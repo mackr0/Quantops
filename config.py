@@ -24,11 +24,8 @@ DEFAULT_TAKE_PROFIT_PCT = 0.15
 # Watchlist
 WATCHLIST = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "SPY", "QQQ"]
 
-# Email / SMTP notifications
-SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER")  # Gmail address
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")  # Gmail app password
+# Email notifications (Resend)
+RESEND_API_KEY = os.getenv("RESEND_API_KEY")
 NOTIFICATION_EMAIL = os.getenv("NOTIFICATION_EMAIL", "mack@mackenziesmith.com")
 
 # Aggressive strategy settings

@@ -1,10 +1,10 @@
 """Rich HTML email notifications for trade events, vetoes, exits, and daily summaries."""
 
-import smtplib
+import json
 import logging
+import urllib.request
+import urllib.error
 from datetime import date, datetime
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 
 import config
 from client import get_account_info, get_positions
@@ -115,34 +115,43 @@ def _table(headers, rows):
 # ---------------------------------------------------------------------------
 
 def send_email(subject, html_body):
-    """Send an HTML email via SMTP with TLS.
+    """Send an HTML email via Resend API.
 
     Returns True on success, False on failure.  Never raises.
     """
-    smtp_user = config.SMTP_USER
-    smtp_password = config.SMTP_PASSWORD
-
-    if not smtp_user or not smtp_password:
-        logger.warning("SMTP credentials not configured — skipping email notification.")
+    api_key = config.RESEND_API_KEY
+    if not api_key:
+        logger.warning("RESEND_API_KEY not configured — skipping email notification.")
         return False
 
     recipient = config.NOTIFICATION_EMAIL
+    payload = json.dumps({
+        "from": "Quantops <onboarding@resend.dev>",
+        "to": [recipient],
+        "subject": subject,
+        "html": html_body,
+    }).encode("utf-8")
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = smtp_user
-    msg["To"] = recipient
-    msg.attach(MIMEText(html_body, "html"))
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "Quantops/1.0",
+        },
+        method="POST",
+    )
 
     try:
-        with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=30) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(smtp_user, smtp_password)
-            server.sendmail(smtp_user, [recipient], msg.as_string())
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
         logger.info("Email sent: %s", subject)
         return True
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        logger.error("Failed to send email '%s': HTTP %s — %s", subject, exc.code, body)
+        return False
     except Exception as exc:
         logger.error("Failed to send email '%s': %s", subject, exc)
         return False
