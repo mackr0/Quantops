@@ -24,6 +24,10 @@ Usage:
     python main.py aggro-scan           Aggressive scan on screened stocks
     python main.py aggro-trade          Screen, scan, and auto-trade aggressively
     python main.py aggro-analyze SYM    Aggressive analysis on a specific symbol
+
+  AI Performance Tracking:
+    python main.py ai-report            Show AI prediction accuracy report
+    python main.py ai-resolve           Resolve pending AI predictions vs actual prices
 """
 
 import sys
@@ -357,6 +361,21 @@ def cmd_aggro_analyze(symbol):
     print_json(result)
 
 
+# ── AI Performance Tracking ───────────────────────────────────────────
+
+def cmd_ai_report():
+    from ai_tracker import init_tracker_db, print_ai_report
+    init_tracker_db()
+    print_ai_report()
+
+
+def cmd_ai_resolve():
+    from ai_tracker import init_tracker_db, resolve_predictions
+    init_tracker_db()
+    count = resolve_predictions()
+    print(f"Resolved {count} predictions. Run 'ai-report' to see updated accuracy.")
+
+
 # ── CLI Router ───────────────────────────────────────────────────────
 
 def main():
@@ -406,6 +425,10 @@ def main():
         cmd_aggro_trade()
     elif command == "aggro-analyze" and len(sys.argv) >= 3:
         cmd_aggro_analyze(sys.argv[2].upper())
+    elif command == "ai-report":
+        cmd_ai_report()
+    elif command == "ai-resolve":
+        cmd_ai_resolve()
     else:
         print(__doc__)
 

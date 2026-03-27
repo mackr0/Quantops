@@ -34,11 +34,13 @@ AI_MIN_CONFIDENCE = 40  # AI must be at least this confident to allow a buy
 def ai_review(symbol, technical_signal):
     """Ask Claude to review a proposed trade before execution.
 
-    Returns (approved: bool, ai_result: dict) where ai_result contains
-    the full AI analysis including signal, confidence, reasoning, and
-    risk factors.
+    Records every AI prediction to the tracker for accuracy measurement.
+    Returns (approved: bool, ai_result: dict).
     """
     from ai_analyst import analyze_symbol
+    from ai_tracker import record_prediction, init_tracker_db
+
+    init_tracker_db()
 
     print(f"    AI reviewing {symbol}...", end=" ", flush=True)
     ai_result = analyze_symbol(symbol)
@@ -47,6 +49,17 @@ def ai_review(symbol, technical_signal):
     ai_confidence = ai_result.get("confidence", 0)
     tech_signal = technical_signal.get("signal", "HOLD").upper()
     tech_direction = "BUY" if "BUY" in tech_signal else "SELL" if "SELL" in tech_signal else "HOLD"
+    price = technical_signal.get("price", 0)
+
+    # Record every AI prediction for accuracy tracking
+    record_prediction(
+        symbol=symbol,
+        predicted_signal=ai_signal,
+        confidence=ai_confidence,
+        reasoning=ai_result.get("reasoning", ""),
+        price_at_prediction=price,
+        price_targets=ai_result.get("price_targets"),
+    )
 
     # Approval logic for BUY trades
     if tech_direction == "BUY":
