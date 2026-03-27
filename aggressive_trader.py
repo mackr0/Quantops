@@ -5,8 +5,13 @@ Position sizing is more aggressive than the conservative trader:
   - STRONG_BUY -> 10%, BUY -> 7.5%
   - Tighter stop-loss at 3% (cut losses fast on volatile names)
   - Take-profit at 10%
+
+AI Review Gate:
+  Before placing any order, Claude analyzes the stock and must approve.
+  If AI says SELL or gives low confidence (<40), the trade is vetoed.
 """
 
+import json
 from client import get_api, get_account_info, get_positions
 from portfolio_manager import check_portfolio_constraints
 from journal import init_db, log_trade, log_signal
@@ -14,28 +19,73 @@ from aggressive_strategy import aggressive_combined_strategy
 
 
 # ---------------------------------------------------------------------------
-# Aggressive position-sizing constants
+# Constants
 # ---------------------------------------------------------------------------
-AGGRESSIVE_MAX_POSITION_PCT = 0.10   # 10% of equity
-AGGRESSIVE_STOP_LOSS_PCT = 0.03      # 3%
-AGGRESSIVE_TAKE_PROFIT_PCT = 0.10    # 10%
+AGGRESSIVE_MAX_POSITION_PCT = 0.10
+AGGRESSIVE_STOP_LOSS_PCT = 0.03
+AGGRESSIVE_TAKE_PROFIT_PCT = 0.10
+AI_MIN_CONFIDENCE = 40  # AI must be at least this confident to allow a buy
 
 
 # ---------------------------------------------------------------------------
-# 1. Execute a single aggressive trade
+# AI Review
 # ---------------------------------------------------------------------------
 
-def aggressive_execute_trade(symbol, signal, max_position_pct=0.10, log=True):
+def ai_review(symbol, technical_signal):
+    """Ask Claude to review a proposed trade before execution.
+
+    Returns (approved: bool, ai_result: dict) where ai_result contains
+    the full AI analysis including signal, confidence, reasoning, and
+    risk factors.
+    """
+    from ai_analyst import analyze_symbol
+
+    print(f"    AI reviewing {symbol}...", end=" ", flush=True)
+    ai_result = analyze_symbol(symbol)
+
+    ai_signal = ai_result.get("signal", "HOLD").upper()
+    ai_confidence = ai_result.get("confidence", 0)
+    tech_signal = technical_signal.get("signal", "HOLD").upper()
+    tech_direction = "BUY" if "BUY" in tech_signal else "SELL" if "SELL" in tech_signal else "HOLD"
+
+    # Approval logic for BUY trades
+    if tech_direction == "BUY":
+        if ai_signal == "SELL":
+            print(f"VETOED (AI says SELL, confidence {ai_confidence})")
+            return False, ai_result
+        if ai_confidence < AI_MIN_CONFIDENCE and ai_signal != "BUY":
+            print(f"VETOED (AI confidence {ai_confidence} < {AI_MIN_CONFIDENCE})")
+            return False, ai_result
+        print(f"APPROVED (AI: {ai_signal}, confidence {ai_confidence})")
+        return True, ai_result
+
+    # Approval logic for SELL trades — AI sell confirmation or low confidence
+    if tech_direction == "SELL":
+        if ai_signal == "BUY" and ai_confidence >= 70:
+            print(f"VETOED (AI strongly says BUY, confidence {ai_confidence})")
+            return False, ai_result
+        print(f"APPROVED (AI: {ai_signal}, confidence {ai_confidence})")
+        return True, ai_result
+
+    # HOLD — nothing to approve
+    return True, ai_result
+
+
+# ---------------------------------------------------------------------------
+# Execute a single aggressive trade
+# ---------------------------------------------------------------------------
+
+def aggressive_execute_trade(symbol, signal, ai_result=None,
+                             max_position_pct=0.10, log=True):
     """Execute a trade with aggressive position sizing.
 
     Args:
         symbol: Ticker string.
-        signal: Strategy signal dict (from any aggressive_strategy function).
-        max_position_pct: Max fraction of equity for one position (default 10%).
+        signal: Strategy signal dict (from aggressive_combined_strategy).
+        ai_result: AI analysis dict (from ai_review). If provided, logged
+                   with the trade for full audit trail.
+        max_position_pct: Max fraction of equity for one position.
         log: Whether to write to the journal database.
-
-    Returns:
-        Dict describing the action taken.
     """
     api = get_api()
     account = get_account_info(api)
@@ -47,11 +97,22 @@ def aggressive_execute_trade(symbol, signal, max_position_pct=0.10, log=True):
     action = signal.get("signal", "HOLD")
     price = signal.get("price", 0)
 
+    # Extract AI info for logging
+    ai_reasoning = None
+    ai_confidence = None
+    if ai_result:
+        ai_reasoning = ai_result.get("reasoning", "")
+        ai_confidence = ai_result.get("confidence")
+        # If AI provided price targets, use them for stop/take-profit
+        targets = ai_result.get("price_targets", {})
+
     result = {
         "symbol": symbol,
         "action": "NONE",
         "signal": action,
         "reason": signal.get("reason", ""),
+        "ai_signal": ai_result.get("signal") if ai_result else None,
+        "ai_confidence": ai_confidence,
         "strategy": "aggressive",
     }
 
@@ -60,11 +121,14 @@ def aggressive_execute_trade(symbol, signal, max_position_pct=0.10, log=True):
 
     # ---- BUY logic --------------------------------------------------------
     if action in ("BUY", "STRONG_BUY") and symbol not in positions:
-        # Aggressive sizing: STRONG_BUY gets full allocation, BUY gets 75%
         if action == "STRONG_BUY":
-            alloc_pct = max_position_pct          # 10%
+            alloc_pct = max_position_pct
         else:
-            alloc_pct = max_position_pct * 0.75   # 7.5%
+            alloc_pct = max_position_pct * 0.75
+
+        # Boost allocation if AI is highly confident
+        if ai_confidence and ai_confidence >= 80:
+            alloc_pct = min(alloc_pct * 1.25, max_position_pct)
 
         max_dollars = equity * alloc_pct
         dollars = min(max_dollars, cash)
@@ -77,27 +141,21 @@ def aggressive_execute_trade(symbol, signal, max_position_pct=0.10, log=True):
         qty = int(dollars / price)
         if qty <= 0:
             result["action"] = "SKIP"
-            result["reason"] = "Position size too small for price"
+            result["reason"] = "Position size too small"
             return result
 
-        # Portfolio constraint check (uses the *aggressive* position limit)
+        # Portfolio constraint check
         proposed = {"side": "buy", "qty": qty, "price": price}
         allowed, constraint_reason = check_portfolio_constraints(
             symbol, proposed, positions, account
         )
 
-        # If the default constraint blocks us because of the conservative
-        # MAX_POSITION_PCT, we still respect other constraints (max positions,
-        # cash).  The concentration check may fire — override only that one
-        # by re-checking manually.
+        # Override conservative concentration limit for aggressive trades
         trade_value = qty * price
         if not allowed and "exceeds" in constraint_reason and equity > 0:
-            # Re-check with our aggressive limit
-            if trade_value / equity <= max_position_pct:
-                # Also verify cash
-                if trade_value <= cash:
-                    allowed = True
-                    constraint_reason = "Passed aggressive constraints"
+            if trade_value / equity <= max_position_pct and trade_value <= cash:
+                allowed = True
+                constraint_reason = "Passed aggressive constraints"
 
         if not allowed:
             result["action"] = "BLOCKED"
@@ -129,6 +187,8 @@ def aggressive_execute_trade(symbol, signal, max_position_pct=0.10, log=True):
                 signal_type=action,
                 strategy="aggressive",
                 reason=signal.get("reason"),
+                ai_reasoning=ai_reasoning,
+                ai_confidence=ai_confidence,
                 stop_loss=AGGRESSIVE_STOP_LOSS_PCT,
                 take_profit=AGGRESSIVE_TAKE_PROFIT_PCT,
             )
@@ -138,7 +198,6 @@ def aggressive_execute_trade(symbol, signal, max_position_pct=0.10, log=True):
         position = positions[symbol]
         qty = int(position["qty"])
 
-        # Aggressive: STRONG_SELL dumps everything, SELL dumps 75%
         if action == "STRONG_SELL":
             sell_qty = qty
         else:
@@ -169,6 +228,8 @@ def aggressive_execute_trade(symbol, signal, max_position_pct=0.10, log=True):
                 signal_type=action,
                 strategy="aggressive",
                 reason=signal.get("reason"),
+                ai_reasoning=ai_reasoning,
+                ai_confidence=ai_confidence,
                 pnl=pnl,
             )
 
@@ -203,52 +264,81 @@ def aggressive_execute_trade(symbol, signal, max_position_pct=0.10, log=True):
 
 
 # ---------------------------------------------------------------------------
-# 2. Scan a list of candidates and trade actionable signals
+# Scan and trade with AI gate
 # ---------------------------------------------------------------------------
 
 def run_aggressive_scan_and_trade(candidates, max_position_pct=0.10, log=True):
-    """Run aggressive_combined_strategy on every candidate and trade actionable
-    signals.
+    """Screen candidates with aggressive strategies, AI-review before trading.
 
-    Args:
-        candidates: List of ticker symbols to scan.
-        max_position_pct: Per-position size cap as fraction of equity.
-        log: Whether to log to the journal.
+    Pipeline for each candidate:
+      1. Run aggressive_combined_strategy → technical signal
+      2. If signal is actionable (BUY/SELL), run AI review
+      3. If AI approves, execute the trade
+      4. If AI vetoes, skip and log the veto
 
-    Returns:
-        Dict with summary stats and per-symbol details.
+    Returns summary dict with counts and details.
     """
-    actions = []
+    details = []
+    vetoed = []
     errors = []
 
     for symbol in candidates:
         try:
+            # Step 1: Technical analysis
             signal = aggressive_combined_strategy(symbol)
+            action = signal.get("signal", "HOLD")
+
+            if action == "HOLD":
+                details.append({"symbol": symbol, "action": "HOLD", "reason": signal.get("reason", "")})
+                continue
+
+            # Step 2: AI review for actionable signals
+            print(f"  {symbol}: {action} (score {signal.get('score', '?')})")
+            approved, ai_result = ai_review(symbol, signal)
+
+            if not approved:
+                vetoed.append({
+                    "symbol": symbol,
+                    "technical_signal": action,
+                    "ai_signal": ai_result.get("signal"),
+                    "ai_confidence": ai_result.get("confidence"),
+                    "ai_reasoning": ai_result.get("reasoning", ""),
+                })
+                details.append({
+                    "symbol": symbol,
+                    "action": "AI_VETOED",
+                    "signal": action,
+                    "ai_signal": ai_result.get("signal"),
+                    "ai_confidence": ai_result.get("confidence"),
+                    "reason": f"AI vetoed: {ai_result.get('reasoning', '')[:100]}",
+                })
+                continue
+
+            # Step 3: Execute trade
             trade_result = aggressive_execute_trade(
-                symbol, signal, max_position_pct=max_position_pct, log=log,
+                symbol, signal, ai_result=ai_result,
+                max_position_pct=max_position_pct, log=log,
             )
-            actions.append(trade_result)
+            details.append(trade_result)
+
         except Exception as exc:
             errors.append({"symbol": symbol, "error": str(exc)})
+            details.append({"symbol": symbol, "action": "ERROR", "reason": str(exc)})
 
-    buys = [a for a in actions if a["action"] == "BUY"]
-    sells = [a for a in actions if a["action"] == "SELL"]
-    holds = [a for a in actions if a["action"] == "HOLD"]
-    skips = [a for a in actions if a["action"] in ("SKIP", "BLOCKED", "NONE")]
+    buys = [d for d in details if d.get("action") == "BUY"]
+    sells = [d for d in details if d.get("action") == "SELL"]
+    holds = [d for d in details if d.get("action") == "HOLD"]
+    skips = [d for d in details if d.get("action") in ("SKIP", "BLOCKED", "NONE")]
+    ai_vetoed = [d for d in details if d.get("action") == "AI_VETOED"]
 
     return {
-        "scanned": len(candidates),
+        "total": len(candidates),
         "buys": len(buys),
         "sells": len(sells),
         "holds": len(holds),
         "skips": len(skips),
+        "ai_vetoed": len(ai_vetoed),
         "errors": len(errors),
-        "actions": actions,
-        "error_details": errors,
-        "summary": (
-            f"Scanned {len(candidates)} symbols: "
-            f"{len(buys)} buys, {len(sells)} sells, "
-            f"{len(holds)} holds, {len(skips)} skipped, "
-            f"{len(errors)} errors"
-        ),
+        "details": details,
+        "vetoed_details": vetoed,
     }

@@ -309,7 +309,7 @@ def cmd_aggro_trade():
     from screener import run_full_screen
     from aggressive_trader import run_aggressive_scan_and_trade
 
-    print("=== Aggressive Auto-Trade ===\n")
+    print("=== Aggressive Auto-Trade (AI-Reviewed) ===\n")
     print("Step 1: Screening for small-cap candidates...\n")
     screen = run_full_screen()
 
@@ -319,23 +319,34 @@ def cmd_aggro_trade():
             symbols.add(s["symbol"])
 
     symbols = list(symbols)[:30]
-    print(f"\nStep 2: Analyzing and trading {len(symbols)} stocks...\n")
+    print(f"\nStep 2: Analyzing with AI review before trading ({len(symbols)} stocks)...\n")
 
     summary = run_aggressive_scan_and_trade(symbols)
 
     print(f"\n{'='*60}")
-    print(f"Stocks scanned: {summary.get('total', 0)}")
-    print(f"Buys executed:  {summary.get('buys', 0)}")
-    print(f"Sells executed: {summary.get('sells', 0)}")
-    print(f"Holds:          {summary.get('holds', 0)}")
-    print(f"Skipped:        {summary.get('skips', 0)}")
-    print(f"Errors:         {summary.get('errors', 0)}")
+    print(f"  Stocks scanned:  {summary.get('total', 0)}")
+    print(f"  Buys executed:   {summary.get('buys', 0)}")
+    print(f"  Sells executed:  {summary.get('sells', 0)}")
+    print(f"  AI vetoed:       {summary.get('ai_vetoed', 0)}")
+    print(f"  Holds:           {summary.get('holds', 0)}")
+    print(f"  Skipped:         {summary.get('skips', 0)}")
+    print(f"  Errors:          {summary.get('errors', 0)}")
+    print(f"{'='*60}")
 
-    if summary.get("details"):
-        print(f"\n--- Trade Details ---")
-        for d in summary["details"]:
-            if d.get("action") in ("BUY", "SELL"):
-                print(f"  {d['action']:4s} {d['symbol']:6s} | qty: {d.get('qty', 'N/A')} | {d.get('reason', '')}")
+    # Show executed trades
+    executed = [d for d in summary.get("details", []) if d.get("action") in ("BUY", "SELL")]
+    if executed:
+        print(f"\n--- Executed Trades ---")
+        for d in executed:
+            ai_info = f"AI: {d.get('ai_signal', '?')} ({d.get('ai_confidence', '?')}%)" if d.get('ai_signal') else ""
+            print(f"  {d['action']:4s} {d['symbol']:6s} | qty: {d.get('qty', 'N/A'):>6} | ~${d.get('estimated_cost', 0):>10,.2f} | {ai_info}")
+
+    # Show AI vetoes
+    vetoed = [d for d in summary.get("details", []) if d.get("action") == "AI_VETOED"]
+    if vetoed:
+        print(f"\n--- AI Vetoed (saved you from these) ---")
+        for d in vetoed:
+            print(f"  {d['symbol']:6s} | Technical: {d.get('signal', '?')} | AI: {d.get('ai_signal', '?')} ({d.get('ai_confidence', '?')}%) | {d.get('reason', '')[:80]}")
 
 
 def cmd_aggro_analyze(symbol):
