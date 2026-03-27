@@ -1,90 +1,170 @@
-"""Small-cap and micro-cap stock screener using Alpaca API."""
+"""Small-cap and micro-cap stock screener using Yahoo Finance (yfinance)."""
 
 import sys
 from datetime import datetime
 
-from client import get_api
+import pandas as pd
+import yfinance as yf
+
 from market_data import get_bars
 
 
-def get_tradable_symbols(api=None):
-    """Get all tradable US equity symbols from major exchanges."""
-    api = api or get_api()
-    assets = api.list_assets(status="active")
-    return [
-        a.symbol for a in assets
-        if a.tradable
-        and a.exchange in ("NYSE", "NASDAQ", "AMEX")
-        and "." not in a.symbol
-        and "/" not in a.symbol
-        and "-" not in a.symbol
-        and len(a.symbol) <= 5
-    ]
+# ---------------------------------------------------------------------------
+# Curated universe of ~300 liquid small / micro-cap symbols ($1-$30 range).
+# Covers biotech, energy, tech, travel, fintech, EVs, mining, retail, etc.
+# ---------------------------------------------------------------------------
+SMALL_CAP_UNIVERSE = [
+    # Fintech / finance
+    "SOFI", "HOOD", "AFRM", "UPST", "CLOV", "OPEN", "PSFE", "ML", "LMND",
+    "VNET", "SLM", "NAVI", "CACC",
+    # EVs / autos / mobility
+    "RIVN", "LCID", "NIO", "XPEV", "LI", "FSR", "GOEV", "WKHS", "NKLA",
+    "MVST", "QS", "CHPT", "BLNK", "EVGO", "REE",
+    # Social / tech / software
+    "SNAP", "PATH", "WISH", "BB", "NOK", "GENI", "IRNT", "IQ", "WB",
+    "EBON", "ZI", "AI", "BBAI", "SOUN", "RKLB",
+    # Cannabis
+    "TLRY", "CGC", "ACB", "SNDL", "OGI", "HEXO",
+    # Crypto / blockchain / miners
+    "MARA", "RIOT", "HUT", "BITF", "CIFR", "CLSK", "IREN", "WULF",
+    # Clean energy / hydrogen / fuel cells
+    "PLUG", "FCEL", "BE", "RUN", "NOVA", "ARRY", "STEM", "OPAL",
+    "MAXN", "JKS", "DQ",
+    # Oil & gas / energy
+    "RIG", "ET", "AM", "AR", "CNX", "BTU", "SWN", "KOS", "TELL", "BTE",
+    "CEIX", "NEXT", "SD", "HPK", "CPE", "SM", "CRGY", "VET",
+    "CTRA", "OVV", "CRK",
+    # Airlines / cruise / travel
+    "JBLU", "AAL", "SAVE", "NCLH", "CCL", "RCL", "TRIP", "ABNB",
+    "HTHT", "LTH",
+    # Biotech / pharma / health
+    "DNA", "ADMA", "WVE", "OLPX", "HIMS", "RVMD", "EXAS", "MRNA",
+    "BNTX", "CRSP", "NTLA", "BEAM", "EDIT", "VERV", "VIR", "FOLD",
+    "APLS", "FATE", "ACAD", "TGTX", "CERE", "ALNY", "SMMT", "IONS",
+    "RXRX", "GILD", "VKTX", "LUNG", "KALA", "TBIO", "ABCL",
+    # Consumer / retail / food
+    "LULU", "CAVA", "DIN", "SHAK", "BROS", "MNST", "COTY", "ELF",
+    "PRPL", "IRBT", "LL", "DBI", "ANF", "URBN", "AEO", "PLBY",
+    "FIZZ", "CELH",
+    # Mining / metals / materials
+    "GOLD", "HL", "CDE", "AG", "PAAS", "SVM", "FSM", "MAG",
+    "MUX", "GPL", "EXK", "SILV", "GATO", "AUY", "USAS",
+    # REITs / real estate
+    "AGNC", "NLY", "TWO", "MFA", "IVR", "NYMT", "CIM", "MITT",
+    "RC", "BRMK",
+    # Industrials / aerospace / defense
+    "JOBY", "ACHR", "LILM", "ASTS", "SPCE", "ASTR", "LUNR",
+    "RDW", "BKSY",
+    # Telecom / media
+    "LUMN", "GSAT", "IRDM", "SIRI", "WBD", "PARA", "LYV",
+    # Other popular small / micro caps
+    "PLTR", "F", "PCG", "T", "VZ", "WBD", "PARA", "GPRO", "VUZI",
+    "LAZR", "MVIS", "LIDR", "OUST", "AEVA", "INVZ",
+    "CIFR", "APPH", "HYLN", "PTRA", "GBS", "VG",
+    "ME", "BNGO", "SAVA", "SKLZ", "DKNG", "PENN",
+    "CRSR", "LOGI", "HEAR",
+    # Additional liquid names in the $1-$30 range
+    "CLF", "X", "AA", "VALE", "PBR", "ITUB", "SID", "BBD",
+    "UMC", "ASX", "QFIN", "VIPS", "JD", "BABA", "BIDU",
+    "TAL", "EDU", "FUTU",
+    "GRAB", "SE", "CPNG", "MELI",
+    "NU", "STNE", "PAGS",
+    "VTRS", "TEVA", "OPK", "PRGO",
+    "NOG", "VTLE", "CHRD", "MTDR",
+    "ERJ", "AZUL", "GOL", "CPA",
+    "SWI", "JAMF", "TENB", "RPD", "S", "CRWD",
+]
 
 
-def screen_by_price_range(min_price=1.0, max_price=20.0, min_volume=500000,
+def get_small_cap_universe():
+    """Return the curated list of small / micro-cap symbols to screen."""
+    # Deduplicate while preserving order
+    seen = set()
+    unique = []
+    for s in SMALL_CAP_UNIVERSE:
+        if s not in seen:
+            seen.add(s)
+            unique.append(s)
+    return unique
+
+
+def screen_by_price_range(min_price=1.0, max_price=20.0, min_volume=500_000,
                           limit=50, api=None):
-    """Screen for small/micro-cap stocks using batch snapshots for speed.
+    """Screen small/micro-cap stocks by price range and minimum volume.
 
-    Uses Alpaca's multi-snapshot API to quickly filter thousands of symbols
-    by price and volume without fetching individual bar histories.
+    Uses yfinance batch download for speed. The ``api`` parameter is
+    ignored (kept for backward compatibility).
     """
-    api = api or get_api()
+    universe = get_small_cap_universe()
+    print(f"Downloading 1-month data for {len(universe)} symbols (yfinance batch)...")
 
-    print("Fetching tradable assets...")
-    all_symbols = get_tradable_symbols(api=api)
-    print(f"Found {len(all_symbols)} tradable symbols. Fetching snapshots...")
+    # Batch download — very fast, single HTTP request per batch
+    data = yf.download(universe, period="1mo", progress=False, group_by="ticker",
+                       threads=True)
 
     results = []
-    batch_size = 1000
-    for i in range(0, len(all_symbols), batch_size):
-        batch = all_symbols[i:i + batch_size]
+    for sym in universe:
         try:
-            snapshots = api.get_snapshots(batch)
-            for sym, snap in snapshots.items():
-                try:
-                    price = float(snap.latest_trade.p)
-                    volume = int(snap.daily_bar.v)
-                    prev_close = float(snap.prev_daily_bar.c) if hasattr(snap, 'prev_daily_bar') and snap.prev_daily_bar else price
-                    change_pct = ((price - prev_close) / prev_close * 100) if prev_close > 0 else 0
+            if len(universe) == 1:
+                sym_df = data
+            else:
+                sym_df = data[sym]
 
-                    if min_price <= price <= max_price and volume >= min_volume:
-                        results.append({
-                            "symbol": sym,
-                            "price": round(price, 2),
-                            "volume": volume,
-                            "price_change_pct": round(change_pct, 2),
-                            "reason": f"${price:.2f} | vol: {volume:,} | chg: {change_pct:+.1f}%",
-                        })
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"  Batch error: {e}")
+            sym_df = sym_df.dropna(subset=["Close"])
+            if sym_df.empty or len(sym_df) < 2:
+                continue
 
-        sys.stdout.write(f"\r  Scanned {min(i + batch_size, len(all_symbols)):,}/{len(all_symbols):,} symbols...")
-        sys.stdout.flush()
+            price = float(sym_df["Close"].iloc[-1])
+            volume = int(sym_df["Volume"].iloc[-1])
+            prev_close = float(sym_df["Close"].iloc[-2])
+            change_pct = ((price - prev_close) / prev_close * 100) if prev_close > 0 else 0
 
-    print(f"\n  Found {len(results)} stocks in ${min_price}-${max_price} with {min_volume:,}+ volume")
+            if min_price <= price <= max_price and volume >= min_volume:
+                results.append({
+                    "symbol": sym,
+                    "price": round(price, 2),
+                    "volume": volume,
+                    "price_change_pct": round(change_pct, 2),
+                    "reason": f"${price:.2f} | vol: {volume:,} | chg: {change_pct:+.1f}%",
+                })
+        except Exception:
+            pass
+
+    print(f"  Found {len(results)} stocks in ${min_price}-${max_price} with {min_volume:,}+ volume")
 
     results.sort(key=lambda x: x["volume"], reverse=True)
     return results[:limit]
 
 
 def find_volume_surges(candidates, volume_multiplier=2.0, api=None):
-    """Find stocks where today's volume surges above the 20-day average."""
-    api = api or get_api()
+    """Find stocks where today's volume surges above the 20-day average.
+
+    ``candidates`` is a list of ticker symbol strings.
+    """
     print(f"  Checking {len(candidates)} stocks for volume surges ({volume_multiplier}x+ avg)...")
 
+    if not candidates:
+        print("\n  Found 0 volume surges")
+        return []
+
+    data = yf.download(candidates, period="1mo", progress=False,
+                       group_by="ticker", threads=True)
+
     surges = []
-    for i, sym in enumerate(candidates):
+    for sym in candidates:
         try:
-            bars = get_bars(sym, limit=30, api=api)
-            if len(bars) < 20:
+            if len(candidates) == 1:
+                sym_df = data
+            else:
+                sym_df = data[sym]
+
+            sym_df = sym_df.dropna(subset=["Close"])
+            if len(sym_df) < 20:
                 continue
 
-            avg_vol = float(bars["volume"].iloc[-21:-1].mean())
-            today_vol = float(bars["volume"].iloc[-1])
-            price = float(bars["close"].iloc[-1])
+            avg_vol = float(sym_df["Volume"].iloc[-21:-1].mean())
+            today_vol = float(sym_df["Volume"].iloc[-1])
+            price = float(sym_df["Close"].iloc[-1])
 
             if avg_vol > 0:
                 ratio = today_vol / avg_vol
@@ -100,10 +180,6 @@ def find_volume_surges(candidates, volume_multiplier=2.0, api=None):
         except Exception:
             pass
 
-        if (i + 1) % 5 == 0:
-            sys.stdout.write(".")
-            sys.stdout.flush()
-
     print(f"\n  Found {len(surges)} volume surges")
     surges.sort(key=lambda x: x["volume_ratio"], reverse=True)
     return surges
@@ -111,19 +187,30 @@ def find_volume_surges(candidates, volume_multiplier=2.0, api=None):
 
 def find_momentum_stocks(candidates, min_gain_5d=5.0, min_gain_20d=10.0, api=None):
     """Find stocks with strong recent price momentum."""
-    api = api or get_api()
     print(f"  Checking {len(candidates)} stocks for momentum ({min_gain_5d}%+ 5d, {min_gain_20d}%+ 20d)...")
 
+    if not candidates:
+        print("\n  Found 0 momentum stocks")
+        return []
+
+    data = yf.download(candidates, period="1mo", progress=False,
+                       group_by="ticker", threads=True)
+
     momentum = []
-    for i, sym in enumerate(candidates):
+    for sym in candidates:
         try:
-            bars = get_bars(sym, limit=30, api=api)
-            if len(bars) < 21:
+            if len(candidates) == 1:
+                sym_df = data
+            else:
+                sym_df = data[sym]
+
+            sym_df = sym_df.dropna(subset=["Close"])
+            if len(sym_df) < 21:
                 continue
 
-            price = float(bars["close"].iloc[-1])
-            price_5d = float(bars["close"].iloc[-6])
-            price_20d = float(bars["close"].iloc[-21])
+            price = float(sym_df["Close"].iloc[-1])
+            price_5d = float(sym_df["Close"].iloc[-6])
+            price_20d = float(sym_df["Close"].iloc[-21])
 
             gain_5d = ((price - price_5d) / price_5d) * 100
             gain_20d = ((price - price_20d) / price_20d) * 100
@@ -139,10 +226,6 @@ def find_momentum_stocks(candidates, min_gain_5d=5.0, min_gain_20d=10.0, api=Non
         except Exception:
             pass
 
-        if (i + 1) % 5 == 0:
-            sys.stdout.write(".")
-            sys.stdout.flush()
-
     print(f"\n  Found {len(momentum)} momentum stocks")
     momentum.sort(key=lambda x: x["gain_20d"], reverse=True)
     return momentum
@@ -150,20 +233,31 @@ def find_momentum_stocks(candidates, min_gain_5d=5.0, min_gain_20d=10.0, api=Non
 
 def find_breakouts(candidates, api=None):
     """Find stocks breaking above their 20-day high on above-average volume."""
-    api = api or get_api()
     print(f"  Checking {len(candidates)} stocks for 20-day high breakouts...")
 
+    if not candidates:
+        print("\n  Found 0 breakout candidates")
+        return []
+
+    data = yf.download(candidates, period="1mo", progress=False,
+                       group_by="ticker", threads=True)
+
     breakouts = []
-    for i, sym in enumerate(candidates):
+    for sym in candidates:
         try:
-            bars = get_bars(sym, limit=30, api=api)
-            if len(bars) < 21:
+            if len(candidates) == 1:
+                sym_df = data
+            else:
+                sym_df = data[sym]
+
+            sym_df = sym_df.dropna(subset=["Close"])
+            if len(sym_df) < 21:
                 continue
 
-            price = float(bars["close"].iloc[-1])
-            high_20d = float(bars["high"].iloc[-21:-1].max())
-            avg_vol = float(bars["volume"].iloc[-21:-1].mean())
-            today_vol = float(bars["volume"].iloc[-1])
+            price = float(sym_df["Close"].iloc[-1])
+            high_20d = float(sym_df["High"].iloc[-21:-1].max())
+            avg_vol = float(sym_df["Volume"].iloc[-21:-1].mean())
+            today_vol = float(sym_df["Volume"].iloc[-1])
 
             vol_ratio = (today_vol / avg_vol) if avg_vol > 0 else 0
 
@@ -180,38 +274,35 @@ def find_breakouts(candidates, api=None):
         except Exception:
             pass
 
-        if (i + 1) % 5 == 0:
-            sys.stdout.write(".")
-            sys.stdout.flush()
-
     print(f"\n  Found {len(breakouts)} breakout candidates")
     breakouts.sort(key=lambda x: x["breakout_pct"], reverse=True)
     return breakouts
 
 
 def run_full_screen(api=None):
-    """Run the complete small-cap screening pipeline."""
-    api = api or get_api()
+    """Run the complete small-cap screening pipeline.
 
+    The ``api`` parameter is ignored (kept for backward compatibility).
+    """
     print("=" * 60)
     print("QUANTOPS SMALL-CAP / MICRO-CAP SCREENER")
     print(f"Run time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
 
-    # Step 1: Fast price/volume screen via snapshots
+    # Step 1: Fast price/volume screen via yfinance batch download
     print("\n[1/4] Price & Volume Screen")
-    candidates = screen_by_price_range(api=api)
+    candidates = screen_by_price_range()
     symbols = [c["symbol"] for c in candidates]
 
     # Steps 2-4: Detailed analysis on candidates only
     print(f"\n[2/4] Volume Surge Detection")
-    volume_surges = find_volume_surges(symbols, api=api)
+    volume_surges = find_volume_surges(symbols)
 
     print(f"\n[3/4] Momentum Screen")
-    momentum = find_momentum_stocks(symbols, api=api)
+    momentum = find_momentum_stocks(symbols)
 
     print(f"\n[4/4] Breakout Detection")
-    breakouts = find_breakouts(symbols, api=api)
+    breakouts = find_breakouts(symbols)
 
     print(f"\n{'='*60}")
     print(f"  Candidates: {len(candidates)}")
