@@ -161,18 +161,19 @@ def send_email(subject, html_body):
 # 2. Trade notification
 # ---------------------------------------------------------------------------
 
-def notify_trade(trade_result, signal, ai_result=None):
+def notify_trade(trade_result, signal=None, ai_result=None):
     """Send a rich notification after a trade is executed.
 
-    Args:
-        trade_result: Dict returned by aggressive_execute_trade (or similar).
-        signal: The strategy signal dict that triggered the trade.
-        ai_result: Optional AI analysis dict.
+    All data can come from trade_result alone (signal and ai_result are
+    optional overrides for backward compatibility).
     """
+    signal = signal or trade_result
+    ai_result = ai_result or trade_result
+
     symbol = trade_result.get("symbol", "???")
     action = trade_result.get("action", "NONE")
     qty = trade_result.get("qty", 0)
-    price = signal.get("price", 0)
+    price = trade_result.get("price") or signal.get("price", 0)
     estimated_cost = trade_result.get("estimated_cost", qty * price)
 
     subject = f"Quantops: {action} {qty} {symbol} @ ${price:,.2f}"
@@ -190,25 +191,26 @@ def notify_trade(trade_result, signal, ai_result=None):
     body = _section("Trade Details", details)
 
     # -- Signal info ---------------------------------------------------------
-    score = signal.get("score", "--")
+    score = trade_result.get("score") or signal.get("score", "--")
     sig_info = (
-        _kv_row("Signal", signal.get("signal", "--"))
+        _kv_row("Signal", trade_result.get("signal") or signal.get("signal", "--"))
         + _kv_row("Score", score)
-        + _kv_row("Reason", signal.get("reason", "--"))
+        + _kv_row("Reason", trade_result.get("reason") or signal.get("reason", "--"))
     )
     body += _section("Strategy Signal", sig_info)
 
     # -- AI analysis ---------------------------------------------------------
-    if ai_result:
-        ai_signal = ai_result.get("signal", "--")
-        ai_conf = ai_result.get("confidence", "--")
-        ai_reasoning = ai_result.get("reasoning", "--")
-        risk_factors = ai_result.get("risk_factors", [])
+    ai_signal = trade_result.get("ai_signal") or ai_result.get("signal")
+    ai_conf = trade_result.get("ai_confidence") or ai_result.get("confidence")
+    ai_reasoning = trade_result.get("ai_reasoning") or ai_result.get("reasoning")
+    risk_factors = trade_result.get("ai_risk_factors") or ai_result.get("risk_factors", [])
+
+    if ai_signal:
         risk_str = ", ".join(risk_factors) if risk_factors else "None listed"
         ai_info = (
             _kv_row("AI Signal", ai_signal)
             + _kv_row("AI Confidence", f"{ai_conf}%")
-            + _kv_row("Reasoning", ai_reasoning)
+            + _kv_row("Reasoning", ai_reasoning or "--")
             + _kv_row("Risk Factors", risk_str)
         )
         body += _section("AI Analysis", ai_info)

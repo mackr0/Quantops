@@ -123,9 +123,13 @@ def aggressive_execute_trade(symbol, signal, ai_result=None,
         "symbol": symbol,
         "action": "NONE",
         "signal": action,
+        "price": price,
         "reason": signal.get("reason", ""),
+        "score": signal.get("score"),
         "ai_signal": ai_result.get("signal") if ai_result else None,
         "ai_confidence": ai_confidence,
+        "ai_reasoning": ai_reasoning,
+        "ai_risk_factors": ai_result.get("risk_factors", []) if ai_result else [],
         "strategy": "aggressive",
     }
 
