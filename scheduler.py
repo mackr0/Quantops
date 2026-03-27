@@ -113,16 +113,18 @@ def task_aggressive_scan_and_trade():
             except Exception:
                 logging.exception("Failed to send trade notification")
 
-    # Send email for AI vetoes
+    # Send email only for vetoed BUY signals (not sells on stocks we don't own)
     for veto in summary.get("vetoed_details", []):
-        try:
-            notify_veto(
-                veto["symbol"],
-                {"signal": veto.get("technical_signal")},
-                veto,
-            )
-        except Exception:
-            logging.exception("Failed to send veto notification")
+        tech_signal = veto.get("technical_signal", "")
+        if "BUY" in str(tech_signal):
+            try:
+                notify_veto(
+                    veto["symbol"],
+                    {"signal": tech_signal},
+                    veto,
+                )
+            except Exception:
+                logging.exception("Failed to send veto notification")
 
 
 def task_check_exits():
