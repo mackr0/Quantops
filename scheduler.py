@@ -81,6 +81,7 @@ def task_aggressive_scan_and_trade():
     """Screen for small-cap candidates and auto-trade with AI review."""
     from screener import run_full_screen
     from aggressive_trader import run_aggressive_scan_and_trade
+    from notifications import notify_trade, notify_veto
 
     screen = run_full_screen()
     symbols = set()
@@ -104,10 +105,30 @@ def task_aggressive_scan_and_trade():
         f"errors={summary.get('errors', 0)}"
     )
 
+    # Send email for each executed trade
+    for detail in summary.get("details", []):
+        if detail.get("action") in ("BUY", "SELL"):
+            try:
+                notify_trade(detail, detail, detail)
+            except Exception:
+                logging.exception("Failed to send trade notification")
+
+    # Send email for AI vetoes
+    for veto in summary.get("vetoed_details", []):
+        try:
+            notify_veto(
+                veto["symbol"],
+                {"signal": veto.get("technical_signal")},
+                veto,
+            )
+        except Exception:
+            logging.exception("Failed to send veto notification")
+
 
 def task_check_exits():
     """Check stop-loss and take-profit triggers on open positions."""
     from trader import check_exits
+    from notifications import notify_exit
 
     results = check_exits()
     if results:
@@ -116,6 +137,10 @@ def task_check_exits():
                 f"Exit triggered: {r['symbol']} {r['trigger'].upper()} "
                 f"qty={r['qty']} — {r['reason']}"
             )
+            try:
+                notify_exit(r["symbol"], r["trigger"], r["qty"], r["reason"])
+            except Exception:
+                logging.exception("Failed to send exit notification")
     else:
         logging.info("No exit triggers fired.")
 
@@ -126,6 +151,13 @@ def task_resolve_predictions():
 
     resolve_predictions()
     logging.info("AI predictions resolved.")
+
+
+def task_daily_summary_email():
+    """Send end-of-day summary email."""
+    from notifications import notify_daily_summary
+    notify_daily_summary()
+    logging.info("Daily summary email sent.")
 
 
 def task_daily_snapshot():
@@ -225,9 +257,10 @@ def main_loop():
                 run_task("Resolve AI Predictions", task_resolve_predictions)
                 last_run["resolve_predictions"] = time.time()
 
-            # At 3:55 PM ET: daily snapshot (once per day)
+            # At 3:55 PM ET: daily snapshot + summary email (once per day)
             if now.hour == 15 and now.minute >= 55 and last_run["daily_snapshot"] != today_str:
                 run_task("Daily Snapshot", task_daily_snapshot)
+                run_task("Daily Summary Email", task_daily_summary_email)
                 last_run["daily_snapshot"] = today_str
 
             # Sleep 30 seconds between checks
