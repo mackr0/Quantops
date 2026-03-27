@@ -18,6 +18,12 @@ Usage:
     python main.py journal              Show trade history
     python main.py performance          Show performance summary
     python main.py snapshot             Save daily portfolio snapshot
+
+  Aggressive Small-Cap Commands:
+    python main.py screen               Screen for small/micro-cap candidates
+    python main.py aggro-scan           Aggressive scan on screened stocks
+    python main.py aggro-trade          Screen, scan, and auto-trade aggressively
+    python main.py aggro-analyze SYM    Aggressive analysis on a specific symbol
 """
 
 import sys
@@ -235,6 +241,111 @@ def cmd_snapshot():
           f"positions={len(positions)}, cash=${account['cash']:,.2f}")
 
 
+# ── Aggressive Small-Cap ──────────────────────────────────────────────
+
+def cmd_screen():
+    from screener import run_full_screen
+    print("=== Small/Micro-Cap Stock Screener ===\n")
+    print("Scanning for stocks $1-$20 with 500K+ avg volume...\n")
+    results = run_full_screen()
+
+    summary = results.get("summary", {})
+    print(f"\n{'='*60}")
+    print(f"Candidates found: {summary.get('total_candidates', 0)}")
+    print(f"Volume surges:    {summary.get('volume_surges', 0)}")
+    print(f"Momentum stocks:  {summary.get('momentum_stocks', 0)}")
+    print(f"Breakouts:        {summary.get('breakouts', 0)}")
+
+    for category in ("volume_surges", "momentum", "breakouts"):
+        stocks = results.get(category, [])
+        if stocks:
+            print(f"\n--- {category.replace('_', ' ').title()} ---")
+            for s in stocks[:10]:
+                print(f"  {s['symbol']:6s} | ${s.get('price', 0):>8.2f} | {s.get('reason', '')}")
+
+
+def cmd_aggro_scan():
+    from screener import run_full_screen
+    from aggressive_strategy import aggressive_combined_strategy
+    from dashboard import show_scan_results
+
+    print("=== Aggressive Small-Cap Scan ===\n")
+    print("Step 1: Screening for candidates...\n")
+    screen = run_full_screen()
+
+    # Collect unique symbols from all categories
+    symbols = set()
+    for cat in ("volume_surges", "momentum", "breakouts", "candidates"):
+        for s in screen.get(cat, []):
+            symbols.add(s["symbol"])
+
+    symbols = list(symbols)[:30]  # Cap at 30 to keep it manageable
+    print(f"\nStep 2: Running aggressive analysis on {len(symbols)} stocks...\n")
+
+    results = []
+    for sym in symbols:
+        try:
+            result = aggressive_combined_strategy(sym)
+            results.append(result)
+            signal = result["signal"]
+            if signal != "HOLD":
+                print(f"  {sym:6s} -> {signal}")
+        except Exception as e:
+            print(f"  {sym:6s} -> ERROR: {e}")
+
+    print()
+    actionable = [r for r in results if r["signal"] != "HOLD"]
+    if actionable:
+        try:
+            show_scan_results(actionable)
+        except Exception:
+            for r in actionable:
+                print(f"  {r['symbol']:6s} | {r['signal']:12s} | {r.get('reason', '')}")
+    else:
+        print("No actionable signals found in this scan.")
+
+
+def cmd_aggro_trade():
+    from screener import run_full_screen
+    from aggressive_trader import run_aggressive_scan_and_trade
+
+    print("=== Aggressive Auto-Trade ===\n")
+    print("Step 1: Screening for small-cap candidates...\n")
+    screen = run_full_screen()
+
+    symbols = set()
+    for cat in ("volume_surges", "momentum", "breakouts", "candidates"):
+        for s in screen.get(cat, []):
+            symbols.add(s["symbol"])
+
+    symbols = list(symbols)[:30]
+    print(f"\nStep 2: Analyzing and trading {len(symbols)} stocks...\n")
+
+    summary = run_aggressive_scan_and_trade(symbols)
+
+    print(f"\n{'='*60}")
+    print(f"Stocks scanned: {summary.get('total', 0)}")
+    print(f"Buys executed:  {summary.get('buys', 0)}")
+    print(f"Sells executed: {summary.get('sells', 0)}")
+    print(f"Holds:          {summary.get('holds', 0)}")
+    print(f"Skipped:        {summary.get('skips', 0)}")
+    print(f"Errors:         {summary.get('errors', 0)}")
+
+    if summary.get("details"):
+        print(f"\n--- Trade Details ---")
+        for d in summary["details"]:
+            if d.get("action") in ("BUY", "SELL"):
+                print(f"  {d['action']:4s} {d['symbol']:6s} | qty: {d.get('qty', 'N/A')} | {d.get('reason', '')}")
+
+
+def cmd_aggro_analyze(symbol):
+    from aggressive_strategy import aggressive_combined_strategy
+    from dashboard import show_ai_analysis
+    print(f"=== Aggressive Analysis: {symbol} ===\n")
+    result = aggressive_combined_strategy(symbol)
+    print_json(result)
+
+
 # ── CLI Router ───────────────────────────────────────────────────────
 
 def main():
@@ -276,6 +387,14 @@ def main():
         cmd_performance()
     elif command == "snapshot":
         cmd_snapshot()
+    elif command == "screen":
+        cmd_screen()
+    elif command == "aggro-scan":
+        cmd_aggro_scan()
+    elif command == "aggro-trade":
+        cmd_aggro_trade()
+    elif command == "aggro-analyze" and len(sys.argv) >= 3:
+        cmd_aggro_analyze(sys.argv[2].upper())
     else:
         print(__doc__)
 
