@@ -5,10 +5,35 @@ import ta
 from client import get_api
 
 
-def get_bars(symbol, timeframe="1Day", limit=100, api=None):
+def get_bars(symbol, timeframe="1Day", limit=200, api=None):
     """Fetch historical bars for a symbol and return as a DataFrame."""
+    from datetime import datetime, timedelta
     api = api or get_api()
-    bars = api.get_bars(symbol, timeframe, limit=limit).df
+    # Use date range instead of limit — more reliable on free tier
+    end = datetime.now().strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=int(limit * 1.5))).strftime("%Y-%m-%d")
+    bars = api.get_bars(symbol, timeframe, start=start, end=end, feed="iex").df
+    if not bars.empty:
+        bars.index = bars.index.tz_convert("US/Eastern")
+    return bars
+
+
+def get_bars_daterange(symbol, start, end, timeframe="1Day", api=None):
+    """
+    Fetch historical bars for a symbol within a specific date range.
+
+    Args:
+        symbol: Ticker symbol (e.g. 'AAPL').
+        start: Start date as ISO-8601 string (e.g. '2025-01-01').
+        end: End date as ISO-8601 string (e.g. '2025-12-31').
+        timeframe: Bar timeframe (default '1Day').
+        api: Optional pre-authenticated Alpaca API client.
+
+    Returns:
+        DataFrame with OHLCV data indexed by timestamp.
+    """
+    api = api or get_api()
+    bars = api.get_bars(symbol, timeframe, start=start, end=end, feed="iex").df
     bars.index = bars.index.tz_convert("US/Eastern")
     return bars
 

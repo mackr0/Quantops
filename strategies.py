@@ -4,14 +4,18 @@ import pandas as pd
 from market_data import get_bars, add_indicators
 
 
-def sma_crossover_strategy(symbol, short_window=20, long_window=50, limit=100):
+def sma_crossover_strategy(symbol, short_window=20, long_window=50, limit=200, df=None):
     """
     Simple Moving Average crossover strategy.
 
     Buy signal: short SMA crosses above long SMA
     Sell signal: short SMA crosses below long SMA
+
+    If df is provided, skip the API call and use that DataFrame directly
+    (useful for backtesting).
     """
-    df = get_bars(symbol, limit=limit)
+    if df is None:
+        df = get_bars(symbol, limit=limit)
     df[f"sma_{short_window}"] = df["close"].rolling(window=short_window).mean()
     df[f"sma_{long_window}"] = df["close"].rolling(window=long_window).mean()
 
@@ -49,14 +53,18 @@ def sma_crossover_strategy(symbol, short_window=20, long_window=50, limit=100):
     }
 
 
-def rsi_strategy(symbol, period=14, oversold=30, overbought=70, limit=100):
+def rsi_strategy(symbol, period=14, oversold=30, overbought=70, limit=200, df=None):
     """
     RSI-based mean reversion strategy.
 
     Buy signal: RSI drops below oversold threshold
     Sell signal: RSI rises above overbought threshold
+
+    If df is provided, skip the API call and use that DataFrame directly
+    (useful for backtesting).
     """
-    df = get_bars(symbol, limit=limit)
+    if df is None:
+        df = get_bars(symbol, limit=limit)
     df = add_indicators(df)
     df = df.dropna()
 
@@ -85,16 +93,19 @@ def rsi_strategy(symbol, period=14, oversold=30, overbought=70, limit=100):
     }
 
 
-def combined_strategy(symbol, limit=100):
+def combined_strategy(symbol, limit=200, df=None):
     """
     Combines SMA crossover and RSI for stronger signals.
 
     Strong BUY: both SMA and RSI say BUY
     Strong SELL: both SMA and RSI say SELL
     Otherwise: HOLD
+
+    If df is provided, skip the API call and use that DataFrame directly
+    (useful for backtesting).
     """
-    sma_result = sma_crossover_strategy(symbol, limit=limit)
-    rsi_result = rsi_strategy(symbol, limit=limit)
+    sma_result = sma_crossover_strategy(symbol, limit=limit, df=df)
+    rsi_result = rsi_strategy(symbol, limit=limit, df=df)
 
     if sma_result["signal"] == "BUY" and rsi_result["signal"] == "BUY":
         signal = "STRONG_BUY"

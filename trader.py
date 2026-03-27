@@ -1,20 +1,25 @@
-"""Execute trades based on strategy signals."""
+"""Execute trades based on strategy signals with risk management and journaling."""
 
 from client import get_api, get_account_info, get_positions
+from portfolio_manager import (
+    calculate_position_size,
+    check_portfolio_constraints,
+    check_stop_loss_take_profit,
+)
+from journal import init_db, log_trade, log_signal
 
 
-def execute_trade(symbol, signal, max_position_pct=0.05):
+def execute_trade(symbol, signal, strategy_name="combined", log=True):
     """
     Execute a trade based on a strategy signal.
 
-    Args:
-        symbol: Stock ticker
-        signal: Strategy signal dict with 'signal' key
-        max_position_pct: Max % of portfolio to allocate per position (default 5%)
+    Uses portfolio_manager for position sizing and constraint checks.
+    Logs trades and signals to the journal.
     """
     api = get_api()
     account = get_account_info(api)
-    positions = {p["symbol"]: p for p in get_positions(api)}
+    positions_list = get_positions(api)
+    positions = {p["symbol"]: p for p in positions_list}
 
     action = signal["signal"]
     price = signal.get("price", 0)
@@ -23,49 +28,67 @@ def execute_trade(symbol, signal, max_position_pct=0.05):
         "symbol": symbol,
         "action": "NONE",
         "signal": action,
-        "reason": signal["reason"],
+        "reason": signal.get("reason", ""),
     }
 
+    if log:
+        init_db()
+
     if action in ("BUY", "STRONG_BUY", "WEAK_BUY") and symbol not in positions:
-        # Calculate position size
-        max_dollars = account["equity"] * max_position_pct
-        if action == "STRONG_BUY":
-            dollars = max_dollars
-        elif action == "BUY":
-            dollars = max_dollars * 0.75
-        else:  # WEAK_BUY
-            dollars = max_dollars * 0.5
+        # Use portfolio manager for position sizing
+        sizing = calculate_position_size(symbol, signal, account, positions)
+        qty = sizing["qty"]
 
-        if price > 0:
-            qty = int(dollars / price)
-        else:
-            qty = 1
-
-        if qty > 0:
-            order = api.submit_order(
-                symbol=symbol,
-                qty=qty,
-                side="buy",
-                type="market",
-                time_in_force="day",
-            )
-            result["action"] = "BUY"
-            result["qty"] = qty
-            result["order_id"] = order.id
-            result["estimated_cost"] = qty * price
-        else:
+        if qty <= 0:
             result["action"] = "SKIP"
-            result["reason"] = "Position size too small"
+            result["reason"] = sizing["reason"]
+        else:
+            # Check portfolio constraints before executing
+            proposed = {"side": "buy", "qty": qty, "price": price}
+            allowed, constraint_reason = check_portfolio_constraints(
+                symbol, proposed, positions, account
+            )
+
+            if not allowed:
+                result["action"] = "BLOCKED"
+                result["reason"] = constraint_reason
+            else:
+                order = api.submit_order(
+                    symbol=symbol,
+                    qty=qty,
+                    side="buy",
+                    type="market",
+                    time_in_force="day",
+                )
+                result["action"] = "BUY"
+                result["qty"] = qty
+                result["order_id"] = order.id
+                result["estimated_cost"] = qty * price
+                result["sizing"] = sizing["reason"]
+
+                if log:
+                    log_trade(
+                        symbol=symbol,
+                        side="buy",
+                        qty=qty,
+                        price=price,
+                        order_id=order.id,
+                        signal_type=action,
+                        strategy=strategy_name,
+                        reason=signal.get("reason"),
+                        ai_reasoning=signal.get("ai_raw_reasoning"),
+                        ai_confidence=signal.get("confidence"),
+                    )
 
     elif action in ("SELL", "STRONG_SELL", "WEAK_SELL") and symbol in positions:
         position = positions[symbol]
         qty = int(position["qty"])
 
         if action == "STRONG_SELL":
-            sell_qty = qty  # Sell all
+            sell_qty = qty
         elif action == "SELL":
             sell_qty = max(1, int(qty * 0.75))
-        else:  # WEAK_SELL
+        else:
             sell_qty = max(1, int(qty * 0.5))
 
         order = api.submit_order(
@@ -79,6 +102,20 @@ def execute_trade(symbol, signal, max_position_pct=0.05):
         result["qty"] = sell_qty
         result["order_id"] = order.id
 
+        if log:
+            pnl = position["unrealized_pl"] * (sell_qty / qty) if qty > 0 else None
+            log_trade(
+                symbol=symbol,
+                side="sell",
+                qty=sell_qty,
+                price=price,
+                order_id=order.id,
+                signal_type=action,
+                strategy=strategy_name,
+                reason=signal.get("reason"),
+                pnl=pnl,
+            )
+
     elif action == "HOLD":
         result["action"] = "HOLD"
 
@@ -89,4 +126,66 @@ def execute_trade(symbol, signal, max_position_pct=0.05):
         elif symbol not in positions and "SELL" in action:
             result["reason"] = f"No position in {symbol} to sell"
 
+    # Log the signal regardless of action
+    if log:
+        log_signal(
+            symbol=symbol,
+            signal=action,
+            strategy=strategy_name,
+            reason=signal.get("reason"),
+            price=price,
+            indicators={
+                k: signal[k] for k in ("rsi", "sma_short", "sma_long", "confidence")
+                if k in signal
+            },
+            acted_on=result["action"] in ("BUY", "SELL"),
+        )
+
     return result
+
+
+def check_exits():
+    """Check all positions for stop-loss/take-profit triggers and execute sells."""
+    api = get_api()
+    positions = get_positions(api)
+
+    if not positions:
+        return []
+
+    init_db()
+    triggered = check_stop_loss_take_profit(positions)
+    results = []
+
+    for trigger_signal in triggered:
+        symbol = trigger_signal["symbol"]
+        qty = int(trigger_signal["qty"])
+
+        order = api.submit_order(
+            symbol=symbol,
+            qty=qty,
+            side="sell",
+            type="market",
+            time_in_force="day",
+        )
+
+        log_trade(
+            symbol=symbol,
+            side="sell",
+            qty=qty,
+            price=trigger_signal["price"],
+            order_id=order.id,
+            signal_type="SELL",
+            strategy=trigger_signal["trigger"],
+            reason=trigger_signal["reason"],
+        )
+
+        results.append({
+            "symbol": symbol,
+            "action": "SELL",
+            "qty": qty,
+            "trigger": trigger_signal["trigger"],
+            "reason": trigger_signal["reason"],
+            "order_id": order.id,
+        })
+
+    return results
