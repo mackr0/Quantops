@@ -24,7 +24,7 @@ from aggressive_strategy import aggressive_combined_strategy
 AGGRESSIVE_MAX_POSITION_PCT = 0.10
 AGGRESSIVE_STOP_LOSS_PCT = 0.03
 AGGRESSIVE_TAKE_PROFIT_PCT = 0.10
-AI_MIN_CONFIDENCE = 40  # AI must be at least this confident to allow a buy
+AI_MIN_CONFIDENCE = 25  # AI must be at least this confident to allow a buy (lower for paper trading)
 
 
 # ---------------------------------------------------------------------------

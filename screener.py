@@ -185,7 +185,7 @@ def find_volume_surges(candidates, volume_multiplier=2.0, api=None):
     return surges
 
 
-def find_momentum_stocks(candidates, min_gain_5d=5.0, min_gain_20d=10.0, api=None):
+def find_momentum_stocks(candidates, min_gain_5d=3.0, min_gain_20d=5.0, api=None):
     """Find stocks with strong recent price momentum."""
     print(f"  Checking {len(candidates)} stocks for momentum ({min_gain_5d}%+ 5d, {min_gain_20d}%+ 20d)...")
 
