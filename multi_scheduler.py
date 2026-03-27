@@ -414,7 +414,23 @@ def main_loop(active_segments=None):
             time.sleep(30)
 
         else:
-            # Market closed
+            # Market closed — but send daily summary if we missed it
+            if last_run["daily_snapshot"] != today_str and now.hour >= 16:
+                logging.info("Market closed — sending missed daily snapshot and summary")
+                for segment_name in active_segments:
+                    if _shutdown:
+                        break
+                    logging.info(f"=== End-of-day snapshot: {segment_name} ===")
+                    run_segment_cycle(
+                        segment_name,
+                        run_scan=False,
+                        run_exits=False,
+                        run_predictions=False,
+                        run_snapshot=True,
+                        run_summary=True,
+                    )
+                last_run["daily_snapshot"] = today_str
+
             nxt = next_market_open(now)
             logging.info(
                 f"Market closed, sleeping until {nxt.strftime('%Y-%m-%d %H:%M %Z')}"
