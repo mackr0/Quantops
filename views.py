@@ -19,6 +19,8 @@ from models import (
     create_trading_profile, get_trading_profile, get_user_profiles,
     get_active_profiles, update_trading_profile, delete_trading_profile,
     build_user_context_from_profile, MARKET_TYPE_NAMES,
+    # Activity log
+    get_activity_feed, get_activity_count,
 )
 from segments import SEGMENTS, get_segment
 from crypto import decrypt, encrypt
@@ -598,3 +600,22 @@ def admin():
 
     conn.close()
     return render_template("admin.html", users=users)
+
+
+# ---------------------------------------------------------------------------
+# Activity Feed API
+# ---------------------------------------------------------------------------
+
+@views_bp.route("/api/activity")
+@login_required
+def api_activity():
+    """Return JSON array of activity log entries for the current user."""
+    profile_id = request.args.get("profile_id", type=int)
+    offset = request.args.get("offset", 0, type=int)
+    limit = request.args.get("limit", 10, type=int)
+    limit = min(limit, 100)  # cap at 100
+
+    entries = get_activity_feed(current_user.id, profile_id=profile_id,
+                                limit=limit, offset=offset)
+    total = get_activity_count(current_user.id, profile_id=profile_id)
+    return jsonify({"entries": entries, "total": total})

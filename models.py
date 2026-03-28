@@ -153,6 +153,18 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+            activity_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            detail TEXT NOT NULL,
+            symbol TEXT,
+            FOREIGN KEY (profile_id) REFERENCES trading_profiles(id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
     """)
     conn.commit()
     conn.close()
@@ -856,3 +868,73 @@ def get_api_usage(user_id: int, date_str: Optional[str] = None) -> int:
     ).fetchone()
     conn.close()
     return row["anthropic_calls"] if row else 0
+
+
+# ---------------------------------------------------------------------------
+# Activity Log
+# ---------------------------------------------------------------------------
+
+def log_activity(profile_id: int, user_id: int, activity_type: str,
+                 title: str, detail: str, symbol: Optional[str] = None) -> int:
+    """Insert an activity log entry. Returns the row id."""
+    conn = _get_conn()
+    cursor = conn.execute(
+        """INSERT INTO activity_log
+           (profile_id, user_id, timestamp, activity_type, title, detail, symbol)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            profile_id,
+            user_id,
+            datetime.utcnow().isoformat(),
+            activity_type,
+            title,
+            detail,
+            symbol,
+        ),
+    )
+    conn.commit()
+    row_id = cursor.lastrowid
+    conn.close()
+    return row_id
+
+
+def get_activity_feed(user_id: int, profile_id: Optional[int] = None,
+                      limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    """Get activity log entries, newest first.
+
+    If profile_id is None, returns all entries for the user.
+    """
+    conn = _get_conn()
+    if profile_id is not None:
+        rows = conn.execute(
+            """SELECT * FROM activity_log
+               WHERE user_id = ? AND profile_id = ?
+               ORDER BY timestamp DESC LIMIT ? OFFSET ?""",
+            (user_id, profile_id, limit, offset),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT * FROM activity_log
+               WHERE user_id = ?
+               ORDER BY timestamp DESC LIMIT ? OFFSET ?""",
+            (user_id, limit, offset),
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_activity_count(user_id: int, profile_id: Optional[int] = None) -> int:
+    """Total activity log count for pagination."""
+    conn = _get_conn()
+    if profile_id is not None:
+        row = conn.execute(
+            "SELECT COUNT(*) as cnt FROM activity_log WHERE user_id = ? AND profile_id = ?",
+            (user_id, profile_id),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT COUNT(*) as cnt FROM activity_log WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    conn.close()
+    return row["cnt"] if row else 0

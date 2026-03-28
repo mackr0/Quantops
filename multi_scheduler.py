@@ -181,6 +181,132 @@ def run_full_screen_for_segment(ctx, seg):
     }
 
 
+# ── Activity Log Helpers ──────────────────────────────────────────────
+
+def _safe_log_activity(profile_id, user_id, activity_type, title, detail,
+                       symbol=None):
+    """Log an activity entry, swallowing errors so it never breaks the scan."""
+    try:
+        from models import log_activity
+        log_activity(profile_id, user_id, activity_type, title, detail,
+                     symbol=symbol)
+    except Exception:
+        logging.exception("Failed to log activity entry")
+
+
+def _build_scan_summary(ctx, candidates, summary):
+    """Build a human-readable scan summary with indicator details.
+
+    Returns (title, detail) strings for the activity log.
+    """
+    from market_data import get_bars, add_indicators
+
+    seg_label = ctx.display_name or ctx.segment
+    total = summary.get("total", len(candidates))
+    buys = summary.get("buys", 0)
+    sells = summary.get("sells", 0)
+    holds = summary.get("holds", 0)
+    ai_vetoed = summary.get("ai_vetoed", 0)
+
+    # Determine market mood
+    if buys > 0 and sells == 0:
+        mood = "bullish signals"
+    elif sells > 0 and buys == 0:
+        mood = "bearish signals"
+    elif buys > 0 and sells > 0:
+        mood = "mixed signals"
+    else:
+        mood = "market flat"
+
+    title = (f"{seg_label} Scan: {total} analyzed, {buys} buys, "
+             f"{sells} sells — {mood}")
+
+    # Build detail with top candidates' indicators
+    lines = []
+
+    # Pick top 5 symbols from candidates to show indicators
+    top_symbols = list(candidates)[:5]
+    indicator_lines = []
+    strategy_lines = []
+
+    for sym in top_symbols:
+        try:
+            df = get_bars(sym, limit=30)
+            if df.empty or len(df) < 5:
+                continue
+            df = add_indicators(df)
+            latest = df.iloc[-1]
+
+            price = latest["close"]
+            rsi = latest.get("rsi", 0) or 0
+
+            # Volume ratio
+            vol = latest.get("volume", 0) or 0
+            vol_avg = latest.get("volume_sma_20", 0) or 0
+            vol_ratio = vol / vol_avg if vol_avg > 0 else 0
+
+            # Distance from 20-day high
+            high_20d = df["high"].tail(20).max() if len(df) >= 20 else df["high"].max()
+            pct_from_high = ((price - high_20d) / high_20d * 100) if high_20d > 0 else 0
+
+            indicator_lines.append(
+                f"  {sym}: ${price:,.2f} (RSI {rsi:.1f}, "
+                f"{pct_from_high:+.1f}% from 20d high, "
+                f"volume {vol_ratio:.1f}x avg)"
+            )
+
+            # Strategy signal reasoning
+            detail_entry = None
+            for d in summary.get("details", []):
+                if d.get("symbol") == sym:
+                    detail_entry = d
+                    break
+
+            action = detail_entry.get("action", "HOLD") if detail_entry else "HOLD"
+            reason = detail_entry.get("reason", "") if detail_entry else ""
+            if reason:
+                strategy_lines.append(f"  {sym}: {action} — {reason[:80]}")
+            else:
+                strategy_lines.append(f"  {sym}: {action}")
+
+        except Exception:
+            continue
+
+    if indicator_lines:
+        lines.append("Market Conditions:")
+        lines.extend(indicator_lines)
+        lines.append("")
+
+    if strategy_lines:
+        lines.append("Strategy Signals:")
+        lines.extend(strategy_lines)
+        lines.append("")
+
+    # Summary of why no action / action taken
+    action_lines = []
+    if buys == 0 and sells == 0:
+        action_lines.append("Decision: No action taken. Waiting for stronger signals.")
+        if ai_vetoed > 0:
+            action_lines.append(f"  {ai_vetoed} signal(s) vetoed by AI review.")
+        if holds > 0:
+            action_lines.append(
+                f"  {holds} candidate(s) evaluated as HOLD (no strong entry signals).")
+    else:
+        parts = []
+        if buys > 0:
+            parts.append(f"{buys} buy(s)")
+        if sells > 0:
+            parts.append(f"{sells} sell(s)")
+        action_lines.append(f"Decision: Executed {', '.join(parts)}.")
+        if ai_vetoed > 0:
+            action_lines.append(f"  {ai_vetoed} additional signal(s) vetoed by AI.")
+
+    lines.extend(action_lines)
+
+    detail = "\n".join(lines)
+    return title, detail
+
+
 # ── Task Implementations ─────────────────────────────────────────────
 # Each task receives a UserContext and passes it through.
 
@@ -211,6 +337,12 @@ def _task_aggressive_scan_and_trade(ctx):
 
     if not symbols:
         logging.info(f"[{seg_label}] No candidates found in screen.")
+        _safe_log_activity(
+            getattr(ctx, "profile_id", 0), ctx.user_id,
+            "scan_summary",
+            f"{seg_label} Scan: 0 candidates found",
+            "No symbols passed the screener filters this cycle.",
+        )
         return
 
     logging.info(f"[{seg_label}] Running aggressive scan on {len(symbols)} candidates")
@@ -224,6 +356,16 @@ def _task_aggressive_scan_and_trade(ctx):
         f"errors={summary.get('errors', 0)}"
     )
 
+    # Log scan summary activity
+    try:
+        scan_title, scan_detail = _build_scan_summary(ctx, symbols, summary)
+        _safe_log_activity(
+            getattr(ctx, "profile_id", 0), ctx.user_id,
+            "scan_summary", scan_title, scan_detail,
+        )
+    except Exception:
+        logging.exception("Failed to build scan summary for activity log")
+
     for detail in summary.get("details", []):
         if detail.get("action") in ("BUY", "SELL"):
             try:
@@ -231,8 +373,39 @@ def _task_aggressive_scan_and_trade(ctx):
             except Exception:
                 logging.exception("Failed to send trade notification")
 
+            # Log trade executed activity
+            sym = detail.get("symbol", "?")
+            action = detail.get("action", "?")
+            qty = detail.get("qty", 0)
+            price = detail.get("price", 0)
+            reason = detail.get("reason", "")
+            _safe_log_activity(
+                getattr(ctx, "profile_id", 0), ctx.user_id,
+                "trade_executed",
+                f"{action} {qty:,.0f} {sym} @ ${price:,.2f}" if qty and price
+                else f"{action} {sym}",
+                f"Trade executed: {action} {sym}\n{reason}",
+                symbol=sym,
+            )
+
     for veto in summary.get("vetoed_details", []):
         tech_signal = veto.get("technical_signal", "")
+        sym = veto.get("symbol", "?")
+        ai_conf = veto.get("ai_confidence", 0)
+        ai_reasoning = veto.get("ai_reasoning", "")
+
+        # Log AI veto activity
+        _safe_log_activity(
+            getattr(ctx, "profile_id", 0), ctx.user_id,
+            "trade_vetoed",
+            f"AI Vetoed {tech_signal} {sym} — confidence only {ai_conf:.0f}%"
+            if ai_conf else f"AI Vetoed {tech_signal} {sym}",
+            f"Technical signal: {tech_signal}\n"
+            f"AI confidence: {ai_conf:.0f}%\n"
+            f"Reasoning: {ai_reasoning}",
+            symbol=sym,
+        )
+
         if "BUY" in str(tech_signal):
             try:
                 notify_veto(veto["symbol"], {"signal": tech_signal}, veto, ctx=ctx)
@@ -257,6 +430,22 @@ def _task_check_exits(ctx):
                 notify_exit(r["symbol"], r["trigger"], r["qty"], r["reason"], ctx=ctx)
             except Exception:
                 logging.exception("Failed to send exit notification")
+
+            # Log exit activity
+            sym = r["symbol"]
+            trigger = r.get("trigger", "exit").capitalize()
+            reason = r.get("reason", "")
+            _safe_log_activity(
+                getattr(ctx, "profile_id", 0), ctx.user_id,
+                "exit_triggered",
+                f"{trigger} {sym} — {reason[:60]}" if reason
+                else f"{trigger} {sym}",
+                f"Exit triggered for {sym}\n"
+                f"Trigger: {trigger}\n"
+                f"Qty: {r.get('qty', '?')}\n"
+                f"Reason: {reason}",
+                symbol=sym,
+            )
     else:
         logging.info(f"[{seg_label}] No exit triggers fired.")
 

@@ -6,6 +6,27 @@
     <p>Welcome back{% if current_user.display_name %}, {{ current_user.display_name }}{% endif %}</p>
 </hgroup>
 
+<!-- Strategy Activity Ticker -->
+<article id="activity-ticker">
+    <header>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h3 style="margin:0;">Strategy Activity</h3>
+            <div style="display:flex; gap:0.5rem; align-items:center;">
+                <button id="ticker-prev" class="outline secondary" style="padding:0.25rem 0.5rem;" title="Previous entry">&larr;</button>
+                <span id="ticker-position" class="muted" style="font-size:0.85rem;">Loading...</span>
+                <button id="ticker-next" class="outline secondary" style="padding:0.25rem 0.5rem;" title="Next entry">&rarr;</button>
+            </div>
+        </div>
+    </header>
+    <div id="ticker-content">
+        <div class="ticker-entry">
+            <div class="ticker-timestamp">Waiting for data...</div>
+            <div class="ticker-title"></div>
+            <div class="ticker-detail"></div>
+        </div>
+    </div>
+</article>
+
 {% if not profiles_data %}
 <article>
     <header><h3>No active profiles</h3></header>
@@ -158,4 +179,165 @@
     </div>
 </article>
 {% endif %}
+
+<!-- Activity Ticker JavaScript -->
+<script>
+(function() {
+    var entries = [];
+    var currentIndex = 0;
+    var totalCount = 0;
+    var PAGE_SIZE = 50;
+
+    var contentEl = document.getElementById('ticker-content');
+    var positionEl = document.getElementById('ticker-position');
+    var prevBtn = document.getElementById('ticker-prev');
+    var nextBtn = document.getElementById('ticker-next');
+
+    function formatTimestamp(ts) {
+        if (!ts) return '';
+        // Parse ISO timestamp and format nicely
+        var d = new Date(ts + 'Z');  // treat as UTC
+        var now = new Date();
+        var diff = (now - d) / 1000;
+
+        var timeStr = d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        var dateStr = d.toLocaleDateString([], {month: 'short', day: 'numeric'});
+
+        if (diff < 3600) {
+            var mins = Math.floor(diff / 60);
+            return mins <= 1 ? 'Just now' : mins + 'm ago';
+        } else if (diff < 86400) {
+            var hours = Math.floor(diff / 3600);
+            return hours + 'h ago';
+        } else {
+            return dateStr + ' ' + timeStr;
+        }
+    }
+
+    function escapeHtml(text) {
+        var div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function renderEntry(entry) {
+        if (!entry) {
+            contentEl.innerHTML = '<div class="ticker-entry"><div class="ticker-timestamp muted">No activity yet. The scheduler will populate entries during scan cycles.</div></div>';
+            return;
+        }
+        var typeBadge = '';
+        var badgeClass = 'ticker-badge-scan';
+        switch(entry.activity_type) {
+            case 'trade_executed': badgeClass = 'ticker-badge-trade'; typeBadge = 'TRADE'; break;
+            case 'trade_vetoed': badgeClass = 'ticker-badge-veto'; typeBadge = 'VETOED'; break;
+            case 'exit_triggered': badgeClass = 'ticker-badge-exit'; typeBadge = 'EXIT'; break;
+            case 'market_status': badgeClass = 'ticker-badge-market'; typeBadge = 'MARKET'; break;
+            default: typeBadge = 'SCAN'; break;
+        }
+        var html = '<div class="ticker-entry">';
+        html += '<div class="ticker-meta">';
+        html += '<span class="ticker-timestamp muted">' + escapeHtml(formatTimestamp(entry.timestamp)) + '</span>';
+        html += ' <span class="ticker-badge ' + badgeClass + '">' + typeBadge + '</span>';
+        if (entry.symbol) {
+            html += ' <span class="ticker-symbol">' + escapeHtml(entry.symbol) + '</span>';
+        }
+        html += '</div>';
+        html += '<div class="ticker-title">' + escapeHtml(entry.title) + '</div>';
+        html += '<div class="ticker-detail">' + escapeHtml(entry.detail) + '</div>';
+        html += '</div>';
+        contentEl.innerHTML = html;
+    }
+
+    function updatePosition() {
+        if (totalCount === 0) {
+            positionEl.textContent = 'No entries';
+            prevBtn.disabled = true;
+            nextBtn.disabled = true;
+        } else {
+            positionEl.textContent = (currentIndex + 1) + ' of ' + totalCount;
+            prevBtn.disabled = (currentIndex <= 0);
+            nextBtn.disabled = (currentIndex >= totalCount - 1);
+        }
+    }
+
+    function fetchActivity() {
+        fetch('/api/activity?limit=' + PAGE_SIZE + '&offset=0')
+            .then(function(resp) { return resp.json(); })
+            .then(function(data) {
+                entries = data.entries || [];
+                totalCount = data.total || 0;
+                currentIndex = 0;
+                renderEntry(entries[0] || null);
+                updatePosition();
+            })
+            .catch(function(err) {
+                contentEl.innerHTML = '<div class="ticker-entry"><div class="ticker-timestamp muted">Could not load activity feed.</div></div>';
+            });
+    }
+
+    prevBtn.addEventListener('click', function() {
+        if (currentIndex > 0) {
+            currentIndex--;
+            renderEntry(entries[currentIndex]);
+            updatePosition();
+        }
+    });
+
+    nextBtn.addEventListener('click', function() {
+        if (currentIndex < totalCount - 1) {
+            currentIndex++;
+            // If we need to fetch more entries
+            if (currentIndex >= entries.length && currentIndex < totalCount) {
+                fetch('/api/activity?limit=' + PAGE_SIZE + '&offset=' + entries.length)
+                    .then(function(resp) { return resp.json(); })
+                    .then(function(data) {
+                        entries = entries.concat(data.entries || []);
+                        renderEntry(entries[currentIndex] || null);
+                        updatePosition();
+                    });
+            } else {
+                renderEntry(entries[currentIndex]);
+                updatePosition();
+            }
+        }
+    });
+
+    // Keyboard navigation
+    document.addEventListener('keydown', function(e) {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+        if (e.key === 'ArrowLeft') { prevBtn.click(); e.preventDefault(); }
+        if (e.key === 'ArrowRight') { nextBtn.click(); e.preventDefault(); }
+    });
+
+    // Initial load
+    fetchActivity();
+
+    // Auto-refresh every 60 seconds
+    setInterval(function() {
+        var savedIndex = currentIndex;
+        fetch('/api/activity?limit=' + PAGE_SIZE + '&offset=0')
+            .then(function(resp) { return resp.json(); })
+            .then(function(data) {
+                var newTotal = data.total || 0;
+                var newEntries = data.entries || [];
+                // If new entries arrived, prepend them and adjust index
+                if (newTotal > totalCount && savedIndex === 0) {
+                    entries = newEntries;
+                    totalCount = newTotal;
+                    currentIndex = 0;
+                    renderEntry(entries[0]);
+                    updatePosition();
+                } else if (newTotal > totalCount) {
+                    var added = newTotal - totalCount;
+                    entries = newEntries;
+                    totalCount = newTotal;
+                    currentIndex = savedIndex + added;
+                    if (currentIndex >= entries.length) currentIndex = entries.length - 1;
+                    renderEntry(entries[currentIndex]);
+                    updatePosition();
+                }
+            });
+    }, 60000);
+})();
+</script>
 {% endblock %}

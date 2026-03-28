@@ -192,6 +192,100 @@ article h4 {
 }
 
 /* ---------------------------------------------------------------------------
+   Activity Ticker
+--------------------------------------------------------------------------- */
+#activity-ticker {
+    background: #1a1a2e;
+    color: #e0e0e0;
+    border: 1px solid #2a2a4e;
+}
+#activity-ticker header {
+    background: #16213e;
+    border-bottom: 1px solid #2a2a4e;
+}
+#activity-ticker header h3 {
+    color: #fff;
+    border-bottom: none;
+}
+#activity-ticker .outline.secondary {
+    color: #8a8aaa;
+    border-color: #3a3a5e;
+    background: transparent;
+}
+#activity-ticker .outline.secondary:hover:not(:disabled) {
+    color: #fff;
+    border-color: #6a6a9e;
+}
+#activity-ticker .outline.secondary:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+.ticker-entry {
+    padding: 0.25rem 0;
+}
+.ticker-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.35rem;
+}
+.ticker-timestamp {
+    font-size: 0.8rem;
+    color: #6a6a8a;
+}
+.ticker-badge {
+    font-size: 0.65rem;
+    font-weight: bold;
+    letter-spacing: 0.5px;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    text-transform: uppercase;
+}
+.ticker-badge-scan {
+    background: #2a3a5e;
+    color: #6aafff;
+}
+.ticker-badge-trade {
+    background: #1b4332;
+    color: #00c853;
+}
+.ticker-badge-veto {
+    background: #4a2a1e;
+    color: #ff9800;
+}
+.ticker-badge-exit {
+    background: #4a1e2a;
+    color: #ff1744;
+}
+.ticker-badge-market {
+    background: #2a2a4e;
+    color: #9e9ebe;
+}
+.ticker-symbol {
+    font-weight: bold;
+    color: #aac4ff;
+    font-size: 0.85rem;
+}
+.ticker-title {
+    font-weight: bold;
+    font-size: 0.95rem;
+    color: #fff;
+    margin-bottom: 0.35rem;
+}
+.ticker-detail {
+    font-family: "SFMono-Regular", "Menlo", "Monaco", "Consolas", monospace;
+    font-size: 0.8rem;
+    color: #b0b0c0;
+    white-space: pre-line;
+    line-height: 1.5;
+    max-height: 16rem;
+    overflow-y: auto;
+}
+#ticker-content {
+    min-height: 3rem;
+}
+
+/* ---------------------------------------------------------------------------
    Footer
 --------------------------------------------------------------------------- */
 footer {
