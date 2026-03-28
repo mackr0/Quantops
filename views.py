@@ -15,9 +15,13 @@ from models import (
     get_user_by_id, get_user_by_email, get_active_users, get_decisions,
     update_user_credentials, get_api_usage,
     create_default_segment_configs,
+    # Trading profiles
+    create_trading_profile, get_trading_profile, get_user_profiles,
+    get_active_profiles, update_trading_profile, delete_trading_profile,
+    build_user_context_from_profile, MARKET_TYPE_NAMES,
 )
 from segments import SEGMENTS, get_segment
-from crypto import decrypt
+from crypto import decrypt, encrypt
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +55,7 @@ def _safe_account_info(ctx):
             "status": account.status,
         }
     except Exception as exc:
-        logger.warning("Could not fetch account for segment %s: %s", ctx.segment, exc)
+        logger.warning("Could not fetch account for %s: %s", ctx.display_name or ctx.segment, exc)
         return None
 
 
@@ -73,12 +77,29 @@ def _safe_positions(ctx):
             for p in positions
         ]
     except Exception as exc:
-        logger.warning("Could not fetch positions for segment %s: %s", ctx.segment, exc)
+        logger.warning("Could not fetch positions for %s: %s", ctx.display_name or ctx.segment, exc)
+        return []
+
+
+def _get_trade_history_for_profile(profile_id, limit=100):
+    """Get trade history from the profile's journal DB."""
+    try:
+        import sqlite3
+        db_path = f"quantopsai_profile_{profile_id}.db"
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM trades ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
         return []
 
 
 def _get_trade_history_for_user(user_id, segment=None, limit=100):
-    """Get trade history from the segment's journal DB."""
+    """Get trade history from the segment's journal DB (legacy)."""
     try:
         import sqlite3
         if segment:
@@ -97,6 +118,15 @@ def _get_trade_history_for_user(user_id, segment=None, limit=100):
         return []
 
 
+def _mask_key(key):
+    """Mask an API key for display."""
+    if not key:
+        return ""
+    if len(key) <= 8:
+        return "****"
+    return key[:4] + "*" * (len(key) - 8) + key[-4:]
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -111,28 +141,31 @@ def index():
 @views_bp.route("/dashboard")
 @login_required
 def dashboard():
-    segments_data = []
-    for seg_name in ("microsmall", "midcap", "largecap", "crypto"):
-        seg_config = get_user_segment_config(current_user.id, seg_name)
-        if not seg_config or not seg_config.get("enabled"):
-            continue
+    profiles = get_active_profiles(user_id=current_user.id)
+    profiles_data = []
+
+    for prof in profiles:
         try:
-            ctx = build_user_context(current_user.id, seg_name)
+            ctx = build_user_context_from_profile(prof["id"])
             account = _safe_account_info(ctx)
             positions = _safe_positions(ctx)
-            trades = _get_trade_history_for_user(current_user.id, seg_name, limit=10)
-            segments_data.append({
-                "name": SEGMENTS[seg_name]["name"],
-                "key": seg_name,
+            trades = _get_trade_history_for_profile(prof["id"], limit=10)
+            profiles_data.append({
+                "id": prof["id"],
+                "name": prof["name"],
+                "market_type": prof["market_type"],
+                "market_type_name": prof.get("market_type_name", prof["market_type"]),
                 "account": account,
                 "positions": positions,
                 "recent_trades": trades,
             })
         except Exception as exc:
-            logger.warning("Dashboard error for segment %s: %s", seg_name, exc)
-            segments_data.append({
-                "name": SEGMENTS[seg_name]["name"],
-                "key": seg_name,
+            logger.warning("Dashboard error for profile #%d: %s", prof["id"], exc)
+            profiles_data.append({
+                "id": prof["id"],
+                "name": prof["name"],
+                "market_type": prof["market_type"],
+                "market_type_name": prof.get("market_type_name", prof["market_type"]),
                 "account": None,
                 "positions": [],
                 "recent_trades": [],
@@ -143,7 +176,7 @@ def dashboard():
     decisions = get_decisions(current_user.id, limit=20)
 
     return render_template("dashboard.html",
-                           segments_data=segments_data,
+                           profiles_data=profiles_data,
                            decisions=decisions)
 
 
@@ -159,46 +192,34 @@ def settings():
     resend_key = decrypt(user.get("resend_api_key_enc", ""))
     notification_email = user.get("notification_email", "")
 
-    # Mask keys for display
-    def mask(key):
-        if not key:
-            return ""
-        if len(key) <= 8:
-            return "****"
-        return key[:4] + "*" * (len(key) - 8) + key[-4:]
-
     keys = {
-        "alpaca_api_key": mask(alpaca_key),
-        "alpaca_secret_key": mask(alpaca_secret),
-        "anthropic_api_key": mask(anthropic_key),
-        "resend_api_key": mask(resend_key),
+        "alpaca_api_key": _mask_key(alpaca_key),
+        "alpaca_secret_key": _mask_key(alpaca_secret),
+        "anthropic_api_key": _mask_key(anthropic_key),
+        "resend_api_key": _mask_key(resend_key),
         "notification_email": notification_email,
         "has_alpaca": bool(alpaca_key),
         "has_anthropic": bool(anthropic_key),
         "has_resend": bool(resend_key),
     }
 
-    # Get segment configs
-    seg_configs = {}
-    for seg_name in ("microsmall", "midcap", "largecap", "crypto"):
-        cfg = get_user_segment_config(current_user.id, seg_name)
-        if cfg:
-            cfg = dict(cfg) if not isinstance(cfg, dict) else cfg
-            # Add masked Alpaca key for display
-            enc_key = cfg.get("alpaca_api_key_enc", "")
-            if enc_key:
-                try:
-                    decrypted = decrypt(enc_key)
-                    cfg["_alpaca_key_masked"] = mask(decrypted)
-                except Exception:
-                    cfg["_alpaca_key_masked"] = "****"
-            seg_configs[seg_name] = cfg
-        else:
-            seg_configs[seg_name] = {}
+    # Get trading profiles
+    profiles = get_user_profiles(current_user.id)
+
+    # Add masked Alpaca key for each profile
+    for prof in profiles:
+        enc_key = prof.get("alpaca_api_key_enc", "")
+        if enc_key:
+            try:
+                decrypted = decrypt(enc_key)
+                prof["_alpaca_key_masked"] = _mask_key(decrypted)
+            except Exception:
+                prof["_alpaca_key_masked"] = "****"
 
     return render_template("settings.html",
                            keys=keys,
-                           seg_configs=seg_configs,
+                           profiles=profiles,
+                           market_types=MARKET_TYPE_NAMES,
                            segments=SEGMENTS)
 
 
@@ -268,6 +289,115 @@ def test_keys():
         return jsonify({"success": False, "message": str(exc)})
 
 
+# ---------------------------------------------------------------------------
+# Trading Profile routes
+# ---------------------------------------------------------------------------
+
+@views_bp.route("/settings/profile/create", methods=["POST"])
+@login_required
+def create_profile():
+    name = request.form.get("profile_name", "").strip()
+    market_type = request.form.get("market_type", "").strip()
+
+    if not name:
+        flash("Profile name is required.", "error")
+        return redirect(url_for("views.settings"))
+
+    if market_type not in MARKET_TYPE_NAMES:
+        flash("Invalid market type.", "error")
+        return redirect(url_for("views.settings"))
+
+    profile_id = create_trading_profile(current_user.id, name, market_type)
+    flash(f'Profile "{name}" created successfully.', "success")
+    return redirect(url_for("views.settings") + f"#profile-{profile_id}")
+
+
+@views_bp.route("/settings/profile/<int:profile_id>", methods=["POST"])
+@login_required
+def save_profile(profile_id):
+    profile = get_trading_profile(profile_id)
+    if not profile or profile["user_id"] != current_user.id:
+        abort(404)
+
+    form = request.form
+
+    config_updates = {
+        "name": form.get("profile_name", profile["name"]).strip(),
+        "enabled": 1 if form.get("enabled") else 0,
+        "stop_loss_pct": float(form.get("stop_loss_pct", 0.03)),
+        "take_profit_pct": float(form.get("take_profit_pct", 0.10)),
+        "max_position_pct": float(form.get("max_position_pct", 0.10)),
+        "max_total_positions": int(form.get("max_total_positions", 10)),
+        "ai_confidence_threshold": int(form.get("ai_confidence_threshold", 25)),
+        "min_price": float(form.get("min_price", 1.0)),
+        "max_price": float(form.get("max_price", 20.0)),
+        "min_volume": int(form.get("min_volume", 500000)),
+        "volume_surge_multiplier": float(form.get("volume_surge_multiplier", 2.0)),
+        "rsi_overbought": float(form.get("rsi_overbought", 85.0)),
+        "rsi_oversold": float(form.get("rsi_oversold", 25.0)),
+        "momentum_5d_gain": float(form.get("momentum_5d_gain", 3.0)),
+        "momentum_20d_gain": float(form.get("momentum_20d_gain", 5.0)),
+        "breakout_volume_threshold": float(form.get("breakout_volume_threshold", 1.0)),
+        "gap_pct_threshold": float(form.get("gap_pct_threshold", 3.0)),
+        "strategy_momentum_breakout": 1 if form.get("strategy_momentum_breakout") else 0,
+        "strategy_volume_spike": 1 if form.get("strategy_volume_spike") else 0,
+        "strategy_mean_reversion": 1 if form.get("strategy_mean_reversion") else 0,
+        "strategy_gap_and_go": 1 if form.get("strategy_gap_and_go") else 0,
+    }
+
+    # Custom watchlist: parse comma-separated text into a JSON list
+    watchlist_raw = form.get("custom_watchlist", "").strip()
+    if watchlist_raw:
+        symbols = [s.strip().upper() for s in watchlist_raw.split(",") if s.strip()]
+        config_updates["custom_watchlist"] = symbols
+    else:
+        config_updates["custom_watchlist"] = []
+
+    # Per-profile Alpaca keys (only update if new values provided)
+    alpaca_key = form.get("alpaca_api_key", "").strip()
+    alpaca_secret = form.get("alpaca_secret_key", "").strip()
+    if alpaca_key and "****" not in alpaca_key and alpaca_secret:
+        config_updates["alpaca_api_key_enc"] = encrypt(alpaca_key)
+        config_updates["alpaca_secret_key_enc"] = encrypt(alpaca_secret)
+    elif alpaca_key and "****" not in alpaca_key and not alpaca_secret:
+        flash("Alpaca secret key is required when updating the API key.", "warning")
+
+    update_trading_profile(profile_id, **config_updates)
+    flash(f'Profile "{config_updates["name"]}" saved.', "success")
+    return redirect(url_for("views.settings") + f"#profile-{profile_id}")
+
+
+@views_bp.route("/settings/profile/<int:profile_id>/delete", methods=["POST"])
+@login_required
+def delete_profile_route(profile_id):
+    profile = get_trading_profile(profile_id)
+    if not profile or profile["user_id"] != current_user.id:
+        abort(404)
+
+    name = profile["name"]
+    delete_trading_profile(profile_id)
+    flash(f'Profile "{name}" deleted.', "info")
+    return redirect(url_for("views.settings"))
+
+
+@views_bp.route("/settings/profile/<int:profile_id>/toggle", methods=["POST"])
+@login_required
+def toggle_profile(profile_id):
+    profile = get_trading_profile(profile_id)
+    if not profile or profile["user_id"] != current_user.id:
+        abort(404)
+
+    new_state = 0 if profile["enabled"] else 1
+    update_trading_profile(profile_id, enabled=new_state)
+    state_str = "enabled" if new_state else "disabled"
+    flash(f'Profile "{profile["name"]}" {state_str}.', "success")
+    return redirect(url_for("views.settings") + f"#profile-{profile_id}")
+
+
+# ---------------------------------------------------------------------------
+# Legacy segment routes (kept for backward compatibility)
+# ---------------------------------------------------------------------------
+
 @views_bp.route("/settings/segment/<segment>", methods=["POST"])
 @login_required
 def save_segment(segment):
@@ -311,7 +441,6 @@ def save_segment(segment):
     alpaca_key = form.get("alpaca_api_key", "").strip()
     alpaca_secret = form.get("alpaca_secret_key", "").strip()
     if alpaca_key and alpaca_secret:
-        from crypto import encrypt
         config_updates["alpaca_api_key_enc"] = encrypt(alpaca_key)
         config_updates["alpaca_secret_key_enc"] = encrypt(alpaca_secret)
     elif alpaca_key and not alpaca_secret:
@@ -357,20 +486,40 @@ def reset_segment(segment):
     return redirect(url_for("views.settings") + f"#segment-{segment}")
 
 
+# ---------------------------------------------------------------------------
+# Trades
+# ---------------------------------------------------------------------------
+
 @views_bp.route("/trades")
 @login_required
 def trades():
     decisions = get_decisions(current_user.id, limit=200)
-    # Also pull from the journal trades tables for each segment
+
+    # Pull trades from each profile's journal DB
     all_trades = []
+    profiles = get_user_profiles(current_user.id)
+    for prof in profiles:
+        prof_trades = _get_trade_history_for_profile(prof["id"], limit=100)
+        for t in prof_trades:
+            t["profile_name"] = prof["name"]
+            t["profile_id"] = prof["id"]
+            t["segment"] = prof["name"]  # Use profile name for display
+        all_trades.extend(prof_trades)
+
+    # Also pull from legacy segment DBs for backward compatibility
     for seg_name in ("microsmall", "midcap", "largecap", "crypto"):
         seg_trades = _get_trade_history_for_user(current_user.id, seg_name, limit=100)
         for t in seg_trades:
-            t["segment"] = seg_name
+            t["segment"] = SEGMENTS.get(seg_name, {}).get("name", seg_name)
+            t["profile_name"] = t["segment"]
         all_trades.extend(seg_trades)
+
     # Sort by timestamp descending
     all_trades.sort(key=lambda t: t.get("timestamp", ""), reverse=True)
-    return render_template("trades.html", decisions=decisions, trades=all_trades[:200])
+    return render_template("trades.html",
+                           decisions=decisions,
+                           trades=all_trades[:200],
+                           profiles=profiles)
 
 
 @views_bp.route("/trades/<int:decision_id>")

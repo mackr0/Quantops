@@ -6,47 +6,52 @@
     <p>Welcome back{% if current_user.display_name %}, {{ current_user.display_name }}{% endif %}</p>
 </hgroup>
 
-{% if not segments_data %}
+{% if not profiles_data %}
 <article>
-    <header><h3>No segments enabled</h3></header>
-    <p>Enable at least one trading segment and configure your API keys in
+    <header><h3>No active profiles</h3></header>
+    <p>Create a trading profile and configure your API keys in
        <a href="/settings">Settings</a> to get started.</p>
 </article>
 {% endif %}
 
-{% for seg in segments_data %}
-<article id="seg-{{ seg.key }}">
+{% for prof in profiles_data %}
+<article id="profile-{{ prof.id }}">
     <header>
-        <h3>{{ seg.name }}</h3>
-        {% if seg.get('error') %}
-        <p class="pnl-neg">Error: {{ seg.error }}</p>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h3 style="margin:0;">{{ prof.name }}</h3>
+            <span style="background:var(--pico-primary-background); color:var(--pico-primary-inverse); padding:0.15rem 0.6rem; border-radius:4px; font-size:0.8rem;">
+                {{ prof.market_type_name }}
+            </span>
+        </div>
+        {% if prof.get('error') %}
+        <p class="pnl-neg">Error: {{ prof.error }}</p>
         {% endif %}
     </header>
 
-    {% if seg.account %}
+    {% if prof.account %}
     <div class="grid">
         <div class="stat-card">
             <small class="muted">Equity</small>
-            <strong>${{ "{:,.2f}".format(seg.account.equity) }}</strong>
+            <strong>${{ "{:,.2f}".format(prof.account.equity) }}</strong>
         </div>
         <div class="stat-card">
             <small class="muted">Cash</small>
-            <strong>${{ "{:,.2f}".format(seg.account.cash) }}</strong>
+            <strong>${{ "{:,.2f}".format(prof.account.cash) }}</strong>
         </div>
         <div class="stat-card">
             <small class="muted">Buying Power</small>
-            <strong>${{ "{:,.2f}".format(seg.account.buying_power) }}</strong>
+            <strong>${{ "{:,.2f}".format(prof.account.buying_power) }}</strong>
         </div>
         <div class="stat-card">
             <small class="muted">Status</small>
-            <strong>{{ seg.account.status }}</strong>
+            <strong>{{ prof.account.status }}</strong>
         </div>
     </div>
     {% else %}
     <p class="muted">Could not connect to Alpaca API. Check your keys in Settings.</p>
     {% endif %}
 
-    {% if seg.positions %}
+    {% if prof.positions %}
     <h4>Open Positions</h4>
     <div class="overflow-auto">
         <table class="striped">
@@ -62,7 +67,7 @@
                 </tr>
             </thead>
             <tbody>
-                {% for p in seg.positions %}
+                {% for p in prof.positions %}
                 <tr>
                     <td><strong>{{ p.symbol }}</strong></td>
                     <td>{{ p.qty|int }}</td>
@@ -80,13 +85,13 @@
             </tbody>
         </table>
     </div>
-    {% elif seg.account %}
-    <p class="muted">No open positions in this segment.</p>
+    {% elif prof.account %}
+    <p class="muted">No open positions in this profile.</p>
     {% endif %}
 
-    {% if seg.recent_trades %}
+    {% if prof.recent_trades %}
     <details>
-        <summary>Recent Trades ({{ seg.recent_trades|length }})</summary>
+        <summary>Recent Trades ({{ prof.recent_trades|length }})</summary>
         <div class="overflow-auto">
             <table class="striped">
                 <thead>
@@ -100,7 +105,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {% for t in seg.recent_trades %}
+                    {% for t in prof.recent_trades %}
                     <tr>
                         <td class="muted">{{ t.timestamp[:16] if t.timestamp else '--' }}</td>
                         <td><strong>{{ t.symbol }}</strong></td>
@@ -130,7 +135,7 @@
             <thead>
                 <tr>
                     <th>Time</th>
-                    <th>Segment</th>
+                    <th>Profile</th>
                     <th>Symbol</th>
                     <th>Decision</th>
                     <th>Action</th>

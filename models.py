@@ -121,6 +121,38 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             UNIQUE (user_id, date),
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
+
+        CREATE TABLE IF NOT EXISTS trading_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            market_type TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            alpaca_api_key_enc TEXT NOT NULL DEFAULT '',
+            alpaca_secret_key_enc TEXT NOT NULL DEFAULT '',
+            stop_loss_pct REAL NOT NULL DEFAULT 0.03,
+            take_profit_pct REAL NOT NULL DEFAULT 0.10,
+            max_position_pct REAL NOT NULL DEFAULT 0.10,
+            max_total_positions INTEGER NOT NULL DEFAULT 10,
+            ai_confidence_threshold INTEGER NOT NULL DEFAULT 25,
+            min_price REAL NOT NULL DEFAULT 1.0,
+            max_price REAL NOT NULL DEFAULT 20.0,
+            min_volume INTEGER NOT NULL DEFAULT 500000,
+            volume_surge_multiplier REAL NOT NULL DEFAULT 2.0,
+            rsi_overbought REAL NOT NULL DEFAULT 85.0,
+            rsi_oversold REAL NOT NULL DEFAULT 25.0,
+            momentum_5d_gain REAL NOT NULL DEFAULT 3.0,
+            momentum_20d_gain REAL NOT NULL DEFAULT 5.0,
+            breakout_volume_threshold REAL NOT NULL DEFAULT 1.0,
+            gap_pct_threshold REAL NOT NULL DEFAULT 3.0,
+            strategy_momentum_breakout INTEGER NOT NULL DEFAULT 1,
+            strategy_volume_spike INTEGER NOT NULL DEFAULT 1,
+            strategy_mean_reversion INTEGER NOT NULL DEFAULT 1,
+            strategy_gap_and_go INTEGER NOT NULL DEFAULT 1,
+            custom_watchlist TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
     """)
     conn.commit()
     conn.close()
@@ -317,7 +349,322 @@ def update_user_segment_config(user_id: int, segment: str, **kwargs) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Build UserContext from DB
+# Trading Profiles
+# ---------------------------------------------------------------------------
+
+MARKET_TYPE_NAMES = {
+    "microsmall": "MicroSmall Cap",
+    "midcap": "Mid Cap",
+    "largecap": "Large Cap",
+    "crypto": "Crypto",
+}
+
+
+def create_trading_profile(user_id: int, name: str, market_type: str) -> int:
+    """Create a new trading profile with defaults from segments.py.  Returns profile_id."""
+    seg = get_segment(market_type)
+    conn = _get_conn()
+    cursor = conn.execute(
+        """INSERT INTO trading_profiles
+           (user_id, name, market_type, enabled,
+            stop_loss_pct, take_profit_pct, max_position_pct,
+            min_price, max_price, min_volume)
+           VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)""",
+        (
+            user_id,
+            name,
+            market_type,
+            seg.get("stop_loss_pct", 0.03),
+            seg.get("take_profit_pct", 0.10),
+            seg.get("max_position_pct", 0.10),
+            seg.get("min_price", 1.0),
+            seg.get("max_price", 20.0),
+            seg.get("min_volume", 500_000),
+        ),
+    )
+    conn.commit()
+    profile_id = cursor.lastrowid
+    conn.close()
+    logger.info("Created trading profile #%d (%s/%s) for user #%d",
+                profile_id, name, market_type, user_id)
+    return profile_id
+
+
+def get_trading_profile(profile_id: int) -> Optional[Dict[str, Any]]:
+    """Return profile dict or None."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT * FROM trading_profiles WHERE id = ?", (profile_id,)
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    d = dict(row)
+    try:
+        d["custom_watchlist"] = json.loads(d.get("custom_watchlist", "[]"))
+    except (json.JSONDecodeError, TypeError):
+        d["custom_watchlist"] = []
+    # Add human-readable market type name
+    d["market_type_name"] = MARKET_TYPE_NAMES.get(d["market_type"], d["market_type"])
+    return d
+
+
+def get_user_profiles(user_id: int) -> List[Dict[str, Any]]:
+    """Return list of all profiles for a user."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT * FROM trading_profiles WHERE user_id = ? ORDER BY created_at",
+        (user_id,),
+    ).fetchall()
+    conn.close()
+    results = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["custom_watchlist"] = json.loads(d.get("custom_watchlist", "[]"))
+        except (json.JSONDecodeError, TypeError):
+            d["custom_watchlist"] = []
+        d["market_type_name"] = MARKET_TYPE_NAMES.get(d["market_type"], d["market_type"])
+        results.append(d)
+    return results
+
+
+def get_active_profiles(user_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Return all enabled profiles, optionally filtered by user.
+
+    If user_id is None, returns all active profiles across all users (for the
+    scheduler).
+    """
+    conn = _get_conn()
+    if user_id is not None:
+        rows = conn.execute(
+            "SELECT * FROM trading_profiles WHERE user_id = ? AND enabled = 1 ORDER BY created_at",
+            (user_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM trading_profiles WHERE enabled = 1 ORDER BY user_id, created_at"
+        ).fetchall()
+    conn.close()
+    results = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["custom_watchlist"] = json.loads(d.get("custom_watchlist", "[]"))
+        except (json.JSONDecodeError, TypeError):
+            d["custom_watchlist"] = []
+        d["market_type_name"] = MARKET_TYPE_NAMES.get(d["market_type"], d["market_type"])
+        results.append(d)
+    return results
+
+
+def update_trading_profile(profile_id: int, **kwargs) -> None:
+    """Update specific fields on a trading profile.
+
+    Only keys that match column names will be applied; unknown keys are
+    silently ignored.
+    """
+    allowed_cols = {
+        "name", "market_type", "enabled",
+        "alpaca_api_key_enc", "alpaca_secret_key_enc",
+        "stop_loss_pct", "take_profit_pct", "max_position_pct",
+        "max_total_positions", "ai_confidence_threshold",
+        "min_price", "max_price", "min_volume", "volume_surge_multiplier",
+        "rsi_overbought", "rsi_oversold",
+        "momentum_5d_gain", "momentum_20d_gain",
+        "breakout_volume_threshold", "gap_pct_threshold",
+        "strategy_momentum_breakout", "strategy_volume_spike",
+        "strategy_mean_reversion", "strategy_gap_and_go",
+        "custom_watchlist",
+    }
+    updates = {}
+    for key, value in kwargs.items():
+        if key in allowed_cols:
+            if key == "custom_watchlist" and isinstance(value, list):
+                value = json.dumps(value)
+            if isinstance(value, bool):
+                value = int(value)
+            updates[key] = value
+
+    if not updates:
+        return
+
+    set_clause = ", ".join(f"{col} = ?" for col in updates)
+    values = list(updates.values()) + [profile_id]
+
+    conn = _get_conn()
+    conn.execute(
+        f"UPDATE trading_profiles SET {set_clause} WHERE id = ?",
+        values,
+    )
+    conn.commit()
+    conn.close()
+    logger.info("Updated trading profile #%d: %s", profile_id, list(updates.keys()))
+
+
+def delete_trading_profile(profile_id: int) -> None:
+    """Delete a trading profile."""
+    conn = _get_conn()
+    conn.execute("DELETE FROM trading_profiles WHERE id = ?", (profile_id,))
+    conn.commit()
+    conn.close()
+    logger.info("Deleted trading profile #%d", profile_id)
+
+
+def build_user_context_from_profile(profile_id: int) -> UserContext:
+    """Load profile + user from DB, decrypt credentials, return UserContext.
+
+    Sets ctx.segment to the profile's market_type and ctx.display_name to
+    the profile name.  Uses a per-profile db_path for isolated data.
+    """
+    profile = get_trading_profile(profile_id)
+    if profile is None:
+        raise ValueError(f"Trading profile #{profile_id} not found")
+
+    user = get_user_by_id(profile["user_id"])
+    if user is None:
+        raise ValueError(f"User #{profile['user_id']} not found")
+
+    # Use per-profile Alpaca keys if set, otherwise fall back to user-level keys
+    prof_alpaca_key = profile.get("alpaca_api_key_enc", "")
+    prof_alpaca_secret = profile.get("alpaca_secret_key_enc", "")
+    if prof_alpaca_key:
+        alpaca_key = decrypt(prof_alpaca_key)
+        alpaca_secret = decrypt(prof_alpaca_secret)
+    else:
+        alpaca_key = decrypt(user.get("alpaca_api_key_enc", ""))
+        alpaca_secret = decrypt(user.get("alpaca_secret_key_enc", ""))
+
+    # Per-profile isolated DB path
+    db_path = f"quantopsai_profile_{profile_id}.db"
+
+    return UserContext(
+        user_id=profile["user_id"],
+        profile_id=profile_id,
+        segment=profile["market_type"],
+        display_name=profile["name"],
+        alpaca_api_key=alpaca_key,
+        alpaca_secret_key=alpaca_secret,
+        alpaca_base_url=config.ALPACA_BASE_URL,
+        anthropic_api_key=decrypt(user.get("anthropic_api_key_enc", "")),
+        claude_model=config.CLAUDE_MODEL,
+        db_path=db_path,
+        notification_email=user.get("notification_email", ""),
+        resend_api_key=decrypt(user.get("resend_api_key_enc", "")),
+        # Risk parameters
+        stop_loss_pct=profile["stop_loss_pct"],
+        take_profit_pct=profile["take_profit_pct"],
+        max_position_pct=profile["max_position_pct"],
+        max_total_positions=profile["max_total_positions"],
+        ai_confidence_threshold=profile["ai_confidence_threshold"],
+        # Screener parameters
+        min_price=profile["min_price"],
+        max_price=profile["max_price"],
+        min_volume=profile["min_volume"],
+        volume_surge_multiplier=profile["volume_surge_multiplier"],
+        # RSI thresholds
+        rsi_overbought=profile["rsi_overbought"],
+        rsi_oversold=profile["rsi_oversold"],
+        # Momentum thresholds
+        momentum_5d_gain=profile["momentum_5d_gain"],
+        momentum_20d_gain=profile["momentum_20d_gain"],
+        # Breakout / gap thresholds
+        breakout_volume_threshold=profile["breakout_volume_threshold"],
+        gap_pct_threshold=profile["gap_pct_threshold"],
+        # Strategy toggles
+        strategy_momentum_breakout=bool(profile["strategy_momentum_breakout"]),
+        strategy_volume_spike=bool(profile["strategy_volume_spike"]),
+        strategy_mean_reversion=bool(profile["strategy_mean_reversion"]),
+        strategy_gap_and_go=bool(profile["strategy_gap_and_go"]),
+        # Custom watchlist
+        custom_watchlist=profile.get("custom_watchlist", []),
+    )
+
+
+def migrate_segments_to_profiles(user_id: int) -> List[int]:
+    """Read old user_segment_configs rows and create corresponding trading_profiles.
+
+    Returns list of created profile_ids.  Skips segments that already have a
+    matching profile (same user + market_type + name).
+    """
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT * FROM user_segment_configs WHERE user_id = ?",
+        (user_id,),
+    ).fetchall()
+    conn.close()
+
+    created_ids = []
+    existing_profiles = get_user_profiles(user_id)
+    existing_names = {(p["market_type"], p["name"]) for p in existing_profiles}
+
+    for row in rows:
+        seg = dict(row)
+        market_type = seg["segment"]
+        profile_name = MARKET_TYPE_NAMES.get(market_type, market_type)
+
+        if (market_type, profile_name) in existing_names:
+            logger.info("Skipping migration for user #%d segment %s — profile already exists",
+                        user_id, market_type)
+            continue
+
+        # Create profile with all saved settings
+        conn2 = _get_conn()
+        cursor = conn2.execute(
+            """INSERT INTO trading_profiles
+               (user_id, name, market_type, enabled,
+                alpaca_api_key_enc, alpaca_secret_key_enc,
+                stop_loss_pct, take_profit_pct, max_position_pct,
+                max_total_positions, ai_confidence_threshold,
+                min_price, max_price, min_volume, volume_surge_multiplier,
+                rsi_overbought, rsi_oversold,
+                momentum_5d_gain, momentum_20d_gain,
+                breakout_volume_threshold, gap_pct_threshold,
+                strategy_momentum_breakout, strategy_volume_spike,
+                strategy_mean_reversion, strategy_gap_and_go,
+                custom_watchlist)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                user_id,
+                profile_name,
+                market_type,
+                seg.get("enabled", 0),
+                seg.get("alpaca_api_key_enc", ""),
+                seg.get("alpaca_secret_key_enc", ""),
+                seg.get("stop_loss_pct", 0.03),
+                seg.get("take_profit_pct", 0.10),
+                seg.get("max_position_pct", 0.10),
+                seg.get("max_total_positions", 10),
+                seg.get("ai_confidence_threshold", 25),
+                seg.get("min_price", 1.0),
+                seg.get("max_price", 20.0),
+                seg.get("min_volume", 500000),
+                seg.get("volume_surge_multiplier", 2.0),
+                seg.get("rsi_overbought", 85.0),
+                seg.get("rsi_oversold", 25.0),
+                seg.get("momentum_5d_gain", 3.0),
+                seg.get("momentum_20d_gain", 5.0),
+                seg.get("breakout_volume_threshold", 1.0),
+                seg.get("gap_pct_threshold", 3.0),
+                seg.get("strategy_momentum_breakout", 1),
+                seg.get("strategy_volume_spike", 1),
+                seg.get("strategy_mean_reversion", 1),
+                seg.get("strategy_gap_and_go", 1),
+                seg.get("custom_watchlist", "[]"),
+            ),
+        )
+        conn2.commit()
+        pid = cursor.lastrowid
+        conn2.close()
+        created_ids.append(pid)
+        logger.info("Migrated segment %s to trading profile #%d for user #%d",
+                     market_type, pid, user_id)
+
+    return created_ids
+
+
+# ---------------------------------------------------------------------------
+# Build UserContext from DB (legacy segment-based)
 # ---------------------------------------------------------------------------
 
 def build_user_context(user_id: int, segment: str) -> UserContext:

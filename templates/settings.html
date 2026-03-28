@@ -47,223 +47,306 @@
     </form>
 </article>
 
-<!-- Segment Configs -->
-{% for seg_name, seg_def in segments.items() %}
-{% set cfg = seg_configs.get(seg_name, {}) %}
-<article id="segment-{{ seg_name }}">
-    <header>
-        <h3>{{ seg_def.name }} Segment</h3>
-    </header>
-    <form method="post" action="/settings/segment/{{ seg_name }}">
-        <!-- Enable toggle -->
-        <fieldset>
-            <label>
-                <input type="checkbox" name="enabled" value="1"
-                       {{ 'checked' if cfg.get('enabled') else '' }}>
-                Enable {{ seg_def.name }} trading
-            </label>
-        </fieldset>
+<!-- Trading Profiles Section -->
+<h2>Your Trading Profiles</h2>
 
-        <!-- Per-segment Alpaca Keys -->
-        <h4>Alpaca Keys (for this segment's account)</h4>
+<!-- Create New Profile -->
+<article>
+    <header><h3>Create New Profile</h3></header>
+    <form method="post" action="/settings/profile/create">
         <div class="grid">
             <label>
-                API Key
-                <input type="text" name="alpaca_api_key"
-                       placeholder="PKXXXXXXXXXX"
-                       value="{{ cfg.get('_alpaca_key_masked', '') }}">
+                Profile Name
+                <input type="text" name="profile_name" required
+                       placeholder="e.g. Aggressive Crypto, Conservative Large Cap">
             </label>
             <label>
-                Secret Key
-                <input type="password" name="alpaca_secret_key"
-                       placeholder="Enter secret key"
-                       value="">
-                {% if cfg.get('alpaca_api_key_enc') %}<small>Key saved (enter new value to change)</small>{% endif %}
-            </label>
-        </div>
-
-        <!-- Risk Parameters -->
-        <h4>Risk Parameters</h4>
-        <div class="grid">
-            <label>
-                Stop Loss %
-                <input type="range" name="stop_loss_pct" class="slider"
-                       min="0.01" max="0.15" step="0.005"
-                       value="{{ cfg.get('stop_loss_pct', seg_def.stop_loss_pct) }}"
-                       data-display="stop_loss_pct_val_{{ seg_name }}">
-                <output id="stop_loss_pct_val_{{ seg_name }}">
-                    {{ "%.1f"|format(cfg.get('stop_loss_pct', seg_def.stop_loss_pct) * 100) }}%
-                </output>
+                Market Type
+                <select name="market_type" required>
+                    <option value="" disabled selected>Select market type...</option>
+                    {% for mt_key, mt_name in market_types.items() %}
+                    <option value="{{ mt_key }}">{{ mt_name }}</option>
+                    {% endfor %}
+                </select>
             </label>
             <label>
-                Take Profit %
-                <input type="range" name="take_profit_pct" class="slider"
-                       min="0.02" max="0.50" step="0.01"
-                       value="{{ cfg.get('take_profit_pct', seg_def.take_profit_pct) }}"
-                       data-display="take_profit_pct_val_{{ seg_name }}">
-                <output id="take_profit_pct_val_{{ seg_name }}">
-                    {{ "%.1f"|format(cfg.get('take_profit_pct', seg_def.take_profit_pct) * 100) }}%
-                </output>
+                &nbsp;
+                <button type="submit">Create Profile</button>
             </label>
-        </div>
-        <div class="grid">
-            <label>
-                Max Position Size %
-                <input type="range" name="max_position_pct" class="slider"
-                       min="0.02" max="0.25" step="0.01"
-                       value="{{ cfg.get('max_position_pct', seg_def.max_position_pct) }}"
-                       data-display="max_position_pct_val_{{ seg_name }}">
-                <output id="max_position_pct_val_{{ seg_name }}">
-                    {{ "%.1f"|format(cfg.get('max_position_pct', seg_def.max_position_pct) * 100) }}%
-                </output>
-            </label>
-            <label>
-                Max Total Positions
-                <input type="number" name="max_total_positions"
-                       value="{{ cfg.get('max_total_positions', 10) }}" min="1" max="50">
-            </label>
-        </div>
-
-        <!-- AI Parameters -->
-        <h4>AI Parameters</h4>
-        <label>
-            AI Confidence Threshold
-            <input type="range" name="ai_confidence_threshold" class="slider"
-                   min="0" max="100" step="5"
-                   value="{{ cfg.get('ai_confidence_threshold', 25) }}"
-                   data-display="ai_conf_val_{{ seg_name }}" data-format="int">
-            <output id="ai_conf_val_{{ seg_name }}">{{ cfg.get('ai_confidence_threshold', 25) }}%</output>
-        </label>
-
-        <!-- Screener Parameters -->
-        <h4>Screener Parameters</h4>
-        <div class="grid">
-            <label>
-                Min Price ($)
-                <input type="number" name="min_price" step="0.5"
-                       value="{{ cfg.get('min_price', seg_def.min_price) }}">
-            </label>
-            <label>
-                Max Price ($)
-                <input type="number" name="max_price" step="1"
-                       value="{{ cfg.get('max_price', seg_def.max_price) }}">
-            </label>
-            <label>
-                Min Volume
-                <input type="number" name="min_volume" step="50000"
-                       value="{{ cfg.get('min_volume', seg_def.min_volume) }}">
-            </label>
-        </div>
-        <div class="grid">
-            <label>
-                Volume Surge Multiplier
-                <input type="range" name="volume_surge_multiplier" class="slider"
-                       min="1.0" max="5.0" step="0.5"
-                       value="{{ cfg.get('volume_surge_multiplier', 2.0) }}"
-                       data-display="vol_surge_val_{{ seg_name }}" data-format="1f">
-                <output id="vol_surge_val_{{ seg_name }}">{{ "%.1f"|format(cfg.get('volume_surge_multiplier', 2.0)) }}x</output>
-            </label>
-            <label>
-                RSI Overbought
-                <input type="range" name="rsi_overbought" class="slider"
-                       min="60" max="95" step="1"
-                       value="{{ cfg.get('rsi_overbought', 85.0) }}"
-                       data-display="rsi_ob_val_{{ seg_name }}" data-format="int">
-                <output id="rsi_ob_val_{{ seg_name }}">{{ cfg.get('rsi_overbought', 85.0)|int }}</output>
-            </label>
-            <label>
-                RSI Oversold
-                <input type="range" name="rsi_oversold" class="slider"
-                       min="10" max="40" step="1"
-                       value="{{ cfg.get('rsi_oversold', 25.0) }}"
-                       data-display="rsi_os_val_{{ seg_name }}" data-format="int">
-                <output id="rsi_os_val_{{ seg_name }}">{{ cfg.get('rsi_oversold', 25.0)|int }}</output>
-            </label>
-        </div>
-
-        <!-- Momentum / Breakout / Gap -->
-        <h4>Signal Thresholds</h4>
-        <div class="grid">
-            <label>
-                Momentum 5d Gain %
-                <input type="range" name="momentum_5d_gain" class="slider"
-                       min="1" max="15" step="0.5"
-                       value="{{ cfg.get('momentum_5d_gain', 3.0) }}"
-                       data-display="mom5_val_{{ seg_name }}" data-format="1f" data-suffix="%">
-                <output id="mom5_val_{{ seg_name }}">{{ "%.1f"|format(cfg.get('momentum_5d_gain', 3.0)) }}%</output>
-            </label>
-            <label>
-                Momentum 20d Gain %
-                <input type="range" name="momentum_20d_gain" class="slider"
-                       min="2" max="30" step="1"
-                       value="{{ cfg.get('momentum_20d_gain', 5.0) }}"
-                       data-display="mom20_val_{{ seg_name }}" data-format="1f" data-suffix="%">
-                <output id="mom20_val_{{ seg_name }}">{{ "%.1f"|format(cfg.get('momentum_20d_gain', 5.0)) }}%</output>
-            </label>
-        </div>
-        <div class="grid">
-            <label>
-                Breakout Volume Threshold
-                <input type="range" name="breakout_volume_threshold" class="slider"
-                       min="0.5" max="5.0" step="0.5"
-                       value="{{ cfg.get('breakout_volume_threshold', 1.0) }}"
-                       data-display="bkout_val_{{ seg_name }}" data-format="1f" data-suffix="x">
-                <output id="bkout_val_{{ seg_name }}">{{ "%.1f"|format(cfg.get('breakout_volume_threshold', 1.0)) }}x</output>
-            </label>
-            <label>
-                Gap % Threshold
-                <input type="range" name="gap_pct_threshold" class="slider"
-                       min="1" max="10" step="0.5"
-                       value="{{ cfg.get('gap_pct_threshold', 3.0) }}"
-                       data-display="gap_val_{{ seg_name }}" data-format="1f" data-suffix="%">
-                <output id="gap_val_{{ seg_name }}">{{ "%.1f"|format(cfg.get('gap_pct_threshold', 3.0)) }}%</output>
-            </label>
-        </div>
-
-        <!-- Strategy Toggles -->
-        <h4>Strategy Toggles</h4>
-        <fieldset class="grid">
-            <label>
-                <input type="checkbox" name="strategy_momentum_breakout" value="1"
-                       {{ 'checked' if cfg.get('strategy_momentum_breakout', 1) else '' }}>
-                Momentum Breakout
-            </label>
-            <label>
-                <input type="checkbox" name="strategy_volume_spike" value="1"
-                       {{ 'checked' if cfg.get('strategy_volume_spike', 1) else '' }}>
-                Volume Spike
-            </label>
-            <label>
-                <input type="checkbox" name="strategy_mean_reversion" value="1"
-                       {{ 'checked' if cfg.get('strategy_mean_reversion', 1) else '' }}>
-                Mean Reversion
-            </label>
-            <label>
-                <input type="checkbox" name="strategy_gap_and_go" value="1"
-                       {{ 'checked' if cfg.get('strategy_gap_and_go', 1) else '' }}>
-                Gap and Go
-            </label>
-        </fieldset>
-
-        <!-- Custom Watchlist -->
-        <h4>Custom Watchlist</h4>
-        <label>
-            Additional symbols (comma-separated)
-            <textarea name="custom_watchlist" rows="2"
-                      placeholder="AAPL, TSLA, NVDA">{{ cfg.get('custom_watchlist', [])|join(', ') if cfg.get('custom_watchlist') is iterable and cfg.get('custom_watchlist') is not string else cfg.get('custom_watchlist', '') }}</textarea>
-        </label>
-
-        <div class="grid">
-            <button type="submit">Save {{ seg_def.name }} Config</button>
-            <button type="button" class="outline secondary reset-btn"
-                    data-segment="{{ seg_name }}"
-                    data-name="{{ seg_def.name }}">Reset to Defaults</button>
         </div>
     </form>
+</article>
+
+<!-- Existing Profiles -->
+{% if not profiles %}
+<article>
+    <p class="muted">No trading profiles yet. Create one above to get started.</p>
+</article>
+{% endif %}
+
+{% for prof in profiles %}
+<article id="profile-{{ prof.id }}">
+    <header>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h3 style="margin:0;">{{ prof.name }}
+                <small class="muted" style="font-weight:normal; margin-left:0.5rem;">
+                    {{ prof.market_type_name }}
+                </small>
+            </h3>
+            <div style="display:flex; gap:0.5rem; align-items:center;">
+                {% if prof.enabled %}
+                <span class="pnl-pos" style="font-size:0.85rem;">Active</span>
+                {% else %}
+                <span class="pnl-neg" style="font-size:0.85rem;">Disabled</span>
+                {% endif %}
+                <form method="post" action="/settings/profile/{{ prof.id }}/toggle" style="margin:0;">
+                    <button type="submit" class="outline secondary" style="padding:0.25rem 0.75rem; font-size:0.8rem;">
+                        {{ 'Disable' if prof.enabled else 'Enable' }}
+                    </button>
+                </form>
+            </div>
+        </div>
+    </header>
+    <details>
+        <summary>Configure {{ prof.name }}</summary>
+        <form method="post" action="/settings/profile/{{ prof.id }}">
+            <!-- Profile Name -->
+            <label>
+                Profile Name
+                <input type="text" name="profile_name" value="{{ prof.name }}" required>
+            </label>
+
+            <p class="muted" style="margin-top:-0.5rem;">
+                Market Type: <strong>{{ prof.market_type_name }}</strong>
+                <small>(determines the stock/crypto universe &mdash; set at creation)</small>
+            </p>
+
+            <!-- Enable toggle -->
+            <fieldset>
+                <label>
+                    <input type="checkbox" name="enabled" value="1"
+                           {{ 'checked' if prof.enabled else '' }}>
+                    Enable this profile
+                </label>
+            </fieldset>
+
+            <!-- Per-profile Alpaca Keys -->
+            <h4>Alpaca Keys (for this profile's account)</h4>
+            <div class="grid">
+                <label>
+                    API Key
+                    <input type="text" name="alpaca_api_key"
+                           placeholder="PKXXXXXXXXXX"
+                           value="{{ prof.get('_alpaca_key_masked', '') }}">
+                </label>
+                <label>
+                    Secret Key
+                    <input type="password" name="alpaca_secret_key"
+                           placeholder="Enter secret key"
+                           value="">
+                    {% if prof.get('alpaca_api_key_enc') %}<small>Key saved (enter new value to change)</small>{% endif %}
+                </label>
+            </div>
+
+            <!-- Risk Parameters -->
+            <h4>Risk Parameters</h4>
+            <div class="grid">
+                <label>
+                    Stop Loss %
+                    <input type="range" name="stop_loss_pct" class="slider"
+                           min="0.01" max="0.15" step="0.005"
+                           value="{{ prof.stop_loss_pct }}"
+                           data-display="stop_loss_pct_val_{{ prof.id }}">
+                    <output id="stop_loss_pct_val_{{ prof.id }}">
+                        {{ "%.1f"|format(prof.stop_loss_pct * 100) }}%
+                    </output>
+                </label>
+                <label>
+                    Take Profit %
+                    <input type="range" name="take_profit_pct" class="slider"
+                           min="0.02" max="0.50" step="0.01"
+                           value="{{ prof.take_profit_pct }}"
+                           data-display="take_profit_pct_val_{{ prof.id }}">
+                    <output id="take_profit_pct_val_{{ prof.id }}">
+                        {{ "%.1f"|format(prof.take_profit_pct * 100) }}%
+                    </output>
+                </label>
+            </div>
+            <div class="grid">
+                <label>
+                    Max Position Size %
+                    <input type="range" name="max_position_pct" class="slider"
+                           min="0.02" max="0.25" step="0.01"
+                           value="{{ prof.max_position_pct }}"
+                           data-display="max_position_pct_val_{{ prof.id }}">
+                    <output id="max_position_pct_val_{{ prof.id }}">
+                        {{ "%.1f"|format(prof.max_position_pct * 100) }}%
+                    </output>
+                </label>
+                <label>
+                    Max Total Positions
+                    <input type="number" name="max_total_positions"
+                           value="{{ prof.max_total_positions }}" min="1" max="50">
+                </label>
+            </div>
+
+            <!-- AI Parameters -->
+            <h4>AI Parameters</h4>
+            <label>
+                AI Confidence Threshold
+                <input type="range" name="ai_confidence_threshold" class="slider"
+                       min="0" max="100" step="5"
+                       value="{{ prof.ai_confidence_threshold }}"
+                       data-display="ai_conf_val_{{ prof.id }}" data-format="int">
+                <output id="ai_conf_val_{{ prof.id }}">{{ prof.ai_confidence_threshold }}%</output>
+            </label>
+
+            <!-- Screener Parameters -->
+            <h4>Screener Parameters</h4>
+            <div class="grid">
+                <label>
+                    Min Price ($)
+                    <input type="number" name="min_price" step="0.5"
+                           value="{{ prof.min_price }}">
+                </label>
+                <label>
+                    Max Price ($)
+                    <input type="number" name="max_price" step="1"
+                           value="{{ prof.max_price }}">
+                </label>
+                <label>
+                    Min Volume
+                    <input type="number" name="min_volume" step="50000"
+                           value="{{ prof.min_volume }}">
+                </label>
+            </div>
+            <div class="grid">
+                <label>
+                    Volume Surge Multiplier
+                    <input type="range" name="volume_surge_multiplier" class="slider"
+                           min="1.0" max="5.0" step="0.5"
+                           value="{{ prof.volume_surge_multiplier }}"
+                           data-display="vol_surge_val_{{ prof.id }}" data-format="1f">
+                    <output id="vol_surge_val_{{ prof.id }}">{{ "%.1f"|format(prof.volume_surge_multiplier) }}x</output>
+                </label>
+                <label>
+                    RSI Overbought
+                    <input type="range" name="rsi_overbought" class="slider"
+                           min="60" max="95" step="1"
+                           value="{{ prof.rsi_overbought }}"
+                           data-display="rsi_ob_val_{{ prof.id }}" data-format="int">
+                    <output id="rsi_ob_val_{{ prof.id }}">{{ prof.rsi_overbought|int }}</output>
+                </label>
+                <label>
+                    RSI Oversold
+                    <input type="range" name="rsi_oversold" class="slider"
+                           min="10" max="40" step="1"
+                           value="{{ prof.rsi_oversold }}"
+                           data-display="rsi_os_val_{{ prof.id }}" data-format="int">
+                    <output id="rsi_os_val_{{ prof.id }}">{{ prof.rsi_oversold|int }}</output>
+                </label>
+            </div>
+
+            <!-- Momentum / Breakout / Gap -->
+            <h4>Signal Thresholds</h4>
+            <div class="grid">
+                <label>
+                    Momentum 5d Gain %
+                    <input type="range" name="momentum_5d_gain" class="slider"
+                           min="1" max="15" step="0.5"
+                           value="{{ prof.momentum_5d_gain }}"
+                           data-display="mom5_val_{{ prof.id }}" data-format="1f" data-suffix="%">
+                    <output id="mom5_val_{{ prof.id }}">{{ "%.1f"|format(prof.momentum_5d_gain) }}%</output>
+                </label>
+                <label>
+                    Momentum 20d Gain %
+                    <input type="range" name="momentum_20d_gain" class="slider"
+                           min="2" max="30" step="1"
+                           value="{{ prof.momentum_20d_gain }}"
+                           data-display="mom20_val_{{ prof.id }}" data-format="1f" data-suffix="%">
+                    <output id="mom20_val_{{ prof.id }}">{{ "%.1f"|format(prof.momentum_20d_gain) }}%</output>
+                </label>
+            </div>
+            <div class="grid">
+                <label>
+                    Breakout Volume Threshold
+                    <input type="range" name="breakout_volume_threshold" class="slider"
+                           min="0.5" max="5.0" step="0.5"
+                           value="{{ prof.breakout_volume_threshold }}"
+                           data-display="bkout_val_{{ prof.id }}" data-format="1f" data-suffix="x">
+                    <output id="bkout_val_{{ prof.id }}">{{ "%.1f"|format(prof.breakout_volume_threshold) }}x</output>
+                </label>
+                <label>
+                    Gap % Threshold
+                    <input type="range" name="gap_pct_threshold" class="slider"
+                           min="1" max="10" step="0.5"
+                           value="{{ prof.gap_pct_threshold }}"
+                           data-display="gap_val_{{ prof.id }}" data-format="1f" data-suffix="%">
+                    <output id="gap_val_{{ prof.id }}">{{ "%.1f"|format(prof.gap_pct_threshold) }}%</output>
+                </label>
+            </div>
+
+            <!-- Strategy Toggles -->
+            <h4>Strategy Toggles</h4>
+            <fieldset class="grid">
+                <label>
+                    <input type="checkbox" name="strategy_momentum_breakout" value="1"
+                           {{ 'checked' if prof.strategy_momentum_breakout else '' }}>
+                    Momentum Breakout
+                </label>
+                <label>
+                    <input type="checkbox" name="strategy_volume_spike" value="1"
+                           {{ 'checked' if prof.strategy_volume_spike else '' }}>
+                    Volume Spike
+                </label>
+                <label>
+                    <input type="checkbox" name="strategy_mean_reversion" value="1"
+                           {{ 'checked' if prof.strategy_mean_reversion else '' }}>
+                    Mean Reversion
+                </label>
+                <label>
+                    <input type="checkbox" name="strategy_gap_and_go" value="1"
+                           {{ 'checked' if prof.strategy_gap_and_go else '' }}>
+                    Gap and Go
+                </label>
+            </fieldset>
+
+            <!-- Custom Watchlist -->
+            <h4>Custom Watchlist</h4>
+            <label>
+                Additional symbols (comma-separated)
+                <textarea name="custom_watchlist" rows="2"
+                          placeholder="AAPL, TSLA, NVDA">{{ prof.custom_watchlist|join(', ') if prof.custom_watchlist is iterable and prof.custom_watchlist is not string else prof.get('custom_watchlist', '') }}</textarea>
+            </label>
+
+            <div class="grid">
+                <button type="submit">Save {{ prof.name }}</button>
+                <button type="button" class="outline contrast delete-profile-btn"
+                        data-profile-id="{{ prof.id }}"
+                        data-profile-name="{{ prof.name }}">Delete Profile</button>
+            </div>
+        </form>
+    </details>
 </article>
 {% endfor %}
 
 {% endblock %}
 {% block scripts %}
 <script src="/static/settings.js"></script>
+<script>
+// Delete profile confirmation
+document.querySelectorAll('.delete-profile-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        var profileId = this.dataset.profileId;
+        var profileName = this.dataset.profileName;
+        if (confirm('Delete profile "' + profileName + '"? This cannot be undone.')) {
+            var form = document.createElement('form');
+            form.method = 'POST';
+            form.action = '/settings/profile/' + profileId + '/delete';
+            document.body.appendChild(form);
+            form.submit();
+        }
+    });
+});
+</script>
 {% endblock %}

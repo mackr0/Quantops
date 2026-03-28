@@ -14,6 +14,7 @@ class UserContext:
     user_id: int
     segment: str
     display_name: str = ""
+    profile_id: Optional[int] = None
 
     # Alpaca credentials
     alpaca_api_key: str = ""

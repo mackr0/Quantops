@@ -5,10 +5,11 @@ Run this once after deploying the multi-user version:
     python migrate.py
 
 It will:
-1. Create user tables (users, user_segment_configs, decision_log, user_api_usage)
+1. Create user tables (users, user_segment_configs, decision_log, user_api_usage, trading_profiles)
 2. Create the admin user (you) with your existing credentials from .env
 3. Create default segment configs for the admin user
-4. Enable all 3 segments for the admin with current settings
+4. Enable all segments for the admin with current settings
+5. Migrate existing segment configs to trading profiles
 """
 
 import os
@@ -21,6 +22,7 @@ from models import (
     init_user_db, create_user, update_user_credentials,
     get_user_by_email, update_user_segment_config,
     create_default_segment_configs,
+    migrate_segments_to_profiles,
 )
 from crypto import encrypt
 
@@ -29,13 +31,13 @@ def migrate():
     print("=== QuantOpsAI Migration ===\n")
 
     # Step 1: Create tables
-    print("[1/3] Creating database tables...")
+    print("[1/4] Creating database tables...")
     init_user_db()
     print("  Done.\n")
 
     # Step 2: Create admin user
     admin_email = os.getenv("NOTIFICATION_EMAIL", "admin@quantopsai.local")
-    print(f"[2/3] Creating admin user: {admin_email}")
+    print(f"[2/4] Creating admin user: {admin_email}")
 
     existing = get_user_by_email(admin_email)
     if existing:
@@ -52,8 +54,8 @@ def migrate():
         print(f"  Created admin user (id={user_id})")
         print(f"  Default password: quantopsai2026  <-- CHANGE THIS after first login\n")
 
-    # Step 3: Create default segment configs
-    print("[3/3] Importing credentials and creating segment configs...")
+    # Step 3: Create default segment configs (legacy, for backward compat)
+    print("[3/4] Importing credentials and creating segment configs...")
 
     # Ensure segment config rows exist
     create_default_segment_configs(user_id)
@@ -64,6 +66,8 @@ def migrate():
     midcap_secret = os.getenv("MIDCAP_ALPACA_SECRET", "")
     largecap_key = os.getenv("LARGECAP_ALPACA_KEY", "")
     largecap_secret = os.getenv("LARGECAP_ALPACA_SECRET", "")
+    crypto_key = os.getenv("CRYPTO_ALPACA_KEY", "")
+    crypto_secret = os.getenv("CRYPTO_ALPACA_SECRET", "")
     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
     notification_email = os.getenv("NOTIFICATION_EMAIL", "")
     resend_key = os.getenv("RESEND_API_KEY", "")
@@ -84,6 +88,7 @@ def migrate():
         ("microsmall", smallcap_key, smallcap_secret),
         ("midcap", midcap_key, midcap_secret),
         ("largecap", largecap_key, largecap_secret),
+        ("crypto", crypto_key, crypto_secret),
     ]:
         if key and secret:
             update_user_segment_config(
@@ -95,6 +100,14 @@ def migrate():
             print(f"  Enabled segment: {segment} (with dedicated Alpaca keys)")
         else:
             print(f"  Skipped segment: {segment} (no credentials)")
+
+    # Step 4: Migrate segment configs to trading profiles
+    print("\n[4/4] Migrating segment configs to trading profiles...")
+    created_ids = migrate_segments_to_profiles(user_id)
+    if created_ids:
+        print(f"  Created {len(created_ids)} trading profiles: {created_ids}")
+    else:
+        print("  No new profiles created (already migrated or no segments to migrate).")
 
     print(f"\n=== Migration Complete ===")
     print(f"Admin login: {admin_email} / quantopsai2026")

@@ -12,7 +12,7 @@
                 <tr>
                     <th></th>
                     <th>Time</th>
-                    <th>Segment</th>
+                    <th>Profile</th>
                     <th>Symbol</th>
                     <th>Decision</th>
                     <th>AI Signal</th>
@@ -70,7 +70,7 @@
             <thead>
                 <tr>
                     <th>Time</th>
-                    <th>Segment</th>
+                    <th>Profile</th>
                     <th>Symbol</th>
                     <th>Side</th>
                     <th>Qty</th>
@@ -83,7 +83,7 @@
                 {% for t in trades %}
                 <tr>
                     <td class="muted">{{ t.timestamp[:16] if t.timestamp else '--' }}</td>
-                    <td>{{ t.segment or '--' }}</td>
+                    <td>{{ t.profile_name or t.segment or '--' }}</td>
                     <td><strong>{{ t.symbol }}</strong></td>
                     <td class="{{ 'pnl-pos' if t.side == 'buy' else 'pnl-neg' }}">
                         {{ t.side|upper }}

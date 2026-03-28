@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""Multi-account scheduler — runs segments via UserContext (no config.* mutation).
+"""Multi-account scheduler — runs trading profiles via UserContext.
 
-Each segment gets a UserContext that carries all credentials, DB paths, and risk
+Each profile gets a UserContext that carries all credentials, DB paths, and risk
 parameters through the entire call chain.  There is no _apply_segment_config /
 _restore_config pattern.
 
-For backward compatibility during migration, the scheduler can build a
-UserContext from either:
-  - The database (build_user_context) for multi-user mode, or
-  - segments.py + config.py (build_context_from_segment) for the original
-    single-owner, env-var-based setup.
+The scheduler iterates all enabled trading profiles across all users.  Crypto
+profiles (market_type == 'crypto') run 24/7; equity profiles run during market
+hours only.
+
+For backward compatibility during migration, the scheduler can still build a
+UserContext from segments.py + config.py if the profile-based approach fails.
 
 Usage:
-    python multi_scheduler.py                  # run all segments
-    python multi_scheduler.py microsmall midcap  # run only selected segments
+    python multi_scheduler.py                  # run all active profiles
+    python multi_scheduler.py --legacy         # run legacy segment mode
 """
 
 import time
@@ -66,8 +67,14 @@ def next_market_open(now=None):
 
 # ── Build UserContext ────────────────────────────────────────────────
 
+def _build_ctx_from_profile(profile):
+    """Build a UserContext from a trading profile dict."""
+    from models import build_user_context_from_profile
+    return build_user_context_from_profile(profile["id"])
+
+
 def _build_ctx(segment_name):
-    """Build a UserContext for a segment.
+    """Build a UserContext for a segment (legacy mode).
 
     First tries the database (multi-user mode via models.build_user_context).
     Falls back to the env-var-based builder (build_context_from_segment) if the
@@ -292,19 +299,31 @@ def _task_daily_summary_email(ctx):
     logging.info("Daily summary email sent.")
 
 
-# ── Main Loop ────────────────────────────────────────────────────────
+# ── Profile-based Main Loop ──────────────────────────────────────────
 
-def main_loop(active_segments=None):
+def _load_active_profiles():
+    """Load all enabled trading profiles from the database."""
+    try:
+        from models import get_active_profiles
+        return get_active_profiles()
+    except Exception:
+        logging.exception("Failed to load active profiles from DB")
+        return []
+
+
+def main_loop(active_segments=None, legacy_mode=False):
     """Run the multi-account scheduling loop.
 
     Parameters
     ----------
     active_segments : list[str] or None
-        Segment names to run.  Defaults to all segments.
+        Segment names to run (legacy mode only).  Defaults to all segments.
+    legacy_mode : bool
+        If True, use the old segment-based iteration instead of profiles.
     """
     global _shutdown
 
-    if active_segments is None:
+    if legacy_mode and active_segments is None:
         active_segments = list_segments()
 
     # ── Logging setup ────────────────────────────────────────────────
@@ -325,7 +344,10 @@ def main_loop(active_segments=None):
 
     logging.info("=" * 60)
     logging.info("QuantOpsAI MULTI-ACCOUNT scheduler starting")
-    logging.info(f"Active segments: {active_segments}")
+    if legacy_mode:
+        logging.info(f"Mode: LEGACY (segments: {active_segments})")
+    else:
+        logging.info("Mode: PROFILES (iterating all active trading profiles)")
     logging.info(f"Log file: {log_file}")
     logging.info("=" * 60)
 
@@ -373,55 +395,98 @@ def main_loop(active_segments=None):
         do_snapshot = (now.hour == 15 and now.minute >= 55
                        and last_run["daily_snapshot"] != today_str)
 
-        # Separate equity and crypto segments
-        equity_segments = [s for s in active_segments if s != "crypto"]
-        crypto_segments = [s for s in active_segments if s == "crypto"]
-
         ran_something = False
 
-        # Equity segments: only during market hours
-        if market_open and (do_scan or do_exits or do_predictions or do_snapshot):
-            for seg_name in equity_segments:
-                if _shutdown:
-                    break
-                try:
-                    ctx = _build_ctx(seg_name)
-                except Exception:
-                    logging.exception(f"Failed to build context for segment {seg_name!r}")
-                    continue
+        if legacy_mode:
+            # ── Legacy segment-based iteration ───────────────────────
+            equity_segments = [s for s in active_segments if s != "crypto"]
+            crypto_segments = [s for s in active_segments if s == "crypto"]
 
-                logging.info(f"=== Processing segment: {seg_name} ===")
-                run_segment_cycle(
-                    ctx,
-                    run_scan=do_scan,
-                    run_exits=do_exits,
-                    run_predictions=do_predictions,
-                    run_snapshot=do_snapshot,
-                    run_summary=do_snapshot,
-                )
-            ran_something = True
+            if market_open and (do_scan or do_exits or do_predictions or do_snapshot):
+                for seg_name in equity_segments:
+                    if _shutdown:
+                        break
+                    try:
+                        ctx = _build_ctx(seg_name)
+                    except Exception:
+                        logging.exception(f"Failed to build context for segment {seg_name!r}")
+                        continue
+                    logging.info(f"=== Processing segment: {seg_name} ===")
+                    run_segment_cycle(
+                        ctx,
+                        run_scan=do_scan, run_exits=do_exits,
+                        run_predictions=do_predictions,
+                        run_snapshot=do_snapshot, run_summary=do_snapshot,
+                    )
+                ran_something = True
 
-        # Crypto segments: 24/7
-        if crypto_segments and (do_scan or do_exits or do_predictions):
-            for seg_name in crypto_segments:
-                if _shutdown:
-                    break
-                try:
-                    ctx = _build_ctx(seg_name)
-                except Exception:
-                    logging.exception(f"Failed to build context for segment {seg_name!r}")
-                    continue
+            if crypto_segments and (do_scan or do_exits or do_predictions):
+                for seg_name in crypto_segments:
+                    if _shutdown:
+                        break
+                    try:
+                        ctx = _build_ctx(seg_name)
+                    except Exception:
+                        logging.exception(f"Failed to build context for segment {seg_name!r}")
+                        continue
+                    logging.info(f"=== Processing segment: {seg_name} (24/7) ===")
+                    run_segment_cycle(
+                        ctx,
+                        run_scan=do_scan, run_exits=do_exits,
+                        run_predictions=do_predictions,
+                        run_snapshot=do_snapshot, run_summary=do_snapshot,
+                    )
+                ran_something = True
 
-                logging.info(f"=== Processing segment: {seg_name} (24/7) ===")
-                run_segment_cycle(
-                    ctx,
-                    run_scan=do_scan,
-                    run_exits=do_exits,
-                    run_predictions=do_predictions,
-                    run_snapshot=do_snapshot,
-                    run_summary=do_snapshot,
-                )
-            ran_something = True
+            has_crypto = bool(crypto_segments)
+
+        else:
+            # ── Profile-based iteration ──────────────────────────────
+            profiles = _load_active_profiles()
+            equity_profiles = [p for p in profiles if p["market_type"] != "crypto"]
+            crypto_profiles = [p for p in profiles if p["market_type"] == "crypto"]
+
+            # Equity profiles: only during market hours
+            if market_open and (do_scan or do_exits or do_predictions or do_snapshot):
+                for prof in equity_profiles:
+                    if _shutdown:
+                        break
+                    try:
+                        ctx = _build_ctx_from_profile(prof)
+                    except Exception:
+                        logging.exception(
+                            f"Failed to build context for profile #{prof['id']} ({prof['name']})")
+                        continue
+                    logging.info(f"=== Processing profile: {prof['name']} (#{prof['id']}, {prof['market_type']}) ===")
+                    run_segment_cycle(
+                        ctx,
+                        run_scan=do_scan, run_exits=do_exits,
+                        run_predictions=do_predictions,
+                        run_snapshot=do_snapshot, run_summary=do_snapshot,
+                    )
+                ran_something = True
+
+            # Crypto profiles: 24/7
+            if crypto_profiles and (do_scan or do_exits or do_predictions):
+                for prof in crypto_profiles:
+                    if _shutdown:
+                        break
+                    try:
+                        ctx = _build_ctx_from_profile(prof)
+                    except Exception:
+                        logging.exception(
+                            f"Failed to build context for profile #{prof['id']} ({prof['name']})")
+                        continue
+                    logging.info(f"=== Processing profile: {prof['name']} (#{prof['id']}, crypto 24/7) ===")
+                    run_segment_cycle(
+                        ctx,
+                        run_scan=do_scan, run_exits=do_exits,
+                        run_predictions=do_predictions,
+                        run_snapshot=do_snapshot, run_summary=do_snapshot,
+                    )
+                ran_something = True
+
+            has_crypto = bool(crypto_profiles)
 
         # Update timestamps
         if ran_something:
@@ -434,17 +499,24 @@ def main_loop(active_segments=None):
             if do_snapshot:
                 last_run["daily_snapshot"] = today_str
 
-        if not market_open and not crypto_segments:
+        if not market_open and not has_crypto:
             # No crypto and market closed — sleep until next open
             if last_run["daily_snapshot"] != today_str and now.hour >= 16:
                 logging.info("Market closed — sending missed daily snapshot")
-                for seg_name in equity_segments:
+                if legacy_mode:
+                    items = [(s, lambda s=s: _build_ctx(s)) for s in (active_segments or []) if s != "crypto"]
+                else:
+                    profiles = _load_active_profiles()
+                    items = [(p["name"], lambda p=p: _build_ctx_from_profile(p))
+                             for p in profiles if p["market_type"] != "crypto"]
+
+                for label, ctx_builder in items:
                     if _shutdown:
                         break
                     try:
-                        ctx = _build_ctx(seg_name)
+                        ctx = ctx_builder()
                     except Exception:
-                        logging.exception(f"Failed to build context for segment {seg_name!r}")
+                        logging.exception(f"Failed to build context for {label}")
                         continue
                     run_segment_cycle(
                         ctx,
@@ -473,9 +545,13 @@ def main_loop(active_segments=None):
 # ── Entry Point ──────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # Accept optional segment names as CLI arguments
     args = sys.argv[1:]
-    if args:
-        main_loop(active_segments=args)
+    if "--legacy" in args:
+        args.remove("--legacy")
+        main_loop(active_segments=args or None, legacy_mode=True)
+    elif args:
+        # If segment names are passed, assume legacy mode
+        main_loop(active_segments=args, legacy_mode=True)
     else:
+        # Default: profile-based mode
         main_loop()
