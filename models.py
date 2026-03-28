@@ -332,13 +332,22 @@ def build_user_context(user_id: int, segment: str) -> UserContext:
     if seg_config is None:
         raise ValueError(f"No segment config for user #{user_id}, segment={segment!r}")
 
+    # Use per-segment Alpaca keys if set, otherwise fall back to user-level keys
+    seg_alpaca_key = seg_config.get("alpaca_api_key_enc", "")
+    seg_alpaca_secret = seg_config.get("alpaca_secret_key_enc", "")
+    if seg_alpaca_key:
+        alpaca_key = decrypt(seg_alpaca_key)
+        alpaca_secret = decrypt(seg_alpaca_secret)
+    else:
+        alpaca_key = decrypt(user.get("alpaca_api_key_enc", ""))
+        alpaca_secret = decrypt(user.get("alpaca_secret_key_enc", ""))
+
     return UserContext(
         user_id=user_id,
         segment=segment,
         display_name=user.get("display_name", ""),
-        # Decrypt credentials
-        alpaca_api_key=decrypt(user.get("alpaca_api_key_enc", "")),
-        alpaca_secret_key=decrypt(user.get("alpaca_secret_key_enc", "")),
+        alpaca_api_key=alpaca_key,
+        alpaca_secret_key=alpaca_secret,
         alpaca_base_url=config.ALPACA_BASE_URL,
         anthropic_api_key=decrypt(user.get("anthropic_api_key_enc", "")),
         claude_model=config.CLAUDE_MODEL,
