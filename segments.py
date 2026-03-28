@@ -197,6 +197,21 @@ LARGE_CAP_UNIVERSE = [
 ]
 
 # ---------------------------------------------------------------------------
+# Crypto universe — Alpaca uses "BTC/USD" format, yfinance uses "BTC-USD"
+# We store the Alpaca format; screener/market_data converts for yfinance
+# ---------------------------------------------------------------------------
+CRYPTO_UNIVERSE = [
+    "BTC/USD", "ETH/USD", "SOL/USD", "DOGE/USD", "XRP/USD",
+    "ADA/USD", "AVAX/USD", "DOT/USD", "LINK/USD", "LTC/USD",
+    "UNI/USD", "AAVE/USD", "FIL/USD", "GRT/USD", "RENDER/USD",
+    "ARB/USD", "ONDO/USD", "PEPE/USD", "SHIB/USD", "BONK/USD",
+    "WIF/USD", "TRUMP/USD", "HYPE/USD", "BCH/USD", "SUSHI/USD",
+    "CRV/USD", "BAT/USD", "LDO/USD", "POL/USD", "XTZ/USD",
+    "YFI/USD", "SKY/USD", "PAXG/USD",
+]
+
+
+# ---------------------------------------------------------------------------
 # Segment definitions
 # ---------------------------------------------------------------------------
 
@@ -239,6 +254,21 @@ SEGMENTS = {
         "stop_loss_pct": 0.05,
         "take_profit_pct": 0.15,
         "universe": LARGE_CAP_UNIVERSE,
+    },
+    "crypto": {
+        "name": "Crypto",
+        "alpaca_key": os.getenv("CRYPTO_ALPACA_KEY", ""),
+        "alpaca_secret": os.getenv("CRYPTO_ALPACA_SECRET", ""),
+        "db_path": "quantopsai_crypto.db",
+        "min_price": 0.0,       # Crypto can be fractions of a cent
+        "max_price": 200000.0,   # BTC
+        "min_volume": 0,         # Volume filtering done differently for crypto
+        "max_position_pct": 0.10,
+        "stop_loss_pct": 0.05,   # 5% — crypto is volatile
+        "take_profit_pct": 0.15, # 15%
+        "universe": CRYPTO_UNIVERSE,
+        "is_crypto": True,       # Flag for special handling
+        "market_hours": "24/7",  # Crypto never closes
     },
 }
 

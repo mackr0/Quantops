@@ -373,61 +373,79 @@ def main_loop(active_segments=None):
             root.addHandler(logging.FileHandler(new_log_file))
             logging.info(f"Log rotated to {new_log_file}")
 
-        if is_market_open(now):
-            current_time = time.time()
+        current_time = time.time()
+        market_open = is_market_open(now)
 
-            do_scan = (current_time - last_run["aggressive_scan"]
-                       >= INTERVAL_AGGRESSIVE_SCAN)
-            do_exits = (current_time - last_run["check_exits"]
-                        >= INTERVAL_CHECK_EXITS)
-            do_predictions = (current_time - last_run["resolve_predictions"]
-                              >= INTERVAL_RESOLVE_PREDICTIONS)
-            do_snapshot = (now.hour == 15 and now.minute >= 55
-                           and last_run["daily_snapshot"] != today_str)
+        do_scan = (current_time - last_run["aggressive_scan"]
+                   >= INTERVAL_AGGRESSIVE_SCAN)
+        do_exits = (current_time - last_run["check_exits"]
+                    >= INTERVAL_CHECK_EXITS)
+        do_predictions = (current_time - last_run["resolve_predictions"]
+                          >= INTERVAL_RESOLVE_PREDICTIONS)
+        do_snapshot = (now.hour == 15 and now.minute >= 55
+                       and last_run["daily_snapshot"] != today_str)
 
-            if do_scan or do_exits or do_predictions or do_snapshot:
-                for segment_name in active_segments:
-                    if _shutdown:
-                        break
+        # Separate equity and crypto segments
+        equity_segments = [s for s in active_segments if s != "crypto"]
+        crypto_segments = [s for s in active_segments if s == "crypto"]
 
-                    logging.info(f"=== Processing segment: {segment_name} ===")
-                    run_segment_cycle(
-                        segment_name,
-                        run_scan=do_scan,
-                        run_exits=do_exits,
-                        run_predictions=do_predictions,
-                        run_snapshot=do_snapshot,
-                        run_summary=do_snapshot,
-                    )
+        ran_something = False
 
-                # Update last-run timestamps after iterating all segments
-                if do_scan:
-                    last_run["aggressive_scan"] = time.time()
-                if do_exits:
-                    last_run["check_exits"] = time.time()
-                if do_predictions:
-                    last_run["resolve_predictions"] = time.time()
-                if do_snapshot:
-                    last_run["daily_snapshot"] = today_str
+        # Equity segments: only during market hours
+        if market_open and (do_scan or do_exits or do_predictions or do_snapshot):
+            for segment_name in equity_segments:
+                if _shutdown:
+                    break
+                logging.info(f"=== Processing segment: {segment_name} ===")
+                run_segment_cycle(
+                    segment_name,
+                    run_scan=do_scan,
+                    run_exits=do_exits,
+                    run_predictions=do_predictions,
+                    run_snapshot=do_snapshot,
+                    run_summary=do_snapshot,
+                )
+            ran_something = True
 
-            # Sleep 30 seconds between checks
-            time.sleep(30)
+        # Crypto segments: 24/7
+        if crypto_segments and (do_scan or do_exits or do_predictions):
+            for segment_name in crypto_segments:
+                if _shutdown:
+                    break
+                logging.info(f"=== Processing segment: {segment_name} (24/7) ===")
+                run_segment_cycle(
+                    segment_name,
+                    run_scan=do_scan,
+                    run_exits=do_exits,
+                    run_predictions=do_predictions,
+                    run_snapshot=do_snapshot,
+                    run_summary=do_snapshot,
+                )
+            ran_something = True
 
-        else:
-            # Market closed — but send daily summary if we missed it
+        # Update timestamps
+        if ran_something:
+            if do_scan:
+                last_run["aggressive_scan"] = time.time()
+            if do_exits:
+                last_run["check_exits"] = time.time()
+            if do_predictions:
+                last_run["resolve_predictions"] = time.time()
+            if do_snapshot:
+                last_run["daily_snapshot"] = today_str
+
+        if not market_open and not crypto_segments:
+            # No crypto and market closed — sleep until next open
             if last_run["daily_snapshot"] != today_str and now.hour >= 16:
-                logging.info("Market closed — sending missed daily snapshot and summary")
-                for segment_name in active_segments:
+                logging.info("Market closed — sending missed daily snapshot")
+                for segment_name in equity_segments:
                     if _shutdown:
                         break
-                    logging.info(f"=== End-of-day snapshot: {segment_name} ===")
                     run_segment_cycle(
                         segment_name,
-                        run_scan=False,
-                        run_exits=False,
+                        run_scan=False, run_exits=False,
                         run_predictions=False,
-                        run_snapshot=True,
-                        run_summary=True,
+                        run_snapshot=True, run_summary=True,
                     )
                 last_run["daily_snapshot"] = today_str
 
@@ -440,6 +458,9 @@ def main_loop(active_segments=None):
                 if is_market_open(now):
                     break
                 time.sleep(60)
+        else:
+            # Sleep 30 seconds between checks
+            time.sleep(30)
 
     logging.info("QuantOpsAI multi-account scheduler stopped.")
 

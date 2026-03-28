@@ -78,14 +78,28 @@ SMALL_CAP_UNIVERSE = [
 
 def get_small_cap_universe():
     """Return the curated list of small / micro-cap symbols to screen."""
-    # Deduplicate while preserving order
+    return _dedup(SMALL_CAP_UNIVERSE)
+
+
+def _dedup(symbols):
+    """Deduplicate while preserving order."""
     seen = set()
     unique = []
-    for s in SMALL_CAP_UNIVERSE:
+    for s in symbols:
         if s not in seen:
             seen.add(s)
             unique.append(s)
     return unique
+
+
+def to_yfinance_symbol(symbol):
+    """Convert Alpaca symbol to yfinance format. E.g. 'BTC/USD' -> 'BTC-USD'."""
+    return symbol.replace("/", "-")
+
+
+def from_yfinance_symbol(symbol):
+    """Convert yfinance symbol back to Alpaca format. E.g. 'BTC-USD' -> 'BTC/USD'."""
+    return symbol.replace("-", "/")
 
 
 def screen_by_price_range(min_price=1.0, max_price=20.0, min_volume=500_000,
@@ -321,5 +335,134 @@ def run_full_screen(api=None):
             "volume_surges": len(volume_surges),
             "momentum_stocks": len(momentum),
             "breakouts": len(breakouts),
+        },
+    }
+
+
+def run_crypto_screen(universe=None):
+    """Screen crypto assets using yfinance data.
+
+    Crypto symbols are stored as 'BTC/USD' (Alpaca format) but fetched
+    as 'BTC-USD' (yfinance format). Results use Alpaca format.
+    """
+    from segments import CRYPTO_UNIVERSE
+
+    if universe is None:
+        universe = CRYPTO_UNIVERSE
+
+    print("=" * 60)
+    print("QUANTOPSAI CRYPTO SCREENER")
+    print(f"Run time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 60)
+
+    # Convert to yfinance format for download
+    yf_symbols = [to_yfinance_symbol(s) for s in universe]
+
+    print(f"\n[1/3] Downloading data for {len(yf_symbols)} crypto pairs...")
+    data = yf.download(yf_symbols, period="1mo", progress=False,
+                       group_by="ticker", threads=True)
+
+    # Screen all crypto — no price/volume filter (they're all candidates)
+    candidates = []
+    for yf_sym in yf_symbols:
+        try:
+            if len(yf_symbols) == 1:
+                sym_df = data
+            else:
+                sym_df = data[yf_sym]
+
+            sym_df = sym_df.dropna(subset=["Close"])
+            if sym_df.empty or len(sym_df) < 2:
+                continue
+
+            price = float(sym_df["Close"].iloc[-1])
+            volume = int(sym_df["Volume"].iloc[-1])
+            prev_close = float(sym_df["Close"].iloc[-2])
+            change_pct = ((price - prev_close) / prev_close * 100) if prev_close > 0 else 0
+
+            alpaca_sym = from_yfinance_symbol(yf_sym)
+            candidates.append({
+                "symbol": alpaca_sym,
+                "price": round(price, 6),
+                "volume": volume,
+                "price_change_pct": round(change_pct, 2),
+                "reason": f"${price:,.2f} | chg: {change_pct:+.1f}%",
+            })
+        except Exception:
+            pass
+
+    print(f"  Found {len(candidates)} active crypto pairs")
+
+    # Volume surges and momentum on crypto
+    alpaca_symbols = [c["symbol"] for c in candidates]
+    yf_syms = [to_yfinance_symbol(s) for s in alpaca_symbols]
+
+    print(f"\n[2/3] Momentum Screen")
+    momentum = []
+    if len(candidates) >= 2:
+        for yf_sym in yf_syms:
+            try:
+                sym_df = data[yf_sym].dropna(subset=["Close"])
+                if len(sym_df) < 8:
+                    continue
+                price = float(sym_df["Close"].iloc[-1])
+                price_5d = float(sym_df["Close"].iloc[-6]) if len(sym_df) >= 6 else None
+                if price_5d and price_5d > 0:
+                    gain_5d = ((price - price_5d) / price_5d) * 100
+                    if gain_5d >= 3.0:
+                        alpaca_sym = from_yfinance_symbol(yf_sym)
+                        momentum.append({
+                            "symbol": alpaca_sym,
+                            "price": round(price, 6),
+                            "gain_5d": round(gain_5d, 1),
+                            "reason": f"5d: +{gain_5d:.1f}%",
+                        })
+            except Exception:
+                pass
+    momentum.sort(key=lambda x: x.get("gain_5d", 0), reverse=True)
+    print(f"  Found {len(momentum)} momentum cryptos")
+
+    print(f"\n[3/3] Volume Surge Detection")
+    surges = []
+    if len(candidates) >= 2:
+        for yf_sym in yf_syms:
+            try:
+                sym_df = data[yf_sym].dropna(subset=["Close"])
+                if len(sym_df) < 20:
+                    continue
+                avg_vol = float(sym_df["Volume"].iloc[-21:-1].mean())
+                today_vol = float(sym_df["Volume"].iloc[-1])
+                price = float(sym_df["Close"].iloc[-1])
+                if avg_vol > 0:
+                    ratio = today_vol / avg_vol
+                    if ratio >= 1.5:
+                        alpaca_sym = from_yfinance_symbol(yf_sym)
+                        surges.append({
+                            "symbol": alpaca_sym,
+                            "price": round(price, 6),
+                            "volume_ratio": round(ratio, 1),
+                            "reason": f"Volume {ratio:.1f}x average",
+                        })
+            except Exception:
+                pass
+    surges.sort(key=lambda x: x.get("volume_ratio", 0), reverse=True)
+    print(f"  Found {len(surges)} volume surges")
+
+    print(f"\n{'='*60}")
+    print(f"  Candidates: {len(candidates)}")
+    print(f"  Momentum: {len(momentum)}")
+    print(f"  Volume surges: {len(surges)}")
+    print(f"{'='*60}")
+
+    return {
+        "candidates": candidates,
+        "volume_surges": surges,
+        "momentum": momentum,
+        "breakouts": [],  # Not applicable for crypto the same way
+        "summary": {
+            "total_candidates": len(candidates),
+            "volume_surges": len(surges),
+            "momentum_stocks": len(momentum),
+            "breakouts": 0,
         },
     }

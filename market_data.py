@@ -27,7 +27,9 @@ def get_bars(symbol, timeframe="1Day", limit=200, api=None):
     else:
         period = "5y"
 
-    ticker = yf.Ticker(symbol)
+    # Convert crypto symbols: "BTC/USD" -> "BTC-USD" for yfinance
+    yf_symbol = symbol.replace("/", "-") if "/" in symbol else symbol
+    ticker = yf.Ticker(yf_symbol)
     df = ticker.history(period=period, auto_adjust=True)
 
     if df.empty:
@@ -62,7 +64,8 @@ def get_bars_daterange(symbol, start, end, timeframe="1Day", api=None):
     Returns:
         DataFrame with OHLCV data indexed by timestamp.
     """
-    ticker = yf.Ticker(symbol)
+    yf_symbol = symbol.replace("/", "-") if "/" in symbol else symbol
+    ticker = yf.Ticker(yf_symbol)
     df = ticker.history(start=start, end=end, auto_adjust=True)
 
     if df.empty:
@@ -114,7 +117,8 @@ def get_snapshot(symbol, api=None):
 
     The ``api`` parameter is ignored (kept for backward compatibility).
     """
-    ticker = yf.Ticker(symbol)
+    yf_symbol = symbol.replace("/", "-") if "/" in symbol else symbol
+    ticker = yf.Ticker(yf_symbol)
     info = ticker.fast_info
 
     # Get the most recent 1-day bar for volume

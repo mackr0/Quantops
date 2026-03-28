@@ -226,7 +226,7 @@ def create_default_segment_configs(user_id: int) -> None:
     Default values are pulled from the segment definitions in segments.py.
     """
     conn = _get_conn()
-    for seg_name in ("microsmall", "midcap", "largecap"):
+    for seg_name in ("microsmall", "midcap", "largecap", "crypto"):
         seg = get_segment(seg_name)
         conn.execute(
             """INSERT OR IGNORE INTO user_segment_configs

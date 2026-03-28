@@ -112,7 +112,7 @@ def index():
 @login_required
 def dashboard():
     segments_data = []
-    for seg_name in ("microsmall", "midcap", "largecap"):
+    for seg_name in ("microsmall", "midcap", "largecap", "crypto"):
         seg_config = get_user_segment_config(current_user.id, seg_name)
         if not seg_config or not seg_config.get("enabled"):
             continue
@@ -180,7 +180,7 @@ def settings():
 
     # Get segment configs
     seg_configs = {}
-    for seg_name in ("microsmall", "midcap", "largecap"):
+    for seg_name in ("microsmall", "midcap", "largecap", "crypto"):
         cfg = get_user_segment_config(current_user.id, seg_name)
         if cfg:
             cfg = dict(cfg) if not isinstance(cfg, dict) else cfg
@@ -363,7 +363,7 @@ def trades():
     decisions = get_decisions(current_user.id, limit=200)
     # Also pull from the journal trades tables for each segment
     all_trades = []
-    for seg_name in ("microsmall", "midcap", "largecap"):
+    for seg_name in ("microsmall", "midcap", "largecap", "crypto"):
         seg_trades = _get_trade_history_for_user(current_user.id, seg_name, limit=100)
         for t in seg_trades:
             t["segment"] = seg_name
