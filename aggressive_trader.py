@@ -19,7 +19,7 @@ from aggressive_strategy import aggressive_combined_strategy
 
 
 # ---------------------------------------------------------------------------
-# Constants
+# Constants (defaults — overridden by ctx when available)
 # ---------------------------------------------------------------------------
 AGGRESSIVE_MAX_POSITION_PCT = 0.10
 AGGRESSIVE_STOP_LOSS_PCT = 0.03
@@ -31,19 +31,26 @@ AI_MIN_CONFIDENCE = 25  # AI must be at least this confident to allow a buy (low
 # AI Review
 # ---------------------------------------------------------------------------
 
-def ai_review(symbol, technical_signal):
+def ai_review(symbol, technical_signal, ctx=None):
     """Ask Claude to review a proposed trade before execution.
 
     Records every AI prediction to the tracker for accuracy measurement.
     Returns (approved: bool, ai_result: dict).
+
+    Parameters
+    ----------
+    ctx : UserContext, optional
+        If provided, passes ctx to analyze_symbol and record_prediction
+        for credentials and DB path.
     """
     from ai_analyst import analyze_symbol
     from ai_tracker import record_prediction, init_tracker_db
 
-    init_tracker_db()
+    db_path = ctx.db_path if ctx is not None else None
+    init_tracker_db(db_path)
 
     print(f"    AI reviewing {symbol}...", end=" ", flush=True)
-    ai_result = analyze_symbol(symbol)
+    ai_result = analyze_symbol(symbol, ctx=ctx)
 
     ai_signal = ai_result.get("signal", "HOLD").upper()
     ai_confidence = ai_result.get("confidence", 0)
@@ -59,15 +66,19 @@ def ai_review(symbol, technical_signal):
         reasoning=ai_result.get("reasoning", ""),
         price_at_prediction=price,
         price_targets=ai_result.get("price_targets"),
+        db_path=db_path,
     )
+
+    # Determine the confidence threshold
+    min_confidence = ctx.ai_confidence_threshold if ctx is not None else AI_MIN_CONFIDENCE
 
     # Approval logic for BUY trades
     if tech_direction == "BUY":
         if ai_signal == "SELL":
             print(f"VETOED (AI says SELL, confidence {ai_confidence})")
             return False, ai_result
-        if ai_confidence < AI_MIN_CONFIDENCE and ai_signal != "BUY":
-            print(f"VETOED (AI confidence {ai_confidence} < {AI_MIN_CONFIDENCE})")
+        if ai_confidence < min_confidence and ai_signal != "BUY":
+            print(f"VETOED (AI confidence {ai_confidence} < {min_confidence})")
             return False, ai_result
         print(f"APPROVED (AI: {ai_signal}, confidence {ai_confidence})")
         return True, ai_result
@@ -88,19 +99,29 @@ def ai_review(symbol, technical_signal):
 # Execute a single aggressive trade
 # ---------------------------------------------------------------------------
 
-def aggressive_execute_trade(symbol, signal, ai_result=None,
-                             max_position_pct=0.10, log=True):
+def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
+                             max_position_pct=None, log=True):
     """Execute a trade with aggressive position sizing.
 
     Args:
         symbol: Ticker string.
         signal: Strategy signal dict (from aggressive_combined_strategy).
+        ctx: UserContext, optional.  When provided, all API calls, risk
+             parameters, and journal logging use the context.
         ai_result: AI analysis dict (from ai_review). If provided, logged
                    with the trade for full audit trail.
-        max_position_pct: Max fraction of equity for one position.
+        max_position_pct: Max fraction of equity for one position.  Falls back
+                          to ctx or module constant.
         log: Whether to write to the journal database.
     """
-    api = get_api()
+    # Resolve parameters from ctx, explicit arg, or module-level constants
+    if max_position_pct is None:
+        max_position_pct = ctx.max_position_pct if ctx is not None else AGGRESSIVE_MAX_POSITION_PCT
+    stop_loss_pct = ctx.stop_loss_pct if ctx is not None else AGGRESSIVE_STOP_LOSS_PCT
+    take_profit_pct = ctx.take_profit_pct if ctx is not None else AGGRESSIVE_TAKE_PROFIT_PCT
+    db_path = ctx.db_path if ctx is not None else None
+
+    api = get_api(ctx)
     account = get_account_info(api)
     positions_list = get_positions(api)
     positions = {p["symbol"]: p for p in positions_list}
@@ -134,7 +155,7 @@ def aggressive_execute_trade(symbol, signal, ai_result=None,
     }
 
     if log:
-        init_db()
+        init_db(db_path)
 
     # ---- BUY logic --------------------------------------------------------
     if action in ("BUY", "STRONG_BUY") and symbol not in positions:
@@ -161,10 +182,13 @@ def aggressive_execute_trade(symbol, signal, ai_result=None,
             result["reason"] = "Position size too small"
             return result
 
-        # Portfolio constraint check
+        # Portfolio constraint check — pass ctx-derived params
+        max_total = ctx.max_total_positions if ctx is not None else None
         proposed = {"side": "buy", "qty": qty, "price": price}
         allowed, constraint_reason = check_portfolio_constraints(
-            symbol, proposed, positions, account
+            symbol, proposed, positions, account,
+            max_position_pct=max_position_pct,
+            max_total_positions=max_total,
         )
 
         # Override conservative concentration limit for aggressive trades
@@ -191,8 +215,8 @@ def aggressive_execute_trade(symbol, signal, ai_result=None,
         result["qty"] = qty
         result["order_id"] = order.id
         result["estimated_cost"] = round(qty * price, 2)
-        result["stop_loss_pct"] = AGGRESSIVE_STOP_LOSS_PCT
-        result["take_profit_pct"] = AGGRESSIVE_TAKE_PROFIT_PCT
+        result["stop_loss_pct"] = stop_loss_pct
+        result["take_profit_pct"] = take_profit_pct
 
         if log:
             log_trade(
@@ -206,8 +230,9 @@ def aggressive_execute_trade(symbol, signal, ai_result=None,
                 reason=signal.get("reason"),
                 ai_reasoning=ai_reasoning,
                 ai_confidence=ai_confidence,
-                stop_loss=AGGRESSIVE_STOP_LOSS_PCT,
-                take_profit=AGGRESSIVE_TAKE_PROFIT_PCT,
+                stop_loss=stop_loss_pct,
+                take_profit=take_profit_pct,
+                db_path=db_path,
             )
 
     # ---- SELL logic -------------------------------------------------------
@@ -248,6 +273,7 @@ def aggressive_execute_trade(symbol, signal, ai_result=None,
                 ai_reasoning=ai_reasoning,
                 ai_confidence=ai_confidence,
                 pnl=pnl,
+                db_path=db_path,
             )
 
     # ---- HOLD / no-action -------------------------------------------------
@@ -275,6 +301,7 @@ def aggressive_execute_trade(symbol, signal, ai_result=None,
                 if k in signal
             },
             acted_on=result["action"] in ("BUY", "SELL"),
+            db_path=db_path,
         )
 
     return result
@@ -284,17 +311,28 @@ def aggressive_execute_trade(symbol, signal, ai_result=None,
 # Scan and trade with AI gate
 # ---------------------------------------------------------------------------
 
-def run_aggressive_scan_and_trade(candidates, max_position_pct=0.10, log=True):
+def run_aggressive_scan_and_trade(candidates, ctx=None, max_position_pct=None,
+                                  log=True):
     """Screen candidates with aggressive strategies, AI-review before trading.
 
     Pipeline for each candidate:
-      1. Run aggressive_combined_strategy → technical signal
+      1. Run aggressive_combined_strategy -> technical signal
       2. If signal is actionable (BUY/SELL), run AI review
       3. If AI approves, execute the trade
       4. If AI vetoes, skip and log the veto
 
+    Parameters
+    ----------
+    ctx : UserContext, optional
+        Passed through to ai_review and aggressive_execute_trade.
+    max_position_pct : float, optional
+        Override for position sizing.  Falls back to ctx or module constant.
+
     Returns summary dict with counts and details.
     """
+    if max_position_pct is None:
+        max_position_pct = ctx.max_position_pct if ctx is not None else AGGRESSIVE_MAX_POSITION_PCT
+
     details = []
     vetoed = []
     errors = []
@@ -311,7 +349,7 @@ def run_aggressive_scan_and_trade(candidates, max_position_pct=0.10, log=True):
 
             # Step 2: AI review for actionable signals
             print(f"  {symbol}: {action} (score {signal.get('score', '?')})")
-            approved, ai_result = ai_review(symbol, signal)
+            approved, ai_result = ai_review(symbol, signal, ctx=ctx)
 
             if not approved:
                 vetoed.append({
@@ -333,7 +371,7 @@ def run_aggressive_scan_and_trade(candidates, max_position_pct=0.10, log=True):
 
             # Step 3: Execute trade
             trade_result = aggressive_execute_trade(
-                symbol, signal, ai_result=ai_result,
+                symbol, signal, ctx=ctx, ai_result=ai_result,
                 max_position_pct=max_position_pct, log=log,
             )
             details.append(trade_result)

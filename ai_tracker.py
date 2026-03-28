@@ -29,17 +29,24 @@ TIMEOUT_DAYS = 20        # Max trading days before force-resolving as neutral
 # Database helpers (mirrors journal.py patterns)
 # ---------------------------------------------------------------------------
 
-def _get_conn():
-    """Get a connection to the journal database."""
-    conn = sqlite3.connect(config.DB_PATH)
+def _get_conn(db_path=None):
+    """Get a connection to the journal database.
+
+    Parameters
+    ----------
+    db_path : str, optional
+        Path to the SQLite database file.  Falls back to config.DB_PATH
+        when not provided (backward compat for CLI).
+    """
+    conn = sqlite3.connect(db_path or config.DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
-def init_tracker_db():
+def init_tracker_db(db_path=None):
     """Create the ai_predictions table if it doesn't exist."""
-    conn = _get_conn()
+    conn = _get_conn(db_path)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS ai_predictions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,7 +76,7 @@ def init_tracker_db():
 # ---------------------------------------------------------------------------
 
 def record_prediction(symbol, predicted_signal, confidence, reasoning,
-                      price_at_prediction, price_targets=None):
+                      price_at_prediction, price_targets=None, db_path=None):
     """Save an AI prediction to the database.
 
     Parameters
@@ -86,16 +93,18 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
         Price when the prediction was made.
     price_targets : dict, optional
         May contain 'entry', 'stop_loss', 'take_profit'.
+    db_path : str, optional
+        Override database path.
 
     Returns
     -------
     int
         Row id of the inserted prediction.
     """
-    init_tracker_db()
+    init_tracker_db(db_path)
 
     price_targets = price_targets or {}
-    conn = _get_conn()
+    conn = _get_conn(db_path)
     cursor = conn.execute(
         """INSERT INTO ai_predictions
            (timestamp, symbol, predicted_signal, confidence, reasoning,
@@ -190,14 +199,21 @@ def _resolve_one(prediction, current_price):
     return None
 
 
-def resolve_predictions(api=None):
+def resolve_predictions(api=None, db_path=None):
     """Check all pending predictions and resolve those that meet criteria.
+
+    Parameters
+    ----------
+    api : alpaca REST client, optional
+        Pre-built API client.  Falls back to get_api() when not provided.
+    db_path : str, optional
+        Override database path.
 
     Returns the number of predictions resolved.
     """
-    init_tracker_db()
+    init_tracker_db(db_path)
     api = api or get_api()
-    conn = _get_conn()
+    conn = _get_conn(db_path)
 
     pending = conn.execute(
         "SELECT * FROM ai_predictions WHERE status = 'pending'"
@@ -259,7 +275,7 @@ def resolve_predictions(api=None):
 # 3. Performance report
 # ---------------------------------------------------------------------------
 
-def get_ai_performance():
+def get_ai_performance(db_path=None):
     """Build and return a performance report dict for AI predictions.
 
     Keys:
@@ -271,8 +287,8 @@ def get_ai_performance():
         best_prediction, worst_prediction,
         profit_factor
     """
-    init_tracker_db()
-    conn = _get_conn()
+    init_tracker_db(db_path)
+    conn = _get_conn(db_path)
 
     total = conn.execute("SELECT COUNT(*) FROM ai_predictions").fetchone()[0]
     resolved = conn.execute(

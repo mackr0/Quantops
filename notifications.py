@@ -114,17 +114,28 @@ def _table(headers, rows):
 # 1. Low-level email sender
 # ---------------------------------------------------------------------------
 
-def send_email(subject, html_body):
+def send_email(subject, html_body, ctx=None):
     """Send an HTML email via Resend API.
+
+    Parameters
+    ----------
+    ctx : UserContext, optional
+        If provided, uses ctx.resend_api_key and ctx.notification_email
+        instead of config globals.
 
     Returns True on success, False on failure.  Never raises.
     """
-    api_key = config.RESEND_API_KEY
+    if ctx is not None:
+        api_key = ctx.resend_api_key
+        recipient = ctx.notification_email
+    else:
+        api_key = config.RESEND_API_KEY
+        recipient = config.NOTIFICATION_EMAIL
+
     if not api_key:
         logger.warning("RESEND_API_KEY not configured — skipping email notification.")
         return False
 
-    recipient = config.NOTIFICATION_EMAIL
     payload = json.dumps({
         "from": "QuantOpsAI <onboarding@resend.dev>",
         "to": [recipient],
@@ -161,7 +172,7 @@ def send_email(subject, html_body):
 # 2. Trade notification
 # ---------------------------------------------------------------------------
 
-def notify_trade(trade_result, signal=None, ai_result=None):
+def notify_trade(trade_result, signal=None, ai_result=None, ctx=None):
     """Send a rich notification after a trade is executed.
 
     All data can come from trade_result alone (signal and ai_result are
@@ -217,7 +228,7 @@ def notify_trade(trade_result, signal=None, ai_result=None):
 
     # -- Account snapshot ----------------------------------------------------
     try:
-        account = get_account_info()
+        account = get_account_info(ctx=ctx)
         acct_info = (
             _kv_row("Equity", f"${account['equity']:,.2f}")
             + _kv_row("Cash", f"${account['cash']:,.2f}")
@@ -229,7 +240,7 @@ def notify_trade(trade_result, signal=None, ai_result=None):
 
     # -- Positions table -----------------------------------------------------
     try:
-        positions = get_positions()
+        positions = get_positions(ctx=ctx)
         if positions:
             rows = []
             for p in positions:
@@ -260,20 +271,21 @@ def notify_trade(trade_result, signal=None, ai_result=None):
         body += _section("Risk Levels", levels)
 
     html = _wrap_html("Trade Executed", body)
-    return send_email(subject, html)
+    return send_email(subject, html, ctx=ctx)
 
 
 # ---------------------------------------------------------------------------
 # 3. AI veto notification
 # ---------------------------------------------------------------------------
 
-def notify_veto(symbol, technical_signal, ai_result):
+def notify_veto(symbol, technical_signal, ai_result, ctx=None):
     """Notify when AI vetoes a trade.
 
     Args:
         symbol: Ticker string.
         technical_signal: The strategy signal dict.
         ai_result: AI analysis dict.
+        ctx: UserContext, optional.
     """
     tech_action = technical_signal.get("signal", "???")
     ai_signal = ai_result.get("signal", "???")
@@ -307,14 +319,14 @@ def notify_veto(symbol, technical_signal, ai_result):
     body += verdict
 
     html = _wrap_html("AI Veto", body)
-    return send_email(subject, html)
+    return send_email(subject, html, ctx=ctx)
 
 
 # ---------------------------------------------------------------------------
 # 4. Exit notification (stop-loss / take-profit)
 # ---------------------------------------------------------------------------
 
-def notify_exit(symbol, trigger, qty, reason):
+def notify_exit(symbol, trigger, qty, reason, ctx=None):
     """Notify when a stop-loss or take-profit triggers an exit.
 
     Args:
@@ -322,7 +334,11 @@ def notify_exit(symbol, trigger, qty, reason):
         trigger: 'stop_loss' or 'take_profit'.
         qty: Number of shares sold.
         reason: Descriptive reason string (e.g. from portfolio_manager).
+        ctx: UserContext, optional.
     """
+    # Derive db_path from ctx for downstream calls
+    db_path = ctx.db_path if ctx is not None else None
+
     label = "Stop-Loss" if trigger == "stop_loss" else "Take-Profit"
     # Try to extract the percentage from the reason string
     pct_str = ""
@@ -347,7 +363,7 @@ def notify_exit(symbol, trigger, qty, reason):
 
     # -- P&L from the trade --------------------------------------------------
     try:
-        trades = get_trade_history(symbol=symbol, limit=5)
+        trades = get_trade_history(symbol=symbol, limit=5, db_path=db_path)
         recent_sells = [t for t in trades if t.get("side") == "sell" and t.get("pnl") is not None]
         if recent_sells:
             last = recent_sells[0]
@@ -358,7 +374,7 @@ def notify_exit(symbol, trigger, qty, reason):
 
     # -- Remaining positions --------------------------------------------------
     try:
-        positions = get_positions()
+        positions = get_positions(ctx=ctx)
         if positions:
             rows = []
             for p in positions:
@@ -378,15 +394,18 @@ def notify_exit(symbol, trigger, qty, reason):
         logger.warning("Could not fetch positions for exit notification: %s", exc)
 
     html = _wrap_html(f"{label} Triggered", body)
-    return send_email(subject, html)
+    return send_email(subject, html, ctx=ctx)
 
 
 # ---------------------------------------------------------------------------
 # 5. Daily summary
 # ---------------------------------------------------------------------------
 
-def notify_daily_summary():
+def notify_daily_summary(ctx=None):
     """Send a comprehensive end-of-day summary email."""
+    # Derive db_path from ctx for downstream calls
+    db_path = ctx.db_path if ctx is not None else None
+
     today_str = date.today().isoformat()
     subject = f"QuantOpsAI Daily Summary \u2014 {today_str}"
 
@@ -394,8 +413,8 @@ def notify_daily_summary():
 
     # -- Account overview ----------------------------------------------------
     try:
-        account = get_account_info()
-        positions = get_positions()
+        account = get_account_info(ctx=ctx)
+        positions = get_positions(ctx=ctx)
         total_unrealized = sum(p.get("unrealized_pl", 0) for p in positions)
 
         acct_info = (
@@ -431,7 +450,7 @@ def notify_daily_summary():
 
     # -- Trades executed today -----------------------------------------------
     try:
-        all_trades = get_trade_history(limit=200)
+        all_trades = get_trade_history(limit=200, db_path=db_path)
         today_trades = [t for t in all_trades if t.get("timestamp", "").startswith(today_str)]
         if today_trades:
             rows = []
@@ -456,7 +475,7 @@ def notify_daily_summary():
     # -- AI vetoes today -----------------------------------------------------
     try:
         from journal import _get_conn
-        conn = _get_conn()
+        conn = _get_conn(db_path)
         vetoes = conn.execute(
             "SELECT * FROM signals WHERE acted_on = 0 AND timestamp LIKE ? "
             "AND signal IN ('BUY','STRONG_BUY','SELL','STRONG_SELL') "
@@ -479,7 +498,7 @@ def notify_daily_summary():
 
     # -- AI performance summary ----------------------------------------------
     try:
-        ai_perf = get_ai_performance()
+        ai_perf = get_ai_performance(db_path=db_path)
         if ai_perf.get("total_predictions", 0) > 0:
             ai_info = (
                 _kv_row("Total Predictions", ai_perf["total_predictions"])
@@ -497,7 +516,12 @@ def notify_daily_summary():
     # -- Risk summary --------------------------------------------------------
     if account and positions:
         try:
-            risk = get_risk_summary(account, positions)
+            # Pull risk params from ctx if available
+            risk_kwargs = {}
+            if ctx is not None:
+                risk_kwargs["max_total_positions"] = ctx.max_total_positions
+                risk_kwargs["max_position_pct"] = ctx.max_position_pct
+            risk = get_risk_summary(account, positions, **risk_kwargs)
             risk_info = (
                 _kv_row("Positions", f"{risk['num_positions']} / {risk['max_positions']}")
                 + _kv_row("Available Slots", risk["available_slots"])
@@ -515,7 +539,7 @@ def notify_daily_summary():
 
     # -- Trade performance (all-time) ----------------------------------------
     try:
-        perf = get_performance_summary()
+        perf = get_performance_summary(db_path=db_path)
         if perf["total_trades"] > 0:
             perf_info = (
                 _kv_row("Total Closed Trades", perf["total_trades"])
@@ -530,19 +554,20 @@ def notify_daily_summary():
         logger.warning("Could not fetch performance summary: %s", exc)
 
     html = _wrap_html("Daily Summary", body)
-    return send_email(subject, html)
+    return send_email(subject, html, ctx=ctx)
 
 
 # ---------------------------------------------------------------------------
 # 6. Error notification
 # ---------------------------------------------------------------------------
 
-def notify_error(error_msg, context=""):
+def notify_error(error_msg, context="", ctx=None):
     """Send a critical error notification.
 
     Args:
         error_msg: The error message or traceback string.
         context: Short label for what was happening when the error occurred.
+        ctx: UserContext, optional.
     """
     ctx_label = context if context else "General"
     subject = f"QuantOpsAI ERROR: {ctx_label}"
@@ -558,4 +583,4 @@ def notify_error(error_msg, context=""):
     body += _kv_row("Occurred at", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"))
 
     html = _wrap_html("Error Alert", body)
-    return send_email(subject, html)
+    return send_email(subject, html, ctx=ctx)

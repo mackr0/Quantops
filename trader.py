@@ -9,14 +9,25 @@ from portfolio_manager import (
 from journal import init_db, log_trade, log_signal
 
 
-def execute_trade(symbol, signal, strategy_name="combined", log=True):
+def execute_trade(symbol, signal, ctx=None, strategy_name="combined", log=True):
     """
     Execute a trade based on a strategy signal.
 
     Uses portfolio_manager for position sizing and constraint checks.
     Logs trades and signals to the journal.
+
+    Parameters
+    ----------
+    ctx : UserContext, optional
+        If provided, uses ctx for API credentials, risk parameters,
+        and journal DB path.
     """
-    api = get_api()
+    # Resolve ctx-derived parameters
+    db_path = ctx.db_path if ctx is not None else None
+    max_position_pct = ctx.max_position_pct if ctx is not None else None
+    max_total_positions = ctx.max_total_positions if ctx is not None else None
+
+    api = get_api(ctx)
     account = get_account_info(api)
     positions_list = get_positions(api)
     positions = {p["symbol"]: p for p in positions_list}
@@ -32,11 +43,14 @@ def execute_trade(symbol, signal, strategy_name="combined", log=True):
     }
 
     if log:
-        init_db()
+        init_db(db_path)
 
     if action in ("BUY", "STRONG_BUY", "WEAK_BUY") and symbol not in positions:
         # Use portfolio manager for position sizing
-        sizing = calculate_position_size(symbol, signal, account, positions)
+        sizing = calculate_position_size(
+            symbol, signal, account, positions,
+            max_position_pct=max_position_pct,
+        )
         qty = sizing["qty"]
 
         if qty <= 0:
@@ -46,7 +60,9 @@ def execute_trade(symbol, signal, strategy_name="combined", log=True):
             # Check portfolio constraints before executing
             proposed = {"side": "buy", "qty": qty, "price": price}
             allowed, constraint_reason = check_portfolio_constraints(
-                symbol, proposed, positions, account
+                symbol, proposed, positions, account,
+                max_position_pct=max_position_pct,
+                max_total_positions=max_total_positions,
             )
 
             if not allowed:
@@ -78,6 +94,7 @@ def execute_trade(symbol, signal, strategy_name="combined", log=True):
                         reason=signal.get("reason"),
                         ai_reasoning=signal.get("ai_raw_reasoning"),
                         ai_confidence=signal.get("confidence"),
+                        db_path=db_path,
                     )
 
     elif action in ("SELL", "STRONG_SELL", "WEAK_SELL") and symbol in positions:
@@ -114,6 +131,7 @@ def execute_trade(symbol, signal, strategy_name="combined", log=True):
                 strategy=strategy_name,
                 reason=signal.get("reason"),
                 pnl=pnl,
+                db_path=db_path,
             )
 
     elif action == "HOLD":
@@ -139,21 +157,38 @@ def execute_trade(symbol, signal, strategy_name="combined", log=True):
                 if k in signal
             },
             acted_on=result["action"] in ("BUY", "SELL"),
+            db_path=db_path,
         )
 
     return result
 
 
-def check_exits():
-    """Check all positions for stop-loss/take-profit triggers and execute sells."""
-    api = get_api()
+def check_exits(ctx=None):
+    """Check all positions for stop-loss/take-profit triggers and execute sells.
+
+    Parameters
+    ----------
+    ctx : UserContext, optional
+        If provided, uses ctx for API credentials, risk parameters,
+        and journal DB path.
+    """
+    # Resolve ctx-derived parameters
+    db_path = ctx.db_path if ctx is not None else None
+    stop_loss_pct = ctx.stop_loss_pct if ctx is not None else None
+    take_profit_pct = ctx.take_profit_pct if ctx is not None else None
+
+    api = get_api(ctx)
     positions = get_positions(api)
 
     if not positions:
         return []
 
-    init_db()
-    triggered = check_stop_loss_take_profit(positions)
+    init_db(db_path)
+    triggered = check_stop_loss_take_profit(
+        positions,
+        stop_loss_pct=stop_loss_pct,
+        take_profit_pct=take_profit_pct,
+    )
     results = []
 
     for trigger_signal in triggered:
@@ -177,6 +212,7 @@ def check_exits():
             signal_type="SELL",
             strategy=trigger_signal["trigger"],
             reason=trigger_signal["reason"],
+            db_path=db_path,
         )
 
         results.append({

@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Multi-account scheduler — runs microsmall, midcap, and largecap segments.
+"""Multi-account scheduler — runs segments via UserContext (no config.* mutation).
 
-Each segment has its own Alpaca credentials, SQLite database, universe, and
-risk parameters.  Segments are processed sequentially (single-threaded) within
-each scheduling cycle.  The existing single-account scheduler.py is untouched.
+Each segment gets a UserContext that carries all credentials, DB paths, and risk
+parameters through the entire call chain.  There is no _apply_segment_config /
+_restore_config pattern.
+
+For backward compatibility during migration, the scheduler can build a
+UserContext from either:
+  - The database (build_user_context) for multi-user mode, or
+  - segments.py + config.py (build_context_from_segment) for the original
+    single-owner, env-var-based setup.
 
 Usage:
     python multi_scheduler.py                  # run all segments
@@ -18,8 +24,7 @@ import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import config
-from segments import get_segment, list_segments, SEGMENTS
+from segments import list_segments, get_segment, SEGMENTS
 
 # ── Timezone ─────────────────────────────────────────────────────────
 
@@ -59,6 +64,25 @@ def next_market_open(now=None):
     return candidate
 
 
+# ── Build UserContext ────────────────────────────────────────────────
+
+def _build_ctx(segment_name):
+    """Build a UserContext for a segment.
+
+    First tries the database (multi-user mode via models.build_user_context).
+    Falls back to the env-var-based builder (build_context_from_segment) if the
+    DB-based approach fails (e.g. no user DB set up yet).
+    """
+    try:
+        from models import build_user_context
+        return build_user_context(1, segment_name)
+    except Exception:
+        pass
+
+    from user_context import build_context_from_segment
+    return build_context_from_segment(segment_name)
+
+
 # ── Task Runner ──────────────────────────────────────────────────────
 
 def run_task(name, func):
@@ -74,125 +98,74 @@ def run_task(name, func):
         logging.exception(f"[TASK FAIL]  {name} ({elapsed:.1f}s)")
 
 
-# ── Config Override Context ──────────────────────────────────────────
-
-def _apply_segment_config(segment_name):
-    """Override module-level config values with the given segment's settings.
-
-    Because the scheduler is single-threaded, we can safely mutate
-    ``config.*`` before running each segment's tasks.  Returns a dict of
-    the previous values so they *could* be restored, though in practice we
-    just overwrite with the next segment's values.
-    """
-    seg = get_segment(segment_name)
-
-    prev = {
-        "ALPACA_API_KEY": config.ALPACA_API_KEY,
-        "ALPACA_SECRET_KEY": config.ALPACA_SECRET_KEY,
-        "DB_PATH": config.DB_PATH,
-        "MAX_POSITION_PCT": config.MAX_POSITION_PCT,
-        "DEFAULT_STOP_LOSS_PCT": config.DEFAULT_STOP_LOSS_PCT,
-        "DEFAULT_TAKE_PROFIT_PCT": config.DEFAULT_TAKE_PROFIT_PCT,
-        "AGGRESSIVE_MAX_POSITION_PCT": config.AGGRESSIVE_MAX_POSITION_PCT,
-        "AGGRESSIVE_STOP_LOSS_PCT": config.AGGRESSIVE_STOP_LOSS_PCT,
-        "AGGRESSIVE_TAKE_PROFIT_PCT": config.AGGRESSIVE_TAKE_PROFIT_PCT,
-        "SCREEN_MIN_PRICE": config.SCREEN_MIN_PRICE,
-        "SCREEN_MAX_PRICE": config.SCREEN_MAX_PRICE,
-        "SCREEN_MIN_VOLUME": config.SCREEN_MIN_VOLUME,
-    }
-
-    config.ALPACA_API_KEY = seg["alpaca_key"]
-    config.ALPACA_SECRET_KEY = seg["alpaca_secret"]
-    config.DB_PATH = seg["db_path"]
-    config.MAX_POSITION_PCT = seg["max_position_pct"]
-    config.DEFAULT_STOP_LOSS_PCT = seg["stop_loss_pct"]
-    config.DEFAULT_TAKE_PROFIT_PCT = seg["take_profit_pct"]
-    config.AGGRESSIVE_MAX_POSITION_PCT = seg["max_position_pct"]
-    config.AGGRESSIVE_STOP_LOSS_PCT = seg["stop_loss_pct"]
-    config.AGGRESSIVE_TAKE_PROFIT_PCT = seg["take_profit_pct"]
-    config.SCREEN_MIN_PRICE = seg["min_price"]
-    config.SCREEN_MAX_PRICE = seg["max_price"]
-    config.SCREEN_MIN_VOLUME = seg["min_volume"]
-
-    return prev
-
-
-def _restore_config(prev):
-    """Restore config values from *prev* dict (returned by _apply_segment_config)."""
-    for key, value in prev.items():
-        setattr(config, key, value)
-
-
 # ── Segment Cycle ────────────────────────────────────────────────────
 
-def run_segment_cycle(segment_name, run_scan=True, run_exits=True,
+def run_segment_cycle(ctx, run_scan=True, run_exits=True,
                       run_predictions=False, run_snapshot=False,
                       run_summary=False):
-    """Run one full cycle for a given segment.
+    """Run one full cycle for a given UserContext.
 
-    Temporarily overrides config.* with the segment's values, then executes
-    the requested tasks.
+    All task functions receive ctx — no config.* globals are mutated.
     """
-    seg = get_segment(segment_name)
-    logging.info(f"--- [{seg['name'].upper()}] segment cycle start ---")
+    seg_label = ctx.display_name or ctx.segment
+    logging.info(f"--- [{seg_label.upper()}] segment cycle start ---")
 
-    prev = _apply_segment_config(segment_name)
+    if run_scan:
+        run_task(
+            f"[{seg_label}] Aggressive Scan & Trade",
+            lambda: _task_aggressive_scan_and_trade(ctx),
+        )
 
-    try:
-        if run_scan:
-            run_task(
-                f"[{seg['name']}] Aggressive Scan & Trade",
-                lambda: _task_aggressive_scan_and_trade(segment_name),
-            )
+    if run_exits:
+        run_task(
+            f"[{seg_label}] Check Exits",
+            lambda: _task_check_exits(ctx),
+        )
 
-        if run_exits:
-            run_task(
-                f"[{seg['name']}] Check Exits",
-                lambda: _task_check_exits(segment_name),
-            )
+    if run_predictions:
+        run_task(
+            f"[{seg_label}] Resolve AI Predictions",
+            lambda: _task_resolve_predictions(ctx),
+        )
 
-        if run_predictions:
-            run_task(
-                f"[{seg['name']}] Resolve AI Predictions",
-                _task_resolve_predictions,
-            )
+    if run_snapshot:
+        run_task(
+            f"[{seg_label}] Daily Snapshot",
+            lambda: _task_daily_snapshot(ctx),
+        )
 
-        if run_snapshot:
-            run_task(
-                f"[{seg['name']}] Daily Snapshot",
-                _task_daily_snapshot,
-            )
+    if run_summary:
+        run_task(
+            f"[{seg_label}] Daily Summary Email",
+            lambda: _task_daily_summary_email(ctx),
+        )
 
-        if run_summary:
-            run_task(
-                f"[{seg['name']}] Daily Summary Email",
-                _task_daily_summary_email,
-            )
-    finally:
-        _restore_config(prev)
-
-    logging.info(f"--- [{seg['name'].upper()}] segment cycle end ---")
+    logging.info(f"--- [{seg_label.upper()}] segment cycle end ---")
 
 
 # ── Task Implementations ─────────────────────────────────────────────
-# These mirror scheduler.py but respect the currently-active config
-# values set by _apply_segment_config().
+# Each task receives a UserContext and passes it through.
 
-def _task_aggressive_scan_and_trade(segment_name):
+def _task_aggressive_scan_and_trade(ctx):
     """Screen the segment's universe and auto-trade with AI review."""
     from screener import screen_by_price_range, find_volume_surges, \
         find_momentum_stocks, find_breakouts
     from aggressive_trader import run_aggressive_scan_and_trade
     from notifications import notify_trade, notify_veto
 
-    seg = get_segment(segment_name)
+    seg_label = ctx.display_name or ctx.segment
 
-    # Use segment-specific universe and price/volume filters
+    # Determine universe from segments.py for this segment
+    seg = get_segment(ctx.segment)
+    universe = seg.get("universe")
+
+    # Use ctx-specific price/volume filters and universe
     candidates = screen_by_price_range(
-        min_price=seg["min_price"],
-        max_price=seg["max_price"],
-        min_volume=seg["min_volume"],
+        min_price=ctx.min_price,
+        max_price=ctx.max_price,
+        min_volume=ctx.min_volume,
         limit=50,
+        universe=universe,
     )
     symbols = set()
     for c in candidates:
@@ -200,9 +173,10 @@ def _task_aggressive_scan_and_trade(segment_name):
 
     # Also run secondary screens on the candidate list
     sym_list = [c["symbol"] for c in candidates]
-    for s in find_volume_surges(sym_list):
+    for s in find_volume_surges(sym_list, volume_multiplier=ctx.volume_surge_multiplier):
         symbols.add(s["symbol"])
-    for s in find_momentum_stocks(sym_list):
+    for s in find_momentum_stocks(sym_list, min_gain_5d=ctx.momentum_5d_gain,
+                                  min_gain_20d=ctx.momentum_20d_gain):
         symbols.add(s["symbol"])
     for s in find_breakouts(sym_list):
         symbols.add(s["symbol"])
@@ -210,13 +184,13 @@ def _task_aggressive_scan_and_trade(segment_name):
     symbols = list(symbols)[:30]
 
     if not symbols:
-        logging.info(f"[{seg['name']}] No candidates found in screen.")
+        logging.info(f"[{seg_label}] No candidates found in screen.")
         return
 
-    logging.info(f"[{seg['name']}] Running aggressive scan on {len(symbols)} candidates")
-    summary = run_aggressive_scan_and_trade(symbols)
+    logging.info(f"[{seg_label}] Running aggressive scan on {len(symbols)} candidates")
+    summary = run_aggressive_scan_and_trade(symbols, ctx=ctx)
     logging.info(
-        f"[{seg['name']}] Trade summary: "
+        f"[{seg_label}] Trade summary: "
         f"buys={summary.get('buys', 0)}, "
         f"sells={summary.get('sells', 0)}, "
         f"ai_vetoed={summary.get('ai_vetoed', 0)}, "
@@ -227,7 +201,7 @@ def _task_aggressive_scan_and_trade(segment_name):
     for detail in summary.get("details", []):
         if detail.get("action") in ("BUY", "SELL"):
             try:
-                notify_trade(detail, detail, detail)
+                notify_trade(detail, detail, detail, ctx=ctx)
             except Exception:
                 logging.exception("Failed to send trade notification")
 
@@ -235,52 +209,56 @@ def _task_aggressive_scan_and_trade(segment_name):
         tech_signal = veto.get("technical_signal", "")
         if "BUY" in str(tech_signal):
             try:
-                notify_veto(veto["symbol"], {"signal": tech_signal}, veto)
+                notify_veto(veto["symbol"], {"signal": tech_signal}, veto, ctx=ctx)
             except Exception:
                 logging.exception("Failed to send veto notification")
 
 
-def _task_check_exits(segment_name):
+def _task_check_exits(ctx):
     """Check stop-loss and take-profit triggers on open positions."""
     from trader import check_exits
     from notifications import notify_exit
 
-    seg = get_segment(segment_name)
-    results = check_exits()
+    seg_label = ctx.display_name or ctx.segment
+    results = check_exits(ctx=ctx)
     if results:
         for r in results:
             logging.info(
-                f"[{seg['name']}] Exit triggered: {r['symbol']} "
+                f"[{seg_label}] Exit triggered: {r['symbol']} "
                 f"{r['trigger'].upper()} qty={r['qty']} — {r['reason']}"
             )
             try:
-                notify_exit(r["symbol"], r["trigger"], r["qty"], r["reason"])
+                notify_exit(r["symbol"], r["trigger"], r["qty"], r["reason"], ctx=ctx)
             except Exception:
                 logging.exception("Failed to send exit notification")
     else:
-        logging.info(f"[{seg['name']}] No exit triggers fired.")
+        logging.info(f"[{seg_label}] No exit triggers fired.")
 
 
-def _task_resolve_predictions():
+def _task_resolve_predictions(ctx):
     """Resolve outstanding AI predictions against actual prices."""
     from ai_tracker import resolve_predictions
-    resolve_predictions()
+    from client import get_api
+
+    api = get_api(ctx)
+    resolve_predictions(api=api, db_path=ctx.db_path)
     logging.info("AI predictions resolved.")
 
 
-def _task_daily_snapshot():
+def _task_daily_snapshot(ctx):
     """Save end-of-day portfolio snapshot."""
     from journal import init_db, log_daily_snapshot
     from client import get_account_info, get_positions
 
-    init_db()
-    account = get_account_info()
-    positions = get_positions()
+    init_db(ctx.db_path)
+    account = get_account_info(ctx=ctx)
+    positions = get_positions(ctx=ctx)
     log_daily_snapshot(
         equity=account["equity"],
         cash=account["cash"],
         portfolio_value=account["portfolio_value"],
         num_positions=len(positions),
+        db_path=ctx.db_path,
     )
     logging.info(
         f"Daily snapshot saved: equity=${account['equity']:,.2f}, "
@@ -288,10 +266,10 @@ def _task_daily_snapshot():
     )
 
 
-def _task_daily_summary_email():
+def _task_daily_summary_email(ctx):
     """Send end-of-day summary email."""
     from notifications import notify_daily_summary
-    notify_daily_summary()
+    notify_daily_summary(ctx=ctx)
     logging.info("Daily summary email sent.")
 
 
@@ -309,15 +287,6 @@ def main_loop(active_segments=None):
 
     if active_segments is None:
         active_segments = list_segments()
-
-    # Validate segment names
-    for name in active_segments:
-        seg = get_segment(name)
-        if not seg["alpaca_key"] or not seg["alpaca_secret"]:
-            logging.warning(
-                f"Segment {name!r} has no Alpaca credentials — "
-                f"set {name.upper()}_ALPACA_KEY and {name.upper()}_ALPACA_SECRET"
-            )
 
     # ── Logging setup ────────────────────────────────────────────────
     log_dir = os.path.expanduser("~/QuantOpsAI/logs")
@@ -393,12 +362,18 @@ def main_loop(active_segments=None):
 
         # Equity segments: only during market hours
         if market_open and (do_scan or do_exits or do_predictions or do_snapshot):
-            for segment_name in equity_segments:
+            for seg_name in equity_segments:
                 if _shutdown:
                     break
-                logging.info(f"=== Processing segment: {segment_name} ===")
+                try:
+                    ctx = _build_ctx(seg_name)
+                except Exception:
+                    logging.exception(f"Failed to build context for segment {seg_name!r}")
+                    continue
+
+                logging.info(f"=== Processing segment: {seg_name} ===")
                 run_segment_cycle(
-                    segment_name,
+                    ctx,
                     run_scan=do_scan,
                     run_exits=do_exits,
                     run_predictions=do_predictions,
@@ -409,12 +384,18 @@ def main_loop(active_segments=None):
 
         # Crypto segments: 24/7
         if crypto_segments and (do_scan or do_exits or do_predictions):
-            for segment_name in crypto_segments:
+            for seg_name in crypto_segments:
                 if _shutdown:
                     break
-                logging.info(f"=== Processing segment: {segment_name} (24/7) ===")
+                try:
+                    ctx = _build_ctx(seg_name)
+                except Exception:
+                    logging.exception(f"Failed to build context for segment {seg_name!r}")
+                    continue
+
+                logging.info(f"=== Processing segment: {seg_name} (24/7) ===")
                 run_segment_cycle(
-                    segment_name,
+                    ctx,
                     run_scan=do_scan,
                     run_exits=do_exits,
                     run_predictions=do_predictions,
@@ -438,11 +419,16 @@ def main_loop(active_segments=None):
             # No crypto and market closed — sleep until next open
             if last_run["daily_snapshot"] != today_str and now.hour >= 16:
                 logging.info("Market closed — sending missed daily snapshot")
-                for segment_name in equity_segments:
+                for seg_name in equity_segments:
                     if _shutdown:
                         break
+                    try:
+                        ctx = _build_ctx(seg_name)
+                    except Exception:
+                        logging.exception(f"Failed to build context for segment {seg_name!r}")
+                        continue
                     run_segment_cycle(
-                        segment_name,
+                        ctx,
                         run_scan=False, run_exits=False,
                         run_predictions=False,
                         run_snapshot=True, run_summary=True,

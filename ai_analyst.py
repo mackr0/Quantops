@@ -5,32 +5,50 @@ import logging
 
 import anthropic
 
-from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+import config
 from client import get_api
 from market_data import get_bars, add_indicators
 
 logger = logging.getLogger(__name__)
 
 
-def get_claude_client():
-    """Return an authenticated Anthropic client."""
-    if not ANTHROPIC_API_KEY:
+def get_claude_client(api_key=None):
+    """Return an authenticated Anthropic client.
+
+    Parameters
+    ----------
+    api_key : str, optional
+        Anthropic API key.  Falls back to config.ANTHROPIC_API_KEY when
+        not provided (backward compat for CLI).
+    """
+    key = api_key or config.ANTHROPIC_API_KEY
+    if not key:
         raise ValueError(
             "Missing ANTHROPIC_API_KEY. Add it to your .env file."
         )
-    return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    return anthropic.Anthropic(api_key=key)
 
 
-def analyze_symbol(symbol, api=None):
+def analyze_symbol(symbol, ctx=None, api=None):
     """
     Fetch market data for *symbol*, add technical indicators, and ask Claude
     for a structured trading recommendation.
+
+    Parameters
+    ----------
+    symbol : str
+        Ticker symbol.
+    ctx : UserContext, optional
+        If provided, uses ctx for Anthropic client and model name, and
+        ctx for the Alpaca API client.
+    api : alpaca REST client, optional
+        Pre-built API client.  Falls back to get_api(ctx) when not provided.
 
     Returns a dict with keys: signal, confidence, reasoning, risk_factors,
     price_targets (entry, stop_loss, take_profit).
     """
     try:
-        api = api or get_api()
+        api = api or get_api(ctx)
         df = get_bars(symbol, limit=100, api=api)
         df = add_indicators(df)
         df = df.dropna()
@@ -89,9 +107,16 @@ def analyze_symbol(symbol, api=None):
             "reasoning."
         )
 
-        client = get_claude_client()
+        # Use ctx for client and model if available, else fall back to config
+        if ctx is not None:
+            client = ctx.get_anthropic_client()
+            model = ctx.claude_model
+        else:
+            client = get_claude_client()
+            model = config.CLAUDE_MODEL
+
         message = client.messages.create(
-            model=CLAUDE_MODEL,
+            model=model,
             max_tokens=1024,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -123,7 +148,7 @@ def analyze_symbol(symbol, api=None):
         }
 
 
-def analyze_portfolio_risk(positions, account_info):
+def analyze_portfolio_risk(positions, account_info, ctx=None):
     """
     Send the full portfolio and account info to Claude for a holistic risk
     assessment.
@@ -134,6 +159,8 @@ def analyze_portfolio_risk(positions, account_info):
         Output of client.get_positions().
     account_info : dict
         Output of client.get_account_info().
+    ctx : UserContext, optional
+        If provided, uses ctx for Anthropic client and model name.
 
     Returns a dict with overall_risk_level, warnings, and recommendations.
     """
@@ -162,9 +189,15 @@ def analyze_portfolio_risk(positions, account_info):
             "utilization, and correlation between holdings."
         )
 
-        client = get_claude_client()
+        if ctx is not None:
+            client = ctx.get_anthropic_client()
+            model = ctx.claude_model
+        else:
+            client = get_claude_client()
+            model = config.CLAUDE_MODEL
+
         message = client.messages.create(
-            model=CLAUDE_MODEL,
+            model=model,
             max_tokens=1024,
             messages=[{"role": "user", "content": prompt}],
         )

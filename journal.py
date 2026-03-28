@@ -7,17 +7,24 @@ from datetime import datetime, date
 import config
 
 
-def _get_conn():
-    """Get a connection to the journal database."""
-    conn = sqlite3.connect(config.DB_PATH)
+def _get_conn(db_path=None):
+    """Get a connection to the journal database.
+
+    Parameters
+    ----------
+    db_path : str, optional
+        Path to the SQLite database file.  Falls back to config.DB_PATH
+        when not provided (backward compat for CLI).
+    """
+    conn = sqlite3.connect(db_path or config.DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
-def init_db():
+def init_db(db_path=None):
     """Create journal tables if they don't exist."""
-    conn = _get_conn()
+    conn = _get_conn(db_path)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,12 +91,13 @@ def init_db():
 
 def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
               strategy=None, reason=None, ai_reasoning=None, ai_confidence=None,
-              stop_loss=None, take_profit=None, status="open", pnl=None):
+              stop_loss=None, take_profit=None, status="open", pnl=None,
+              db_path=None):
     """Log a trade execution to the journal.
 
     Returns the row id of the inserted trade.
     """
-    conn = _get_conn()
+    conn = _get_conn(db_path)
     cursor = conn.execute(
         """INSERT INTO trades
            (timestamp, symbol, side, qty, price, order_id, signal_type, strategy,
@@ -109,14 +117,14 @@ def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
 
 
 def log_signal(symbol, signal, strategy=None, reason=None, price=None,
-               indicators=None, acted_on=False):
+               indicators=None, acted_on=False, db_path=None):
     """Log a strategy signal to the journal.
 
     Args:
         indicators: dict of indicator values; stored as JSON.
     Returns the row id.
     """
-    conn = _get_conn()
+    conn = _get_conn(db_path)
     indicators_json = json.dumps(indicators) if indicators else None
     cursor = conn.execute(
         """INSERT INTO signals
@@ -134,12 +142,13 @@ def log_signal(symbol, signal, strategy=None, reason=None, price=None,
     return signal_id
 
 
-def log_daily_snapshot(equity, cash, portfolio_value, num_positions, daily_pnl=None):
+def log_daily_snapshot(equity, cash, portfolio_value, num_positions, daily_pnl=None,
+                       db_path=None):
     """Log an end-of-day portfolio snapshot.
 
     Returns the row id.
     """
-    conn = _get_conn()
+    conn = _get_conn(db_path)
     cursor = conn.execute(
         """INSERT INTO daily_snapshots
            (date, equity, cash, portfolio_value, num_positions, daily_pnl)
@@ -155,12 +164,12 @@ def log_daily_snapshot(equity, cash, portfolio_value, num_positions, daily_pnl=N
     return snapshot_id
 
 
-def get_trade_history(symbol=None, limit=50):
+def get_trade_history(symbol=None, limit=50, db_path=None):
     """Return recent trades, optionally filtered by symbol.
 
     Returns a list of dicts.
     """
-    conn = _get_conn()
+    conn = _get_conn(db_path)
     if symbol:
         rows = conn.execute(
             "SELECT * FROM trades WHERE symbol = ? ORDER BY timestamp DESC LIMIT ?",
@@ -175,13 +184,13 @@ def get_trade_history(symbol=None, limit=50):
     return [dict(r) for r in rows]
 
 
-def get_performance_summary():
+def get_performance_summary(db_path=None):
     """Return aggregate performance metrics from the trade journal.
 
     Returns a dict with total_trades, winning_trades, losing_trades, win_rate,
     total_pnl, avg_pnl, best_trade, worst_trade.
     """
-    conn = _get_conn()
+    conn = _get_conn(db_path)
 
     total = conn.execute("SELECT COUNT(*) FROM trades WHERE pnl IS NOT NULL").fetchone()[0]
     if total == 0:
@@ -227,12 +236,12 @@ def get_performance_summary():
     }
 
 
-def get_signal_history(symbol=None, limit=100):
+def get_signal_history(symbol=None, limit=100, db_path=None):
     """Return recent signals, optionally filtered by symbol.
 
     Returns a list of dicts with indicators parsed from JSON.
     """
-    conn = _get_conn()
+    conn = _get_conn(db_path)
     if symbol:
         rows = conn.execute(
             "SELECT * FROM signals WHERE symbol = ? ORDER BY timestamp DESC LIMIT ?",
@@ -257,12 +266,12 @@ def get_signal_history(symbol=None, limit=100):
     return results
 
 
-def get_equity_curve(days=30):
+def get_equity_curve(days=30, db_path=None):
     """Return daily equity snapshots for charting.
 
     Returns a list of dicts with date, equity, portfolio_value, daily_pnl.
     """
-    conn = _get_conn()
+    conn = _get_conn(db_path)
     rows = conn.execute(
         """SELECT date, equity, cash, portfolio_value, num_positions, daily_pnl
            FROM daily_snapshots

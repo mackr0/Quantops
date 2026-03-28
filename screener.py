@@ -103,13 +103,21 @@ def from_yfinance_symbol(symbol):
 
 
 def screen_by_price_range(min_price=1.0, max_price=20.0, min_volume=500_000,
-                          limit=50, api=None):
+                          limit=50, universe=None, api=None):
     """Screen small/micro-cap stocks by price range and minimum volume.
 
     Uses yfinance batch download for speed. The ``api`` parameter is
     ignored (kept for backward compatibility).
+
+    Parameters
+    ----------
+    universe : list[str], optional
+        Symbol list to screen.  Falls back to get_small_cap_universe()
+        when not provided.
     """
-    universe = get_small_cap_universe()
+    if universe is None:
+        universe = get_small_cap_universe()
+
     print(f"Downloading 1-month data for {len(universe)} symbols (yfinance batch)...")
 
     # Batch download — very fast, single HTTP request per batch
@@ -293,19 +301,37 @@ def find_breakouts(candidates, api=None):
     return breakouts
 
 
-def run_full_screen(api=None):
+def run_full_screen(universe=None, min_price=None, max_price=None, min_volume=None,
+                    api=None):
     """Run the complete small-cap screening pipeline.
 
-    The ``api`` parameter is ignored (kept for backward compatibility).
+    Parameters
+    ----------
+    universe : list[str], optional
+        Symbol list to screen.  Falls back to get_small_cap_universe().
+    min_price, max_price, min_volume : optional
+        Override default screening parameters.
+    api : ignored (kept for backward compatibility).
     """
     print("=" * 60)
     print("QUANTOPSAI SMALL-CAP / MICRO-CAP SCREENER")
     print(f"Run time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
 
+    # Build kwargs for screen_by_price_range
+    kwargs = {}
+    if universe is not None:
+        kwargs["universe"] = universe
+    if min_price is not None:
+        kwargs["min_price"] = min_price
+    if max_price is not None:
+        kwargs["max_price"] = max_price
+    if min_volume is not None:
+        kwargs["min_volume"] = min_volume
+
     # Step 1: Fast price/volume screen via yfinance batch download
     print("\n[1/4] Price & Volume Screen")
-    candidates = screen_by_price_range()
+    candidates = screen_by_price_range(**kwargs)
     symbols = [c["symbol"] for c in candidates]
 
     # Steps 2-4: Detailed analysis on candidates only

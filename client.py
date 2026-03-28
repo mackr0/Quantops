@@ -1,21 +1,34 @@
 """Alpaca API client wrapper."""
 
 import alpaca_trade_api as tradeapi
-from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL
+import config
 
 
-def get_api():
-    """Create and return an authenticated Alpaca API client."""
-    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+def get_api(ctx=None):
+    """Create and return an authenticated Alpaca API client.
+
+    Parameters
+    ----------
+    ctx : UserContext, optional
+        If provided, credentials are taken from the context instead of
+        module-level config globals.  When *ctx* is None the existing
+        config.* behaviour is preserved (backward compat for CLI).
+    """
+    if ctx is not None:
+        return ctx.get_alpaca_api()
+
+    api_key = config.ALPACA_API_KEY
+    secret_key = config.ALPACA_SECRET_KEY
+    if not api_key or not secret_key:
         raise ValueError(
             "Missing API credentials. Copy .env.example to .env and add your keys."
         )
-    return tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version="v2")
+    return tradeapi.REST(api_key, secret_key, config.ALPACA_BASE_URL, api_version="v2")
 
 
-def get_account_info(api=None):
+def get_account_info(api=None, ctx=None):
     """Get account details: equity, buying power, etc."""
-    api = api or get_api()
+    api = api or get_api(ctx)
     account = api.get_account()
     return {
         "equity": float(account.equity),
@@ -26,9 +39,9 @@ def get_account_info(api=None):
     }
 
 
-def get_positions(api=None):
+def get_positions(api=None, ctx=None):
     """Get all current positions."""
-    api = api or get_api()
+    api = api or get_api(ctx)
     positions = api.list_positions()
     return [
         {
