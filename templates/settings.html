@@ -321,9 +321,13 @@
 
             <div class="grid">
                 <button type="submit">Save {{ prof.name }}</button>
+                {% if not prof.enabled %}
                 <button type="button" class="outline contrast delete-profile-btn"
                         data-profile-id="{{ prof.id }}"
                         data-profile-name="{{ prof.name }}">Delete Profile</button>
+                {% else %}
+                <small class="muted" style="align-self:center;">Disable this profile first to delete it</small>
+                {% endif %}
             </div>
         </form>
     </details>
@@ -339,7 +343,7 @@ document.querySelectorAll('.delete-profile-btn').forEach(function(btn) {
     btn.addEventListener('click', function() {
         var profileId = this.dataset.profileId;
         var profileName = this.dataset.profileName;
-        if (confirm('Delete profile "' + profileName + '"? This cannot be undone.')) {
+        if (confirm('DELETE "' + profileName + '"?\n\nThis will permanently delete this profile and all its trade history, AI predictions, and performance data.\n\nThis cannot be undone.')) {
             var form = document.createElement('form');
             form.method = 'POST';
             form.action = '/settings/profile/' + profileId + '/delete';
