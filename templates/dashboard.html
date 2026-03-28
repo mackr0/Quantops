@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - QuantOpsAI{% endblock %}
+{% block content %}
+<hgroup>
+    <h1>Dashboard</h1>
+    <p>Welcome back{% if current_user.display_name %}, {{ current_user.display_name }}{% endif %}</p>
+</hgroup>
+
+{% if not segments_data %}
+<article>
+    <header><h3>No segments enabled</h3></header>
+    <p>Enable at least one trading segment and configure your API keys in
+       <a href="/settings">Settings</a> to get started.</p>
+</article>
+{% endif %}
+
+{% for seg in segments_data %}
+<article id="seg-{{ seg.key }}">
+    <header>
+        <h3>{{ seg.name }}</h3>
+        {% if seg.get('error') %}
+        <p class="pnl-neg">Error: {{ seg.error }}</p>
+        {% endif %}
+    </header>
+
+    {% if seg.account %}
+    <div class="grid">
+        <div class="stat-card">
+            <small class="muted">Equity</small>
+            <strong>${{ "{:,.2f}".format(seg.account.equity) }}</strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Cash</small>
+            <strong>${{ "{:,.2f}".format(seg.account.cash) }}</strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Buying Power</small>
+            <strong>${{ "{:,.2f}".format(seg.account.buying_power) }}</strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Status</small>
+            <strong>{{ seg.account.status }}</strong>
+        </div>
+    </div>
+    {% else %}
+    <p class="muted">Could not connect to Alpaca API. Check your keys in Settings.</p>
+    {% endif %}
+
+    {% if seg.positions %}
+    <h4>Open Positions</h4>
+    <div class="overflow-auto">
+        <table class="striped">
+            <thead>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Qty</th>
+                    <th>Entry</th>
+                    <th>Current</th>
+                    <th>Mkt Value</th>
+                    <th>P&L</th>
+                    <th>P&L %</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in seg.positions %}
+                <tr>
+                    <td><strong>{{ p.symbol }}</strong></td>
+                    <td>{{ p.qty|int }}</td>
+                    <td>${{ "{:,.2f}".format(p.avg_entry_price) }}</td>
+                    <td>${{ "{:,.2f}".format(p.current_price) }}</td>
+                    <td>${{ "{:,.2f}".format(p.market_value) }}</td>
+                    <td class="{{ 'pnl-pos' if p.unrealized_pl >= 0 else 'pnl-neg' }}">
+                        {{ "{:+,.2f}".format(p.unrealized_pl) }}
+                    </td>
+                    <td class="{{ 'pnl-pos' if p.unrealized_plpc >= 0 else 'pnl-neg' }}">
+                        {{ "{:+.2f}".format(p.unrealized_plpc * 100) }}%
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% elif seg.account %}
+    <p class="muted">No open positions in this segment.</p>
+    {% endif %}
+
+    {% if seg.recent_trades %}
+    <details>
+        <summary>Recent Trades ({{ seg.recent_trades|length }})</summary>
+        <div class="overflow-auto">
+            <table class="striped">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Symbol</th>
+                        <th>Side</th>
+                        <th>Qty</th>
+                        <th>Price</th>
+                        <th>P&L</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for t in seg.recent_trades %}
+                    <tr>
+                        <td class="muted">{{ t.timestamp[:16] if t.timestamp else '--' }}</td>
+                        <td><strong>{{ t.symbol }}</strong></td>
+                        <td class="{{ 'pnl-pos' if t.side == 'buy' else 'pnl-neg' }}">
+                            {{ t.side|upper }}
+                        </td>
+                        <td>{{ t.qty|int }}</td>
+                        <td>{{ "${:,.2f}".format(t.price) if t.price else '--' }}</td>
+                        <td class="{{ 'pnl-pos' if (t.pnl or 0) >= 0 else 'pnl-neg' }}">
+                            {{ "{:+,.2f}".format(t.pnl) if t.pnl is not none else '--' }}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </details>
+    {% endif %}
+</article>
+{% endfor %}
+
+{% if decisions %}
+<article>
+    <header><h3>Recent Activity</h3></header>
+    <div class="overflow-auto">
+        <table class="striped">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Segment</th>
+                    <th>Symbol</th>
+                    <th>Decision</th>
+                    <th>Action</th>
+                    <th>AI Confidence</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for d in decisions[:15] %}
+                <tr>
+                    <td class="muted">{{ d.timestamp[:16] if d.timestamp else '--' }}</td>
+                    <td>{{ d.segment }}</td>
+                    <td><strong>{{ d.symbol }}</strong></td>
+                    <td>{{ d.decision_type }}</td>
+                    <td>{{ d.action_taken or '--' }}</td>
+                    <td>{{ "{:.0f}%".format(d.ai_confidence) if d.ai_confidence else '--' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</article>
+{% endif %}
+{% endblock %}

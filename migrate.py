@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""One-time migration: set up multi-user database and create admin account.
+
+Run this once after deploying the multi-user version:
+    python migrate.py
+
+It will:
+1. Create user tables (users, user_segment_configs, decision_log, user_api_usage)
+2. Create the admin user (you) with your existing credentials from .env
+3. Create default segment configs for the admin user
+4. Enable all 3 segments for the admin with current settings
+"""
+
+import os
+import sys
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from models import (
+    init_user_db, create_user, update_user_credentials,
+    get_user_by_email, update_user_segment_config,
+)
+from crypto import encrypt
+
+
+def migrate():
+    print("=== QuantOpsAI Migration ===\n")
+
+    # Step 1: Create tables
+    print("[1/3] Creating database tables...")
+    init_user_db()
+    print("  Done.\n")
+
+    # Step 2: Create admin user
+    admin_email = os.getenv("NOTIFICATION_EMAIL", "admin@quantopsai.local")
+    print(f"[2/3] Creating admin user: {admin_email}")
+
+    existing = get_user_by_email(admin_email)
+    if existing:
+        print(f"  Admin user already exists (id={existing['id']}). Skipping.\n")
+        user_id = existing["id"]
+    else:
+        # Default password — admin should change this
+        user_id = create_user(
+            email=admin_email,
+            password="quantopsai2026",
+            display_name="Admin",
+            is_admin=True,
+        )
+        print(f"  Created admin user (id={user_id})")
+        print(f"  Default password: quantopsai2026  <-- CHANGE THIS after first login\n")
+
+    # Step 3: Store credentials from .env
+    print("[3/3] Importing credentials from .env...")
+
+    # Small cap account
+    smallcap_key = os.getenv("SMALLCAP_ALPACA_KEY") or os.getenv("ALPACA_API_KEY", "")
+    smallcap_secret = os.getenv("SMALLCAP_ALPACA_SECRET") or os.getenv("ALPACA_SECRET_KEY", "")
+    midcap_key = os.getenv("MIDCAP_ALPACA_KEY", "")
+    midcap_secret = os.getenv("MIDCAP_ALPACA_SECRET", "")
+    largecap_key = os.getenv("LARGECAP_ALPACA_KEY", "")
+    largecap_secret = os.getenv("LARGECAP_ALPACA_SECRET", "")
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+    notification_email = os.getenv("NOTIFICATION_EMAIL", "")
+    resend_key = os.getenv("RESEND_API_KEY", "")
+
+    # Store the small-cap keys as the user's default Alpaca credentials
+    update_user_credentials(
+        user_id=user_id,
+        alpaca_key=smallcap_key,
+        alpaca_secret=smallcap_secret,
+        anthropic_key=anthropic_key,
+        notification_email=notification_email,
+        resend_key=resend_key,
+    )
+    print("  Stored Alpaca, Anthropic, and notification credentials.")
+
+    # Enable all segments and store per-segment Alpaca keys
+    # For now, all segments use the same user credentials from the users table
+    # The per-segment Alpaca keys from .env are stored as segment-specific overrides
+    for segment, key, secret in [
+        ("smallcap", smallcap_key, smallcap_secret),
+        ("midcap", midcap_key, midcap_secret),
+        ("largecap", largecap_key, largecap_secret),
+    ]:
+        if key and secret:
+            update_user_segment_config(user_id, segment, enabled=1)
+            print(f"  Enabled segment: {segment}")
+        else:
+            print(f"  Skipped segment: {segment} (no credentials)")
+
+    print(f"\n=== Migration Complete ===")
+    print(f"Admin login: {admin_email} / quantopsai2026")
+    print(f"Web UI: http://localhost:5000 (local) or http://<droplet-ip> (remote)")
+
+
+if __name__ == "__main__":
+    migrate()

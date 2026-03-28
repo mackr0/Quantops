@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Admin - QuantOpsAI{% endblock %}
+{% block content %}
+<h1>Admin Panel</h1>
+
+<article>
+    <header><h3>Users ({{ users|length }})</h3></header>
+    <div class="overflow-auto">
+        <table class="striped">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Email</th>
+                    <th>Display Name</th>
+                    <th>Admin</th>
+                    <th>Active</th>
+                    <th>Created</th>
+                    <th>Last Login</th>
+                    <th>API Calls Today</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for u in users %}
+                <tr>
+                    <td>{{ u.id }}</td>
+                    <td>{{ u.email }}</td>
+                    <td>{{ u.display_name or '--' }}</td>
+                    <td>{{ 'Yes' if u.is_admin else 'No' }}</td>
+                    <td>{{ 'Yes' if u.is_active else 'No' }}</td>
+                    <td class="muted">{{ u.created_at[:10] if u.created_at else '--' }}</td>
+                    <td class="muted">{{ u.last_login_at[:16] if u.last_login_at else 'Never' }}</td>
+                    <td>{{ u.api_calls_today }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</article>
+{% endblock %}

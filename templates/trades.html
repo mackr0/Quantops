@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% block title %}Trades - QuantOpsAI{% endblock %}
+{% block content %}
+<h1>Trade History</h1>
+
+{% if decisions %}
+<article>
+    <header><h3>Decision Audit Trail</h3></header>
+    <div class="overflow-auto">
+        <table class="striped">
+            <thead>
+                <tr>
+                    <th></th>
+                    <th>Time</th>
+                    <th>Segment</th>
+                    <th>Symbol</th>
+                    <th>Decision</th>
+                    <th>AI Signal</th>
+                    <th>AI Conf</th>
+                    <th>Action</th>
+                    <th>Qty</th>
+                    <th>Price</th>
+                    <th>P&L</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for d in decisions %}
+                <tr class="decision-row" data-decision-id="{{ d.id }}">
+                    <td><span class="expand-btn" title="Show details">+</span></td>
+                    <td class="muted">{{ d.timestamp[:16] if d.timestamp else '--' }}</td>
+                    <td>{{ d.segment or '--' }}</td>
+                    <td><strong>{{ d.symbol }}</strong></td>
+                    <td>{{ d.decision_type }}</td>
+                    <td>
+                        {% if d.ai_signal %}
+                        <span class="{{ 'pnl-pos' if 'BUY' in (d.ai_signal or '') else ('pnl-neg' if 'SELL' in (d.ai_signal or '') else '') }}">
+                            {{ d.ai_signal }}
+                        </span>
+                        {% else %}--{% endif %}
+                    </td>
+                    <td>{{ "{:.0f}%".format(d.ai_confidence) if d.ai_confidence else '--' }}</td>
+                    <td>{{ d.action_taken or '--' }}</td>
+                    <td>{{ "{:.0f}".format(d.qty) if d.qty else '--' }}</td>
+                    <td>{{ "${:,.2f}".format(d.price) if d.price else '--' }}</td>
+                    <td class="{{ 'pnl-pos' if (d.pnl or 0) > 0 else ('pnl-neg' if (d.pnl or 0) < 0 else '') }}">
+                        {{ "{:+,.2f}".format(d.pnl) if d.pnl else '--' }}
+                    </td>
+                </tr>
+                <tr class="decision-detail" id="detail-{{ d.id }}" style="display:none">
+                    <td colspan="11">
+                        <div class="detail-content">Loading...</div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</article>
+{% else %}
+<article>
+    <p class="muted">No decision log entries yet. Decisions will appear here once the trading system executes.</p>
+</article>
+{% endif %}
+
+{% if trades %}
+<article>
+    <header><h3>Journal Trades</h3></header>
+    <div class="overflow-auto">
+        <table class="striped">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Segment</th>
+                    <th>Symbol</th>
+                    <th>Side</th>
+                    <th>Qty</th>
+                    <th>Price</th>
+                    <th>Strategy</th>
+                    <th>P&L</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for t in trades %}
+                <tr>
+                    <td class="muted">{{ t.timestamp[:16] if t.timestamp else '--' }}</td>
+                    <td>{{ t.segment or '--' }}</td>
+                    <td><strong>{{ t.symbol }}</strong></td>
+                    <td class="{{ 'pnl-pos' if t.side == 'buy' else 'pnl-neg' }}">
+                        {{ t.side|upper }}
+                    </td>
+                    <td>{{ t.qty|int }}</td>
+                    <td>{{ "${:,.2f}".format(t.price) if t.price else '--' }}</td>
+                    <td>{{ t.strategy or '--' }}</td>
+                    <td class="{{ 'pnl-pos' if (t.pnl or 0) > 0 else ('pnl-neg' if (t.pnl or 0) < 0 else '') }}">
+                        {{ "{:+,.2f}".format(t.pnl) if t.pnl is not none else '--' }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</article>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.decision-row').forEach(function(row) {
+        row.addEventListener('click', function() {
+            const id = this.dataset.decisionId;
+            const detailRow = document.getElementById('detail-' + id);
+            const btn = this.querySelector('.expand-btn');
+            if (detailRow.style.display === 'none') {
+                detailRow.style.display = '';
+                btn.textContent = '-';
+                const content = detailRow.querySelector('.detail-content');
+                if (content.textContent === 'Loading...') {
+                    fetch('/trades/' + id)
+                        .then(r => r.json())
+                        .then(data => {
+                            if (data.error) {
+                                content.textContent = 'Error: ' + data.error;
+                                return;
+                            }
+                            let html = '<div class="detail-grid">';
+                            if (data.technical_score !== null) {
+                                html += '<div><strong>Technical Score:</strong> ' + data.technical_score + '</div>';
+                            }
+                            if (data.strategy_votes) {
+                                const votes = typeof data.strategy_votes === 'string'
+                                    ? JSON.parse(data.strategy_votes) : data.strategy_votes;
+                                html += '<div><strong>Strategy Votes:</strong> ' + JSON.stringify(votes) + '</div>';
+                            }
+                            if (data.strategy_reasons) {
+                                const reasons = typeof data.strategy_reasons === 'string'
+                                    ? JSON.parse(data.strategy_reasons) : data.strategy_reasons;
+                                html += '<div><strong>Strategy Reasons:</strong><ul>';
+                                if (typeof reasons === 'object') {
+                                    for (const [k, v] of Object.entries(reasons)) {
+                                        html += '<li><strong>' + k + ':</strong> ' + v + '</li>';
+                                    }
+                                }
+                                html += '</ul></div>';
+                            }
+                            if (data.ai_reasoning) {
+                                html += '<div><strong>AI Reasoning:</strong> ' + data.ai_reasoning + '</div>';
+                            }
+                            if (data.ai_risk_factors) {
+                                const factors = typeof data.ai_risk_factors === 'string'
+                                    ? JSON.parse(data.ai_risk_factors) : data.ai_risk_factors;
+                                if (Array.isArray(factors) && factors.length) {
+                                    html += '<div><strong>Risk Factors:</strong> ' + factors.join(', ') + '</div>';
+                                }
+                            }
+                            if (data.ai_price_targets) {
+                                const targets = typeof data.ai_price_targets === 'string'
+                                    ? JSON.parse(data.ai_price_targets) : data.ai_price_targets;
+                                html += '<div><strong>Price Targets:</strong> ' + JSON.stringify(targets) + '</div>';
+                            }
+                            if (data.veto_rule) {
+                                html += '<div><strong>Veto Rule:</strong> ' + data.veto_rule + '</div>';
+                            }
+                            if (data.exit_trigger) {
+                                html += '<div><strong>Exit Trigger:</strong> ' + data.exit_trigger + '</div>';
+                            }
+                            if (data.order_id) {
+                                html += '<div><strong>Order ID:</strong> <code>' + data.order_id + '</code></div>';
+                            }
+                            html += '</div>';
+                            content.innerHTML = html;
+                        })
+                        .catch(err => { content.textContent = 'Failed to load details.'; });
+                }
+            } else {
+                detailRow.style.display = 'none';
+                btn.textContent = '+';
+            }
+        });
+    });
+});
+</script>
+{% endblock %}

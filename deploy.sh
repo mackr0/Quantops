@@ -14,48 +14,65 @@ echo "============================================"
 
 # ── Step 1: Install system dependencies ──────────────────────────────
 echo ""
-echo "[1/5] Installing system dependencies..."
-ssh ${REMOTE_USER}@${DROPLET_IP} "apt update && apt install -y python3-pip python3-venv git"
+echo "[1/7] Installing system dependencies..."
+ssh ${REMOTE_USER}@${DROPLET_IP} "apt update -qq && apt install -y -qq python3-pip python3-venv git nginx > /dev/null 2>&1 && echo 'Done'"
 
 # ── Step 2: Create remote directory ──────────────────────────────────
 echo ""
-echo "[2/5] Creating remote directory ${REMOTE_DIR}..."
-ssh ${REMOTE_USER}@${DROPLET_IP} "mkdir -p ${REMOTE_DIR}"
+echo "[2/7] Creating remote directory ${REMOTE_DIR}..."
+ssh ${REMOTE_USER}@${DROPLET_IP} "mkdir -p ${REMOTE_DIR}/{logs,static,templates}"
 
 # ── Step 3: Sync files ───────────────────────────────────────────────
 echo ""
-echo "[3/5] Syncing files to droplet..."
+echo "[3/7] Syncing files to droplet..."
 rsync -avz --progress \
     --exclude 'venv/' \
     --exclude '__pycache__/' \
     --exclude '.git/' \
     --exclude '*.db' \
+    --exclude '*.db-shm' \
+    --exclude '*.db-wal' \
     --include '*.py' \
+    --include '*.html' \
+    --include '*.css' \
+    --include '*.js' \
     --include 'requirements.txt' \
     --include '.env' \
+    --include 'templates/***' \
+    --include 'static/***' \
     --include '*/' \
     --exclude '*' \
     ./ ${REMOTE_USER}@${DROPLET_IP}:${REMOTE_DIR}/
 
 # ── Step 4: Set up Python environment ────────────────────────────────
 echo ""
-echo "[4/5] Setting up Python environment..."
+echo "[4/7] Setting up Python environment..."
 ssh ${REMOTE_USER}@${DROPLET_IP} << 'SETUP'
 cd /opt/quantopsai
-python3 -m venv venv
+if [ ! -d venv ]; then
+    python3 -m venv venv
+fi
 source venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+pip install --upgrade pip -q
+pip install -r requirements.txt -q 2>&1 | tail -3
+pip install yfinance tzdata -q 2>&1 | tail -1
 mkdir -p logs
 SETUP
 
-# ── Step 5: Create and enable systemd service ────────────────────────
+# ── Step 5: Run migration (safe to re-run) ───────────────────────────
 echo ""
-echo "[5/5] Creating systemd service..."
+echo "[5/7] Running database migration..."
+ssh ${REMOTE_USER}@${DROPLET_IP} "cd /opt/quantopsai && source venv/bin/activate && python3 migrate.py"
+
+# ── Step 6: Create systemd services ──────────────────────────────────
+echo ""
+echo "[6/7] Creating systemd services..."
 ssh ${REMOTE_USER}@${DROPLET_IP} << 'SERVICE'
+
+# Scheduler service
 cat > /etc/systemd/system/quantopsai.service << 'EOF'
 [Unit]
-Description=QuantOpsAI Autonomous Trading Scheduler
+Description=QuantOpsAI Trading Scheduler
 After=network.target
 
 [Service]
@@ -73,10 +90,62 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
+# Web app service
+cat > /etc/systemd/system/quantopsai-web.service << 'EOF'
+[Unit]
+Description=QuantOpsAI Web UI
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/quantopsai
+ExecStart=/opt/quantopsai/venv/bin/gunicorn --bind 127.0.0.1:8000 --workers 2 --timeout 120 "app:create_app()"
+Restart=on-failure
+RestartSec=10
+EnvironmentFile=/opt/quantopsai/.env
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 systemctl daemon-reload
-systemctl enable quantopsai
-systemctl restart quantopsai
+systemctl enable quantopsai quantopsai-web
+systemctl restart quantopsai quantopsai-web
 SERVICE
+
+# ── Step 7: Configure nginx ──────────────────────────────────────────
+echo ""
+echo "[7/7] Configuring nginx..."
+ssh ${REMOTE_USER}@${DROPLET_IP} << 'NGINX'
+cat > /etc/nginx/sites-available/quantopsai << 'EOF'
+server {
+    listen 80;
+    server_name _;
+
+    location /static/ {
+        alias /opt/quantopsai/static/;
+        expires 1d;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+    }
+}
+EOF
+
+# Enable site, disable default
+ln -sf /etc/nginx/sites-available/quantopsai /etc/nginx/sites-enabled/quantopsai
+rm -f /etc/nginx/sites-enabled/default
+nginx -t && systemctl reload nginx
+NGINX
 
 echo ""
 echo "============================================"
@@ -85,8 +154,12 @@ echo "============================================"
 echo ""
 
 # Print service status
-ssh ${REMOTE_USER}@${DROPLET_IP} "systemctl status quantopsai --no-pager"
+ssh ${REMOTE_USER}@${DROPLET_IP} "systemctl status quantopsai --no-pager -l | head -10"
+echo "---"
+ssh ${REMOTE_USER}@${DROPLET_IP} "systemctl status quantopsai-web --no-pager -l | head -10"
 
+echo ""
+echo "Web UI: http://${DROPLET_IP}"
 echo ""
 echo "Useful commands:"
 echo "  ./status_remote.sh ${DROPLET_IP}   — Check status and logs"

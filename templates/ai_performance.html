@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% block title %}AI Performance - QuantOpsAI{% endblock %}
+{% block content %}
+<h1>AI Performance</h1>
+
+<div class="grid">
+    <article>
+        <header><h4>Predictions Overview</h4></header>
+        <div class="stat-card">
+            <small class="muted">Total Predictions</small>
+            <strong>{{ perf.total_predictions }}</strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Resolved</small>
+            <strong>{{ perf.resolved }}</strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Pending</small>
+            <strong>{{ perf.pending }}</strong>
+        </div>
+    </article>
+
+    <article>
+        <header><h4>Accuracy</h4></header>
+        <div class="stat-card">
+            <small class="muted">Win Rate</small>
+            <strong class="{{ 'pnl-pos' if perf.win_rate >= 50 else 'pnl-neg' }}">
+                {{ "%.1f"|format(perf.win_rate) }}%
+            </strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Profit Factor</small>
+            <strong>{{ perf.profit_factor }}</strong>
+        </div>
+    </article>
+</div>
+
+<div class="grid">
+    <article>
+        <header><h4>Confidence Calibration</h4></header>
+        <div class="stat-card">
+            <small class="muted">Avg Confidence on Wins</small>
+            <strong>{{ "%.1f"|format(perf.avg_confidence_on_wins) }}%</strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Avg Confidence on Losses</small>
+            <strong>{{ "%.1f"|format(perf.avg_confidence_on_losses) }}%</strong>
+        </div>
+    </article>
+
+    <article>
+        <header><h4>Returns by Signal</h4></header>
+        <div class="stat-card">
+            <small class="muted">Avg Return on BUYs</small>
+            <strong class="{{ 'pnl-pos' if perf.avg_return_on_buys >= 0 else 'pnl-neg' }}">
+                {{ "{:+.2f}".format(perf.avg_return_on_buys) }}%
+            </strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Avg Return on SELLs</small>
+            <strong class="{{ 'pnl-pos' if perf.avg_return_on_sells >= 0 else 'pnl-neg' }}">
+                {{ "{:+.2f}".format(perf.avg_return_on_sells) }}%
+            </strong>
+        </div>
+    </article>
+</div>
+
+{% if perf.accuracy_by_confidence %}
+<article>
+    <header><h4>Accuracy by Confidence Band</h4></header>
+    <div class="overflow-auto">
+        <table>
+            <thead>
+                <tr>
+                    <th>Confidence Band</th>
+                    <th>Win Rate</th>
+                    <th>Visual</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for band, acc in perf.accuracy_by_confidence.items() %}
+                <tr>
+                    <td>{{ band }}%</td>
+                    <td class="{{ 'pnl-pos' if acc >= 50 else 'pnl-neg' }}">{{ "%.1f"|format(acc) }}%</td>
+                    <td>
+                        <div class="bar-container">
+                            <div class="bar {{ 'bar-green' if acc >= 50 else 'bar-red' }}"
+                                 style="width: {{ acc }}%"></div>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</article>
+{% endif %}
+
+<div class="grid">
+    {% if perf.best_prediction %}
+    <article>
+        <header><h4>Best Prediction</h4></header>
+        <p>
+            <strong>{{ perf.best_prediction.symbol }}</strong>
+            <span class="muted">({{ perf.best_prediction.confidence }}% confidence)</span>
+        </p>
+        <p class="pnl-pos" style="font-size: 1.5rem">
+            {{ "{:+.2f}".format(perf.best_prediction.return_pct) }}%
+        </p>
+    </article>
+    {% endif %}
+
+    {% if perf.worst_prediction %}
+    <article>
+        <header><h4>Worst Prediction</h4></header>
+        <p>
+            <strong>{{ perf.worst_prediction.symbol }}</strong>
+            <span class="muted">({{ perf.worst_prediction.confidence }}% confidence)</span>
+        </p>
+        <p class="pnl-neg" style="font-size: 1.5rem">
+            {{ "{:+.2f}".format(perf.worst_prediction.return_pct) }}%
+        </p>
+    </article>
+    {% endif %}
+</div>
+
+<!-- Trade Performance Summary -->
+<article>
+    <header><h3>Trade Performance (All-Time)</h3></header>
+    {% if trade_perf.total_trades > 0 %}
+    <div class="grid">
+        <div class="stat-card">
+            <small class="muted">Total Closed Trades</small>
+            <strong>{{ trade_perf.total_trades }}</strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Win Rate</small>
+            <strong class="{{ 'pnl-pos' if trade_perf.win_rate >= 50 else 'pnl-neg' }}">
+                {{ "%.1f"|format(trade_perf.win_rate) }}%
+            </strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Total P&L</small>
+            <strong class="{{ 'pnl-pos' if trade_perf.total_pnl >= 0 else 'pnl-neg' }}">
+                ${{ "{:,.2f}".format(trade_perf.total_pnl) }}
+            </strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Avg P&L</small>
+            <strong class="{{ 'pnl-pos' if trade_perf.avg_pnl >= 0 else 'pnl-neg' }}">
+                ${{ "{:,.2f}".format(trade_perf.avg_pnl) }}
+            </strong>
+        </div>
+    </div>
+    <div class="grid">
+        <div class="stat-card">
+            <small class="muted">Winning</small>
+            <strong class="pnl-pos">{{ trade_perf.winning_trades }}</strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Losing</small>
+            <strong class="pnl-neg">{{ trade_perf.losing_trades }}</strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Best Trade</small>
+            <strong class="pnl-pos">${{ "{:,.2f}".format(trade_perf.best_trade) }}</strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Worst Trade</small>
+            <strong class="pnl-neg">${{ "{:,.2f}".format(trade_perf.worst_trade) }}</strong>
+        </div>
+    </div>
+    {% else %}
+    <p class="muted">No closed trades yet.</p>
+    {% endif %}
+</article>
+{% endblock %}

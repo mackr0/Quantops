@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html data-theme="light">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}QuantOpsAI{% endblock %}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav class="container-fluid qnav">
+        <ul><li><a href="/dashboard" class="brand"><strong>QUANTOPSAI</strong></a></li></ul>
+        <ul>
+            {% if current_user.is_authenticated %}
+            <li><a href="/dashboard">Dashboard</a></li>
+            <li><a href="/trades">Trades</a></li>
+            <li><a href="/ai-performance">AI Performance</a></li>
+            <li><a href="/settings">Settings</a></li>
+            {% if current_user.is_admin %}<li><a href="/admin">Admin</a></li>{% endif %}
+            <li><a href="/logout" role="button" class="outline secondary btn-sm">Logout</a></li>
+            {% endif %}
+        </ul>
+    </nav>
+    <main class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        {% for category, message in messages %}
+        <div class="flash flash-{{ category }}" role="alert">{{ message }}</div>
+        {% endfor %}
+        {% endif %}
+        {% endwith %}
+        {% block content %}{% endblock %}
+    </main>
+    <footer class="container">
+        <small class="muted">QuantOpsAI Automated Trading System</small>
+    </footer>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

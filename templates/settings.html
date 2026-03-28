@@ -1,0 +1,251 @@
+{% extends "base.html" %}
+{% block title %}Settings - QuantOpsAI{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+
+<!-- API Keys Section -->
+<article>
+    <header><h3>API Keys</h3></header>
+    <form method="post" action="/settings/keys">
+        <div class="grid">
+            <label>
+                Alpaca API Key
+                <input type="text" name="alpaca_api_key" value="{{ keys.alpaca_api_key }}"
+                       placeholder="Enter Alpaca API key">
+                {% if keys.has_alpaca %}<small class="pnl-pos">Configured</small>{% endif %}
+            </label>
+            <label>
+                Alpaca Secret Key
+                <input type="password" name="alpaca_secret_key" value="{{ keys.alpaca_secret_key }}"
+                       placeholder="Enter Alpaca secret key">
+            </label>
+        </div>
+        <div class="grid">
+            <label>
+                Anthropic API Key
+                <input type="password" name="anthropic_api_key" value="{{ keys.anthropic_api_key }}"
+                       placeholder="Enter Anthropic API key">
+                {% if keys.has_anthropic %}<small class="pnl-pos">Configured</small>{% endif %}
+            </label>
+            <label>
+                Notification Email
+                <input type="email" name="notification_email" value="{{ keys.notification_email }}"
+                       placeholder="you@example.com">
+            </label>
+        </div>
+        <label>
+            Resend API Key <small class="muted">(for email notifications)</small>
+            <input type="password" name="resend_api_key" value="{{ keys.resend_api_key }}"
+                   placeholder="Enter Resend API key">
+            {% if keys.has_resend %}<small class="pnl-pos">Configured</small>{% endif %}
+        </label>
+        <div class="grid">
+            <button type="submit">Save Keys</button>
+            <button type="button" id="test-connection-btn" class="outline">Test Alpaca Connection</button>
+        </div>
+        <div id="test-result" style="display:none; margin-top:0.5rem;"></div>
+    </form>
+</article>
+
+<!-- Segment Configs -->
+{% for seg_name, seg_def in segments.items() %}
+{% set cfg = seg_configs.get(seg_name, {}) %}
+<article id="segment-{{ seg_name }}">
+    <header>
+        <h3>{{ seg_def.name }} Segment</h3>
+    </header>
+    <form method="post" action="/settings/segment/{{ seg_name }}">
+        <!-- Enable toggle -->
+        <fieldset>
+            <label>
+                <input type="checkbox" name="enabled" value="1"
+                       {{ 'checked' if cfg.get('enabled') else '' }}>
+                Enable {{ seg_def.name }} trading
+            </label>
+        </fieldset>
+
+        <!-- Risk Parameters -->
+        <h4>Risk Parameters</h4>
+        <div class="grid">
+            <label>
+                Stop Loss %
+                <input type="range" name="stop_loss_pct" class="slider"
+                       min="0.01" max="0.15" step="0.005"
+                       value="{{ cfg.get('stop_loss_pct', seg_def.stop_loss_pct) }}"
+                       data-display="stop_loss_pct_val_{{ seg_name }}">
+                <output id="stop_loss_pct_val_{{ seg_name }}">
+                    {{ "%.1f"|format(cfg.get('stop_loss_pct', seg_def.stop_loss_pct) * 100) }}%
+                </output>
+            </label>
+            <label>
+                Take Profit %
+                <input type="range" name="take_profit_pct" class="slider"
+                       min="0.02" max="0.50" step="0.01"
+                       value="{{ cfg.get('take_profit_pct', seg_def.take_profit_pct) }}"
+                       data-display="take_profit_pct_val_{{ seg_name }}">
+                <output id="take_profit_pct_val_{{ seg_name }}">
+                    {{ "%.1f"|format(cfg.get('take_profit_pct', seg_def.take_profit_pct) * 100) }}%
+                </output>
+            </label>
+        </div>
+        <div class="grid">
+            <label>
+                Max Position Size %
+                <input type="range" name="max_position_pct" class="slider"
+                       min="0.02" max="0.25" step="0.01"
+                       value="{{ cfg.get('max_position_pct', seg_def.max_position_pct) }}"
+                       data-display="max_position_pct_val_{{ seg_name }}">
+                <output id="max_position_pct_val_{{ seg_name }}">
+                    {{ "%.1f"|format(cfg.get('max_position_pct', seg_def.max_position_pct) * 100) }}%
+                </output>
+            </label>
+            <label>
+                Max Total Positions
+                <input type="number" name="max_total_positions"
+                       value="{{ cfg.get('max_total_positions', 10) }}" min="1" max="50">
+            </label>
+        </div>
+
+        <!-- AI Parameters -->
+        <h4>AI Parameters</h4>
+        <label>
+            AI Confidence Threshold
+            <input type="range" name="ai_confidence_threshold" class="slider"
+                   min="0" max="100" step="5"
+                   value="{{ cfg.get('ai_confidence_threshold', 25) }}"
+                   data-display="ai_conf_val_{{ seg_name }}" data-format="int">
+            <output id="ai_conf_val_{{ seg_name }}">{{ cfg.get('ai_confidence_threshold', 25) }}%</output>
+        </label>
+
+        <!-- Screener Parameters -->
+        <h4>Screener Parameters</h4>
+        <div class="grid">
+            <label>
+                Min Price ($)
+                <input type="number" name="min_price" step="0.5"
+                       value="{{ cfg.get('min_price', seg_def.min_price) }}">
+            </label>
+            <label>
+                Max Price ($)
+                <input type="number" name="max_price" step="1"
+                       value="{{ cfg.get('max_price', seg_def.max_price) }}">
+            </label>
+            <label>
+                Min Volume
+                <input type="number" name="min_volume" step="50000"
+                       value="{{ cfg.get('min_volume', seg_def.min_volume) }}">
+            </label>
+        </div>
+        <div class="grid">
+            <label>
+                Volume Surge Multiplier
+                <input type="range" name="volume_surge_multiplier" class="slider"
+                       min="1.0" max="5.0" step="0.5"
+                       value="{{ cfg.get('volume_surge_multiplier', 2.0) }}"
+                       data-display="vol_surge_val_{{ seg_name }}" data-format="1f">
+                <output id="vol_surge_val_{{ seg_name }}">{{ "%.1f"|format(cfg.get('volume_surge_multiplier', 2.0)) }}x</output>
+            </label>
+            <label>
+                RSI Overbought
+                <input type="range" name="rsi_overbought" class="slider"
+                       min="60" max="95" step="1"
+                       value="{{ cfg.get('rsi_overbought', 85.0) }}"
+                       data-display="rsi_ob_val_{{ seg_name }}" data-format="int">
+                <output id="rsi_ob_val_{{ seg_name }}">{{ cfg.get('rsi_overbought', 85.0)|int }}</output>
+            </label>
+            <label>
+                RSI Oversold
+                <input type="range" name="rsi_oversold" class="slider"
+                       min="10" max="40" step="1"
+                       value="{{ cfg.get('rsi_oversold', 25.0) }}"
+                       data-display="rsi_os_val_{{ seg_name }}" data-format="int">
+                <output id="rsi_os_val_{{ seg_name }}">{{ cfg.get('rsi_oversold', 25.0)|int }}</output>
+            </label>
+        </div>
+
+        <!-- Momentum / Breakout / Gap -->
+        <h4>Signal Thresholds</h4>
+        <div class="grid">
+            <label>
+                Momentum 5d Gain %
+                <input type="range" name="momentum_5d_gain" class="slider"
+                       min="1" max="15" step="0.5"
+                       value="{{ cfg.get('momentum_5d_gain', 3.0) }}"
+                       data-display="mom5_val_{{ seg_name }}" data-format="1f" data-suffix="%">
+                <output id="mom5_val_{{ seg_name }}">{{ "%.1f"|format(cfg.get('momentum_5d_gain', 3.0)) }}%</output>
+            </label>
+            <label>
+                Momentum 20d Gain %
+                <input type="range" name="momentum_20d_gain" class="slider"
+                       min="2" max="30" step="1"
+                       value="{{ cfg.get('momentum_20d_gain', 5.0) }}"
+                       data-display="mom20_val_{{ seg_name }}" data-format="1f" data-suffix="%">
+                <output id="mom20_val_{{ seg_name }}">{{ "%.1f"|format(cfg.get('momentum_20d_gain', 5.0)) }}%</output>
+            </label>
+        </div>
+        <div class="grid">
+            <label>
+                Breakout Volume Threshold
+                <input type="range" name="breakout_volume_threshold" class="slider"
+                       min="0.5" max="5.0" step="0.5"
+                       value="{{ cfg.get('breakout_volume_threshold', 1.0) }}"
+                       data-display="bkout_val_{{ seg_name }}" data-format="1f" data-suffix="x">
+                <output id="bkout_val_{{ seg_name }}">{{ "%.1f"|format(cfg.get('breakout_volume_threshold', 1.0)) }}x</output>
+            </label>
+            <label>
+                Gap % Threshold
+                <input type="range" name="gap_pct_threshold" class="slider"
+                       min="1" max="10" step="0.5"
+                       value="{{ cfg.get('gap_pct_threshold', 3.0) }}"
+                       data-display="gap_val_{{ seg_name }}" data-format="1f" data-suffix="%">
+                <output id="gap_val_{{ seg_name }}">{{ "%.1f"|format(cfg.get('gap_pct_threshold', 3.0)) }}%</output>
+            </label>
+        </div>
+
+        <!-- Strategy Toggles -->
+        <h4>Strategy Toggles</h4>
+        <fieldset class="grid">
+            <label>
+                <input type="checkbox" name="strategy_momentum_breakout" value="1"
+                       {{ 'checked' if cfg.get('strategy_momentum_breakout', 1) else '' }}>
+                Momentum Breakout
+            </label>
+            <label>
+                <input type="checkbox" name="strategy_volume_spike" value="1"
+                       {{ 'checked' if cfg.get('strategy_volume_spike', 1) else '' }}>
+                Volume Spike
+            </label>
+            <label>
+                <input type="checkbox" name="strategy_mean_reversion" value="1"
+                       {{ 'checked' if cfg.get('strategy_mean_reversion', 1) else '' }}>
+                Mean Reversion
+            </label>
+            <label>
+                <input type="checkbox" name="strategy_gap_and_go" value="1"
+                       {{ 'checked' if cfg.get('strategy_gap_and_go', 1) else '' }}>
+                Gap and Go
+            </label>
+        </fieldset>
+
+        <!-- Custom Watchlist -->
+        <h4>Custom Watchlist</h4>
+        <label>
+            Additional symbols (comma-separated)
+            <textarea name="custom_watchlist" rows="2"
+                      placeholder="AAPL, TSLA, NVDA">{{ cfg.get('custom_watchlist', [])|join(', ') if cfg.get('custom_watchlist') is iterable and cfg.get('custom_watchlist') is not string else cfg.get('custom_watchlist', '') }}</textarea>
+        </label>
+
+        <div class="grid">
+            <button type="submit">Save {{ seg_def.name }} Config</button>
+            <button type="button" class="outline secondary reset-btn"
+                    data-segment="{{ seg_name }}"
+                    data-name="{{ seg_def.name }}">Reset to Defaults</button>
+        </div>
+    </form>
+</article>
+{% endfor %}
+
+{% endblock %}
+{% block scripts %}
+<script src="/static/settings.js"></script>
+{% endblock %}
