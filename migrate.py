@@ -20,6 +20,7 @@ load_dotenv()
 from models import (
     init_user_db, create_user, update_user_credentials,
     get_user_by_email, update_user_segment_config,
+    create_default_segment_configs,
 )
 from crypto import encrypt
 
