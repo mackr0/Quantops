@@ -6,6 +6,25 @@
     <p>Welcome back{% if current_user.display_name %}, {{ current_user.display_name }}{% endif %}</p>
 </hgroup>
 
+<!-- Cycle Countdown Timers -->
+<div class="grid" style="margin-bottom:1rem;">
+    <article style="text-align:center; padding:0.75rem; margin:0;">
+        <small class="muted">Next Scan & Trade</small>
+        <div id="timer-scan" style="font-size:1.5rem; font-weight:bold; font-family:monospace;">--:--</div>
+        <small class="muted">every 30 min</small>
+    </article>
+    <article style="text-align:center; padding:0.75rem; margin:0;">
+        <small class="muted">Next Exit Check</small>
+        <div id="timer-exit" style="font-size:1.5rem; font-weight:bold; font-family:monospace;">--:--</div>
+        <small class="muted">every 15 min</small>
+    </article>
+    <article style="text-align:center; padding:0.75rem; margin:0;">
+        <small class="muted">Next AI Resolution</small>
+        <div id="timer-ai" style="font-size:1.5rem; font-weight:bold; font-family:monospace;">--:--</div>
+        <small class="muted">every 60 min</small>
+    </article>
+</div>
+
 <!-- Strategy Activity Ticker -->
 <article id="activity-ticker">
     <header>
@@ -338,6 +357,50 @@
                 }
             });
     }, 60000);
+})();
+
+// Countdown timers
+(function() {
+    var scanEl = document.getElementById('timer-scan');
+    var exitEl = document.getElementById('timer-exit');
+    var aiEl = document.getElementById('timer-ai');
+    var scanRemaining = 0, exitRemaining = 0, aiRemaining = 0;
+
+    function formatTime(seconds) {
+        if (seconds <= 0) return '<span style="color:#00c853">NOW</span>';
+        var m = Math.floor(seconds / 60);
+        var s = seconds % 60;
+        return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+    }
+
+    function updateDisplay() {
+        scanEl.innerHTML = formatTime(scanRemaining);
+        exitEl.innerHTML = formatTime(exitRemaining);
+        aiEl.innerHTML = formatTime(aiRemaining);
+    }
+
+    function fetchStatus() {
+        fetch('/api/scheduler-status')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                scanRemaining = data.scan_remaining || 0;
+                exitRemaining = data.exit_remaining || 0;
+                aiRemaining = data.ai_remaining || 0;
+                updateDisplay();
+            })
+            .catch(function() {});
+    }
+
+    fetchStatus();
+    // Tick down every second
+    setInterval(function() {
+        if (scanRemaining > 0) scanRemaining--;
+        if (exitRemaining > 0) exitRemaining--;
+        if (aiRemaining > 0) aiRemaining--;
+        updateDisplay();
+    }, 1000);
+    // Re-sync with server every 30 seconds
+    setInterval(fetchStatus, 30000);
 })();
 </script>
 {% endblock %}

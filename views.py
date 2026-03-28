@@ -619,3 +619,21 @@ def api_activity():
                                 limit=limit, offset=offset)
     total = get_activity_count(current_user.id, profile_id=profile_id)
     return jsonify({"entries": entries, "total": total})
+
+
+@views_bp.route("/api/scheduler-status")
+@login_required
+def api_scheduler_status():
+    """Return scheduler timing info for countdown timers."""
+    import time as _time
+    try:
+        with open("scheduler_status.json") as f:
+            status = json.load(f)
+        now = _time.time()
+        # Calculate seconds remaining for each cycle
+        status["scan_remaining"] = max(0, int(status.get("next_scan", 0) - now))
+        status["exit_remaining"] = max(0, int(status.get("next_exit_check", 0) - now))
+        status["ai_remaining"] = max(0, int(status.get("next_ai_resolve", 0) - now))
+        return jsonify(status)
+    except FileNotFoundError:
+        return jsonify({"error": "Scheduler not running yet", "scan_remaining": 0, "exit_remaining": 0, "ai_remaining": 0})

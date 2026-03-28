@@ -22,6 +22,7 @@ import logging
 import signal
 import sys
 import os
+import json as _json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -221,87 +222,95 @@ def _build_scan_summary(ctx, candidates, summary):
     title = (f"{seg_label} Scan: {total} analyzed, {buys} buys, "
              f"{sells} sells — {mood}")
 
-    # Build detail with top candidates' indicators
-    lines = []
-
-    # Pick top 5 symbols from candidates to show indicators
+    # Build a clean, structured detail summary
     top_symbols = list(candidates)[:5]
-    indicator_lines = []
-    strategy_lines = []
+    asset_rows = []
 
     for sym in top_symbols:
         try:
             df = get_bars(sym, limit=30)
             if df.empty or len(df) < 5:
                 continue
+            df = df.copy()
             df = add_indicators(df)
             latest = df.iloc[-1]
 
-            price = latest["close"]
-            rsi = latest.get("rsi", 0) or 0
-
-            # Volume ratio
-            vol = latest.get("volume", 0) or 0
-            vol_avg = latest.get("volume_sma_20", 0) or 0
+            price = float(latest["close"])
+            rsi = float(latest.get("rsi", 0) or 0)
+            vol = float(latest.get("volume", 0) or 0)
+            vol_avg = float(latest.get("volume_sma_20", 0) or 0)
             vol_ratio = vol / vol_avg if vol_avg > 0 else 0
-
-            # Distance from 20-day high
-            high_20d = df["high"].tail(20).max() if len(df) >= 20 else df["high"].max()
+            high_20d = float(df["high"].tail(20).max()) if len(df) >= 20 else float(df["high"].max())
             pct_from_high = ((price - high_20d) / high_20d * 100) if high_20d > 0 else 0
 
-            indicator_lines.append(
-                f"  {sym}: ${price:,.2f} (RSI {rsi:.1f}, "
-                f"{pct_from_high:+.1f}% from 20d high, "
-                f"volume {vol_ratio:.1f}x avg)"
-            )
-
-            # Strategy signal reasoning
-            detail_entry = None
-            for d in summary.get("details", []):
-                if d.get("symbol") == sym:
-                    detail_entry = d
-                    break
-
-            action = detail_entry.get("action", "HOLD") if detail_entry else "HOLD"
-            reason = detail_entry.get("reason", "") if detail_entry else ""
-            if reason:
-                strategy_lines.append(f"  {sym}: {action} — {reason[:80]}")
+            # RSI condition label
+            if rsi < 25:
+                rsi_label = "Oversold"
+            elif rsi < 40:
+                rsi_label = "Weak"
+            elif rsi < 60:
+                rsi_label = "Neutral"
+            elif rsi < 75:
+                rsi_label = "Strong"
             else:
-                strategy_lines.append(f"  {sym}: {action}")
+                rsi_label = "Overbought"
 
+            # Volume label
+            if vol_ratio >= 2.0:
+                vol_label = "Surging"
+            elif vol_ratio >= 1.0:
+                vol_label = "Normal"
+            else:
+                vol_label = "Low"
+
+            asset_rows.append({
+                "sym": sym, "price": price, "rsi": rsi, "rsi_label": rsi_label,
+                "vol_ratio": vol_ratio, "vol_label": vol_label,
+                "pct_from_high": pct_from_high,
+            })
         except Exception:
             continue
 
-    if indicator_lines:
-        lines.append("Market Conditions:")
-        lines.extend(indicator_lines)
-        lines.append("")
+    # Build the detail text — clean structured format
+    lines = []
 
-    if strategy_lines:
-        lines.append("Strategy Signals:")
-        lines.extend(strategy_lines)
-        lines.append("")
+    if asset_rows:
+        lines.append("MARKET CONDITIONS")
+        lines.append("-" * 40)
+        for a in asset_rows:
+            lines.append(f"{a['sym']}")
+            lines.append(f"  Price: ${a['price']:,.2f}  |  RSI: {a['rsi']:.0f} ({a['rsi_label']})  |  Vol: {a['vol_ratio']:.1f}x ({a['vol_label']})")
+            lines.append(f"  From 20d high: {a['pct_from_high']:+.1f}%")
+            lines.append("")
 
-    # Summary of why no action / action taken
-    action_lines = []
+    lines.append("SCAN RESULT")
+    lines.append("-" * 40)
     if buys == 0 and sells == 0:
-        action_lines.append("Decision: No action taken. Waiting for stronger signals.")
+        lines.append("No trades executed — waiting for stronger signals.")
+        reasons = []
+        if asset_rows:
+            avg_rsi = sum(a["rsi"] for a in asset_rows) / len(asset_rows)
+            avg_vol = sum(a["vol_ratio"] for a in asset_rows) / len(asset_rows)
+            if avg_rsi > 25:
+                reasons.append(f"RSI range {min(a['rsi'] for a in asset_rows):.0f}-{max(a['rsi'] for a in asset_rows):.0f} (need <25 for mean reversion)")
+            if avg_vol < 2.0:
+                reasons.append(f"Volume {avg_vol:.1f}x avg (need 2x+ for volume spike)")
+            if all(a["pct_from_high"] < -3 for a in asset_rows):
+                reasons.append("All assets below 20-day highs (no breakouts)")
+        if reasons:
+            for r in reasons:
+                lines.append(f"  • {r}")
         if ai_vetoed > 0:
-            action_lines.append(f"  {ai_vetoed} signal(s) vetoed by AI review.")
-        if holds > 0:
-            action_lines.append(
-                f"  {holds} candidate(s) evaluated as HOLD (no strong entry signals).")
+            lines.append(f"  • {ai_vetoed} signal(s) vetoed by AI review")
     else:
         parts = []
         if buys > 0:
             parts.append(f"{buys} buy(s)")
         if sells > 0:
             parts.append(f"{sells} sell(s)")
-        action_lines.append(f"Decision: Executed {', '.join(parts)}.")
+        lines.append(f"Executed {', '.join(parts)}.")
         if ai_vetoed > 0:
-            action_lines.append(f"  {ai_vetoed} additional signal(s) vetoed by AI.")
-
-    lines.extend(action_lines)
+            lines.append(f"  • {ai_vetoed} additional signal(s) vetoed by AI")
 
     detail = "\n".join(lines)
     return title, detail
@@ -687,6 +696,27 @@ def main_loop(active_segments=None, legacy_mode=False):
                 last_run["resolve_predictions"] = time.time()
             if do_snapshot:
                 last_run["daily_snapshot"] = today_str
+
+            # Write status file for the web UI countdown timers
+            try:
+                status = {
+                    "last_scan": last_run["aggressive_scan"],
+                    "next_scan": last_run["aggressive_scan"] + INTERVAL_AGGRESSIVE_SCAN,
+                    "last_exit_check": last_run["check_exits"],
+                    "next_exit_check": last_run["check_exits"] + INTERVAL_CHECK_EXITS,
+                    "last_ai_resolve": last_run["resolve_predictions"],
+                    "next_ai_resolve": last_run["resolve_predictions"] + INTERVAL_RESOLVE_PREDICTIONS,
+                    "scan_interval_min": INTERVAL_AGGRESSIVE_SCAN // 60,
+                    "exit_interval_min": INTERVAL_CHECK_EXITS // 60,
+                    "ai_interval_min": INTERVAL_RESOLVE_PREDICTIONS // 60,
+                    "market_open": market_open,
+                    "has_crypto": has_crypto if not legacy_mode else bool([s for s in (active_segments or []) if s == "crypto"]),
+                    "updated_at": time.time(),
+                }
+                with open("scheduler_status.json", "w") as f:
+                    _json.dump(status, f)
+            except Exception:
+                pass  # Never break the scheduler for a status file
 
         if not market_open and not has_crypto:
             # No crypto and market closed — sleep until next open
