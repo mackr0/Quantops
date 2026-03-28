@@ -112,7 +112,7 @@ def index():
 @login_required
 def dashboard():
     segments_data = []
-    for seg_name in ("smallcap", "midcap", "largecap"):
+    for seg_name in ("microsmall", "midcap", "largecap"):
         seg_config = get_user_segment_config(current_user.id, seg_name)
         if not seg_config or not seg_config.get("enabled"):
             continue
@@ -180,9 +180,18 @@ def settings():
 
     # Get segment configs
     seg_configs = {}
-    for seg_name in ("smallcap", "midcap", "largecap"):
+    for seg_name in ("microsmall", "midcap", "largecap"):
         cfg = get_user_segment_config(current_user.id, seg_name)
         if cfg:
+            cfg = dict(cfg) if not isinstance(cfg, dict) else cfg
+            # Add masked Alpaca key for display
+            enc_key = cfg.get("alpaca_api_key_enc", "")
+            if enc_key:
+                try:
+                    decrypted = decrypt(enc_key)
+                    cfg["_alpaca_key_masked"] = mask(decrypted)
+                except Exception:
+                    cfg["_alpaca_key_masked"] = "****"
             seg_configs[seg_name] = cfg
         else:
             seg_configs[seg_name] = {}
@@ -298,6 +307,16 @@ def save_segment(segment):
     else:
         config_updates["custom_watchlist"] = []
 
+    # Per-segment Alpaca keys (only update if new values provided)
+    alpaca_key = form.get("alpaca_api_key", "").strip()
+    alpaca_secret = form.get("alpaca_secret_key", "").strip()
+    if alpaca_key and alpaca_secret:
+        from crypto import encrypt
+        config_updates["alpaca_api_key_enc"] = encrypt(alpaca_key)
+        config_updates["alpaca_secret_key_enc"] = encrypt(alpaca_secret)
+    elif alpaca_key and not alpaca_secret:
+        flash("Alpaca secret key is required when updating the API key.", "warning")
+
     update_user_segment_config(current_user.id, segment, **config_updates)
     flash(f"{SEGMENTS[segment]['name']} configuration saved.", "success")
     return redirect(url_for("views.settings") + f"#segment-{segment}")
@@ -344,7 +363,7 @@ def trades():
     decisions = get_decisions(current_user.id, limit=200)
     # Also pull from the journal trades tables for each segment
     all_trades = []
-    for seg_name in ("smallcap", "midcap", "largecap"):
+    for seg_name in ("microsmall", "midcap", "largecap"):
         seg_trades = _get_trade_history_for_user(current_user.id, seg_name, limit=100)
         for t in seg_trades:
             t["segment"] = seg_name

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Multi-account scheduler — runs smallcap, midcap, and largecap segments.
+"""Multi-account scheduler — runs microsmall, midcap, and largecap segments.
 
 Each segment has its own Alpaca credentials, SQLite database, universe, and
 risk parameters.  Segments are processed sequentially (single-threaded) within
@@ -7,7 +7,7 @@ each scheduling cycle.  The existing single-account scheduler.py is untouched.
 
 Usage:
     python multi_scheduler.py                  # run all segments
-    python multi_scheduler.py smallcap midcap  # run only selected segments
+    python multi_scheduler.py microsmall midcap  # run only selected segments
 """
 
 import time

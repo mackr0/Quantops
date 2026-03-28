@@ -61,7 +61,9 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         CREATE TABLE IF NOT EXISTS user_segment_configs (
             user_id INTEGER NOT NULL,
             segment TEXT NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 1,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            alpaca_api_key_enc TEXT NOT NULL DEFAULT '',
+            alpaca_secret_key_enc TEXT NOT NULL DEFAULT '',
             stop_loss_pct REAL NOT NULL DEFAULT 0.03,
             take_profit_pct REAL NOT NULL DEFAULT 0.10,
             max_position_pct REAL NOT NULL DEFAULT 0.10,
@@ -219,12 +221,12 @@ def get_active_users() -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def create_default_segment_configs(user_id: int) -> None:
-    """Insert default config rows for smallcap, midcap, and largecap segments.
+    """Insert default config rows for microsmall, midcap, and largecap segments.
 
     Default values are pulled from the segment definitions in segments.py.
     """
     conn = _get_conn()
-    for seg_name in ("smallcap", "midcap", "largecap"):
+    for seg_name in ("microsmall", "midcap", "largecap"):
         seg = get_segment(seg_name)
         conn.execute(
             """INSERT OR IGNORE INTO user_segment_configs
@@ -274,7 +276,8 @@ def update_user_segment_config(user_id: int, segment: str, **kwargs) -> None:
     silently ignored.
     """
     allowed_cols = {
-        "enabled", "stop_loss_pct", "take_profit_pct", "max_position_pct",
+        "enabled", "alpaca_api_key_enc", "alpaca_secret_key_enc",
+        "stop_loss_pct", "take_profit_pct", "max_position_pct",
         "max_total_positions", "ai_confidence_threshold",
         "min_price", "max_price", "min_volume", "volume_surge_multiplier",
         "rsi_overbought", "rsi_oversold",

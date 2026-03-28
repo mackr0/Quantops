@@ -51,10 +51,12 @@ def migrate():
         print(f"  Created admin user (id={user_id})")
         print(f"  Default password: quantopsai2026  <-- CHANGE THIS after first login\n")
 
-    # Step 3: Store credentials from .env
-    print("[3/3] Importing credentials from .env...")
+    # Step 3: Create default segment configs
+    print("[3/3] Importing credentials and creating segment configs...")
 
-    # Small cap account
+    # Ensure segment config rows exist
+    create_default_segment_configs(user_id)
+
     smallcap_key = os.getenv("SMALLCAP_ALPACA_KEY") or os.getenv("ALPACA_API_KEY", "")
     smallcap_secret = os.getenv("SMALLCAP_ALPACA_SECRET") or os.getenv("ALPACA_SECRET_KEY", "")
     midcap_key = os.getenv("MIDCAP_ALPACA_KEY", "")
@@ -65,7 +67,7 @@ def migrate():
     notification_email = os.getenv("NOTIFICATION_EMAIL", "")
     resend_key = os.getenv("RESEND_API_KEY", "")
 
-    # Store the small-cap keys as the user's default Alpaca credentials
+    # Store default credentials on user record (microsmall cap keys)
     update_user_credentials(
         user_id=user_id,
         alpaca_key=smallcap_key,
@@ -74,19 +76,22 @@ def migrate():
         notification_email=notification_email,
         resend_key=resend_key,
     )
-    print("  Stored Alpaca, Anthropic, and notification credentials.")
+    print("  Stored Anthropic and notification credentials.")
 
-    # Enable all segments and store per-segment Alpaca keys
-    # For now, all segments use the same user credentials from the users table
-    # The per-segment Alpaca keys from .env are stored as segment-specific overrides
+    # Enable and store per-segment Alpaca keys
     for segment, key, secret in [
-        ("smallcap", smallcap_key, smallcap_secret),
+        ("microsmall", smallcap_key, smallcap_secret),
         ("midcap", midcap_key, midcap_secret),
         ("largecap", largecap_key, largecap_secret),
     ]:
         if key and secret:
-            update_user_segment_config(user_id, segment, enabled=1)
-            print(f"  Enabled segment: {segment}")
+            update_user_segment_config(
+                user_id, segment,
+                enabled=1,
+                alpaca_api_key_enc=encrypt(key),
+                alpaca_secret_key_enc=encrypt(secret),
+            )
+            print(f"  Enabled segment: {segment} (with dedicated Alpaca keys)")
         else:
             print(f"  Skipped segment: {segment} (no credentials)")
 

@@ -201,11 +201,11 @@ LARGE_CAP_UNIVERSE = [
 # ---------------------------------------------------------------------------
 
 SEGMENTS = {
-    "smallcap": {
-        "name": "Small Cap",
+    "microsmall": {
+        "name": "MicroSmall Cap",
         "alpaca_key": _SMALLCAP_KEY,
         "alpaca_secret": _SMALLCAP_SECRET,
-        "db_path": "quantopsai_smallcap.db",
+        "db_path": "quantopsai_microsmall.db",
         "min_price": 1.0,
         "max_price": 20.0,
         "min_volume": 500_000,

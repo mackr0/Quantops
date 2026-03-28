@@ -64,6 +64,24 @@
             </label>
         </fieldset>
 
+        <!-- Per-segment Alpaca Keys -->
+        <h4>Alpaca Keys (for this segment's account)</h4>
+        <div class="grid">
+            <label>
+                API Key
+                <input type="text" name="alpaca_api_key"
+                       placeholder="PKXXXXXXXXXX"
+                       value="{{ cfg.get('_alpaca_key_masked', '') }}">
+            </label>
+            <label>
+                Secret Key
+                <input type="password" name="alpaca_secret_key"
+                       placeholder="Enter secret key"
+                       value="">
+                {% if cfg.get('alpaca_api_key_enc') %}<small>Key saved (enter new value to change)</small>{% endif %}
+            </label>
+        </div>
+
         <!-- Risk Parameters -->
         <h4>Risk Parameters</h4>
         <div class="grid">
