@@ -143,23 +143,14 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
     logging.info(f"--- [{seg_label.upper()}] segment cycle end ---")
 
 
-# ── Task Implementations ─────────────────────────────────────────────
-# Each task receives a UserContext and passes it through.
+# ── Helpers ─────────────────────────────────────────────────────────
 
-def _task_aggressive_scan_and_trade(ctx):
-    """Screen the segment's universe and auto-trade with AI review."""
+def run_full_screen_for_segment(ctx, seg):
+    """Run the standard equity screener with ctx-specific parameters."""
     from screener import screen_by_price_range, find_volume_surges, \
         find_momentum_stocks, find_breakouts
-    from aggressive_trader import run_aggressive_scan_and_trade
-    from notifications import notify_trade, notify_veto
 
-    seg_label = ctx.display_name or ctx.segment
-
-    # Determine universe from segments.py for this segment
-    seg = get_segment(ctx.segment)
     universe = seg.get("universe")
-
-    # Use ctx-specific price/volume filters and universe
     candidates = screen_by_price_range(
         min_price=ctx.min_price,
         max_price=ctx.max_price,
@@ -167,19 +158,47 @@ def _task_aggressive_scan_and_trade(ctx):
         limit=50,
         universe=universe,
     )
-    symbols = set()
-    for c in candidates:
-        symbols.add(c["symbol"])
-
-    # Also run secondary screens on the candidate list
     sym_list = [c["symbol"] for c in candidates]
-    for s in find_volume_surges(sym_list, volume_multiplier=ctx.volume_surge_multiplier):
-        symbols.add(s["symbol"])
-    for s in find_momentum_stocks(sym_list, min_gain_5d=ctx.momentum_5d_gain,
-                                  min_gain_20d=ctx.momentum_20d_gain):
-        symbols.add(s["symbol"])
-    for s in find_breakouts(sym_list):
-        symbols.add(s["symbol"])
+    volume_surges = find_volume_surges(
+        sym_list, volume_multiplier=ctx.volume_surge_multiplier)
+    momentum = find_momentum_stocks(
+        sym_list, min_gain_5d=ctx.momentum_5d_gain,
+        min_gain_20d=ctx.momentum_20d_gain)
+    breakouts = find_breakouts(sym_list)
+
+    return {
+        "candidates": candidates,
+        "volume_surges": volume_surges,
+        "momentum": momentum,
+        "breakouts": breakouts,
+    }
+
+
+# ── Task Implementations ─────────────────────────────────────────────
+# Each task receives a UserContext and passes it through.
+
+def _task_aggressive_scan_and_trade(ctx):
+    """Screen the segment's universe and auto-trade with AI review."""
+    from screener import screen_by_price_range, find_volume_surges, \
+        find_momentum_stocks, find_breakouts, run_crypto_screen
+    from aggressive_trader import run_aggressive_scan_and_trade
+    from notifications import notify_trade, notify_veto
+
+    seg_label = ctx.display_name or ctx.segment
+    seg = get_segment(ctx.segment)
+    is_crypto = seg.get("is_crypto", False)
+
+    if is_crypto:
+        # Crypto uses its own screener with symbol conversion
+        screen_results = run_crypto_screen(universe=seg.get("universe"))
+    else:
+        # Equity segments use the standard screener
+        screen_results = run_full_screen_for_segment(ctx, seg)
+
+    symbols = set()
+    for cat in ("candidates", "volume_surges", "momentum", "breakouts"):
+        for s in screen_results.get(cat, []):
+            symbols.add(s["symbol"])
 
     symbols = list(symbols)[:30]
 
