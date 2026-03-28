@@ -1,11 +1,13 @@
 """Authentication blueprint — login, register, logout."""
 
+from datetime import datetime
+
 from flask import Blueprint, render_template, request, redirect, url_for, flash
 from flask_login import login_user, logout_user, login_required
 
 from models import (
     get_user_by_email, verify_password, create_user,
-    create_default_segment_configs,
+    create_default_segment_configs, _get_conn,
 )
 from app import User
 
@@ -27,6 +29,15 @@ def login():
             if not user.get("is_active", 1):
                 flash("Your account has been deactivated.", "error")
                 return render_template("auth/login.html")
+            # Update last login timestamp
+            conn = _get_conn()
+            conn.execute(
+                "UPDATE users SET last_login_at = ? WHERE id = ?",
+                (datetime.utcnow().isoformat(), user["id"]),
+            )
+            conn.commit()
+            conn.close()
+
             login_user(User(user), remember=True)
             next_page = request.args.get("next")
             return redirect(next_page or url_for("views.dashboard"))
