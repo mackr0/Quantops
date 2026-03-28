@@ -1,4 +1,4 @@
-"""Rich terminal dashboard for Quantops.
+"""Rich terminal dashboard for QuantOpsAI.
 
 All display functions gracefully fall back to plain print() if the rich
 library is not installed.

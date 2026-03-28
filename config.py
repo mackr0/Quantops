@@ -13,7 +13,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
 
 # Database
-DB_PATH = os.getenv("DB_PATH", "quantops.db")
+DB_PATH = os.getenv("DB_PATH", "quantopsai.db")
 
 # Risk management
 MAX_POSITION_PCT = 0.05

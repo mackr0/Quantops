@@ -1,4 +1,4 @@
-# Quantops
+# QuantOpsAI
 
 AI-powered autonomous paper trading system for small-cap and micro-cap stocks. Uses Claude AI to review every trade before execution, tracks AI prediction accuracy over time, and runs 24/7 on a cloud server.
 
@@ -6,7 +6,7 @@ AI-powered autonomous paper trading system for small-cap and micro-cap stocks. U
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                   QUANTOPS PIPELINE                      │
+│                   QUANTOPSAI PIPELINE                      │
 │                                                          │
 │  Screen 8,000+ stocks                                    │
 │       ↓                                                  │
@@ -198,7 +198,7 @@ The bot runs autonomously on a $6/mo DigitalOcean droplet.
 
 This will:
 1. Install Python and dependencies on the droplet
-2. Sync all code and `.env` to `/opt/quantops`
+2. Sync all code and `.env` to `/opt/quantopsai`
 3. Create a systemd service that auto-starts on boot
 4. Start the scheduler
 
@@ -219,16 +219,16 @@ This will:
 
 ```bash
 # Portfolio dashboard
-ssh root@67.205.155.63 "cd /opt/quantops && venv/bin/python3 main.py dashboard"
+ssh root@67.205.155.63 "cd /opt/quantopsai && venv/bin/python3 main.py dashboard"
 
 # AI accuracy report
-ssh root@67.205.155.63 "cd /opt/quantops && venv/bin/python3 main.py ai-report"
+ssh root@67.205.155.63 "cd /opt/quantopsai && venv/bin/python3 main.py ai-report"
 
 # Trade history
-ssh root@67.205.155.63 "cd /opt/quantops && venv/bin/python3 main.py journal"
+ssh root@67.205.155.63 "cd /opt/quantopsai && venv/bin/python3 main.py journal"
 
 # View today's logs
-ssh root@67.205.155.63 "tail -50 /opt/quantops/logs/quantops_$(date +%Y-%m-%d).log"
+ssh root@67.205.155.63 "tail -50 /opt/quantopsai/logs/quantopsai_$(date +%Y-%m-%d).log"
 ```
 
 ### Autonomous Schedule

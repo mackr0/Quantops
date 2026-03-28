@@ -1,15 +1,15 @@
 #!/bin/bash
-# Deploy Quantops to DigitalOcean droplet
+# Deploy QuantOpsAI to DigitalOcean droplet
 # Usage: ./deploy.sh <droplet-ip>
 
 set -e
 
 DROPLET_IP=${1:-"67.205.155.63"}
 REMOTE_USER="root"
-REMOTE_DIR="/opt/quantops"
+REMOTE_DIR="/opt/quantopsai"
 
 echo "============================================"
-echo "  Deploying Quantops to ${REMOTE_USER}@${DROPLET_IP}"
+echo "  Deploying QuantOpsAI to ${REMOTE_USER}@${DROPLET_IP}"
 echo "============================================"
 
 # ── Step 1: Install system dependencies ──────────────────────────────
@@ -41,7 +41,7 @@ rsync -avz --progress \
 echo ""
 echo "[4/5] Setting up Python environment..."
 ssh ${REMOTE_USER}@${DROPLET_IP} << 'SETUP'
-cd /opt/quantops
+cd /opt/quantopsai
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
@@ -53,19 +53,19 @@ SETUP
 echo ""
 echo "[5/5] Creating systemd service..."
 ssh ${REMOTE_USER}@${DROPLET_IP} << 'SERVICE'
-cat > /etc/systemd/system/quantops.service << 'EOF'
+cat > /etc/systemd/system/quantopsai.service << 'EOF'
 [Unit]
-Description=Quantops Autonomous Trading Scheduler
+Description=QuantOpsAI Autonomous Trading Scheduler
 After=network.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/quantops
-ExecStart=/opt/quantops/venv/bin/python3 multi_scheduler.py
+WorkingDirectory=/opt/quantopsai
+ExecStart=/opt/quantopsai/venv/bin/python3 multi_scheduler.py
 Restart=on-failure
 RestartSec=30
-EnvironmentFile=/opt/quantops/.env
+EnvironmentFile=/opt/quantopsai/.env
 StandardOutput=journal
 StandardError=journal
 
@@ -74,8 +74,8 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable quantops
-systemctl restart quantops
+systemctl enable quantopsai
+systemctl restart quantopsai
 SERVICE
 
 echo ""
@@ -85,7 +85,7 @@ echo "============================================"
 echo ""
 
 # Print service status
-ssh ${REMOTE_USER}@${DROPLET_IP} "systemctl status quantops --no-pager"
+ssh ${REMOTE_USER}@${DROPLET_IP} "systemctl status quantopsai --no-pager"
 
 echo ""
 echo "Useful commands:"

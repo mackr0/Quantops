@@ -58,7 +58,7 @@ def _wrap_html(title, body_content):
 <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%">
   <!-- Header -->
   <tr><td style="background:{_HEADER_BG};padding:20px 24px;border-radius:8px 8px 0 0">
-    <span style="color:#fff;font-size:22px;font-weight:bold;letter-spacing:1px">QUANTOPS</span>
+    <span style="color:#fff;font-size:22px;font-weight:bold;letter-spacing:1px">QUANTOPSAI</span>
     <span style="color:{_MUTED};font-size:13px;margin-left:12px">{title}</span>
   </td></tr>
   <!-- Body -->
@@ -67,7 +67,7 @@ def _wrap_html(title, body_content):
   </td></tr>
   <!-- Footer -->
   <tr><td style="padding:12px 24px;text-align:center">
-    <span style="color:{_MUTED};font-size:11px">Quantops Automated Trading System &bull; {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}</span>
+    <span style="color:{_MUTED};font-size:11px">QuantOpsAI Automated Trading System &bull; {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}</span>
   </td></tr>
 </table>
 </td></tr>
@@ -126,7 +126,7 @@ def send_email(subject, html_body):
 
     recipient = config.NOTIFICATION_EMAIL
     payload = json.dumps({
-        "from": "Quantops <onboarding@resend.dev>",
+        "from": "QuantOpsAI <onboarding@resend.dev>",
         "to": [recipient],
         "subject": subject,
         "html": html_body,
@@ -138,7 +138,7 @@ def send_email(subject, html_body):
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "Quantops/1.0",
+            "User-Agent": "QuantOpsAI/1.0",
         },
         method="POST",
     )
@@ -176,7 +176,7 @@ def notify_trade(trade_result, signal=None, ai_result=None):
     price = trade_result.get("price") or signal.get("price", 0)
     estimated_cost = trade_result.get("estimated_cost", qty * price)
 
-    subject = f"Quantops: {action} {qty} {symbol} @ ${price:,.2f}"
+    subject = f"QuantOpsAI: {action} {qty} {symbol} @ ${price:,.2f}"
 
     # -- Trade details -------------------------------------------------------
     details = (
@@ -279,7 +279,7 @@ def notify_veto(symbol, technical_signal, ai_result):
     ai_signal = ai_result.get("signal", "???")
     ai_conf = ai_result.get("confidence", "?")
 
-    subject = f"Quantops: AI Vetoed {tech_action} {symbol}"
+    subject = f"QuantOpsAI: AI Vetoed {tech_action} {symbol}"
 
     tech_info = (
         _kv_row("Symbol", symbol)
@@ -335,7 +335,7 @@ def notify_exit(symbol, trigger, qty, reason):
         except Exception:
             pass
 
-    subject = f"Quantops: {label} {symbol}{pct_str}"
+    subject = f"QuantOpsAI: {label} {symbol}{pct_str}"
 
     exit_info = (
         _kv_row("Symbol", symbol)
@@ -388,7 +388,7 @@ def notify_exit(symbol, trigger, qty, reason):
 def notify_daily_summary():
     """Send a comprehensive end-of-day summary email."""
     today_str = date.today().isoformat()
-    subject = f"Quantops Daily Summary \u2014 {today_str}"
+    subject = f"QuantOpsAI Daily Summary \u2014 {today_str}"
 
     body = ""
 
@@ -545,7 +545,7 @@ def notify_error(error_msg, context=""):
         context: Short label for what was happening when the error occurred.
     """
     ctx_label = context if context else "General"
-    subject = f"Quantops ERROR: {ctx_label}"
+    subject = f"QuantOpsAI ERROR: {ctx_label}"
 
     error_block = (
         f'<div style="padding:14px;background:#ffebee;border-left:4px solid {_RED};'

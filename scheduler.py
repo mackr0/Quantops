@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Quantops Autonomous Trading Scheduler
+QuantOpsAI Autonomous Trading Scheduler
 
 Runs 24/7 on a server, executing trading tasks during market hours:
   - Every 30 min: aggressive scan and trade
@@ -188,11 +188,11 @@ def main_loop():
     global _shutdown
 
     # ── Logging setup ────────────────────────────────────────────────
-    log_dir = os.path.expanduser("~/Quantops/logs")
+    log_dir = os.path.expanduser("~/QuantOpsAI/logs")
     os.makedirs(log_dir, exist_ok=True)
 
     today_str = datetime.now(ET).strftime("%Y-%m-%d")
-    log_file = os.path.join(log_dir, f"quantops_{today_str}.log")
+    log_file = os.path.join(log_dir, f"quantopsai_{today_str}.log")
 
     logging.basicConfig(
         level=logging.INFO,
@@ -204,7 +204,7 @@ def main_loop():
     )
 
     logging.info("=" * 60)
-    logging.info("Quantops scheduler starting")
+    logging.info("QuantOpsAI scheduler starting")
     logging.info(f"Log file: {log_file}")
     logging.info("=" * 60)
 
@@ -231,7 +231,7 @@ def main_loop():
         new_today = now.strftime("%Y-%m-%d")
         if new_today != today_str:
             today_str = new_today
-            new_log_file = os.path.join(log_dir, f"quantops_{today_str}.log")
+            new_log_file = os.path.join(log_dir, f"quantopsai_{today_str}.log")
             # Replace file handler
             root = logging.getLogger()
             for handler in root.handlers[:]:
@@ -281,7 +281,7 @@ def main_loop():
                     break
                 time.sleep(60)
 
-    logging.info("Quantops scheduler stopped.")
+    logging.info("QuantOpsAI scheduler stopped.")
 
 
 if __name__ == "__main__":

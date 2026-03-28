@@ -59,6 +59,24 @@ def init_db():
             num_positions INTEGER,
             daily_pnl REAL
         );
+
+        CREATE TABLE IF NOT EXISTS ai_predictions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+            symbol TEXT NOT NULL,
+            predicted_signal TEXT NOT NULL,
+            confidence REAL,
+            reasoning TEXT,
+            price_at_prediction REAL NOT NULL,
+            target_entry REAL,
+            target_stop_loss REAL,
+            target_take_profit REAL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            actual_outcome TEXT,
+            actual_return_pct REAL,
+            resolved_at TEXT,
+            resolution_price REAL
+        );
     """)
     conn.commit()
     conn.close()

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Quantops — AI-powered paper trading system.
+QuantOpsAI — AI-powered paper trading system.
 
 Usage:
     python main.py account              Show account info

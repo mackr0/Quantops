@@ -285,7 +285,7 @@ def run_full_screen(api=None):
     The ``api`` parameter is ignored (kept for backward compatibility).
     """
     print("=" * 60)
-    print("QUANTOPS SMALL-CAP / MICRO-CAP SCREENER")
+    print("QUANTOPSAI SMALL-CAP / MICRO-CAP SCREENER")
     print(f"Run time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
 

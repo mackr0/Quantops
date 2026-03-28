@@ -320,11 +320,11 @@ def main_loop(active_segments=None):
             )
 
     # ── Logging setup ────────────────────────────────────────────────
-    log_dir = os.path.expanduser("~/Quantops/logs")
+    log_dir = os.path.expanduser("~/QuantOpsAI/logs")
     os.makedirs(log_dir, exist_ok=True)
 
     today_str = datetime.now(ET).strftime("%Y-%m-%d")
-    log_file = os.path.join(log_dir, f"quantops_multi_{today_str}.log")
+    log_file = os.path.join(log_dir, f"quantopsai_multi_{today_str}.log")
 
     logging.basicConfig(
         level=logging.INFO,
@@ -336,7 +336,7 @@ def main_loop(active_segments=None):
     )
 
     logging.info("=" * 60)
-    logging.info("Quantops MULTI-ACCOUNT scheduler starting")
+    logging.info("QuantOpsAI MULTI-ACCOUNT scheduler starting")
     logging.info(f"Active segments: {active_segments}")
     logging.info(f"Log file: {log_file}")
     logging.info("=" * 60)
@@ -364,7 +364,7 @@ def main_loop(active_segments=None):
         new_today = now.strftime("%Y-%m-%d")
         if new_today != today_str:
             today_str = new_today
-            new_log_file = os.path.join(log_dir, f"quantops_multi_{today_str}.log")
+            new_log_file = os.path.join(log_dir, f"quantopsai_multi_{today_str}.log")
             root = logging.getLogger()
             for handler in root.handlers[:]:
                 if isinstance(handler, logging.FileHandler):
@@ -441,7 +441,7 @@ def main_loop(active_segments=None):
                     break
                 time.sleep(60)
 
-    logging.info("Quantops multi-account scheduler stopped.")
+    logging.info("QuantOpsAI multi-account scheduler stopped.")
 
 
 # ── Entry Point ──────────────────────────────────────────────────────

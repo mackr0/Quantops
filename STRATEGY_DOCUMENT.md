@@ -1,4 +1,4 @@
-# Quantops — Trading & AI Strategy Document
+# QuantOpsAI — Trading & AI Strategy Document
 
 **Version:** 2.0
 **Date:** March 27, 2026
@@ -9,13 +9,13 @@
 
 ## 1. System Overview
 
-Quantops is an autonomous paper trading system that combines rules-based technical analysis with AI-powered trade review. It operates three independent Alpaca paper trading accounts — one each for small-cap, mid-cap, and large-cap stocks — applying the same core strategy with segment-tuned parameters.
+QuantOpsAI is an autonomous paper trading system that combines rules-based technical analysis with AI-powered trade review. It operates three independent Alpaca paper trading accounts — one each for small-cap, mid-cap, and large-cap stocks — applying the same core strategy with segment-tuned parameters.
 
 The system screens ~600+ stocks across all segments, applies four independent technical strategies, then sends each actionable signal through a Claude AI review before execution. Every AI prediction is tracked against actual price outcomes to measure whether the AI adds value.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                      QUANTOPS PIPELINE                           │
+│                      QUANTOPSAI PIPELINE                           │
 │                                                                  │
 │  ┌──────────┐   ┌──────────┐   ┌──────────┐                    │
 │  │ Small Cap │   │ Mid Cap  │   │ Large Cap│   3 Alpaca accounts │
@@ -60,7 +60,7 @@ Three independent paper trading accounts run the same strategy with segment-spec
 | **Stop-loss** | 3% | 4% | 5% |
 | **Take-profit** | 10% | 12% | 15% |
 | **Max positions** | 10 | 10 | 10 |
-| **Database** | quantops_smallcap.db | quantops_midcap.db | quantops_largecap.db |
+| **Database** | quantopsai_smallcap.db | quantopsai_midcap.db | quantopsai_largecap.db |
 
 **Rationale for parameter differences:**
 - **Wider stops for larger caps:** Large-cap stocks are less volatile; a 3% stop would trigger on normal intraday noise. The 5% stop gives blue chips room to breathe while still cutting clear trend failures.
