@@ -350,7 +350,7 @@
     <div class="universe-dialog-body">
         <table class="universe-table">
             <thead>
-                <tr><th>Symbol</th><th>Source</th></tr>
+                <tr><th>Symbol</th><th>Name</th></tr>
             </thead>
             <tbody id="universe-dialog-tbody"></tbody>
         </table>
@@ -397,10 +397,10 @@
                     var html = '';
                     data.symbols.forEach(function(s) {
                         var cls = s.source === 'custom' ? ' class="universe-custom-row"' : '';
-                        var label = s.source === 'custom'
-                            ? '<span class="universe-badge-custom">custom</span>'
-                            : '<span class="universe-badge-base">base</span>';
-                        html += '<tr' + cls + '><td>' + s.symbol + '</td><td>' + label + '</td></tr>';
+                        var name = s.source === 'custom'
+                            ? '<span style="color:#00c853">Custom</span>'
+                            : s.symbol;
+                        html += '<tr' + cls + '><td>' + s.symbol + '</td><td style="color:#8a8aaa">' + name + '</td></tr>';
                     });
                     tbodyEl.innerHTML = html;
                 })
