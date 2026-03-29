@@ -326,11 +326,10 @@
                            {{ 'checked' if prof.strategy_gap_and_go else '' }}>
                     Gap and Go
                 </label>
-                <label style="display:flex;align-items:center;gap:0.5rem;">
-                    <input type="checkbox" name="maga_mode" value="1" style="flex-shrink:0;"
+                <label style="display:flex;align-items:flex-start;gap:0.5rem;">
+                    <input type="checkbox" name="maga_mode" value="1" style="flex-shrink:0;margin-top:0.2rem;"
                            {{ 'checked' if prof.maga_mode else '' }}>
-                    <img src="/static/trump_icon.png" alt="" style="width:28px;height:28px;border-radius:4px;flex-shrink:0;">
-                    <span>MAGA Mode<br><small style="color:#888;font-weight:normal;">Factor current political insanity into AI analysis — buy politically-driven dips</small></span>
+                    <span>MAGA Mode <img src="/static/trump_icon.png" alt="" style="width:22px;height:22px;border-radius:3px;vertical-align:middle;"><br><small style="color:#888;font-weight:normal;">Factor current political insanity into AI analysis — buy politically-driven dips</small></span>
                 </label>
             </fieldset>
 
