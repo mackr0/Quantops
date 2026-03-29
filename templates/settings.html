@@ -340,24 +340,26 @@
 </article>
 {% endfor %}
 
-<!-- Universe Popup -->
-<div id="universe-popup" class="universe-popup" style="display:none;">
-    <div class="universe-popup-header">
+{% endblock %}
+{% block scripts %}
+<!-- Universe popup - outside <main> so Pico CSS can't interfere -->
+<div id="universe-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.3);z-index:9998;"></div>
+<div id="universe-popup" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:380px;max-height:400px;background:#fff;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.25);z-index:9999;overflow:hidden;font-family:sans-serif;">
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#1a1a2e;color:#fff;font-size:14px;font-weight:bold;">
         <span id="universe-popup-title"></span>
-        <button type="button" id="universe-popup-close" class="universe-popup-close">&times;</button>
+        <span id="universe-popup-close" style="cursor:pointer;font-size:18px;color:#999;">&times;</span>
     </div>
-    <p id="universe-popup-subtitle" class="universe-popup-subtitle"></p>
-    <div class="universe-popup-body">
-        <table>
-            <thead><tr><th>Symbol</th><th>Name</th></tr></thead>
+    <div style="padding:4px 12px;font-size:12px;color:#888;border-bottom:1px solid #eee;" id="universe-popup-subtitle"></div>
+    <div style="max-height:320px;overflow-y:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <thead><tr>
+                <th style="position:sticky;top:0;background:#f5f5f5;padding:4px 12px;text-align:left;font-size:11px;text-transform:uppercase;color:#666;border-bottom:1px solid #ddd;">Symbol</th>
+                <th style="position:sticky;top:0;background:#f5f5f5;padding:4px 12px;text-align:left;font-size:11px;text-transform:uppercase;color:#666;border-bottom:1px solid #ddd;">Name</th>
+            </tr></thead>
             <tbody id="universe-popup-tbody"></tbody>
         </table>
     </div>
 </div>
-<div id="universe-overlay" style="display:none;"></div>
-
-{% endblock %}
-{% block scripts %}
 <script src="/static/settings.js"></script>
 <script>
 // View Universe popup
@@ -389,6 +391,10 @@
             // Trigger name caching in background
             fetch('/api/universe/' + profileId + '/cache-names', {method: 'POST'}).catch(function(){});
 
+            // Trigger name caching in background (slow, runs async)
+            fetch('/api/universe/' + profileId + '/cache-names', {method: 'POST'}).catch(function(){});
+
+            // Immediately show symbols with whatever names are cached
             fetch('/api/universe/' + profileId)
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
@@ -401,8 +407,9 @@
 
                     var html = '';
                     data.symbols.forEach(function(s) {
-                        var cls = s.source === 'custom' ? ' style="color:#00c853"' : '';
-                        html += '<tr><td' + cls + '>' + s.symbol + '</td><td>' + s.name + '</td></tr>';
+                        var nameDisplay = (s.name && s.name !== s.symbol) ? s.name : '';
+                        var symStyle = s.source === 'custom' ? 'color:#00c853;font-weight:bold' : '';
+                        html += '<tr><td style="' + symStyle + ';padding:3px 12px;">' + s.symbol + '</td><td style="color:#666;padding:3px 12px;">' + nameDisplay + '</td></tr>';
                     });
                     tbodyEl.innerHTML = html;
                 })
