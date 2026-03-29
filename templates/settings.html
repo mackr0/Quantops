@@ -318,6 +318,12 @@
                 <textarea name="custom_watchlist" rows="2"
                           placeholder="AAPL, TSLA, NVDA">{{ prof.custom_watchlist|join(', ') if prof.custom_watchlist is iterable and prof.custom_watchlist is not string else prof.get('custom_watchlist', '') }}</textarea>
             </label>
+            <button type="button" class="outline secondary view-universe-btn"
+                    data-profile-id="{{ prof.id }}"
+                    data-profile-name="{{ prof.name }}"
+                    style="margin-top:0.25rem; padding:0.3rem 0.8rem; font-size:0.8rem;">
+                View Full Universe
+            </button>
 
             <div class="grid">
                 <button type="submit">Save {{ prof.name }}</button>
@@ -334,10 +340,77 @@
 </article>
 {% endfor %}
 
+<!-- Universe Dialog -->
+<dialog id="universe-dialog" class="universe-dialog">
+    <div class="universe-dialog-header">
+        <h3 id="universe-dialog-title"></h3>
+        <button type="button" id="universe-dialog-close" class="universe-dialog-close-btn" aria-label="Close">&times;</button>
+    </div>
+    <p id="universe-dialog-subtitle" class="universe-dialog-subtitle"></p>
+    <div class="universe-dialog-body">
+        <table class="universe-table">
+            <thead>
+                <tr><th>Symbol</th><th>Source</th></tr>
+            </thead>
+            <tbody id="universe-dialog-tbody"></tbody>
+        </table>
+    </div>
+</dialog>
+
 {% endblock %}
 {% block scripts %}
 <script src="/static/settings.js"></script>
 <script>
+// View Universe dialog
+(function() {
+    var dialog = document.getElementById('universe-dialog');
+    var titleEl = document.getElementById('universe-dialog-title');
+    var subtitleEl = document.getElementById('universe-dialog-subtitle');
+    var tbodyEl = document.getElementById('universe-dialog-tbody');
+    var closeBtn = document.getElementById('universe-dialog-close');
+
+    closeBtn.addEventListener('click', function() { dialog.close(); });
+    dialog.addEventListener('click', function(e) {
+        if (e.target === dialog) dialog.close();
+    });
+
+    document.querySelectorAll('.view-universe-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            var profileId = this.dataset.profileId;
+            var profileName = this.dataset.profileName;
+            titleEl.textContent = 'Symbols being evaluated for ' + profileName;
+            subtitleEl.textContent = 'Loading...';
+            tbodyEl.innerHTML = '';
+            dialog.showModal();
+
+            fetch('/api/universe/' + profileId)
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.error) {
+                        subtitleEl.textContent = 'Error: ' + data.error;
+                        return;
+                    }
+                    subtitleEl.textContent = data.market_type_name + ' universe: ' +
+                        data.base_count + ' base symbols' +
+                        (data.custom_count > 0 ? ' + ' + data.custom_count + ' custom' : '');
+
+                    var html = '';
+                    data.symbols.forEach(function(s) {
+                        var cls = s.source === 'custom' ? ' class="universe-custom-row"' : '';
+                        var label = s.source === 'custom'
+                            ? '<span class="universe-badge-custom">custom</span>'
+                            : '<span class="universe-badge-base">base</span>';
+                        html += '<tr' + cls + '><td>' + s.symbol + '</td><td>' + label + '</td></tr>';
+                    });
+                    tbodyEl.innerHTML = html;
+                })
+                .catch(function(err) {
+                    subtitleEl.textContent = 'Failed to load universe.';
+                });
+        });
+    });
+})();
+
 // Delete profile confirmation
 document.querySelectorAll('.delete-profile-btn').forEach(function(btn) {
     btn.addEventListener('click', function() {

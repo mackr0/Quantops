@@ -621,6 +621,54 @@ def api_activity():
     return jsonify({"entries": entries, "total": total})
 
 
+@views_bp.route("/api/universe/<int:profile_id>")
+@login_required
+def api_universe(profile_id):
+    """Return the full symbol universe for a trading profile."""
+    profile = get_trading_profile(profile_id)
+    if not profile or profile["user_id"] != current_user.id:
+        return jsonify({"error": "Not found"}), 404
+
+    market_type = profile["market_type"]
+    segment = SEGMENTS.get(market_type)
+    if not segment:
+        return jsonify({"error": f"Unknown market type: {market_type}"}), 400
+
+    # Base universe from segments.py
+    base_universe = list(segment["universe"])
+    base_set = set(base_universe)
+
+    # Custom watchlist from the profile
+    custom_watchlist = profile.get("custom_watchlist", []) or []
+    if isinstance(custom_watchlist, str):
+        try:
+            custom_watchlist = json.loads(custom_watchlist)
+        except (json.JSONDecodeError, TypeError):
+            custom_watchlist = []
+
+    # Build symbol list: base first, then custom (excluding duplicates)
+    symbols = []
+    for sym in sorted(base_universe):
+        symbols.append({"symbol": sym, "source": "base"})
+
+    custom_count = 0
+    for sym in custom_watchlist:
+        sym = sym.strip().upper()
+        if sym and sym not in base_set:
+            symbols.append({"symbol": sym, "source": "custom"})
+            custom_count += 1
+
+    market_type_name = SEGMENTS[market_type].get("name", market_type)
+
+    return jsonify({
+        "market_type": market_type,
+        "market_type_name": market_type_name,
+        "base_count": len(base_universe),
+        "custom_count": custom_count,
+        "symbols": symbols,
+    })
+
+
 @views_bp.route("/api/scheduler-status")
 @login_required
 def api_scheduler_status():
