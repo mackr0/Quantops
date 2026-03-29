@@ -621,6 +621,48 @@ def api_activity():
     return jsonify({"entries": entries, "total": total})
 
 
+@views_bp.route("/universe/<int:profile_id>")
+@login_required
+def universe_popup(profile_id):
+    """Render the universe popup window page."""
+    profile = get_trading_profile(profile_id)
+    if not profile or profile["user_id"] != current_user.id:
+        abort(404)
+
+    market_type = profile["market_type"]
+    segment = SEGMENTS.get(market_type)
+    if not segment:
+        abort(404)
+
+    base_universe = sorted(segment["universe"])
+
+    custom_watchlist = profile.get("custom_watchlist", []) or []
+    if isinstance(custom_watchlist, str):
+        try:
+            custom_watchlist = json.loads(custom_watchlist)
+        except (json.JSONDecodeError, TypeError):
+            custom_watchlist = []
+
+    from models import get_cached_names
+    all_syms = base_universe + [s.strip().upper() for s in custom_watchlist if s.strip()]
+    names = get_cached_names(all_syms)
+    base_set = set(base_universe)
+
+    symbols = []
+    for sym in base_universe:
+        symbols.append({"symbol": sym, "name": names.get(sym, ""), "custom": False})
+    for sym in custom_watchlist:
+        sym = sym.strip().upper()
+        if sym and sym not in base_set:
+            symbols.append({"symbol": sym, "name": names.get(sym, ""), "custom": True})
+
+    return render_template("universe_popup.html",
+                           profile=profile,
+                           symbols=symbols,
+                           base_count=len(base_universe),
+                           custom_count=len([s for s in symbols if s["custom"]]))
+
+
 @views_bp.route("/api/universe/<int:profile_id>")
 @login_required
 def api_universe(profile_id):
