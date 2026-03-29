@@ -47,6 +47,23 @@
     </form>
 </article>
 
+<!-- Restricted Symbols -->
+<article>
+    <header><h3>Restricted Symbols</h3></header>
+    <p style="font-size:0.85rem;color:#666;margin-top:-0.5rem;">
+        Symbols listed here will still be analyzed as part of the market but will <strong>never be traded</strong> in any of your profiles.
+        Use this if you're restricted from trading certain stocks (e.g. employer stock, insider trading restrictions).
+    </p>
+    <form method="post" action="/settings/exclusions">
+        <label>
+            Excluded symbols (comma-separated)
+            <textarea name="excluded_symbols" rows="2"
+                      placeholder="AAPL, GOOGL, MSFT">{{ excluded_symbols }}</textarea>
+        </label>
+        <button type="submit">Save Exclusions</button>
+    </form>
+</article>
+
 <!-- Trading Profiles Section -->
 <h2>Your Trading Profiles</h2>
 

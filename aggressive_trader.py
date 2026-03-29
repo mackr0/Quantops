@@ -114,6 +114,19 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
                           to ctx or module constant.
         log: Whether to write to the journal database.
     """
+    # Check exclusion list — symbol is analyzed but never traded
+    if ctx is not None:
+        from models import is_symbol_excluded
+        if is_symbol_excluded(ctx.user_id, symbol):
+            return {
+                "symbol": symbol,
+                "action": "EXCLUDED",
+                "signal": signal.get("signal", "HOLD"),
+                "price": signal.get("price", 0),
+                "reason": f"{symbol} is on your restricted list and cannot be traded",
+                "strategy": "aggressive",
+            }
+
     # Resolve parameters from ctx, explicit arg, or module-level constants
     if max_position_pct is None:
         max_position_pct = ctx.max_position_pct if ctx is not None else AGGRESSIVE_MAX_POSITION_PCT

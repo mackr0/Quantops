@@ -22,6 +22,17 @@ def execute_trade(symbol, signal, ctx=None, strategy_name="combined", log=True):
         If provided, uses ctx for API credentials, risk parameters,
         and journal DB path.
     """
+    # Check exclusion list
+    if ctx is not None:
+        from models import is_symbol_excluded
+        if is_symbol_excluded(ctx.user_id, symbol):
+            return {
+                "symbol": symbol,
+                "action": "EXCLUDED",
+                "signal": signal.get("signal", "HOLD"),
+                "reason": f"{symbol} is on your restricted list and cannot be traded",
+            }
+
     # Resolve ctx-derived parameters
     db_path = ctx.db_path if ctx is not None else None
     max_position_pct = ctx.max_position_pct if ctx is not None else None

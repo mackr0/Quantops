@@ -218,11 +218,31 @@ def settings():
             except Exception:
                 prof["_alpaca_key_masked"] = "****"
 
+    # Get excluded symbols
+    from models import get_excluded_symbols
+    excluded = get_excluded_symbols(current_user.id)
+    excluded_str = ", ".join(excluded)
+
     return render_template("settings.html",
                            keys=keys,
                            profiles=profiles,
                            market_types=MARKET_TYPE_NAMES,
-                           segments=SEGMENTS)
+                           segments=SEGMENTS,
+                           excluded_symbols=excluded_str)
+
+
+@views_bp.route("/settings/exclusions", methods=["POST"])
+@login_required
+def save_exclusions():
+    raw = request.form.get("excluded_symbols", "").strip()
+    symbols = [s.strip().upper() for s in raw.split(",") if s.strip()]
+    from models import update_excluded_symbols
+    update_excluded_symbols(current_user.id, symbols)
+    if symbols:
+        flash(f"Restricted symbols updated: {', '.join(symbols)}", "success")
+    else:
+        flash("Restricted symbols cleared.", "success")
+    return redirect(url_for("views.settings"))
 
 
 @views_bp.route("/settings/keys", methods=["POST"])

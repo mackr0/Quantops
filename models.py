@@ -55,7 +55,8 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             anthropic_api_key_enc TEXT NOT NULL DEFAULT '',
             notification_email TEXT NOT NULL DEFAULT '',
             resend_api_key_enc TEXT NOT NULL DEFAULT '',
-            last_login_at TEXT
+            last_login_at TEXT,
+            excluded_symbols TEXT NOT NULL DEFAULT '[]'
         );
 
         CREATE TABLE IF NOT EXISTS user_segment_configs (
@@ -250,6 +251,38 @@ def update_user_credentials(user_id: int, alpaca_key: str = "",
     conn.commit()
     conn.close()
     logger.info("Updated credentials for user #%d", user_id)
+
+
+def get_excluded_symbols(user_id: int) -> List[str]:
+    """Return the list of symbols this user is not allowed to trade."""
+    conn = _get_conn()
+    row = conn.execute("SELECT excluded_symbols FROM users WHERE id = ?", (user_id,)).fetchone()
+    conn.close()
+    if not row:
+        return []
+    try:
+        return json.loads(row["excluded_symbols"])
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def update_excluded_symbols(user_id: int, symbols: List[str]) -> None:
+    """Update the exclusion list for a user."""
+    cleaned = sorted(set(s.strip().upper() for s in symbols if s.strip()))
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE users SET excluded_symbols = ? WHERE id = ?",
+        (json.dumps(cleaned), user_id),
+    )
+    conn.commit()
+    conn.close()
+    logger.info("Updated excluded symbols for user #%d: %s", user_id, cleaned)
+
+
+def is_symbol_excluded(user_id: int, symbol: str) -> bool:
+    """Check if a symbol is on the user's exclusion list."""
+    excluded = get_excluded_symbols(user_id)
+    return symbol.upper() in excluded
 
 
 def get_active_users() -> List[Dict[str, Any]]:
