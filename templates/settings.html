@@ -342,79 +342,88 @@
 
 {% endblock %}
 {% block scripts %}
-<!-- Universe popup - outside <main> so Pico CSS can't interfere -->
-<div id="universe-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.3);z-index:9998;"></div>
-<div id="universe-popup" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:380px;max-height:400px;background:#fff;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.25);z-index:9999;overflow:hidden;font-family:sans-serif;">
-    <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#1a1a2e;color:#fff;font-size:14px;font-weight:bold;">
-        <span id="universe-popup-title"></span>
-        <span id="universe-popup-close" style="cursor:pointer;font-size:18px;color:#999;">&times;</span>
-    </div>
-    <div style="padding:4px 12px;font-size:12px;color:#888;border-bottom:1px solid #eee;" id="universe-popup-subtitle"></div>
-    <div style="max-height:320px;overflow-y:auto;">
-        <table style="width:100%;border-collapse:collapse;font-size:13px;">
-            <thead><tr>
-                <th style="position:sticky;top:0;background:#f5f5f5;padding:4px 12px;text-align:left;font-size:11px;text-transform:uppercase;color:#666;border-bottom:1px solid #ddd;">Symbol</th>
-                <th style="position:sticky;top:0;background:#f5f5f5;padding:4px 12px;text-align:left;font-size:11px;text-transform:uppercase;color:#666;border-bottom:1px solid #ddd;">Name</th>
-            </tr></thead>
-            <tbody id="universe-popup-tbody"></tbody>
-        </table>
-    </div>
-</div>
 <script src="/static/settings.js"></script>
 <script>
-// View Universe popup
+// View Universe - true popup that floats next to the button
 (function() {
-    var popup = document.getElementById('universe-popup');
-    var overlay = document.getElementById('universe-overlay');
-    var titleEl = document.getElementById('universe-popup-title');
-    var subtitleEl = document.getElementById('universe-popup-subtitle');
-    var tbodyEl = document.getElementById('universe-popup-tbody');
-    var closeBtn = document.getElementById('universe-popup-close');
+    var activePopup = null;
 
     function closePopup() {
-        popup.style.display = 'none';
-        overlay.style.display = 'none';
+        if (activePopup) {
+            activePopup.remove();
+            activePopup = null;
+        }
     }
-    closeBtn.addEventListener('click', closePopup);
-    overlay.addEventListener('click', closePopup);
+
+    // Close on click outside
+    document.addEventListener('click', function(e) {
+        if (activePopup && !activePopup.contains(e.target) && !e.target.classList.contains('view-universe-btn')) {
+            closePopup();
+        }
+    });
+    // Close on Escape
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') closePopup();
+    });
 
     document.querySelectorAll('.view-universe-btn').forEach(function(btn) {
-        btn.addEventListener('click', function() {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            closePopup();
+
             var profileId = this.dataset.profileId;
             var profileName = this.dataset.profileName;
-            titleEl.textContent = profileName + ' Universe';
-            subtitleEl.textContent = 'Loading...';
-            tbodyEl.innerHTML = '';
-            popup.style.display = 'block';
-            overlay.style.display = 'block';
+            var rect = this.getBoundingClientRect();
 
-            // Trigger name caching in background
+            // Create popup element
+            var popup = document.createElement('div');
+            popup.style.cssText = 'position:absolute;width:340px;max-height:300px;background:#fff;border:1px solid #ccc;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.15);z-index:100;overflow:hidden;font-family:sans-serif;';
+            popup.style.top = (window.scrollY + rect.bottom + 4) + 'px';
+            popup.style.left = rect.left + 'px';
+
+            popup.innerHTML =
+                '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:#1a1a2e;color:#fff;font-size:13px;font-weight:bold;">' +
+                    '<span>' + profileName + '</span>' +
+                    '<span class="popup-close" style="cursor:pointer;color:#999;font-size:16px;">&times;</span>' +
+                '</div>' +
+                '<div class="popup-subtitle" style="padding:3px 10px;font-size:11px;color:#888;border-bottom:1px solid #eee;">Loading...</div>' +
+                '<div style="max-height:240px;overflow-y:auto;">' +
+                    '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
+                        '<thead><tr><th style="position:sticky;top:0;background:#f5f5f5;padding:3px 10px;text-align:left;font-size:10px;color:#999;border-bottom:1px solid #eee;">Symbol</th><th style="position:sticky;top:0;background:#f5f5f5;padding:3px 10px;text-align:left;font-size:10px;color:#999;border-bottom:1px solid #eee;">Name</th></tr></thead>' +
+                        '<tbody class="popup-tbody"></tbody>' +
+                    '</table>' +
+                '</div>';
+
+            document.body.appendChild(popup);
+            activePopup = popup;
+
+            popup.querySelector('.popup-close').addEventListener('click', closePopup);
+
+            // Cache names in background
             fetch('/api/universe/' + profileId + '/cache-names', {method: 'POST'}).catch(function(){});
 
-            // Trigger name caching in background (slow, runs async)
-            fetch('/api/universe/' + profileId + '/cache-names', {method: 'POST'}).catch(function(){});
-
-            // Immediately show symbols with whatever names are cached
+            // Load symbols
             fetch('/api/universe/' + profileId)
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
                     if (data.error) {
-                        subtitleEl.textContent = 'Error: ' + data.error;
+                        popup.querySelector('.popup-subtitle').textContent = 'Error: ' + data.error;
                         return;
                     }
-                    subtitleEl.textContent = data.base_count + ' symbols' +
+                    popup.querySelector('.popup-subtitle').textContent = data.base_count + ' symbols' +
                         (data.custom_count > 0 ? ' + ' + data.custom_count + ' custom' : '');
 
                     var html = '';
                     data.symbols.forEach(function(s) {
-                        var nameDisplay = (s.name && s.name !== s.symbol) ? s.name : '';
-                        var symStyle = s.source === 'custom' ? 'color:#00c853;font-weight:bold' : '';
-                        html += '<tr><td style="' + symStyle + ';padding:3px 12px;">' + s.symbol + '</td><td style="color:#666;padding:3px 12px;">' + nameDisplay + '</td></tr>';
+                        var name = (s.name && s.name !== s.symbol) ? s.name : '';
+                        var symColor = s.source === 'custom' ? 'color:#00c853;font-weight:bold;' : '';
+                        html += '<tr><td style="padding:2px 10px;border-bottom:1px solid #f0f0f0;' + symColor + '">' + s.symbol + '</td>' +
+                                '<td style="padding:2px 10px;border-bottom:1px solid #f0f0f0;color:#888;">' + name + '</td></tr>';
                     });
-                    tbodyEl.innerHTML = html;
+                    popup.querySelector('.popup-tbody').innerHTML = html;
                 })
                 .catch(function() {
-                    subtitleEl.textContent = 'Failed to load.';
+                    popup.querySelector('.popup-subtitle').textContent = 'Failed to load.';
                 });
         });
     });
