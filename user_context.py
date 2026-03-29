@@ -70,6 +70,9 @@ class UserContext:
     # Custom watchlist (additional symbols beyond segment universe)
     custom_watchlist: List[str] = field(default_factory=list)
 
+    # MAGA Mode — factor political volatility into AI analysis
+    maga_mode: bool = False
+
     def get_alpaca_api(self):
         """Create an Alpaca REST client for this user."""
         import alpaca_trade_api as tradeapi

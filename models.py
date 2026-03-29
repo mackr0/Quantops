@@ -151,9 +151,12 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             strategy_mean_reversion INTEGER NOT NULL DEFAULT 1,
             strategy_gap_and_go INTEGER NOT NULL DEFAULT 1,
             custom_watchlist TEXT NOT NULL DEFAULT '[]',
+            maga_mode INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
+        -- NOTE: For existing databases, run this migration manually:
+        -- ALTER TABLE trading_profiles ADD COLUMN maga_mode INTEGER NOT NULL DEFAULT 0;
         CREATE TABLE IF NOT EXISTS activity_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             profile_id INTEGER NOT NULL,
@@ -525,7 +528,7 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "breakout_volume_threshold", "gap_pct_threshold",
         "strategy_momentum_breakout", "strategy_volume_spike",
         "strategy_mean_reversion", "strategy_gap_and_go",
-        "custom_watchlist",
+        "custom_watchlist", "maga_mode",
     }
     updates = {}
     for key, value in kwargs.items():
@@ -628,6 +631,8 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         strategy_gap_and_go=bool(profile["strategy_gap_and_go"]),
         # Custom watchlist
         custom_watchlist=profile.get("custom_watchlist", []),
+        # MAGA Mode
+        maga_mode=bool(profile.get("maga_mode", 0)),
     )
 
 

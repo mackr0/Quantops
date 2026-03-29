@@ -326,6 +326,11 @@
                            {{ 'checked' if prof.strategy_gap_and_go else '' }}>
                     Gap and Go
                 </label>
+                <label>
+                    <input type="checkbox" name="maga_mode" value="1"
+                           {{ 'checked' if prof.maga_mode else '' }}>
+                    MAGA Mode <small style="color:#888;">(Factor political volatility into AI analysis — buy politically-driven dips)</small>
+                </label>
             </fieldset>
 
             <!-- Custom Watchlist -->

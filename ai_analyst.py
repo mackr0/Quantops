@@ -29,7 +29,7 @@ def get_claude_client(api_key=None):
     return anthropic.Anthropic(api_key=key)
 
 
-def analyze_symbol(symbol, ctx=None, api=None):
+def analyze_symbol(symbol, ctx=None, api=None, political_context=None):
     """
     Fetch market data for *symbol*, add technical indicators, and ask Claude
     for a structured trading recommendation.
@@ -43,6 +43,9 @@ def analyze_symbol(symbol, ctx=None, api=None):
         ctx for the Alpaca API client.
     api : alpaca REST client, optional
         Pre-built API client.  Falls back to get_api(ctx) when not provided.
+    political_context : str, optional
+        If provided (from MAGA Mode), appended to the prompt so Claude
+        factors political/macro context into its recommendation.
 
     Returns a dict with keys: signal, confidence, reasoning, risk_factors,
     price_targets (entry, stop_loss, take_profit).
@@ -106,6 +109,17 @@ def analyze_symbol(symbol, ctx=None, api=None):
             "volume trends provided. Be specific and quantitative in your "
             "reasoning."
         )
+
+        # Append political/macro context when MAGA Mode is active
+        if political_context:
+            prompt += (
+                "\n\nAdditionally, consider the following political/macro "
+                "context when making your recommendation:\n"
+                f"{political_context}\n\n"
+                "If the current technical weakness appears to be driven by "
+                "political noise rather than fundamental deterioration, factor "
+                "in the likelihood of a mean reversion bounce."
+            )
 
         # Use ctx for client and model if available, else fall back to config
         if ctx is not None:

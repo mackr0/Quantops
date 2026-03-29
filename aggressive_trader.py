@@ -31,7 +31,7 @@ AI_MIN_CONFIDENCE = 25  # AI must be at least this confident to allow a buy (low
 # AI Review
 # ---------------------------------------------------------------------------
 
-def ai_review(symbol, technical_signal, ctx=None):
+def ai_review(symbol, technical_signal, ctx=None, political_context=None):
     """Ask Claude to review a proposed trade before execution.
 
     Records every AI prediction to the tracker for accuracy measurement.
@@ -42,6 +42,9 @@ def ai_review(symbol, technical_signal, ctx=None):
     ctx : UserContext, optional
         If provided, passes ctx to analyze_symbol and record_prediction
         for credentials and DB path.
+    political_context : str, optional
+        If provided (from MAGA Mode), passed through to analyze_symbol so
+        Claude considers political/macro conditions.
     """
     from ai_analyst import analyze_symbol
     from ai_tracker import record_prediction, init_tracker_db
@@ -50,7 +53,7 @@ def ai_review(symbol, technical_signal, ctx=None):
     init_tracker_db(db_path)
 
     print(f"    AI reviewing {symbol}...", end=" ", flush=True)
-    ai_result = analyze_symbol(symbol, ctx=ctx)
+    ai_result = analyze_symbol(symbol, ctx=ctx, political_context=political_context)
 
     ai_signal = ai_result.get("signal", "HOLD").upper()
     ai_confidence = ai_result.get("confidence", 0)
@@ -346,6 +349,16 @@ def run_aggressive_scan_and_trade(candidates, ctx=None, max_position_pct=None,
     if max_position_pct is None:
         max_position_pct = ctx.max_position_pct if ctx is not None else AGGRESSIVE_MAX_POSITION_PCT
 
+    # Fetch political context once for the entire scan if MAGA mode is enabled
+    political_context = None
+    maga_mode = ctx.maga_mode if ctx is not None else False
+    if maga_mode:
+        from political_sentiment import get_maga_mode_context
+        print("  MAGA Mode active — fetching political context...", flush=True)
+        political_context = get_maga_mode_context(ctx=ctx)
+        if political_context:
+            print(f"  {political_context.splitlines()[0]}")  # Print first line
+
     details = []
     vetoed = []
     errors = []
@@ -362,7 +375,8 @@ def run_aggressive_scan_and_trade(candidates, ctx=None, max_position_pct=None,
 
             # Step 2: AI review for actionable signals
             print(f"  {symbol}: {action} (score {signal.get('score', '?')})")
-            approved, ai_result = ai_review(symbol, signal, ctx=ctx)
+            approved, ai_result = ai_review(symbol, signal, ctx=ctx,
+                                            political_context=political_context)
 
             if not approved:
                 vetoed.append({
