@@ -1,8 +1,17 @@
-"""Political sentiment analysis for market volatility detection."""
+"""Political sentiment analysis for market volatility detection.
+
+Sources (all free, no API keys):
+- Google News RSS (political + market search)
+- CNBC Economy RSS
+- Reuters Business RSS
+- Yahoo Finance (via yfinance) for SPY/QQQ/DIA news
+"""
 
 import json
 import logging
 import time
+import urllib.request
+import xml.etree.ElementTree as ET
 from typing import Optional, Dict, Any, List
 
 import yfinance as yf
@@ -19,7 +28,18 @@ POLITICAL_KEYWORDS = [
     "tariff", "trade war", "sanctions", "executive order", "policy",
     "regulation", "president", "white house", "congress", "fed",
     "treasury", "ban", "restrict", "tax", "subsidy", "stimulus",
-    "shutdown", "debt ceiling", "impeach",
+    "shutdown", "debt ceiling", "impeach", "trump", "truth social",
+    "trade deal", "china", "retaliation", "duty", "import",
+    "executive action", "veto", "bipartisan",
+]
+
+# ---------------------------------------------------------------------------
+# Free RSS feeds
+# ---------------------------------------------------------------------------
+RSS_FEEDS = [
+    ("Google News: Trump Market", "https://news.google.com/rss/search?q=trump+market+tariff&hl=en-US&gl=US&ceid=US:en"),
+    ("Google News: Political Economy", "https://news.google.com/rss/search?q=political+economy+stocks&hl=en-US&gl=US&ceid=US:en"),
+    ("CNBC Economy", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -53,46 +73,69 @@ def _set_cache(key: str, value: Any) -> None:
 # Fetch political news
 # ---------------------------------------------------------------------------
 
-def fetch_political_news(limit: int = 20) -> List[Dict[str, str]]:
-    """Fetch recent market-relevant political news.
+def _fetch_rss(url: str, source_name: str) -> List[Dict[str, str]]:
+    """Fetch headlines from an RSS feed. Returns list of {title, source}."""
+    results = []
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "QuantOpsAI/1.0"})
+        resp = urllib.request.urlopen(req, timeout=8)
+        data = resp.read()
+        root = ET.fromstring(data)
+        for item in root.findall(".//item"):
+            title_el = item.find("title")
+            if title_el is not None and title_el.text:
+                results.append({
+                    "title": title_el.text.strip(),
+                    "source": source_name,
+                })
+    except Exception as exc:
+        logger.warning("RSS fetch failed for %s: %s", source_name, exc)
+    return results
 
-    Uses yfinance news for broad market ETFs (SPY, QQQ, DIA) and filters
-    headlines that contain political keywords.
 
-    Returns a list of headline dicts with 'title' and 'source' keys.
+def fetch_political_news(limit: int = 30) -> List[Dict[str, str]]:
+    """Fetch recent market-relevant political news from multiple free sources.
+
+    Sources:
+    - Google News RSS (political + market searches)
+    - CNBC Economy RSS
+    - Yahoo Finance (via yfinance) for SPY/QQQ/DIA news
+
+    All headlines are filtered for political keywords and deduplicated.
+    Results cached for 30 minutes.
     """
     if _is_cached("political_news"):
         logger.debug("Returning cached political news")
         return _cache["political_news"]
 
-    market_symbols = ["SPY", "QQQ", "DIA"]
     all_headlines: List[Dict[str, str]] = []
     seen_titles = set()
 
-    for sym in market_symbols:
+    def _add(title, source):
+        if title and title not in seen_titles:
+            title_lower = title.lower()
+            if any(kw in title_lower for kw in POLITICAL_KEYWORDS):
+                seen_titles.add(title)
+                all_headlines.append({"title": title, "source": source})
+
+    # 1. RSS feeds (fast, free, broad coverage)
+    for feed_name, feed_url in RSS_FEEDS:
+        for item in _fetch_rss(feed_url, feed_name):
+            _add(item["title"], item["source"])
+
+    # 2. Yahoo Finance via yfinance (market ETFs)
+    for sym in ["SPY", "QQQ", "DIA"]:
         try:
             ticker = yf.Ticker(sym)
-            news = ticker.news or []
-            for item in news:
-                title = item.get("title", "")
-                if not title or title in seen_titles:
-                    continue
-                # Check if headline contains any political keyword
-                title_lower = title.lower()
-                if any(kw in title_lower for kw in POLITICAL_KEYWORDS):
-                    seen_titles.add(title)
-                    all_headlines.append({
-                        "title": title,
-                        "source": item.get("publisher", "Unknown"),
-                    })
+            for item in (ticker.news or []):
+                _add(item.get("title", ""), item.get("publisher", "Yahoo Finance"))
         except Exception as exc:
-            logger.warning("Failed to fetch news for %s: %s", sym, exc)
+            logger.warning("yfinance news failed for %s: %s", sym, exc)
 
-    # Trim to requested limit
     result = all_headlines[:limit]
     _set_cache("political_news", result)
-    logger.info("Fetched %d political headlines (from %d total market news)",
-                len(result), len(seen_titles))
+    logger.info("Fetched %d political headlines from %d sources",
+                len(result), len(RSS_FEEDS) + 3)
     return result
 
 
