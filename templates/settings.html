@@ -340,48 +340,54 @@
 </article>
 {% endfor %}
 
-<!-- Universe Dialog -->
-<dialog id="universe-dialog" class="universe-dialog">
-    <div class="universe-dialog-header">
-        <h3 id="universe-dialog-title"></h3>
-        <button type="button" id="universe-dialog-close" class="universe-dialog-close-btn" aria-label="Close">&times;</button>
+<!-- Universe Popup -->
+<div id="universe-popup" class="universe-popup" style="display:none;">
+    <div class="universe-popup-header">
+        <span id="universe-popup-title"></span>
+        <button type="button" id="universe-popup-close" class="universe-popup-close">&times;</button>
     </div>
-    <p id="universe-dialog-subtitle" class="universe-dialog-subtitle"></p>
-    <div class="universe-dialog-body">
-        <table class="universe-table">
-            <thead>
-                <tr><th>Symbol</th><th>Name</th></tr>
-            </thead>
-            <tbody id="universe-dialog-tbody"></tbody>
+    <p id="universe-popup-subtitle" class="universe-popup-subtitle"></p>
+    <div class="universe-popup-body">
+        <table>
+            <thead><tr><th>Symbol</th><th>Name</th></tr></thead>
+            <tbody id="universe-popup-tbody"></tbody>
         </table>
     </div>
-</dialog>
+</div>
+<div id="universe-overlay" style="display:none;"></div>
 
 {% endblock %}
 {% block scripts %}
 <script src="/static/settings.js"></script>
 <script>
-// View Universe dialog
+// View Universe popup
 (function() {
-    var dialog = document.getElementById('universe-dialog');
-    var titleEl = document.getElementById('universe-dialog-title');
-    var subtitleEl = document.getElementById('universe-dialog-subtitle');
-    var tbodyEl = document.getElementById('universe-dialog-tbody');
-    var closeBtn = document.getElementById('universe-dialog-close');
+    var popup = document.getElementById('universe-popup');
+    var overlay = document.getElementById('universe-overlay');
+    var titleEl = document.getElementById('universe-popup-title');
+    var subtitleEl = document.getElementById('universe-popup-subtitle');
+    var tbodyEl = document.getElementById('universe-popup-tbody');
+    var closeBtn = document.getElementById('universe-popup-close');
 
-    closeBtn.addEventListener('click', function() { dialog.close(); });
-    dialog.addEventListener('click', function(e) {
-        if (e.target === dialog) dialog.close();
-    });
+    function closePopup() {
+        popup.style.display = 'none';
+        overlay.style.display = 'none';
+    }
+    closeBtn.addEventListener('click', closePopup);
+    overlay.addEventListener('click', closePopup);
 
     document.querySelectorAll('.view-universe-btn').forEach(function(btn) {
         btn.addEventListener('click', function() {
             var profileId = this.dataset.profileId;
             var profileName = this.dataset.profileName;
-            titleEl.textContent = 'Symbols being evaluated for ' + profileName;
+            titleEl.textContent = profileName + ' Universe';
             subtitleEl.textContent = 'Loading...';
             tbodyEl.innerHTML = '';
-            dialog.showModal();
+            popup.style.display = 'block';
+            overlay.style.display = 'block';
+
+            // Trigger name caching in background
+            fetch('/api/universe/' + profileId + '/cache-names', {method: 'POST'}).catch(function(){});
 
             fetch('/api/universe/' + profileId)
                 .then(function(r) { return r.json(); })
@@ -390,22 +396,18 @@
                         subtitleEl.textContent = 'Error: ' + data.error;
                         return;
                     }
-                    subtitleEl.textContent = data.market_type_name + ' universe: ' +
-                        data.base_count + ' base symbols' +
+                    subtitleEl.textContent = data.base_count + ' symbols' +
                         (data.custom_count > 0 ? ' + ' + data.custom_count + ' custom' : '');
 
                     var html = '';
                     data.symbols.forEach(function(s) {
-                        var cls = s.source === 'custom' ? ' class="universe-custom-row"' : '';
-                        var name = s.source === 'custom'
-                            ? '<span style="color:#00c853">Custom</span>'
-                            : s.symbol;
-                        html += '<tr' + cls + '><td>' + s.symbol + '</td><td style="color:#8a8aaa">' + name + '</td></tr>';
+                        var cls = s.source === 'custom' ? ' style="color:#00c853"' : '';
+                        html += '<tr><td' + cls + '>' + s.symbol + '</td><td>' + s.name + '</td></tr>';
                     });
                     tbodyEl.innerHTML = html;
                 })
-                .catch(function(err) {
-                    subtitleEl.textContent = 'Failed to load universe.';
+                .catch(function() {
+                    subtitleEl.textContent = 'Failed to load.';
                 });
         });
     });

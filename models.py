@@ -165,6 +165,11 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             FOREIGN KEY (profile_id) REFERENCES trading_profiles(id),
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
+        CREATE TABLE IF NOT EXISTS symbol_names (
+            symbol TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
     """)
     conn.commit()
     conn.close()
@@ -938,3 +943,69 @@ def get_activity_count(user_id: int, profile_id: Optional[int] = None) -> int:
         ).fetchone()
     conn.close()
     return row["cnt"] if row else 0
+
+
+# ---------------------------------------------------------------------------
+# Symbol Name Cache
+# ---------------------------------------------------------------------------
+
+def get_cached_names(symbols: List[str]) -> Dict[str, str]:
+    """Return a dict of {symbol: name} from the cache. Missing symbols omitted."""
+    if not symbols:
+        return {}
+    conn = _get_conn()
+    placeholders = ",".join("?" for _ in symbols)
+    rows = conn.execute(
+        f"SELECT symbol, name FROM symbol_names WHERE symbol IN ({placeholders})",
+        symbols,
+    ).fetchall()
+    conn.close()
+    return {r["symbol"]: r["name"] for r in rows}
+
+
+def cache_symbol_names(names: Dict[str, str]) -> None:
+    """Upsert symbol names into the cache."""
+    if not names:
+        return
+    conn = _get_conn()
+    for sym, name in names.items():
+        conn.execute(
+            "INSERT OR REPLACE INTO symbol_names (symbol, name, updated_at) VALUES (?, ?, datetime('now'))",
+            (sym, name),
+        )
+    conn.commit()
+    conn.close()
+
+
+def fetch_and_cache_names(symbols: List[str]) -> Dict[str, str]:
+    """Fetch names from yfinance for symbols not already cached, cache them, return all."""
+    cached = get_cached_names(symbols)
+    missing = [s for s in symbols if s not in cached]
+
+    if not missing:
+        return cached
+
+    # Fetch from yfinance in batches of 20
+    import yfinance as yf
+    new_names = {}
+    for i in range(0, len(missing), 20):
+        batch = missing[i:i + 20]
+        yf_syms = [s.replace("/", "-") for s in batch]
+        try:
+            tickers = yf.Tickers(" ".join(yf_syms))
+            for orig, yf_sym in zip(batch, yf_syms):
+                try:
+                    info = tickers.tickers[yf_sym].info
+                    name = info.get("shortName") or info.get("longName") or orig
+                    new_names[orig] = name
+                except Exception:
+                    new_names[orig] = orig
+        except Exception:
+            for s in batch:
+                new_names[s] = s
+
+    if new_names:
+        cache_symbol_names(new_names)
+
+    cached.update(new_names)
+    return cached

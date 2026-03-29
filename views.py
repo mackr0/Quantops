@@ -646,16 +646,21 @@ def api_universe(profile_id):
         except (json.JSONDecodeError, TypeError):
             custom_watchlist = []
 
-    # Build symbol list: base first, then custom (excluding duplicates)
+    # Get cached names (fast — from DB)
+    from models import get_cached_names
+    all_syms = sorted(base_universe) + [s.strip().upper() for s in custom_watchlist if s.strip()]
+    names = get_cached_names(all_syms)
+
+    # Build symbol list: base first, then custom
     symbols = []
     for sym in sorted(base_universe):
-        symbols.append({"symbol": sym, "source": "base"})
+        symbols.append({"symbol": sym, "name": names.get(sym, sym), "source": "base"})
 
     custom_count = 0
     for sym in custom_watchlist:
         sym = sym.strip().upper()
         if sym and sym not in base_set:
-            symbols.append({"symbol": sym, "source": "custom"})
+            symbols.append({"symbol": sym, "name": names.get(sym, sym), "source": "custom"})
             custom_count += 1
 
     market_type_name = SEGMENTS[market_type].get("name", market_type)
@@ -667,6 +672,25 @@ def api_universe(profile_id):
         "custom_count": custom_count,
         "symbols": symbols,
     })
+
+
+@views_bp.route("/api/universe/<int:profile_id>/cache-names", methods=["POST"])
+@login_required
+def api_cache_universe_names(profile_id):
+    """Trigger background caching of symbol names for a profile's universe."""
+    profile = get_trading_profile(profile_id)
+    if not profile or profile["user_id"] != current_user.id:
+        return jsonify({"error": "Not found"}), 404
+
+    market_type = profile["market_type"]
+    segment = SEGMENTS.get(market_type)
+    if not segment:
+        return jsonify({"error": "Unknown market type"}), 400
+
+    from models import fetch_and_cache_names
+    universe = list(segment["universe"])
+    names = fetch_and_cache_names(universe)
+    return jsonify({"cached": len(names)})
 
 
 @views_bp.route("/api/scheduler-status")
