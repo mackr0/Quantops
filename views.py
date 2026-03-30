@@ -177,9 +177,14 @@ def dashboard():
     # Get recent decisions
     decisions = get_decisions(current_user.id, limit=20)
 
+    # Scanning status for admin start/stop button
+    from models import is_scanning_active
+    scanning_active = is_scanning_active(current_user.id)
+
     return render_template("dashboard.html",
                            profiles_data=profiles_data,
-                           decisions=decisions)
+                           decisions=decisions,
+                           scanning_active=scanning_active)
 
 
 @views_bp.route("/settings")
@@ -812,6 +817,22 @@ def api_cache_universe_names(profile_id):
     universe = list(segment["universe"])
     names = fetch_and_cache_names(universe)
     return jsonify({"cached": len(names)})
+
+
+@views_bp.route("/api/scheduler-status")
+@login_required
+@views_bp.route("/scanning/toggle", methods=["POST"])
+@login_required
+def toggle_scanning():
+    """Admin-only: start/stop AI scanning for the current user."""
+    if not current_user.is_admin:
+        abort(403)
+    from models import is_scanning_active, set_scanning_active
+    currently_active = is_scanning_active(current_user.id)
+    set_scanning_active(current_user.id, not currently_active)
+    status = "started" if not currently_active else "stopped"
+    flash(f"AI scanning {status}.", "success")
+    return redirect(url_for("views.dashboard"))
 
 
 @views_bp.route("/api/scheduler-status")

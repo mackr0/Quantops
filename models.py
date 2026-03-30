@@ -56,7 +56,8 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             notification_email TEXT NOT NULL DEFAULT '',
             resend_api_key_enc TEXT NOT NULL DEFAULT '',
             last_login_at TEXT,
-            excluded_symbols TEXT NOT NULL DEFAULT '[]'
+            excluded_symbols TEXT NOT NULL DEFAULT '[]',
+            scanning_active INTEGER NOT NULL DEFAULT 1
         );
 
         CREATE TABLE IF NOT EXISTS user_segment_configs (
@@ -254,6 +255,23 @@ def update_user_credentials(user_id: int, alpaca_key: str = "",
     conn.commit()
     conn.close()
     logger.info("Updated credentials for user #%d", user_id)
+
+
+def is_scanning_active(user_id: int) -> bool:
+    """Check if a user's scanning is currently active."""
+    conn = _get_conn()
+    row = conn.execute("SELECT scanning_active FROM users WHERE id = ?", (user_id,)).fetchone()
+    conn.close()
+    return bool(row["scanning_active"]) if row else False
+
+
+def set_scanning_active(user_id: int, active: bool) -> None:
+    """Turn scanning on or off for a user."""
+    conn = _get_conn()
+    conn.execute("UPDATE users SET scanning_active = ? WHERE id = ?", (int(active), user_id))
+    conn.commit()
+    conn.close()
+    logger.info("User #%d scanning set to %s", user_id, active)
 
 
 def get_excluded_symbols(user_id: int) -> List[str]:
@@ -495,8 +513,12 @@ def get_active_profiles(user_id: Optional[int] = None) -> List[Dict[str, Any]]:
             (user_id,),
         ).fetchall()
     else:
+        # Only return profiles for users who have scanning_active = 1
         rows = conn.execute(
-            "SELECT * FROM trading_profiles WHERE enabled = 1 ORDER BY user_id, created_at"
+            """SELECT tp.* FROM trading_profiles tp
+               JOIN users u ON tp.user_id = u.id
+               WHERE tp.enabled = 1 AND u.scanning_active = 1
+               ORDER BY tp.user_id, tp.created_at"""
         ).fetchall()
     conn.close()
     results = []

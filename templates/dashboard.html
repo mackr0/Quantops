@@ -2,8 +2,23 @@
 {% block title %}Dashboard - QuantOpsAI{% endblock %}
 {% block content %}
 <hgroup>
-    <h1>Dashboard</h1>
-    <p>Welcome back{% if current_user.display_name %}, {{ current_user.display_name }}{% endif %}</p>
+    <h1 style="display:flex;justify-content:space-between;align-items:center;">
+        Dashboard
+        {% if current_user.is_admin %}
+        <form method="post" action="/scanning/toggle" style="margin:0;">
+            {% if scanning_active %}
+            <button type="submit" style="background:#ff1744;border-color:#ff1744;padding:0.4rem 1.2rem;font-size:0.9rem;">Stop Scanning</button>
+            {% else %}
+            <button type="submit" style="background:#00c853;border-color:#00c853;padding:0.4rem 1.2rem;font-size:0.9rem;">Start Scanning</button>
+            {% endif %}
+        </form>
+        {% endif %}
+    </h1>
+    <p>Welcome back{% if current_user.display_name %}, {{ current_user.display_name }}{% endif %}
+        {% if current_user.is_admin %}
+            — AI scanning is {% if scanning_active %}<strong style="color:#00c853;">active</strong>{% else %}<strong style="color:#ff1744;">stopped</strong>{% endif %}
+        {% endif %}
+    </p>
 </hgroup>
 
 <!-- Cycle Countdown Timers -->
