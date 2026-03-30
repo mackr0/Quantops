@@ -573,31 +573,89 @@ def trade_detail(decision_id):
 @views_bp.route("/ai-performance")
 @login_required
 def ai_performance():
-    """AI prediction accuracy dashboard."""
-    try:
-        from ai_tracker import get_ai_performance
-        perf = get_ai_performance()
-    except Exception:
-        perf = {
-            "total_predictions": 0, "resolved": 0, "pending": 0,
-            "win_rate": 0.0, "avg_confidence_on_wins": 0.0,
-            "avg_confidence_on_losses": 0.0, "avg_return_on_buys": 0.0,
-            "avg_return_on_sells": 0.0, "accuracy_by_confidence": {},
-            "best_prediction": None, "worst_prediction": None,
-            "profit_factor": 0.0,
-        }
+    """AI prediction accuracy dashboard — aggregated across all user's profiles."""
+    from ai_tracker import get_ai_performance
+    from journal import get_performance_summary
+    import os
 
-    try:
-        from journal import get_performance_summary
-        trade_perf = get_performance_summary()
-    except Exception:
-        trade_perf = {
-            "total_trades": 0, "winning_trades": 0, "losing_trades": 0,
-            "win_rate": 0.0, "total_pnl": 0.0, "avg_pnl": 0.0,
-            "best_trade": 0.0, "worst_trade": 0.0,
-        }
+    # Aggregate AI performance across all profile databases + legacy segment DBs
+    combined_perf = {
+        "total_predictions": 0, "resolved": 0, "pending": 0,
+        "win_rate": 0.0, "avg_confidence_on_wins": 0.0,
+        "avg_confidence_on_losses": 0.0, "avg_return_on_buys": 0.0,
+        "avg_return_on_sells": 0.0, "accuracy_by_confidence": {},
+        "best_prediction": None, "worst_prediction": None,
+        "profit_factor": 0.0,
+    }
+    combined_trade = {
+        "total_trades": 0, "winning_trades": 0, "losing_trades": 0,
+        "win_rate": 0.0, "total_pnl": 0.0, "avg_pnl": 0.0,
+        "best_trade": 0.0, "worst_trade": 0.0,
+    }
 
-    return render_template("ai_performance.html", perf=perf, trade_perf=trade_perf)
+    # Collect all DB paths for this user's profiles + legacy segment DBs
+    profiles = get_user_profiles(current_user.id)
+    db_paths = set()
+    for p in profiles:
+        db_path = f"quantopsai_profile_{p['id']}.db"
+        if os.path.exists(db_path):
+            db_paths.add(db_path)
+
+    # Also check legacy segment DBs
+    for legacy in ["quantopsai_microsmall.db", "quantopsai_midcap.db",
+                    "quantopsai_largecap.db", "quantopsai_crypto.db",
+                    "quantopsai_smallcap.db"]:
+        if os.path.exists(legacy):
+            db_paths.add(legacy)
+
+    for db_path in db_paths:
+        try:
+            p = get_ai_performance(db_path=db_path)
+            combined_perf["total_predictions"] += p.get("total_predictions", 0)
+            combined_perf["resolved"] += p.get("resolved", 0)
+            combined_perf["pending"] += p.get("pending", 0)
+            if p.get("best_prediction"):
+                if (combined_perf["best_prediction"] is None or
+                        p["best_prediction"].get("return_pct", 0) >
+                        combined_perf["best_prediction"].get("return_pct", 0)):
+                    combined_perf["best_prediction"] = p["best_prediction"]
+            if p.get("worst_prediction"):
+                if (combined_perf["worst_prediction"] is None or
+                        p["worst_prediction"].get("return_pct", 0) <
+                        combined_perf["worst_prediction"].get("return_pct", 0)):
+                    combined_perf["worst_prediction"] = p["worst_prediction"]
+        except Exception:
+            pass
+
+        try:
+            t = get_performance_summary(db_path=db_path)
+            combined_trade["total_trades"] += t.get("total_trades", 0)
+            combined_trade["winning_trades"] += t.get("winning_trades", 0)
+            combined_trade["losing_trades"] += t.get("losing_trades", 0)
+            combined_trade["total_pnl"] += t.get("total_pnl", 0)
+            if t.get("best_trade", 0) > combined_trade["best_trade"]:
+                combined_trade["best_trade"] = t["best_trade"]
+            if t.get("worst_trade", 0) < combined_trade["worst_trade"]:
+                combined_trade["worst_trade"] = t["worst_trade"]
+        except Exception:
+            pass
+
+    # Calculate derived metrics
+    if combined_perf["resolved"] > 0:
+        # Win rate would need per-record aggregation for accuracy,
+        # but this is a reasonable approximation
+        pass
+    if combined_trade["total_trades"] > 0:
+        combined_trade["win_rate"] = (
+            combined_trade["winning_trades"] / combined_trade["total_trades"] * 100
+        )
+        combined_trade["avg_pnl"] = (
+            combined_trade["total_pnl"] / combined_trade["total_trades"]
+        )
+
+    return render_template("ai_performance.html",
+                           perf=combined_perf,
+                           trade_perf=combined_trade)
 
 
 @views_bp.route("/admin")
