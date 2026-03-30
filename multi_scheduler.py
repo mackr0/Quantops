@@ -417,7 +417,13 @@ def _task_aggressive_scan_and_trade(ctx):
 
         if "BUY" in str(tech_signal):
             try:
-                notify_veto(veto["symbol"], {"signal": tech_signal}, veto, ctx=ctx)
+                notify_veto(
+                    veto["symbol"],
+                    {"signal": tech_signal, "score": veto.get("score", ""), "reason": veto.get("reason", "")},
+                    {"signal": veto.get("ai_signal", ""), "confidence": ai_conf, "reasoning": ai_reasoning,
+                     "risk_factors": veto.get("ai_risk_factors", [])},
+                    ctx=ctx,
+                )
             except Exception:
                 logging.exception("Failed to send veto notification")
 
