@@ -209,6 +209,10 @@ def analyze_political_climate(ctx=None) -> Dict[str, Any]:
         )
 
         response_text = message.content[0].text.strip()
+        if response_text.startswith("```"):
+            lines = response_text.split("\n")
+            lines = [l for l in lines if not l.strip().startswith("```")]
+            response_text = "\n".join(lines).strip()
         result = json.loads(response_text)
         _set_cache("political_climate", result)
         return result

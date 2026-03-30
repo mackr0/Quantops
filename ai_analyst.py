@@ -136,6 +136,12 @@ def analyze_symbol(symbol, ctx=None, api=None, political_context=None):
         )
 
         response_text = message.content[0].text.strip()
+        # Strip markdown code fences if present (Haiku sometimes adds them)
+        if response_text.startswith("```"):
+            lines = response_text.split("\n")
+            # Remove first line (```json) and last line (```)
+            lines = [l for l in lines if not l.strip().startswith("```")]
+            response_text = "\n".join(lines).strip()
         result = json.loads(response_text)
         result["symbol"] = symbol
         return result
@@ -217,6 +223,10 @@ def analyze_portfolio_risk(positions, account_info, ctx=None):
         )
 
         response_text = message.content[0].text.strip()
+        if response_text.startswith("```"):
+            lines = response_text.split("\n")
+            lines = [l for l in lines if not l.strip().startswith("```")]
+            response_text = "\n".join(lines).strip()
         return json.loads(response_text)
 
     except json.JSONDecodeError as exc:
