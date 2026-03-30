@@ -342,6 +342,39 @@ def _task_aggressive_scan_and_trade(ctx):
         for s in screen_results.get(cat, []):
             symbols.add(s["symbol"])
 
+    # MAGA Mode: also scan the full universe for deeply oversold stocks
+    # These might not pass normal screener filters but are mean reversion candidates
+    if maga_mode and not is_crypto:
+        from market_data import get_bars, add_indicators
+        universe = seg.get("universe", [])
+        import yfinance as _yf
+        logging.info(f"[{seg_label}] MAGA Mode: scanning for oversold opportunities...")
+        try:
+            yf_data = _yf.download(universe, period="1mo", progress=False,
+                                   group_by="ticker", threads=True)
+            for sym in universe:
+                if sym in symbols:
+                    continue
+                try:
+                    sym_df = yf_data[sym].dropna(subset=["Close"])
+                    if len(sym_df) < 15:
+                        continue
+                    # Quick RSI calculation
+                    close = sym_df["Close"]
+                    delta = close.diff()
+                    gain = delta.where(delta > 0, 0).rolling(14).mean()
+                    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                    rs = gain / loss
+                    rsi = 100 - (100 / (1 + rs))
+                    latest_rsi = float(rsi.iloc[-1])
+                    if latest_rsi < ctx.rsi_oversold:
+                        symbols.add(sym)
+                except Exception:
+                    pass
+        except Exception:
+            logging.warning(f"[{seg_label}] MAGA oversold scan failed")
+        logging.info(f"[{seg_label}] After MAGA oversold scan: {len(symbols)} total candidates")
+
     symbols = list(symbols)[:30]
 
     if not symbols:
