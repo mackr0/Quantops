@@ -819,8 +819,6 @@ def api_cache_universe_names(profile_id):
     return jsonify({"cached": len(names)})
 
 
-@views_bp.route("/api/scheduler-status")
-@login_required
 @views_bp.route("/scanning/toggle", methods=["POST"])
 @login_required
 def toggle_scanning():
