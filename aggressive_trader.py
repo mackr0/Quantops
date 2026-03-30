@@ -374,6 +374,17 @@ def run_aggressive_scan_and_trade(candidates, ctx=None, max_position_pct=None,
             # Step 1: Technical analysis
             signal = aggressive_combined_strategy(symbol)
             action = signal.get("signal", "HOLD")
+            score = signal.get("score", 0)
+            votes = signal.get("votes", {})
+
+            # In MAGA mode, a score of 0 with a mean_reversion BUY vote
+            # should still go to AI review — the AI may see it as a
+            # politically-driven dip worth buying
+            has_mean_reversion_buy = votes.get("mean_reversion") == "BUY"
+            if action == "HOLD" and maga_mode and has_mean_reversion_buy:
+                action = "BUY"
+                signal["signal"] = "BUY"
+                signal["reason"] = f"MAGA Mode override: {signal.get('reason', '')} | Mean reversion BUY active despite conflicting signals"
 
             if action == "HOLD":
                 details.append({"symbol": symbol, "action": "HOLD", "reason": signal.get("reason", "")})
