@@ -140,6 +140,12 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
     api = get_api(ctx)
     account = get_account_info(api)
     positions_list = get_positions(api)
+
+    # Filter positions to match profile's market type
+    if ctx is not None:
+        is_crypto = ctx.segment == "crypto"
+        positions_list = [p for p in positions_list if ("/" in p["symbol"]) == is_crypto]
+
     positions = {p["symbol"]: p for p in positions_list}
 
     equity = account.get("equity", 0)

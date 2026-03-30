@@ -194,6 +194,19 @@ def check_exits(ctx=None):
     if not positions:
         return []
 
+    # Filter positions to match the profile's market type
+    # Crypto profiles only manage crypto positions (symbol contains '/')
+    # Equity profiles only manage stock positions (no '/')
+    if ctx is not None:
+        is_crypto = ctx.segment == "crypto"
+        positions = [
+            p for p in positions
+            if ("/" in p["symbol"]) == is_crypto
+        ]
+
+    if not positions:
+        return []
+
     init_db(db_path)
     triggered = check_stop_loss_take_profit(
         positions,
