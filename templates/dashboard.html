@@ -2,33 +2,18 @@
 {% block title %}Dashboard - QuantOpsAI{% endblock %}
 {% block content %}
 <hgroup>
-    <h1 style="display:flex;justify-content:space-between;align-items:center;">
-        Dashboard
-        {% if current_user.is_admin %}
-        <form method="post" action="/scanning/toggle" style="margin:0;">
-            {% if scanning_active %}
-            <button type="submit" style="background:#ff1744;border-color:#ff1744;padding:0.4rem 1.2rem;font-size:0.9rem;">Stop Scanning</button>
-            {% else %}
-            <button type="submit" style="background:#00c853;border-color:#00c853;padding:0.4rem 1.2rem;font-size:0.9rem;">Start Scanning</button>
-            {% endif %}
-        </form>
-        {% endif %}
-    </h1>
-    <p>Welcome back{% if current_user.display_name %}, {{ current_user.display_name }}{% endif %}
-        {% if current_user.is_admin %}
-            — AI scanning is {% if scanning_active %}<strong style="color:#00c853;">active</strong>{% else %}<strong style="color:#ff1744;">stopped</strong>{% endif %}
-        {% endif %}
-    </p>
+    <h1>Dashboard</h1>
+    <p>Welcome back{% if current_user.display_name %}, {{ current_user.display_name }}{% endif %}</p>
 </hgroup>
 
-<!-- Cycle Countdown Timers -->
-{% if not scanning_active and current_user.is_admin %}
-<article style="text-align:center;padding:1rem;margin-bottom:1rem;background:#2a1a1a;border:1px solid #ff1744;border-radius:8px;">
-    <strong style="color:#ff1744;">AI Scanning is Stopped</strong>
-    <p class="muted" style="margin:0.25rem 0 0;">No tokens are being used. Press Start Scanning to resume.</p>
+<!-- Cycle Countdown Timers / Schedule Status -->
+{% if not any_profile_active %}
+<article style="text-align:center;padding:1rem;margin-bottom:1rem;background:#1a1a2e;border:1px solid #333;border-radius:8px;">
+    <strong style="color:#8a8aaa;">All profiles outside trading hours</strong>
+    <p class="muted" style="margin:0.25rem 0 0;">Next session starts at {{ next_session_time }}. No tokens being used.</p>
 </article>
 {% endif %}
-<div class="grid" style="margin-bottom:1rem;{% if not scanning_active and current_user.is_admin %}display:none;{% endif %}"">
+<div class="grid" style="margin-bottom:1rem;{% if not any_profile_active %}display:none;{% endif %}"
     <article style="text-align:center; padding:0.75rem; margin:0;">
         <small class="muted">Next Scan & Trade</small>
         <div id="timer-scan" style="font-size:1.5rem; font-weight:bold; font-family:monospace;">--:--</div>
