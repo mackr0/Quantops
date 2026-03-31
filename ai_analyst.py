@@ -131,6 +131,14 @@ def analyze_symbol(symbol, ctx=None, api=None, political_context=None):
             api_key=ctx.ai_api_key if ctx else config.ANTHROPIC_API_KEY,
         )
 
+        # Track API usage
+        if ctx is not None:
+            try:
+                from models import increment_api_usage
+                increment_api_usage(ctx.user_id)
+            except Exception:
+                pass
+
         result = json.loads(response_text)
         result["symbol"] = symbol
         return result
@@ -204,6 +212,13 @@ def analyze_portfolio_risk(positions, account_info, ctx=None):
             model=ctx.ai_model if ctx else config.CLAUDE_MODEL,
             api_key=ctx.ai_api_key if ctx else config.ANTHROPIC_API_KEY,
         )
+
+        if ctx is not None:
+            try:
+                from models import increment_api_usage
+                increment_api_usage(ctx.user_id)
+            except Exception:
+                pass
 
         return json.loads(response_text)
 

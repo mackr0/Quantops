@@ -204,6 +204,14 @@ def analyze_political_climate(ctx=None) -> Dict[str, Any]:
             max_tokens=512,
         )
 
+        # Track API usage
+        if ctx is not None:
+            try:
+                from models import increment_api_usage
+                increment_api_usage(ctx.user_id)
+            except Exception:
+                pass
+
         result = json.loads(response_text)
         _set_cache("political_climate", result)
         return result
