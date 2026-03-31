@@ -206,21 +206,23 @@ def _build_scan_summary(ctx, candidates, summary):
     total = summary.get("total", len(candidates))
     buys = summary.get("buys", 0)
     sells = summary.get("sells", 0)
+    shorts = summary.get("shorts", 0)
     holds = summary.get("holds", 0)
     ai_vetoed = summary.get("ai_vetoed", 0)
 
     # Determine market mood
-    if buys > 0 and sells == 0:
+    if buys > 0 and sells == 0 and shorts == 0:
         mood = "bullish signals"
-    elif sells > 0 and buys == 0:
+    elif (sells > 0 or shorts > 0) and buys == 0:
         mood = "bearish signals"
-    elif buys > 0 and sells > 0:
+    elif buys > 0 and (sells > 0 or shorts > 0):
         mood = "mixed signals"
     else:
         mood = "market flat"
 
+    shorts_part = f", {shorts} shorts" if shorts > 0 else ""
     title = (f"{seg_label} Scan: {total} analyzed, {buys} buys, "
-             f"{sells} sells — {mood}")
+             f"{sells} sells{shorts_part} — {mood}")
 
     # Build a clean, structured detail summary
     top_symbols = list(candidates)[:5]
@@ -393,6 +395,7 @@ def _task_aggressive_scan_and_trade(ctx):
         f"[{seg_label}] Trade summary: "
         f"buys={summary.get('buys', 0)}, "
         f"sells={summary.get('sells', 0)}, "
+        f"shorts={summary.get('shorts', 0)}, "
         f"ai_vetoed={summary.get('ai_vetoed', 0)}, "
         f"holds={summary.get('holds', 0)}, "
         f"errors={summary.get('errors', 0)}"
@@ -409,7 +412,7 @@ def _task_aggressive_scan_and_trade(ctx):
         logging.exception("Failed to build scan summary for activity log")
 
     for detail in summary.get("details", []):
-        if detail.get("action") in ("BUY", "SELL"):
+        if detail.get("action") in ("BUY", "SELL", "SHORT"):
             try:
                 notify_trade(detail, detail, detail, ctx=ctx)
             except Exception:

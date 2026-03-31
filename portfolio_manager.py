@@ -175,30 +175,63 @@ def check_stop_loss_take_profit(positions, stop_loss_pct=None, take_profit_pct=N
         pos_stop_loss = pos.get("stop_loss") or stop_loss_pct
         pos_take_profit = pos.get("take_profit") or take_profit_pct
 
-        if pct_change <= -pos_stop_loss:
-            triggered.append({
-                "symbol": symbol,
-                "signal": "SELL",
-                "reason": (
-                    f"Stop-loss triggered: {pct_change:+.2%} "
-                    f"(threshold -{pos_stop_loss:.0%})"
-                ),
-                "price": current_price,
-                "qty": qty,
-                "trigger": "stop_loss",
-            })
-        elif pct_change >= pos_take_profit:
-            triggered.append({
-                "symbol": symbol,
-                "signal": "SELL",
-                "reason": (
-                    f"Take-profit triggered: {pct_change:+.2%} "
-                    f"(threshold +{pos_take_profit:.0%})"
-                ),
-                "price": current_price,
-                "qty": qty,
-                "trigger": "take_profit",
-            })
+        # Detect short positions by negative qty
+        is_short = int(qty) < 0
+
+        if is_short:
+            abs_qty = abs(int(qty))
+            # For shorts: price going UP is bad (stop-loss), price going DOWN is good (take-profit)
+            if pct_change >= pos_stop_loss:
+                triggered.append({
+                    "symbol": symbol,
+                    "signal": "SELL",
+                    "reason": (
+                        f"Short stop-loss triggered: price up {pct_change:+.2%} "
+                        f"(threshold +{pos_stop_loss:.0%})"
+                    ),
+                    "price": current_price,
+                    "qty": abs_qty,
+                    "trigger": "short_stop_loss",
+                    "is_short": True,
+                })
+            elif pct_change <= -pos_take_profit:
+                triggered.append({
+                    "symbol": symbol,
+                    "signal": "SELL",
+                    "reason": (
+                        f"Short take-profit triggered: price down {pct_change:+.2%} "
+                        f"(threshold -{pos_take_profit:.0%})"
+                    ),
+                    "price": current_price,
+                    "qty": abs_qty,
+                    "trigger": "short_take_profit",
+                    "is_short": True,
+                })
+        else:
+            if pct_change <= -pos_stop_loss:
+                triggered.append({
+                    "symbol": symbol,
+                    "signal": "SELL",
+                    "reason": (
+                        f"Stop-loss triggered: {pct_change:+.2%} "
+                        f"(threshold -{pos_stop_loss:.0%})"
+                    ),
+                    "price": current_price,
+                    "qty": qty,
+                    "trigger": "stop_loss",
+                })
+            elif pct_change >= pos_take_profit:
+                triggered.append({
+                    "symbol": symbol,
+                    "signal": "SELL",
+                    "reason": (
+                        f"Take-profit triggered: {pct_change:+.2%} "
+                        f"(threshold +{pos_take_profit:.0%})"
+                    ),
+                    "price": current_price,
+                    "qty": qty,
+                    "trigger": "take_profit",
+                })
 
     return triggered
 

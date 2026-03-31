@@ -376,6 +376,7 @@ def save_profile(profile_id):
         "strategy_mean_reversion": 1 if form.get("strategy_mean_reversion") else 0,
         "strategy_gap_and_go": 1 if form.get("strategy_gap_and_go") else 0,
         "maga_mode": 1 if form.get("maga_mode") else 0,
+        "enable_short_selling": 1 if form.get("enable_short_selling") else 0,
     }
 
     # Custom watchlist: parse comma-separated text into a JSON list

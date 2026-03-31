@@ -100,6 +100,7 @@ def task_aggressive_scan_and_trade():
         f"Aggressive trade summary: "
         f"buys={summary.get('buys', 0)}, "
         f"sells={summary.get('sells', 0)}, "
+        f"shorts={summary.get('shorts', 0)}, "
         f"ai_vetoed={summary.get('ai_vetoed', 0)}, "
         f"holds={summary.get('holds', 0)}, "
         f"errors={summary.get('errors', 0)}"
@@ -107,7 +108,7 @@ def task_aggressive_scan_and_trade():
 
     # Send email for each executed trade
     for detail in summary.get("details", []):
-        if detail.get("action") in ("BUY", "SELL"):
+        if detail.get("action") in ("BUY", "SELL", "SHORT"):
             try:
                 notify_trade(detail, detail, detail)
             except Exception:

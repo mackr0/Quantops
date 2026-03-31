@@ -153,6 +153,7 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             strategy_gap_and_go INTEGER NOT NULL DEFAULT 1,
             custom_watchlist TEXT NOT NULL DEFAULT '[]',
             maga_mode INTEGER NOT NULL DEFAULT 0,
+            enable_short_selling INTEGER NOT NULL DEFAULT 0,
             ai_provider TEXT NOT NULL DEFAULT 'anthropic',
             ai_model TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001',
             ai_api_key_enc TEXT NOT NULL DEFAULT '',
@@ -164,6 +165,7 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         -- ALTER TABLE trading_profiles ADD COLUMN ai_provider TEXT NOT NULL DEFAULT 'anthropic';
         -- ALTER TABLE trading_profiles ADD COLUMN ai_model TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001';
         -- ALTER TABLE trading_profiles ADD COLUMN ai_api_key_enc TEXT NOT NULL DEFAULT '';
+        -- ALTER TABLE trading_profiles ADD COLUMN enable_short_selling INTEGER NOT NULL DEFAULT 0;
         CREATE TABLE IF NOT EXISTS activity_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             profile_id INTEGER NOT NULL,
@@ -556,7 +558,7 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "breakout_volume_threshold", "gap_pct_threshold",
         "strategy_momentum_breakout", "strategy_volume_spike",
         "strategy_mean_reversion", "strategy_gap_and_go",
-        "custom_watchlist", "maga_mode",
+        "custom_watchlist", "maga_mode", "enable_short_selling",
         "ai_provider", "ai_model", "ai_api_key_enc",
     }
     updates = {}
@@ -667,6 +669,8 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         custom_watchlist=profile.get("custom_watchlist", []),
         # MAGA Mode
         maga_mode=bool(profile.get("maga_mode", 0)),
+        # Short selling
+        enable_short_selling=bool(profile.get("enable_short_selling", 0)),
     )
 
 

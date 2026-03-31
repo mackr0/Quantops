@@ -108,7 +108,7 @@ def execute_trade(symbol, signal, ctx=None, strategy_name="combined", log=True):
                         db_path=db_path,
                     )
 
-    elif action in ("SELL", "STRONG_SELL", "WEAK_SELL") and symbol in positions:
+    elif action in ("SELL", "STRONG_SELL", "WEAK_SELL") and symbol in positions and int(positions[symbol]["qty"]) > 0:
         position = positions[symbol]
         qty = int(position["qty"])
 
@@ -221,20 +221,36 @@ def check_exits(ctx=None):
     for trigger_signal in triggered:
         symbol = trigger_signal["symbol"]
         qty = int(trigger_signal["qty"])
+        is_short = trigger_signal.get("is_short", False)
 
-        order = api.submit_order(
-            symbol=symbol,
-            qty=qty,
-            side="sell",
-            type="market",
-            time_in_force="day",
-        )
+        if is_short:
+            # Close short position by buying to cover
+            order = api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side="buy",
+                type="market",
+                time_in_force="day",
+            )
+            side_label = "cover"
+            action_label = "COVER"
+        else:
+            # Close long position by selling
+            order = api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side="sell",
+                type="market",
+                time_in_force="day",
+            )
+            side_label = "sell"
+            action_label = "SELL"
 
         pnl = pnl_by_symbol.get(symbol)
 
         log_trade(
             symbol=symbol,
-            side="sell",
+            side=side_label,
             qty=qty,
             price=trigger_signal["price"],
             order_id=order.id,
@@ -247,7 +263,7 @@ def check_exits(ctx=None):
 
         results.append({
             "symbol": symbol,
-            "action": "SELL",
+            "action": action_label,
             "qty": qty,
             "trigger": trigger_signal["trigger"],
             "reason": trigger_signal["reason"],

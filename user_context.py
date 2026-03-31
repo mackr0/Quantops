@@ -74,6 +74,9 @@ class UserContext:
     # MAGA Mode — factor political volatility into AI analysis
     maga_mode: bool = False
 
+    # Short selling — allow opening short positions on SELL signals
+    enable_short_selling: bool = False
+
     def get_alpaca_api(self):
         """Create an Alpaca REST client for this user."""
         import alpaca_trade_api as tradeapi

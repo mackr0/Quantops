@@ -232,6 +232,12 @@
                 </label>
             </div>
 
+            <label style="display:flex;align-items:flex-start;gap:0.5rem;">
+                <input type="checkbox" name="enable_short_selling" value="1" style="flex-shrink:0;margin-top:0.2rem;"
+                       {{ 'checked' if prof.enable_short_selling else '' }}>
+                <span>Enable Short Selling<br><small style="color:#888;font-weight:normal;">Allows opening short positions to profit from declining stocks</small></span>
+            </label>
+
             <!-- AI Parameters -->
             <h4>AI Parameters</h4>
             <label>

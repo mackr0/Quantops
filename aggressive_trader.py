@@ -257,8 +257,8 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
                 db_path=db_path,
             )
 
-    # ---- SELL logic -------------------------------------------------------
-    elif action in ("SELL", "STRONG_SELL") and symbol in positions:
+    # ---- SELL logic (close existing long position) ---------------------------
+    elif action in ("SELL", "STRONG_SELL") and symbol in positions and int(positions[symbol]["qty"]) > 0:
         position = positions[symbol]
         qty = int(position["qty"])
 
@@ -298,6 +298,67 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
                 db_path=db_path,
             )
 
+    # ---- SHORT SELL logic (open new short position) -------------------------
+    elif action in ("SELL", "STRONG_SELL") and symbol not in positions:
+        # Only if short selling is enabled for this profile
+        enable_shorts = ctx.enable_short_selling if ctx is not None else False
+        if not enable_shorts:
+            result["action"] = "SKIP"
+            result["reason"] = f"SELL signal on {symbol} but short selling is disabled"
+        else:
+            # Position sizing same as BUY but for short
+            if action == "STRONG_SELL":
+                alloc_pct = max_position_pct
+            else:
+                alloc_pct = max_position_pct * 0.75
+
+            # Boost if AI confident
+            if ai_confidence and ai_confidence >= 80:
+                alloc_pct = min(alloc_pct * 1.25, max_position_pct)
+
+            max_dollars = equity * alloc_pct
+            dollars = min(max_dollars, cash)
+
+            if price <= 0:
+                result["action"] = "SKIP"
+                result["reason"] = "Invalid price"
+            else:
+                qty = int(dollars / price)
+                if qty <= 0:
+                    result["action"] = "SKIP"
+                    result["reason"] = "Position size too small"
+                else:
+                    order = api.submit_order(
+                        symbol=symbol,
+                        qty=qty,
+                        side="sell",  # sell without owning = short
+                        type="market",
+                        time_in_force="day",
+                    )
+                    result["action"] = "SHORT"
+                    result["qty"] = qty
+                    result["order_id"] = order.id
+                    result["estimated_proceeds"] = round(qty * price, 2)
+                    result["stop_loss_pct"] = stop_loss_pct
+                    result["take_profit_pct"] = take_profit_pct
+
+                    if log:
+                        log_trade(
+                            symbol=symbol,
+                            side="short",
+                            qty=qty,
+                            price=price,
+                            order_id=order.id,
+                            signal_type=action,
+                            strategy="aggressive",
+                            reason=signal.get("reason"),
+                            ai_reasoning=ai_reasoning,
+                            ai_confidence=ai_confidence,
+                            stop_loss=stop_loss_pct,
+                            take_profit=take_profit_pct,
+                            db_path=db_path,
+                        )
+
     # ---- HOLD / no-action -------------------------------------------------
     elif action == "HOLD":
         result["action"] = "HOLD"
@@ -305,8 +366,8 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
         result["action"] = "SKIP"
         if symbol in positions and "BUY" in action:
             result["reason"] = f"Already holding {symbol}"
-        elif symbol not in positions and "SELL" in action:
-            result["reason"] = f"No position in {symbol} to sell"
+        elif symbol in positions and "SELL" in action and int(positions[symbol]["qty"]) < 0:
+            result["reason"] = f"Already short {symbol}"
 
     # Log the signal regardless
     if log:
@@ -322,7 +383,7 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
                           "gap_pct", "pct_below_sma")
                 if k in signal
             },
-            acted_on=result["action"] in ("BUY", "SELL"),
+            acted_on=result["action"] in ("BUY", "SELL", "SHORT"),
             db_path=db_path,
         )
 
@@ -426,6 +487,7 @@ def run_aggressive_scan_and_trade(candidates, ctx=None, max_position_pct=None,
 
     buys = [d for d in details if d.get("action") == "BUY"]
     sells = [d for d in details if d.get("action") == "SELL"]
+    shorts = [d for d in details if d.get("action") == "SHORT"]
     holds = [d for d in details if d.get("action") == "HOLD"]
     skips = [d for d in details if d.get("action") in ("SKIP", "BLOCKED", "NONE")]
     ai_vetoed = [d for d in details if d.get("action") == "AI_VETOED"]
@@ -434,6 +496,7 @@ def run_aggressive_scan_and_trade(candidates, ctx=None, max_position_pct=None,
         "total": len(candidates),
         "buys": len(buys),
         "sells": len(sells),
+        "shorts": len(shorts),
         "holds": len(holds),
         "skips": len(skips),
         "ai_vetoed": len(ai_vetoed),

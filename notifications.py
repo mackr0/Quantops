@@ -185,17 +185,18 @@ def notify_trade(trade_result, signal=None, ai_result=None, ctx=None):
     action = trade_result.get("action", "NONE")
     qty = trade_result.get("qty", 0)
     price = trade_result.get("price") or signal.get("price", 0)
-    estimated_cost = trade_result.get("estimated_cost", qty * price)
+    estimated_cost = trade_result.get("estimated_cost") or trade_result.get("estimated_proceeds") or (qty * price)
 
     subject = f"QuantOpsAI: {action} {qty} {symbol} @ ${price:,.2f}"
 
     # -- Trade details -------------------------------------------------------
+    cost_label = "Estimated Proceeds" if action == "SHORT" else "Estimated Cost"
     details = (
         _kv_row("Symbol", symbol)
         + _kv_row("Side", action)
         + _kv_row("Quantity", f"{qty:,}")
         + _kv_row("Price", f"${price:,.2f}")
-        + _kv_row("Estimated Cost", f"${estimated_cost:,.2f}")
+        + _kv_row(cost_label, f"${estimated_cost:,.2f}")
         + _kv_row("Strategy", trade_result.get("strategy", "aggressive"))
         + _kv_row("Order ID", trade_result.get("order_id", "--"))
     )

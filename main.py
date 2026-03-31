@@ -331,6 +331,7 @@ def cmd_aggro_trade():
     print(f"  Stocks scanned:  {summary.get('total', 0)}")
     print(f"  Buys executed:   {summary.get('buys', 0)}")
     print(f"  Sells executed:  {summary.get('sells', 0)}")
+    print(f"  Shorts opened:   {summary.get('shorts', 0)}")
     print(f"  AI vetoed:       {summary.get('ai_vetoed', 0)}")
     print(f"  Holds:           {summary.get('holds', 0)}")
     print(f"  Skipped:         {summary.get('skips', 0)}")
