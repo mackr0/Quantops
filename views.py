@@ -178,42 +178,55 @@ def dashboard():
     # Get recent decisions
     decisions = get_decisions(current_user.id, limit=20)
 
-    # Check if any profile is currently within its trading schedule
+    # Build per-profile schedule status
     from datetime import datetime as _dt
     from zoneinfo import ZoneInfo
     _now = _dt.now(ZoneInfo("America/New_York"))
     any_profile_active = False
-    next_session_time = "9:30 AM ET"  # default
+    profile_schedules = []
 
-    for prof in profiles:
+    all_profiles = get_user_profiles(current_user.id)
+    for prof in all_profiles:
+        if not prof.get("enabled"):
+            continue
         try:
             ctx = build_user_context_from_profile(prof["id"])
-            if ctx.is_within_schedule(_now):
+            active = ctx.is_within_schedule(_now)
+            if active:
                 any_profile_active = True
-                break
+
+            # Determine next session text
+            if active:
+                next_session = ""
+            elif ctx.schedule_type == "24_7":
+                next_session = "Always on"
+            elif ctx.schedule_type in ("market_hours", "extended_hours"):
+                weekday = _now.weekday()
+                start = "9:30 AM" if ctx.schedule_type == "market_hours" else "4:00 AM"
+                if weekday < 5 and _now.hour < 16:
+                    next_session = f"{start} ET today"
+                elif weekday >= 4:
+                    next_session = f"{start} ET Monday"
+                else:
+                    next_session = f"{start} ET tomorrow"
+            else:
+                next_session = f"{ctx.custom_start} ET"
+
+            profile_schedules.append({
+                "name": prof["name"],
+                "market_type_name": prof.get("market_type_name", prof["market_type"]),
+                "active": active,
+                "next_session": next_session,
+                "schedule_type": ctx.schedule_type,
+            })
         except Exception:
             pass
-
-    if not any_profile_active:
-        # Find the earliest next session across all profiles
-        # For market_hours profiles, next is 9:30 AM ET next weekday
-        weekday = _now.weekday()
-        if weekday < 5 and _now.hour < 16:
-            next_session_time = "9:30 AM ET today"
-        elif weekday == 4:
-            next_session_time = "9:30 AM ET Monday"
-        elif weekday == 5:
-            next_session_time = "9:30 AM ET Monday"
-        elif weekday == 6:
-            next_session_time = "9:30 AM ET tomorrow"
-        else:
-            next_session_time = "9:30 AM ET tomorrow"
 
     return render_template("dashboard.html",
                            profiles_data=profiles_data,
                            decisions=decisions,
                            any_profile_active=any_profile_active,
-                           next_session_time=next_session_time)
+                           profile_schedules=profile_schedules)
 
 
 @views_bp.route("/settings")
