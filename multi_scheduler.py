@@ -331,6 +331,7 @@ def _task_aggressive_scan_and_trade(ctx):
     seg_label = ctx.display_name or ctx.segment
     seg = get_segment(ctx.segment)
     is_crypto = seg.get("is_crypto", False)
+    maga_mode = ctx.maga_mode if ctx is not None else False
 
     if is_crypto:
         # Crypto uses its own screener with symbol conversion
