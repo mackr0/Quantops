@@ -77,6 +77,58 @@ class UserContext:
     # Short selling — allow opening short positions on SELL signals
     enable_short_selling: bool = False
 
+    # Trading schedule
+    schedule_type: str = "market_hours"  # "market_hours", "extended_hours", "24_7", "custom"
+    custom_start: str = "09:30"  # HH:MM in ET, only used if schedule_type == "custom"
+    custom_end: str = "16:00"    # HH:MM in ET, only used if schedule_type == "custom"
+    custom_days: str = "0,1,2,3,4"  # comma-separated day numbers (0=Mon, 6=Sun), only used if custom
+
+    def is_within_schedule(self, now=None):
+        """Check if the current time falls within this profile's trading schedule.
+
+        Args:
+            now: datetime with timezone (ET). If None, uses current ET time.
+
+        Returns True if the profile should be active right now.
+        """
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+
+        if now is None:
+            now = datetime.now(ZoneInfo("America/New_York"))
+
+        weekday = now.weekday()  # 0=Monday, 6=Sunday
+        current_minutes = now.hour * 60 + now.minute
+
+        if self.schedule_type == "24_7":
+            return True
+
+        if self.schedule_type == "market_hours":
+            # Mon-Fri 9:30 AM - 4:00 PM ET
+            if weekday >= 5:
+                return False
+            return 9 * 60 + 30 <= current_minutes < 16 * 60
+
+        if self.schedule_type == "extended_hours":
+            # Mon-Fri 4:00 AM - 8:00 PM ET (pre-market + after-hours)
+            if weekday >= 5:
+                return False
+            return 4 * 60 <= current_minutes < 20 * 60
+
+        if self.schedule_type == "custom":
+            # Check day
+            allowed_days = [int(d.strip()) for d in self.custom_days.split(",") if d.strip()]
+            if weekday not in allowed_days:
+                return False
+            # Check time
+            start_parts = self.custom_start.split(":")
+            end_parts = self.custom_end.split(":")
+            start_min = int(start_parts[0]) * 60 + int(start_parts[1])
+            end_min = int(end_parts[0]) * 60 + int(end_parts[1])
+            return start_min <= current_minutes < end_min
+
+        return True  # Unknown schedule type, default to active
+
     def get_alpaca_api(self):
         """Create an Alpaca REST client for this user."""
         import alpaca_trade_api as tradeapi

@@ -157,6 +157,10 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             ai_provider TEXT NOT NULL DEFAULT 'anthropic',
             ai_model TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001',
             ai_api_key_enc TEXT NOT NULL DEFAULT '',
+            schedule_type TEXT NOT NULL DEFAULT 'market_hours',
+            custom_start TEXT NOT NULL DEFAULT '09:30',
+            custom_end TEXT NOT NULL DEFAULT '16:00',
+            custom_days TEXT NOT NULL DEFAULT '0,1,2,3,4',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
@@ -166,6 +170,10 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         -- ALTER TABLE trading_profiles ADD COLUMN ai_model TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001';
         -- ALTER TABLE trading_profiles ADD COLUMN ai_api_key_enc TEXT NOT NULL DEFAULT '';
         -- ALTER TABLE trading_profiles ADD COLUMN enable_short_selling INTEGER NOT NULL DEFAULT 0;
+        -- ALTER TABLE trading_profiles ADD COLUMN schedule_type TEXT NOT NULL DEFAULT 'market_hours';
+        -- ALTER TABLE trading_profiles ADD COLUMN custom_start TEXT NOT NULL DEFAULT '09:30';
+        -- ALTER TABLE trading_profiles ADD COLUMN custom_end TEXT NOT NULL DEFAULT '16:00';
+        -- ALTER TABLE trading_profiles ADD COLUMN custom_days TEXT NOT NULL DEFAULT '0,1,2,3,4';
         CREATE TABLE IF NOT EXISTS activity_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             profile_id INTEGER NOT NULL,
@@ -442,13 +450,15 @@ MARKET_TYPE_NAMES = {
 def create_trading_profile(user_id: int, name: str, market_type: str) -> int:
     """Create a new trading profile with defaults from segments.py.  Returns profile_id."""
     seg = get_segment(market_type)
+    # Default schedule: crypto gets 24/7, everything else gets market_hours
+    default_schedule = "24_7" if market_type == "crypto" else "market_hours"
     conn = _get_conn()
     cursor = conn.execute(
         """INSERT INTO trading_profiles
            (user_id, name, market_type, enabled,
             stop_loss_pct, take_profit_pct, max_position_pct,
-            min_price, max_price, min_volume)
-           VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)""",
+            min_price, max_price, min_volume, schedule_type)
+           VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)""",
         (
             user_id,
             name,
@@ -459,6 +469,7 @@ def create_trading_profile(user_id: int, name: str, market_type: str) -> int:
             seg.get("min_price", 1.0),
             seg.get("max_price", 20.0),
             seg.get("min_volume", 500_000),
+            default_schedule,
         ),
     )
     conn.commit()
@@ -560,6 +571,7 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "strategy_mean_reversion", "strategy_gap_and_go",
         "custom_watchlist", "maga_mode", "enable_short_selling",
         "ai_provider", "ai_model", "ai_api_key_enc",
+        "schedule_type", "custom_start", "custom_end", "custom_days",
     }
     updates = {}
     for key, value in kwargs.items():
@@ -671,6 +683,11 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         maga_mode=bool(profile.get("maga_mode", 0)),
         # Short selling
         enable_short_selling=bool(profile.get("enable_short_selling", 0)),
+        # Trading schedule
+        schedule_type=profile.get("schedule_type", "market_hours"),
+        custom_start=profile.get("custom_start", "09:30"),
+        custom_end=profile.get("custom_end", "16:00"),
+        custom_days=profile.get("custom_days", "0,1,2,3,4"),
     )
 
 

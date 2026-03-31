@@ -377,6 +377,11 @@ def save_profile(profile_id):
         "strategy_gap_and_go": 1 if form.get("strategy_gap_and_go") else 0,
         "maga_mode": 1 if form.get("maga_mode") else 0,
         "enable_short_selling": 1 if form.get("enable_short_selling") else 0,
+        # Trading schedule
+        "schedule_type": form.get("schedule_type", "market_hours"),
+        "custom_start": form.get("custom_start", "09:30"),
+        "custom_end": form.get("custom_end", "16:00"),
+        "custom_days": ",".join(form.getlist("custom_days")) or "0,1,2,3,4",
     }
 
     # Custom watchlist: parse comma-separated text into a JSON list

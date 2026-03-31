@@ -683,12 +683,10 @@ def main_loop(active_segments=None, legacy_mode=False):
         else:
             # ── Profile-based iteration ──────────────────────────────
             profiles = _load_active_profiles()
-            equity_profiles = [p for p in profiles if p["market_type"] != "crypto"]
-            crypto_profiles = [p for p in profiles if p["market_type"] == "crypto"]
+            has_always_on = False  # Track if any profile is active outside market hours
 
-            # Equity profiles: only during market hours
-            if market_open and (do_scan or do_exits or do_predictions or do_snapshot):
-                for prof in equity_profiles:
+            if do_scan or do_exits or do_predictions or do_snapshot:
+                for prof in profiles:
                     if _shutdown:
                         break
                     try:
@@ -697,36 +695,25 @@ def main_loop(active_segments=None, legacy_mode=False):
                         logging.exception(
                             f"Failed to build context for profile #{prof['id']} ({prof['name']})")
                         continue
-                    logging.info(f"=== Processing profile: {prof['name']} (#{prof['id']}, {prof['market_type']}) ===")
+
+                    if not ctx.is_within_schedule(now):
+                        continue  # Skip this profile — not within its schedule
+
+                    # Track if any active profile runs outside standard market hours
+                    schedule = ctx.schedule_type
+                    if schedule == "24_7" or schedule == "custom":
+                        has_always_on = True
+
+                    logging.info(f"=== Processing profile: {prof['name']} (#{prof['id']}, {prof['market_type']}, schedule={schedule}) ===")
                     run_segment_cycle(
                         ctx,
                         run_scan=do_scan, run_exits=do_exits,
                         run_predictions=do_predictions,
                         run_snapshot=do_snapshot, run_summary=do_snapshot,
                     )
-                ran_something = True
+                    ran_something = True
 
-            # Crypto profiles: 24/7
-            if crypto_profiles and (do_scan or do_exits or do_predictions):
-                for prof in crypto_profiles:
-                    if _shutdown:
-                        break
-                    try:
-                        ctx = _build_ctx_from_profile(prof)
-                    except Exception:
-                        logging.exception(
-                            f"Failed to build context for profile #{prof['id']} ({prof['name']})")
-                        continue
-                    logging.info(f"=== Processing profile: {prof['name']} (#{prof['id']}, crypto 24/7) ===")
-                    run_segment_cycle(
-                        ctx,
-                        run_scan=do_scan, run_exits=do_exits,
-                        run_predictions=do_predictions,
-                        run_snapshot=do_snapshot, run_summary=do_snapshot,
-                    )
-                ran_something = True
-
-            has_crypto = bool(crypto_profiles)
+            has_crypto = has_always_on
 
         # Update timestamps
         if ran_something:

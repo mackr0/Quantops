@@ -147,6 +147,45 @@
                 </label>
             </fieldset>
 
+            <!-- Trading Schedule -->
+            <h4>Trading Schedule</h4>
+            <div class="grid">
+                <label>
+                    Schedule
+                    <select name="schedule_type">
+                        <option value="market_hours" {{ 'selected' if prof.get('schedule_type', 'market_hours') == 'market_hours' }}>Market Hours (9:30 AM - 4:00 PM ET, Mon-Fri)</option>
+                        <option value="extended_hours" {{ 'selected' if prof.get('schedule_type') == 'extended_hours' }}>Extended Hours (4:00 AM - 8:00 PM ET, Mon-Fri)</option>
+                        <option value="24_7" {{ 'selected' if prof.get('schedule_type') == '24_7' }}>24/7 (Always Active)</option>
+                        <option value="custom" {{ 'selected' if prof.get('schedule_type') == 'custom' }}>Custom</option>
+                    </select>
+                </label>
+            </div>
+            <div class="schedule-custom-fields" data-profile-id="{{ prof.id }}" style="{% if prof.get('schedule_type', 'market_hours') != 'custom' %}display:none;{% endif %}">
+                <div class="grid">
+                    <label>
+                        Start Time (ET)
+                        <input type="time" name="custom_start" value="{{ prof.get('custom_start', '09:30') }}">
+                    </label>
+                    <label>
+                        End Time (ET)
+                        <input type="time" name="custom_end" value="{{ prof.get('custom_end', '16:00') }}">
+                    </label>
+                </div>
+                <fieldset>
+                    <legend>Trading Days</legend>
+                    <div style="display:flex;gap:1rem;flex-wrap:wrap;">
+                        {% set days = prof.get('custom_days', '0,1,2,3,4').split(',') %}
+                        {% for day_num, day_name in [('0','Mon'),('1','Tue'),('2','Wed'),('3','Thu'),('4','Fri'),('5','Sat'),('6','Sun')] %}
+                        <label style="display:flex;align-items:center;gap:0.3rem;">
+                            <input type="checkbox" name="custom_days" value="{{ day_num }}"
+                                   {{ 'checked' if day_num in days else '' }}>
+                            {{ day_name }}
+                        </label>
+                        {% endfor %}
+                    </div>
+                </fieldset>
+            </div>
+
             <!-- Per-profile Alpaca Keys -->
             <h4>Alpaca Keys (for this profile's account)</h4>
             <div class="grid">
@@ -446,6 +485,17 @@ document.querySelectorAll('.view-universe-btn').forEach(function(btn) {
             'universe_' + profileId,
             'width=420,height=500,scrollbars=yes,resizable=yes'
         );
+    });
+});
+
+// Trading Schedule: show/hide custom fields
+document.querySelectorAll('select[name="schedule_type"]').forEach(function(sel) {
+    sel.addEventListener('change', function() {
+        var profileId = this.closest('article').id.replace('profile-', '');
+        var customFields = document.querySelector('.schedule-custom-fields[data-profile-id="' + profileId + '"]');
+        if (customFields) {
+            customFields.style.display = this.value === 'custom' ? '' : 'none';
+        }
     });
 });
 
