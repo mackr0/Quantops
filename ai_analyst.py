@@ -136,8 +136,8 @@ def analyze_symbol(symbol, ctx=None, api=None, political_context=None):
             try:
                 from models import increment_api_usage
                 increment_api_usage(ctx.user_id)
-            except Exception:
-                pass
+            except Exception as _usage_err:
+                logger.warning("Failed to increment API usage: %s", _usage_err)
 
         result = json.loads(response_text)
         result["symbol"] = symbol
