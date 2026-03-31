@@ -24,6 +24,7 @@ from models import (
 )
 from segments import SEGMENTS, get_segment
 from crypto import decrypt, encrypt
+from ai_providers import get_providers
 
 logger = logging.getLogger(__name__)
 
@@ -228,12 +229,16 @@ def settings():
     excluded = get_excluded_symbols(current_user.id)
     excluded_str = ", ".join(excluded)
 
+    ai_providers = get_providers()
+
     return render_template("settings.html",
                            keys=keys,
                            profiles=profiles,
                            market_types=MARKET_TYPE_NAMES,
                            segments=SEGMENTS,
-                           excluded_symbols=excluded_str)
+                           excluded_symbols=excluded_str,
+                           ai_providers=ai_providers,
+                           ai_providers_json=json.dumps(ai_providers))
 
 
 @views_bp.route("/settings/exclusions", methods=["POST"])
@@ -380,6 +385,18 @@ def save_profile(profile_id):
         config_updates["custom_watchlist"] = symbols
     else:
         config_updates["custom_watchlist"] = []
+
+    # AI provider/model configuration
+    ai_provider = form.get("ai_provider", "").strip()
+    ai_model = form.get("ai_model", "").strip()
+    ai_api_key = form.get("ai_api_key", "").strip()
+
+    if ai_provider:
+        config_updates["ai_provider"] = ai_provider
+    if ai_model:
+        config_updates["ai_model"] = ai_model
+    if ai_api_key:
+        config_updates["ai_api_key_enc"] = encrypt(ai_api_key)
 
     # Per-profile Alpaca keys (only update if new values provided)
     alpaca_key = form.get("alpaca_api_key", "").strip()

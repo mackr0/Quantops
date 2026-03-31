@@ -1,11 +1,10 @@
-"""Claude AI integration for trading analysis."""
+"""AI integration for trading analysis (multi-provider)."""
 
 import json
 import logging
 
-import anthropic
-
 import config
+from ai_providers import call_ai
 from client import get_api
 from market_data import get_bars, add_indicators
 
@@ -13,14 +12,17 @@ logger = logging.getLogger(__name__)
 
 
 def get_claude_client(api_key=None):
-    """Return an authenticated Anthropic client.
+    """Return an authenticated Anthropic client (backward compat for CLI).
 
     Parameters
     ----------
     api_key : str, optional
         Anthropic API key.  Falls back to config.ANTHROPIC_API_KEY when
-        not provided (backward compat for CLI).
+        not provided.
+
+    Note: New code should use ai_providers.call_ai() instead.
     """
+    import anthropic
     key = api_key or config.ANTHROPIC_API_KEY
     if not key:
         raise ValueError(
@@ -121,27 +123,14 @@ def analyze_symbol(symbol, ctx=None, api=None, political_context=None):
                 "in the likelihood of a mean reversion bounce."
             )
 
-        # Use ctx for client and model if available, else fall back to config
-        if ctx is not None:
-            client = ctx.get_anthropic_client()
-            model = ctx.claude_model
-        else:
-            client = get_claude_client()
-            model = config.CLAUDE_MODEL
-
-        message = client.messages.create(
-            model=model,
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
+        # Call AI provider (multi-provider via ai_providers.call_ai)
+        response_text = call_ai(
+            prompt,
+            provider=ctx.ai_provider if ctx else "anthropic",
+            model=ctx.ai_model if ctx else config.CLAUDE_MODEL,
+            api_key=ctx.ai_api_key if ctx else config.ANTHROPIC_API_KEY,
         )
 
-        response_text = message.content[0].text.strip()
-        # Strip markdown code fences if present (Haiku sometimes adds them)
-        if response_text.startswith("```"):
-            lines = response_text.split("\n")
-            # Remove first line (```json) and last line (```)
-            lines = [l for l in lines if not l.strip().startswith("```")]
-            response_text = "\n".join(lines).strip()
         result = json.loads(response_text)
         result["symbol"] = symbol
         return result
@@ -209,24 +198,13 @@ def analyze_portfolio_risk(positions, account_info, ctx=None):
             "utilization, and correlation between holdings."
         )
 
-        if ctx is not None:
-            client = ctx.get_anthropic_client()
-            model = ctx.claude_model
-        else:
-            client = get_claude_client()
-            model = config.CLAUDE_MODEL
-
-        message = client.messages.create(
-            model=model,
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
+        response_text = call_ai(
+            prompt,
+            provider=ctx.ai_provider if ctx else "anthropic",
+            model=ctx.ai_model if ctx else config.CLAUDE_MODEL,
+            api_key=ctx.ai_api_key if ctx else config.ANTHROPIC_API_KEY,
         )
 
-        response_text = message.content[0].text.strip()
-        if response_text.startswith("```"):
-            lines = response_text.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
-            response_text = "\n".join(lines).strip()
         return json.loads(response_text)
 
     except json.JSONDecodeError as exc:

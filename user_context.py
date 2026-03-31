@@ -21,9 +21,10 @@ class UserContext:
     alpaca_secret_key: str = ""
     alpaca_base_url: str = "https://paper-api.alpaca.markets"
 
-    # Anthropic
-    anthropic_api_key: str = ""
-    claude_model: str = "claude-haiku-4-5-20251001"
+    # AI configuration (multi-provider)
+    ai_provider: str = "anthropic"
+    ai_model: str = "claude-haiku-4-5-20251001"
+    ai_api_key: str = ""  # API key for whichever provider
 
     # Database
     db_path: str = "quantopsai.db"
@@ -83,10 +84,26 @@ class UserContext:
             api_version="v2"
         )
 
+    @property
+    def anthropic_api_key(self):
+        """Backward compat: return AI key only if provider is Anthropic."""
+        return self.ai_api_key if self.ai_provider == "anthropic" else ""
+
+    @property
+    def claude_model(self):
+        """Backward compat: return AI model only if provider is Anthropic."""
+        return self.ai_model if self.ai_provider == "anthropic" else ""
+
     def get_anthropic_client(self):
-        """Create an Anthropic client for this user."""
+        """Create an Anthropic client for this user (backward compat).
+
+        Prefer using ai_providers.call_ai() for new code.
+        """
         import anthropic
-        return anthropic.Anthropic(api_key=self.anthropic_api_key)
+        key = self.ai_api_key if self.ai_provider == "anthropic" else ""
+        if not key:
+            raise ValueError("No Anthropic API key configured for this user/profile.")
+        return anthropic.Anthropic(api_key=key)
 
 
 def build_context_from_segment(segment_name: str) -> UserContext:
@@ -108,9 +125,10 @@ def build_context_from_segment(segment_name: str) -> UserContext:
         alpaca_api_key=seg.get("alpaca_key") or config.ALPACA_API_KEY or "",
         alpaca_secret_key=seg.get("alpaca_secret") or config.ALPACA_SECRET_KEY or "",
         alpaca_base_url=config.ALPACA_BASE_URL,
-        # Anthropic
-        anthropic_api_key=config.ANTHROPIC_API_KEY or "",
-        claude_model=config.CLAUDE_MODEL,
+        # AI configuration (defaults to Anthropic for backward compat)
+        ai_provider="anthropic",
+        ai_model=config.CLAUDE_MODEL,
+        ai_api_key=config.ANTHROPIC_API_KEY or "",
         # Database — use the segment-specific DB path
         db_path=seg.get("db_path", config.DB_PATH),
         # Notifications

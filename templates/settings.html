@@ -165,6 +165,31 @@
                 </label>
             </div>
 
+            <!-- AI Configuration -->
+            <h4>AI Configuration</h4>
+            <div class="grid">
+                <label>
+                    Provider
+                    <select name="ai_provider" class="ai-provider-select" data-profile-id="{{ prof.id }}">
+                        {% for pkey, pval in ai_providers.items() %}
+                        <option value="{{ pkey }}" {{ 'selected' if prof.get('ai_provider', 'anthropic') == pkey else '' }}>{{ pval.name }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label>
+                    Model
+                    <select name="ai_model" class="ai-model-select" data-profile-id="{{ prof.id }}" data-current-model="{{ prof.get('ai_model', 'claude-haiku-4-5-20251001') }}">
+                        <!-- Populated by JS based on provider selection -->
+                    </select>
+                </label>
+                <label>
+                    API Key
+                    <input type="password" name="ai_api_key" placeholder="Enter API key for selected provider"
+                           value="">
+                    {% if prof.get('ai_api_key_enc') %}<small>Key saved (enter new value to change)</small>{% endif %}
+                </label>
+            </div>
+
             <!-- Risk Parameters -->
             <h4>Risk Parameters</h4>
             <div class="grid">
@@ -366,6 +391,42 @@
 {% block scripts %}
 <script src="/static/settings.js"></script>
 <script>
+// AI Provider/Model configuration
+var AI_PROVIDERS = {{ ai_providers_json|safe }};
+
+function populateModelDropdown(providerSelect) {
+    var profileId = providerSelect.dataset.profileId;
+    var provider = providerSelect.value;
+    var modelSelect = document.querySelector('.ai-model-select[data-profile-id="' + profileId + '"]');
+    if (!modelSelect) return;
+
+    var currentModel = modelSelect.dataset.currentModel || '';
+    var models = (AI_PROVIDERS[provider] || {}).models || {};
+
+    modelSelect.innerHTML = '';
+    for (var modelId in models) {
+        var opt = document.createElement('option');
+        opt.value = modelId;
+        opt.textContent = models[modelId];
+        if (modelId === currentModel) {
+            opt.selected = true;
+        }
+        modelSelect.appendChild(opt);
+    }
+}
+
+// Initialize all provider/model dropdowns on page load
+document.querySelectorAll('.ai-provider-select').forEach(function(sel) {
+    populateModelDropdown(sel);
+    sel.addEventListener('change', function() {
+        // Clear current model so first option is selected on provider change
+        var profileId = this.dataset.profileId;
+        var modelSelect = document.querySelector('.ai-model-select[data-profile-id="' + profileId + '"]');
+        if (modelSelect) modelSelect.dataset.currentModel = '';
+        populateModelDropdown(this);
+    });
+});
+
 // View Universe - actual browser popup window
 document.querySelectorAll('.view-universe-btn').forEach(function(btn) {
     btn.addEventListener('click', function() {

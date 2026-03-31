@@ -17,7 +17,8 @@ from typing import Optional, Dict, Any, List
 import yfinance as yf
 
 import config
-from ai_analyst import get_claude_client
+from ai_providers import call_ai
+from ai_analyst import get_claude_client  # backward compat
 
 logger = logging.getLogger(__name__)
 
@@ -195,24 +196,14 @@ def analyze_political_climate(ctx=None) -> Dict[str, Any]:
     )
 
     try:
-        if ctx is not None:
-            client = ctx.get_anthropic_client()
-            model = ctx.claude_model
-        else:
-            client = get_claude_client()
-            model = config.CLAUDE_MODEL
-
-        message = client.messages.create(
-            model=model,
+        response_text = call_ai(
+            prompt,
+            provider=ctx.ai_provider if ctx else "anthropic",
+            model=ctx.ai_model if ctx else config.CLAUDE_MODEL,
+            api_key=ctx.ai_api_key if ctx else config.ANTHROPIC_API_KEY,
             max_tokens=512,
-            messages=[{"role": "user", "content": prompt}],
         )
 
-        response_text = message.content[0].text.strip()
-        if response_text.startswith("```"):
-            lines = response_text.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
-            response_text = "\n".join(lines).strip()
         result = json.loads(response_text)
         _set_cache("political_climate", result)
         return result

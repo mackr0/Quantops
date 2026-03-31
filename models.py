@@ -153,11 +153,17 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             strategy_gap_and_go INTEGER NOT NULL DEFAULT 1,
             custom_watchlist TEXT NOT NULL DEFAULT '[]',
             maga_mode INTEGER NOT NULL DEFAULT 0,
+            ai_provider TEXT NOT NULL DEFAULT 'anthropic',
+            ai_model TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001',
+            ai_api_key_enc TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
-        -- NOTE: For existing databases, run this migration manually:
+        -- NOTE: For existing databases, run these migrations manually:
         -- ALTER TABLE trading_profiles ADD COLUMN maga_mode INTEGER NOT NULL DEFAULT 0;
+        -- ALTER TABLE trading_profiles ADD COLUMN ai_provider TEXT NOT NULL DEFAULT 'anthropic';
+        -- ALTER TABLE trading_profiles ADD COLUMN ai_model TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001';
+        -- ALTER TABLE trading_profiles ADD COLUMN ai_api_key_enc TEXT NOT NULL DEFAULT '';
         CREATE TABLE IF NOT EXISTS activity_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             profile_id INTEGER NOT NULL,
@@ -551,6 +557,7 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "strategy_momentum_breakout", "strategy_volume_spike",
         "strategy_mean_reversion", "strategy_gap_and_go",
         "custom_watchlist", "maga_mode",
+        "ai_provider", "ai_model", "ai_api_key_enc",
     }
     updates = {}
     for key, value in kwargs.items():
@@ -621,8 +628,13 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         alpaca_api_key=alpaca_key,
         alpaca_secret_key=alpaca_secret,
         alpaca_base_url=config.ALPACA_BASE_URL,
-        anthropic_api_key=decrypt(user.get("anthropic_api_key_enc", "")),
-        claude_model=config.CLAUDE_MODEL,
+        # AI configuration: per-profile provider/model, with key fallback
+        ai_provider=profile.get("ai_provider", "anthropic"),
+        ai_model=profile.get("ai_model", "claude-haiku-4-5-20251001"),
+        ai_api_key=(
+            decrypt(profile.get("ai_api_key_enc", ""))
+            or decrypt(user.get("anthropic_api_key_enc", ""))
+        ),
         db_path=db_path,
         notification_email=user.get("notification_email", ""),
         resend_api_key=decrypt(user.get("resend_api_key_enc", "")),
@@ -773,8 +785,10 @@ def build_user_context(user_id: int, segment: str) -> UserContext:
         alpaca_api_key=alpaca_key,
         alpaca_secret_key=alpaca_secret,
         alpaca_base_url=config.ALPACA_BASE_URL,
-        anthropic_api_key=decrypt(user.get("anthropic_api_key_enc", "")),
-        claude_model=config.CLAUDE_MODEL,
+        # AI config: legacy path uses Anthropic defaults
+        ai_provider="anthropic",
+        ai_model=config.CLAUDE_MODEL,
+        ai_api_key=decrypt(user.get("anthropic_api_key_enc", "")),
         db_path=config.DB_PATH,
         notification_email=user.get("notification_email", ""),
         resend_api_key=decrypt(user.get("resend_api_key_enc", "")),
