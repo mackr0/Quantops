@@ -683,7 +683,15 @@ def main_loop(active_segments=None, legacy_mode=False):
         else:
             # ── Profile-based iteration ──────────────────────────────
             profiles = _load_active_profiles()
-            has_always_on = False  # Track if any profile is active outside market hours
+
+            # Check BEFORE timing logic if any profile has a non-market-hours schedule
+            has_always_on = False
+            for prof in profiles:
+                stype = prof.get("schedule_type", "market_hours")
+                if stype in ("24_7", "extended_hours", "custom"):
+                    has_always_on = True
+                    break
+            has_crypto = has_always_on
 
             if do_scan or do_exits or do_predictions or do_snapshot:
                 for prof in profiles:
@@ -699,12 +707,7 @@ def main_loop(active_segments=None, legacy_mode=False):
                     if not ctx.is_within_schedule(now):
                         continue  # Skip this profile — not within its schedule
 
-                    # Track if any active profile runs outside standard market hours
-                    schedule = ctx.schedule_type
-                    if schedule == "24_7" or schedule == "custom":
-                        has_always_on = True
-
-                    logging.info(f"=== Processing profile: {prof['name']} (#{prof['id']}, {prof['market_type']}, schedule={schedule}) ===")
+                    logging.info(f"=== Processing profile: {prof['name']} (#{prof['id']}, {prof['market_type']}, schedule={ctx.schedule_type}) ===")
                     run_segment_cycle(
                         ctx,
                         run_scan=do_scan, run_exits=do_exits,
@@ -712,8 +715,6 @@ def main_loop(active_segments=None, legacy_mode=False):
                         run_snapshot=do_snapshot, run_summary=do_snapshot,
                     )
                     ran_something = True
-
-            has_crypto = has_always_on
 
         # Update timestamps
         if ran_something:
