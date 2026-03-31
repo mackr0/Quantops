@@ -8,20 +8,16 @@
 
 <!-- Per-Profile Schedule Status -->
 {% for ps in profile_schedules %}
-<article style="padding:0.5rem 1rem;margin-bottom:0.5rem;background:{% if ps.active %}#1a2e1a{% else %}#1a1a2e{% endif %};border:1px solid {% if ps.active %}#00c853{% else %}#333{% endif %};border-radius:6px;">
-    <div style="display:flex;justify-content:space-between;align-items:center;">
-        <span>
-            <strong>{{ ps.name }}</strong>
-            <small class="muted" style="margin-left:0.5rem;">{{ ps.market_type_name }}</small>
-        </span>
-        {% if ps.active %}
-        <span style="color:#00c853;font-size:0.85rem;">Scanning</span>
-        {% else %}
-        <span style="color:#8a8aaa;font-size:0.85rem;">Next: {{ ps.next_session }}</span>
-        {% endif %}
-    </div>
-</article>
+<div style="display:flex;justify-content:space-between;align-items:center;padding:0.4rem 0.75rem;margin-bottom:0.25rem;border-left:3px solid {% if ps.active %}#00c853{% else %}#555{% endif %};background:{% if ps.active %}#f0fff0{% else %}#f5f5f5{% endif %};border-radius:0 4px 4px 0;">
+    <strong style="color:#222;">{{ ps.name }}</strong>
+    {% if ps.active %}
+    <span style="color:#00c853;font-size:0.85rem;font-weight:bold;">Scanning</span>
+    {% else %}
+    <span style="color:#666;font-size:0.85rem;">Next: {{ ps.next_session }}</span>
+    {% endif %}
+</div>
 {% endfor %}
+<div style="margin-bottom:1rem;"></div>
 
 <!-- Cycle Countdown Timers (shown only when at least one profile is active) -->
 {% if any_profile_active %}
