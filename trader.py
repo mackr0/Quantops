@@ -215,6 +215,9 @@ def check_exits(ctx=None):
     )
     results = []
 
+    # Build a lookup for unrealized P&L from positions
+    pnl_by_symbol = {p["symbol"]: float(p.get("unrealized_pl", 0)) for p in positions}
+
     for trigger_signal in triggered:
         symbol = trigger_signal["symbol"]
         qty = int(trigger_signal["qty"])
@@ -227,6 +230,8 @@ def check_exits(ctx=None):
             time_in_force="day",
         )
 
+        pnl = pnl_by_symbol.get(symbol)
+
         log_trade(
             symbol=symbol,
             side="sell",
@@ -236,6 +241,7 @@ def check_exits(ctx=None):
             signal_type="SELL",
             strategy=trigger_signal["trigger"],
             reason=trigger_signal["reason"],
+            pnl=pnl,
             db_path=db_path,
         )
 
