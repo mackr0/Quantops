@@ -418,6 +418,7 @@ def save_profile(profile_id):
         "strategy_gap_and_go": 1 if form.get("strategy_gap_and_go") else 0,
         "maga_mode": 1 if form.get("maga_mode") else 0,
         "enable_short_selling": 1 if form.get("enable_short_selling") else 0,
+        "enable_self_tuning": 1 if form.get("enable_self_tuning") else 0,
         # Trading schedule
         "schedule_type": form.get("schedule_type", "market_hours"),
         "custom_start": form.get("custom_start", "09:30"),

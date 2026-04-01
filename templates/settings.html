@@ -288,6 +288,12 @@
                 <output id="ai_conf_val_{{ prof.id }}">{{ prof.ai_confidence_threshold }}%</output>
             </label>
 
+            <label style="display:flex;align-items:flex-start;gap:0.5rem;">
+                <input type="checkbox" name="enable_self_tuning" value="1" style="flex-shrink:0;margin-top:0.2rem;"
+                       {{ 'checked' if prof.get('enable_self_tuning', 1) else '' }}>
+                <span>Enable Self-Tuning<br><small style="color:#888;font-weight:normal;">AI learns from past wins/losses and adjusts its approach automatically</small></span>
+            </label>
+
             <!-- Screener Parameters -->
             <h4>Screener Parameters</h4>
             <div class="grid">

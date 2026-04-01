@@ -154,6 +154,7 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             custom_watchlist TEXT NOT NULL DEFAULT '[]',
             maga_mode INTEGER NOT NULL DEFAULT 0,
             enable_short_selling INTEGER NOT NULL DEFAULT 0,
+            enable_self_tuning INTEGER NOT NULL DEFAULT 1,
             ai_provider TEXT NOT NULL DEFAULT 'anthropic',
             ai_model TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001',
             ai_api_key_enc TEXT NOT NULL DEFAULT '',
@@ -170,6 +171,7 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         -- ALTER TABLE trading_profiles ADD COLUMN ai_model TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001';
         -- ALTER TABLE trading_profiles ADD COLUMN ai_api_key_enc TEXT NOT NULL DEFAULT '';
         -- ALTER TABLE trading_profiles ADD COLUMN enable_short_selling INTEGER NOT NULL DEFAULT 0;
+        -- ALTER TABLE trading_profiles ADD COLUMN enable_self_tuning INTEGER NOT NULL DEFAULT 1;
         -- ALTER TABLE trading_profiles ADD COLUMN schedule_type TEXT NOT NULL DEFAULT 'market_hours';
         -- ALTER TABLE trading_profiles ADD COLUMN custom_start TEXT NOT NULL DEFAULT '09:30';
         -- ALTER TABLE trading_profiles ADD COLUMN custom_end TEXT NOT NULL DEFAULT '16:00';
@@ -570,6 +572,7 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "strategy_momentum_breakout", "strategy_volume_spike",
         "strategy_mean_reversion", "strategy_gap_and_go",
         "custom_watchlist", "maga_mode", "enable_short_selling",
+        "enable_self_tuning",
         "ai_provider", "ai_model", "ai_api_key_enc",
         "schedule_type", "custom_start", "custom_end", "custom_days",
     }
@@ -683,6 +686,8 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         maga_mode=bool(profile.get("maga_mode", 0)),
         # Short selling
         enable_short_selling=bool(profile.get("enable_short_selling", 0)),
+        # Self-tuning
+        enable_self_tuning=bool(profile.get("enable_self_tuning", 1)),
         # Trading schedule
         schedule_type=profile.get("schedule_type", "market_hours"),
         custom_start=profile.get("custom_start", "09:30"),

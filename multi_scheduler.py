@@ -141,6 +141,12 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             f"[{seg_label}] Daily Snapshot",
             lambda: _task_daily_snapshot(ctx),
         )
+        # Self-tuning runs once per day alongside the daily snapshot
+        if getattr(ctx, "enable_self_tuning", True):
+            run_task(
+                f"[{seg_label}] Self-Tune",
+                lambda: _task_self_tune(ctx),
+            )
 
     if run_summary:
         run_task(
@@ -531,6 +537,26 @@ def _task_daily_snapshot(ctx):
         f"Daily snapshot saved: equity=${account['equity']:,.2f}, "
         f"positions={len(positions)}, cash=${account['cash']:,.2f}"
     )
+
+
+def _task_self_tune(ctx):
+    """Run self-tuning auto-adjustments based on AI prediction performance."""
+    from self_tuning import apply_auto_adjustments
+
+    adjustments = apply_auto_adjustments(ctx)
+    if adjustments:
+        seg_label = ctx.display_name or ctx.segment
+        for adj in adjustments:
+            logging.info(f"[{seg_label}] Self-tune: {adj}")
+        # Log to activity feed
+        _safe_log_activity(
+            getattr(ctx, "profile_id", 0), ctx.user_id,
+            "self_tune",
+            f"Self-Tuning: {len(adjustments)} adjustment(s) applied",
+            "\n".join(f"- {a}" for a in adjustments),
+        )
+    else:
+        logging.info("Self-tuning: no adjustments needed.")
 
 
 def _task_daily_summary_email(ctx):

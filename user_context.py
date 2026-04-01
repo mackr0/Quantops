@@ -77,6 +77,9 @@ class UserContext:
     # Short selling — allow opening short positions on SELL signals
     enable_short_selling: bool = False
 
+    # Self-tuning — AI learns from past wins/losses and adjusts approach
+    enable_self_tuning: bool = True
+
     # Trading schedule
     schedule_type: str = "market_hours"  # "market_hours", "extended_hours", "24_7", "custom"
     custom_start: str = "09:30"  # HH:MM in ET, only used if schedule_type == "custom"

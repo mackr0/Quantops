@@ -112,6 +112,17 @@ def analyze_symbol(symbol, ctx=None, api=None, political_context=None):
             "reasoning."
         )
 
+        # Inject self-tuning performance context (after technical data,
+        # before political context) so the AI learns from past mistakes
+        if ctx is not None and getattr(ctx, "enable_self_tuning", True):
+            try:
+                from self_tuning import build_performance_context
+                perf_context = build_performance_context(ctx, symbol=symbol)
+                if perf_context:
+                    prompt += f"\n\n{perf_context}"
+            except Exception as _st_err:
+                logger.warning("Failed to build self-tuning context: %s", _st_err)
+
         # Append political/macro context when MAGA Mode is active
         if political_context:
             prompt += (
