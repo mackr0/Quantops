@@ -677,6 +677,17 @@ def ai_performance():
         if os.path.exists(legacy):
             db_paths.add(legacy)
 
+    # Aggregate raw data across all DBs for accurate metric calculation
+    import sqlite3
+    all_wins = 0
+    all_losses = 0
+    all_return_buys = []
+    all_return_sells = []
+    conf_on_wins = []
+    conf_on_losses = []
+    total_gains = 0.0
+    total_losses_amt = 0.0
+
     for db_path in db_paths:
         try:
             p = get_ai_performance(db_path=db_path)
@@ -696,6 +707,40 @@ def ai_performance():
         except Exception:
             pass
 
+        # Query raw resolved predictions for accurate aggregation
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT predicted_signal, actual_outcome, actual_return_pct, confidence "
+                "FROM ai_predictions WHERE status = 'resolved'"
+            ).fetchall()
+            conn.close()
+            for r in rows:
+                outcome = r["actual_outcome"]
+                ret = r["actual_return_pct"]
+                conf = r["confidence"] or 0
+                sig = r["predicted_signal"] or ""
+
+                if outcome == "win":
+                    all_wins += 1
+                    conf_on_wins.append(conf)
+                    if ret and ret > 0:
+                        total_gains += ret
+                elif outcome == "loss":
+                    all_losses += 1
+                    conf_on_losses.append(conf)
+                    if ret and ret < 0:
+                        total_losses_amt += abs(ret)
+
+                if ret is not None:
+                    if "BUY" in sig.upper():
+                        all_return_buys.append(ret)
+                    elif "SELL" in sig.upper():
+                        all_return_sells.append(ret)
+        except Exception:
+            pass
+
         try:
             t = get_performance_summary(db_path=db_path)
             combined_trade["total_trades"] += t.get("total_trades", 0)
@@ -709,11 +754,21 @@ def ai_performance():
         except Exception:
             pass
 
-    # Calculate derived metrics
-    if combined_perf["resolved"] > 0:
-        # Win rate would need per-record aggregation for accuracy,
-        # but this is a reasonable approximation
-        pass
+    # Calculate derived metrics from raw aggregated data
+    total_resolved = all_wins + all_losses
+    if total_resolved > 0:
+        combined_perf["win_rate"] = round(all_wins / total_resolved * 100, 1)
+    if conf_on_wins:
+        combined_perf["avg_confidence_on_wins"] = round(sum(conf_on_wins) / len(conf_on_wins), 1)
+    if conf_on_losses:
+        combined_perf["avg_confidence_on_losses"] = round(sum(conf_on_losses) / len(conf_on_losses), 1)
+    if all_return_buys:
+        combined_perf["avg_return_on_buys"] = round(sum(all_return_buys) / len(all_return_buys), 2)
+    if all_return_sells:
+        combined_perf["avg_return_on_sells"] = round(sum(all_return_sells) / len(all_return_sells), 2)
+    if total_losses_amt > 0:
+        combined_perf["profit_factor"] = round(total_gains / total_losses_amt, 2)
+
     if combined_trade["total_trades"] > 0:
         combined_trade["win_rate"] = (
             combined_trade["winning_trades"] / combined_trade["total_trades"] * 100
