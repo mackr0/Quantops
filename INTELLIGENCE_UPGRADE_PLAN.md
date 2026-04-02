@@ -7,9 +7,9 @@
 | 1 | Drawdown Protection | DONE | A |
 | 2 | Per-Stock Memory | DONE | A |
 | 3 | Market Regime Detection | DONE | B |
-| 4 | Cross-Profile Learning | NOT STARTED | C |
+| 4 | Cross-Profile Learning | DONE | C |
 | 5 | Earnings Calendar Awareness | DONE | B |
-| 6 | Multi-Model Consensus | NOT STARTED | C |
+| 6 | Multi-Model Consensus | DONE | C |
 | 7 | Time-of-Day Patterns | DONE | B |
 | 8 | Per-Stock Win Rate in Prompt | DONE | A |
 

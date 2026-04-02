@@ -166,6 +166,9 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             drawdown_reduce_pct REAL NOT NULL DEFAULT 0.10,
             avoid_earnings_days INTEGER NOT NULL DEFAULT 2,
             skip_first_minutes INTEGER NOT NULL DEFAULT 0,
+            enable_consensus INTEGER NOT NULL DEFAULT 0,
+            consensus_model TEXT NOT NULL DEFAULT '',
+            consensus_api_key_enc TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
@@ -228,6 +231,9 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         ("trading_profiles", "drawdown_reduce_pct", "REAL NOT NULL DEFAULT 0.10"),
         ("trading_profiles", "avoid_earnings_days", "INTEGER NOT NULL DEFAULT 2"),
         ("trading_profiles", "skip_first_minutes", "INTEGER NOT NULL DEFAULT 0"),
+        ("trading_profiles", "enable_consensus", "INTEGER NOT NULL DEFAULT 0"),
+        ("trading_profiles", "consensus_model", "TEXT NOT NULL DEFAULT ''"),
+        ("trading_profiles", "consensus_api_key_enc", "TEXT NOT NULL DEFAULT ''"),
     ]
     for table, col, col_def in _migrations:
         try:
@@ -619,6 +625,7 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "schedule_type", "custom_start", "custom_end", "custom_days",
         "drawdown_pause_pct", "drawdown_reduce_pct",
         "avoid_earnings_days", "skip_first_minutes",
+        "enable_consensus", "consensus_model", "consensus_api_key_enc",
     }
     updates = {}
     for key, value in kwargs.items():
@@ -744,6 +751,10 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         avoid_earnings_days=profile.get("avoid_earnings_days", 2),
         # Time-of-day patterns
         skip_first_minutes=profile.get("skip_first_minutes", 0),
+        # Multi-model consensus
+        enable_consensus=bool(profile.get("enable_consensus", 0)),
+        consensus_model=profile.get("consensus_model", ""),
+        consensus_api_key=decrypt(profile.get("consensus_api_key_enc", "")),
     )
 
 

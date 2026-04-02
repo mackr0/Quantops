@@ -46,20 +46,35 @@ def ai_review(symbol, technical_signal, ctx=None, political_context=None):
         If provided (from MAGA Mode), passed through to analyze_symbol so
         Claude considers political/macro conditions.
     """
-    from ai_analyst import analyze_symbol
+    from ai_analyst import analyze_symbol, analyze_symbol_consensus
     from ai_tracker import record_prediction, init_tracker_db
 
     db_path = ctx.db_path if ctx is not None else None
     init_tracker_db(db_path)
 
     print(f"    AI reviewing {symbol}...", end=" ", flush=True)
-    ai_result = analyze_symbol(symbol, ctx=ctx, political_context=political_context)
+
+    # Use consensus analysis if enabled
+    use_consensus = ctx is not None and getattr(ctx, "enable_consensus", False)
+    if use_consensus:
+        ai_result = analyze_symbol_consensus(symbol, ctx=ctx, political_context=political_context)
+    else:
+        ai_result = analyze_symbol(symbol, ctx=ctx, political_context=political_context)
 
     ai_signal = ai_result.get("signal", "HOLD").upper()
     ai_confidence = ai_result.get("confidence", 0)
     tech_signal = technical_signal.get("signal", "HOLD").upper()
     tech_direction = "BUY" if "BUY" in tech_signal else "SELL" if "SELL" in tech_signal else "HOLD"
     price = technical_signal.get("price", 0)
+
+    # Consensus veto: if consensus was sought and models disagree, veto the trade
+    if use_consensus and ai_result.get("consensus") is False:
+        primary = ai_result.get("primary_signal", "?")
+        secondary = ai_result.get("secondary_signal", "?")
+        secondary_model = ai_result.get("secondary_model", "unknown")
+        print(f"VETOED (No consensus — primary says {primary}, "
+              f"secondary ({secondary_model}) says {secondary})")
+        return False, ai_result
 
     # Record every AI prediction for accuracy tracking
     record_prediction(

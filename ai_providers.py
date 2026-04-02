@@ -53,6 +53,19 @@ def get_models_for_provider(provider):
     return PROVIDERS.get(provider, {}).get("models", {})
 
 
+def get_provider_for_model(model_id):
+    """Look up which provider a model belongs to by checking PROVIDERS dict.
+
+    Returns provider name (e.g. "anthropic", "openai", "google") or None.
+    """
+    if not model_id:
+        return None
+    for provider_key, provider_info in PROVIDERS.items():
+        if model_id in provider_info.get("models", {}):
+            return provider_key
+    return None
+
+
 def _strip_markdown_fences(text):
     """Remove markdown code fences and extract the first complete JSON object.
 

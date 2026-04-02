@@ -229,6 +229,36 @@
                 </label>
             </div>
 
+            <!-- Multi-Model Consensus -->
+            <h4>Multi-Model Consensus</h4>
+            <fieldset>
+                <label style="display:flex;align-items:flex-start;gap:0.5rem;">
+                    <input type="checkbox" name="enable_consensus" value="1" style="flex-shrink:0;margin-top:0.2rem;"
+                           {{ 'checked' if prof.get('enable_consensus') else '' }}>
+                    <span>Enable Consensus<br><small style="color:#888;font-weight:normal;">Get a second AI opinion on strong signals. Only trades when both models agree.</small></span>
+                </label>
+            </fieldset>
+            <div class="grid">
+                <label>
+                    Secondary Model
+                    <select name="consensus_model">
+                        <option value="">Select secondary model...</option>
+                        {% for pkey, pval in ai_providers.items() %}
+                        <optgroup label="{{ pval.name }}">
+                            {% for mkey, mname in pval.models.items() %}
+                            <option value="{{ mkey }}" {{ 'selected' if prof.get('consensus_model') == mkey else '' }}>{{ mname }}</option>
+                            {% endfor %}
+                        </optgroup>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label>
+                    Secondary API Key
+                    <input type="password" name="consensus_api_key" placeholder="API key for secondary model's provider">
+                    {% if prof.get('consensus_api_key_enc') %}<small>Key saved</small>{% endif %}
+                </label>
+            </div>
+
             <!-- Risk Parameters -->
             <h4>Risk Parameters</h4>
             <div class="grid">

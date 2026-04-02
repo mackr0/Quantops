@@ -433,6 +433,14 @@ def save_profile(profile_id):
         "custom_days": ",".join(form.getlist("custom_days")) or "0,1,2,3,4",
     }
 
+    # Multi-model consensus
+    config_updates["enable_consensus"] = 1 if form.get("enable_consensus") else 0
+    consensus_model = form.get("consensus_model", "").strip()
+    config_updates["consensus_model"] = consensus_model
+    consensus_api_key = form.get("consensus_api_key", "").strip()
+    if consensus_api_key:
+        config_updates["consensus_api_key_enc"] = encrypt(consensus_api_key)
+
     # Custom watchlist: parse comma-separated text into a JSON list
     watchlist_raw = form.get("custom_watchlist", "").strip()
     if watchlist_raw:

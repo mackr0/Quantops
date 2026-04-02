@@ -120,6 +120,158 @@ def _was_adjustment_effective(profile_id, parameter_name):
 
 
 # ---------------------------------------------------------------------------
+# Cross-Profile Learning (Feature 4)
+# ---------------------------------------------------------------------------
+
+def _build_cross_profile_insights(user_id, current_profile_id, current_db_path):
+    """Compare performance across all of a user's profiles and build insight text.
+
+    Only produces output if there are 2+ profiles with 20+ resolved predictions each,
+    and another profile significantly outperforms the current one (15%+ higher win rate).
+
+    Returns insight string or empty string.
+    """
+    try:
+        from models import get_user_profiles, get_trading_profile
+    except ImportError:
+        return ""
+
+    try:
+        profiles = get_user_profiles(user_id)
+    except Exception:
+        return ""
+
+    if len(profiles) < 2:
+        return ""
+
+    # Gather stats for each profile
+    profile_stats = []
+    for prof in profiles:
+        pid = prof["id"]
+        db = f"quantopsai_profile_{pid}.db"
+
+        try:
+            conn = _get_conn(db)
+        except Exception:
+            continue
+
+        try:
+            table_check = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_predictions'"
+            ).fetchone()
+            if not table_check:
+                conn.close()
+                continue
+
+            resolved = conn.execute(
+                "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved'"
+            ).fetchone()[0]
+
+            if resolved < 20:
+                conn.close()
+                continue
+
+            wins = conn.execute(
+                "SELECT COUNT(*) FROM ai_predictions "
+                "WHERE status='resolved' AND actual_outcome='win'"
+            ).fetchone()[0]
+            win_rate = (wins / resolved * 100) if resolved > 0 else 0
+
+            avg_return = conn.execute(
+                "SELECT AVG(actual_return_pct) FROM ai_predictions WHERE status='resolved'"
+            ).fetchone()[0] or 0
+
+            # BUY-specific stats
+            buy_total = conn.execute(
+                "SELECT COUNT(*) FROM ai_predictions "
+                "WHERE status='resolved' AND predicted_signal='BUY'"
+            ).fetchone()[0]
+            buy_wins = conn.execute(
+                "SELECT COUNT(*) FROM ai_predictions "
+                "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal='BUY'"
+            ).fetchone()[0]
+            buy_avg_ret = conn.execute(
+                "SELECT AVG(actual_return_pct) FROM ai_predictions "
+                "WHERE status='resolved' AND predicted_signal='BUY'"
+            ).fetchone()[0] or 0
+            buy_wr = (buy_wins / buy_total * 100) if buy_total > 0 else 0
+
+            conn.close()
+
+            profile_stats.append({
+                "id": pid,
+                "name": prof["name"],
+                "resolved": resolved,
+                "win_rate": win_rate,
+                "avg_return": avg_return,
+                "buy_wr": buy_wr,
+                "buy_avg_ret": buy_avg_ret,
+                "ai_confidence_threshold": prof.get("ai_confidence_threshold", 25),
+                "min_price": prof.get("min_price", 1.0),
+                "max_price": prof.get("max_price", 20.0),
+            })
+        except Exception as exc:
+            logger.warning("Cross-profile: error reading profile #%d: %s", pid, exc)
+            try:
+                conn.close()
+            except Exception:
+                pass
+            continue
+
+    # Need 2+ profiles with enough data
+    if len(profile_stats) < 2:
+        return ""
+
+    # Find current profile stats
+    current_stats = None
+    for ps in profile_stats:
+        if ps["id"] == current_profile_id:
+            current_stats = ps
+            break
+
+    if current_stats is None:
+        return ""
+
+    # Find profiles that significantly outperform the current one
+    lines = []
+    for other in profile_stats:
+        if other["id"] == current_profile_id:
+            continue
+
+        wr_diff = other["win_rate"] - current_stats["win_rate"]
+        if wr_diff >= 15:
+            lines.append("CROSS-PROFILE INSIGHTS:")
+            lines.append(
+                f'Your "{other["name"]}" profile wins {other["buy_wr"]:.0f}% '
+                f'on BUY signals with avg return {other["buy_avg_ret"]:+.1f}%.'
+            )
+            lines.append(
+                f'This profile ("{current_stats["name"]}") only wins '
+                f'{current_stats["buy_wr"]:.0f}% with avg return '
+                f'{current_stats["buy_avg_ret"]:+.1f}%.'
+            )
+            lines.append("")
+            lines.append(f'Key differences in "{other["name"]}":')
+            lines.append(
+                f'  - AI confidence threshold: {other["ai_confidence_threshold"]} '
+                f'(this profile: {current_stats["ai_confidence_threshold"]})'
+            )
+            lines.append(
+                f'  - Price range: ${other["min_price"]:.0f}-${other["max_price"]:.0f} '
+                f'(this profile: ${current_stats["min_price"]:.0f}-${current_stats["max_price"]:.0f})'
+            )
+            lines.append("")
+            lines.append(
+                f'The AI appears more accurate on "{other["name"]}" stocks '
+                f'in the current market.'
+            )
+            lines.append("Consider being more selective on this profile.")
+            break  # Only show the best-performing comparison
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Per-stock reputation (Feature 2: Auto-Blacklist)
 # ---------------------------------------------------------------------------
 
@@ -457,6 +609,17 @@ def build_performance_context(ctx, symbol=None, db_path=None):
             if lessons:
                 lines.append("")
                 lines.append(lessons)
+
+        # --- CROSS-PROFILE INSIGHTS (Feature 4) ---
+        if ctx is not None and profile_id:
+            try:
+                cross_insights = _build_cross_profile_insights(
+                    ctx.user_id, profile_id, db)
+                if cross_insights:
+                    lines.append("")
+                    lines.append(cross_insights)
+            except Exception as _cross_exc:
+                logger.warning("Failed to build cross-profile insights: %s", _cross_exc)
 
         conn.close()
         result = "\n".join(lines)
@@ -1010,6 +1173,48 @@ def apply_auto_adjustments(ctx, db_path=None):
                 f"SELL win rate {sell_wr:.0f}%"
             )
 
+        # --- Cross-profile learning: recommend confidence threshold from better profiles ---
+        try:
+            from models import get_user_profiles as _get_profiles
+            other_profiles = _get_profiles(user_id)
+            for other_prof in other_profiles:
+                if other_prof["id"] == profile_id:
+                    continue
+                other_db = f"quantopsai_profile_{other_prof['id']}.db"
+                try:
+                    other_conn = _get_conn(other_db)
+                    other_table = other_conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_predictions'"
+                    ).fetchone()
+                    if not other_table:
+                        other_conn.close()
+                        continue
+                    other_resolved = other_conn.execute(
+                        "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved'"
+                    ).fetchone()[0]
+                    if other_resolved < 20:
+                        other_conn.close()
+                        continue
+                    other_wins = other_conn.execute(
+                        "SELECT COUNT(*) FROM ai_predictions "
+                        "WHERE status='resolved' AND actual_outcome='win'"
+                    ).fetchone()[0]
+                    other_wr = (other_wins / other_resolved * 100) if other_resolved > 0 else 0
+                    other_conn.close()
+
+                    if other_wr - overall_wr >= 20:
+                        other_threshold = other_prof.get("ai_confidence_threshold", 25)
+                        adjustments_made.append(
+                            f"Cross-profile suggestion: \"{other_prof['name']}\" has "
+                            f"{other_wr:.0f}% win rate vs this profile's {overall_wr:.0f}%. "
+                            f"Consider raising confidence threshold to match "
+                            f"({other_threshold}) — not auto-applied (cross-profile)"
+                        )
+                except Exception:
+                    continue
+        except Exception as _cross_exc:
+            logger.warning("Cross-profile auto-adjust check failed: %s", _cross_exc)
+
         # --- Overall win rate too low — reduce position size ---
         recent_pos = _get_recent_adjustment(
             profile_id, "max_position_pct", days=3)
@@ -1062,6 +1267,7 @@ def _cast_param_value(param_name, value_str):
         "strategy_momentum_breakout", "strategy_volume_spike",
         "strategy_mean_reversion", "strategy_gap_and_go",
         "enable_short_selling", "enable_self_tuning", "maga_mode",
+        "enable_consensus",
     }
 
     if param_name in int_params:

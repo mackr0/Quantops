@@ -205,6 +205,181 @@ def analyze_symbol(symbol, ctx=None, api=None, political_context=None):
         }
 
 
+def analyze_symbol_consensus(symbol, ctx=None, api=None, political_context=None):
+    """Run analysis through primary model, then if STRONG signal, get second opinion.
+
+    Returns same dict as analyze_symbol but with additional keys:
+    - consensus: True if both models agree, False if not
+    - primary_signal: what the primary model said
+    - secondary_signal: what the secondary model said (or None)
+    - secondary_model: which model was used for second opinion
+    """
+    # Step 1: Call analyze_symbol normally with user's chosen model
+    result = analyze_symbol(symbol, ctx=ctx, api=api, political_context=political_context)
+
+    signal = result.get("signal", "HOLD").upper()
+    result["primary_signal"] = signal
+    result["secondary_signal"] = None
+    result["secondary_model"] = None
+    result["consensus"] = True  # default: agree with self
+
+    # Only seek consensus on actionable signals
+    actionable = {"STRONG_BUY", "STRONG_SELL", "BUY", "SELL"}
+    if signal not in actionable:
+        return result
+
+    # Check if consensus is enabled
+    if ctx is None or not getattr(ctx, "enable_consensus", False):
+        return result
+
+    # Determine secondary model
+    consensus_model = getattr(ctx, "consensus_model", "") or ""
+    if not consensus_model:
+        logger.info("Consensus enabled but no secondary model configured — skipping")
+        return result
+
+    # Determine the API key for the secondary model
+    from ai_providers import get_provider_for_model
+    secondary_provider = get_provider_for_model(consensus_model)
+    if not secondary_provider:
+        logger.warning("Could not determine provider for consensus model %s", consensus_model)
+        return result
+
+    primary_provider = ctx.ai_provider if ctx else "anthropic"
+
+    # Determine which API key to use for the secondary model
+    if secondary_provider == primary_provider:
+        # Same provider — use the primary API key
+        secondary_api_key = ctx.ai_api_key
+    else:
+        # Different provider — need a separate key
+        secondary_api_key = getattr(ctx, "consensus_api_key", "") or ""
+        if not secondary_api_key:
+            logger.info(
+                "Consensus: secondary model %s is provider %s but no consensus_api_key set — skipping",
+                consensus_model, secondary_provider,
+            )
+            return result
+
+    result["secondary_model"] = consensus_model
+
+    # Step 2: Build the same prompt and call secondary model
+    try:
+        api_client = api or get_api(ctx)
+        df = get_bars(symbol, limit=100, api=api_client)
+        df = add_indicators(df)
+        df = df.dropna()
+
+        if df.empty:
+            return result
+
+        latest = df.iloc[-1]
+        recent = df.tail(10)
+
+        tech_summary = {
+            "symbol": symbol,
+            "current_price": float(latest["close"]),
+            "volume": int(latest["volume"]),
+            "sma_20": float(latest["sma_20"]),
+            "sma_50": float(latest["sma_50"]),
+            "ema_12": float(latest["ema_12"]),
+            "rsi": float(latest["rsi"]),
+            "macd": float(latest["macd"]),
+            "macd_signal": float(latest["macd_signal"]),
+            "macd_histogram": float(latest["macd_histogram"]),
+            "bb_upper": float(latest["bb_upper"]),
+            "bb_lower": float(latest["bb_lower"]),
+            "bb_middle": float(latest["bb_middle"]),
+            "volume_sma_20": float(latest["volume_sma_20"]),
+            "recent_closes": [float(row["close"]) for _, row in recent.iterrows()],
+            "recent_volumes": [int(row["volume"]) for _, row in recent.iterrows()],
+        }
+
+        prompt = (
+            "You are a quantitative trading analyst. Analyze the following "
+            "technical data and provide a trading recommendation.\n\n"
+            f"Technical Data:\n{json.dumps(tech_summary, indent=2)}\n\n"
+            "Respond ONLY with valid JSON (no markdown fences) using this exact schema:\n"
+            "{\n"
+            '  "signal": "BUY" | "SELL" | "HOLD",\n'
+            '  "confidence": <integer 0-100>,\n'
+            '  "reasoning": "<string explaining the analysis>",\n'
+            '  "risk_factors": ["<risk1>", "<risk2>", ...],\n'
+            '  "price_targets": {\n'
+            '    "entry": <float>,\n'
+            '    "stop_loss": <float>,\n'
+            '    "take_profit": <float>\n'
+            "  }\n"
+            "}\n\n"
+            "Base your analysis on the indicator values, price action, and "
+            "volume trends provided. Be specific and quantitative in your "
+            "reasoning."
+        )
+
+        if political_context:
+            prompt += (
+                "\n\nAdditionally, consider the following political/macro "
+                "context when making your recommendation:\n"
+                f"{political_context}\n\n"
+                "If the current technical weakness appears to be driven by "
+                "political noise rather than fundamental deterioration, factor "
+                "in the likelihood of a mean reversion bounce."
+            )
+
+        secondary_text = call_ai(
+            prompt,
+            provider=secondary_provider,
+            model=consensus_model,
+            api_key=secondary_api_key,
+        )
+
+        # Track secondary API usage
+        if ctx is not None:
+            try:
+                from models import increment_api_usage
+                increment_api_usage(ctx.user_id)
+            except Exception:
+                pass
+
+        secondary_result = json.loads(secondary_text)
+        secondary_signal = secondary_result.get("signal", "HOLD").upper()
+        result["secondary_signal"] = secondary_signal
+
+        # Determine direction agreement
+        primary_direction = "BUY" if "BUY" in signal else "SELL" if "SELL" in signal else "HOLD"
+        secondary_direction = "BUY" if "BUY" in secondary_signal else "SELL" if "SELL" in secondary_signal else "HOLD"
+
+        if primary_direction == secondary_direction and primary_direction != "HOLD":
+            # Both agree on direction — boost confidence by 10%
+            result["consensus"] = True
+            original_conf = result.get("confidence", 0)
+            result["confidence"] = min(100, int(original_conf * 1.10))
+            logger.info(
+                "Consensus AGREE on %s for %s: primary=%s, secondary=%s (confidence %d->%d)",
+                primary_direction, symbol, signal, secondary_signal,
+                original_conf, result["confidence"],
+            )
+        else:
+            # Disagree — downgrade to HOLD
+            result["consensus"] = False
+            result["signal"] = "HOLD"
+            logger.info(
+                "Consensus DISAGREE on %s: primary=%s, secondary=%s — downgrading to HOLD",
+                symbol, signal, secondary_signal,
+            )
+
+    except json.JSONDecodeError as exc:
+        logger.warning("Consensus: secondary model returned invalid JSON for %s: %s", symbol, exc)
+        # Treat as "no consensus available" — proceed with primary only
+        result["secondary_signal"] = "PARSE_ERROR"
+    except Exception as exc:
+        logger.warning("Consensus: secondary model call failed for %s: %s", symbol, exc)
+        # Proceed with primary only
+        result["secondary_signal"] = "ERROR"
+
+    return result
+
+
 def analyze_portfolio_risk(positions, account_info, ctx=None):
     """
     Send the full portfolio and account info to Claude for a holistic risk
