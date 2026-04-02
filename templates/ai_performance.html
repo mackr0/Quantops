@@ -124,6 +124,50 @@
     {% endif %}
 </div>
 
+<!-- Self-Tuning History -->
+{% if tuning_history %}
+<article>
+    <header><h3>Self-Tuning History</h3></header>
+    <p class="muted" style="margin-top:-0.5rem;">Automatic adjustments the system has made based on its own performance.</p>
+    <table>
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Profile</th>
+                <th>Change</th>
+                <th>Reason</th>
+                <th>Win Rate Then</th>
+                <th>Outcome</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for h in tuning_history %}
+            <tr>
+                <td>{{ h.timestamp[:10] }}</td>
+                <td>{{ h.profile_name }}</td>
+                <td><strong>{{ h.parameter_name }}</strong><br>
+                    <small>{{ h.old_value }} → {{ h.new_value }}</small>
+                </td>
+                <td style="font-size:0.85rem;">{{ h.reason[:80] }}</td>
+                <td>{{ "%.1f"|format(h.win_rate_at_change) }}%</td>
+                <td>
+                    {% if h.outcome_after == 'improved' %}
+                        <span class="pnl-pos">Improved{% if h.win_rate_after %} ({{ "%.1f"|format(h.win_rate_after) }}%){% endif %}</span>
+                    {% elif h.outcome_after == 'worsened' %}
+                        <span class="pnl-neg">Worsened{% if h.win_rate_after %} ({{ "%.1f"|format(h.win_rate_after) }}%){% endif %}</span>
+                    {% elif h.outcome_after == 'unchanged' %}
+                        <span class="muted">Unchanged</span>
+                    {% else %}
+                        <span class="muted">Pending review</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</article>
+{% endif %}
+
 <!-- Trade Performance Summary -->
 <article>
     <header><h3>Trade Performance (All-Time)</h3></header>

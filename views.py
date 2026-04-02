@@ -778,9 +778,20 @@ def ai_performance():
             combined_trade["total_pnl"] / combined_trade["total_trades"]
         )
 
+    # Get tuning history across all profiles
+    from models import get_tuning_history
+    tuning_history = []
+    for p in profiles:
+        history = get_tuning_history(p["id"], limit=10)
+        for h in history:
+            h["profile_name"] = p["name"]
+        tuning_history.extend(history)
+    tuning_history.sort(key=lambda h: h.get("timestamp", ""), reverse=True)
+
     return render_template("ai_performance.html",
                            perf=combined_perf,
-                           trade_perf=combined_trade)
+                           trade_perf=combined_trade,
+                           tuning_history=tuning_history[:20])
 
 
 @views_bp.route("/admin")
