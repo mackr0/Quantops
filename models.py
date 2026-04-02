@@ -162,6 +162,8 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             custom_start TEXT NOT NULL DEFAULT '09:30',
             custom_end TEXT NOT NULL DEFAULT '16:00',
             custom_days TEXT NOT NULL DEFAULT '0,1,2,3,4',
+            drawdown_pause_pct REAL NOT NULL DEFAULT 0.20,
+            drawdown_reduce_pct REAL NOT NULL DEFAULT 0.10,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
@@ -176,6 +178,8 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         -- ALTER TABLE trading_profiles ADD COLUMN custom_start TEXT NOT NULL DEFAULT '09:30';
         -- ALTER TABLE trading_profiles ADD COLUMN custom_end TEXT NOT NULL DEFAULT '16:00';
         -- ALTER TABLE trading_profiles ADD COLUMN custom_days TEXT NOT NULL DEFAULT '0,1,2,3,4';
+        -- ALTER TABLE trading_profiles ADD COLUMN drawdown_pause_pct REAL NOT NULL DEFAULT 0.20;
+        -- ALTER TABLE trading_profiles ADD COLUMN drawdown_reduce_pct REAL NOT NULL DEFAULT 0.10;
         CREATE TABLE IF NOT EXISTS activity_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             profile_id INTEGER NOT NULL,
@@ -213,6 +217,20 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         );
     """)
     conn.commit()
+
+    # Auto-migrate: add columns that may not exist in older databases
+    _migrations = [
+        ("trading_profiles", "drawdown_pause_pct", "REAL NOT NULL DEFAULT 0.20"),
+        ("trading_profiles", "drawdown_reduce_pct", "REAL NOT NULL DEFAULT 0.10"),
+    ]
+    for table, col, col_def in _migrations:
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+            conn.commit()
+            logger.info("Migrated: added %s.%s", table, col)
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
     conn.close()
     logger.info("User database initialised.")
 
@@ -593,6 +611,7 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "enable_self_tuning",
         "ai_provider", "ai_model", "ai_api_key_enc",
         "schedule_type", "custom_start", "custom_end", "custom_days",
+        "drawdown_pause_pct", "drawdown_reduce_pct",
     }
     updates = {}
     for key, value in kwargs.items():
@@ -711,6 +730,9 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         custom_start=profile.get("custom_start", "09:30"),
         custom_end=profile.get("custom_end", "16:00"),
         custom_days=profile.get("custom_days", "0,1,2,3,4"),
+        # Drawdown protection
+        drawdown_pause_pct=profile.get("drawdown_pause_pct", 0.20),
+        drawdown_reduce_pct=profile.get("drawdown_reduce_pct", 0.10),
     )
 
 

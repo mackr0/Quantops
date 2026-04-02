@@ -120,6 +120,63 @@ def _was_adjustment_effective(profile_id, parameter_name):
 
 
 # ---------------------------------------------------------------------------
+# Per-stock reputation (Feature 2: Auto-Blacklist)
+# ---------------------------------------------------------------------------
+
+def get_symbol_reputation(db_path, min_predictions=3):
+    """Get win rate per symbol from ai_predictions.
+
+    Returns dict: {symbol: {"wins": N, "losses": N, "win_rate": float, "avg_return": float}}
+    Only includes symbols with min_predictions resolved.
+    """
+    try:
+        conn = _get_conn(db_path)
+    except Exception:
+        return {}
+
+    try:
+        table_check = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_predictions'"
+        ).fetchone()
+        if not table_check:
+            conn.close()
+            return {}
+
+        rows = conn.execute(
+            "SELECT symbol, COUNT(*) as total, "
+            "SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) as wins, "
+            "AVG(actual_return_pct) as avg_return "
+            "FROM ai_predictions WHERE status='resolved' "
+            "GROUP BY symbol HAVING COUNT(*) >= ?",
+            (min_predictions,),
+        ).fetchall()
+        conn.close()
+
+        result = {}
+        for r in rows:
+            total = r["total"]
+            wins = r["wins"]
+            losses = total - wins
+            win_rate = (wins / total * 100) if total > 0 else 0
+            result[r["symbol"]] = {
+                "wins": wins,
+                "losses": losses,
+                "total": total,
+                "win_rate": win_rate,
+                "avg_return": r["avg_return"] or 0,
+            }
+        return result
+
+    except Exception as exc:
+        logger.warning("Failed to get symbol reputation: %s", exc)
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return {}
+
+
+# ---------------------------------------------------------------------------
 # build_performance_context
 # ---------------------------------------------------------------------------
 
@@ -174,7 +231,65 @@ def build_performance_context(ctx, symbol=None, db_path=None):
         ).fetchone()[0]
         win_rate = (wins / resolved * 100) if resolved else 0
 
-        lines = ["YOUR PREDICTION TRACK RECORD:"]
+        lines = []
+
+        # --- Stock-specific track record (most relevant context first) ---
+        sym_rows = None
+        if symbol:
+            sym_rows = conn.execute(
+                "SELECT predicted_signal, actual_outcome, actual_return_pct, "
+                "price_at_prediction, timestamp "
+                "FROM ai_predictions "
+                "WHERE status='resolved' AND symbol=? "
+                "ORDER BY timestamp DESC",
+                (symbol.upper(),),
+            ).fetchall()
+            if sym_rows:
+                sym_total = len(sym_rows)
+                sym_wins = sum(1 for r in sym_rows if r["actual_outcome"] == "win")
+                sym_losses = sym_total - sym_wins
+                sym_wr = (sym_wins / sym_total * 100) if sym_total else 0
+                all_rets = [r["actual_return_pct"] or 0 for r in sym_rows]
+                sym_avg_ret = sum(all_rets) / len(all_rets) if all_rets else 0
+
+                lines.append(f"STOCK-SPECIFIC TRACK RECORD ({symbol.upper()}):")
+                lines.append(
+                    f"You have predicted on {symbol.upper()} {sym_total} times: "
+                    f"{sym_wins}W / {sym_losses}L ({sym_wr:.0f}% win rate)"
+                )
+                lines.append(
+                    f"Average return on {symbol.upper()}: {sym_avg_ret:+.1f}%"
+                )
+
+                # Last 3 predictions
+                last_3 = sym_rows[:3]
+                if last_3:
+                    lines.append("Last 3 predictions:")
+                    for r in last_3:
+                        ts = r["timestamp"][:10] if r["timestamp"] else "unknown"
+                        outcome = "WIN" if r["actual_outcome"] == "win" else "LOSS"
+                        ret = r["actual_return_pct"] or 0
+                        lines.append(
+                            f"  {ts}: {r['predicted_signal']} "
+                            f"@ ${r['price_at_prediction']:.2f} "
+                            f"-> {outcome} ({ret:+.1f}%)"
+                        )
+
+                if sym_wr == 0:
+                    lines.append(
+                        "WARNING: You have NEVER been right about this stock. "
+                        "Consider avoiding it."
+                    )
+                elif sym_wr > 70:
+                    lines.append(
+                        "This is one of your best-performing stocks. "
+                        "Your analysis of it tends to be accurate."
+                    )
+
+                lines.append("")
+
+        # --- Overall stats ---
+        lines.append("YOUR PREDICTION TRACK RECORD:")
         lines.append(
             f"Overall: {win_rate:.1f}% win rate "
             f"({wins}W / {losses}L from {resolved} resolved predictions)"
@@ -255,39 +370,6 @@ def build_performance_context(ctx, symbol=None, db_path=None):
                     f"  {outcome_label}: {r['predicted_signal']} "
                     f"{r['symbol']} @ ${r['price_at_prediction']:.2f} "
                     f"({ret:+.1f}%)"
-                )
-
-        # --- Symbol-specific history ---
-        sym_rows = None
-        if symbol:
-            sym_rows = conn.execute(
-                "SELECT predicted_signal, actual_outcome, actual_return_pct "
-                "FROM ai_predictions "
-                "WHERE status='resolved' AND symbol=?",
-                (symbol.upper(),),
-            ).fetchall()
-            if sym_rows:
-                sym_buys = [r for r in sym_rows if r["predicted_signal"] == "BUY"]
-                sym_sells = [r for r in sym_rows if r["predicted_signal"] == "SELL"]
-                sym_buy_wins = sum(1 for r in sym_buys if r["actual_outcome"] == "win")
-                sym_sell_wins = sum(1 for r in sym_sells if r["actual_outcome"] == "win")
-                all_rets = [r["actual_return_pct"] or 0 for r in sym_rows]
-                avg_ret = sum(all_rets) / len(all_rets) if all_rets else 0
-                parts = []
-                if sym_buys:
-                    parts.append(
-                        f"{len(sym_buys)} BUY(s) ({sym_buy_wins} win, "
-                        f"{len(sym_buys) - sym_buy_wins} loss)"
-                    )
-                if sym_sells:
-                    parts.append(
-                        f"{len(sym_sells)} SELL(s) ({sym_sell_wins} win, "
-                        f"{len(sym_sells) - sym_sell_wins} loss)"
-                    )
-                lines.append("")
-                lines.append(
-                    f"Your past predictions on {symbol.upper()}: "
-                    f"{', '.join(parts)}, avg return {avg_ret:+.1f}%"
                 )
 
         # --- Self-tuning guidance ---
@@ -862,6 +944,7 @@ def _cast_param_value(param_name, value_str):
         "min_price", "max_price", "volume_surge_multiplier",
         "rsi_overbought", "rsi_oversold", "momentum_5d_gain",
         "momentum_20d_gain", "breakout_volume_threshold", "gap_pct_threshold",
+        "drawdown_pause_pct", "drawdown_reduce_pct",
     }
     bool_params = {
         "strategy_momentum_breakout", "strategy_volume_spike",

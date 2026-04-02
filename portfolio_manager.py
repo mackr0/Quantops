@@ -1,6 +1,11 @@
 """Portfolio-level risk management and position sizing."""
 
+import logging
+import sqlite3
+
 import config
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_position_size(symbol, signal, account_info, current_positions,
@@ -294,4 +299,56 @@ def get_risk_summary(account_info, positions, max_total_positions=None,
         "position_weights": {k: round(v, 2) for k, v in position_weights.items()},
         "largest_position": largest_position,
         "max_position_pct": max_position_pct * 100,
+    }
+
+
+def check_drawdown(ctx, account_info, db_path=None):
+    """Check current drawdown from peak equity.
+
+    Returns:
+        dict with keys: drawdown_pct, peak_equity, current_equity, action
+        action is one of: "normal", "reduce", "pause"
+    """
+    current_equity = account_info.get("equity", 0)
+    db = db_path or (ctx.db_path if ctx else None)
+
+    peak_equity = current_equity  # default if no snapshots
+
+    if db:
+        try:
+            conn = sqlite3.connect(db)
+            row = conn.execute(
+                "SELECT MAX(equity) FROM daily_snapshots"
+            ).fetchone()
+            conn.close()
+            if row and row[0] is not None:
+                peak_equity = max(float(row[0]), current_equity)
+        except Exception as exc:
+            logger.debug("Could not query daily_snapshots for peak equity: %s", exc)
+
+    if peak_equity <= 0:
+        return {
+            "drawdown_pct": 0.0,
+            "peak_equity": peak_equity,
+            "current_equity": current_equity,
+            "action": "normal",
+        }
+
+    drawdown_pct = (peak_equity - current_equity) / peak_equity * 100
+
+    pause_threshold = (ctx.drawdown_pause_pct * 100) if ctx else 20.0
+    reduce_threshold = (ctx.drawdown_reduce_pct * 100) if ctx else 10.0
+
+    if drawdown_pct >= pause_threshold:
+        action = "pause"
+    elif drawdown_pct >= reduce_threshold:
+        action = "reduce"
+    else:
+        action = "normal"
+
+    return {
+        "drawdown_pct": round(drawdown_pct, 2),
+        "peak_equity": peak_equity,
+        "current_equity": current_equity,
+        "action": action,
     }

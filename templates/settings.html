@@ -271,6 +271,25 @@
                 </label>
             </div>
 
+            <div class="grid">
+                <label>
+                    Reduce Size at Drawdown %
+                    <input type="range" name="drawdown_reduce_pct" class="slider"
+                           min="0.05" max="0.25" step="0.01"
+                           value="{{ prof.get('drawdown_reduce_pct', 0.10) }}"
+                           data-display="dd_reduce_val_{{ prof.id }}">
+                    <output id="dd_reduce_val_{{ prof.id }}">{{ "%.0f"|format(prof.get('drawdown_reduce_pct', 0.10) * 100) }}%</output>
+                </label>
+                <label>
+                    Pause Trading at Drawdown %
+                    <input type="range" name="drawdown_pause_pct" class="slider"
+                           min="0.10" max="0.40" step="0.01"
+                           value="{{ prof.get('drawdown_pause_pct', 0.20) }}"
+                           data-display="dd_pause_val_{{ prof.id }}">
+                    <output id="dd_pause_val_{{ prof.id }}">{{ "%.0f"|format(prof.get('drawdown_pause_pct', 0.20) * 100) }}%</output>
+                </label>
+            </div>
+
             <label style="display:flex;align-items:flex-start;gap:0.5rem;">
                 <input type="checkbox" name="enable_short_selling" value="1" style="flex-shrink:0;margin-top:0.2rem;"
                        {{ 'checked' if prof.enable_short_selling else '' }}>

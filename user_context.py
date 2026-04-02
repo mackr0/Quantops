@@ -80,6 +80,10 @@ class UserContext:
     # Self-tuning — AI learns from past wins/losses and adjusts approach
     enable_self_tuning: bool = True
 
+    # Drawdown protection
+    drawdown_pause_pct: float = 0.20  # pause all trading at 20% drawdown
+    drawdown_reduce_pct: float = 0.10  # reduce position sizes at 10% drawdown
+
     # Trading schedule
     schedule_type: str = "market_hours"  # "market_hours", "extended_hours", "24_7", "custom"
     custom_start: str = "09:30"  # HH:MM in ET, only used if schedule_type == "custom"

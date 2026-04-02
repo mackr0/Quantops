@@ -13,7 +13,7 @@ AI Review Gate:
 
 import json
 from client import get_api, get_account_info, get_positions
-from portfolio_manager import check_portfolio_constraints
+from portfolio_manager import check_portfolio_constraints, check_drawdown
 from journal import init_db, log_trade, log_signal
 from aggressive_strategy import aggressive_combined_strategy
 
@@ -139,6 +139,22 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
 
     api = get_api(ctx)
     account = get_account_info(api)
+
+    # --- Drawdown protection ---
+    dd = {"action": "normal", "drawdown_pct": 0.0, "peak_equity": 0, "current_equity": 0}
+    if ctx is not None:
+        dd = check_drawdown(ctx, account, db_path=db_path)
+        print(f"    Drawdown: {dd['drawdown_pct']:.1f}% (peak ${dd['peak_equity']:,.0f}, current ${dd['current_equity']:,.0f}) -> {dd['action']}")
+        if dd["action"] == "pause":
+            return {
+                "symbol": symbol,
+                "action": "DRAWDOWN_PAUSE",
+                "signal": signal.get("signal", "HOLD"),
+                "price": signal.get("price", 0),
+                "reason": f"Trading paused: {dd['drawdown_pct']:.1f}% drawdown exceeds {ctx.drawdown_pause_pct*100:.0f}% threshold",
+                "strategy": "aggressive",
+            }
+
     positions_list = get_positions(api)
 
     # Filter positions to match profile's market type
@@ -199,6 +215,12 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
             return result
 
         qty = int(dollars / price)
+
+        # Drawdown reduce: halve position size when in drawdown
+        if ctx is not None and dd["action"] == "reduce":
+            qty = max(1, int(qty * 0.5))
+            print(f"    Drawdown reduce: halved qty to {qty}")
+
         if qty <= 0:
             result["action"] = "SKIP"
             result["reason"] = "Position size too small"
@@ -324,6 +346,12 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
                 result["reason"] = "Invalid price"
             else:
                 qty = int(dollars / price)
+
+                # Drawdown reduce: halve position size when in drawdown
+                if ctx is not None and dd["action"] == "reduce":
+                    qty = max(1, int(qty * 0.5))
+                    print(f"    Drawdown reduce: halved short qty to {qty}")
+
                 if qty <= 0:
                     result["action"] = "SKIP"
                     result["reason"] = "Position size too small"
@@ -426,12 +454,45 @@ def run_aggressive_scan_and_trade(candidates, ctx=None, max_position_pct=None,
         if political_context:
             print(f"  {political_context.splitlines()[0]}")  # Print first line
 
+    # Per-stock reputation: auto-blacklist symbols with 0% win rate
+    symbol_reputation = {}
+    if ctx is not None:
+        try:
+            from self_tuning import get_symbol_reputation
+            symbol_reputation = get_symbol_reputation(ctx.db_path)
+        except Exception as exc:
+            print(f"  Warning: Could not load symbol reputation: {exc}")
+
     details = []
     vetoed = []
     errors = []
 
     for symbol in candidates:
         try:
+            # Auto-blacklist: skip symbols with 0% win rate on 3+ predictions
+            if symbol in symbol_reputation:
+                rep = symbol_reputation[symbol]
+                if rep["win_rate"] == 0 and rep["total"] >= 3:
+                    print(f"  Auto-blacklisted {symbol}: 0/{rep['total']} wins")
+                    details.append({
+                        "symbol": symbol,
+                        "action": "AUTO_BLACKLISTED",
+                        "reason": f"0% win rate on {rep['total']} predictions",
+                    })
+                    # Log to activity feed
+                    if ctx is not None:
+                        try:
+                            from models import log_activity
+                            log_activity(
+                                ctx.profile_id, ctx.user_id, "auto_blacklist",
+                                f"Auto-blacklisted {symbol}",
+                                f"0/{rep['total']} wins — skipping until track record improves",
+                                symbol=symbol,
+                            )
+                        except Exception:
+                            pass
+                    continue
+
             # Step 1: Technical analysis
             signal = aggressive_combined_strategy(symbol)
             action = signal.get("signal", "HOLD")
