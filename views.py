@@ -422,6 +422,10 @@ def save_profile(profile_id):
         # Drawdown protection
         "drawdown_reduce_pct": float(form.get("drawdown_reduce_pct", 0.10)),
         "drawdown_pause_pct": float(form.get("drawdown_pause_pct", 0.20)),
+        # Earnings calendar
+        "avoid_earnings_days": int(form.get("avoid_earnings_days", 2)),
+        # Time-of-day patterns
+        "skip_first_minutes": int(form.get("skip_first_minutes", 0)),
         # Trading schedule
         "schedule_type": form.get("schedule_type", "market_hours"),
         "custom_start": form.get("custom_start", "09:30"),

@@ -359,6 +359,21 @@
                 </label>
             </div>
 
+            <div class="grid">
+                <label>
+                    Avoid Earnings (days)
+                    <input type="number" name="avoid_earnings_days" min="0" max="10" step="1"
+                           value="{{ prof.get('avoid_earnings_days', 2) }}">
+                    <small class="muted">Skip stocks with earnings within this many days (0 = don't avoid)</small>
+                </label>
+                <label>
+                    Skip Opening Minutes
+                    <input type="number" name="skip_first_minutes" min="0" max="60" step="5"
+                           value="{{ prof.get('skip_first_minutes', 0) }}">
+                    <small class="muted">Skip first N minutes after market open (0 = don't skip)</small>
+                </label>
+            </div>
+
             <!-- Momentum / Breakout / Gap -->
             <h4>Signal Thresholds</h4>
             <div class="grid">

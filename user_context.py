@@ -80,6 +80,12 @@ class UserContext:
     # Self-tuning — AI learns from past wins/losses and adjusts approach
     enable_self_tuning: bool = True
 
+    # Earnings calendar
+    avoid_earnings_days: int = 2  # skip stocks with earnings within this many days (0 = don't avoid)
+
+    # Time-of-day patterns
+    skip_first_minutes: int = 0  # skip first N minutes after market open (0 = don't skip)
+
     # Drawdown protection
     drawdown_pause_pct: float = 0.20  # pause all trading at 20% drawdown
     drawdown_reduce_pct: float = 0.10  # reduce position sizes at 10% drawdown

@@ -6,11 +6,11 @@
 |---|---|---|---|
 | 1 | Drawdown Protection | DONE | A |
 | 2 | Per-Stock Memory | DONE | A |
-| 3 | Market Regime Detection | NOT STARTED | B |
+| 3 | Market Regime Detection | DONE | B |
 | 4 | Cross-Profile Learning | NOT STARTED | C |
-| 5 | Earnings Calendar Awareness | NOT STARTED | B |
+| 5 | Earnings Calendar Awareness | DONE | B |
 | 6 | Multi-Model Consensus | NOT STARTED | C |
-| 7 | Time-of-Day Patterns | NOT STARTED | B |
+| 7 | Time-of-Day Patterns | DONE | B |
 | 8 | Per-Stock Win Rate in Prompt | DONE | A |
 
 ## Build Order

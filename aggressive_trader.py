@@ -130,6 +130,26 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
                 "strategy": "aggressive",
             }
 
+    # Earnings calendar check — skip stocks reporting earnings soon
+    if ctx is not None:
+        try:
+            avoid_days = getattr(ctx, "avoid_earnings_days", 2)
+            if avoid_days > 0:
+                from earnings_calendar import check_earnings
+                earnings = check_earnings(symbol)
+                if earnings and earnings["days_until"] <= avoid_days:
+                    return {
+                        "symbol": symbol,
+                        "action": "EARNINGS_SKIP",
+                        "signal": signal.get("signal", "HOLD"),
+                        "price": signal.get("price", 0),
+                        "reason": f"Skipping {symbol}: earnings in {earnings['days_until']} day(s) (on {earnings['earnings_date']})",
+                        "strategy": "aggressive",
+                    }
+        except Exception as _earn_exc:
+            # Never block a trade due to earnings lookup failure
+            pass
+
     # Resolve parameters from ctx, explicit arg, or module-level constants
     if max_position_pct is None:
         max_position_pct = ctx.max_position_pct if ctx is not None else AGGRESSIVE_MAX_POSITION_PCT
@@ -443,6 +463,29 @@ def run_aggressive_scan_and_trade(candidates, ctx=None, max_position_pct=None,
     """
     if max_position_pct is None:
         max_position_pct = ctx.max_position_pct if ctx is not None else AGGRESSIVE_MAX_POSITION_PCT
+
+    # Fetch market regime once at start of cycle
+    regime_info = None
+    try:
+        from market_regime import detect_regime
+        regime_info = detect_regime()
+        if regime_info and regime_info.get("regime") != "unknown":
+            regime_label = regime_info["regime"].upper()
+            vix_val = regime_info.get("vix", 0)
+            print(f"  Market regime: {regime_label} (VIX {vix_val:.1f})")
+            if ctx is not None:
+                try:
+                    from models import log_activity
+                    log_activity(
+                        getattr(ctx, "profile_id", 0), ctx.user_id,
+                        "market_regime",
+                        f"Market regime: {regime_label} (VIX {vix_val:.1f})",
+                        regime_info.get("summary", ""),
+                    )
+                except Exception:
+                    pass
+    except Exception as _regime_exc:
+        print(f"  Warning: Could not detect market regime: {_regime_exc}")
 
     # Fetch political context once for the entire scan if MAGA mode is enabled
     political_context = None

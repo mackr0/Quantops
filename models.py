@@ -164,6 +164,8 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             custom_days TEXT NOT NULL DEFAULT '0,1,2,3,4',
             drawdown_pause_pct REAL NOT NULL DEFAULT 0.20,
             drawdown_reduce_pct REAL NOT NULL DEFAULT 0.10,
+            avoid_earnings_days INTEGER NOT NULL DEFAULT 2,
+            skip_first_minutes INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
@@ -180,6 +182,8 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         -- ALTER TABLE trading_profiles ADD COLUMN custom_days TEXT NOT NULL DEFAULT '0,1,2,3,4';
         -- ALTER TABLE trading_profiles ADD COLUMN drawdown_pause_pct REAL NOT NULL DEFAULT 0.20;
         -- ALTER TABLE trading_profiles ADD COLUMN drawdown_reduce_pct REAL NOT NULL DEFAULT 0.10;
+        -- ALTER TABLE trading_profiles ADD COLUMN avoid_earnings_days INTEGER NOT NULL DEFAULT 2;
+        -- ALTER TABLE trading_profiles ADD COLUMN skip_first_minutes INTEGER NOT NULL DEFAULT 0;
         CREATE TABLE IF NOT EXISTS activity_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             profile_id INTEGER NOT NULL,
@@ -222,6 +226,8 @@ def init_user_db(db_path: Optional[str] = None) -> None:
     _migrations = [
         ("trading_profiles", "drawdown_pause_pct", "REAL NOT NULL DEFAULT 0.20"),
         ("trading_profiles", "drawdown_reduce_pct", "REAL NOT NULL DEFAULT 0.10"),
+        ("trading_profiles", "avoid_earnings_days", "INTEGER NOT NULL DEFAULT 2"),
+        ("trading_profiles", "skip_first_minutes", "INTEGER NOT NULL DEFAULT 0"),
     ]
     for table, col, col_def in _migrations:
         try:
@@ -612,6 +618,7 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "ai_provider", "ai_model", "ai_api_key_enc",
         "schedule_type", "custom_start", "custom_end", "custom_days",
         "drawdown_pause_pct", "drawdown_reduce_pct",
+        "avoid_earnings_days", "skip_first_minutes",
     }
     updates = {}
     for key, value in kwargs.items():
@@ -733,6 +740,10 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         # Drawdown protection
         drawdown_pause_pct=profile.get("drawdown_pause_pct", 0.20),
         drawdown_reduce_pct=profile.get("drawdown_reduce_pct", 0.10),
+        # Earnings calendar
+        avoid_earnings_days=profile.get("avoid_earnings_days", 2),
+        # Time-of-day patterns
+        skip_first_minutes=profile.get("skip_first_minutes", 0),
     )
 
 

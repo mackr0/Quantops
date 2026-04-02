@@ -761,6 +761,19 @@ def main_loop(active_segments=None, legacy_mode=False):
                     if not ctx.is_within_schedule(now):
                         continue  # Skip this profile — not within its schedule
 
+                    # Feature 7: Skip first N minutes after market open
+                    if ctx.skip_first_minutes > 0 and now.weekday() < 5:
+                        market_open_time = now.replace(
+                            hour=9, minute=30, second=0, microsecond=0)
+                        skip_until = market_open_time + timedelta(
+                            minutes=ctx.skip_first_minutes)
+                        if market_open_time <= now < skip_until:
+                            logging.info(
+                                f"Skipping profile {prof['name']} — within "
+                                f"first {ctx.skip_first_minutes} minutes of "
+                                f"market open (until {skip_until.strftime('%H:%M')} ET)")
+                            continue
+
                     logging.info(f"=== Processing profile: {prof['name']} (#{prof['id']}, {prof['market_type']}, schedule={ctx.schedule_type}) ===")
                     run_segment_cycle(
                         ctx,

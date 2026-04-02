@@ -441,6 +441,15 @@ def build_performance_context(ctx, symbol=None, db_path=None):
                     f"({sym_wr:.0f}% win rate)."
                 )
 
+        # --- TIME-OF-DAY PERFORMANCE ---
+        try:
+            time_ctx = _build_time_context(db)
+            if time_ctx:
+                lines.append("")
+                lines.append(time_ctx)
+        except Exception as _time_exc:
+            logger.warning("Failed to add time context: %s", _time_exc)
+
         # --- LESSONS LEARNED from tuning history ---
         profile_id = getattr(ctx, "profile_id", None) if ctx else None
         if profile_id:
@@ -456,6 +465,108 @@ def build_performance_context(ctx, symbol=None, db_path=None):
 
     except Exception as exc:
         logger.warning("Failed to build performance context: %s", exc)
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return ""
+
+
+def _build_time_context(db_path):
+    """Build time-of-day performance summary from ai_predictions.
+
+    Groups resolved predictions by hour and calculates win rate per time bucket.
+    Only includes results if there are 5+ predictions in at least 2 buckets.
+
+    Returns a summary string, or empty string if insufficient data.
+    """
+    try:
+        conn = _get_conn(db_path)
+    except Exception:
+        return ""
+
+    try:
+        table_check = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_predictions'"
+        ).fetchone()
+        if not table_check:
+            conn.close()
+            return ""
+
+        rows = conn.execute(
+            "SELECT timestamp, actual_outcome FROM ai_predictions "
+            "WHERE status='resolved' AND timestamp IS NOT NULL"
+        ).fetchall()
+        conn.close()
+
+        if not rows:
+            return ""
+
+        # Group by hour buckets
+        buckets = {
+            "open": {"label": "9:30-10:00 (Open)", "hours": {9}, "min_minute": 30, "wins": 0, "total": 0},
+            "morning": {"label": "10:00-12:00 (Morning)", "hours": {10, 11}, "wins": 0, "total": 0},
+            "midday": {"label": "12:00-14:00 (Midday)", "hours": {12, 13}, "wins": 0, "total": 0},
+            "afternoon": {"label": "14:00-16:00 (Afternoon)", "hours": {14, 15}, "wins": 0, "total": 0},
+        }
+
+        for r in rows:
+            ts_str = r["timestamp"]
+            if not ts_str:
+                continue
+            try:
+                from datetime import datetime as _dt
+                ts = _dt.fromisoformat(ts_str)
+                hour = ts.hour
+                minute = ts.minute
+
+                # Classify into bucket
+                if hour == 9 and minute >= 30:
+                    bucket = "open"
+                elif hour in (10, 11):
+                    bucket = "morning"
+                elif hour in (12, 13):
+                    bucket = "midday"
+                elif hour in (14, 15):
+                    bucket = "afternoon"
+                else:
+                    continue  # Outside market hours
+
+                buckets[bucket]["total"] += 1
+                if r["actual_outcome"] == "win":
+                    buckets[bucket]["wins"] += 1
+            except Exception:
+                continue
+
+        # Check if we have enough data: 5+ predictions in at least 2 buckets
+        active_buckets = [b for b in buckets.values() if b["total"] >= 5]
+        if len(active_buckets) < 2:
+            return ""
+
+        lines = ["TIME-OF-DAY PERFORMANCE:"]
+        for key in ("open", "morning", "midday", "afternoon"):
+            b = buckets[key]
+            if b["total"] > 0:
+                wr = (b["wins"] / b["total"]) * 100
+                if wr < 35:
+                    note = "volatile, avoid"
+                elif wr < 45:
+                    note = "below average"
+                elif wr < 55:
+                    note = "average"
+                elif wr < 65:
+                    note = "good window"
+                else:
+                    note = "your best window"
+                lines.append(
+                    f"{b['label']}: {wr:.0f}% win rate "
+                    f"({b['wins']}/{b['total']}) — {note}"
+                )
+
+        return "\n".join(lines)
+
+    except Exception as exc:
+        logger.warning("Failed to build time context: %s", exc)
         try:
             conn.close()
         except Exception:
@@ -938,7 +1049,8 @@ def apply_auto_adjustments(ctx, db_path=None):
 
 def _cast_param_value(param_name, value_str):
     """Cast a string value back to the appropriate type for a profile parameter."""
-    int_params = {"ai_confidence_threshold", "max_total_positions", "min_volume"}
+    int_params = {"ai_confidence_threshold", "max_total_positions", "min_volume",
+                   "avoid_earnings_days", "skip_first_minutes"}
     float_params = {
         "max_position_pct", "stop_loss_pct", "take_profit_pct",
         "min_price", "max_price", "volume_surge_multiplier",
