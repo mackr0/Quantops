@@ -193,6 +193,24 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             name TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS tuning_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+            adjustment_type TEXT NOT NULL,
+            parameter_name TEXT NOT NULL,
+            old_value TEXT NOT NULL,
+            new_value TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            win_rate_at_change REAL,
+            predictions_resolved INTEGER,
+            outcome_after TEXT DEFAULT 'pending',
+            win_rate_after REAL,
+            reviewed_at TEXT,
+            FOREIGN KEY (profile_id) REFERENCES trading_profiles(id)
+        );
     """)
     conn.commit()
     conn.close()
@@ -1043,6 +1061,149 @@ def get_activity_count(user_id: int, profile_id: Optional[int] = None) -> int:
         ).fetchone()
     conn.close()
     return row["cnt"] if row else 0
+
+
+# ---------------------------------------------------------------------------
+# Tuning History
+# ---------------------------------------------------------------------------
+
+def log_tuning_change(profile_id: int, user_id: int, adjustment_type: str,
+                      parameter_name: str, old_value: str, new_value: str,
+                      reason: str, win_rate_at_change: Optional[float] = None,
+                      predictions_resolved: Optional[int] = None) -> int:
+    """Insert a tuning history record. Returns the row id."""
+    conn = _get_conn()
+    cursor = conn.execute(
+        """INSERT INTO tuning_history
+           (profile_id, user_id, timestamp, adjustment_type, parameter_name,
+            old_value, new_value, reason, win_rate_at_change, predictions_resolved)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            profile_id,
+            user_id,
+            datetime.utcnow().isoformat(),
+            adjustment_type,
+            parameter_name,
+            str(old_value),
+            str(new_value),
+            reason,
+            win_rate_at_change,
+            predictions_resolved,
+        ),
+    )
+    conn.commit()
+    row_id = cursor.lastrowid
+    conn.close()
+    return row_id
+
+
+def get_tuning_history(profile_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+    """Get recent tuning history for a profile, newest first."""
+    conn = _get_conn()
+    rows = conn.execute(
+        """SELECT * FROM tuning_history
+           WHERE profile_id = ?
+           ORDER BY timestamp DESC LIMIT ?""",
+        (profile_id, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def review_past_adjustments(profile_id: int,
+                            db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Review adjustments made 3+ days ago with at least 10 new predictions since.
+
+    Compares win rate at change time vs current win rate, updates outcome_after.
+    Returns list of reviewed adjustment dicts.
+    """
+    conn = _get_conn()
+    reviewed = []
+
+    try:
+        # Get pending adjustments made 3+ days ago
+        pending = conn.execute(
+            """SELECT * FROM tuning_history
+               WHERE profile_id = ? AND outcome_after = 'pending'
+               AND datetime(timestamp) <= datetime('now', '-3 days')
+               ORDER BY timestamp ASC""",
+            (profile_id,),
+        ).fetchall()
+
+        if not pending:
+            conn.close()
+            return []
+
+        # Get current win rate from profile's prediction DB
+        pred_conn = None
+        try:
+            pred_conn = sqlite3.connect(db_path or config.DB_PATH)
+            pred_conn.row_factory = sqlite3.Row
+
+            # Check ai_predictions table exists
+            table_check = pred_conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_predictions'"
+            ).fetchone()
+            if not table_check:
+                if pred_conn:
+                    pred_conn.close()
+                conn.close()
+                return []
+
+            total = pred_conn.execute(
+                "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved'"
+            ).fetchone()[0]
+            wins = pred_conn.execute(
+                "SELECT COUNT(*) FROM ai_predictions "
+                "WHERE status='resolved' AND actual_outcome='win'"
+            ).fetchone()[0]
+            current_wr = (wins / total * 100) if total > 0 else 0.0
+            pred_conn.close()
+            pred_conn = None
+        except Exception:
+            if pred_conn:
+                pred_conn.close()
+            conn.close()
+            return []
+
+        now_iso = datetime.utcnow().isoformat()
+
+        for row in pending:
+            row = dict(row)
+            old_wr = row.get("win_rate_at_change") or 0.0
+            old_resolved = row.get("predictions_resolved") or 0
+
+            # Require at least 10 new resolved predictions since the change
+            if total - old_resolved < 10:
+                continue
+
+            # Determine outcome
+            delta = current_wr - old_wr
+            if delta > 3.0:
+                outcome = "improved"
+            elif delta < -3.0:
+                outcome = "worsened"
+            else:
+                outcome = "unchanged"
+
+            conn.execute(
+                """UPDATE tuning_history
+                   SET outcome_after = ?, win_rate_after = ?, reviewed_at = ?
+                   WHERE id = ?""",
+                (outcome, current_wr, now_iso, row["id"]),
+            )
+            row["outcome_after"] = outcome
+            row["win_rate_after"] = current_wr
+            row["reviewed_at"] = now_iso
+            reviewed.append(row)
+
+        conn.commit()
+    except Exception as exc:
+        logger.warning("Failed to review past adjustments: %s", exc)
+    finally:
+        conn.close()
+
+    return reviewed
 
 
 # ---------------------------------------------------------------------------

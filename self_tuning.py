@@ -1,8 +1,14 @@
-"""Self-tuning feedback loop — feeds past performance into AI prompts."""
+"""Self-tuning feedback loop — feeds past performance into AI prompts.
+
+Now includes tuning memory: every adjustment is logged, reviewed after 3 days,
+and the outcomes are fed back into future decisions so the system learns from
+its own learning.
+"""
 
 import logging
 import sqlite3
 import time
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import config
@@ -38,6 +44,79 @@ def _get_conn(db_path=None):
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
+
+
+def _get_current_win_rate(conn):
+    """Return (win_rate_pct, total_resolved) from ai_predictions."""
+    resolved = conn.execute(
+        "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved'"
+    ).fetchone()[0]
+    if resolved == 0:
+        return 0.0, 0
+    wins = conn.execute(
+        "SELECT COUNT(*) FROM ai_predictions "
+        "WHERE status='resolved' AND actual_outcome='win'"
+    ).fetchone()[0]
+    return (wins / resolved * 100), resolved
+
+
+def _days_ago_label(timestamp_str):
+    """Return a human-readable 'X days ago' label from an ISO timestamp."""
+    try:
+        ts = datetime.fromisoformat(timestamp_str)
+        delta = datetime.utcnow() - ts
+        days = delta.days
+        if days == 0:
+            return "today"
+        elif days == 1:
+            return "1 day ago"
+        else:
+            return f"{days} days ago"
+    except Exception:
+        return "recently"
+
+
+# ---------------------------------------------------------------------------
+# Tuning history helpers (delegate to models.py)
+# ---------------------------------------------------------------------------
+
+def _get_tuning_history(profile_id, limit=20):
+    """Get tuning history from the central DB."""
+    try:
+        from models import get_tuning_history
+        return get_tuning_history(profile_id, limit=limit)
+    except Exception:
+        return []
+
+
+def _get_recent_adjustment(profile_id, parameter_name, days=3):
+    """Check if a specific parameter was adjusted within the last N days.
+
+    Returns the most recent matching adjustment dict, or None.
+    """
+    history = _get_tuning_history(profile_id, limit=50)
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    for entry in history:
+        try:
+            ts = datetime.fromisoformat(entry["timestamp"])
+            if ts >= cutoff and entry["parameter_name"] == parameter_name:
+                return entry
+        except Exception:
+            continue
+    return None
+
+
+def _was_adjustment_effective(profile_id, parameter_name):
+    """Check the most recent reviewed adjustment for this parameter.
+
+    Returns: 'improved', 'worsened', 'unchanged', or None if no reviewed data.
+    """
+    history = _get_tuning_history(profile_id, limit=50)
+    for entry in history:
+        if (entry["parameter_name"] == parameter_name
+                and entry["outcome_after"] != "pending"):
+            return entry["outcome_after"]
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +258,7 @@ def build_performance_context(ctx, symbol=None, db_path=None):
                 )
 
         # --- Symbol-specific history ---
+        sym_rows = None
         if symbol:
             sym_rows = conn.execute(
                 "SELECT predicted_signal, actual_outcome, actual_return_pct "
@@ -279,6 +359,14 @@ def build_performance_context(ctx, symbol=None, db_path=None):
                     f"({sym_wr:.0f}% win rate)."
                 )
 
+        # --- LESSONS LEARNED from tuning history ---
+        profile_id = getattr(ctx, "profile_id", None) if ctx else None
+        if profile_id:
+            lessons = _build_lessons_learned(profile_id)
+            if lessons:
+                lines.append("")
+                lines.append(lessons)
+
         conn.close()
         result = "\n".join(lines)
         _set_cache(cache_key, result)
@@ -293,6 +381,88 @@ def build_performance_context(ctx, symbol=None, db_path=None):
         return ""
 
 
+def _build_lessons_learned(profile_id):
+    """Build a concise LESSONS LEARNED section from tuning history.
+
+    Kept under 300 tokens for prompt injection.
+    """
+    history = _get_tuning_history(profile_id, limit=20)
+    if not history:
+        return ""
+
+    # Separate reviewed vs pending
+    reviewed = [h for h in history if h["outcome_after"] != "pending"]
+    pending = [h for h in history if h["outcome_after"] == "pending"]
+
+    if not reviewed and not pending:
+        return ""
+
+    lines = ["LEARNING FROM PAST ADJUSTMENTS:"]
+
+    # Show recent adjustments and outcomes (max 5)
+    if reviewed:
+        lines.append("Past adjustments and results:")
+        for entry in reviewed[:5]:
+            label = _days_ago_label(entry["timestamp"])
+            param = entry["parameter_name"]
+            old_v = entry["old_value"]
+            new_v = entry["new_value"]
+            reason = entry["reason"][:80]
+            outcome = entry["outcome_after"].upper()
+            wr_before = entry.get("win_rate_at_change") or 0
+            wr_after = entry.get("win_rate_after") or 0
+
+            if outcome == "IMPROVED":
+                verdict = "GOOD DECISION"
+            elif outcome == "WORSENED":
+                verdict = "BAD DECISION — may need reversal"
+            else:
+                verdict = "NO CLEAR EFFECT"
+
+            lines.append(
+                f"- {label}: Changed {param} from {old_v} to {new_v} "
+                f"(reason: {reason})"
+            )
+            lines.append(
+                f"  Result: win rate {wr_before:.0f}% -> {wr_after:.0f}% "
+                f"-> {verdict}"
+            )
+
+    # Show pending adjustments (max 3)
+    if pending:
+        for entry in pending[:3]:
+            label = _days_ago_label(entry["timestamp"])
+            param = entry["parameter_name"]
+            old_v = entry["old_value"]
+            new_v = entry["new_value"]
+            lines.append(
+                f"- {label}: Changed {param} from {old_v} to {new_v} "
+                f"(awaiting results)"
+            )
+
+    # Summarize what works and what doesn't
+    if reviewed:
+        lines.append("Lessons:")
+        param_outcomes = {}
+        for entry in reviewed:
+            key = entry["parameter_name"]
+            if key not in param_outcomes:
+                param_outcomes[key] = []
+            param_outcomes[key].append(entry["outcome_after"])
+        for param, outcomes in param_outcomes.items():
+            improved = outcomes.count("improved")
+            worsened = outcomes.count("worsened")
+            if improved > worsened:
+                lines.append(f"- Adjusting {param}: has worked well")
+            elif worsened > improved:
+                lines.append(f"- Adjusting {param}: has NOT worked, avoid")
+            else:
+                lines.append(f"- Adjusting {param}: mixed results")
+
+    lines.append("Use this knowledge. Don't repeat strategies that failed.")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # get_auto_adjustments
 # ---------------------------------------------------------------------------
@@ -300,9 +470,13 @@ def build_performance_context(ctx, symbol=None, db_path=None):
 def get_auto_adjustments(ctx, db_path=None):
     """Analyze performance data and return recommended parameter adjustments.
 
-    Returns a dict with recommended changes and reasons.
+    Now checks tuning history before recommending changes:
+    - Won't reverse a recent adjustment that improved things
+    - Will reverse adjustments that worsened things
+    - Won't repeat the same adjustment within 3 days
     """
     db = db_path or (ctx.db_path if ctx else None)
+    profile_id = getattr(ctx, "profile_id", None) if ctx else None
 
     try:
         conn = _get_conn(db)
@@ -338,26 +512,52 @@ def get_auto_adjustments(ctx, db_path=None):
             "reasons": [],
         }
 
+        # --- Check tuning history before making recommendations ---
+        # Don't recommend changes that were already tried recently
+        if profile_id:
+            recent_conf = _get_recent_adjustment(
+                profile_id, "ai_confidence_threshold", days=3)
+            recent_pos = _get_recent_adjustment(
+                profile_id, "max_position_pct", days=3)
+        else:
+            recent_conf = None
+            recent_pos = None
+
         # Win rate by confidence band
-        for threshold, label in [(60, "<60%"), (70, "<70%")]:
-            band_total = conn.execute(
-                "SELECT COUNT(*) FROM ai_predictions "
-                "WHERE status='resolved' AND confidence < ?",
-                (threshold,),
-            ).fetchone()[0]
-            band_wins = conn.execute(
-                "SELECT COUNT(*) FROM ai_predictions "
-                "WHERE status='resolved' AND actual_outcome='win' AND confidence < ?",
-                (threshold,),
-            ).fetchone()[0]
-            if band_total > 5:
-                bwr = band_wins / band_total * 100
-                if bwr < 35:
-                    result["confidence_threshold"] = threshold
-                    result["reasons"].append(
-                        f"Win rate at confidence {label} is {bwr:.0f}%, "
-                        f"raising threshold to {threshold}"
-                    )
+        if not recent_conf:  # Only suggest if not adjusted in last 3 days
+            for threshold, label in [(60, "<60%"), (70, "<70%")]:
+                band_total = conn.execute(
+                    "SELECT COUNT(*) FROM ai_predictions "
+                    "WHERE status='resolved' AND confidence < ?",
+                    (threshold,),
+                ).fetchone()[0]
+                band_wins = conn.execute(
+                    "SELECT COUNT(*) FROM ai_predictions "
+                    "WHERE status='resolved' AND actual_outcome='win' AND confidence < ?",
+                    (threshold,),
+                ).fetchone()[0]
+                if band_total > 5:
+                    bwr = band_wins / band_total * 100
+                    if bwr < 35:
+                        # Check if a past adjustment in this direction worsened things
+                        past_outcome = _was_adjustment_effective(
+                            profile_id, "ai_confidence_threshold") if profile_id else None
+                        if past_outcome == "worsened":
+                            result["reasons"].append(
+                                f"Win rate at confidence {label} is {bwr:.0f}%, "
+                                f"but previous threshold raise worsened results — skipping"
+                            )
+                        else:
+                            result["confidence_threshold"] = threshold
+                            result["reasons"].append(
+                                f"Win rate at confidence {label} is {bwr:.0f}%, "
+                                f"raising threshold to {threshold}"
+                            )
+        else:
+            result["reasons"].append(
+                "Confidence threshold was adjusted recently — "
+                "waiting for results before changing again"
+            )
 
         # BUY vs SELL performance
         buy_total = conn.execute(
@@ -387,11 +587,17 @@ def get_auto_adjustments(ctx, db_path=None):
                 f"SELL win rate ({sell_wr:.0f}%) strong — consider enabling short selling"
             )
 
-        if overall_wr < 40:
+        if overall_wr < 40 and not recent_pos:
             result["reasons"].append(
                 f"Overall win rate ({overall_wr:.0f}%) below 40%, "
                 f"recommend reducing position size"
             )
+        elif overall_wr < 40 and recent_pos:
+            result["reasons"].append(
+                f"Overall win rate ({overall_wr:.0f}%) below 40%, "
+                f"but position size was adjusted recently — waiting for results"
+            )
+            result["reduce_position_size"] = False
 
         conn.close()
         return result
@@ -412,8 +618,11 @@ def get_auto_adjustments(ctx, db_path=None):
 def apply_auto_adjustments(ctx, db_path=None):
     """Apply conservative auto-adjustments to the profile based on performance.
 
-    Only adjusts if there are at least 20 resolved predictions.
-    Returns list of adjustment descriptions.
+    Now also:
+    - Logs every change to tuning_history via log_tuning_change()
+    - Reviews past adjustments via review_past_adjustments()
+    - Checks history to avoid oscillation and repeating failed strategies
+    - Returns list of adjustment descriptions including review results
     """
     if ctx is None:
         return []
@@ -424,10 +633,65 @@ def apply_auto_adjustments(ctx, db_path=None):
     db = db_path or ctx.db_path
     adjustments_made = []
 
+    # --- First, review past adjustments ---
+    profile_id = getattr(ctx, "profile_id", None)
+    user_id = getattr(ctx, "user_id", None)
+
+    if profile_id:
+        try:
+            from models import review_past_adjustments
+            reviews = review_past_adjustments(profile_id, db_path=db)
+            for rev in reviews:
+                outcome = rev["outcome_after"].upper()
+                param = rev["parameter_name"]
+                old_v = rev["old_value"]
+                new_v = rev["new_value"]
+                wr_before = rev.get("win_rate_at_change") or 0
+                wr_after = rev.get("win_rate_after") or 0
+                adjustments_made.append(
+                    f"Reviewed past adjustment: {param} {old_v}->{new_v} "
+                    f"(win rate {wr_before:.0f}%->{wr_after:.0f}%: {outcome})"
+                )
+
+                # If a past adjustment worsened things, reverse it
+                if rev["outcome_after"] == "worsened":
+                    try:
+                        from models import update_trading_profile, log_tuning_change
+                        # Reverse: set back to old value
+                        update_kwargs = {param: _cast_param_value(param, old_v)}
+                        update_trading_profile(profile_id, **update_kwargs)
+
+                        # Get current stats for the reversal log
+                        try:
+                            conn_tmp = _get_conn(db)
+                            cur_wr, cur_resolved = _get_current_win_rate(conn_tmp)
+                            conn_tmp.close()
+                        except Exception:
+                            cur_wr, cur_resolved = 0, 0
+
+                        log_tuning_change(
+                            profile_id, user_id or 0,
+                            "auto_reversal", param,
+                            new_v, old_v,
+                            f"Reversing previous change — {outcome} "
+                            f"(win rate went from {wr_before:.0f}% to {wr_after:.0f}%)",
+                            win_rate_at_change=cur_wr,
+                            predictions_resolved=cur_resolved,
+                        )
+                        adjustments_made.append(
+                            f"REVERSED: {param} back from {new_v} to {old_v} "
+                            f"(previous change worsened performance)"
+                        )
+                    except Exception as rev_exc:
+                        logger.warning("Failed to reverse adjustment: %s", rev_exc)
+
+        except Exception as exc:
+            logger.warning("Failed to review past adjustments: %s", exc)
+
     try:
         conn = _get_conn(db)
     except Exception:
-        return []
+        return adjustments_made
 
     try:
         table_check = conn.execute(
@@ -435,7 +699,7 @@ def apply_auto_adjustments(ctx, db_path=None):
         ).fetchone()
         if not table_check:
             conn.close()
-            return []
+            return adjustments_made
 
         resolved = conn.execute(
             "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved'"
@@ -443,52 +707,88 @@ def apply_auto_adjustments(ctx, db_path=None):
 
         if resolved < 20:
             conn.close()
-            return []
+            return adjustments_made
 
-        profile_id = getattr(ctx, "profile_id", None)
         if not profile_id:
             conn.close()
-            return []
+            return adjustments_made
 
-        from models import update_trading_profile
+        from models import update_trading_profile, log_tuning_change
 
-        # --- Check win rate at confidence < 60 ---
-        band60_total = conn.execute(
-            "SELECT COUNT(*) FROM ai_predictions "
-            "WHERE status='resolved' AND confidence < 60"
-        ).fetchone()[0]
-        band60_wins = conn.execute(
-            "SELECT COUNT(*) FROM ai_predictions "
-            "WHERE status='resolved' AND actual_outcome='win' AND confidence < 60"
-        ).fetchone()[0]
+        overall_wr, _ = _get_current_win_rate(conn)
 
-        if band60_total > 5:
-            wr60 = band60_wins / band60_total * 100
-            if wr60 < 35 and ctx.ai_confidence_threshold < 60:
-                update_trading_profile(profile_id, ai_confidence_threshold=60)
-                adjustments_made.append(
-                    f"Raised AI confidence threshold from {ctx.ai_confidence_threshold} "
-                    f"to 60 (win rate at <60% confidence was {wr60:.0f}%)"
-                )
+        # --- Check if confidence threshold was adjusted recently ---
+        recent_conf = _get_recent_adjustment(
+            profile_id, "ai_confidence_threshold", days=3)
 
-        # --- Check win rate at confidence < 70 ---
-        band70_total = conn.execute(
-            "SELECT COUNT(*) FROM ai_predictions "
-            "WHERE status='resolved' AND confidence < 70"
-        ).fetchone()[0]
-        band70_wins = conn.execute(
-            "SELECT COUNT(*) FROM ai_predictions "
-            "WHERE status='resolved' AND actual_outcome='win' AND confidence < 70"
-        ).fetchone()[0]
+        if not recent_conf:
+            # --- Check win rate at confidence < 60 ---
+            band60_total = conn.execute(
+                "SELECT COUNT(*) FROM ai_predictions "
+                "WHERE status='resolved' AND confidence < 60"
+            ).fetchone()[0]
+            band60_wins = conn.execute(
+                "SELECT COUNT(*) FROM ai_predictions "
+                "WHERE status='resolved' AND actual_outcome='win' AND confidence < 60"
+            ).fetchone()[0]
 
-        if band70_total > 5:
-            wr70 = band70_wins / band70_total * 100
-            if wr70 < 35 and ctx.ai_confidence_threshold < 70:
-                update_trading_profile(profile_id, ai_confidence_threshold=70)
-                adjustments_made.append(
-                    f"Raised AI confidence threshold to 70 "
-                    f"(win rate at <70% confidence was {wr70:.0f}%)"
-                )
+            if band60_total > 5:
+                wr60 = band60_wins / band60_total * 100
+                if wr60 < 35 and ctx.ai_confidence_threshold < 60:
+                    # Check if raising threshold previously worsened things
+                    past_outcome = _was_adjustment_effective(
+                        profile_id, "ai_confidence_threshold")
+                    if past_outcome != "worsened":
+                        old_val = ctx.ai_confidence_threshold
+                        update_trading_profile(profile_id, ai_confidence_threshold=60)
+                        reason = (
+                            f"Win rate at <60% confidence was {wr60:.0f}% "
+                            f"({band60_wins}/{band60_total})"
+                        )
+                        log_tuning_change(
+                            profile_id, user_id or 0,
+                            "confidence_threshold", "ai_confidence_threshold",
+                            str(old_val), "60", reason,
+                            win_rate_at_change=overall_wr,
+                            predictions_resolved=resolved,
+                        )
+                        adjustments_made.append(
+                            f"Raised AI confidence threshold from {old_val} "
+                            f"to 60 ({reason})"
+                        )
+
+            # --- Check win rate at confidence < 70 ---
+            band70_total = conn.execute(
+                "SELECT COUNT(*) FROM ai_predictions "
+                "WHERE status='resolved' AND confidence < 70"
+            ).fetchone()[0]
+            band70_wins = conn.execute(
+                "SELECT COUNT(*) FROM ai_predictions "
+                "WHERE status='resolved' AND actual_outcome='win' AND confidence < 70"
+            ).fetchone()[0]
+
+            if band70_total > 5:
+                wr70 = band70_wins / band70_total * 100
+                if wr70 < 35 and ctx.ai_confidence_threshold < 70:
+                    past_outcome = _was_adjustment_effective(
+                        profile_id, "ai_confidence_threshold")
+                    if past_outcome != "worsened":
+                        old_val = ctx.ai_confidence_threshold
+                        update_trading_profile(profile_id, ai_confidence_threshold=70)
+                        reason = (
+                            f"Win rate at <70% confidence was {wr70:.0f}% "
+                            f"({band70_wins}/{band70_total})"
+                        )
+                        log_tuning_change(
+                            profile_id, user_id or 0,
+                            "confidence_threshold", "ai_confidence_threshold",
+                            str(old_val), "70", reason,
+                            win_rate_at_change=overall_wr,
+                            predictions_resolved=resolved,
+                        )
+                        adjustments_made.append(
+                            f"Raised AI confidence threshold to 70 ({reason})"
+                        )
 
         # --- BUY vs SELL performance ---
         buy_total = conn.execute(
@@ -518,20 +818,29 @@ def apply_auto_adjustments(ctx, db_path=None):
             )
 
         # --- Overall win rate too low — reduce position size ---
-        wins = conn.execute(
-            "SELECT COUNT(*) FROM ai_predictions "
-            "WHERE status='resolved' AND actual_outcome='win'"
-        ).fetchone()[0]
-        overall_wr = wins / resolved * 100
+        recent_pos = _get_recent_adjustment(
+            profile_id, "max_position_pct", days=3)
 
-        if overall_wr < 30:
-            new_pct = max(0.03, ctx.max_position_pct * 0.8)
-            if new_pct < ctx.max_position_pct:
-                update_trading_profile(profile_id, max_position_pct=round(new_pct, 4))
-                adjustments_made.append(
-                    f"Reduced max position size from {ctx.max_position_pct:.1%} "
-                    f"to {new_pct:.1%} (overall win rate {overall_wr:.0f}%)"
-                )
+        if overall_wr < 30 and not recent_pos:
+            past_outcome = _was_adjustment_effective(
+                profile_id, "max_position_pct")
+            if past_outcome != "worsened":
+                new_pct = max(0.03, ctx.max_position_pct * 0.8)
+                if new_pct < ctx.max_position_pct:
+                    old_val = ctx.max_position_pct
+                    update_trading_profile(profile_id, max_position_pct=round(new_pct, 4))
+                    reason = f"Overall win rate {overall_wr:.0f}% below 30%"
+                    log_tuning_change(
+                        profile_id, user_id or 0,
+                        "position_size", "max_position_pct",
+                        str(old_val), str(round(new_pct, 4)), reason,
+                        win_rate_at_change=overall_wr,
+                        predictions_resolved=resolved,
+                    )
+                    adjustments_made.append(
+                        f"Reduced max position size from {old_val:.1%} "
+                        f"to {new_pct:.1%} ({reason})"
+                    )
 
         conn.close()
         return adjustments_made
@@ -542,4 +851,28 @@ def apply_auto_adjustments(ctx, db_path=None):
             conn.close()
         except Exception:
             pass
-        return []
+        return adjustments_made
+
+
+def _cast_param_value(param_name, value_str):
+    """Cast a string value back to the appropriate type for a profile parameter."""
+    int_params = {"ai_confidence_threshold", "max_total_positions", "min_volume"}
+    float_params = {
+        "max_position_pct", "stop_loss_pct", "take_profit_pct",
+        "min_price", "max_price", "volume_surge_multiplier",
+        "rsi_overbought", "rsi_oversold", "momentum_5d_gain",
+        "momentum_20d_gain", "breakout_volume_threshold", "gap_pct_threshold",
+    }
+    bool_params = {
+        "strategy_momentum_breakout", "strategy_volume_spike",
+        "strategy_mean_reversion", "strategy_gap_and_go",
+        "enable_short_selling", "enable_self_tuning", "maga_mode",
+    }
+
+    if param_name in int_params:
+        return int(float(value_str))
+    elif param_name in float_params:
+        return float(value_str)
+    elif param_name in bool_params:
+        return int(float(value_str))
+    return value_str

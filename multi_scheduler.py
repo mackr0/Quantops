@@ -550,14 +550,37 @@ def _task_self_tune(ctx):
     adjustments = apply_auto_adjustments(ctx)
     if adjustments:
         seg_label = ctx.display_name or ctx.segment
+
+        # Separate reviews from new adjustments for clearer logging
+        reviews = [a for a in adjustments if a.startswith("Reviewed") or a.startswith("REVERSED")]
+        new_adj = [a for a in adjustments if a not in reviews]
+
         for adj in adjustments:
             logging.info(f"[{seg_label}] Self-tune: {adj}")
-        # Log to activity feed
+
+        # Build a structured detail message
+        detail_parts = []
+        if reviews:
+            detail_parts.append("PAST ADJUSTMENT REVIEWS:")
+            detail_parts.extend(f"  - {r}" for r in reviews)
+        if new_adj:
+            if detail_parts:
+                detail_parts.append("")
+            detail_parts.append("NEW ADJUSTMENTS:")
+            detail_parts.extend(f"  - {a}" for a in new_adj)
+        if not detail_parts:
+            detail_parts = [f"- {a}" for a in adjustments]
+
+        title_parts = []
+        if new_adj:
+            title_parts.append(f"{len(new_adj)} new adjustment(s)")
+        if reviews:
+            title_parts.append(f"{len(reviews)} review(s)")
+        title = f"Self-Tuning: {', '.join(title_parts)}"
+
         _safe_log_activity(
             getattr(ctx, "profile_id", 0), ctx.user_id,
-            "self_tune",
-            f"Self-Tuning: {len(adjustments)} adjustment(s) applied",
-            "\n".join(f"- {a}" for a in adjustments),
+            "self_tune", title, "\n".join(detail_parts),
         )
     else:
         logging.info("Self-tuning: no adjustments needed.")
