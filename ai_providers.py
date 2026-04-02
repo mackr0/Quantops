@@ -54,12 +54,13 @@ def get_models_for_provider(provider):
 
 
 def _strip_markdown_fences(text):
-    """Remove markdown code fences and extract JSON from AI response text.
+    """Remove markdown code fences and extract the first complete JSON object.
 
     Handles all known provider quirks:
     - Haiku/Sonnet: wraps JSON in ```json ... ```
     - GPT models: sometimes adds preamble text before JSON
     - Gemini: may add explanation after the JSON
+    - Any model: extra text after the closing }
     """
     text = text.strip()
 
@@ -69,10 +70,9 @@ def _strip_markdown_fences(text):
         lines = [line for line in lines if not line.strip().startswith("```")]
         text = "\n".join(lines).strip()
 
-    # If there's text before the first '{', try to extract just the JSON
-    if text and not text.startswith("{") and "{" in text:
+    # Extract the first complete JSON object using brace matching
+    if "{" in text:
         start = text.index("{")
-        # Find the matching closing brace
         depth = 0
         for i in range(start, len(text)):
             if text[i] == "{":
@@ -80,8 +80,7 @@ def _strip_markdown_fences(text):
             elif text[i] == "}":
                 depth -= 1
                 if depth == 0:
-                    text = text[start:i + 1]
-                    break
+                    return text[start:i + 1]
 
     return text
 

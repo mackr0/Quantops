@@ -459,16 +459,20 @@ def _task_aggressive_scan_and_trade(ctx):
         )
 
         if "BUY" in str(tech_signal):
-            try:
-                notify_veto(
-                    veto["symbol"],
-                    {"signal": tech_signal, "score": veto.get("score", ""), "reason": veto.get("reason", "")},
-                    {"signal": veto.get("ai_signal", ""), "confidence": ai_conf, "reasoning": ai_reasoning,
-                     "risk_factors": veto.get("ai_risk_factors", [])},
-                    ctx=ctx,
-                )
-            except Exception:
-                logging.exception("Failed to send veto notification")
+            # Don't send veto emails for JSON parse failures — those are errors, not real vetoes
+            if ai_conf == 0 and ("not valid JSON" in str(ai_reasoning) or "parse" in str(ai_reasoning).lower()):
+                logging.warning(f"Skipping veto email for {sym} — AI response was a parse error")
+            else:
+                try:
+                    notify_veto(
+                        veto["symbol"],
+                        {"signal": tech_signal, "score": veto.get("score", ""), "reason": veto.get("reason", "")},
+                        {"signal": veto.get("ai_signal", ""), "confidence": ai_conf, "reasoning": ai_reasoning,
+                         "risk_factors": veto.get("ai_risk_factors", [])},
+                        ctx=ctx,
+                    )
+                except Exception:
+                    logging.exception("Failed to send veto notification")
 
 
 def _task_check_exits(ctx):
