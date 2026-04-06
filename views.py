@@ -418,6 +418,8 @@ def save_profile(profile_id):
         "strategy_gap_and_go": 1 if form.get("strategy_gap_and_go") else 0,
         "maga_mode": 1 if form.get("maga_mode") else 0,
         "enable_short_selling": 1 if form.get("enable_short_selling") else 0,
+        "short_stop_loss_pct": float(form.get("short_stop_loss_pct", 0.08)),
+        "short_take_profit_pct": float(form.get("short_take_profit_pct", 0.08)),
         "enable_self_tuning": 1 if form.get("enable_self_tuning") else 0,
         # Drawdown protection
         "drawdown_reduce_pct": float(form.get("drawdown_reduce_pct", 0.10)),

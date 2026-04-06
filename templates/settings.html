@@ -326,6 +326,26 @@
                 <span>Enable Short Selling<br><small style="color:#888;font-weight:normal;">Allows opening short positions to profit from declining stocks</small></span>
             </label>
 
+            <h5 style="margin-top:1rem;">Short Selling Risk</h5>
+            <div class="grid">
+                <label>
+                    Short Stop Loss %
+                    <input type="range" name="short_stop_loss_pct" class="slider"
+                           min="0.03" max="0.20" step="0.01"
+                           value="{{ prof.get('short_stop_loss_pct', 0.08) }}"
+                           data-display="short_sl_val_{{ prof.id }}">
+                    <output id="short_sl_val_{{ prof.id }}">{{ "%.0f"|format(prof.get('short_stop_loss_pct', 0.08) * 100) }}%</output>
+                </label>
+                <label>
+                    Short Take Profit %
+                    <input type="range" name="short_take_profit_pct" class="slider"
+                           min="0.03" max="0.20" step="0.01"
+                           value="{{ prof.get('short_take_profit_pct', 0.08) }}"
+                           data-display="short_tp_val_{{ prof.id }}">
+                    <output id="short_tp_val_{{ prof.id }}">{{ "%.0f"|format(prof.get('short_take_profit_pct', 0.08) * 100) }}%</output>
+                </label>
+            </div>
+
             <!-- AI Parameters -->
             <h4>AI Parameters</h4>
             <label>

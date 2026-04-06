@@ -76,6 +76,8 @@ class UserContext:
 
     # Short selling — allow opening short positions on SELL signals
     enable_short_selling: bool = False
+    short_stop_loss_pct: float = 0.08  # wider stop for shorts (8% vs 3% for longs)
+    short_take_profit_pct: float = 0.08  # shorts profit faster on hard drops
 
     # Self-tuning — AI learns from past wins/losses and adjusts approach
     enable_self_tuning: bool = True

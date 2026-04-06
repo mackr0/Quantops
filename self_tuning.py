@@ -332,6 +332,98 @@ def get_symbol_reputation(db_path, min_predictions=3):
 # build_performance_context
 # ---------------------------------------------------------------------------
 
+def _build_trade_performance_context(db_path):
+    """Build actual trade P&L performance breakdown by strategy type.
+
+    Queries the trades table for completed trades (those with pnl set)
+    grouped by side/strategy type. This is more valuable than prediction
+    accuracy because it reflects real money outcomes.
+
+    Returns a summary string, or empty string if insufficient data.
+    """
+    try:
+        conn = _get_conn(db_path)
+    except Exception:
+        return ""
+
+    try:
+        table_check = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='trades'"
+        ).fetchone()
+        if not table_check:
+            conn.close()
+            return ""
+
+        # Query trades grouped by side (buy, sell, short, cover)
+        rows = conn.execute(
+            "SELECT side, COUNT(*) as cnt, "
+            "SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins, "
+            "SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) as losses, "
+            "SUM(pnl) as total_pnl "
+            "FROM trades WHERE pnl IS NOT NULL "
+            "GROUP BY side"
+        ).fetchall()
+
+        if not rows:
+            conn.close()
+            return ""
+
+        total_trades = sum(r["cnt"] for r in rows)
+        if total_trades < 3:
+            conn.close()
+            return ""
+
+        lines = ["ACTUAL TRADE PERFORMANCE (not just predictions):"]
+        warnings = []
+
+        side_labels = {
+            "buy": "Long buys",
+            "sell": "Long sells",
+            "short": "Short sells",
+            "cover": "Short covers",
+        }
+
+        for r in rows:
+            side = r["side"]
+            label = side_labels.get(side, side.capitalize())
+            cnt = r["cnt"]
+            wins = r["wins"] or 0
+            losses = r["losses"] or 0
+            total_pnl = r["total_pnl"] or 0
+
+            win_rate = (wins / cnt * 100) if cnt > 0 else 0
+            pnl_str = f"+${total_pnl:,.0f}" if total_pnl >= 0 else f"-${abs(total_pnl):,.0f}"
+            lines.append(f"  {label:16s} {wins} wins / {losses} losses | P&L: {pnl_str}")
+
+            # Flag critical problems
+            if side in ("short", "cover") and cnt >= 5 and win_rate == 0:
+                warnings.append(
+                    f"WARNING: Short selling has a 0% win rate across {cnt} trades.\n"
+                    f"Stop-losses are triggering on every short position before they can profit.\n"
+                    f"Consider: wider short stop-losses, or only shorting on bounce days."
+                )
+            elif side in ("short", "cover") and cnt >= 5 and win_rate < 20:
+                warnings.append(
+                    f"WARNING: Short selling has only a {win_rate:.0f}% win rate across {cnt} trades.\n"
+                    f"Short stop-losses may be too tight, or entries are poorly timed."
+                )
+
+        for w in warnings:
+            lines.append("")
+            lines.append(w)
+
+        conn.close()
+        return "\n".join(lines)
+
+    except Exception as exc:
+        logger.warning("Failed to build trade performance context: %s", exc)
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return ""
+
+
 def build_performance_context(ctx, symbol=None, db_path=None):
     """Query the profile's AI predictions database and build a performance
     summary string that gets injected into the AI prompt.
@@ -384,6 +476,12 @@ def build_performance_context(ctx, symbol=None, db_path=None):
         win_rate = (wins / resolved * 100) if resolved else 0
 
         lines = []
+
+        # --- Actual trade P&L by strategy (most important — real money) ---
+        trade_perf = _build_trade_performance_context(db)
+        if trade_perf:
+            lines.append(trade_perf)
+            lines.append("")
 
         # --- Stock-specific track record (most relevant context first) ---
         sym_rows = None
@@ -1215,6 +1313,58 @@ def apply_auto_adjustments(ctx, db_path=None):
         except Exception as _cross_exc:
             logger.warning("Cross-profile auto-adjust check failed: %s", _cross_exc)
 
+        # --- Short trade performance — auto-widen stops if 0% win rate ---
+        try:
+            trade_table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='trades'"
+            ).fetchone()
+            if trade_table:
+                short_rows = conn.execute(
+                    "SELECT COUNT(*) as cnt, "
+                    "SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins, "
+                    "SUM(pnl) as total_pnl "
+                    "FROM trades WHERE pnl IS NOT NULL AND side IN ('short', 'cover')"
+                ).fetchone()
+                short_cnt = short_rows["cnt"] if short_rows else 0
+                short_wins = short_rows["wins"] or 0 if short_rows else 0
+                short_pnl = short_rows["total_pnl"] or 0 if short_rows else 0
+                short_wr = (short_wins / short_cnt * 100) if short_cnt > 0 else 100
+
+                # Auto-widen short stop-loss if 0% win rate with 5+ trades
+                if short_cnt >= 5 and short_wr == 0:
+                    recent_short_sl = _get_recent_adjustment(
+                        profile_id, "short_stop_loss_pct", days=3)
+                    if not recent_short_sl:
+                        current_sl = getattr(ctx, "short_stop_loss_pct", 0.08)
+                        new_sl = round(min(current_sl * 1.5, 0.20), 4)
+                        if new_sl > current_sl:
+                            update_trading_profile(profile_id, short_stop_loss_pct=new_sl)
+                            reason = (
+                                f"Short selling 0% win rate across {short_cnt} trades — "
+                                f"widening stop-loss by 50%"
+                            )
+                            log_tuning_change(
+                                profile_id, user_id or 0,
+                                "short_stop_loss", "short_stop_loss_pct",
+                                str(current_sl), str(new_sl), reason,
+                                win_rate_at_change=overall_wr,
+                                predictions_resolved=resolved,
+                            )
+                            adjustments_made.append(
+                                f"Widened short stop-loss from {current_sl:.0%} to "
+                                f"{new_sl:.0%} ({reason})"
+                            )
+
+                # Recommend disabling shorts if overall negative P&L with 10+ trades and <20% win rate
+                if short_cnt >= 10 and short_wr < 20 and short_pnl < 0:
+                    adjustments_made.append(
+                        f"Recommendation: DISABLE short selling — "
+                        f"{short_wins}/{short_cnt} wins ({short_wr:.0f}%), "
+                        f"total P&L ${short_pnl:,.0f}"
+                    )
+        except Exception as _short_exc:
+            logger.warning("Failed to check short trade performance: %s", _short_exc)
+
         # --- Overall win rate too low — reduce position size ---
         recent_pos = _get_recent_adjustment(
             profile_id, "max_position_pct", days=3)
@@ -1258,6 +1408,7 @@ def _cast_param_value(param_name, value_str):
                    "avoid_earnings_days", "skip_first_minutes"}
     float_params = {
         "max_position_pct", "stop_loss_pct", "take_profit_pct",
+        "short_stop_loss_pct", "short_take_profit_pct",
         "min_price", "max_price", "volume_surge_multiplier",
         "rsi_overbought", "rsi_oversold", "momentum_5d_gain",
         "momentum_20d_gain", "breakout_volume_threshold", "gap_pct_threshold",

@@ -187,6 +187,8 @@ def check_exits(ctx=None):
     db_path = ctx.db_path if ctx is not None else None
     stop_loss_pct = ctx.stop_loss_pct if ctx is not None else None
     take_profit_pct = ctx.take_profit_pct if ctx is not None else None
+    short_stop_loss_pct = getattr(ctx, "short_stop_loss_pct", None) if ctx is not None else None
+    short_take_profit_pct = getattr(ctx, "short_take_profit_pct", None) if ctx is not None else None
 
     api = get_api(ctx)
     positions = get_positions(api)
@@ -212,6 +214,8 @@ def check_exits(ctx=None):
         positions,
         stop_loss_pct=stop_loss_pct,
         take_profit_pct=take_profit_pct,
+        short_stop_loss_pct=short_stop_loss_pct,
+        short_take_profit_pct=short_take_profit_pct,
     )
     results = []
 

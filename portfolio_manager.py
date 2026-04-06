@@ -142,17 +142,22 @@ def check_portfolio_constraints(symbol, proposed_trade, current_positions, accou
     return True, "Trade passes all portfolio constraints"
 
 
-def check_stop_loss_take_profit(positions, stop_loss_pct=None, take_profit_pct=None):
+def check_stop_loss_take_profit(positions, stop_loss_pct=None, take_profit_pct=None,
+                                short_stop_loss_pct=None, short_take_profit_pct=None):
     """Check all open positions against stop-loss and take-profit thresholds.
 
     Args:
         positions: List of position dicts, each with at least:
             'symbol', 'current_price', 'avg_entry_price', 'qty',
             and optionally 'stop_loss', 'take_profit'.
-        stop_loss_pct: Default stop-loss percentage.  Falls back to
-                       config.DEFAULT_STOP_LOSS_PCT when None.
-        take_profit_pct: Default take-profit percentage.  Falls back to
-                         config.DEFAULT_TAKE_PROFIT_PCT when None.
+        stop_loss_pct: Default stop-loss percentage for long positions.  Falls
+                       back to config.DEFAULT_STOP_LOSS_PCT when None.
+        take_profit_pct: Default take-profit percentage for long positions.
+                         Falls back to config.DEFAULT_TAKE_PROFIT_PCT when None.
+        short_stop_loss_pct: Stop-loss percentage for short positions.  Falls
+                             back to stop_loss_pct when None.
+        short_take_profit_pct: Take-profit percentage for short positions.
+                               Falls back to take_profit_pct when None.
 
     Returns:
         List of sell signal dicts for positions that have triggered, each with:
@@ -162,6 +167,10 @@ def check_stop_loss_take_profit(positions, stop_loss_pct=None, take_profit_pct=N
         stop_loss_pct = config.DEFAULT_STOP_LOSS_PCT
     if take_profit_pct is None:
         take_profit_pct = config.DEFAULT_TAKE_PROFIT_PCT
+    if short_stop_loss_pct is None:
+        short_stop_loss_pct = stop_loss_pct
+    if short_take_profit_pct is None:
+        short_take_profit_pct = take_profit_pct
 
     triggered = []
 
@@ -185,27 +194,30 @@ def check_stop_loss_take_profit(positions, stop_loss_pct=None, take_profit_pct=N
 
         if is_short:
             abs_qty = abs(int(qty))
+            # For shorts, use short-specific thresholds (wider stops)
+            pos_short_sl = pos.get("stop_loss") or short_stop_loss_pct
+            pos_short_tp = pos.get("take_profit") or short_take_profit_pct
             # For shorts: price going UP is bad (stop-loss), price going DOWN is good (take-profit)
-            if pct_change >= pos_stop_loss:
+            if pct_change >= pos_short_sl:
                 triggered.append({
                     "symbol": symbol,
                     "signal": "SELL",
                     "reason": (
                         f"Short stop-loss triggered: price up {pct_change:+.2%} "
-                        f"(threshold +{pos_stop_loss:.0%})"
+                        f"(threshold +{pos_short_sl:.0%})"
                     ),
                     "price": current_price,
                     "qty": abs_qty,
                     "trigger": "short_stop_loss",
                     "is_short": True,
                 })
-            elif pct_change <= -pos_take_profit:
+            elif pct_change <= -pos_short_tp:
                 triggered.append({
                     "symbol": symbol,
                     "signal": "SELL",
                     "reason": (
                         f"Short take-profit triggered: price down {pct_change:+.2%} "
-                        f"(threshold -{pos_take_profit:.0%})"
+                        f"(threshold -{pos_short_tp:.0%})"
                     ),
                     "price": current_price,
                     "qty": abs_qty,

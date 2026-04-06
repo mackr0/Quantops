@@ -363,6 +363,27 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
             result["action"] = "SKIP"
             result["reason"] = f"SELL signal on {symbol} but short selling is disabled"
         else:
+            # Only short on bounce days (stock is up intraday) — don't short into weakness
+            try:
+                from market_data import get_bars
+                bars = get_bars(symbol, limit=5)
+                if not bars.empty:
+                    latest = bars.iloc[-1]
+                    day_change = (float(latest["close"]) - float(latest["open"])) / float(latest["open"]) * 100
+                    if day_change < 0:
+                        result["action"] = "SKIP"
+                        result["reason"] = f"Short skipped: {symbol} is down {day_change:.1f}% today (only short on bounce days)"
+                        if log:
+                            init_db(db_path)
+                            log_signal(
+                                symbol=symbol, signal=action, strategy="aggressive",
+                                reason=result["reason"], price=price,
+                                indicators={k: signal[k] for k in ("rsi", "score", "votes", "volume_ratio", "gap_pct", "pct_below_sma") if k in signal},
+                                acted_on=False, db_path=db_path,
+                            )
+                        return result
+            except Exception:
+                pass  # If we can't check, proceed
             # Position sizing same as BUY but for short
             if action == "STRONG_SELL":
                 alloc_pct = max_position_pct
@@ -398,12 +419,16 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
                         type="market",
                         time_in_force="day",
                     )
+                    # Use short-specific stop-loss/take-profit (wider stops for shorts)
+                    short_sl = getattr(ctx, "short_stop_loss_pct", 0.08) if ctx is not None else AGGRESSIVE_STOP_LOSS_PCT
+                    short_tp = getattr(ctx, "short_take_profit_pct", 0.08) if ctx is not None else AGGRESSIVE_TAKE_PROFIT_PCT
+
                     result["action"] = "SHORT"
                     result["qty"] = qty
                     result["order_id"] = order.id
                     result["estimated_proceeds"] = round(qty * price, 2)
-                    result["stop_loss_pct"] = stop_loss_pct
-                    result["take_profit_pct"] = take_profit_pct
+                    result["stop_loss_pct"] = short_sl
+                    result["take_profit_pct"] = short_tp
 
                     if log:
                         log_trade(
@@ -417,8 +442,8 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
                             reason=signal.get("reason"),
                             ai_reasoning=ai_reasoning,
                             ai_confidence=ai_confidence,
-                            stop_loss=stop_loss_pct,
-                            take_profit=take_profit_pct,
+                            stop_loss=short_sl,
+                            take_profit=short_tp,
                             db_path=db_path,
                         )
 

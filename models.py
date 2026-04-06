@@ -154,6 +154,8 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             custom_watchlist TEXT NOT NULL DEFAULT '[]',
             maga_mode INTEGER NOT NULL DEFAULT 0,
             enable_short_selling INTEGER NOT NULL DEFAULT 0,
+            short_stop_loss_pct REAL NOT NULL DEFAULT 0.08,
+            short_take_profit_pct REAL NOT NULL DEFAULT 0.08,
             enable_self_tuning INTEGER NOT NULL DEFAULT 1,
             ai_provider TEXT NOT NULL DEFAULT 'anthropic',
             ai_model TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001',
@@ -234,6 +236,8 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         ("trading_profiles", "enable_consensus", "INTEGER NOT NULL DEFAULT 0"),
         ("trading_profiles", "consensus_model", "TEXT NOT NULL DEFAULT ''"),
         ("trading_profiles", "consensus_api_key_enc", "TEXT NOT NULL DEFAULT ''"),
+        ("trading_profiles", "short_stop_loss_pct", "REAL NOT NULL DEFAULT 0.08"),
+        ("trading_profiles", "short_take_profit_pct", "REAL NOT NULL DEFAULT 0.08"),
     ]
     for table, col, col_def in _migrations:
         try:
@@ -620,6 +624,7 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "strategy_momentum_breakout", "strategy_volume_spike",
         "strategy_mean_reversion", "strategy_gap_and_go",
         "custom_watchlist", "maga_mode", "enable_short_selling",
+        "short_stop_loss_pct", "short_take_profit_pct",
         "enable_self_tuning",
         "ai_provider", "ai_model", "ai_api_key_enc",
         "schedule_type", "custom_start", "custom_end", "custom_days",
@@ -737,6 +742,8 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         maga_mode=bool(profile.get("maga_mode", 0)),
         # Short selling
         enable_short_selling=bool(profile.get("enable_short_selling", 0)),
+        short_stop_loss_pct=profile.get("short_stop_loss_pct", 0.08),
+        short_take_profit_pct=profile.get("short_take_profit_pct", 0.08),
         # Self-tuning
         enable_self_tuning=bool(profile.get("enable_self_tuning", 1)),
         # Trading schedule
