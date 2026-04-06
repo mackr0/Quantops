@@ -3,11 +3,58 @@
 {% block content %}
 <h1>AI Performance</h1>
 
+<!-- Actual Trade Results (most important — real money) -->
+<article style="border-left:4px solid {% if trade_perf.win_rate >= 50 %}#00c853{% else %}#ff1744{% endif %};">
+    <header><h3>Actual Trade Results</h3></header>
+    {% if trade_perf.total_trades > 0 %}
+    <div class="grid">
+        <div class="stat-card">
+            <small class="muted">Trade Win Rate</small>
+            <strong style="font-size:2rem;" class="{{ 'pnl-pos' if trade_perf.win_rate >= 50 else 'pnl-neg' }}">
+                {{ "%.1f"|format(trade_perf.win_rate) }}%
+            </strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Total P&L</small>
+            <strong style="font-size:2rem;" class="{{ 'pnl-pos' if trade_perf.total_pnl >= 0 else 'pnl-neg' }}">
+                ${{ "{:,.2f}".format(trade_perf.total_pnl) }}
+            </strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Closed Trades</small>
+            <strong style="font-size:2rem;">{{ trade_perf.total_trades }}</strong>
+            <small class="muted">{{ trade_perf.winning_trades }}W / {{ trade_perf.losing_trades }}L</small>
+        </div>
+    </div>
+    <div class="grid">
+        <div class="stat-card">
+            <small class="muted">Avg P&L per Trade</small>
+            <strong class="{{ 'pnl-pos' if trade_perf.avg_pnl >= 0 else 'pnl-neg' }}">
+                ${{ "{:,.2f}".format(trade_perf.avg_pnl) }}
+            </strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Best Trade</small>
+            <strong class="pnl-pos">${{ "{:,.2f}".format(trade_perf.best_trade) }}</strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Worst Trade</small>
+            <strong class="pnl-neg">${{ "{:,.2f}".format(trade_perf.worst_trade) }}</strong>
+        </div>
+    </div>
+    {% else %}
+    <p class="muted">No closed trades yet.</p>
+    {% endif %}
+</article>
+
+<!-- AI Prediction Accuracy (theoretical — did the AI predict direction correctly?) -->
+<h3>AI Prediction Accuracy</h3>
+<p class="muted" style="margin-top:-0.5rem;">How often the AI correctly predicted price direction — includes predictions that didn't result in trades.</p>
 <div class="grid">
     <article>
-        <header><h4>Predictions Overview</h4></header>
+        <header><h4>Predictions</h4></header>
         <div class="stat-card">
-            <small class="muted">Total Predictions</small>
+            <small class="muted">Total</small>
             <strong>{{ perf.total_predictions }}</strong>
         </div>
         <div class="stat-card">
@@ -21,9 +68,9 @@
     </article>
 
     <article>
-        <header><h4>Accuracy</h4></header>
+        <header><h4>Prediction Accuracy</h4></header>
         <div class="stat-card">
-            <small class="muted">Win Rate</small>
+            <small class="muted">Prediction Win Rate</small>
             <strong class="{{ 'pnl-pos' if perf.win_rate >= 50 else 'pnl-neg' }}">
                 {{ "%.1f"|format(perf.win_rate) }}%
             </strong>
@@ -168,54 +215,4 @@
 </article>
 {% endif %}
 
-<!-- Trade Performance Summary -->
-<article>
-    <header><h3>Trade Performance (All-Time)</h3></header>
-    {% if trade_perf.total_trades > 0 %}
-    <div class="grid">
-        <div class="stat-card">
-            <small class="muted">Total Closed Trades</small>
-            <strong>{{ trade_perf.total_trades }}</strong>
-        </div>
-        <div class="stat-card">
-            <small class="muted">Win Rate</small>
-            <strong class="{{ 'pnl-pos' if trade_perf.win_rate >= 50 else 'pnl-neg' }}">
-                {{ "%.1f"|format(trade_perf.win_rate) }}%
-            </strong>
-        </div>
-        <div class="stat-card">
-            <small class="muted">Total P&L</small>
-            <strong class="{{ 'pnl-pos' if trade_perf.total_pnl >= 0 else 'pnl-neg' }}">
-                ${{ "{:,.2f}".format(trade_perf.total_pnl) }}
-            </strong>
-        </div>
-        <div class="stat-card">
-            <small class="muted">Avg P&L</small>
-            <strong class="{{ 'pnl-pos' if trade_perf.avg_pnl >= 0 else 'pnl-neg' }}">
-                ${{ "{:,.2f}".format(trade_perf.avg_pnl) }}
-            </strong>
-        </div>
-    </div>
-    <div class="grid">
-        <div class="stat-card">
-            <small class="muted">Winning</small>
-            <strong class="pnl-pos">{{ trade_perf.winning_trades }}</strong>
-        </div>
-        <div class="stat-card">
-            <small class="muted">Losing</small>
-            <strong class="pnl-neg">{{ trade_perf.losing_trades }}</strong>
-        </div>
-        <div class="stat-card">
-            <small class="muted">Best Trade</small>
-            <strong class="pnl-pos">${{ "{:,.2f}".format(trade_perf.best_trade) }}</strong>
-        </div>
-        <div class="stat-card">
-            <small class="muted">Worst Trade</small>
-            <strong class="pnl-neg">${{ "{:,.2f}".format(trade_perf.worst_trade) }}</strong>
-        </div>
-    </div>
-    {% else %}
-    <p class="muted">No closed trades yet.</p>
-    {% endif %}
-</article>
 {% endblock %}
