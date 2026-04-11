@@ -79,8 +79,8 @@ def _prepare_df(symbol, df, min_rows=25):
 def btc_correlation_strategy(symbol, ctx=None, df=None):
     """When BTC bounces, alts follow (usually amplified).
 
-    BUY  -- BTC RSI < 35 AND BTC bouncing (positive 1-day change)
-            AND alt RSI < 30
+    BUY  -- BTC RSI < 45 AND BTC bouncing (positive 1-day change)
+            AND alt RSI < 40
     EXIT -- BTC drops below recent low OR alt hits take-profit
     """
     df, err = _prepare_df(symbol, df)
@@ -110,7 +110,7 @@ def btc_correlation_strategy(symbol, ctx=None, df=None):
             btc_info = f"BTC RSI {btc_rsi:.1f}, change {btc_day_change:+.1f}%"
 
     # BUY conditions -- BTC oversold and bouncing, alt oversold
-    if btc_rsi is not None and btc_rsi < 35 and btc_bouncing and rsi < 30:
+    if btc_rsi is not None and btc_rsi < 45 and btc_bouncing and rsi < 40:
         return {
             "symbol": symbol,
             "signal": "BUY",
@@ -177,13 +177,14 @@ def trend_following_strategy(symbol, ctx=None, df=None):
     vol_avg = float(latest["volume_sma_20"])
     vol_ratio = volume / vol_avg if vol_avg > 0 else 0
 
-    # Price just crossed above SMA20
+    # Price crossed above SMA20 (exact cross OR already above with momentum)
     crossed_above = prev_close <= prev_sma_20 and price > sma_20
+    above_with_momentum = price > sma_20 and rsi > 50 and price > prev_close
     # Price just crossed below SMA20
     crossed_below = prev_close >= prev_sma_20 and price < sma_20
 
-    # BUY conditions
-    if crossed_above and vol_ratio > 1.5 and 45 <= rsi <= 65:
+    # BUY conditions — crossover OR above SMA with momentum
+    if (crossed_above or above_with_momentum) and 40 <= rsi <= 70:
         return {
             "symbol": symbol,
             "signal": "BUY",
@@ -246,7 +247,7 @@ def extreme_oversold_strategy(symbol, ctx=None, df=None):
     pct_below_sma = ((price - sma_20) / sma_20 * 100) if sma_20 > 0 else 0
 
     # BUY -- extreme oversold
-    if rsi < 20 and pct_below_sma < -25:
+    if rsi < 30 and pct_below_sma < -10:
         return {
             "symbol": symbol,
             "signal": "BUY",
@@ -260,26 +261,15 @@ def extreme_oversold_strategy(symbol, ctx=None, df=None):
             "pct_below_sma": round(pct_below_sma, 2),
         }
 
-    # SELL -- RSI recovered or price at SMA
-    if price >= sma_20:
+    # SELL -- only if we're in an overbought condition (not just "above SMA20")
+    # The exit conditions (price>=SMA, RSI>45) only matter if you hold a position
+    # from a previous oversold BUY. Without position tracking, we can't know that,
+    # so only signal SELL on genuine overbought conditions.
+    if rsi > 75:
         return {
             "symbol": symbol,
             "signal": "SELL",
-            "reason": (
-                f"Price ({price:.2f}) returned to SMA20 ({sma_20:.2f}) -- "
-                f"bounce target hit"
-            ),
-            "price": price,
-            "rsi": rsi,
-            "sma_20": sma_20,
-            "pct_below_sma": round(pct_below_sma, 2),
-        }
-
-    if rsi > 45:
-        return {
-            "symbol": symbol,
-            "signal": "SELL",
-            "reason": f"RSI recovered to {rsi:.1f} (> 45) -- exit bounce trade",
+            "reason": f"RSI overbought at {rsi:.1f} (> 75) -- potential reversal",
             "price": price,
             "rsi": rsi,
             "sma_20": sma_20,
@@ -325,7 +315,7 @@ def volume_surge_strategy(symbol, ctx=None, df=None):
     day_change_pct = ((price - open_price) / open_price * 100) if open_price > 0 else 0
 
     # BUY conditions
-    if vol_ratio > 3.0 and day_change_pct > 3.0 and rsi < 65:
+    if vol_ratio > 1.5 and day_change_pct > 1.5 and rsi < 70:
         return {
             "symbol": symbol,
             "signal": "BUY",
