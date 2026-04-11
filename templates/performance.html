@@ -397,10 +397,8 @@
 <div id="tab-market" class="perf-tab-content">
 
     {% if m.num_daily_returns < 20 %}
-    <article>
-        <p class="muted">Need at least 20 daily returns for market relationship analysis. Currently have {{ m.num_daily_returns }}.</p>
-    </article>
-    {% else %}
+    <p class="muted" style="margin-bottom:1rem;">Need at least 20 daily returns for market relationship analysis. Currently have {{ m.num_daily_returns }}. Showing structure with default values.</p>
+    {% endif %}
 
     <!-- Alpha & Beta -->
     <div class="grid">
@@ -487,7 +485,6 @@
     </article>
     {% endif %}
 
-    {% endif %}
 </div>
 
 <!-- ===================================================================
@@ -496,10 +493,8 @@
 <div id="tab-scale" class="perf-tab-content">
 
     {% if not m.has_trades %}
-    <article>
-        <p class="muted">No trade data available for scalability analysis.</p>
-    </article>
-    {% else %}
+    <p class="muted" style="margin-bottom:1rem;">No trade data yet — scalability metrics will populate after trades complete.</p>
+    {% endif %}
 
     <!-- Slippage Analysis -->
     <article>
@@ -585,7 +580,6 @@
         <small class="muted">Note: Projections are rough estimates. Actual slippage at scale depends on liquidity of specific traded symbols.</small>
     </article>
 
-    {% endif %}
 </div>
 
 <script>
