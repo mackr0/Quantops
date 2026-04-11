@@ -577,15 +577,52 @@
                 View Full Universe
             </a>
 
-            <div class="grid">
+            <div class="grid" style="gap:0.5rem;">
+                <button type="button" class="outline backtest-btn"
+                        data-profile-id="{{ prof.id }}"
+                        style="background:#1a1a2e;color:#fff;border-color:#1a1a2e;">
+                    Backtest These Settings
+                </button>
                 <button type="submit">Save {{ prof.name }}</button>
-                {% if not prof.enabled %}
+            </div>
+            {% if not prof.enabled %}
+            <div style="margin-top:0.5rem;">
                 <button type="button" class="outline contrast delete-profile-btn"
                         data-profile-id="{{ prof.id }}"
                         data-profile-name="{{ prof.name }}">Delete Profile</button>
-                {% else %}
-                <small class="muted" style="align-self:center;">Disable this profile first to delete it</small>
-                {% endif %}
+            </div>
+            {% else %}
+            <small class="muted" style="display:block;margin-top:0.5rem;">Disable this profile first to delete it</small>
+            {% endif %}
+
+            <!-- Backtest Results Panel (hidden initially) -->
+            <div class="backtest-results" id="backtest-results-{{ prof.id }}" style="display:none; margin-top:1rem;">
+                <div class="backtest-loading" style="display:none; text-align:center; padding:2rem;">
+                    <p>Running backtest on full universe...</p>
+                    <progress></progress>
+                </div>
+                <div class="backtest-data" style="display:none;">
+                    <h5>Backtest Results (90 days)</h5>
+                    <table style="width:100%; font-size:0.85rem;">
+                        <thead>
+                            <tr>
+                                <th></th>
+                                <th>Current Settings</th>
+                                <th>Your Changes</th>
+                                <th>Difference</th>
+                            </tr>
+                        </thead>
+                        <tbody id="backtest-tbody-{{ prof.id }}"></tbody>
+                    </table>
+                    <div class="grid" style="margin-top:1rem;">
+                        <button type="submit" class="apply-btn" style="background:#00c853;border-color:#00c853;">
+                            Apply These Settings
+                        </button>
+                        <button type="button" class="outline discard-btn" data-profile-id="{{ prof.id }}">
+                            Discard Changes
+                        </button>
+                    </div>
+                </div>
             </div>
         </form>
     </details>
@@ -656,6 +693,93 @@ document.querySelectorAll('select[name="schedule_type"]').forEach(function(sel) 
         if (customFields) {
             customFields.style.display = this.value === 'custom' ? '' : 'none';
         }
+    });
+});
+
+// Backtest button handler
+document.querySelectorAll('.backtest-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        var profileId = this.dataset.profileId;
+        var form = this.closest('form');
+        var resultsDiv = document.getElementById('backtest-results-' + profileId);
+        var loadingDiv = resultsDiv.querySelector('.backtest-loading');
+        var dataDiv = resultsDiv.querySelector('.backtest-data');
+        var tbody = document.getElementById('backtest-tbody-' + profileId);
+
+        // Show loading
+        resultsDiv.style.display = 'block';
+        loadingDiv.style.display = 'block';
+        dataDiv.style.display = 'none';
+
+        // Gather all form values
+        var formData = new FormData(form);
+        var params = {};
+        formData.forEach(function(value, key) {
+            params[key] = value;
+        });
+
+        // Call backtest API
+        fetch('/api/backtest/' + profileId, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(params)
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            loadingDiv.style.display = 'none';
+            dataDiv.style.display = 'block';
+
+            if (data.error) {
+                tbody.innerHTML = '<tr><td colspan="4">' + data.error + '</td></tr>';
+                return;
+            }
+
+            // Build comparison table
+            var metrics = [
+                ['Win Rate', 'win_rate', '%', true],
+                ['Total Return', 'total_return_pct', '%', true],
+                ['Max Drawdown', 'max_drawdown_pct', '%', false],
+                ['Trades', 'num_trades', '', null],
+                ['Sharpe Ratio', 'sharpe_ratio', '', true],
+                ['Best Trade', 'best_trade_pct', '%', true],
+                ['Worst Trade', 'worst_trade_pct', '%', false],
+            ];
+
+            var html = '';
+            metrics.forEach(function(m) {
+                var label = m[0], key = m[1], suffix = m[2], higherBetter = m[3];
+                var curr = data.current[key] || 0;
+                var prop = data.proposed[key] || 0;
+                var diff = data.diff[key] || 0;
+
+                var diffColor = '';
+                if (higherBetter !== null) {
+                    diffColor = (higherBetter ? diff > 0 : diff < 0) ? 'color:#00c853' : (diff === 0 ? '' : 'color:#ff1744');
+                }
+                var arrow = diff > 0 ? ' \u2191' : (diff < 0 ? ' \u2193' : '');
+
+                html += '<tr>';
+                html += '<td><strong>' + label + '</strong></td>';
+                html += '<td>' + curr.toFixed(1) + suffix + '</td>';
+                html += '<td>' + prop.toFixed(1) + suffix + '</td>';
+                html += '<td style="' + diffColor + ';font-weight:bold;">' + (diff > 0 ? '+' : '') + diff.toFixed(1) + suffix + arrow + '</td>';
+                html += '</tr>';
+            });
+            html += '<tr><td colspan="4" style="font-size:0.8rem;color:#888;">Tested ' + (data.symbols_tested || '?') + ' symbols over ' + (data.days || 90) + ' days</td></tr>';
+            tbody.innerHTML = html;
+        })
+        .catch(function(err) {
+            loadingDiv.style.display = 'none';
+            dataDiv.style.display = 'block';
+            tbody.innerHTML = '<tr><td colspan="4">Backtest failed: ' + err + '</td></tr>';
+        });
+    });
+});
+
+// Discard button -- reload page to reset sliders
+document.querySelectorAll('.discard-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        window.location.reload();
     });
 });
 

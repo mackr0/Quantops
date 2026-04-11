@@ -393,6 +393,25 @@ article h4 {
     padding: 0.4rem 0.75rem;
 }
 /* ---------------------------------------------------------------------------
+   Backtest Results Panel
+--------------------------------------------------------------------------- */
+.backtest-results {
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 1rem;
+    background: #fafafa;
+}
+.backtest-results table th {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    color: #666;
+    padding: 0.3rem 0.5rem;
+}
+.backtest-results table td {
+    padding: 0.3rem 0.5rem;
+}
+
+/* ---------------------------------------------------------------------------
    Footer
 --------------------------------------------------------------------------- */
 footer {

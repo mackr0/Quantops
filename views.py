@@ -491,6 +491,72 @@ def save_profile(profile_id):
     return redirect(url_for("views.settings") + f"#profile-{profile_id}")
 
 
+@views_bp.route("/api/backtest/<int:profile_id>", methods=["POST"])
+@login_required
+def api_backtest(profile_id):
+    """Run a backtest with the submitted form parameters.
+    Returns JSON with current vs proposed results.
+    """
+    profile = get_trading_profile(profile_id)
+    if not profile or profile["user_id"] != current_user.id:
+        return jsonify({"error": "Profile not found"}), 404
+
+    market_type = profile["market_type"]
+
+    try:
+        data = request.get_json(force=True)
+    except Exception:
+        return jsonify({"error": "Invalid JSON payload"}), 400
+
+    # Build current params from saved profile
+    current_params = {
+        "stop_loss_pct": float(profile.get("stop_loss_pct", 0.03)),
+        "take_profit_pct": float(profile.get("take_profit_pct", 0.10)),
+        "max_position_pct": float(profile.get("max_position_pct", 0.10)),
+        "use_atr_stops": bool(profile.get("use_atr_stops", 1)),
+        "atr_multiplier_sl": float(profile.get("atr_multiplier_sl", 2.0)),
+        "atr_multiplier_tp": float(profile.get("atr_multiplier_tp", 3.0)),
+        "use_trailing_stops": bool(profile.get("use_trailing_stops", 1)),
+        "trailing_atr_multiplier": float(profile.get("trailing_atr_multiplier", 1.5)),
+        "ai_confidence_threshold": int(profile.get("ai_confidence_threshold", 25)),
+        "strategy_momentum_breakout": bool(profile.get("strategy_momentum_breakout", 1)),
+        "strategy_volume_spike": bool(profile.get("strategy_volume_spike", 1)),
+        "strategy_mean_reversion": bool(profile.get("strategy_mean_reversion", 1)),
+        "strategy_gap_and_go": bool(profile.get("strategy_gap_and_go", 1)),
+        "rsi_oversold": float(profile.get("rsi_oversold", 25.0)),
+        "rsi_overbought": float(profile.get("rsi_overbought", 85.0)),
+        "volume_surge_multiplier": float(profile.get("volume_surge_multiplier", 2.0)),
+    }
+
+    # Build proposed params from submitted form data
+    proposed_params = {
+        "stop_loss_pct": float(data.get("stop_loss_pct", current_params["stop_loss_pct"])),
+        "take_profit_pct": float(data.get("take_profit_pct", current_params["take_profit_pct"])),
+        "max_position_pct": float(data.get("max_position_pct", current_params["max_position_pct"])),
+        "use_atr_stops": bool(data.get("use_atr_stops", current_params["use_atr_stops"])),
+        "atr_multiplier_sl": float(data.get("atr_multiplier_sl", current_params["atr_multiplier_sl"])),
+        "atr_multiplier_tp": float(data.get("atr_multiplier_tp", current_params["atr_multiplier_tp"])),
+        "use_trailing_stops": bool(data.get("use_trailing_stops", current_params["use_trailing_stops"])),
+        "trailing_atr_multiplier": float(data.get("trailing_atr_multiplier", current_params["trailing_atr_multiplier"])),
+        "ai_confidence_threshold": int(data.get("ai_confidence_threshold", current_params["ai_confidence_threshold"])),
+        "strategy_momentum_breakout": bool(data.get("strategy_momentum_breakout", current_params["strategy_momentum_breakout"])),
+        "strategy_volume_spike": bool(data.get("strategy_volume_spike", current_params["strategy_volume_spike"])),
+        "strategy_mean_reversion": bool(data.get("strategy_mean_reversion", current_params["strategy_mean_reversion"])),
+        "strategy_gap_and_go": bool(data.get("strategy_gap_and_go", current_params["strategy_gap_and_go"])),
+        "rsi_oversold": float(data.get("rsi_oversold", current_params["rsi_oversold"])),
+        "rsi_overbought": float(data.get("rsi_overbought", current_params["rsi_overbought"])),
+        "volume_surge_multiplier": float(data.get("volume_surge_multiplier", current_params["volume_surge_multiplier"])),
+    }
+
+    try:
+        from backtester import backtest_comparison
+        results = backtest_comparison(market_type, current_params, proposed_params, days=90)
+        return jsonify(results)
+    except Exception as exc:
+        logger.exception("Backtest failed for profile %d", profile_id)
+        return jsonify({"error": f"Backtest failed: {str(exc)}"}), 500
+
+
 @views_bp.route("/settings/profile/<int:profile_id>/delete", methods=["POST"])
 @login_required
 def delete_profile_route(profile_id):

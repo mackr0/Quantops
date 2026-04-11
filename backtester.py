@@ -3,6 +3,7 @@
 import math
 import random
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional
@@ -13,6 +14,12 @@ import pandas as pd
 from market_data import get_bars_daterange
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Module-level cache for batch yfinance downloads (24-hour TTL)
+# ---------------------------------------------------------------------------
+_data_cache: Dict[str, dict] = {}
+_CACHE_TTL = 86400  # 24 hours in seconds
 
 
 @dataclass
@@ -655,3 +662,365 @@ def print_strategy_backtest_report(results: Dict) -> None:
                   f"{pnl_str:>7s} | {t.get('exit_reason', '')}")
 
     print("\n" + "=" * 65 + "\n")
+
+
+# ---------------------------------------------------------------------------
+# "What If" parameterized backtester (Settings page)
+# ---------------------------------------------------------------------------
+
+def _fetch_universe_batch(market_type: str, days: int) -> Optional[pd.DataFrame]:
+    """Batch-download historical data for the full universe of a market type.
+
+    Uses yfinance batch download with module-level caching (24-hour TTL).
+
+    Returns:
+        MultiIndex DataFrame grouped by ticker, or None on failure.
+    """
+    import yfinance as yf
+    from segments import get_segment
+
+    cache_key = f"{market_type}_{days}"
+    now = time.time()
+
+    # Check cache
+    if cache_key in _data_cache:
+        entry = _data_cache[cache_key]
+        if now - entry["ts"] < _CACHE_TTL and entry["data"] is not None:
+            logger.debug("Cache hit for %s", cache_key)
+            return entry["data"]
+
+    segment = get_segment(market_type)
+    universe = segment.get("universe", [])
+    if not universe:
+        return None
+
+    # Convert symbols for yfinance (e.g. BTC/USD -> BTC-USD)
+    yf_symbols = [s.replace("/", "-") for s in universe]
+
+    # Calculate period string from days
+    total_days = days + 60  # buffer for warmup + weekends/holidays
+    if total_days <= 30:
+        period = "1mo"
+    elif total_days <= 90:
+        period = "3mo"
+    elif total_days <= 180:
+        period = "6mo"
+    elif total_days <= 365:
+        period = "1y"
+    else:
+        period = "2y"
+
+    try:
+        logger.info("Batch downloading %d symbols for %s (%s)...",
+                     len(yf_symbols), market_type, period)
+        data = yf.download(
+            yf_symbols,
+            period=period,
+            progress=False,
+            group_by="ticker",
+            threads=True,
+            auto_adjust=True,
+        )
+
+        if data is None or data.empty:
+            return None
+
+        # Cache it
+        _data_cache[cache_key] = {"data": data, "ts": now}
+        return data
+
+    except Exception as exc:
+        logger.warning("Batch download failed for %s: %s", market_type, exc)
+        return None
+
+
+def _extract_symbol_df(batch_data: pd.DataFrame, symbol: str,
+                       universe_size: int) -> Optional[pd.DataFrame]:
+    """Extract a single symbol's OHLCV DataFrame from a batch download result.
+
+    Handles both MultiIndex (multi-ticker) and single-level (single-ticker)
+    column layouts returned by yfinance.
+    """
+    yf_sym = symbol.replace("/", "-")
+
+    try:
+        if universe_size == 1:
+            # Single ticker: columns are just Price levels (Open, High, ...)
+            df = batch_data.copy()
+        else:
+            # Multi-ticker: columns are (Ticker, Price)
+            if yf_sym not in batch_data.columns.get_level_values(0):
+                return None
+            df = batch_data[yf_sym].copy()
+
+        # Normalize column names to lowercase
+        df.columns = [c.lower() for c in df.columns]
+
+        # Drop rows with all NaN (symbol may not have traded that day)
+        df = df.dropna(subset=["close"])
+
+        for col in ("open", "high", "low", "close", "volume"):
+            if col not in df.columns:
+                return None
+
+        if len(df) < 20:
+            return None
+
+        return df
+
+    except Exception:
+        return None
+
+
+def backtest_with_params(market_type: str, params: dict, days: int = 90) -> dict:
+    """Backtest a strategy with specific parameter overrides.
+
+    Args:
+        market_type: "micro", "small", "midcap", "largecap", "crypto"
+        params: dict of all configurable parameters matching UserContext fields:
+            stop_loss_pct, take_profit_pct, max_position_pct,
+            use_atr_stops, atr_multiplier_sl, atr_multiplier_tp,
+            ai_confidence_threshold, strategy_momentum_breakout,
+            strategy_volume_spike, strategy_mean_reversion, strategy_gap_and_go,
+            rsi_oversold, rsi_overbought, volume_surge_multiplier, etc.
+        days: Number of trading days to backtest
+
+    Returns:
+        dict with: total_return_pct, win_rate, max_drawdown_pct, sharpe_ratio,
+        num_trades, avg_hold_days, best_trade_pct, worst_trade_pct, trades list,
+        symbols_tested
+    """
+    from segments import get_segment
+    from strategy_router import run_strategy
+
+    segment = get_segment(market_type)
+    universe = segment.get("universe", [])
+
+    if not universe:
+        return {"error": f"No universe found for market type: {market_type}"}
+
+    # Batch download the full universe
+    batch_data = _fetch_universe_batch(market_type, days)
+    if batch_data is None:
+        return {"error": "Failed to download market data"}
+
+    # Extract params
+    use_atr_stops = bool(params.get("use_atr_stops", True))
+    atr_sl_mult = float(params.get("atr_multiplier_sl", 2.0))
+    atr_tp_mult = float(params.get("atr_multiplier_tp", 3.0))
+    fixed_sl_pct = float(params.get("stop_loss_pct", 0.03))
+    fixed_tp_pct = float(params.get("take_profit_pct", 0.10))
+    use_trailing = bool(params.get("use_trailing_stops", True))
+    trailing_mult = float(params.get("trailing_atr_multiplier", 1.5))
+
+    warmup_days = 50
+    initial_capital = 10_000
+    equity = initial_capital
+    daily_equity: List[float] = [initial_capital]
+    all_trades: List[Dict] = []
+    symbols_tested = 0
+
+    for symbol in universe:
+        df = _extract_symbol_df(batch_data, symbol, len(universe))
+        if df is None or len(df) < warmup_days + 20:
+            continue
+
+        symbols_tested += 1
+
+        # Walk forward day by day
+        position_open = False
+        entry_price = 0.0
+        entry_date = None
+        stop_loss = 0.0
+        take_profit = 0.0
+        trailing_high = 0.0
+
+        for i in range(warmup_days, len(df)):
+            window = df.iloc[:i + 1].copy()
+            current_bar = df.iloc[i]
+            current_price = float(current_bar["close"])
+            current_high = float(current_bar["high"])
+            current_low = float(current_bar["low"])
+            current_date = df.index[i]
+
+            if position_open:
+                # Update trailing high watermark
+                if current_high > trailing_high:
+                    trailing_high = current_high
+
+                # Check ATR/fixed stops using high/low of the bar
+                hit_sl = current_low <= stop_loss
+                hit_tp = current_high >= take_profit
+
+                # Trailing stop check
+                hit_trailing = False
+                if use_trailing and trailing_high > entry_price:
+                    atr_val = _calculate_atr(window, period=14)
+                    if atr_val > 0:
+                        trail_stop = trailing_high - (atr_val * trailing_mult)
+                        if current_low <= trail_stop and trail_stop > stop_loss:
+                            hit_trailing = True
+                            exit_price = trail_stop
+                            exit_reason = "trailing_stop"
+
+                if hit_sl or hit_tp or hit_trailing:
+                    if not hit_trailing:
+                        if hit_sl:
+                            exit_price = stop_loss
+                            exit_reason = "stop_loss"
+                        else:
+                            exit_price = take_profit
+                            exit_reason = "take_profit"
+
+                    pnl = exit_price - entry_price
+                    pnl_pct = (pnl / entry_price) * 100
+                    hold_days = (current_date - entry_date).days if entry_date else 0
+
+                    all_trades.append({
+                        "symbol": symbol,
+                        "entry_date": str(entry_date)[:10] if entry_date else "",
+                        "exit_date": str(current_date)[:10],
+                        "entry_price": round(entry_price, 4),
+                        "exit_price": round(exit_price, 4),
+                        "pnl": round(pnl, 4),
+                        "pnl_pct": round(pnl_pct, 2),
+                        "holding_days": hold_days,
+                        "exit_reason": exit_reason,
+                    })
+
+                    equity += pnl * (initial_capital * 0.10 / entry_price)
+                    daily_equity.append(equity)
+                    position_open = False
+                    continue
+
+            if not position_open:
+                # Run strategy to check for entry signal
+                try:
+                    signal = run_strategy(symbol, market_type, df=window)
+                    action = signal.get("signal", "HOLD")
+
+                    if action in ("BUY", "STRONG_BUY"):
+                        entry_price = current_price
+                        entry_date = current_date
+                        position_open = True
+                        trailing_high = current_high
+
+                        # Calculate stops
+                        if use_atr_stops:
+                            atr = _calculate_atr(window, period=14)
+                            if atr > 0:
+                                stop_loss = entry_price - (atr * atr_sl_mult)
+                                take_profit = entry_price + (atr * atr_tp_mult)
+                            else:
+                                stop_loss = entry_price * (1 - fixed_sl_pct)
+                                take_profit = entry_price * (1 + fixed_tp_pct)
+                        else:
+                            stop_loss = entry_price * (1 - fixed_sl_pct)
+                            take_profit = entry_price * (1 + fixed_tp_pct)
+                except Exception:
+                    pass
+
+                daily_equity.append(equity)
+
+        # Close any open position at the end
+        if position_open:
+            final_price = float(df.iloc[-1]["close"])
+            pnl = final_price - entry_price
+            pnl_pct = (pnl / entry_price) * 100
+            hold_days = (df.index[-1] - entry_date).days if entry_date else 0
+
+            all_trades.append({
+                "symbol": symbol,
+                "entry_date": str(entry_date)[:10] if entry_date else "",
+                "exit_date": str(df.index[-1])[:10],
+                "entry_price": round(entry_price, 4),
+                "exit_price": round(final_price, 4),
+                "pnl": round(pnl, 4),
+                "pnl_pct": round(pnl_pct, 2),
+                "holding_days": hold_days,
+                "exit_reason": "end_of_backtest",
+            })
+
+            equity += pnl * (initial_capital * 0.10 / entry_price)
+            daily_equity.append(equity)
+
+    # --- Calculate aggregate metrics ---
+    total_return_pct = ((equity - initial_capital) / initial_capital) * 100
+
+    num_trades = len(all_trades)
+    wins = [t for t in all_trades if t["pnl"] > 0]
+    win_rate = (len(wins) / num_trades * 100) if num_trades > 0 else 0.0
+
+    # Max drawdown from equity curve
+    eq_series = pd.Series(daily_equity)
+    peak = eq_series.cummax()
+    drawdown = (eq_series - peak) / peak * 100
+    max_drawdown_pct = float(drawdown.min()) if len(drawdown) > 0 else 0.0
+
+    # Sharpe ratio from daily equity changes
+    eq_returns = eq_series.pct_change().dropna()
+    if len(eq_returns) > 1 and eq_returns.std() > 0:
+        sharpe_ratio = (eq_returns.mean() / eq_returns.std()) * math.sqrt(252)
+    else:
+        sharpe_ratio = 0.0
+
+    # Average holding days
+    avg_hold_days = (
+        sum(t["holding_days"] for t in all_trades) / num_trades
+        if num_trades > 0 else 0.0
+    )
+
+    # Best and worst trades by pct
+    best_trade_pct = max((t["pnl_pct"] for t in all_trades), default=0.0)
+    worst_trade_pct = min((t["pnl_pct"] for t in all_trades), default=0.0)
+
+    return {
+        "total_return_pct": round(total_return_pct, 2),
+        "win_rate": round(win_rate, 2),
+        "max_drawdown_pct": round(max_drawdown_pct, 2),
+        "sharpe_ratio": round(sharpe_ratio, 2),
+        "num_trades": num_trades,
+        "avg_hold_days": round(avg_hold_days, 1),
+        "best_trade_pct": round(best_trade_pct, 2),
+        "worst_trade_pct": round(worst_trade_pct, 2),
+        "symbols_tested": symbols_tested,
+        "trades": all_trades,
+    }
+
+
+def backtest_comparison(market_type: str, current_params: dict,
+                        new_params: dict, days: int = 90) -> dict:
+    """Run two backtests and return comparison.
+
+    Returns dict with current_results, new_results, and diff for each metric.
+    """
+    current_results = backtest_with_params(market_type, current_params, days=days)
+    new_results = backtest_with_params(market_type, new_params, days=days)
+
+    if "error" in current_results or "error" in new_results:
+        return {
+            "error": current_results.get("error") or new_results.get("error"),
+        }
+
+    # Calculate diffs for numeric metrics
+    diff_keys = [
+        "total_return_pct", "win_rate", "max_drawdown_pct",
+        "sharpe_ratio", "num_trades", "best_trade_pct", "worst_trade_pct",
+    ]
+    diff = {}
+    for key in diff_keys:
+        c = current_results.get(key, 0) or 0
+        n = new_results.get(key, 0) or 0
+        diff[key] = round(n - c, 2)
+
+    # Strip trade lists from response to keep payload small
+    current_summary = {k: v for k, v in current_results.items() if k != "trades"}
+    new_summary = {k: v for k, v in new_results.items() if k != "trades"}
+
+    return {
+        "current": current_summary,
+        "proposed": new_summary,
+        "diff": diff,
+        "days": days,
+        "symbols_tested": new_results.get("symbols_tested", 0),
+    }
