@@ -4,8 +4,151 @@ import logging
 import sqlite3
 
 import config
+from market_data import get_bars
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# ATR-Based Stops (Feature 1)
+# ---------------------------------------------------------------------------
+
+def calculate_atr_stops(symbol, entry_price, atr_multiplier_sl=2.0, atr_multiplier_tp=3.0):
+    """Calculate stop-loss and take-profit prices based on ATR.
+
+    Fetches 30 bars for *symbol*, computes a simple 14-day ATR (average of
+    high - low), then returns dollar-price levels for stop and take-profit.
+
+    Returns (stop_price, take_profit_price, atr_value) or (None, None, None)
+    on failure.
+    """
+    try:
+        bars = get_bars(symbol, limit=30)
+        if bars is None or bars.empty or len(bars) < 14:
+            logger.warning("calculate_atr_stops: not enough bars for %s (%d)",
+                           symbol, len(bars) if bars is not None else 0)
+            return None, None, None
+
+        # Simple ATR: average of (high - low) over the last 14 bars
+        ranges = (bars["high"] - bars["low"]).tail(14)
+        atr = float(ranges.mean())
+
+        if atr <= 0:
+            return None, None, None
+
+        stop_price = entry_price - (atr * atr_multiplier_sl)
+        tp_price = entry_price + (atr * atr_multiplier_tp)
+
+        # Ensure stop is positive
+        if stop_price <= 0:
+            stop_price = entry_price * 0.01  # minimal floor
+
+        return round(stop_price, 4), round(tp_price, 4), round(atr, 4)
+
+    except Exception as exc:
+        logger.warning("calculate_atr_stops failed for %s: %s", symbol, exc)
+        return None, None, None
+
+
+# ---------------------------------------------------------------------------
+# Trailing Stops (Feature 2)
+# ---------------------------------------------------------------------------
+
+def check_trailing_stops(positions, ctx=None):
+    """Check positions for trailing stop triggers.
+
+    For each profitable long position, tracks the highest recent price and
+    sets a trailing stop at high_water - (ATR * trailing_multiplier).
+    For profitable short positions, tracks the lowest recent price.
+
+    Only trails *profitable* positions — losers are handled by the regular stop.
+
+    Returns list of triggered exit signals (same format as
+    check_stop_loss_take_profit).
+    """
+    if ctx is None:
+        return []
+
+    trailing_multiplier = getattr(ctx, "trailing_atr_multiplier", 1.5)
+    triggered = []
+
+    for pos in positions:
+        symbol = pos.get("symbol")
+        current_price = float(pos.get("current_price", 0))
+        entry_price = float(pos.get("avg_entry_price", 0))
+        qty = pos.get("qty", 0)
+
+        if entry_price <= 0 or current_price <= 0:
+            continue
+
+        is_short = int(qty) < 0
+
+        # Only trail profitable positions
+        if is_short:
+            # Profitable short: current price < entry price
+            if current_price >= entry_price:
+                continue
+        else:
+            # Profitable long: current price > entry price
+            if current_price <= entry_price:
+                continue
+
+        try:
+            bars = get_bars(symbol, limit=30)
+            if bars is None or bars.empty or len(bars) < 14:
+                continue
+
+            # Compute ATR from last 14 bars
+            ranges = (bars["high"] - bars["low"]).tail(14)
+            atr = float(ranges.mean())
+            if atr <= 0:
+                continue
+
+            recent_bars = bars.tail(5)
+
+            if is_short:
+                # Track the lowest price (best for short), trail upward
+                low_water = float(recent_bars["low"].min())
+                trailing_stop = low_water + (atr * trailing_multiplier)
+                if current_price > trailing_stop:
+                    abs_qty = abs(int(qty))
+                    pct_from_entry = (current_price - entry_price) / entry_price
+                    triggered.append({
+                        "symbol": symbol,
+                        "signal": "SELL",
+                        "reason": (
+                            f"Trailing stop triggered (short): price ${current_price:.2f} "
+                            f"> trailing stop ${trailing_stop:.2f} "
+                            f"(low water ${low_water:.2f} + {trailing_multiplier:.1f}x ATR ${atr:.2f})"
+                        ),
+                        "price": current_price,
+                        "qty": abs_qty,
+                        "trigger": "trailing_stop",
+                        "is_short": True,
+                    })
+            else:
+                # Track the highest price, trail downward
+                high_water = float(recent_bars["high"].max())
+                trailing_stop = high_water - (atr * trailing_multiplier)
+                if current_price < trailing_stop:
+                    triggered.append({
+                        "symbol": symbol,
+                        "signal": "SELL",
+                        "reason": (
+                            f"Trailing stop triggered: price ${current_price:.2f} "
+                            f"< trailing stop ${trailing_stop:.2f} "
+                            f"(high water ${high_water:.2f} - {trailing_multiplier:.1f}x ATR ${atr:.2f})"
+                        ),
+                        "price": current_price,
+                        "qty": int(qty),
+                        "trigger": "trailing_stop",
+                    })
+
+        except Exception as exc:
+            logger.warning("Trailing stop check failed for %s: %s", symbol, exc)
+            continue
+
+    return triggered
 
 
 def calculate_position_size(symbol, signal, account_info, current_positions,

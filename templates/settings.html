@@ -348,6 +348,74 @@
                 </label>
             </div>
 
+            <h5 style="margin-top:1rem;">Correlation Management</h5>
+            <div class="grid">
+                <label>
+                    Max Correlation
+                    <input type="range" name="max_correlation" class="slider" min="0.3" max="0.95" step="0.05"
+                           value="{{ prof.get('max_correlation', 0.7) }}"
+                           data-display="corr_val_{{ prof.id }}" data-format="1f">
+                    <output id="corr_val_{{ prof.id }}">{{ "%.2f"|format(prof.get('max_correlation', 0.7)) }}</output>
+                    <small class="muted">Reduce position size when new trade is highly correlated with existing positions</small>
+                </label>
+                <label>
+                    Max Positions per Group
+                    <input type="number" name="max_sector_positions" min="1" max="10"
+                           value="{{ prof.get('max_sector_positions', 5) }}">
+                    <small class="muted">Limit positions in correlated groups</small>
+                </label>
+            </div>
+
+            <!-- Smart Stops & Order Execution -->
+            <h4>Smart Stops & Order Execution</h4>
+            <h5 style="margin-top:1rem;">Smart Stops (ATR-Based)</h5>
+            <fieldset>
+                <label style="display:flex;align-items:flex-start;gap:0.5rem;">
+                    <input type="checkbox" name="use_atr_stops" value="1" style="flex-shrink:0;margin-top:0.2rem;"
+                           {{ 'checked' if prof.get('use_atr_stops', 1) else '' }}>
+                    <span>Use ATR-Based Stops<br><small style="color:#888;font-weight:normal;">Adapts stop-loss and take-profit to each stock's actual volatility</small></span>
+                </label>
+            </fieldset>
+            <div class="grid">
+                <label>
+                    Stop-Loss ATR Multiplier
+                    <input type="range" name="atr_multiplier_sl" class="slider" min="1.0" max="4.0" step="0.5"
+                           value="{{ prof.get('atr_multiplier_sl', 2.0) }}"
+                           data-display="atr_sl_val_{{ prof.id }}" data-format="1f" data-suffix="x">
+                    <output id="atr_sl_val_{{ prof.id }}">{{ "%.1f"|format(prof.get('atr_multiplier_sl', 2.0)) }}x</output>
+                </label>
+                <label>
+                    Take-Profit ATR Multiplier
+                    <input type="range" name="atr_multiplier_tp" class="slider" min="1.0" max="5.0" step="0.5"
+                           value="{{ prof.get('atr_multiplier_tp', 3.0) }}"
+                           data-display="atr_tp_val_{{ prof.id }}" data-format="1f" data-suffix="x">
+                    <output id="atr_tp_val_{{ prof.id }}">{{ "%.1f"|format(prof.get('atr_multiplier_tp', 3.0)) }}x</output>
+                </label>
+            </div>
+
+            <fieldset>
+                <label style="display:flex;align-items:flex-start;gap:0.5rem;">
+                    <input type="checkbox" name="use_trailing_stops" value="1" style="flex-shrink:0;margin-top:0.2rem;"
+                           {{ 'checked' if prof.get('use_trailing_stops', 1) else '' }}>
+                    <span>Use Trailing Stops<br><small style="color:#888;font-weight:normal;">Locks in profits as price moves in your favor — never turn a winner into a big loser</small></span>
+                </label>
+            </fieldset>
+            <label>
+                Trailing Stop ATR Multiplier
+                <input type="range" name="trailing_atr_multiplier" class="slider" min="0.5" max="3.0" step="0.5"
+                       value="{{ prof.get('trailing_atr_multiplier', 1.5) }}"
+                       data-display="trail_val_{{ prof.id }}" data-format="1f" data-suffix="x">
+                <output id="trail_val_{{ prof.id }}">{{ "%.1f"|format(prof.get('trailing_atr_multiplier', 1.5)) }}x</output>
+            </label>
+
+            <fieldset>
+                <label style="display:flex;align-items:flex-start;gap:0.5rem;">
+                    <input type="checkbox" name="use_limit_orders" value="1" style="flex-shrink:0;margin-top:0.2rem;"
+                           {{ 'checked' if prof.get('use_limit_orders', 0) else '' }}>
+                    <span>Use Limit Orders<br><small style="color:#888;font-weight:normal;">Better fill prices on entries. Orders cancelled if not filled within 5 minutes.</small></span>
+                </label>
+            </fieldset>
+
             <!-- AI Parameters -->
             <h4>AI Parameters</h4>
             <label>

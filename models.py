@@ -171,6 +171,14 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             enable_consensus INTEGER NOT NULL DEFAULT 0,
             consensus_model TEXT NOT NULL DEFAULT '',
             consensus_api_key_enc TEXT NOT NULL DEFAULT '',
+            use_atr_stops INTEGER NOT NULL DEFAULT 1,
+            atr_multiplier_sl REAL NOT NULL DEFAULT 2.0,
+            atr_multiplier_tp REAL NOT NULL DEFAULT 3.0,
+            use_trailing_stops INTEGER NOT NULL DEFAULT 1,
+            trailing_atr_multiplier REAL NOT NULL DEFAULT 1.5,
+            use_limit_orders INTEGER NOT NULL DEFAULT 0,
+            max_correlation REAL NOT NULL DEFAULT 0.7,
+            max_sector_positions INTEGER NOT NULL DEFAULT 5,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
@@ -238,6 +246,14 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         ("trading_profiles", "consensus_api_key_enc", "TEXT NOT NULL DEFAULT ''"),
         ("trading_profiles", "short_stop_loss_pct", "REAL NOT NULL DEFAULT 0.08"),
         ("trading_profiles", "short_take_profit_pct", "REAL NOT NULL DEFAULT 0.08"),
+        ("trading_profiles", "use_atr_stops", "INTEGER NOT NULL DEFAULT 1"),
+        ("trading_profiles", "atr_multiplier_sl", "REAL NOT NULL DEFAULT 2.0"),
+        ("trading_profiles", "atr_multiplier_tp", "REAL NOT NULL DEFAULT 3.0"),
+        ("trading_profiles", "use_trailing_stops", "INTEGER NOT NULL DEFAULT 1"),
+        ("trading_profiles", "trailing_atr_multiplier", "REAL NOT NULL DEFAULT 1.5"),
+        ("trading_profiles", "use_limit_orders", "INTEGER NOT NULL DEFAULT 0"),
+        ("trading_profiles", "max_correlation", "REAL NOT NULL DEFAULT 0.7"),
+        ("trading_profiles", "max_sector_positions", "INTEGER NOT NULL DEFAULT 5"),
     ]
     for table, col, col_def in _migrations:
         try:
@@ -633,6 +649,10 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "drawdown_pause_pct", "drawdown_reduce_pct",
         "avoid_earnings_days", "skip_first_minutes",
         "enable_consensus", "consensus_model", "consensus_api_key_enc",
+        "use_atr_stops", "atr_multiplier_sl", "atr_multiplier_tp",
+        "use_trailing_stops", "trailing_atr_multiplier",
+        "use_limit_orders",
+        "max_correlation", "max_sector_positions",
     }
     updates = {}
     for key, value in kwargs.items():
@@ -764,6 +784,18 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         enable_consensus=bool(profile.get("enable_consensus", 0)),
         consensus_model=profile.get("consensus_model", ""),
         consensus_api_key=decrypt(profile.get("consensus_api_key_enc", "")),
+        # ATR-based stops
+        use_atr_stops=bool(profile.get("use_atr_stops", 1)),
+        atr_multiplier_sl=profile.get("atr_multiplier_sl", 2.0),
+        atr_multiplier_tp=profile.get("atr_multiplier_tp", 3.0),
+        # Trailing stops
+        use_trailing_stops=bool(profile.get("use_trailing_stops", 1)),
+        trailing_atr_multiplier=profile.get("trailing_atr_multiplier", 1.5),
+        # Limit orders
+        use_limit_orders=bool(profile.get("use_limit_orders", 0)),
+        # Correlation management
+        max_correlation=profile.get("max_correlation", 0.7),
+        max_sector_positions=profile.get("max_sector_positions", 5),
     )
 
 

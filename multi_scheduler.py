@@ -129,6 +129,11 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             f"[{seg_label}] Check Exits",
             lambda: _task_check_exits(ctx),
         )
+        # Cancel stale limit orders every exit-check cycle
+        run_task(
+            f"[{seg_label}] Cancel Stale Orders",
+            lambda: _task_cancel_stale_orders(ctx),
+        )
 
     if run_predictions:
         run_task(
@@ -473,6 +478,53 @@ def _task_aggressive_scan_and_trade(ctx):
                     )
                 except Exception:
                     logging.exception("Failed to send veto notification")
+
+
+def _task_cancel_stale_orders(ctx):
+    """Cancel limit orders older than 5 minutes that haven't been filled."""
+    from client import get_api
+    from datetime import datetime, timezone
+
+    seg_label = ctx.display_name or ctx.segment
+
+    if not getattr(ctx, "use_limit_orders", False):
+        return
+
+    try:
+        api = get_api(ctx)
+        open_orders = api.list_orders(status="open")
+        now = datetime.now(timezone.utc)
+        stale_cutoff = timedelta(minutes=5)
+        cancelled = 0
+
+        for order in open_orders:
+            if order.type != "limit":
+                continue
+            # Parse order creation time
+            created_at = order.created_at
+            if isinstance(created_at, str):
+                created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            if hasattr(created_at, "tzinfo") and created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+
+            age = now - created_at
+            if age > stale_cutoff:
+                api.cancel_order(order.id)
+                cancelled += 1
+                logging.info(
+                    f"[{seg_label}] Cancelled stale limit order {order.id} "
+                    f"for {order.symbol} (age {age.total_seconds():.0f}s)"
+                )
+
+        if cancelled > 0:
+            _safe_log_activity(
+                getattr(ctx, "profile_id", 0), ctx.user_id,
+                "stale_order_cancel",
+                f"Cancelled {cancelled} stale limit order(s)",
+                f"Orders older than 5 minutes were cancelled",
+            )
+    except Exception:
+        logging.exception(f"[{seg_label}] Failed to cancel stale orders")
 
 
 def _task_check_exits(ctx):

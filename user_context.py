@@ -92,6 +92,22 @@ class UserContext:
     drawdown_pause_pct: float = 0.20  # pause all trading at 20% drawdown
     drawdown_reduce_pct: float = 0.10  # reduce position sizes at 10% drawdown
 
+    # ATR-based stops
+    use_atr_stops: bool = True
+    atr_multiplier_sl: float = 2.0
+    atr_multiplier_tp: float = 3.0
+
+    # Trailing stops
+    use_trailing_stops: bool = True
+    trailing_atr_multiplier: float = 1.5
+
+    # Limit orders
+    use_limit_orders: bool = False
+
+    # Correlation management
+    max_correlation: float = 0.7
+    max_sector_positions: int = 5
+
     # Multi-model consensus
     enable_consensus: bool = False
     consensus_model: str = ""  # model ID for secondary opinion, e.g. "gpt-4o-mini"

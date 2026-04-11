@@ -5,6 +5,7 @@ from portfolio_manager import (
     calculate_position_size,
     check_portfolio_constraints,
     check_stop_loss_take_profit,
+    check_trailing_stops,
 )
 from journal import init_db, log_trade, log_signal
 
@@ -217,6 +218,15 @@ def check_exits(ctx=None):
         short_stop_loss_pct=short_stop_loss_pct,
         short_take_profit_pct=short_take_profit_pct,
     )
+
+    # Trailing stops: check profitable positions for trailing stop triggers
+    if ctx is not None and getattr(ctx, "use_trailing_stops", False):
+        # Don't trail symbols already triggered by regular stop/TP
+        already_triggered = {t["symbol"] for t in triggered}
+        trailing_candidates = [p for p in positions if p["symbol"] not in already_triggered]
+        trailing_triggered = check_trailing_stops(trailing_candidates, ctx)
+        triggered.extend(trailing_triggered)
+
     results = []
 
     # Build a lookup for unrealized P&L from positions

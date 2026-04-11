@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}Backtest: {{ market_type }} - QuantOpsAI{% endblock %}
+{% block content %}
+<h1>Backtest Results: {{ market_type|title }}</h1>
+
+<p class="muted">
+    Strategy engine: <strong>{{ market_type }}</strong> |
+    Period: <strong>{{ days }} days</strong> |
+    Symbols tested: <strong>{{ results.get('symbols_tested', 0) }}</strong>
+    ({{ results.get('symbols_skipped', 0) }} skipped)
+</p>
+
+{% if results.get('error') %}
+<article>
+    <header><h3>Error</h3></header>
+    <p>{{ results.error }}</p>
+</article>
+{% else %}
+
+<!-- Performance Summary -->
+<div class="grid">
+    <article>
+        <header><h4>Total Return</h4></header>
+        <p style="font-size:2rem; font-weight:bold;"
+           class="{{ 'pnl-pos' if results.total_return_pct >= 0 else 'pnl-neg' }}">
+            {{ "%+.2f"|format(results.total_return_pct) }}%
+        </p>
+        <small>${{ "{:,.2f}".format(results.initial_capital) }} &rarr; ${{ "{:,.2f}".format(results.final_equity) }}</small>
+    </article>
+    <article>
+        <header><h4>Win Rate</h4></header>
+        <p style="font-size:2rem; font-weight:bold;">{{ "%.1f"|format(results.win_rate) }}%</p>
+        <small>{{ results.num_trades }} total trades</small>
+    </article>
+    <article>
+        <header><h4>Sharpe Ratio</h4></header>
+        <p style="font-size:2rem; font-weight:bold;">{{ "%.2f"|format(results.sharpe_ratio) }}</p>
+        <small>Risk-adjusted return</small>
+    </article>
+    <article>
+        <header><h4>Max Drawdown</h4></header>
+        <p style="font-size:2rem; font-weight:bold; color:var(--pnl-neg, #e74c3c);">
+            {{ "%.2f"|format(results.max_drawdown_pct) }}%
+        </p>
+        <small>Largest peak-to-trough decline</small>
+    </article>
+</div>
+
+<!-- Additional Metrics -->
+<article>
+    <header><h3>Trade Statistics</h3></header>
+    <div class="grid">
+        <div>
+            <strong>Avg Holding Days:</strong> {{ "%.1f"|format(results.avg_hold_days) }}
+        </div>
+        <div>
+            {% set trades = results.get('trades', []) %}
+            {% set sl_count = trades|selectattr('exit_reason', 'equalto', 'stop_loss')|list|length %}
+            {% set tp_count = trades|selectattr('exit_reason', 'equalto', 'take_profit')|list|length %}
+            <strong>Stop-Loss Exits:</strong> {{ sl_count }} |
+            <strong>Take-Profit Exits:</strong> {{ tp_count }}
+        </div>
+    </div>
+
+    {% if results.best_trade %}
+    <div class="grid" style="margin-top:1rem;">
+        <div>
+            <strong>Best Trade:</strong>
+            <span class="pnl-pos">{{ results.best_trade.symbol }} {{ "%+.2f"|format(results.best_trade.pnl_pct) }}%</span>
+            <small class="muted">({{ results.best_trade.entry_date }} &rarr; {{ results.best_trade.exit_date }})</small>
+        </div>
+        {% if results.worst_trade %}
+        <div>
+            <strong>Worst Trade:</strong>
+            <span class="pnl-neg">{{ results.worst_trade.symbol }} {{ "%+.2f"|format(results.worst_trade.pnl_pct) }}%</span>
+            <small class="muted">({{ results.worst_trade.entry_date }} &rarr; {{ results.worst_trade.exit_date }})</small>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+</article>
+
+<!-- Trade List -->
+{% if results.trades %}
+<article>
+    <header><h3>All Trades ({{ results.trades|length }})</h3></header>
+    <div style="overflow-x:auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>Symbol</th>
+                    <th>Entry</th>
+                    <th>Exit</th>
+                    <th>Entry $</th>
+                    <th>Exit $</th>
+                    <th>P&L %</th>
+                    <th>Days</th>
+                    <th>Exit Reason</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for t in results.trades %}
+                <tr>
+                    <td><strong>{{ t.symbol }}</strong></td>
+                    <td>{{ t.entry_date }}</td>
+                    <td>{{ t.exit_date }}</td>
+                    <td>${{ "%.2f"|format(t.entry_price) }}</td>
+                    <td>${{ "%.2f"|format(t.exit_price) }}</td>
+                    <td class="{{ 'pnl-pos' if t.pnl_pct >= 0 else 'pnl-neg' }}">
+                        {{ "%+.2f"|format(t.pnl_pct) }}%
+                    </td>
+                    <td>{{ t.holding_days }}</td>
+                    <td>{{ t.exit_reason }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</article>
+{% endif %}
+
+{% endif %}
+
+<p>
+    <a href="/dashboard" role="button" class="outline">&larr; Back to Dashboard</a>
+    {% for mt in ['micro', 'small', 'midcap', 'largecap', 'crypto'] %}
+    {% if mt != market_type %}
+    <a href="/backtest/{{ mt }}?days={{ days }}" role="button" class="outline secondary"
+       style="margin-left:0.5rem;">{{ mt|title }}</a>
+    {% endif %}
+    {% endfor %}
+</p>
+{% endblock %}

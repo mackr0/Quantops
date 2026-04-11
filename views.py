@@ -435,6 +435,20 @@ def save_profile(profile_id):
         "custom_days": ",".join(form.getlist("custom_days")) or "0,1,2,3,4",
     }
 
+    # Correlation management
+    config_updates["max_correlation"] = float(form.get("max_correlation", 0.7))
+    config_updates["max_sector_positions"] = int(form.get("max_sector_positions", 5))
+
+    # ATR-based stops
+    config_updates["use_atr_stops"] = 1 if form.get("use_atr_stops") else 0
+    config_updates["atr_multiplier_sl"] = float(form.get("atr_multiplier_sl", 2.0))
+    config_updates["atr_multiplier_tp"] = float(form.get("atr_multiplier_tp", 3.0))
+    # Trailing stops
+    config_updates["use_trailing_stops"] = 1 if form.get("use_trailing_stops") else 0
+    config_updates["trailing_atr_multiplier"] = float(form.get("trailing_atr_multiplier", 1.5))
+    # Limit orders
+    config_updates["use_limit_orders"] = 1 if form.get("use_limit_orders") else 0
+
     # Multi-model consensus
     config_updates["enable_consensus"] = 1 if form.get("enable_consensus") else 0
     consensus_model = form.get("consensus_model", "").strip()
@@ -1047,3 +1061,30 @@ def api_scheduler_status():
         return jsonify(status)
     except FileNotFoundError:
         return jsonify({"error": "Scheduler not running yet", "scan_remaining": 0, "exit_remaining": 0, "ai_remaining": 0})
+
+
+# ---------------------------------------------------------------------------
+# Backtesting
+# ---------------------------------------------------------------------------
+
+@views_bp.route("/backtest/<market_type>")
+@login_required
+def run_backtest(market_type):
+    """Run a backtest and display results."""
+    valid_types = {"micro", "small", "midcap", "largecap", "crypto"}
+    if market_type not in valid_types:
+        flash(f"Invalid market type: {market_type}. Must be one of: {', '.join(sorted(valid_types))}", "error")
+        return redirect(url_for("views.dashboard"))
+
+    days = request.args.get("days", 180, type=int)
+    days = max(30, min(days, 365))  # Clamp to reasonable range
+
+    try:
+        from backtester import backtest_strategy
+        results = backtest_strategy(market_type, days=days)
+    except Exception as exc:
+        logger.error("Backtest failed for %s: %s", market_type, exc)
+        flash(f"Backtest failed: {exc}", "error")
+        return redirect(url_for("views.dashboard"))
+
+    return render_template("backtest.html", results=results, market_type=market_type, days=days)

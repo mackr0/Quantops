@@ -15,6 +15,7 @@ Usage:
     python main.py trade-scan           Scan and trade all signals
     python main.py check-exits          Check stop-loss / take-profit triggers
     python main.py backtest AAPL        Backtest combined strategy on a symbol
+    python main.py backtest-strategy midcap  Backtest market-specific strategy engine
     python main.py journal              Show trade history
     python main.py performance          Show performance summary
     python main.py snapshot             Save daily portfolio snapshot
@@ -426,6 +427,12 @@ def main():
         cmd_aggro_trade()
     elif command == "aggro-analyze" and len(sys.argv) >= 3:
         cmd_aggro_analyze(sys.argv[2].upper())
+    elif command == "backtest-strategy" and len(sys.argv) >= 3:
+        from backtester import backtest_strategy, print_strategy_backtest_report
+        market_type = sys.argv[2].lower()
+        days = int(sys.argv[3]) if len(sys.argv) >= 4 else 180
+        result = backtest_strategy(market_type, days=days)
+        print_strategy_backtest_report(result)
     elif command == "ai-report":
         cmd_ai_report()
     elif command == "ai-resolve":

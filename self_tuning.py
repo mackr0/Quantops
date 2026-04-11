@@ -424,6 +424,85 @@ def _build_trade_performance_context(db_path):
         return ""
 
 
+def build_concise_context(ctx, symbol=None):
+    """Build a concise AI prompt context (max 4 lines).
+
+    This replaces the verbose build_performance_context() injection in the
+    AI prompt. The verbose version is still used internally for self-tuning
+    adjustments.
+
+    Returns a string with at most 4 lines of context, or empty string.
+    """
+    if ctx is None:
+        return ""
+
+    db = getattr(ctx, "db_path", None)
+    lines = []
+
+    # 1. Market regime (1 line)
+    try:
+        from market_regime import detect_regime
+        regime = detect_regime()
+        if regime and regime.get("regime", "unknown") != "unknown":
+            vix = regime.get("vix", 0)
+            lines.append(f"MARKET: {regime['regime'].upper()} (VIX {vix:.0f})")
+    except Exception:
+        pass
+
+    # 2. Stock-specific history (1 line)
+    if symbol and db:
+        try:
+            rep = get_symbol_reputation(db)
+            if symbol in rep:
+                r = rep[symbol]
+                lines.append(
+                    f"YOUR RECORD ON {symbol}: "
+                    f"{r['wins']}W/{r['losses']}L "
+                    f"({r['win_rate']:.0f}% win rate)"
+                )
+        except Exception:
+            pass
+
+    # 3. Overall win rate (1 line)
+    if db:
+        try:
+            conn = _get_conn(db)
+            table_check = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_predictions'"
+            ).fetchone()
+            if table_check:
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved'"
+                ).fetchone()[0]
+                wins = conn.execute(
+                    "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved' AND actual_outcome='win'"
+                ).fetchone()[0]
+                if total >= 10:
+                    wr = wins / total * 100
+                    selectivity = "Be more selective." if wr < 40 else "Good accuracy."
+                    lines.append(
+                        f"YOUR OVERALL: {wr:.0f}% win rate "
+                        f"({wins}W/{total - wins}L). {selectivity}"
+                    )
+            conn.close()
+        except Exception:
+            pass
+
+    # 4. Earnings warning (1 line, only if imminent)
+    if symbol:
+        try:
+            from earnings_calendar import check_earnings
+            e = check_earnings(symbol)
+            if e and e.get("days_until", 999) <= 5:
+                lines.append(
+                    f"EARNINGS: {symbol} reports in {e['days_until']} days. High uncertainty."
+                )
+        except Exception:
+            pass
+
+    return "\n".join(lines)
+
+
 def build_performance_context(ctx, symbol=None, db_path=None):
     """Query the profile's AI predictions database and build a performance
     summary string that gets injected into the AI prompt.

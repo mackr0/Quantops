@@ -13,7 +13,7 @@ AI Review Gate:
 
 import json
 from client import get_api, get_account_info, get_positions
-from portfolio_manager import check_portfolio_constraints, check_drawdown
+from portfolio_manager import check_portfolio_constraints, check_drawdown, calculate_atr_stops
 from journal import init_db, log_trade, log_signal
 from aggressive_strategy import aggressive_combined_strategy
 from strategy_router import run_strategy
@@ -198,6 +198,22 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
         is_crypto = ctx.segment == "crypto"
         positions_list = [p for p in positions_list if ("/" in p["symbol"]) == is_crypto]
 
+    # --- Correlation check ---
+    correlation_reduce = False
+    if ctx is not None and hasattr(ctx, "max_correlation"):
+        try:
+            from correlation import check_correlation
+            corr_result = check_correlation(
+                symbol, positions_list,
+                max_correlation=ctx.max_correlation,
+            )
+            if not corr_result.get("allowed", True):
+                correlation_reduce = True
+                print(f"    Correlation warning: {corr_result.get('reason', 'too correlated')} — reducing position size 50%")
+        except Exception as _corr_exc:
+            # Never block a trade due to correlation check failure
+            pass
+
     positions = {p["symbol"]: p for p in positions_list}
 
     equity = account.get("equity", 0)
@@ -257,6 +273,11 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
             qty = max(1, int(qty * 0.5))
             print(f"    Drawdown reduce: halved qty to {qty}")
 
+        # Correlation reduce: halve position size when correlated
+        if correlation_reduce:
+            qty = max(1, int(qty * 0.5))
+            print(f"    Correlation reduce: halved qty to {qty}")
+
         if qty <= 0:
             result["action"] = "SKIP"
             result["reason"] = "Position size too small"
@@ -283,20 +304,41 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
             result["reason"] = constraint_reason
             return result
 
-        order = api.submit_order(
-            symbol=symbol,
-            qty=qty,
-            side="buy",
-            type="market",
-            time_in_force="day",
-        )
+        # ATR-based stops: calculate volatility-adapted stop/TP levels
+        actual_sl_pct = stop_loss_pct
+        actual_tp_pct = take_profit_pct
+        if ctx is not None and getattr(ctx, "use_atr_stops", False) and price > 0:
+            atr_sl_mult = getattr(ctx, "atr_multiplier_sl", 2.0)
+            atr_tp_mult = getattr(ctx, "atr_multiplier_tp", 3.0)
+            atr_stop, atr_tp, atr_val = calculate_atr_stops(
+                symbol, price, atr_sl_mult, atr_tp_mult)
+            if atr_stop is not None:
+                # Convert ATR prices to percentage equivalents
+                actual_sl_pct = round((price - atr_stop) / price, 4)
+                actual_tp_pct = round((atr_tp - price) / price, 4)
+                print(f"    ATR stops for {symbol}: SL ${atr_stop:.2f} ({actual_sl_pct:.1%}), "
+                      f"TP ${atr_tp:.2f} ({actual_tp_pct:.1%}), ATR ${atr_val:.2f}")
+
+        # Limit orders: use limit price at current price for better fills
+        use_limit = ctx is not None and getattr(ctx, "use_limit_orders", False)
+        order_type = "limit" if use_limit else "market"
+        order_kwargs = {
+            "symbol": symbol,
+            "qty": qty,
+            "side": "buy",
+            "type": order_type,
+            "time_in_force": "day",
+        }
+        if use_limit:
+            order_kwargs["limit_price"] = str(round(price, 2))
+        order = api.submit_order(**order_kwargs)
 
         result["action"] = "BUY"
         result["qty"] = qty
         result["order_id"] = order.id
         result["estimated_cost"] = round(qty * price, 2)
-        result["stop_loss_pct"] = stop_loss_pct
-        result["take_profit_pct"] = take_profit_pct
+        result["stop_loss_pct"] = actual_sl_pct
+        result["take_profit_pct"] = actual_tp_pct
 
         if log:
             log_trade(
@@ -310,8 +352,8 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
                 reason=signal.get("reason"),
                 ai_reasoning=ai_reasoning,
                 ai_confidence=ai_confidence,
-                stop_loss=stop_loss_pct,
-                take_profit=take_profit_pct,
+                stop_loss=actual_sl_pct,
+                take_profit=actual_tp_pct,
                 db_path=db_path,
             )
 
@@ -409,20 +451,45 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
                     qty = max(1, int(qty * 0.5))
                     print(f"    Drawdown reduce: halved short qty to {qty}")
 
+                # Correlation reduce: halve position size when correlated
+                if correlation_reduce:
+                    qty = max(1, int(qty * 0.5))
+                    print(f"    Correlation reduce: halved short qty to {qty}")
+
                 if qty <= 0:
                     result["action"] = "SKIP"
                     result["reason"] = "Position size too small"
                 else:
-                    order = api.submit_order(
-                        symbol=symbol,
-                        qty=qty,
-                        side="sell",  # sell without owning = short
-                        type="market",
-                        time_in_force="day",
-                    )
                     # Use short-specific stop-loss/take-profit (wider stops for shorts)
                     short_sl = getattr(ctx, "short_stop_loss_pct", 0.08) if ctx is not None else AGGRESSIVE_STOP_LOSS_PCT
                     short_tp = getattr(ctx, "short_take_profit_pct", 0.08) if ctx is not None else AGGRESSIVE_TAKE_PROFIT_PCT
+
+                    # ATR-based stops for shorts
+                    if ctx is not None and getattr(ctx, "use_atr_stops", False) and price > 0:
+                        atr_sl_mult = getattr(ctx, "atr_multiplier_sl", 2.0)
+                        atr_tp_mult = getattr(ctx, "atr_multiplier_tp", 3.0)
+                        atr_stop, atr_tp, atr_val = calculate_atr_stops(
+                            symbol, price, atr_sl_mult, atr_tp_mult)
+                        if atr_stop is not None:
+                            # For shorts: stop is above entry, TP is below
+                            short_sl = round((atr_tp - price) / price, 4)  # distance above
+                            short_tp = round((price - atr_stop) / price, 4)  # distance below
+                            print(f"    ATR stops for {symbol} (short): "
+                                  f"SL +{short_sl:.1%}, TP -{short_tp:.1%}, ATR ${atr_val:.2f}")
+
+                    # Limit orders for short entries
+                    use_limit = ctx is not None and getattr(ctx, "use_limit_orders", False)
+                    order_type = "limit" if use_limit else "market"
+                    order_kwargs = {
+                        "symbol": symbol,
+                        "qty": qty,
+                        "side": "sell",  # sell without owning = short
+                        "type": order_type,
+                        "time_in_force": "day",
+                    }
+                    if use_limit:
+                        order_kwargs["limit_price"] = str(round(price, 2))
+                    order = api.submit_order(**order_kwargs)
 
                     result["action"] = "SHORT"
                     result["qty"] = qty
@@ -538,6 +605,13 @@ def run_aggressive_scan_and_trade(candidates, ctx=None, max_position_pct=None,
         if political_context:
             print(f"  {political_context.splitlines()[0]}")  # Print first line
 
+    # Get current positions once (for SELL signal filtering)
+    current_positions = {}
+    try:
+        current_positions = {p["symbol"]: p for p in get_positions(get_api(ctx))}
+    except Exception:
+        pass
+
     # Per-stock reputation: auto-blacklist symbols with 0% win rate
     symbol_reputation = {}
     if ctx is not None:
@@ -597,6 +671,13 @@ def run_aggressive_scan_and_trade(candidates, ctx=None, max_position_pct=None,
             if action == "HOLD":
                 details.append({"symbol": symbol, "action": "HOLD", "reason": signal.get("reason", "")})
                 continue
+
+            # Skip SELL signals that can't result in a trade (saves AI tokens)
+            enable_shorts = ctx.enable_short_selling if ctx is not None else False
+            if action in ("SELL", "STRONG_SELL"):
+                if symbol not in current_positions and not enable_shorts:
+                    details.append({"symbol": symbol, "action": "SKIP", "reason": "SELL signal but no position and shorts disabled"})
+                    continue
 
             # Step 2: AI review for actionable signals
             print(f"  {symbol}: {action} (score {signal.get('score', '?')})")

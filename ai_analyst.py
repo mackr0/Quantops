@@ -112,55 +112,24 @@ def analyze_symbol(symbol, ctx=None, api=None, political_context=None):
             "reasoning."
         )
 
-        # Inject self-tuning performance context (after technical data,
-        # before political context) so the AI learns from past mistakes
-        if ctx is not None and getattr(ctx, "enable_self_tuning", True):
+        # Concise context: market regime, stock history, overall win rate, earnings
+        # (replaces verbose build_performance_context for cleaner AI prompts)
+        if ctx is not None:
             try:
-                from self_tuning import build_performance_context
-                perf_context = build_performance_context(ctx, symbol=symbol)
-                if perf_context:
-                    prompt += f"\n\n{perf_context}"
-            except Exception as _st_err:
-                logger.warning("Failed to build self-tuning context: %s", _st_err)
-
-        # Market regime context
-        try:
-            from market_regime import get_regime_context
-            regime_context = get_regime_context()
-            if regime_context:
-                prompt += f"\n\n{regime_context}"
-        except Exception as _regime_err:
-            logger.warning("Failed to get regime context: %s", _regime_err)
-
-        # Earnings calendar context
-        try:
-            from earnings_calendar import get_earnings_context
-            avoid_days = ctx.avoid_earnings_days if ctx else 2
-            earnings_ctx = get_earnings_context(symbol, avoid_days=avoid_days)
-            if earnings_ctx:
-                prompt += f"\n\n{earnings_ctx}"
-        except Exception as _earn_err:
-            logger.warning("Failed to get earnings context: %s", _earn_err)
-
-        # Current time context (Feature 7: Time-of-Day Patterns)
-        try:
-            from datetime import datetime as _dt
-            from zoneinfo import ZoneInfo
-            now_et = _dt.now(ZoneInfo("America/New_York"))
-            time_note = f"Current time: {now_et.strftime('%I:%M %p ET')} ({now_et.strftime('%A')})"
-            prompt += f"\n\n{time_note}"
-        except Exception as _time_err:
-            logger.warning("Failed to add time context: %s", _time_err)
+                from self_tuning import build_concise_context
+                concise = build_concise_context(ctx, symbol=symbol)
+                if concise:
+                    prompt += f"\n\nCONTEXT:\n{concise}"
+            except Exception as _ctx_err:
+                logger.warning("Failed to build concise context: %s", _ctx_err)
 
         # Append political/macro context when MAGA Mode is active
         if political_context:
             prompt += (
-                "\n\nAdditionally, consider the following political/macro "
-                "context when making your recommendation:\n"
-                f"{political_context}\n\n"
-                "If the current technical weakness appears to be driven by "
-                "political noise rather than fundamental deterioration, factor "
-                "in the likelihood of a mean reversion bounce."
+                "\n\nPOLITICAL/MACRO CONTEXT:\n"
+                f"{political_context}\n"
+                "If technical weakness looks driven by political noise rather "
+                "than fundamentals, factor in mean reversion likelihood."
             )
 
         # Call AI provider (multi-provider via ai_providers.call_ai)

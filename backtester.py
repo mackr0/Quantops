@@ -1,6 +1,8 @@
 """Backtesting engine for evaluating strategies on historical data."""
 
 import math
+import random
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional
@@ -9,6 +11,8 @@ import numpy as np
 import pandas as pd
 
 from market_data import get_bars_daterange
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -307,3 +311,347 @@ def print_backtest_report(result: BacktestResult) -> None:
                   f"{pnl_str} {pct_str}")
 
     print("\n" + "=" * 60 + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Strategy-router backtest (Feature 6)
+# ---------------------------------------------------------------------------
+
+def _calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
+    """Calculate the latest ATR from a DataFrame with high/low/close columns."""
+    if len(df) < period + 1:
+        return 0.0
+
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    close = df["close"].astype(float)
+
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    atr = tr.rolling(window=period).mean()
+    latest = atr.iloc[-1]
+    return float(latest) if pd.notna(latest) else 0.0
+
+
+def _fetch_yf_history(symbol: str, days: int) -> Optional[pd.DataFrame]:
+    """Fetch historical daily bars from yfinance.
+
+    Returns DataFrame with columns: open, high, low, close, volume,
+    indexed by datetime.  Returns None on failure.
+    """
+    try:
+        import yfinance as yf
+
+        # Convert symbol for yfinance (e.g. BTC/USD -> BTC-USD)
+        yf_sym = symbol.replace("/", "-")
+
+        end = datetime.now()
+        start = end - timedelta(days=days + 10)  # small buffer
+
+        ticker = yf.Ticker(yf_sym)
+        df = ticker.history(
+            start=start.strftime("%Y-%m-%d"),
+            end=end.strftime("%Y-%m-%d"),
+            auto_adjust=True,
+        )
+
+        if df is None or df.empty:
+            return None
+
+        # Normalize column names to lowercase
+        df.columns = [c.lower() for c in df.columns]
+
+        # Ensure required columns exist
+        for col in ("open", "high", "low", "close", "volume"):
+            if col not in df.columns:
+                return None
+
+        return df
+
+    except Exception as exc:
+        logger.debug("yfinance fetch failed for %s: %s", symbol, exc)
+        return None
+
+
+def backtest_strategy(
+    market_type: str,
+    days: int = 180,
+    initial_capital: float = 10_000,
+    sample_size: int = 30,
+    atr_sl_mult: float = 2.0,
+    atr_tp_mult: float = 3.0,
+) -> Dict:
+    """Backtest a market-specific strategy against historical data.
+
+    Uses the strategy_router to run the correct strategy engine for the
+    given market type, then simulates entries and ATR-based exits.
+
+    Args:
+        market_type: "micro", "small", "midcap", "largecap", "crypto"
+        days: Number of trading days to test.
+        initial_capital: Starting capital.
+        sample_size: Number of symbols to sample from the universe.
+        atr_sl_mult: ATR multiplier for stop-loss (default 2x).
+        atr_tp_mult: ATR multiplier for take-profit (default 3x).
+
+    Returns:
+        dict with: total_return_pct, win_rate, max_drawdown_pct, sharpe_ratio,
+        num_trades, avg_hold_days, best_trade, worst_trade, trades, config.
+    """
+    from segments import get_segment
+    from strategy_router import run_strategy
+
+    segment = get_segment(market_type)
+    universe = segment.get("universe", [])
+
+    if not universe:
+        return {"error": f"No universe found for market type: {market_type}"}
+
+    # Sample symbols from universe (don't backtest all -- too slow)
+    if len(universe) > sample_size:
+        symbols = random.sample(universe, sample_size)
+    else:
+        symbols = list(universe)
+
+    print(f"\nBacktesting {market_type} strategy on {len(symbols)} symbols over {days} days...")
+    print(f"  ATR stops: SL={atr_sl_mult}x, TP={atr_tp_mult}x")
+    print(f"  Initial capital: ${initial_capital:,.2f}\n")
+
+    # Warmup: extra days for indicators
+    warmup_days = 50
+    total_fetch_days = days + warmup_days + 30  # buffer for weekends/holidays
+
+    all_trades: List[Dict] = []
+    equity = initial_capital
+    daily_equity: List[float] = [initial_capital]
+    symbols_tested = 0
+    symbols_skipped = 0
+
+    for idx, symbol in enumerate(symbols):
+        print(f"  [{idx + 1}/{len(symbols)}] {symbol}...", end=" ", flush=True)
+
+        df = _fetch_yf_history(symbol, total_fetch_days)
+        if df is None or len(df) < warmup_days + 20:
+            print("skipped (insufficient data)")
+            symbols_skipped += 1
+            continue
+
+        symbols_tested += 1
+
+        # Walk forward day by day
+        position_open = False
+        entry_price = 0.0
+        entry_date = None
+        stop_loss = 0.0
+        take_profit = 0.0
+        symbol_trades = 0
+
+        for i in range(warmup_days, len(df)):
+            window = df.iloc[:i + 1].copy()
+            current_bar = df.iloc[i]
+            current_price = float(current_bar["close"])
+            current_high = float(current_bar["high"])
+            current_low = float(current_bar["low"])
+            current_date = df.index[i]
+
+            if position_open:
+                # Check stops using high/low of the bar
+                hit_sl = current_low <= stop_loss
+                hit_tp = current_high >= take_profit
+
+                if hit_sl or hit_tp:
+                    if hit_sl:
+                        exit_price = stop_loss
+                        exit_reason = "stop_loss"
+                    else:
+                        exit_price = take_profit
+                        exit_reason = "take_profit"
+
+                    pnl = exit_price - entry_price
+                    pnl_pct = (pnl / entry_price) * 100
+                    hold_days = (current_date - entry_date).days if entry_date else 0
+
+                    all_trades.append({
+                        "symbol": symbol,
+                        "entry_date": str(entry_date)[:10] if entry_date else "",
+                        "exit_date": str(current_date)[:10],
+                        "entry_price": round(entry_price, 4),
+                        "exit_price": round(exit_price, 4),
+                        "pnl": round(pnl, 4),
+                        "pnl_pct": round(pnl_pct, 2),
+                        "holding_days": hold_days,
+                        "exit_reason": exit_reason,
+                    })
+
+                    equity += pnl * (initial_capital * 0.10 / entry_price)  # ~10% position
+                    daily_equity.append(equity)
+                    position_open = False
+                    symbol_trades += 1
+                    continue
+
+            if not position_open:
+                # Run strategy to check for entry signal
+                try:
+                    signal = run_strategy(symbol, market_type, df=window)
+                    action = signal.get("signal", "HOLD")
+
+                    if action in ("BUY", "STRONG_BUY"):
+                        entry_price = current_price
+                        entry_date = current_date
+                        position_open = True
+
+                        # Calculate ATR-based stops
+                        atr = _calculate_atr(window, period=14)
+                        if atr > 0:
+                            stop_loss = entry_price - (atr * atr_sl_mult)
+                            take_profit = entry_price + (atr * atr_tp_mult)
+                        else:
+                            # Fallback: fixed 3%/6% stops
+                            stop_loss = entry_price * 0.97
+                            take_profit = entry_price * 1.06
+                except Exception:
+                    pass  # Strategy error -- skip this bar
+
+            daily_equity.append(equity)
+
+        # Close any open position at the end
+        if position_open:
+            final_price = float(df.iloc[-1]["close"])
+            pnl = final_price - entry_price
+            pnl_pct = (pnl / entry_price) * 100
+            hold_days = (df.index[-1] - entry_date).days if entry_date else 0
+
+            all_trades.append({
+                "symbol": symbol,
+                "entry_date": str(entry_date)[:10] if entry_date else "",
+                "exit_date": str(df.index[-1])[:10],
+                "entry_price": round(entry_price, 4),
+                "exit_price": round(final_price, 4),
+                "pnl": round(pnl, 4),
+                "pnl_pct": round(pnl_pct, 2),
+                "holding_days": hold_days,
+                "exit_reason": "end_of_backtest",
+            })
+
+            equity += pnl * (initial_capital * 0.10 / entry_price)
+            daily_equity.append(equity)
+
+        print(f"{symbol_trades} trades")
+
+    # --- Calculate aggregate metrics ---
+    total_return_pct = ((equity - initial_capital) / initial_capital) * 100
+
+    num_trades = len(all_trades)
+    wins = [t for t in all_trades if t["pnl"] > 0]
+    losses = [t for t in all_trades if t["pnl"] <= 0]
+    win_rate = (len(wins) / num_trades * 100) if num_trades > 0 else 0.0
+
+    # Max drawdown from equity curve
+    eq_series = pd.Series(daily_equity)
+    peak = eq_series.cummax()
+    drawdown = (eq_series - peak) / peak * 100
+    max_drawdown_pct = float(drawdown.min()) if len(drawdown) > 0 else 0.0
+
+    # Sharpe ratio from daily equity changes
+    eq_returns = eq_series.pct_change().dropna()
+    if len(eq_returns) > 1 and eq_returns.std() > 0:
+        sharpe_ratio = (eq_returns.mean() / eq_returns.std()) * math.sqrt(252)
+    else:
+        sharpe_ratio = 0.0
+
+    # Average holding days
+    avg_hold_days = (
+        sum(t["holding_days"] for t in all_trades) / num_trades
+        if num_trades > 0 else 0.0
+    )
+
+    # Best and worst trades
+    best_trade = max(all_trades, key=lambda t: t["pnl_pct"]) if all_trades else None
+    worst_trade = min(all_trades, key=lambda t: t["pnl_pct"]) if all_trades else None
+
+    return {
+        "market_type": market_type,
+        "days": days,
+        "initial_capital": initial_capital,
+        "final_equity": round(equity, 2),
+        "total_return_pct": round(total_return_pct, 2),
+        "win_rate": round(win_rate, 2),
+        "max_drawdown_pct": round(max_drawdown_pct, 2),
+        "sharpe_ratio": round(sharpe_ratio, 2),
+        "num_trades": num_trades,
+        "avg_hold_days": round(avg_hold_days, 1),
+        "best_trade": best_trade,
+        "worst_trade": worst_trade,
+        "symbols_tested": symbols_tested,
+        "symbols_skipped": symbols_skipped,
+        "trades": all_trades,
+    }
+
+
+def print_strategy_backtest_report(results: Dict) -> None:
+    """Print a formatted backtest report for a strategy backtest."""
+    print("\n" + "=" * 65)
+    print("  STRATEGY BACKTEST REPORT")
+    print("=" * 65)
+
+    print(f"\n  Market Type:        {results.get('market_type', '?')}")
+    print(f"  Period:             {results.get('days', '?')} trading days")
+    print(f"  Symbols Tested:     {results.get('symbols_tested', 0)} "
+          f"(skipped {results.get('symbols_skipped', 0)})")
+    print(f"  Initial Capital:    ${results.get('initial_capital', 0):,.2f}")
+    print(f"  Final Equity:       ${results.get('final_equity', 0):,.2f}")
+
+    print("\n" + "-" * 65)
+    print("  PERFORMANCE")
+    print("-" * 65)
+
+    total_ret = results.get("total_return_pct", 0)
+    ret_color = "+" if total_ret >= 0 else ""
+    print(f"  Total Return:       {ret_color}{total_ret:.2f}%")
+    print(f"  Sharpe Ratio:       {results.get('sharpe_ratio', 0):.2f}")
+    print(f"  Max Drawdown:       {results.get('max_drawdown_pct', 0):.2f}%")
+
+    print("\n" + "-" * 65)
+    print("  TRADE STATISTICS")
+    print("-" * 65)
+
+    print(f"  Total Trades:       {results.get('num_trades', 0)}")
+    print(f"  Win Rate:           {results.get('win_rate', 0):.1f}%")
+    print(f"  Avg Holding Days:   {results.get('avg_hold_days', 0):.1f}")
+
+    best = results.get("best_trade")
+    worst = results.get("worst_trade")
+    if best:
+        print(f"\n  Best Trade:         {best['symbol']} {best['pnl_pct']:+.2f}% "
+              f"({best.get('entry_date', '')} -> {best.get('exit_date', '')})")
+    if worst:
+        print(f"  Worst Trade:        {worst['symbol']} {worst['pnl_pct']:+.2f}% "
+              f"({worst.get('entry_date', '')} -> {worst.get('exit_date', '')})")
+
+    # Exit reason breakdown
+    trades = results.get("trades", [])
+    if trades:
+        sl_count = sum(1 for t in trades if t.get("exit_reason") == "stop_loss")
+        tp_count = sum(1 for t in trades if t.get("exit_reason") == "take_profit")
+        eob_count = sum(1 for t in trades if t.get("exit_reason") == "end_of_backtest")
+        print(f"\n  Exit Breakdown:")
+        print(f"    Stop-Loss:        {sl_count}")
+        print(f"    Take-Profit:      {tp_count}")
+        print(f"    End of Backtest:  {eob_count}")
+
+    # Show last 10 trades
+    if trades:
+        print("\n" + "-" * 65)
+        print("  RECENT TRADES (last 10)")
+        print("-" * 65)
+        for t in trades[-10:]:
+            pnl_str = f"{t['pnl_pct']:+.1f}%"
+            print(f"  {t.get('symbol', '?'):8s} | "
+                  f"{t.get('entry_date', ''):10s} -> {t.get('exit_date', ''):10s} | "
+                  f"${t.get('entry_price', 0):>8.2f} -> ${t.get('exit_price', 0):>8.2f} | "
+                  f"{pnl_str:>7s} | {t.get('exit_reason', '')}")
+
+    print("\n" + "=" * 65 + "\n")
