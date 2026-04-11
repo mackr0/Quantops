@@ -722,9 +722,21 @@ document.querySelectorAll('.backtest-btn').forEach(function(btn) {
         fetch('/api/backtest/' + profileId, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
+            credentials: 'same-origin',
             body: JSON.stringify(params)
         })
-        .then(function(r) { return r.json(); })
+        .then(function(r) {
+            if (!r.ok) {
+                return r.text().then(function(t) {
+                    throw new Error('Server returned ' + r.status + ': ' + t.substring(0, 100));
+                });
+            }
+            var ct = r.headers.get('content-type') || '';
+            if (ct.indexOf('application/json') === -1) {
+                throw new Error('Server returned HTML instead of JSON — you may need to log in again');
+            }
+            return r.json();
+        })
         .then(function(data) {
             loadingDiv.style.display = 'none';
             dataDiv.style.display = 'block';
