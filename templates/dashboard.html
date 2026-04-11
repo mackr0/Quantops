@@ -86,7 +86,7 @@
     {% if prof.account %}
     <div class="grid">
         <div class="stat-card">
-            <small class="muted">Equity</small>
+            <small class="muted"><span class="tip" data-tip="Total value of your account including open positions">Equity</span></small>
             <strong>${{ "{:,.2f}".format(prof.account.equity) }}</strong>
         </div>
         <div class="stat-card">
@@ -94,7 +94,7 @@
             <strong>${{ "{:,.2f}".format(prof.account.cash) }}</strong>
         </div>
         <div class="stat-card">
-            <small class="muted">Buying Power</small>
+            <small class="muted"><span class="tip" data-tip="How much money is available to make new trades">Buying Power</span></small>
             <strong>${{ "{:,.2f}".format(prof.account.buying_power) }}</strong>
         </div>
         <div class="stat-card">
@@ -117,7 +117,7 @@
                     <th>Entry</th>
                     <th>Current</th>
                     <th>Mkt Value</th>
-                    <th>P&L</th>
+                    <th><span class="tip" data-tip="Profit or loss on positions you still hold — not locked in yet">Unrealized P/L</span></th>
                     <th>P&L %</th>
                 </tr>
             </thead>

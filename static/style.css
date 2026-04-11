@@ -458,6 +458,44 @@ footer {
     display: block;
 }
 
+/* ---------------------------------------------------------------------------
+   Tooltips
+--------------------------------------------------------------------------- */
+.tip {
+    position: relative;
+    cursor: help;
+    border-bottom: 1px dotted #888;
+}
+.tip:hover::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #333;
+    color: #fff;
+    padding: 0.4rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: normal;
+    white-space: normal;
+    width: max-content;
+    max-width: 250px;
+    z-index: 100;
+    line-height: 1.3;
+    pointer-events: none;
+}
+.tip:hover::before {
+    content: '';
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%) translateY(100%);
+    border: 5px solid transparent;
+    border-top-color: #333;
+    z-index: 100;
+}
+
 @media (max-width: 768px) {
     .detail-grid {
         grid-template-columns: 1fr;

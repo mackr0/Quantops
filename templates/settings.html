@@ -237,7 +237,7 @@
                 <label style="display:flex;align-items:flex-start;gap:0.5rem;">
                     <input type="checkbox" name="enable_consensus" value="1" style="flex-shrink:0;margin-top:0.2rem;"
                            {{ 'checked' if prof.get('enable_consensus') else '' }}>
-                    <span>Enable Consensus<br><small style="color:#888;font-weight:normal;">Get a second AI opinion on strong signals. Only trades when both models agree.</small></span>
+                    <span><span class="tip" data-tip="Requires two different AI models to agree before making a trade">Enable Consensus</span><br><small style="color:#888;font-weight:normal;">Get a second AI opinion on strong signals. Only trades when both models agree.</small></span>
                 </label>
             </fieldset>
             <div class="grid">
@@ -265,7 +265,7 @@
             <h4>Risk Parameters</h4>
             <div class="grid">
                 <label>
-                    Stop Loss %
+                    <span class="tip" data-tip="Automatically sells a position if it drops by this percentage to limit losses">Stop Loss</span> %
                     <input type="range" name="stop_loss_pct" class="slider"
                            min="0.01" max="0.15" step="0.005"
                            value="{{ prof.stop_loss_pct }}"
@@ -275,7 +275,7 @@
                     </output>
                 </label>
                 <label>
-                    Take Profit %
+                    <span class="tip" data-tip="Automatically sells a position when it gains this percentage to lock in profit">Take Profit</span> %
                     <input type="range" name="take_profit_pct" class="slider"
                            min="0.02" max="0.50" step="0.01"
                            value="{{ prof.take_profit_pct }}"
@@ -287,7 +287,7 @@
             </div>
             <div class="grid">
                 <label>
-                    Max Position Size %
+                    <span class="tip" data-tip="The most you'll invest in any single stock as a percentage of your total account">Max Position Size</span> %
                     <input type="range" name="max_position_pct" class="slider"
                            min="0.02" max="0.25" step="0.01"
                            value="{{ prof.max_position_pct }}"
@@ -297,7 +297,7 @@
                     </output>
                 </label>
                 <label>
-                    Max Total Positions
+                    <span class="tip" data-tip="The maximum number of stocks you can hold at once">Max Total Positions</span>
                     <input type="number" name="max_total_positions"
                            value="{{ prof.max_total_positions }}" min="1" max="50">
                 </label>
@@ -305,7 +305,7 @@
 
             <div class="grid">
                 <label>
-                    Reduce Size at Drawdown %
+                    <span class="tip" data-tip="If your account drops by this much, position sizes are cut in half">Drawdown Reduce</span> %
                     <input type="range" name="drawdown_reduce_pct" class="slider"
                            min="0.05" max="0.25" step="0.01"
                            value="{{ prof.get('drawdown_reduce_pct', 0.10) }}"
@@ -313,7 +313,7 @@
                     <output id="dd_reduce_val_{{ prof.id }}">{{ "%.0f"|format(prof.get('drawdown_reduce_pct', 0.10) * 100) }}%</output>
                 </label>
                 <label>
-                    Pause Trading at Drawdown %
+                    <span class="tip" data-tip="If your account drops by this much from its peak, all trading stops automatically">Drawdown Pause</span> %
                     <input type="range" name="drawdown_pause_pct" class="slider"
                            min="0.10" max="0.40" step="0.01"
                            value="{{ prof.get('drawdown_pause_pct', 0.20) }}"
@@ -325,7 +325,7 @@
             <label style="display:flex;align-items:flex-start;gap:0.5rem;">
                 <input type="checkbox" name="enable_short_selling" value="1" style="flex-shrink:0;margin-top:0.2rem;"
                        {{ 'checked' if prof.enable_short_selling else '' }}>
-                <span>Enable Short Selling<br><small style="color:#888;font-weight:normal;">Allows opening short positions to profit from declining stocks</small></span>
+                <span><span class="tip" data-tip="Allows betting that stocks will go down — profit when prices fall">Enable Short Selling</span><br><small style="color:#888;font-weight:normal;">Allows opening short positions to profit from declining stocks</small></span>
             </label>
 
             <h5 style="margin-top:1rem;">Short Selling Risk</h5>
@@ -351,7 +351,7 @@
             <h5 style="margin-top:1rem;">Correlation Management</h5>
             <div class="grid">
                 <label>
-                    Max Correlation
+                    <span class="tip" data-tip="Limits how similar your positions can be — prevents having too many eggs in one basket">Max Correlation</span>
                     <input type="range" name="max_correlation" class="slider" min="0.3" max="0.95" step="0.05"
                            value="{{ prof.get('max_correlation', 0.7) }}"
                            data-display="corr_val_{{ prof.id }}" data-format="1f">
@@ -373,19 +373,19 @@
                 <label style="display:flex;align-items:flex-start;gap:0.5rem;">
                     <input type="checkbox" name="use_atr_stops" value="1" style="flex-shrink:0;margin-top:0.2rem;"
                            {{ 'checked' if prof.get('use_atr_stops', 1) else '' }}>
-                    <span>Use ATR-Based Stops<br><small style="color:#888;font-weight:normal;">Adapts stop-loss and take-profit to each stock's actual volatility</small></span>
+                    <span><span class="tip" data-tip="Sets stop-loss and take-profit based on how volatile each stock actually is, instead of a fixed percentage">ATR-Based Stops</span><br><small style="color:#888;font-weight:normal;">Adapts stop-loss and take-profit to each stock's actual volatility</small></span>
                 </label>
             </fieldset>
             <div class="grid">
                 <label>
-                    Stop-Loss ATR Multiplier
+                    Stop-Loss <span class="tip" data-tip="How many times the stock's average daily range to set the stop. Higher = wider stop, more room to breathe">ATR Multiplier</span>
                     <input type="range" name="atr_multiplier_sl" class="slider" min="1.0" max="4.0" step="0.5"
                            value="{{ prof.get('atr_multiplier_sl', 2.0) }}"
                            data-display="atr_sl_val_{{ prof.id }}" data-format="1f" data-suffix="x">
                     <output id="atr_sl_val_{{ prof.id }}">{{ "%.1f"|format(prof.get('atr_multiplier_sl', 2.0)) }}x</output>
                 </label>
                 <label>
-                    Take-Profit ATR Multiplier
+                    Take-Profit <span class="tip" data-tip="How many times the stock's average daily range to set the stop. Higher = wider stop, more room to breathe">ATR Multiplier</span>
                     <input type="range" name="atr_multiplier_tp" class="slider" min="1.0" max="5.0" step="0.5"
                            value="{{ prof.get('atr_multiplier_tp', 3.0) }}"
                            data-display="atr_tp_val_{{ prof.id }}" data-format="1f" data-suffix="x">
@@ -397,7 +397,7 @@
                 <label style="display:flex;align-items:flex-start;gap:0.5rem;">
                     <input type="checkbox" name="use_trailing_stops" value="1" style="flex-shrink:0;margin-top:0.2rem;"
                            {{ 'checked' if prof.get('use_trailing_stops', 1) else '' }}>
-                    <span>Use Trailing Stops<br><small style="color:#888;font-weight:normal;">Locks in profits as price moves in your favor — never turn a winner into a big loser</small></span>
+                    <span><span class="tip" data-tip="Once a trade is profitable, the stop-loss follows the price up, protecting your gains">Trailing Stops</span><br><small style="color:#888;font-weight:normal;">Locks in profits as price moves in your favor — never turn a winner into a big loser</small></span>
                 </label>
             </fieldset>
             <label>
@@ -419,7 +419,7 @@
             <!-- AI Parameters -->
             <h4>AI Parameters</h4>
             <label>
-                AI Confidence Threshold
+                <span class="tip" data-tip="The AI must be at least this confident before it approves a trade">AI Confidence Threshold</span>
                 <input type="range" name="ai_confidence_threshold" class="slider"
                        min="0" max="100" step="5"
                        value="{{ prof.ai_confidence_threshold }}"
@@ -430,7 +430,7 @@
             <label style="display:flex;align-items:flex-start;gap:0.5rem;">
                 <input type="checkbox" name="enable_self_tuning" value="1" style="flex-shrink:0;margin-top:0.2rem;"
                        {{ 'checked' if prof.get('enable_self_tuning', 1) else '' }}>
-                <span>Enable Self-Tuning<br><small style="color:#888;font-weight:normal;">AI learns from past wins/losses and adjusts its approach automatically</small></span>
+                <span><span class="tip" data-tip="The AI learns from its past wins and losses and automatically adjusts its approach">Self-Tuning</span><br><small style="color:#888;font-weight:normal;">AI learns from past wins/losses and adjusts its approach automatically</small></span>
             </label>
 
             <!-- Screener Parameters -->
@@ -454,7 +454,7 @@
             </div>
             <div class="grid">
                 <label>
-                    Volume Surge Multiplier
+                    <span class="tip" data-tip="How much higher than normal the trading volume needs to be to trigger a signal">Volume Surge Multiplier</span>
                     <input type="range" name="volume_surge_multiplier" class="slider"
                            min="1.0" max="5.0" step="0.5"
                            value="{{ prof.volume_surge_multiplier }}"
@@ -462,7 +462,7 @@
                     <output id="vol_surge_val_{{ prof.id }}">{{ "%.1f"|format(prof.volume_surge_multiplier) }}x</output>
                 </label>
                 <label>
-                    RSI Overbought
+                    <span class="tip" data-tip="The level above which a stock is considered overextended and might pull back">RSI Overbought</span>
                     <input type="range" name="rsi_overbought" class="slider"
                            min="60" max="95" step="1"
                            value="{{ prof.rsi_overbought }}"
@@ -470,7 +470,7 @@
                     <output id="rsi_ob_val_{{ prof.id }}">{{ prof.rsi_overbought|int }}</output>
                 </label>
                 <label>
-                    RSI Oversold
+                    <span class="tip" data-tip="The level below which a stock is considered beaten down enough to potentially bounce back">RSI Oversold</span>
                     <input type="range" name="rsi_oversold" class="slider"
                            min="10" max="40" step="1"
                            value="{{ prof.rsi_oversold }}"
@@ -481,7 +481,7 @@
 
             <div class="grid">
                 <label>
-                    Avoid Earnings (days)
+                    <span class="tip" data-tip="Skips trading stocks that are about to report earnings — earnings are unpredictable">Avoid Earnings</span> (days)
                     <input type="number" name="avoid_earnings_days" min="0" max="10" step="1"
                            value="{{ prof.get('avoid_earnings_days', 2) }}">
                     <small class="muted">Skip stocks with earnings within this many days (0 = don't avoid)</small>
@@ -559,7 +559,7 @@
                 <label style="display:flex;align-items:flex-start;gap:0.5rem;">
                     <input type="checkbox" name="maga_mode" value="1" style="flex-shrink:0;margin-top:0.2rem;"
                            {{ 'checked' if prof.maga_mode else '' }}>
-                    <span>MAGA Mode <img src="/static/trump_icon.png" alt="" style="width:22px;height:22px;border-radius:3px;vertical-align:middle;"><br><small style="color:#888;font-weight:normal;">Factor current political insanity into AI analysis — buy politically-driven dips</small></span>
+                    <span><span class="tip" data-tip="Factors in political news and tariff chaos to find buying opportunities during politically-driven selloffs">MAGA Mode</span> <img src="/static/trump_icon.png" alt="" style="width:22px;height:22px;border-radius:3px;vertical-align:middle;"><br><small style="color:#888;font-weight:normal;">Factor current political insanity into AI analysis — buy politically-driven dips</small></span>
                 </label>
             </fieldset>
 
