@@ -58,7 +58,9 @@ def _prepare_df(symbol, df, min_rows=25):
         df = get_bars(symbol, limit=200)
 
     df = df.copy()
-    df = add_indicators(df)
+    # Only add indicators if they're not already present (backtester pre-computes)
+    if "rsi" not in df.columns:
+        df = add_indicators(df)
 
     df = df.dropna(subset=["rsi", "sma_20", "volume_sma_20"])
 

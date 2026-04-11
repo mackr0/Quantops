@@ -494,9 +494,7 @@ def save_profile(profile_id):
 @views_bp.route("/api/backtest/<int:profile_id>", methods=["POST"])
 @login_required
 def api_backtest(profile_id):
-    """Run a backtest with the submitted form parameters.
-    Returns JSON with current vs proposed results.
-    """
+    """Start a backtest in background. Returns job_id immediately."""
     profile = get_trading_profile(profile_id)
     if not profile or profile["user_id"] != current_user.id:
         return jsonify({"error": "Profile not found"}), 404
@@ -548,13 +546,17 @@ def api_backtest(profile_id):
         "volume_surge_multiplier": float(data.get("volume_surge_multiplier", current_params["volume_surge_multiplier"])),
     }
 
-    try:
-        from backtester import backtest_comparison
-        results = backtest_comparison(market_type, current_params, proposed_params, days=90)
-        return jsonify(results)
-    except Exception as exc:
-        logger.exception("Backtest failed for profile %d", profile_id)
-        return jsonify({"error": f"Backtest failed: {str(exc)}"}), 500
+    from backtest_worker import start_backtest
+    job_id = start_backtest(market_type, current_params, proposed_params, days=90)
+    return jsonify({"job_id": job_id})
+
+
+@views_bp.route("/api/backtest/status/<job_id>")
+@login_required
+def api_backtest_status(job_id):
+    """Poll for backtest job status."""
+    from backtest_worker import get_job_status
+    return jsonify(get_job_status(job_id))
 
 
 @views_bp.route("/settings/profile/<int:profile_id>/delete", methods=["POST"])

@@ -696,7 +696,51 @@ document.querySelectorAll('select[name="schedule_type"]').forEach(function(sel) 
     });
 });
 
-// Backtest button handler
+// Render backtest results into the comparison table
+function renderBacktestResults(data, dataDiv, tbody, loadingDiv) {
+    loadingDiv.style.display = 'none';
+    dataDiv.style.display = 'block';
+
+    if (data.error) {
+        tbody.innerHTML = '<tr><td colspan="4">' + data.error + '</td></tr>';
+        return;
+    }
+
+    var metrics = [
+        ['Win Rate', 'win_rate', '%', true],
+        ['Total Return', 'total_return_pct', '%', true],
+        ['Max Drawdown', 'max_drawdown_pct', '%', false],
+        ['Trades', 'num_trades', '', null],
+        ['Sharpe Ratio', 'sharpe_ratio', '', true],
+        ['Best Trade', 'best_trade_pct', '%', true],
+        ['Worst Trade', 'worst_trade_pct', '%', false],
+    ];
+
+    var html = '';
+    metrics.forEach(function(m) {
+        var label = m[0], key = m[1], suffix = m[2], higherBetter = m[3];
+        var curr = data.current[key] || 0;
+        var prop = data.proposed[key] || 0;
+        var diff = data.diff[key] || 0;
+
+        var diffColor = '';
+        if (higherBetter !== null) {
+            diffColor = (higherBetter ? diff > 0 : diff < 0) ? 'color:#00c853' : (diff === 0 ? '' : 'color:#ff1744');
+        }
+        var arrow = diff > 0 ? ' \u2191' : (diff < 0 ? ' \u2193' : '');
+
+        html += '<tr>';
+        html += '<td><strong>' + label + '</strong></td>';
+        html += '<td>' + curr.toFixed(1) + suffix + '</td>';
+        html += '<td>' + prop.toFixed(1) + suffix + '</td>';
+        html += '<td style="' + diffColor + ';font-weight:bold;">' + (diff > 0 ? '+' : '') + diff.toFixed(1) + suffix + arrow + '</td>';
+        html += '</tr>';
+    });
+    html += '<tr><td colspan="4" style="font-size:0.8rem;color:#888;">Tested ' + (data.symbols_tested || '?') + ' symbols over ' + (data.days || 90) + ' days</td></tr>';
+    tbody.innerHTML = html;
+}
+
+// Backtest button handler (async with polling)
 document.querySelectorAll('.backtest-btn').forEach(function(btn) {
     btn.addEventListener('click', function() {
         var profileId = this.dataset.profileId;
@@ -718,7 +762,9 @@ document.querySelectorAll('.backtest-btn').forEach(function(btn) {
             params[key] = value;
         });
 
-        // Call backtest API
+        var progressEl = loadingDiv.querySelector('p');
+
+        // Start the backtest (returns immediately with job_id)
         fetch('/api/backtest/' + profileId, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -733,52 +779,50 @@ document.querySelectorAll('.backtest-btn').forEach(function(btn) {
             }
             var ct = r.headers.get('content-type') || '';
             if (ct.indexOf('application/json') === -1) {
-                throw new Error('Server returned HTML instead of JSON — you may need to log in again');
+                throw new Error('Server returned HTML instead of JSON -- you may need to log in again');
             }
             return r.json();
         })
         .then(function(data) {
-            loadingDiv.style.display = 'none';
-            dataDiv.style.display = 'block';
-
             if (data.error) {
+                loadingDiv.style.display = 'none';
+                dataDiv.style.display = 'block';
                 tbody.innerHTML = '<tr><td colspan="4">' + data.error + '</td></tr>';
                 return;
             }
 
-            // Build comparison table
-            var metrics = [
-                ['Win Rate', 'win_rate', '%', true],
-                ['Total Return', 'total_return_pct', '%', true],
-                ['Max Drawdown', 'max_drawdown_pct', '%', false],
-                ['Trades', 'num_trades', '', null],
-                ['Sharpe Ratio', 'sharpe_ratio', '', true],
-                ['Best Trade', 'best_trade_pct', '%', true],
-                ['Worst Trade', 'worst_trade_pct', '%', false],
-            ];
+            var jobId = data.job_id;
 
-            var html = '';
-            metrics.forEach(function(m) {
-                var label = m[0], key = m[1], suffix = m[2], higherBetter = m[3];
-                var curr = data.current[key] || 0;
-                var prop = data.proposed[key] || 0;
-                var diff = data.diff[key] || 0;
+            // Poll for results every 3 seconds
+            var pollInterval = setInterval(function() {
+                fetch('/api/backtest/status/' + jobId, {credentials: 'same-origin'})
+                .then(function(r) { return r.json(); })
+                .then(function(status) {
+                    // Update progress text
+                    var progressMsg = status.progress || 'Working...';
+                    var elapsed = status.elapsed_seconds || 0;
+                    progressEl.textContent = progressMsg + ' (' + elapsed + 's)';
 
-                var diffColor = '';
-                if (higherBetter !== null) {
-                    diffColor = (higherBetter ? diff > 0 : diff < 0) ? 'color:#00c853' : (diff === 0 ? '' : 'color:#ff1744');
-                }
-                var arrow = diff > 0 ? ' \u2191' : (diff < 0 ? ' \u2193' : '');
-
-                html += '<tr>';
-                html += '<td><strong>' + label + '</strong></td>';
-                html += '<td>' + curr.toFixed(1) + suffix + '</td>';
-                html += '<td>' + prop.toFixed(1) + suffix + '</td>';
-                html += '<td style="' + diffColor + ';font-weight:bold;">' + (diff > 0 ? '+' : '') + diff.toFixed(1) + suffix + arrow + '</td>';
-                html += '</tr>';
-            });
-            html += '<tr><td colspan="4" style="font-size:0.8rem;color:#888;">Tested ' + (data.symbols_tested || '?') + ' symbols over ' + (data.days || 90) + ' days</td></tr>';
-            tbody.innerHTML = html;
+                    if (status.status === 'complete') {
+                        clearInterval(pollInterval);
+                        renderBacktestResults(status.result, dataDiv, tbody, loadingDiv);
+                    } else if (status.status === 'failed') {
+                        clearInterval(pollInterval);
+                        loadingDiv.style.display = 'none';
+                        dataDiv.style.display = 'block';
+                        tbody.innerHTML = '<tr><td colspan="4">Backtest failed: ' + (status.error || 'Unknown error') + '</td></tr>';
+                    } else if (status.status === 'not_found') {
+                        clearInterval(pollInterval);
+                        loadingDiv.style.display = 'none';
+                        dataDiv.style.display = 'block';
+                        tbody.innerHTML = '<tr><td colspan="4">Backtest job expired or not found.</td></tr>';
+                    }
+                })
+                .catch(function(err) {
+                    // Network error on poll -- keep trying
+                    progressEl.textContent = 'Reconnecting...';
+                });
+            }, 3000);
         })
         .catch(function(err) {
             loadingDiv.style.display = 'none';

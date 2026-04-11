@@ -11,7 +11,7 @@ from typing import Callable, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from market_data import get_bars_daterange
+from market_data import get_bars_daterange, add_indicators
 
 logger = logging.getLogger(__name__)
 
@@ -781,7 +781,8 @@ def _extract_symbol_df(batch_data: pd.DataFrame, symbol: str,
         return None
 
 
-def backtest_with_params(market_type: str, params: dict, days: int = 90) -> dict:
+def backtest_with_params(market_type: str, params: dict, days: int = 90,
+                         progress_callback: Optional[Callable] = None) -> dict:
     """Backtest a strategy with specific parameter overrides.
 
     Args:
@@ -793,12 +794,16 @@ def backtest_with_params(market_type: str, params: dict, days: int = 90) -> dict
             strategy_volume_spike, strategy_mean_reversion, strategy_gap_and_go,
             rsi_oversold, rsi_overbought, volume_surge_multiplier, etc.
         days: Number of trading days to backtest
+        progress_callback: Optional callable(msg) to report progress updates.
 
     Returns:
         dict with: total_return_pct, win_rate, max_drawdown_pct, sharpe_ratio,
         num_trades, avg_hold_days, best_trade_pct, worst_trade_pct, trades list,
         symbols_tested
     """
+    def _progress(msg):
+        if progress_callback:
+            progress_callback(msg)
     from segments import get_segment
     from strategy_router import run_strategy
 
@@ -809,6 +814,7 @@ def backtest_with_params(market_type: str, params: dict, days: int = 90) -> dict
         return {"error": f"No universe found for market type: {market_type}"}
 
     # Batch download the full universe
+    _progress("Downloading historical data...")
     batch_data = _fetch_universe_batch(market_type, days)
     if batch_data is None:
         return {"error": "Failed to download market data"}
@@ -829,12 +835,16 @@ def backtest_with_params(market_type: str, params: dict, days: int = 90) -> dict
     all_trades: List[Dict] = []
     symbols_tested = 0
 
-    for symbol in universe:
+    for sym_idx, symbol in enumerate(universe):
+        _progress(f"Testing symbol {sym_idx + 1}/{len(universe)} ({symbol})...")
         df = _extract_symbol_df(batch_data, symbol, len(universe))
         if df is None or len(df) < warmup_days + 20:
             continue
 
         symbols_tested += 1
+
+        # Pre-compute indicators ONCE for the full dataframe
+        df_full = add_indicators(df.copy())
 
         # Walk forward day by day
         position_open = False
@@ -844,13 +854,13 @@ def backtest_with_params(market_type: str, params: dict, days: int = 90) -> dict
         take_profit = 0.0
         trailing_high = 0.0
 
-        for i in range(warmup_days, len(df)):
-            window = df.iloc[:i + 1].copy()
-            current_bar = df.iloc[i]
+        for i in range(warmup_days, len(df_full)):
+            window = df_full.iloc[:i + 1]
+            current_bar = df_full.iloc[i]
             current_price = float(current_bar["close"])
             current_high = float(current_bar["high"])
             current_low = float(current_bar["low"])
-            current_date = df.index[i]
+            current_date = df_full.index[i]
 
             if position_open:
                 # Update trailing high watermark
@@ -933,15 +943,15 @@ def backtest_with_params(market_type: str, params: dict, days: int = 90) -> dict
 
         # Close any open position at the end
         if position_open:
-            final_price = float(df.iloc[-1]["close"])
+            final_price = float(df_full.iloc[-1]["close"])
             pnl = final_price - entry_price
             pnl_pct = (pnl / entry_price) * 100
-            hold_days = (df.index[-1] - entry_date).days if entry_date else 0
+            hold_days = (df_full.index[-1] - entry_date).days if entry_date else 0
 
             all_trades.append({
                 "symbol": symbol,
                 "entry_date": str(entry_date)[:10] if entry_date else "",
-                "exit_date": str(df.index[-1])[:10],
+                "exit_date": str(df_full.index[-1])[:10],
                 "entry_price": round(entry_price, 4),
                 "exit_price": round(final_price, 4),
                 "pnl": round(pnl, 4),
@@ -952,6 +962,8 @@ def backtest_with_params(market_type: str, params: dict, days: int = 90) -> dict
 
             equity += pnl * (initial_capital * 0.10 / entry_price)
             daily_equity.append(equity)
+
+    _progress("Calculating metrics...")
 
     # --- Calculate aggregate metrics ---
     total_return_pct = ((equity - initial_capital) / initial_capital) * 100
@@ -998,13 +1010,22 @@ def backtest_with_params(market_type: str, params: dict, days: int = 90) -> dict
 
 
 def backtest_comparison(market_type: str, current_params: dict,
-                        new_params: dict, days: int = 90) -> dict:
+                        new_params: dict, days: int = 90,
+                        progress_callback: Optional[Callable] = None) -> dict:
     """Run two backtests and return comparison.
 
     Returns dict with current_results, new_results, and diff for each metric.
     """
-    current_results = backtest_with_params(market_type, current_params, days=days)
-    new_results = backtest_with_params(market_type, new_params, days=days)
+    def _progress(msg):
+        if progress_callback:
+            progress_callback(msg)
+
+    _progress("Running backtest with current settings...")
+    current_results = backtest_with_params(market_type, current_params, days=days,
+                                           progress_callback=progress_callback)
+    _progress("Running backtest with proposed settings...")
+    new_results = backtest_with_params(market_type, new_params, days=days,
+                                       progress_callback=progress_callback)
 
     if "error" in current_results or "error" in new_results:
         return {
