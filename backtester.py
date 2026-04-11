@@ -502,7 +502,7 @@ def backtest_strategy(
             if not position_open:
                 # Run strategy to check for entry signal
                 try:
-                    signal = run_strategy(symbol, market_type, df=window)
+                    signal = run_strategy(symbol, market_type, df=window, params=None)
                     action = signal.get("signal", "HOLD")
 
                     if action in ("BUY", "STRONG_BUY"):
@@ -915,7 +915,7 @@ def backtest_with_params(market_type: str, params: dict, days: int = 90,
             if not position_open:
                 # Run strategy to check for entry signal
                 try:
-                    signal = run_strategy(symbol, market_type, df=window)
+                    signal = run_strategy(symbol, market_type, df=window, params=params)
                     action = signal.get("signal", "HOLD")
 
                     if action in ("BUY", "STRONG_BUY"):

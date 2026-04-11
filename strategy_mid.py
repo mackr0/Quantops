@@ -76,10 +76,11 @@ def _prepare_df(symbol, df, min_rows=25):
 # 1. Sector Momentum (using SPY as proxy)
 # ---------------------------------------------------------------------------
 
-def sector_momentum_strategy(symbol, ctx=None, df=None):
+def sector_momentum_strategy(symbol, ctx=None, df=None,
+                             rsi_threshold=50):
     """Mid-cap sector momentum using SPY as market trend proxy.
 
-    BUY  -- stock RSI > 50 AND SPY above SMA20 (market trending up)
+    BUY  -- stock RSI > rsi_threshold AND SPY above SMA20 (market trending up)
             AND volume > avg
     EXIT -- stock drops below 20-day SMA OR SPY reverses below SMA20
     """
@@ -109,7 +110,7 @@ def sector_momentum_strategy(symbol, ctx=None, df=None):
             spy_info = f"SPY {'above' if spy_above_sma else 'below'} SMA20 ({spy_sma:.2f})"
 
     # BUY conditions
-    if rsi > 50 and spy_above_sma and vol_ratio > 1.0:
+    if rsi > rsi_threshold and spy_above_sma and vol_ratio > 1.0:
         return {
             "symbol": symbol,
             "signal": "BUY",
@@ -169,10 +170,11 @@ def sector_momentum_strategy(symbol, ctx=None, df=None):
 # 2. Breakout with Volume
 # ---------------------------------------------------------------------------
 
-def breakout_volume_strategy(symbol, ctx=None, df=None):
+def breakout_volume_strategy(symbol, ctx=None, df=None,
+                             vol_multiplier=2.0, rsi_low=55, rsi_high=75):
     """Clean breakouts above resistance for mid-caps.
 
-    BUY  -- price > 20-day high AND volume > 2x avg AND RSI 55-75
+    BUY  -- price > 20-day high AND volume > vol_multiplier x avg AND RSI rsi_low-rsi_high
     EXIT -- price drops below 10-day low
     """
     df, err = _prepare_df(symbol, df)
@@ -196,7 +198,7 @@ def breakout_volume_strategy(symbol, ctx=None, df=None):
     low_10 = float(latest["low_10"])
 
     # BUY conditions
-    if price > high_20 and vol_ratio > 2.0 and 55 <= rsi <= 75:
+    if price > high_20 and vol_ratio > vol_multiplier and rsi_low <= rsi <= rsi_high:
         return {
             "symbol": symbol,
             "signal": "BUY",
@@ -244,10 +246,11 @@ def breakout_volume_strategy(symbol, ctx=None, df=None):
 # 3. Pullback to Support
 # ---------------------------------------------------------------------------
 
-def pullback_support_strategy(symbol, ctx=None, df=None):
+def pullback_support_strategy(symbol, ctx=None, df=None,
+                              rsi_low=40, rsi_high=55):
     """Buy dips in uptrends for mid-caps.
 
-    BUY  -- price pulls back to 20-day SMA from above AND RSI 40-55
+    BUY  -- price pulls back to 20-day SMA from above AND RSI rsi_low-rsi_high
             AND SMA20 still rising
     EXIT -- price closes below SMA50
     """
@@ -272,7 +275,7 @@ def pullback_support_strategy(symbol, ctx=None, df=None):
     pct_from_sma = ((price - sma_20) / sma_20 * 100) if sma_20 > 0 else 0
     near_sma = -2 <= pct_from_sma <= 2
 
-    rsi_in_range = 40 <= rsi <= 55
+    rsi_in_range = rsi_low <= rsi <= rsi_high
 
     # BUY conditions
     if near_sma and rsi_in_range and sma_rising:
@@ -404,7 +407,7 @@ def macd_cross_strategy(symbol, ctx=None, df=None):
 # Combined Mid Cap Strategy
 # ---------------------------------------------------------------------------
 
-def mid_combined_strategy(symbol, ctx=None, df=None):
+def mid_combined_strategy(symbol, ctx=None, df=None, params=None):
     """Run all four mid-cap strategies, score them, and return the
     strongest signal.
 
@@ -420,15 +423,46 @@ def mid_combined_strategy(symbol, ctx=None, df=None):
         score <= -2 -> STRONG_SELL
         else        -> HOLD
     """
+    if params is None:
+        params = {}
+
+    # Extract user-configurable thresholds from params, falling back to defaults
+    rsi_oversold = float(params.get("rsi_oversold", 50.0))
+    volume_surge_mult = float(params.get("volume_surge_multiplier", 2.0))
+    breakout_vol_threshold = float(params.get("breakout_volume_threshold", 2.0))
+
+    # Strategy toggles
+    use_momentum = bool(params.get("strategy_momentum_breakout", True))
+    use_volume_spike = bool(params.get("strategy_volume_spike", True))
+    use_mean_reversion = bool(params.get("strategy_mean_reversion", True))
+
     # Fetch data once and share across strategies
     if df is None:
         df = get_bars(symbol, limit=200)
 
     strategies = {
-        "sector_momentum": sector_momentum_strategy,
-        "breakout_volume": breakout_volume_strategy,
-        "pullback_support": pullback_support_strategy,
+        "sector_momentum": lambda sym, ctx=ctx, df=None: (
+            sector_momentum_strategy(sym, ctx=ctx, df=df,
+                                     rsi_threshold=rsi_oversold)
+        ),
+        "breakout_volume": lambda sym, ctx=ctx, df=None: (
+            breakout_volume_strategy(sym, ctx=ctx, df=df,
+                                     vol_multiplier=breakout_vol_threshold,
+                                     rsi_low=55, rsi_high=75)
+        ),
+        "pullback_support": lambda sym, ctx=ctx, df=None: (
+            pullback_support_strategy(sym, ctx=ctx, df=df,
+                                      rsi_low=40, rsi_high=55)
+        ),
         "macd_cross": macd_cross_strategy,
+    }
+
+    # Strategy toggle map
+    toggle_map = {
+        "sector_momentum": use_momentum,
+        "breakout_volume": use_volume_spike,
+        "pullback_support": use_mean_reversion,
+        "macd_cross": True,  # MACD has no user params, always active
     }
 
     votes = {}
@@ -436,6 +470,11 @@ def mid_combined_strategy(symbol, ctx=None, df=None):
     score = 0
 
     for name, fn in strategies.items():
+        if not toggle_map.get(name, True):
+            results[name] = {"symbol": symbol, "signal": "HOLD",
+                             "reason": f"{name} disabled by user settings"}
+            votes[name] = "HOLD"
+            continue
         result = fn(symbol, ctx=ctx, df=df.copy())
         results[name] = result
         sig = result.get("signal", "HOLD")

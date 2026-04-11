@@ -49,10 +49,11 @@ def _prepare_df(symbol, df, min_rows=25):
 # 1. Mean Reversion
 # ---------------------------------------------------------------------------
 
-def mean_reversion_strategy(symbol, ctx=None, df=None):
+def mean_reversion_strategy(symbol, ctx=None, df=None,
+                            rsi_threshold=28, sma_distance=-8):
     """Classic oversold bounce for small caps.
 
-    BUY  -- RSI < 28 AND price > 8% below 20-day SMA
+    BUY  -- RSI < rsi_threshold AND price > sma_distance% below 20-day SMA
     EXIT -- price returns to 20-day SMA OR RSI > 55
     """
     df, err = _prepare_df(symbol, df)
@@ -66,7 +67,7 @@ def mean_reversion_strategy(symbol, ctx=None, df=None):
     pct_below_sma = ((price - sma_20) / sma_20 * 100) if sma_20 > 0 else 0
 
     # BUY -- deeply oversold
-    if rsi < 28 and pct_below_sma < -8:
+    if rsi < rsi_threshold and pct_below_sma < sma_distance:
         return {
             "symbol": symbol,
             "signal": "BUY",
@@ -124,10 +125,11 @@ def mean_reversion_strategy(symbol, ctx=None, df=None):
 # 2. Volume Spike Entry
 # ---------------------------------------------------------------------------
 
-def volume_spike_entry_strategy(symbol, ctx=None, df=None):
+def volume_spike_entry_strategy(symbol, ctx=None, df=None,
+                                vol_multiplier=3.0, price_change=3.0):
     """Institutional interest or catalyst detection.
 
-    BUY  -- volume > 3x 20-day avg AND price up > 3% AND RSI 30-65
+    BUY  -- volume > vol_multiplier x 20-day avg AND price up > price_change% AND RSI 30-65
     EXIT -- 2 consecutive red days with declining volume
     """
     df, err = _prepare_df(symbol, df)
@@ -145,7 +147,7 @@ def volume_spike_entry_strategy(symbol, ctx=None, df=None):
     day_change_pct = ((price - open_price) / open_price * 100) if open_price > 0 else 0
 
     # BUY conditions
-    if vol_ratio > 3.0 and day_change_pct > 3.0 and 30 <= rsi <= 65:
+    if vol_ratio > vol_multiplier and day_change_pct > price_change and 30 <= rsi <= 65:
         return {
             "symbol": symbol,
             "signal": "BUY",
@@ -196,10 +198,11 @@ def volume_spike_entry_strategy(symbol, ctx=None, df=None):
 # 3. Gap and Go
 # ---------------------------------------------------------------------------
 
-def gap_and_go_strategy(symbol, ctx=None, df=None):
+def gap_and_go_strategy(symbol, ctx=None, df=None,
+                        gap_threshold=2.5):
     """Opening gaps with momentum follow-through.
 
-    BUY  -- open > 2.5% above previous close AND volume > 1.5x avg
+    BUY  -- open > gap_threshold% above previous close AND volume > 1.5x avg
     EXIT -- price drops below today's open (gap fill)
     """
     df, err = _prepare_df(symbol, df)
@@ -218,7 +221,7 @@ def gap_and_go_strategy(symbol, ctx=None, df=None):
     gap_pct = ((today_open - prev_close) / prev_close * 100) if prev_close > 0 else 0
 
     # BUY -- gap up with volume confirmation
-    if gap_pct > 2.5 and vol_ratio > 1.5:
+    if gap_pct > gap_threshold and vol_ratio > 1.5:
         return {
             "symbol": symbol,
             "signal": "BUY",
@@ -234,7 +237,7 @@ def gap_and_go_strategy(symbol, ctx=None, df=None):
         }
 
     # SELL -- gap fill
-    if gap_pct > 2.5 and price < today_open:
+    if gap_pct > gap_threshold and price < today_open:
         return {
             "symbol": symbol,
             "signal": "SELL",
@@ -268,10 +271,11 @@ def gap_and_go_strategy(symbol, ctx=None, df=None):
 # 4. Momentum Continuation
 # ---------------------------------------------------------------------------
 
-def momentum_continuation_strategy(symbol, ctx=None, df=None):
+def momentum_continuation_strategy(symbol, ctx=None, df=None,
+                                   rsi_low=50, rsi_high=70):
     """Riding established uptrends.
 
-    BUY  -- price above 20-day SMA AND SMA20 slope positive AND RSI 50-70
+    BUY  -- price above 20-day SMA AND SMA20 slope positive AND RSI rsi_low-rsi_high
             AND volume > avg
     EXIT -- price closes below 20-day SMA
     """
@@ -295,7 +299,7 @@ def momentum_continuation_strategy(symbol, ctx=None, df=None):
         sma_slope_positive = False
 
     above_sma = price > sma_20
-    rsi_in_range = 50 <= rsi <= 70
+    rsi_in_range = rsi_low <= rsi <= rsi_high
     vol_above_avg = vol_ratio > 1.0
 
     # BUY conditions
@@ -346,7 +350,7 @@ def momentum_continuation_strategy(symbol, ctx=None, df=None):
 # Combined Small Cap Strategy
 # ---------------------------------------------------------------------------
 
-def small_combined_strategy(symbol, ctx=None, df=None):
+def small_combined_strategy(symbol, ctx=None, df=None, params=None):
     """Run all four small-cap strategies, score them, and return the
     strongest signal.
 
@@ -362,15 +366,51 @@ def small_combined_strategy(symbol, ctx=None, df=None):
         score <= -2 -> STRONG_SELL
         else        -> HOLD
     """
+    if params is None:
+        params = {}
+
+    # Extract user-configurable thresholds from params, falling back to defaults
+    rsi_oversold = float(params.get("rsi_oversold", 28.0))
+    volume_surge_mult = float(params.get("volume_surge_multiplier", 3.0))
+    gap_threshold = float(params.get("gap_pct_threshold", 2.5))
+
+    # Strategy toggles
+    use_mean_reversion = bool(params.get("strategy_mean_reversion", True))
+    use_volume_spike = bool(params.get("strategy_volume_spike", True))
+    use_gap_and_go = bool(params.get("strategy_gap_and_go", True))
+    use_momentum = bool(params.get("strategy_momentum_breakout", True))
+
     # Fetch data once and share across strategies
     if df is None:
         df = get_bars(symbol, limit=200)
 
     strategies = {
-        "mean_reversion": mean_reversion_strategy,
-        "volume_spike_entry": volume_spike_entry_strategy,
-        "gap_and_go": gap_and_go_strategy,
-        "momentum_continuation": momentum_continuation_strategy,
+        "mean_reversion": lambda sym, ctx=ctx, df=None: (
+            mean_reversion_strategy(sym, ctx=ctx, df=df,
+                                    rsi_threshold=rsi_oversold,
+                                    sma_distance=-8)
+        ),
+        "volume_spike_entry": lambda sym, ctx=ctx, df=None: (
+            volume_spike_entry_strategy(sym, ctx=ctx, df=df,
+                                        vol_multiplier=volume_surge_mult,
+                                        price_change=3.0)
+        ),
+        "gap_and_go": lambda sym, ctx=ctx, df=None: (
+            gap_and_go_strategy(sym, ctx=ctx, df=df,
+                                gap_threshold=gap_threshold)
+        ),
+        "momentum_continuation": lambda sym, ctx=ctx, df=None: (
+            momentum_continuation_strategy(sym, ctx=ctx, df=df,
+                                           rsi_low=50, rsi_high=70)
+        ),
+    }
+
+    # Strategy toggle map
+    toggle_map = {
+        "mean_reversion": use_mean_reversion,
+        "volume_spike_entry": use_volume_spike,
+        "gap_and_go": use_gap_and_go,
+        "momentum_continuation": use_momentum,
     }
 
     votes = {}
@@ -378,6 +418,11 @@ def small_combined_strategy(symbol, ctx=None, df=None):
     score = 0
 
     for name, fn in strategies.items():
+        if not toggle_map.get(name, True):
+            results[name] = {"symbol": symbol, "signal": "HOLD",
+                             "reason": f"{name} disabled by user settings"}
+            votes[name] = "HOLD"
+            continue
         result = fn(symbol, ctx=ctx, df=df.copy())
         results[name] = result
         sig = result.get("signal", "HOLD")

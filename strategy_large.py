@@ -76,10 +76,11 @@ def _prepare_df(symbol, df, min_rows=25):
 # 1. Index Correlation Buy
 # ---------------------------------------------------------------------------
 
-def index_correlation_strategy(symbol, ctx=None, df=None):
+def index_correlation_strategy(symbol, ctx=None, df=None,
+                               spy_rsi_threshold=35, stock_rsi_threshold=40):
     """When SPY bounces from oversold, large caps bounce too.
 
-    BUY  -- SPY RSI < 35 AND stock RSI < 40
+    BUY  -- SPY RSI < spy_rsi_threshold AND stock RSI < stock_rsi_threshold
     EXIT -- SPY reaches overbought OR stock hits take-profit
     """
     df, err = _prepare_df(symbol, df)
@@ -102,7 +103,7 @@ def index_correlation_strategy(symbol, ctx=None, df=None):
             spy_info = f"SPY RSI {spy_rsi:.1f}"
 
     # BUY conditions
-    if spy_rsi is not None and spy_rsi < 35 and rsi < 40:
+    if spy_rsi is not None and spy_rsi < spy_rsi_threshold and rsi < stock_rsi_threshold:
         return {
             "symbol": symbol,
             "signal": "BUY",
@@ -144,10 +145,11 @@ def index_correlation_strategy(symbol, ctx=None, df=None):
 # 2. Relative Strength
 # ---------------------------------------------------------------------------
 
-def relative_strength_strategy(symbol, ctx=None, df=None):
+def relative_strength_strategy(symbol, ctx=None, df=None,
+                               rsi_ceiling=70):
     """Buy stocks outperforming the market.
 
-    BUY  -- stock up more than SPY over 5 days AND volume > avg AND RSI < 70
+    BUY  -- stock up more than SPY over 5 days AND volume > avg AND RSI < rsi_ceiling
     EXIT -- stock underperforms SPY for 3 consecutive days
     """
     df, err = _prepare_df(symbol, df)
@@ -181,7 +183,7 @@ def relative_strength_strategy(symbol, ctx=None, df=None):
     relative_strength = stock_5d_return - spy_5d_return
 
     # BUY conditions
-    if outperforming and vol_ratio > 1.0 and rsi < 70:
+    if outperforming and vol_ratio > 1.0 and rsi < rsi_ceiling:
         return {
             "symbol": symbol,
             "signal": "BUY",
@@ -234,10 +236,11 @@ def relative_strength_strategy(symbol, ctx=None, df=None):
 # 3. Dividend Yield Play (proxy: RSI<35 + price>$50)
 # ---------------------------------------------------------------------------
 
-def dividend_yield_strategy(symbol, ctx=None, df=None):
+def dividend_yield_strategy(symbol, ctx=None, df=None,
+                            rsi_threshold=35):
     """Blue chip oversold bounce proxy.
 
-    BUY  -- RSI < 35 AND price > $50 (proxy for blue chip / dividend payer)
+    BUY  -- RSI < rsi_threshold AND price > $50 (proxy for blue chip / dividend payer)
     EXIT -- RSI > 55
     """
     df, err = _prepare_df(symbol, df)
@@ -249,7 +252,7 @@ def dividend_yield_strategy(symbol, ctx=None, df=None):
     rsi = float(latest["rsi"])
 
     # BUY -- oversold blue chip
-    if rsi < 35 and price > 50:
+    if rsi < rsi_threshold and price > 50:
         return {
             "symbol": symbol,
             "signal": "BUY",
@@ -366,7 +369,7 @@ def ma_alignment_strategy(symbol, ctx=None, df=None):
 # Combined Large Cap Strategy
 # ---------------------------------------------------------------------------
 
-def large_combined_strategy(symbol, ctx=None, df=None):
+def large_combined_strategy(symbol, ctx=None, df=None, params=None):
     """Run all four large-cap strategies, score them, and return the
     strongest signal.
 
@@ -382,15 +385,45 @@ def large_combined_strategy(symbol, ctx=None, df=None):
         score <= -2 -> STRONG_SELL
         else        -> HOLD
     """
+    if params is None:
+        params = {}
+
+    # Extract user-configurable thresholds from params, falling back to defaults
+    rsi_oversold = float(params.get("rsi_oversold", 35.0))
+    rsi_overbought = float(params.get("rsi_overbought", 70.0))
+
+    # Strategy toggles
+    use_momentum = bool(params.get("strategy_momentum_breakout", True))
+    use_volume_spike = bool(params.get("strategy_volume_spike", True))
+    use_mean_reversion = bool(params.get("strategy_mean_reversion", True))
+
     # Fetch data once and share across strategies
     if df is None:
         df = get_bars(symbol, limit=200)
 
     strategies = {
-        "index_correlation": index_correlation_strategy,
-        "relative_strength": relative_strength_strategy,
-        "dividend_yield": dividend_yield_strategy,
+        "index_correlation": lambda sym, ctx=ctx, df=None: (
+            index_correlation_strategy(sym, ctx=ctx, df=df,
+                                       spy_rsi_threshold=rsi_oversold,
+                                       stock_rsi_threshold=rsi_oversold + 5)
+        ),
+        "relative_strength": lambda sym, ctx=ctx, df=None: (
+            relative_strength_strategy(sym, ctx=ctx, df=df,
+                                       rsi_ceiling=rsi_overbought)
+        ),
+        "dividend_yield": lambda sym, ctx=ctx, df=None: (
+            dividend_yield_strategy(sym, ctx=ctx, df=df,
+                                    rsi_threshold=rsi_oversold)
+        ),
         "ma_alignment": ma_alignment_strategy,
+    }
+
+    # Strategy toggle map
+    toggle_map = {
+        "index_correlation": use_mean_reversion,
+        "relative_strength": use_momentum,
+        "dividend_yield": use_volume_spike,
+        "ma_alignment": True,  # MA alignment has no user params, always active
     }
 
     votes = {}
@@ -398,6 +431,11 @@ def large_combined_strategy(symbol, ctx=None, df=None):
     score = 0
 
     for name, fn in strategies.items():
+        if not toggle_map.get(name, True):
+            results[name] = {"symbol": symbol, "signal": "HOLD",
+                             "reason": f"{name} disabled by user settings"}
+            votes[name] = "HOLD"
+            continue
         result = fn(symbol, ctx=ctx, df=df.copy())
         results[name] = result
         sig = result.get("signal", "HOLD")

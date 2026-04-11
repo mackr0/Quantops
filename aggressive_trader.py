@@ -737,8 +737,22 @@ def run_aggressive_scan_and_trade(candidates, ctx=None, max_position_pct=None,
 
     for symbol in filtered_candidates:
         try:
+            # Build strategy params from user context
+            strategy_params = {
+                "rsi_oversold": ctx.rsi_oversold,
+                "rsi_overbought": ctx.rsi_overbought,
+                "volume_surge_multiplier": ctx.volume_surge_multiplier,
+                "breakout_volume_threshold": ctx.breakout_volume_threshold,
+                "momentum_5d_gain": ctx.momentum_5d_gain,
+                "momentum_20d_gain": ctx.momentum_20d_gain,
+                "gap_pct_threshold": ctx.gap_pct_threshold,
+                "strategy_momentum_breakout": ctx.strategy_momentum_breakout,
+                "strategy_volume_spike": ctx.strategy_volume_spike,
+                "strategy_mean_reversion": ctx.strategy_mean_reversion,
+                "strategy_gap_and_go": ctx.strategy_gap_and_go,
+            } if ctx else None
             # Run strategy
-            signal = run_strategy(symbol, market_type, ctx=ctx)
+            signal = run_strategy(symbol, market_type, ctx=ctx, params=strategy_params)
             action = signal.get("signal", "HOLD")
             score = signal.get("score", 0)
             votes = signal.get("votes", {})

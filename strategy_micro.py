@@ -50,10 +50,12 @@ def _prepare_df(symbol, df, min_rows=25):
 # 1. Volume Explosion
 # ---------------------------------------------------------------------------
 
-def volume_explosion_strategy(symbol, ctx=None, df=None):
+def volume_explosion_strategy(symbol, ctx=None, df=None,
+                              vol_threshold=5.0, price_change_threshold=5.0,
+                              rsi_ceiling=75):
     """Volume explosion strategy for micro-caps.
 
-    BUY  -- volume > 5x 20-day avg AND price up > 5% on the day AND RSI < 75
+    BUY  -- volume > vol_threshold x 20-day avg AND price up > price_change_threshold% AND RSI < rsi_ceiling
     EXIT -- volume drops below 2x avg (catalyst fading)
     """
     df, err = _prepare_df(symbol, df)
@@ -70,7 +72,7 @@ def volume_explosion_strategy(symbol, ctx=None, df=None):
     day_change_pct = ((price - open_price) / open_price * 100) if open_price > 0 else 0
 
     # BUY conditions
-    if vol_ratio > 5.0 and day_change_pct > 5.0 and rsi < 75:
+    if vol_ratio > vol_threshold and day_change_pct > price_change_threshold and rsi < rsi_ceiling:
         return {
             "symbol": symbol,
             "signal": "BUY",
@@ -117,10 +119,11 @@ def volume_explosion_strategy(symbol, ctx=None, df=None):
 # 2. Penny Reversal
 # ---------------------------------------------------------------------------
 
-def penny_reversal_strategy(symbol, ctx=None, df=None):
+def penny_reversal_strategy(symbol, ctx=None, df=None,
+                            rsi_threshold=20, sma_distance=-20):
     """Deep oversold bounce for micro-caps.
 
-    BUY  -- RSI < 20 AND price > 20% below 10-day SMA AND volume increasing
+    BUY  -- RSI < rsi_threshold AND price > sma_distance% below 10-day SMA AND volume increasing
     EXIT -- price returns to 10-day SMA OR RSI > 50
     """
     df, err = _prepare_df(symbol, df)
@@ -144,7 +147,7 @@ def penny_reversal_strategy(symbol, ctx=None, df=None):
     vol_increasing = volume > prev_volume
 
     # BUY -- deeply oversold penny bounce
-    if rsi < 20 and pct_below_sma10 < -20 and vol_increasing:
+    if rsi < rsi_threshold and pct_below_sma10 < sma_distance and vol_increasing:
         return {
             "symbol": symbol,
             "signal": "BUY",
@@ -202,10 +205,11 @@ def penny_reversal_strategy(symbol, ctx=None, df=None):
 # 3. Breakout Above Resistance
 # ---------------------------------------------------------------------------
 
-def breakout_resistance_strategy(symbol, ctx=None, df=None):
+def breakout_resistance_strategy(symbol, ctx=None, df=None,
+                                 vol_threshold=3.0):
     """Breakout above resistance for micro-caps.
 
-    BUY  -- price > 10-day high AND volume > 3x avg
+    BUY  -- price > 10-day high AND volume > vol_threshold x avg
     EXIT -- price drops below breakout level (failed breakout)
     """
     df, err = _prepare_df(symbol, df)
@@ -229,7 +233,7 @@ def breakout_resistance_strategy(symbol, ctx=None, df=None):
     low_5 = float(latest["low_5"])
 
     # BUY -- breakout above 10-day high with volume
-    if price > high_10 and vol_ratio > 3.0:
+    if price > high_10 and vol_ratio > vol_threshold:
         return {
             "symbol": symbol,
             "signal": "BUY",
@@ -340,7 +344,7 @@ def avoid_traps_filter(symbol, ctx=None, df=None):
 # Combined Micro Cap Strategy
 # ---------------------------------------------------------------------------
 
-def micro_combined_strategy(symbol, ctx=None, df=None):
+def micro_combined_strategy(symbol, ctx=None, df=None, params=None):
     """Run all four micro-cap strategies, score them, and return the
     strongest signal.
 
@@ -356,15 +360,49 @@ def micro_combined_strategy(symbol, ctx=None, df=None):
         score <= -2 -> STRONG_SELL
         else        -> HOLD
     """
+    if params is None:
+        params = {}
+
+    # Extract user-configurable thresholds from params, falling back to defaults
+    rsi_oversold = float(params.get("rsi_oversold", 20.0))
+    rsi_overbought = float(params.get("rsi_overbought", 75.0))
+    volume_surge_mult = float(params.get("volume_surge_multiplier", 5.0))
+    breakout_vol_threshold = float(params.get("breakout_volume_threshold", 3.0))
+
+    # Strategy toggles
+    use_volume_explosion = bool(params.get("strategy_volume_spike", True))
+    use_penny_reversal = bool(params.get("strategy_mean_reversion", True))
+    use_breakout = bool(params.get("strategy_momentum_breakout", True))
+
     # Fetch data once and share across strategies
     if df is None:
         df = get_bars(symbol, limit=200)
 
     strategies = {
-        "volume_explosion": volume_explosion_strategy,
-        "penny_reversal": penny_reversal_strategy,
-        "breakout_resistance": breakout_resistance_strategy,
+        "volume_explosion": lambda sym, ctx=ctx, df=None: (
+            volume_explosion_strategy(sym, ctx=ctx, df=df,
+                                      vol_threshold=volume_surge_mult,
+                                      price_change_threshold=5.0,
+                                      rsi_ceiling=rsi_overbought)
+        ),
+        "penny_reversal": lambda sym, ctx=ctx, df=None: (
+            penny_reversal_strategy(sym, ctx=ctx, df=df,
+                                    rsi_threshold=rsi_oversold,
+                                    sma_distance=-20)
+        ),
+        "breakout_resistance": lambda sym, ctx=ctx, df=None: (
+            breakout_resistance_strategy(sym, ctx=ctx, df=df,
+                                         vol_threshold=breakout_vol_threshold)
+        ),
         "avoid_traps": avoid_traps_filter,
+    }
+
+    # Strategy toggle map
+    toggle_map = {
+        "volume_explosion": use_volume_explosion,
+        "penny_reversal": use_penny_reversal,
+        "breakout_resistance": use_breakout,
+        "avoid_traps": True,  # Always active (safety filter)
     }
 
     votes = {}
@@ -372,6 +410,12 @@ def micro_combined_strategy(symbol, ctx=None, df=None):
     score = 0
 
     for name, fn in strategies.items():
+        if not toggle_map.get(name, True):
+            # Strategy toggled off -- force HOLD
+            results[name] = {"symbol": symbol, "signal": "HOLD",
+                             "reason": f"{name} disabled by user settings"}
+            votes[name] = "HOLD"
+            continue
         result = fn(symbol, ctx=ctx, df=df.copy())
         results[name] = result
         sig = result.get("signal", "HOLD")

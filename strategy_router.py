@@ -11,7 +11,7 @@ Falls back to aggressive_combined_strategy for unknown market types.
 """
 
 
-def run_strategy(symbol, market_type, ctx=None, df=None):
+def run_strategy(symbol, market_type, ctx=None, df=None, params=None):
     """Route to the correct strategy engine based on market type.
 
     Parameters
@@ -24,6 +24,10 @@ def run_strategy(symbol, market_type, ctx=None, df=None):
         User context for credentials and parameters.
     df : DataFrame, optional
         Pre-fetched price data. If None, the strategy will fetch its own.
+    params : dict, optional
+        User-configurable strategy parameters (RSI thresholds, volume
+        multipliers, strategy toggles, etc.).  When provided these override
+        the hardcoded defaults inside each strategy engine.
 
     Returns
     -------
@@ -33,25 +37,25 @@ def run_strategy(symbol, market_type, ctx=None, df=None):
     """
     if market_type == "micro":
         from strategy_micro import micro_combined_strategy
-        return micro_combined_strategy(symbol, ctx=ctx, df=df)
+        return micro_combined_strategy(symbol, ctx=ctx, df=df, params=params)
 
     elif market_type == "small":
         from strategy_small import small_combined_strategy
-        return small_combined_strategy(symbol, ctx=ctx, df=df)
+        return small_combined_strategy(symbol, ctx=ctx, df=df, params=params)
 
     elif market_type == "midcap":
         from strategy_mid import mid_combined_strategy
-        return mid_combined_strategy(symbol, ctx=ctx, df=df)
+        return mid_combined_strategy(symbol, ctx=ctx, df=df, params=params)
 
     elif market_type == "largecap":
         from strategy_large import large_combined_strategy
-        return large_combined_strategy(symbol, ctx=ctx, df=df)
+        return large_combined_strategy(symbol, ctx=ctx, df=df, params=params)
 
     elif market_type == "crypto":
         from strategy_crypto import crypto_combined_strategy
-        return crypto_combined_strategy(symbol, ctx=ctx, df=df)
+        return crypto_combined_strategy(symbol, ctx=ctx, df=df, params=params)
 
     else:
         # Fallback for unknown market types (including legacy "microsmall")
         from aggressive_strategy import aggressive_combined_strategy
-        return aggressive_combined_strategy(symbol, df=df)
+        return aggressive_combined_strategy(symbol, df=df, params=params)

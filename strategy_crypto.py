@@ -78,11 +78,12 @@ def _prepare_df(symbol, df, min_rows=25):
 # 1. BTC Correlation Play
 # ---------------------------------------------------------------------------
 
-def btc_correlation_strategy(symbol, ctx=None, df=None):
+def btc_correlation_strategy(symbol, ctx=None, df=None,
+                             btc_rsi_threshold=45, alt_rsi_threshold=40):
     """When BTC bounces, alts follow (usually amplified).
 
-    BUY  -- BTC RSI < 45 AND BTC bouncing (positive 1-day change)
-            AND alt RSI < 40
+    BUY  -- BTC RSI < btc_rsi_threshold AND BTC bouncing (positive 1-day change)
+            AND alt RSI < alt_rsi_threshold
     EXIT -- BTC drops below recent low OR alt hits take-profit
     """
     df, err = _prepare_df(symbol, df)
@@ -112,7 +113,7 @@ def btc_correlation_strategy(symbol, ctx=None, df=None):
             btc_info = f"BTC RSI {btc_rsi:.1f}, change {btc_day_change:+.1f}%"
 
     # BUY conditions -- BTC oversold and bouncing, alt oversold
-    if btc_rsi is not None and btc_rsi < 45 and btc_bouncing and rsi < 40:
+    if btc_rsi is not None and btc_rsi < btc_rsi_threshold and btc_bouncing and rsi < alt_rsi_threshold:
         return {
             "symbol": symbol,
             "signal": "BUY",
@@ -154,11 +155,12 @@ def btc_correlation_strategy(symbol, ctx=None, df=None):
 # 2. Trend Following
 # ---------------------------------------------------------------------------
 
-def trend_following_strategy(symbol, ctx=None, df=None):
+def trend_following_strategy(symbol, ctx=None, df=None,
+                             rsi_low=40, rsi_high=70):
     """Crypto trends harder than equities. Ride the trend.
 
     BUY  -- price crosses above SMA20 from below AND volume > 1.5x avg
-            AND RSI 45-65
+            AND RSI rsi_low-rsi_high
     EXIT -- price crosses back below SMA20
     """
     df, err = _prepare_df(symbol, df)
@@ -186,7 +188,7 @@ def trend_following_strategy(symbol, ctx=None, df=None):
     crossed_below = prev_close >= prev_sma_20 and price < sma_20
 
     # BUY conditions — crossover OR above SMA with momentum
-    if (crossed_above or above_with_momentum) and 40 <= rsi <= 70:
+    if (crossed_above or above_with_momentum) and rsi_low <= rsi <= rsi_high:
         return {
             "symbol": symbol,
             "signal": "BUY",
@@ -232,10 +234,11 @@ def trend_following_strategy(symbol, ctx=None, df=None):
 # 3. Extreme Oversold Bounce
 # ---------------------------------------------------------------------------
 
-def extreme_oversold_strategy(symbol, ctx=None, df=None):
+def extreme_oversold_strategy(symbol, ctx=None, df=None,
+                              rsi_threshold=30, sma_distance=-10):
     """Crypto drops are extreme but bounces are violent.
 
-    BUY  -- RSI < 20 AND price > 25% below 20-day SMA
+    BUY  -- RSI < rsi_threshold AND price > sma_distance% below 20-day SMA
     EXIT -- RSI > 45 OR price returns to SMA20
     """
     df, err = _prepare_df(symbol, df)
@@ -249,7 +252,7 @@ def extreme_oversold_strategy(symbol, ctx=None, df=None):
     pct_below_sma = ((price - sma_20) / sma_20 * 100) if sma_20 > 0 else 0
 
     # BUY -- extreme oversold
-    if rsi < 30 and pct_below_sma < -10:
+    if rsi < rsi_threshold and pct_below_sma < sma_distance:
         return {
             "symbol": symbol,
             "signal": "BUY",
@@ -296,10 +299,11 @@ def extreme_oversold_strategy(symbol, ctx=None, df=None):
 # 4. Volume Surge
 # ---------------------------------------------------------------------------
 
-def volume_surge_strategy(symbol, ctx=None, df=None):
+def volume_surge_strategy(symbol, ctx=None, df=None,
+                          vol_multiplier=1.5, price_change=1.5):
     """Big volume on crypto usually means something.
 
-    BUY  -- volume > 3x avg AND price up > 3% AND RSI < 65
+    BUY  -- volume > vol_multiplier x avg AND price up > price_change% AND RSI < 70
     EXIT -- volume drops below avg for 2 consecutive periods
     """
     df, err = _prepare_df(symbol, df)
@@ -317,7 +321,7 @@ def volume_surge_strategy(symbol, ctx=None, df=None):
     day_change_pct = ((price - open_price) / open_price * 100) if open_price > 0 else 0
 
     # BUY conditions
-    if vol_ratio > 1.5 and day_change_pct > 1.5 and rsi < 70:
+    if vol_ratio > vol_multiplier and day_change_pct > price_change and rsi < 70:
         return {
             "symbol": symbol,
             "signal": "BUY",
@@ -368,7 +372,7 @@ def volume_surge_strategy(symbol, ctx=None, df=None):
 # Combined Crypto Strategy
 # ---------------------------------------------------------------------------
 
-def crypto_combined_strategy(symbol, ctx=None, df=None):
+def crypto_combined_strategy(symbol, ctx=None, df=None, params=None):
     """Run all four crypto strategies, score them, and return the
     strongest signal.
 
@@ -384,15 +388,50 @@ def crypto_combined_strategy(symbol, ctx=None, df=None):
         score <= -2 -> STRONG_SELL
         else        -> HOLD
     """
+    if params is None:
+        params = {}
+
+    # Extract user-configurable thresholds from params, falling back to defaults
+    rsi_oversold = float(params.get("rsi_oversold", 30.0))
+    volume_surge_mult = float(params.get("volume_surge_multiplier", 1.5))
+
+    # Strategy toggles
+    use_momentum = bool(params.get("strategy_momentum_breakout", True))
+    use_volume_spike = bool(params.get("strategy_volume_spike", True))
+    use_mean_reversion = bool(params.get("strategy_mean_reversion", True))
+
     # Fetch data once and share across strategies
     if df is None:
         df = get_bars(symbol, limit=200)
 
     strategies = {
-        "btc_correlation": btc_correlation_strategy,
-        "trend_following": trend_following_strategy,
-        "extreme_oversold": extreme_oversold_strategy,
-        "volume_surge": volume_surge_strategy,
+        "btc_correlation": lambda sym, ctx=ctx, df=None: (
+            btc_correlation_strategy(sym, ctx=ctx, df=df,
+                                     btc_rsi_threshold=rsi_oversold + 15,
+                                     alt_rsi_threshold=rsi_oversold + 10)
+        ),
+        "trend_following": lambda sym, ctx=ctx, df=None: (
+            trend_following_strategy(sym, ctx=ctx, df=df,
+                                     rsi_low=40, rsi_high=70)
+        ),
+        "extreme_oversold": lambda sym, ctx=ctx, df=None: (
+            extreme_oversold_strategy(sym, ctx=ctx, df=df,
+                                      rsi_threshold=rsi_oversold,
+                                      sma_distance=-10)
+        ),
+        "volume_surge": lambda sym, ctx=ctx, df=None: (
+            volume_surge_strategy(sym, ctx=ctx, df=df,
+                                  vol_multiplier=volume_surge_mult,
+                                  price_change=1.5)
+        ),
+    }
+
+    # Strategy toggle map
+    toggle_map = {
+        "btc_correlation": use_momentum,
+        "trend_following": use_momentum,
+        "extreme_oversold": use_mean_reversion,
+        "volume_surge": use_volume_spike,
     }
 
     votes = {}
@@ -400,6 +439,11 @@ def crypto_combined_strategy(symbol, ctx=None, df=None):
     score = 0
 
     for name, fn in strategies.items():
+        if not toggle_map.get(name, True):
+            results[name] = {"symbol": symbol, "signal": "HOLD",
+                             "reason": f"{name} disabled by user settings"}
+            votes[name] = "HOLD"
+            continue
         result = fn(symbol, ctx=ctx, df=df.copy())
         results[name] = result
         sig = result.get("signal", "HOLD")
