@@ -800,6 +800,249 @@ def trade_detail(decision_id):
     return jsonify(d)
 
 
+def _calculate_risk_metrics(db_paths):
+    """Calculate risk and consistency metrics from trade data across multiple DBs.
+
+    Returns a dict with max drawdown, tail risk, streak, and monthly return data.
+    """
+    import sqlite3
+    from collections import defaultdict
+    from datetime import datetime as _dt
+
+    # Collect all closed trades with pnl across all DBs
+    all_trades = []  # list of (timestamp, symbol, pnl, price, qty)
+    all_snapshots = []  # list of (date, equity)
+
+    for db_path in db_paths:
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT timestamp, symbol, pnl, price, qty "
+                "FROM trades WHERE pnl IS NOT NULL "
+                "ORDER BY timestamp ASC"
+            ).fetchall()
+            for r in rows:
+                all_trades.append({
+                    "timestamp": r["timestamp"] or "",
+                    "symbol": r["symbol"] or "",
+                    "pnl": r["pnl"] or 0,
+                    "price": r["price"] or 0,
+                    "qty": r["qty"] or 0,
+                })
+
+            # Daily snapshots for drawdown
+            snap_rows = conn.execute(
+                "SELECT date, equity FROM daily_snapshots "
+                "WHERE equity IS NOT NULL ORDER BY date ASC"
+            ).fetchall()
+            for r in snap_rows:
+                all_snapshots.append({
+                    "date": r["date"],
+                    "equity": r["equity"],
+                })
+            conn.close()
+        except Exception:
+            pass
+
+    # Sort trades by timestamp
+    all_trades.sort(key=lambda t: t["timestamp"])
+
+    result = {
+        "has_data": len(all_trades) >= 5,
+        # Drawdown
+        "max_drawdown_pct": 0.0,
+        "max_drawdown_peak": 0.0,
+        "max_drawdown_trough": 0.0,
+        "max_drawdown_dates": "N/A",
+        # Tail risk
+        "worst_trade_pnl": 0.0,
+        "worst_trade_symbol": "N/A",
+        "worst_trade_pct": 0.0,
+        "worst_day_pnl": 0.0,
+        "worst_day_date": "N/A",
+        "var_95": 0.0,
+        # Streaks
+        "longest_losing_streak": 0,
+        "longest_winning_streak": 0,
+        "current_streak": 0,
+        "current_streak_type": "none",
+        "avg_losing_streak": 0.0,
+        # Monthly returns
+        "monthly_returns": [],
+    }
+
+    if len(all_trades) < 5:
+        return result
+
+    # --- Max Drawdown from daily_snapshots (preferred) or trades ---
+    if all_snapshots:
+        all_snapshots.sort(key=lambda s: s["date"])
+        peak = all_snapshots[0]["equity"]
+        max_dd = 0.0
+        dd_peak = peak
+        dd_trough = peak
+        dd_peak_date = all_snapshots[0]["date"]
+        dd_trough_date = all_snapshots[0]["date"]
+        cur_peak_date = all_snapshots[0]["date"]
+
+        for s in all_snapshots:
+            eq = s["equity"]
+            if eq > peak:
+                peak = eq
+                cur_peak_date = s["date"]
+            if peak > 0:
+                dd = (peak - eq) / peak
+                if dd > max_dd:
+                    max_dd = dd
+                    dd_peak = peak
+                    dd_trough = eq
+                    dd_peak_date = cur_peak_date
+                    dd_trough_date = s["date"]
+
+        result["max_drawdown_pct"] = round(max_dd * 100, 1)
+        result["max_drawdown_peak"] = round(dd_peak, 2)
+        result["max_drawdown_trough"] = round(dd_trough, 2)
+        if max_dd > 0:
+            result["max_drawdown_dates"] = (
+                f"{dd_peak_date} to {dd_trough_date}, "
+                f"peak ${dd_peak:,.0f} → trough ${dd_trough:,.0f}"
+            )
+    else:
+        # Fallback: reconstruct equity curve from cumulative trade PnL
+        cumulative = 0.0
+        peak = 0.0
+        max_dd = 0.0
+        for t in all_trades:
+            cumulative += t["pnl"]
+            if cumulative > peak:
+                peak = cumulative
+            if peak > 0:
+                dd = (peak - cumulative) / peak
+                if dd > max_dd:
+                    max_dd = dd
+        result["max_drawdown_pct"] = round(max_dd * 100, 1)
+
+    # --- Tail Risk ---
+    # Worst single trade
+    worst_trade = min(all_trades, key=lambda t: t["pnl"])
+    result["worst_trade_pnl"] = round(worst_trade["pnl"], 2)
+    result["worst_trade_symbol"] = worst_trade["symbol"]
+    if worst_trade["price"] and worst_trade["qty"] and worst_trade["price"] > 0:
+        cost_basis = worst_trade["price"] * worst_trade["qty"]
+        if cost_basis > 0:
+            result["worst_trade_pct"] = round(worst_trade["pnl"] / cost_basis * 100, 1)
+
+    # Worst single day P&L
+    daily_pnl = defaultdict(float)
+    for t in all_trades:
+        day = t["timestamp"][:10]
+        daily_pnl[day] += t["pnl"]
+    if daily_pnl:
+        worst_day = min(daily_pnl.items(), key=lambda x: x[1])
+        result["worst_day_pnl"] = round(worst_day[1], 2)
+        result["worst_day_date"] = worst_day[0]
+
+    # VaR at 95% — based on trade PnL as % of cost basis
+    trade_returns = []
+    for t in all_trades:
+        if t["price"] and t["qty"] and t["price"] > 0:
+            cost = t["price"] * t["qty"]
+            if cost > 0:
+                trade_returns.append(t["pnl"] / cost * 100)
+    if trade_returns:
+        trade_returns.sort()
+        idx = max(0, int(len(trade_returns) * 0.05))
+        result["var_95"] = round(trade_returns[idx], 1)
+
+    # --- Streaks ---
+    losing_streaks = []
+    winning_streaks = []
+    current_streak_len = 0
+    current_streak_type = "none"
+
+    for t in all_trades:
+        if t["pnl"] < 0:
+            if current_streak_type == "losing":
+                current_streak_len += 1
+            else:
+                if current_streak_type == "winning" and current_streak_len > 0:
+                    winning_streaks.append(current_streak_len)
+                current_streak_type = "losing"
+                current_streak_len = 1
+        elif t["pnl"] > 0:
+            if current_streak_type == "winning":
+                current_streak_len += 1
+            else:
+                if current_streak_type == "losing" and current_streak_len > 0:
+                    losing_streaks.append(current_streak_len)
+                current_streak_type = "winning"
+                current_streak_len = 1
+        # pnl == 0 treated as neutral, doesn't break streak
+
+    # Don't forget the final streak
+    if current_streak_type == "losing" and current_streak_len > 0:
+        losing_streaks.append(current_streak_len)
+    elif current_streak_type == "winning" and current_streak_len > 0:
+        winning_streaks.append(current_streak_len)
+
+    result["current_streak"] = current_streak_len
+    result["current_streak_type"] = current_streak_type
+    result["longest_losing_streak"] = max(losing_streaks) if losing_streaks else 0
+    result["longest_winning_streak"] = max(winning_streaks) if winning_streaks else 0
+    result["avg_losing_streak"] = (
+        round(sum(losing_streaks) / len(losing_streaks), 1) if losing_streaks else 0.0
+    )
+
+    # --- Monthly Returns ---
+    monthly = defaultdict(lambda: {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0})
+    for t in all_trades:
+        ts = t["timestamp"]
+        if len(ts) >= 7:
+            month_key = ts[:7]  # YYYY-MM
+        else:
+            continue
+        monthly[month_key]["trades"] += 1
+        monthly[month_key]["pnl"] += t["pnl"]
+        if t["pnl"] > 0:
+            monthly[month_key]["wins"] += 1
+        elif t["pnl"] < 0:
+            monthly[month_key]["losses"] += 1
+
+    # Build monthly returns list sorted most recent first
+    # For return_pct, we use pnl / first equity of that month from snapshots,
+    # or if no snapshots, just show raw PnL with 0 return_pct
+    snapshot_by_month = {}
+    for s in all_snapshots:
+        mk = s["date"][:7]
+        if mk not in snapshot_by_month:
+            snapshot_by_month[mk] = s["equity"]
+
+    monthly_list = []
+    for mk in sorted(monthly.keys(), reverse=True):
+        m = monthly[mk]
+        try:
+            dt = _dt.strptime(mk, "%Y-%m")
+            label = dt.strftime("%b %Y")
+        except Exception:
+            label = mk
+        equity_start = snapshot_by_month.get(mk, 0)
+        return_pct = 0.0
+        if equity_start and equity_start > 0:
+            return_pct = round(m["pnl"] / equity_start * 100, 1)
+        monthly_list.append({
+            "month": label,
+            "trades": m["trades"],
+            "wins": m["wins"],
+            "losses": m["losses"],
+            "pnl": round(m["pnl"], 2),
+            "return_pct": return_pct,
+        })
+    result["monthly_returns"] = monthly_list
+
+    return result
+
+
 @views_bp.route("/ai-performance")
 @login_required
 def ai_performance():
@@ -1009,6 +1252,9 @@ def ai_performance():
         if total_slip_count > 0:
             combined_slippage["avg_slippage_pct"] = round(total_slip_sum / total_slip_count, 4)
 
+    # Calculate risk & consistency metrics
+    risk_metrics = _calculate_risk_metrics(db_paths)
+
     return render_template("ai_performance.html",
                            perf=combined_perf,
                            trade_perf=combined_trade,
@@ -1016,7 +1262,9 @@ def ai_performance():
                            profiles=profiles,
                            selected_profile=selected_profile_int,
                            selected_profile_name=selected_profile_name,
-                           slippage=combined_slippage)
+                           slippage=combined_slippage,
+                           risk=risk_metrics,
+                           monthly_returns=risk_metrics.get("monthly_returns", []))
 
 
 @views_bp.route("/api/backtest-vs-reality/<int:profile_id>")

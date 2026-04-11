@@ -876,7 +876,48 @@ The comparison only appears when there are at least 5 closed trades in the perio
 
 ---
 
-## 20. Tax and Regulatory Considerations
+## 20. Risk Metrics & Consistency Reporting
+
+The AI Performance page (`/ai-performance`) includes risk analysis and consistency sections calculated by `_calculate_risk_metrics()` in `views.py`.
+
+### Risk Analysis
+
+Calculated across all profile databases (or filtered to a single profile via dropdown):
+
+| Metric | Calculation | Source |
+|---|---|---|
+| **Max Drawdown** | Largest peak-to-trough decline in equity | `daily_snapshots` table (preferred) or cumulative trade PnL fallback |
+| **Value at Risk (95%)** | 5th percentile of all trade returns sorted ascending | Trade PnL as % of cost basis |
+| **Worst Single Trade** | Minimum PnL across all closed trades | `trades` table |
+| **Worst Day** | Minimum sum of PnL grouped by day | `trades` table grouped by date |
+| **Longest Losing Streak** | Maximum consecutive trades with `pnl < 0` | `trades` table ordered by timestamp |
+| **Current Streak** | Active winning or losing streak | Last N trades |
+| **Longest Winning Streak** | Maximum consecutive trades with `pnl > 0` | `trades` table ordered by timestamp |
+| **Avg Losing Streak** | Mean length of all losing streaks | All identified losing streaks |
+
+### Monthly Returns (Consistency)
+
+Trades are grouped by month (from timestamp `YYYY-MM`), sorted most recent first:
+
+| Column | Description |
+|---|---|
+| Month | Calendar month label (e.g., "Apr 2026") |
+| Trades | Total closed trades that month |
+| Wins | Trades with `pnl > 0` |
+| Losses | Trades with `pnl < 0` |
+| P&L | Sum of all trade PnL for the month |
+| Return | Monthly PnL as % of starting equity (from `daily_snapshots`) |
+
+### Data Requirements
+
+- Risk metrics require at least 5 closed trades; otherwise "Not enough data" is displayed.
+- Max drawdown uses `daily_snapshots` equity values when available; falls back to reconstructing an equity curve from cumulative trade PnL.
+- Monthly return % shows 0.0% when no daily snapshot equity data is available for that month.
+- All sections respect the per-profile filter dropdown on the AI Performance page.
+
+---
+
+## 21. Tax and Regulatory Considerations
 
 ### Current Status
 
@@ -923,7 +964,7 @@ These features are not currently implemented. Users should consult a tax profess
 
 ---
 
-## 21. Scaling Roadmap
+## 22. Scaling Roadmap
 
 See `SCALING_PLAN.md` for the complete scaling plan from $10K paper through $1M+ live trading, including what changes at each stage, what breaks at scale, and success criteria for each milestone.
 

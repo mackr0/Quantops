@@ -224,6 +224,93 @@
 </script>
 {% endif %}
 
+<!-- Risk Analysis -->
+{% if risk and risk.has_data %}
+<article style="border-left:4px solid #9c27b0;">
+    <header><h3>Risk Analysis</h3></header>
+    <div class="grid">
+        <div class="stat-card">
+            <small class="muted">Max Drawdown</small>
+            <strong style="font-size:2rem;" class="pnl-neg">-{{ risk.max_drawdown_pct }}%</strong>
+            <small class="muted">{{ risk.max_drawdown_dates }}</small>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Value at Risk (95%)</small>
+            <strong style="font-size:2rem;" class="pnl-neg">{{ risk.var_95 }}%</strong>
+            <small class="muted">95% of trades better than this</small>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Worst Single Trade</small>
+            <strong style="font-size:2rem;" class="pnl-neg">${{ "{:,.2f}".format(risk.worst_trade_pnl) }}</strong>
+            <small class="muted">{{ risk.worst_trade_symbol }} ({{ risk.worst_trade_pct }}%)</small>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Worst Day</small>
+            <strong style="font-size:2rem;" class="pnl-neg">${{ "{:,.2f}".format(risk.worst_day_pnl) }}</strong>
+            <small class="muted">{{ risk.worst_day_date }}</small>
+        </div>
+    </div>
+    <div class="grid">
+        <div class="stat-card">
+            <small class="muted">Longest Losing Streak</small>
+            <strong class="pnl-neg">{{ risk.longest_losing_streak }} trades</strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Current Streak</small>
+            <strong class="{{ 'pnl-pos' if risk.current_streak_type == 'winning' else 'pnl-neg' if risk.current_streak_type == 'losing' else '' }}">
+                {{ risk.current_streak }} {{ risk.current_streak_type }}
+            </strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Longest Winning Streak</small>
+            <strong class="pnl-pos">{{ risk.longest_winning_streak }} trades</strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Avg Losing Streak</small>
+            <strong>{{ risk.avg_losing_streak }} trades</strong>
+        </div>
+    </div>
+</article>
+{% elif risk and not risk.has_data %}
+<article style="border-left:4px solid #9c27b0;">
+    <header><h3>Risk Analysis</h3></header>
+    <p class="muted">Not enough data &mdash; need at least 5 closed trades for risk metrics.</p>
+</article>
+{% endif %}
+
+<!-- Monthly Returns (Consistency) -->
+{% if monthly_returns %}
+<article style="border-left:4px solid #607d8b;">
+    <header><h3>Monthly Returns</h3></header>
+    <div class="overflow-auto">
+        <table>
+            <thead>
+                <tr>
+                    <th>Month</th>
+                    <th>Trades</th>
+                    <th>Wins</th>
+                    <th>Losses</th>
+                    <th>P&amp;L</th>
+                    <th>Return</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for m in monthly_returns %}
+                <tr>
+                    <td>{{ m.month }}</td>
+                    <td>{{ m.trades }}</td>
+                    <td class="pnl-pos">{{ m.wins }}</td>
+                    <td class="pnl-neg">{{ m.losses }}</td>
+                    <td class="{{ 'pnl-pos' if m.pnl >= 0 else 'pnl-neg' }}">${{ "{:,.2f}".format(m.pnl) }}</td>
+                    <td class="{{ 'pnl-pos' if m.return_pct >= 0 else 'pnl-neg' }}">{{ "{:+.1f}".format(m.return_pct) }}%</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</article>
+{% endif %}
+
 <!-- AI Prediction Accuracy (theoretical — did the AI predict direction correctly?) -->
 <h3>AI Prediction Accuracy</h3>
 <p class="muted" style="margin-top:-0.5rem;">How often the AI correctly predicted price direction — includes predictions that didn't result in trades.</p>
