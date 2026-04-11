@@ -12,6 +12,7 @@ AI Review Gate:
 """
 
 import json
+import logging
 from client import get_api, get_account_info, get_positions
 from portfolio_manager import check_portfolio_constraints, check_drawdown, calculate_atr_stops
 from journal import init_db, log_trade, log_signal
@@ -119,7 +120,8 @@ def ai_review(symbol, technical_signal, ctx=None, political_context=None):
 # ---------------------------------------------------------------------------
 
 def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
-                             max_position_pct=None, log=True):
+                             max_position_pct=None, log=True,
+                             _account=None, _positions_list=None, _dd=None):
     """Execute a trade with aggressive position sizing.
 
     Args:
@@ -132,6 +134,9 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
         max_position_pct: Max fraction of equity for one position.  Falls back
                           to ctx or module constant.
         log: Whether to write to the journal database.
+        _account: Pre-fetched account info dict. If None, fetched fresh.
+        _positions_list: Pre-fetched positions list. If None, fetched fresh.
+        _dd: Pre-fetched drawdown dict. If None, computed fresh.
     """
     # Check exclusion list — symbol is analyzed but never traded
     if ctx is not None:
@@ -147,7 +152,9 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
             }
 
     # Earnings calendar check — skip stocks reporting earnings soon
-    if ctx is not None:
+    # (When called from run_aggressive_scan_and_trade, this is already
+    # handled by pre-filtering. This check remains for direct callers.)
+    if ctx is not None and _positions_list is None:
         try:
             avoid_days = getattr(ctx, "avoid_earnings_days", 2)
             if avoid_days > 0:
@@ -174,11 +181,13 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
     db_path = ctx.db_path if ctx is not None else None
 
     api = get_api(ctx)
-    account = get_account_info(api)
+
+    # Use pre-fetched data if available, otherwise fetch fresh
+    account = _account if _account is not None else get_account_info(api)
 
     # --- Drawdown protection ---
-    dd = {"action": "normal", "drawdown_pct": 0.0, "peak_equity": 0, "current_equity": 0}
-    if ctx is not None:
+    dd = _dd if _dd is not None else {"action": "normal", "drawdown_pct": 0.0, "peak_equity": 0, "current_equity": 0}
+    if ctx is not None and _dd is None:
         dd = check_drawdown(ctx, account, db_path=db_path)
         print(f"    Drawdown: {dd['drawdown_pct']:.1f}% (peak ${dd['peak_equity']:,.0f}, current ${dd['current_equity']:,.0f}) -> {dd['action']}")
         if dd["action"] == "pause":
@@ -191,12 +200,14 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
                 "strategy": "aggressive",
             }
 
-    positions_list = get_positions(api)
-
-    # Filter positions to match profile's market type
-    if ctx is not None:
-        is_crypto = ctx.segment == "crypto"
-        positions_list = [p for p in positions_list if ("/" in p["symbol"]) == is_crypto]
+    if _positions_list is not None:
+        positions_list = _positions_list
+    else:
+        positions_list = get_positions(api)
+        # Filter positions to match profile's market type
+        if ctx is not None:
+            is_crypto = ctx.segment == "crypto"
+            positions_list = [p for p in positions_list if ("/" in p["symbol"]) == is_crypto]
 
     # --- Correlation check ---
     correlation_reduce = False
@@ -552,27 +563,133 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
 
 def run_aggressive_scan_and_trade(candidates, ctx=None, max_position_pct=None,
                                   log=True):
-    """Screen candidates with aggressive strategies, AI-review before trading.
+    """Pipeline: pre-filter -> strategy -> AI review -> execute.
 
-    Pipeline for each candidate:
-      1. Run aggressive_combined_strategy -> technical signal
-      2. If signal is actionable (BUY/SELL), run AI review
-      3. If AI approves, execute the trade
-      4. If AI vetoes, skip and log the veto
+    AI is ONLY called on candidates that can realistically result in a trade.
+    Portfolio state is fetched ONCE at the top and reused throughout.
 
     Parameters
     ----------
+    candidates : list[str]
+        Ticker symbols to evaluate.
     ctx : UserContext, optional
         Passed through to ai_review and aggressive_execute_trade.
     max_position_pct : float, optional
         Override for position sizing.  Falls back to ctx or module constant.
+    log : bool
+        Whether to write to the journal database.
 
     Returns summary dict with counts and details.
     """
     if max_position_pct is None:
         max_position_pct = ctx.max_position_pct if ctx is not None else AGGRESSIVE_MAX_POSITION_PCT
 
-    # Fetch market regime once at start of cycle
+    # ── STEP 0: Portfolio state (fetched ONCE) ──────────────────────
+    api = get_api(ctx)
+    account = get_account_info(api)
+    positions_list = get_positions(api)
+
+    # Filter positions by market type (crypto vs equity)
+    if ctx is not None:
+        is_crypto = ctx.segment == "crypto"
+        positions_list = [p for p in positions_list if ("/" in p["symbol"]) == is_crypto]
+
+    held_symbols = {p["symbol"] for p in positions_list}
+    positions_dict = {p["symbol"]: p for p in positions_list}
+
+    # Drawdown check — ONCE at the top
+    drawdown_action = "normal"
+    dd = {"action": "normal", "drawdown_pct": 0.0, "peak_equity": 0, "current_equity": 0}
+    if ctx is not None:
+        dd = check_drawdown(ctx, account, db_path=ctx.db_path)
+        drawdown_action = dd.get("action", "normal")
+        logging.info(f"Drawdown: {dd['drawdown_pct']:.1f}% (peak ${dd['peak_equity']:,.0f}, "
+                     f"current ${dd['current_equity']:,.0f}) -> {drawdown_action}")
+        if drawdown_action == "pause":
+            logging.info(f"Drawdown pause: {dd['drawdown_pct']:.1f}% — skipping all trades")
+            return {
+                "total": len(candidates), "buys": 0, "sells": 0, "shorts": 0,
+                "holds": 0, "skips": len(candidates), "ai_vetoed": 0, "errors": 0,
+                "pre_filtered": len(candidates), "sent_to_ai": 0,
+                "details": [{"symbol": s, "action": "DRAWDOWN_PAUSE"} for s in candidates],
+                "vetoed_details": [],
+            }
+
+    enable_shorts = ctx.enable_short_selling if ctx is not None else False
+    num_positions = len(positions_list)
+    max_positions = ctx.max_total_positions if ctx is not None else 10
+    at_max_positions = num_positions >= max_positions
+
+    # ── STEP 1: Pre-filter (NO AI calls, NO strategy calls) ────────
+    # Load auto-blacklist
+    symbol_reputation = {}
+    if ctx is not None:
+        try:
+            from self_tuning import get_symbol_reputation
+            symbol_reputation = get_symbol_reputation(ctx.db_path)
+        except Exception as exc:
+            logging.warning(f"Could not load symbol reputation: {exc}")
+
+    # Load earnings calendar
+    earnings_blocklist = set()
+    if ctx is not None:
+        avoid_days = getattr(ctx, "avoid_earnings_days", 2)
+        if avoid_days > 0:
+            from earnings_calendar import check_earnings as _check_earnings
+            for sym in candidates:
+                try:
+                    e = _check_earnings(sym)
+                    if e and e["days_until"] <= avoid_days:
+                        earnings_blocklist.add(sym)
+                except Exception:
+                    pass
+
+    filtered_candidates = []
+    pre_filter_skips = []
+
+    for symbol in candidates:
+        # Auto-blacklisted?
+        if symbol in symbol_reputation:
+            rep = symbol_reputation[symbol]
+            if rep["win_rate"] == 0 and rep["total"] >= 3:
+                logging.info(f"  Auto-blacklisted {symbol}: 0/{rep['total']} wins")
+                pre_filter_skips.append({
+                    "symbol": symbol, "action": "AUTO_BLACKLISTED",
+                    "reason": f"0% win rate on {rep['total']} predictions",
+                })
+                # Log to activity feed
+                if ctx is not None:
+                    try:
+                        from models import log_activity
+                        log_activity(
+                            ctx.profile_id, ctx.user_id, "auto_blacklist",
+                            f"Auto-blacklisted {symbol}",
+                            f"0/{rep['total']} wins — skipping until track record improves",
+                            symbol=symbol,
+                        )
+                    except Exception:
+                        pass
+                continue
+
+        # Earnings block?
+        if symbol in earnings_blocklist:
+            pre_filter_skips.append({
+                "symbol": symbol, "action": "EARNINGS_SKIP",
+                "reason": f"Earnings within {getattr(ctx, 'avoid_earnings_days', 2)} days",
+            })
+            continue
+
+        # At max positions and don't hold this stock? Can only close existing.
+        if at_max_positions and symbol not in held_symbols:
+            pre_filter_skips.append({
+                "symbol": symbol, "action": "SKIP",
+                "reason": "At max positions, can only close existing",
+            })
+            continue
+
+        filtered_candidates.append(symbol)
+
+    # ── STEP 2: Fetch regime and political context ONCE ─────────────
     regime_info = None
     try:
         from market_regime import detect_regime
@@ -593,9 +710,8 @@ def run_aggressive_scan_and_trade(candidates, ctx=None, max_position_pct=None,
                 except Exception:
                     pass
     except Exception as _regime_exc:
-        print(f"  Warning: Could not detect market regime: {_regime_exc}")
+        logging.warning(f"Could not detect market regime: {_regime_exc}")
 
-    # Fetch political context once for the entire scan if MAGA mode is enabled
     political_context = None
     maga_mode = ctx.maga_mode if ctx is not None else False
     if maga_mode:
@@ -603,84 +719,62 @@ def run_aggressive_scan_and_trade(candidates, ctx=None, max_position_pct=None,
         print("  MAGA Mode active — fetching political context...", flush=True)
         political_context = get_maga_mode_context(ctx=ctx)
         if political_context:
-            print(f"  {political_context.splitlines()[0]}")  # Print first line
+            print(f"  {political_context.splitlines()[0]}")
 
-    # Get current positions once (for SELL signal filtering)
-    current_positions = {}
-    try:
-        current_positions = {p["symbol"]: p for p in get_positions(get_api(ctx))}
-    except Exception:
-        pass
+    market_type = ctx.segment if ctx is not None else "small"
 
-    # Per-stock reputation: auto-blacklist symbols with 0% win rate
-    symbol_reputation = {}
-    if ctx is not None:
-        try:
-            from self_tuning import get_symbol_reputation
-            symbol_reputation = get_symbol_reputation(ctx.db_path)
-        except Exception as exc:
-            print(f"  Warning: Could not load symbol reputation: {exc}")
+    # ── STEP 3: Run strategy on filtered candidates only ────────────
+    logging.info(f"Pipeline: {len(candidates)} candidates -> {len(filtered_candidates)} after pre-filter "
+                 f"({len(pre_filter_skips)} removed: "
+                 f"{sum(1 for s in pre_filter_skips if s['action'] == 'AUTO_BLACKLISTED')} blacklisted, "
+                 f"{sum(1 for s in pre_filter_skips if s['action'] == 'EARNINGS_SKIP')} earnings, "
+                 f"{sum(1 for s in pre_filter_skips if s['action'] == 'SKIP')} max-positions)")
 
-    details = []
+    details = list(pre_filter_skips)  # Include skips in details
     vetoed = []
     errors = []
+    sent_to_ai = 0
 
-    for symbol in candidates:
+    for symbol in filtered_candidates:
         try:
-            # Auto-blacklist: skip symbols with 0% win rate on 3+ predictions
-            if symbol in symbol_reputation:
-                rep = symbol_reputation[symbol]
-                if rep["win_rate"] == 0 and rep["total"] >= 3:
-                    print(f"  Auto-blacklisted {symbol}: 0/{rep['total']} wins")
-                    details.append({
-                        "symbol": symbol,
-                        "action": "AUTO_BLACKLISTED",
-                        "reason": f"0% win rate on {rep['total']} predictions",
-                    })
-                    # Log to activity feed
-                    if ctx is not None:
-                        try:
-                            from models import log_activity
-                            log_activity(
-                                ctx.profile_id, ctx.user_id, "auto_blacklist",
-                                f"Auto-blacklisted {symbol}",
-                                f"0/{rep['total']} wins — skipping until track record improves",
-                                symbol=symbol,
-                            )
-                        except Exception:
-                            pass
-                    continue
-
-            # Step 1: Technical analysis — route to market-specific strategy engine
-            market_type = ctx.segment if ctx else "small"
+            # Run strategy
             signal = run_strategy(symbol, market_type, ctx=ctx)
-
             action = signal.get("signal", "HOLD")
             score = signal.get("score", 0)
             votes = signal.get("votes", {})
 
-            # In MAGA mode, a score of 0 with a mean_reversion BUY vote
-            # should still go to AI review — the AI may see it as a
-            # politically-driven dip worth buying
-            has_mean_reversion_buy = votes.get("mean_reversion") == "BUY"
-            if action == "HOLD" and maga_mode and has_mean_reversion_buy:
+            # MAGA mode override for mean reversion
+            has_mr_buy = (votes.get("mean_reversion") == "BUY"
+                          or votes.get("extreme_oversold") == "BUY"
+                          or votes.get("penny_reversal") == "BUY")
+            if action == "HOLD" and maga_mode and has_mr_buy:
                 action = "BUY"
                 signal["signal"] = "BUY"
-                signal["reason"] = f"MAGA Mode override: {signal.get('reason', '')} | Mean reversion BUY active despite conflicting signals"
+                signal["reason"] = (f"MAGA Mode override: {signal.get('reason', '')} "
+                                    f"| Mean reversion BUY active despite conflicting signals")
 
+            # HOLD -> skip AI (no cost)
             if action == "HOLD":
-                details.append({"symbol": symbol, "action": "HOLD", "reason": signal.get("reason", "")})
+                details.append({"symbol": symbol, "action": "HOLD",
+                                "reason": signal.get("reason", "")})
                 continue
 
-            # Skip SELL signals that can't result in a trade (saves AI tokens)
-            enable_shorts = ctx.enable_short_selling if ctx is not None else False
+            # SELL with no position and no shorts -> skip AI (no cost)
             if action in ("SELL", "STRONG_SELL"):
-                if symbol not in current_positions and not enable_shorts:
-                    details.append({"symbol": symbol, "action": "SKIP", "reason": "SELL signal but no position and shorts disabled"})
+                if symbol not in held_symbols and not enable_shorts:
+                    details.append({"symbol": symbol, "action": "SKIP",
+                                    "reason": "SELL signal, no position, shorts disabled"})
                     continue
 
-            # Step 2: AI review for actionable signals
-            print(f"  {symbol}: {action} (score {signal.get('score', '?')})")
+            # BUY when already holding -> skip AI (no cost)
+            if action in ("BUY", "STRONG_BUY") and symbol in held_symbols:
+                details.append({"symbol": symbol, "action": "SKIP",
+                                "reason": f"Already holding {symbol}"})
+                continue
+
+            # ── STEP 4: AI review (ONLY for trades that can actually execute) ──
+            sent_to_ai += 1
+            print(f"  {symbol}: {action} (score {score})")
             approved, ai_result = ai_review(symbol, signal, ctx=ctx,
                                             political_context=political_context)
 
@@ -693,19 +787,19 @@ def run_aggressive_scan_and_trade(candidates, ctx=None, max_position_pct=None,
                     "ai_reasoning": ai_result.get("reasoning", ""),
                 })
                 details.append({
-                    "symbol": symbol,
-                    "action": "AI_VETOED",
-                    "signal": action,
+                    "symbol": symbol, "action": "AI_VETOED", "signal": action,
                     "ai_signal": ai_result.get("signal"),
                     "ai_confidence": ai_result.get("confidence"),
                     "reason": f"AI vetoed: {ai_result.get('reasoning', '')[:100]}",
                 })
                 continue
 
-            # Step 3: Execute trade
+            # ── STEP 5: Execute ────────────────────────────────────────
             trade_result = aggressive_execute_trade(
                 symbol, signal, ctx=ctx, ai_result=ai_result,
                 max_position_pct=max_position_pct, log=log,
+                _account=account, _positions_list=positions_list,
+                _dd=dd,
             )
             details.append(trade_result)
 
@@ -713,12 +807,19 @@ def run_aggressive_scan_and_trade(candidates, ctx=None, max_position_pct=None,
             errors.append({"symbol": symbol, "error": str(exc)})
             details.append({"symbol": symbol, "action": "ERROR", "reason": str(exc)})
 
+    # Build summary
     buys = [d for d in details if d.get("action") == "BUY"]
     sells = [d for d in details if d.get("action") == "SELL"]
     shorts = [d for d in details if d.get("action") == "SHORT"]
     holds = [d for d in details if d.get("action") == "HOLD"]
-    skips = [d for d in details if d.get("action") in ("SKIP", "BLOCKED", "NONE")]
-    ai_vetoed = [d for d in details if d.get("action") == "AI_VETOED"]
+    skips = [d for d in details if d.get("action") in ("SKIP", "BLOCKED", "NONE",
+                                                         "DRAWDOWN_PAUSE", "EXCLUDED",
+                                                         "AUTO_BLACKLISTED", "EARNINGS_SKIP")]
+    ai_vetoed_list = [d for d in details if d.get("action") == "AI_VETOED"]
+
+    logging.info(f"Pipeline complete: {len(candidates)} candidates -> "
+                 f"{len(filtered_candidates)} post-filter -> {sent_to_ai} sent to AI -> "
+                 f"{len(buys)} buys, {len(sells)} sells, {len(shorts)} shorts")
 
     return {
         "total": len(candidates),
@@ -727,8 +828,10 @@ def run_aggressive_scan_and_trade(candidates, ctx=None, max_position_pct=None,
         "shorts": len(shorts),
         "holds": len(holds),
         "skips": len(skips),
-        "ai_vetoed": len(ai_vetoed),
+        "ai_vetoed": len(ai_vetoed_list),
         "errors": len(errors),
+        "pre_filtered": len(pre_filter_skips),
+        "sent_to_ai": sent_to_ai,
         "details": details,
         "vetoed_details": vetoed,
     }

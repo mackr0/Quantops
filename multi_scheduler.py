@@ -410,6 +410,8 @@ def _task_aggressive_scan_and_trade(ctx):
         f"shorts={summary.get('shorts', 0)}, "
         f"ai_vetoed={summary.get('ai_vetoed', 0)}, "
         f"holds={summary.get('holds', 0)}, "
+        f"pre_filtered={summary.get('pre_filtered', 0)}, "
+        f"sent_to_ai={summary.get('sent_to_ai', '?')}, "
         f"errors={summary.get('errors', 0)}"
     )
 
