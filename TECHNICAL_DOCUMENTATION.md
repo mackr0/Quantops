@@ -805,4 +805,128 @@ Worst Trade:        -6.2%              -5.1%            +1.1% ↑
 
 ---
 
+## 18. Slippage Tracking
+
+### Overview
+
+The system tracks the difference between the price at decision time (when the strategy/AI decided to trade) and the actual fill price from Alpaca. This measures real execution quality.
+
+### How It Works
+
+1. **Decision price** recorded when the order is submitted — this is the price the strategy saw when it generated the signal
+2. **Fill price** captured asynchronously — a background task queries Alpaca every 15 minutes for recently filled orders and updates the trade record with `filled_avg_price`
+3. **Slippage calculated** as: `(fill_price - decision_price) / decision_price × 100`
+
+### Database Fields (trades table)
+
+| Column | Type | Description |
+|---|---|---|
+| `decision_price` | REAL | Price when strategy/AI made the decision |
+| `fill_price` | REAL | Actual fill price from Alpaca (updated async) |
+| `slippage_pct` | REAL | Percentage slippage (positive = worse fill) |
+
+### Metrics Displayed
+
+The AI Performance page shows:
+- **Average slippage per trade** (%)
+- **Total slippage cost** ($)
+- **Worst slippage trade** (symbol and %)
+- Only displayed when fill price data is available
+
+### Backtester Slippage Model
+
+The backtester applies simulated slippage:
+- **Entry:** 0.2% above current price (buying pushes price up)
+- **Exit:** 0.2% below target price (selling pushes price down)
+- **Total round-trip:** ~0.4% per trade
+
+This makes backtest results more conservative and closer to real trading.
+
+---
+
+## 19. Backtest vs Reality Comparison
+
+### Overview
+
+Compares what the backtester predicted the strategy would do against what actually happened in live trading. This validates whether the backtest model is reliable.
+
+### How It Works
+
+1. When a profile is selected on the AI Performance page, the system runs a 30-day backtest with that profile's current settings (async, no timeout)
+2. Queries actual trades from the same 30-day period
+3. Displays a comparison:
+
+```
+                    Backtest Predicted    Actual Results    Gap
+Win Rate:           48.1%                35.2%             -12.9%
+Total Return:       +8.9%                -4.2%             -13.1%
+Avg Slippage:       0.2% (simulated)     0.8% (actual)     +0.6%
+Trades:             42                   28                -14
+```
+
+### Interpreting the Gap
+
+| Gap | Meaning |
+|---|---|
+| Small gap (<5%) | Backtest model is reliable, strategy performs as predicted |
+| Medium gap (5-15%) | Some difference due to slippage, timing, or AI vetoes |
+| Large gap (>15%) | Backtest model is unreliable — likely slippage, liquidity, or regime change |
+
+The comparison only appears when there are at least 5 closed trades in the period.
+
+---
+
+## 20. Tax and Regulatory Considerations
+
+### Current Status
+
+The system is a paper trading platform and does not currently handle tax reporting. The following considerations apply if the system is used with real money:
+
+### Short-Term Capital Gains
+
+All trades held less than 1 year are taxed as ordinary income (not the lower long-term capital gains rate). Since this system is designed for short-term trades (average hold: days to weeks), virtually all profits would be short-term gains. Tax rates range from 10-37% depending on income bracket.
+
+### Wash Sale Rule
+
+The IRS wash sale rule disallows a tax deduction on a loss if you buy the same or "substantially identical" security within 30 days before or after the sale. This system frequently trades the same stocks, which means:
+- Losses may not be immediately deductible
+- The disallowed loss gets added to the cost basis of the replacement purchase
+- The self-tuning system could re-buy a stock it just sold at a loss within days
+
+A wash sale tracking module would need to:
+- Track all sells at a loss per symbol
+- Check if the same symbol was bought within 30 days before or after
+- Adjust cost basis accordingly
+- Flag affected trades in the tax report
+
+### Pattern Day Trader (PDT) Rule
+
+If a trader executes 4 or more day trades within 5 business days in a margin account, they're classified as a Pattern Day Trader and must maintain $25,000 minimum equity. This system's 30-minute scan interval means it can open and close positions within the same day.
+
+Implications:
+- Accounts under $25K should limit day trades to 3 per 5-day period
+- The system should track day trade count and pause if approaching the limit
+- Cash accounts (not margin) are exempt from PDT but have settlement delays
+
+### What Would Need to Be Built
+
+| Feature | Purpose | Priority |
+|---|---|---|
+| Tax lot tracking | Track cost basis per share for accurate gain/loss | High |
+| Wash sale detection | Flag trades affected by wash sale rule | High |
+| Day trade counter | Track day trades to avoid PDT violation | High |
+| Tax report export | Generate IRS-compatible trade report (Form 8949) | Medium |
+| Holding period tracking | Distinguish short-term vs long-term gains | Medium |
+| Cost basis methods | Support FIFO, LIFO, specific identification | Low |
+
+These features are not currently implemented. Users should consult a tax professional before using this system with real money.
+
+---
+
+## 21. Scaling Roadmap
+
+See `SCALING_PLAN.md` for the complete scaling plan from $10K paper through $1M+ live trading, including what changes at each stage, what breaks at scale, and success criteria for each milestone.
+
+---
+
 *This document describes a paper trading system. No real capital is at risk. The system is designed to test AI-augmented trading strategies across multiple market segments.*
