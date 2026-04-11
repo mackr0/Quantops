@@ -25,24 +25,39 @@ ssh ${REMOTE_USER}@${DROPLET_IP} "mkdir -p ${REMOTE_DIR}/{logs,static,templates}
 # ── Step 3: Sync files ───────────────────────────────────────────────
 echo ""
 echo "[3/7] Syncing files to droplet..."
+# SAFETY: Use explicit file list — NEVER sync venv, __pycache__, .git, or databases
 rsync -avz --progress \
-    --exclude 'venv/' \
-    --exclude '__pycache__/' \
-    --exclude '.git/' \
-    --exclude '*.db' \
-    --exclude '*.db-shm' \
-    --exclude '*.db-wal' \
+    --filter '- venv/' \
+    --filter '- venv/**' \
+    --filter '- __pycache__/' \
+    --filter '- __pycache__/**' \
+    --filter '- .git/' \
+    --filter '- .git/**' \
+    --filter '- *.db' \
+    --filter '- *.db-shm' \
+    --filter '- *.db-wal' \
+    --filter '- *.pyc' \
+    --filter '- .DS_Store' \
     --include '*.py' \
     --include '*.html' \
     --include '*.css' \
     --include '*.js' \
-    --include 'requirements.txt' \
+    --include '*.md' \
+    --include '*.txt' \
+    --include '*.sh' \
+    --include '*.png' \
     --include '.env' \
-    --include 'templates/***' \
-    --include 'static/***' \
-    --include '*/' \
+    --include 'templates/' \
+    --include 'templates/**' \
+    --include 'static/' \
+    --include 'static/**' \
     --exclude '*' \
     ./ ${REMOTE_USER}@${DROPLET_IP}:${REMOTE_DIR}/
+
+# SAFETY CHECK: verify venv wasn't corrupted
+echo ""
+echo "Verifying remote venv integrity..."
+ssh ${REMOTE_USER}@${DROPLET_IP} "head -1 ${REMOTE_DIR}/venv/bin/gunicorn | grep -q '/opt/quantopsai/venv' && echo 'SAFE: venv shebangs correct' || echo 'DANGER: venv corrupted — run: ${REMOTE_DIR}/venv/bin/pip install -r ${REMOTE_DIR}/requirements.txt'"
 
 # ── Step 4: Set up Python environment ────────────────────────────────
 echo ""
