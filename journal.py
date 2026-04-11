@@ -42,7 +42,10 @@ def init_db(db_path=None):
             stop_loss REAL,
             take_profit REAL,
             status TEXT DEFAULT 'open',
-            pnl REAL
+            pnl REAL,
+            decision_price REAL,
+            fill_price REAL,
+            slippage_pct REAL
         );
 
         CREATE TABLE IF NOT EXISTS signals (
@@ -85,15 +88,46 @@ def init_db(db_path=None):
             resolution_price REAL
         );
     """)
+
+    # Auto-migration: add slippage columns to existing databases
+    _migrate_slippage_columns(conn)
+
     conn.commit()
     conn.close()
+
+
+def _migrate_slippage_columns(conn):
+    """Add decision_price, fill_price, slippage_pct columns if missing."""
+    try:
+        existing = {
+            row[1] for row in conn.execute("PRAGMA table_info(trades)").fetchall()
+        }
+        for col, col_type in [
+            ("decision_price", "REAL"),
+            ("fill_price", "REAL"),
+            ("slippage_pct", "REAL"),
+        ]:
+            if col not in existing:
+                conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {col_type}")
+    except Exception:
+        pass  # Table may not exist yet (first run)
 
 
 def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
               strategy=None, reason=None, ai_reasoning=None, ai_confidence=None,
               stop_loss=None, take_profit=None, status="open", pnl=None,
+              decision_price=None, fill_price=None, slippage_pct=None,
               db_path=None):
     """Log a trade execution to the journal.
+
+    Parameters
+    ----------
+    decision_price : float, optional
+        The price the strategy/AI saw when making the decision.
+    fill_price : float, optional
+        The actual fill price from Alpaca (updated later by fill updater).
+    slippage_pct : float, optional
+        (fill_price - decision_price) / decision_price * 100.
 
     Returns the row id of the inserted trade.
     """
@@ -101,13 +135,14 @@ def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
     cursor = conn.execute(
         """INSERT INTO trades
            (timestamp, symbol, side, qty, price, order_id, signal_type, strategy,
-            reason, ai_reasoning, ai_confidence, stop_loss, take_profit, status, pnl)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            reason, ai_reasoning, ai_confidence, stop_loss, take_profit, status, pnl,
+            decision_price, fill_price, slippage_pct)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             datetime.utcnow().isoformat(),
             symbol, side, qty, price, order_id, signal_type, strategy,
             reason, ai_reasoning, ai_confidence, stop_loss, take_profit,
-            status, pnl,
+            status, pnl, decision_price, fill_price, slippage_pct,
         ),
     )
     conn.commit()
@@ -282,3 +317,49 @@ def get_equity_curve(days=30, db_path=None):
     conn.close()
     # Return in chronological order
     return [dict(r) for r in reversed(rows)]
+
+
+def get_slippage_stats(db_path=None):
+    """Return slippage statistics from trades that have fill_price data.
+
+    Returns a dict with avg_slippage_pct, total_slippage_cost, worst_slippage,
+    trades_with_fills, or None if no fill data is available.
+    """
+    conn = _get_conn(db_path)
+    try:
+        row = conn.execute("""
+            SELECT
+                COUNT(*) AS trades_with_fills,
+                AVG(slippage_pct) AS avg_slippage_pct,
+                MAX(ABS(slippage_pct)) AS worst_slippage_pct,
+                SUM(ABS(fill_price - decision_price) * qty) AS total_slippage_cost
+            FROM trades
+            WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL
+              AND decision_price > 0
+        """).fetchone()
+
+        if not row or row["trades_with_fills"] == 0:
+            conn.close()
+            return None
+
+        # Get the worst slippage trade details
+        worst = conn.execute("""
+            SELECT symbol, side, qty, decision_price, fill_price, slippage_pct, timestamp
+            FROM trades
+            WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL
+              AND decision_price > 0
+            ORDER BY ABS(slippage_pct) DESC
+            LIMIT 1
+        """).fetchone()
+
+        conn.close()
+        return {
+            "trades_with_fills": row["trades_with_fills"],
+            "avg_slippage_pct": round(row["avg_slippage_pct"] or 0, 4),
+            "worst_slippage_pct": round(row["worst_slippage_pct"] or 0, 4),
+            "total_slippage_cost": round(row["total_slippage_cost"] or 0, 2),
+            "worst_trade": dict(worst) if worst else None,
+        }
+    except Exception:
+        conn.close()
+        return None

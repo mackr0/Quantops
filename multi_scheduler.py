@@ -134,6 +134,11 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             f"[{seg_label}] Cancel Stale Orders",
             lambda: _task_cancel_stale_orders(ctx),
         )
+        # Update fill prices from Alpaca for slippage tracking
+        run_task(
+            f"[{seg_label}] Update Fill Prices",
+            lambda: _task_update_fills(ctx),
+        )
 
     if run_predictions:
         run_task(
@@ -527,6 +532,55 @@ def _task_cancel_stale_orders(ctx):
             )
     except Exception:
         logging.exception(f"[{seg_label}] Failed to cancel stale orders")
+
+
+def _task_update_fills(ctx):
+    """Update fill prices on recent trades from Alpaca order data."""
+    import sqlite3
+    from client import get_api
+
+    seg_label = ctx.display_name or ctx.segment
+    db_path = ctx.db_path
+    api = get_api(ctx)
+
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+
+        # Find trades with no fill_price that have an order_id
+        unfilled = conn.execute(
+            "SELECT id, order_id, decision_price FROM trades "
+            "WHERE fill_price IS NULL AND order_id IS NOT NULL "
+            "AND decision_price IS NOT NULL"
+        ).fetchall()
+
+        if not unfilled:
+            conn.close()
+            return
+
+        updated = 0
+        for trade in unfilled:
+            try:
+                order = api.get_order(trade["order_id"])
+                if order.filled_avg_price:
+                    fill = float(order.filled_avg_price)
+                    dec = trade["decision_price"] or 0
+                    slip = ((fill - dec) / dec * 100) if dec > 0 else 0
+                    conn.execute(
+                        "UPDATE trades SET fill_price = ?, slippage_pct = ? WHERE id = ?",
+                        (fill, round(slip, 4), trade["id"]),
+                    )
+                    updated += 1
+            except Exception:
+                pass  # Order may not exist yet or API error
+
+        conn.commit()
+        conn.close()
+
+        if updated > 0:
+            logging.info(f"[{seg_label}] Updated fill prices on {updated} trade(s)")
+    except Exception:
+        logging.exception(f"[{seg_label}] Failed to update fill prices")
 
 
 def _task_check_exits(ctx):

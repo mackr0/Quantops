@@ -106,6 +106,7 @@ def execute_trade(symbol, signal, ctx=None, strategy_name="combined", log=True):
                         reason=signal.get("reason"),
                         ai_reasoning=signal.get("ai_raw_reasoning"),
                         ai_confidence=signal.get("confidence"),
+                        decision_price=price,
                         db_path=db_path,
                     )
 
@@ -143,6 +144,7 @@ def execute_trade(symbol, signal, ctx=None, strategy_name="combined", log=True):
                 strategy=strategy_name,
                 reason=signal.get("reason"),
                 pnl=pnl,
+                decision_price=price,
                 db_path=db_path,
             )
 
@@ -272,6 +274,7 @@ def check_exits(ctx=None):
             strategy=trigger_signal["trigger"],
             reason=trigger_signal["reason"],
             pnl=pnl,
+            decision_price=trigger_signal["price"],
             db_path=db_path,
         )
 

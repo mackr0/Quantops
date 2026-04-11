@@ -365,6 +365,7 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
                 ai_confidence=ai_confidence,
                 stop_loss=actual_sl_pct,
                 take_profit=actual_tp_pct,
+                decision_price=price,
                 db_path=db_path,
             )
 
@@ -406,6 +407,7 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
                 ai_reasoning=ai_reasoning,
                 ai_confidence=ai_confidence,
                 pnl=pnl,
+                decision_price=price,
                 db_path=db_path,
             )
 
@@ -523,6 +525,7 @@ def aggressive_execute_trade(symbol, signal, ctx=None, ai_result=None,
                             ai_confidence=ai_confidence,
                             stop_loss=short_sl,
                             take_profit=short_tp,
+                            decision_price=price,
                             db_path=db_path,
                         )
 

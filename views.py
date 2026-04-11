@@ -967,13 +967,207 @@ def ai_performance():
         tuning_history.extend(history)
     tuning_history.sort(key=lambda h: h.get("timestamp", ""), reverse=True)
 
+    # Aggregate slippage stats across relevant DBs
+    from journal import get_slippage_stats
+    combined_slippage = None
+    for db_path in db_paths:
+        try:
+            s = get_slippage_stats(db_path=db_path)
+            if s:
+                if combined_slippage is None:
+                    combined_slippage = {
+                        "trades_with_fills": 0, "avg_slippage_pct": 0,
+                        "total_slippage_cost": 0, "worst_slippage_pct": 0,
+                        "worst_trade": None,
+                    }
+                combined_slippage["trades_with_fills"] += s["trades_with_fills"]
+                combined_slippage["total_slippage_cost"] += s["total_slippage_cost"]
+                if s["worst_slippage_pct"] > combined_slippage.get("worst_slippage_pct", 0):
+                    combined_slippage["worst_slippage_pct"] = s["worst_slippage_pct"]
+                    combined_slippage["worst_trade"] = s.get("worst_trade")
+        except Exception:
+            pass
+    if combined_slippage and combined_slippage["trades_with_fills"] > 0:
+        # Re-query for accurate average across all DBs
+        total_slip_sum = 0
+        total_slip_count = 0
+        for db_path in db_paths:
+            try:
+                c = sqlite3.connect(db_path)
+                c.row_factory = sqlite3.Row
+                r = c.execute(
+                    "SELECT COUNT(*) AS cnt, SUM(slippage_pct) AS s "
+                    "FROM trades WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL "
+                    "AND decision_price > 0"
+                ).fetchone()
+                c.close()
+                if r and r["cnt"]:
+                    total_slip_count += r["cnt"]
+                    total_slip_sum += r["s"] or 0
+            except Exception:
+                pass
+        if total_slip_count > 0:
+            combined_slippage["avg_slippage_pct"] = round(total_slip_sum / total_slip_count, 4)
+
     return render_template("ai_performance.html",
                            perf=combined_perf,
                            trade_perf=combined_trade,
                            tuning_history=tuning_history[:20],
                            profiles=profiles,
                            selected_profile=selected_profile_int,
-                           selected_profile_name=selected_profile_name)
+                           selected_profile_name=selected_profile_name,
+                           slippage=combined_slippage)
+
+
+@views_bp.route("/api/backtest-vs-reality/<int:profile_id>")
+@login_required
+def api_backtest_vs_reality(profile_id):
+    """Compare backtest predictions with actual trading results over last 30 days.
+
+    Runs a backtest with the profile's current settings on the last 30 days,
+    then compares with actual trades from the same period.
+    Returns JSON comparison data.
+    """
+    import sqlite3
+    import os
+    from datetime import datetime, timedelta
+
+    profile = get_trading_profile(profile_id)
+    if not profile or profile["user_id"] != current_user.id:
+        return jsonify({"error": "Profile not found"}), 404
+
+    db_path = f"quantopsai_profile_{profile_id}.db"
+    if not os.path.exists(db_path):
+        return jsonify({"error": "No trade data for this profile"}), 404
+
+    # --- Actual trade results (last 30 days) ---
+    thirty_days_ago = (datetime.utcnow() - timedelta(days=30)).isoformat()
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+
+        actual_trades = conn.execute(
+            "SELECT * FROM trades WHERE pnl IS NOT NULL AND timestamp >= ? "
+            "ORDER BY timestamp DESC",
+            (thirty_days_ago,),
+        ).fetchall()
+        actual_trades = [dict(r) for r in actual_trades]
+
+        # Slippage stats for this profile
+        slippage_row = conn.execute("""
+            SELECT
+                COUNT(*) AS trades_with_fills,
+                AVG(slippage_pct) AS avg_slippage_pct,
+                SUM(ABS(fill_price - decision_price) * qty) AS total_slippage_cost
+            FROM trades
+            WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL
+              AND decision_price > 0 AND timestamp >= ?
+        """, (thirty_days_ago,)).fetchone()
+
+        conn.close()
+    except Exception as exc:
+        logger.warning("Failed to query actual trades for profile %d: %s", profile_id, exc)
+        return jsonify({"error": "Failed to query trade data"}), 500
+
+    if len(actual_trades) < 5:
+        return jsonify({
+            "error": "insufficient_data",
+            "message": f"Need at least 5 closed trades in the last 30 days (found {len(actual_trades)})",
+            "actual_trade_count": len(actual_trades),
+        })
+
+    # Actual metrics
+    actual_wins = sum(1 for t in actual_trades if (t.get("pnl") or 0) > 0)
+    actual_losses = len(actual_trades) - actual_wins
+    actual_total_pnl = sum(t.get("pnl") or 0 for t in actual_trades)
+    actual_win_rate = (actual_wins / len(actual_trades) * 100) if actual_trades else 0
+
+    actual_slippage = round(slippage_row["avg_slippage_pct"] or 0, 3) if slippage_row and slippage_row["trades_with_fills"] else None
+    actual_slippage_cost = round(slippage_row["total_slippage_cost"] or 0, 2) if slippage_row and slippage_row["trades_with_fills"] else None
+
+    # --- Backtest results (last 30 days with current settings) ---
+    market_type = profile["market_type"]
+    try:
+        from backtester import backtest_strategy
+        bt = backtest_strategy(market_type, days=30,
+                               initial_capital=10_000, sample_size=15,
+                               atr_sl_mult=float(profile.get("atr_multiplier_sl", 2.0)),
+                               atr_tp_mult=float(profile.get("atr_multiplier_tp", 3.0)))
+        bt_win_rate = bt.get("win_rate", 0)
+        bt_total_return = bt.get("total_return_pct", 0)
+        bt_num_trades = bt.get("num_trades", 0)
+        bt_avg_slippage = 0.2  # Simulated slippage estimate
+    except Exception as exc:
+        logger.warning("Backtest failed for profile %d: %s", profile_id, exc)
+        bt_win_rate = 0
+        bt_total_return = 0
+        bt_num_trades = 0
+        bt_avg_slippage = 0.2
+
+    # Calculate total return pct from actual trades (approx: pnl relative to equity)
+    # Use daily snapshots for better accuracy
+    try:
+        conn2 = sqlite3.connect(db_path)
+        conn2.row_factory = sqlite3.Row
+        snap = conn2.execute(
+            "SELECT equity FROM daily_snapshots ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+        conn2.close()
+        equity_base = snap["equity"] if snap else 10_000
+    except Exception:
+        equity_base = 10_000
+
+    actual_return_pct = (actual_total_pnl / equity_base * 100) if equity_base > 0 else 0
+
+    comparison = {
+        "backtest": {
+            "win_rate": round(bt_win_rate, 1),
+            "total_return_pct": round(bt_total_return, 1),
+            "num_trades": bt_num_trades,
+            "avg_slippage_pct": bt_avg_slippage,
+        },
+        "actual": {
+            "win_rate": round(actual_win_rate, 1),
+            "total_return_pct": round(actual_return_pct, 1),
+            "num_trades": len(actual_trades),
+            "winning_trades": actual_wins,
+            "losing_trades": actual_losses,
+            "total_pnl": round(actual_total_pnl, 2),
+            "avg_slippage_pct": actual_slippage,
+            "total_slippage_cost": actual_slippage_cost,
+        },
+        "gap": {
+            "win_rate": round(actual_win_rate - bt_win_rate, 1),
+            "total_return_pct": round(actual_return_pct - bt_total_return, 1),
+            "slippage_pct": round((actual_slippage or 0) - bt_avg_slippage, 1) if actual_slippage is not None else None,
+        },
+        "period_days": 30,
+        "actual_trade_count": len(actual_trades),
+    }
+
+    return jsonify(comparison)
+
+
+@views_bp.route("/api/slippage-stats/<int:profile_id>")
+@login_required
+def api_slippage_stats(profile_id):
+    """Return slippage statistics for a profile."""
+    import os
+
+    profile = get_trading_profile(profile_id)
+    if not profile or profile["user_id"] != current_user.id:
+        return jsonify({"error": "Profile not found"}), 404
+
+    db_path = f"quantopsai_profile_{profile_id}.db"
+    if not os.path.exists(db_path):
+        return jsonify({"error": "No trade data"}), 404
+
+    from journal import get_slippage_stats
+    stats = get_slippage_stats(db_path=db_path)
+    if stats is None:
+        return jsonify({"available": False})
+
+    return jsonify({"available": True, **stats})
 
 
 @views_bp.route("/admin")

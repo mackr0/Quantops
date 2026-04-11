@@ -59,6 +59,171 @@
     {% endif %}
 </article>
 
+<!-- Slippage Impact (only shown when fill_price data is available) -->
+{% if slippage and slippage.trades_with_fills > 0 %}
+<article style="border-left:4px solid #ff9800;">
+    <header><h3>Slippage Impact</h3></header>
+    <p class="muted" style="margin-top:-0.5rem;">Difference between the strategy's decision price and the actual fill price from Alpaca. Only includes trades with fill data.</p>
+    <div class="grid">
+        <div class="stat-card">
+            <small class="muted">Avg Slippage per Trade</small>
+            <strong style="font-size:2rem;" class="{{ 'pnl-neg' if slippage.avg_slippage_pct > 0 else 'pnl-pos' }}">
+                {{ "{:+.3f}".format(slippage.avg_slippage_pct) }}%
+            </strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Total Slippage Cost</small>
+            <strong style="font-size:2rem;" class="pnl-neg">
+                ${{ "{:,.2f}".format(slippage.total_slippage_cost) }}
+            </strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Worst Slippage</small>
+            <strong style="font-size:2rem;" class="pnl-neg">
+                {{ "{:.3f}".format(slippage.worst_slippage_pct) }}%
+            </strong>
+            {% if slippage.worst_trade %}
+            <small class="muted">{{ slippage.worst_trade.symbol }} ({{ slippage.worst_trade.side }})</small>
+            {% endif %}
+        </div>
+        <div class="stat-card">
+            <small class="muted">Trades with Fill Data</small>
+            <strong style="font-size:2rem;">{{ slippage.trades_with_fills }}</strong>
+        </div>
+    </div>
+</article>
+{% endif %}
+
+<!-- Backtest vs Reality (loaded via AJAX, only shown when sufficient data) -->
+{% if selected_profile %}
+<article id="backtest-vs-reality" style="border-left:4px solid #2196f3; display:none;">
+    <header><h3>Backtest vs Reality (Last 30 Days)</h3></header>
+    <p class="muted" style="margin-top:-0.5rem;">Comparing what the strategy's backtest predicts vs. actual trading results.</p>
+    <div id="bvr-loading" style="text-align:center;padding:1rem;">
+        <span aria-busy="true">Running backtest comparison...</span>
+    </div>
+    <div id="bvr-content" style="display:none;">
+        <div class="overflow-auto">
+            <table>
+                <thead>
+                    <tr>
+                        <th></th>
+                        <th>Backtest Predicted</th>
+                        <th>Actual Results</th>
+                        <th>Gap</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Win Rate</strong></td>
+                        <td id="bvr-bt-winrate"></td>
+                        <td id="bvr-actual-winrate"></td>
+                        <td id="bvr-gap-winrate"></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Total Return</strong></td>
+                        <td id="bvr-bt-return"></td>
+                        <td id="bvr-actual-return"></td>
+                        <td id="bvr-gap-return"></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Avg Slippage</strong></td>
+                        <td id="bvr-bt-slippage"></td>
+                        <td id="bvr-actual-slippage"></td>
+                        <td id="bvr-gap-slippage"></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Trades</strong></td>
+                        <td id="bvr-bt-trades"></td>
+                        <td id="bvr-actual-trades"></td>
+                        <td></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <div id="bvr-error" style="display:none;">
+        <p class="muted" id="bvr-error-msg"></p>
+    </div>
+</article>
+
+<script>
+(function() {
+    var profileId = {{ selected_profile }};
+    if (!profileId) return;
+
+    fetch('/api/backtest-vs-reality/' + profileId)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var section = document.getElementById('backtest-vs-reality');
+            var loading = document.getElementById('bvr-loading');
+            var content = document.getElementById('bvr-content');
+            var errorDiv = document.getElementById('bvr-error');
+
+            if (data.error) {
+                if (data.error === 'insufficient_data') {
+                    // Not enough data -- don't show the section at all
+                    return;
+                }
+                section.style.display = 'block';
+                loading.style.display = 'none';
+                errorDiv.style.display = 'block';
+                document.getElementById('bvr-error-msg').textContent = data.error;
+                return;
+            }
+
+            section.style.display = 'block';
+            loading.style.display = 'none';
+            content.style.display = 'block';
+
+            function fmt(v, suffix) {
+                if (v === null || v === undefined) return 'N/A';
+                var s = (v >= 0 ? '+' : '') + v.toFixed(1) + suffix;
+                return s;
+            }
+            function cls(v) {
+                if (v === null || v === undefined) return '';
+                return v >= 0 ? 'pnl-pos' : 'pnl-neg';
+            }
+            function setCell(id, val, suffix) {
+                var el = document.getElementById(id);
+                if (!el) return;
+                var txt = fmt(val, suffix);
+                el.textContent = txt;
+                el.className = cls(val);
+            }
+
+            setCell('bvr-bt-winrate', data.backtest.win_rate, '%');
+            setCell('bvr-actual-winrate', data.actual.win_rate, '%');
+            setCell('bvr-gap-winrate', data.gap.win_rate, '%');
+
+            setCell('bvr-bt-return', data.backtest.total_return_pct, '%');
+            setCell('bvr-actual-return', data.actual.total_return_pct, '%');
+            setCell('bvr-gap-return', data.gap.total_return_pct, '%');
+
+            document.getElementById('bvr-bt-slippage').textContent =
+                data.backtest.avg_slippage_pct.toFixed(1) + '% (simulated)';
+            var actualSlip = data.actual.avg_slippage_pct;
+            document.getElementById('bvr-actual-slippage').textContent =
+                actualSlip !== null ? actualSlip.toFixed(1) + '% (actual)' : 'No fill data';
+            if (data.gap.slippage_pct !== null) {
+                setCell('bvr-gap-slippage', data.gap.slippage_pct, '%');
+            } else {
+                document.getElementById('bvr-gap-slippage').textContent = 'N/A';
+            }
+
+            document.getElementById('bvr-bt-trades').textContent = data.backtest.num_trades;
+            document.getElementById('bvr-actual-trades').textContent =
+                data.actual.num_trades + ' (' + data.actual.winning_trades + 'W / ' + data.actual.losing_trades + 'L)';
+        })
+        .catch(function(err) {
+            // Silently fail -- don't show the section
+            console.warn('Backtest vs reality failed:', err);
+        });
+})();
+</script>
+{% endif %}
+
 <!-- AI Prediction Accuracy (theoretical — did the AI predict direction correctly?) -->
 <h3>AI Prediction Accuracy</h3>
 <p class="muted" style="margin-top:-0.5rem;">How often the AI correctly predicted price direction — includes predictions that didn't result in trades.</p>
