@@ -106,9 +106,11 @@
     <header>
         <div style="display:flex; justify-content:space-between; align-items:center;">
             <h3 style="margin:0;">{{ prof.name }}
+                {% if prof.market_type_name != prof.name %}
                 <small class="muted" style="font-weight:normal; margin-left:0.5rem;">
                     {{ prof.market_type_name }}
                 </small>
+                {% endif %}
             </h3>
             <div style="display:flex; gap:0.5rem; align-items:center;">
                 {% if prof.enabled %}
