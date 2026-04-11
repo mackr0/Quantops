@@ -3,6 +3,18 @@
 {% block content %}
 <h1>Trade History</h1>
 
+<div style="margin-bottom:1rem;">
+    <form method="get" action="/trades" style="display:flex;gap:0.5rem;align-items:center;">
+        <label style="margin:0;">Profile:</label>
+        <select name="profile_id" onchange="this.form.submit()">
+            <option value="">All Profiles</option>
+            {% for p in profiles %}
+            <option value="{{ p.id }}" {{ 'selected' if selected_profile == p.id else '' }}>{{ p.name }}</option>
+            {% endfor %}
+        </select>
+    </form>
+</div>
+
 {% if decisions %}
 <article>
     <header><h3>Decision Audit Trail</h3></header>

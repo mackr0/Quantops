@@ -603,33 +603,61 @@ def reset_segment(segment):
 @views_bp.route("/trades")
 @login_required
 def trades():
-    decisions = get_decisions(current_user.id, limit=200)
-
-    # Pull trades from each profile's journal DB
-    all_trades = []
     profiles = get_user_profiles(current_user.id)
-    for prof in profiles:
-        prof_trades = _get_trade_history_for_profile(prof["id"], limit=100)
-        for t in prof_trades:
-            t["profile_name"] = prof["name"]
-            t["profile_id"] = prof["id"]
-            t["segment"] = prof["name"]  # Use profile name for display
-        all_trades.extend(prof_trades)
 
-    # Also pull from legacy segment DBs for backward compatibility
-    for seg_name in ("microsmall", "midcap", "largecap", "crypto"):
-        seg_trades = _get_trade_history_for_user(current_user.id, seg_name, limit=100)
-        for t in seg_trades:
-            t["segment"] = SEGMENTS.get(seg_name, {}).get("name", seg_name)
-            t["profile_name"] = t["segment"]
-        all_trades.extend(seg_trades)
+    # Parse optional profile filter
+    selected_profile = request.args.get("profile_id", "", type=str)
+    selected_profile_int = int(selected_profile) if selected_profile else None
+
+    # Filter decisions by profile name (segment column stores profile name)
+    if selected_profile_int:
+        # Find the profile name for filtering decisions
+        prof_name = None
+        for p in profiles:
+            if p["id"] == selected_profile_int:
+                prof_name = p["name"]
+                break
+        decisions = get_decisions(current_user.id, segment=prof_name, limit=200) if prof_name else []
+    else:
+        decisions = get_decisions(current_user.id, limit=200)
+
+    # Pull trades from profile journal DBs
+    all_trades = []
+    if selected_profile_int:
+        # Single profile mode
+        prof = next((p for p in profiles if p["id"] == selected_profile_int), None)
+        if prof:
+            prof_trades = _get_trade_history_for_profile(prof["id"], limit=200)
+            for t in prof_trades:
+                t["profile_name"] = prof["name"]
+                t["profile_id"] = prof["id"]
+                t["segment"] = prof["name"]
+            all_trades.extend(prof_trades)
+    else:
+        # All profiles mode (current behavior)
+        for prof in profiles:
+            prof_trades = _get_trade_history_for_profile(prof["id"], limit=100)
+            for t in prof_trades:
+                t["profile_name"] = prof["name"]
+                t["profile_id"] = prof["id"]
+                t["segment"] = prof["name"]
+            all_trades.extend(prof_trades)
+
+        # Also pull from legacy segment DBs for backward compatibility
+        for seg_name in ("microsmall", "midcap", "largecap", "crypto"):
+            seg_trades = _get_trade_history_for_user(current_user.id, seg_name, limit=100)
+            for t in seg_trades:
+                t["segment"] = SEGMENTS.get(seg_name, {}).get("name", seg_name)
+                t["profile_name"] = t["segment"]
+            all_trades.extend(seg_trades)
 
     # Sort by timestamp descending
     all_trades.sort(key=lambda t: t.get("timestamp", ""), reverse=True)
     return render_template("trades.html",
                            decisions=decisions,
                            trades=all_trades[:200],
-                           profiles=profiles)
+                           profiles=profiles,
+                           selected_profile=selected_profile_int)
 
 
 @views_bp.route("/trades/<int:decision_id>")
@@ -680,20 +708,36 @@ def ai_performance():
         "best_trade": 0.0, "worst_trade": 0.0,
     }
 
-    # Collect all DB paths for this user's profiles + legacy segment DBs
+    # Parse optional profile filter
     profiles = get_user_profiles(current_user.id)
-    db_paths = set()
-    for p in profiles:
-        db_path = f"quantopsai_profile_{p['id']}.db"
-        if os.path.exists(db_path):
-            db_paths.add(db_path)
+    selected_profile = request.args.get("profile_id", "", type=str)
+    selected_profile_int = int(selected_profile) if selected_profile else None
+    selected_profile_name = None
 
-    # Also check legacy segment DBs
-    for legacy in ["quantopsai_microsmall.db", "quantopsai_midcap.db",
-                    "quantopsai_largecap.db", "quantopsai_crypto.db",
-                    "quantopsai_smallcap.db"]:
-        if os.path.exists(legacy):
-            db_paths.add(legacy)
+    # Collect DB paths based on filter
+    db_paths = set()
+    if selected_profile_int:
+        # Single profile mode
+        for p in profiles:
+            if p["id"] == selected_profile_int:
+                selected_profile_name = p["name"]
+                db_path = f"quantopsai_profile_{p['id']}.db"
+                if os.path.exists(db_path):
+                    db_paths.add(db_path)
+                break
+    else:
+        # All profiles mode (current behavior)
+        for p in profiles:
+            db_path = f"quantopsai_profile_{p['id']}.db"
+            if os.path.exists(db_path):
+                db_paths.add(db_path)
+
+        # Also check legacy segment DBs
+        for legacy in ["quantopsai_microsmall.db", "quantopsai_midcap.db",
+                        "quantopsai_largecap.db", "quantopsai_crypto.db",
+                        "quantopsai_smallcap.db"]:
+            if os.path.exists(legacy):
+                db_paths.add(legacy)
 
     # Aggregate raw data across all DBs for accurate metric calculation
     import sqlite3
@@ -795,10 +839,13 @@ def ai_performance():
             combined_trade["total_pnl"] / combined_trade["total_trades"]
         )
 
-    # Get tuning history across all profiles
+    # Get tuning history — filtered by profile if selected
     from models import get_tuning_history
     tuning_history = []
-    for p in profiles:
+    profiles_to_query = profiles
+    if selected_profile_int:
+        profiles_to_query = [p for p in profiles if p["id"] == selected_profile_int]
+    for p in profiles_to_query:
         history = get_tuning_history(p["id"], limit=10)
         for h in history:
             h["profile_name"] = p["name"]
@@ -808,7 +855,10 @@ def ai_performance():
     return render_template("ai_performance.html",
                            perf=combined_perf,
                            trade_perf=combined_trade,
-                           tuning_history=tuning_history[:20])
+                           tuning_history=tuning_history[:20],
+                           profiles=profiles,
+                           selected_profile=selected_profile_int,
+                           selected_profile_name=selected_profile_name)
 
 
 @views_bp.route("/admin")
