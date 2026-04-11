@@ -891,6 +891,9 @@ def backtest_with_params(market_type: str, params: dict, days: int = 90,
                             exit_price = take_profit
                             exit_reason = "take_profit"
 
+                    # Apply slippage on exit (realistic fill)
+                    exit_price = exit_price * (1 - 0.002)  # 0.2% slippage on sell
+
                     pnl = exit_price - entry_price
                     pnl_pct = (pnl / entry_price) * 100
                     hold_days = (current_date - entry_date).days if entry_date else 0
@@ -919,7 +922,9 @@ def backtest_with_params(market_type: str, params: dict, days: int = 90,
                     action = signal.get("signal", "HOLD")
 
                     if action in ("BUY", "STRONG_BUY"):
-                        entry_price = current_price
+                        # Apply slippage on entry (realistic fill price)
+                        slippage_pct = 0.002  # 0.2% slippage
+                        entry_price = current_price * (1 + slippage_pct)
                         entry_date = current_date
                         position_open = True
                         trailing_high = current_high
