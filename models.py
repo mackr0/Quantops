@@ -494,7 +494,9 @@ def update_user_segment_config(user_id: int, segment: str, **kwargs) -> None:
 # ---------------------------------------------------------------------------
 
 MARKET_TYPE_NAMES = {
-    "microsmall": "MicroSmall Cap",
+    "micro": "Micro Cap",
+    "small": "Small Cap",
+    "microsmall": "Small Cap",  # backward compat alias
     "midcap": "Mid Cap",
     "largecap": "Large Cap",
     "crypto": "Crypto",

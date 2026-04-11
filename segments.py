@@ -28,65 +28,83 @@ ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets
 # Universes
 # ---------------------------------------------------------------------------
 
+# Micro Cap universe -- stocks typically under $5
+MICRO_CAP_UNIVERSE = [
+    # Cannabis (penny territory)
+    "SNDL", "ACB", "HEXO", "OGI", "CGC", "TLRY",
+    # Biotech / health (low price)
+    "DNA", "BNGO", "KALA", "TBIO", "ABCL", "OPK",
+    # Tech / social (low price)
+    "IQ", "WISH", "BB", "NOK", "EBON", "VUZI", "GPRO",
+    # Clean energy (low price)
+    "FCEL", "PLUG", "STEM", "OPAL", "MAXN",
+    # EV / mobility (low price)
+    "FSR", "GOEV", "WKHS", "NKLA", "REE", "MVST",
+    # Telecom / other (low price)
+    "GSAT", "TELL", "LUMN", "SIRI",
+    # LiDAR / sensors (low price)
+    "LAZR", "MVIS", "LIDR", "OUST", "AEVA", "INVZ",
+    # Other micro-caps
+    "APPH", "HYLN", "PTRA", "GBS", "VG", "ME",
+    "SKLZ", "PRPL", "IRBT", "LL", "PLBY",
+    "GPL", "EXK", "SILV", "GATO", "USAS", "MUX",
+    "TWO", "MFA", "IVR", "NYMT", "MITT", "BRMK",
+    "SPCE", "ASTR", "RDW", "BKSY",
+    "SD", "HPK", "BTE", "GOL",
+    "PSFE", "CLOV", "OPEN",
+    "CHPT", "BLNK", "EVGO",
+]
+
+# Small Cap universe -- stocks typically $5-$20
 SMALL_CAP_UNIVERSE = [
     # Fintech / finance
-    "SOFI", "HOOD", "AFRM", "UPST", "CLOV", "OPEN", "PSFE", "ML", "LMND",
+    "SOFI", "HOOD", "AFRM", "UPST", "ML", "LMND",
     "VNET", "SLM", "NAVI", "CACC",
     # EVs / autos / mobility
-    "RIVN", "LCID", "NIO", "XPEV", "LI", "FSR", "GOEV", "WKHS", "NKLA",
-    "MVST", "QS", "CHPT", "BLNK", "EVGO", "REE",
+    "RIVN", "LCID", "NIO", "XPEV", "LI", "QS",
     # Social / tech / software
-    "SNAP", "PATH", "WISH", "BB", "NOK", "GENI", "IRNT", "IQ", "WB",
-    "EBON", "ZI", "AI", "BBAI", "SOUN", "RKLB",
-    # Cannabis
-    "TLRY", "CGC", "ACB", "SNDL", "OGI", "HEXO",
+    "SNAP", "PATH", "GENI", "IRNT", "WB",
+    "ZI", "AI", "BBAI", "SOUN", "RKLB",
     # Crypto / blockchain / miners
     "MARA", "RIOT", "HUT", "BITF", "CIFR", "CLSK", "IREN", "WULF",
     # Clean energy / hydrogen / fuel cells
-    "PLUG", "FCEL", "BE", "RUN", "NOVA", "ARRY", "STEM", "OPAL",
-    "MAXN", "JKS", "DQ",
+    "BE", "RUN", "NOVA", "ARRY", "JKS", "DQ",
     # Oil & gas / energy
-    "RIG", "ET", "AM", "AR", "CNX", "BTU", "SWN", "KOS", "TELL", "BTE",
-    "CEIX", "NEXT", "SD", "HPK", "CPE", "SM", "CRGY", "VET",
+    "RIG", "ET", "AM", "AR", "CNX", "BTU", "SWN", "KOS",
+    "CEIX", "NEXT", "CPE", "SM", "CRGY", "VET",
     "CTRA", "OVV", "CRK",
     # Airlines / cruise / travel
     "JBLU", "AAL", "SAVE", "NCLH", "CCL", "RCL", "TRIP", "ABNB",
     "HTHT", "LTH",
     # Biotech / pharma / health
-    "DNA", "ADMA", "WVE", "OLPX", "HIMS", "RVMD", "EXAS", "MRNA",
+    "ADMA", "WVE", "OLPX", "HIMS", "RVMD", "EXAS", "MRNA",
     "BNTX", "CRSP", "NTLA", "BEAM", "EDIT", "VERV", "VIR", "FOLD",
     "APLS", "FATE", "ACAD", "TGTX", "CERE", "ALNY", "SMMT", "IONS",
-    "RXRX", "GILD", "VKTX", "LUNG", "KALA", "TBIO", "ABCL",
+    "RXRX", "GILD", "VKTX", "LUNG",
     # Consumer / retail / food
     "LULU", "CAVA", "DIN", "SHAK", "BROS", "MNST", "COTY", "ELF",
-    "PRPL", "IRBT", "LL", "DBI", "ANF", "URBN", "AEO", "PLBY",
-    "FIZZ", "CELH",
+    "DBI", "ANF", "URBN", "AEO", "FIZZ", "CELH",
     # Mining / metals / materials
-    "GOLD", "HL", "CDE", "AG", "PAAS", "SVM", "FSM", "MAG",
-    "MUX", "GPL", "EXK", "SILV", "GATO", "AUY", "USAS",
+    "GOLD", "HL", "CDE", "AG", "PAAS", "SVM", "FSM", "MAG", "AUY",
     # REITs / real estate
-    "AGNC", "NLY", "TWO", "MFA", "IVR", "NYMT", "CIM", "MITT",
-    "RC", "BRMK",
+    "AGNC", "NLY", "CIM", "RC",
     # Industrials / aerospace / defense
-    "JOBY", "ACHR", "LILM", "ASTS", "SPCE", "ASTR", "LUNR",
-    "RDW", "BKSY",
+    "JOBY", "ACHR", "LILM", "ASTS", "LUNR",
     # Telecom / media
-    "LUMN", "GSAT", "IRDM", "SIRI", "WBD", "PARA", "LYV",
-    # Other popular small / micro caps
-    "PLTR", "F", "PCG", "T", "VZ", "GPRO", "VUZI",
-    "LAZR", "MVIS", "LIDR", "OUST", "AEVA", "INVZ",
-    "APPH", "HYLN", "PTRA", "GBS", "VG",
-    "ME", "BNGO", "SAVA", "SKLZ", "DKNG", "PENN",
+    "IRDM", "WBD", "PARA", "LYV",
+    # Other popular small caps
+    "PLTR", "F", "PCG", "T", "VZ",
+    "SAVA", "DKNG", "PENN",
     "CRSR", "LOGI", "HEAR",
-    # Additional liquid names in the $1-$30 range
+    # Additional liquid names in the $5-$30 range
     "CLF", "X", "AA", "VALE", "PBR", "ITUB", "SID", "BBD",
     "UMC", "ASX", "QFIN", "VIPS", "JD", "BABA", "BIDU",
     "TAL", "EDU", "FUTU",
     "GRAB", "SE", "CPNG", "MELI",
     "NU", "STNE", "PAGS",
-    "VTRS", "TEVA", "OPK", "PRGO",
+    "VTRS", "TEVA", "PRGO",
     "NOG", "VTLE", "CHRD", "MTDR",
-    "ERJ", "AZUL", "GOL", "CPA",
+    "ERJ", "AZUL", "CPA",
     "SWI", "JAMF", "TENB", "RPD", "S", "CRWD",
 ]
 
@@ -216,17 +234,30 @@ CRYPTO_UNIVERSE = [
 # ---------------------------------------------------------------------------
 
 SEGMENTS = {
-    "microsmall": {
-        "name": "MicroSmall Cap",
+    "micro": {
+        "name": "Micro Cap",
         "alpaca_key": _SMALLCAP_KEY,
         "alpaca_secret": _SMALLCAP_SECRET,
-        "db_path": "quantopsai_microsmall.db",
+        "db_path": "quantopsai_micro.db",
         "min_price": 1.0,
+        "max_price": 5.0,
+        "min_volume": 100_000,
+        "max_position_pct": 0.05,
+        "stop_loss_pct": 0.10,
+        "take_profit_pct": 0.15,
+        "universe": MICRO_CAP_UNIVERSE,
+    },
+    "small": {
+        "name": "Small Cap",
+        "alpaca_key": _SMALLCAP_KEY,
+        "alpaca_secret": _SMALLCAP_SECRET,
+        "db_path": "quantopsai_small.db",
+        "min_price": 5.0,
         "max_price": 20.0,
-        "min_volume": 500_000,
-        "max_position_pct": 0.10,
-        "stop_loss_pct": 0.03,
-        "take_profit_pct": 0.10,
+        "min_volume": 300_000,
+        "max_position_pct": 0.08,
+        "stop_loss_pct": 0.06,
+        "take_profit_pct": 0.08,
         "universe": SMALL_CAP_UNIVERSE,
     },
     "midcap": {
@@ -272,14 +303,17 @@ SEGMENTS = {
     },
 }
 
+# Backward compatibility: "microsmall" maps to "small"
+SEGMENTS["microsmall"] = SEGMENTS["small"]
+
 
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
 
 def list_segments():
-    """Return list of segment names."""
-    return list(SEGMENTS.keys())
+    """Return list of segment names (excludes backward-compat aliases)."""
+    return [k for k in SEGMENTS.keys() if k != "microsmall"]
 
 
 def get_segment(name):

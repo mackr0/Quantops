@@ -16,6 +16,7 @@ from client import get_api, get_account_info, get_positions
 from portfolio_manager import check_portfolio_constraints, check_drawdown
 from journal import init_db, log_trade, log_signal
 from aggressive_strategy import aggressive_combined_strategy
+from strategy_router import run_strategy
 
 
 # ---------------------------------------------------------------------------
@@ -576,8 +577,10 @@ def run_aggressive_scan_and_trade(candidates, ctx=None, max_position_pct=None,
                             pass
                     continue
 
-            # Step 1: Technical analysis
-            signal = aggressive_combined_strategy(symbol)
+            # Step 1: Technical analysis — route to market-specific strategy engine
+            market_type = ctx.segment if ctx else "small"
+            signal = run_strategy(symbol, market_type, ctx=ctx)
+
             action = signal.get("signal", "HOLD")
             score = signal.get("score", 0)
             votes = signal.get("votes", {})
