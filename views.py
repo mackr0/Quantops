@@ -1046,6 +1046,17 @@ def _calculate_risk_metrics(db_paths):
 @views_bp.route("/ai-performance")
 @login_required
 def ai_performance():
+    """Legacy AI performance page -- redirects to new Performance Dashboard."""
+    profile_id = request.args.get("profile_id", "")
+    target = "/performance"
+    if profile_id:
+        target += f"?profile_id={profile_id}"
+    return redirect(target)
+
+
+@views_bp.route("/ai-performance-legacy")
+@login_required
+def ai_performance_legacy():
     """AI prediction accuracy dashboard — aggregated across all user's profiles."""
     from ai_tracker import get_ai_performance
     from journal import get_performance_summary
@@ -1265,6 +1276,76 @@ def ai_performance():
                            slippage=combined_slippage,
                            risk=risk_metrics,
                            monthly_returns=risk_metrics.get("monthly_returns", []))
+
+
+# ---------------------------------------------------------------------------
+# Institutional Performance Dashboard (5-tab)
+# ---------------------------------------------------------------------------
+
+@views_bp.route("/performance")
+@login_required
+def performance_dashboard():
+    """Institutional metrics dashboard -- 5-tab layout."""
+    import os
+    from metrics import calculate_all_metrics
+
+    profiles = get_user_profiles(current_user.id)
+    selected_profile = request.args.get("profile_id", "", type=str)
+    selected_profile_int = int(selected_profile) if selected_profile else None
+    selected_profile_name = None
+
+    # Collect DB paths based on filter
+    db_paths = set()
+    if selected_profile_int:
+        for p in profiles:
+            if p["id"] == selected_profile_int:
+                selected_profile_name = p["name"]
+                db_path = f"quantopsai_profile_{p['id']}.db"
+                if os.path.exists(db_path):
+                    db_paths.add(db_path)
+                break
+    else:
+        for p in profiles:
+            db_path = f"quantopsai_profile_{p['id']}.db"
+            if os.path.exists(db_path):
+                db_paths.add(db_path)
+        # Legacy segment DBs
+        for legacy in ["quantopsai_microsmall.db", "quantopsai_midcap.db",
+                        "quantopsai_largecap.db", "quantopsai_crypto.db",
+                        "quantopsai_smallcap.db"]:
+            if os.path.exists(legacy):
+                db_paths.add(legacy)
+
+    # Calculate all institutional metrics
+    metrics = calculate_all_metrics(db_paths, initial_capital=10000)
+
+    # Try to get current exposure from Alpaca (for Market Relationship tab)
+    exposure = None
+    if selected_profile_int:
+        try:
+            profile = get_trading_profile(selected_profile_int)
+            if profile and profile["user_id"] == current_user.id:
+                ctx = build_user_context_from_profile(profile)
+                positions = _safe_positions(ctx)
+                account = _safe_account_info(ctx)
+                if positions and account:
+                    equity = account.get("equity", 0) or 1
+                    long_val = sum(p["market_value"] for p in positions if p["qty"] > 0)
+                    short_val = sum(abs(p["market_value"]) for p in positions if p["qty"] < 0)
+                    exposure = {
+                        "net_pct": round((long_val - short_val) / equity * 100, 1),
+                        "gross_pct": round((long_val + short_val) / equity * 100, 1),
+                        "num_positions": len(positions),
+                    }
+        except Exception:
+            pass
+
+    return render_template("performance.html",
+                           m=metrics,
+                           profiles=profiles,
+                           selected_profile=selected_profile_int,
+                           selected_profile_name=selected_profile_name,
+                           exposure=exposure)
 
 
 @views_bp.route("/api/backtest-vs-reality/<int:profile_id>")

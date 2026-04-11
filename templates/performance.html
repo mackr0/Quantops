@@ -1,0 +1,634 @@
+{% extends "base.html" %}
+{% block title %}Performance Dashboard - QuantOpsAI{% endblock %}
+{% block content %}
+
+<h1>Performance Dashboard{% if selected_profile_name %} &mdash; {{ selected_profile_name }}{% endif %}</h1>
+
+<!-- Profile filter -->
+<div style="margin-bottom:1rem;">
+    <form method="get" action="/performance" style="display:flex;gap:0.5rem;align-items:center;">
+        <label style="margin:0;">Profile:</label>
+        <select name="profile_id" onchange="this.form.submit()">
+            <option value="">All Profiles</option>
+            {% for p in profiles %}
+            <option value="{{ p.id }}" {{ 'selected' if selected_profile == p.id }}>{{ p.name }}</option>
+            {% endfor %}
+        </select>
+    </form>
+</div>
+
+<!-- Tab navigation -->
+<div class="perf-tabs">
+    <a href="#summary" class="perf-tab active" onclick="showTab(event, 'summary')">Executive Summary</a>
+    <a href="#risk" class="perf-tab" onclick="showTab(event, 'risk')">Risk &amp; Stability</a>
+    <a href="#trades" class="perf-tab" onclick="showTab(event, 'trades')">Trade Analytics</a>
+    <a href="#market" class="perf-tab" onclick="showTab(event, 'market')">Market Relationship</a>
+    <a href="#scale" class="perf-tab" onclick="showTab(event, 'scale')">Scalability</a>
+</div>
+
+<!-- ===================================================================
+     TAB 1: EXECUTIVE SUMMARY
+     =================================================================== -->
+<div id="tab-summary" class="perf-tab-content active">
+
+    {% if not m.has_trades and not m.has_snapshots %}
+    <article>
+        <p class="muted">No trade or snapshot data yet. Start trading to see your performance metrics.</p>
+    </article>
+    {% else %}
+
+    <!-- Key metrics cards -->
+    <div class="grid">
+        <div class="stat-card" style="text-align:center;">
+            <small class="muted">Total Return</small>
+            <strong style="font-size:2rem;" class="{{ 'pnl-pos' if m.total_return_pct >= 0 else 'pnl-neg' }}">
+                {{ "{:+.1f}".format(m.total_return_pct) }}%
+            </strong>
+            <small class="muted">{{ m.days_active }} days</small>
+        </div>
+        <div class="stat-card" style="text-align:center;">
+            <small class="muted">Annualised Return</small>
+            <strong style="font-size:2rem;" class="{{ 'pnl-pos' if m.annualized_return_pct >= 0 else 'pnl-neg' }}">
+                {{ "{:+.1f}".format(m.annualized_return_pct) }}%
+            </strong>
+        </div>
+        <div class="stat-card" style="text-align:center;">
+            <small class="muted">Total P&amp;L</small>
+            <strong style="font-size:2rem;" class="{{ 'pnl-pos' if m.total_pnl >= 0 else 'pnl-neg' }}">
+                ${{ "{:,.2f}".format(m.total_pnl) }}
+            </strong>
+        </div>
+    </div>
+
+    <div class="grid">
+        <article style="text-align:center;">
+            <small class="muted">Sharpe Ratio</small>
+            <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if m.sharpe_ratio >= 2 else 'pnl-neg' if m.sharpe_ratio < 1 else '' }}">
+                {{ "%.2f"|format(m.sharpe_ratio) }}
+            </strong>
+            <small class="muted">Target: &gt;2.0</small>
+        </article>
+        <article style="text-align:center;">
+            <small class="muted">Sortino Ratio</small>
+            <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if m.sortino_ratio >= 2 else 'pnl-neg' if m.sortino_ratio < 1 else '' }}">
+                {{ "%.2f"|format(m.sortino_ratio) }}
+            </strong>
+            <small class="muted">Target: &gt;2.0</small>
+        </article>
+        <article style="text-align:center;">
+            <small class="muted">Max Drawdown</small>
+            <strong style="font-size:2.5rem; display:block;" class="pnl-neg">
+                -{{ "%.1f"|format(m.max_drawdown_pct) }}%
+            </strong>
+            <small class="muted">Target: &lt;20%</small>
+        </article>
+        <article style="text-align:center;">
+            <small class="muted">Calmar Ratio</small>
+            <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if m.calmar_ratio >= 2 else 'pnl-neg' if m.calmar_ratio < 1 else '' }}">
+                {{ "%.2f"|format(m.calmar_ratio) }}
+            </strong>
+            <small class="muted">Target: &gt;2.0</small>
+        </article>
+    </div>
+
+    <!-- Equity Curve -->
+    <article>
+        <header><h3>Equity Curve</h3></header>
+        {{ m.equity_curve_svg|safe }}
+    </article>
+
+    <!-- Net vs Gross -->
+    <div class="grid">
+        <article>
+            <header><h4>Gross Return</h4></header>
+            <strong class="{{ 'pnl-pos' if m.gross_return_pct >= 0 else 'pnl-neg' }}" style="font-size:1.5rem;">
+                {{ "{:+.2f}".format(m.gross_return_pct) }}%
+            </strong>
+            <small class="muted">Before slippage</small>
+        </article>
+        <article>
+            <header><h4>Net Return</h4></header>
+            <strong class="{{ 'pnl-pos' if m.net_return_pct >= 0 else 'pnl-neg' }}" style="font-size:1.5rem;">
+                {{ "{:+.2f}".format(m.net_return_pct) }}%
+            </strong>
+            <small class="muted">After slippage</small>
+        </article>
+    </div>
+
+    <!-- Monthly Returns Table -->
+    {% if m.monthly_returns %}
+    <article>
+        <header><h3>Monthly Returns</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Monthly win rate: <strong>{{ "%.1f"|format(m.monthly_win_rate) }}%</strong></p>
+        {{ m.monthly_returns_svg|safe }}
+        <div class="overflow-auto" style="margin-top:1rem;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Month</th>
+                        <th>Trades</th>
+                        <th>Wins</th>
+                        <th>Losses</th>
+                        <th>P&amp;L</th>
+                        <th>Return</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for mo in m.monthly_returns %}
+                    <tr>
+                        <td>{{ mo.month }}</td>
+                        <td>{{ mo.trades }}</td>
+                        <td class="pnl-pos">{{ mo.wins }}</td>
+                        <td class="pnl-neg">{{ mo.losses }}</td>
+                        <td class="{{ 'pnl-pos' if mo.pnl >= 0 else 'pnl-neg' }}">${{ "{:,.2f}".format(mo.pnl) }}</td>
+                        <td class="{{ 'pnl-pos' if mo.return_pct >= 0 else 'pnl-neg' }}">{{ "{:+.1f}".format(mo.return_pct) }}%</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </article>
+    {% endif %}
+
+    {% endif %}{# has_trades or has_snapshots #}
+</div>
+
+<!-- ===================================================================
+     TAB 2: RISK & STABILITY
+     =================================================================== -->
+<div id="tab-risk" class="perf-tab-content">
+
+    {% if not m.has_trades and not m.has_snapshots %}
+    <article>
+        <p class="muted">No data available for risk analysis.</p>
+    </article>
+    {% else %}
+
+    <!-- Volatility, VaR, CVaR -->
+    <div class="grid">
+        <article style="text-align:center;">
+            <small class="muted">Annualised Volatility</small>
+            <strong style="font-size:2rem; display:block;">{{ "%.1f"|format(m.annualized_volatility) }}%</strong>
+        </article>
+        <article style="text-align:center;">
+            <small class="muted">VaR (95%)</small>
+            <strong style="font-size:2rem; display:block;" class="pnl-neg">{{ "%.1f"|format(m.var_95) }}%</strong>
+            <small class="muted">95% of trades better than this</small>
+        </article>
+        <article style="text-align:center;">
+            <small class="muted">CVaR / Expected Shortfall</small>
+            <strong style="font-size:2rem; display:block;" class="pnl-neg">{{ "%.1f"|format(m.cvar_95) }}%</strong>
+            <small class="muted">Avg loss in worst 5% of trades</small>
+        </article>
+    </div>
+
+    <div class="grid">
+        <article style="text-align:center;">
+            <small class="muted">Max Drawdown</small>
+            <strong style="font-size:2rem; display:block;" class="pnl-neg">-{{ "%.1f"|format(m.max_drawdown_pct) }}%</strong>
+            {% if m.max_drawdown_peak_date %}
+            <small class="muted">{{ m.max_drawdown_peak_date }} to {{ m.max_drawdown_trough_date }}</small>
+            {% endif %}
+        </article>
+        <article style="text-align:center;">
+            <small class="muted">Max DD Duration</small>
+            <strong style="font-size:2rem; display:block;">{{ m.max_drawdown_duration_days }} days</strong>
+            <small class="muted">Target: &lt;30 days</small>
+        </article>
+    </div>
+
+    <!-- Drawdown chart -->
+    <article>
+        <header><h3>Drawdown Over Time</h3></header>
+        {{ m.drawdown_svg|safe }}
+    </article>
+
+    <!-- Rolling Sharpe -->
+    <article>
+        <header><h3>Rolling 6-Month Sharpe Ratio</h3></header>
+        {% if m.needs_more_days_rolling > 0 %}
+        <p class="muted">Need {{ m.needs_more_days_rolling }} more trading days for rolling metrics.</p>
+        {% else %}
+        {{ m.rolling_sharpe_svg|safe }}
+        {% endif %}
+    </article>
+
+    <!-- Rolling 3-month returns -->
+    {% if m.rolling_3m_returns %}
+    <article>
+        <header><h3>Rolling 3-Month Returns</h3></header>
+        <div class="overflow-auto">
+            <table>
+                <thead>
+                    <tr><th>Period Ending</th><th>Return</th></tr>
+                </thead>
+                <tbody>
+                    {% for r in m.rolling_3m_returns %}
+                    <tr>
+                        <td>{{ r.date }}</td>
+                        <td class="{{ 'pnl-pos' if r.return_pct >= 0 else 'pnl-neg' }}">{{ "{:+.1f}".format(r.return_pct) }}%</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </article>
+    {% endif %}
+
+    <!-- Worst Periods -->
+    <article>
+        <header><h3>Worst Periods</h3></header>
+        <div class="overflow-auto">
+            <table>
+                <thead>
+                    <tr><th>Period</th><th>Dates</th><th>P&amp;L</th><th>Return</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Worst Week</strong></td>
+                        <td>{{ m.worst_week.period }}</td>
+                        <td class="pnl-neg">${{ "{:,.2f}".format(m.worst_week.pnl) }}</td>
+                        <td class="pnl-neg">{{ "{:+.1f}".format(m.worst_week.return_pct) }}%</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Worst Month</strong></td>
+                        <td>{{ m.worst_month_period.period }}</td>
+                        <td class="pnl-neg">${{ "{:,.2f}".format(m.worst_month_period.pnl) }}</td>
+                        <td class="pnl-neg">{{ "{:+.1f}".format(m.worst_month_period.return_pct) }}%</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Worst Quarter</strong></td>
+                        <td>{{ m.worst_quarter.period }}</td>
+                        <td class="pnl-neg">${{ "{:,.2f}".format(m.worst_quarter.pnl) }}</td>
+                        <td class="pnl-neg">{{ "{:+.1f}".format(m.worst_quarter.return_pct) }}%</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </article>
+
+    {% endif %}
+</div>
+
+<!-- ===================================================================
+     TAB 3: TRADE ANALYTICS
+     =================================================================== -->
+<div id="tab-trades" class="perf-tab-content">
+
+    {% if not m.has_trades %}
+    <article>
+        <p class="muted">No closed trades yet. Trade analytics will appear here after your first completed trade.</p>
+    </article>
+    {% else %}
+
+    <!-- Win rate, profit factor, expectancy -->
+    <div class="grid">
+        <article style="text-align:center;">
+            <small class="muted">Win Rate</small>
+            <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if m.win_rate >= 50 else 'pnl-neg' }}">
+                {{ "%.1f"|format(m.win_rate) }}%
+            </strong>
+            <small class="muted">{{ m.winning_trades }}W / {{ m.losing_trades }}L of {{ m.total_trades }}</small>
+        </article>
+        <article style="text-align:center;">
+            <small class="muted">Profit Factor</small>
+            <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if m.profit_factor >= 1.5 else 'pnl-neg' if m.profit_factor < 1 else '' }}">
+                {{ "%.2f"|format(m.profit_factor) }}
+            </strong>
+            <small class="muted">Target: &gt;1.5</small>
+        </article>
+        <article style="text-align:center;">
+            <small class="muted">Expectancy per Trade</small>
+            <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if m.expectancy >= 0 else 'pnl-neg' }}">
+                ${{ "{:,.2f}".format(m.expectancy) }}
+            </strong>
+        </article>
+    </div>
+
+    <!-- Avg win vs avg loss -->
+    <div class="grid">
+        <article>
+            <header><h4>Average Winning Trade</h4></header>
+            <strong class="pnl-pos" style="font-size:1.5rem;">${{ "{:,.2f}".format(m.avg_win) }}</strong>
+            <small class="muted">({{ "{:+.2f}".format(m.avg_win_pct) }}%)</small>
+        </article>
+        <article>
+            <header><h4>Average Losing Trade</h4></header>
+            <strong class="pnl-neg" style="font-size:1.5rem;">${{ "{:,.2f}".format(m.avg_loss) }}</strong>
+            <small class="muted">({{ "{:+.2f}".format(m.avg_loss_pct) }}%)</small>
+        </article>
+        <article>
+            <header><h4>Win/Loss Ratio</h4></header>
+            <strong style="font-size:1.5rem;" class="{{ 'pnl-pos' if m.win_loss_ratio >= 1 else 'pnl-neg' }}">
+                {{ "%.2f"|format(m.win_loss_ratio) }}
+            </strong>
+            <small class="muted">avg win / avg loss</small>
+        </article>
+    </div>
+
+    <!-- Largest win/loss -->
+    <div class="grid">
+        <article>
+            <header><h4>Largest Win</h4></header>
+            <strong class="pnl-pos" style="font-size:1.5rem;">${{ "{:,.2f}".format(m.largest_win) }}</strong>
+            <small class="muted">{{ m.largest_win_symbol }}</small>
+        </article>
+        <article>
+            <header><h4>Largest Loss</h4></header>
+            <strong class="pnl-neg" style="font-size:1.5rem;">${{ "{:,.2f}".format(m.largest_loss) }}</strong>
+            <small class="muted">{{ m.largest_loss_symbol }}</small>
+        </article>
+    </div>
+
+    <!-- Trade activity -->
+    <div class="grid">
+        <article>
+            <header><h4>Avg Holding Period</h4></header>
+            <strong style="font-size:1.5rem;">{{ "%.1f"|format(m.avg_hold_days) }} days</strong>
+        </article>
+        <article>
+            <header><h4>Trades per Month</h4></header>
+            <strong style="font-size:1.5rem;">{{ "%.1f"|format(m.trades_per_month) }}</strong>
+        </article>
+    </div>
+
+    <!-- Trade distribution chart -->
+    {% if m.pnl_distribution_svg %}
+    <article>
+        <header><h3>Trade Return Distribution</h3></header>
+        {{ m.pnl_distribution_svg|safe }}
+    </article>
+    {% endif %}
+
+    <!-- Streaks -->
+    <article>
+        <header><h3>Streaks</h3></header>
+        <div class="grid">
+            <div class="stat-card">
+                <small class="muted">Current Streak</small>
+                <strong class="{{ 'pnl-pos' if m.current_streak.type == 'winning' else 'pnl-neg' if m.current_streak.type == 'losing' else '' }}">
+                    {{ m.current_streak.count }} {{ m.current_streak.type }}
+                </strong>
+            </div>
+            <div class="stat-card">
+                <small class="muted">Max Consecutive Wins</small>
+                <strong class="pnl-pos">{{ m.max_consecutive_wins }}</strong>
+            </div>
+            <div class="stat-card">
+                <small class="muted">Max Consecutive Losses</small>
+                <strong class="pnl-neg">{{ m.max_consecutive_losses }}</strong>
+            </div>
+        </div>
+    </article>
+
+    <!-- Best/Worst Month -->
+    <div class="grid">
+        <article>
+            <header><h4>Best Month</h4></header>
+            <strong class="pnl-pos" style="font-size:1.2rem;">${{ "{:,.2f}".format(m.best_month.pnl) }}</strong>
+            <small class="muted">{{ m.best_month.month_label }} ({{ "{:+.1f}".format(m.best_month.return_pct) }}%)</small>
+        </article>
+        <article>
+            <header><h4>Worst Month</h4></header>
+            <strong class="pnl-neg" style="font-size:1.2rem;">${{ "{:,.2f}".format(m.worst_month.pnl) }}</strong>
+            <small class="muted">{{ m.worst_month.month_label }} ({{ "{:+.1f}".format(m.worst_month.return_pct) }}%)</small>
+        </article>
+    </div>
+
+    {% endif %}
+</div>
+
+<!-- ===================================================================
+     TAB 4: MARKET RELATIONSHIP
+     =================================================================== -->
+<div id="tab-market" class="perf-tab-content">
+
+    {% if m.num_daily_returns < 20 %}
+    <article>
+        <p class="muted">Need at least 20 daily returns for market relationship analysis. Currently have {{ m.num_daily_returns }}.</p>
+    </article>
+    {% else %}
+
+    <!-- Alpha & Beta -->
+    <div class="grid">
+        <article style="text-align:center;">
+            <small class="muted">Alpha (annualised)</small>
+            <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if m.alpha >= 0 else 'pnl-neg' }}">
+                {{ "{:+.2f}".format(m.alpha) }}%
+            </strong>
+            <small class="muted">Excess return vs market</small>
+        </article>
+        <article style="text-align:center;">
+            <small class="muted">Beta vs S&amp;P 500</small>
+            <strong style="font-size:2.5rem; display:block;">
+                {{ "%.3f"|format(m.beta_spy) }}
+            </strong>
+            <small class="muted">Target: &lt;0.5</small>
+        </article>
+    </div>
+
+    <!-- Correlation Table -->
+    <article>
+        <header><h3>Correlation Matrix</h3></header>
+        <div class="overflow-auto">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Benchmark</th>
+                        <th>Correlation</th>
+                        <th>Interpretation</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>S&amp;P 500 (SPY)</strong></td>
+                        <td>{{ "%.3f"|format(m.correlation_spy) }}</td>
+                        <td class="muted">
+                            {% if m.correlation_spy|abs < 0.3 %}Low correlation (good diversification)
+                            {% elif m.correlation_spy|abs < 0.7 %}Moderate correlation
+                            {% else %}High correlation{% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Nasdaq (QQQ)</strong></td>
+                        <td>{{ "%.3f"|format(m.correlation_qqq) }}</td>
+                        <td class="muted">
+                            {% if m.correlation_qqq|abs < 0.3 %}Low correlation
+                            {% elif m.correlation_qqq|abs < 0.7 %}Moderate correlation
+                            {% else %}High correlation{% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Bitcoin (BTC-USD)</strong></td>
+                        <td>{{ "%.3f"|format(m.correlation_btc) }}</td>
+                        <td class="muted">
+                            {% if m.correlation_btc == 0 %}No data available
+                            {% elif m.correlation_btc|abs < 0.3 %}Low correlation
+                            {% elif m.correlation_btc|abs < 0.7 %}Moderate correlation
+                            {% else %}High correlation{% endif %}
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </article>
+
+    <!-- Exposure (from live positions if available) -->
+    {% if exposure %}
+    <article>
+        <header><h3>Current Exposure</h3></header>
+        <div class="grid">
+            <div class="stat-card" style="text-align:center;">
+                <small class="muted">Net Exposure</small>
+                <strong style="font-size:2rem;">{{ "{:+.1f}".format(exposure.net_pct) }}%</strong>
+            </div>
+            <div class="stat-card" style="text-align:center;">
+                <small class="muted">Gross Exposure</small>
+                <strong style="font-size:2rem;">{{ "%.1f"|format(exposure.gross_pct) }}%</strong>
+            </div>
+            <div class="stat-card" style="text-align:center;">
+                <small class="muted">Positions</small>
+                <strong style="font-size:2rem;">{{ exposure.num_positions }}</strong>
+            </div>
+        </div>
+    </article>
+    {% endif %}
+
+    {% endif %}
+</div>
+
+<!-- ===================================================================
+     TAB 5: SCALABILITY
+     =================================================================== -->
+<div id="tab-scale" class="perf-tab-content">
+
+    {% if not m.has_trades %}
+    <article>
+        <p class="muted">No trade data available for scalability analysis.</p>
+    </article>
+    {% else %}
+
+    <!-- Slippage Analysis -->
+    <article>
+        <header><h3>Slippage Analysis</h3></header>
+        {% if m.trades_with_slippage > 0 %}
+        <div class="grid">
+            <div class="stat-card" style="text-align:center;">
+                <small class="muted">Avg Slippage per Trade</small>
+                <strong style="font-size:2rem;" class="{{ 'pnl-neg' if m.slippage_avg_pct > 0 else 'pnl-pos' }}">
+                    {{ "{:+.4f}".format(m.slippage_avg_pct) }}%
+                </strong>
+            </div>
+            <div class="stat-card" style="text-align:center;">
+                <small class="muted">Total Slippage Cost</small>
+                <strong style="font-size:2rem;" class="pnl-neg">
+                    ${{ "{:,.2f}".format(m.slippage_total_cost) }}
+                </strong>
+            </div>
+            <div class="stat-card" style="text-align:center;">
+                <small class="muted">Slippage vs Gross Profit</small>
+                <strong style="font-size:2rem;" class="{{ 'pnl-neg' if m.slippage_vs_gross > 20 else '' }}">
+                    {{ "%.1f"|format(m.slippage_vs_gross) }}%
+                </strong>
+                <small class="muted">Target: &lt;20%</small>
+            </div>
+            <div class="stat-card" style="text-align:center;">
+                <small class="muted">Trades with Fill Data</small>
+                <strong style="font-size:2rem;">{{ m.trades_with_slippage }}</strong>
+            </div>
+        </div>
+        {% else %}
+        <p class="muted">No slippage data available. Slippage tracking requires trades with both decision_price and fill_price.</p>
+        {% endif %}
+    </article>
+
+    <!-- Position sizing -->
+    <article>
+        <header><h3>Position Sizing</h3></header>
+        <div class="grid">
+            <div class="stat-card" style="text-align:center;">
+                <small class="muted">Avg Position Size</small>
+                <strong style="font-size:2rem;">${{ "{:,.2f}".format(m.avg_position_size) }}</strong>
+            </div>
+            <div class="stat-card" style="text-align:center;">
+                <small class="muted">Total Trades</small>
+                <strong style="font-size:2rem;">{{ m.total_trades }}</strong>
+            </div>
+        </div>
+    </article>
+
+    <!-- Scaling Projection -->
+    <article>
+        <header><h3>Scaling Projection</h3></header>
+        <p class="muted">Estimated impact of scaling capital on slippage and returns.</p>
+        <div class="overflow-auto">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Capital Level</th>
+                        <th>Est. Position Size</th>
+                        <th>Est. Slippage Impact</th>
+                        <th>Projected Net Return</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% set base_return = m.net_return_pct %}
+                    {% set base_slip = m.slippage_vs_gross %}
+                    {% for mult, label in [(1, "Current ($10K)"), (5, "$50K"), (10, "$100K"), (50, "$500K"), (100, "$1M")] %}
+                    <tr>
+                        <td><strong>{{ label }}</strong></td>
+                        <td>${{ "{:,.0f}".format(m.avg_position_size * mult) }}</td>
+                        <td class="{{ 'pnl-neg' if mult > 10 else '' }}">
+                            ~{{ "%.1f"|format(base_slip * (1 + (mult - 1) * 0.1)) }}%
+                        </td>
+                        <td class="{{ 'pnl-pos' if base_return - base_slip * (mult - 1) * 0.05 >= 0 else 'pnl-neg' }}">
+                            ~{{ "{:+.1f}".format(base_return - base_slip * (mult - 1) * 0.05) }}%
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <small class="muted">Note: Projections are rough estimates. Actual slippage at scale depends on liquidity of specific traded symbols.</small>
+    </article>
+
+    {% endif %}
+</div>
+
+<script>
+function showTab(event, tabName) {
+    event.preventDefault();
+    document.querySelectorAll('.perf-tab-content').forEach(function(el) {
+        el.classList.remove('active');
+    });
+    document.querySelectorAll('.perf-tab').forEach(function(el) {
+        el.classList.remove('active');
+    });
+    document.getElementById('tab-' + tabName).classList.add('active');
+    event.target.classList.add('active');
+    // Update URL hash for bookmarking
+    history.replaceState(null, null, '#' + tabName);
+}
+
+// Restore tab from URL hash on load
+(function() {
+    var hash = window.location.hash.replace('#', '');
+    if (hash && document.getElementById('tab-' + hash)) {
+        document.querySelectorAll('.perf-tab-content').forEach(function(el) {
+            el.classList.remove('active');
+        });
+        document.querySelectorAll('.perf-tab').forEach(function(el) {
+            el.classList.remove('active');
+        });
+        document.getElementById('tab-' + hash).classList.add('active');
+        // Find and activate the correct tab link
+        document.querySelectorAll('.perf-tab').forEach(function(el) {
+            if (el.getAttribute('href') === '#' + hash) {
+                el.classList.add('active');
+            }
+        });
+    }
+})();
+</script>
+
+{% endblock %}
