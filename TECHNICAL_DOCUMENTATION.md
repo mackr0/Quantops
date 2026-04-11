@@ -747,7 +747,61 @@ Pipeline pre-filtering reduces AI calls by 60-80% compared to calling AI on ever
     └── SMART_EXECUTION_PLAN.md     Execution feature plan
 ```
 
-**Total: ~45 Python files, ~16,000 lines of code**
+**Total: ~45 Python files, ~17,000+ lines of code**
+
+---
+
+## 17. What-If Backtesting
+
+### Overview
+
+The settings page includes a "What-If" backtesting feature that lets users test parameter changes against historical market data before applying them live. This runs against **actual historical prices** from Yahoo Finance — it does not require any trade history.
+
+### How It Works
+
+1. User adjusts sliders on the settings page (stop-loss, take-profit, ATR multipliers, strategy toggles, etc.)
+2. User clicks **"Backtest These Settings"**
+3. System runs the market-specific strategy engine against 90 days of historical data for the **full** symbol universe (no sampling)
+4. Results displayed inline as a side-by-side comparison:
+
+```
+                    Current Settings    Your Changes     Difference
+Win Rate:           35.2%              48.1%            +12.9% ↑
+Total Return:       -4.2%              +8.9%            +13.1% ↑
+Max Drawdown:       -15.3%             -8.7%            +6.6% ↑
+Trades:             42                 28               -14
+Sharpe Ratio:       -0.45              0.62             +1.07 ↑
+Best Trade:         +8.1%              +12.4%           +4.3% ↑
+Worst Trade:        -6.2%              -5.1%            +1.1% ↑
+```
+
+5. User clicks **"Apply These Settings"** to save, or **"Discard"** to revert
+
+### Technical Implementation
+
+**Data Caching:**
+- Historical price data downloaded via `yf.download()` batch request for full universe
+- Cached at module level for 24 hours
+- First backtest: ~30 seconds (download + simulation)
+- Subsequent backtests with different parameters: ~20 seconds (cached data, only re-run strategy)
+
+**Simulation Engine:**
+- Walk-forward day-by-day through historical bars
+- Uses the same strategy engine (via `strategy_router.run_strategy()`) as live trading
+- Supports ATR-based stops, trailing stops, and fixed % stops
+- Respects all strategy toggles (enable/disable individual strategies)
+- Calculates: total return, win rate, max drawdown, Sharpe ratio, trade count, best/worst trades
+
+**Parameterization:**
+- `backtest_with_params(market_type, params, days)` accepts all UserContext fields as a params dict
+- `backtest_comparison(market_type, current_params, new_params, days)` runs both and computes diffs
+- API endpoint: `POST /api/backtest/<profile_id>` accepts JSON params, returns comparison JSON
+
+**Key Design Decisions:**
+- Full universe (no sampling) for representative results
+- 90-day default period — enough data for statistical significance, fast enough to complete in 30 seconds
+- Color-coded diffs: green for improvements, red for regressions
+- No changes saved until user explicitly clicks "Apply"
 
 ---
 
