@@ -48,7 +48,8 @@ def _update_job(job_id: str, **kwargs):
             _write_jobs(jobs)
 
 
-def start_backtest(market_type, current_params, proposed_params, days=90):
+def start_backtest(market_type, current_params, proposed_params, days=90,
+                    changes_summary=None):
     """Start a backtest in a background thread. Returns job_id immediately."""
     job_id = str(uuid.uuid4())[:8]
 
@@ -60,6 +61,7 @@ def start_backtest(market_type, current_params, proposed_params, days=90):
             "result": None,
             "error": None,
             "progress": "Starting backtest...",
+            "changes": changes_summary or [],
         }
         _write_jobs(jobs)
 
@@ -102,6 +104,7 @@ def get_job_status(job_id):
         "error": job.get("error"),
         "progress": job.get("progress", ""),
         "elapsed_seconds": elapsed,
+        "changes": job.get("changes", []),
     }
 
 

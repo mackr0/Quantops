@@ -546,8 +546,41 @@ def api_backtest(profile_id):
         "volume_surge_multiplier": float(data.get("volume_surge_multiplier", current_params["volume_surge_multiplier"])),
     }
 
+    # Identify what changed for the results display
+    param_labels = {
+        "stop_loss_pct": "Stop Loss",
+        "take_profit_pct": "Take Profit",
+        "max_position_pct": "Max Position",
+        "use_atr_stops": "ATR Stops",
+        "atr_multiplier_sl": "ATR SL Multiplier",
+        "atr_multiplier_tp": "ATR TP Multiplier",
+        "use_trailing_stops": "Trailing Stops",
+        "trailing_atr_multiplier": "Trailing Multiplier",
+        "ai_confidence_threshold": "AI Confidence",
+        "strategy_momentum_breakout": "Momentum Breakout",
+        "strategy_volume_spike": "Volume Spike",
+        "strategy_mean_reversion": "Mean Reversion",
+        "strategy_gap_and_go": "Gap and Go",
+        "rsi_oversold": "RSI Oversold",
+        "rsi_overbought": "RSI Overbought",
+        "volume_surge_multiplier": "Volume Surge Mult",
+    }
+    changes = []
+    for key in current_params:
+        curr_val = current_params[key]
+        prop_val = proposed_params[key]
+        if curr_val != prop_val:
+            label = param_labels.get(key, key)
+            if isinstance(curr_val, float) and curr_val < 1:
+                changes.append(f"{label}: {curr_val*100:.1f}% → {prop_val*100:.1f}%")
+            elif isinstance(curr_val, bool):
+                changes.append(f"{label}: {'ON' if curr_val else 'OFF'} → {'ON' if prop_val else 'OFF'}")
+            else:
+                changes.append(f"{label}: {curr_val} → {prop_val}")
+
     from backtest_worker import start_backtest
-    job_id = start_backtest(market_type, current_params, proposed_params, days=90)
+    job_id = start_backtest(market_type, current_params, proposed_params, days=90,
+                            changes_summary=changes)
     return jsonify({"job_id": job_id})
 
 

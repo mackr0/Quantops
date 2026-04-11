@@ -697,7 +697,7 @@ document.querySelectorAll('select[name="schedule_type"]').forEach(function(sel) 
 });
 
 // Render backtest results into the comparison table
-function renderBacktestResults(data, dataDiv, tbody, loadingDiv) {
+function renderBacktestResults(data, changes, dataDiv, tbody, loadingDiv) {
     loadingDiv.style.display = 'none';
     dataDiv.style.display = 'block';
 
@@ -705,6 +705,20 @@ function renderBacktestResults(data, dataDiv, tbody, loadingDiv) {
         tbody.innerHTML = '<tr><td colspan="4">' + data.error + '</td></tr>';
         return;
     }
+
+    // Show what was changed
+    var changesHtml = '';
+    if (changes && changes.length > 0) {
+        changesHtml = '<div style="margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:#e8f5e9;border-left:3px solid #00c853;border-radius:0 4px 4px 0;font-size:0.85rem;">';
+        changesHtml += '<strong>Changes tested:</strong> ';
+        changesHtml += changes.join(' | ');
+        changesHtml += '</div>';
+    } else {
+        changesHtml = '<div style="margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:#fff3e0;border-left:3px solid #ff9800;border-radius:0 4px 4px 0;font-size:0.85rem;">';
+        changesHtml += '<strong>No changes detected.</strong> Adjust sliders above, then backtest to see the difference.';
+        changesHtml += '</div>';
+    }
+    dataDiv.querySelector('h5').insertAdjacentHTML('afterend', changesHtml);
 
     var metrics = [
         ['Win Rate', 'win_rate', '%', true],
@@ -805,7 +819,7 @@ document.querySelectorAll('.backtest-btn').forEach(function(btn) {
 
                     if (status.status === 'complete') {
                         clearInterval(pollInterval);
-                        renderBacktestResults(status.result, dataDiv, tbody, loadingDiv);
+                        renderBacktestResults(status.result, status.changes || [], dataDiv, tbody, loadingDiv);
                     } else if (status.status === 'failed') {
                         clearInterval(pollInterval);
                         loadingDiv.style.display = 'none';
