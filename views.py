@@ -1340,12 +1340,115 @@ def performance_dashboard():
         except Exception:
             pass
 
+    # AI prediction accuracy (for AI Intelligence tab)
+    from ai_tracker import get_ai_performance
+    from journal import get_performance_summary
+    from models import get_tuning_history
+    import sqlite3 as _sqlite3
+
+    ai_perf = {
+        "total_predictions": 0, "resolved": 0, "pending": 0,
+        "win_rate": 0.0, "avg_confidence_on_wins": 0.0,
+        "avg_confidence_on_losses": 0.0, "avg_return_on_buys": 0.0,
+        "avg_return_on_sells": 0.0, "best_prediction": None,
+        "worst_prediction": None, "profit_factor": 0.0,
+    }
+    all_wins = 0
+    all_losses = 0
+    conf_on_wins = []
+    conf_on_losses = []
+    all_return_buys = []
+    all_return_sells = []
+
+    for db_path in db_paths:
+        try:
+            p = get_ai_performance(db_path=db_path)
+            ai_perf["total_predictions"] += p.get("total_predictions", 0)
+            ai_perf["resolved"] += p.get("resolved", 0)
+            ai_perf["pending"] += p.get("pending", 0)
+            if p.get("best_prediction"):
+                if ai_perf["best_prediction"] is None or p["best_prediction"].get("return_pct", 0) > ai_perf["best_prediction"].get("return_pct", 0):
+                    ai_perf["best_prediction"] = p["best_prediction"]
+            if p.get("worst_prediction"):
+                if ai_perf["worst_prediction"] is None or p["worst_prediction"].get("return_pct", 0) < ai_perf["worst_prediction"].get("return_pct", 0):
+                    ai_perf["worst_prediction"] = p["worst_prediction"]
+        except Exception:
+            pass
+
+        try:
+            conn = _sqlite3.connect(db_path)
+            conn.row_factory = _sqlite3.Row
+            rows = conn.execute(
+                "SELECT predicted_signal, actual_outcome, actual_return_pct, confidence "
+                "FROM ai_predictions WHERE status = 'resolved'"
+            ).fetchall()
+            conn.close()
+            for r in rows:
+                outcome = r["actual_outcome"]
+                ret = r["actual_return_pct"]
+                conf = r["confidence"] or 0
+                sig = r["predicted_signal"] or ""
+                if outcome == "win":
+                    all_wins += 1
+                    conf_on_wins.append(conf)
+                elif outcome == "loss":
+                    all_losses += 1
+                    conf_on_losses.append(conf)
+                if ret is not None:
+                    if "BUY" in sig.upper():
+                        all_return_buys.append(ret)
+                    elif "SELL" in sig.upper():
+                        all_return_sells.append(ret)
+        except Exception:
+            pass
+
+    total_resolved = all_wins + all_losses
+    if total_resolved > 0:
+        ai_perf["win_rate"] = round(all_wins / total_resolved * 100, 1)
+    if conf_on_wins:
+        ai_perf["avg_confidence_on_wins"] = round(sum(conf_on_wins) / len(conf_on_wins), 1)
+    if conf_on_losses:
+        ai_perf["avg_confidence_on_losses"] = round(sum(conf_on_losses) / len(conf_on_losses), 1)
+    if all_return_buys:
+        ai_perf["avg_return_on_buys"] = round(sum(all_return_buys) / len(all_return_buys), 2)
+    if all_return_sells:
+        ai_perf["avg_return_on_sells"] = round(sum(all_return_sells) / len(all_return_sells), 2)
+
+    # Slippage stats
+    slippage = {"avg_pct": 0, "total_cost": 0, "count": 0}
+    for db_path in db_paths:
+        try:
+            from journal import get_slippage_stats
+            s = get_slippage_stats(db_path=db_path)
+            if s:
+                slippage["count"] += s.get("count", 0)
+                slippage["total_cost"] += s.get("total_cost", 0)
+        except Exception:
+            pass
+    if slippage["count"] > 0 and slippage["total_cost"] != 0:
+        slippage["avg_pct"] = slippage["total_cost"] / slippage["count"]
+
+    # Tuning history
+    tuning_history = []
+    for p in profiles:
+        try:
+            history = get_tuning_history(p["id"], limit=10)
+            for h in history:
+                h["profile_name"] = p["name"]
+            tuning_history.extend(history)
+        except Exception:
+            pass
+    tuning_history.sort(key=lambda h: h.get("timestamp", ""), reverse=True)
+
     return render_template("performance.html",
                            m=metrics,
                            profiles=profiles,
                            selected_profile=selected_profile_int,
                            selected_profile_name=selected_profile_name,
-                           exposure=exposure)
+                           exposure=exposure,
+                           ai_perf=ai_perf,
+                           slippage=slippage,
+                           tuning_history=tuning_history[:20])
 
 
 @views_bp.route("/api/backtest-vs-reality/<int:profile_id>")

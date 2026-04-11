@@ -24,6 +24,7 @@
     <a href="#trades" class="perf-tab" onclick="showTab(event, 'trades')">Trade Analytics</a>
     <a href="#market" class="perf-tab" onclick="showTab(event, 'market')">Market Relationship</a>
     <a href="#scale" class="perf-tab" onclick="showTab(event, 'scale')">Scalability</a>
+    <a href="#ai" class="perf-tab" onclick="showTab(event, 'ai')">AI Intelligence</a>
 </div>
 
 <!-- ===================================================================
@@ -579,6 +580,179 @@
         </div>
         <small class="muted">Note: Projections are rough estimates. Actual slippage at scale depends on liquidity of specific traded symbols.</small>
     </article>
+
+</div>
+
+<!-- ===================================================================
+     TAB 6: AI INTELLIGENCE
+     =================================================================== -->
+<div id="tab-ai" class="perf-tab-content">
+
+    {% if not ai_perf %}
+    <p class="muted" style="margin-bottom:1rem;">AI prediction data will appear here as the system makes and resolves predictions.</p>
+    {% endif %}
+
+    <!-- AI Prediction Accuracy -->
+    <div class="grid">
+        <article style="text-align:center;">
+            <small class="muted"><span class="tip" data-tip="Total number of predictions the AI has made">Total Predictions</span></small>
+            <strong style="font-size:2rem; display:block;">{{ ai_perf.total_predictions if ai_perf else 0 }}</strong>
+        </article>
+        <article style="text-align:center;">
+            <small class="muted">Resolved</small>
+            <strong style="font-size:2rem; display:block;">{{ ai_perf.resolved if ai_perf else 0 }}</strong>
+        </article>
+        <article style="text-align:center;">
+            <small class="muted">Pending</small>
+            <strong style="font-size:2rem; display:block;">{{ ai_perf.pending if ai_perf else 0 }}</strong>
+        </article>
+    </div>
+
+    <div class="grid">
+        <article style="text-align:center;">
+            <small class="muted"><span class="tip" data-tip="How often the AI correctly predicted price direction">Prediction Win Rate</span></small>
+            <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if (ai_perf.win_rate if ai_perf else 0) >= 50 else 'pnl-neg' }}">
+                {{ "%.1f"|format(ai_perf.win_rate if ai_perf else 0) }}%
+            </strong>
+        </article>
+        <article style="text-align:center;">
+            <small class="muted"><span class="tip" data-tip="Total gains divided by total losses on AI predictions">Profit Factor</span></small>
+            <strong style="font-size:2.5rem; display:block;">{{ ai_perf.profit_factor if ai_perf else 0 }}</strong>
+        </article>
+    </div>
+
+    <!-- Confidence Calibration -->
+    <div class="grid">
+        <article>
+            <header><h4>Confidence Calibration</h4></header>
+            <div class="stat-card">
+                <small class="muted">Avg Confidence on Wins</small>
+                <strong>{{ "%.1f"|format(ai_perf.avg_confidence_on_wins if ai_perf else 0) }}%</strong>
+            </div>
+            <div class="stat-card">
+                <small class="muted">Avg Confidence on Losses</small>
+                <strong>{{ "%.1f"|format(ai_perf.avg_confidence_on_losses if ai_perf else 0) }}%</strong>
+            </div>
+        </article>
+        <article>
+            <header><h4>Returns by Signal</h4></header>
+            <div class="stat-card">
+                <small class="muted">Avg Return on BUYs</small>
+                <strong class="{{ 'pnl-pos' if (ai_perf.avg_return_on_buys if ai_perf else 0) >= 0 else 'pnl-neg' }}">
+                    {{ "{:+.2f}".format(ai_perf.avg_return_on_buys if ai_perf else 0) }}%
+                </strong>
+            </div>
+            <div class="stat-card">
+                <small class="muted">Avg Return on SELLs</small>
+                <strong class="{{ 'pnl-pos' if (ai_perf.avg_return_on_sells if ai_perf else 0) >= 0 else 'pnl-neg' }}">
+                    {{ "{:+.2f}".format(ai_perf.avg_return_on_sells if ai_perf else 0) }}%
+                </strong>
+            </div>
+        </article>
+    </div>
+
+    <!-- Best / Worst Predictions -->
+    <div class="grid">
+        {% if ai_perf and ai_perf.best_prediction %}
+        <article>
+            <header><h4>Best Prediction</h4></header>
+            <strong>{{ ai_perf.best_prediction.symbol }}</strong>
+            <small class="muted">({{ ai_perf.best_prediction.confidence }}% confidence)</small>
+            <p class="pnl-pos" style="font-size:1.5rem;">{{ "{:+.2f}".format(ai_perf.best_prediction.return_pct) }}%</p>
+        </article>
+        {% else %}
+        <article>
+            <header><h4>Best Prediction</h4></header>
+            <p class="muted">No resolved predictions yet</p>
+        </article>
+        {% endif %}
+
+        {% if ai_perf and ai_perf.worst_prediction %}
+        <article>
+            <header><h4>Worst Prediction</h4></header>
+            <strong>{{ ai_perf.worst_prediction.symbol }}</strong>
+            <small class="muted">({{ ai_perf.worst_prediction.confidence }}% confidence)</small>
+            <p class="pnl-neg" style="font-size:1.5rem;">{{ "{:+.2f}".format(ai_perf.worst_prediction.return_pct) }}%</p>
+        </article>
+        {% else %}
+        <article>
+            <header><h4>Worst Prediction</h4></header>
+            <p class="muted">No resolved predictions yet</p>
+        </article>
+        {% endif %}
+    </div>
+
+    <!-- Slippage Impact -->
+    {% if slippage and slippage.count > 0 %}
+    <article>
+        <header><h4>Slippage Impact</h4></header>
+        <div class="grid">
+            <div class="stat-card">
+                <small class="muted"><span class="tip" data-tip="The difference between the price you expected and the price you actually got">Avg Slippage</span></small>
+                <strong>{{ "%.3f"|format(slippage.avg_pct) }}%</strong>
+            </div>
+            <div class="stat-card">
+                <small class="muted">Total Slippage Cost</small>
+                <strong class="pnl-neg">${{ "{:,.2f}".format(slippage.total_cost) }}</strong>
+            </div>
+            <div class="stat-card">
+                <small class="muted">Trades with Fill Data</small>
+                <strong>{{ slippage.count }}</strong>
+            </div>
+        </div>
+    </article>
+    {% endif %}
+
+    <!-- Self-Tuning History -->
+    {% if tuning_history %}
+    <article>
+        <header><h3>Self-Tuning History</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;"><span class="tip" data-tip="The AI learns from its past wins and losses and automatically adjusts its approach">Automatic adjustments</span> the system has made based on its own performance.</p>
+        <div class="overflow-auto">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Profile</th>
+                        <th>Change</th>
+                        <th>Reason</th>
+                        <th>Win Rate Then</th>
+                        <th>Outcome</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for h in tuning_history %}
+                    <tr>
+                        <td>{{ h.timestamp[:10] }}</td>
+                        <td>{{ h.profile_name }}</td>
+                        <td><strong>{{ h.parameter_name }}</strong><br>
+                            <small>{{ h.old_value }} &rarr; {{ h.new_value }}</small>
+                        </td>
+                        <td style="font-size:0.85rem;">{{ h.reason[:80] }}</td>
+                        <td>{{ "%.1f"|format(h.win_rate_at_change) }}%</td>
+                        <td>
+                            {% if h.outcome_after == 'improved' %}
+                                <span class="pnl-pos">Improved{% if h.win_rate_after %} ({{ "%.1f"|format(h.win_rate_after) }}%){% endif %}</span>
+                            {% elif h.outcome_after == 'worsened' %}
+                                <span class="pnl-neg">Worsened{% if h.win_rate_after %} ({{ "%.1f"|format(h.win_rate_after) }}%){% endif %}</span>
+                            {% elif h.outcome_after == 'unchanged' %}
+                                <span class="muted">Unchanged</span>
+                            {% else %}
+                                <span class="muted">Pending review</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </article>
+    {% else %}
+    <article>
+        <header><h3>Self-Tuning History</h3></header>
+        <p class="muted">No self-tuning adjustments yet. The system will start adjusting after enough trade data accumulates.</p>
+    </article>
+    {% endif %}
 
 </div>
 
