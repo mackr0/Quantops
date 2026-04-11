@@ -754,14 +754,23 @@ def _extract_symbol_df(batch_data: pd.DataFrame, symbol: str,
             df = batch_data[yf_sym].copy()
 
         # Normalize column names to lowercase
-        df.columns = [c.lower() for c in df.columns]
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [c[-1].lower() if isinstance(c, tuple) else str(c).lower() for c in df.columns]
+        else:
+            df.columns = [str(c).lower() for c in df.columns]
 
-        # Drop rows with all NaN (symbol may not have traded that day)
+        # Keep only OHLCV columns to avoid conflicts
+        keep = [c for c in ("open", "high", "low", "close", "volume") if c in df.columns]
+        if len(keep) < 5:
+            return None
+        df = df[keep].copy()
+
+        # Drop rows with NaN close
         df = df.dropna(subset=["close"])
 
-        for col in ("open", "high", "low", "close", "volume"):
-            if col not in df.columns:
-                return None
+        # Ensure numeric types
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
         if len(df) < 20:
             return None
