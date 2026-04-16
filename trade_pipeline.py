@@ -187,7 +187,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
     api = get_api(ctx)
 
     # Use pre-fetched data if available, otherwise fetch fresh
-    account = _account if _account is not None else get_account_info(api)
+    account = _account if _account is not None else get_account_info(api, ctx=ctx)
 
     # --- Drawdown protection ---
     dd = _dd if _dd is not None else {"action": "normal", "drawdown_pct": 0.0, "peak_equity": 0, "current_equity": 0}
@@ -638,8 +638,8 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
 
     # ── STEP 0: Portfolio state (fetched ONCE) ──────────────────────
     api = get_api(ctx)
-    account = get_account_info(api)
-    positions_list = get_positions(api)
+    account = get_account_info(api, ctx=ctx)
+    positions_list = get_positions(api, ctx=ctx)
 
     # Filter positions by market type (crypto vs equity)
     if ctx is not None:

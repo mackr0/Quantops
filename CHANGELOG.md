@@ -151,6 +151,26 @@ carried `status=open` despite having realized `pnl`.
 
 ---
 
+## 2026-04-16 — Critical fix: virtual profiles sized against Alpaca's balance, not their own
+
+**Severity:** critical — virtual profiles with $25K capital were buying $176K of stock
+
+**Symptom:** Mid Cap 25K profile showed cash of -$151,074. Small Cap 25K showed -$12,492.
+
+**Root cause:** `trade_pipeline.py` line 190 and 641, and `trader.py` lines 43-44 and 208 called `get_account_info(api)` and `get_positions(api)` passing only the API client but NOT `ctx`. Without `ctx`, the virtual interception in `client.py` never fired — the pipeline saw Alpaca's $1M account balance and sized positions accordingly.
+
+**Fix:** All 5 call sites now pass `ctx=ctx`:
+- `trade_pipeline.py:190` — `get_account_info(api, ctx=ctx)`
+- `trade_pipeline.py:641-642` — both `get_account_info` and `get_positions`
+- `trader.py:43-44` — `execute_trade` path
+- `trader.py:208` — `check_exits` path
+
+**Data impact:** Profiles 5 (Small Cap 25K) and 6 (Mid Cap 25K) had corrupted trade data from oversized positions. Both were wiped clean and reset to their $25K starting balance. All other profiles were unaffected — their trade history is intact.
+
+**Lesson:** The virtual account layer requires that EVERY code path reading equity or positions passes `ctx` through to `client.py`. Added this as an invariant to watch for in future code changes.
+
+---
+
 ## 2026-04-16 — Virtual Account Layer (broker decoupling)
 
 **Severity:** architectural — major new capability

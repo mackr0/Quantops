@@ -40,8 +40,8 @@ def execute_trade(symbol, signal, ctx=None, strategy_name="combined", log=True):
     max_total_positions = ctx.max_total_positions if ctx is not None else None
 
     api = get_api(ctx)
-    account = get_account_info(api)
-    positions_list = get_positions(api)
+    account = get_account_info(api, ctx=ctx)
+    positions_list = get_positions(api, ctx=ctx)
     positions = {p["symbol"]: p for p in positions_list}
 
     action = signal["signal"]
@@ -205,7 +205,7 @@ def check_exits(ctx=None):
     short_take_profit_pct = getattr(ctx, "short_take_profit_pct", None) if ctx is not None else None
 
     api = get_api(ctx)
-    positions = get_positions(api)
+    positions = get_positions(api, ctx=ctx)
 
     if not positions:
         return []
