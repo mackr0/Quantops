@@ -76,7 +76,8 @@ def init_tracker_db(db_path=None):
 # ---------------------------------------------------------------------------
 
 def record_prediction(symbol, predicted_signal, confidence, reasoning,
-                      price_at_prediction, price_targets=None, db_path=None):
+                      price_at_prediction, price_targets=None, db_path=None,
+                      regime=None, strategy_type=None, features=None):
     """Save an AI prediction to the database.
 
     Parameters
@@ -95,22 +96,35 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
         May contain 'entry', 'stop_loss', 'take_profit'.
     db_path : str, optional
         Override database path.
+    regime : str, optional
+        Market regime at time of prediction (bull/bear/sideways/volatile).
+    strategy_type : str, optional
+        Which strategy generated the signal (e.g., "mean_reversion").
+    features : dict, optional
+        Full feature context the AI saw at prediction time (indicators, alt
+        data, sector context, track record). Serialized to JSON and stored
+        for the Phase 1 meta-model. See ROADMAP.md.
 
     Returns
     -------
     int
         Row id of the inserted prediction.
     """
+    import json as _json
+
     init_tracker_db(db_path)
 
     price_targets = price_targets or {}
+    features_json = _json.dumps(features) if features else None
+
     conn = _get_conn(db_path)
     cursor = conn.execute(
         """INSERT INTO ai_predictions
            (timestamp, symbol, predicted_signal, confidence, reasoning,
             price_at_prediction, target_entry, target_stop_loss,
-            target_take_profit, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')""",
+            target_take_profit, status, regime_at_prediction, strategy_type,
+            features_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)""",
         (
             datetime.utcnow().isoformat(),
             symbol.upper(),
@@ -121,6 +135,9 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
             price_targets.get("entry"),
             price_targets.get("stop_loss"),
             price_targets.get("take_profit"),
+            regime,
+            strategy_type,
+            features_json,
         ),
     )
     conn.commit()

@@ -1,0 +1,1319 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>ROADMAP</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">ROADMAP</h1>
+</header>
+<h1 id="quantopsai-quant-fund-evolution-roadmap">QuantOpsAI — Quant Fund
+Evolution Roadmap</h1>
+<p><strong>Purpose:</strong> This document is the source of truth for
+the system’s evolution from “excellent retail platform” to “world-class
+quant fund in miniature.” It persists across development sessions so
+context is never lost.</p>
+<p><strong>Last updated:</strong> 2026-04-15</p>
+<hr />
+<h2 id="vision">Vision</h2>
+<p>QuantOpsAI is already better than 95% of retail trading systems. The
+10 phases below close the gap toward what real quant funds (Renaissance,
+Two Sigma, DE Shaw) actually do. The key insight: <strong>alpha comes
+from layering</strong>, not from any single clever trick. Each phase
+compounds with the others.</p>
+<p><strong>Our moat:</strong> We have no legacy infrastructure. Every
+big fund runs 10-year-old code on 90s data pipelines and cannot rebuild.
+We can rebuild our entire stack every 6 months. Agility is the
+asymmetry.</p>
+<hr />
+<h2 id="the-10-phases">The 10 Phases</h2>
+<h3 id="phase-1-meta-model-on-own-prediction-data-current">Phase 1 —
+Meta-Model on Own Prediction Data [CURRENT]</h3>
+<p>Train a gradient-boosted classifier on the features the AI saw for
+each past prediction, with the target being whether that prediction was
+right or wrong. This predicts <strong>“when is the AI likely to be
+correct?”</strong> and re-weights confidence before execution. Creates a
+second-order edge that compounds automatically as prediction data
+accumulates.</p>
+<p><strong>Key insight:</strong> We’re not predicting the market — we’re
+learning our AI’s systematic blind spots from proprietary data no one
+else has.</p>
+<h3 id="phase-2-scientific-backtesting-infrastructure">Phase 2 —
+Scientific Backtesting Infrastructure</h3>
+<p>Walk-forward optimization, out-of-sample validation, regime-specific
+testing, transaction cost modeling, Monte Carlo stress testing,
+statistical significance gates. <strong>Every strategy must pass this
+gauntlet before going live.</strong> This is the discipline that 90% of
+funds skip.</p>
+<h3 id="phase-3-alpha-decay-monitoring">Phase 3 — Alpha Decay
+Monitoring</h3>
+<p>Track rolling Sharpe of every signal and strategy. Auto-deprecate
+when edge fades for 30+ trading days. Most systems cling to dead
+strategies forever because nobody measures decay rigorously.</p>
+<h3 id="phase-4-sec-filings-semantic-analysis">Phase 4 — SEC Filings
+Semantic Analysis</h3>
+<p>AI reads every 10-K, 10-Q, 8-Q for our watchlist. Detect material
+language changes between filings (new “going concern”, “material
+weakness”, risk factor shifts). Strongest predictive signals in finance
+— and nearly no fund does it at our scale.</p>
+<h3 id="phase-5-options-chain-oracle">Phase 5 — Options Chain
+Oracle</h3>
+<p>Compute IV surface shape, put/call skew, term structure, gamma
+exposure (GEX), max pain from free yfinance data. This reveals “what the
+smartest money in the world expects” for every stock. Institutional-only
+insight at zero cost.</p>
+<h3 id="phase-6-multi-strategy-parallel-execution">Phase 6 —
+Multi-Strategy Parallel Execution</h3>
+<p>Run 10+ uncorrelated strategies simultaneously with capital
+allocation via Kelly criterion or risk parity. Each strategy has small
+alpha; combined they dominate. Strategies to add: pair trading, earnings
+drift, short-term reversal, sector rotation, insider cluster
+replication, volatility regimes.</p>
+<h3 id="phase-7-strategy-auto-generation">Phase 7 — Strategy
+Auto-Generation</h3>
+<p>AI proposes strategy variants → auto-backtest → promote winners to
+shadow trading → retire losers. Genetic algorithm on strategy space.
+This is what Renaissance has been doing for 30 years — a self-improving
+strategy library.</p>
+<h3 id="phase-8-ensemble-of-specialized-ais">Phase 8 — Ensemble of
+Specialized AIs</h3>
+<p>Replace single generalist AI with specialists: earnings analyst,
+pattern recognition, sentiment/narrative, risk assessment, and a
+meta-coordinator that weighs them contextually. Different architectures
+see different things.</p>
+<h3 id="phase-9-event-driven-architecture">Phase 9 — Event-Driven
+Architecture</h3>
+<p>React to events, not timers. Earnings announcements, SEC filings, Fed
+decisions, congressional trade disclosures, whale crypto movements each
+trigger immediate AI analysis. Events matter more than clock ticks.</p>
+<h3 id="phase-10-cross-asset-crisis-detection">Phase 10 — Cross-Asset
+Crisis Detection</h3>
+<p>Detect regime breaks (VIX &gt; 40, cross-asset correlation spike,
+credit spread widening) and automatically shift to capital preservation
+mode. Prevents catastrophic losses during events like March 2020 or
+2008.</p>
+<hr />
+<h2 id="phase-order-dependencies">Phase Order &amp; Dependencies</h2>
+<pre><code>    Phase 1 (Meta-Model) ─────────────────────────────┐
+                                                        │
+    Phase 2 (Backtesting) ──┬──► Phase 3 (Alpha Decay) ─┤
+                            │                           │
+                            ├──► Phase 4 (SEC)          ├──► Phase 6 (Multi-Strategy)
+                            │                           │          │
+                            └──► Phase 5 (Options)      │          ├──► Phase 7 (Auto-Gen)
+                                       │                │          │
+                                       └────────────────┘          ├──► Phase 9 (Events)
+                                                                   │
+                                       Phase 8 (Ensemble AIs) ◄────┤
+                                                                   │
+                                       Phase 10 (Crisis) ◄─────────┘</code></pre>
+<p><strong>Core rule:</strong> Never skip phases. The order exists
+because each phase compounds with prior ones.</p>
+<hr />
+<h2 id="non-negotiable-principles">Non-Negotiable Principles</h2>
+<ol type="1">
+<li><strong>Statistical rigor is mandatory.</strong> No strategy goes
+live without passing Phase 2 validation. Not ever. Not “I have a feeling
+about this one.”</li>
+<li><strong>Alpha decays always.</strong> Every signal, every strategy,
+every edge gets tracked and auto-retired when it stops working.</li>
+<li><strong>Layering compounds.</strong> Each phase makes prior phases
+more valuable. Don’t skip to shiny new phases.</li>
+<li><strong>Proprietary data is the moat.</strong> Our predictions,
+backtest results, pattern discoveries are more valuable than any public
+data source.</li>
+<li><strong>Documentation is infrastructure.</strong> This file is the
+source of truth. Every phase has a detailed sub-plan. Never assume
+memory.</li>
+</ol>
+<hr />
+<h2 id="phase-status">Phase Status</h2>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>#</th>
+<th>Name</th>
+<th>Status</th>
+<th>Dependencies</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Meta-Model on Prediction Data</td>
+<td>✅ Infrastructure Complete (awaiting data)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Scientific Backtesting Infrastructure</td>
+<td>✅ Complete</td>
+<td>—</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Alpha Decay Monitoring</td>
+<td>✅ Complete</td>
+<td>—</td>
+</tr>
+<tr>
+<td>4</td>
+<td>SEC Filings Semantic Analysis</td>
+<td>✅ Complete</td>
+<td>—</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Options Chain Oracle</td>
+<td>✅ Complete</td>
+<td>—</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Multi-Strategy Parallel Execution</td>
+<td>✅ Complete</td>
+<td>—</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Strategy Auto-Generation</td>
+<td>✅ Complete</td>
+<td>—</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Ensemble Specialized AIs</td>
+<td>✅ Complete</td>
+<td>—</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Event-Driven Architecture</td>
+<td>✅ Complete</td>
+<td>—</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Cross-Asset Crisis Detection</td>
+<td>✅ Complete</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>🎯 ALL 10 PHASES COMPLETE</strong></p>
+<h3 id="phase-1-completion-summary">Phase 1 Completion Summary</h3>
+<p><strong>Deployed:</strong> 2026-04-14. All infrastructure live and
+verified.</p>
+<p><strong>What was built:</strong> - <code>meta_model.py</code> —
+gradient-boosted classifier with feature extraction, training,
+inference, and persistence - <code>features_json</code> column added to
+<code>ai_predictions</code> table via idempotent migration -
+<code>record_prediction()</code> extended to accept and store full
+feature payload - <code>trade_pipeline.py</code> pipeline passes
+candidate features to prediction recording AND integrates meta-model
+re-weighting at Step 4.5 (between AI selection and execution) - Daily
+<code>_task_retrain_meta_model</code> in <code>multi_scheduler.py</code>
+— trains when ≥100 resolved predictions available - Performance
+dashboard “Meta-Model” panel showing AUC, accuracy, sample count, top
+features - 18 new tests in <code>test_meta_model.py</code> — all passing
+(122 total)</p>
+<p><strong>What’s waiting for data:</strong> - Model training requires
+100+ resolved predictions per profile - Current state: 3 profiles in
+production, each capturing features in every scan cycle - Expected first
+models: 2-4 weeks at current scan frequency - Suppression threshold:
+<code>meta_prob &lt; 0.3</code> drops trades; confidence blend =
+<code>ai_conf * (0.5 + meta_prob * 0.5)</code></p>
+<p><strong>Success criteria (to verify in 2-4 weeks):</strong> - AUC
+&gt; 0.55 on each profile’s meta-model - Feature importance shows
+sensible patterns (not random) - Overall win rate improves ≥3% vs
+pre-meta-model baseline</p>
+<hr />
+<h2 id="phase-2-implementation-complete">Phase 2 Implementation
+(Complete)</h2>
+<h3 id="what-was-built">What was built</h3>
+<ul>
+<li><code>rigorous_backtest.py</code> — single-entry
+<code>validate_strategy()</code> that runs 10 gates and returns
+PASS/FAIL with full report</li>
+<li>Individual gate functions (walk-forward, out-of-sample, regime,
+Monte Carlo, statistical significance, capacity)</li>
+<li>Transaction cost modeling baked into Monte Carlo</li>
+<li><code>strategy_validations.db</code> persistence with full reports
+searchable by timestamp/strategy/market</li>
+<li>Performance dashboard integration showing recent validation
+runs</li>
+<li>15 tests in <code>test_rigorous_backtest.py</code> — all passing
+(137 total)</li>
+</ul>
+<h3 id="the-10-gates">The 10 Gates</h3>
+<p>Sharpe, drawdown, win rate, statistical significance (p&lt;0.05),
+Monte Carlo (&gt;60% positive bootstraps), out-of-sample (OOS Sharpe
+drop ≤30%), regime consistency (≥2 profitable regimes), walk-forward
+(≥50% folds profitable), capacity (≤1% daily volume), minimum activity
+(≥30 trades).</p>
+<h3 id="usage">Usage</h3>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> rigorous_backtest <span class="im">import</span> validate_strategy, save_validation</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>result <span class="op">=</span> validate_strategy(strategy_fn<span class="op">=</span>my_strategy, market_type<span class="op">=</span><span class="st">&#39;midcap&#39;</span>)</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> result[<span class="st">&#39;verdict&#39;</span>] <span class="op">==</span> <span class="st">&#39;PASS&#39;</span>:</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    save_validation(<span class="st">&#39;my_strategy&#39;</span>, result)</span></code></pre></div>
+<h3 id="why-this-matters-for-phases-3-10">Why This Matters for Phases
+3-10</h3>
+<p>All subsequent phases depend on this gate: - Phase 3 (Alpha Decay)
+uses historical validation scores to detect degradation - Phase 6
+(Multi-Strategy) only allocates capital to validated strategies - Phase
+7 (Auto-Generation) requires every proposed strategy to pass validation
+before promotion - Non-negotiable principle: no strategy goes live
+without a PASS verdict.</p>
+<h3 id="first-validation-run-results-2026-04-13">First Validation Run
+Results (2026-04-13)</h3>
+<p>All 5 live strategy engines validated. All 5 <strong>FAILED</strong>
+— which is a correct and important finding:</p>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Verdict</th>
+<th>Score</th>
+<th>Sharpe</th>
+<th>Max DD</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>micro_combined</td>
+<td>FAIL</td>
+<td>30.0</td>
+<td>0.33</td>
+<td>-2%</td>
+</tr>
+<tr>
+<td>small_combined</td>
+<td>FAIL</td>
+<td>50.0</td>
+<td>0.14</td>
+<td>-5%</td>
+</tr>
+<tr>
+<td>mid_combined</td>
+<td>FAIL</td>
+<td>40.0</td>
+<td>-0.27</td>
+<td>-11%</td>
+</tr>
+<tr>
+<td>large_combined</td>
+<td>FAIL</td>
+<td>40.0</td>
+<td>0.39</td>
+<td>-5%</td>
+</tr>
+<tr>
+<td>crypto_combined</td>
+<td>FAIL</td>
+<td>20.0</td>
+<td>-1.15</td>
+<td>-63%</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Interpretation:</strong> The raw strategy engines, in
+isolation, do not produce alpha. This is expected and matches production
+behavior — the AI frequently passes on their signals because the
+underlying technical patterns aren’t strong enough on their own. The
+live system’s edge comes from the AI-first pipeline (strategy + 33+
+indicators + alt data + sector + patterns + meta-model), not from the
+strategy engines alone.</p>
+<p><strong>Immediate follow-ups queued (Phase 2.1):</strong> 1.
+<del>Shared data caching across validation gates</del> ✅ <strong>DONE
+(2026-04-13)</strong> — 5.97x speedup 2. End-to-end pipeline validation:
+a harness that runs validate_strategy on the full pipeline (strategies +
+AI + meta-model), not just signal generators. This is the real test of
+system edge. 3. Use these results to inform Phase 7 (auto-generation) —
+the gate will reject weak variants, keep the rare strong ones.</p>
+<p>The gate itself works correctly. The results are sobering and
+useful.</p>
+<h3 id="phase-2.1-completion-2026-04-13">Phase 2.1 Completion
+(2026-04-13)</h3>
+<p><strong>Two optimizations deployed:</strong> 1. <strong>Per-symbol
+yfinance cache</strong> (<code>_symbol_cache</code> in
+<code>backtester.py</code>) — downloads each symbol once at max-window
+(720 days), slices down for any shorter request. Eliminates redundant
+downloads across the 7 backtests in each validation run. 2.
+<strong>Indicator precomputation</strong> — strategy engines were
+recomputing all 33 indicators on every day’s window (~100+ times per
+symbol per backtest). Now <code>add_indicators(df)</code> runs once
+before the simulation loop; strategies reuse the prepopulated DataFrame.
+This was the bigger win.</p>
+<p><strong>Measured speedup on the 5-strategy validation
+suite:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Before</th>
+<th>After</th>
+<th>Factor</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>micro</td>
+<td>317.6s</td>
+<td>58.4s</td>
+<td>5.4x</td>
+</tr>
+<tr>
+<td>small</td>
+<td>347.0s</td>
+<td>48.0s</td>
+<td>7.2x</td>
+</tr>
+<tr>
+<td>mid</td>
+<td>240.9s</td>
+<td>46.3s</td>
+<td>5.2x</td>
+</tr>
+<tr>
+<td>large</td>
+<td>362.8s</td>
+<td>68.2s</td>
+<td>5.3x</td>
+</tr>
+<tr>
+<td>crypto</td>
+<td>224.2s</td>
+<td>29.1s</td>
+<td>7.7x</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td><strong>24.9 min</strong></td>
+<td><strong>4.2 min</strong></td>
+<td><strong>5.97x</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Verdicts and scores identical before/after — confirms the
+optimization is pure work-elimination, no behavior change. Makes Phase 7
+(auto-generation, which validates dozens of variants) practical;
+previously would have been prohibitively slow.</p>
+<hr />
+<h2 id="phase-3-implementation-complete">Phase 3 Implementation
+(Complete)</h2>
+<h3 id="what-was-built-1">What was built</h3>
+<ul>
+<li><code>alpha_decay.py</code> — rolling metrics, snapshot persistence,
+decay detection, auto-deprecation, restoration</li>
+<li>Two new per-profile tables: <code>signal_performance_history</code>
+(daily snapshots) and <code>deprecated_strategies</code> (active
+deprecations)</li>
+<li>Daily <code>_task_alpha_decay(ctx)</code> scheduler task runs the
+full cycle alongside self-tuning and meta-model retraining</li>
+<li>Trade pipeline filter: <code>_rank_candidates()</code> skips signals
+from deprecated strategies</li>
+<li>Performance dashboard “Alpha Decay Monitoring” panel showing
+per-strategy rolling vs lifetime Sharpe, edge change, and any
+deprecations</li>
+<li>14 new tests in <code>test_alpha_decay.py</code> — all passing (151
+total)</li>
+</ul>
+<h3 id="detection-algorithm">Detection Algorithm</h3>
+<ol type="1">
+<li>Daily: write a 30-day rolling snapshot per strategy_type to
+<code>signal_performance_history</code></li>
+<li>Compare rolling Sharpe vs lifetime Sharpe</li>
+<li>If rolling ≤ lifetime × 0.7 for 30 consecutive snapshot days →
+auto-deprecate</li>
+<li>If deprecated strategy’s rolling Sharpe recovers to within 15% of
+lifetime for 14 consecutive days → auto-restore</li>
+</ol>
+<h3 id="pipeline-integration">Pipeline Integration</h3>
+<p>The trade pipeline’s <code>_rank_candidates()</code> now accepts a
+<code>deprecated_strategies</code> set and filters out any candidate
+whose primary voting strategy is deprecated. Happens every scan cycle,
+zero AI cost.</p>
+<h3 id="why-this-matters-for-phases-6-10">Why This Matters for Phases
+6-10</h3>
+<ul>
+<li>Phase 6 (Multi-Strategy): capital allocator only considers
+non-deprecated strategies</li>
+<li>Phase 7 (Auto-Generation): deprecated strategies get retired
+automatically, making room for new variants proposed and validated by
+the Phase 2 gate</li>
+<li>Phase 10 (Crisis Detection): decay monitor surfaces wholesale system
+failures (multiple strategies deprecated at once → crisis signal)</li>
+</ul>
+<h3 id="whats-waiting-for-live-data">What’s waiting for live data</h3>
+<p>Same as Phase 1: alpha decay requires ≥50 resolved predictions per
+strategy_type to establish a lifetime baseline, then 30+ days of
+snapshots to detect decay. Current production has ~225 Crypto
+predictions but they span multiple strategy types, so baselines per
+strategy will mature over the next few weeks. The dashboard already
+shows rolling vs lifetime for anything with resolved data.</p>
+<hr />
+<h2 id="phase-4-implementation-complete">Phase 4 Implementation
+(Complete)</h2>
+<h3 id="what-was-built-2">What was built</h3>
+<ul>
+<li>Expanded <code>sec_filings.py</code> from a Form-4-only module to a
+full 10-K / 10-Q / 8-K analyzer</li>
+<li>CIK lookup via SEC’s free <code>company_tickers.json</code> mapping
+(cached in-process)</li>
+<li>Company filings list via EDGAR submissions JSON</li>
+<li>Filing text fetch via rate-limited EDGAR requests with BeautifulSoup
+parsing</li>
+<li>Section extraction: Item 1A Risk Factors, Item 7 MD&amp;A</li>
+<li>Flag detection: “going concern” and “material weakness in internal
+control”</li>
+<li>AI-powered semantic diff of risk factor language between consecutive
+filings</li>
+<li>New per-profile table <code>sec_filings_history</code> stores filing
+metadata, sections, and AI alerts</li>
+<li>Daily scheduled task <code>_task_sec_filings(ctx)</code> monitors
+held positions + shortlist candidates</li>
+<li>Trade pipeline injects medium+ severity alerts into the AI batch
+prompt per candidate</li>
+<li>Performance dashboard “SEC Filing Alerts” panel with
+severity/signal/summary rows</li>
+<li>13 new tests in <code>test_sec_filings.py</code> — all passing (164
+total)</li>
+</ul>
+<h3 id="architecture">Architecture</h3>
+<pre><code>EDGAR (free) → CIK lookup → submissions JSON → filing list
+  → fetch HTML → BeautifulSoup plain text → regex section extraction
+  → AI diff vs previous filing of same type → severity/signal/summary
+  → sec_filings_history (persist) → trade pipeline (inject into candidate)</code></pre>
+<h3 id="rate-limiting-and-identification">Rate limiting and
+identification</h3>
+<p>SEC requires &lt;10 req/sec and a contactable User-Agent. The module
+enforces 110ms between requests and identifies as
+<code>QuantOpsAI Research Bot (mack@mackenziesmith.com)</code>. Filings
+are immutable, so we cache filing bodies indefinitely once fetched.</p>
+<h3 id="why-this-matters-for-phases-5-10">Why This Matters for Phases
+5-10</h3>
+<ul>
+<li>Phase 5 (Options Oracle) and Phase 4 are independent signals that
+combine well in the AI prompt — options flow + SEC alerts = full-picture
+institutional awareness</li>
+<li>Phase 8 (Ensemble AIs) — the SEC diff is already a specialist AI
+call; Phase 8 will formalize this pattern across all data sources</li>
+<li>Phase 10 (Crisis Detection) — a cluster of high-severity SEC alerts
+across held positions is a macro distress signal</li>
+</ul>
+<hr />
+<h2 id="phase-5-implementation-complete">Phase 5 Implementation
+(Complete)</h2>
+<h3 id="what-was-built-3">What was built</h3>
+<ul>
+<li>New <code>options_oracle.py</code> module computing 7
+institutional-grade signals from free yfinance chains</li>
+<li>IV Skew (fear/greed asymmetry)</li>
+<li>IV Term Structure (event detection via inversion)</li>
+<li>Implied Move (ATM straddle → 1σ move)</li>
+<li>Put/Call Ratios (volume + open interest)</li>
+<li>Gamma Exposure / dealer regime (pinning vs expansion)</li>
+<li>Max Pain (gravitational strike near expiration)</li>
+<li>IV Rank (vs 52-week realized vol proxy)</li>
+<li>Integration into trade pipeline: every equity candidate carries an
+<code>options_oracle_summary</code> field that the AI sees on its own
+line in the batch prompt</li>
+<li>30-minute cache TTL per symbol (matches 15-min scan cadence with
+headroom)</li>
+<li>Crypto symbols skipped automatically</li>
+<li>18 new tests in <code>test_options_oracle.py</code> — all passing
+(182 total)</li>
+</ul>
+<h3 id="compact-summary-format-injected-into-ai-prompt">Compact summary
+format injected into AI prompt</h3>
+<pre><code>OPTIONS: skew=fear(1.42) | IV TERM INVERTED | implied_move=6.2%/4d | PCR=1.85(bearish_flow) | gex=volatility_expansion | iv_rank=iv_high</code></pre>
+<p>The AI reads this and knows what institutional options traders
+believe about a stock’s next few days. No data subscription
+required.</p>
+<h3 id="why-this-matters-for-phases-6-10-1">Why This Matters for Phases
+6-10</h3>
+<ul>
+<li>Phase 6 (Multi-Strategy): options signals unlock new strategy types
+— volatility regime trading, skew contrarian, max pain pinning
+plays</li>
+<li>Phase 8 (Ensemble AIs): a dedicated options-flow specialist AI
+becomes natural; it reads the full oracle dict vs the prompt
+summary</li>
+<li>Phase 10 (Crisis Detection): cluster of extreme skew readings across
+held positions → early crisis signal</li>
+</ul>
+<hr />
+<h2 id="live-incidents-fixes-2026-04-15">Live Incidents &amp; Fixes
+(2026-04-15)</h2>
+<p>Two serious production issues surfaced and were fixed today.
+Documented in full detail in <code>CHANGELOG.md</code>; roadmap-level
+summary here.</p>
+<h3
+id="market-data-migration-yfinance-alpaca-algo-trader-plus">Market-data
+migration: yfinance → Alpaca (Algo Trader Plus)</h3>
+<p>yfinance timeouts during market open hung the screener for 30+
+minutes and blocked exits behind the scan pipeline. Upgraded to Alpaca
+Algo Trader Plus and migrated <code>market_data.get_bars()</code> +
+<code>screener</code> to use Alpaca’s SIP feed and batched
+<code>get_snapshots</code>. Screener went from 30 min → 853 ms. yfinance
+kept as fallback; crypto bypasses Alpaca.</p>
+<h3
+id="strategy-sell-bias-small-cap-starved-of-trades-for-days">Strategy
+SELL-bias: Small Cap starved of trades for days</h3>
+<p>Small Cap opened zero trades for 4+ days despite 616 AI predictions.
+Root cause: every size-specific strategy module
+(<code>strategy_{small,mid,large,micro}.py</code>) leaked “exit
+conditions for hypothetical longs”
+(e.g. <code>price &gt;= sma_20</code>, <code>rsi &gt; 55</code>) as
+<code>SELL</code> votes, biasing the multi-strategy aggregator toward
+<code>STRONG_SELL</code> on most of the universe. The specialist
+ensemble (Phase 8) confirmed the pre-tagged label; the AI correctly
+concluded “no edge.” Fixed by stripping the bogus SELL branches and
+adding an aggregation-level short-flag gate. 18 new regression
+tests.</p>
+<h3 id="operational">Operational</h3>
+<ul>
+<li>Per-profile Alpaca key rotation after the master-key upgrade (Mid
+Cap + Small Cap keys had been revoked / pointing at a dead paper
+account; UI-driven re-keying resolved).</li>
+<li><code>/opt/quantops/</code> (singular, no “ai”) stale directory on
+server identified; pending cleanup.</li>
+</ul>
+<p><strong>Test count:</strong> 468 passing (was 450 before today).</p>
+<hr />
+<h2 id="operational-hygiene-2026-04-14">Operational Hygiene
+(2026-04-14)</h2>
+<p>Two small but high-value layers added after the 10-phase roadmap
+completed.</p>
+<h3 id="ai-cost-ledger">AI cost ledger</h3>
+<ul>
+<li><code>ai_pricing.py</code> — per-model USD/M-token table (estimates,
+easy to update); fallback for unknown models prefers over-estimate to
+silent $0</li>
+<li><code>ai_cost_ledger.py</code> — write/read API; per-profile
+<code>ai_cost_ledger</code> table; <code>spend_summary()</code> returns
+1d/7d/30d totals + breakdowns by purpose and model</li>
+<li><code>ai_providers.call_ai()</code> extended with
+<code>db_path</code> + <code>purpose</code> kwargs; threaded through
+every high-volume caller (ensemble specialists, batch select, strategy
+proposer, SEC diff, political context, single-symbol analyze, consensus
+secondary)</li>
+<li>Dashboard panel “AI Cost” at top of <code>/performance#ai</code>
+with per-profile + cross-profile totals</li>
+<li>13 new tests covering pricing math, fallback behavior, ledger
+writes, missing-table safety, window aggregation</li>
+</ul>
+<h3 id="database-backup-with-rotation">Database backup with
+rotation</h3>
+<ul>
+<li><code>backup_db.py</code> — SQLite-native <code>.backup</code> API
+(WAL-safe), atomic write via <code>.tmp</code> +
+<code>os.replace</code>, date-stamped destination, per-day
+idempotent</li>
+<li>Default 14-day retention with rotation</li>
+<li>New <code>_task_db_backup</code> runs in scheduler’s daily snapshot
+block</li>
+<li>10 new tests covering valid-copy creation, missing-source handling,
+dest-dir auto-create, atomic-rename cleanup, multi-DB sweep, WAL/SHM
+exclusion, and rotation</li>
+</ul>
+<p>Total new tests: 23 (354 total passing).</p>
+<hr />
+<h2 id="expanded-seed-strategy-library-2026-04-14">Expanded Seed
+Strategy Library (2026-04-14)</h2>
+<p>Added 10 hand-coded strategies to complement the original 6, bringing
+the total to <strong>16 built-in strategies</strong>. Also fixed the
+hardcoded <code>DEFAULT_WEIGHT = 1/6</code> in
+<code>multi_strategy.py</code> so the capital allocator scales cleanly
+regardless of library size.</p>
+<h3 id="what-was-added">What was added</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Data source</th>
+<th>Research lineage</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Short-Term Reversal</td>
+<td>Bars + RSI</td>
+<td>Jegadeesh 1990, Lehmann 1990</td>
+</tr>
+<tr>
+<td>Sector Momentum Rotation</td>
+<td>Sector rotation data</td>
+<td>Moskowitz, Asness</td>
+</tr>
+<tr>
+<td>Analyst Revision Drift</td>
+<td>yfinance recommendations</td>
+<td>Womack 1996</td>
+</tr>
+<tr>
+<td>52-Week Breakout</td>
+<td>Bars + volume</td>
+<td>George &amp; Hwang 2004</td>
+</tr>
+<tr>
+<td>Short Squeeze Setup</td>
+<td>Alt-data short interest</td>
+<td>—</td>
+</tr>
+<tr>
+<td>High IV Rank Fade</td>
+<td>Options oracle</td>
+<td>Premium-sell proxy</td>
+</tr>
+<tr>
+<td>Insider Selling Cluster</td>
+<td>Alt-data insider txns</td>
+<td>Seyhun 1986 (bearish mirror)</td>
+</tr>
+<tr>
+<td>News Sentiment Spike</td>
+<td>News sentiment signal</td>
+<td>Tetlock 2007, Garcia 2013</td>
+</tr>
+<tr>
+<td>Volume Dry-up Breakout</td>
+<td>Bars + volume</td>
+<td>Minervini / O’Neil</td>
+</tr>
+<tr>
+<td>MACD Cross Confirmation</td>
+<td>Indicators</td>
+<td>Classic with multi-factor confirmation</td>
+</tr>
+</tbody>
+</table>
+<h3 id="registry-coverage-by-market">Registry coverage by market</h3>
+<ul>
+<li>Crypto: 3 strategies (market_engine, news_sentiment_spike,
+macd_cross_confirmation)</li>
+<li>Micro: 5 strategies</li>
+<li>Small: 13 strategies</li>
+<li>Midcap: 16 strategies (full set)</li>
+<li>Largecap: 14 strategies</li>
+</ul>
+<h3 id="infrastructure-fix">Infrastructure fix</h3>
+<p><code>DEFAULT_WEIGHT</code> is now computed per-call as
+<code>1/N</code> where N is the number of strategies in the current
+allocation. The prior hardcoded <code>1/6</code> would have silently
+misallocated capital once the library exceeded 6 strategies. The
+<code>compute_capital_allocations</code> function is unchanged in
+behavior for the original 6 but now scales correctly to any library
+size.</p>
+<h3 id="honest-caveats">Honest caveats</h3>
+<ul>
+<li>Most classical anomalies in this list have <strong>decayed in
+academic studies</strong> — Short-Term Reversal and 52-Week Breakout
+both show reduced effect sizes vs. the original papers</li>
+<li>Individual strategies may fail Phase 2 rigorous validation when run
+in isolation (same as the original 6 did during the Phase 6 validation
+exercise)</li>
+<li>The value of the expanded library is <strong>breadth for Phase
+7</strong> (the AI proposer has more parent patterns to evolve from) and
+<strong>diversity for the meta-model</strong> (more varied behavioral
+profiles to learn error patterns from)</li>
+<li>30 new tests added (<code>test_seed_strategies.py</code>): total
+suite now <strong>331 passing</strong></li>
+</ul>
+<hr />
+<h2 id="phase-10-implementation-complete">Phase 10 Implementation
+(Complete)</h2>
+<h3 id="what-was-built-4">What was built</h3>
+<ul>
+<li><code>crisis_detector.py</code> — six cross-asset signals (VIX
+level, VIX term structure inversion, SPY/TLT/GLD/UUP correlation spike,
+bond/stock divergence, gold rally, HYG/LQD credit stress) plus Phase-9
+event clustering; classifier mapping signal set + VIX level → {normal,
+elevated, crisis, severe}</li>
+<li><code>crisis_state.py</code> — transition controller that writes
+<code>crisis_state_history</code> rows only on level changes and emits
+<code>crisis_state_change</code> events with transition-aware severity
+(critical for upgrades to severe, info for downgrades)</li>
+<li><code>crisis_state_history</code> table with index on
+transitioned_at</li>
+<li>Pipeline gating — <code>_build_market_context()</code> injects
+crisis state into AI prompt; <code>trade_pipeline.py</code> Step 4.9
+hard-applies size multiplier (0.5× at elevated) and blocks new longs (at
+crisis/severe) after the AI decides</li>
+<li>Scheduler — <code>_task_crisis_monitor</code> runs before event tick
+every scan cycle</li>
+<li>Dashboard — <code>Crisis Monitor</code> panel with colored severity
+banner, active signals, cross-asset readings, and collapsible transition
+history</li>
+<li>17 new tests in <code>test_crisis.py</code> covering classification,
+size multipliers, state persistence, transition emission,
+downgrade-vs-upgrade severity, idempotence (285 total, all passing)</li>
+</ul>
+<h3 id="design">Design</h3>
+<ul>
+<li>Separation of concerns: detector returns pure data; state module
+owns persistence and bus emission</li>
+<li>Dedup key includes the transition pair (<code>from→to:day</code>) so
+distinct upgrades/downgrades in one day each emit once</li>
+<li>Crisis gate applies AFTER the AI chooses — the AI’s reasoning is
+preserved in logs, but execution is override-gated for safety</li>
+<li>Hard cash rule: at crisis/severe the pipeline will not open new
+longs regardless of what any prior layer (meta-model, ensemble,
+strategies, AI) decided</li>
+</ul>
+<h3 id="this-is-the-final-phase-of-the-quant-fund-evolution-roadmap.">🎯
+This is the final phase of the Quant Fund Evolution roadmap.</h3>
+<p>All 10 phases now operational: 1. Meta-Model on Prediction Data ✅ 2.
+Scientific Backtesting ✅ 3. Alpha Decay Monitoring ✅ 4. SEC Filings
+Semantic Analysis ✅ 5. Options Chain Oracle ✅ 6. Multi-Strategy
+Parallel Execution ✅ 7. Strategy Auto-Generation ✅ 8. Ensemble
+Specialized AIs ✅ 9. Event-Driven Architecture ✅ 10. Cross-Asset
+Crisis Detection ✅</p>
+<h3
+id="cross-phase-integration-tests-previously-deferred-now-complete">Cross-Phase
+Integration Tests (previously deferred — now complete)</h3>
+<p><code>tests/test_integration.py</code> guards the cross-phase
+contracts that single-phase tests can’t see: - Deprecated strategies
+(Phase 3) stay out of multi-strategy aggregation (Phase 6) - Shadow
+auto-strategies (Phase 7) never reach the active-trade registry (Phase
+6) - Crisis gate (Phase 10) drops BUYs but preserves SELL/SHORT
+regardless of AI output (Phase 8 / core) - Crisis transitions (Phase 10)
+always produce dispatchable events (Phase 9) - Auto-strategy validation
+PASS → shadow, FAIL → retired + module file deleted (Phase 2 + 7) -
+Smoke test: every phase’s public entry points import and canonical
+constants match</p>
+<p>8 integration tests; total suite now 293 passing.</p>
+<hr />
+<h2 id="phase-9-implementation-complete">Phase 9 Implementation
+(Complete)</h2>
+<h3 id="what-was-built-5">What was built</h3>
+<ul>
+<li><code>event_bus.py</code> — in-process SQLite-backed bus with
+emit/dedup/subscribe/dispatch semantics</li>
+<li><code>events</code> table with UNIQUE dedup_key enforcement and
+pending-event index</li>
+<li><code>event_detectors.py</code> — 4 detectors (SEC filings, earnings
+imminent, price shocks, big resolved predictions)</li>
+<li><code>event_handlers.py</code> — default handlers (log_activity for
+all events, fire_ensemble for SEC + price shock)</li>
+<li>Scheduler integration — <code>_task_event_tick</code> runs on every
+scan cycle, rate-limited to 20 dispatches per tick</li>
+<li>Dashboard — “Event Stream” panel with last-24h per-profile event
+log, severity counts, payload summary, and handler outcomes</li>
+<li>16 new tests in <code>test_event_bus.py</code> covering emit, dedup,
+subscribe/dispatch routing, handler isolation, dispatch limits, detector
+idempotence (268 total, all passing)</li>
+</ul>
+<h3 id="design-choices">Design choices</h3>
+<ul>
+<li>SQLite-backed, not Redis: handles hundreds of events/hour, simpler
+deployment</li>
+<li>Handler exceptions are captured per-handler, never abort the
+dispatch loop</li>
+<li>Detectors self-dedup via (type, symbol, trigger-identity) keys —
+safe to call every tick</li>
+<li>Cost-gated ensemble reactions: only SEC filings + price shocks spawn
+AI analysis (otherwise the polling pipeline would double-count)</li>
+</ul>
+<h3 id="why-this-matters-for-phase-10">Why This Matters for Phase
+10</h3>
+<ul>
+<li>A cluster of <code>price_shock</code> +
+<code>strategy_deprecated</code> events across multiple profiles in the
+same 30-minute window is precisely the cross-asset crisis signal Phase
+10 needs to detect</li>
+</ul>
+<hr />
+<h2 id="phase-8-implementation-complete">Phase 8 Implementation
+(Complete)</h2>
+<h3 id="what-was-built-6">What was built</h3>
+<ul>
+<li><code>specialists/</code> package — registry + 4 specialist modules
+each with focused system prompt and response parser:
+<ul>
+<li><code>earnings_analyst</code> — interprets earnings context,
+guidance tone, SEC filing alerts</li>
+<li><code>pattern_recognizer</code> — judges chart structure and
+momentum confluence (weight 1.2)</li>
+<li><code>sentiment_narrative</code> — reads news flow, political
+context, insider/options tells</li>
+<li><code>risk_assessor</code> — portfolio + regime risk gatekeeper with
+<strong>VETO authority</strong></li>
+</ul></li>
+<li><code>ensemble.py</code> — meta-coordinator that runs every
+specialist against the shortlist in parallel (one batched AI call each)
+and synthesizes per-symbol verdicts via confidence-weighted voting</li>
+<li>Pipeline integration — <code>trade_pipeline.py</code> Step 3.7 runs
+the ensemble between shortlist build and final AI call; risk-vetoed
+candidates are dropped; surviving candidates carry an
+<code>ensemble_summary</code> injected into the final AI prompt</li>
+<li>Dashboard — “Specialist Ensemble” panel on
+<code>/performance#ai</code> with per-symbol specialist breakdown,
+consensus verdict, and VETO highlights</li>
+<li>19 new tests in <code>test_ensemble.py</code> covering registry,
+parsing, aggregation (agreement/disagreement/VETO/abstention), cost
+characteristics (252 total, all passing)</li>
+</ul>
+<h3 id="cost-design">Cost design</h3>
+<p>Cost is O(specialists), not O(specialists × candidates). Four
+specialists each batch the entire shortlist into one call — adds 4 AI
+calls per cycle regardless of shortlist size.</p>
+<h3 id="why-this-matters-for-phases-9-10">Why This Matters for Phases
+9-10</h3>
+<ul>
+<li>Phase 9 (Event-Driven): specialists can become event-reactive — an
+earnings release fires <code>earnings_analyst</code> immediately, not
+just on the polling cycle</li>
+<li>Phase 10 (Crisis Detection): cluster of <code>risk_assessor</code>
+VETOs across positions within minutes = regime-break signal</li>
+</ul>
+<hr />
+<h2 id="phase-7-implementation-complete">Phase 7 Implementation
+(Complete)</h2>
+<h3 id="what-was-built-7">What was built</h3>
+<ul>
+<li><code>strategy_generator.py</code> — spec validation (closed
+allowlist of fields, ops, markets, directions), template-based Python
+code generation, and lifecycle persistence for auto-generated
+strategies</li>
+<li><code>strategy_proposer.py</code> — AI-driven spec generation with
+strict JSON-only prompting and post-hoc validation; the AI never writes
+Python</li>
+<li><code>strategy_lifecycle.py</code> — five-state transition
+controller (proposed → validated → shadow → active → retired); promotion
+gated on ≥50 resolved predictions with rolling Sharpe ≥ 0.8; retirement
+after 60 days without edge; active cap of 5 per profile</li>
+<li>Registry integration — <code>discover_strategies()</code> finds
+<code>strategies/auto_*.py</code> files automatically;
+<code>get_active_strategies()</code> returns only
+<code>status='active'</code> auto-strategies; new
+<code>get_shadow_strategies()</code> yields shadows</li>
+<li>Multi-strategy integration —
+<code>aggregate_shadow_candidates()</code> runs shadow strategies for
+prediction tracking without driving real trades</li>
+<li>Validation pipeline — <code>backtest_strategy()</code> gained an
+optional <code>signal_fn</code> parameter;
+<code>validate_strategy()</code> passes it through to every inner call
+(baseline, OOS, walk-forward) so auto-strategies are validated with the
+full Phase 2 gauntlet</li>
+<li>Weekly scheduler tasks — <code>_task_auto_strategy_generation</code>
+(Sundays: AI proposes 3 specs, each validated);
+<code>_task_auto_strategy_lifecycle</code> (daily: promote/retire)</li>
+<li>Dashboard — “Evolving Strategy Library” panel with per-profile
+status counts, generation lineage, and timestamps</li>
+<li>30 new tests in <code>test_auto_strategy.py</code> covering spec
+validation, code generation, condition evaluation, lifecycle
+transitions, registry wiring, and AI proposal extraction (233 total, all
+passing)</li>
+</ul>
+<h3 id="safety-design">Safety design</h3>
+<p>The AI never writes code. It writes structured JSON matching an
+allowlisted grammar. Every field, operator, market, and direction is
+checked against closed sets before a spec is accepted. The generator
+fills a fixed template using <code>repr()</code>-escaped values — no
+string interpolation of AI output into executable positions. Failed
+validations delete the rendered module so the registry stops importing
+it. An AI proposal with a malformed payload is silently dropped, not
+retried with looser validation.</p>
+<h3 id="why-this-matters-for-phases-8-10">Why This Matters for Phases
+8-10</h3>
+<ul>
+<li>Phase 8 (Ensemble AIs): the proposer is already specialist-shaped;
+Phase 8 extends it to a team of proposers (earnings-specialist,
+mean-reversion-specialist, macro-specialist) whose proposals compete for
+shadow slots</li>
+<li>Phase 9 (Event-Driven): auto-strategies can trigger on events, not
+just polling; a spec’s <code>conditions</code> list can include
+event-type fields once the event bus exists</li>
+<li>Phase 10 (Crisis Detection): when ≥ 2 promoted auto-strategies
+simultaneously retire with the same failure mode, that’s itself a
+regime-break signal</li>
+</ul>
+<hr />
+<h2 id="phase-6-implementation-complete">Phase 6 Implementation
+(Complete)</h2>
+<h3 id="what-was-built-8">What was built</h3>
+<ul>
+<li><code>strategies/</code> package — registry with 6 strategy modules
+exposing a uniform
+<code>NAME / APPLICABLE_MARKETS / find_candidates()</code> contract</li>
+<li><code>multi_strategy.py</code> — aggregates candidates across every
+active strategy and computes capital allocation via inverse-variance
+(risk-parity) weighting on 30-day rolling Sharpe</li>
+<li>Five new alpha strategies:
+<ul>
+<li><code>insider_cluster</code> — 3+ insider buys totaling ≥ $250K
+dominating sells</li>
+<li><code>earnings_drift</code> — post-earnings announcement drift (&gt;
+5% move in line with beat/miss)</li>
+<li><code>vol_regime</code> — trades GEX volatility expansion regimes
+(dealer short gamma)</li>
+<li><code>max_pain_pinning</code> — fades moves away from max pain
+within 5 days of expiration</li>
+<li><code>gap_reversal</code> — fades &gt; 3% opening gaps on
+normal-or-lower volume (no catalyst)</li>
+</ul></li>
+<li><code>market_engine</code> preserves existing per-market strategy
+router as one voter in the ensemble</li>
+<li>Pipeline integration: <code>trade_pipeline.py</code> Step 3 now
+calls <code>aggregate_candidates(ctx, universe)</code> instead of the
+single-strategy router</li>
+<li>Deprecation-aware: strategies flagged by Phase 3 alpha decay are
+filtered out of <code>get_active_strategies()</code></li>
+<li>Risk parity capital allocation with 40% per-strategy cap and
+iterative excess redistribution</li>
+<li>Dashboard: <code>Strategy Allocation</code> panel on
+<code>/performance#ai</code> showing per-profile per-strategy weight,
+rolling Sharpe, lifetime Sharpe, n resolved predictions, win rate</li>
+<li>21 new tests in <code>test_multi_strategy.py</code> — all passing
+(203 total)</li>
+</ul>
+<h3 id="allocation-math">Allocation math</h3>
+<pre><code>New strategy   (&lt;20 resolved preds)  → DEFAULT_WEIGHT = 1/6 baseline
+Losing         (rolling Sharpe ≤ 0) → DEFAULT_WEIGHT × 0.25 (minimum)
+Profitable     (rolling Sharpe &gt; 0) → min(Sharpe, 4.0)
+→ Normalize to sum 1.0
+→ Iteratively cap any single strategy at 40%, redistributing excess
+  proportionally to strategies under the cap (single-strategy case keeps 100%)</code></pre>
+<h3 id="why-this-matters-for-phases-7-10">Why This Matters for Phases
+7-10</h3>
+<ul>
+<li>Phase 7 (Auto-Gen): the registry is the integration point —
+AI-proposed strategy variants drop in as new
+<code>strategies/auto_*.py</code> modules and are automatically
+validated, monitored, and allocated capital once they accumulate track
+record</li>
+<li>Phase 8 (Ensemble AIs): multi-strategy view gives each specialist AI
+a richer candidate stream — an earnings-specialist reviews
+earnings_drift picks, an insider-specialist reviews insider_cluster
+picks</li>
+<li>Phase 9 (Event-Driven): each strategy becomes an event-handler
+target — earnings announcement fires earnings_drift, insider Form 4
+fires insider_cluster, OPEX Friday fires max_pain_pinning</li>
+<li>Phase 10 (Crisis Detection): when ≥ 3 strategies simultaneously
+deprecate, that is itself a regime-break signal</li>
+</ul>
+<hr />
+<h2 id="phase-1-implementation-current">Phase 1 Implementation
+(Current)</h2>
+<h3 id="goal">Goal</h3>
+<p>Build a gradient-boosted classifier that takes the feature context
+the AI saw for each prediction and predicts the probability that
+prediction will be correct. This probability re-weights the AI’s
+confidence before execution.</p>
+<h3 id="flow">Flow</h3>
+<pre><code>1. AI makes prediction → all features stored in ai_predictions.features_json
+2. Prediction resolves (win/loss) via existing ai_tracker resolution
+3. Daily 4:00 AM ET: retrain meta-model on accumulated resolved predictions
+4. Live: before executing AI-selected trades, meta-model estimates P(correct)
+5. If meta_prob &gt;= 0.3: execute with blended confidence = ai_conf * (0.5 + meta_prob * 0.5)
+6. If meta_prob &lt; 0.3: suppress the trade entirely</code></pre>
+<h3 id="why-this-works">Why This Works</h3>
+<ul>
+<li>The AI is a generalist. It has systematic blind spots.</li>
+<li>Our resolved prediction database captures those blind spots in
+labeled form.</li>
+<li>A gradient-boosted tree learns patterns like: “AI overconfident on
+low-volume mid-caps in sideways markets, RSI in 45-55 band.”</li>
+<li>The meta-model doesn’t need to be smarter than the AI. It just needs
+to recognize the AI’s error patterns.</li>
+<li>Training data is our proprietary AI predictions — literally
+impossible for competitors to replicate.</li>
+</ul>
+<h3 id="files-modified-created-phase-1">Files Modified / Created (Phase
+1)</h3>
+<p><strong>Created:</strong> - <code>meta_model.py</code> — core ML
+module - <code>tests/test_meta_model.py</code> — unit tests</p>
+<p><strong>Modified:</strong> - <code>journal.py</code> — add
+<code>features_json</code> column to <code>ai_predictions</code>, handle
+migration - <code>ai_tracker.py</code> — <code>record_prediction</code>
+accepts and stores features - <code>trade_pipeline.py</code> — passes
+features to record_prediction, integrates meta-model before execution -
+<code>multi_scheduler.py</code> — daily retraining task -
+<code>views.py</code> — meta-model dashboard data -
+<code>templates/performance.html</code> — meta-model panel -
+<code>requirements.txt</code> — add <code>scikit-learn</code> -
+<code>TECHNICAL_DOCUMENTATION.md</code> — document Phase 1</p>
+<h3 id="success-criteria">Success Criteria</h3>
+<ul>
+<li>Meta-model trained on 100+ resolved predictions with AUC &gt;
+0.55</li>
+<li>Trades where meta_prob &lt; 0.3 are correctly suppressed</li>
+<li>Feature importance shows sensible (non-random) patterns</li>
+<li>Overall win rate improves ≥3% over the pre-meta-model baseline after
+2 weeks</li>
+</ul>
+<hr />
+<h2 id="cross-session-continuity">Cross-Session Continuity</h2>
+<p><strong>If you are an AI assistant reading this in a new
+session:</strong></p>
+<ol type="1">
+<li>Check the “Phase Status” table above. The row marked 🟡 In Progress
+is where work is happening.</li>
+<li>Read that phase’s detailed implementation plan in this
+document.</li>
+<li>Run <code>./run_tests.sh</code> first to confirm baseline (should be
+104+ tests passing).</li>
+<li>Check the detailed plan at
+<code>/Users/mackr0/.claude/plans/serialized-nibbling-fern.md</code> for
+granular step-by-step instructions.</li>
+<li>Do NOT skip to a later phase. Phase order encodes dependencies.</li>
+<li>After completing any phase, update:
+<ul>
+<li>The status table in this file</li>
+<li><code>TECHNICAL_DOCUMENTATION.md</code> with architecture
+changes</li>
+<li>The plan file with a completion summary</li>
+</ul></li>
+</ol>
+<p>The user has explicitly emphasized documentation because context is
+lost between sessions. Every architectural decision must be persisted
+here.</p>
+</body>
+</html>

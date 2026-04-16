@@ -134,9 +134,40 @@ def _gather_trades(db_paths) -> List[Dict]:
     return all_trades
 
 
-def _gather_snapshots(db_paths) -> List[Dict]:
-    """Collect all daily snapshots from the provided DBs."""
-    all_snaps = []
+def _count_open_trades(db_paths) -> int:
+    """Count trades that opened positions but haven't been closed yet.
+
+    Used to display the full activity picture alongside the closed-trade
+    metrics — a shortlist of 5 trades (3 open + 2 closed) previously
+    showed as 'Total Trades: 2' which misleads users into thinking the
+    system hasn't traded.
+    """
+    total = 0
+    for db_path in db_paths:
+        try:
+            conn = sqlite3.connect(db_path)
+            rows = conn.execute(
+                "SELECT COUNT(*) FROM trades "
+                "WHERE pnl IS NULL AND side IN ('buy', 'short')"
+            ).fetchone()
+            if rows:
+                total += int(rows[0] or 0)
+            conn.close()
+        except Exception:
+            pass
+    return total
+
+
+def _gather_snapshots(db_paths, initial_capital_per_profile: float = 10000) -> List[Dict]:
+    """Collect daily snapshots from all DBs and aggregate across profiles.
+
+    For each date, sums equity across all profiles. If a profile is missing a
+    snapshot for a given date, its most recent known equity (or initial capital)
+    is carried forward. This prevents artificial return spikes when profiles
+    have different snapshot dates.
+    """
+    per_db_snaps: Dict[str, List[Dict]] = {}
+    all_dates = set()
     for db_path in db_paths:
         try:
             conn = sqlite3.connect(db_path)
@@ -145,25 +176,41 @@ def _gather_snapshots(db_paths) -> List[Dict]:
                 "SELECT date, equity, cash, portfolio_value, num_positions, daily_pnl "
                 "FROM daily_snapshots WHERE equity IS NOT NULL ORDER BY date ASC"
             ).fetchall()
-            for r in rows:
-                all_snaps.append(dict(r))
+            snaps = [dict(r) for r in rows]
+            per_db_snaps[db_path] = snaps
+            for s in snaps:
+                if s.get("date"):
+                    all_dates.add(s["date"])
             conn.close()
         except Exception:
-            pass
-    all_snaps.sort(key=lambda s: s.get("date") or "")
-    # Deduplicate by date (keep latest equity if multiple DBs have same date)
-    seen: Dict[str, Dict] = {}
-    for s in all_snaps:
-        d = s.get("date", "")
-        if d not in seen:
-            seen[d] = s
-        else:
-            # sum equities across profiles for same date
-            seen[d]["equity"] = (seen[d].get("equity") or 0) + (s.get("equity") or 0)
-            seen[d]["daily_pnl"] = (seen[d].get("daily_pnl") or 0) + (s.get("daily_pnl") or 0)
-    deduped = list(seen.values())
-    deduped.sort(key=lambda s: s.get("date") or "")
-    return deduped
+            per_db_snaps[db_path] = []
+
+    if not all_dates:
+        return []
+
+    sorted_dates = sorted(all_dates)
+    # Build per-DB equity by date (with forward-fill)
+    per_db_equity: Dict[str, Dict[str, float]] = {}
+    for db_path, snaps in per_db_snaps.items():
+        by_date = {s["date"]: s for s in snaps if s.get("date")}
+        per_db_equity[db_path] = {}
+        last_eq = initial_capital_per_profile
+        last_pnl = 0
+        for d in sorted_dates:
+            if d in by_date:
+                last_eq = by_date[d].get("equity") or last_eq
+                last_pnl = by_date[d].get("daily_pnl") or 0
+            else:
+                last_pnl = 0  # no new pnl on days with no snapshot
+            per_db_equity[db_path][d] = {"equity": last_eq, "daily_pnl": last_pnl}
+
+    # Aggregate across DBs per date
+    result = []
+    for d in sorted_dates:
+        total_equity = sum(per_db_equity[db][d]["equity"] for db in per_db_snaps)
+        total_pnl = sum(per_db_equity[db][d]["daily_pnl"] for db in per_db_snaps)
+        result.append({"date": d, "equity": total_equity, "daily_pnl": total_pnl})
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -313,13 +360,17 @@ def render_bar_chart_svg(data: List[Dict], value_key: str = "value", label_key: 
     # Zero line
     bars_svg += f'<line x1="{pad_left}" y1="{zero_y}" x2="{pad_left + chart_w}" y2="{zero_y}" stroke="#666" stroke-width="0.5"/>'
 
-    # X-axis labels (first, middle, last)
+    # X-axis labels (first, middle, last — deduped so single-bar charts
+    # don't render the same label 3 times)
     label_svg = ""
     if labels:
-        for idx in [0, len(labels) // 2, len(labels) - 1]:
-            if idx < len(labels):
-                x = pad_left + idx * (bar_width + gap) + bar_width / 2
-                label_svg += f'<text x="{x:.1f}" y="{pad_top + chart_h + 15}" text-anchor="middle" fill="#888" font-size="9">{labels[idx]}</text>'
+        label_idxs = sorted(set(
+            i for i in (0, len(labels) // 2, len(labels) - 1)
+            if 0 <= i < len(labels)
+        ))
+        for idx in label_idxs:
+            x = pad_left + idx * (bar_width + gap) + bar_width / 2
+            label_svg += f'<text x="{x:.1f}" y="{pad_top + chart_h + 15}" text-anchor="middle" fill="#888" font-size="9">{labels[idx]}</text>'
 
     return f'''<svg viewBox="0 0 {width} {height}" style="width:100%;max-width:{width}px;">
     {bars_svg}
@@ -383,15 +434,27 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000) -> Dict[str,
     Handles empty data gracefully -- returns zeroes / empty lists.
     """
     trades = _gather_trades(db_paths)
-    snapshots = _gather_snapshots(db_paths)
+    # Pass per-profile initial capital so snapshots forward-fill correctly
+    snapshots = _gather_snapshots(db_paths, initial_capital_per_profile=initial_capital)
+    # Combined baseline = per-profile capital × number of profiles
+    num_profiles = max(len(list(db_paths)), 1)
+    combined_initial_capital = initial_capital * num_profiles
 
     result: Dict[str, Any] = {}
 
     # -----------------------------------------------------------------------
     # Basic counts
     # -----------------------------------------------------------------------
-    result["total_trades"] = len(trades)
-    result["has_trades"] = len(trades) > 0
+    # "closed_trades" = trades with realized PnL — the metric-relevant set.
+    # "open_trades"   = positions currently held (BUY/SHORT without a matching
+    # close yet). Both are shown on the dashboard so users see the full
+    # activity count, but win-rate / profit-factor / Sharpe etc. still use
+    # closed trades only (that's what has a realized PnL to measure).
+    result["total_trades"] = len(trades)           # closed trades (backwards compat)
+    result["closed_trades"] = len(trades)
+    result["open_trades"] = _count_open_trades(db_paths)
+    result["all_trades"] = len(trades) + result["open_trades"]
+    result["has_trades"] = result["all_trades"] > 0
     result["has_snapshots"] = len(snapshots) > 0
 
     # -----------------------------------------------------------------------
@@ -402,12 +465,15 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000) -> Dict[str,
     # -----------------------------------------------------------------------
     # Performance metrics
     # -----------------------------------------------------------------------
+    # Use combined capital as baseline so total return reflects actual P&L
+    # against deposited capital (not just first snapshot value which can be
+    # skewed when profiles have different first-snapshot dates)
     if snapshots:
-        first_eq = snapshots[0].get("equity", initial_capital) or initial_capital
-        last_eq = snapshots[-1].get("equity", initial_capital) or initial_capital
+        first_eq = combined_initial_capital
+        last_eq = snapshots[-1].get("equity", combined_initial_capital) or combined_initial_capital
     else:
-        first_eq = initial_capital
-        last_eq = initial_capital
+        first_eq = combined_initial_capital
+        last_eq = combined_initial_capital
 
     total_pnl = sum(t.get("pnl", 0) or 0 for t in trades)
     result["total_pnl"] = round(total_pnl, 2)
@@ -476,21 +542,41 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000) -> Dict[str,
     result["num_daily_returns"] = len(daily_returns)
 
     # -----------------------------------------------------------------------
-    # Risk metrics
-    # -----------------------------------------------------------------------
-    if daily_returns:
+    # Risk metrics — need at least 2 daily returns to compute any std.
+    # Anything less is "insufficient data", not "zero volatility / sharpe".
+    # Templates check the `_computable` flags to show N/A instead of 0.
+    MIN_RETURNS_FOR_SHARPE = 2
+    if len(daily_returns) >= MIN_RETURNS_FOR_SHARPE:
         avg_ret = _mean(daily_returns)
         std_ret = _std(daily_returns)
         neg_returns = [r for r in daily_returns if r < 0]
         std_neg = _std(neg_returns) if len(neg_returns) >= 2 else 0
 
-        result["sharpe_ratio"] = round(avg_ret / std_ret * math.sqrt(252), 2) if std_ret > 0 else 0.0
-        result["sortino_ratio"] = round(avg_ret / std_neg * math.sqrt(252), 2) if std_neg > 0 else 0.0
-        result["annualized_volatility"] = round(std_ret * math.sqrt(252) * 100, 2)
+        if std_ret > 0:
+            result["sharpe_ratio"] = round(avg_ret / std_ret * math.sqrt(252), 2)
+            result["sharpe_ratio_computable"] = True
+            result["annualized_volatility"] = round(std_ret * math.sqrt(252) * 100, 2)
+            result["annualized_volatility_computable"] = True
+        else:
+            # All daily returns identical → no volatility to measure
+            result["sharpe_ratio"] = 0.0
+            result["sharpe_ratio_computable"] = False
+            result["annualized_volatility"] = 0.0
+            result["annualized_volatility_computable"] = False
+
+        if std_neg > 0:
+            result["sortino_ratio"] = round(avg_ret / std_neg * math.sqrt(252), 2)
+            result["sortino_ratio_computable"] = True
+        else:
+            result["sortino_ratio"] = 0.0
+            result["sortino_ratio_computable"] = False
     else:
         result["sharpe_ratio"] = 0.0
+        result["sharpe_ratio_computable"] = False
         result["sortino_ratio"] = 0.0
+        result["sortino_ratio_computable"] = False
         result["annualized_volatility"] = 0.0
+        result["annualized_volatility_computable"] = False
 
     # Max drawdown from equity curve
     max_dd_pct = 0.0
@@ -550,11 +636,24 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000) -> Dict[str,
     result["max_drawdown_trough_date"] = dd_trough_date
     result["rolling_drawdown"] = rolling_drawdown
 
-    # Calmar ratio
+    # Calmar ratio — only meaningful with real drawdown and real history.
+    # With 1 day of data and a 0.07% DD, -21% / 0.07 = -310 which is
+    # nonsense. Guard against that by requiring both a non-trivial DD
+    # and enough trading history.
     ann_ret = result["annualized_return_pct"]
-    result["calmar_ratio"] = round(ann_ret / max_dd_pct, 2) if max_dd_pct > 0 else 0.0
+    CALMAR_MIN_DD_PCT = 1.0      # DD must be >= 1% for Calmar to be meaningful
+    CALMAR_MIN_DAYS = 30          # need at least a month of activity
+    if (max_dd_pct >= CALMAR_MIN_DD_PCT
+            and days_active >= CALMAR_MIN_DAYS):
+        result["calmar_ratio"] = round(ann_ret / max_dd_pct, 2)
+        result["calmar_ratio_computable"] = True
+    else:
+        result["calmar_ratio"] = 0.0
+        result["calmar_ratio_computable"] = False
 
-    # VaR / CVaR from trade returns
+    # VaR / CVaR from trade returns — undefined with zero closed trades.
+    # We also want a minimum sample (5+) before reporting VaR honestly;
+    # one trade's return isn't a distribution.
     trade_return_pcts = []
     for t in trades:
         price = t.get("price", 0) or 0
@@ -564,14 +663,24 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000) -> Dict[str,
             cost = price * qty
             trade_return_pcts.append(pnl / cost * 100)
 
-    if trade_return_pcts:
+    MIN_TRADES_FOR_VAR = 5
+    if len(trade_return_pcts) >= MIN_TRADES_FOR_VAR:
         result["var_95"] = round(_percentile(trade_return_pcts, 5), 2)
+        result["var_95_computable"] = True
         var_threshold = result["var_95"]
         tail = [r for r in trade_return_pcts if r <= var_threshold]
-        result["cvar_95"] = round(_mean(tail), 2) if tail else result["var_95"]
+        if tail:
+            result["cvar_95"] = round(_mean(tail), 2)
+            result["cvar_95_computable"] = True
+        else:
+            # Degenerate: no trades at or below the 5th percentile (rare)
+            result["cvar_95"] = result["var_95"]
+            result["cvar_95_computable"] = True
     else:
         result["var_95"] = 0.0
+        result["var_95_computable"] = False
         result["cvar_95"] = 0.0
+        result["cvar_95_computable"] = False
 
     # -----------------------------------------------------------------------
     # Rolling metrics
@@ -627,7 +736,13 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000) -> Dict[str,
 
     result["winning_trades"] = len(winning_trades)
     result["losing_trades"] = len(losing_trades)
-    result["win_rate"] = round(len(winning_trades) / len(trades) * 100, 1) if trades else 0.0
+    # Win rate — undefined without any closed trades
+    if trades:
+        result["win_rate"] = round(len(winning_trades) / len(trades) * 100, 1)
+        result["win_rate_computable"] = True
+    else:
+        result["win_rate"] = 0.0
+        result["win_rate_computable"] = False
 
     win_pnls = [t.get("pnl", 0) for t in winning_trades]
     loss_pnls = [t.get("pnl", 0) for t in losing_trades]
@@ -635,7 +750,14 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000) -> Dict[str,
     total_gains = sum(win_pnls)
     total_losses_abs = abs(sum(loss_pnls))
 
-    result["profit_factor"] = round(total_gains / total_losses_abs, 2) if total_losses_abs > 0 else 0.0
+    # Profit factor is undefined when there are no losses (all wins → +inf
+    # is meaningless) or no trades. Only reportable when both sides exist.
+    if winning_trades and losing_trades and total_losses_abs > 0:
+        result["profit_factor"] = round(total_gains / total_losses_abs, 2)
+        result["profit_factor_computable"] = True
+    else:
+        result["profit_factor"] = 0.0
+        result["profit_factor_computable"] = False
 
     avg_win = _mean(win_pnls) if win_pnls else 0
     avg_loss = _mean(loss_pnls) if loss_pnls else 0  # negative number
@@ -671,7 +793,16 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000) -> Dict[str,
 
     result["avg_win_pct"] = round(_mean(win_return_pcts), 2) if win_return_pcts else 0.0
     result["avg_loss_pct"] = round(_mean(loss_return_pcts), 2) if loss_return_pcts else 0.0
-    result["win_loss_ratio"] = round(avg_win / abs(avg_loss), 2) if avg_loss != 0 else 0.0
+    # Win/Loss ratio is undefined when there are no wins OR no losses —
+    # showing 0.00 in either case misleads users into thinking they have
+    # a 0× edge rather than "no data to compute the ratio yet". Flag the
+    # undefined case so the template can show N/A.
+    if winning_trades and losing_trades and avg_loss != 0:
+        result["win_loss_ratio"] = round(avg_win / abs(avg_loss), 2)
+        result["win_loss_ratio_computable"] = True
+    else:
+        result["win_loss_ratio"] = 0.0
+        result["win_loss_ratio_computable"] = False
 
     # Largest win / loss
     if winning_trades:
@@ -690,10 +821,24 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000) -> Dict[str,
         result["largest_loss"] = 0.0
         result["largest_loss_symbol"] = ""
 
-    # Avg hold days (estimate from trade pairs - buy then sell)
+    # Avg hold days (match buys to sells — must use ALL trades, not the
+    # pnl-filtered list above, because buys never have pnl set until
+    # closed by a later sell).
     hold_days_list = []
-    open_positions: Dict[str, str] = {}  # symbol -> timestamp
-    for t in trades:
+    all_rows: List[Dict] = []
+    for db_path in db_paths:
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT timestamp, symbol, side FROM trades ORDER BY timestamp ASC"
+            ).fetchall()
+            all_rows.extend(dict(r) for r in rows)
+            conn.close()
+        except Exception:
+            pass
+    open_positions: Dict[str, str] = {}  # symbol -> timestamp of buy
+    for t in all_rows:
         sym = t.get("symbol", "")
         side = (t.get("side") or "").lower()
         ts = t.get("timestamp", "")[:10]
@@ -703,7 +848,7 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000) -> Dict[str,
             try:
                 d1 = datetime.strptime(open_positions[sym], "%Y-%m-%d")
                 d2 = datetime.strptime(ts, "%Y-%m-%d")
-                hold_days_list.append((d2 - d1).days)
+                hold_days_list.append(max((d2 - d1).days, 0))
             except Exception:
                 pass
             del open_positions[sym]
@@ -757,10 +902,15 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000) -> Dict[str,
         })
     result["monthly_returns"] = monthly_list
 
-    # Monthly win rate
+    # Monthly win rate — undefined when there's not a full month of activity
     profitable_months = sum(1 for m in monthly_list if m["pnl"] > 0)
     total_months = len(monthly_list)
-    result["monthly_win_rate"] = round(profitable_months / total_months * 100, 1) if total_months > 0 else 0.0
+    if total_months > 0:
+        result["monthly_win_rate"] = round(profitable_months / total_months * 100, 1)
+        result["monthly_win_rate_computable"] = True
+    else:
+        result["monthly_win_rate"] = 0.0
+        result["monthly_win_rate_computable"] = False
 
     # Best / worst month
     if monthly_list:
@@ -809,7 +959,12 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000) -> Dict[str,
 
     result["max_consecutive_wins"] = max(winning_streaks) if winning_streaks else 0
     result["max_consecutive_losses"] = max(losing_streaks) if losing_streaks else 0
-    result["current_streak"] = {"count": cur_streak_len, "type": cur_streak_type}
+    result["current_streak"] = {
+        "count": cur_streak_len,
+        "type": cur_streak_type,
+        # Computable = has any closed trades; "0 none" is confusing display
+        "computable": bool(trades),
+    }
 
     # -----------------------------------------------------------------------
     # Worst periods
@@ -859,13 +1014,19 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000) -> Dict[str,
     result["worst_quarter"] = _worst_period(90)
 
     # -----------------------------------------------------------------------
-    # Market relationship (SPY, QQQ, BTC)
+    # Market relationship (SPY, QQQ, BTC) — computable flags distinguish
+    # "insufficient data" from "actually uncorrelated / zero alpha"
     # -----------------------------------------------------------------------
     result["beta_spy"] = 0.0
+    result["beta_spy_computable"] = False
     result["alpha"] = 0.0
+    result["alpha_computable"] = False
     result["correlation_spy"] = 0.0
+    result["correlation_spy_computable"] = False
     result["correlation_qqq"] = 0.0
+    result["correlation_qqq_computable"] = False
     result["correlation_btc"] = 0.0
+    result["correlation_btc_computable"] = False
 
     if len(daily_returns) >= 20 and snapshots:
         # Build portfolio daily returns keyed by date
@@ -918,16 +1079,19 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000) -> Dict[str,
                     cov = _mean([(p - m_p) * (b - m_b) for p, b in zip(aligned_port, aligned_bench)])
                     corr = cov / (s_p * s_b)
                     result[f"correlation_{key}"] = round(corr, 3)
+                    result[f"correlation_{key}_computable"] = True
 
                     if key == "spy":
                         var_bench = s_b ** 2
                         if var_bench > 0:
                             beta = cov / var_bench
                             result["beta_spy"] = round(beta, 3)
+                            result["beta_spy_computable"] = True
                             # Alpha: annualised
                             ann_port = result["annualized_return_pct"]
                             ann_bench = _mean(aligned_bench) * 252 * 100
                             result["alpha"] = round(ann_port - (beta * ann_bench), 2)
+                            result["alpha_computable"] = True
 
     # -----------------------------------------------------------------------
     # Scalability metrics
@@ -954,9 +1118,16 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000) -> Dict[str,
     result["avg_position_size"] = round(_mean(position_sizes), 2) if position_sizes else 0.0
     result["slippage_avg_pct"] = round(_mean(slippage_pcts), 4) if slippage_pcts else 0.0
     result["slippage_total_cost"] = round(sum(slippage_costs), 2) if slippage_costs else 0.0
-    result["slippage_vs_gross"] = round(
-        sum(slippage_costs) / gross_profit * 100, 2
-    ) if gross_profit > 0 and slippage_costs else 0.0
+    # Slippage vs gross — undefined when gross profit ≤ 0 (can't express
+    # slippage as a fraction of profit that doesn't exist)
+    if gross_profit > 0 and slippage_costs:
+        result["slippage_vs_gross"] = round(
+            sum(slippage_costs) / gross_profit * 100, 2
+        )
+        result["slippage_vs_gross_computable"] = True
+    else:
+        result["slippage_vs_gross"] = 0.0
+        result["slippage_vs_gross_computable"] = False
     result["trades_with_slippage"] = len(slippage_pcts)
 
     # Trade PnL distribution (for histogram)

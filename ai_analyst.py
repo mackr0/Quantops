@@ -138,6 +138,8 @@ def analyze_symbol(symbol, ctx=None, api=None, political_context=None):
             provider=ctx.ai_provider if ctx else "anthropic",
             model=ctx.ai_model if ctx else config.CLAUDE_MODEL,
             api_key=ctx.ai_api_key if ctx else config.ANTHROPIC_API_KEY,
+            db_path=getattr(ctx, "db_path", None) if ctx else None,
+            purpose="single_analyze",
         )
 
         # Track API usage
@@ -300,6 +302,8 @@ def analyze_symbol_consensus(symbol, ctx=None, api=None, political_context=None)
             provider=secondary_provider,
             model=consensus_model,
             api_key=secondary_api_key,
+            db_path=getattr(ctx, "db_path", None) if ctx else None,
+            purpose="consensus_secondary",
         )
 
         # Track secondary API usage
@@ -395,6 +399,8 @@ def analyze_portfolio_risk(positions, account_info, ctx=None):
             provider=ctx.ai_provider if ctx else "anthropic",
             model=ctx.ai_model if ctx else config.CLAUDE_MODEL,
             api_key=ctx.ai_api_key if ctx else config.ANTHROPIC_API_KEY,
+            db_path=getattr(ctx, "db_path", None) if ctx else None,
+            purpose="portfolio_review",
         )
 
         if ctx is not None:
@@ -479,4 +485,330 @@ def compare_signals(technical_signal, ai_signal):
         "risk_factors": ai_signal.get("risk_factors", []),
         "price_targets": ai_signal.get("price_targets", {}),
         "technical_reason": technical_signal.get("reason", ""),
+    }
+
+
+# ---------------------------------------------------------------------------
+# AI-first batch trade selection
+# ---------------------------------------------------------------------------
+
+def ai_select_trades(candidates_data, portfolio_state, market_context, ctx=None):
+    """Send a batch of ranked candidates to AI for portfolio-aware trade selection.
+
+    One smart AI call replaces N per-symbol calls.  The AI sees the full
+    picture (candidates + portfolio + regime) and picks the best 0-3 trades.
+
+    Returns dict with keys:
+        trades: list[dict] — each has symbol, action, size_pct, confidence, reasoning
+        portfolio_reasoning: str
+        pass_this_cycle: bool
+    """
+    prompt = _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx)
+
+    provider = getattr(ctx, "ai_provider", "anthropic") if ctx else "anthropic"
+    model = getattr(ctx, "ai_model", "claude-haiku-4-5-20251001") if ctx else "claude-haiku-4-5-20251001"
+    api_key = getattr(ctx, "ai_api_key", "") if ctx else ""
+
+    try:
+        raw = call_ai(prompt, provider=provider, model=model, api_key=api_key,
+                       max_tokens=1024,
+                       db_path=getattr(ctx, "db_path", None),
+                       purpose="batch_select")
+        result = json.loads(raw)
+    except (json.JSONDecodeError, Exception) as exc:
+        logger.error("AI batch call failed: %s", exc)
+        return {
+            "trades": [],
+            "portfolio_reasoning": f"AI call failed: {exc}",
+            "pass_this_cycle": True,
+        }
+
+    return _validate_ai_trades(result, candidates_data, ctx)
+
+
+def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=None):
+    """Construct the prompt for the AI batch trade selector."""
+
+    max_pos_pct = getattr(ctx, "max_position_pct", 0.10) if ctx else 0.10
+    max_positions = getattr(ctx, "max_total_positions", 10) if ctx else 10
+    enable_shorts = getattr(ctx, "enable_short_selling", False) if ctx else False
+    market_type = getattr(ctx, "segment", "unknown") if ctx else "unknown"
+
+    # --- Portfolio section ---
+    positions_text = "  None (all cash)"
+    pos_list = portfolio_state.get("positions", [])
+    if pos_list:
+        lines = []
+        for p in pos_list:
+            sym = p.get("symbol", "?")
+            qty = p.get("qty", 0)
+            mv = p.get("market_value", 0)
+            upl = p.get("unrealized_pl", 0)
+            uplpc = p.get("unrealized_plpc", 0)
+            lines.append(f"  {sym}: {qty} shares, ${mv:,.0f} mkt val, P&L ${upl:+,.0f} ({uplpc:+.1f}%)")
+        positions_text = "\n".join(lines)
+
+    dd_pct = portfolio_state.get("drawdown_pct", 0)
+    dd_action = portfolio_state.get("drawdown_action", "normal")
+
+    portfolio_section = (
+        f"PORTFOLIO STATE:\n"
+        f"  Equity: ${portfolio_state.get('equity', 0):,.0f} | "
+        f"Cash: ${portfolio_state.get('cash', 0):,.0f}\n"
+        f"  Positions ({portfolio_state.get('num_positions', 0)}/{max_positions}):\n"
+        f"{positions_text}\n"
+        f"  Drawdown: {dd_pct:.1f}% from peak ({dd_action})"
+    )
+
+    # --- Market context section ---
+    regime = market_context.get("regime", "unknown")
+    vix = market_context.get("vix", 0)
+    spy_trend = market_context.get("spy_trend", "unknown")
+    political = market_context.get("political_context")
+    profile_summary = market_context.get("profile_summary")
+
+    market_section = f"MARKET CONTEXT:\n  Regime: {regime} (VIX {vix:.0f}, SPY trend: {spy_trend})"
+    crisis_ctx = market_context.get("crisis_context")
+    if crisis_ctx:
+        market_section += f"\n  *** {crisis_ctx} ***"
+    if political:
+        for pline in political.splitlines()[:4]:
+            market_section += f"\n  {pline}"
+    if profile_summary:
+        market_section += f"\n  Track record: {profile_summary}"
+
+    learned = market_context.get("learned_patterns", [])
+    if learned:
+        market_section += "\n  LEARNED PATTERNS (from your history):"
+        for pattern in learned[:5]:
+            market_section += f"\n    - {pattern}"
+
+    # Sector rotation
+    _sector_display = {
+        "tech": "Tech", "finance": "Financials", "energy": "Energy",
+        "healthcare": "Healthcare", "industrial": "Industrials",
+        "consumer_disc": "Consumer Disc", "consumer_staples": "Consumer Staples",
+        "utilities": "Utilities", "materials": "Materials",
+        "real_estate": "Real Estate", "comm_services": "Communications",
+    }
+    sector_rot = market_context.get("sector_rotation", {})
+    if sector_rot:
+        inflows = [f"{_sector_display.get(s,s)}({d['return_5d']:+.1f}%)" for s, d in sector_rot.items()
+                   if d.get("trend") == "inflow"]
+        outflows = [f"{_sector_display.get(s,s)}({d['return_5d']:+.1f}%)" for s, d in sector_rot.items()
+                    if d.get("trend") == "outflow"]
+        if inflows:
+            market_section += f"\n  Sector inflows: {', '.join(inflows)}"
+        if outflows:
+            market_section += f"\n  Sector outflows: {', '.join(outflows)}"
+
+    # --- Candidates section ---
+    cand_lines = []
+    for i, c in enumerate(candidates_data, 1):
+        sym = c.get("symbol", "?")
+        price = c.get("price", 0)
+        signal = c.get("signal", "?")
+        score = c.get("score", 0)
+        rsi = c.get("rsi", 0)
+        vol_ratio = c.get("volume_ratio", 0)
+        reason = c.get("reason", "")[:120]
+        votes = c.get("votes", {})
+
+        votes_parts = [f"{k}={v}" for k, v in votes.items() if v != "HOLD"]
+        votes_str = ", ".join(votes_parts) if votes_parts else "no strong votes"
+
+        adx = c.get("adx", 0)
+        stoch = c.get("stoch_rsi", 50)
+        roc = c.get("roc_10", 0)
+        pct_52h = c.get("pct_from_52w_high", 0)
+        mfi = c.get("mfi", 50)
+        cmf = c.get("cmf", 0)
+        squeeze = c.get("squeeze", 0)
+        vwap_dist = c.get("pct_from_vwap", 0)
+        fib_dist = c.get("nearest_fib_dist", 99)
+        gap = c.get("gap_pct", 0)
+
+        line = (f"  {i}. {sym} @ ${price:.2f} | {signal} (score {score}/4)\n"
+                f"     Votes: {votes_str}\n"
+                f"     RSI: {rsi:.0f} | StochRSI: {stoch:.0f} | ADX: {adx:.0f} | "
+                f"Vol: {vol_ratio:.1f}x | ROC10: {roc:+.1f}%\n"
+                f"     MFI: {mfi:.0f} | CMF: {cmf:+.2f} | "
+                f"vs52wH: {pct_52h:+.1f}% | vsVWAP: {vwap_dist:+.1f}%")
+
+        # Conditional flags (only show when meaningful)
+        flags = []
+        if squeeze:
+            flags.append("SQUEEZE (big move imminent)")
+        if abs(gap) > 2:
+            flags.append(f"GAP {gap:+.1f}%")
+        if fib_dist < 2:
+            flags.append(f"Near Fib level ({fib_dist:.1f}%)")
+        if flags:
+            line += f"\n     FLAGS: {' | '.join(flags)}"
+
+        line += f"\n     {reason}"
+
+        # Relative strength vs sector
+        rs = c.get("rel_strength")
+        if rs:
+            line += (f"\n     Sector: {rs['sector']} ({rs['sector_trend']}) | "
+                     f"Stock 5d: {rs['stock_5d']:+.1f}% vs sector: {rs['sector_5d']:+.1f}% "
+                     f"(RS: {rs['relative_strength']:+.1f}%)")
+
+        # Alternative data
+        alt = c.get("alt_data", {})
+        if alt:
+            alt_parts = []
+            insider = alt.get("insider", {})
+            if insider.get("net_direction") != "neutral":
+                alt_parts.append(f"Insiders: {insider['net_direction']} "
+                                 f"({insider.get('recent_buys',0)}B/{insider.get('recent_sells',0)}S)")
+            short = alt.get("short", {})
+            if short.get("short_pct_float", 0) > 5:
+                alt_parts.append(f"Short: {short['short_pct_float']:.1f}% float "
+                                 f"(squeeze risk: {short.get('squeeze_risk','low')})")
+            opts = alt.get("options", {})
+            if opts.get("unusual"):
+                alt_parts.append(f"Options: {opts.get('signal','neutral')} "
+                                 f"(P/C ratio: {opts.get('put_call_ratio',0):.1f})")
+            intra = alt.get("intraday", {})
+            if intra.get("opening_range_breakout"):
+                alt_parts.append("ORB breakout")
+            if intra.get("vwap_position") != "at":
+                alt_parts.append(f"Intraday: {intra['vwap_position']} VWAP")
+            fund = alt.get("fundamentals", {})
+            if fund.get("pe_trailing", 0) > 0:
+                alt_parts.append(f"PE: {fund['pe_trailing']:.1f}")
+            if alt_parts:
+                line += f"\n     ALT DATA: {' | '.join(alt_parts)}"
+
+        # Social sentiment
+        social = c.get("social", {})
+        if social.get("mentions", 0) > 0:
+            sent_label = "bullish" if social["sentiment_score"] > 0.2 else \
+                         "bearish" if social["sentiment_score"] < -0.2 else "mixed"
+            line += (f"\n     REDDIT: {social['mentions']} mentions ({sent_label}) "
+                     f"in r/{', r/'.join(social.get('subreddits_found', []))}")
+
+        track = c.get("track_record")
+        if track:
+            line += f"\n     Your record: {track}"
+        last_pred = c.get("last_prediction")
+        if last_pred:
+            line += f"\n     {last_pred}"
+        earnings = c.get("earnings_warning")
+        if earnings:
+            line += f"\n     {earnings}"
+        # Phase 4: SEC filing alert (material language changes in 10-K/10-Q/8-K)
+        sec = c.get("sec_alert")
+        if sec:
+            line += (f"\n     SEC ALERT [{sec['severity'].upper()}/{sec['signal']}]: "
+                     f"{sec['form']} filed {sec['date']} — {sec['summary'][:200]}")
+        # Phase 5: Options Chain Oracle — IV skew, term structure, GEX, etc
+        opts_sum = c.get("options_oracle_summary")
+        if opts_sum:
+            line += f"\n     OPTIONS: {opts_sum}"
+        # Phase 8: Specialist ensemble summary (earnings, pattern, sentiment, risk)
+        ens = c.get("ensemble_summary")
+        if ens:
+            line += f"\n     {ens}"
+        news = c.get("news")
+        if news:
+            line += f"\n     News: {' | '.join(n[:80] for n in news[:3])}"
+
+        cand_lines.append(line)
+
+    candidates_section = "CANDIDATES (ranked by technical score):\n" + "\n".join(cand_lines)
+
+    # --- Actions allowed ---
+    actions = "BUY"
+    if enable_shorts:
+        actions += " | SHORT"
+
+    # --- Assemble prompt ---
+    prompt = (
+        f"You are a portfolio manager for an automated {market_type} trading system. "
+        f"You see a batch of candidates our technical screener flagged. "
+        f"Your job is to PICK the best 0-3 trades and SIZE them. "
+        f"Zero trades is a valid and often correct answer — only trade when conviction is high.\n\n"
+        f"{portfolio_section}\n\n"
+        f"{market_section}\n\n"
+        f"{candidates_section}\n\n"
+        f"RULES:\n"
+        f"- Select 0-3 trades. Actions allowed: {actions}\n"
+        f"- Max position size: {max_pos_pct * 100:.0f}% of equity\n"
+        f"- Consider: portfolio concentration, market regime, drawdown state, "
+        f"your track record on each symbol\n"
+        f"- If drawdown is elevated ({dd_action}), be conservative\n"
+        f"- If at max positions, only recommend exits\n\n"
+        f"Respond ONLY with valid JSON (no markdown, no commentary):\n"
+        f'{{"trades": [{{"symbol": "TICKER", "action": "BUY", '
+        f'"size_pct": 7.5, "confidence": 75, '
+        f'"stop_loss_pct": 3.0, "take_profit_pct": 10.0, '
+        f'"reasoning": "1-2 sentences"}}], '
+        f'"portfolio_reasoning": "Why this combination or why pass", '
+        f'"pass_this_cycle": false}}'
+    )
+
+    return prompt
+
+
+def _validate_ai_trades(result, candidates_data, ctx=None):
+    """Validate and sanitize the AI batch response."""
+
+    max_pos_pct = getattr(ctx, "max_position_pct", 0.10) if ctx else 0.10
+    enable_shorts = getattr(ctx, "enable_short_selling", False) if ctx else False
+
+    # Ensure structure
+    if not isinstance(result, dict):
+        return {"trades": [], "portfolio_reasoning": "Invalid response format",
+                "pass_this_cycle": True}
+
+    trades = result.get("trades", [])
+    if not isinstance(trades, list):
+        trades = []
+
+    pass_cycle = result.get("pass_this_cycle", False)
+    reasoning = result.get("portfolio_reasoning", "")
+
+    if pass_cycle:
+        return {"trades": [], "portfolio_reasoning": reasoning,
+                "pass_this_cycle": True}
+
+    # Valid symbols from candidates
+    valid_symbols = {c["symbol"] for c in candidates_data}
+
+    validated = []
+    for t in trades[:3]:  # Max 3
+        if not isinstance(t, dict):
+            continue
+        sym = t.get("symbol", "")
+        if sym not in valid_symbols:
+            logger.warning("AI suggested symbol %s not in candidates — skipped", sym)
+            continue
+
+        action = t.get("action", "").upper()
+        if action == "SHORT" and not enable_shorts:
+            logger.warning("AI suggested SHORT on %s but shorts disabled — skipped", sym)
+            continue
+        if action not in ("BUY", "SELL", "SHORT"):
+            continue
+
+        size_pct = min(float(t.get("size_pct", 5.0)), max_pos_pct * 100)
+        size_pct = max(size_pct, 1.0)
+
+        validated.append({
+            "symbol": sym,
+            "action": action,
+            "size_pct": size_pct,
+            "confidence": int(t.get("confidence", 50)),
+            "stop_loss_pct": float(t.get("stop_loss_pct", 3.0)),
+            "take_profit_pct": float(t.get("take_profit_pct", 10.0)),
+            "reasoning": t.get("reasoning", ""),
+        })
+
+    return {
+        "trades": validated,
+        "portfolio_reasoning": reasoning,
+        "pass_this_cycle": len(validated) == 0,
     }

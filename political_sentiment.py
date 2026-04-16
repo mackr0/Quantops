@@ -178,20 +178,23 @@ def analyze_political_climate(ctx=None) -> Dict[str, Any]:
     )
 
     prompt = (
-        "Analyze these recent political/market headlines and assess the "
-        "current political volatility environment for US equity markets.\n\n"
+        "Analyze these recent political/market headlines. Assess political "
+        "volatility AND identify specific trading opportunities.\n\n"
         f"Headlines:\n{headlines_text}\n\n"
-        "Respond ONLY with valid JSON (no markdown fences) using this schema:\n"
+        "Respond ONLY with valid JSON (no markdown fences):\n"
         "{\n"
         '  "political_volatility_level": "high" | "medium" | "low",\n'
         '  "is_panic_driven": true | false,\n'
         '  "expected_duration": "days" | "weeks" | "months",\n'
         '  "affected_sectors": ["sector1", "sector2"],\n'
+        '  "sector_impact": {"tech": "negative", "defense": "positive", "energy": "neutral"},\n'
+        '  "ticker_mentions": ["AAPL", "BA"],\n'
         '  "summary": "2-3 sentence assessment",\n'
-        '  "recommendation": "buy_the_dip" | "stay_cautious" | "normal"\n'
+        '  "recommendation": "buy_the_dip" | "stay_cautious" | "normal",\n'
+        '  "trade_ideas": [{"symbol": "BA", "direction": "BUY", "reasoning": "Defense spending likely to increase"}]\n'
         "}\n\n"
-        "Consider: Is current market weakness driven by political noise "
-        "(tariffs, tweets, policy threats) vs fundamental deterioration? "
+        "Consider: Is weakness driven by political noise vs fundamentals? "
+        "Which specific sectors and stocks benefit or suffer from these headlines? "
         "Political panic selloffs often overcorrect and revert within days."
     )
 
@@ -202,6 +205,8 @@ def analyze_political_climate(ctx=None) -> Dict[str, Any]:
             model=ctx.ai_model if ctx else config.CLAUDE_MODEL,
             api_key=ctx.ai_api_key if ctx else config.ANTHROPIC_API_KEY,
             max_tokens=512,
+            db_path=getattr(ctx, "db_path", None) if ctx else None,
+            purpose="political_context",
         )
 
         # Track API usage
@@ -270,6 +275,24 @@ def get_maga_mode_context(ctx=None) -> str:
 
     sectors_str = ", ".join(sectors) if sectors else "Broad market"
 
+    # Sector-specific impact
+    sector_impact = climate.get("sector_impact", {})
+    impact_lines = []
+    for sector, impact in sector_impact.items():
+        if impact != "neutral":
+            impact_lines.append(f"  {sector}: {impact}")
+    impact_str = "\n".join(impact_lines) if impact_lines else "  No sector-specific impact"
+
+    # Specific ticker mentions and trade ideas
+    tickers = climate.get("ticker_mentions", [])
+    trade_ideas = climate.get("trade_ideas", [])
+    ideas_str = ""
+    if trade_ideas:
+        ideas_str = "\nPolitical Trade Ideas: " + "; ".join(
+            f"{t.get('symbol', '?')} {t.get('direction', '?')} ({t.get('reasoning', '')})"
+            for t in trade_ideas[:3]
+        )
+
     context = (
         f"POLITICAL MARKET CONTEXT (MAGA Mode Active):\n"
         f"Volatility Level: {vol_level}\n"
@@ -277,7 +300,9 @@ def get_maga_mode_context(ctx=None) -> str:
         f"Panic-Driven: {'Yes' if is_panic else 'No'} | "
         f"Expected Duration: {duration}\n"
         f"Affected Sectors: {sectors_str}\n"
+        f"Sector Impact:\n{impact_str}\n"
         f"Recommendation: {rec_text}"
+        f"{ideas_str}"
     )
 
     return context

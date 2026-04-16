@@ -182,8 +182,6 @@ def get_position_diversity(positions: List[Dict]) -> Dict:
     # Build a reverse lookup: symbol -> segment name
     symbol_to_group = {}
     for seg_name, seg_def in SEGMENTS.items():
-        if seg_name == "microsmall":
-            continue  # Skip alias
         for sym in seg_def.get("universe", []):
             symbol_to_group[sym] = seg_name
 

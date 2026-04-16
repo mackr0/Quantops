@@ -16,10 +16,18 @@ from market_data import get_bars_daterange, add_indicators
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Module-level cache for batch yfinance downloads (24-hour TTL)
+# Module-level caches for yfinance downloads (24-hour TTL)
 # ---------------------------------------------------------------------------
 _data_cache: Dict[str, dict] = {}
 _CACHE_TTL = 86400  # 24 hours in seconds
+
+# Per-symbol cache shared by _fetch_yf_history. Keyed on symbol only; we
+# always fetch the maximum-needed window and slice down for shorter requests.
+# This is critical for validation runs where one strategy triggers 7
+# backtests with different `days` arguments — without this cache each
+# backtest re-downloads every symbol from yfinance.
+_symbol_cache: Dict[str, dict] = {}
+_SYMBOL_CACHE_MAX_DAYS = 720   # always fetch this much so any gate is served
 
 
 @dataclass
@@ -344,19 +352,43 @@ def _calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
 
 
 def _fetch_yf_history(symbol: str, days: int) -> Optional[pd.DataFrame]:
-    """Fetch historical daily bars from yfinance.
+    """Fetch historical daily bars from yfinance, with per-symbol caching.
+
+    We always download the maximum window (_SYMBOL_CACHE_MAX_DAYS) and slice
+    down to the caller's requested `days`. This means a single validation run
+    triggering 7 backtests with different `days` values only downloads each
+    symbol ONCE, not 7 times. 24-hour TTL on cache entries.
 
     Returns DataFrame with columns: open, high, low, close, volume,
-    indexed by datetime.  Returns None on failure.
+    indexed by datetime. Returns None on failure.
     """
+    now = time.time()
+    cached = _symbol_cache.get(symbol)
+    if cached and (now - cached["ts"]) < _CACHE_TTL and cached["data"] is not None:
+        full_df = cached["data"]
+    else:
+        full_df = _download_symbol(symbol, _SYMBOL_CACHE_MAX_DAYS)
+        _symbol_cache[symbol] = {"data": full_df, "ts": now}
+
+    if full_df is None or full_df.empty:
+        return None
+
+    # Slice to requested window (latest `days` rows after normalization)
+    needed_rows = days + 60   # buffer for weekends/warmup (caller handles)
+    if len(full_df) > needed_rows:
+        return full_df.iloc[-needed_rows:].copy()
+    return full_df.copy()
+
+
+def _download_symbol(symbol: str, days: int) -> Optional[pd.DataFrame]:
+    """Actually download data from yfinance (no caching)."""
     try:
         import yfinance as yf
 
-        # Convert symbol for yfinance (e.g. BTC/USD -> BTC-USD)
         yf_sym = symbol.replace("/", "-")
 
         end = datetime.now()
-        start = end - timedelta(days=days + 10)  # small buffer
+        start = end - timedelta(days=days + 10)
 
         ticker = yf.Ticker(yf_sym)
         df = ticker.history(
@@ -368,10 +400,8 @@ def _fetch_yf_history(symbol: str, days: int) -> Optional[pd.DataFrame]:
         if df is None or df.empty:
             return None
 
-        # Normalize column names to lowercase
         df.columns = [c.lower() for c in df.columns]
 
-        # Ensure required columns exist
         for col in ("open", "high", "low", "close", "volume"):
             if col not in df.columns:
                 return None
@@ -390,6 +420,8 @@ def backtest_strategy(
     sample_size: int = 30,
     atr_sl_mult: float = 2.0,
     atr_tp_mult: float = 3.0,
+    symbols: Optional[List[str]] = None,
+    signal_fn: Optional[Callable] = None,
 ) -> Dict:
     """Backtest a market-specific strategy against historical data.
 
@@ -403,6 +435,10 @@ def backtest_strategy(
         sample_size: Number of symbols to sample from the universe.
         atr_sl_mult: ATR multiplier for stop-loss (default 2x).
         atr_tp_mult: ATR multiplier for take-profit (default 3x).
+        symbols: Optional explicit symbol list. When provided, overrides the
+            random sampling — used by validate_strategy() so every gate in a
+            single validation run tests the SAME symbols. This lets the
+            per-symbol cache serve repeat requests instantly.
 
     Returns:
         dict with: total_return_pct, win_rate, max_drawdown_pct, sharpe_ratio,
@@ -417,8 +453,11 @@ def backtest_strategy(
     if not universe:
         return {"error": f"No universe found for market type: {market_type}"}
 
-    # Sample symbols from universe (don't backtest all -- too slow)
-    if len(universe) > sample_size:
+    if symbols is not None:
+        # Respect caller's symbol list (used by validation runs for cache
+        # consistency across gates)
+        pass
+    elif len(universe) > sample_size:
         symbols = random.sample(universe, sample_size)
     else:
         symbols = list(universe)
@@ -446,6 +485,17 @@ def backtest_strategy(
             symbols_skipped += 1
             continue
 
+        # OPTIMIZATION: precompute all indicators once for the full history.
+        # Strategy engines check `if "rsi" not in df.columns` and skip
+        # add_indicators() when indicators are already present, so computing
+        # once up-front avoids redoing ~30 indicators on every day's window.
+        # This is the single biggest speedup in the backtest loop.
+        try:
+            from market_data import add_indicators
+            df = add_indicators(df)
+        except Exception as exc:
+            logger.warning("Failed to precompute indicators for %s: %s", symbol, exc)
+
         symbols_tested += 1
 
         # Walk forward day by day
@@ -457,7 +507,7 @@ def backtest_strategy(
         symbol_trades = 0
 
         for i in range(warmup_days, len(df)):
-            window = df.iloc[:i + 1].copy()
+            window = df.iloc[:i + 1]   # view, not copy — strategy doesn't mutate
             current_bar = df.iloc[i]
             current_price = float(current_bar["close"])
             current_high = float(current_bar["high"])
@@ -502,7 +552,10 @@ def backtest_strategy(
             if not position_open:
                 # Run strategy to check for entry signal
                 try:
-                    signal = run_strategy(symbol, market_type, df=window, params=None)
+                    if signal_fn is not None:
+                        signal = signal_fn(symbol, df=window) or {"signal": "HOLD"}
+                    else:
+                        signal = run_strategy(symbol, market_type, df=window, params=None)
                     action = signal.get("signal", "HOLD")
 
                     if action in ("BUY", "STRONG_BUY"):

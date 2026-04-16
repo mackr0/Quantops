@@ -25,6 +25,7 @@ The system is designed and tested for **$10K paper trading accounts**. Position 
 ### Stage 3: $50K Real Money
 - **Prerequisites:** Stage 2 profitable over 60+ trading days
 - **Changes needed:**
+  - **Upgrade to Alpaca real-time data** — Replace yfinance (delayed, free) with Alpaca Data API subscription (~$99/month for Algo Trader Plus). This gives: real-time quotes from all US exchanges, WebSocket streaming, Level 2 order book depth, real-time 1-min/5-min bars. Code changes: replace `market_data.get_bars()` yfinance calls with `alpaca_trade_api` data endpoints. The `alternative_data.py` intraday functions switch from yfinance 5m bars to Alpaca real-time bars.
   - Position sizing remains percentage-based (scales automatically)
   - Add minimum dollar volume filter: only trade stocks with $5M+ daily dollar volume
   - Enable limit orders by default (reduce slippage)
@@ -36,10 +37,11 @@ The system is designed and tested for **$10K paper trading accounts**. Position 
 ### Stage 4: $100K-$250K
 - **Prerequisites:** Stage 3 profitable over 90+ trading days
 - **Changes needed:**
+  - **WebSocket streaming architecture** — Replace 15-min polling scheduler with event-driven WebSocket listeners. Alpaca streams real-time trades, quotes, and bar updates. The system reacts to price changes instantly instead of scanning on a timer. Code changes: new `streaming.py` module using `alpaca_trade_api.Stream`, triggers AI analysis on significant price/volume events rather than fixed intervals.
+  - **Level 2 order book analysis** — Use Alpaca's order book depth data to detect bid/ask imbalance (strong buys vs sells) before entering trades. When bids significantly outweigh asks, price is likely to rise.
   - Minimum dollar volume filter: $10M+ daily
   - VWAP order execution (spread orders across time)
   - Iceberg orders (hide order size from other traders)
-  - Real-time WebSocket data from Alpaca instead of 30-min polling
   - Portfolio-level risk monitoring (total exposure, sector concentration, beta)
   - Tax-lot tracking for tax optimization
   - Consider pattern day trader (PDT) rule implications
@@ -88,7 +90,8 @@ These components work at any account size:
 | Market orders | $50K+ | Slippage on small caps | Limit/VWAP orders |
 | Micro-cap universe | $50K+ | Orders are >1% of daily volume | Drop micro-caps |
 | Small-cap universe | $250K+ | Same liquidity issue | Raise volume floors |
-| 30-min scan interval | $250K+ | Too slow, miss opportunities | Real-time streaming |
+| 15-min scan interval | $100K+ | Too slow, miss opportunities | Real-time WebSocket streaming |
+| yfinance delayed data | $50K+ | Delayed/inaccurate prices increase slippage | Alpaca real-time data subscription |
 | Correlation (0.7) | $100K+ | Correlated losses too large | Tighten to 0.5 |
 | Fixed % position sizing | $1M+ | % of equity exceeds % of daily volume | Volume-based sizing |
 | Scheduler architecture | $1M+ | Polling too slow | Event-driven |

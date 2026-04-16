@@ -1,0 +1,98 @@
+{#
+    Shared trade-history table. Used by both /trades and the dashboard so
+    the two views never drift apart.
+
+    Parameters:
+        trades          list of trade dicts (schema: journal.py `trades` table)
+        show_profile    True on cross-profile views (e.g. /trades), False on
+                        per-profile views (e.g. dashboard panels)
+        empty_message   override for the "no trades" line
+        table_id        unique ID for JS sorting (each table on the page needs
+                        its own ID). Defaults to "trades-table".
+#}
+{% macro render_trades(trades, show_profile=False, empty_message=None, table_id="trades-table") -%}
+    {% if trades %}
+    <div class="overflow-auto">
+        <table class="striped sortable-table" id="{{ table_id }}">
+            <thead>
+                <tr>
+                    <th style="width:1.5rem;"></th>
+                    <th class="sortable" data-sort="string" data-col="1">Time <span class="sort-arrow">▼</span></th>
+                    {% if show_profile %}<th class="sortable" data-sort="string" data-col="2">Profile</th>{% endif %}
+                    <th class="sortable" data-sort="string" data-col="{{ 3 if show_profile else 2 }}">Symbol</th>
+                    <th class="sortable" data-sort="string" data-col="{{ 4 if show_profile else 3 }}">Side</th>
+                    <th class="sortable" data-sort="number" data-col="{{ 5 if show_profile else 4 }}">Qty</th>
+                    <th class="sortable" data-sort="number" data-col="{{ 6 if show_profile else 5 }}">Price</th>
+                    <th class="sortable" data-sort="number" data-col="{{ 7 if show_profile else 6 }}">AI Conf</th>
+                    <th class="sortable" data-sort="number" data-col="{{ 8 if show_profile else 7 }}">P&L</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for t in trades %}
+                <tr class="trade-row" data-symbol="{{ t.symbol }}" data-ts="{{ t.timestamp or '' }}" style="cursor:pointer;" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? '' : 'none'; this.querySelector('.expand-caret').innerHTML = this.nextElementSibling.style.display === 'none' ? '&#9654;' : '&#9660;'">
+                    <td style="width:1.5rem;text-align:center;"><span class="expand-caret" style="font-size:0.7rem;color:#888;">&#9654;</span></td>
+                    <td class="muted" data-raw="{{ t.timestamp or '' }}">{{ (t.timestamp or '')|friendly_time }}</td>
+                    {% if show_profile %}<td>{{ t.profile_name or t.segment or '--' }}</td>{% endif %}
+                    <td><strong>{{ t.symbol }}</strong></td>
+                    <td class="{{ 'pnl-pos' if t.side == 'buy' else 'pnl-neg' }}">
+                        {{ t.side|upper }}
+                    </td>
+                    <td>{{ t.qty|int }}</td>
+                    <td>{{ "${:,.2f}".format(t.price) if t.price else '--' }}</td>
+                    <td>{{ "{}%".format(t.ai_confidence|int) if t.ai_confidence else '--' }}</td>
+                    <td>
+                        {% if t.pnl is not none %}
+                            {% if t.price and t.qty %}
+                                {% if t.side == 'sell' %}
+                                    {% set cost_basis = t.price * t.qty - t.pnl %}
+                                {% else %}
+                                    {% set cost_basis = t.price * t.qty %}
+                                {% endif %}
+                                {% if cost_basis and cost_basis > 0 %}
+                                    {% set pnl_pct = t.pnl / cost_basis * 100 %}
+                                {% else %}
+                                    {% set pnl_pct = 0 %}
+                                {% endif %}
+                            {% else %}
+                                {% set pnl_pct = 0 %}
+                            {% endif %}
+                            <span class="{{ 'pnl-pos' if t.pnl > 0 else 'pnl-neg' }}">{{ "${:+,.2f}".format(t.pnl) }} ({{ "{:+.1f}%".format(pnl_pct) }})</span>
+                        {% elif t.unrealized_pl is defined and t.unrealized_pl is not none %}
+                            <span class="{{ 'pnl-pos' if t.unrealized_pl > 0 else 'pnl-neg' }}">{% if t.unrealized_pl >= 0 %}+${{ "{:,.2f}".format(t.unrealized_pl) }}{% else %}-${{ "{:,.2f}".format(-t.unrealized_pl) }}{% endif %} ({{ "{:+.1f}%".format(t.unrealized_plpc * 100) }})</span>
+                            <small class="muted"> unrealized</small>
+                        {% else %}
+                            <span class="muted">open</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                <tr class="detail-row" style="display:none;">
+                    <td colspan="{{ 9 if show_profile else 8 }}" style="background:#f8f9fa; padding:0.75rem; max-width:0;">
+                        <div style="font-size:0.85rem;">
+                            {% if t.current_price is defined and t.current_price is not none and t.market_value is defined %}
+                            <small class="muted" style="display:block; margin-bottom:0.5rem;">
+                                Current: ${{ "{:,.2f}".format(t.current_price) }} |
+                                Market Value: ${{ "{:,.2f}".format(t.market_value) }}
+                            </small>
+                            {% endif %}
+                            <strong>AI Reasoning:</strong>
+                            <p style="margin:0.25rem 0;">{{ t.ai_reasoning or t.reason or 'No reasoning recorded' }}</p>
+                            {% if t.stop_loss or t.take_profit %}
+                            <small class="muted">
+                                Stop: {{ "${:,.2f}".format(t.stop_loss) if t.stop_loss else '--' }} |
+                                Target: {{ "${:,.2f}".format(t.take_profit) if t.take_profit else '--' }}
+                                {% if t.decision_price and t.fill_price %}
+                                | Slippage: {{ "{:.3f}%".format(t.slippage_pct) if t.slippage_pct else '--' }}
+                                {% endif %}
+                            </small>
+                            {% endif %}
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="muted">{{ empty_message or 'No trades yet.' }}</p>
+    {% endif %}
+{%- endmacro %}

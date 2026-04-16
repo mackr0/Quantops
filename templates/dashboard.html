@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_trades_table.html" as trades_tpl %}
 {% block title %}Dashboard - QuantOpsAI{% endblock %}
 {% block content %}
 <hgroup>
@@ -6,96 +7,207 @@
     <p>Welcome back{% if current_user.display_name %}, {{ current_user.display_name }}{% endif %}</p>
 </hgroup>
 
-<!-- Per-Profile Schedule Status -->
+<!-- Per-Profile Schedule Status (compact bar) -->
+<div style="display:flex; flex-wrap:wrap; gap:0.25rem; margin-bottom:0.75rem;">
 {% for ps in profile_schedules %}
-<div style="display:flex;justify-content:space-between;align-items:center;padding:0.4rem 0.75rem;margin-bottom:0.25rem;border-left:3px solid {% if ps.active %}#00c853{% else %}#555{% endif %};background:{% if ps.active %}#f0fff0{% else %}#f5f5f5{% endif %};border-radius:0 4px 4px 0;">
-    <strong style="color:#222;">{{ ps.name }}</strong>
-    {% if ps.active %}
-    <span style="color:#00c853;font-size:0.85rem;font-weight:bold;">Scanning</span>
-    {% else %}
-    <span style="color:#666;font-size:0.85rem;">Next: {{ ps.next_session }}</span>
-    {% endif %}
+<div style="padding:0.25rem 0.6rem; border-left:3px solid {% if ps.active %}#00c853{% else %}#555{% endif %}; background:{% if ps.active %}#f0fff0{% else %}#f5f5f5{% endif %}; border-radius:0 4px 4px 0; font-size:0.85rem;">
+    <strong>{{ ps.name }}</strong>
+    {% if ps.active %}<span style="color:#00c853; margin-left:0.3rem;">Scanning</span>
+    {% else %}<span class="muted" style="margin-left:0.3rem;">{{ ps.next_session }}</span>{% endif %}
 </div>
 {% endfor %}
-<div style="margin-bottom:1rem;"></div>
+</div>
 
-<!-- Cycle Countdown Timers (shown only when at least one profile is active) -->
+<!-- Countdown Timers -->
 {% if any_profile_active %}
-<div class="grid" style="margin-bottom:1rem;">
-    <article style="text-align:center; padding:0.75rem; margin:0;">
-        <small class="muted">Next Scan & Trade</small>
-        <div id="timer-scan" style="font-size:1.5rem; font-weight:bold; font-family:monospace;">--:--</div>
-        <small class="muted">every 30 min</small>
+<div class="grid" style="margin-bottom:0.75rem;">
+    <article style="text-align:center; padding:0.5rem; margin:0;">
+        <small class="muted">Next Scan</small>
+        <div id="timer-scan" style="font-size:1.3rem; font-weight:bold; font-family:monospace;">--:--</div>
     </article>
-    <article style="text-align:center; padding:0.75rem; margin:0;">
+    <article style="text-align:center; padding:0.5rem; margin:0;">
         <small class="muted">Next Exit Check</small>
-        <div id="timer-exit" style="font-size:1.5rem; font-weight:bold; font-family:monospace;">--:--</div>
-        <small class="muted">every 15 min</small>
+        <div id="timer-exit" style="font-size:1.3rem; font-weight:bold; font-family:monospace;">--:--</div>
     </article>
-    <article style="text-align:center; padding:0.75rem; margin:0;">
+    <article style="text-align:center; padding:0.5rem; margin:0;">
         <small class="muted">Next AI Validation</small>
-        <div id="timer-ai" style="font-size:1.5rem; font-weight:bold; font-family:monospace;">--:--</div>
-        <small class="muted">every 60 min</small>
+        <div id="timer-ai" style="font-size:1.3rem; font-weight:bold; font-family:monospace;">--:--</div>
     </article>
 </div>
 {% endif %}
 
-<!-- Strategy Activity Ticker -->
-<article id="activity-ticker">
-    <header>
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-            <h3 style="margin:0;">Strategy Activity</h3>
-            <div style="display:flex; gap:0.5rem; align-items:center;">
-                <button id="ticker-prev" class="outline secondary" style="padding:0.25rem 0.5rem;" title="Previous entry">&larr;</button>
-                <span id="ticker-position" class="muted" style="font-size:0.85rem;">Loading...</span>
-                <button id="ticker-next" class="outline secondary" style="padding:0.25rem 0.5rem;" title="Next entry">&rarr;</button>
+<!-- ================================================================
+     TAB NAVIGATION
+     ================================================================ -->
+<div class="perf-tabs" style="margin-bottom:1rem;">
+    <a href="#overview" class="perf-tab active" onclick="showDashTab(event, 'overview')">Overview</a>
+    {% for prof in profiles_data %}
+    <a href="#p{{ prof.id }}" class="perf-tab" onclick="showDashTab(event, 'p{{ prof.id }}')">{{ prof.name }}</a>
+    {% endfor %}
+</div>
+
+<!-- ================================================================
+     TAB: OVERVIEW (summary of all profiles)
+     ================================================================ -->
+<div id="tab-overview" class="perf-tab-content active">
+
+    <!-- Portfolio Summary Cards -->
+    {% if profiles_data %}
+    <div class="overflow-auto">
+        <table class="striped">
+            <thead>
+                <tr>
+                    <th>Profile</th>
+                    <th>Type</th>
+                    <th>Equity</th>
+                    <th>Cash</th>
+                    <th>Positions</th>
+                    <th>P&L</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% set ns = namespace(total_equity=0, total_cash=0, total_positions=0) %}
+                {% for prof in profiles_data %}
+                <tr style="cursor:pointer;" onclick="showDashTab(event, 'p{{ prof.id }}'); document.querySelector('a[href=\'#p{{ prof.id }}\']').classList.add('active');">
+                    <td>
+                        <strong>{{ prof.name }}</strong>
+                        {% if prof.is_virtual %}<small class="muted">(Virtual)</small>{% endif %}
+                    </td>
+                    <td><small>{{ prof.market_type_name }}</small></td>
+                    {% if prof.account %}
+                    <td><strong>${{ "{:,.0f}".format(prof.account.equity) }}</strong></td>
+                    <td class="muted">${{ "{:,.0f}".format(prof.account.cash) }}</td>
+                    <td>{{ prof.positions|length }}</td>
+                    <td class="{{ 'pnl-pos' if prof.account.equity - (prof.account.get('initial_capital', prof.account.equity)) > 0 else 'pnl-neg' if prof.account.equity - (prof.account.get('initial_capital', prof.account.equity)) < 0 else '' }}">
+                        {% set pnl_est = prof.account.equity - prof.account.cash - (prof.positions|sum(attribute='unrealized_pl') if prof.positions else 0) %}
+                        {{ prof.positions|length }} open
+                    </td>
+                    {% set ns.total_equity = ns.total_equity + prof.account.equity %}
+                    {% set ns.total_cash = ns.total_cash + prof.account.cash %}
+                    {% set ns.total_positions = ns.total_positions + prof.positions|length %}
+                    {% else %}
+                    <td colspan="4" class="muted">Not connected</td>
+                    {% endif %}
+                </tr>
+                {% endfor %}
+            </tbody>
+            <tfoot>
+                <tr style="font-weight:bold;">
+                    <td>Total ({{ profiles_data|length }} profiles)</td>
+                    <td></td>
+                    <td>${{ "{:,.0f}".format(ns.total_equity) }}</td>
+                    <td class="muted">${{ "{:,.0f}".format(ns.total_cash) }}</td>
+                    <td>{{ ns.total_positions }}</td>
+                    <td></td>
+                </tr>
+            </tfoot>
+        </table>
+    </div>
+    {% endif %}
+
+    <!-- Strategy Activity Ticker -->
+    <article id="activity-ticker" style="margin-top:0.75rem;">
+        <header>
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <h3 style="margin:0;">Strategy Activity</h3>
+                <div style="display:flex; gap:0.5rem; align-items:center;">
+                    <button id="ticker-prev" class="outline secondary" style="padding:0.25rem 0.5rem;" title="Previous entry">&larr;</button>
+                    <span id="ticker-position" class="muted" style="font-size:0.85rem;">Loading...</span>
+                    <button id="ticker-next" class="outline secondary" style="padding:0.25rem 0.5rem;" title="Next entry">&rarr;</button>
+                </div>
+            </div>
+        </header>
+        <div id="ticker-content">
+            <div class="ticker-entry">
+                <div class="ticker-timestamp">Waiting for data...</div>
             </div>
         </div>
-    </header>
-    <div id="ticker-content">
-        <div class="ticker-entry">
-            <div class="ticker-timestamp">Waiting for data...</div>
-            <div class="ticker-title"></div>
-            <div class="ticker-detail"></div>
+    </article>
+
+    <!-- Sector Rotation Widget -->
+    <article id="sector-rotation" style="margin-bottom:0.5rem;">
+        <header style="padding:0.5rem 0.75rem;">
+            <h4 style="margin:0;">Sector Rotation</h4>
+        </header>
+        <div id="sector-data" style="padding:0 0.75rem 0.5rem; display:flex; flex-wrap:wrap; gap:0.4rem; font-size:0.8rem;">
+            Loading...
         </div>
-    </div>
-</article>
+    </article>
 
-{% if not profiles_data %}
-<article>
-    <header><h3>No active profiles</h3></header>
-    <p>Create a trading profile and configure your API keys in
-       <a href="/settings">Settings</a> to get started.</p>
-</article>
-{% endif %}
+    {% if decisions %}
+    <article>
+        <header><h3>Recent Activity</h3></header>
+        <div class="overflow-auto">
+            <table class="striped">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Profile</th>
+                        <th>Symbol</th>
+                        <th>Decision</th>
+                        <th>Action</th>
+                        <th>AI Confidence</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for d in decisions[:15] %}
+                    <tr>
+                        <td class="muted">{{ (d.timestamp or '')|friendly_time }}</td>
+                        <td>{{ d.segment }}</td>
+                        <td><strong>{{ d.symbol }}</strong></td>
+                        <td>{{ d.decision_type }}</td>
+                        <td>{{ d.action_taken or '--' }}</td>
+                        <td>{{ "{:.0f}%".format(d.ai_confidence) if d.ai_confidence else '--' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </article>
+    {% endif %}
+</div>
 
+<!-- ================================================================
+     TAB: PER-PROFILE (one tab per profile)
+     ================================================================ -->
 {% for prof in profiles_data %}
-<article id="profile-{{ prof.id }}">
-    <header>
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-            <h3 style="margin:0;">{{ prof.name }}</h3>
-            <span style="background:var(--pico-primary-background); color:var(--pico-primary-inverse); padding:0.15rem 0.6rem; border-radius:4px; font-size:0.8rem;">
-                {{ prof.market_type_name }}
-            </span>
-        </div>
-        {% if prof.get('error') %}
-        <p class="pnl-neg">Error: {{ prof.error }}</p>
-        {% endif %}
-    </header>
+<div id="tab-p{{ prof.id }}" class="perf-tab-content">
 
+    <!-- AI Brain Panel -->
+    <article id="ai-panel-{{ prof.id }}" style="margin-bottom:0.5rem;">
+        <header style="padding:0.5rem 0.75rem;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <h4 style="margin:0;">AI Brain: {{ prof.name }}{% if prof.is_virtual %} <small style="font-size:0.6em; color:#888; font-weight:normal;">(Virtual)</small>{% endif %}</h4>
+                <small class="muted" id="ai-time-{{ prof.id }}">Loading...</small>
+            </div>
+        </header>
+        <div style="padding:0 0.75rem 0.5rem;">
+            <div id="ai-reasoning-{{ prof.id }}" style="font-size:0.9rem; color:#333; margin-bottom:0.5rem;">
+                Waiting for first cycle...
+            </div>
+            <details>
+                <summary style="font-size:0.85rem;">Candidates Considered</summary>
+                <div id="ai-shortlist-{{ prof.id }}" style="font-size:0.8rem; overflow-x:auto;">
+                    <em>No data yet</em>
+                </div>
+            </details>
+        </div>
+    </article>
+
+    <!-- Account Stats -->
     {% if prof.account %}
-    <div class="grid">
+    <div class="grid" id="account-{{ prof.id }}">
         <div class="stat-card">
             <small class="muted"><span class="tip" data-tip="Total value of your account including open positions">Equity</span></small>
-            <strong>${{ "{:,.2f}".format(prof.account.equity) }}</strong>
+            <strong id="equity-{{ prof.id }}">${{ "{:,.2f}".format(prof.account.equity) }}</strong>
         </div>
         <div class="stat-card">
             <small class="muted">Cash</small>
-            <strong>${{ "{:,.2f}".format(prof.account.cash) }}</strong>
+            <strong id="cash-{{ prof.id }}">${{ "{:,.2f}".format(prof.account.cash) }}</strong>
         </div>
         <div class="stat-card">
             <small class="muted"><span class="tip" data-tip="How much money is available to make new trades">Buying Power</span></small>
-            <strong>${{ "{:,.2f}".format(prof.account.buying_power) }}</strong>
+            <strong id="bp-{{ prof.id }}">${{ "{:,.2f}".format(prof.account.buying_power) }}</strong>
         </div>
         <div class="stat-card">
             <small class="muted">Status</small>
@@ -106,115 +218,93 @@
     <p class="muted">Could not connect to Alpaca API. Check your keys in Settings.</p>
     {% endif %}
 
-    {% if prof.positions %}
+    <!-- Open Positions -->
     <h4>Open Positions</h4>
+    <div id="positions-wrap-{{ prof.id }}">
+        {{ trades_tpl.render_trades(prof.positions, show_profile=False,
+            empty_message="No open positions in this profile.") }}
+    </div>
+
+    <!-- Pending Orders -->
+    {% if prof.pending_orders %}
+    <h4>Pending Orders <small class="muted">(queued — not yet filled)</small></h4>
     <div class="overflow-auto">
         <table class="striped">
             <thead>
                 <tr>
                     <th>Symbol</th>
+                    <th>Side</th>
                     <th>Qty</th>
-                    <th>Entry</th>
-                    <th>Current</th>
-                    <th>Mkt Value</th>
-                    <th><span class="tip" data-tip="Profit or loss on positions you still hold — not locked in yet">Unrealized P/L</span></th>
-                    <th>P&L %</th>
+                    <th>Type</th>
+                    <th>Limit Price</th>
+                    <th>Status</th>
+                    <th>Submitted</th>
+                    <th>TIF</th>
                 </tr>
             </thead>
-            <tbody>
-                {% for p in prof.positions %}
+            <tbody id="pending-orders-{{ prof.id }}">
+                {% for o in prof.pending_orders %}
                 <tr>
-                    <td><strong>{{ p.symbol }}</strong></td>
-                    <td>{{ p.qty|int }}</td>
-                    <td>${{ "{:,.2f}".format(p.avg_entry_price) }}</td>
-                    <td>${{ "{:,.2f}".format(p.current_price) }}</td>
-                    <td>${{ "{:,.2f}".format(p.market_value) }}</td>
-                    <td class="{{ 'pnl-pos' if p.unrealized_pl >= 0 else 'pnl-neg' }}">
-                        {{ "{:+,.2f}".format(p.unrealized_pl) }}
-                    </td>
-                    <td class="{{ 'pnl-pos' if p.unrealized_plpc >= 0 else 'pnl-neg' }}">
-                        {{ "{:+.2f}".format(p.unrealized_plpc * 100) }}%
-                    </td>
+                    <td><strong>{{ o.symbol }}</strong></td>
+                    <td><span class="badge badge-{{ 'buy' if o.side == 'buy' else 'sell' }}">{{ o.side|upper }}</span></td>
+                    <td>{{ o.qty|int }}</td>
+                    <td>{{ o.order_type|upper }}</td>
+                    <td>{% if o.limit_price %}${{ "{:,.2f}".format(o.limit_price) }}{% else %}—{% endif %}</td>
+                    <td><span class="muted">{{ o.status|title }}</span></td>
+                    <td class="muted">{{ o.submitted_at or '—' }}</td>
+                    <td>{{ o.time_in_force|upper }}</td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
-    {% elif prof.account %}
-    <p class="muted">No open positions in this profile.</p>
     {% endif %}
 
-    {% if prof.recent_trades %}
-    <details>
-        <summary>Recent Trades ({{ prof.recent_trades|length }})</summary>
-        <div class="overflow-auto">
-            <table class="striped">
-                <thead>
-                    <tr>
-                        <th>Time</th>
-                        <th>Symbol</th>
-                        <th>Side</th>
-                        <th>Qty</th>
-                        <th>Price</th>
-                        <th>P&L</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for t in prof.recent_trades %}
-                    <tr>
-                        <td class="muted">{{ t.timestamp[:16] if t.timestamp else '--' }}</td>
-                        <td><strong>{{ t.symbol }}</strong></td>
-                        <td class="{{ 'pnl-pos' if t.side == 'buy' else 'pnl-neg' }}">
-                            {{ t.side|upper }}
-                        </td>
-                        <td>{{ t.qty|int }}</td>
-                        <td>{{ "${:,.2f}".format(t.price) if t.price else '--' }}</td>
-                        <td class="{{ 'pnl-pos' if (t.pnl or 0) >= 0 else 'pnl-neg' }}">
-                            {{ "{:+,.2f}".format(t.pnl) if t.pnl is not none else '--' }}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </details>
-    {% endif %}
-</article>
+    <p class="muted" style="margin-top:0.5rem;">
+        <small><a href="/trades?profile_id={{ prof.id }}">View full trade history →</a></small>
+    </p>
+</div>
 {% endfor %}
 
-{% if decisions %}
+{% if not profiles_data %}
 <article>
-    <header><h3>Recent Activity</h3></header>
-    <div class="overflow-auto">
-        <table class="striped">
-            <thead>
-                <tr>
-                    <th>Time</th>
-                    <th>Profile</th>
-                    <th>Symbol</th>
-                    <th>Decision</th>
-                    <th>Action</th>
-                    <th>AI Confidence</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for d in decisions[:15] %}
-                <tr>
-                    <td class="muted">{{ d.timestamp[:16] if d.timestamp else '--' }}</td>
-                    <td>{{ d.segment }}</td>
-                    <td><strong>{{ d.symbol }}</strong></td>
-                    <td>{{ d.decision_type }}</td>
-                    <td>{{ d.action_taken or '--' }}</td>
-                    <td>{{ "{:.0f}%".format(d.ai_confidence) if d.ai_confidence else '--' }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
+    <header><h3>No active profiles</h3></header>
+    <p>Create a trading profile and configure your API keys in
+       <a href="/settings">Settings</a> to get started.</p>
 </article>
 {% endif %}
 
-<!-- Activity Ticker JavaScript -->
+{% endblock %}
+
+{% block scripts %}
+<!-- Tab switching -->
+<script>
+function showDashTab(event, tabName) {
+    event.preventDefault();
+    document.querySelectorAll('.perf-tab-content').forEach(function(el) {
+        el.classList.remove('active');
+    });
+    document.querySelectorAll('.perf-tab').forEach(function(el) {
+        el.classList.remove('active');
+    });
+    document.getElementById('tab-' + tabName).classList.add('active');
+    if (event.target.classList) event.target.classList.add('active');
+    history.replaceState(null, null, '#' + tabName);
+}
+// Restore tab from URL hash
+(function() {
+    var hash = window.location.hash.replace('#', '');
+    if (hash && document.getElementById('tab-' + hash)) {
+        document.querySelectorAll('.perf-tab-content').forEach(function(el) { el.classList.remove('active'); });
+        document.querySelectorAll('.perf-tab').forEach(function(el) { el.classList.remove('active'); });
+        document.getElementById('tab-' + hash).classList.add('active');
+        var link = document.querySelector('a[href="#' + hash + '"]');
+        if (link) link.classList.add('active');
+    }
+})();
+</script>
+
+<!-- Activity Ticker -->
 <script>
 (function() {
     var entries = [];
@@ -229,23 +319,18 @@
 
     function formatTimestamp(ts) {
         if (!ts) return '';
-        // Parse ISO timestamp and format nicely
-        var d = new Date(ts + 'Z');  // treat as UTC
+        var d = new Date(ts + 'Z');
         var now = new Date();
         var diff = (now - d) / 1000;
-
         var timeStr = d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
         var dateStr = d.toLocaleDateString([], {month: 'short', day: 'numeric'});
-
         if (diff < 3600) {
             var mins = Math.floor(diff / 60);
             return mins <= 1 ? 'Just now' : mins + 'm ago';
         } else if (diff < 86400) {
-            var hours = Math.floor(diff / 3600);
-            return hours + 'h ago';
-        } else {
-            return dateStr + ' ' + timeStr;
+            return Math.floor(diff / 3600) + 'h ago';
         }
+        return dateStr + ' ' + timeStr;
     }
 
     function escapeHtml(text) {
@@ -256,11 +341,10 @@
 
     function renderEntry(entry) {
         if (!entry) {
-            contentEl.innerHTML = '<div class="ticker-entry"><div class="ticker-timestamp muted">No activity yet. The scheduler will populate entries during scan cycles.</div></div>';
+            contentEl.innerHTML = '<div class="ticker-entry"><div class="ticker-timestamp muted">No activity yet.</div></div>';
             return;
         }
-        var typeBadge = '';
-        var badgeClass = 'ticker-badge-scan';
+        var typeBadge = '', badgeClass = 'ticker-badge-scan';
         switch(entry.activity_type) {
             case 'trade_executed': badgeClass = 'ticker-badge-trade'; typeBadge = 'TRADE'; break;
             case 'trade_vetoed': badgeClass = 'ticker-badge-veto'; typeBadge = 'VETOED'; break;
@@ -268,167 +352,149 @@
             case 'market_status': badgeClass = 'ticker-badge-market'; typeBadge = 'MARKET'; break;
             default: typeBadge = 'SCAN'; break;
         }
-        var html = '<div class="ticker-entry">';
-        html += '<div class="ticker-meta">';
-        html += '<span class="ticker-timestamp muted">' + escapeHtml(formatTimestamp(entry.timestamp)) + '</span>';
-        html += ' <span class="ticker-badge ' + badgeClass + '">' + typeBadge + '</span>';
-        if (entry.symbol) {
-            html += ' <span class="ticker-symbol">' + escapeHtml(entry.symbol) + '</span>';
-        }
-        html += '</div>';
-        html += '<div class="ticker-title">' + escapeHtml(entry.title) + '</div>';
-        html += '<div class="ticker-detail">' + escapeHtml(entry.detail) + '</div>';
-        html += '</div>';
-        contentEl.innerHTML = html;
+        contentEl.innerHTML = '<div class="ticker-entry">' +
+            '<div class="ticker-meta"><span class="ticker-timestamp muted">' + escapeHtml(formatTimestamp(entry.timestamp)) + '</span>' +
+            ' <span class="ticker-badge ' + badgeClass + '">' + typeBadge + '</span>' +
+            (entry.symbol ? ' <span class="ticker-symbol">' + escapeHtml(entry.symbol) + '</span>' : '') + '</div>' +
+            '<div class="ticker-title">' + escapeHtml(entry.title) + '</div>' +
+            '<div class="ticker-detail">' + escapeHtml(entry.detail) + '</div></div>';
     }
 
     function updatePosition() {
-        if (totalCount === 0) {
-            positionEl.textContent = 'No entries';
-            prevBtn.disabled = true;
-            nextBtn.disabled = true;
-        } else {
-            positionEl.textContent = (currentIndex + 1) + ' of ' + totalCount;
-            prevBtn.disabled = (currentIndex <= 0);
-            nextBtn.disabled = (currentIndex >= totalCount - 1);
-        }
+        if (totalCount === 0) { positionEl.textContent = 'No entries'; prevBtn.disabled = true; nextBtn.disabled = true; }
+        else { positionEl.textContent = (currentIndex + 1) + ' of ' + totalCount; prevBtn.disabled = (currentIndex <= 0); nextBtn.disabled = (currentIndex >= totalCount - 1); }
     }
 
     function fetchActivity() {
         fetch('/api/activity?limit=' + PAGE_SIZE + '&offset=0')
             .then(function(resp) { return resp.json(); })
-            .then(function(data) {
-                entries = data.entries || [];
-                totalCount = data.total || 0;
-                currentIndex = 0;
-                renderEntry(entries[0] || null);
-                updatePosition();
-            })
-            .catch(function(err) {
-                contentEl.innerHTML = '<div class="ticker-entry"><div class="ticker-timestamp muted">Could not load activity feed.</div></div>';
-            });
+            .then(function(data) { entries = data.entries || []; totalCount = data.total || 0; currentIndex = 0; renderEntry(entries[0] || null); updatePosition(); })
+            .catch(function() {});
     }
 
-    prevBtn.addEventListener('click', function() {
-        if (currentIndex > 0) {
-            currentIndex--;
-            renderEntry(entries[currentIndex]);
-            updatePosition();
-        }
-    });
-
+    prevBtn.addEventListener('click', function() { if (currentIndex > 0) { currentIndex--; renderEntry(entries[currentIndex]); updatePosition(); } });
     nextBtn.addEventListener('click', function() {
-        if (currentIndex < totalCount - 1) {
-            currentIndex++;
-            // If we need to fetch more entries
+        if (currentIndex < totalCount - 1) { currentIndex++;
             if (currentIndex >= entries.length && currentIndex < totalCount) {
-                fetch('/api/activity?limit=' + PAGE_SIZE + '&offset=' + entries.length)
-                    .then(function(resp) { return resp.json(); })
-                    .then(function(data) {
-                        entries = entries.concat(data.entries || []);
-                        renderEntry(entries[currentIndex] || null);
-                        updatePosition();
-                    });
-            } else {
-                renderEntry(entries[currentIndex]);
-                updatePosition();
-            }
+                fetch('/api/activity?limit=' + PAGE_SIZE + '&offset=' + entries.length).then(function(r) { return r.json(); }).then(function(data) { entries = entries.concat(data.entries || []); renderEntry(entries[currentIndex] || null); updatePosition(); });
+            } else { renderEntry(entries[currentIndex]); updatePosition(); }
         }
     });
 
-    // Keyboard navigation
-    document.addEventListener('keydown', function(e) {
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-        if (e.key === 'ArrowLeft') { prevBtn.click(); e.preventDefault(); }
-        if (e.key === 'ArrowRight') { nextBtn.click(); e.preventDefault(); }
-    });
-
-    // Initial load
+    document.addEventListener('keydown', function(e) { if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return; if (e.key === 'ArrowLeft') { prevBtn.click(); e.preventDefault(); } if (e.key === 'ArrowRight') { nextBtn.click(); e.preventDefault(); } });
     fetchActivity();
-
-    // Auto-refresh every 60 seconds
     setInterval(function() {
-        var savedIndex = currentIndex;
-        fetch('/api/activity?limit=' + PAGE_SIZE + '&offset=0')
-            .then(function(resp) { return resp.json(); })
-            .then(function(data) {
-                var newTotal = data.total || 0;
-                var newEntries = data.entries || [];
-                // If new entries arrived, prepend them and adjust index
-                if (newTotal > totalCount && savedIndex === 0) {
-                    entries = newEntries;
-                    totalCount = newTotal;
-                    currentIndex = 0;
-                    renderEntry(entries[0]);
-                    updatePosition();
-                } else if (newTotal > totalCount) {
-                    var added = newTotal - totalCount;
-                    entries = newEntries;
-                    totalCount = newTotal;
-                    currentIndex = savedIndex + added;
-                    if (currentIndex >= entries.length) currentIndex = entries.length - 1;
-                    renderEntry(entries[currentIndex]);
-                    updatePosition();
-                }
-            });
+        var saved = currentIndex;
+        fetch('/api/activity?limit=' + PAGE_SIZE + '&offset=0').then(function(r) { return r.json(); }).then(function(data) {
+            var nt = data.total || 0, ne = data.entries || [];
+            if (nt > totalCount && saved === 0) { entries = ne; totalCount = nt; currentIndex = 0; renderEntry(entries[0]); updatePosition(); }
+            else if (nt > totalCount) { var added = nt - totalCount; entries = ne; totalCount = nt; currentIndex = saved + added; if (currentIndex >= entries.length) currentIndex = entries.length - 1; renderEntry(entries[currentIndex]); updatePosition(); }
+        });
     }, 60000);
 })();
+</script>
 
-// Countdown timers
+<!-- Countdown Timers -->
+<script>
 (function() {
     var scanEl = document.getElementById('timer-scan');
     var exitEl = document.getElementById('timer-exit');
     var aiEl = document.getElementById('timer-ai');
-    if (!scanEl) return; // Timers not shown (no active profiles)
+    if (!scanEl) return;
+    var scanR = -1, exitR = -1, aiR = -1;
+    var atZero = {scan: 0, exit: 0, ai: 0};
+    function fmt(key, s) { if (s <= 0) { atZero[key]++; return atZero[key] > 3 ? '<span style="color:#f0ad4e;font-size:0.9rem;">Scanning...</span>' : '<span style="color:#00c853">NOW</span>'; } atZero[key] = 0; var m = Math.floor(s/60), sec = s%60; return (m<10?'0':'')+m+':'+(sec<10?'0':'')+sec; }
+    function upd() { scanEl.innerHTML = fmt('scan',scanR); exitEl.innerHTML = fmt('exit',exitR); aiEl.innerHTML = fmt('ai',aiR); }
+    function fetchS() { fetch('/api/scheduler-status').then(function(r){return r.json();}).then(function(d){scanR=d.scan_remaining||0;exitR=d.exit_remaining||0;aiR=d.ai_remaining||0;if(scanR>0)atZero.scan=0;if(exitR>0)atZero.exit=0;if(aiR>0)atZero.ai=0;upd();}).catch(function(){}); }
+    fetchS(); setInterval(function(){if(scanR>0)scanR--;if(exitR>0)exitR--;if(aiR>0)aiR--;upd();},1000); setInterval(fetchS,10000);
+})();
+</script>
 
-    var scanRemaining = -1, exitRemaining = -1, aiRemaining = -1;
-    var atZeroSince = {scan: 0, exit: 0, ai: 0};
-
-    function formatTime(key, seconds) {
-        if (seconds <= 0) {
-            atZeroSince[key]++;
-            if (atZeroSince[key] > 3) {
-                return '<span style="color:#f0ad4e;font-size:0.9rem;">Scanning...</span>';
+<!-- AI Decision Panels -->
+<script>
+(function() {
+    var profileIds = [{% for prof in profiles_data %}{{ prof.id }}{% if not loop.last %},{% endif %}{% endfor %}];
+    function timeAgo(ts) { var d = Math.floor(Date.now()/1000 - ts); if (d<60) return d+'s ago'; if (d<3600) return Math.floor(d/60)+'m ago'; return Math.floor(d/3600)+'h ago'; }
+    function fetchCycleData(pid) {
+        fetch('/api/cycle-data/' + pid).then(function(r){return r.json();}).then(function(data) {
+            if (data.error) return;
+            var timeEl = document.getElementById('ai-time-' + pid);
+            var reasonEl = document.getElementById('ai-reasoning-' + pid);
+            var listEl = document.getElementById('ai-shortlist-' + pid);
+            if (timeEl && data.timestamp) timeEl.textContent = timeAgo(data.timestamp);
+            if (reasonEl && data.ai_reasoning) {
+                var trades = data.trades_selected || [], html = '';
+                if (trades.length > 0) { html += '<strong style="color:#00c853;">TRADES SELECTED:</strong><br>'; trades.forEach(function(t) { html += '<span style="color:#00c853;">' + t.action + ' ' + t.symbol + '</span> (' + t.size_pct + '% equity, ' + t.confidence + '% confidence)<br><em>' + t.reasoning + '</em><br>'; }); }
+                else { html += '<strong>Decision:</strong> ' + data.ai_reasoning; }
+                if (data.learned_patterns && data.learned_patterns.length > 0) { html += '<br><small style="color:#888;">Patterns: ' + data.learned_patterns.slice(0,2).join(' | ') + '</small>'; }
+                reasonEl.innerHTML = html;
             }
-            return '<span style="color:#00c853">NOW</span>';
-        }
-        atZeroSince[key] = 0;
-        var m = Math.floor(seconds / 60);
-        var s = seconds % 60;
-        return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+            if (listEl && data.shortlist && data.shortlist.length > 0) {
+                var tbl = '<table style="font-size:0.8rem;margin:0;"><thead><tr><th>Symbol</th><th>Signal</th><th>Score</th><th>RSI</th><th>ADX</th><th>MFI</th><th>Vol</th><th>Record</th><th>Alt Data</th></tr></thead><tbody>';
+                data.shortlist.forEach(function(c) {
+                    var alt = [];
+                    if (c.squeeze) alt.push('<span style="color:#ff9800;">SQUEEZE</span>');
+                    if (c.insider && c.insider !== 'neutral') alt.push('Insider: ' + c.insider);
+                    if (c.short_pct > 10) alt.push('<span style="color:#f44336;">Short ' + c.short_pct.toFixed(0) + '%</span>');
+                    if (c.options_signal && c.options_signal !== 'neutral') alt.push('Opts: ' + c.options_signal);
+                    if (c.reddit_mentions > 0) alt.push('Reddit: ' + c.reddit_mentions);
+                    if (c.news && c.news.length) alt.push(c.news.length + ' news');
+                    tbl += '<tr><td><strong>' + c.symbol + '</strong></td><td>' + c.signal + '</td><td>' + c.score + '/4</td><td>' + (c.rsi||0).toFixed(0) + '</td><td>' + (c.adx||0).toFixed(0) + '</td><td>' + (c.mfi||0).toFixed(0) + '</td><td>' + (c.volume_ratio||0).toFixed(1) + 'x</td><td>' + (c.track_record||'new') + '</td><td style="font-size:0.75rem;">' + (alt.join('<br>')||'-') + '</td></tr>';
+                });
+                tbl += '</tbody></table>';
+                listEl.innerHTML = tbl;
+            } else if (listEl) { listEl.innerHTML = '<em>No candidates met threshold this cycle</em>'; }
+        }).catch(function(){});
     }
+    function fetchAll() { profileIds.forEach(fetchCycleData); }
+    fetchAll(); setInterval(fetchAll, 30000);
+})();
+</script>
 
-    function updateDisplay() {
-        scanEl.innerHTML = formatTime('scan', scanRemaining);
-        exitEl.innerHTML = formatTime('exit', exitRemaining);
-        aiEl.innerHTML = formatTime('ai', aiRemaining);
+<!-- Sector Rotation Widget -->
+<script>
+(function() {
+    var sectorNames = {'tech':'Technology','finance':'Financials','energy':'Energy','healthcare':'Healthcare','industrial':'Industrials','consumer_disc':'Consumer Disc.','consumer_staples':'Consumer Staples','utilities':'Utilities','materials':'Materials','real_estate':'Real Estate','comm_services':'Communications'};
+    function fetchSectors() {
+        fetch('/api/sector-rotation').then(function(r){return r.json();}).then(function(data) {
+            var el = document.getElementById('sector-data'); if (!el) return; if (data.error) { el.textContent = 'No data'; return; }
+            var html = '', sectors = Object.entries(data).sort(function(a,b){return b[1].return_5d - a[1].return_5d;});
+            sectors.forEach(function(entry) {
+                var s = sectorNames[entry[0]] || entry[0], d = entry[1];
+                var color = d.return_5d > 1 ? '#00c853' : d.return_5d < -1 ? '#f44336' : '#888';
+                var arrow = d.return_5d > 1 ? '&#9650;' : d.return_5d < -1 ? '&#9660;' : '&#9679;';
+                html += '<span style="display:inline-block;padding:0.2rem 0.5rem;border-radius:4px;border:1px solid ' + color + ';color:' + color + ';">' + arrow + ' <strong>' + s + '</strong> ' + (d.return_5d > 0 ? '+' : '') + d.return_5d.toFixed(1) + '% (5d)</span>';
+            });
+            el.innerHTML = html || 'No sector data';
+        }).catch(function(){});
     }
+    fetchSectors(); setInterval(fetchSectors, 60000);
+})();
+</script>
 
-    function fetchStatus() {
-        fetch('/api/scheduler-status')
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                scanRemaining = data.scan_remaining || 0;
-                exitRemaining = data.exit_remaining || 0;
-                aiRemaining = data.ai_remaining || 0;
-                // Reset zero counters when we get fresh data with time remaining
-                if (scanRemaining > 0) atZeroSince.scan = 0;
-                if (exitRemaining > 0) atZeroSince.exit = 0;
-                if (aiRemaining > 0) atZeroSince.ai = 0;
-                updateDisplay();
-            })
-            .catch(function() {});
+<!-- Live Portfolio Refresh -->
+<script>
+(function() {
+    var profileIds = [{% for prof in profiles_data %}{{ prof.id }}{% if not loop.last %},{% endif %}{% endfor %}];
+    function fmt(n) { return '$' + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+    function updateProfile(pid) {
+        fetch('/api/portfolio/' + pid).then(function(r){return r.json();}).then(function(data) {
+            if (data.error) return;
+            var a = data.account;
+            if (a) { var eq = document.getElementById('equity-' + pid); var ca = document.getElementById('cash-' + pid); var bp = document.getElementById('bp-' + pid); if (eq) eq.textContent = fmt(a.equity); if (ca) ca.textContent = fmt(a.cash); if (bp) bp.textContent = fmt(a.buying_power); }
+            var ptbody = document.getElementById('pending-orders-' + pid);
+            if (ptbody && data.pending_orders) {
+                var phtml = '';
+                data.pending_orders.forEach(function(o) { phtml += '<tr><td><strong>' + o.symbol + '</strong></td><td><span class="badge badge-' + (o.side==='buy'?'buy':'sell') + '">' + o.side.toUpperCase() + '</span></td><td>' + Math.floor(o.qty) + '</td><td>' + (o.order_type||'').toUpperCase() + '</td><td>' + (o.limit_price!=null?fmt(o.limit_price):'—') + '</td><td><span class="muted">' + (o.status||'').replace(/\b\w/g,function(c){return c.toUpperCase();}) + '</span></td><td class="muted">' + (o.submitted_at||'—') + '</td><td>' + (o.time_in_force||'').toUpperCase() + '</td></tr>'; });
+                ptbody.innerHTML = phtml;
+            }
+        }).catch(function(){});
     }
-
-    fetchStatus();
-    setInterval(function() {
-        if (scanRemaining > 0) scanRemaining--;
-        if (exitRemaining > 0) exitRemaining--;
-        if (aiRemaining > 0) aiRemaining--;
-        updateDisplay();
-    }, 1000);
-    // Re-sync every 10 seconds (faster than before)
-    setInterval(fetchStatus, 10000);
+    function captureExpanded(wrap) { var s = {}; wrap.querySelectorAll('.trade-row').forEach(function(r) { var n = r.nextElementSibling; if (n && n.style.display !== 'none' && r.dataset.symbol) s[r.dataset.symbol] = true; }); return s; }
+    function restoreExpanded(wrap, s) { wrap.querySelectorAll('.trade-row').forEach(function(r) { if (r.dataset.symbol && s[r.dataset.symbol]) { var n = r.nextElementSibling; if (n) { n.style.display = ''; var c = r.querySelector('.expand-caret'); if (c) c.innerHTML = '&#9660;'; } } }); }
+    function refreshPositions(pid) { var wrap = document.getElementById('positions-wrap-' + pid); if (!wrap) return; var exp = captureExpanded(wrap); fetch('/api/positions-html/' + pid).then(function(r){return r.ok?r.text():null;}).then(function(html){if(html){wrap.innerHTML=html;restoreExpanded(wrap,exp);}}).catch(function(){}); }
+    function refreshAll() { profileIds.forEach(function(pid) { updateProfile(pid); refreshPositions(pid); }); }
+    setInterval(refreshAll, 15000);
 })();
 </script>
 {% endblock %}

@@ -86,21 +86,6 @@ def volume_explosion_strategy(symbol, ctx=None, df=None,
             "day_change_pct": round(day_change_pct, 2),
         }
 
-    # SELL conditions -- catalyst fading
-    if vol_ratio < 2.0 and rsi > 60:
-        return {
-            "symbol": symbol,
-            "signal": "SELL",
-            "reason": (
-                f"Catalyst fading: volume {vol_ratio:.1f}x avg (below 2x), "
-                f"RSI {rsi:.1f}"
-            ),
-            "price": price,
-            "rsi": rsi,
-            "volume_ratio": round(vol_ratio, 2),
-            "day_change_pct": round(day_change_pct, 2),
-        }
-
     return {
         "symbol": symbol,
         "signal": "HOLD",
@@ -155,32 +140,6 @@ def penny_reversal_strategy(symbol, ctx=None, df=None,
                 f"Penny reversal: RSI {rsi:.1f} (< 20), "
                 f"price {pct_below_sma10:.1f}% below SMA10, volume increasing"
             ),
-            "price": price,
-            "rsi": rsi,
-            "sma_10": sma_10,
-            "pct_below_sma10": round(pct_below_sma10, 2),
-        }
-
-    # SELL -- price recovered to SMA10 or RSI normalized
-    if price >= sma_10:
-        return {
-            "symbol": symbol,
-            "signal": "SELL",
-            "reason": (
-                f"Price ({price:.2f}) returned to SMA10 ({sma_10:.2f}) -- "
-                f"reversal target hit"
-            ),
-            "price": price,
-            "rsi": rsi,
-            "sma_10": sma_10,
-            "pct_below_sma10": round(pct_below_sma10, 2),
-        }
-
-    if rsi > 50:
-        return {
-            "symbol": symbol,
-            "signal": "SELL",
-            "reason": f"RSI recovered to {rsi:.1f} (> 50) -- exit reversal trade",
             "price": price,
             "rsi": rsi,
             "sma_10": sma_10,

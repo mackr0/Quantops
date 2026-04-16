@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>AI_ARCHITECTURE</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">AI_ARCHITECTURE</h1>
+</header>
+<h1 id="quantopsai-ai-architecture-map">QuantOpsAI — AI Architecture
+Map</h1>
+<p>How the system uses AI, every agent and its purpose, and how they
+flow together.</p>
+<hr />
+<h2 id="overview">Overview</h2>
+<p>QuantOpsAI makes <strong>7 distinct types of AI calls</strong> per
+scan cycle. Each serves a different analytical function. They execute in
+a pipeline — each stage feeds the next.</p>
+<pre><code>                         ┌──────────────────────┐
+                         │   MARKET DATA FEED    │
+                         │  (Alpaca + yfinance)  │
+                         └──────────┬───────────┘
+                                    │
+                         ┌──────────▼───────────┐
+                         │   SCREENER            │
+                         │   8,000+ stocks → 15  │
+                         │   (no AI — rule-based) │
+                         └──────────┬───────────┘
+                                    │
+                    ┌───────────────▼───────────────┐
+                    │   MULTI-STRATEGY SCORING       │
+                    │   16 strategies vote BUY/SELL   │
+                    │   (no AI — rule-based)          │
+                    └───────────────┬───────────────┘
+                                    │
+              ┌─────────────────────▼─────────────────────┐
+              │          SPECIALIST ENSEMBLE (4 AI calls)  │
+              │                                            │
+              │  ┌──────────┐ ┌──────────┐ ┌──────────┐  │
+              │  │ Earnings  │ │ Pattern  │ │Sentiment │  │
+              │  │ Analyst   │ │Recognizer│ │Narrative │  │
+              │  └────┬─────┘ └────┬─────┘ └────┬─────┘  │
+              │       │            │             │         │
+              │  ┌────▼────────────▼─────────────▼────┐   │
+              │  │          Risk Assessor              │   │
+              │  │      (has VETO authority)            │   │
+              │  └────────────────┬────────────────────┘   │
+              │                   │                        │
+              │    Consensus verdict per candidate         │
+              └─────────────────────┬─────────────────────┘
+                                    │
+                    ┌───────────────▼───────────────┐
+                    │   BATCH TRADE SELECTOR         │
+                    │   (1 AI call)                   │
+                    │                                 │
+                    │   Sees ALL candidates + context: │
+                    │   • Ensemble verdicts            │
+                    │   • Portfolio state              │
+                    │   • Market regime (VIX, SPY)     │
+                    │   • Political context            │
+                    │   • Learned patterns             │
+                    │   • Per-stock track record       │
+                    │                                  │
+                    │   Picks 0-3 trades + sizes them  │
+                    └───────────────┬───────────────┘
+                                    │
+                         ┌──────────▼───────────┐
+                         │   ORDER EXECUTION     │
+                         │   (Alpaca API)         │
+                         └──────────┬───────────┘
+                                    │
+                         ┌──────────▼───────────┐
+                         │   INTERNAL LEDGER     │
+                         │   (SQLite per-profile) │
+                         └──────────────────────┘</code></pre>
+<hr />
+<h2 id="the-7-ai-agent-types">The 7 AI Agent Types</h2>
+<h3 id="earnings-analyst">1. Earnings Analyst</h3>
+<ul>
+<li><strong>Purpose:</strong> Evaluate financial fundamentals — recent
+earnings, revenue trends, guidance</li>
+<li><strong>When:</strong> Every scan cycle, on each batch of ~5
+candidates</li>
+<li><strong>Model:</strong> Claude Haiku (cheapest, fastest)</li>
+<li><strong>Output:</strong> BUY / SELL / HOLD / ABSTAIN with confidence
+score + reasoning</li>
+<li><strong>Abstains</strong> when it has no earnings data for a symbol
+(rather than guessing)</li>
+<li><strong>Cost label:</strong>
+<code>ensemble:earnings_analyst</code></li>
+</ul>
+<h3 id="pattern-recognizer">2. Pattern Recognizer</h3>
+<ul>
+<li><strong>Purpose:</strong> Read technical chart patterns — price
+action, volume patterns, support/resistance, momentum</li>
+<li><strong>When:</strong> Every scan cycle, on each batch of ~5
+candidates</li>
+<li><strong>Model:</strong> Claude Haiku</li>
+<li><strong>Output:</strong> BUY / SELL / HOLD with confidence +
+reasoning</li>
+<li><strong>Cost label:</strong>
+<code>ensemble:pattern_recognizer</code></li>
+</ul>
+<h3 id="sentiment-narrative-analyst">3. Sentiment &amp; Narrative
+Analyst</h3>
+<ul>
+<li><strong>Purpose:</strong> Evaluate the story around the stock — news
+headlines, sector headwinds/tailwinds, macro environment</li>
+<li><strong>When:</strong> Every scan cycle, on each batch of ~5
+candidates</li>
+<li><strong>Model:</strong> Claude Haiku</li>
+<li><strong>Output:</strong> BUY / SELL / HOLD with confidence +
+reasoning</li>
+<li><strong>Cost label:</strong>
+<code>ensemble:sentiment_narrative</code></li>
+</ul>
+<h3 id="risk-assessor">4. Risk Assessor</h3>
+<ul>
+<li><strong>Purpose:</strong> The skeptic. Evaluates concentration risk,
+regulatory exposure, event risk, regime sensitivity</li>
+<li><strong>When:</strong> Every scan cycle, on each batch of ~5
+candidates</li>
+<li><strong>Model:</strong> Claude Haiku</li>
+<li><strong>Output:</strong> BUY / SELL / HOLD / <strong>VETO</strong>
+with confidence + reasoning</li>
+<li><strong>Special power:</strong> Can VETO a trade outright regardless
+of what the other 3 specialists say. Used sparingly — only for genuine
+structural risks, not routine caution.</li>
+<li><strong>Cost label:</strong>
+<code>ensemble:risk_assessor</code></li>
+</ul>
+<h3 id="batch-trade-selector-the-portfolio-manager">5. Batch Trade
+Selector (The Portfolio Manager)</h3>
+<ul>
+<li><strong>Purpose:</strong> The final decision-maker. Sees all
+candidates with their ensemble verdicts, the current portfolio, market
+regime, and learned patterns. Picks which trades to actually execute and
+sizes them.</li>
+<li><strong>When:</strong> Once per scan cycle (after all specialists
+have voted)</li>
+<li><strong>Model:</strong> Claude Haiku (configurable per profile)</li>
+<li><strong>Input:</strong>
+<ul>
+<li>All ~15 candidates with full indicator data</li>
+<li>Ensemble verdicts from the 4 specialists</li>
+<li>Current portfolio holdings and P&amp;L</li>
+<li>Market regime (VIX level, SPY trend, crisis state)</li>
+<li>Political context (if MAGA mode enabled)</li>
+<li>Per-stock track record (past wins/losses on each symbol)</li>
+<li>Learned patterns from self-tuning</li>
+</ul></li>
+<li><strong>Output:</strong> JSON array of 0-3 trades, each with:
+symbol, action (BUY/SELL), size (% of equity), confidence,
+reasoning</li>
+<li><strong>Cost label:</strong> <code>batch_select</code></li>
+</ul>
+<h3 id="political-context-analyst">6. Political Context Analyst</h3>
+<ul>
+<li><strong>Purpose:</strong> Analyze current political news, tariff
+developments, executive orders — and flag stocks that could be affected
+(positively or negatively)</li>
+<li><strong>When:</strong> Once per scan cycle (if MAGA mode enabled on
+the profile)</li>
+<li><strong>Model:</strong> Claude Haiku</li>
+<li><strong>Output:</strong> Text summary injected into the batch
+selector’s context</li>
+<li><strong>Cost label:</strong> <code>political_context</code></li>
+<li><strong>Skipped</strong> for crypto profiles (politics don’t move
+Bitcoin the same way)</li>
+</ul>
+<h3 id="strategy-proposer">7. Strategy Proposer</h3>
+<ul>
+<li><strong>Purpose:</strong> Generate new strategy ideas as JSON
+specifications. These are validated, backtested, and promoted through a
+lifecycle (proposed → validated → shadow → active → retired).</li>
+<li><strong>When:</strong> Weekly (Sundays), not every cycle</li>
+<li><strong>Model:</strong> Claude Haiku</li>
+<li><strong>Output:</strong> JSON strategy spec against a closed
+allowlist — AI never writes code, only parameters</li>
+<li><strong>Safety:</strong> Invalid specs are silently dropped. Max 5
+auto-strategies per profile.</li>
+<li><strong>Cost label:</strong> <code>strategy_proposal</code></li>
+</ul>
+<hr />
+<h2 id="supporting-ai-calls-not-every-cycle">Supporting AI Calls (not
+every cycle)</h2>
+<h3 id="single-symbol-analyzer">Single-Symbol Analyzer</h3>
+<ul>
+<li><strong>Purpose:</strong> Deep-dive analysis on one specific stock
+(used by the event-driven system when a price shock or SEC filing
+triggers a reactive analysis)</li>
+<li><strong>When:</strong> On-demand, triggered by events</li>
+<li><strong>Cost label:</strong> <code>single_analyze</code></li>
+</ul>
+<h3 id="consensus-secondary-model">Consensus Secondary Model</h3>
+<ul>
+<li><strong>Purpose:</strong> A second AI model (different provider,
+e.g., GPT-4o-mini) reviews the primary AI’s trade selections for a
+second opinion</li>
+<li><strong>When:</strong> Every cycle, only if “Multi-Model Consensus”
+is enabled on the profile</li>
+<li><strong>Cost label:</strong> <code>consensus_secondary</code></li>
+</ul>
+<h3 id="sec-filing-diff-analyzer">SEC Filing Diff Analyzer</h3>
+<ul>
+<li><strong>Purpose:</strong> When a new SEC filing (10-K, 10-Q, 8-K) is
+detected, the AI reads the filing and compares it to the previous
+version, flagging material language changes</li>
+<li><strong>When:</strong> When new filings are detected
+(event-driven)</li>
+<li><strong>Cost label:</strong> <code>sec_diff</code></li>
+</ul>
+<h3 id="portfolio-review">Portfolio Review</h3>
+<ul>
+<li><strong>Purpose:</strong> Periodic holistic review of the entire
+portfolio — are positions still justified? Any correlated risks building
+up?</li>
+<li><strong>When:</strong> Less frequent than regular scans</li>
+<li><strong>Cost label:</strong> <code>portfolio_review</code></li>
+</ul>
+<hr />
+<h2 id="cost-per-scan-cycle">Cost Per Scan Cycle</h2>
+<table>
+<thead>
+<tr>
+<th>Agent</th>
+<th>Calls per Cycle</th>
+<th>Est. Cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Earnings Analyst</td>
+<td>3 (chunked by 5 candidates)</td>
+<td>$0.003</td>
+</tr>
+<tr>
+<td>Pattern Recognizer</td>
+<td>3</td>
+<td>$0.003</td>
+</tr>
+<tr>
+<td>Sentiment &amp; Narrative</td>
+<td>3</td>
+<td>$0.003</td>
+</tr>
+<tr>
+<td>Risk Assessor</td>
+<td>3</td>
+<td>$0.003</td>
+</tr>
+<tr>
+<td>Batch Trade Selector</td>
+<td>1</td>
+<td>$0.001</td>
+</tr>
+<tr>
+<td>Political Context</td>
+<td>1 (if MAGA mode)</td>
+<td>$0.001</td>
+</tr>
+<tr>
+<td><strong>Total per cycle</strong></td>
+<td><strong>~13-14</strong></td>
+<td><strong>~$0.014</strong></td>
+</tr>
+</tbody>
+</table>
+<p>At 4 cycles/hour × 6.5 market hours × 10 profiles: -
+<strong>~$3.64/day</strong> or <strong>~$109/month</strong> at full
+load</p>
+<hr />
+<h2 id="how-they-work-together">How They Work Together</h2>
+<ol type="1">
+<li><p><strong>Screener</strong> (no AI) filters 8,000+ stocks to ~15
+candidates based on price, volume, and technical rules.</p></li>
+<li><p><strong>16 Strategies</strong> (no AI) each independently vote
+BUY/SELL/HOLD on each candidate. Votes are aggregated into a
+score.</p></li>
+<li><p><strong>4 Specialist AIs</strong> each evaluate the ~15
+candidates from their unique perspective. They’re batched in chunks of 5
+to prevent the AI from dropping entries. Each returns a verdict +
+confidence + reasoning.</p></li>
+<li><p><strong>The ensemble synthesizer</strong> (code, not AI) combines
+the 4 specialist verdicts into a consensus using confidence-weighted
+voting. The Risk Assessor’s VETO overrides everything.</p></li>
+<li><p><strong>The Batch Trade Selector</strong> (1 AI call) sees the
+full picture — candidates, ensemble verdicts, portfolio state, market
+regime — and makes the final call on which 0-3 trades to execute and how
+to size them.</p></li>
+<li><p><strong>Order execution</strong> sends the trades to Alpaca. The
+internal ledger records everything for metrics, self-tuning, and the
+meta-model.</p></li>
+</ol>
+<hr />
+<h2 id="self-learning-loop">Self-Learning Loop</h2>
+<p>The AI isn’t static. Three feedback mechanisms improve it over
+time:</p>
+<h3 id="self-tuning-daily">Self-Tuning (daily)</h3>
+<p>Watches the AI’s win rate and adjusts parameters (confidence
+threshold, stop/TP percentages). Reviews its own past adjustments and
+reverses ones that made things worse.</p>
+<h3 id="meta-model-phase-1-collecting-data">Meta-Model (Phase 1 —
+collecting data)</h3>
+<p>A gradient-boosted classifier trained on the AI’s own prediction
+history. Learns patterns like “the AI is overconfident on low-volume
+mid-caps in sideways markets” and adjusts confidence before execution.
+Needs 100+ resolved predictions to train.</p>
+<h3 id="alpha-decay-monitor-continuous">Alpha Decay Monitor
+(continuous)</h3>
+<p>Tracks each strategy’s rolling 30-day Sharpe ratio. When a strategy’s
+edge degrades by 30%+ for 30 consecutive days, it’s automatically
+deprecated and removed from the active roster. Can restore if it
+recovers for 14 consecutive days.</p>
+</body>
+</html>

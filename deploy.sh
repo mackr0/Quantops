@@ -51,6 +51,10 @@ rsync -avz --progress \
     --include 'templates/**' \
     --include 'static/' \
     --include 'static/**' \
+    --include 'strategies/' \
+    --include 'strategies/**' \
+    --include 'tests/' \
+    --include 'tests/**' \
     --exclude '*' \
     ./ ${REMOTE_USER}@${DROPLET_IP}:${REMOTE_DIR}/
 

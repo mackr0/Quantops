@@ -1,5 +1,6 @@
 #!/bin/bash
-# Safe sync to droplet — NEVER copies venv, __pycache__, .git, or database files
+# Safe sync to droplet — preserves directory structure. NEVER copies venv,
+# __pycache__, .git, database files, or .env.
 # Usage: ./sync.sh [droplet-ip]
 
 set -e
@@ -9,6 +10,10 @@ REMOTE_DIR="/opt/quantopsai"
 
 echo "Syncing code to ${DROPLET_IP}:${REMOTE_DIR}..."
 
+# Sync from the project root so the directory structure (templates/,
+# strategies/, tests/, static/) is preserved on the server. --delete
+# cleans up files removed locally, but excluded items (venv, .env,
+# *.db, logs/, exports/) are protected on both sides.
 rsync -az --delete \
     --exclude 'venv/' \
     --exclude '__pycache__/' \
@@ -20,16 +25,14 @@ rsync -az --delete \
     --exclude '.env' \
     --exclude 'node_modules/' \
     --exclude '.DS_Store' \
-    --filter '- venv/**' \
-    --filter '- __pycache__/**' \
-    --filter '- .git/**' \
-    /Users/mackr0/Quantops/*.py \
-    /Users/mackr0/Quantops/*.sh \
-    /Users/mackr0/Quantops/*.txt \
-    /Users/mackr0/Quantops/*.md \
-    /Users/mackr0/Quantops/templates/ \
-    /Users/mackr0/Quantops/static/ \
-    ${REMOTE_DIR}/
+    --exclude 'logs/' \
+    --exclude 'exports/' \
+    --exclude '*.pkl' \
+    --exclude 'cycle_data_*.json' \
+    --exclude 'scheduler_status.json' \
+    --exclude 'dynamic_screener_cache.json' \
+    /Users/mackr0/Quantops/ \
+    root@${DROPLET_IP}:${REMOTE_DIR}/
 
 echo "Sync complete. Restarting services..."
 ssh root@${DROPLET_IP} "systemctl restart quantopsai quantopsai-web"

@@ -51,6 +51,11 @@ def create_app():
     app.register_blueprint(auth_bp)
     app.register_blueprint(views_bp)
 
+    # Register Jinja filters — gives templates `| display_name` for
+    # converting internal snake_case identifiers into human-readable labels.
+    from display_names import register as register_display_names
+    register_display_names(app)
+
     # Init DB
     init_user_db()
 

@@ -7,7 +7,7 @@ Each market type has its own tuned strategy engine:
   - largecap: strategy_large.py   (Large Cap $50-$500)
   - crypto:   strategy_crypto.py  (Crypto)
 
-Falls back to aggressive_combined_strategy for unknown market types.
+Falls back to fallback_combined_strategy for unknown market types.
 """
 
 
@@ -56,6 +56,6 @@ def run_strategy(symbol, market_type, ctx=None, df=None, params=None):
         return crypto_combined_strategy(symbol, ctx=ctx, df=df, params=params)
 
     else:
-        # Fallback for unknown market types (including legacy "microsmall")
-        from aggressive_strategy import aggressive_combined_strategy
-        return aggressive_combined_strategy(symbol, df=df, params=params)
+        # Fallback for unknown market types
+        from fallback_strategy import fallback_combined_strategy
+        return fallback_combined_strategy(symbol, df=df, params=params)

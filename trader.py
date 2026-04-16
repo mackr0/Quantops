@@ -81,6 +81,11 @@ def execute_trade(symbol, signal, ctx=None, strategy_name="combined", log=True):
                 result["action"] = "BLOCKED"
                 result["reason"] = constraint_reason
             else:
+                from order_guard import check_can_submit
+                if not check_can_submit(ctx, symbol, "buy"):
+                    result["action"] = "SKIP"
+                    result["reason"] = "Order blocked: outside trading window"
+                    return result
                 order = api.submit_order(
                     symbol=symbol,
                     qty=qty,
@@ -111,6 +116,12 @@ def execute_trade(symbol, signal, ctx=None, strategy_name="combined", log=True):
                     )
 
     elif action in ("SELL", "STRONG_SELL", "WEAK_SELL") and symbol in positions and int(positions[symbol]["qty"]) > 0:
+        from order_guard import check_can_submit
+        if not check_can_submit(ctx, symbol, "sell"):
+            result["action"] = "SKIP"
+            result["reason"] = "Order blocked: outside trading window"
+            return result
+
         position = positions[symbol]
         qty = int(position["qty"])
 
@@ -213,12 +224,22 @@ def check_exits(ctx=None):
         return []
 
     init_db(db_path)
+
+    # Conviction-based take-profit override: build the skip predicate if
+    # the profile has it enabled. Runaway winners (IONQ-style) keep running
+    # while the trailing stop manages the exit, instead of being capped.
+    conviction_tp_skip = None
+    if ctx is not None and getattr(ctx, "use_conviction_tp_override", False):
+        from conviction_tp import build_conviction_skip
+        conviction_tp_skip = build_conviction_skip(ctx, db_path)
+
     triggered = check_stop_loss_take_profit(
         positions,
         stop_loss_pct=stop_loss_pct,
         take_profit_pct=take_profit_pct,
         short_stop_loss_pct=short_stop_loss_pct,
         short_take_profit_pct=short_take_profit_pct,
+        conviction_tp_skip=conviction_tp_skip,
     )
 
     # Trailing stops: check profitable positions for trailing stop triggers
@@ -239,8 +260,15 @@ def check_exits(ctx=None):
         qty = int(trigger_signal["qty"])
         is_short = trigger_signal.get("is_short", False)
 
+        # Schedule guard: don't submit exit orders outside the profile's
+        # trading window. Stop-loss/take-profit triggers will re-fire on
+        # the next check cycle within schedule.
+        from order_guard import check_can_submit
+        exit_side = "buy" if is_short else "sell"
+        if not check_can_submit(ctx, symbol, exit_side):
+            continue
+
         if is_short:
-            # Close short position by buying to cover
             order = api.submit_order(
                 symbol=symbol,
                 qty=qty,
@@ -251,7 +279,6 @@ def check_exits(ctx=None):
             side_label = "cover"
             action_label = "COVER"
         else:
-            # Close long position by selling
             order = api.submit_order(
                 symbol=symbol,
                 qty=qty,
@@ -274,9 +301,29 @@ def check_exits(ctx=None):
             strategy=trigger_signal["trigger"],
             reason=trigger_signal["reason"],
             pnl=pnl,
+            # Exit-fired orders realize P&L → the row is closed, not open.
+            # Matching BUY rows get reconciled below.
+            status="closed" if pnl is not None else "open",
             decision_price=trigger_signal["price"],
             db_path=db_path,
         )
+
+        # Mark any still-open BUY rows for this symbol as closed — the
+        # exit has flattened the position. Without this the trades page
+        # shows the old entry as "open" forever.
+        try:
+            import sqlite3 as _sqlite3
+            _c = _sqlite3.connect(db_path) if db_path else _sqlite3.connect("journal.db")
+            _c.execute(
+                "UPDATE trades SET status='closed' "
+                "WHERE symbol=? AND side='buy' AND status='open'",
+                (symbol,),
+            )
+            _c.commit()
+            _c.close()
+        except Exception as _exc:
+            # Reconciliation is best-effort — never block the exit path.
+            pass
 
         results.append({
             "symbol": symbol,

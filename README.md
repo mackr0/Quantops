@@ -1,39 +1,86 @@
 # QuantOpsAI
 
-AI-powered autonomous paper trading system for small-cap and micro-cap stocks. Uses Claude AI to review every trade before execution, tracks AI prediction accuracy over time, and runs 24/7 on a cloud server.
+AI-powered autonomous paper trading platform. The AI is the portfolio manager — it sees 33 technical indicators, per-stock news, sector rotation, political sentiment, and its own track record, then picks and sizes the best trades from each scan cycle. Multi-user Flask web app with 5 market-specific strategy engines, pattern learning, and institutional-grade performance analytics. Runs 24/7 on a cloud server.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                   QUANTOPSAI PIPELINE                      │
-│                                                          │
-│  Screen 8,000+ stocks                                    │
-│       ↓                                                  │
-│  Filter: $1-$20, 500K+ volume                           │
-│       ↓                                                  │
-│  4 Aggressive Strategies (technical analysis)            │
-│       ↓                                                  │
-│  Claude AI Review (approve/veto each trade)              │
-│       ↓                                                  │
-│  Execute on Alpaca (paper trading)                       │
-│       ↓                                                  │
-│  Track AI accuracy + email notifications                 │
-└─────────────────────────────────────────────────────────┘
+                       QUANTOPSAI AI-FIRST PIPELINE (per profile)
+
+  Dynamic Universe Discovery (8,000+ symbols via Alpaca)
+       |
+  Pre-Filter (blacklist, earnings, max positions, drawdown)
+       |
+  5 Market-Specific Strategy Engines (20 strategies, free — no AI cost)
+       |
+  Rank Top ~15 Candidates
+       |
+  SINGLE AI Batch Call — AI sees ALL candidates + portfolio + context:
+    - 33 technical indicators per stock
+    - Per-stock news headlines
+    - Sector rotation (11 ETFs)
+    - Relative strength vs sector
+    - Market regime (VIX, SPY trend)
+    - Political sentiment (MAGA Mode)
+    - Per-stock win/loss memory
+    - Learned patterns from history
+       |
+  AI Picks 0-3 Trades & Sizes Them
+       |
+  Smart Execution (ATR stops, trailing stops, correlation check)
+       |
+  Pattern Learning (stores regime + strategy type for future analysis)
 ```
 
-## Features
+## Key Features
 
-- **Stock Screener** — Scans 8,000+ tradable symbols via Alpaca snapshots, filters by price range and volume
-- **4 Aggressive Strategies** — Momentum breakout, volume spike, mean reversion, gap-and-go
-- **AI Trade Review** — Claude analyzes technicals before every trade; vetoes bad ones
-- **AI Accuracy Tracking** — Records every AI prediction, resolves against actual prices, reports win rate by confidence band
-- **Risk Management** — Position sizing, portfolio constraints, stop-loss (3%), take-profit (10%)
-- **Trade Journal** — SQLite database logging every trade, signal, and AI reasoning
-- **Autonomous Scheduler** — Runs during market hours on a cloud server, no human needed
-- **Email Notifications** — Trade alerts, AI veto alerts, stop-loss triggers, daily summaries
-- **Rich Dashboard** — Terminal UI with colored tables and panels
-- **Backtesting** — Walk-forward backtester with Sharpe ratio, drawdown, win rate
+### AI Intelligence (the edge)
+- **AI as Portfolio Manager** — One smart batch call per cycle. AI sees the full picture and decides what to trade, not just approve/reject.
+- **33 Technical Indicators** — RSI, StochRSI, ADX, MACD, MFI, CMF, OBV, ATR, Bollinger Bands, Keltner Squeeze, VWAP, Fibonacci levels, Pivot Points, 52-week context, ROC, and more.
+- **Insider Transaction Data** — Recent insider buys/sells from yfinance + SEC EDGAR Form 4 filings. Insider buying clusters are among the strongest signals in finance.
+- **Short Interest & Squeeze Detection** — Short % of float, days to cover, automatic squeeze risk assessment.
+- **Options Flow Analysis** — Unusual call/put volume detection, put/call ratio, bullish/bearish flow signals. Shows what smart money is betting on before the move.
+- **Intraday Patterns** — Real-time VWAP position, opening range breakout, intraday trend and volume profile from 5-minute bars.
+- **Social Sentiment (Reddit)** — Scans r/wallstreetbets, r/stocks, r/investing for ticker mentions, trending detection, and sentiment scoring via PRAW.
+- **Per-Stock News** — AI sees recent headlines for every candidate (free from yfinance)
+- **Sector Rotation** — Tracks 11 sector ETFs, shows money inflows/outflows, computes relative strength per stock vs its sector
+- **Fundamentals** — PE ratio, beta, market cap, sector, industry, institutional/insider ownership percentages
+- **Pattern Learning** — Discovers failure/success patterns: "breakouts fail in volatile markets", "mean reversion works midday". Feeds patterns to AI each cycle.
+- **MAGA Mode** — Political sentiment with sector-specific impact, ticker mentions, and trade ideas
+- **Per-Stock Memory** — Tracks win/loss per symbol; auto-blacklists chronic losers
+- **Market Regime Detection** — SPY/VIX classifies bull/bear/sideways/volatile
+- **Self-Tuning** — Adjusts parameters daily, reverts bad changes, remembers what worked
+
+### Strategy Engines
+- **5 Market-Specific Engines** — Micro Cap, Small Cap, Mid Cap, Large Cap, Crypto (each with 4 dedicated strategies)
+- **Dynamic Universe** — Discovers tradable symbols from 8,000+ Alpaca assets (not just hardcoded lists)
+- **15-Minute Scan Interval** — Catches intraday momentum that 30-min systems miss
+
+### Risk Management
+- **Drawdown Protection** — Reduces size at 10% drawdown, pauses at 20%, auto-resumes at 5%
+- **ATR-Based Stops** — Volatility-adapted stop-loss and take-profit per stock
+- **Trailing Stops** — Lock in profits as price moves favorably
+- **Correlation Management** — Limits correlated positions and sector concentration
+
+### Web Platform
+- **Multi-User** — Flask + Flask-Login with bcrypt auth and Fernet-encrypted API keys
+- **AI Brain Dashboard** — Shows AI's last decision, reasoning, candidate shortlist with all indicators
+- **Sector Rotation Widget** — Live sector ETF inflows/outflows
+- **6-Tab Performance Dashboard** — Executive Summary, Risk & Stability, Trade Analytics, Market Relationship, Scalability, AI Intelligence
+- **Learned Patterns Display** — Shows discovered win/loss patterns
+- **Indicator Suite Reference** — All 33 indicators grouped by category
+- **What-If Backtesting** — Test parameter changes against 90 days of real market data
+- **Slippage Tracking** — Decision price vs fill price on every trade
+
+### AI Providers
+- Anthropic Claude (Haiku, Sonnet, Opus)
+- OpenAI GPT (GPT-4o, GPT-4o-mini)
+- Google Gemini (Flash, Pro)
+
+### Cost Efficiency
+- **~$0.15-0.25/day** total AI cost (1-2 calls per 15-min cycle, not 20+)
+- **$6/month** server (DigitalOcean droplet)
+- **Free data** (yfinance, RSS feeds, Alpaca paper trading)
 
 ## Setup
 
@@ -47,240 +94,147 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Configure API keys
+### 2. Configure environment
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your keys:
+Edit `.env`:
 
 ```
 # Alpaca Paper Trading (https://app.alpaca.markets)
-ALPACA_API_KEY=your_key
-ALPACA_SECRET_KEY=your_secret
+SMALLCAP_ALPACA_KEY=your_key
+SMALLCAP_ALPACA_SECRET=your_secret
+MIDCAP_ALPACA_KEY=your_key
+MIDCAP_ALPACA_SECRET=your_secret
+CRYPTO_ALPACA_KEY=your_key
+CRYPTO_ALPACA_SECRET=your_secret
 ALPACA_BASE_URL=https://paper-api.alpaca.markets
 
-# Anthropic Claude API (https://console.anthropic.com)
+# AI Provider (at least one required)
 ANTHROPIC_API_KEY=sk-ant-...
 
-# Email notifications (Gmail with app password)
-SMTP_USER=your@gmail.com
-SMTP_PASSWORD=your_app_password
-NOTIFICATION_EMAIL=your@email.com
+# Email notifications via Resend
+RESEND_API_KEY=re_...
+NOTIFICATION_EMAIL=you@example.com
 ```
 
-**Getting a Gmail App Password:**
-1. Go to https://myaccount.google.com/apppasswords
-2. Generate a new app password for "Mail"
-3. Use that 16-character password as `SMTP_PASSWORD`
-
-### 3. Test the connection
+### 3. Initialize database
 
 ```bash
-python main.py account
+python migrate.py
 ```
 
-## Commands
+### 4. Run locally
 
-### Portfolio & Account
+```bash
+gunicorn --bind 127.0.0.1:5000 "app:create_app()"  # Web UI
+python multi_scheduler.py                             # Scheduler (separate terminal)
+```
 
-| Command | Description |
-|---|---|
-| `python main.py account` | Show account info (equity, cash, buying power) |
-| `python main.py positions` | Show all open positions |
-| `python main.py dashboard` | Rich terminal dashboard with positions, risk summary |
+### 5. Run tests
 
-### Technical Analysis
-
-| Command | Description |
-|---|---|
-| `python main.py analyze AAPL` | SMA crossover + RSI + combined signal |
-| `python main.py ai-analyze AAPL` | Claude AI analysis with confidence and risk factors |
-| `python main.py sentiment AAPL` | News sentiment analysis using Claude |
-| `python main.py scan` | Scan default watchlist with technical signals |
-| `python main.py ai-scan` | Full AI + sentiment scan of watchlist |
-
-### Aggressive Small-Cap Trading
-
-| Command | Description |
-|---|---|
-| `python main.py screen` | Screen 8,000+ stocks for small/micro-cap candidates |
-| `python main.py aggro-analyze SYM` | Run 4 aggressive strategies on a symbol |
-| `python main.py aggro-scan` | Screen + aggressive analysis on all candidates |
-| `python main.py aggro-trade` | Screen + AI review + auto-execute paper trades |
-
-### Trading
-
-| Command | Description |
-|---|---|
-| `python main.py trade AAPL` | Execute trade based on combined strategy |
-| `python main.py trade-scan` | Scan watchlist and trade all signals |
-| `python main.py check-exits` | Check stop-loss / take-profit triggers |
-
-### Backtesting
-
-| Command | Description |
-|---|---|
-| `python main.py backtest AAPL` | Backtest combined strategy (default 365 days) |
-| `python main.py backtest AAPL 180` | Backtest with custom day count |
-
-### Journal & Performance
-
-| Command | Description |
-|---|---|
-| `python main.py journal` | Show all trade history |
-| `python main.py journal AAPL` | Show trade history for a specific symbol |
-| `python main.py performance` | Show overall performance summary |
-| `python main.py snapshot` | Save daily portfolio snapshot |
-
-### AI Performance Tracking
-
-| Command | Description |
-|---|---|
-| `python main.py ai-report` | Show AI prediction accuracy report |
-| `python main.py ai-resolve` | Resolve pending predictions vs actual prices |
-
-## Strategies
-
-### Conservative (Default Watchlist)
-
-| Strategy | Buy Signal | Sell Signal |
-|---|---|---|
-| SMA Crossover | SMA20 crosses above SMA50 | SMA20 crosses below SMA50 |
-| RSI | RSI < 30 (oversold) | RSI > 70 (overbought) |
-| Combined | Both agree = STRONG signal | Mixed = WEAK signal |
-
-### Aggressive (Small-Cap)
-
-| Strategy | Buy Signal | Sell Signal |
-|---|---|---|
-| Momentum Breakout | Price breaks 20-day high + 1.5x volume + RSI 50-80 | Price below 10-day low or RSI > 85 |
-| Volume Spike | Volume > 2x avg + price up > 2% + RSI < 70 | Volume fades + 2 red candles |
-| Mean Reversion | RSI < 25 + price > 10% below SMA20 | Price returns to SMA20 or RSI > 60 |
-| Gap and Go | Open > 3% above prev close + above avg volume | Price drops below today's open |
-
-The aggressive combined strategy scores each sub-strategy (+1 BUY, -1 SELL) and maps to signal strength:
-- Score >= 2: STRONG_BUY
-- Score 1: BUY
-- Score -1: SELL
-- Score <= -2: STRONG_SELL
-
-### AI Review Gate
-
-Before any aggressive trade executes, Claude AI analyzes the stock:
-- Reviews technicals (SMA, RSI, MACD, Bollinger Bands, volume)
-- Provides signal, confidence (0-100), reasoning, risk factors, and price targets
-- **Veto rules:** AI SELL on a BUY = vetoed. AI confidence < 40 = vetoed. AI strongly BUY on a SELL = vetoed.
-- Every AI prediction is recorded and scored against actual outcomes
-
-### Risk Management
-
-| Parameter | Value |
-|---|---|
-| Max position size (aggressive) | 10% of equity |
-| Max total positions | 10 |
-| Stop-loss (aggressive) | 3% |
-| Take-profit (aggressive) | 10% |
-| Max position size (conservative) | 5% of equity |
-| Stop-loss (conservative) | 5% |
-| Take-profit (conservative) | 15% |
+```bash
+./run_tests.sh          # All 105 tests
+./run_tests.sh -x       # Stop on first failure
+./run_tests.sh -k "strategy"  # Strategy tests only
+```
 
 ## Cloud Deployment (DigitalOcean)
 
-The bot runs autonomously on a $6/mo DigitalOcean droplet.
-
-### Deploy
-
 ```bash
-./deploy.sh 67.205.155.63
+./deploy.sh 67.205.155.63     # Full deploy
+./sync.sh 67.205.155.63       # Code-only sync (safe)
+./status_remote.sh 67.205.155.63
+./stop_remote.sh 67.205.155.63
 ```
 
-This will:
-1. Install Python and dependencies on the droplet
-2. Sync all code and `.env` to `/opt/quantopsai`
-3. Create a systemd service that auto-starts on boot
-4. Start the scheduler
+## Trading Schedules
 
-### Manage
+| Schedule | Hours | Days |
+|---|---|---|
+| Market Hours | 9:30 AM - 4:00 PM ET | Mon-Fri |
+| Extended Hours | 4:00 AM - 8:00 PM ET | Mon-Fri |
+| 24/7 | Always | Every day |
+| Custom | User-defined | User-defined |
 
-```bash
-# Check status and recent logs
-./status_remote.sh
-
-# Stop the bot
-./stop_remote.sh
-
-# Redeploy after code changes
-./deploy.sh
-```
-
-### Remote commands
-
-```bash
-# Portfolio dashboard
-ssh root@67.205.155.63 "cd /opt/quantopsai && venv/bin/python3 main.py dashboard"
-
-# AI accuracy report
-ssh root@67.205.155.63 "cd /opt/quantopsai && venv/bin/python3 main.py ai-report"
-
-# Trade history
-ssh root@67.205.155.63 "cd /opt/quantopsai && venv/bin/python3 main.py journal"
-
-# View today's logs
-ssh root@67.205.155.63 "tail -50 /opt/quantopsai/logs/quantopsai_$(date +%Y-%m-%d).log"
-```
-
-### Autonomous Schedule
-
-During market hours (9:30 AM - 4:00 PM ET, Mon-Fri):
+### Autonomous Tasks
 
 | Interval | Task |
 |---|---|
-| Every 15 min | Check stop-loss / take-profit on all positions |
-| Every 30 min | Screen → Analyze → AI Review → Trade |
-| Every 60 min | Resolve AI predictions against actual prices |
-| 3:55 PM ET | Save daily snapshot + send daily summary email |
-
-Outside market hours, the bot sleeps and automatically wakes at next market open.
-
-## Email Notifications
-
-You'll receive emails for:
-- **Trade executed** — Symbol, qty, price, AI analysis, account snapshot, positions
-- **AI veto** — What technical said vs what AI said and why
-- **Stop-loss / take-profit triggered** — Exit details and P&L
-- **Daily summary** — Full portfolio overview, today's trades, AI performance stats
+| Every 15 min | Screen -> Strategy -> AI batch select -> Execute |
+| Every 15 min | Check exits (stop-loss, take-profit, trailing stops) |
+| Every 15 min | Cancel stale limit orders, update fill prices |
+| Every 60 min | Resolve AI predictions against actual outcomes |
+| Daily 3:55 PM ET | Snapshot, self-tune, pattern analysis, summary email |
 
 ## Project Structure
 
 ```
 Quantops/
-├── main.py                 # CLI entry point with all commands
-├── config.py               # Configuration and environment variables
-├── client.py               # Alpaca API client wrapper
-├── market_data.py          # Historical bars and technical indicators
-├── strategies.py           # Conservative strategies (SMA, RSI, combined)
-├── aggressive_strategy.py  # Small-cap strategies (momentum, volume, gap)
-├── trader.py               # Trade execution with risk management
-├── aggressive_trader.py    # Aggressive execution with AI review gate
-├── screener.py             # Small/micro-cap stock screener
-├── ai_analyst.py           # Claude AI analysis integration
-├── news_sentiment.py       # News fetching and AI sentiment scoring
-├── ai_tracker.py           # AI prediction accuracy tracking
-├── portfolio_manager.py    # Position sizing and risk constraints
-├── journal.py              # SQLite trade journal
-├── dashboard.py            # Rich terminal dashboard
-├── notifications.py        # Email notification system
-├── backtester.py           # Walk-forward backtesting engine
-├── scheduler.py            # Autonomous market-hours scheduler
-├── deploy.sh               # One-command cloud deployment
-├── status_remote.sh        # Check remote bot status
-├── stop_remote.sh          # Stop remote bot
-├── requirements.txt        # Python dependencies
-└── .env.example            # Environment variable template
+├── Strategy Engines
+│   ├── strategy_micro.py        Micro cap ($1-$5): volume explosion, penny reversal, breakout, trap avoidance
+│   ├── strategy_small.py        Small cap ($5-$20): mean reversion, volume spike, gap & go, momentum
+│   ├── strategy_mid.py          Mid cap ($20-$100): sector momentum, breakout, pullback, MACD cross
+│   ├── strategy_large.py        Large cap ($50-$500): index correlation, relative strength, dividend, MA alignment
+│   ├── strategy_crypto.py       Crypto: BTC correlation, trend following, extreme oversold, volume surge
+│   └── strategy_router.py       Routes symbols to correct engine
+├── AI & Intelligence
+│   ├── ai_analyst.py            AI-first batch trade selection + per-symbol analysis
+│   ├── ai_providers.py          Provider abstraction (Anthropic, OpenAI, Google)
+│   ├── ai_tracker.py            Prediction tracking with regime + strategy type
+│   ├── self_tuning.py           Pattern learning, auto-adjustment, failure analysis
+│   ├── alternative_data.py      Insider trades, short interest, options flow, fundamentals, intraday
+│   ├── sec_filings.py           SEC EDGAR Form 4 insider filing scraper
+│   ├── social_sentiment.py      Reddit sentiment via PRAW (r/wallstreetbets, r/stocks)
+│   ├── political_sentiment.py   MAGA mode: sector impact, ticker mentions, trade ideas
+│   ├── market_regime.py         Bull/bear/sideways/volatile detection
+│   ├── earnings_calendar.py     Earnings date checking
+│   └── news_sentiment.py        Per-stock news from yfinance
+├── Trading & Execution
+│   ├── trade_pipeline.py        AI-first pipeline: pre-filter -> strategy -> rank -> AI batch -> execute
+│   ├── trader.py                Exit management, stop-loss, trailing stops
+│   ├── portfolio_manager.py     Position sizing, drawdown protection, ATR stops
+│   └── correlation.py           Position correlation checking
+├── Data
+│   ├── market_data.py           33 technical indicators, sector rotation, relative strength
+│   ├── screener.py              Dynamic universe discovery (8000+ symbols) + price/volume screening
+│   └── segments.py              Fallback hardcoded universes per market type
+├── Web Application
+│   ├── app.py                   Flask factory with Flask-Login
+│   ├── auth.py                  Authentication routes
+│   ├── views.py                 Dashboard, settings, performance, API endpoints
+│   ├── metrics.py               Institutional metrics calculator + SVG charts
+│   ├── templates/               AI Brain panels, sector rotation, candidate shortlist, 6-tab performance
+│   └── static/                  CSS + JavaScript
+├── Infrastructure
+│   ├── multi_scheduler.py       15-min scan, multi-profile, dynamic universe
+│   ├── models.py                Database schema, migrations, user/profile CRUD
+│   ├── user_context.py          UserContext dataclass (53 fields)
+│   ├── journal.py               Per-profile trade journal with pattern learning columns
+│   ├── backtester.py            Walk-forward backtester with slippage
+│   ├── backtest_worker.py       Background thread job runner
+│   ├── notifications.py         Email via Resend API
+│   ├── crypto.py                Fernet encryption for API keys
+│   └── config.py                Environment configuration
+├── Testing
+│   ├── tests/                   105 tests (imports, database, strategies, pipeline, web)
+│   ├── run_tests.sh             Test runner script
+│   ├── run_backtest_validation.py  Backtest all 5 engines against real data
+│   └── pytest.ini               Test configuration
+├── Deployment
+│   ├── deploy.sh                Full deployment script
+│   ├── sync.sh                  Safe code-only rsync
+│   ├── migrate.py               Database migration (idempotent)
+│   ├── status_remote.sh         Check service status
+│   └── stop_remote.sh           Stop services
+└── Documentation
+    ├── TECHNICAL_DOCUMENTATION.md   Complete system documentation (v4.0, 22 sections)
+    ├── SCALING_PLAN.md              $10K paper -> $1M+ live roadmap
+    └── requirements.txt             Python dependencies
 ```
 
 ## Disclaimer
 
-This is for **educational and paper trading purposes only**. Do not use for real trading without thorough testing and understanding of the risks involved. Past performance does not guarantee future results. AI analysis is probabilistic and can be wrong.
+This is for **educational and paper trading purposes only**. No real capital is at risk. AI analysis is probabilistic and can be wrong. Past performance does not guarantee future results.

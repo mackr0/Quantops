@@ -1,0 +1,4187 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>TECHNICAL_DOCUMENTATION</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">TECHNICAL_DOCUMENTATION</h1>
+</header>
+<h1 id="quantopsai-technical-documentation">QuantOpsAI — Technical
+Documentation</h1>
+<p><strong>Version:</strong> 4.0 <strong>Date:</strong> April 12, 2026
+<strong>System:</strong> AI-powered autonomous paper trading platform
+<strong>Architecture:</strong> Python 3.12 / Flask / SQLite /
+DigitalOcean</p>
+<hr />
+<h2 id="table-of-contents">Table of Contents</h2>
+<ol type="1">
+<li><a href="#1-system-overview">System Overview</a></li>
+<li><a href="#2-architecture">Architecture</a></li>
+<li><a href="#3-market-specific-strategy-engines">Market-Specific
+Strategy Engines</a></li>
+<li><a href="#4-ai-analysis-pipeline">AI Analysis Pipeline</a></li>
+<li><a href="#5-trade-execution-pipeline">Trade Execution
+Pipeline</a></li>
+<li><a href="#6-risk-management">Risk Management</a></li>
+<li><a href="#7-self-tuning--machine-learning">Self-Tuning &amp; Machine
+Learning</a></li>
+<li><a href="#8-intelligence-features">Intelligence Features</a></li>
+<li><a href="#9-database-schema">Database Schema</a></li>
+<li><a href="#10-web-application">Web Application</a></li>
+<li><a href="#11-scheduler--automation">Scheduler &amp;
+Automation</a></li>
+<li><a href="#12-external-integrations">External Integrations</a></li>
+<li><a href="#13-multi-user-security-model">Multi-User Security
+Model</a></li>
+<li><a href="#14-configuration-reference">Configuration
+Reference</a></li>
+<li><a href="#15-cost-model">Cost Model</a></li>
+<li><a href="#16-codebase-reference">Codebase Reference</a></li>
+</ol>
+<hr />
+<h2 id="system-overview">1. System Overview</h2>
+<p>QuantOpsAI is an autonomous paper trading system that:</p>
+<ol type="1">
+<li><strong>Screens</strong> hundreds of stocks/crypto across 5 market
+segments using Yahoo Finance data (free)</li>
+<li><strong>Analyzes</strong> candidates with market-specific technical
+strategies (each segment has its own engine)</li>
+<li><strong>Reviews</strong> actionable signals through AI
+(Claude/GPT/Gemini) before any trade executes</li>
+<li><strong>Executes</strong> on Alpaca’s paper trading platform
+(commission-free, simulated)</li>
+<li><strong>Tracks</strong> every AI prediction and resolves it against
+actual price movements</li>
+<li><strong>Self-tunes</strong> by feeding past performance back into
+the AI prompt and auto-adjusting parameters</li>
+<li><strong>Notifies</strong> users via email for every trade, veto,
+exit, and daily summary</li>
+</ol>
+<p>The system operates 24/7 for crypto and during US market hours for
+equities, running on a $6/month DigitalOcean droplet.</p>
+<hr />
+<h2 id="architecture">2. Architecture</h2>
+<pre><code>┌─────────────────────────────────────────────────────────────────┐
+│                    QuantOpsAI Architecture                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌──────────┐    ┌──────────────┐    ┌──────────────┐          │
+│  │ Flask    │    │ Multi-User   │    │ Strategy     │          │
+│  │ Web App  │    │ Scheduler    │    │ Engines (5)  │          │
+│  │ (Gunicorn)│    │ (systemd)    │    │              │          │
+│  └────┬─────┘    └──────┬───────┘    └──────┬───────┘          │
+│       │                 │                    │                   │
+│       └────────┬────────┴────────────┬───────┘                  │
+│                │                     │                           │
+│         ┌──────▼──────┐      ┌──────▼──────┐                   │
+│         │   SQLite    │      │   AI Layer  │                   │
+│         │  Databases  │      │ (multi-     │                   │
+│         │  (per-user/ │      │  provider)  │                   │
+│         │   profile)  │      └──────┬──────┘                   │
+│         └─────────────┘             │                           │
+│                              ┌──────▼──────┐                   │
+│                              │  Alpaca API │                   │
+│                              │ (paper      │                   │
+│                              │  trading)   │                   │
+│                              └─────────────┘                   │
+├─────────────────────────────────────────────────────────────────┤
+│  Data Sources: Yahoo Finance (free) | RSS Feeds (free)          │
+│  AI Providers: Anthropic | OpenAI | Google (user&#39;s API keys)    │
+│  Notifications: Resend Email API                                │
+│  Infrastructure: DigitalOcean droplet ($6/mo), nginx, systemd   │
+└─────────────────────────────────────────────────────────────────┘</code></pre>
+<h3 id="component-summary">Component Summary</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Component</th>
+<th>Technology</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Web App</td>
+<td>Flask + Gunicorn + nginx</td>
+<td>User interface, settings, dashboards</td>
+</tr>
+<tr>
+<td>Scheduler</td>
+<td>Python systemd service</td>
+<td>Autonomous trading loop</td>
+</tr>
+<tr>
+<td>Strategy Engines</td>
+<td>5 Python modules</td>
+<td>Market-specific signal generation</td>
+</tr>
+<tr>
+<td>AI Layer</td>
+<td>Anthropic/OpenAI/Google APIs</td>
+<td>Trade validation and consensus</td>
+</tr>
+<tr>
+<td>Database</td>
+<td>SQLite (WAL mode)</td>
+<td>User data, trades, predictions, tuning history</td>
+</tr>
+<tr>
+<td>Market Data</td>
+<td>Yahoo Finance (yfinance)</td>
+<td>OHLCV bars, indicators, earnings</td>
+</tr>
+<tr>
+<td>Execution</td>
+<td>Alpaca REST API</td>
+<td>Paper trade placement and monitoring</td>
+</tr>
+<tr>
+<td>Notifications</td>
+<td>Resend API</td>
+<td>Email alerts for trades, vetoes, summaries</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="market-specific-strategy-engines">3. Market-Specific Strategy
+Engines</h2>
+<p>Each market segment has its own strategy engine with strategies
+designed for that market’s specific behavior patterns.</p>
+<h3 id="micro-cap-15-strategy_micro.py">3.1 Micro Cap ($1–$5) —
+<code>strategy_micro.py</code></h3>
+<p><strong>Market Characteristics:</strong> Extreme volatility, low
+liquidity, catalyst-driven, penny stock behavior.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>BUY Trigger</th>
+<th>EXIT Trigger</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Volume Explosion</strong></td>
+<td>Volume &gt; 5x 20-day avg AND price up &gt; 5% AND RSI &lt; 75</td>
+<td>Volume drops below 2x avg</td>
+</tr>
+<tr>
+<td><strong>Penny Reversal</strong></td>
+<td>RSI &lt; 20 AND price &gt; 20% below 10-day SMA AND volume
+increasing</td>
+<td>Price returns to SMA10 OR RSI &gt; 50</td>
+</tr>
+<tr>
+<td><strong>Breakout Above Resistance</strong></td>
+<td>Price &gt; 10-day high AND volume &gt; 3x avg</td>
+<td>Price drops below breakout level</td>
+</tr>
+<tr>
+<td><strong>Trap Avoidance Filter</strong></td>
+<td>SKIP if avg volume &lt; 100K or 10+ consecutive down days</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Default Risk:</strong> 10% stop-loss, 15% take-profit, 5% max
+position size</p>
+<h3 id="small-cap-520-strategy_small.py">3.2 Small Cap ($5–$20) —
+<code>strategy_small.py</code></h3>
+<p><strong>Market Characteristics:</strong> Volatile but more
+established, sector-sensitive, mean reversion works.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>BUY Trigger</th>
+<th>EXIT Trigger</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Mean Reversion</strong></td>
+<td>RSI &lt; 28 AND price &gt; 8% below 20-day SMA</td>
+<td>Price returns to SMA20 OR RSI &gt; 55</td>
+</tr>
+<tr>
+<td><strong>Volume Spike Entry</strong></td>
+<td>Volume &gt; 3x avg AND price up &gt; 3% AND RSI 30-65</td>
+<td>2 consecutive red days with declining volume</td>
+</tr>
+<tr>
+<td><strong>Gap and Go</strong></td>
+<td>Open &gt; 2.5% above previous close AND volume &gt; 1.5x avg</td>
+<td>Price drops below today’s open</td>
+</tr>
+<tr>
+<td><strong>Momentum Continuation</strong></td>
+<td>Price above SMA20 AND SMA20 slope positive AND RSI 50-70</td>
+<td>Price closes below SMA20</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Default Risk:</strong> 6% stop-loss, 8% take-profit, 8% max
+position size</p>
+<h3 id="mid-cap-20100-strategy_mid.py">3.3 Mid Cap ($20–$100) —
+<code>strategy_mid.py</code></h3>
+<p><strong>Market Characteristics:</strong> Institutional ownership,
+follows sectors/indices, momentum works well.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>BUY Trigger</th>
+<th>EXIT Trigger</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Sector Momentum</strong></td>
+<td>Stock RSI &gt; 50 AND SPY trending up AND volume &gt; avg</td>
+<td>Stock drops below SMA20 OR sector reverses</td>
+</tr>
+<tr>
+<td><strong>Breakout with Volume</strong></td>
+<td>Price &gt; 20-day high AND volume &gt; 2x avg AND RSI 55-75</td>
+<td>Price drops below 10-day low</td>
+</tr>
+<tr>
+<td><strong>Pullback to Support</strong></td>
+<td>Price pulls back to SMA20 from above AND RSI 40-55</td>
+<td>Price closes below SMA50</td>
+</tr>
+<tr>
+<td><strong>MACD Cross</strong></td>
+<td>MACD crosses above signal AND histogram positive AND price &gt;
+SMA50</td>
+<td>MACD crosses below signal</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Default Risk:</strong> 5% stop-loss, 7% take-profit, 8% max
+position size</p>
+<h3 id="large-cap-50500-strategy_large.py">3.4 Large Cap ($50–$500) —
+<code>strategy_large.py</code></h3>
+<p><strong>Market Characteristics:</strong> Market-correlated,
+institutional-driven, lower volatility.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>BUY Trigger</th>
+<th>EXIT Trigger</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Index Correlation</strong></td>
+<td>SPY RSI &lt; 35 AND stock RSI &lt; 40</td>
+<td>SPY overbought OR stock hits TP</td>
+</tr>
+<tr>
+<td><strong>Relative Strength</strong></td>
+<td>Stock outperforms SPY over 5 days AND volume &gt; avg AND RSI &lt;
+70</td>
+<td>Stock underperforms SPY 3 consecutive days</td>
+</tr>
+<tr>
+<td><strong>Dividend Yield Play</strong></td>
+<td>RSI &lt; 35 AND price &gt; $50 (blue chip proxy)</td>
+<td>RSI &gt; 55</td>
+</tr>
+<tr>
+<td><strong>MA Alignment</strong></td>
+<td>Price &gt; EMA12 &gt; SMA20 &gt; SMA50 AND volume &gt; avg</td>
+<td>Price closes below SMA20</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Default Risk:</strong> 4% stop-loss, 6% take-profit, 7% max
+position size</p>
+<h3 id="crypto-strategy_crypto.py">3.5 Crypto —
+<code>strategy_crypto.py</code></h3>
+<p><strong>Market Characteristics:</strong> 24/7 trading,
+BTC-correlated, sentiment-driven, trends hard.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>BUY Trigger</th>
+<th>EXIT Trigger</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>BTC Correlation</strong></td>
+<td>BTC RSI &lt; 45 AND BTC bouncing (positive day) AND alt RSI &lt;
+40</td>
+<td>BTC drops below recent low</td>
+</tr>
+<tr>
+<td><strong>Trend Following</strong></td>
+<td>Price above SMA20 with momentum (RSI 40-70, positive day)</td>
+<td>Price crosses below SMA20</td>
+</tr>
+<tr>
+<td><strong>Extreme Oversold</strong></td>
+<td>RSI &lt; 30 AND price &gt; 10% below SMA20</td>
+<td>RSI &gt; 75 (genuine overbought)</td>
+</tr>
+<tr>
+<td><strong>Volume Surge</strong></td>
+<td>Volume &gt; 1.5x avg AND price up &gt; 1.5% AND RSI &lt; 70</td>
+<td>Volume drops below avg 2 periods</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Default Risk:</strong> 8% stop-loss, 10% take-profit, 7% max
+position size</p>
+<h3 id="strategy-scoring-system">Strategy Scoring System</h3>
+<p>Each engine runs 4 strategies independently. Votes are combined:</p>
+<table>
+<thead>
+<tr>
+<th>Vote</th>
+<th>Score</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BUY</td>
+<td>+1</td>
+</tr>
+<tr>
+<td>SELL</td>
+<td>-1</td>
+</tr>
+<tr>
+<td>HOLD</td>
+<td>0</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Total Score</th>
+<th>Signal</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>≥ 2</td>
+<td>STRONG_BUY</td>
+</tr>
+<tr>
+<td>1</td>
+<td>BUY</td>
+</tr>
+<tr>
+<td>0</td>
+<td>HOLD</td>
+</tr>
+<tr>
+<td>-1</td>
+<td>SELL</td>
+</tr>
+<tr>
+<td>≤ -2</td>
+<td>STRONG_SELL</td>
+</tr>
+</tbody>
+</table>
+<h4 id="long-only-entry-invariant-2026-04-15">Long-only entry invariant
+(2026-04-15)</h4>
+<p>The per-size strategies are <strong>long-only entry engines</strong>.
+They emit <code>BUY</code> or <code>HOLD</code> for almost every
+condition. A <code>SELL</code> vote is only returned for conditions that
+are <em>actually bearish setups a short trader would take</em> — not
+“exit conditions for a hypothetical existing long.” Examples of allowed
+SELL branches: MACD bearish cross, break of 10-day low, failed gap,
+falling knife (10 consecutive red closes), SPY RSI &gt; 75.</p>
+<p>Exit management for actual open positions (stop loss, take profit,
+trailing stop, re-entry cooldown) is a <strong>separate concern</strong>
+handled by <code>trade_pipeline.check_exits</code> and friends — the
+entry strategies do not participate.</p>
+<p>Additionally, <code>multi_strategy.aggregate_candidates()</code>
+coerces <code>SELL</code> votes to <code>HOLD</code> (with zero score
+contribution) when the profile has
+<code>enable_short_selling=False</code>, so long-only profiles cannot be
+biased toward <code>STRONG_SELL</code> by signal leakage.</p>
+<p><strong>Regression guard:</strong>
+<code>tests/test_strategy_sell_bias_fix.py</code> (18 tests) pins both
+invariants — bogus-SELL conditions return HOLD, legit bearish setups
+still SELL, aggregation respects the profile flag.</p>
+<hr />
+<h2 id="ai-first-analysis-pipeline">4. AI-First Analysis Pipeline</h2>
+<h3 id="architecture-ai-as-the-brain">4.1 Architecture: AI as the
+Brain</h3>
+<p>The AI is not a yes/no gate — it is the portfolio manager. One batch
+call per cycle sees all candidates with full context and picks the best
+trades.</p>
+<pre><code>Screen 8000+ symbols → Strategy engines score candidates (free) →
+  Rank top ~15 → Single AI batch call with:
+    - All candidates + indicators + news headlines
+    - Current portfolio state (holdings, P&amp;L, drawdown)
+    - Market regime (VIX, SPY trend)
+    - Political context (MAGA Mode)
+    - Learned patterns from history
+    - Per-stock track record
+  → AI picks 0-3 trades and sizes them → Execute</code></pre>
+<p><strong>Cost:</strong> ~$0.001 per batch call. At 15-min intervals:
+~$0.15-0.25/day total.</p>
+<h3 id="multi-provider-support">4.2 Multi-Provider Support</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Provider</th>
+<th>Models Available</th>
+<th>Pricing Tier</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Anthropic</strong></td>
+<td>Claude Haiku 4.5 (cheapest), Sonnet 4, Opus 4</td>
+<td>~$0.001/batch call (Haiku)</td>
+</tr>
+<tr>
+<td><strong>OpenAI</strong></td>
+<td>GPT-4o-mini, GPT-4o, o3-mini</td>
+<td>~$0.001/batch call (mini)</td>
+</tr>
+<tr>
+<td><strong>Google</strong></td>
+<td>Gemini 2.0 Flash, Gemini 2.5 Pro</td>
+<td>~$0.001/batch call (Flash)</td>
+</tr>
+</tbody>
+</table>
+<p>Users select their provider and model per trading profile. The
+<code>ai_providers.py</code> abstraction handles SDK differences and
+JSON response cleaning.</p>
+<h3 id="batch-prompt-structure">4.3 Batch Prompt Structure</h3>
+<p>The AI receives a single comprehensive prompt:</p>
+<pre><code>ROLE: Portfolio manager for automated {market_type} system.
+      Pick 0-3 trades from candidates. Zero is valid.
+
+PORTFOLIO STATE:
+  - Equity, cash, positions with P&amp;L
+  - Drawdown % and status (normal/reduce/pause)
+
+MARKET CONTEXT:
+  - Regime (bull/bear/sideways/volatile), VIX, SPY trend
+  - Political context (MAGA Mode): sector impact, ticker mentions, trade ideas
+  - Track record summary and overall win rate
+  - LEARNED PATTERNS from history:
+    - &quot;Breakout signals in volatile markets: 15% win rate. Avoid.&quot;
+    - &quot;Mean reversion midday: 55% win rate. Favor this pattern.&quot;
+
+CANDIDATES (ranked by technical score):
+  1. AAPL @ $185.50 | STRONG_BUY (score 2/4)
+     Votes: breakout=BUY, momentum=BUY
+     RSI: 42 | StochRSI: 35 | ADX: 28 | Vol: 2.3x | ROC10: +3.2% | vs 52wH: -8.5%
+     Breakout above 20-day high on 2.3x volume
+     Your record: 3W/1L (75% win rate)
+     News: Apple reports strong iPhone sales | AI chip deal announced
+  2. ...
+
+RESPONSE: JSON with trades[], portfolio_reasoning, pass_this_cycle</code></pre>
+<h3 id="technical-indicators-fed-to-ai">4.4 Technical Indicators Fed to
+AI</h3>
+<p><strong>Trend &amp; Momentum (7 indicators):</strong></p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Indicator</th>
+<th>Code</th>
+<th>What It Measures</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>RSI (14)</td>
+<td><code>rsi</code></td>
+<td>Overbought/oversold (0-100)</td>
+</tr>
+<tr>
+<td>Stochastic RSI</td>
+<td><code>stoch_rsi</code></td>
+<td>More sensitive RSI variant (0-100)</td>
+</tr>
+<tr>
+<td>ADX (14)</td>
+<td><code>adx</code></td>
+<td>Trend strength (&gt;25 = strong trend)</td>
+</tr>
+<tr>
+<td>MACD + Signal + Histogram</td>
+<td><code>macd</code>, <code>macd_signal</code>,
+<code>macd_histogram</code></td>
+<td>Momentum shifts</td>
+</tr>
+<tr>
+<td>ROC (10)</td>
+<td><code>roc_10</code></td>
+<td>Rate of Change — momentum as %</td>
+</tr>
+<tr>
+<td>SMA 20, 50</td>
+<td><code>sma_20</code>, <code>sma_50</code></td>
+<td>Moving average trend direction</td>
+</tr>
+<tr>
+<td>EMA 12</td>
+<td><code>ema_12</code></td>
+<td>Short-term trend sensitivity</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Institutional Money Flow (4 indicators):</strong></p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Indicator</th>
+<th>Code</th>
+<th>What It Measures</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>MFI (14)</td>
+<td><code>mfi</code></td>
+<td>Money Flow Index — volume-weighted RSI. Shows if institutions are
+buying (&gt;50) or selling (&lt;50).</td>
+</tr>
+<tr>
+<td>CMF (20)</td>
+<td><code>cmf</code></td>
+<td>Chaikin Money Flow — positive = accumulation, negative =
+distribution</td>
+</tr>
+<tr>
+<td>OBV</td>
+<td><code>obv</code></td>
+<td>On-Balance Volume — running total showing if volume flows with or
+against price</td>
+</tr>
+<tr>
+<td>A/D Line</td>
+<td><code>ad_line</code></td>
+<td>Accumulation/Distribution — confirms trend with volume</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Volatility &amp; Structure (5 indicators):</strong></p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Indicator</th>
+<th>Code</th>
+<th>What It Measures</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ATR (14)</td>
+<td><code>atr_14</code></td>
+<td>Average True Range — stock’s actual volatility in dollars</td>
+</tr>
+<tr>
+<td>Bollinger Bands</td>
+<td><code>bb_upper</code>, <code>bb_lower</code>,
+<code>bb_middle</code></td>
+<td>Volatility channels (2σ from SMA20)</td>
+</tr>
+<tr>
+<td>Volatility Squeeze</td>
+<td><code>squeeze</code></td>
+<td>1 when Bollinger Bands are inside Keltner Channels — big move
+imminent</td>
+</tr>
+<tr>
+<td>VWAP (20)</td>
+<td><code>vwap_20</code>, <code>pct_from_vwap</code></td>
+<td>Volume-Weighted Average Price — institutional benchmark</td>
+</tr>
+<tr>
+<td>Volume vs SMA</td>
+<td><code>volume_sma_20</code></td>
+<td>Volume anomaly detection</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Price Context (5 indicators):</strong></p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Indicator</th>
+<th>Code</th>
+<th>What It Measures</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>52-Week High/Low</td>
+<td><code>pct_from_52w_high</code>, <code>pct_from_52w_low</code></td>
+<td>Where price sits in yearly range</td>
+</tr>
+<tr>
+<td>Fibonacci Levels</td>
+<td><code>fib_382</code>, <code>fib_500</code>, <code>fib_618</code>,
+<code>nearest_fib_dist</code></td>
+<td>Key retracement levels where institutional orders cluster</td>
+</tr>
+<tr>
+<td>Pivot Points</td>
+<td><code>pivot</code>, <code>resistance_1</code>,
+<code>support_1</code></td>
+<td>Previous-day derived support/resistance</td>
+</tr>
+<tr>
+<td>Gap %</td>
+<td><code>gap_pct</code></td>
+<td>Opening gap from previous close — unfilled gaps act as price
+magnets</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Sector Context (per candidate):</strong></p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Data</th>
+<th>Source</th>
+<th>What It Provides</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sector Rotation</td>
+<td>11 sector ETFs (XLK, XLF, XLE, etc.)</td>
+<td>Which sectors have inflows/outflows this week</td>
+</tr>
+<tr>
+<td>Relative Strength</td>
+<td>Stock 5d return vs sector ETF 5d return</td>
+<td>Is this stock leading or lagging its sector?</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Per-Stock News (up to 3 headlines per candidate):</strong>
+Free from yfinance, cached 30 min. AI sees actual news catalysts
+alongside technicals.</p>
+<p>All computed from the <code>ta</code> library on free yfinance data.
+<strong>33 technical indicators + alternative data (insider, short
+interest, options flow, fundamentals, intraday) + sector context + news
+= zero API cost.</strong></p>
+<h3 id="ai-response-schema">4.5 AI Response Schema</h3>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;trades&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;symbol&quot;</span><span class="fu">:</span> <span class="st">&quot;AAPL&quot;</span><span class="fu">,</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;action&quot;</span><span class="fu">:</span> <span class="st">&quot;BUY&quot;</span><span class="fu">,</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;size_pct&quot;</span><span class="fu">:</span> <span class="fl">7.5</span><span class="fu">,</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;confidence&quot;</span><span class="fu">:</span> <span class="dv">75</span><span class="fu">,</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;stop_loss_pct&quot;</span><span class="fu">:</span> <span class="fl">3.0</span><span class="fu">,</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;take_profit_pct&quot;</span><span class="fu">:</span> <span class="fl">10.0</span><span class="fu">,</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>      <span class="dt">&quot;reasoning&quot;</span><span class="fu">:</span> <span class="st">&quot;Strong breakout with volume confirmation...&quot;</span></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>    <span class="fu">}</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;portfolio_reasoning&quot;</span><span class="fu">:</span> <span class="st">&quot;Why this combination or why pass&quot;</span><span class="fu">,</span></span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;pass_this_cycle&quot;</span><span class="fu">:</span> <span class="kw">false</span></span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p>Validation: symbols must be in candidates list, size clamped to
+max_position_pct, max 3 trades, shorts only if enabled. On failure: 0
+trades (safe default).</p>
+<h3 id="json-response-handling">4.6 JSON Response Handling</h3>
+<p>All AI responses go through <code>_strip_markdown_fences()</code>
+which: 1. Removes <code>```json ```</code> wrappers 2. Extracts the
+first complete <code>{...}</code> JSON object using brace matching 3.
+Handles preamble text and trailing commentary 4. Works across all
+providers (Haiku, GPT, Gemini)</p>
+<hr />
+<h2 id="trade-execution-pipeline">5. Trade Execution Pipeline</h2>
+<h3 id="pipeline-steps">5.1 Pipeline Steps</h3>
+<pre><code>Step 0: PORTFOLIO STATE (fetched ONCE per cycle)
+  ├─ Account info (equity, cash, buying power)
+  ├─ Current positions (filtered by market type)
+  ├─ Drawdown check (pause at 20%, reduce at 10%)
+  └─ If drawdown pause → return immediately, zero AI calls
+
+Step 1: PRE-FILTER (zero AI cost)
+  ├─ Auto-blacklisted symbols (0% win rate on 3+ predictions)
+  ├─ Earnings within avoid_days
+  ├─ At max positions and symbol not held
+  └─ Excluded symbols (user&#39;s restricted list)
+
+Step 2: STRATEGY (CPU cost, no AI cost)
+  ├─ Route to market-specific engine via strategy_router.py
+  ├─ Run 4 strategies per symbol, combine votes into score
+  └─ All candidates scored in parallel (no AI calls)
+
+Step 3: RANK &amp; SHORTLIST (zero cost)
+  ├─ Filter: HOLD → drop, SELL with no position + no shorts → drop
+  ├─ Sort by abs(score) descending
+  └─ Take top 15 candidates
+
+Step 4: AI BATCH SELECTION (ONE AI call)
+  ├─ Lazy-fetch MAGA political context (only when shortlist non-empty)
+  ├─ Build batch prompt: candidates + portfolio + regime + patterns + news
+  ├─ Single call to ai_select_trades()
+  └─ AI returns 0-3 trades with sizing and reasoning
+
+Step 5: EXECUTE (per AI-selected trade)
+  ├─ ATR-based stop/take-profit calculation
+  ├─ Correlation check (reduce size if &gt; 0.7)
+  ├─ Position sizing from AI&#39;s size_pct
+  ├─ Submit order via Alpaca API (market or limit)
+  └─ Log trade to journal</code></pre>
+<h3 id="pipeline-efficiency">5.2 Pipeline Efficiency</h3>
+<p>Logged every cycle:
+<code>"27 candidates → 23 post-filter → 1 shortlisted → 1 AI call → 0 buys"</code></p>
+<p>Typical cycle cost: <strong>1-2 AI calls</strong> (batch + MAGA if
+needed). ~$0.001-0.002 per cycle.</p>
+<h3 id="dynamic-universe-discovery">5.3 Dynamic Universe Discovery</h3>
+<p>Instead of hardcoded symbol lists, the system dynamically discovers
+tradable symbols:</p>
+<ol type="1">
+<li>Alpaca API <code>list_assets()</code> returns ~8000+ tradable US
+equities</li>
+<li>Random sample of 500 + full hardcoded fallback universe</li>
+<li>yfinance batch download filters by price range and volume</li>
+<li>Top 100 most active symbols returned</li>
+<li>Cached for 24 hours</li>
+</ol>
+<p>Hardcoded lists in segments.py serve as the fallback if dynamic
+discovery fails. Crypto uses a fixed universe (33 pairs) since crypto
+symbols are well-known.</p>
+<h3 id="per-stock-news-integration">5.4 Per-Stock News Integration</h3>
+<p>Each shortlisted candidate gets up to 3 recent headlines from
+yfinance (free, cached 30 min). Headlines are included in the AI batch
+prompt so the AI can factor in news catalysts without a separate AI
+call.</p>
+<hr />
+<h2 id="risk-management">6. Risk Management</h2>
+<h3 id="position-level-controls">6.1 Position-Level Controls</h3>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Control</th>
+<th>How It Works</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>ATR-Based Stops</strong></td>
+<td>Stop-loss = entry - (2× ATR), take-profit = entry + (3× ATR). Adapts
+to each stock’s volatility.</td>
+</tr>
+<tr>
+<td><strong>Trailing Stops</strong></td>
+<td>Once profitable, stop follows price up (longs) or down (shorts).
+Trail distance = 1.5× ATR. Never turns a winner into a big loser.</td>
+</tr>
+<tr>
+<td><strong>Fixed % Stops</strong></td>
+<td>Fallback when ATR data unavailable. Configurable per profile.</td>
+</tr>
+<tr>
+<td><strong>Short-Specific Stops</strong></td>
+<td>Separate wider stops for shorts (default 8%) because upward
+volatility spikes are sharper.</td>
+</tr>
+<tr>
+<td><strong>Limit Orders</strong></td>
+<td>Optional (default off). Entries use limit orders at current price
+for better fills. Unfilled orders auto-cancelled after 5 minutes. Exit
+orders remain market for guaranteed fill.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="portfolio-level-controls">6.2 Portfolio-Level Controls</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Control</th>
+<th>Default</th>
+<th>How It Works</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Max Position Size</strong></td>
+<td>8-10% of equity</td>
+<td>No single position exceeds this %</td>
+</tr>
+<tr>
+<td><strong>Max Total Positions</strong></td>
+<td>10</td>
+<td>Won’t open new positions beyond this count</td>
+</tr>
+<tr>
+<td><strong>Drawdown Reduction</strong></td>
+<td>10% drawdown</td>
+<td>Halves all position sizes</td>
+</tr>
+<tr>
+<td><strong>Drawdown Pause</strong></td>
+<td>20% drawdown</td>
+<td>Stops all trading until recovery</td>
+</tr>
+<tr>
+<td><strong>Correlation Limit</strong></td>
+<td>0.7</td>
+<td>Reduces position size 50% when new trade is &gt; 70% correlated with
+existing positions</td>
+</tr>
+<tr>
+<td><strong>Sector Limit</strong></td>
+<td>5 per group</td>
+<td>Limits exposure to correlated market segments</td>
+</tr>
+</tbody>
+</table>
+<h3 id="pre-trade-filters">6.3 Pre-Trade Filters</h3>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Filter</th>
+<th>How It Works</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Earnings Avoidance</strong></td>
+<td>Skips stocks within N days of earnings (default 2)</td>
+</tr>
+<tr>
+<td><strong>Auto-Blacklist</strong></td>
+<td>Skips stocks with 0% win rate on 3+ predictions</td>
+</tr>
+<tr>
+<td><strong>Restricted Symbols</strong></td>
+<td>User-defined exclusion list (e.g., employer stock)</td>
+</tr>
+<tr>
+<td><strong>Bounce-Day Short Filter</strong></td>
+<td>Only opens shorts when stock is UP intraday (not shorting into
+weakness)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="self-tuning-machine-learning">7. Self-Tuning &amp; Machine
+Learning</h2>
+<h3 id="performance-context-injection">7.1 Performance Context
+Injection</h3>
+<p>Before every AI review, the prompt includes the AI’s own track
+record:</p>
+<pre><code>MARKET: BEAR (VIX 25)
+YOUR RECORD ON SOFI: 2W/6L (25% win rate)
+YOUR OVERALL: 45% win rate (94W/112L). Be more selective.
+EARNINGS: SOFI reports in 3 days. High uncertainty.</code></pre>
+<p>This forces the AI to consider its own accuracy when making
+decisions.</p>
+<h3 id="automatic-parameter-adjustment">7.2 Automatic Parameter
+Adjustment</h3>
+<p>Runs daily at 3:55 PM ET:</p>
+<ol type="1">
+<li><strong>Review past adjustments</strong> (3+ days old with 10+ new
+predictions)
+<ul>
+<li>If adjustment improved win rate → mark “improved,” keep it</li>
+<li>If adjustment worsened win rate → auto-reverse it</li>
+<li>3-day cooldown prevents oscillation</li>
+</ul></li>
+<li><strong>Make new adjustments</strong> based on current data:
+<ul>
+<li>If win rate at confidence &lt; 60% is below 35% → raise threshold to
+60</li>
+<li>If win rate at confidence &lt; 70% is below 35% → raise to 70</li>
+<li>If overall win rate &lt; 30% → reduce position size by 20%</li>
+<li>If short selling has 0% win rate on 5+ trades → widen short stops
+50%</li>
+</ul></li>
+<li><strong>Cross-profile learning:</strong>
+<ul>
+<li>If another profile has 20%+ higher win rate → suggest adopting its
+settings (logged but not auto-applied)</li>
+</ul></li>
+</ol>
+<h3 id="tuning-memory">7.3 Tuning Memory</h3>
+<p>Every adjustment is logged with full context in
+<code>tuning_history</code>:</p>
+<pre><code>| Date       | Parameter              | Old → New  | Win Rate Then | Outcome  |
+|------------|------------------------|------------|---------------|----------|
+| 2026-04-02 | ai_confidence_threshold| 25 → 70    | 8.8%          | Improved |
+| 2026-04-02 | max_position_pct       | 0.10 → 0.08| 8.8%          | Improved |</code></pre>
+<p>Future adjustments check this history to avoid repeating strategies
+that already failed.</p>
+<h3 id="pattern-learning">7.4 Pattern Learning</h3>
+<p>The system analyzes historical predictions to discover
+failure/success patterns beyond simple win/loss counts.
+<code>_analyze_failure_patterns()</code> queries
+<code>ai_predictions</code> grouped by:</p>
+<ul>
+<li><strong>Market regime</strong> at prediction time (stored in
+<code>regime_at_prediction</code> column)</li>
+<li><strong>Strategy type</strong> that generated the signal (stored in
+<code>strategy_type</code> column)</li>
+<li><strong>Time of day</strong> when the prediction was made</li>
+</ul>
+<p>Example patterns surfaced to the AI:</p>
+<pre><code>LEARNED PATTERNS (from your history):
+- Predictions in volatile markets: 15% win rate (vs 45% overall). Be extra cautious.
+- breakout signals: 22% win rate (60 trades). Avoid this pattern.
+- Predictions at 9:00-10:00: 20% win rate (25 trades). Avoid trading this hour.
+- mean_reversion signals: 65% win rate (30 trades). Favor this pattern.</code></pre>
+<p>These patterns are included in every AI batch prompt so the AI can
+apply conditional reasoning, not just aggregate statistics.</p>
+<h3 id="meta-model-phase-1-of-quant-fund-evolution">7.5 Meta-Model
+(Phase 1 of Quant Fund Evolution)</h3>
+<p>A second-layer gradient-boosted classifier trained on the system’s
+own prediction history. It learns <strong>when the AI is likely to be
+wrong</strong> and re-weights confidence before execution. See
+<code>meta_model.py</code> and <code>ROADMAP.md</code>.</p>
+<p><strong>The Insight:</strong> The AI is a generalist with systematic
+blind spots. Our resolved prediction database captures those blind spots
+in labeled form. A classifier learns patterns like “AI overconfident on
+low-volume mid-caps in sideways markets with RSI 45-55.” The training
+data is our proprietary AI predictions — literally impossible for
+competitors to replicate.</p>
+<p><strong>Data Flow:</strong></p>
+<pre><code>1. AI makes prediction -&gt; full feature context stored in ai_predictions.features_json
+2. Prediction resolves (win/loss) via existing resolution job
+3. Daily at snapshot time: retrain meta-model on resolved predictions (&gt;=100 samples)
+4. Live: before execution, meta-model estimates P(AI correct) for each selected trade
+5. Execution rules:
+   - meta_prob &gt;= 0.3: blend confidence = ai_conf * (0.5 + meta_prob * 0.5)
+   - meta_prob &lt; 0.3: suppress trade entirely</code></pre>
+<p><strong>Features the meta-model uses:</strong></p>
+<ul>
+<li>Numeric: all 33 technical indicators (RSI, ADX, MFI, CMF, etc.),
+relative strength vs sector, short interest, PE ratio, Reddit
+mentions/sentiment, market signal count</li>
+<li>Categorical (one-hot encoded): signal direction, insider direction,
+options signal, VWAP position, sector trend, market regime</li>
+</ul>
+<p><strong>Model Architecture:</strong>
+<code>sklearn.ensemble.GradientBoostingClassifier</code> — 100
+estimators, depth 3, learning rate 0.05. Chosen over XGBoost for
+simplicity and no extra dependencies. Trained with 80/20 train/test
+split, stratified.</p>
+<p><strong>Metrics Tracked:</strong></p>
+<ul>
+<li>AUC (area under ROC curve): how well the model separates winners
+from losers. Target &gt;= 0.55 (better than random).</li>
+<li>Accuracy: overall hit rate on held-out test set</li>
+<li>Positive rate: baseline win rate for comparison</li>
+<li>Feature importance: which inputs most strongly predict AI
+correctness</li>
+</ul>
+<p><strong>Retraining:</strong> Daily at end-of-day snapshot time. Model
+saved to <code>meta_model_{profile_id}.pkl</code>. Requires &gt;=100
+resolved predictions with <code>features_json</code> populated to
+train.</p>
+<p><strong>Dashboard:</strong> Performance page AI Intelligence tab
+shows per-profile: current AUC, accuracy, training sample count, top 10
+most predictive features. When insufficient data is available, shows
+“Collecting training data” placeholder.</p>
+<p><strong>Why This Matters:</strong> Most systems use AI as a single
+decision layer. This creates a second layer that ML-learns from the
+first layer’s mistakes. Each new prediction strengthens the meta-model.
+Over time the system develops a sophisticated model of its own error
+patterns — compounding alpha that competitors cannot replicate because
+it’s trained on our proprietary prediction data.</p>
+<h3 id="rigorous-validation-gate-phase-2-of-quant-fund-evolution">7.6
+Rigorous Validation Gate (Phase 2 of Quant Fund Evolution)</h3>
+<p>The discipline that 90% of quant funds skip. No strategy goes live
+without passing this gauntlet. See <code>rigorous_backtest.py</code> and
+<code>ROADMAP.md</code>.</p>
+<p><strong>Entry Point:</strong></p>
+<div class="sourceCode" id="cb10"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> rigorous_backtest <span class="im">import</span> validate_strategy, save_validation</span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>result <span class="op">=</span> validate_strategy(</span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>    strategy_fn<span class="op">=</span>my_strategy,</span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>    market_type<span class="op">=</span><span class="st">&#39;midcap&#39;</span>,</span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>    history_days<span class="op">=</span><span class="dv">540</span>,        <span class="co"># ~2 years</span></span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>    params<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> result[<span class="st">&#39;verdict&#39;</span>] <span class="op">==</span> <span class="st">&#39;PASS&#39;</span>:</span>
+<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a>    save_validation(<span class="st">&#39;my_strategy&#39;</span>, result)</span>
+<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a>    <span class="co"># now safe to deploy</span></span>
+<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a><span class="cf">else</span>:</span>
+<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(result[<span class="st">&#39;failed_gates&#39;</span>])</span></code></pre></div>
+<p><strong>The 10 Gates (all must PASS):</strong></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>#</th>
+<th>Gate</th>
+<th>What It Checks</th>
+<th>Threshold</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Min Trades</td>
+<td>Enough trades for statistical meaning</td>
+<td>≥ 30</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Sharpe Ratio</td>
+<td>Risk-adjusted return</td>
+<td>≥ 1.0</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Max Drawdown</td>
+<td>Worst peak-to-trough</td>
+<td>≥ -25%</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Win Rate</td>
+<td>Trade hit rate</td>
+<td>≥ 35%</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Statistical Significance</td>
+<td>t-test on Sharpe ratio</td>
+<td>p &lt; 0.05</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Monte Carlo</td>
+<td>Bootstrap resample 1000×</td>
+<td>≥ 60% positive</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Out-of-Sample</td>
+<td>Held-out 20% not overfit</td>
+<td>OOS Sharpe drop ≤ 30%</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Regime Consistency</td>
+<td>Works across market conditions</td>
+<td>≥ 2 regimes profitable</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Walk-Forward</td>
+<td>Stability across time windows</td>
+<td>≥ 50% folds profitable</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Capacity</td>
+<td>Position size vs daily volume</td>
+<td>≤ 1% of daily volume</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Gate Details:</strong></p>
+<ul>
+<li><strong>Statistical Significance</strong>: Computes t-statistic on
+per-trade returns against H0: Sharpe = 0. Uses scipy for proper
+t-distribution when available, normal approximation otherwise.</li>
+<li><strong>Monte Carlo Stress Test</strong>: Bootstrap-resamples trade
+outcomes 1000 times, subtracts realistic transaction costs (0.2% entry +
+0.2% exit), reports percentile statistics. A strategy passes only if
+&gt;60% of resampled scenarios are profitable.</li>
+<li><strong>Out-of-Sample Degradation</strong>: Runs backtest on
+in-sample window, then on held-out OOS window. Fails if OOS Sharpe drops
+more than 30% (classic overfit signature).</li>
+<li><strong>Regime Consistency</strong>: Partitions trades by market
+regime (bull/bear/sideways/volatile). A strategy that only works in one
+regime is curve-fit and fails this gate.</li>
+<li><strong>Walk-Forward Analysis</strong>: Splits history into
+sequential non-overlapping folds. Strategy must be profitable in &gt;50%
+of folds — confirms edge is stable over time.</li>
+<li><strong>Capacity Analysis</strong>: For each trade, computes
+position value / average daily dollar volume. Positions above 1% of
+daily volume will experience significant slippage at scale. Also
+projects USD capacity ceiling.</li>
+<li><strong>Transaction Cost Modeling</strong>: Every Monte Carlo
+iteration subtracts 0.4% round-trip cost (configurable). This prevents
+strategies that only look good before slippage.</li>
+</ul>
+<p><strong>Persistence:</strong> All validation runs saved to
+<code>strategy_validations.db</code> with full gate-by-gate results,
+metrics, and configuration. Powers the Phase 3 alpha decay monitoring
+layer.</p>
+<p><strong>Dashboard:</strong> Performance page AI Intelligence tab
+shows all recent validations with verdict, score, gate pass/fail counts,
+and elapsed time.</p>
+<p><strong>Default Thresholds</strong> (in
+<code>rigorous_backtest.THRESHOLDS</code>):</p>
+<div class="sourceCode" id="cb11"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a>THRESHOLDS <span class="op">=</span> {</span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_total_trades&quot;</span>: <span class="dv">30</span>,</span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_sharpe&quot;</span>: <span class="fl">1.0</span>,</span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_sortino&quot;</span>: <span class="fl">1.0</span>,</span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;max_drawdown_pct&quot;</span>: <span class="op">-</span><span class="fl">25.0</span>,</span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_win_rate&quot;</span>: <span class="fl">35.0</span>,</span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_profit_factor&quot;</span>: <span class="fl">1.3</span>,</span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;max_p_value&quot;</span>: <span class="fl">0.05</span>,</span>
+<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;max_oos_sharpe_degradation_pct&quot;</span>: <span class="fl">30.0</span>,</span>
+<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_regimes_profitable&quot;</span>: <span class="dv">2</span>,</span>
+<span id="cb11-11"><a href="#cb11-11" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_monte_carlo_positive_pct&quot;</span>: <span class="fl">60.0</span>,</span>
+<span id="cb11-12"><a href="#cb11-12" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;max_pct_daily_volume&quot;</span>: <span class="fl">0.01</span>,</span>
+<span id="cb11-13"><a href="#cb11-13" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<p>These thresholds are the absolute minimum bar. Strategies exceeding
+them meaningfully (Sharpe &gt; 1.5, OOS degradation &lt; 10%, etc.) are
+ranked higher for deployment priority.</p>
+<p><strong>Why This Matters:</strong> Every institutional failure story
+— LTCM, Archegos, Melvin — traces back to insufficient rigor before
+deployment. The largest funds in the world deploy strategies that
+haven’t been walked forward, stress tested, or validated out-of-sample.
+We won’t. This gate is non-negotiable and applies to every phase that
+follows (auto-generated strategies in Phase 7 must pass before promotion
+to live; multi-strategy capital allocation in Phase 6 only considers
+strategies that have passed validation).</p>
+<p><strong>Performance (Phase 2.1 optimization):</strong> A full
+5-strategy validation originally took ~25 minutes. With per-symbol
+yfinance caching and one-time indicator precomputation (strategies reuse
+the prepopulated DataFrame instead of recomputing all 33 indicators on
+every day’s window), the same run completes in ~4 minutes — a 5.97x
+speedup. This makes Phase 7 (auto-generation) practical because it
+requires validating dozens of proposed strategy variants per cycle.</p>
+<h3 id="alpha-decay-monitoring-phase-3-of-quant-fund-evolution">7.7
+Alpha Decay Monitoring (Phase 3 of Quant Fund Evolution)</h3>
+<p>Every signal decays. Momentum worked for decades then got arbitraged
+away. Value investing stopped paying in the 2010s. Most retail AND
+institutional systems cling to dead strategies because nobody rigorously
+measures decay. This module fixes that.</p>
+<p>See <code>alpha_decay.py</code> and <code>ROADMAP.md</code>.</p>
+<p><strong>Data Flow:</strong></p>
+<pre><code>Every resolved prediction → ai_predictions (existing)
+Daily task: snapshot_all_strategies() → signal_performance_history
+         → detect_decay() per strategy_type
+         → deprecate_strategy() if 30-day rolling Sharpe stays
+           &gt;=30% below lifetime for 30+ consecutive days
+         → restore_strategy() if rolling edge recovers
+Trade pipeline: _rank_candidates() skips deprecated strategies&#39; signals</code></pre>
+<p><strong>Detection Algorithm:</strong></p>
+<ol type="1">
+<li>Compute lifetime Sharpe from all resolved predictions
+(<code>strategy_type</code> column on <code>ai_predictions</code>)</li>
+<li>Write a daily snapshot of 30-day rolling metrics per strategy to
+<code>signal_performance_history</code></li>
+<li>Check if rolling Sharpe &lt; lifetime × (1 - 30%) for 30 consecutive
+snapshot days</li>
+<li>If yes → insert row into <code>deprecated_strategies</code>,
+pipeline stops using that strategy’s signals</li>
+<li>If a deprecated strategy’s rolling Sharpe recovers to within 15% of
+lifetime for 14 consecutive days → restore it</li>
+</ol>
+<p><strong>Tables (per-profile journal DB):</strong></p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Table</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>signal_performance_history</code></td>
+<td>Daily snapshot rows: date, strategy_type, window_days,
+n_predictions, wins, losses, win_rate, avg_return_pct, sharpe_ratio,
+profit_factor</td>
+</tr>
+<tr>
+<td><code>deprecated_strategies</code></td>
+<td>Current deprecation state: strategy_type PRIMARY KEY, deprecated_at,
+reason, rolling_sharpe_at_deprecation, lifetime_sharpe,
+consecutive_bad_days, restored_at</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Thresholds</strong> (in
+<code>alpha_decay.DECAY_THRESHOLDS</code>):</p>
+<div class="sourceCode" id="cb13"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a>DECAY_THRESHOLDS <span class="op">=</span> {</span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;rolling_window_days&quot;</span>: <span class="dv">30</span>,</span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;lifetime_min_predictions&quot;</span>: <span class="dv">50</span>,</span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;rolling_min_predictions&quot;</span>: <span class="dv">10</span>,</span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;sharpe_degradation_pct&quot;</span>: <span class="fl">30.0</span>,</span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;consecutive_bad_days&quot;</span>: <span class="dv">30</span>,</span>
+<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;restoration_recovery_pct&quot;</span>: <span class="fl">15.0</span>,</span>
+<span id="cb13-8"><a href="#cb13-8" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;restoration_good_days&quot;</span>: <span class="dv">14</span>,</span>
+<span id="cb13-9"><a href="#cb13-9" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<p><strong>Scheduled Task:</strong> <code>_task_alpha_decay(ctx)</code>
+in <code>multi_scheduler.py</code> runs daily at snapshot time alongside
+self-tuning and meta-model retraining.</p>
+<p><strong>Dashboard:</strong> Performance page AI Intelligence tab
+shows per-profile rolling vs lifetime Sharpe for each strategy, edge
+change %, and any currently-deprecated strategies with the reason they
+were retired.</p>
+<p><strong>Why This Matters:</strong> Without automatic decay
+monitoring, a strategy that was profitable for years can silently stop
+working and drain equity for months before anyone notices. This module
+catches it within weeks of actual decay and removes the strategy from
+the candidate pool automatically. Combined with Phase 7
+(auto-generation), the strategy library refreshes continuously: dying
+strategies retire, new variants get proposed, validated, and deployed.
+The alpha pool stays fresh.</p>
+<h3
+id="sec-filings-semantic-analysis-phase-4-of-quant-fund-evolution">7.8
+SEC Filings Semantic Analysis (Phase 4 of Quant Fund Evolution)</h3>
+<p>10-K (annual), 10-Q (quarterly), and 8-K (current report) filings are
+public and free on SEC EDGAR. They contain some of the strongest
+predictive signals in finance — new risk factor language, going concern
+disclosures, material weakness admissions, MD&amp;A forward-looking tone
+shifts — but nobody reads 200-page documents by hand. LLMs can read them
+instantly and diff consecutive filings to surface material changes.</p>
+<p>See <code>sec_filings.py</code> and <code>ROADMAP.md</code>.</p>
+<p><strong>Data Flow:</strong></p>
+<pre><code>Daily task: for each held/shortlist equity symbol:
+  1. Resolve ticker → CIK via SEC&#39;s free company_tickers.json mapping
+  2. List recent filings (10-K/10-Q/8-K) from EDGAR submissions JSON
+  3. Skip any already in sec_filings_history
+  4. For each new filing:
+       a. Fetch filing HTML via rate-limited EDGAR request
+       b. Extract Risk Factors and MD&amp;A sections with regex anchors
+       c. Flag &quot;going concern&quot; and &quot;material weakness in internal control&quot;
+       d. AI diff risk factors against previous filing of same type
+       e. Persist row with alert severity/signal/summary
+Trade pipeline: _build_candidates_data() reads active alerts (filed &lt;= 90
+days ago) for shortlist symbols and injects them into the AI prompt.</code></pre>
+<p><strong>Tables (per-profile journal DB):</strong></p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Column</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>symbol, accession_number, form_type, filed_date</td>
+<td>Filing identity</td>
+</tr>
+<tr>
+<td>filing_url, fetched_at</td>
+<td>Source URL and when we pulled it</td>
+</tr>
+<tr>
+<td>risk_factors_text, mdna_text</td>
+<td>Extracted section bodies</td>
+</tr>
+<tr>
+<td>going_concern_flag, material_weakness_flag</td>
+<td>Boolean red-flag indicators</td>
+</tr>
+<tr>
+<td>analyzed_at, alert_severity, alert_signal, alert_summary,
+alert_changes_json</td>
+<td>AI diff results</td>
+</tr>
+</tbody>
+</table>
+<p><strong>AI Diff Output Schema:</strong></p>
+<div class="sourceCode" id="cb15"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;severity&quot;</span><span class="fu">:</span> <span class="st">&quot;low | medium | high&quot;</span><span class="fu">,</span></span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;signal&quot;</span><span class="fu">:</span> <span class="st">&quot;concerning | positive | neutral&quot;</span><span class="fu">,</span></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;summary&quot;</span><span class="fu">:</span> <span class="st">&quot;one-sentence human-readable&quot;</span><span class="fu">,</span></span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;changes&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span><span class="dt">&quot;type&quot;</span><span class="fu">:</span> <span class="st">&quot;new_risk | removed_language | language_shift&quot;</span><span class="fu">,</span></span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a>     <span class="dt">&quot;old&quot;</span><span class="fu">:</span> <span class="st">&quot;...&quot;</span><span class="fu">,</span> <span class="dt">&quot;new&quot;</span><span class="fu">:</span> <span class="st">&quot;...&quot;</span><span class="fu">,</span> <span class="dt">&quot;impact&quot;</span><span class="fu">:</span> <span class="st">&quot;trade short | avoid | none&quot;</span><span class="fu">}</span></span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span></span>
+<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p><strong>Integration with AI batch prompt:</strong> Medium- and
+high-severity alerts appear on the candidate line in the form:</p>
+<pre><code>SEC ALERT [HIGH/concerning]: 10-Q filed 2024-04-01 — New going concern
+language added to risk factors following covenant breach.</code></pre>
+<p>The AI can now condition its trade decision on breaking corporate
+disclosures without any additional data ingestion work.</p>
+<p><strong>Rate limits:</strong> SEC asks for &lt;10 req/sec and a
+contactable User-Agent. The module sleeps between requests and
+identifies itself as
+<code>QuantOpsAI Research Bot (mack@mackenziesmith.com)</code>. All
+filing bodies cache for 24 hours (filings are immutable, but cache
+prevents repeat fetches during a single run).</p>
+<p><strong>Crypto profiles are skipped</strong> — SEC filings don’t
+apply.</p>
+<p><strong>Scheduled Task:</strong> <code>_task_sec_filings(ctx)</code>
+in <code>multi_scheduler.py</code> runs daily at snapshot time.
+Processes held positions plus symbols from the most recent cycle’s
+shortlist.</p>
+<p><strong>Dashboard:</strong> Performance page AI Intelligence tab
+includes a “SEC Filing Alerts” panel showing all active (≤90 day) alerts
+with severity, signal, and summary.</p>
+<p><strong>Why This Matters:</strong> When a CEO inserts one new
+paragraph into a 10-K risk factors section about “material uncertainty
+regarding continued operations,” the stock typically drops 10-40% over
+the next quarter. Humans miss this because the filing is 200 pages;
+institutional analysts catch it but only for their watchlist of a few
+dozen names. Our system scans every held position plus every shortlist
+candidate daily. This is genuine alternative data at our scale almost no
+one has.</p>
+<h3 id="options-chain-oracle-phase-5-of-quant-fund-evolution">7.9
+Options Chain Oracle (Phase 5 of Quant Fund Evolution)</h3>
+<p>Options markets are the forward-expectation layer on top of the spot
+market. Institutional traders pay real money for optionality — the
+prices they pay reveal what they actually believe will happen. Most
+retail systems see only “did a call print green today” and call it
+“options flow.” We extract the real signals.</p>
+<p>See <code>options_oracle.py</code> and <code>ROADMAP.md</code>.</p>
+<p><strong>Seven institutional-grade signals, all from free yfinance
+chains:</strong></p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Signal</th>
+<th>What It Reveals</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>IV Skew</strong></td>
+<td>Put IV vs call IV asymmetry. Skew &gt; 1.3 = market fear; &lt; 0.85
+= greed. Contrarian signals at extremes.</td>
+</tr>
+<tr>
+<td><strong>IV Term Structure</strong></td>
+<td>IV across expirations. Normal = upward slope; inverted = imminent
+event (earnings, catalysts) expected.</td>
+</tr>
+<tr>
+<td><strong>Implied Move</strong></td>
+<td>Market-implied 1σ move from ATM straddle price. A 5% move in 4 days
+= major catalyst priced in.</td>
+</tr>
+<tr>
+<td><strong>Put/Call Ratios</strong></td>
+<td>Volume PCR (intraday flow) and OI PCR (positioning). &gt; 1.2 =
+bearish, &lt; 0.5 = bullish.</td>
+</tr>
+<tr>
+<td><strong>Gamma Exposure (GEX)</strong></td>
+<td>Dealer hedging regime. Positive = pinning / vol contraction;
+negative = vol expansion.</td>
+</tr>
+<tr>
+<td><strong>Max Pain</strong></td>
+<td>Strike where option holders collectively lose the most. Price
+gravitates here near expiration.</td>
+</tr>
+<tr>
+<td><strong>IV Rank</strong></td>
+<td>Current IV percentile vs 52-week realized vol proxy. High = sell
+premium, low = buy premium.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Flow:</strong></p>
+<pre><code>Shortlist candidate → get_options_oracle(symbol) →
+  fetch nearest 3 expirations&#39; chains (cached 30 min) →
+  compute all 7 signals →
+  summarize_for_ai() → compact one-line summary →
+  injected into AI batch prompt as &quot;OPTIONS: ...&quot;</code></pre>
+<p><strong>Example prompt injection:</strong></p>
+<pre><code>OPTIONS: skew=fear(1.42) | IV TERM INVERTED | implied_move=6.2%/4d | PCR=1.85(bearish_flow) | gex=volatility_expansion | iv_rank=iv_high</code></pre>
+<p>The AI reads this and knows: institutional traders are pricing in a
+big downward move within 4 days, options are expensive, and dealers are
+short gamma (so volatility will amplify). That’s enough context to size
+a short or avoid a long position entirely — institutional intelligence
+impossible to derive from price alone.</p>
+<p><strong>Crypto is skipped</strong> — yfinance doesn’t have crypto
+options chains at retail scale.</p>
+<p><strong>Caching:</strong> 30-minute TTL per symbol. Options data
+changes during the session but not every cycle. This matches our 15-min
+scan cadence well.</p>
+<p><strong>Why This Matters:</strong> Implied volatility, gamma
+positioning, and skew are the three signals institutional options desks
+watch every hour. Retail traders don’t even know these exist. Hedge
+funds pay $2,000+/month per seat for Bloomberg or Tradytics to see them.
+We compute them in milliseconds from a free yfinance chain. Every time
+the AI evaluates a candidate, it sees what the smartest money in the
+world thinks about that stock’s future.</p>
+<h3
+id="multi-strategy-capital-allocation-phase-6-of-quant-fund-evolution">7.10
+Multi-Strategy Capital Allocation (Phase 6 of Quant Fund Evolution)</h3>
+<p>Real quant funds don’t run one strategy — they run dozens of
+uncorrelated strategies in parallel and split capital across them by
+risk contribution. Each strategy has a small edge; combined, they
+dominate single-strategy systems. See <code>strategies/</code>,
+<code>multi_strategy.py</code>, and <code>ROADMAP.md</code>.</p>
+<p><strong>Strategy registry
+(<code>strategies/__init__.py</code>):</strong> Every alpha strategy is
+a self-contained module exposing a uniform interface:</p>
+<div class="sourceCode" id="cb19"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a>NAME <span class="op">=</span> <span class="st">&quot;my_strategy&quot;</span>                          <span class="co"># must match strategy_type in ai_predictions</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a>APPLICABLE_MARKETS <span class="op">=</span> [<span class="st">&quot;small&quot;</span>, <span class="st">&quot;midcap&quot;</span>]      <span class="co"># or [&quot;*&quot;] for every market</span></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> find_candidates(ctx, universe) <span class="op">-&gt;</span> <span class="bu">list</span>[<span class="bu">dict</span>]: ...</span></code></pre></div>
+<p>The registry discovers modules, filters by market type, and skips any
+strategy present in the per-profile <code>deprecated_strategies</code>
+table (set by Phase 3 alpha decay monitoring).</p>
+<p><strong>Current strategies (16):</strong></p>
+<p>Core 6 (Phase 6 seed):</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Markets</th>
+<th>Trigger</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Market Structure Engine</td>
+<td>All</td>
+<td>Per-market router (momentum/breakout/mean-reversion/gap) preserved
+as one voter</td>
+</tr>
+<tr>
+<td>Insider Buying Cluster</td>
+<td>Equities</td>
+<td>3+ insider buys totaling ≥ $250K dominating sells</td>
+</tr>
+<tr>
+<td>Earnings Drift</td>
+<td>Equities</td>
+<td>Post-announcement move &gt; 5% in line with beat/miss direction</td>
+</tr>
+<tr>
+<td>Volatility Regime</td>
+<td>Equities</td>
+<td>Options GEX in volatility-expansion regime (dealer short gamma)</td>
+</tr>
+<tr>
+<td>Max Pain Pinning</td>
+<td>Equities</td>
+<td>Price trading away from max pain within 5 days of expiration</td>
+</tr>
+<tr>
+<td>Gap Reversal</td>
+<td>Equities</td>
+<td>&gt;3% opening gap on normal-or-lower volume, no catalyst</td>
+</tr>
+</tbody>
+</table>
+<p>Expanded seed library (10 additional, added 2026-04-14):</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Markets</th>
+<th>Trigger</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Short-Term Reversal</td>
+<td>Micro/Small/Midcap</td>
+<td>3-day decline + RSI &lt; 35 + pullback ≥ 3% from 5d high
+(Jegadeesh/Lehmann)</td>
+</tr>
+<tr>
+<td>Sector Momentum Rotation</td>
+<td>Small/Midcap/Largecap</td>
+<td>Symbol belongs to a top-2 or bottom-2 sector by 5d return
+(Moskowitz/Asness)</td>
+</tr>
+<tr>
+<td>Analyst Revision Drift</td>
+<td>Small/Midcap/Largecap</td>
+<td>Fresh upgrade/downgrade within 5 days + price confirming
+(Womack)</td>
+</tr>
+<tr>
+<td>52-Week Breakout</td>
+<td>Small/Midcap/Largecap</td>
+<td>New 52-week high on ≥ 1.5× avg volume, capped at +15% daily
+(George/Hwang)</td>
+</tr>
+<tr>
+<td>Short Squeeze Setup</td>
+<td>Micro/Small/Midcap</td>
+<td>Short interest &gt; 15% + breakout above 20d high on volume
+surge</td>
+</tr>
+<tr>
+<td>High IV Rank Fade</td>
+<td>Midcap/Largecap</td>
+<td>IV rank &gt; 80 + RSI extreme — fade the move as premium-sellers
+hedge</td>
+</tr>
+<tr>
+<td>Insider Selling Cluster</td>
+<td>Equities</td>
+<td>3+ insider sells totaling ≥ $500K dominating buys (Seyhun;
+bearish)</td>
+</tr>
+<tr>
+<td>News Sentiment Spike</td>
+<td>All</td>
+<td>Directional sentiment score ≥ 70 + price confirming ≥ 1%
+(Tetlock/Garcia)</td>
+</tr>
+<tr>
+<td>Volume Dry-up Breakout</td>
+<td>Small/Midcap/Largecap</td>
+<td>5d declining volume consolidation, then break above 10d high on 2×
+avg</td>
+</tr>
+<tr>
+<td>MACD Cross Confirmation</td>
+<td>All</td>
+<td>MACD zero-line cross + RSI in trending zone + 1.2× volume
+confirmation</td>
+</tr>
+</tbody>
+</table>
+<p>Each row is a module in <code>strategies/</code> with a uniform
+interface. Markets column shows where the strategy is applicable;
+<code>get_active_strategies(market_type)</code> returns the subset that
+applies.</p>
+<p><strong>Aggregation
+(<code>multi_strategy.aggregate_candidates</code>):</strong> Every
+active strategy runs across the universe. Each proposes candidates;
+duplicates are merged by symbol with votes recorded per strategy. Score
+updates on agreement (bump) or conflict (dampen). Final signal
+re-derived: score ≥ 2 → STRONG_BUY, 1 → BUY, -1 → SELL, ≤ -2 →
+STRONG_SELL. One strategy failing does NOT abort the pipeline.</p>
+<p><strong>Capital allocation
+(<code>compute_capital_allocations</code>):</strong> Inverse-variance
+(risk-parity) weighting based on each strategy’s 30-day rolling
+Sharpe.</p>
+<pre><code>New strategy (&lt;20 resolved predictions)  → DEFAULT_WEIGHT = 1/6 baseline
+Losing strategy (Sharpe ≤ 0)             → DEFAULT_WEIGHT × 0.25 (minimum)
+Proven strategy (Sharpe &gt; 0)             → min(Sharpe, 4.0) raw weight</code></pre>
+<p>Raw weights are normalized to sum to 1.0. <strong>No single strategy
+may exceed 40% of capital</strong> — excess is redistributed
+proportionally to strategies under the cap, iterated until stable. If
+only one strategy is active, it keeps 100% (nowhere to
+redistribute).</p>
+<p><strong>Pipeline integration (<code>trade_pipeline.py</code> Step
+3):</strong> The former
+<code>strategy_router.run_strategy(symbol, market_type)</code>
+single-call is replaced by
+<code>aggregate_candidates(ctx, filtered_candidates, db_path=ctx.db_path)</code>.
+Every downstream stage — AI batch, risk gates, execution — sees the
+merged multi-strategy view.</p>
+<p><strong>Dashboard panel:</strong> <code>Strategy Allocation</code> on
+<code>/performance#ai</code> shows per-profile per-strategy weight,
+rolling Sharpe, lifetime Sharpe, resolved prediction count, and win
+rate. New strategies display as “default (insufficient history)” until
+they accumulate track record.</p>
+<p><strong>Why This Matters:</strong> Every additional uncorrelated
+strategy adds marginal alpha that compounds with the others.
+Institutional funds gate capital by risk contribution, not by “which
+strategy feels good” — that discipline is the single biggest separator
+between hobbyist systems and real quant funds. Adding a new strategy is
+now a two-line change: drop a module into <code>strategies/</code>, list
+it in <code>STRATEGY_MODULES</code>, and the registry, validation gate,
+decay monitor, and capital allocator handle the rest automatically.</p>
+<h3 id="evolving-strategy-library-phase-7-of-quant-fund-evolution">7.11
+Evolving Strategy Library (Phase 7 of Quant Fund Evolution)</h3>
+<p>Most quant systems have a fixed library that ages out; our library
+evolves. The AI proposes new strategy <em>specs</em> (pure JSON, never
+Python), each validated against an allowlisted grammar, rendered into a
+deterministic module, backtested, and — if it earns it — promoted to
+shadow and then live trading. Failures retire automatically. See
+<code>strategy_generator.py</code>, <code>strategy_proposer.py</code>,
+<code>strategy_lifecycle.py</code>, and <code>ROADMAP.md</code>.</p>
+<p><strong>Spec grammar.</strong> The AI never writes Python. It writes
+JSON matching this schema:</p>
+<div class="sourceCode" id="cb21"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;auto_oversold_vol&quot;</span><span class="fu">,</span></span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;description&quot;</span><span class="fu">:</span> <span class="st">&quot;Deep oversold with volume confirmation&quot;</span><span class="fu">,</span></span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;applicable_markets&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;small&quot;</span><span class="ot">,</span> <span class="st">&quot;midcap&quot;</span><span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;direction&quot;</span><span class="fu">:</span> <span class="st">&quot;BUY&quot;</span><span class="fu">,</span></span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;score&quot;</span><span class="fu">:</span> <span class="dv">2</span><span class="fu">,</span></span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;conditions&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span><span class="dt">&quot;field&quot;</span><span class="fu">:</span> <span class="st">&quot;rsi&quot;</span><span class="fu">,</span> <span class="dt">&quot;op&quot;</span><span class="fu">:</span> <span class="st">&quot;&lt;&quot;</span><span class="fu">,</span> <span class="dt">&quot;value&quot;</span><span class="fu">:</span> <span class="dv">25</span><span class="fu">}</span><span class="ot">,</span></span>
+<span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span><span class="dt">&quot;field&quot;</span><span class="fu">:</span> <span class="st">&quot;volume_ratio&quot;</span><span class="fu">,</span> <span class="dt">&quot;op&quot;</span><span class="fu">:</span> <span class="st">&quot;&gt;&quot;</span><span class="fu">,</span> <span class="dt">&quot;value&quot;</span><span class="fu">:</span> <span class="fl">1.8</span><span class="fu">}</span><span class="ot">,</span></span>
+<span id="cb21-10"><a href="#cb21-10" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span><span class="dt">&quot;field&quot;</span><span class="fu">:</span> <span class="st">&quot;close&quot;</span><span class="fu">,</span> <span class="dt">&quot;op&quot;</span><span class="fu">:</span> <span class="st">&quot;&gt;&quot;</span><span class="fu">,</span> <span class="dt">&quot;field_ref&quot;</span><span class="fu">:</span> <span class="st">&quot;sma_50&quot;</span><span class="fu">}</span></span>
+<span id="cb21-11"><a href="#cb21-11" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span></span>
+<span id="cb21-12"><a href="#cb21-12" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p>Every <code>field</code>, <code>op</code>, <code>direction</code>,
+and <code>applicable_markets</code> value is checked against a closed
+allowlist before the spec is accepted. An AI-proposed spec cannot
+smuggle in arbitrary code, data, or side effects — the generator only
+knows how to read the permitted fields. Allowed fields include the 20+
+indicator columns produced by <code>add_indicators</code> plus seven
+derived fields (<code>volume_ratio</code>, <code>gap_pct</code>,
+<code>range_position</code>, etc.) that <code>evaluate_conditions</code>
+computes from bars on demand.</p>
+<p><strong>Code generation.</strong>
+<code>render_strategy_module(spec)</code> fills a fixed Python template
+with <code>repr()</code>-escaped values. The resulting file is
+deterministic and safe to exec. Every auto-strategy module declares
+<code>AUTO_GENERATED = True</code>; the registry uses that flag plus the
+lifecycle status to decide which ones drive real trades versus which
+ones are merely recording predictions.</p>
+<p><strong>Lifecycle.</strong> Each auto-strategy flows through five
+states:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Status</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>proposed</code></td>
+<td>AI wrote the spec; awaiting backtest</td>
+</tr>
+<tr>
+<td><code>validated</code></td>
+<td>Passed Phase 2 <code>validate_strategy()</code> — walk-forward, OOS,
+Monte Carlo, statistical significance</td>
+</tr>
+<tr>
+<td><code>shadow</code></td>
+<td>Running live but <code>get_active_strategies()</code> excludes it
+from the trade pipeline. <code>aggregate_shadow_candidates()</code> runs
+it so its predictions are recorded and measurable.</td>
+</tr>
+<tr>
+<td><code>active</code></td>
+<td>Promoted after ≥50 resolved shadow predictions with rolling Sharpe ≥
+0.8 and no decay trigger. Now drives real capital.</td>
+</tr>
+<tr>
+<td><code>retired</code></td>
+<td>Failed validation, hit shadow period without edge (60d), or was
+deprecated by Phase 3 alpha decay</td>
+</tr>
+</tbody>
+</table>
+<p>State is persisted in the per-profile
+<code>auto_generated_strategies</code> table with timestamps for every
+transition and the full validation report JSON.</p>
+<p><strong>Weekly cadence.</strong> <code>multi_scheduler</code> runs
+two new tasks:</p>
+<ul>
+<li><code>_task_auto_strategy_generation</code> (Sundays only): asks the
+AI for 3 new specs tailored to the profile’s recent performance,
+validates each, moves survivors into shadow mode.</li>
+<li><code>_task_auto_strategy_lifecycle</code> (daily): promotes matured
+shadows and retires failed ones.</li>
+</ul>
+<p><strong>Safety rails.</strong> -
+<code>max_active_auto_strategies = 5</code> — hard cap on live
+auto-strategies per profile - Spec validation rejects any field or
+operator outside the allowlist - Failed validations delete the rendered
+module file so the registry won’t import it - Shadow strategies
+contribute zero to capital allocation until promoted - Every AI-proposed
+spec with a duplicate name or malformed payload is silently dropped —
+the AI cannot coerce the system into bad state by misbehaving</p>
+<p><strong>Dashboard.</strong> <code>Evolving Strategy Library</code>
+panel on <code>/performance#ai</code> shows per-profile counts by status
+plus each strategy’s lineage (generation number, parent,
+creation/promotion/retirement timestamps).</p>
+<p><strong>Why This Matters:</strong> Strategy discovery is a full-time
+job at real funds — teams of PhDs spend months designing, backtesting,
+and promoting new signals. Our system does it every week, for every
+profile, with a validation gate that is more rigorous than what most
+human-designed strategies ever receive. The compounding effect is
+dramatic: a system that loses its best strategy every year to alpha
+decay without replacing it slowly dies. A system that proposes and
+promotes new strategies faster than old ones decay is a system with
+structurally renewable edge. Combined with Phase 3 monitoring, this is
+the “self-improving” layer real quant funds dream about but can rarely
+ship because their legacy infrastructure forbids it.</p>
+<h3 id="specialist-ai-ensemble-phase-8-of-quant-fund-evolution">7.12
+Specialist AI Ensemble (Phase 8 of Quant Fund Evolution)</h3>
+<p>One AI looking at everything has systematic blind spots. Real funds
+run teams of specialists — earnings analysts, technicians,
+macroeconomists, risk managers — and combine their views. We do the same
+with focused prompts. Four specialist AIs review every shortlisted
+candidate in parallel; a meta-coordinator synthesizes their verdicts.
+See <code>specialists/</code> and <code>ensemble.py</code>.</p>
+<p><strong>The four specialists:</strong></p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Specialist</th>
+<th>Lens</th>
+<th>Unique authority</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>earnings_analyst</code></td>
+<td>Earnings surprise, guidance tone, SEC filing alerts (going concern,
+material weakness)</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>pattern_recognizer</code></td>
+<td>Chart structure, breakout quality, momentum confluence, volume
+confirmation</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>sentiment_narrative</code></td>
+<td>News flow, political/macro narrative, insider clusters, unusual
+options flow</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>risk_assessor</code></td>
+<td>Regime risk, concentration, liquidity, drawdown context, correlation
+to existing positions</td>
+<td><strong>VETO authority</strong> — can block a trade regardless of
+the other three</td>
+</tr>
+</tbody>
+</table>
+<p>Each specialist is a small module with <code>NAME</code>,
+<code>DESCRIPTION</code>, <code>build_prompt(candidates, ctx)</code>,
+and <code>parse_response(raw)</code>. The module never calls the AI
+itself — <code>ensemble.run_ensemble()</code> owns the AI call, retries,
+and cost accounting.</p>
+<p><strong>Cost scales with specialist count, not candidate
+count.</strong> Every specialist batches all shortlisted candidates into
+a single AI call. With 4 specialists on a shortlist of 15 candidates,
+the ensemble costs 4 AI calls per cycle (not 60).</p>
+<p><strong>Synthesis algorithm:</strong></p>
+<pre><code>For each candidate:
+  buy_score  = Σ weight × (confidence / 100) for specialists voting BUY
+  sell_score = Σ weight × (confidence / 100) for specialists voting SELL
+  verdicts with confidence &lt; 25 are ignored (specialist abstained)
+  if risk_assessor.verdict == &quot;VETO&quot;:  → final = VETO (blocks trade)
+  elif buy_score &gt; sell_score:        → final = BUY, confidence scaled
+  elif sell_score &gt; buy_score:        → final = SELL, confidence scaled
+  else:                               → final = HOLD</code></pre>
+<p>Specialist weights: <code>pattern_recognizer=1.2</code>,
+<code>earnings_analyst=1.0</code>, <code>risk_assessor=1.0</code>,
+<code>sentiment_narrative=0.9</code>. Pattern gets the highest weight
+because chart-level evidence is the most concrete; narrative gets the
+lowest because news flow is noisy. The risk specialist’s VETO is binary
+— fires or not — and supersedes any consensus.</p>
+<p><strong>Pipeline integration.</strong> <code>trade_pipeline.py</code>
+Step 3.7 runs the ensemble between candidate data construction and the
+final trade-selection AI. Vetoed candidates are dropped from the
+shortlist entirely (they never reach the final AI call). Surviving
+candidates carry an <code>ensemble_summary</code> field (compact
+one-liner) that the final AI prompt sees alongside raw indicators and
+alt-data.</p>
+<p><strong>Safety:</strong> malformed specialist responses parse to
+empty lists, treated as “specialist abstains” — one broken specialist
+does not abort the pipeline. Confidence values are clamped to [0, 100]
+on ingest so a hallucinated “confidence 250” from the AI cannot swing
+the consensus.</p>
+<p><strong>Dashboard.</strong> <code>Specialist Ensemble</code> panel on
+<code>/performance#ai</code> shows per-profile, per-symbol consensus +
+each specialist’s vote + confidence, plus a highlighted list of risk
+VETOs. Makes it trivial to debug bad trades: which specialist was
+wrong?</p>
+<p><strong>Why This Matters:</strong> A single generalist prompt rounds
+off its weaker signals. A specialist forced to focus on exactly one
+dimension produces sharper verdicts. Combining them with
+confidence-weighted voting + veto authority is how real institutional
+research desks decide positions — portfolio managers don’t see “the
+answer,” they see each analyst’s position and synthesize. Phase 8 brings
+that structure to AI-first trading at a constant cost of 4 specialist
+calls per cycle, regardless of shortlist size.</p>
+<h3 id="event-driven-architecture-phase-9-of-quant-fund-evolution">7.13
+Event-Driven Architecture (Phase 9 of Quant Fund Evolution)</h3>
+<p>Timers are for batch jobs. Markets react to events. A material 8-K
+filed at 9:31 shouldn’t wait until the 9:45 scan tick to influence the
+portfolio — we should see it and react within seconds. Phase 9
+introduces a lightweight in-process event bus, a set of detectors that
+watch for real triggers, and handlers that fire immediately. See
+<code>event_bus.py</code>, <code>event_detectors.py</code>, and
+<code>event_handlers.py</code>.</p>
+<p><strong>Event bus.</strong>
+<code>event_bus.emit(db, type, symbol, severity, payload, dedup_key)</code>
+inserts a row into the per-profile <code>events</code> table. The UNIQUE
+constraint on <code>dedup_key</code> enforces idempotence — a detector
+can safely call emit every tick without creating duplicates.
+<code>dispatch_pending(db, ctx, limit)</code> pulls every unhandled
+event, calls each subscribed handler, records the handler results in
+<code>handler_results_json</code>, and marks the event handled. A
+handler raising an exception does NOT abort the other handlers.</p>
+<p><strong>Event types</strong> (the closed set handlers can subscribe
+to):</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Type</th>
+<th>Fired by</th>
+<th>Default handler(s)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sec_filing_detected</code></td>
+<td>Phase 4 SEC monitor writes a medium/high alert</td>
+<td>log_activity + fire_ensemble</td>
+</tr>
+<tr>
+<td><code>earnings_imminent</code></td>
+<td>Held position has earnings within 24h</td>
+<td>log_activity</td>
+</tr>
+<tr>
+<td><code>price_shock</code></td>
+<td>Held position moves ≥5% on ≥2× volume</td>
+<td>log_activity + fire_ensemble</td>
+</tr>
+<tr>
+<td><code>prediction_big_winner</code></td>
+<td>Resolved prediction with ≥+15% return</td>
+<td>log_activity</td>
+</tr>
+<tr>
+<td><code>prediction_big_loser</code></td>
+<td>Resolved prediction with ≤-15% return</td>
+<td>log_activity</td>
+</tr>
+<tr>
+<td><code>strategy_deprecated</code></td>
+<td>Phase 3 alpha decay deprecates a strategy</td>
+<td>log_activity</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Detectors</strong> (<code>event_detectors.py</code>). Each
+detector is a pure function of database + API state. Every detector uses
+a dedup key that ties the event to its underlying trigger (SEC filing’s
+accession number, prediction’s id, today’s date + symbol) so running the
+tick every 5 minutes doesn’t spam the event stream.</p>
+<p><strong>Handlers</strong> (<code>event_handlers.py</code>): -
+<code>handler_log_activity</code> — writes a human-readable row to the
+profile’s activity feed (for email digests and dashboard) -
+<code>handler_fire_ensemble</code> — runs the Phase 8 specialist
+ensemble on the event symbol (only for SEC filing + price shock events —
+the two types where reactive AI analysis justifies the cost)</p>
+<p><code>register_default_handlers()</code> wires these up at scheduler
+startup.</p>
+<p><strong>Scheduler integration.</strong> <code>_task_event_tick</code>
+runs at every scan cycle (15 min): register handlers, run all detectors,
+dispatch up to 20 pending events. Rate-limiting by dispatch batch
+prevents an event storm (e.g., sector-wide price shock across 30 held
+positions) from blocking the scheduler.</p>
+<p><strong>Design: in-process SQLite, not external broker.</strong> We
+considered Redis / Kafka but SQLite with WAL mode handles hundreds of
+events per hour trivially and keeps deployment simple. Handler and
+detector APIs don’t depend on the persistence layer — switching to Redis
+later is a ~100-line change.</p>
+<p><strong>Dashboard.</strong> <code>Event Stream</code> panel on
+<code>/performance#ai</code> shows the last 24h of events per profile
+with severity counts, the event payload (move %, SEC form type, etc),
+and handler outcomes (e.g., <code>ensemble=VETO/85%</code> means the
+reactive ensemble vetoed).</p>
+<p><strong>Why This Matters:</strong> The gap between “a market-moving
+event occurred” and “the AI saw it and reacted” is where real alpha
+comes from in intraday trading. A 15-minute scan tick is a 15-minute
+information lag — other funds with event-driven architectures trade
+against you every cycle. Phase 9 brings that lag down to the next scan
+tick (and eventually, with real-time push sources like WebSocket feeds,
+to seconds). The specialist ensemble (Phase 8) is the natural reaction
+engine for events; Phase 9 plugs them into a fast trigger loop.</p>
+<h3
+id="cross-asset-crisis-detection-phase-10-of-quant-fund-evolution">7.14
+Cross-Asset Crisis Detection (Phase 10 of Quant Fund Evolution)</h3>
+<p>Every alpha layer above this one is worth zero if a single regime
+break wipes out the account. Phase 10 is the capital-preservation
+backstop. See <code>crisis_detector.py</code>,
+<code>crisis_state.py</code>, and <code>ROADMAP.md</code>.</p>
+<p><strong>Six monitored signals:</strong></p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Signal</th>
+<th>Trigger</th>
+<th>Why it matters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>VIX level</strong></td>
+<td>≥ 22 elevated, ≥ 32 crisis, ≥ 45 severe</td>
+<td>Raw volatility regime</td>
+</tr>
+<tr>
+<td><strong>VIX term inversion</strong></td>
+<td>3M/spot ratio &lt; 0.95</td>
+<td>Front-month stress priced higher than 3M — imminent event</td>
+</tr>
+<tr>
+<td><strong>Cross-asset correlation spike</strong></td>
+<td>10-day avg |corr| of SPY/TLT/GLD/UUP ≥ 0.75</td>
+<td>Everything moves together = liquidity crunch</td>
+</tr>
+<tr>
+<td><strong>Bond/stock divergence</strong></td>
+<td>TLT up + SPY down with spread ≥ 3% over 5d</td>
+<td>Classic flight-to-safety</td>
+</tr>
+<tr>
+<td><strong>Gold rally</strong></td>
+<td>GLD ≥ +3% over 5d</td>
+<td>Safe-haven demand</td>
+</tr>
+<tr>
+<td><strong>Credit stress</strong></td>
+<td>HYG/LQD ratio ≤ -2% over 10d</td>
+<td>High-yield bonds under stress relative to investment grade</td>
+</tr>
+<tr>
+<td><strong>Event cluster</strong></td>
+<td>≥ 3 Phase-9 <code>price_shock</code> events in 30 min</td>
+<td>Regime break in progress across held positions</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Four crisis levels</strong> with automatic position-sizing
+responses:</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Level</th>
+<th>Trigger</th>
+<th>Size multiplier</th>
+<th>Pipeline behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>normal</code></td>
+<td>no material signals</td>
+<td>1.0×</td>
+<td>Trade as usual</td>
+</tr>
+<tr>
+<td><code>elevated</code></td>
+<td>VIX &gt; 22, or 1+ signal</td>
+<td>0.5×</td>
+<td>Positions sized down</td>
+</tr>
+<tr>
+<td><code>crisis</code></td>
+<td>VIX &gt; 32, or 3+ signals</td>
+<td>0.0×</td>
+<td>New longs blocked; SELL/SHORT allowed</td>
+</tr>
+<tr>
+<td><code>severe</code></td>
+<td>VIX &gt; 45, or 5+ signals, or critical signal</td>
+<td>0.0×</td>
+<td>Liquidate / cash</td>
+</tr>
+</tbody>
+</table>
+<p>The classifier uses VIX level as the primary gate then escalates with
+signal count (see <code>_classify_level</code> for exact rules).</p>
+<p><strong>Persistence.</strong> <code>crisis_state_history</code>
+records one row per transition (not per tick) with
+<code>from_level</code>, <code>to_level</code>, signals, readings, and
+size multiplier. <code>get_current_level()</code> returns the
+most-recent row. <code>run_crisis_tick()</code> runs detection, writes a
+history row only on transition, and emits a
+<code>crisis_state_change</code> event via Phase 9’s bus — severity is
+<code>critical</code> on upgrades to severe, proportionate for lesser
+upgrades, and <code>info</code> on downgrades (recovery).</p>
+<p><strong>Pipeline integration.</strong></p>
+<ol type="1">
+<li><code>_task_crisis_monitor</code> runs on every scan cycle, before
+the event tick and before the trade pipeline, so the level is
+fresh.</li>
+<li><code>_build_market_context()</code> pulls the current level and
+constructs a <code>crisis_context</code> string injected into the final
+AI batch prompt (e.g.,
+<code>CRISIS STATE: ELEVATED (size x0.50). Signals: vix_elevated, bond_stock_divergence. Bias toward capital preservation...</code>).</li>
+<li><code>trade_pipeline.py</code> Step 4.9 (crisis gate) applies the
+hard override AFTER the AI has decided:
+<ul>
+<li><code>elevated</code>: all <code>size_pct</code> values are
+multiplied by 0.5</li>
+<li><code>crisis</code> / <code>severe</code>: SELL and SHORT orders
+pass through; BUY orders are removed entirely</li>
+</ul></li>
+</ol>
+<p><strong>Dashboard.</strong> <code>Crisis Monitor</code> panel on
+<code>/performance#ai</code> shows the current level per profile with a
+colored banner at the top (“⚠ CRISIS” / “⛔ SEVERE”), the active signals
+and their severities, the current cross-asset readings (VIX, bond/stock
+deltas, correlation, credit stress), and a collapsible transition
+history.</p>
+<p><strong>Why This Matters:</strong> The March 2020, September 2008,
+February 2018, and August 2015 drawdowns were all foreseeable from
+cross-asset behavior in the preceding days. Funds with discretionary
+risk desks shrank early; funds trading strictly off single-asset
+indicators got clipped. Phase 10 codifies the discretionary risk desk: a
+small set of rules, run every cycle, that automatically disarm the alpha
+engines when the market says “not today.” It is not a return generator.
+It is the reason a return generator can compound for years without a
+ruin event.</p>
+<p><strong>This is the final phase of the Quant Fund Evolution
+roadmap.</strong> With Phases 1-10 live, the system has: proprietary
+meta-learning (1), rigorous validation (2), decay monitoring (3),
+alternative data (4, 5), multi-strategy aggregation (6), self-generating
+strategies (7), specialist ensemble (8), event-driven reaction (9), and
+crisis-mode capital preservation (10). Each layer compounds with the
+others — the whole is designed to be structurally harder to compete with
+than any single clever feature.</p>
+<h3 id="b-operational-hygiene-ai-cost-tracking-db-backup">7.14b
+Operational Hygiene: AI Cost Tracking + DB Backup</h3>
+<p>Two small operational layers that don’t add alpha but make the system
+safe to run unattended.</p>
+<h4 id="ai-cost-ledger">AI Cost Ledger</h4>
+<p><code>call_ai()</code> accepts optional <code>db_path</code> and
+<code>purpose</code> arguments. When provided, every AI call is logged
+to the per-profile <code>ai_cost_ledger</code> table with provider,
+model, input/output token counts, and an estimated USD cost computed
+from <code>ai_pricing.PRICING</code>. Token counts come from each
+provider SDK’s usage object (Anthropic <code>usage.input_tokens</code>,
+OpenAI <code>usage.prompt_tokens</code>, Google
+<code>usage_metadata.prompt_token_count</code>).</p>
+<p>USD is stored alongside tokens but recomputed from the pricing table
+on read. This means <strong>re-pricing history is a single-file
+edit</strong> to <code>ai_pricing.py</code> — no DB migration needed
+when providers change rates.</p>
+<p>The dashboard <code>AI Cost</code> panel (top of
+<code>/performance#ai</code>) shows per-profile spend over today / 7d /
+30d windows plus a breakdown by <code>purpose</code> (e.g.,
+<code>ensemble:earnings_analyst</code>, <code>batch_select</code>,
+<code>strategy_proposal</code>, <code>sec_diff</code>) and by
+<code>model</code>. Aggregation is done via
+<code>ai_cost_ledger.spend_summary(db_path)</code>.</p>
+<p><strong>Pricing is approximate.</strong> The <code>PRICING</code>
+table in <code>ai_pricing.py</code> is best-effort and treats unknown
+models with a conservative mid-tier fallback (over-estimate is preferred
+to silent zero). Treat dashboard totals as order-of-magnitude, not
+billing-grade.</p>
+<h4 id="database-backup">Database Backup</h4>
+<p><code>backup_db.backup_all(project_dir, backup_dir, retain_days=14)</code>
+runs every scan cycle’s daily snapshot block. For each <code>*.db</code>
+in the project root, it uses SQLite’s native <code>.backup</code> API
+(via <code>conn.backup()</code>) to produce a WAL-safe consistent
+snapshot at
+<code>/var/backups/quantopsai/&lt;name&gt;.&lt;YYYY-MM-DD&gt;.db</code>.
+A plain <code>cp</code> of a WAL-mode database can produce a corrupt
+copy — this never does.</p>
+<p>After backup, files older than <code>retain_days</code> are pruned.
+Backups are date-stamped (not numbered) so re-running the task on the
+same day overwrites atomically (write to <code>.tmp</code>,
+<code>os.replace</code>).</p>
+<p><strong>What’s protected:</strong> every per-profile DB. These hold
+all proprietary training data (predictions + features + outcomes), the
+auto-strategy lifecycle table, the SEC filing alert history, the event
+ledger, and the crisis state history. The meta-model is useless without
+them; auto-strategies cannot be “regrown” from scratch because the AI’s
+proposal context depends on the existing performance history.
+<strong>Lose the DBs and you lose the moat.</strong></p>
+<h3 id="cross-phase-integration-test-layer">7.15 Cross-Phase Integration
+Test Layer</h3>
+<p>Every phase has its own unit-test file covering that phase’s
+internals. What those tests can’t catch is a regression where two phases
+<em>individually</em> still work but their <em>composition</em> is
+broken — a deprecated strategy that slips back into multi-strategy
+aggregation, a shadow auto-strategy that accidentally gets promoted to
+active-trading, a crisis gate that stops blocking new longs after an
+upstream refactor. See <code>tests/test_integration.py</code>.</p>
+<p>Integration test coverage:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Invariant</th>
+<th>What it verifies</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Phase 3 + 6</td>
+<td>Strategies in <code>deprecated_strategies</code> are never called by
+<code>aggregate_candidates</code></td>
+</tr>
+<tr>
+<td>Phase 6 + 7</td>
+<td>Shadow auto-strategies are reachable via
+<code>get_shadow_strategies()</code> but NOT
+<code>get_active_strategies()</code></td>
+</tr>
+<tr>
+<td>Phase 8 + 10</td>
+<td>Crisis gate drops <code>BUY</code> actions but preserves
+<code>SELL</code>/<code>SHORT</code> regardless of what upstream layers
+decided</td>
+</tr>
+<tr>
+<td>Phase 9 + 10</td>
+<td>Crisis state transitions always produce
+<code>crisis_state_change</code> events the event bus can dispatch</td>
+</tr>
+<tr>
+<td>Phase 2 + 7</td>
+<td>Auto-strategy validation PASS → status <code>shadow</code>; FAIL →
+status <code>retired</code> + rendered <code>.py</code> file deleted
+from disk</td>
+</tr>
+<tr>
+<td>All phases</td>
+<td>Every phase’s public entry point is importable and its canonical
+constants (event types, crisis levels, size multipliers, specialist
+count) match the documented contract</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>tmp_strategies_dir</code> fixture in
+<code>conftest.py</code> redirects <code>STRATEGIES_DIR</code> per-test
+so rendering auto-strategy modules in tests never pollutes the real
+<code>strategies/</code> package.</p>
+<p><strong>Why This Matters:</strong> As the system grows, the biggest
+regression risk isn’t individual-phase bugs (unit tests catch those).
+It’s silent breakage of the contracts <em>between</em> phases during
+refactoring — a change that looks local but silently violates a
+downstream expectation. These integration tests codify the
+phase-to-phase contracts so a refactor that violates them fails CI
+loudly, not silently in production.</p>
+<hr />
+<h2 id="intelligence-features">8. Intelligence Features</h2>
+<h3 id="market-regime-detection-market_regime.py">8.1 Market Regime
+Detection (<code>market_regime.py</code>)</h3>
+<p>Classifies the current market using SPY and VIX:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Regime</th>
+<th>Conditions</th>
+<th>Strategy Impact</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Bull</strong></td>
+<td>SPY &gt; SMA50, slope positive, VIX &lt; 20</td>
+<td>Favor momentum, breakouts</td>
+</tr>
+<tr>
+<td><strong>Bear</strong></td>
+<td>SPY &lt; SMA50, slope negative, VIX &gt; 25</td>
+<td>Favor shorts, mean reversion, tighter stops</td>
+</tr>
+<tr>
+<td><strong>Sideways</strong></td>
+<td>SPY near SMA50, low slope</td>
+<td>Tighten stops, reduce position sizes</td>
+</tr>
+<tr>
+<td><strong>Volatile</strong></td>
+<td>VIX &gt; 30 and high ATR</td>
+<td>Reduce all position sizes, widen stops</td>
+</tr>
+</tbody>
+</table>
+<p>Cached 30 minutes. Injected into AI prompt.</p>
+<h3 id="political-sentiment-maga-mode-political_sentiment.py">8.2
+Political Sentiment — MAGA Mode
+(<code>political_sentiment.py</code>)</h3>
+<p>When enabled, fetches political news from free RSS feeds: - Google
+News RSS (trump+market+tariff, political+economy) - CNBC Economy RSS -
+Yahoo Finance (SPY/QQQ/DIA news)</p>
+<p>Claude analyzes headlines and returns structured intelligence: -
+Volatility level (HIGH/MEDIUM/LOW) - Is the selloff politically driven
+or fundamental? - Expected duration (days/weeks/months) -
+<strong>Sector-specific impact</strong> (e.g., tech: negative, defense:
+positive) - <strong>Specific ticker mentions</strong> from headlines -
+<strong>Trade ideas</strong> with direction and reasoning (e.g., “BA BUY
+— defense spending likely to increase”) - Recommendation (buy_the_dip /
+stay_cautious / normal)</p>
+<p>MAGA context is lazy-fetched — only when the shortlist is non-empty
+(zero cost when no trades are candidates). Sector impact is injected
+per-candidate in the batch prompt so the AI can make stock-specific
+political decisions.</p>
+<h3 id="earnings-calendar-earnings_calendar.py">8.3 Earnings Calendar
+(<code>earnings_calendar.py</code>)</h3>
+<p>Checks yfinance for upcoming earnings dates. Stocks within
+<code>avoid_earnings_days</code> are: - Skipped in the pre-filter (zero
+AI cost) - Flagged in the AI prompt if within 5 days</p>
+<h3 id="per-stock-memory">8.4 Per-Stock Memory</h3>
+<p>Computed dynamically from <code>ai_predictions</code> table: - Tracks
+win/loss per symbol across all predictions - Auto-blacklists symbols
+with 0% win rate after 3+ predictions - Injects stock-specific history
+into AI prompt: “You’ve predicted on RIG 6 times: 0 wins”</p>
+<h3 id="time-of-day-patterns">8.5 Time-of-Day Patterns</h3>
+<p>Tracks win rate by hour from resolved predictions: - Identifies
+best/worst trading hours - Optional: skip first N minutes after market
+open - AI prompt includes current time context</p>
+<h3 id="cross-profile-learning">8.6 Cross-Profile Learning</h3>
+<p>Compares performance across user’s profiles: - If Mid Cap wins 64%
+and Small Cap wins 31%, the AI sees: “Your Mid Cap profile outperforms.
+Consider being more selective.” - Suggests parameter adjustments based
+on better-performing profiles</p>
+<h3 id="correlation-management-correlation.py">8.7 Correlation
+Management (<code>correlation.py</code>)</h3>
+<p>Before opening a position: - Fetches 20-day returns for new symbol
+and all existing positions - Calculates Pearson correlation - If
+correlation &gt; 0.7 with any existing position → reduces size 50% -
+Cached 60 minutes</p>
+<h3 id="alternative-data-alternative_data.py">8.8 Alternative Data
+(<code>alternative_data.py</code>)</h3>
+<p>All free from yfinance — no paid subscriptions needed.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Data Source</th>
+<th>What It Provides</th>
+<th>Signal Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Insider Transactions</strong></td>
+<td>Recent insider buys/sells, net direction, notable transactions</td>
+<td>Insider buying clusters are one of the strongest predictive signals.
+When a CEO buys $2M of their own stock, they know something.</td>
+</tr>
+<tr>
+<td><strong>Short Interest</strong></td>
+<td>Short % of float, days to cover, squeeze risk</td>
+<td>High short + positive catalyst = squeeze potential. Short ratio &gt;
+5 days = hard to cover quickly.</td>
+</tr>
+<tr>
+<td><strong>Options Flow</strong></td>
+<td>Call/put volume, put/call ratio, unusual activity detection</td>
+<td>When call volume is 2x+ put volume, smart money is bullish. Unusual
+volume (&gt;2x open interest) signals imminent move.</td>
+</tr>
+<tr>
+<td><strong>Fundamentals</strong></td>
+<td>PE ratio, beta, market cap, sector, industry, insider/institutional
+ownership %</td>
+<td>Context for valuation — is this growth or value? Low PE + insider
+buying = undervalued.</td>
+</tr>
+<tr>
+<td><strong>Intraday Patterns</strong></td>
+<td>VWAP position, opening range breakout, intraday trend, volume
+profile</td>
+<td>Price above VWAP = institutional buyers in control. Opening range
+breakout predicts trend continuation.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="sec-edgar-filings-sec_filings.py">8.9 SEC EDGAR Filings
+(<code>sec_filings.py</code>)</h3>
+<p>Fetches Form 4 insider filings directly from SEC’s free EDGAR RSS
+feeds. Provides: - Filing count in last 90 days - Net signal:
+insider_buying / insider_selling / mixed - Links to actual SEC
+filings</p>
+<p>No API key needed. Rate-limited by SEC’s User-Agent policy (includes
+contact email).</p>
+<h3 id="social-sentiment-social_sentiment.py">8.10 Social Sentiment
+(<code>social_sentiment.py</code>)</h3>
+<p>Scans Reddit via PRAW (official Reddit API wrapper) for ticker
+mentions:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Subreddit</th>
+<th>What It Captures</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>r/wallstreetbets</td>
+<td>High-risk retail momentum (YOLO trades, squeeze plays)</td>
+</tr>
+<tr>
+<td>r/stocks</td>
+<td>More measured stock discussion</td>
+</tr>
+<tr>
+<td>r/investing</td>
+<td>Long-term investment sentiment</td>
+</tr>
+<tr>
+<td>r/options</td>
+<td>Options-specific sentiment and unusual activity</td>
+</tr>
+</tbody>
+</table>
+<p>Features: - Ticker mention counting with false-positive filtering
+(excludes common words like “CEO”, “IPO”, “DD”) - Rough sentiment
+scoring (bullish/bearish/mixed) from keyword analysis - Trending
+detection (5+ mentions = trending) - Trending tickers discovery
+(most-mentioned across all subs)</p>
+<p>Requires Reddit API credentials (<code>REDDIT_CLIENT_ID</code>,
+<code>REDDIT_CLIENT_SECRET</code> in .env). Free at
+reddit.com/prefs/apps. Gracefully degrades if not configured — system
+works without Reddit data.</p>
+<hr />
+<h2 id="database-schema">9. Database Schema</h2>
+<h3 id="main-database-quantopsai.db">Main Database
+(<code>quantopsai.db</code>)</h3>
+<table>
+<thead>
+<tr>
+<th>Table</th>
+<th>Records</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>users</code></td>
+<td>User accounts with encrypted API keys</td>
+<td></td>
+</tr>
+<tr>
+<td><code>trading_profiles</code></td>
+<td>50+ column config per profile</td>
+<td></td>
+</tr>
+<tr>
+<td><code>user_segment_configs</code></td>
+<td>Legacy segment configs</td>
+<td></td>
+</tr>
+<tr>
+<td><code>decision_log</code></td>
+<td>Full audit trail per trade decision</td>
+<td></td>
+</tr>
+<tr>
+<td><code>activity_log</code></td>
+<td>Strategy ticker feed</td>
+<td></td>
+</tr>
+<tr>
+<td><code>user_api_usage</code></td>
+<td>Daily AI API call counts</td>
+<td></td>
+</tr>
+<tr>
+<td><code>tuning_history</code></td>
+<td>Self-tuning adjustment records with outcomes</td>
+<td></td>
+</tr>
+<tr>
+<td><code>symbol_names</code></td>
+<td>Cached company names from yfinance</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h3 id="per-profile-databases-quantopsai_profile_id.db">Per-Profile
+Databases (<code>quantopsai_profile_{id}.db</code>)</h3>
+<p>Each profile has an isolated database containing:</p>
+<table>
+<thead>
+<tr>
+<th>Table</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>trades</code></td>
+<td>Trade execution log with P&amp;L</td>
+</tr>
+<tr>
+<td><code>signals</code></td>
+<td>Strategy signals (traded or not)</td>
+</tr>
+<tr>
+<td><code>daily_snapshots</code></td>
+<td>End-of-day equity snapshots</td>
+</tr>
+<tr>
+<td><code>ai_predictions</code></td>
+<td>Every AI prediction with resolution status</td>
+</tr>
+</tbody>
+</table>
+<h3 id="ai-prediction-resolution">AI Prediction Resolution</h3>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Prediction</th>
+<th>WIN Threshold</th>
+<th>LOSS Threshold</th>
+<th>Timeout</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BUY</td>
+<td>Price rises ≥ 5%</td>
+<td>Price drops ≥ 3%</td>
+<td>20 trading days → neutral</td>
+</tr>
+<tr>
+<td>SELL</td>
+<td>Price drops ≥ 5%</td>
+<td>Price rises ≥ 3%</td>
+<td>20 trading days → neutral</td>
+</tr>
+<tr>
+<td>HOLD</td>
+<td>Change &lt; 3% after 5 days</td>
+<td>Change ≥ 3% after 5 days</td>
+<td>20 trading days → neutral</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="web-application">10. Web Application</h2>
+<h3 id="technology-stack">Technology Stack</h3>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Technology</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Framework</td>
+<td>Flask 3.x</td>
+</tr>
+<tr>
+<td>Auth</td>
+<td>Flask-Login + bcrypt</td>
+</tr>
+<tr>
+<td>Templates</td>
+<td>Jinja2 + Pico CSS</td>
+</tr>
+<tr>
+<td>JavaScript</td>
+<td>Vanilla JS (no framework)</td>
+</tr>
+<tr>
+<td>Server</td>
+<td>Gunicorn (2 workers) behind nginx</td>
+</tr>
+<tr>
+<td>Encryption</td>
+<td>Fernet (cryptography library)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="pages">Pages</h3>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Route</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/dashboard</code></td>
+<td>Portfolio overview, AI Brain panels (per-profile reasoning +
+candidate shortlist table with all indicators and alt data), Sector
+Rotation widget (11 ETFs with inflow/outflow), activity ticker, 15-min
+countdown timers</td>
+</tr>
+<tr>
+<td><code>/settings</code></td>
+<td>API keys, profile management (create/edit/delete), strategy
+sliders</td>
+</tr>
+<tr>
+<td><code>/trades</code></td>
+<td>Trade history with per-profile filtering</td>
+</tr>
+<tr>
+<td><code>/performance</code></td>
+<td>6-tab institutional metrics dashboard (returns, risk, trades,
+market, scaling, AI Intelligence with Learned Patterns + AI Data Suite
+reference)</td>
+</tr>
+<tr>
+<td><code>/ai-performance</code></td>
+<td>Win rate, P&amp;L, prediction accuracy, self-tuning history</td>
+</tr>
+<tr>
+<td><code>/admin</code></td>
+<td>User management, API usage tracking</td>
+</tr>
+<tr>
+<td><code>/universe/{id}</code></td>
+<td>Popup showing all symbols in a profile’s universe</td>
+</tr>
+<tr>
+<td><code>/backtest/{type}</code></td>
+<td>Backtest a strategy engine against historical data</td>
+</tr>
+</tbody>
+</table>
+<h3 id="api-endpoints">API Endpoints</h3>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /api/activity</code></td>
+<td>Activity feed JSON (for ticker)</td>
+</tr>
+<tr>
+<td><code>GET /api/scheduler-status</code></td>
+<td>Countdown timer data</td>
+</tr>
+<tr>
+<td><code>GET /api/universe/{id}</code></td>
+<td>Symbol list with names</td>
+</tr>
+<tr>
+<td><code>POST /api/universe/{id}/cache-names</code></td>
+<td>Trigger name caching</td>
+</tr>
+<tr>
+<td><code>POST /api/backtest/{id}</code></td>
+<td>Start background backtest job</td>
+</tr>
+<tr>
+<td><code>GET /api/backtest/status/{job_id}</code></td>
+<td>Poll backtest job progress</td>
+</tr>
+<tr>
+<td><code>GET /api/slippage-stats/{id}</code></td>
+<td>Slippage metrics per profile</td>
+</tr>
+<tr>
+<td><code>GET /api/backtest-vs-reality/{id}</code></td>
+<td>Compare backtest predictions vs actual trades</td>
+</tr>
+<tr>
+<td><code>GET /api/cycle-data/{id}</code></td>
+<td>Last AI cycle decisions, shortlist, reasoning per profile</td>
+</tr>
+<tr>
+<td><code>GET /api/sector-rotation</code></td>
+<td>Current sector rotation (11 ETFs, inflow/outflow)</td>
+</tr>
+<tr>
+<td><code>POST /scanning/toggle</code></td>
+<td>Admin start/stop scanning</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="scheduler-automation">11. Scheduler &amp; Automation</h2>
+<h3 id="task-schedule">Task Schedule</h3>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Task</th>
+<th>Interval</th>
+<th>Scope</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Scan &amp; Trade</strong></td>
+<td>15 min</td>
+<td>Per profile within schedule</td>
+<td>Screen → Strategy → AI batch → Execute</td>
+</tr>
+<tr>
+<td><strong>Check Exits</strong></td>
+<td>15 min</td>
+<td>Per profile within schedule</td>
+<td>Stop-loss, take-profit, trailing stops</td>
+</tr>
+<tr>
+<td><strong>Cancel Stale Orders</strong></td>
+<td>15 min</td>
+<td>Per profile</td>
+<td>Cancel unfilled limit orders &gt; 5 min old</td>
+</tr>
+<tr>
+<td><strong>Resolve Predictions</strong></td>
+<td>60 min</td>
+<td>Per profile</td>
+<td>Score past AI predictions against actuals</td>
+</tr>
+<tr>
+<td><strong>Self-Tune</strong></td>
+<td>Daily (3:55 PM ET)</td>
+<td>Per profile</td>
+<td>Review adjustments, apply new ones</td>
+</tr>
+<tr>
+<td><strong>Daily Snapshot</strong></td>
+<td>Daily (3:55 PM ET)</td>
+<td>Per profile</td>
+<td>Save equity/cash/positions</td>
+</tr>
+<tr>
+<td><strong>Daily Summary Email</strong></td>
+<td>Daily (3:55 PM ET)</td>
+<td>Per profile</td>
+<td>Portfolio + performance email</td>
+</tr>
+</tbody>
+</table>
+<h3 id="per-profile-scheduling">Per-Profile Scheduling</h3>
+<p>Each profile has its own trading schedule:</p>
+<table>
+<thead>
+<tr>
+<th>Schedule Type</th>
+<th>Hours</th>
+<th>Days</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Market Hours</td>
+<td>9:30 AM – 4:00 PM ET</td>
+<td>Mon–Fri</td>
+</tr>
+<tr>
+<td>Extended Hours</td>
+<td>4:00 AM – 8:00 PM ET</td>
+<td>Mon–Fri</td>
+</tr>
+<tr>
+<td>24/7</td>
+<td>Always</td>
+<td>Every day</td>
+</tr>
+<tr>
+<td>Custom</td>
+<td>User-defined start/end</td>
+<td>User-selected days</td>
+</tr>
+</tbody>
+</table>
+<p>The scheduler checks <code>ctx.is_within_schedule()</code> before
+processing each profile.</p>
+<h3 id="process-architecture">Process Architecture</h3>
+<pre><code>systemd → quantopsai.service (scheduler)
+        → quantopsai-web.service (gunicorn → Flask)
+        → nginx (reverse proxy, port 80)</code></pre>
+<p>Both services auto-restart on failure, start on boot.</p>
+<hr />
+<h2 id="external-integrations">12. External Integrations</h2>
+<h3 id="alpaca-paper-trading-api">Alpaca Paper Trading API</h3>
+<table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>Method</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/v2/account</code></td>
+<td>GET</td>
+<td>Equity, buying power, status</td>
+</tr>
+<tr>
+<td><code>/v2/positions</code></td>
+<td>GET</td>
+<td>All open positions</td>
+</tr>
+<tr>
+<td><code>/v2/orders</code></td>
+<td>POST</td>
+<td>Submit market/limit orders</td>
+</tr>
+<tr>
+<td><code>/v2/orders</code></td>
+<td>GET</td>
+<td>List open/filled orders</td>
+</tr>
+<tr>
+<td><code>/v2/orders/{id}</code></td>
+<td>DELETE</td>
+<td>Cancel pending order</td>
+</tr>
+</tbody>
+</table>
+<p>Authentication: Per-profile API key + secret (encrypted in
+database).</p>
+<h3 id="yahoo-finance-yfinance">Yahoo Finance (yfinance)</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Ticker.history()</code></td>
+<td>Daily OHLCV bars (free, no key)</td>
+</tr>
+<tr>
+<td><code>Ticker.calendar</code></td>
+<td>Earnings dates</td>
+</tr>
+<tr>
+<td><code>Ticker.news</code></td>
+<td>Headlines</td>
+</tr>
+<tr>
+<td><code>download()</code></td>
+<td>Batch download multiple symbols</td>
+</tr>
+</tbody>
+</table>
+<p>Used for: All market data, indicators, screener, backtesting, regime
+detection (SPY/VIX).</p>
+<h3 id="ai-providers">AI Providers</h3>
+<p>All providers called through <code>ai_providers.call_ai()</code>
+abstraction:</p>
+<table>
+<thead>
+<tr>
+<th>Provider</th>
+<th>SDK</th>
+<th>Auth</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Anthropic</td>
+<td><code>anthropic</code></td>
+<td>Bearer API key</td>
+</tr>
+<tr>
+<td>OpenAI</td>
+<td><code>openai</code></td>
+<td>Bearer API key</td>
+</tr>
+<tr>
+<td>Google</td>
+<td><code>google-generativeai</code></td>
+<td>API key</td>
+</tr>
+</tbody>
+</table>
+<p>Lazy-imported — missing SDKs don’t crash the app, just that
+provider.</p>
+<h3 id="resend-email-api">Resend Email API</h3>
+<table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>POST /emails</code></td>
+<td>Send HTML emails</td>
+</tr>
+</tbody>
+</table>
+<p>From address:
+<code>QuantOpsAI &lt;onboarding@resend.dev&gt;</code></p>
+<h3 id="rss-feeds-free-no-auth">RSS Feeds (Free, No Auth)</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Feed</th>
+<th>URL Pattern</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Google News</td>
+<td><code>news.google.com/rss/search?q=...</code></td>
+<td>Political/market headlines</td>
+</tr>
+<tr>
+<td>CNBC Economy</td>
+<td><code>search.cnbc.com/rs/search/...</code></td>
+<td>Economic news</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="multi-user-security-model">13. Multi-User Security Model</h2>
+<h3 id="credential-storage">Credential Storage</h3>
+<p>All API keys encrypted at rest using Fernet symmetric encryption: -
+Encryption key stored in server <code>.env</code> file (root-only
+access) - Keys decrypted only at runtime when creating API clients -
+Never logged, never included in error messages</p>
+<h3 id="account-isolation">Account Isolation</h3>
+<table>
+<thead>
+<tr>
+<th>What</th>
+<th>Isolation Method</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Trades &amp; positions</td>
+<td>Per-profile Alpaca accounts (separate API keys)</td>
+</tr>
+<tr>
+<td>AI predictions &amp; journals</td>
+<td>Per-profile SQLite databases</td>
+</tr>
+<tr>
+<td>Strategy settings</td>
+<td>Per-profile rows in <code>trading_profiles</code> table</td>
+</tr>
+<tr>
+<td>Email notifications</td>
+<td>Per-user notification_email</td>
+</tr>
+</tbody>
+</table>
+<p>Every database query includes <code>WHERE user_id = ?</code> or uses
+a per-profile database file.</p>
+<h3 id="authentication">Authentication</h3>
+<ul>
+<li>Email + password with bcrypt hashing</li>
+<li>Flask-Login session cookies</li>
+<li>Admin role for system management</li>
+</ul>
+<hr />
+<h2 id="configuration-reference">14. Configuration Reference</h2>
+<h3 id="environment-variables">Environment Variables</h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Required</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>FLASK_SECRET_KEY</code></td>
+<td>Yes</td>
+<td>Flask session encryption</td>
+</tr>
+<tr>
+<td><code>ENCRYPTION_KEY</code></td>
+<td>Yes</td>
+<td>Fernet key for API key encryption</td>
+</tr>
+<tr>
+<td><code>ALPACA_BASE_URL</code></td>
+<td>No</td>
+<td>Default: <code>https://paper-api.alpaca.markets</code></td>
+</tr>
+<tr>
+<td><code>DB_PATH</code></td>
+<td>No</td>
+<td>Default: <code>quantopsai.db</code></td>
+</tr>
+</tbody>
+</table>
+<p>All other credentials (Alpaca, Anthropic, Resend) are stored
+encrypted in the database per user/profile.</p>
+<h3 id="default-risk-parameters-by-market-type">Default Risk Parameters
+by Market Type</h3>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Micro</th>
+<th>Small</th>
+<th>Mid</th>
+<th>Large</th>
+<th>Crypto</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Stop Loss</td>
+<td>10%</td>
+<td>6%</td>
+<td>5%</td>
+<td>4%</td>
+<td>8%</td>
+</tr>
+<tr>
+<td>Take Profit</td>
+<td>15%</td>
+<td>8%</td>
+<td>7%</td>
+<td>6%</td>
+<td>10%</td>
+</tr>
+<tr>
+<td>Max Position</td>
+<td>5%</td>
+<td>8%</td>
+<td>8%</td>
+<td>7%</td>
+<td>7%</td>
+</tr>
+<tr>
+<td>Min Volume</td>
+<td>100K</td>
+<td>300K</td>
+<td>500K</td>
+<td>1M</td>
+<td>0</td>
+</tr>
+<tr>
+<td>Universe Size</td>
+<td>~60</td>
+<td>~120</td>
+<td>~120</td>
+<td>~100</td>
+<td>~33</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="cost-model">15. Cost Model</h2>
+<h3 id="infrastructure">Infrastructure</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Monthly Cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DigitalOcean droplet (1 vCPU, 1GB RAM)</td>
+<td>$6</td>
+</tr>
+<tr>
+<td>Market data (Yahoo Finance)</td>
+<td>Free</td>
+</tr>
+<tr>
+<td>Trade execution (Alpaca paper)</td>
+<td>Free</td>
+</tr>
+<tr>
+<td>Email notifications (Resend free tier)</td>
+<td>Free</td>
+</tr>
+<tr>
+<td><strong>Total infrastructure</strong></td>
+<td><strong>$6/month</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="ai-api-costs-anthropic-haiku">AI API Costs (Anthropic
+Haiku)</h3>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Calls/Cycle</th>
+<th>Cycles/Day</th>
+<th>Daily Cost</th>
+<th>Monthly Cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Crypto (24/7, 15-min)</td>
+<td>1-2</td>
+<td>96</td>
+<td>~$0.10</td>
+<td>~$3.00</td>
+</tr>
+<tr>
+<td>Mid Cap (market hours)</td>
+<td>1-2</td>
+<td>26</td>
+<td>~$0.03</td>
+<td>~$0.75</td>
+</tr>
+<tr>
+<td>Small Cap (market hours)</td>
+<td>1-2</td>
+<td>26</td>
+<td>~$0.03</td>
+<td>~$0.75</td>
+</tr>
+<tr>
+<td>MAGA mode (lazy, per shortlist)</td>
+<td>0-1</td>
+<td>varies</td>
+<td>~$0.02</td>
+<td>~$0.50</td>
+</tr>
+<tr>
+<td><strong>Typical total</strong></td>
+<td></td>
+<td></td>
+<td><strong>~$0.18</strong></td>
+<td><strong>~$5</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The AI-first batch architecture uses 1 AI call per scan cycle (vs 20+
+in the old per-symbol review system). MAGA context is only fetched when
+the shortlist is non-empty.</p>
+<hr />
+<h2 id="codebase-reference">16. Codebase Reference</h2>
+<h3 id="file-count-structure">File Count &amp; Structure</h3>
+<pre><code>/opt/quantopsai/
+├── Strategy Engines (5 files, ~2,300 lines)
+│   ├── strategy_micro.py      Micro cap strategies
+│   ├── strategy_small.py      Small cap strategies
+│   ├── strategy_mid.py        Mid cap strategies
+│   ├── strategy_large.py      Large cap strategies
+│   └── strategy_crypto.py     Crypto strategies
+├── Strategy Infrastructure (3 files, ~1,000 lines)
+│   ├── strategy_router.py     Routes to correct engine
+│   ├── fallback_strategy.py  Fallback combined strategy (unknown market types)
+│   └── strategies.py          Conservative strategies (SMA/RSI)
+├── AI &amp; Intelligence (6 files, ~3,000 lines)
+│   ├── ai_analyst.py          Multi-model AI analysis
+│   ├── ai_providers.py        Provider abstraction layer
+│   ├── ai_tracker.py          Prediction tracking &amp; resolution
+│   ├── self_tuning.py         Performance feedback &amp; auto-adjustment
+│   ├── political_sentiment.py MAGA mode news analysis
+│   ├── market_regime.py       Bull/bear/sideways detection
+│   └── news_sentiment.py     News-based sentiment analysis
+├── Trading &amp; Execution (5 files, ~1,800 lines)
+│   ├── trade_pipeline.py      Core trade pipeline (AI-first decision engine)
+│   ├── trader.py              Exit management &amp; stop-loss
+│   ├── portfolio_manager.py   Position sizing &amp; risk controls
+│   ├── correlation.py         Position correlation checking
+│   └── earnings_calendar.py   Earnings date lookup
+├── Data &amp; Market (3 files, ~800 lines)
+│   ├── market_data.py         yfinance wrapper &amp; indicators
+│   ├── screener.py            Stock screening &amp; filtering
+│   └── segments.py            Market segment definitions
+├── Web Application (5 files, ~1,800 lines)
+│   ├── app.py                 Flask application factory
+│   ├── auth.py                Authentication routes
+│   ├── views.py               Dashboard, settings, admin routes
+│   ├── templates/             Jinja2 HTML templates (12 files)
+│   └── static/                CSS + JavaScript (3 files)
+├── Infrastructure (6 files, ~2,000 lines)
+│   ├── multi_scheduler.py     Multi-user autonomous scheduler
+│   ├── scheduler.py           Legacy single-user scheduler
+│   ├── models.py              Database schema &amp; queries
+│   ├── journal.py             Trade journal
+│   ├── metrics.py             Institutional metrics &amp; SVG charts
+│   ├── notifications.py       Email notifications
+│   └── config.py              Environment configuration
+├── Utilities (5 files, ~600 lines)
+│   ├── user_context.py        UserContext dataclass
+│   ├── crypto.py              Fernet encryption
+│   ├── backtester.py          Strategy backtesting
+│   ├── backtest_worker.py     Background thread job runner
+│   ├── main.py                CLI entry point
+│   └── migrate.py             Database migration
+├── Deployment (3 files)
+│   ├── deploy.sh              One-command deployment
+│   ├── sync.sh                Safe code-only rsync wrapper
+│   ├── stop_remote.sh         Stop services
+│   └── status_remote.sh       Check service status
+└── Documentation (4 files)
+    ├── TECHNICAL_DOCUMENTATION.md  This document
+    ├── STRATEGY_DOCUMENT.md        Strategy overview
+    ├── STRATEGY_ENGINES_PLAN.md    Engine design plan
+    └── SMART_EXECUTION_PLAN.md     Execution feature plan</code></pre>
+<p><strong>Total: ~45 Python files, ~17,000+ lines of code</strong></p>
+<hr />
+<h2 id="what-if-backtesting">17. What-If Backtesting</h2>
+<h3 id="overview">Overview</h3>
+<p>The settings page includes a “What-If” backtesting feature that lets
+users test parameter changes against historical market data before
+applying them live. This runs against <strong>actual historical
+prices</strong> from Yahoo Finance — it does not require any trade
+history.</p>
+<h3 id="how-it-works">How It Works</h3>
+<ol type="1">
+<li>User adjusts sliders on the settings page (stop-loss, take-profit,
+ATR multipliers, strategy toggles, etc.)</li>
+<li>User clicks <strong>“Backtest These Settings”</strong></li>
+<li>System runs the market-specific strategy engine against 90 days of
+historical data for the <strong>full</strong> symbol universe (no
+sampling)</li>
+<li>Results displayed inline as a side-by-side comparison:</li>
+</ol>
+<pre><code>                    Current Settings    Your Changes     Difference
+Win Rate:           35.2%              48.1%            +12.9% ↑
+Total Return:       -4.2%              +8.9%            +13.1% ↑
+Max Drawdown:       -15.3%             -8.7%            +6.6% ↑
+Trades:             42                 28               -14
+Sharpe Ratio:       -0.45              0.62             +1.07 ↑
+Best Trade:         +8.1%              +12.4%           +4.3% ↑
+Worst Trade:        -6.2%              -5.1%            +1.1% ↑</code></pre>
+<ol start="5" type="1">
+<li>User clicks <strong>“Apply These Settings”</strong> to save, or
+<strong>“Discard”</strong> to revert</li>
+</ol>
+<h3 id="technical-implementation">Technical Implementation</h3>
+<p><strong>Data Caching:</strong> - Historical price data downloaded via
+<code>yf.download()</code> batch request for full universe - Cached at
+module level for 24 hours - First backtest: ~30 seconds (download +
+simulation) - Subsequent backtests with different parameters: ~20
+seconds (cached data, only re-run strategy)</p>
+<p><strong>Simulation Engine:</strong> - Walk-forward day-by-day through
+historical bars - Uses the same strategy engine (via
+<code>strategy_router.run_strategy()</code>) as live trading - Supports
+ATR-based stops, trailing stops, and fixed % stops - Respects all
+strategy toggles (enable/disable individual strategies) - Calculates:
+total return, win rate, max drawdown, Sharpe ratio, trade count,
+best/worst trades</p>
+<p><strong>Parameterization:</strong> -
+<code>backtest_with_params(market_type, params, days)</code> accepts all
+UserContext fields as a params dict -
+<code>backtest_comparison(market_type, current_params, new_params, days)</code>
+runs both and computes diffs - API endpoint:
+<code>POST /api/backtest/&lt;profile_id&gt;</code> accepts JSON params,
+returns comparison JSON</p>
+<p><strong>Key Design Decisions:</strong> - Full universe (no sampling)
+for representative results - 90-day default period — enough data for
+statistical significance, fast enough to complete in 30 seconds -
+Color-coded diffs: green for improvements, red for regressions - No
+changes saved until user explicitly clicks “Apply”</p>
+<hr />
+<h2 id="slippage-tracking">18. Slippage Tracking</h2>
+<h3 id="overview-1">Overview</h3>
+<p>The system tracks the difference between the price at decision time
+(when the strategy/AI decided to trade) and the actual fill price from
+Alpaca. This measures real execution quality.</p>
+<h3 id="how-it-works-1">How It Works</h3>
+<ol type="1">
+<li><strong>Decision price</strong> recorded when the order is submitted
+— this is the price the strategy saw when it generated the signal</li>
+<li><strong>Fill price</strong> captured asynchronously — a background
+task queries Alpaca every 15 minutes for recently filled orders and
+updates the trade record with <code>filled_avg_price</code></li>
+<li><strong>Slippage calculated</strong> as:
+<code>(fill_price - decision_price) / decision_price × 100</code></li>
+</ol>
+<h3 id="database-fields-trades-table">Database Fields (trades
+table)</h3>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>decision_price</code></td>
+<td>REAL</td>
+<td>Price when strategy/AI made the decision</td>
+</tr>
+<tr>
+<td><code>fill_price</code></td>
+<td>REAL</td>
+<td>Actual fill price from Alpaca (updated async)</td>
+</tr>
+<tr>
+<td><code>slippage_pct</code></td>
+<td>REAL</td>
+<td>Percentage slippage (positive = worse fill)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="metrics-displayed">Metrics Displayed</h3>
+<p>The AI Performance page shows: - <strong>Average slippage per
+trade</strong> (%) - <strong>Total slippage cost</strong> ($) -
+<strong>Worst slippage trade</strong> (symbol and %) - Only displayed
+when fill price data is available</p>
+<h3 id="backtester-slippage-model">Backtester Slippage Model</h3>
+<p>The backtester applies simulated slippage: - <strong>Entry:</strong>
+0.2% above current price (buying pushes price up) -
+<strong>Exit:</strong> 0.2% below target price (selling pushes price
+down) - <strong>Total round-trip:</strong> ~0.4% per trade</p>
+<p>This makes backtest results more conservative and closer to real
+trading.</p>
+<hr />
+<h2 id="backtest-vs-reality-comparison">19. Backtest vs Reality
+Comparison</h2>
+<h3 id="overview-2">Overview</h3>
+<p>Compares what the backtester predicted the strategy would do against
+what actually happened in live trading. This validates whether the
+backtest model is reliable.</p>
+<h3 id="how-it-works-2">How It Works</h3>
+<ol type="1">
+<li>When a profile is selected on the AI Performance page, the system
+runs a 30-day backtest with that profile’s current settings (async, no
+timeout)</li>
+<li>Queries actual trades from the same 30-day period</li>
+<li>Displays a comparison:</li>
+</ol>
+<pre><code>                    Backtest Predicted    Actual Results    Gap
+Win Rate:           48.1%                35.2%             -12.9%
+Total Return:       +8.9%                -4.2%             -13.1%
+Avg Slippage:       0.2% (simulated)     0.8% (actual)     +0.6%
+Trades:             42                   28                -14</code></pre>
+<h3 id="interpreting-the-gap">Interpreting the Gap</h3>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Small gap (&lt;5%)</td>
+<td>Backtest model is reliable, strategy performs as predicted</td>
+</tr>
+<tr>
+<td>Medium gap (5-15%)</td>
+<td>Some difference due to slippage, timing, or AI vetoes</td>
+</tr>
+<tr>
+<td>Large gap (&gt;15%)</td>
+<td>Backtest model is unreliable — likely slippage, liquidity, or regime
+change</td>
+</tr>
+</tbody>
+</table>
+<p>The comparison only appears when there are at least 5 closed trades
+in the period.</p>
+<hr />
+<h2 id="institutional-performance-dashboard">20. Institutional
+Performance Dashboard</h2>
+<p>The system includes a comprehensive 6-tab performance dashboard at
+<code>/performance</code> designed to meet institutional investor
+standards. All metrics are calculated by <code>metrics.py</code> using
+<code>calculate_all_metrics()</code>.</p>
+<h3 id="tab-1-executive-summary">Tab 1: Executive Summary</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Formula</th>
+<th>Target</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Total Return %</td>
+<td>(final_equity - initial) / initial × 100</td>
+<td>Positive</td>
+</tr>
+<tr>
+<td>Annualized Return %</td>
+<td>(1 + total_return)^(365/days) - 1</td>
+<td>40-80%</td>
+</tr>
+<tr>
+<td>Net vs Gross Return</td>
+<td>Net accounts for slippage</td>
+<td>Gap should be small</td>
+</tr>
+<tr>
+<td>Sharpe Ratio</td>
+<td>mean(daily_returns) / std(daily_returns) × √252</td>
+<td>&gt;2.0</td>
+</tr>
+<tr>
+<td>Sortino Ratio</td>
+<td>mean(daily_returns) / std(negative_returns) × √252</td>
+<td>&gt;2.0</td>
+</tr>
+<tr>
+<td>Max Drawdown %</td>
+<td>Largest peak-to-trough in equity curve</td>
+<td>&lt;20%</td>
+</tr>
+<tr>
+<td>Calmar Ratio</td>
+<td>annualized_return / max_drawdown</td>
+<td>&gt;2.0</td>
+</tr>
+</tbody>
+</table>
+<p>Includes: SVG equity curve chart, monthly returns table with bar
+chart.</p>
+<h3 id="tab-2-risk-stability">Tab 2: Risk &amp; Stability</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Formula</th>
+<th>Target</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Annualized Volatility</td>
+<td>std(daily_returns) × √252</td>
+<td>Low relative to return</td>
+</tr>
+<tr>
+<td>VaR (95%)</td>
+<td>5th percentile of trade returns</td>
+<td>Know worst expected day</td>
+</tr>
+<tr>
+<td>CVaR (95%)</td>
+<td>Mean of returns worse than VaR</td>
+<td>Tail risk measure</td>
+</tr>
+<tr>
+<td>Max Drawdown Duration</td>
+<td>Days peak to recovery</td>
+<td>&lt;30 days</td>
+</tr>
+<tr>
+<td>Rolling 3-Month Return</td>
+<td>Trailing 63-day return, monthly</td>
+<td>Consistently positive</td>
+</tr>
+<tr>
+<td>Rolling 6-Month Sharpe</td>
+<td>Trailing 126-day Sharpe, monthly</td>
+<td>Consistently &gt;1.0</td>
+</tr>
+<tr>
+<td>Worst Week/Month/Quarter</td>
+<td>Worst periods by P&amp;L</td>
+<td>Context for drawdown</td>
+</tr>
+</tbody>
+</table>
+<p>Includes: SVG drawdown chart, SVG rolling Sharpe chart.</p>
+<h3 id="tab-3-trade-analytics">Tab 3: Trade Analytics</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Formula</th>
+<th>Target</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Win Rate</td>
+<td>winning / total × 100</td>
+<td>&gt;50%</td>
+</tr>
+<tr>
+<td>Profit Factor</td>
+<td>gross_profits / gross_losses</td>
+<td>&gt;1.5</td>
+</tr>
+<tr>
+<td>Expectancy</td>
+<td>(win_rate × avg_win) - (loss_rate × avg_loss)</td>
+<td>Clearly positive</td>
+</tr>
+<tr>
+<td>Avg Win vs Avg Loss</td>
+<td>Dollar and percentage</td>
+<td>Avg win &gt; avg loss</td>
+</tr>
+<tr>
+<td>Win/Loss Ratio</td>
+<td>avg_win / abs(avg_loss)</td>
+<td>&gt;1.0</td>
+</tr>
+<tr>
+<td>Avg Hold Days</td>
+<td>Mean trade duration</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Trades per Month</td>
+<td>Activity level</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Monthly Win Rate</td>
+<td>Profitable months / total months</td>
+<td>&gt;60%</td>
+</tr>
+</tbody>
+</table>
+<p>Includes: PnL distribution histogram SVG, streak analysis, best/worst
+month.</p>
+<h3 id="tab-4-market-relationship">Tab 4: Market Relationship</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Formula</th>
+<th>Target</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Beta vs S&amp;P 500</td>
+<td>cov(portfolio, SPY) / var(SPY)</td>
+<td>&lt;0.5</td>
+</tr>
+<tr>
+<td>Alpha</td>
+<td>portfolio_return - (beta × SPY_return)</td>
+<td>Positive</td>
+</tr>
+<tr>
+<td>Correlation to SPY</td>
+<td>Pearson correlation of daily returns</td>
+<td>Low</td>
+</tr>
+<tr>
+<td>Correlation to QQQ</td>
+<td>Same for Nasdaq</td>
+<td>Low</td>
+</tr>
+<tr>
+<td>Correlation to BTC</td>
+<td>Same for Bitcoin</td>
+<td>Low</td>
+</tr>
+<tr>
+<td>Net Exposure</td>
+<td>(long - short) / equity</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Gross Exposure</td>
+<td>(long + short) / equity</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>SPY/QQQ/BTC data fetched from yfinance with 30-minute cache.</p>
+<h3 id="tab-5-scalability">Tab 5: Scalability</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Source</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Avg Position Size</td>
+<td>Trade data</td>
+<td>Current trade scale</td>
+</tr>
+<tr>
+<td>Slippage per Trade</td>
+<td>Fill vs decision price</td>
+<td>Execution quality</td>
+</tr>
+<tr>
+<td>Slippage vs Gross Profit</td>
+<td>Slippage total / gross profit</td>
+<td>Should be &lt;20%</td>
+</tr>
+<tr>
+<td>Capacity Projection</td>
+<td>Position / daily volume ratio</td>
+<td>$10K to $1M scaling table</td>
+</tr>
+</tbody>
+</table>
+<h3 id="tab-6-ai-intelligence">Tab 6: AI Intelligence</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Source</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Prediction Win Rate</td>
+<td>ai_predictions table</td>
+<td>Overall AI accuracy</td>
+</tr>
+<tr>
+<td>Per-Symbol Track Record</td>
+<td>ai_predictions grouped by symbol</td>
+<td>Stock-specific AI performance</td>
+</tr>
+<tr>
+<td>Signal Type Breakdown</td>
+<td>ai_predictions grouped by signal</td>
+<td>Which signals work (BUY/SELL/HOLD)</td>
+</tr>
+<tr>
+<td>Confidence Distribution</td>
+<td>ai_predictions confidence field</td>
+<td>Is higher confidence more accurate?</td>
+</tr>
+<tr>
+<td>Self-Tuning History</td>
+<td>tuning_history table</td>
+<td>What adjustments were made and their outcomes</td>
+</tr>
+<tr>
+<td>Cross-Profile Comparison</td>
+<td>All profiles’ ai_predictions</td>
+<td>Which profile’s AI is performing best</td>
+</tr>
+</tbody>
+</table>
+<h3 id="chart-generation">Chart Generation</h3>
+<p>All charts are inline SVG generated by <code>metrics.py</code>: -
+<code>render_equity_curve_svg()</code> — line chart with responsive
+viewBox - <code>render_drawdown_svg()</code> — inverted area chart (red
+below zero) - <code>render_bar_chart_svg()</code> — colored bars for
+monthly returns and PnL distribution -
+<code>render_rolling_sharpe_svg()</code> — line chart of rolling Sharpe
+stability</p>
+<p>No external charting libraries — pure SVG works in all browsers and
+emails.</p>
+<h3 id="previous-risk-analysis">Previous Risk Analysis</h3>
+<p>The following metrics were previously on the AI Performance page and
+are now incorporated into the Performance Dashboard:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Calculation</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Max Drawdown</strong></td>
+<td>Largest peak-to-trough decline in equity</td>
+<td><code>daily_snapshots</code> table (preferred) or cumulative trade
+PnL fallback</td>
+</tr>
+<tr>
+<td><strong>Value at Risk (95%)</strong></td>
+<td>5th percentile of all trade returns sorted ascending</td>
+<td>Trade PnL as % of cost basis</td>
+</tr>
+<tr>
+<td><strong>Worst Single Trade</strong></td>
+<td>Minimum PnL across all closed trades</td>
+<td><code>trades</code> table</td>
+</tr>
+<tr>
+<td><strong>Worst Day</strong></td>
+<td>Minimum sum of PnL grouped by day</td>
+<td><code>trades</code> table grouped by date</td>
+</tr>
+<tr>
+<td><strong>Longest Losing Streak</strong></td>
+<td>Maximum consecutive trades with <code>pnl &lt; 0</code></td>
+<td><code>trades</code> table ordered by timestamp</td>
+</tr>
+<tr>
+<td><strong>Current Streak</strong></td>
+<td>Active winning or losing streak</td>
+<td>Last N trades</td>
+</tr>
+<tr>
+<td><strong>Longest Winning Streak</strong></td>
+<td>Maximum consecutive trades with <code>pnl &gt; 0</code></td>
+<td><code>trades</code> table ordered by timestamp</td>
+</tr>
+<tr>
+<td><strong>Avg Losing Streak</strong></td>
+<td>Mean length of all losing streaks</td>
+<td>All identified losing streaks</td>
+</tr>
+</tbody>
+</table>
+<h3 id="monthly-returns-consistency">Monthly Returns (Consistency)</h3>
+<p>Trades are grouped by month (from timestamp <code>YYYY-MM</code>),
+sorted most recent first:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Column</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Month</td>
+<td>Calendar month label (e.g., “Apr 2026”)</td>
+</tr>
+<tr>
+<td>Trades</td>
+<td>Total closed trades that month</td>
+</tr>
+<tr>
+<td>Wins</td>
+<td>Trades with <code>pnl &gt; 0</code></td>
+</tr>
+<tr>
+<td>Losses</td>
+<td>Trades with <code>pnl &lt; 0</code></td>
+</tr>
+<tr>
+<td>P&amp;L</td>
+<td>Sum of all trade PnL for the month</td>
+</tr>
+<tr>
+<td>Return</td>
+<td>Monthly PnL as % of starting equity (from
+<code>daily_snapshots</code>)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="data-requirements">Data Requirements</h3>
+<ul>
+<li>Risk metrics require at least 5 closed trades; otherwise “Not enough
+data” is displayed.</li>
+<li>Max drawdown uses <code>daily_snapshots</code> equity values when
+available; falls back to reconstructing an equity curve from cumulative
+trade PnL.</li>
+<li>Monthly return % shows 0.0% when no daily snapshot equity data is
+available for that month.</li>
+<li>All sections respect the per-profile filter dropdown on the AI
+Performance page.</li>
+</ul>
+<hr />
+<h2 id="tax-and-regulatory-considerations">21. Tax and Regulatory
+Considerations</h2>
+<h3 id="current-status">Current Status</h3>
+<p>The system is a paper trading platform and does not currently handle
+tax reporting. The following considerations apply if the system is used
+with real money:</p>
+<h3 id="short-term-capital-gains">Short-Term Capital Gains</h3>
+<p>All trades held less than 1 year are taxed as ordinary income (not
+the lower long-term capital gains rate). Since this system is designed
+for short-term trades (average hold: days to weeks), virtually all
+profits would be short-term gains. Tax rates range from 10-37% depending
+on income bracket.</p>
+<h3 id="wash-sale-rule">Wash Sale Rule</h3>
+<p>The IRS wash sale rule disallows a tax deduction on a loss if you buy
+the same or “substantially identical” security within 30 days before or
+after the sale. This system frequently trades the same stocks, which
+means: - Losses may not be immediately deductible - The disallowed loss
+gets added to the cost basis of the replacement purchase - The
+self-tuning system could re-buy a stock it just sold at a loss within
+days</p>
+<p>A wash sale tracking module would need to: - Track all sells at a
+loss per symbol - Check if the same symbol was bought within 30 days
+before or after - Adjust cost basis accordingly - Flag affected trades
+in the tax report</p>
+<h3 id="pattern-day-trader-pdt-rule">Pattern Day Trader (PDT) Rule</h3>
+<p>If a trader executes 4 or more day trades within 5 business days in a
+margin account, they’re classified as a Pattern Day Trader and must
+maintain $25,000 minimum equity. This system’s 30-minute scan interval
+means it can open and close positions within the same day.</p>
+<p>Implications: - Accounts under $25K should limit day trades to 3 per
+5-day period - The system should track day trade count and pause if
+approaching the limit - Cash accounts (not margin) are exempt from PDT
+but have settlement delays</p>
+<h3 id="what-would-need-to-be-built">What Would Need to Be Built</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Purpose</th>
+<th>Priority</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Tax lot tracking</td>
+<td>Track cost basis per share for accurate gain/loss</td>
+<td>High</td>
+</tr>
+<tr>
+<td>Wash sale detection</td>
+<td>Flag trades affected by wash sale rule</td>
+<td>High</td>
+</tr>
+<tr>
+<td>Day trade counter</td>
+<td>Track day trades to avoid PDT violation</td>
+<td>High</td>
+</tr>
+<tr>
+<td>Tax report export</td>
+<td>Generate IRS-compatible trade report (Form 8949)</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>Holding period tracking</td>
+<td>Distinguish short-term vs long-term gains</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>Cost basis methods</td>
+<td>Support FIFO, LIFO, specific identification</td>
+<td>Low</td>
+</tr>
+</tbody>
+</table>
+<p>These features are not currently implemented. Users should consult a
+tax professional before using this system with real money.</p>
+<hr />
+<h2 id="scaling-roadmap">22. Scaling Roadmap</h2>
+<p>See <code>SCALING_PLAN.md</code> for the complete scaling plan from
+$10K paper through $1M+ live trading, including what changes at each
+stage, what breaks at scale, and success criteria for each
+milestone.</p>
+<hr />
+<p><em>This document describes a paper trading system. No real capital
+is at risk. The system is designed to test AI-augmented trading
+strategies across multiple market segments.</em></p>
+</body>
+</html>

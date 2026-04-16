@@ -124,34 +124,6 @@ def sector_momentum_strategy(symbol, ctx=None, df=None,
             "volume_ratio": round(vol_ratio, 2),
         }
 
-    # SELL -- stock below SMA20 or SPY reversed
-    if price < sma_20:
-        return {
-            "symbol": symbol,
-            "signal": "SELL",
-            "reason": (
-                f"Price ({price:.2f}) below SMA20 ({sma_20:.2f}) -- "
-                f"sector momentum lost"
-            ),
-            "price": price,
-            "rsi": rsi,
-            "sma_20": sma_20,
-            "volume_ratio": round(vol_ratio, 2),
-        }
-
-    if not spy_above_sma and rsi < 45:
-        return {
-            "symbol": symbol,
-            "signal": "SELL",
-            "reason": (
-                f"SPY below SMA20 and stock RSI {rsi:.1f} -- market downturn"
-            ),
-            "price": price,
-            "rsi": rsi,
-            "sma_20": sma_20,
-            "volume_ratio": round(vol_ratio, 2),
-        }
-
     return {
         "symbol": symbol,
         "signal": "HOLD",
@@ -290,21 +262,6 @@ def pullback_support_strategy(symbol, ctx=None, df=None,
             "rsi": rsi,
             "sma_20": sma_20,
             "pct_from_sma": round(pct_from_sma, 2),
-        }
-
-    # SELL -- price closes below SMA50
-    if sma_50 is not None and price < sma_50:
-        return {
-            "symbol": symbol,
-            "signal": "SELL",
-            "reason": (
-                f"Price ({price:.2f}) below SMA50 ({sma_50:.2f}) -- "
-                f"uptrend broken"
-            ),
-            "price": price,
-            "rsi": rsi,
-            "sma_20": sma_20,
-            "sma_50": sma_50,
         }
 
     return {

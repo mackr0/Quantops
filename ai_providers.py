@@ -98,7 +98,8 @@ def _strip_markdown_fences(text):
     return text
 
 
-def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1024):
+def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1024,
+            db_path=None, purpose=None):
     """Send a prompt to the specified AI provider and return the response text.
 
     Args:
@@ -107,6 +108,11 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
         model: Model ID string (if None, uses cheapest for provider)
         api_key: API key for the provider
         max_tokens: Max response tokens
+        db_path: Optional per-profile DB path. When provided, the call is
+            logged to that profile's ai_cost_ledger table.
+        purpose: Optional short tag (e.g., "ensemble:earnings_analyst",
+            "batch_select", "sec_diff") for the ledger — lets the dashboard
+            break spend down by what the call was for.
 
     Returns:
         str: The raw response text (with markdown fences stripped)
@@ -127,21 +133,106 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
     logger.info("Calling AI: provider=%s, model=%s, max_tokens=%d",
                 provider, model, max_tokens)
 
+    # Each provider-specific helper returns (text, input_tokens, output_tokens).
+    # Unknown token counts come back as 0 — cost ledger logs $0 for those.
     if provider == "anthropic":
-        response_text = _call_anthropic(prompt, model, api_key, max_tokens)
+        response_text, in_tok, out_tok = _call_anthropic(prompt, model, api_key, max_tokens)
     elif provider == "openai":
-        response_text = _call_openai(prompt, model, api_key, max_tokens)
+        response_text, in_tok, out_tok = _call_openai(prompt, model, api_key, max_tokens)
     elif provider == "google":
-        response_text = _call_google(prompt, model, api_key, max_tokens)
+        response_text, in_tok, out_tok = _call_google(prompt, model, api_key, max_tokens)
     else:
         raise ValueError(f"Unknown AI provider: {provider!r}")
+
+    # Fire-and-forget cost logging — never raise from here
+    if db_path:
+        try:
+            from ai_cost_ledger import log_ai_call
+            log_ai_call(db_path, provider, model or "?",
+                        in_tok, out_tok, purpose or "")
+        except Exception as exc:
+            logger.debug("cost ledger skipped: %s", exc)
 
     # Strip markdown code fences (the bug we had with Haiku, could happen with any provider)
     return _strip_markdown_fences(response_text)
 
 
+def call_ai_structured(prompt, schema, tool_name="emit",
+                        provider="anthropic", model=None, api_key=None,
+                        max_tokens=4096,
+                        db_path=None, purpose=None):
+    """Force a structured JSON response matching `schema` via tool_use.
+
+    Solves the Haiku-drops-candidates bug: when asked for an array in a
+    normal prompt, Haiku sometimes returns a single object or truncated
+    list. Tool-use forces the model to call a function with an argument
+    matching the schema — the SDK returns a validated dict, no parsing.
+
+    Currently implemented for Anthropic only. OpenAI/Google fall back to
+    a plain call_ai and the caller must parse normally.
+
+    Returns
+    -------
+    dict (the tool input), or None on failure.
+    """
+    if provider != "anthropic":
+        # Fallback: plain text call, caller parses
+        raw = call_ai(prompt, provider=provider, model=model,
+                      api_key=api_key, max_tokens=max_tokens,
+                      db_path=db_path, purpose=purpose)
+        try:
+            import json as _json
+            return _json.loads(raw)
+        except Exception:
+            return None
+
+    if not api_key:
+        raise ValueError("api_key required")
+    if model is None:
+        model = _DEFAULT_MODELS.get("anthropic")
+
+    try:
+        import anthropic
+    except ImportError:
+        raise ImportError(
+            "The 'anthropic' package is required. pip install anthropic"
+        )
+
+    client = anthropic.Anthropic(api_key=api_key)
+    tool_spec = {
+        "name": tool_name,
+        "description": "Submit the structured result for this request.",
+        "input_schema": schema,
+    }
+    message = client.messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        tools=[tool_spec],
+        tool_choice={"type": "tool", "name": tool_name},
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    # Cost logging
+    usage = getattr(message, "usage", None)
+    in_tok = getattr(usage, "input_tokens", 0) if usage else 0
+    out_tok = getattr(usage, "output_tokens", 0) if usage else 0
+    if db_path:
+        try:
+            from ai_cost_ledger import log_ai_call
+            log_ai_call(db_path, "anthropic", model or "?",
+                        in_tok, out_tok, purpose or "")
+        except Exception:
+            pass
+
+    # Find the tool_use block and return its input
+    for block in message.content:
+        if getattr(block, "type", None) == "tool_use":
+            return dict(getattr(block, "input", {}) or {})
+    return None
+
+
 def _call_anthropic(prompt, model, api_key, max_tokens):
-    """Call Anthropic Claude API."""
+    """Call Anthropic Claude API. Returns (text, input_tokens, output_tokens)."""
     try:
         import anthropic
     except ImportError:
@@ -156,11 +247,14 @@ def _call_anthropic(prompt, model, api_key, max_tokens):
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
-    return message.content[0].text
+    usage = getattr(message, "usage", None)
+    in_tok = getattr(usage, "input_tokens", 0) if usage else 0
+    out_tok = getattr(usage, "output_tokens", 0) if usage else 0
+    return message.content[0].text, in_tok, out_tok
 
 
 def _call_openai(prompt, model, api_key, max_tokens):
-    """Call OpenAI API."""
+    """Call OpenAI API. Returns (text, input_tokens, output_tokens)."""
     try:
         from openai import OpenAI
     except ImportError:
@@ -175,11 +269,14 @@ def _call_openai(prompt, model, api_key, max_tokens):
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
     )
-    return response.choices[0].message.content
+    usage = getattr(response, "usage", None)
+    in_tok = getattr(usage, "prompt_tokens", 0) if usage else 0
+    out_tok = getattr(usage, "completion_tokens", 0) if usage else 0
+    return response.choices[0].message.content, in_tok, out_tok
 
 
 def _call_google(prompt, model, api_key, max_tokens):
-    """Call Google Gemini API."""
+    """Call Google Gemini API. Returns (text, input_tokens, output_tokens)."""
     try:
         import google.generativeai as genai
     except ImportError:
@@ -194,4 +291,7 @@ def _call_google(prompt, model, api_key, max_tokens):
         prompt,
         generation_config={"max_output_tokens": max_tokens},
     )
-    return response.text
+    meta = getattr(response, "usage_metadata", None)
+    in_tok = getattr(meta, "prompt_token_count", 0) if meta else 0
+    out_tok = getattr(meta, "candidates_token_count", 0) if meta else 0
+    return response.text, in_tok, out_tok

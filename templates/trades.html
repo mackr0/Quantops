@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_trades_table.html" as trades_tpl %}
 {% block title %}Trades - QuantOpsAI{% endblock %}
 {% block content %}
 <h1>Trade History</h1>
@@ -69,50 +70,13 @@
     </div>
 </article>
 {% else %}
-<article>
-    <p class="muted">No decision log entries yet. Decisions will appear here once the trading system executes.</p>
-</article>
 {% endif %}
 
-{% if trades %}
 <article>
-    <header><h3>Journal Trades</h3></header>
-    <div class="overflow-auto">
-        <table class="striped">
-            <thead>
-                <tr>
-                    <th>Time</th>
-                    <th>Profile</th>
-                    <th>Symbol</th>
-                    <th>Side</th>
-                    <th>Qty</th>
-                    <th>Price</th>
-                    <th>Strategy</th>
-                    <th>P&L</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for t in trades %}
-                <tr>
-                    <td class="muted">{{ t.timestamp[:16] if t.timestamp else '--' }}</td>
-                    <td>{{ t.profile_name or t.segment or '--' }}</td>
-                    <td><strong>{{ t.symbol }}</strong></td>
-                    <td class="{{ 'pnl-pos' if t.side == 'buy' else 'pnl-neg' }}">
-                        {{ t.side|upper }}
-                    </td>
-                    <td>{{ t.qty|int }}</td>
-                    <td>{{ "${:,.2f}".format(t.price) if t.price else '--' }}</td>
-                    <td>{{ t.strategy or '--' }}</td>
-                    <td class="{{ 'pnl-pos' if (t.pnl or 0) > 0 else ('pnl-neg' if (t.pnl or 0) < 0 else '') }}">
-                        {{ "{:+,.2f}".format(t.pnl) if t.pnl is not none else '--' }}
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
+    <header><h3>Trades</h3></header>
+    {{ trades_tpl.render_trades(trades, show_profile=True,
+        empty_message="No trades yet. Trades will appear here once the AI selects and executes positions.") }}
 </article>
-{% endif %}
 {% endblock %}
 
 {% block scripts %}
@@ -135,6 +99,20 @@ document.addEventListener('DOMContentLoaded', function() {
                                 content.textContent = 'Error: ' + data.error;
                                 return;
                             }
+                            // Map internal snake_case identifiers to display labels
+                            const STRATEGY_LABELS = {
+                                'market_engine': 'Market Structure Engine',
+                                'insider_cluster': 'Insider Buying Cluster',
+                                'earnings_drift': 'Earnings Drift',
+                                'vol_regime': 'Volatility Regime',
+                                'max_pain_pinning': 'Max Pain Pinning',
+                                'gap_reversal': 'Gap Reversal',
+                            };
+                            function pretty(key) {
+                                if (STRATEGY_LABELS[key]) return STRATEGY_LABELS[key];
+                                return key.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+                            }
+
                             let html = '<div class="detail-grid">';
                             if (data.technical_score !== null) {
                                 html += '<div><strong>Technical Score:</strong> ' + data.technical_score + '</div>';
@@ -142,7 +120,8 @@ document.addEventListener('DOMContentLoaded', function() {
                             if (data.strategy_votes) {
                                 const votes = typeof data.strategy_votes === 'string'
                                     ? JSON.parse(data.strategy_votes) : data.strategy_votes;
-                                html += '<div><strong>Strategy Votes:</strong> ' + JSON.stringify(votes) + '</div>';
+                                const voteLines = Object.entries(votes).map(([k, v]) => pretty(k) + ': ' + v).join(', ');
+                                html += '<div><strong>Strategy Votes:</strong> ' + voteLines + '</div>';
                             }
                             if (data.strategy_reasons) {
                                 const reasons = typeof data.strategy_reasons === 'string'
@@ -150,7 +129,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                 html += '<div><strong>Strategy Reasons:</strong><ul>';
                                 if (typeof reasons === 'object') {
                                     for (const [k, v] of Object.entries(reasons)) {
-                                        html += '<li><strong>' + k + ':</strong> ' + v + '</li>';
+                                        html += '<li><strong>' + pretty(k) + ':</strong> ' + v + '</li>';
                                     }
                                 }
                                 html += '</ul></div>';
@@ -188,6 +167,83 @@ document.addEventListener('DOMContentLoaded', function() {
                 detailRow.style.display = 'none';
                 btn.textContent = '+';
             }
+        });
+    });
+});
+
+// --- Sortable table columns ---
+document.querySelectorAll('.sortable-table').forEach(function(table) {
+    var headers = table.querySelectorAll('th.sortable');
+    var currentSort = { col: 1, dir: 'desc' }; // default: Time descending
+
+    headers.forEach(function(th) {
+        th.addEventListener('click', function() {
+            var col = parseInt(th.dataset.col);
+            var sortType = th.dataset.sort || 'string';
+            // Toggle direction if clicking same column
+            if (currentSort.col === col) {
+                currentSort.dir = currentSort.dir === 'asc' ? 'desc' : 'asc';
+            } else {
+                currentSort.col = col;
+                currentSort.dir = 'asc';
+            }
+
+            // Update arrow indicators
+            headers.forEach(function(h) {
+                var arrow = h.querySelector('.sort-arrow');
+                if (arrow) arrow.textContent = '';
+                h.classList.remove('sort-asc', 'sort-desc');
+            });
+            var arrow = th.querySelector('.sort-arrow');
+            if (!arrow) {
+                arrow = document.createElement('span');
+                arrow.className = 'sort-arrow';
+                th.appendChild(arrow);
+            }
+            arrow.textContent = currentSort.dir === 'asc' ? ' ▲' : ' ▼';
+            th.classList.add('sort-' + currentSort.dir);
+
+            // Gather rows: each trade = [summary-row, detail-row]
+            var tbody = table.querySelector('tbody');
+            var allRows = Array.from(tbody.querySelectorAll('tr'));
+            var pairs = [];
+            for (var i = 0; i < allRows.length; i += 2) {
+                pairs.push([allRows[i], allRows[i + 1]]);
+            }
+
+            pairs.sort(function(a, b) {
+                var cellA = a[0].children[col];
+                var cellB = b[0].children[col];
+                if (!cellA || !cellB) return 0;
+
+                var valA, valB;
+                if (col === 1) {
+                    // Time column: sort by raw ISO timestamp in data-raw
+                    valA = cellA.getAttribute('data-raw') || '';
+                    valB = cellB.getAttribute('data-raw') || '';
+                    return currentSort.dir === 'asc'
+                        ? valA.localeCompare(valB)
+                        : valB.localeCompare(valA);
+                }
+
+                var textA = (cellA.textContent || '').trim();
+                var textB = (cellB.textContent || '').trim();
+
+                if (sortType === 'number') {
+                    valA = parseFloat(textA.replace(/[$,%+]/g, '')) || 0;
+                    valB = parseFloat(textB.replace(/[$,%+]/g, '')) || 0;
+                    return currentSort.dir === 'asc' ? valA - valB : valB - valA;
+                }
+                return currentSort.dir === 'asc'
+                    ? textA.localeCompare(textB)
+                    : textB.localeCompare(textA);
+            });
+
+            // Re-append sorted pairs
+            pairs.forEach(function(pair) {
+                tbody.appendChild(pair[0]);
+                if (pair[1]) tbody.appendChild(pair[1]);
+            });
         });
     });
 });

@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>SCALING_PLAN</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">SCALING_PLAN</h1>
+</header>
+<h1 id="quantopsai-scaling-plan">QuantOpsAI — Scaling Plan</h1>
+<h2 id="current-state">Current State</h2>
+<p>The system is designed and tested for <strong>$10K paper trading
+accounts</strong>. Position sizing, execution, universe selection, and
+risk management are all calibrated for this range.</p>
+<h2 id="scaling-milestones">Scaling Milestones</h2>
+<h3 id="stage-1-10k-paper-current">Stage 1: $10K Paper (CURRENT)</h3>
+<ul>
+<li><strong>Status:</strong> Active</li>
+<li><strong>Goal:</strong> Prove the strategies generate positive
+returns on paper</li>
+<li><strong>Success criteria:</strong> Consistent positive P&amp;L over
+30+ trading days with &gt;45% trade win rate</li>
+<li><strong>What to watch:</strong> AI prediction accuracy, self-tuning
+effectiveness, strategy-specific performance per market type</li>
+</ul>
+<h3 id="stage-2-10k-real-money">Stage 2: $10K Real Money</h3>
+<ul>
+<li><strong>Prerequisites:</strong> Stage 1 success criteria met</li>
+<li><strong>Changes needed:</strong>
+<ul>
+<li>Switch Alpaca from paper to live account</li>
+<li>Add real-time P&amp;L monitoring and alerts</li>
+<li>Tighter drawdown limits (10% pause instead of 20%)</li>
+<li>Start with 1 market type (whichever performed best on paper)</li>
+<li>Monitor slippage — compare actual fills to expected prices</li>
+</ul></li>
+<li><strong>Risk budget:</strong> Accept up to $1,000 loss (10%) as
+tuition before pausing</li>
+</ul>
+<h3 id="stage-3-50k-real-money">Stage 3: $50K Real Money</h3>
+<ul>
+<li><strong>Prerequisites:</strong> Stage 2 profitable over 60+ trading
+days</li>
+<li><strong>Changes needed:</strong>
+<ul>
+<li><strong>Upgrade to Alpaca real-time data</strong> — Replace yfinance
+(delayed, free) with Alpaca Data API subscription (~$99/month for Algo
+Trader Plus). This gives: real-time quotes from all US exchanges,
+WebSocket streaming, Level 2 order book depth, real-time 1-min/5-min
+bars. Code changes: replace <code>market_data.get_bars()</code> yfinance
+calls with <code>alpaca_trade_api</code> data endpoints. The
+<code>alternative_data.py</code> intraday functions switch from yfinance
+5m bars to Alpaca real-time bars.</li>
+<li>Position sizing remains percentage-based (scales automatically)</li>
+<li>Add minimum dollar volume filter: only trade stocks with $5M+ daily
+dollar volume</li>
+<li>Enable limit orders by default (reduce slippage)</li>
+<li>Tighter correlation limits (0.5 instead of 0.7)</li>
+<li>Reduce max positions per sector to 3</li>
+<li>Add VaR (Value at Risk) calculation before each trade</li>
+<li>Drop micro-cap universe (too illiquid at this size)</li>
+</ul></li>
+</ul>
+<h3 id="stage-4-100k-250k">Stage 4: $100K-$250K</h3>
+<ul>
+<li><strong>Prerequisites:</strong> Stage 3 profitable over 90+ trading
+days</li>
+<li><strong>Changes needed:</strong>
+<ul>
+<li><strong>WebSocket streaming architecture</strong> — Replace 15-min
+polling scheduler with event-driven WebSocket listeners. Alpaca streams
+real-time trades, quotes, and bar updates. The system reacts to price
+changes instantly instead of scanning on a timer. Code changes: new
+<code>streaming.py</code> module using
+<code>alpaca_trade_api.Stream</code>, triggers AI analysis on
+significant price/volume events rather than fixed intervals.</li>
+<li><strong>Level 2 order book analysis</strong> — Use Alpaca’s order
+book depth data to detect bid/ask imbalance (strong buys vs sells)
+before entering trades. When bids significantly outweigh asks, price is
+likely to rise.</li>
+<li>Minimum dollar volume filter: $10M+ daily</li>
+<li>VWAP order execution (spread orders across time)</li>
+<li>Iceberg orders (hide order size from other traders)</li>
+<li>Portfolio-level risk monitoring (total exposure, sector
+concentration, beta)</li>
+<li>Tax-lot tracking for tax optimization</li>
+<li>Consider pattern day trader (PDT) rule implications</li>
+</ul></li>
+</ul>
+<h3 id="stage-5-1m">Stage 5: $1M+</h3>
+<ul>
+<li><strong>Prerequisites:</strong> Stage 4 profitable over 180+ trading
+days</li>
+<li><strong>Changes needed:</strong>
+<ul>
+<li>Complete execution layer rebuild:
+<ul>
+<li>Event-driven architecture (replace scheduler polling)</li>
+<li>Sub-second order execution</li>
+<li>Smart order routing (split large orders)</li>
+<li>Market impact modeling (estimate price impact before trading)</li>
+</ul></li>
+<li>Universe changes:
+<ul>
+<li>Drop small-cap entirely (insufficient liquidity)</li>
+<li>Focus on mid-cap and large-cap only</li>
+<li>Position sizing capped at 1% of stock’s daily dollar volume</li>
+</ul></li>
+<li>Risk management:
+<ul>
+<li>Real-time portfolio VaR</li>
+<li>Sector exposure limits (max 20% per sector)</li>
+<li>Correlation matrix updated daily</li>
+<li>Maximum drawdown triggers reviewed with actual capital at risk</li>
+</ul></li>
+<li>Infrastructure:
+<ul>
+<li>Dedicated server (not shared $6 droplet)</li>
+<li>Redundant connections to exchange</li>
+<li>Monitoring and alerting for system failures</li>
+</ul></li>
+<li>Regulatory:
+<ul>
+<li>Pattern day trader compliance</li>
+<li>Short selling borrowing costs</li>
+<li>Potential SEC reporting requirements above certain thresholds</li>
+</ul></li>
+</ul></li>
+</ul>
+<h2 id="what-scales-without-changes">What Scales Without Changes</h2>
+<p>These components work at any account size: - <strong>AI analysis
+pipeline</strong> — same prompt, same analysis, same cost -
+<strong>Self-tuning &amp; learning</strong> — performance tracking is
+percentage-based - <strong>Strategy engines</strong> — signal generation
+is price/volume ratio based - <strong>Market regime detection</strong> —
+SPY/VIX analysis is account-size independent - <strong>Political
+sentiment (MAGA Mode)</strong> — news analysis doesn’t change with
+account size - <strong>Earnings calendar</strong> — same check
+regardless of position size - <strong>Web UI &amp; dashboards</strong> —
+display layer is size-agnostic</p>
+<h2 id="what-breaks-at-scale">What Breaks at Scale</h2>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Component</th>
+<th>Breaks At</th>
+<th>Why</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Market orders</td>
+<td>$50K+</td>
+<td>Slippage on small caps</td>
+<td>Limit/VWAP orders</td>
+</tr>
+<tr>
+<td>Micro-cap universe</td>
+<td>$50K+</td>
+<td>Orders are &gt;1% of daily volume</td>
+<td>Drop micro-caps</td>
+</tr>
+<tr>
+<td>Small-cap universe</td>
+<td>$250K+</td>
+<td>Same liquidity issue</td>
+<td>Raise volume floors</td>
+</tr>
+<tr>
+<td>15-min scan interval</td>
+<td>$100K+</td>
+<td>Too slow, miss opportunities</td>
+<td>Real-time WebSocket streaming</td>
+</tr>
+<tr>
+<td>yfinance delayed data</td>
+<td>$50K+</td>
+<td>Delayed/inaccurate prices increase slippage</td>
+<td>Alpaca real-time data subscription</td>
+</tr>
+<tr>
+<td>Correlation (0.7)</td>
+<td>$100K+</td>
+<td>Correlated losses too large</td>
+<td>Tighten to 0.5</td>
+</tr>
+<tr>
+<td>Fixed % position sizing</td>
+<td>$1M+</td>
+<td>% of equity exceeds % of daily volume</td>
+<td>Volume-based sizing</td>
+</tr>
+<tr>
+<td>Scheduler architecture</td>
+<td>$1M+</td>
+<td>Polling too slow</td>
+<td>Event-driven</td>
+</tr>
+<tr>
+<td>Shared $6 droplet</td>
+<td>$100K+</td>
+<td>Single point of failure</td>
+<td>Dedicated infrastructure</td>
+</tr>
+</tbody>
+</table>
+<h2 id="decision-framework">Decision Framework</h2>
+<p>At each stage, ask: 1. Is the strategy still generating positive
+returns? → Continue 2. Is slippage eating more than 20% of gross
+profits? → Fix execution 3. Are position sizes exceeding 1% of daily
+stock volume? → Tighten universe 4. Is drawdown exceeding the
+stage-appropriate limit? → Pause and review 5. Has the market regime
+changed significantly? → Validate strategy still works</p>
+<h2 id="timeline-estimate">Timeline Estimate</h2>
+<table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>Duration</th>
+<th>Cumulative</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Stage 1 (paper)</td>
+<td>1-3 months</td>
+<td>1-3 months</td>
+</tr>
+<tr>
+<td>Stage 2 ($10K real)</td>
+<td>2-3 months</td>
+<td>3-6 months</td>
+</tr>
+<tr>
+<td>Stage 3 ($50K)</td>
+<td>3-6 months</td>
+<td>6-12 months</td>
+</tr>
+<tr>
+<td>Stage 4 ($100K-$250K)</td>
+<td>6-12 months</td>
+<td>12-24 months</td>
+</tr>
+<tr>
+<td>Stage 5 ($1M+)</td>
+<td>Ongoing</td>
+<td>18+ months</td>
+</tr>
+</tbody>
+</table>
+<p>Each stage should only begin after the previous stage’s success
+criteria are met. Rushing ahead with unproven strategies at larger scale
+is how accounts blow up.</p>
+</body>
+</html>

@@ -1,0 +1,1726 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>CHANGELOG</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">CHANGELOG</h1>
+</header>
+<h1 id="changelog">Changelog</h1>
+<p>Every bug fix, behavior change, and known-issue resolution. Newest
+entries at the top. Each entry includes the problem, root cause, fix,
+and any follow-up work tracked separately.</p>
+<p><strong>Format</strong>: YYYY-MM-DD — short title. Severity: critical
+/ high / medium / low.</p>
+<p>Rules going forward: - Every production bug fix gets an entry here
+before deploy - Every fix must name the test that prevents regression
+(or a follow-up TODO to add one) - “Production” means anything that
+changed behavior on the droplet, not code-only refactors - Honest
+failure analysis: <strong>what broke</strong>, <strong>why it wasn’t
+caught</strong>, <strong>what the fix actually does</strong>,
+<strong>why the new test would catch it next time</strong></p>
+<hr />
+<h2
+id="fifo-pl-backfilled-onto-closed-buy-rows-no-more-useless-open-or-closed-labels">2026-04-15
+— FIFO P&amp;L backfilled onto closed BUY rows (no more useless “open”
+or “closed” labels)</h2>
+<p><strong>Severity:</strong> medium UX — user feedback: “having a bunch
+of random closed is just as useless as a bunch of random opens. You know
+what you bought it for and what you sold it for so you can calculate the
+P&amp;L.”</p>
+<p><strong>Root cause of the useless display:</strong> the trades table
+design puts pnl only on SELL (exit) rows. BUY (entry) rows had
+<code>pnl=NULL</code> — even after <code>reconcile_trade_statuses</code>
+marked them <code>status='closed'</code>, the trades page had no dollar
+value to display, so it fell back to “closed” or “open” labels that told
+the user nothing.</p>
+<p><strong>Fix (proper one):</strong> extend
+<code>reconcile_trade_statuses</code> with FIFO lot matching. For each
+symbol, walk trades in timestamp order; every BUY opens a lot; every
+SELL consumes qty from the oldest open lots and accumulates realized
+P&amp;L back onto each BUY row’s <code>pnl</code> column.</p>
+<p>The algorithm handles: - Simple round-trips (1 BUY → 1 SELL) -
+Partial exits (1 BUY → 2+ partial SELLs) — sums attributed P&amp;L -
+Multiple round-trips (BUY → SELL → BUY → SELL) — each entry row gets its
+own correct P&amp;L - Open positions (BUY without matching SELL) — left
+with <code>pnl=NULL</code> - Already-set <code>pnl</code> — never
+overwritten</p>
+<p><strong>Template now:</strong> the trades-table macro shows realized
+P&amp;L on every closed row (BUY or SELL), unrealized P&amp;L on held
+positions, “open” only for truly uncalibrated rows (new BUY with no live
+quote yet). No more “closed” or “exit” labels — every closed trade shows
+a dollar number.</p>
+<p><strong>Backfill on production:</strong> Mid Cap had 4 closed BUY
+rows with NULL pnl — after the one-shot reconcile run, all 4 carry their
+realized P&amp;L (e.g., HIMS 04-13 BUY now shows +$15.20 across the two
+partial sells on 04-15). Small Cap and Large Cap had no closed positions
+yet (their exits happen on Mid Cap primarily).</p>
+<p><strong>Tests</strong> (<code>test_trade_status_reconcile.py</code> —
+16 total, +6 new): - Simple round-trip: BUY 10@$100, SELL 10@$110 → BUY
+pnl +$100 - Losses record correctly as negative - Partial sells sum to
+total realized P&amp;L on the BUY row - Multiple round-trips: each BUY
+gets its own lot’s P&amp;L, not merged - Still-open BUYs stay
+<code>pnl=NULL</code> - Existing <code>pnl</code> values never
+overwritten</p>
+<p><strong>Test count:</strong> 550 (was 545 + 6 new − 1 replaced
+obsolete).</p>
+<hr />
+<h2
+id="self-tuning-now-visible-even-when-it-doesnt-change-anything">2026-04-15
+— Self-tuning now visible even when it doesn’t change anything</h2>
+<p><strong>Severity:</strong> UX — user was certain self-tuning wasn’t
+running because nothing ever appeared in the dashboard.</p>
+<p><strong>Reality check:</strong> Self-Tune runs daily (alongside the
+Daily Snapshot task), but it needs ≥20 resolved AI predictions per
+profile before it will adjust anything. Current state: Mid Cap 8
+resolved, Small Cap 0, Large Cap 0. The tuner is alive but patiently
+waiting for data.</p>
+<p><strong>The UX gap:</strong> when
+<code>apply_auto_adjustments()</code> returned an empty list (no
+changes), the scheduler silently exited with a log line nobody reads. No
+activity row. No dashboard signal. User saw nothing → assumed the tuner
+was broken.</p>
+<p><strong>Fix:</strong> - New
+<code>self_tuning.describe_tuning_state(ctx)</code> returns a struct
+with <code>can_tune</code>, <code>resolved</code> (current count),
+<code>required</code> (20), and a human-readable <code>message</code>
+explaining the current state. - <code>_task_self_tune</code> in the
+scheduler now logs an activity entry EVERY run — whether it changed
+parameters, found no adjustments needed, or is waiting for more data.
+The title + detail distinguish the three cases so the user can confirm
+the tuner is alive at a glance. - New “Self-Tuning Status” panel on
+Performance &gt; AI Intelligence tab shows per-profile:
+resolved-predictions progress bar (e.g. “8 / 20 (40%)”), current status
+(“Collecting data” vs “Active”), last-run timestamp, and the
+human-readable message. Hides only if there’s literally no data at
+all.</p>
+<p><strong>Tests</strong> (<code>test_self_tuning_visibility.py</code> —
+5 tests): - <code>can_tune=False</code> when self-tuning disabled on
+profile - Resolved count reads from ai_predictions table -
+<code>can_tune=True</code> when resolved ≥ 20 - Missing
+<code>ai_predictions</code> table → safe message, no crash - Message
+copy communicates “waiting for data” (not failure)</p>
+<hr />
+<h2
+id="trade-statuses-reconciled-buy-rows-no-longer-show-open-after-exit">2026-04-15
+— Trade statuses reconciled (BUY rows no longer show “open” after
+exit)</h2>
+<p><strong>Severity:</strong> medium UX — the Trades page was showing
+closed positions as “open” forever.</p>
+<p><strong>Symptom:</strong> HIMS BUY on 04-13 (qty 20) was fully exited
+by two SELLs on 04-15 (qty 5 + 15). The BUY row stayed
+<code>status=open, pnl=null</code> and displayed as “open” on the trades
+page. Most exit-SELL rows also carried <code>status=open</code> despite
+having realized <code>pnl</code>.</p>
+<p><strong>Root causes:</strong> 1. <code>trader.check_exits</code>
+logged exit SELLs without passing <code>status="closed"</code> (unlike
+<code>trade_pipeline.py</code> which did). Default was “open”. 2.
+Nothing ever went back and marked matching BUY rows as closed when their
+positions flattened.</p>
+<p><strong>Fixes:</strong> - <code>trader.py</code> now passes
+<code>status="closed" if pnl is not None else "open"</code> on exit
+SELLs, matching the pipeline’s behavior. - After an exit, both
+<code>trader.py</code> and <code>trade_pipeline.py</code> run an inline
+<code>UPDATE trades SET status='closed' WHERE symbol=? AND   side='buy' AND status='open'</code>
+— flattens entry rows the moment the position closes. - New
+<code>journal.reconcile_trade_statuses(db_path, open_symbols)</code> —
+authoritative reconciliation using live Alpaca positions as ground
+truth. Fixes any drift (old rows from before this fix) by marking open
+BUYs closed when their symbol isn’t currently held. - New scheduled task
+<code>_task_reconcile_trade_statuses</code> runs every exit cycle (5
+min) to catch any drift automatically. - One-shot backfill run against
+the live DBs: Mid Cap fixed 5 sells and 4 buys; Small/Large had no
+drift.</p>
+<p><strong>Tests</strong> (<code>test_trade_status_reconcile.py</code> —
+10 tests): - SELL rows with pnl but open status → closed - SELL rows
+without pnl → left alone (can’t confirm) - Already-closed SELLs
+unchanged - BUY rows for symbols not in live positions → closed - Empty
+open_symbols (no positions) → all open BUYs closed - BUY rows for
+still-held symbols → preserved - Heuristic path (no positions list): BUY
+with matching SELL → closed - Count-reporting correctness</p>
+<p><strong>Test count:</strong> 543 (was 528 + 15 new across two
+features).</p>
+<hr />
+<h2 id="virtual-account-layer-broker-decoupling">2026-04-16 — Virtual
+Account Layer (broker decoupling)</h2>
+<p><strong>Severity:</strong> architectural — major new capability</p>
+<p><strong>What it enables:</strong> Unlimited virtual trading profiles
+sharing the same 3 Alpaca paper accounts. Each virtual profile has its
+own starting capital, positions, P&amp;L, and strategy — all tracked
+internally. Alpaca is used only for order execution and price
+quotes.</p>
+<p><strong>Architecture:</strong> - <strong>Internal position
+ledger</strong> (<code>journal.get_virtual_positions()</code>) —
+computes net positions from the trades table via FIFO lot tracking.
+Returns the exact same dict shape as <code>client.get_positions()</code>
+so every downstream consumer works unchanged. - <strong>Virtual equity
+tracker</strong> (<code>journal.get_virtual_account_info()</code>) —
+computes equity, cash, buying power from trade flows + initial capital.
+<code>cash = initial_capital - sum(buy_costs) + sum(sell_proceeds)</code>.
+- <strong>Profile-to-account mapping</strong> — new
+<code>alpaca_accounts</code> table holds named broker connections.
+Multiple profiles can reference the same account via
+<code>alpaca_account_id</code> FK. <code>is_virtual=1</code> flips the
+profile to use internal data instead of Alpaca reads. - <strong>Single
+interception point</strong> (<code>client.py</code>) —
+<code>get_positions()</code> and <code>get_account_info()</code> check
+<code>ctx.is_virtual</code> and route to the internal ledger when true.
+Because trader.py, trade_pipeline.py, multi_scheduler.py, and views.py
+all call through client.py, this one change makes the entire pipeline
+virtual-aware. - <strong>Virtual-aware reconciliation</strong> — virtual
+profiles use the internal ledger as ground truth (not Alpaca’s combined
+view of shared accounts). - <strong>Settings UI</strong> — new “Alpaca
+Accounts” section for managing broker connections. “Create Profile” form
+has a dropdown to select a shared account + starting capital input.
+Virtual profiles show “(Virtual)” badge on the dashboard.</p>
+<p><strong>Backward compatibility:</strong> Existing profiles have
+<code>is_virtual=0</code> and <code>alpaca_account_id=NULL</code>. Zero
+behavior change — they continue using per-profile Alpaca keys and
+reading positions/equity from Alpaca.</p>
+<p><strong>Schema:</strong></p>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode sql"><code class="sourceCode sql"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> <span class="kw">TABLE</span> alpaca_accounts (<span class="kw">id</span>, user_id, name, keys, base_url);</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="kw">ALTER</span> <span class="kw">TABLE</span> trading_profiles <span class="kw">ADD</span> <span class="kw">COLUMN</span> alpaca_account_id <span class="dt">INTEGER</span>;</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="kw">ALTER</span> <span class="kw">TABLE</span> trading_profiles <span class="kw">ADD</span> <span class="kw">COLUMN</span> is_virtual <span class="dt">INTEGER</span> <span class="kw">DEFAULT</span> <span class="dv">0</span>;</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="kw">ALTER</span> <span class="kw">TABLE</span> trading_profiles <span class="kw">ADD</span> <span class="kw">COLUMN</span> initial_capital <span class="dt">REAL</span> <span class="kw">DEFAULT</span> <span class="dv">100000</span>;</span></code></pre></div>
+<p><strong>Tests:</strong> 26 new (test_virtual_positions.py: 15,
+test_virtual_account.py: 11) covering FIFO lots, partial sells,
+unrealized P&amp;L, equity math, output shape compatibility, price
+fetcher fallbacks, UserContext defaults.</p>
+<p><strong>Test count:</strong> 583 passing.</p>
+<hr />
+<h2
+id="scaling-projection-v4-side-by-side-market-vs-limit-columns">2026-04-15
+— Scaling projection v4: side-by-side market vs limit columns</h2>
+<p><strong>Severity:</strong> UX — final iteration on the Scalability
+tab</p>
+<p><strong>User pushback on v3:</strong> “Why is the system OK with
+losses vs switching to limit orders, is it really nonstandard to use
+limit orders?”</p>
+<p><strong>The honest answer:</strong> it’s a real tradeoff, not a clear
+winner. Limit orders cut slippage by ~60% but can miss fills entirely on
+momentum moves. The “right” choice depends on strategy style.</p>
+<p><strong>Fix:</strong> stop picking for the user. Show BOTH execution
+styles side-by-side at every capital tier so they can compare and
+decide.</p>
+<p><strong>New table layout:</strong></p>
+<pre><code>                       │ If Market Orders │ If Limit Orders │
+Capital   Profile      │ Slippage Return  │ Slippage Return │
+$10K      Small Cap    │  0.336%  -0.09%  │  0.134%   +0.11%│
+$50K      Small Cap    │  0.751%  -0.51%  │  0.300%   -0.05%│
+$100K     Small Cap    │  1.062%  -0.82%  │  0.425%   -0.18%│
+$500K     Mid Cap      │  0.751%  -0.51%  │  0.300%   -0.05%│
+$1M       Mid Cap      │  1.062%  -0.82%  │  0.425%   -0.18%│
+$10M      Large Cap    │  1.062%  -0.82%  │  0.425%   -0.18%│</code></pre>
+<p>Limit columns are tinted green to make the comparison obvious. The
+footer notes that limits are an option but come with their own tradeoff
+(missed fills on momentum moves) and points to the profile settings
+toggle.</p>
+<p><strong>Code changes:</strong> - <code>project_scaling()</code>
+returns <code>slippage_market_pct</code> +
+<code>slippage_limit_pct</code> + <code>return_market_pct</code> +
+<code>return_limit_pct</code> + CIs for both. - Calibration backs out
+the right baseline based on what the user is currently using (so we
+never double-apply or miss the limit benefit). - Removed
+<code>_LIMIT_ORDER_CAPITAL_THRESHOLD</code> — no automatic switch at any
+tier; both shown everywhere. - Removed <code>uses_limit_orders</code>
+per-row flag (no longer needed). - Slippage growth no longer clipped at
+0 — improvements (e.g. switching to limits at current scale) properly
+INCREASE projected return. - Template adds a header row with
+<code>colspan</code> grouping the two execution columns.</p>
+<p><strong>Tests</strong> (<code>test_scaling_projection.py</code> — 20,
+replaced ExecutionStyleAdjustment with BothExecutionStylesAlwaysShown):
+- Every row has both market and limit columns - Limit slippage always
+lower than market - Limit/market ratio stays at ~0.40 across all scales
+- Baseline calibration correct whether user is on market or limit orders
+(back-implied properly in both directions)</p>
+<p><strong>Test count:</strong> 528.</p>
+<hr />
+<h2 id="tooltip-z-index-fix-mounted-to-body-via-js">2026-04-15 — Tooltip
+z-index fix (mounted to body via JS)</h2>
+<p><strong>Symptom:</strong> tooltips on the Scalability table appeared
+as a thin sliver — clipped by the parent <code>overflow-auto</code>
+container.</p>
+<p><strong>Fix:</strong> new JS in <code>base.html</code> mounts a
+single tooltip element on <code>&lt;body&gt;</code>, positioned via
+<code>getBoundingClientRect</code> and <code>position: fixed</code>.
+Escapes ALL parent overflow constraints. Hides on scroll. The old CSS
+pseudo-element approach (<code>.tip:hover::after</code>) is stripped +
+defensively suppressed in case browser cache lingers. CSS link gets a
+<code>?v=20260415-tooltip-fix</code> cache-buster.</p>
+<hr />
+<h2
+id="scaling-model-v3-real-world-migration-ladder-execution-adjustment">2026-04-15
+— Scaling model v3: real-world migration ladder + execution
+adjustment</h2>
+<p><strong>Severity:</strong> medium — UX/accuracy of a high-visibility
+planning tool</p>
+<p><strong>User feedback (v2 wasn’t right either):</strong> “Why are you
+using the same profile (small cap) for all the different levels? That
+doesn’t make sense. Isn’t this supposed to show the scalability in a
+real way?” Plus: “Why are we referencing internal documentation on all
+these rows?” Plus: “The tooltips for est. slippage and universe appear
+to be showing up behind the layer above.”</p>
+<p><strong>Real-world model:</strong> at each capital level, project
+what would <em>actually happen</em> — not “if you stubbornly stayed
+Small Cap forever” (v2) and not “magically blended universe” (v1). Three
+real effects compound:</p>
+<ol type="1">
+<li><strong>Square-root market impact.</strong> Larger orders cost more,
+scaling as <code>√(position_size)</code>. (Almgren-Chriss.)</li>
+<li><strong>Tier migration.</strong> $250K+ rationally migrates Small →
+Mid; $5M+ migrates Mid → Large. Each tier offers ~10× more daily volume
+per name, which offsets ~√10 ≈ 3.16× of capital growth.</li>
+<li><strong>Order-execution style.</strong> Above $100K any rational
+operator uses limit orders, which cut realized slippage by ~60%.
+Cap-bracket institutional norm.</li>
+</ol>
+<p>The combined effect: with the full real-world playbook, slippage
+stays roughly flat across the entire scale range. Realistic example for
+a user calibrated at 0.336% baseline (Small Cap, market orders, 6
+fills):</p>
+<pre><code>Capital  Profile     Orders   Slippage   Return
+$10K     Small Cap   market    0.336%    -0.09%
+$50K     Small Cap   market    0.751%    -0.51%
+$100K    Small Cap   limit     0.425%    -0.18%   ← order type switches
+$500K    Mid Cap     limit     0.300%    -0.09%   ← profile migrates
+$1M      Mid Cap     limit     0.425%    -0.18%
+$10M     Large Cap   limit     0.425%    -0.18%   ← profile migrates again</code></pre>
+<p>That’s what real institutional execution looks like. The previous v2
+model showed slippage exploding to 10%+ at $10M because it pretended a
+small-cap operator would still be running small-cap names — which no
+sane operator would.</p>
+<p><strong>Code changes:</strong> -
+<code>scaling_projection.project_scaling()</code> — added
+<code>use_limit_orders_now</code> parameter, applies 0.40× slippage
+multiplier when projection assumes switch to limit orders (only if user
+isn’t already using them). -
+<code>_LIMIT_ORDER_CAPITAL_THRESHOLD = $100K</code>,
+<code>_LIMIT_ORDER_SLIPPAGE_MULT = 0.40</code>. - <code>views.py</code>
+reads the profile’s <code>use_limit_orders</code> setting and threads it
+through. - <code>templates/performance.html</code> adds an “Orders”
+column showing Market vs Limit at each capital level. - Migration notes
+use plain English: “At this scale, you’d switch to a Mid Cap profile.
+The bigger universe gives you ~10× more daily volume per name.” No
+internal-doc references like “SCALING_PLAN.md.” - Footer explanation
+lists the three compounding effects in user terms — no jargon, no
+formulas.</p>
+<p><strong>Tooltip z-index fix:</strong> - <code>.tip</code> tooltips
+were CSS pseudo-elements being clipped by parent
+<code>overflow-auto</code> on the Scalability table — visible only as a
+thin sliver. - New JS in <code>base.html</code> mounts a single tooltip
+element on <code>&lt;body&gt;</code>, positioned via
+<code>getBoundingClientRect</code> and <code>position: fixed</code>.
+Escapes ALL parent overflow constraints. Hides on scroll so it doesn’t
+float orphaned. - Old CSS <code>.tip:hover::after</code> /
+<code>::before</code> stripped to avoid double-rendering.</p>
+<p><strong>Tests</strong> (<code>test_scaling_projection.py</code> — 19
+total, +5 new): -
+<code>test_above_100k_uses_limit_orders_when_currently_market</code> -
+<code>test_limit_order_adoption_lowers_slippage_at_threshold</code> -
+<code>test_already_using_limit_does_not_double_apply_benefit</code> -
+<code>test_limit_order_note_in_migration_row</code> -
+<code>test_no_internal_doc_references_anywhere</code> — sweeps every
+output string for <code>.md</code> and <code>scaling_plan</code> so
+internal doc names can’t silently leak to the UI again - Updated
+<code>test_migration_offsets_capital_growth</code> — pinned to the
+real-world ratio (~1.27×) rather than the without-execution-adjustment
+ratio (~3.16×)</p>
+<p><strong>Test count:</strong> 527 (was 525 + 5 new − 3 obsolete from
+earlier model revisions).</p>
+<hr />
+<h2
+id="scaling-model-removed-fake-universe-shifts-made-monotonic">2026-04-15
+— Scaling model: removed fake universe shifts, made monotonic</h2>
+<p><strong>Severity:</strong> medium — the v1 sqrt model fixed the
+linear bug but introduced its own quirk: non-monotonic projections from
+cross-profile universe shifts. User screenshot showed slippage going
+<code>0.336% → 0.752% → 0.336% → 0.752% → 1.063%</code>, with universe
+rows labeled “drops {micro} (improves liquidity)” that didn’t apply to a
+single-profile view.</p>
+<p><strong>Root cause:</strong> the projection assumed the universe
+SHIFTS as capital grows, blending across all cap tiers. That’s a valid
+model for “if I were running the whole system at $X AUM,” but it’s wrong
+when the user is viewing a <em>single profile</em> (e.g. Small Cap). A
+Small Cap profile only ever trades small caps — the universe is FIXED by
+<code>market_type</code>. The “shift to large at $1M” is a system-level
+recommendation in <code>SCALING_PLAN.md</code>, not a per-profile
+projection.</p>
+<p><strong>Fix:</strong> - <code>project_scaling()</code> now uses the
+profile’s <code>market_type</code> as a fixed singleton universe at
+every ladder rung. - Slippage formula is pure
+<code>base × sqrt(scale_mult)</code> — guaranteed monotonic. No more
+confusing up-down-up artifacts. - New
+<code>_MAX_CAPITAL_BY_MARKET_TYPE</code> table encodes per-tier soft
+capacity (micro $50K, small $250K, mid $5M, large $50M+, crypto $1M). -
+Each row gets a <code>warnings[]</code> and
+<code>exceeds_capacity</code> flag. Once capital exceeds the soft max,
+the row warns the user to migrate capital to a larger-cap profile per
+SCALING_PLAN.md — instead of fudging the slippage number lower.</p>
+<p><strong>Sample output for a Small Cap profile</strong> (6 trades,
+0.336% baseline):</p>
+<pre><code>$10K   0.336%  small                  ← soft max $250K
+$50K   0.751%  small
+$100K  1.062%  small
+$500K  2.376%  small  EXCEEDS CAPACITY → migrate to mid/large
+$1M    3.360%  small  EXCEEDS CAPACITY
+$10M  10.625%  small  EXCEEDS CAPACITY</code></pre>
+<p>Now monotonic, honest about per-tier capacity, and the universe
+column shows the actual profile rather than a fictional cross-profile
+blend.</p>
+<p><strong>Tests</strong> (<code>test_scaling_projection.py</code> — 17
+total, +3 new): - <code>test_slippage_monotonic_across_ladder</code> —
+guards against reintroducing universe-shift artifacts -
+<code>test_small_cap_universe_stays_small_at_all_scales</code> — fixed-
+universe invariant -
+<code>test_capacity_warning_when_exceeding_soft_max</code> — exercises
+the <code>exceeds_capacity</code> flag and warning text -
+<code>test_market_type_aliases_normalize</code> — <code>smallcap</code>
+and <code>small</code> produce identical projections -
+<code>test_mid_cap_has_higher_capacity_than_small</code> — sanity check
+on the per-tier capacity ladder - Updated
+<code>test_100x_capital_gives_10x_slippage_pure_sqrt</code> — pure
+sqrt(100)=10 instead of the v1’s universe-fudged value</p>
+<p><strong>Test count:</strong> 525 (was 522 + 3 new − 0 removed).</p>
+<hr />
+<h2
+id="replaced-broken-linear-scaling-model-with-sqrt-impact-universe-aware-ladder">2026-04-15
+— Replaced broken linear scaling model with sqrt-impact + universe-aware
+ladder</h2>
+<p><strong>Severity:</strong> medium — UI was showing dangerously
+misleading projections</p>
+<p><strong>Symptom:</strong> Performance &gt; Scalability &gt; “Scaling
+Projection” tab showed slippage of &gt;10% at $1M AUM. That’s plausible
+for trading penny stocks with no risk management, but absurd for our
+system which rotates universe as it scales. The number was scary enough
+to throw off planning, and it was wrong.</p>
+<p><strong>Root cause:</strong> the Jinja template did the math
+inline:</p>
+<pre><code>slippage_at_scale = base_slip × (1 + (mult - 1) × 0.1)
+return_at_scale   = base_return - base_slip × (mult - 1) × 0.05</code></pre>
+<p>Three flaws: 1. <strong>Linear</strong>, not square-root. Real market
+impact is sub-linear in trade size (Almgren-Chriss). 2. <strong>Ignored
+universe changes.</strong> <code>SCALING_PLAN.md</code> already
+documents that we drop micro at $100K, drop small at $1M, etc. The model
+projected as if the system kept slamming the same illiquid names. 3.
+<strong>Arbitrary constants.</strong> <code>+0.1</code> per multiplier
+and <code>0.05×slip</code> for return decay had no empirical or
+theoretical basis.</p>
+<p><strong>Fix:</strong> new <code>scaling_projection.py</code> module
+implements: - Square-root market impact:
+<code>scaled = base_slip × √(scale_mult / liquidity_factor)</code> -
+Universe-change ladder per capital tier (micro dropped at $100K, small
+dropped at $10M, etc.) with empirical $ADV averages for each cap tier -
+Confidence intervals scaled to sample size (n&lt;10 = ±100%, n≥100 =
+±10%) - Three data-quality states: <code>insufficient</code> (no fill
+data → show N/A), <code>modeled</code> (small sample → wide CIs),
+<code>calibrated</code> (≥30 trades → tight CIs)</p>
+<p><strong>Realistic example output</strong> (50 trades with 0.05%
+baseline slippage, small-cap profile):</p>
+<pre><code>Capital     Slippage   CI            Universe                  Return
+$10K        0.050%     [0.037,0.062] micro,mid,small           +12.00%
+$100K       0.050%     [0.037,0.062] large,mid,small (-micro)  +12.00%
+$1M         0.158%     [0.119,0.198] large,mid,small           +11.89%
+$10M        0.281%     [0.211,0.351] large,mid (-small)        +11.77%</code></pre>
+<p>Note how the $100K row’s slippage stays at 0.050% — the 10× capital
+increase is exactly offset by the universe shift to more liquid names.
+This is the kind of insight the broken linear model erased.</p>
+<p><strong>Wired in:</strong> - <code>views.py</code> performance route
+loads <code>_gather_trades(db_paths)</code> and calls
+<code>project_scaling()</code> with the selected profile’s market_type -
+<code>templates/performance.html</code> Scalability tab now renders the
+table from <code>scaling.rows</code>, shows confidence intervals, lists
+per-tier warnings (universe drops, position-vs-volume cautions), and
+surfaces the model formula in the footer</p>
+<p><strong>Tests</strong> (<code>test_scaling_projection.py</code> — 14
+tests): - Square-root scaling: 4× capital → ~2× slippage, NOT 4× - 100×
+capital → &lt; 7× slippage when universe shifts (regression guard
+against the broken linear formula) - Universe correctly drops micro at
+$100K, small at $10M - Crypto universe stays crypto at all capital
+levels - CIs widen with small samples (n=5 → ±100%; n=150 → ±10%) -
+Insufficient-data path returns flag + message instead of misleading
+numbers - Net return projection only deducts the <em>additional</em>
+slippage cost, not arbitrary 5× decay - <strong>Hard regression
+bound:</strong> $1M slippage with 0.05% baseline must be &lt; 1%</p>
+<p><strong>Test count:</strong> 522 (was 508 + 14).</p>
+<hr />
+<h2
+id="conviction-take-profit-override-prevent-capping-runaway-winners">2026-04-15
+— Conviction take-profit override (prevent capping runaway winners)</h2>
+<p><strong>Severity:</strong> feature — opt-in per profile, default
+OFF</p>
+<p><strong>Motivation:</strong> IONQ this morning sold at +20% TP, then
+the AI immediately wanted back in at a slightly higher price. That’s the
+IONQ scenario — fixed TP caps the upside when a strong trend is actually
+still running. A trailing stop would have ridden the move further; fixed
+TP pays bid-ask spread + slippage twice for no extra return.</p>
+<p><strong>Design:</strong> new per-profile flag
+<code>use_conviction_tp_override</code>. When on, a long position’s
+fixed take-profit is SKIPPED if ALL three conditions hold: 1. Most
+recent AI prediction confidence for the symbol &gt;=
+<code>conviction_tp_min_confidence</code> (default 70) 2. Latest ADX
+&gt;= <code>conviction_tp_min_adx</code> (default 25) — trend has actual
+strength 3. Current close &gt;= previous bar’s high — trend is still
+intact right now</p>
+<p>When skip fires, the ATR trailing stop continues to manage the exit.
+If the trend reverses, trailing stop catches it. If it keeps running, we
+keep the gains.</p>
+<p><strong>What is NEVER overridden (safety):</strong> - Stop-loss —
+always fires - Short-position take-profit — shorts profit on fast
+reversals, not trends</p>
+<p><strong>Files:</strong> - <code>conviction_tp.py</code> — new module:
+pure predicate + DB/bars IO wrapper -
+<code>portfolio_manager.check_stop_loss_take_profit</code> — new
+<code>conviction_tp_skip</code> kwarg (optional callable) -
+<code>trader.check_exits</code> — builds the skip predicate when the
+profile has the override enabled - <code>user_context.UserContext</code>
+— 3 new fields (default OFF) - <code>models.py</code> — 3 new ALTER
+TABLE migrations + build_user_context loader - <code>views.py</code> —
+settings POST handler persists the 3 new fields -
+<code>templates/settings.html</code> — new checkbox + 2 sliders under
+Trailing Stops section with tooltip explaining tradeoff</p>
+<p><strong>Tests</strong> (<code>test_conviction_tp.py</code> — 17
+tests): - Pure predicate: all conditions true → True; any one false →
+False; None/missing inputs → False (safe default: don’t skip) -
+Integration with <code>check_stop_loss_take_profit</code>: skip fn
+prevents long TP; returning False still triggers TP; stop-loss NEVER
+skipped; short TP NEVER skipped; no-skip-fn preserves legacy behavior -
+DB lookups: most recent confidence wins; missing DB returns None; empty
+path returns None - UserContext defaults: off, 70%, 25 (unchanged
+behavior for existing profiles)</p>
+<p><strong>Test count:</strong> 508 (was 491 + 17).</p>
+<p><strong>Self-tuning note:</strong> The override is NOT auto-tuned by
+the existing self-tuning system. That system adjusts numeric thresholds
+(confidence, stop/TP %), not boolean strategy flags. Auto-toggling can
+be added later once we have 15-20 TP events to compare “counterfactually
+would have kept running” vs “reversed” — a premature flip on a 3-trade
+sample would do more harm than good.</p>
+<hr />
+<h2
+id="dashboard-expand-row-state-preserved-across-auto-refresh">2026-04-15
+— Dashboard expand-row state preserved across auto-refresh</h2>
+<p><strong>Severity:</strong> low UX — annoying, not broken</p>
+<p><strong>Symptom:</strong> Dashboard auto-refreshes Open Positions
+every 15s by fetching the server-rendered HTML and replacing the
+wrapper. Any row the user had expanded to read AI reasoning collapsed on
+refresh — mid-sentence.</p>
+<p><strong>Fix:</strong> <code>_trades_table.html</code> macro adds
+<code>data-symbol</code> on the summary row. Dashboard JS
+<code>refreshPositions()</code> captures the set of expanded symbols
+before the swap, then reapplies expansion state (and the caret icon)
+afterward. State is by symbol, so it survives add/remove of positions as
+well.</p>
+<hr />
+<h2
+id="dashboard-open-positions-now-use-rich-format-recent-trades-removed">2026-04-15
+— Dashboard: Open Positions now use rich format, Recent Trades
+removed</h2>
+<p><strong>Severity:</strong> low (UX improvement, reduced
+duplication)</p>
+<p><strong>Symptom &amp; rationale:</strong> The dashboard was
+double-duty — Open Positions (live Alpaca data) plus a slim Recent
+Trades table, both competing for space. The Recent Trades duplicated
+what <code>/trades</code> already does better (full history, filters,
+expandable reasoning). Meanwhile Open Positions lacked the AI metadata
+that made <code>/trades</code> useful.</p>
+<p><strong>Fix:</strong> - Open Positions now render through the shared
+<code>_trades_table.html</code> macro. Each row is click-to-expand; the
+expanded panel shows Current Price, Market Value, AI Reasoning,
+Stop/Target, and Slippage. -
+<code>_enriched_positions(ctx, profile_id)</code> — new helper that
+merges Alpaca’s live position data with the most recent matching row in
+the profile’s <code>trades</code> table, pulling in
+<code>ai_reasoning</code>, <code>ai_confidence</code>,
+<code>stop_loss</code>, <code>take_profit</code>,
+<code>decision_price</code>, <code>fill_price</code>,
+<code>slippage_pct</code>. - Recent Trades table removed from the
+dashboard. Replaced with a small “View full trade history →” link that
+filters <code>/trades</code> by the profile. -
+<code>/api/positions-html/&lt;id&gt;</code> — new partial endpoint
+returning the server-rendered positions block. The 15-second
+auto-refresh fetches HTML instead of rebuilding in JS, so the expandable
+markup can’t drift from the template. - Macro extended: expanded panel
+now shows Current + Market Value when the row is an open position
+(detected by <code>current_price</code> being set).</p>
+<p><strong>Tests</strong> (<code>test_enriched_positions.py</code> — 6
+tests): - Positions gain AI metadata from the matching open trade -
+Most-recent trade wins when symbol has been re-entered - Positions
+without any matching trade still render (manual Alpaca fills don’t crash
+the dashboard) - Missing DB doesn’t crash - Short positions get
+<code>side='sell'</code> with absolute qty - Empty positions list
+returns empty list (not error)</p>
+<p><strong>Test count:</strong> 491 (was 485 + 6).</p>
+<hr />
+<h2 id="unified-dashboard-trades-trade-history-display">2026-04-15 —
+Unified dashboard + /trades trade-history display</h2>
+<p><strong>Severity:</strong> low (UX consistency, DRY refactor)</p>
+<p><strong>Symptom:</strong> Dashboard had a slim 6-column trade table
+(Time / Symbol / Side / Qty / Price / P&amp;L) while
+<code>/trades</code> had the richer 9-column expandable version (Time /
+Profile / Symbol / Side / Qty / Price / AI Conf / P&amp;L + expand row
+showing AI reasoning, stop, target, slippage). Two copies of similar
+Jinja meant bug fixes landed on one and not the other.</p>
+<p><strong>Fix:</strong> - New <code>templates/_trades_table.html</code>
+— single Jinja macro
+<code>render_trades(trades, show_profile, empty_message)</code> owning
+all trade-row markup including expand-on-click details row. -
+<code>templates/trades.html</code> and
+<code>templates/dashboard.html</code> now both
+<code>{% import "_trades_table.html" as trades_tpl %}</code> and call
+the macro. - Dashboard calls with <code>show_profile=False</code> (it’s
+already per-profile); <code>/trades</code> calls with
+<code>show_profile=True</code>. - <code>colspan</code> auto-adjusts to
+match column count.</p>
+<p><strong>Net effect:</strong> dashboard now shows AI confidence +
+expandable AI reasoning, stop/target, slippage on every trade, matching
+<code>/trades</code>. Future UI tweaks land in one place.</p>
+<p><strong>Tests</strong> (<code>test_trades_table_shared.py</code> — 12
+tests): - AI confidence, reasoning, stop/target, slippage all render -
+Expand-caret present - <code>show_profile</code> toggle adds/removes
+Profile column AND adjusts colspan - Empty-state custom + default
+messages - P&amp;L rendering: realized (closed), unrealized
+(open-with-mark), open-no-mark</p>
+<p><strong>Test count:</strong> 485 (was 473 + 12).</p>
+<hr />
+<h2
+id="pending-alpaca-orders-now-visible-on-dashboard-task-18.4">2026-04-15
+— Pending Alpaca orders now visible on dashboard (Task 18.4)</h2>
+<p><strong>Severity:</strong> medium (UX / operational visibility)</p>
+<p><strong>Symptom:</strong> After-hours order submissions queue in
+Alpaca as <code>accepted</code> or <code>new</code> and don’t fill until
+the next session. Dashboard showed only filled positions, so a user
+couldn’t tell “scheduler has orders waiting for market open” from
+“scheduler produced nothing this cycle.” Silently confusing.</p>
+<p><strong>Fix:</strong> - <code>views._safe_pending_orders(ctx)</code>
+— defensive wrapper around <code>api.list_orders(status="open")</code>
+with float coercion and exception-to-empty-list fallback. - Dashboard
+renders a new “Pending Orders” table between Open Positions and Recent
+Trades, showing symbol / side / qty / order type / limit price / status
+/ submitted timestamp / TIF. - <code>/api/portfolio/&lt;id&gt;</code>
+returns <code>pending_orders</code>; JS auto-refresh every 15s updates
+the table alongside positions. - Hidden entirely when the list is empty
+(no dead UI).</p>
+<p><strong>Tests</strong> (<code>test_pending_orders.py</code> — 5
+tests): - Happy path: accepted limit buy renders with correct shape -
+Market orders produce <code>limit_price=None</code> - Garbage numeric
+fields coerce safely instead of crashing - API exception → empty list,
+not 500 - <code>list_orders</code> is called with
+<code>status="open"</code> (filters out fills)</p>
+<p><strong>Test count:</strong> 473 (was 468 + 5).</p>
+<hr />
+<h2
+id="cleaned-up-stale-optquantops-directory-on-server-task-20.5">2026-04-15
+— Cleaned up stale <code>/opt/quantops/</code> directory on server (Task
+20.5)</h2>
+<p><strong>Severity:</strong> low (operational hygiene / prevents future
+confusion)</p>
+<p><strong>Symptom:</strong> Earlier today I wasted a minute on the
+server when <code>find</code> surfaced a stale
+<code>aggressive_trader.py</code> at <code>/opt/quantops/</code> (no
+“ai”) — an abandoned pre-refactor codebase from March 27. The active
+service runs at <code>/opt/quantopsai/</code>. Old path had a disabled
+<code>quantops.service</code> systemd unit, not inactive since
+2026-03-28.</p>
+<p><strong>Fix:</strong>
+<code>systemctl disable quantops.service</code>, removed the unit file,
+<code>daemon-reload</code>, <code>rm -rf /opt/quantops/</code>. Verified
+<code>/opt/</code> now contains only <code>quantopsai/</code>. No
+running service referenced the stale tree.</p>
+<hr />
+<h2
+id="strategy-sell-bias-starved-small-cap-of-trades-for-4-days">2026-04-15
+— Strategy SELL-bias starved Small Cap of trades for 4+ days</h2>
+<p><strong>Severity:</strong> critical — profile opened zero trades
+despite scanning every 15 min</p>
+<p><strong>Symptoms:</strong> Small Cap profile scanned continuously
+(616 AI predictions across 2026-04-13 to 2026-04-15) but opened
+<strong>zero trades</strong>. Every prediction returned
+<code>HOLD</code> with <code>confidence=0</code>. Mid Cap and Large Cap
+were also affected — their shortlists were 11/12 and 15/15
+<code>STRONG_SELL</code> respectively; only a stray
+<code>STRONG_BUY</code> had let Mid Cap open any positions, and not
+recently.</p>
+<p><strong>Where the prior “working as intended” call was
+wrong:</strong> Past evaluations chalked this up to a genuinely bearish
+universe. It was actually a labeling bug — the screener was pre-tagging
+nearly every candidate <code>STRONG_SELL</code> before the AI even saw
+it, the specialist ensemble (Phase 8) saw the <code>STRONG_SELL</code>
+input and agreed, and the AI correctly concluded “no edge across the
+board.” The loop looked convincing because every layer “agreed.”</p>
+<p><strong>Root cause:</strong> Each size-specific strategy module
+(<code>strategy_small.py</code>, <code>strategy_mid.py</code>,
+<code>strategy_large.py</code>, <code>strategy_micro.py</code>) is a
+LONG-ONLY entry engine, but several of its internal rules emitted
+<code>signal="SELL"</code> whenever the <strong>exit condition for a
+hypothetical existing long</strong> was true. Examples:</p>
+<ul>
+<li><code>mean_reversion_strategy</code>: SELL if
+<code>price &gt;= sma_20</code> OR <code>rsi &gt; 55</code> (fires on
+~60-70% of any universe)</li>
+<li><code>momentum_continuation_strategy</code>: SELL if
+<code>price &lt; sma_20</code></li>
+<li><code>ma_alignment_strategy</code>: SELL if
+<code>price &lt; sma_20</code></li>
+<li><code>pullback_support_strategy</code>: SELL if
+<code>price &lt; sma_50</code></li>
+<li><code>dividend_yield_strategy</code>: SELL if
+<code>rsi &gt; 55</code></li>
+<li><code>penny_reversal_strategy</code>: SELL if
+<code>price &gt;= sma_10</code> OR <code>rsi &gt; 50</code></li>
+<li><code>volume_explosion_strategy</code>: SELL if
+<code>vol_ratio &lt; 2 and rsi &gt; 60</code></li>
+<li><code>sector_momentum_strategy</code>: two separate bogus SELL
+branches</li>
+</ul>
+<p>Those comments literally say <code>EXIT --</code> but the code emits
+a SELL signal, which <code>multi_strategy.aggregate_candidates()</code>
+then interprets as bearish sentiment. A typical stock accumulated 2+
+SELL votes → score ≤ -2 → label <code>STRONG_SELL</code>. AI then
+declined everything.</p>
+<p><strong>Fixes:</strong></p>
+<ol type="1">
+<li><strong>Aggregation respects short-selling flag.</strong>
+<code>multi_strategy.aggregate_candidates()</code> now coerces SELL
+votes to HOLD (and zeroes their score contribution) when the profile has
+<code>enable_short_selling=False</code>. Defensive — all current
+profiles have shorting on, but this closes the class of bug for any
+future long-only profile.</li>
+<li><strong>Stripped the broken SELL branches.</strong> Replaced ~12
+“exit-as-SELL” branches with HOLD returns across all four size strategy
+files. Legit bearish setups preserved (MACD bearish cross, 10-day-low
+break, failed gap, falling-knife 10-consecutive-red-days, SPY overbought
+≥75).</li>
+</ol>
+<p><strong>Why the specialist ensemble didn’t catch it:</strong> The
+ensemble receives the already-<code>STRONG_SELL</code>-labeled shortlist
+as input. It’s a second-layer consensus model, not a first-principles
+re-evaluator — its job is to confirm or veto, not to re-score from
+scratch. GIGO.</p>
+<p><strong>Why no prior test caught it:</strong> The existing
+<code>test_multi_strategy.py</code> fixtures passed explicit
+<code>signal</code> values into fake strategies; they never exercised
+the “what happens when a real strategy emits SELL from an
+exit-condition” path.</p>
+<p><strong>Tests</strong> (<code>test_strategy_sell_bias_fix.py</code> —
+18 tests): - Aggregation: SELL → HOLD when shorting off, pass-through
+when on, BUY votes untouched by the flag - <code>mean_reversion</code>
+returns HOLD at RSI 60 and above-SMA, still BUY when truly oversold -
+<code>momentum_continuation</code>, <code>sector_momentum</code>,
+<code>pullback_support</code>, <code>dividend_yield</code>,
+<code>ma_alignment</code>, <code>relative_strength</code>,
+<code>volume_explosion</code>, <code>penny_reversal</code> all return
+HOLD (not SELL) in the previously-broken conditions - <strong>Preserved
+legit bearish signals:</strong> 10-day-low break still SELLs, MACD
+bearish cross still SELLs, 10-consecutive-red-days still SELLs -
+End-to-end: diverse universe with no SELL votes produces zero
+<code>STRONG_SELL</code> labels (regression guard against the Small Cap
+freeze)</p>
+<p><strong>Verification:</strong> Small Cap’s next scan cycle
+post-deploy should show a mix of signal labels (not 100%
+<code>STRONG_SELL</code>) and begin evaluating BUY candidates. Actual
+trade execution still gated behind the AI (Phase 1-10 stack), which now
+has real information to decide on.</p>
+<p><strong>Test count:</strong> 468 (was 450 + 18).</p>
+<hr />
+<h2
+id="migrated-market-data-from-yfinance-to-alpaca-algo-trader-plus">2026-04-15
+— Migrated market data from yfinance to Alpaca (Algo Trader Plus)</h2>
+<p><strong>Severity:</strong> architectural improvement (prevents the
+class of bug from yesterday’s 30-min hang; not fixing a new
+regression)</p>
+<p><strong>Context:</strong> yfinance is an unofficial Yahoo scraper;
+during market open Yahoo throttles and returns 10-sec timeouts on many
+symbols. Yesterday this hung the screener for 30+ minutes and blocked
+exits behind it, nearly costing ~$100 of locked-in profit on HOOD and
+IONQ.</p>
+<p><strong>Upgrade:</strong> subscribed to Alpaca Algo Trader Plus
+($99/mo) for SIP feed and unlimited historical bars. Updated main
+<code>.env</code> with account-level master API key that has the
+subscription active.</p>
+<p><strong>Code migration:</strong> -
+<code>market_data.get_bars()</code> now tries Alpaca first, falls back
+to yfinance. Crypto symbols (containing <code>/</code>) bypass Alpaca
+directly — Alpaca’s equity endpoint doesn’t serve crypto. -
+<code>screener.screen_dynamic_universe()</code> now uses Alpaca’s
+<code>get_snapshots()</code> batch endpoint (up to 200 symbols per call)
+to filter by price + volume. The previous <code>yf.download()</code>
+path remains as a fallback when the Alpaca snapshot call fails or
+raises.</p>
+<p><strong>Measured speedup:</strong> - Single <code>get_bars</code>
+call: 10s timeouts → 200ms (50× faster) - Full dynamic screener: 30 min
+→ 853 ms (<strong>~2,100× faster</strong>) - First live cycle
+post-restart: Small Cap Scan &amp; Trade completed in 166 seconds (well
+inside the 15-min interval)</p>
+<p><strong>Tests</strong> (<code>test_alpaca_data_migration.py</code> —
+13 tests): - <code>_limit_to_days</code> calendar window math - Alpaca
+success → lowercase OHLCV columns + US/Eastern tz - Alpaca over-fetch
+respects caller’s <code>limit</code> via <code>.tail()</code> - Alpaca
+empty / exception / missing client → yfinance fallback - Crypto symbols
+skip Alpaca entirely, slash→dash for yfinance - Screener Alpaca success
+path → filtered symbols - Screener Alpaca failure → yfinance fallback
+invoked - <strong>Contract guards:</strong> source inspection ensures
+the Alpaca-before-yfinance ordering can’t silently regress in either
+<code>market_data.get_bars</code> or
+<code>screener.screen_dynamic_universe</code>.</p>
+<p><strong>Test count:</strong> 450 (was 437 + 13).</p>
+<hr />
+<h2 id="exits-blocked-behind-hung-scan-realized-pl-risk">2026-04-15 —
+Exits blocked behind hung scan (realized-P&amp;L risk)</h2>
+<p><strong>Severity:</strong> critical — positions past take-profit
+thresholds weren’t selling</p>
+<p><strong>Symptoms:</strong> Mid Cap Scan &amp; Trade hung for 30+
+minutes during market open. User noticed positions should have hit
+take-profit but nothing was firing. Manual exit-check via SSH triggered
+HOOD (+10.2%) and IONQ (+20.3%) sells that the scheduler had been
+sitting on.</p>
+<p><strong>Root cause:</strong> <code>run_segment_cycle</code> ran tasks
+in order <code>scan → exits</code>. When the scan hung (yfinance timeout
+storm during market open, see below), exit checks never got a chance.
+Take-profit and stop-loss triggers are only meaningful if they fire
+within minutes of being hit; gating them behind a 30-minute hung scan
+means P&amp;L evaporates.</p>
+<p><strong>Fixes:</strong> 1. <strong>Exits run BEFORE scan</strong> —
+reordered <code>run_segment_cycle</code> so
+<code>_task_check_exits</code>, <code>_task_cancel_stale_orders</code>,
+and <code>_task_update_fills</code> fire first. Exits are ~1-5 seconds
+per profile, cheap, and must never be blocked by a slow scan pipeline
+downstream. 2. <strong>Exit interval shortened from 15 min → 5
+min</strong> — <code>INTERVAL_CHECK_EXITS</code> was matching the scan
+interval; now it’s independent and tight enough that TP/SL triggers fire
+within 5 min of being hit. 3. <strong>Dynamic screener budget + disk
+cache</strong> — the hang root cause was yfinance getting hammered
+during market open (40+ failed downloads at 10-sec timeouts each). Added
+<code>_DYNAMIC_YF_BUDGET_SEC = 180</code> hard wall-clock budget that
+abandons yfinance after 3 min and falls back to stale cache or curated
+fallback. Cache now persists to <code>dynamic_screener_cache.json</code>
+so process restarts don’t force a re-scan. 4. <strong>Trailing stop
+NoneType crash</strong> — <code>check_trailing_stops</code> failed with
+“‘NoneType’ object is not subscriptable” on symbols where
+<code>get_bars</code> returned a malformed DataFrame. Added defensive
+guards: skip if <code>bars</code> is None / missing <code>.empty</code>
+/ missing required columns / NaN ATR.</p>
+<p><strong>Verified live:</strong> at 14:21:02 UTC, Mid Cap’s Check
+Exits completed in 4.2 seconds — before Scan &amp; Trade even started.
+Exit checks are now firewalled from scan failures.</p>
+<p><strong>Tests:</strong> <code>test_screener_cache.py</code> — 4 tests
+covering disk persistence, stale fallback, and budget constant bounds.
+Total suite now 437 passing.</p>
+<hr />
+<h2
+id="per-profile-scheduling-large-cap-starvation-bug-droplet-swap">2026-04-14
+— Per-profile scheduling (Large Cap starvation bug) + droplet swap</h2>
+<p><strong>Severity:</strong> high (profiles could be starved, scheduler
+would silently skip)</p>
+<p><strong>Bug:</strong> Scheduler tracked <code>last_run["scan"]</code>
+/ <code>last_run["check_exits"]</code> /
+<code>last_run["resolve_predictions"]</code> as a <strong>single global
+timestamp shared across all profiles</strong>. When one profile’s full
+cycle (scan + ensemble + AI + event tick) overran the 15-minute
+interval, every other profile inherited the same “just ran” timestamp
+and none would be due again for 15 minutes. In practice: Mid Cap took ~5
+min, then Small Cap ~5 min, then Large Cap (last in iteration) was often
+still starting when the next interval rolled around — so its cycle got
+truncated or skipped entirely. The user observed zero Large Cap trades
+despite the profile being enabled.</p>
+<p><strong>Fix:</strong> - New
+<code>profile_runs: Dict[int, Dict[str, float]]</code> state, keyed by
+profile_id. Each profile gets its own
+<code>{scan, check_exits,   resolve_predictions}</code> timestamps. -
+Helper <code>_get_profile_runs(pid)</code> lazily initializes a
+profile’s entry on first access. - The profile-iteration loop now
+computes <code>prof_do_scan</code> / <code>prof_do_exits</code> /
+<code>prof_do_predictions</code> <strong>per-profile</strong> from that
+profile’s own timestamps. - After each profile’s cycle completes,
+<strong>only that profile’s</strong> timestamps are stamped — adjacent
+profiles aren’t affected. - Snapshot remains global (one snapshot per
+calendar day is the correct system-wide behavior). - Legacy segment-mode
+branch keeps the old global <code>last_run</code> for backwards compat;
+only the profile branch changed.</p>
+<p><strong>Natural staggering:</strong> First-run starts all profiles
+due simultaneously. Sequential execution (one at a time, since we’re
+memory-constrained) means profile 1 finishes at T+5min, profile 2 at
+T+10min, profile 3 at T+15min. Each then clocks its own 15-minute
+interval from there. After one full warm-up cycle, the three profiles
+naturally fire at approximately staggered 5-minute offsets. No explicit
+offset logic needed — emerges from sequential execution + independent
+clocks.</p>
+<p><strong>Secondary: added 1 GB swap to droplet.</strong> The droplet
+is 1 GB RAM, 1 CPU, no swap — 681 MB used, 281 MB free. A Python memory
+spike (large yfinance batch, concurrent AI responses) could OOM-kill the
+scheduler with no cushion. <code>fallocate /swapfile 1G</code>,
+<code>mkswap</code>, <code>swapon</code>, persisted in
+<code>/etc/fstab</code>. Free + safety. Does not enable parallel
+execution, but prevents unexpected OOM kills.</p>
+<p><strong>Tests:</strong> <code>test_per_profile_scheduling.py</code> —
+5 tests covering independent clocks, slow-cycle-doesn’t-starve-others
+invariant, natural staggering from sequential execution, module import
+stability, and a source-pattern guard that fails loudly if the
+per-profile structure is ever flattened back to globals.</p>
+<p><strong>Test count:</strong> 426 (was 421 + 5).</p>
+<hr />
+<h2
+id="dashboard-pl-formatting-flicker-earnings-detector-import-bug">2026-04-14
+— Dashboard P/L formatting flicker + earnings detector import bug</h2>
+<p><strong>Bug A: Unrealized P/L cell flickers between two
+formats</strong> - On page load (Jinja-rendered): <code>-29.70</code>
+(no <code>$</code>) - On 5-second auto-refresh (JS-rendered):
+<code>$-29.70</code> (<code>$</code> prepended, minus sign INSIDE the
+dollar) - The two render paths used different format strings for the
+same cell. Looked like the column was changing because it WAS — every
+refresh. - <strong>Fix:</strong> standardized both to
+<code>+$1,234.56</code> / <code>-$29.70</code> (sign before
+<code>$</code>, conventional). Changed in <code>dashboard.html</code>
+template (line 166) AND inline JS (line 630). Same fix applied to
+<code>trades.html</code> for the unrealized-P/L badge.</p>
+<p><strong>Bug B: <code>event_detectors.detect_earnings_imminent</code>
+imports nonexistent function</strong> - Imports
+<code>get_next_earnings</code> from <code>earnings_calendar</code> —
+function doesn’t exist (the actual API is
+<code>check_earnings(symbol) -&gt; dict</code>). Detector silently
+failed every event tick with a warning the user wouldn’t see. -
+<strong>Fix:</strong> call <code>check_earnings(sym)</code> and read
+<code>.days_until</code> from the returned dict. -
+<strong>Tests:</strong>
+<code>test_event_bus.TestEarningsImminentDetector</code> — 2 tests
+verify the import resolves and the detector handles empty positions.</p>
+<p><strong>Test count:</strong> 421 (was 419 + 2).</p>
+<hr />
+<h2 id="profile-switch-crypto-large-cap">2026-04-14 — Profile switch:
+Crypto → Large Cap</h2>
+<p><strong>Severity:</strong> (not a bug — operational change, logged
+per changelog policy)</p>
+<p><strong>What changed:</strong> The Crypto profile (id=2) was
+producing zero trades despite consuming ~$0.78/day in AI calls because 3
+of 4 specialists had no crypto-relevant data. After the ensemble scoping
+fix limited crypto to pattern_recognizer only, we further discussed
+whether to continue running crypto at all versus switching to Large Cap,
+where all 10 phases of infrastructure apply meaningfully.</p>
+<p><strong>Decision:</strong> Switch. Alpaca Crypto account deleted; new
+Alpaca Large Cap paper account created.</p>
+<p><strong>Steps taken on the server:</strong> 1. Profile id=2 renamed
+to “Crypto (archived)”, <code>enabled=0</code>, Alpaca keys blanked so
+the scheduler stops trying to authenticate. Historical DB
+(<code>quantopsai_profile_2.db</code>) preserved as archival record of
+crypto prediction history. 2. New profile id=4 “Large Cap” created with
+<code>market_type='largecap'</code>,
+<code>schedule_type='market_hours'</code>,
+<code>enable_short_selling=1</code>, settings mirroring Mid Cap
+(max_position_pct=0.08, max_total_positions=10). 3. Alpaca credentials
+encrypted via <code>crypto.encrypt()</code> and stored in
+<code>trading_profiles.alpaca_api_key_enc</code> /
+<code>alpaca_secret_key_enc</code>. 4.
+<code>journal.init_db('quantopsai_profile_4.db')</code> to create the
+Large Cap profile’s database with current schema (including the new
+<code>recently_exited_symbols</code> and <code>ai_cost_ledger</code>
+tables from today). 5. Scheduler restarted. New profile is now in the
+rotation: Mid Cap → Small Cap → Large Cap (Crypto no longer
+iterated).</p>
+<p><strong>Verified:</strong> Alpaca connection live, equity $10,000
+paper, status ACTIVE.</p>
+<p><strong>Implication for MONTHLY_REVIEW.md tracker:</strong> the
+month-1/2/3 review metrics are now gathered across three equity profiles
+(Mid, Small, Large Cap) all using the full 10-phase stack. Historical
+crypto data in <code>quantopsai_profile_2.db</code> stays archived and
+does not feed meta-model training or decay monitoring for the new
+profile.</p>
+<hr />
+<h2
+id="crypto-specialist-ensemble-scoped-to-pattern_recognizer-only">2026-04-14
+— Crypto specialist ensemble scoped to pattern_recognizer only</h2>
+<p><strong>Severity:</strong> medium (cost + signal quality on
+crypto)</p>
+<p><strong>Symptoms:</strong> Crypto profile spent ~$0.78 today (256 AI
+calls) with zero trades executed. Ensemble log: “ENSEMBLE HOLD at 0%
+confidence across the board” for nearly every cycle. Specialists were
+ABSTAIN-ing or returning generic HOLDs because crypto has none of the
+data they’re designed to read.</p>
+<p><strong>Root cause:</strong> Three of the four specialists need data
+sources that don’t exist for crypto: - <code>earnings_analyst</code> —
+crypto has no earnings calls or filings -
+<code>sentiment_narrative</code> — political/insider/options-flow inputs
+are equity-specific - <code>risk_assessor</code> — portfolio
+concentration / Form 4 / SEC context doesn’t apply</p>
+<p>Running them produced noise that drowned out the one specialist
+(<code>pattern_recognizer</code>) that can genuinely read crypto price
+action.</p>
+<p><strong>Fix:</strong>
+<code>ensemble.APPLICABLE_SPECIALISTS_BY_MARKET["crypto"] = {"pattern_recognizer"}</code>.
+On crypto, only pattern_recognizer runs. Equity markets keep the full
+4-specialist ensemble.</p>
+<p><strong>Expected impact:</strong> - Crypto cost drops ~75% (1
+specialist × chunks instead of 4) - Pattern-recognizer’s BUY/SELL
+verdicts now drive consensus directly (no dilution from ABSTAIN-ing
+peers) - Crypto should start actually trading</p>
+<p><strong>Tests:</strong>
+<code>test_ensemble.TestSpecialistMarketApplicability</code> — 2 tests:
+crypto-only-pattern, and equity-runs-all-four.</p>
+<p><strong>Test count:</strong> 419 (was 417 + 2).</p>
+<hr />
+<h2 id="re-entry-cooldown-skip-political_context-on-crypto">2026-04-14 —
+Re-entry cooldown + skip political_context on crypto</h2>
+<p><strong>Severity:</strong> medium (trade quality + cost
+efficiency)</p>
+<p><strong>Bug: Position churn on same-symbol re-entry (ASTS)</strong> -
+17:32 BUY ASTS @ $88.25 → 17:56 trailing stop triggered, sold @ $89.44
+(+$1.83 profit) → <strong>18:02 BUY ASTS again @ $89.78</strong> (6 min
+later, $0.34 higher than the exit). AI prompt had no “we just stopped
+out of this” context, so it re-selected ASTS as a high-conviction setup
+seconds after the protective exit fired. - <strong>Fix:</strong> - New
+<code>recently_exited_symbols</code> table in per-profile DB -
+<code>journal.record_exit()</code> is called by
+<code>_task_check_exits</code> for every trailing-stop / stop-loss /
+take-profit firing - <code>trade_pipeline</code> pre-filter drops
+non-held symbols that appear in
+<code>get_recently_exited(cooldown_minutes=60)</code>. Held positions
+can still be managed (trimmed/exited); only fresh BUY entries are
+blocked. - <strong>Tests:</strong> <code>test_reentry_cooldown.py</code>
+— 6 tests covering insert, expiry window, dedup on replace,
+missing-table safety, and the pipeline-filter contract.</p>
+<p><strong>Cost optimization: Skip political_context on crypto</strong>
+- <code>political_sentiment.get_maga_mode_context</code> runs once per
+cycle when MAGA mode is on. It’s ~$0.02 per call, equity-focused
+(tariffs, sector impacts). Crypto profiles called it ~40× today
+($0.15/day wasted — crypto is macro-driven, not
+political-narrative-driven). - <strong>Fix:</strong>
+<code>trade_pipeline.py</code> Step 4 skips the political context fetch
+when <code>ctx.segment == "crypto"</code>. - <strong>Expected
+impact:</strong> Crypto AI cost drops ~20% per day.</p>
+<p><strong>Open follow-up:</strong> Small Cap / Crypto are still showing
+0 trades. Logs reveal the AI sees unanimous ensemble SELL conviction but
+passes citing “sideways market regime”. Not a bug — an AI decision
+pattern. Separate task (#107) to decide whether to tune prompt to
+respect strong ensemble consensus or accept cautious behavior during
+bootstrap.</p>
+<p><strong>Test count:</strong> 417 (was 411 + 6).</p>
+<hr />
+<h2
+id="systematic-insufficient-data-na-pass-across-every-metric">2026-04-14
+— Systematic “insufficient data = N/A” pass across every metric</h2>
+<p><strong>Severity:</strong> medium (UX correctness, not data
+integrity)</p>
+<p><strong>Symptoms:</strong> User audited the Performance Dashboard and
+found misleading <code>0.00</code> values everywhere. Sharpe showing
+0.00 with 1 day of data, Calmar showing absurd numbers, Alpha/Beta
+showing 0.000 with insufficient data, VaR showing 0.0 with no trades,
+Profit Factor showing 0.00 when there are no wins, Current Streak
+showing “0 none” with no trades, etc. User rightly pushed back: “I tell
+you to evaluate each page and you fix them one at a time
+reactively.”</p>
+<p><strong>Root cause:</strong> Widespread anti-pattern. Every
+<code>X if Y &gt; 0 else 0.0</code> collapses “undefined” and “zero”
+into the same display value. Users can’t distinguish “no data yet” from
+“your system produces no return.”</p>
+<p><strong>Fix:</strong> Introduced a consistent
+<code>{metric}_computable</code> boolean alongside every numeric metric
+that can be undefined. Template checks the flag and renders
+<strong>N/A</strong> with a short “need X” hint instead of
+<code>0.00</code>.</p>
+<p><strong>Metrics covered</strong> (all now flag-guarded): -
+<code>sharpe_ratio</code> — need ≥ 2 daily returns with positive std -
+<code>sortino_ratio</code> — need ≥ 2 losing days -
+<code>annualized_volatility</code> — same as Sharpe -
+<code>calmar_ratio</code> — need ≥ 1% DD + ≥ 30 days -
+<code>var_95</code> — need ≥ 5 closed trades - <code>cvar_95</code> —
+same - <code>win_rate</code> — need ≥ 1 closed trade -
+<code>profit_factor</code> — need at least one win AND one loss -
+<code>win_loss_ratio</code> — same - <code>monthly_win_rate</code> —
+need ≥ 1 month of activity - <code>alpha</code> — need ≥ 20 days aligned
+vs SPY - <code>beta_spy</code> — same -
+<code>correlation_spy / _qqq / _btc</code> — need ≥ 10 aligned days -
+<code>slippage_vs_gross</code> — need positive gross profit -
+<code>current_streak</code> — need ≥ 1 closed trade</p>
+<p><strong>Tests:</strong> <code>test_insufficient_data_guards.py</code>
+— 14 tests covering: 1. Every flag is emitted (not silently missing from
+the dict) 2. Empty data → all flags False 3. One-trade scenario (matches
+production state) → most flags False, ones that should compute
+(win_rate, streaks) return correctly 4. Sufficient data (30 snapshots,
+5+ trades, wins+losses) → flags True</p>
+<p>This is a <strong>contract test</strong>: a future refactor that
+removes a flag will fail immediately with a pointed error message. Same
+mechanism we used for the snake_case leak audit.</p>
+<p><strong>Test count:</strong> 411 (was 397 + 14).</p>
+<hr />
+<h2
+id="winloss-ratio-shows-undefined-when-ratio-isnt-computable">2026-04-14
+— Win/Loss Ratio shows undefined when ratio isn’t computable</h2>
+<p><strong>Severity:</strong> low (UX correctness — same class as the
+Calmar guard)</p>
+<p><strong>Bug 8:</strong> Win/Loss Ratio displayed <code>0.00</code>
+when the account had no winning trades. The math
+<code>avg_win / abs(avg_loss) = 0 / X = 0.0</code> is technically
+correct but misleads users into thinking they have a 0× edge. The
+correct signal is “undefined — not enough data yet.”</p>
+<p><strong>Fix:</strong> <code>metrics.py</code> emits
+<code>win_loss_ratio_computable = False</code> when either
+<code>winning_trades</code> or <code>losing_trades</code> is empty.
+Template shows <strong>“N/A”</strong> with a “need at least one win and
+one loss” hint instead of <code>0.00</code>.</p>
+<p><strong>Test:</strong>
+<code>test_metrics_bugs.TestWinLossRatio</code> — three cases: no wins,
+no losses, and both present (computes normal 2.0 ratio).</p>
+<p><strong>Test count:</strong> 397 (was 394 + 3).</p>
+<hr />
+<h2 id="trade-analytics-audit-2-more-bugs">2026-04-14 — Trade Analytics
+audit: 2 more bugs</h2>
+<p><strong>Severity:</strong> medium (metrics display)</p>
+<p><strong>Bug 6 — Avg Hold Days always 0.0</strong> -
+<code>metrics.py:765</code> matched buy→sell pairs by iterating the
+<code>trades</code> variable, which is the pnl-filtered list. Buys never
+have pnl set until the sell closes them, so BUY rows weren’t in the
+list. Every SELL looked at an empty <code>open_positions</code> dict and
+recorded nothing. - <strong>Fix:</strong> separate SQL query that
+fetches ALL trades (unfiltered) for the hold-days calculation. Buy/sell
+matching now works correctly. - <strong>Test:</strong>
+<code>test_metrics_bugs.TestAvgHoldDays</code> — verifies a 04-13 buy +
+04-14 sell yields 1.0 days, and empty-list case stays 0.0.</p>
+<p><strong>Bug 7 — PnL distribution chart rendered same label 3× on
+single-bar charts</strong> -
+<code>metrics.render_bar_chart_svg:366</code> picked label indices
+<code>[0, len//2,   len-1]</code> without deduping. A 1-bar chart
+collapsed all three to idx=0 and rendered the label 3 times. User saw
+“-8% / -8% / -8%” when there was actually one trade bucketed to -8%. -
+<strong>Fix:</strong> <code>sorted(set(...))</code> to dedup the idx
+list before rendering. - <strong>Test:</strong>
+<code>test_metrics_bugs.TestSingleBarChartLabels</code> — 1 bar renders
+label 1×; 10 bars render 3 distinct labels.</p>
+<p><strong>Test count:</strong> 394 (was 389 + 5 new).</p>
+<hr />
+<h2 id="executive-summary-audit-5-distinct-bugs">2026-04-14 — Executive
+Summary audit: 5 distinct bugs</h2>
+<p><strong>Severity:</strong> medium (metrics wrong / misleading, not
+data-destructive)</p>
+<p><strong>Symptoms:</strong> User reviewed the Performance Dashboard’s
+Executive Summary tab and noted “a lot of 0s” despite a full day of
+trading. Audit revealed 5 distinct issues with how metrics are computed
+or displayed.</p>
+<p><strong>Bug 1 — SELL trade with realized PnL stored as
+<code>status='open'</code></strong> - <code>trade_pipeline.py:405</code>
+called <code>log_trade(pnl=pnl, ...)</code> on position closes without
+passing <code>status</code>. <code>journal.log_trade</code> defaults
+status to <code>'open'</code>. Result: closed positions with realized
+PnL appeared as open in the DB; downstream status-filter queries were
+wrong. - <strong>Fix:</strong> pass <code>status="closed"</code> when
+pnl is not None on the sell path. - <strong>Test:</strong>
+<code>test_metrics_bugs.TestSellStatusClosed</code>.</p>
+<p><strong>Bug 2 — <code>daily_pnl</code> column always NULL</strong> -
+<code>_task_daily_snapshot</code> never passed <code>daily_pnl</code> to
+<code>log_daily_snapshot</code>. The column existed in the schema but
+had zero write paths. - <strong>Fix:</strong> task now reads the most
+recent prior snapshot and stores
+<code>daily_pnl = today_equity - prior_equity</code>. First-ever
+snapshot stays NULL (no prior to compare against). -
+<strong>Test:</strong>
+<code>test_metrics_bugs.TestDailyPnlPopulated</code>.</p>
+<p><strong>Bug 3 — Calmar ratio produced absurd values with tiny
+drawdown</strong> - <code>metrics.py:585</code> divided annualized
+return by max_dd_pct with no floor. With 1 day of data and a 0.07% DD,
+Calmar became -310. That’s mathematically correct but practically
+meaningless. - <strong>Fix:</strong> require
+<code>max_dd_pct &gt;= 1.0</code> AND <code>days_active &gt;= 30</code>
+before computing Calmar. Below that, return 0.0 — the “insufficient
+data” sentinel already used elsewhere. - <strong>Test:</strong>
+<code>test_metrics_bugs.TestCalmarGuard</code> with tiny-DD,
+insufficient-days, and meaningful-data scenarios.</p>
+<p><strong>Bug 4 — Daily snapshot triggered only in a 5-minute
+window</strong> - <code>multi_scheduler.py:1221</code> gated snapshot on
+<code>now.hour == 15 and   now.minute &gt;= 55</code>. If the scheduler
+was restarted or paused through those 5 minutes, no snapshot that day.
+Two profiles were missing their 2026-04-12 snapshot because of this. -
+<strong>Fix:</strong> trigger is now <code>now &gt;= 15:55</code> for
+any time that day, with dedup via
+<code>last_run["daily_snapshot"]</code> date string. Missed-at-close is
+still caught later. - <strong>Test:</strong>
+<code>test_metrics_bugs.TestSnapshotTriggerWindow</code> — both the
+trigger semantics and the dedup-by-date-string assertion (reads source
+to guarantee the dedup form isn’t regressed).</p>
+<p><strong>Bug 5 — Total Trades count excluded open positions</strong> -
+<code>metrics._gather_trades</code> filters
+<code>WHERE pnl IS NOT NULL</code>, so open positions never counted. A
+user who had made 3 trades (2 opens + 1 close) saw “Total Trades: 1” and
+thought nothing had happened. - <strong>Fix:</strong> added
+<code>_count_open_trades</code>; metrics dict now has
+<code>closed_trades</code>, <code>open_trades</code>, and
+<code>all_trades</code> (plus backward-compat
+<code>total_trades = closed_trades</code>). Template displays “3 (1
+closed · 2 open)”. Win rate / profit factor / Sharpe still use closed
+trades only (those are the only trades with realized PnL to measure). -
+<strong>Test:</strong>
+<code>test_metrics_bugs.TestTradeCountsIncludeOpen</code>.</p>
+<p><strong>Follow-up:</strong> one stray row on the server (Mid Cap LUNR
+sell) still has status=‘open’ from before the fix. Retroactively updated
+with a one-line SQL on deploy. Future sells will get status=‘closed’
+correctly via the code path.</p>
+<p><strong>Total:</strong> 11 new tests in
+<code>test_metrics_bugs.py</code>. Suite now 389 passing.</p>
+<hr />
+<h2
+id="risk-specialist-over-vetoing-earnings-specialist-noise-voting">2026-04-14
+— Risk specialist over-vetoing, earnings specialist noise-voting</h2>
+<p><strong>Severity:</strong> high (trading completely blocked despite
+unanimous sell signals)</p>
+<p><strong>Symptoms:</strong> First live cycles after the tool_use fix
+showed ensemble was producing real verdicts (previously all ABSTAIN),
+but trading was still blocked. Per-cycle breakdown: -
+<code>risk_assessor</code>: VETOing 53-80% of candidates (8/15 Mid Cap,
+12/15 Small Cap) - <code>earnings_analyst</code>: returning HOLD @ low
+confidence for 15/15 in every cycle - Pattern + sentiment producing real
+signals but being drowned out - Final AI correctly reasoning “mixed
+consensus” → pass</p>
+<p><strong>Root cause:</strong> Both specialists lacked meaningful
+per-symbol data in their prompts (only symbol + signal + one-line
+reason). When asked to judge without data: - <code>risk_assessor</code>
+treated its “BIAS TOWARD CAUTION” + “VETO is final” as license to VETO
+anything ambiguous, including “sideways regime” and “low volatility” —
+which should be HOLD, not VETO - <code>earnings_analyst</code> was
+explicitly instructed to “return HOLD with low confidence” when it had
+no earnings data — so it did, for every symbol, every cycle. That filled
+the consensus with neutral-but-valid HOLD votes that drowned out real
+signal</p>
+<p><strong>Why it wasn’t caught:</strong> End-to-end trading behavior
+couldn’t be tested without running against a live Anthropic model. Unit
+tests of the ensemble aggregation use mocked verdicts and don’t reveal
+systemic miscalibration in the prompts themselves.</p>
+<p><strong>Fix:</strong> - <code>risk_assessor</code> prompt now
+explicitly lists INVALID VETO reasons (“uncertain market”, “sideways
+regime”, “low volatility”, “general caution”, “lack of information”) —
+these are HOLD, not VETO. Also added a soft sanity check: “if you find
+yourself writing more than 2 VETOs in a batch of 5, re-examine”. Removed
+the “BIAS TOWARD CAUTION” framing. - <code>earnings_analyst</code>
+prompt now says: <strong>omit symbols you can’t assess</strong>.
+Previously it returned HOLD for unknown symbols, polluting consensus.
+Now silence is the correct answer — only return verdicts for symbols
+with specific earnings/filing evidence (upcoming earnings date, recent
+surprise, SEC alert, etc.)</p>
+<p><strong>Tests:</strong> ensemble unit tests unchanged (mock-based,
+don’t cover this). Live validation required — watch next cycles for VETO
+rate &lt; 20% on risk_assessor and earnings_analyst producing verdicts
+for only a subset of candidates (not 15/15 HOLD).</p>
+<p><strong>Follow-up:</strong> richer data in the specialist prompts
+(actual portfolio state for risk, earnings calendar hits for earnings
+analyst) would let them make informed verdicts instead of defaulting to
+safe-but-useless output. Tracked informally as a design improvement.</p>
+<hr />
+<h2
+id="specialist-ensemble-silently-abstaining-on-every-call">2026-04-14 —
+Specialist ensemble silently abstaining on every call</h2>
+<p><strong>Severity:</strong> critical (bordering on catastrophic)</p>
+<p><strong>Symptoms:</strong> Over 24 hours of live trading, Mid Cap
+profile made 2 trades, Crypto made 0, Small Cap made 0. All 4
+specialists showed <code>ENSEMBLE HOLD @ 0% confidence</code> for every
+candidate. Final-decision AI correctly refused to trade because
+“specialists universally abstain.” No SHORT trades ever executed despite
+STRONG_SELL technicals.</p>
+<p><strong>Root cause:</strong> Two compounding failures, both rooted in
+Haiku non-compliance:</p>
+<ol type="1">
+<li><strong>Shape failure</strong> — Anthropic Haiku returns a single
+JSON object <code>{...}</code> instead of an array
+<code>[{...}, {...}]</code> for specialist prompts. The parser strictly
+required <code>isinstance(parsed, list)</code> and dropped the response
+when it wasn’t.</li>
+<li><strong>Drop failure</strong> — Even with shape coerced, Haiku only
+returned 1-2 of 15 requested candidates per call. The remaining 13
+abstained by default, so the ensemble consensus was ABSTAIN/HOLD for
+almost every symbol, and the final AI refused to trade.</li>
+</ol>
+<p><strong>Why it wasn’t caught:</strong> Unit tests mocked the AI call
+with clean JSON arrays, never exercised the single-object branch or the
+truncated-response branch. No integration test ran real specialist
+prompts against a real provider.</p>
+<p><strong>Fix</strong> (three layers — only the third fully resolves
+the issue):</p>
+<ol type="1">
+<li><strong>Parser hardening</strong> —
+<code>extract_verdict_array</code> now accepts: array, single object
+(wrapped), multiple concatenated objects, any of the above embedded in
+prose. Verified live — Haiku’s single-object responses are now parsed
+correctly.</li>
+<li><strong>Prompt strengthening</strong> — all 4 specialist prompts now
+say “STRICT JSON ARRAY — starts with <code>[</code> and ends with
+<code>]</code>” and “You MUST return exactly {N} entries”. Helped but
+not sufficient — Haiku still dropped candidates at size 15.</li>
+<li><strong>Chunking + <code>tool_use</code></strong> — ensemble now
+chunks candidates into groups of 5 AND uses Anthropic’s
+structured-output mode (<code>call_ai_structured</code> in
+<code>ai_providers.py</code>) to force schema compliance via a tool
+definition. <strong>This is the fix that actually works.</strong> Live
+probe verified 8/8 coverage per specialist (was 0-2/8).</li>
+</ol>
+<p><strong>Cost impact:</strong> With chunking + tool_use, ensemble is
+now 4 specialists × ceil(15/5) = 12 AI calls per cycle (was 4). Cost per
+cycle increases ~3× but the ensemble now produces usable verdicts, which
+is the whole point.</p>
+<p><strong>Tests added</strong> (<code>test_ensemble.py</code>): -
+<code>test_accepts_single_object_not_wrapped_in_array</code> — shape
+coercion - <code>test_accepts_multiple_concatenated_objects</code> —
+streaming-object variant -
+<code>test_accepts_object_with_surrounding_prose</code> — prose-wrapped
+variant - <code>test_cost_scales_with_chunks_not_candidate_count</code>
+— chunking math - <code>test_single_chunk_when_few_candidates</code> —
+small-shortlist sanity</p>
+<p><strong>Gaps acknowledged:</strong> No test uses a real Anthropic SDK
+to verify tool_use works end-to-end. I ran a live probe on the server
+post-deploy to confirm (8/8 verdicts returned). A mocked SDK integration
+test covering the tool_use path would be valuable follow-up.</p>
+<hr />
+<h2 id="snake_case-leaking-to-ai-cost-dashboard">2026-04-14 — Snake_case
+leaking to AI Cost dashboard</h2>
+<p><strong>Severity:</strong> medium (UX)</p>
+<p><strong>Symptoms:</strong> AI Cost panel showed
+<code>political_context</code>, <code>batch_select</code>,
+<code>ensemble:risk_assessor</code>, etc., directly in user-facing
+tables — raw internal identifiers instead of human labels.</p>
+<p><strong>Root cause:</strong> The
+<code>test_every_new_strategy_has_display_name</code> test was scoped
+only to <code>STRATEGY_MODULES</code>. The <code>purpose=</code> tags
+emitted by <code>call_ai</code> across 8 modules were never checked.
+Template also missed the <code>| display_name</code> filter on the
+purpose column.</p>
+<p><strong>Why it wasn’t caught:</strong> Existing test only validated
+strategy names. No sweep across all identifier sources in the
+codebase.</p>
+<p><strong>Fix:</strong> - Added 11 new <code>_DISPLAY_NAMES</code>
+entries covering every <code>purpose=</code> tag - Added
+namespaced-fallback: <code>display_name("ensemble:foo_bar")</code> →
+<code>"Ensemble — Foo Bar"</code> - Applied <code>| display_name</code>
+in the AI Cost panel template</p>
+<p><strong>Tests added</strong>
+(<code>test_display_names.py::TestNoSnakeCaseLeaksAnywhere</code>): -
+<code>test_every_purpose_tag_has_human_label</code> — grep-discovers
+every <code>purpose=</code> literal in the codebase and asserts the
+rendered label has no underscores and is capitalized. Auto-catches any
+future tag. - <code>test_known_purpose_labels</code> — exact assertions
+for 6 user-facing labels -
+<code>test_namespaced_fallback_for_unknown_specialist</code> — future
+specialists pretty-print even without an explicit entry</p>
+<hr />
+<h2 id="sync.sh-wiped-live-dashboard-state-on-every-deploy">2026-04-14 —
+<code>sync.sh</code> wiped live dashboard state on every deploy</h2>
+<p><strong>Severity:</strong> high</p>
+<p><strong>Symptoms:</strong> Dashboard “AI Brain” panel showed “Waiting
+for first cycle…” for Mid Cap and Small Cap profiles despite a full day
+of trading activity recorded in their DBs. Multi-day breakage spanning
+~6 deploys.</p>
+<p><strong>Root cause:</strong> <code>sync.sh</code> uses
+<code>rsync --delete</code> to mirror source → server. Excludes were set
+for <code>*.db</code>, <code>*.pkl</code>, <code>.env</code>,
+<code>logs/</code>, <code>exports/</code> — but
+<code>cycle_data_*.json</code> and <code>scheduler_status.json</code>
+were missing from the excludes. Those files are written at runtime to
+the project root by <code>trade_pipeline._save_cycle_data</code>. Every
+deploy wiped them. Crypto regenerated quickly (24/7 cycle); equities
+only run during US market hours, so their files stayed missing all
+evening.</p>
+<p>Data itself was safe — per-profile DBs were correctly excluded.</p>
+<p><strong>Why it wasn’t caught:</strong> The sync script has no
+self-test. I rewrote it during the templates-flatten incident and didn’t
+enumerate all runtime files.</p>
+<p><strong>Fix:</strong> - Added
+<code>--exclude 'cycle_data_*.json'</code> and
+<code>--exclude 'scheduler_status.json'</code> to <code>sync.sh</code> -
+New <code>recover_cycle_data.py</code> one-shot script rebuilds missing
+cycle files from recent <code>ai_predictions</code> rows - Freshness
+check in recovery script prevents overwriting live cycle data
+(<code>--force</code> flag for explicit override)</p>
+<p><strong>Tests added</strong>
+(<code>test_recover_cycle_data.py</code>): -
+<code>TestSyncShExclusions::test_sync_excludes_runtime_artifacts</code>
+— reads <code>sync.sh</code> and asserts both exclusions are present.
+Fails with a message that points back at this incident if anyone removes
+them. - 5 tests covering the recovery script (valid reconstruction,
+freshness check, force flag, missing-DB safety, empty-DB safety)</p>
+<hr />
+<h2 id="capital-allocator-hardcoded-default_weight-16">2026-04-14 —
+Capital allocator hardcoded <code>DEFAULT_WEIGHT = 1/6</code></h2>
+<p><strong>Severity:</strong> medium (latent — would have broken
+silently as library grew)</p>
+<p><strong>Symptoms:</strong> None yet — caught pre-production while
+expanding the strategy library from 6 → 16. With the hardcode, 16 new
+strategies each got a “default” weight of 1/6 = 16.67% = 2.67×
+oversized. Normalization would still sum to 1.0 but relative weights
+between no-track-record strategies would be wrong.</p>
+<p><strong>Root cause:</strong>
+<code>multi_strategy.DEFAULT_WEIGHT = 1.0 / 6</code> was a module-level
+constant hardcoded to the original library size.</p>
+<p><strong>Fix:</strong> - Replaced with
+<code>_default_weight(n_strategies)</code> function computed per-call
+using the actual <code>len(strategy_names)</code> from the current
+allocation</p>
+<p><strong>Tests added</strong>
+(<code>test_today_integration.py</code>): -
+<code>test_default_weight_scales_inversely_with_count</code> — validates
+at 6, 16, 40 - <code>test_one_hot_strategy_capped_redistributed</code> —
+cap-and-redistribute math at 16-strategy library size -
+<code>test_three_hot_strategies_all_capped</code> — edge case where
+multiple strategies hit the 40% cap</p>
+<hr />
+<h2 id="sync.sh-flattened-templates-wiped-running-web-ui">2026-04-14 —
+<code>sync.sh</code> flattened <code>templates/</code>, wiped running
+web UI</h2>
+<p><strong>Severity:</strong> critical (production web UI broke, 500
+errors)</p>
+<p><strong>Symptoms:</strong> <code>GET /login</code> returned HTTP 500
+after a routine deploy. Flask couldn’t find <code>templates/</code>
+anywhere.</p>
+<p><strong>Root cause:</strong> The prior <code>sync.sh</code> passed
+multiple directory arguments to rsync (<code>templates/</code>,
+<code>static/</code>, <code>strategies/</code>, <code>tests/</code>) —
+each with a trailing slash. rsync’s semantics for
+<code>&lt;src&gt;/</code> with multiple sources merges all their
+<em>contents</em> into the target root, so
+<code>templates/base.html</code> and <code>strategies/__init__.py</code>
+both landed at <code>/opt/quantopsai/</code> root. <code>--delete</code>
+then removed the actual <code>templates/</code> directory because it was
+no longer “in source” after the flattening.</p>
+<p><strong>Why it wasn’t caught:</strong> No deploy-smoke test. The sync
+script wasn’t tested.</p>
+<p><strong>Fix:</strong> - Rewrote <code>sync.sh</code> to sync the
+project root as a single source (<code>/Users/mackr0/Quantops/</code>
+with trailing slash → <code>/opt/quantopsai/</code>), preserving
+directory structure - Deploy restored templates/ and put everything back
+in correct subdirectories - <code>deploy.sh</code> updated to explicitly
+include <code>strategies/</code> and <code>tests/</code></p>
+<p><strong>Tests added:</strong> Indirectly by the cycle_data guardrail
+test, which also asserts other critical exclusions are present. A
+dedicated deploy-smoke test would be better — tracked informally as a
+hygiene follow-up.</p>
+<hr />
+<h2 id="pre-changelog-fixes-retroactive-limited-context">Pre-changelog
+fixes (retroactive — limited context)</h2>
+<p>Entries before this date were not tracked contemporaneously.
+Reconstructed from session memory; details may be incomplete.</p>
+<h3
+id="capital-allocator-cap-redistribution-infinite-excess-bug">2026-04-13
+— Capital allocator cap redistribution infinite-excess bug</h3>
+<p><strong>Severity:</strong> high</p>
+<p><strong>Symptoms:</strong> At a single strategy, the 40% cap logic
+capped it to 40% and had “nowhere to redistribute” the 60% excess, so
+that capital was simply lost from the allocation (sum &lt; 1.0). At 2
+strategies with both over-cap, the redistribution oscillated and left
+sum &lt; 1.0.</p>
+<p><strong>Root cause:</strong> Original cap loop used a stale snapshot
+of <code>normalized.items()</code> and redistributed excess based on a
+single pass that didn’t iterate to convergence.</p>
+<p><strong>Fix:</strong> Iterative cap-and-redistribute loop in
+<code>multi_strategy.compute_capital_allocations</code>. Stops when no
+strategy is over the cap or no strategies are under the cap.
+Single-strategy case keeps 100% (nowhere to redistribute; correct
+behavior).</p>
+<p><strong>Tests:</strong>
+<code>test_multi_strategy.TestCapitalAllocations::test_weights_always_sum_to_one</code>
+covers 1, 2, 6 strategies.
+<code>test_no_strategy_exceeds_forty_percent_cap</code>.</p>
+<h3
+id="statistical-significance-assertion-using-numpy-booleans">2026-04-13
+— Statistical significance assertion using numpy booleans</h3>
+<p><strong>Severity:</strong> low (test-only)</p>
+<p><strong>Symptoms:</strong> Rigorous backtest test failed with
+<code>np.True_ is True</code> mismatch on assertion.</p>
+<p><strong>Root cause:</strong> <code>scipy.stats</code> returns numpy
+booleans, not Python <code>bool</code>.
+<code>assert result["significant"] is True</code> fails even when the
+test is semantically correct.</p>
+<p><strong>Fix:</strong> Wrapped return values with <code>bool()</code>
+in <code>rigorous_backtest.py</code>.</p>
+<h3 id="apiportfolioid-passing-profile-dict-instead-of-id">2026-04-13 —
+<code>/api/portfolio/{id}</code> passing profile dict instead of id</h3>
+<p><strong>Severity:</strong> medium</p>
+<p><strong>Symptoms:</strong> API endpoint returned errors instead of
+portfolio data.</p>
+<p><strong>Root cause:</strong>
+<code>build_user_context_from_profile()</code> expects profile_id, was
+being called with the profile dict itself.</p>
+<p><strong>Fix:</strong> Pass <code>prof["id"]</code> instead of
+<code>prof</code>.</p>
+<h3 id="stoptarget-displayed-as-raw-percentages-0.13-0.19">2026-04-12 —
+Stop/target displayed as raw percentages ($0.13, $0.19)</h3>
+<p><strong>Severity:</strong> medium (UX + correctness)</p>
+<p><strong>Symptoms:</strong> Trades showed stop-loss as $0.13 and
+take-profit as $0.19 — these were 13% and 19% values stored as raw
+percentages but rendered as dollar prices.</p>
+<p><strong>Root cause:</strong> <code>execute_trade</code> stored
+<code>stop_loss_pct</code> directly rather than converting to a dollar
+price at the time of trade.</p>
+<p><strong>Fix:</strong>
+<code>stop_price = price * (1 - actual_sl_pct)</code> at execution.
+Retroactively fixed existing trade rows in the DB.</p>
+<h3 id="total-return-199.8-on-all-profiles-view">2026-04-12 — Total
+return +199.8% on “All Profiles” view</h3>
+<p><strong>Severity:</strong> medium (correctness)</p>
+<p><strong>Symptoms:</strong> Dashboard showed impossibly high aggregate
+returns when “All Profiles” was selected.</p>
+<p><strong>Root cause:</strong> <code>_gather_snapshots()</code> summed
+per-day snapshots across profiles without forward-filling gaps. A
+profile missing a day’s snapshot contributed zero, distorting the
+aggregate.</p>
+<p><strong>Fix:</strong> Forward-fill missing days per profile before
+aggregation.</p>
+<h3 id="tab-persistence-lost-on-profile-dropdown-change">2026-04-12 —
+Tab persistence lost on profile dropdown change</h3>
+<p><strong>Severity:</strong> low (UX)</p>
+<p><strong>Symptoms:</strong> Changing the profile dropdown lost the
+active tab hash (e.g., <code>#ai</code> → bare URL).</p>
+<p><strong>Root cause:</strong> Form submit replaced
+<code>window.location</code> without preserving <code>.hash</code>.</p>
+<p><strong>Fix:</strong> Inline <code>onchange</code> handler that
+captures <code>window.location.hash</code> and re-appends before
+submit.</p>
+<hr />
+<h2 id="how-to-add-a-new-entry">How to add a new entry</h2>
+<p>When fixing a production bug, copy this template:</p>
+<div class="sourceCode" id="cb7"><pre
+class="sourceCode markdown"><code class="sourceCode markdown"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="fu">## YYYY-MM-DD — Short title</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>**Severity:** critical | high | medium | low</span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>**Symptoms:** What the user/operator saw.</span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>**Root cause:** What was actually wrong in the code.</span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>**Why it wasn&#39;t caught:** Honest answer — missing test coverage,</span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a>wrong assumption, etc.</span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a>**Fix:** What changed. Point at files.</span>
+<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-14"><a href="#cb7-14" aria-hidden="true" tabindex="-1"></a>**Tests added:** Named tests in <span class="in">`test_*.py`</span> that prevent regression.</span>
+<span id="cb7-15"><a href="#cb7-15" aria-hidden="true" tabindex="-1"></a>If none exist yet, track it as a follow-up TODO.</span>
+<span id="cb7-16"><a href="#cb7-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-17"><a href="#cb7-17" aria-hidden="true" tabindex="-1"></a>**Follow-up (optional):** Related work not done in this fix.</span></code></pre></div>
+<p>Add the entry <strong>before the deploy ships</strong>, not after.
+Severity is assessed on impact, not how hard the fix was.</p>
+</body>
+</html>

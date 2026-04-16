@@ -1148,6 +1148,60 @@ def get_auto_adjustments(ctx, db_path=None):
 # apply_auto_adjustments
 # ---------------------------------------------------------------------------
 
+def describe_tuning_state(ctx, db_path=None):
+    """Return a human-readable one-liner explaining why self-tuning may
+    or may not have room to adjust anything. Used for dashboard
+    visibility so the user sees the tuner is alive even when it doesn't
+    change parameters.
+
+    Returns a dict with:
+        {
+            "can_tune": bool — True if we have enough data to evaluate,
+            "resolved": int — # of resolved AI predictions,
+            "required": int — threshold required (20),
+            "message": str — human-readable explanation,
+        }
+    """
+    required = 20
+    if ctx is None:
+        return {"can_tune": False, "resolved": 0, "required": required,
+                "message": "No profile context available."}
+    if not getattr(ctx, "enable_self_tuning", True):
+        return {"can_tune": False, "resolved": 0, "required": required,
+                "message": "Self-tuning is disabled on this profile."}
+    db = db_path or ctx.db_path
+    try:
+        conn = _get_conn(db)
+        table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_predictions'"
+        ).fetchone()
+        if not table:
+            conn.close()
+            return {"can_tune": False, "resolved": 0, "required": required,
+                    "message": "AI prediction history not yet initialized."}
+        resolved = conn.execute(
+            "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved'"
+        ).fetchone()[0]
+        conn.close()
+        if resolved < required:
+            return {
+                "can_tune": False, "resolved": resolved, "required": required,
+                "message": (
+                    f"Waiting for more AI predictions to resolve — "
+                    f"{resolved}/{required} ready. Each prediction takes about "
+                    f"5 trading days to resolve; the tuner will start "
+                    f"evaluating once the threshold is met."
+                ),
+            }
+        return {
+            "can_tune": True, "resolved": resolved, "required": required,
+            "message": f"Tuner is evaluating against {resolved} resolved predictions.",
+        }
+    except Exception as exc:
+        return {"can_tune": False, "resolved": 0, "required": required,
+                "message": f"Could not read prediction state: {exc}"}
+
+
 def apply_auto_adjustments(ctx, db_path=None):
     """Apply conservative auto-adjustments to the profile based on performance.
 
@@ -1507,3 +1561,152 @@ def _cast_param_value(param_name, value_str):
     elif param_name in bool_params:
         return int(float(value_str))
     return value_str
+
+
+# ---------------------------------------------------------------------------
+# Batch context for AI-first pipeline
+# ---------------------------------------------------------------------------
+
+def _analyze_failure_patterns(db_path):
+    """Find patterns in losing predictions — what conditions lead to losses.
+
+    Queries ai_predictions joined with regime/strategy data to find patterns
+    like "breakout signals in volatile markets: 15% win rate."
+
+    Returns list of up to 5 pattern strings.
+    """
+    try:
+        conn = _get_conn(db_path)
+    except Exception:
+        return []
+
+    patterns = []
+    try:
+        # Check if regime/strategy columns exist
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(ai_predictions)").fetchall()}
+        has_regime = "regime_at_prediction" in cols
+        has_strategy = "strategy_type" in cols
+
+        if not has_regime and not has_strategy:
+            conn.close()
+            return []
+
+        # Pattern 1: Win rate by regime
+        if has_regime:
+            rows = conn.execute(
+                "SELECT regime_at_prediction, COUNT(*) as total, "
+                "SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) as wins "
+                "FROM ai_predictions WHERE status='resolved' AND regime_at_prediction IS NOT NULL "
+                "GROUP BY regime_at_prediction HAVING COUNT(*) >= 5"
+            ).fetchall()
+            overall = conn.execute(
+                "SELECT COUNT(*), SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) "
+                "FROM ai_predictions WHERE status='resolved'"
+            ).fetchone()
+            overall_wr = (overall[1] / overall[0] * 100) if overall[0] > 0 else 50
+
+            for r in rows:
+                regime = r[0]
+                total = r[1]
+                wr = r[2] / total * 100
+                if wr < overall_wr - 15:  # Significantly worse than average
+                    patterns.append(
+                        f"Predictions in {regime} markets: {wr:.0f}% win rate "
+                        f"(vs {overall_wr:.0f}% overall, {total} trades). Be extra cautious."
+                    )
+                elif wr > overall_wr + 15:  # Significantly better
+                    patterns.append(
+                        f"Predictions in {regime} markets: {wr:.0f}% win rate "
+                        f"(vs {overall_wr:.0f}% overall, {total} trades). This is your edge."
+                    )
+
+        # Pattern 2: Win rate by strategy type
+        if has_strategy:
+            rows = conn.execute(
+                "SELECT strategy_type, COUNT(*) as total, "
+                "SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) as wins "
+                "FROM ai_predictions WHERE status='resolved' AND strategy_type IS NOT NULL "
+                "GROUP BY strategy_type HAVING COUNT(*) >= 5"
+            ).fetchall()
+            for r in rows:
+                stype = r[0]
+                total = r[1]
+                wr = r[2] / total * 100
+                if wr < 30:
+                    patterns.append(
+                        f"{stype} signals: {wr:.0f}% win rate ({total} trades). Avoid this pattern."
+                    )
+                elif wr > 60:
+                    patterns.append(
+                        f"{stype} signals: {wr:.0f}% win rate ({total} trades). Favor this pattern."
+                    )
+
+        # Pattern 3: Win rate by time of day (hour)
+        rows = conn.execute(
+            "SELECT CAST(strftime('%H', timestamp) AS INTEGER) as hour, "
+            "COUNT(*) as total, "
+            "SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) as wins "
+            "FROM ai_predictions WHERE status='resolved' "
+            "GROUP BY hour HAVING COUNT(*) >= 5"
+        ).fetchall()
+        for r in rows:
+            hour = r[0]
+            total = r[1]
+            wr = r[2] / total * 100
+            if wr < 25:
+                label = f"{hour}:00-{hour+1}:00"
+                patterns.append(
+                    f"Predictions at {label}: {wr:.0f}% win rate ({total} trades). "
+                    f"Avoid trading this hour."
+                )
+
+        conn.close()
+        return patterns[:5]  # Max 5 patterns
+
+    except Exception as exc:
+        logger.warning("Failed to analyze failure patterns: %s", exc)
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return []
+
+
+def get_batch_context_data(ctx, symbols=None):
+    """Gather performance context for the AI batch prompt.
+
+    Returns dict with:
+        overall_win_rate: float or None
+        total_resolved: int
+        symbol_records: {symbol: {wins, losses, win_rate, avg_return}}
+        profile_summary: str or None (1-line summary)
+    """
+    db_path = getattr(ctx, "db_path", None)
+    if not db_path:
+        return {"overall_win_rate": None, "total_resolved": 0,
+                "symbol_records": {}, "profile_summary": None}
+
+    try:
+        conn = _get_conn(db_path)
+        wr, total = _get_current_win_rate(conn)
+        conn.close()
+    except Exception:
+        wr, total = 0.0, 0
+
+    symbol_records = get_symbol_reputation(db_path, min_predictions=1)
+
+    summary = None
+    if total >= 5:
+        quality = "Good accuracy." if wr >= 45 else "Be more selective."
+        summary = f"Overall: {wr:.0f}% win rate ({total} resolved). {quality}"
+
+    # Pattern learning — what conditions lead to wins/losses
+    failure_patterns = _analyze_failure_patterns(db_path)
+
+    return {
+        "overall_win_rate": wr if total >= 5 else None,
+        "total_resolved": total,
+        "symbol_records": symbol_records,
+        "profile_summary": summary,
+        "learned_patterns": failure_patterns,
+    }

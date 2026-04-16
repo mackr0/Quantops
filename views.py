@@ -46,41 +46,124 @@ def admin_required(f):
 
 
 def _safe_account_info(ctx):
-    """Try to fetch Alpaca account info, return dict or None on failure."""
+    """Fetch account info — routes through client.py which handles the
+    virtual-account interception automatically."""
     try:
-        api = ctx.get_alpaca_api()
-        account = api.get_account()
-        return {
-            "equity": float(account.equity),
-            "buying_power": float(account.buying_power),
-            "cash": float(account.cash),
-            "portfolio_value": float(account.portfolio_value),
-            "status": account.status,
-        }
+        from client import get_account_info
+        return get_account_info(ctx=ctx)
     except Exception as exc:
         logger.warning("Could not fetch account for %s: %s", ctx.display_name or ctx.segment, exc)
         return None
 
 
 def _safe_positions(ctx):
-    """Try to fetch Alpaca positions, return list or empty on failure."""
+    """Fetch positions — routes through client.py which handles the
+    virtual-account interception automatically."""
     try:
-        api = ctx.get_alpaca_api()
-        positions = api.list_positions()
-        return [
-            {
-                "symbol": p.symbol,
-                "qty": float(p.qty),
-                "market_value": float(p.market_value),
-                "unrealized_pl": float(p.unrealized_pl),
-                "unrealized_plpc": float(p.unrealized_plpc),
-                "current_price": float(p.current_price),
-                "avg_entry_price": float(p.avg_entry_price),
-            }
-            for p in positions
-        ]
+        from client import get_positions
+        return get_positions(ctx=ctx)
     except Exception as exc:
         logger.warning("Could not fetch positions for %s: %s", ctx.display_name or ctx.segment, exc)
+        return []
+
+
+def _enriched_positions(ctx, profile_id):
+    """Alpaca live positions + the AI metadata (reasoning, confidence,
+    stop, target, slippage) from the most recent matching trade in the
+    profile's journal DB. Rendered by the shared `_trades_table.html`
+    macro.
+
+    Fields we add on top of `_safe_positions` output:
+      ai_confidence, ai_reasoning, reason, stop_loss, take_profit,
+      decision_price, fill_price, slippage_pct, timestamp, side
+    We reuse `unrealized_pl` / `unrealized_plpc` / `current_price` /
+    `market_value` from Alpaca so the macro's open-position path renders.
+    """
+    positions = _safe_positions(ctx)
+    if not positions:
+        return []
+
+    trade_meta = {}
+    try:
+        import sqlite3
+        db_path = f"quantopsai_profile_{profile_id}.db"
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM trades "
+            "WHERE side='buy' OR side='sell_short' "
+            "ORDER BY timestamp DESC"
+        ).fetchall()
+        conn.close()
+        for r in rows:
+            sym = r["symbol"]
+            if sym not in trade_meta:  # keep most recent open-side trade
+                trade_meta[sym] = dict(r)
+    except Exception as exc:
+        logger.warning("Could not enrich positions for profile %d: %s",
+                       profile_id, exc)
+
+    out = []
+    for p in positions:
+        meta = trade_meta.get(p["symbol"], {})
+        side = "sell" if p.get("qty", 0) < 0 else "buy"
+        out.append({
+            "timestamp": meta.get("timestamp"),
+            "symbol": p["symbol"],
+            "side": side,
+            "qty": abs(p["qty"]),
+            "price": p["avg_entry_price"],
+            "current_price": p["current_price"],
+            "market_value": p["market_value"],
+            "ai_confidence": meta.get("ai_confidence"),
+            "ai_reasoning": meta.get("ai_reasoning"),
+            "reason": meta.get("reason"),
+            "stop_loss": meta.get("stop_loss"),
+            "take_profit": meta.get("take_profit"),
+            "decision_price": meta.get("decision_price"),
+            "fill_price": meta.get("fill_price"),
+            "slippage_pct": meta.get("slippage_pct"),
+            "pnl": None,
+            "unrealized_pl": p["unrealized_pl"],
+            "unrealized_plpc": p["unrealized_plpc"],
+        })
+    return out
+
+
+def _safe_pending_orders(ctx):
+    """Fetch open/accepted Alpaca orders that have not filled yet.
+
+    After-hours submissions queue as `accepted` until the next market
+    session. Without surfacing them, the dashboard looks deceptively
+    empty — the user can't tell a sitting order from a no-op cycle.
+    """
+    try:
+        api = ctx.get_alpaca_api()
+        orders = api.list_orders(status="open", limit=50)
+        out = []
+        for o in orders:
+            try:
+                qty = float(o.qty) if o.qty else 0.0
+            except (TypeError, ValueError):
+                qty = 0.0
+            try:
+                limit_price = float(o.limit_price) if o.limit_price else None
+            except (TypeError, ValueError):
+                limit_price = None
+            out.append({
+                "symbol": o.symbol,
+                "side": o.side,
+                "qty": qty,
+                "order_type": o.order_type,
+                "limit_price": limit_price,
+                "status": o.status,
+                "submitted_at": str(o.submitted_at) if getattr(o, "submitted_at", None) else None,
+                "time_in_force": o.time_in_force,
+            })
+        return out
+    except Exception as exc:
+        logger.warning("Could not fetch pending orders for %s: %s",
+                       ctx.display_name or ctx.segment, exc)
         return []
 
 
@@ -101,26 +184,6 @@ def _get_trade_history_for_profile(profile_id, limit=100):
         return []
 
 
-def _get_trade_history_for_user(user_id, segment=None, limit=100):
-    """Get trade history from the segment's journal DB (legacy)."""
-    try:
-        import sqlite3
-        if segment:
-            db_path = f"quantopsai_{segment}.db"
-        else:
-            db_path = "quantopsai.db"
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT * FROM trades ORDER BY timestamp DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
-    except Exception:
-        return []
-
-
 def _mask_key(key):
     """Mask an API key for display."""
     if not key:
@@ -128,6 +191,55 @@ def _mask_key(key):
     if len(key) <= 8:
         return "****"
     return key[:4] + "*" * (len(key) - 8) + key[-4:]
+
+
+# Human-readable names for trading parameters
+PARAMETER_LABELS = {
+    "ai_confidence_threshold": "AI Confidence Threshold",
+    "max_position_pct": "Max Position Size (%)",
+    "max_total_positions": "Max Total Positions",
+    "stop_loss_pct": "Stop-Loss (%)",
+    "take_profit_pct": "Take-Profit (%)",
+    "drawdown_pause_pct": "Drawdown Pause Threshold",
+    "drawdown_reduce_pct": "Drawdown Reduce Threshold",
+    "short_stop_loss_pct": "Short Stop-Loss (%)",
+    "short_take_profit_pct": "Short Take-Profit (%)",
+    "enable_short_selling": "Short Selling",
+    "enable_self_tuning": "Self-Tuning",
+    "enable_consensus": "Multi-Model Consensus",
+    "use_atr_stops": "ATR-Based Stops",
+    "use_trailing_stops": "Trailing Stops",
+    "use_limit_orders": "Limit Orders",
+    "atr_multiplier_sl": "ATR Stop Multiplier",
+    "atr_multiplier_tp": "ATR Target Multiplier",
+    "trailing_atr_multiplier": "Trailing Stop Multiplier",
+    "max_correlation": "Max Correlation",
+    "max_sector_positions": "Max Positions per Sector",
+    "min_price": "Min Stock Price",
+    "max_price": "Max Stock Price",
+    "min_volume": "Min Volume",
+    "volume_surge_multiplier": "Volume Surge Multiplier",
+    "rsi_overbought": "RSI Overbought Threshold",
+    "rsi_oversold": "RSI Oversold Threshold",
+    "momentum_5d_gain": "5-Day Momentum Gain (%)",
+    "momentum_20d_gain": "20-Day Momentum Gain (%)",
+    "breakout_volume_threshold": "Breakout Volume Threshold",
+    "gap_pct_threshold": "Gap % Threshold",
+    "avoid_earnings_days": "Avoid Earnings (days)",
+    "skip_first_minutes": "Skip Opening Minutes",
+    "strategy_momentum_breakout": "Strategy: Momentum Breakout",
+    "strategy_volume_spike": "Strategy: Volume Spike",
+    "strategy_mean_reversion": "Strategy: Mean Reversion",
+    "strategy_gap_and_go": "Strategy: Gap and Go",
+    "maga_mode": "MAGA Mode",
+}
+
+
+def _format_param_name(name):
+    """Convert a parameter key to a human-readable label."""
+    if not name:
+        return ""
+    return PARAMETER_LABELS.get(name, name.replace("_", " ").title())
 
 
 # ---------------------------------------------------------------------------
@@ -151,8 +263,8 @@ def dashboard():
         try:
             ctx = build_user_context_from_profile(prof["id"])
             account = _safe_account_info(ctx)
-            positions = _safe_positions(ctx)
-            trades = _get_trade_history_for_profile(prof["id"], limit=10)
+            positions = _enriched_positions(ctx, prof["id"])
+            pending_orders = _safe_pending_orders(ctx)
             profiles_data.append({
                 "id": prof["id"],
                 "name": prof["name"],
@@ -160,7 +272,8 @@ def dashboard():
                 "market_type_name": prof.get("market_type_name", prof["market_type"]),
                 "account": account,
                 "positions": positions,
-                "recent_trades": trades,
+                "pending_orders": pending_orders,
+                "is_virtual": getattr(ctx, "is_virtual", False),
             })
         except Exception as exc:
             logger.warning("Dashboard error for profile #%d: %s", prof["id"], exc)
@@ -171,7 +284,8 @@ def dashboard():
                 "market_type_name": prof.get("market_type_name", prof["market_type"]),
                 "account": None,
                 "positions": [],
-                "recent_trades": [],
+                "pending_orders": [],
+                "is_virtual": False,
                 "error": str(exc),
             })
 
@@ -272,6 +386,14 @@ def settings():
 
     ai_providers = get_providers()
 
+    from models import get_alpaca_accounts
+    alpaca_accounts = get_alpaca_accounts(current_user.id)
+    for acct in alpaca_accounts:
+        try:
+            acct["_key_masked"] = _mask_key(decrypt(acct.get("alpaca_api_key_enc", "")))
+        except Exception:
+            acct["_key_masked"] = "****"
+
     return render_template("settings.html",
                            keys=keys,
                            profiles=profiles,
@@ -279,7 +401,8 @@ def settings():
                            segments=SEGMENTS,
                            excluded_symbols=excluded_str,
                            ai_providers=ai_providers,
-                           ai_providers_json=json.dumps(ai_providers))
+                           ai_providers_json=json.dumps(ai_providers),
+                           alpaca_accounts=alpaca_accounts)
 
 
 @views_bp.route("/settings/exclusions", methods=["POST"])
@@ -366,6 +489,45 @@ def test_keys():
 # Trading Profile routes
 # ---------------------------------------------------------------------------
 
+def _get_main_conn():
+    """Get a connection to the main quantopsai.db (not per-profile)."""
+    import sqlite3
+    conn = sqlite3.connect("quantopsai.db")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+@views_bp.route("/settings/alpaca-accounts", methods=["POST"])
+@login_required
+def manage_alpaca_account():
+    """Create or delete a named Alpaca account reference."""
+    from models import create_alpaca_account
+    action = request.form.get("action", "create")
+    if action == "delete":
+        account_id = request.form.get("account_id")
+        if account_id:
+            conn = _get_main_conn()
+            conn.execute("DELETE FROM alpaca_accounts WHERE id=? AND user_id=?",
+                         (int(account_id), current_user.id))
+            conn.commit()
+            conn.close()
+            flash("Alpaca account removed.", "success")
+        return redirect(url_for("views.settings"))
+
+    name = request.form.get("account_name", "").strip() or "Paper Account"
+    api_key = request.form.get("account_api_key", "").strip()
+    secret_key = request.form.get("account_secret_key", "").strip()
+    if not api_key or not secret_key:
+        flash("Both API key and secret key are required.", "error")
+        return redirect(url_for("views.settings"))
+    create_alpaca_account(
+        current_user.id, name,
+        encrypt(api_key), encrypt(secret_key),
+    )
+    flash(f'Alpaca account "{name}" added.', "success")
+    return redirect(url_for("views.settings"))
+
+
 @views_bp.route("/settings/profile/create", methods=["POST"])
 @login_required
 def create_profile():
@@ -381,6 +543,17 @@ def create_profile():
         return redirect(url_for("views.settings"))
 
     profile_id = create_trading_profile(current_user.id, name, market_type)
+
+    # Virtual account setup
+    alpaca_account_id = request.form.get("alpaca_account_id", "").strip()
+    initial_capital = request.form.get("initial_capital", "100000").strip()
+    if alpaca_account_id:
+        update_trading_profile(profile_id,
+            alpaca_account_id=int(alpaca_account_id),
+            is_virtual=1,
+            initial_capital=float(initial_capital),
+        )
+
     flash(f'Profile "{name}" created successfully.', "success")
     return redirect(url_for("views.settings") + f"#profile-{profile_id}")
 
@@ -446,6 +619,10 @@ def save_profile(profile_id):
     # Trailing stops
     config_updates["use_trailing_stops"] = 1 if form.get("use_trailing_stops") else 0
     config_updates["trailing_atr_multiplier"] = float(form.get("trailing_atr_multiplier", 1.5))
+    # Conviction-based take-profit override
+    config_updates["use_conviction_tp_override"] = 1 if form.get("use_conviction_tp_override") else 0
+    config_updates["conviction_tp_min_confidence"] = float(form.get("conviction_tp_min_confidence", 70.0))
+    config_updates["conviction_tp_min_adx"] = float(form.get("conviction_tp_min_adx", 25.0))
     # Limit orders
     config_updates["use_limit_orders"] = 1 if form.get("use_limit_orders") else 0
 
@@ -758,13 +935,26 @@ def trades():
                 t["segment"] = prof["name"]
             all_trades.extend(prof_trades)
 
-        # Also pull from legacy segment DBs for backward compatibility
-        for seg_name in ("microsmall", "midcap", "largecap", "crypto"):
-            seg_trades = _get_trade_history_for_user(current_user.id, seg_name, limit=100)
-            for t in seg_trades:
-                t["segment"] = SEGMENTS.get(seg_name, {}).get("name", seg_name)
-                t["profile_name"] = t["segment"]
-            all_trades.extend(seg_trades)
+    # Enrich open trades with unrealized P&L from live positions
+    positions_by_profile = {}
+    for prof in profiles:
+        try:
+            ctx = build_user_context_from_profile(prof["id"])
+            positions = _safe_positions(ctx)
+            if positions:
+                pos_map = {p["symbol"]: p for p in positions}
+                positions_by_profile[prof["id"]] = pos_map
+        except Exception:
+            pass
+
+    for t in all_trades:
+        if t.get("pnl") is None and t.get("status") == "open":
+            pid = t.get("profile_id")
+            pos_map = positions_by_profile.get(pid, {})
+            pos = pos_map.get(t.get("symbol"))
+            if pos:
+                t["unrealized_pl"] = pos.get("unrealized_pl", 0)
+                t["unrealized_plpc"] = pos.get("unrealized_plpc", 0)
 
     # Sort by timestamp descending
     all_trades.sort(key=lambda t: t.get("timestamp", ""), reverse=True)
@@ -1101,12 +1291,6 @@ def ai_performance_legacy():
             if os.path.exists(db_path):
                 db_paths.add(db_path)
 
-        # Also check legacy segment DBs
-        for legacy in ["quantopsai_microsmall.db", "quantopsai_midcap.db",
-                        "quantopsai_largecap.db", "quantopsai_crypto.db",
-                        "quantopsai_smallcap.db"]:
-            if os.path.exists(legacy):
-                db_paths.add(legacy)
 
     # Aggregate raw data across all DBs for accurate metric calculation
     import sqlite3
@@ -1218,6 +1402,7 @@ def ai_performance_legacy():
         history = get_tuning_history(p["id"], limit=10)
         for h in history:
             h["profile_name"] = p["name"]
+            h["parameter_label"] = _format_param_name(h.get("parameter_name", ""))
         tuning_history.extend(history)
     tuning_history.sort(key=lambda h: h.get("timestamp", ""), reverse=True)
 
@@ -1318,6 +1503,33 @@ def performance_dashboard():
 
     # Calculate all institutional metrics
     metrics = calculate_all_metrics(db_paths, initial_capital=10000)
+
+    # Scaling projection — square-root market impact + migration ladder
+    # + execution-style adjustment. See `scaling_projection.py`.
+    scaling = None
+    try:
+        from scaling_projection import project_scaling
+        from metrics import _gather_trades
+        all_trades = _gather_trades(db_paths)
+        mtype = "small"
+        uses_limit = False
+        if selected_profile_int:
+            try:
+                _p = get_trading_profile(selected_profile_int)
+                if _p:
+                    mtype = _p.get("market_type", "small")
+                    uses_limit = bool(_p.get("use_limit_orders", 0))
+            except Exception:
+                pass
+        scaling = project_scaling(
+            all_trades,
+            current_capital=10000,
+            base_net_return_pct=metrics.get("net_return_pct", 0.0),
+            market_type=mtype,
+            use_limit_orders_now=uses_limit,
+        )
+    except Exception as exc:
+        logger.warning("Scaling projection failed: %s", exc)
 
     # Try to get current exposure from Alpaca (for Market Relationship tab)
     exposure = None
@@ -1428,17 +1640,387 @@ def performance_dashboard():
     if slippage["count"] > 0 and slippage["total_cost"] != 0:
         slippage["avg_pct"] = slippage["total_cost"] / slippage["count"]
 
-    # Tuning history
+    # Tuning history — filter to selected profile, or show all
     tuning_history = []
-    for p in profiles:
+    tuning_profiles = profiles
+    if selected_profile_int:
+        tuning_profiles = [p for p in profiles if p["id"] == selected_profile_int]
+    for p in tuning_profiles:
         try:
             history = get_tuning_history(p["id"], limit=10)
             for h in history:
                 h["profile_name"] = p["name"]
+                h["parameter_label"] = _format_param_name(h.get("parameter_name", ""))
             tuning_history.extend(history)
         except Exception:
             pass
     tuning_history.sort(key=lambda h: h.get("timestamp", ""), reverse=True)
+
+    # Learned patterns from self-tuning
+    learned_patterns = []
+    for db_path in db_paths:
+        try:
+            from self_tuning import _analyze_failure_patterns
+            patterns = _analyze_failure_patterns(db_path)
+            learned_patterns.extend(patterns)
+        except Exception:
+            pass
+
+    # Self-tuning status panel — shows whether the tuner is alive,
+    # how much data it has, when it last ran, and why it may not
+    # have made changes.
+    tuning_status = []
+    try:
+        from self_tuning import describe_tuning_state
+        import sqlite3 as _sqlite3
+        status_profiles = [p for p in profiles
+                           if not selected_profile_int or p["id"] == selected_profile_int]
+        for p in status_profiles:
+            try:
+                ctx = build_user_context_from_profile(p["id"])
+                state = describe_tuning_state(ctx)
+            except Exception:
+                state = {"can_tune": False, "resolved": 0, "required": 20,
+                         "message": "Could not load tuning state."}
+            # Last run timestamp
+            last_run = None
+            try:
+                _c = _sqlite3.connect(ctx.db_path)
+                row = _c.execute(
+                    "SELECT started_at FROM task_runs "
+                    "WHERE task_name LIKE '%Self-Tune%' "
+                    "ORDER BY started_at DESC LIMIT 1"
+                ).fetchone()
+                _c.close()
+                if row:
+                    last_run = row[0]
+            except Exception:
+                pass
+            tuning_status.append({
+                "profile_id": p["id"],
+                "profile_name": p["name"],
+                "resolved": state["resolved"],
+                "required": state["required"],
+                "can_tune": state["can_tune"],
+                "message": state["message"],
+                "last_run": last_run,
+            })
+    except Exception:
+        pass
+
+    # Meta-model info for dashboard (Phase 1)
+    meta_info = {"loaded": False, "profiles": []}
+    try:
+        import meta_model
+        profiles_to_check = [p for p in profiles
+                             if (not selected_profile_int or p["id"] == selected_profile_int)]
+        for p in profiles_to_check:
+            path = meta_model.model_path_for_profile(p["id"])
+            bundle = meta_model.load_model(path)
+            if bundle:
+                meta_info["loaded"] = True
+                meta_info["profiles"].append({
+                    "name": p["name"],
+                    "id": p["id"],
+                    "auc": bundle["metrics"]["auc"],
+                    "accuracy": bundle["metrics"]["accuracy"],
+                    "n_samples": bundle["metrics"]["n_samples"],
+                    "positive_rate": bundle["metrics"]["positive_rate"],
+                    "top_features": bundle["feature_importance"][:10],
+                })
+    except Exception:
+        pass
+
+    # Strategy validations (Phase 2)
+    validations = []
+    try:
+        from rigorous_backtest import get_recent_validations
+        raw = get_recent_validations(limit=30)
+        for v in raw:
+            # Parse stored JSON arrays
+            try:
+                passed = json.loads(v.get("passed_gates", "[]"))
+                failed = json.loads(v.get("failed_gates", "[]"))
+            except Exception:
+                passed, failed = [], []
+            validations.append({
+                "id": v.get("id"),
+                "timestamp": v.get("timestamp", ""),
+                "strategy_name": v.get("strategy_name", ""),
+                "market_type": v.get("market_type", ""),
+                "verdict": v.get("verdict", ""),
+                "score": v.get("score", 0),
+                "passed_count": len(passed),
+                "total_gates": len(passed) + len(failed),
+                "elapsed_sec": v.get("elapsed_sec") or 0,
+            })
+    except Exception:
+        pass
+
+    # Multi-strategy capital allocation (Phase 6)
+    allocation_info = {"per_profile": []}
+    try:
+        from multi_strategy import get_allocation_summary
+        for p in profiles:
+            if selected_profile_int and p["id"] != selected_profile_int:
+                continue
+            db = f"quantopsai_profile_{p['id']}.db"
+            if not os.path.exists(db):
+                continue
+            summary = get_allocation_summary(db, p["market_type"])
+            allocation_info["per_profile"].append({
+                "profile_id": p["id"],
+                "name": p["name"],
+                "market_type": p["market_type"],
+                "strategies": summary,
+            })
+    except Exception:
+        pass
+
+    # AI cost spend per profile (last 1d / 7d / 30d)
+    ai_cost_info = {"per_profile": [], "totals": {"today": 0.0, "7d": 0.0, "30d": 0.0}}
+    try:
+        from ai_cost_ledger import spend_summary
+        for p in profiles:
+            if selected_profile_int and p["id"] != selected_profile_int:
+                continue
+            db = f"quantopsai_profile_{p['id']}.db"
+            if not os.path.exists(db):
+                continue
+            summary = spend_summary(db)
+            ai_cost_info["per_profile"].append({
+                "profile_id": p["id"],
+                "name": p["name"],
+                "today": summary["today"],
+                "seven_d": summary["7d"],
+                "thirty_d": summary["30d"],
+                "by_purpose": summary["by_purpose_30d"],
+                "by_model": summary["by_model_30d"],
+            })
+            ai_cost_info["totals"]["today"] += summary["today"]["usd"]
+            ai_cost_info["totals"]["7d"] += summary["7d"]["usd"]
+            ai_cost_info["totals"]["30d"] += summary["30d"]["usd"]
+    except Exception:
+        pass
+
+    # Crisis state (Phase 10)
+    crisis_info = {"per_profile": [], "max_level": "normal"}
+    _level_rank = {"normal": 0, "elevated": 1, "crisis": 2, "severe": 3}
+    try:
+        from crisis_state import get_current_level, history as _crisis_history
+        for p in profiles:
+            if selected_profile_int and p["id"] != selected_profile_int:
+                continue
+            db = f"quantopsai_profile_{p['id']}.db"
+            if not os.path.exists(db):
+                continue
+            cur = get_current_level(db)
+            hist = _crisis_history(db, limit=10)
+            crisis_info["per_profile"].append({
+                "profile_id": p["id"],
+                "name": p["name"],
+                "level": cur.get("level", "normal"),
+                "size_multiplier": cur.get("size_multiplier", 1.0),
+                "transitioned_at": cur.get("transitioned_at"),
+                "signals": cur.get("signals", []),
+                "readings": cur.get("readings", {}),
+                "history": hist,
+            })
+            lvl = cur.get("level", "normal")
+            if _level_rank.get(lvl, 0) > _level_rank.get(crisis_info["max_level"], 0):
+                crisis_info["max_level"] = lvl
+    except Exception:
+        pass
+
+    # Event stream from last 24h (Phase 9)
+    event_info = {"per_profile": []}
+    try:
+        from event_bus import recent_events
+        for p in profiles:
+            if selected_profile_int and p["id"] != selected_profile_int:
+                continue
+            db = f"quantopsai_profile_{p['id']}.db"
+            if not os.path.exists(db):
+                continue
+            try:
+                events = recent_events(db, hours=24, limit=25)
+            except Exception:
+                events = []
+            if not events:
+                continue
+            counts = {"high": 0, "medium": 0, "low": 0, "info": 0, "critical": 0}
+            for e in events:
+                sev = e.get("severity", "info")
+                counts[sev] = counts.get(sev, 0) + 1
+            event_info["per_profile"].append({
+                "profile_id": p["id"],
+                "name": p["name"],
+                "events": events,
+                "counts": counts,
+            })
+    except Exception:
+        pass
+
+    # Specialist ensemble breakdown from last cycle (Phase 8)
+    ensemble_info = {"per_profile": []}
+    try:
+        for p in profiles:
+            if selected_profile_int and p["id"] != selected_profile_int:
+                continue
+            cycle_path = f"cycle_data_{p['id']}.json"
+            if not os.path.exists(cycle_path):
+                continue
+            try:
+                with open(cycle_path) as f:
+                    cycle = json.load(f)
+            except Exception:
+                continue
+            ens = cycle.get("ensemble") or {}
+            if not ens.get("enabled"):
+                continue
+            ensemble_info["per_profile"].append({
+                "profile_id": p["id"],
+                "name": p["name"],
+                "cost_calls": ens.get("cost_calls", 0),
+                "vetoed": ens.get("vetoed", []),
+                "rows": ens.get("rows", [])[:12],
+                "timestamp": cycle.get("timestamp"),
+            })
+    except Exception:
+        pass
+
+    # Auto-generated strategies (Phase 7)
+    auto_strategy_info = {"per_profile": []}
+    try:
+        from strategy_generator import list_strategies as _list_auto
+        for p in profiles:
+            if selected_profile_int and p["id"] != selected_profile_int:
+                continue
+            db = f"quantopsai_profile_{p['id']}.db"
+            if not os.path.exists(db):
+                continue
+            rows = _list_auto(db)
+            # Parse spec for human-readable summary
+            enriched = []
+            for row in rows[:30]:
+                try:
+                    spec = json.loads(row.get("spec_json") or "{}")
+                except Exception:
+                    spec = {}
+                enriched.append({
+                    "id": row["id"],
+                    "name": row["name"],
+                    "status": row["status"],
+                    "generation": row["generation"],
+                    "description": spec.get("description", ""),
+                    "markets": spec.get("applicable_markets", []),
+                    "direction": spec.get("direction", ""),
+                    "created_at": row.get("created_at", ""),
+                    "shadow_started_at": row.get("shadow_started_at", ""),
+                    "promoted_at": row.get("promoted_at", ""),
+                    "retired_at": row.get("retired_at", ""),
+                    "retirement_reason": row.get("retirement_reason", ""),
+                })
+            counts = {
+                "proposed": sum(1 for r in rows if r["status"] == "proposed"),
+                "shadow":   sum(1 for r in rows if r["status"] == "shadow"),
+                "active":   sum(1 for r in rows if r["status"] == "active"),
+                "retired":  sum(1 for r in rows if r["status"] == "retired"),
+            }
+            auto_strategy_info["per_profile"].append({
+                "profile_id": p["id"],
+                "name": p["name"],
+                "market_type": p["market_type"],
+                "strategies": enriched,
+                "counts": counts,
+            })
+    except Exception:
+        pass
+
+    # SEC filing alerts (Phase 4)
+    sec_alerts = []
+    try:
+        from sec_filings import get_active_alerts
+        import sqlite3 as _sq3a
+        profiles_for_sec = [p for p in profiles
+                            if (not selected_profile_int or p["id"] == selected_profile_int)]
+        for p in profiles_for_sec:
+            db = f"quantopsai_profile_{p['id']}.db"
+            if not os.path.exists(db):
+                continue
+            alerts = get_active_alerts(db, min_severity="medium")
+            for a in alerts[:20]:
+                sec_alerts.append({
+                    "profile_id": p["id"],
+                    "profile_name": p["name"],
+                    "symbol": a.get("symbol", ""),
+                    "form": a.get("form_type", ""),
+                    "filed_date": a.get("filed_date", ""),
+                    "severity": a.get("alert_severity", ""),
+                    "signal": a.get("alert_signal", ""),
+                    "summary": a.get("alert_summary", ""),
+                })
+        # Sort by severity, then date desc
+        sev_rank = {"high": 0, "medium": 1, "low": 2}
+        sec_alerts.sort(key=lambda a: (sev_rank.get(a["severity"], 3),
+                                        -(len(a["filed_date"]) and int(a["filed_date"].replace("-", "")) or 0)))
+    except Exception:
+        pass
+
+    # Alpha decay monitoring (Phase 3) — per-profile rolling metrics and
+    # deprecated strategy list. Aggregate across selected profiles.
+    decay_info = {"per_profile": [], "any_deprecated": False}
+    try:
+        from alpha_decay import (list_deprecated, compute_rolling_metrics,
+                                  compute_lifetime_metrics)
+        profiles_for_decay = [p for p in profiles
+                              if (not selected_profile_int or p["id"] == selected_profile_int)]
+        import sqlite3 as _sq3
+        for p in profiles_for_decay:
+            db = f"quantopsai_profile_{p['id']}.db"
+            if not os.path.exists(db):
+                continue
+            # Distinct strategy types this profile has recorded predictions for
+            strat_types = []
+            try:
+                c = _sq3.connect(db)
+                rows = c.execute(
+                    "SELECT DISTINCT strategy_type FROM ai_predictions "
+                    "WHERE strategy_type IS NOT NULL AND strategy_type != '' "
+                    "AND status = 'resolved'"
+                ).fetchall()
+                strat_types = [r[0] for r in rows]
+                c.close()
+            except Exception:
+                pass
+
+            entries = []
+            for stype in strat_types:
+                rolling = compute_rolling_metrics(db, stype, window_days=30)
+                lifetime = compute_lifetime_metrics(db, stype)
+                entries.append({
+                    "strategy_type": stype,
+                    "rolling": rolling,
+                    "lifetime": lifetime,
+                    "edge_change_pct": (
+                        round((rolling["sharpe_ratio"] - lifetime["sharpe_ratio"])
+                              / abs(lifetime["sharpe_ratio"]) * 100, 1)
+                        if lifetime["sharpe_ratio"] and lifetime["n_predictions"] >= 50 else None
+                    ),
+                })
+
+            deprecated = list_deprecated(db)
+            if deprecated:
+                decay_info["any_deprecated"] = True
+
+            decay_info["per_profile"].append({
+                "profile_id": p["id"],
+                "name": p["name"],
+                "entries": entries,
+                "deprecated": deprecated,
+            })
+    except Exception:
+        pass
 
     return render_template("performance.html",
                            m=metrics,
@@ -1448,7 +2030,20 @@ def performance_dashboard():
                            exposure=exposure,
                            ai_perf=ai_perf,
                            slippage=slippage,
-                           tuning_history=tuning_history[:20])
+                           scaling=scaling,
+                           tuning_history=tuning_history[:20],
+                           tuning_status=tuning_status,
+                           learned_patterns=learned_patterns,
+                           meta_info=meta_info,
+                           validations=validations,
+                           decay_info=decay_info,
+                           sec_alerts=sec_alerts,
+                           allocation_info=allocation_info,
+                           auto_strategy_info=auto_strategy_info,
+                           ensemble_info=ensemble_info,
+                           event_info=event_info,
+                           crisis_info=crisis_info,
+                           ai_cost_info=ai_cost_info)
 
 
 @views_bp.route("/api/backtest-vs-reality/<int:profile_id>")
@@ -1788,6 +2383,76 @@ def api_scheduler_status():
         return jsonify(status)
     except FileNotFoundError:
         return jsonify({"error": "Scheduler not running yet", "scan_remaining": 0, "exit_remaining": 0, "ai_remaining": 0})
+
+
+@views_bp.route("/api/portfolio/<int:profile_id>")
+@login_required
+def api_portfolio(profile_id):
+    """Return live portfolio data for a profile (positions, account info)."""
+    try:
+        profile = get_trading_profile(profile_id)
+        if not profile or profile["user_id"] != current_user.id:
+            return jsonify({"error": "not found"}), 404
+
+        ctx = build_user_context_from_profile(profile_id)
+        account = _safe_account_info(ctx)
+        positions = _enriched_positions(ctx, profile_id)
+        pending_orders = _safe_pending_orders(ctx)
+
+        return jsonify({
+            "account": account,
+            "positions": positions,
+            "pending_orders": pending_orders,
+        })
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@views_bp.route("/api/positions-html/<int:profile_id>")
+@login_required
+def api_positions_html(profile_id):
+    """Server-rendered Open Positions table HTML. Used by the dashboard
+    auto-refresh so the JS doesn't have to duplicate the expandable
+    trade-row markup."""
+    from flask import render_template_string
+    try:
+        profile = get_trading_profile(profile_id)
+        if not profile or profile["user_id"] != current_user.id:
+            return "not found", 404
+        ctx = build_user_context_from_profile(profile_id)
+        positions = _enriched_positions(ctx, profile_id)
+        return render_template_string(
+            '{% import "_trades_table.html" as trades_tpl %}'
+            '{{ trades_tpl.render_trades(positions, show_profile=False, '
+            'empty_message="No open positions in this profile.") }}',
+            positions=positions,
+        )
+    except Exception as exc:
+        return f"<p class='muted'>Failed to refresh: {exc}</p>", 500
+
+
+@views_bp.route("/api/cycle-data/<int:profile_id>")
+@login_required
+def api_cycle_data(profile_id):
+    """Return the last AI cycle data for a profile (decisions, shortlist, reasoning)."""
+    try:
+        with open(f"cycle_data_{profile_id}.json") as f:
+            data = json.load(f)
+        return jsonify(data)
+    except FileNotFoundError:
+        return jsonify({"error": "No cycle data yet", "shortlist": [], "trades_selected": []})
+
+
+@views_bp.route("/api/sector-rotation")
+@login_required
+def api_sector_rotation():
+    """Return current sector rotation data."""
+    try:
+        from market_data import get_sector_rotation
+        rotation = get_sector_rotation()
+        return jsonify(rotation)
+    except Exception as exc:
+        return jsonify({"error": str(exc)})
 
 
 # ---------------------------------------------------------------------------

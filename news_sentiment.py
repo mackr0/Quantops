@@ -163,3 +163,39 @@ def get_sentiment_signal(symbol):
         "news_count": len(news_items),
         "items": sentiment.get("items", []),
     }
+
+
+# ---------------------------------------------------------------------------
+# Free yfinance news (no Alpaca key needed)
+# ---------------------------------------------------------------------------
+
+_yf_news_cache = {}
+_YF_NEWS_TTL = 1800  # 30 minutes
+
+def fetch_news_yfinance(symbol, limit=3):
+    """Fetch recent headlines for a symbol from yfinance (free, no API key).
+
+    Returns list of headline strings. Cached for 30 minutes per symbol.
+    """
+    import time
+    now = time.time()
+    cached = _yf_news_cache.get(symbol)
+    if cached and (now - cached[0]) < _YF_NEWS_TTL:
+        return cached[1]
+
+    try:
+        import yfinance as yf
+        yf_symbol = symbol.replace("/", "-") if "/" in symbol else symbol
+        ticker = yf.Ticker(yf_symbol)
+        news = ticker.news or []
+        headlines = []
+        for item in news[:limit]:
+            title = item.get("title", "")
+            if title:
+                headlines.append(title)
+        _yf_news_cache[symbol] = (now, headlines)
+        return headlines
+    except Exception as exc:
+        logger.debug("Failed to fetch yfinance news for %s: %s", symbol, exc)
+        _yf_news_cache[symbol] = (now, [])
+        return []

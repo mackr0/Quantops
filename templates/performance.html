@@ -8,7 +8,7 @@
 <div style="margin-bottom:1rem;">
     <form method="get" action="/performance" style="display:flex;gap:0.5rem;align-items:center;">
         <label style="margin:0;">Profile:</label>
-        <select name="profile_id" onchange="this.form.submit()">
+        <select name="profile_id" onchange="var h=window.location.hash;this.form.action=this.form.action.split('#')[0]+h;this.form.submit()">
             <option value="">All Profiles</option>
             {% for p in profiles %}
             <option value="{{ p.id }}" {{ 'selected' if selected_profile == p.id }}>{{ p.name }}</option>
@@ -41,40 +41,52 @@
     <!-- Key metrics cards -->
     <div class="grid">
         <div class="stat-card" style="text-align:center;">
-            <small class="muted"><span class="tip" data-tip="How much money you made or lost as a percentage of what you started with">Total Return</span></small>
+            <small class="muted"><span class="tip" data-tip="Change in total account value (cash + open positions) since the start — includes unrealized gains on positions you still hold">Total Return</span></small>
             <strong style="font-size:2rem;" class="{{ 'pnl-pos' if m.total_return_pct >= 0 else 'pnl-neg' }}">
                 {{ "{:+.1f}".format(m.total_return_pct) }}%
             </strong>
-            <small class="muted">{{ m.days_active }} days</small>
+            <small class="muted">{{ m.days_active }} days · includes unrealized</small>
         </div>
         <div class="stat-card" style="text-align:center;">
-            <small class="muted"><span class="tip" data-tip="Your return scaled to a full year — lets you compare short periods fairly">Annualized Return</span></small>
+            <small class="muted"><span class="tip" data-tip="Total Return scaled to a full year — useful for comparison but unreliable with less than 90 days of data">Annualized Return</span></small>
             <strong style="font-size:2rem;" class="{{ 'pnl-pos' if m.annualized_return_pct >= 0 else 'pnl-neg' }}">
                 {{ "{:+.1f}".format(m.annualized_return_pct) }}%
             </strong>
+            {% if m.days_active < 90 %}<small class="muted">low confidence (&lt;90 days)</small>{% endif %}
         </div>
         <div class="stat-card" style="text-align:center;">
-            <small class="muted">Total P&amp;L</small>
+            <small class="muted"><span class="tip" data-tip="Sum of realized profit and loss from trades that have been closed — does not include gains or losses on positions you still hold">Total P&amp;L</span></small>
             <strong style="font-size:2rem;" class="{{ 'pnl-pos' if m.total_pnl >= 0 else 'pnl-neg' }}">
                 ${{ "{:,.2f}".format(m.total_pnl) }}
             </strong>
+            <small class="muted">realized (closed trades only)</small>
         </div>
     </div>
 
     <div class="grid">
         <article style="text-align:center;">
             <small class="muted"><span class="tip" data-tip="Measures return per unit of risk. Above 2.0 is strong, above 3.0 is excellent">Sharpe Ratio</span></small>
+            {% if m.sharpe_ratio_computable %}
             <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if m.sharpe_ratio >= 2 else 'pnl-neg' if m.sharpe_ratio < 1 else '' }}">
                 {{ "%.2f"|format(m.sharpe_ratio) }}
             </strong>
             <small class="muted">Target: &gt;2.0</small>
+            {% else %}
+            <strong style="font-size:2.5rem; display:block;" class="muted">N/A</strong>
+            <small class="muted">need 2+ daily returns</small>
+            {% endif %}
         </article>
         <article style="text-align:center;">
             <small class="muted"><span class="tip" data-tip="Like Sharpe but only counts downside risk. Better measure since upside volatility is good">Sortino Ratio</span></small>
+            {% if m.sortino_ratio_computable %}
             <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if m.sortino_ratio >= 2 else 'pnl-neg' if m.sortino_ratio < 1 else '' }}">
                 {{ "%.2f"|format(m.sortino_ratio) }}
             </strong>
             <small class="muted">Target: &gt;2.0</small>
+            {% else %}
+            <strong style="font-size:2.5rem; display:block;" class="muted">N/A</strong>
+            <small class="muted">need 2+ losing days</small>
+            {% endif %}
         </article>
         <article style="text-align:center;">
             <small class="muted"><span class="tip" data-tip="The biggest drop from a peak to a low point — how bad the worst losing streak got">Max Drawdown</span></small>
@@ -85,10 +97,15 @@
         </article>
         <article style="text-align:center;">
             <small class="muted"><span class="tip" data-tip="Annual return divided by max drawdown. Higher means better return for the risk taken">Calmar Ratio</span></small>
+            {% if m.calmar_ratio_computable %}
             <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if m.calmar_ratio >= 2 else 'pnl-neg' if m.calmar_ratio < 1 else '' }}">
                 {{ "%.2f"|format(m.calmar_ratio) }}
             </strong>
             <small class="muted">Target: &gt;2.0</small>
+            {% else %}
+            <strong style="font-size:2.5rem; display:block;" class="muted">N/A</strong>
+            <small class="muted">need 30+ days + 1%+ DD</small>
+            {% endif %}
         </article>
     </div>
 
@@ -166,17 +183,32 @@
     <div class="grid">
         <article style="text-align:center;">
             <small class="muted"><span class="tip" data-tip="How much your returns swing up and down over a year. Lower is more predictable">Annualized Volatility</span></small>
+            {% if m.annualized_volatility_computable %}
             <strong style="font-size:2rem; display:block;">{{ "%.1f"|format(m.annualized_volatility) }}%</strong>
+            {% else %}
+            <strong style="font-size:2rem; display:block;" class="muted">N/A</strong>
+            <small class="muted">need 2+ daily returns</small>
+            {% endif %}
         </article>
         <article style="text-align:center;">
             <small class="muted"><span class="tip" data-tip="Value at Risk — 95% of the time, your worst trade won't be worse than this">VaR (95%)</span></small>
+            {% if m.var_95_computable %}
             <strong style="font-size:2rem; display:block;" class="pnl-neg">{{ "%.1f"|format(m.var_95) }}%</strong>
             <small class="muted">95% of trades better than this</small>
+            {% else %}
+            <strong style="font-size:2rem; display:block;" class="muted">N/A</strong>
+            <small class="muted">need 5+ closed trades</small>
+            {% endif %}
         </article>
         <article style="text-align:center;">
             <small class="muted"><span class="tip" data-tip="Average loss in the worst 5% of scenarios — measures how bad the really bad days get">CVaR (95%)</span></small>
+            {% if m.cvar_95_computable %}
             <strong style="font-size:2rem; display:block;" class="pnl-neg">{{ "%.1f"|format(m.cvar_95) }}%</strong>
             <small class="muted">Avg loss in worst 5% of trades</small>
+            {% else %}
+            <strong style="font-size:2rem; display:block;" class="muted">N/A</strong>
+            <small class="muted">need 5+ closed trades</small>
+            {% endif %}
         </article>
     </div>
 
@@ -280,17 +312,27 @@
     <div class="grid">
         <article style="text-align:center;">
             <small class="muted"><span class="tip" data-tip="Percentage of trades that made money">Win Rate</span></small>
+            {% if m.win_rate_computable %}
             <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if m.win_rate >= 50 else 'pnl-neg' }}">
                 {{ "%.1f"|format(m.win_rate) }}%
             </strong>
-            <small class="muted">{{ m.winning_trades }}W / {{ m.losing_trades }}L of {{ m.total_trades }}</small>
+            <small class="muted">{{ m.winning_trades }}W / {{ m.losing_trades }}L of {{ m.closed_trades }} closed{% if m.open_trades %} ({{ m.open_trades }} still open){% endif %}</small>
+            {% else %}
+            <strong style="font-size:2.5rem; display:block;" class="muted">N/A</strong>
+            <small class="muted">no closed trades yet{% if m.open_trades %} ({{ m.open_trades }} open){% endif %}</small>
+            {% endif %}
         </article>
         <article style="text-align:center;">
             <small class="muted"><span class="tip" data-tip="Total money won divided by total money lost. Above 1.5 is good, above 2.0 is strong">Profit Factor</span></small>
+            {% if m.profit_factor_computable %}
             <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if m.profit_factor >= 1.5 else 'pnl-neg' if m.profit_factor < 1 else '' }}">
                 {{ "%.2f"|format(m.profit_factor) }}
             </strong>
             <small class="muted">Target: &gt;1.5</small>
+            {% else %}
+            <strong style="font-size:2.5rem; display:block;" class="muted">N/A</strong>
+            <small class="muted">need at least one win and one loss</small>
+            {% endif %}
         </article>
         <article style="text-align:center;">
             <small class="muted"><span class="tip" data-tip="The average amount you expect to make (or lose) on each trade">Expectancy</span> per Trade</small>
@@ -314,10 +356,15 @@
         </article>
         <article>
             <header><h4><span class="tip" data-tip="Average winning trade divided by average losing trade. Above 1.0 means winners are bigger than losers">Win/Loss Ratio</span></h4></header>
+            {% if m.win_loss_ratio_computable %}
             <strong style="font-size:1.5rem;" class="{{ 'pnl-pos' if m.win_loss_ratio >= 1 else 'pnl-neg' }}">
                 {{ "%.2f"|format(m.win_loss_ratio) }}
             </strong>
             <small class="muted">avg win / avg loss</small>
+            {% else %}
+            <strong style="font-size:1.5rem;" class="muted">N/A</strong>
+            <small class="muted">need at least one win and one loss</small>
+            {% endif %}
         </article>
     </div>
 
@@ -361,9 +408,14 @@
         <div class="grid">
             <div class="stat-card">
                 <small class="muted">Current Streak</small>
+                {% if m.current_streak.computable %}
                 <strong class="{{ 'pnl-pos' if m.current_streak.type == 'winning' else 'pnl-neg' if m.current_streak.type == 'losing' else '' }}">
                     {{ m.current_streak.count }} {{ m.current_streak.type }}
                 </strong>
+                {% else %}
+                <strong class="muted">N/A</strong>
+                <small class="muted">no closed trades yet</small>
+                {% endif %}
             </div>
             <div class="stat-card">
                 <small class="muted">Max Consecutive Wins</small>
@@ -405,17 +457,27 @@
     <div class="grid">
         <article style="text-align:center;">
             <small class="muted"><span class="tip" data-tip="Your excess return above what the market gave you. Positive alpha means you're beating the market">Alpha</span> (annualized)</small>
+            {% if m.alpha_computable %}
             <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if m.alpha >= 0 else 'pnl-neg' }}">
                 {{ "{:+.2f}".format(m.alpha) }}%
             </strong>
             <small class="muted">Excess return vs market</small>
+            {% else %}
+            <strong style="font-size:2.5rem; display:block;" class="muted">N/A</strong>
+            <small class="muted">need 20+ aligned days vs SPY</small>
+            {% endif %}
         </article>
         <article style="text-align:center;">
             <small class="muted"><span class="tip" data-tip="How much your portfolio moves with the market. 0.5 means half as volatile as the market">Beta</span> vs S&amp;P 500</small>
+            {% if m.beta_spy_computable %}
             <strong style="font-size:2.5rem; display:block;">
                 {{ "%.3f"|format(m.beta_spy) }}
             </strong>
             <small class="muted">Target: &lt;0.5</small>
+            {% else %}
+            <strong style="font-size:2.5rem; display:block;" class="muted">N/A</strong>
+            <small class="muted">need 20+ aligned days vs SPY</small>
+            {% endif %}
         </article>
     </div>
 
@@ -434,31 +496,45 @@
                 <tbody>
                     <tr>
                         <td><strong>S&amp;P 500 (SPY)</strong></td>
+                        {% if m.correlation_spy_computable %}
                         <td>{{ "%.3f"|format(m.correlation_spy) }}</td>
                         <td class="muted">
                             {% if m.correlation_spy|abs < 0.3 %}Low correlation (good diversification)
                             {% elif m.correlation_spy|abs < 0.7 %}Moderate correlation
                             {% else %}High correlation{% endif %}
                         </td>
+                        {% else %}
+                        <td class="muted">N/A</td>
+                        <td class="muted">need 10+ aligned days</td>
+                        {% endif %}
                     </tr>
                     <tr>
                         <td><strong>Nasdaq (QQQ)</strong></td>
+                        {% if m.correlation_qqq_computable %}
                         <td>{{ "%.3f"|format(m.correlation_qqq) }}</td>
                         <td class="muted">
                             {% if m.correlation_qqq|abs < 0.3 %}Low correlation
                             {% elif m.correlation_qqq|abs < 0.7 %}Moderate correlation
                             {% else %}High correlation{% endif %}
                         </td>
+                        {% else %}
+                        <td class="muted">N/A</td>
+                        <td class="muted">need 10+ aligned days</td>
+                        {% endif %}
                     </tr>
                     <tr>
                         <td><strong>Bitcoin (BTC-USD)</strong></td>
+                        {% if m.correlation_btc_computable %}
                         <td>{{ "%.3f"|format(m.correlation_btc) }}</td>
                         <td class="muted">
-                            {% if m.correlation_btc == 0 %}No data available
-                            {% elif m.correlation_btc|abs < 0.3 %}Low correlation
+                            {% if m.correlation_btc|abs < 0.3 %}Low correlation
                             {% elif m.correlation_btc|abs < 0.7 %}Moderate correlation
                             {% else %}High correlation{% endif %}
                         </td>
+                        {% else %}
+                        <td class="muted">N/A</td>
+                        <td class="muted">need 10+ aligned days</td>
+                        {% endif %}
                     </tr>
                 </tbody>
             </table>
@@ -516,10 +592,15 @@
             </div>
             <div class="stat-card" style="text-align:center;">
                 <small class="muted">Slippage vs Gross Profit</small>
+                {% if m.slippage_vs_gross_computable %}
                 <strong style="font-size:2rem;" class="{{ 'pnl-neg' if m.slippage_vs_gross > 20 else '' }}">
                     {{ "%.1f"|format(m.slippage_vs_gross) }}%
                 </strong>
                 <small class="muted">Target: &lt;20%</small>
+                {% else %}
+                <strong style="font-size:2rem;" class="muted">N/A</strong>
+                <small class="muted">need profitable trades</small>
+                {% endif %}
             </div>
             <div class="stat-card" style="text-align:center;">
                 <small class="muted">Trades with Fill Data</small>
@@ -541,44 +622,102 @@
             </div>
             <div class="stat-card" style="text-align:center;">
                 <small class="muted">Total Trades</small>
-                <strong style="font-size:2rem;">{{ m.total_trades }}</strong>
+                <strong style="font-size:2rem;">{{ m.all_trades }}</strong>
+                <small class="muted">{{ m.closed_trades }} closed · {{ m.open_trades }} open</small>
             </div>
         </div>
     </article>
 
     <!-- Scaling Projection -->
     <article>
-        <header><h3>Scaling Projection (<span class="tip" data-tip="How much money the strategy can handle before it starts to degrade">Capacity</span>)</h3></header>
-        <p class="muted">Estimated impact of scaling capital on slippage and returns.</p>
+        <header><h3>Scaling Projection</h3></header>
+        {% if not scaling or scaling.data_quality == 'insufficient' %}
+        <p class="muted">{{ scaling.message if scaling else 'No trade data with fill prices yet — scaling projections will populate after trades complete with both expected and actual prices recorded.' }}</p>
+        {% else %}
+        <p class="muted">
+            What this strategy would look like at each capital level — assuming you migrate
+            to the appropriate-sized profile as you grow. Calibrated from
+            {{ scaling.n_trades_with_fills }} observed fill{{ '' if scaling.n_trades_with_fills == 1 else 's' }}
+            on your current {{ scaling.current_tier_label }} profile (typical slippage
+            {{ "%.3f"|format(scaling.base_slippage_pct) }}%).
+            {% if scaling.data_quality == 'modeled' %}
+            <span><em>Sample size is still small, so projections come with wide confidence intervals.</em></span>
+            {% endif %}
+        </p>
         <div class="overflow-auto">
             <table>
                 <thead>
                     <tr>
-                        <th>Capital Level</th>
-                        <th>Est. Position Size</th>
-                        <th>Est. Slippage Impact</th>
-                        <th>Projected Net Return</th>
+                        <th rowspan="2">Capital</th>
+                        <th rowspan="2"><span class="tip" data-tip="The right profile to be running at this scale. Larger accounts need larger-cap names to absorb the orders cleanly.">Profile</span></th>
+                        <th rowspan="2">Avg Position</th>
+                        <th colspan="2" style="text-align:center;border-bottom:1px solid #ddd;"><span class="tip" data-tip="Market orders take whatever price the market offers right now. Faster fills, higher slippage. Good when speed matters more than price.">If Market Orders</span></th>
+                        <th colspan="2" style="text-align:center;border-bottom:1px solid #ddd;"><span class="tip" data-tip="Limit orders wait for the price you want. Lower slippage but may not fill if the price runs away. Cut slippage by ~60% when they do fill.">If Limit Orders</span></th>
+                    </tr>
+                    <tr>
+                        <th>Slippage</th>
+                        <th>Return</th>
+                        <th>Slippage</th>
+                        <th>Return</th>
                     </tr>
                 </thead>
                 <tbody>
-                    {% set base_return = m.net_return_pct %}
-                    {% set base_slip = m.slippage_vs_gross %}
-                    {% for mult, label in [(1, "Current ($10K)"), (5, "$50K"), (10, "$100K"), (50, "$500K"), (100, "$1M")] %}
+                    {% for row in scaling.rows %}
                     <tr>
-                        <td><strong>{{ label }}</strong></td>
-                        <td>${{ "{:,.0f}".format(m.avg_position_size * mult) }}</td>
-                        <td class="{{ 'pnl-neg' if mult > 10 else '' }}">
-                            ~{{ "%.1f"|format(base_slip * (1 + (mult - 1) * 0.1)) }}%
+                        <td><strong>{{ row.label }}</strong></td>
+                        <td>
+                            {{ row.recommended_tier_label }}
+                            {% if row.migrated %}
+                            <small class="muted">(migrated)</small>
+                            {% endif %}
                         </td>
-                        <td class="{{ 'pnl-pos' if base_return - base_slip * (mult - 1) * 0.05 >= 0 else 'pnl-neg' }}">
-                            ~{{ "{:+.1f}".format(base_return - base_slip * (mult - 1) * 0.05) }}%
+                        <td>${{ "{:,.0f}".format(m.avg_position_size * (row.capital / scaling.rows[0].capital if scaling.rows[0].capital else 1)) }}</td>
+                        <td class="{{ 'pnl-neg' if row.slippage_market_pct > 1.0 else '' }}">
+                            {{ "%.3f"|format(row.slippage_market_pct) }}%
+                            <small class="muted">
+                                ({{ "%.3f"|format(row.slippage_market_pct_low) }}–{{ "%.3f"|format(row.slippage_market_pct_high) }}%)
+                            </small>
+                        </td>
+                        <td class="{{ 'pnl-pos' if row.return_market_pct >= 0 else 'pnl-neg' }}">
+                            {{ "{:+.2f}".format(row.return_market_pct) }}%
+                        </td>
+                        <td class="{{ 'pnl-neg' if row.slippage_limit_pct > 1.0 else 'pnl-pos' }}" style="background:#f0fff4;">
+                            {{ "%.3f"|format(row.slippage_limit_pct) }}%
+                            <small class="muted">
+                                ({{ "%.3f"|format(row.slippage_limit_pct_low) }}–{{ "%.3f"|format(row.slippage_limit_pct_high) }}%)
+                            </small>
+                        </td>
+                        <td class="{{ 'pnl-pos' if row.return_limit_pct >= 0 else 'pnl-neg' }}" style="background:#f0fff4;">
+                            {{ "{:+.2f}".format(row.return_limit_pct) }}%
                         </td>
                     </tr>
+                    {% if row.notes %}
+                    <tr>
+                        <td colspan="7" style="background:#f0f7ff; padding:0.5rem 0.75rem; font-size:0.85rem;">
+                            <small>{{ row.notes|join(' ') }}</small>
+                        </td>
+                    </tr>
+                    {% endif %}
                     {% endfor %}
                 </tbody>
             </table>
         </div>
-        <small class="muted">Note: Projections are rough estimates. Actual slippage at scale depends on liquidity of specific traded symbols.</small>
+        <small class="muted">
+            <strong>How this is calculated:</strong>
+            Two real-world effects scale your slippage.
+            (1) <strong>Larger orders cost more</strong> — slippage grows with the square root
+            of position size, so 4× the capital is ~2× the slippage, not 4×.
+            (2) <strong>Larger-cap stocks have ~10× more liquidity per tier</strong> — migrating
+            from Small Cap → Mid Cap → Large Cap as you grow lets each new dollar find a more
+            patient market.
+            <br><br>
+            The two right-most columns show what happens with limit orders instead of market
+            orders. Limit orders cut slippage by ~{{ scaling.limit_order_reduction_pct }}%
+            because they wait for the price you want — but they may not fill at all if the
+            price runs away, so they're a tradeoff for momentum-reactive strategies. Toggle
+            "Use Limit Orders" in your profile settings to switch.
+        </small>
+        {% endif %}
     </article>
 
 </div>
@@ -611,13 +750,24 @@
     <div class="grid">
         <article style="text-align:center;">
             <small class="muted"><span class="tip" data-tip="How often the AI correctly predicted price direction">Prediction Win Rate</span></small>
-            <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if (ai_perf.win_rate if ai_perf else 0) >= 50 else 'pnl-neg' }}">
-                {{ "%.1f"|format(ai_perf.win_rate if ai_perf else 0) }}%
+            {% if ai_perf and ai_perf.resolved > 0 %}
+            <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if ai_perf.win_rate >= 50 else 'pnl-neg' }}">
+                {{ "%.1f"|format(ai_perf.win_rate) }}%
             </strong>
+            <small class="muted">{{ ai_perf.resolved }} resolved predictions</small>
+            {% else %}
+            <strong style="font-size:2.5rem; display:block;" class="muted">N/A</strong>
+            <small class="muted">no resolved predictions yet</small>
+            {% endif %}
         </article>
         <article style="text-align:center;">
             <small class="muted"><span class="tip" data-tip="Total gains divided by total losses on AI predictions">Profit Factor</span></small>
-            <strong style="font-size:2.5rem; display:block;">{{ ai_perf.profit_factor if ai_perf else 0 }}</strong>
+            {% if ai_perf and ai_perf.profit_factor > 0 %}
+            <strong style="font-size:2.5rem; display:block;">{{ "%.2f"|format(ai_perf.profit_factor) }}</strong>
+            {% else %}
+            <strong style="font-size:2.5rem; display:block;" class="muted">N/A</strong>
+            <small class="muted">need at least one win and one loss</small>
+            {% endif %}
         </article>
     </div>
 
@@ -703,6 +853,57 @@
     </article>
     {% endif %}
 
+    <!-- Self-Tuning Status — current state of the tuner per profile -->
+    {% if tuning_status %}
+    <article>
+        <header><h3>Self-Tuning Status</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">
+            The tuner runs daily and evaluates whether any parameters should change based on recent performance.
+            It needs at least 20 resolved AI predictions per profile before it will adjust anything.
+        </p>
+        <div class="overflow-auto">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Profile</th>
+                        <th><span class="tip" data-tip="How many AI predictions have been resolved with a known outcome. The tuner needs 20+ before it starts adjusting parameters.">Resolved Predictions</span></th>
+                        <th>Status</th>
+                        <th>Last Run</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for s in tuning_status %}
+                    <tr>
+                        <td><strong>{{ s.profile_name }}</strong></td>
+                        <td>
+                            {{ s.resolved }} / {{ s.required }}
+                            {% if s.resolved < s.required %}
+                            <small class="muted">({{ "%.0f"|format(s.resolved / s.required * 100) }}%)</small>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if s.can_tune %}
+                            <span class="pnl-pos">Active</span>
+                            {% else %}
+                            <span class="muted">Collecting data</span>
+                            {% endif %}
+                            <br><small class="muted">{{ s.message }}</small>
+                        </td>
+                        <td>
+                            {% if s.last_run %}
+                            <small>{{ s.last_run[:16] }}</small>
+                            {% else %}
+                            <small class="muted">never</small>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </article>
+    {% endif %}
+
     <!-- Self-Tuning History -->
     {% if tuning_history %}
     <article>
@@ -725,7 +926,7 @@
                     <tr>
                         <td>{{ h.timestamp[:10] }}</td>
                         <td>{{ h.profile_name }}</td>
-                        <td><strong>{{ h.parameter_name }}</strong><br>
+                        <td><strong>{{ h.parameter_label or h.parameter_name }}</strong><br>
                             <small>{{ h.old_value }} &rarr; {{ h.new_value }}</small>
                         </td>
                         <td style="font-size:0.85rem;">{{ h.reason[:80] }}</td>
@@ -753,6 +954,810 @@
         <p class="muted">No self-tuning adjustments yet. The system will start adjusting after enough trade data accumulates.</p>
     </article>
     {% endif %}
+
+    <!-- Learned Patterns -->
+    <article>
+        <header><h3>Learned Patterns</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Patterns the system has discovered from historical predictions — which conditions lead to wins vs losses.</p>
+        {% if learned_patterns %}
+        <ul style="list-style:none;padding:0;">
+            {% for pattern in learned_patterns %}
+            <li style="padding:0.4rem 0.75rem;margin-bottom:0.25rem;border-left:3px solid {% if 'Avoid' in pattern or 'cautious' in pattern %}#f44336{% elif 'Favor' in pattern or 'edge' in pattern %}#00c853{% else %}#888{% endif %};background:#f9f9f9;border-radius:0 4px 4px 0;font-size:0.9rem;">
+                {{ pattern }}
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="muted">Patterns will appear after the system has enough resolved predictions with regime and strategy data. New predictions now store market regime and strategy type for pattern analysis.</p>
+        {% endif %}
+    </article>
+
+    <!-- Full Data Suite -->
+    <article>
+        <header><h3>What the AI Sees</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">The full data context every candidate is evaluated against.</p>
+
+        <h4>Technical Indicators</h4>
+        <div class="grid">
+            <div>
+                <h5>Trend & Momentum</h5>
+                <small>RSI, StochRSI, ADX, MACD (3), ROC, SMA (2), EMA</small>
+            </div>
+            <div>
+                <h5>Institutional Flow</h5>
+                <small>MFI, CMF, OBV, A/D Line — volume-weighted money flow signals</small>
+            </div>
+            <div>
+                <h5>Volatility & Structure</h5>
+                <small>ATR, Bollinger Bands (3), Keltner Squeeze, VWAP, Volume SMA</small>
+            </div>
+        </div>
+        <div class="grid">
+            <div>
+                <h5>Price Context</h5>
+                <small>52-week high/low, Fibonacci levels (3 + distance), Pivot points (3), Gap %</small>
+            </div>
+            <div>
+                <h5>Sector Intelligence</h5>
+                <small>11 sector ETF rotation, per-stock relative strength vs sector</small>
+            </div>
+            <div>
+                <h5>News Headlines</h5>
+                <small>Up to 3 recent headlines per stock from yfinance</small>
+            </div>
+        </div>
+
+        <h4>Alternative Data</h4>
+        <div class="grid">
+            <div>
+                <h5>Insider Transactions</h5>
+                <small>Recent insider buys/sells from yfinance + SEC EDGAR Form 4 filings. Insider buying clusters are among the strongest predictive signals in finance.</small>
+            </div>
+            <div>
+                <h5>Short Interest</h5>
+                <small>Short % of float, days to cover, squeeze risk assessment. High short interest + positive catalyst = squeeze potential.</small>
+            </div>
+            <div>
+                <h5>Options Flow</h5>
+                <small>Unusual call/put volume, put/call ratio, bullish/bearish flow detection. Shows what smart money is betting on.</small>
+            </div>
+        </div>
+        <div class="grid">
+            <div>
+                <h5>Fundamentals</h5>
+                <small>PE ratio, beta, market cap, sector, industry, institutional ownership %, insider ownership %.</small>
+            </div>
+            <div>
+                <h5>Intraday Patterns</h5>
+                <small>Real-time VWAP position, opening range breakout, intraday trend, volume profile (front/back loaded).</small>
+            </div>
+            <div>
+                <h5>Social Sentiment</h5>
+                <small>Reddit mentions across r/wallstreetbets, r/stocks, r/investing. Trending detection and sentiment scoring. Requires Reddit API credentials.</small>
+            </div>
+        </div>
+
+        <h4>Institutional Intelligence</h4>
+        <div class="grid">
+            <div>
+                <h5>SEC Filing Alerts</h5>
+                <small>AI-analyzed 10-K / 10-Q / 8-K filings. Detects material language changes — new risk factors, going-concern disclosures, restatements — and injects severity tags into the candidate context.</small>
+            </div>
+            <div>
+                <h5>Options Chain Oracle</h5>
+                <small>Seven institutional-grade signals from free options chains: IV skew, IV term structure, implied move, put/call ratios, gamma exposure, max pain, IV rank.</small>
+            </div>
+            <div>
+                <h5>Specialist Ensemble Consensus</h5>
+                <small>Four specialist AIs (earnings, pattern, sentiment, risk) review each shortlisted candidate. Their confidence-weighted verdict is injected into the final AI prompt. The risk specialist can VETO a trade outright.</small>
+            </div>
+        </div>
+        <div class="grid">
+            <div>
+                <h5>Crisis State</h5>
+                <small>Cross-asset capital-preservation layer. When elevated/crisis/severe, the AI sees the active signals (VIX, bond/stock divergence, credit stress, event clusters) alongside its own reasoning context.</small>
+            </div>
+            <div>
+                <h5>Strategy Allocation</h5>
+                <small>Multi-strategy capital weighting by rolling Sharpe (risk parity). Candidates carry which strategies proposed them and their combined score.</small>
+            </div>
+            <div>
+                <h5>Evolving Library</h5>
+                <small>Auto-generated strategies run alongside built-in ones. Shadow strategies record predictions without deploying capital; active auto-strategies participate in the aggregation.</small>
+            </div>
+        </div>
+
+        <h4>Context & Intelligence</h4>
+        <div class="grid">
+            <div>
+                <h5>Political Sentiment (MAGA Mode)</h5>
+                <small>Sector-specific impact, ticker mentions, trade ideas from political news analysis.</small>
+            </div>
+            <div>
+                <h5>Pattern Learning</h5>
+                <small>Discovered failure/success patterns by regime, strategy type, and time of day.</small>
+            </div>
+            <div>
+                <h5>Per-Stock Memory</h5>
+                <small>Win/loss track record per symbol. Auto-blacklists chronic losers.</small>
+            </div>
+        </div>
+        <div class="grid">
+            <div>
+                <h5>Meta-Model Probability</h5>
+                <small>Gradient-boosted classifier trained on our own resolved predictions. Re-weights AI confidence and suppresses trades where the model predicts the AI is likely wrong.</small>
+            </div>
+            <div>
+                <h5>Alpha Decay Monitoring</h5>
+                <small>Every strategy's rolling Sharpe is tracked daily. Strategies that lose their edge for 30+ consecutive days are auto-deprecated and excluded from the pipeline until they recover.</small>
+            </div>
+            <div>
+                <h5>Event-Driven Reaction</h5>
+                <small>SEC filings, imminent earnings, price shocks, and big resolved predictions trigger immediate analysis — not just the 15-minute polling tick.</small>
+            </div>
+        </div>
+    </article>
+
+    <!-- Phase 1: Meta-Model Panel -->
+    <article>
+        <header><h3>Meta-Model</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">A learned model of when the AI is likely to be wrong, trained on our own prediction history. It re-weights confidence and suppresses low-probability trades before execution.</p>
+
+        {% if not meta_info.loaded %}
+        <div style="padding:0.75rem;background:#fafafa;border-left:3px solid #888;border-radius:0 4px 4px 0;">
+            <strong>Collecting training data</strong>
+            <p class="muted" style="margin:0.25rem 0 0 0;font-size:0.9rem;">
+                The meta-model trains automatically once a profile has 100+ resolved predictions. Every scan cycle captures the full feature context the AI saw. As predictions resolve (win/loss), they become training samples. The first model typically trains after ~2 weeks of scanning.
+            </p>
+        </div>
+        {% else %}
+        {% for mp in meta_info.profiles %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;"><h4 style="margin:0;">{{ mp.name }}</h4></header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                <div class="grid">
+                    <div class="stat-card">
+                        <small class="muted"><span class="tip" data-tip="Area Under ROC Curve — how well the model distinguishes right from wrong predictions. 0.5 = random, 1.0 = perfect">AUC</span></small>
+                        <strong class="{{ 'pnl-pos' if mp.auc >= 0.6 else ('pnl-neg' if mp.auc < 0.52 else '') }}">{{ "%.3f"|format(mp.auc) }}</strong>
+                    </div>
+                    <div class="stat-card">
+                        <small class="muted">Accuracy</small>
+                        <strong>{{ "%.1f"|format(mp.accuracy * 100) }}%</strong>
+                    </div>
+                    <div class="stat-card">
+                        <small class="muted">Training Samples</small>
+                        <strong>{{ mp.n_samples }}</strong>
+                    </div>
+                    <div class="stat-card">
+                        <small class="muted">Win Rate (baseline)</small>
+                        <strong>{{ "%.1f"|format(mp.positive_rate * 100) }}%</strong>
+                    </div>
+                </div>
+                <h5 style="margin-top:1rem;">Top Predictive Features</h5>
+                <p class="muted" style="margin-top:-0.5rem;font-size:0.85rem;">Which data points most strongly predict whether the AI is correct. Sensible patterns here confirm the model is learning real signals (not noise).</p>
+                <table style="font-size:0.85rem;">
+                    <thead>
+                        <tr><th>Feature</th><th style="text-align:right;">Importance</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for name, imp in mp.top_features %}
+                        <tr>
+                            <td>{{ name }}</td>
+                            <td style="text-align:right;font-family:monospace;">{{ "%.4f"|format(imp) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+    <!-- Phase 2: Strategy Validations -->
+    <article>
+        <header><h3>Strategy Validations</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Every strategy is validated against ten checks — Sharpe ratio, drawdown, win rate, statistical significance, Monte Carlo stress, out-of-sample degradation, regime consistency, walk-forward stability, capacity, and minimum activity — before being eligible to trade.</p>
+
+        {% if not validations %}
+        <div style="padding:0.75rem;background:#fafafa;border-left:3px solid #888;border-radius:0 4px 4px 0;">
+            <strong>No validation runs yet</strong>
+            <p class="muted" style="margin:0.25rem 0 0 0;font-size:0.9rem;">
+                Run validations from the command line or admin interface to build the library of certified strategies. Validation runs are stored in <code>strategy_validations.db</code> and displayed here with full gate-by-gate breakdowns.
+            </p>
+        </div>
+        {% else %}
+        <div class="overflow-auto">
+            <table class="striped">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Strategy</th>
+                        <th>Market</th>
+                        <th>Verdict</th>
+                        <th>Score</th>
+                        <th>Passed / Total</th>
+                        <th>Runtime</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for v in validations %}
+                    <tr>
+                        <td class="muted">{{ v.timestamp[:16] }}</td>
+                        <td><strong>{{ v.strategy_name | display_name }}</strong></td>
+                        <td>{{ v.market_type }}</td>
+                        <td>
+                            {% if v.verdict == 'PASS' %}
+                                <span class="pnl-pos">PASS</span>
+                            {% else %}
+                                <span class="pnl-neg">FAIL</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ "%.1f"|format(v.score) }}</td>
+                        <td>{{ v.passed_count }} / {{ v.total_gates }}</td>
+                        <td class="muted">{{ "%.1f"|format(v.elapsed_sec) }}s</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+    </article>
+
+    <!-- AI Cost Tracking -->
+    <article>
+        <header>
+            <h3>AI Cost</h3>
+            <small class="muted">
+                Across all profiles —
+                today: <strong>${{ "%.2f"|format(ai_cost_info.totals.today) }}</strong> ·
+                7d: <strong>${{ "%.2f"|format(ai_cost_info.totals['7d']) }}</strong> ·
+                30d: <strong>${{ "%.2f"|format(ai_cost_info.totals['30d']) }}</strong>
+            </small>
+        </header>
+        <p class="muted" style="margin-top:-0.5rem;">Estimated USD spend on AI inference. Token counts come from each provider's response; USD is computed via a per-model price table that's an approximation (treat totals as order-of-magnitude, not billing-grade).</p>
+
+        {% if not ai_cost_info.per_profile %}
+        <p class="muted">No AI calls recorded yet.</p>
+        {% else %}
+        {% for prof in ai_cost_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;">
+                <h4 style="margin:0;">{{ prof.name }}</h4>
+                <small class="muted">
+                    today: ${{ "%.3f"|format(prof.today.usd) }} ({{ prof.today.calls }} calls) ·
+                    7d: ${{ "%.2f"|format(prof.seven_d.usd) }} ({{ prof.seven_d.calls }}) ·
+                    30d: ${{ "%.2f"|format(prof.thirty_d.usd) }} ({{ prof.thirty_d.calls }})
+                </small>
+            </header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                {% if prof.by_purpose %}
+                <p style="font-size:0.85rem;margin:0.5rem 0;"><strong>30-day spend by purpose:</strong></p>
+                <table style="font-size:0.85rem;">
+                    <thead><tr><th>Purpose</th><th>Calls</th><th style="text-align:right;">USD</th></tr></thead>
+                    <tbody>
+                        {% for row in prof.by_purpose[:8] %}
+                        <tr>
+                            <td>{{ row.purpose | display_name }}</td>
+                            <td class="muted">{{ row.calls }}</td>
+                            <td style="text-align:right;font-family:monospace;">${{ "%.4f"|format(row.usd) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% endif %}
+                {% if prof.by_model %}
+                <p style="font-size:0.8rem;" class="muted">
+                    <strong>By model (30d):</strong>
+                    {% for row in prof.by_model %}
+                    {{ row.model }} (${{ "%.3f"|format(row.usd) }}){% if not loop.last %} · {% endif %}
+                    {% endfor %}
+                </p>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+    <!-- Phase 10: Cross-Asset Crisis Detection -->
+    <article>
+        {% set crisis_level = crisis_info.max_level or 'normal' %}
+        <header style="{% if crisis_level != 'normal' %}background:#fff3e0;border-bottom:2px solid #ff8c00;padding:0.75rem 1rem;{% endif %}">
+            <h3 style="margin:0;">
+                Crisis Monitor
+                {% if crisis_level == 'normal' %}
+                <span style="color:#2d7a3d;font-weight:normal;font-size:0.9rem;">● all clear</span>
+                {% elif crisis_level == 'elevated' %}
+                <span style="color:#b87333;font-weight:bold;font-size:0.95rem;">⚠ ELEVATED</span>
+                {% elif crisis_level == 'crisis' %}
+                <span style="color:#b00;font-weight:bold;font-size:1rem;">⚠ CRISIS — new longs blocked</span>
+                {% else %}
+                <span style="color:#800;font-weight:bold;font-size:1.05rem;">⛔ SEVERE — liquidate / cash</span>
+                {% endif %}
+            </h3>
+        </header>
+        <p class="muted" style="margin-top:-0.5rem;">Cross-asset capital preservation layer. Monitors VIX level and term structure, SPY/TLT/GLD/UUP correlation spikes, bond/stock divergences, gold safe-haven rallies, HYG/LQD credit stress, and clusters of recent price shocks. When the level rises, position sizes scale down; at crisis/severe, the trade pipeline blocks new long entries.</p>
+
+        {% if not crisis_info.per_profile %}
+        <p class="muted">No crisis monitoring data yet.</p>
+        {% else %}
+        {% for prof in crisis_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;">
+                <h4 style="margin:0;">
+                    {{ prof.name }}
+                    {% if prof.level == 'normal' %}
+                    <span style="color:#2d7a3d;font-size:0.85rem;">normal (size x1.00)</span>
+                    {% elif prof.level == 'elevated' %}
+                    <span style="color:#b87333;font-weight:bold;font-size:0.85rem;">ELEVATED (size x{{ "%.2f"|format(prof.size_multiplier) }})</span>
+                    {% elif prof.level == 'crisis' %}
+                    <span style="color:#b00;font-weight:bold;font-size:0.9rem;">CRISIS</span>
+                    {% else %}
+                    <span style="color:#800;font-weight:bold;font-size:0.9rem;">SEVERE</span>
+                    {% endif %}
+                </h4>
+                {% if prof.transitioned_at %}
+                <small class="muted">since {{ prof.transitioned_at[:16] }}</small>
+                {% endif %}
+            </header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                {% if prof.signals %}
+                <p style="font-size:0.85rem;margin:0.5rem 0;"><strong>Active signals:</strong></p>
+                <ul style="font-size:0.85rem;margin-top:0;">
+                    {% for s in prof.signals %}
+                    <li>
+                        <strong>{{ s.name | display_name }}</strong>
+                        <span class="muted">({{ s.severity | title }})</span>
+                        — {{ s.detail }}
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+                {% if prof.readings %}
+                <p style="font-size:0.85rem;" class="muted" style="margin-top:0.5rem;">
+                    <strong>Readings:</strong>
+                </p>
+                <table style="font-size:0.8rem;">
+                    <tbody>
+                        {% for k, v in prof.readings.items() %}
+                        <tr>
+                            <td class="muted" style="padding:0.15rem 0.5rem 0.15rem 0;">{{ k | display_name }}</td>
+                            <td style="font-family:monospace;text-align:right;padding:0.15rem 0;">{{ k | reading_value(v) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% endif %}
+                {% if prof.history %}
+                <details>
+                    <summary style="font-size:0.85rem;cursor:pointer;">Transition history ({{ prof.history|length }})</summary>
+                    <table style="font-size:0.8rem;margin-top:0.5rem;">
+                        <thead>
+                            <tr><th>When</th><th>From</th><th>To</th><th>Size x</th></tr>
+                        </thead>
+                        <tbody>
+                            {% for h in prof.history %}
+                            <tr>
+                                <td>{{ h.transitioned_at[:16] }}</td>
+                                <td class="muted">{{ h.from_level | display_name }}</td>
+                                <td><strong>{{ h.to_level | display_name }}</strong></td>
+                                <td style="font-family:monospace;">{{ "%.2f"|format(h.size_multiplier) }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </details>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+    <!-- Phase 9: Event Stream -->
+    <article>
+        <header><h3>Event Stream</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">The system reacts to events in near-real-time, not just on 15-minute timers. Detectors watch for SEC filings, imminent earnings, price shocks on held positions, and big resolved predictions. High-severity SEC and price-shock events trigger an immediate specialist ensemble analysis; all events are logged to the activity feed.</p>
+
+        {% if not event_info.per_profile %}
+        <p class="muted">No events in the last 24 hours.</p>
+        {% else %}
+        {% for prof in event_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;">
+                <h4 style="margin:0;">{{ prof.name }}</h4>
+                <small class="muted">
+                    {{ prof.events|length }} events ·
+                    {% if prof.counts.high %}<strong style="color:#b00;">{{ prof.counts.high }} high</strong> · {% endif %}
+                    {% if prof.counts.medium %}{{ prof.counts.medium }} medium · {% endif %}
+                    {% if prof.counts.low %}{{ prof.counts.low }} low · {% endif %}
+                    {{ prof.counts.info }} info
+                </small>
+            </header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                <table style="font-size:0.85rem;">
+                    <thead>
+                        <tr>
+                            <th>When</th>
+                            <th>Type</th>
+                            <th>Symbol</th>
+                            <th>Severity</th>
+                            <th>Detail</th>
+                            <th>Handler</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for e in prof.events %}
+                        <tr>
+                            <td class="muted" style="font-size:0.75rem;">{{ e.detected_at[:16] }}</td>
+                            <td style="font-size:0.85rem;">{{ e.type | display_name }}</td>
+                            <td style="font-family:monospace;">{{ e.symbol or '-' }}</td>
+                            <td>
+                                {% if e.severity == 'high' or e.severity == 'critical' %}
+                                <strong style="color:#b00;">{{ e.severity }}</strong>
+                                {% elif e.severity == 'medium' %}
+                                <span style="color:#b87333;">{{ e.severity }}</span>
+                                {% else %}
+                                <span class="muted">{{ e.severity }}</span>
+                                {% endif %}
+                            </td>
+                            <td class="muted" style="font-size:0.8rem;">
+                                {% if e.payload.move_pct %}{{ "%+.1f"|format(e.payload.move_pct) }}%{% endif %}
+                                {% if e.payload.return_pct %}{{ "%+.1f"|format(e.payload.return_pct) }}% ({{ e.payload.strategy | display_name }}){% endif %}
+                                {% if e.payload.form_type %}{{ e.payload.form_type }} — {{ e.payload.signal or '' }}{% endif %}
+                                {% if e.payload.days_until is defined %}earnings in {{ e.payload.days_until }}d{% endif %}
+                            </td>
+                            <td class="muted" style="font-size:0.85rem;">
+                                {% set actions = [] %}
+                                {% for hr in e.handler_results %}
+                                  {% if hr.result.vetoed %}
+                                    {% if actions.append('<span style="color:#b00;">Ensemble VETO</span>') %}{% endif %}
+                                  {% elif hr.result.ensemble_verdict == 'BUY' %}
+                                    {% if actions.append('Ensemble → <span style="color:#2d7a3d;">Buy</span> (' ~ hr.result.ensemble_confidence ~ '% confidence)') %}{% endif %}
+                                  {% elif hr.result.ensemble_verdict == 'SELL' %}
+                                    {% if actions.append('Ensemble → <span style="color:#b87333;">Sell</span> (' ~ hr.result.ensemble_confidence ~ '% confidence)') %}{% endif %}
+                                  {% elif hr.result.ensemble_verdict == 'HOLD' %}
+                                    {% if actions.append('Ensemble → Hold (specialists abstained)') %}{% endif %}
+                                  {% elif hr.result.logged %}
+                                    {% if actions.append('Logged to activity feed') %}{% endif %}
+                                  {% elif hr.result.skipped %}
+                                    {# silent — handler intentionally skipped this event type #}
+                                  {% elif hr.result.error %}
+                                    {% if actions.append('<span style="color:#b00;">Handler error</span>') %}{% endif %}
+                                  {% endif %}
+                                {% endfor %}
+                                {% if actions %}
+                                  {{ actions | join(' · ') | safe }}
+                                {% else %}
+                                  <span class="muted">—</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+    <!-- Phase 8: Specialist Ensemble Breakdown -->
+    <article>
+        <header><h3>Specialist Ensemble</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Four specialist AIs — earnings analyst, pattern recognizer, sentiment/narrative, and risk assessor — each review every shortlisted candidate. Their verdicts are combined via confidence-weighted voting. The risk specialist holds VETO authority and can block a trade regardless of the others.</p>
+
+        {% if not ensemble_info.per_profile %}
+        <p class="muted">No ensemble decisions yet. The specialist ensemble runs during each scan cycle once the shortlist is built.</p>
+        {% else %}
+        {% for prof in ensemble_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;">
+                <h4 style="margin:0;">{{ prof.name }}</h4>
+                <small class="muted">
+                    {{ prof.cost_calls }} specialist calls ·
+                    {{ prof.vetoed|length }} vetoed this cycle
+                </small>
+            </header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                {% if prof.vetoed %}
+                <p style="font-size:0.85rem;">
+                    <strong>Risk VETOs:</strong>
+                    {% for v in prof.vetoed %}
+                    <span style="color:#b00;font-family:monospace;">{{ v.symbol }}</span>
+                    <span class="muted" style="font-size:0.8rem;">({{ v.reason[:70] }})</span>{% if not loop.last %} · {% endif %}
+                    {% endfor %}
+                </p>
+                {% endif %}
+                {% if prof.rows %}
+                <table style="font-size:0.85rem;">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Consensus</th>
+                            <th>Earnings</th>
+                            <th>Pattern</th>
+                            <th>Sentiment</th>
+                            <th>Risk</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in prof.rows %}
+                        <tr>
+                            <td style="font-family:monospace;">{{ r.symbol }}</td>
+                            <td>
+                                {% if r.vetoed %}
+                                <strong style="color:#b00;">Vetoed</strong>
+                                {% elif r.verdict == 'BUY' %}
+                                <strong style="color:#2d7a3d;">Buy {{ r.confidence }}%</strong>
+                                {% elif r.verdict == 'SELL' %}
+                                <strong style="color:#b87333;">Sell {{ r.confidence }}%</strong>
+                                {% else %}
+                                <span class="muted">{{ r.verdict | title }}</span>
+                                {% endif %}
+                            </td>
+                            {% for spec_name in ['earnings_analyst', 'pattern_recognizer', 'sentiment_narrative', 'risk_assessor'] %}
+                            <td class="muted" style="font-size:0.75rem;">
+                                {% for s in r.specialists if s.name == spec_name %}
+                                    {% if s.verdict == 'BUY' %}<span style="color:#2d7a3d;">↑{{ s.confidence }}</span>
+                                    {% elif s.verdict == 'SELL' %}<span style="color:#b87333;">↓{{ s.confidence }}</span>
+                                    {% elif s.verdict == 'VETO' %}<span style="color:#b00;">⊘{{ s.confidence }}</span>
+                                    {% else %}·{% endif %}
+                                {% else %}
+                                —
+                                {% endfor %}
+                            </td>
+                            {% endfor %}
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+    <!-- Phase 6: Multi-Strategy Capital Allocation -->
+    <article>
+        <header><h3>Strategy Allocation</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Capital is divided across multiple uncorrelated strategies. Each strategy's weight is set by its rolling Sharpe ratio (risk parity). New strategies start at the default share until they accumulate a track record.</p>
+
+        {% if not allocation_info.per_profile %}
+        <p class="muted">No strategy allocation data yet.</p>
+        {% else %}
+        {% for prof in allocation_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;"><h4 style="margin:0;">{{ prof.name }}</h4></header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                {% if prof.strategies %}
+                <table style="font-size:0.85rem;">
+                    <thead>
+                        <tr>
+                            <th>Strategy</th>
+                            <th style="text-align:right;">Weight</th>
+                            <th style="text-align:right;">Rolling Sharpe</th>
+                            <th style="text-align:right;">Lifetime Sharpe</th>
+                            <th style="text-align:right;">Resolved Preds (30d)</th>
+                            <th style="text-align:right;">Win Rate</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for s in prof.strategies %}
+                        <tr>
+                            <td><strong>{{ s.name | display_name }}</strong></td>
+                            <td style="text-align:right;font-family:monospace;">
+                                {{ "%.1f%%"|format(s.weight * 100) }}
+                            </td>
+                            <td style="text-align:right;font-family:monospace;">{{ "%.2f"|format(s.rolling_sharpe) }}</td>
+                            <td style="text-align:right;font-family:monospace;">{{ "%.2f"|format(s.lifetime_sharpe) }}</td>
+                            <td style="text-align:right;" class="muted">{{ s.rolling_n }}</td>
+                            <td style="text-align:right;font-family:monospace;">{{ "%.0f%%"|format(s.rolling_win_rate) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p class="muted" style="font-size:0.9rem;">No strategies active for this profile yet.</p>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+    <!-- Phase 7: Auto-Generated Strategies -->
+    <article>
+        <header><h3>Evolving Strategy Library</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">The AI proposes new strategy variants weekly against an allowlisted spec grammar. Each proposal is validated via walk-forward + out-of-sample backtesting; survivors run in shadow mode with no real capital until their rolling Sharpe earns promotion. Failures are retired automatically.</p>
+
+        {% if not auto_strategy_info.per_profile %}
+        <p class="muted">No auto-generated strategies yet.</p>
+        {% else %}
+        {% for prof in auto_strategy_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;">
+                <h4 style="margin:0;">{{ prof.name }}</h4>
+                <small class="muted">
+                    proposed {{ prof.counts.proposed }} ·
+                    shadow {{ prof.counts.shadow }} ·
+                    <strong>active {{ prof.counts.active }}</strong> ·
+                    retired {{ prof.counts.retired }}
+                </small>
+            </header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                {% if prof.strategies %}
+                <table style="font-size:0.85rem;">
+                    <thead>
+                        <tr>
+                            <th>Strategy</th>
+                            <th>Status</th>
+                            <th>Dir</th>
+                            <th>Markets</th>
+                            <th>Gen</th>
+                            <th>Description</th>
+                            <th>Milestone</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for s in prof.strategies %}
+                        <tr>
+                            <td>{{ s.name | display_name }}</td>
+                            <td>
+                                {% if s.status == 'active' %}
+                                <strong style="color:#2d7a3d;">Active</strong>
+                                {% elif s.status == 'shadow' %}
+                                <span style="color:#b87333;">Shadow</span>
+                                {% elif s.status == 'retired' %}
+                                <span class="muted">Retired</span>
+                                {% else %}
+                                {{ s.status | display_name }}
+                                {% endif %}
+                            </td>
+                            <td>{{ s.direction }}</td>
+                            <td class="muted" style="font-size:0.8rem;">{{ s.markets | map('display_name') | join(', ') }}</td>
+                            <td class="muted">g{{ s.generation }}</td>
+                            <td>{{ s.description }}</td>
+                            <td class="muted" style="font-size:0.8rem;">
+                                {% if s.status == 'active' and s.promoted_at %}
+                                promoted {{ s.promoted_at[:10] }}
+                                {% elif s.status == 'shadow' and s.shadow_started_at %}
+                                shadow since {{ s.shadow_started_at[:10] }}
+                                {% elif s.status == 'retired' and s.retired_at %}
+                                retired {{ s.retired_at[:10] }}
+                                {% else %}
+                                created {{ s.created_at[:10] }}
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p class="muted" style="font-size:0.9rem;">No proposals yet. The weekly generation task runs every Sunday.</p>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+    <!-- Phase 4: SEC Filing Alerts -->
+    <article>
+        <header><h3>SEC Filing Alerts</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">AI-analyzed 10-K / 10-Q / 8-K filings for positions and shortlist symbols. Detects material language changes — new risk factors, going-concern disclosures, material weakness, restatements. Updated daily via EDGAR.</p>
+
+        {% if not sec_alerts %}
+        <p class="muted">No active alerts. The daily SEC filing monitor scans held positions + shortlisted candidates and flags material language changes. Alerts persist for 90 days.</p>
+        {% else %}
+        <div class="overflow-auto">
+            <table class="striped">
+                <thead>
+                    <tr>
+                        <th>Profile</th>
+                        <th>Symbol</th>
+                        <th>Filing</th>
+                        <th>Date</th>
+                        <th>Severity</th>
+                        <th>Signal</th>
+                        <th>Summary</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for a in sec_alerts %}
+                    <tr>
+                        <td class="muted">{{ a.profile_name }}</td>
+                        <td><strong>{{ a.symbol }}</strong></td>
+                        <td>{{ a.form }}</td>
+                        <td class="muted">{{ a.filed_date }}</td>
+                        <td>
+                            {% if a.severity == 'high' %}
+                                <span class="pnl-neg">HIGH</span>
+                            {% elif a.severity == 'medium' %}
+                                <span style="color:#f57c00;">MEDIUM</span>
+                            {% else %}
+                                <span class="muted">LOW</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if a.signal == 'concerning' %}
+                                <span class="pnl-neg">⚠ concerning</span>
+                            {% elif a.signal == 'positive' %}
+                                <span class="pnl-pos">positive</span>
+                            {% else %}
+                                <span class="muted">neutral</span>
+                            {% endif %}
+                        </td>
+                        <td style="font-size:0.85rem;">{{ a.summary }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+    </article>
+
+    <!-- Phase 3: Alpha Decay Monitoring -->
+    <article>
+        <header><h3>Alpha Decay Monitoring</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Every signal decays eventually. This monitor tracks rolling 30-day Sharpe per strategy vs its lifetime baseline. Strategies whose edge stays degraded for 30+ consecutive days are auto-deprecated — the trade pipeline skips their signals until the edge recovers.</p>
+
+        {% if not decay_info.per_profile %}
+        <p class="muted">No strategy performance data yet. Alpha decay monitoring activates once resolved predictions accumulate.</p>
+        {% else %}
+        {% for prof_decay in decay_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;"><h4 style="margin:0;">{{ prof_decay.name }}</h4></header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                {% if prof_decay.deprecated %}
+                <div style="padding:0.5rem 0.75rem;margin-bottom:0.75rem;border-left:3px solid #f44336;background:#fff5f5;border-radius:0 4px 4px 0;">
+                    <strong style="color:#c62828;">Deprecated Strategies</strong>
+                    <ul style="margin:0.25rem 0 0 1rem;padding:0;font-size:0.85rem;">
+                        {% for d in prof_decay.deprecated %}
+                        <li><strong>{{ d.strategy_type | display_name }}</strong> — deprecated {{ d.deprecated_at[:10] }}: {{ d.reason }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+                {% if prof_decay.entries %}
+                <table style="font-size:0.85rem;">
+                    <thead>
+                        <tr>
+                            <th>Strategy</th>
+                            <th style="text-align:right;">Rolling Sharpe (30d)</th>
+                            <th style="text-align:right;">Lifetime Sharpe</th>
+                            <th style="text-align:right;">Edge Change</th>
+                            <th style="text-align:right;">Resolved Preds (30d)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for e in prof_decay.entries %}
+                        <tr>
+                            <td><strong>{{ e.strategy_type | display_name }}</strong></td>
+                            <td style="text-align:right;font-family:monospace;">{{ "%.2f"|format(e.rolling.sharpe_ratio) }}</td>
+                            <td style="text-align:right;font-family:monospace;">{{ "%.2f"|format(e.lifetime.sharpe_ratio) }}</td>
+                            <td style="text-align:right;font-family:monospace;" class="{{ 'pnl-pos' if e.edge_change_pct and e.edge_change_pct > 0 else ('pnl-neg' if e.edge_change_pct and e.edge_change_pct < -15 else '') }}">
+                                {% if e.edge_change_pct is not none %}
+                                    {{ "{:+.1f}%".format(e.edge_change_pct) }}
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </td>
+                            <td style="text-align:right;" class="muted">{{ e.rolling.n_predictions }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p class="muted" style="font-size:0.9rem;">No resolved predictions with strategy tags yet.</p>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
 
 </div>
 

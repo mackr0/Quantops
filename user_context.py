@@ -101,6 +101,21 @@ class UserContext:
     use_trailing_stops: bool = True
     trailing_atr_multiplier: float = 1.5
 
+    # Conviction-based take-profit override
+    # When a long position hits its fixed take-profit threshold, normally
+    # we sell and realize the gain. If this override is on, we instead
+    # *skip* the fixed TP and let the trailing stop manage the exit —
+    # provided the AI still has high conviction AND the trend is intact
+    # (ADX >= threshold) AND price is making new highs. Designed for
+    # runaway winners like IONQ where fixed TP caps the upside.
+    use_conviction_tp_override: bool = False
+    conviction_tp_min_confidence: float = 70.0     # AI confidence >= this
+    conviction_tp_min_adx: float = 25.0            # trend strength (ADX) >= this
+
+    # Virtual account layer
+    is_virtual: bool = False
+    initial_capital: float = 100000.0
+
     # Limit orders
     use_limit_orders: bool = False
 

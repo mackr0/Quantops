@@ -87,13 +87,210 @@ def init_db(db_path=None):
             resolved_at TEXT,
             resolution_price REAL
         );
+
+        -- Phase 3: rolling performance snapshots per strategy/signal type.
+        -- Written daily by alpha_decay monitoring task. Each row is one
+        -- day's 30-day rolling view of a specific signal's performance.
+        CREATE TABLE IF NOT EXISTS signal_performance_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_date TEXT NOT NULL,
+            strategy_type TEXT NOT NULL,
+            window_days INTEGER NOT NULL,
+            n_predictions INTEGER NOT NULL,
+            wins INTEGER NOT NULL,
+            losses INTEGER NOT NULL,
+            win_rate REAL NOT NULL,
+            avg_return_pct REAL NOT NULL,
+            sharpe_ratio REAL NOT NULL,
+            profit_factor REAL,
+            UNIQUE (snapshot_date, strategy_type, window_days)
+        );
+
+        -- Phase 3: strategies that have been auto-deprecated due to alpha
+        -- decay. The trade pipeline checks this table and skips deprecated
+        -- strategies' signals. Restoration sets deprecated_at=NULL.
+        CREATE TABLE IF NOT EXISTS deprecated_strategies (
+            strategy_type TEXT PRIMARY KEY,
+            deprecated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            reason TEXT NOT NULL,
+            rolling_sharpe_at_deprecation REAL,
+            lifetime_sharpe REAL,
+            consecutive_bad_days INTEGER,
+            restored_at TEXT
+        );
+
+        -- Phase 4: SEC filing history and AI-analyzed semantic alerts.
+        -- One row per (symbol, accession_number). Consecutive filings of
+        -- the same type are diffed by the AI to detect material language
+        -- changes (going concern, material weakness, risk factor shifts).
+        CREATE TABLE IF NOT EXISTS sec_filings_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            accession_number TEXT NOT NULL,
+            form_type TEXT NOT NULL,
+            filed_date TEXT NOT NULL,
+            fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
+            filing_url TEXT,
+            risk_factors_text TEXT,
+            mdna_text TEXT,
+            going_concern_flag INTEGER DEFAULT 0,
+            material_weakness_flag INTEGER DEFAULT 0,
+            analyzed_at TEXT,
+            alert_severity TEXT,
+            alert_signal TEXT,
+            alert_summary TEXT,
+            alert_changes_json TEXT,
+            UNIQUE (symbol, accession_number)
+        );
+
+        -- Task-run ledger: one row per scheduled task invocation. Used
+        -- by the run-completion watchdog to detect stalled runs — any
+        -- row with started_at older than N minutes but completed_at NULL
+        -- is a stuck task that needs investigation.
+        CREATE TABLE IF NOT EXISTS task_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_name TEXT NOT NULL,
+            started_at TEXT NOT NULL DEFAULT (datetime('now')),
+            completed_at TEXT,
+            duration_seconds REAL,
+            status TEXT NOT NULL DEFAULT 'running',
+            error_message TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_runs_active
+            ON task_runs(completed_at) WHERE completed_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_task_runs_started
+            ON task_runs(started_at DESC);
+
+        -- Symbols that were recently exited (stop-loss, trailing-stop,
+        -- take-profit, or manual close). The trade pipeline skips BUY
+        -- signals on symbols with a row here within the cooldown window.
+        -- Prevents the sell→immediate-rebuy-higher churn.
+        CREATE TABLE IF NOT EXISTS recently_exited_symbols (
+            symbol TEXT PRIMARY KEY,
+            exited_at TEXT NOT NULL DEFAULT (datetime('now')),
+            trigger TEXT,
+            exit_price REAL
+        );
+
+        -- AI cost ledger: one row per call_ai invocation. Token counts
+        -- are stored separately from USD so re-pricing history is a
+        -- single-file change in ai_pricing.py.
+        CREATE TABLE IF NOT EXISTS ai_cost_ledger (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            purpose TEXT,
+            estimated_cost_usd REAL NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_cost_ts
+            ON ai_cost_ledger(timestamp DESC);
+
+        -- Phase 10: cross-asset crisis state transitions. One row per
+        -- transition (normal → elevated → crisis → severe). The trade
+        -- pipeline reads the latest active row to gate position sizing
+        -- and new longs.
+        CREATE TABLE IF NOT EXISTS crisis_state_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            transitioned_at TEXT NOT NULL DEFAULT (datetime('now')),
+            from_level TEXT,
+            to_level TEXT NOT NULL,
+            signals_json TEXT,
+            readings_json TEXT,
+            size_multiplier REAL NOT NULL DEFAULT 1.0
+        );
+        CREATE INDEX IF NOT EXISTS idx_crisis_state_time
+            ON crisis_state_history(transitioned_at DESC);
+
+        -- Phase 9: event stream. Events are detected by pollers and
+        -- dispatched to subscribed handlers. Idempotency is enforced on
+        -- (type, symbol, DATE(detected_at)) so the same detector run
+        -- twice in a day doesn't duplicate an event.
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL,
+            symbol TEXT,
+            severity TEXT NOT NULL DEFAULT 'info',
+            payload_json TEXT,
+            detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+            handled_at TEXT,
+            handler_results_json TEXT,
+            dedup_key TEXT UNIQUE
+        );
+        CREATE INDEX IF NOT EXISTS idx_events_handled
+            ON events(handled_at) WHERE handled_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_events_type_time
+            ON events(type, detected_at DESC);
+
+        -- Phase 7: auto-generated strategies proposed by the AI. Each row is
+        -- a strategy variant with its full JSON spec, lifecycle status, and
+        -- lineage. Status progression:
+        --   proposed  → AI wrote the spec; awaiting backtest validation
+        --   validated → passed Phase 2 rigorous_backtest
+        --   shadow    → runs live; predictions tracked but no real capital
+        --   active    → promoted after shadow period with sufficient edge
+        --   retired   → failed validation, decayed, or lost shadow race
+        -- parent_id links genealogies (Phase 7 evolves variants of winners).
+        CREATE TABLE IF NOT EXISTS auto_generated_strategies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            spec_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'proposed',
+            generation INTEGER NOT NULL DEFAULT 1,
+            parent_id INTEGER,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            validated_at TEXT,
+            shadow_started_at TEXT,
+            promoted_at TEXT,
+            retired_at TEXT,
+            retirement_reason TEXT,
+            validation_report_json TEXT,
+            FOREIGN KEY (parent_id) REFERENCES auto_generated_strategies(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_auto_strategies_status
+            ON auto_generated_strategies(status);
     """)
 
     # Auto-migration: add slippage columns to existing databases
     _migrate_slippage_columns(conn)
+    # Auto-migration: add pattern learning columns to ai_predictions
+    _migrate_prediction_columns(conn)
 
     conn.commit()
     conn.close()
+
+
+def record_exit(db_path: str, symbol: str, trigger: str,
+                exit_price: float = 0) -> None:
+    """Mark a symbol as recently exited so the pipeline skips re-entry."""
+    conn = _get_conn(db_path)
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO recently_exited_symbols "
+            "(symbol, exited_at, trigger, exit_price) "
+            "VALUES (?, datetime('now'), ?, ?)",
+            (symbol, trigger, exit_price),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_recently_exited(db_path: str, cooldown_minutes: int = 60) -> set:
+    """Return the set of symbols currently in the post-exit cooldown window."""
+    try:
+        conn = _get_conn(db_path)
+        rows = conn.execute(
+            "SELECT symbol FROM recently_exited_symbols "
+            "WHERE exited_at >= datetime('now', ?)",
+            (f"-{int(cooldown_minutes)} minutes",),
+        ).fetchall()
+        conn.close()
+        return {r["symbol"] for r in rows}
+    except Exception:
+        return set()
 
 
 def _migrate_slippage_columns(conn):
@@ -111,6 +308,26 @@ def _migrate_slippage_columns(conn):
                 conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {col_type}")
     except Exception:
         pass  # Table may not exist yet (first run)
+
+
+def _migrate_prediction_columns(conn):
+    """Add regime_at_prediction, strategy_type, and features_json columns if missing."""
+    try:
+        existing = {
+            row[1] for row in conn.execute("PRAGMA table_info(ai_predictions)").fetchall()
+        }
+        # features_json stores the full feature vector the AI saw at prediction time
+        # (all 33 indicators + alt data + sector context + track record). This is
+        # the training data for Phase 1 meta-model. See ROADMAP.md Phase 1.
+        for col, col_type in [
+            ("regime_at_prediction", "TEXT"),
+            ("strategy_type", "TEXT"),
+            ("features_json", "TEXT"),
+        ]:
+            if col not in existing:
+                conn.execute(f"ALTER TABLE ai_predictions ADD COLUMN {col} {col_type}")
+    except Exception:
+        pass
 
 
 def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
@@ -149,6 +366,275 @@ def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
     trade_id = cursor.lastrowid
     conn.close()
     return trade_id
+
+
+def get_virtual_positions(db_path=None, price_fetcher=None):
+    """Compute net open positions from the trades table using FIFO lots.
+
+    This is the core of the virtual-account layer: instead of asking
+    Alpaca "what do I hold?", we derive it from our own trade records.
+    The output shape matches `client.get_positions()` exactly so every
+    downstream consumer (trader.py, trade_pipeline.py, views.py) works
+    unchanged.
+
+    Args:
+        db_path: profile journal DB path.
+        price_fetcher: optional `callable(symbol) -> float` that returns
+            the current market price. Used for unrealized P&L. When
+            None, uses the last trade price as a fallback.
+
+    Returns:
+        List of position dicts:
+        [{symbol, qty, avg_entry_price, market_value, unrealized_pl,
+          unrealized_plpc, current_price}]
+    """
+    conn = _get_conn(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT symbol, side, qty, price, timestamp "
+            "FROM trades ORDER BY timestamp ASC, id ASC"
+        ).fetchall()
+    except Exception:
+        conn.close()
+        return []
+    conn.close()
+
+    # FIFO lot tracking per symbol.
+    # Each lot: [qty_remaining, entry_price]
+    lots_by_symbol = {}
+    for row in rows:
+        symbol = row[0]
+        side = row[1]
+        qty = float(row[2] or 0)
+        price = float(row[3] or 0)
+        if qty <= 0 or price <= 0:
+            continue
+
+        if symbol not in lots_by_symbol:
+            lots_by_symbol[symbol] = []
+        lots = lots_by_symbol[symbol]
+
+        if side == "buy":
+            lots.append([qty, price])
+        elif side in ("sell", "cover"):
+            remaining = qty
+            while remaining > 0 and lots:
+                lot = lots[0]
+                consumed = min(lot[0], remaining)
+                lot[0] -= consumed
+                remaining -= consumed
+                if lot[0] <= 0.001:
+                    lots.pop(0)
+
+    # Build position dicts from remaining lots
+    positions = []
+    for symbol, lots in lots_by_symbol.items():
+        total_qty = sum(lot[0] for lot in lots)
+        if total_qty < 0.001:
+            continue
+
+        # Weighted average entry price
+        total_cost = sum(lot[0] * lot[1] for lot in lots)
+        avg_entry = total_cost / total_qty if total_qty > 0 else 0
+
+        # Current price: use price_fetcher if available, else last entry
+        current_price = 0.0
+        if price_fetcher:
+            try:
+                current_price = float(price_fetcher(symbol) or 0)
+            except Exception:
+                pass
+        if current_price <= 0:
+            current_price = avg_entry  # fallback: no price change assumed
+
+        market_value = current_price * total_qty
+        unrealized_pl = (current_price - avg_entry) * total_qty
+        unrealized_plpc = (
+            (current_price - avg_entry) / avg_entry if avg_entry > 0 else 0
+        )
+
+        positions.append({
+            "symbol": symbol,
+            "qty": round(total_qty, 4),
+            "avg_entry_price": round(avg_entry, 4),
+            "current_price": round(current_price, 4),
+            "market_value": round(market_value, 2),
+            "unrealized_pl": round(unrealized_pl, 2),
+            "unrealized_plpc": round(unrealized_plpc, 6),
+        })
+
+    return positions
+
+
+def get_virtual_account_info(db_path=None, initial_capital=100000.0,
+                             price_fetcher=None):
+    """Compute virtual account info from the trades table.
+
+    Returns a dict matching `client.get_account_info()` shape:
+    {equity, buying_power, cash, portfolio_value, status}
+
+    Cash is computed from money flows:
+        cash = initial_capital - sum(BUY costs) + sum(SELL proceeds)
+
+    Portfolio value = sum(current_price × qty) for open positions.
+    Equity = cash + portfolio_value.
+    Buying power = cash (no margin on paper).
+    """
+    conn = _get_conn(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT side, qty, price FROM trades"
+        ).fetchall()
+    except Exception:
+        conn.close()
+        return {
+            "equity": initial_capital,
+            "buying_power": initial_capital,
+            "cash": initial_capital,
+            "portfolio_value": 0.0,
+            "status": "ACTIVE",
+        }
+    conn.close()
+
+    total_buys = 0.0
+    total_sells = 0.0
+    for row in rows:
+        side = row[0]
+        qty = float(row[1] or 0)
+        price = float(row[2] or 0)
+        if qty <= 0 or price <= 0:
+            continue
+        if side == "buy":
+            total_buys += qty * price
+        elif side in ("sell", "cover"):
+            total_sells += qty * price
+
+    cash = initial_capital - total_buys + total_sells
+
+    positions = get_virtual_positions(db_path=db_path, price_fetcher=price_fetcher)
+    portfolio_value = sum(p["market_value"] for p in positions)
+    equity = cash + portfolio_value
+
+    return {
+        "equity": round(equity, 2),
+        "buying_power": round(max(cash, 0), 2),
+        "cash": round(cash, 2),
+        "portfolio_value": round(portfolio_value, 2),
+        "status": "ACTIVE",
+    }
+
+
+def reconcile_trade_statuses(db_path=None, open_symbols=None):
+    """Fix up `trades.status` AND compute realized P&L on BUY rows from
+    their matching SELL exits, so the trades page shows a dollar value
+    on every closed trade instead of a useless "closed" label.
+
+    Three problems this corrects:
+      1. SELL rows that were logged without status="closed" even though
+         they have realized pnl.
+      2. BUY rows for symbols no longer held — marked closed.
+      3. Closed BUY rows with NULL pnl — populated via FIFO matching
+         to the symbol's SELL rows (proceeds − cost per BUY lot).
+
+    FIFO matching: for each symbol, walk trades in timestamp order.
+    Every BUY opens a lot (qty remaining, entry price). Every SELL
+    consumes qty from the oldest open lots first and attributes the
+    realized P&L back to each consumed lot's BUY row.
+
+    Args:
+        db_path: profile journal DB path.
+        open_symbols: optional set of symbols currently held in Alpaca.
+            When provided, used as ground truth for status updates.
+
+    Returns dict with counts: {"sells_fixed", "buys_fixed", "pnl_computed"}.
+    """
+    conn = _get_conn(db_path)
+
+    # 1. SELL rows with pnl but open status
+    cur = conn.execute(
+        "UPDATE trades SET status='closed' "
+        "WHERE side='sell' AND pnl IS NOT NULL AND status='open'"
+    )
+    sells_fixed = cur.rowcount
+
+    # 2. BUY rows for closed positions
+    if open_symbols is not None:
+        placeholders = ",".join("?" * len(open_symbols)) if open_symbols else "''"
+        if open_symbols:
+            cur = conn.execute(
+                f"UPDATE trades SET status='closed' "
+                f"WHERE side='buy' AND status='open' "
+                f"AND symbol NOT IN ({placeholders})",
+                list(open_symbols),
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE trades SET status='closed' "
+                "WHERE side='buy' AND status='open'"
+            )
+        buys_fixed = cur.rowcount
+    else:
+        cur = conn.execute(
+            "UPDATE trades SET status='closed' "
+            "WHERE side='buy' AND status='open' AND symbol IN ("
+            "  SELECT DISTINCT symbol FROM trades "
+            "  WHERE side='sell' AND pnl IS NOT NULL"
+            ")"
+        )
+        buys_fixed = cur.rowcount
+
+    # 3. FIFO-match BUY lots to SELLs to compute realized pnl on BUY rows
+    pnl_computed = 0
+    symbols = [
+        r[0] for r in conn.execute(
+            "SELECT DISTINCT symbol FROM trades "
+            "WHERE side='buy' AND status='closed' AND pnl IS NULL"
+        ).fetchall()
+    ]
+    for symbol in symbols:
+        rows = conn.execute(
+            "SELECT id, side, qty, price, pnl, timestamp "
+            "FROM trades WHERE symbol=? "
+            "ORDER BY timestamp ASC, id ASC",
+            (symbol,),
+        ).fetchall()
+        # Lots: list of [buy_id, qty_remaining, entry_price, realized_pnl]
+        lots = []
+        for r in rows:
+            tid, side, qty, price, row_pnl, ts = r
+            qty = float(qty or 0)
+            price = float(price or 0)
+            if side == "buy":
+                lots.append([tid, qty, price, 0.0])
+            elif side == "sell" and qty > 0 and price > 0:
+                remaining = qty
+                for lot in lots:
+                    if remaining <= 0:
+                        break
+                    if lot[1] <= 0:
+                        continue
+                    consumed = min(lot[1], remaining)
+                    # Realized for this slice: (exit - entry) × qty
+                    lot[3] += (price - lot[2]) * consumed
+                    lot[1] -= consumed
+                    remaining -= consumed
+        # Write realized pnl back to each fully-consumed BUY lot so every
+        # row in the trades page shows a dollar value consistently.
+        for tid, qty_left, _entry, realized in lots:
+            if qty_left <= 0.001 and realized != 0.0:
+                cur = conn.execute(
+                    "UPDATE trades SET pnl=? WHERE id=? AND pnl IS NULL",
+                    (round(realized, 4), tid),
+                )
+                pnl_computed += cur.rowcount
+
+    conn.commit()
+    conn.close()
+    return {
+        "sells_fixed": sells_fixed,
+        "buys_fixed": buys_fixed,
+        "pnl_computed": pnl_computed,
+    }
 
 
 def log_signal(symbol, signal, strategy=None, reason=None, price=None,

@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>MONTHLY_REVIEW</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">MONTHLY_REVIEW</h1>
+</header>
+<h1 id="monthly-review-quantopsai">Monthly Review — QuantOpsAI</h1>
+<p>A follow-up tracker for the first 3 months of live paper trading with
+all 10 phases of the Quant Fund Evolution roadmap operational. Fill in
+the “Observed” columns at each month-end review.</p>
+<p><strong>Start date:</strong> 2026-04-14 <strong>Review date
+(M1):</strong> ~2026-05-14 <strong>Review date (M2):</strong>
+~2026-06-14 <strong>Review date (M3):</strong> ~2026-07-14</p>
+<hr />
+<h2 id="baseline-context">0. Baseline Context</h2>
+<h3 id="what-an-equivalent-system-would-cost-in-real-life">What an
+equivalent system would cost in real life</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Component we built</th>
+<th>Commercial equivalent</th>
+<th>Annual cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SEC filings semantic analysis</td>
+<td>AlphaSense seat, FactSet SEC module, Bloomberg legal/regulatory
+feed</td>
+<td>$15–40k/seat</td>
+</tr>
+<tr>
+<td>Options oracle</td>
+<td>OptionMetrics, TradeAlert, Bloomberg options analytics</td>
+<td>$15–180k/yr</td>
+</tr>
+<tr>
+<td>Alt-data (insider, short interest, options flow)</td>
+<td>FactSet, S&amp;P Capital IQ, Refinitiv</td>
+<td>$25–100k/yr</td>
+</tr>
+<tr>
+<td>Rigorous backtesting platform</td>
+<td>Axioma Portfolio, Bloomberg PORT, QuantConnect enterprise</td>
+<td>$25–150k/yr</td>
+</tr>
+<tr>
+<td>Crisis / risk monitoring</td>
+<td>MSCI RiskManager, Bloomberg risk suite</td>
+<td>$50–200k/yr</td>
+</tr>
+<tr>
+<td>Multi-strategy capital allocation</td>
+<td>Axioma, MSCI BarraOne</td>
+<td>$50–200k/yr</td>
+</tr>
+<tr>
+<td>Bloomberg Terminal (baseline)</td>
+<td>—</td>
+<td>$24k/seat</td>
+</tr>
+</tbody>
+</table>
+<p><strong>People a small fund would hire</strong> (PM + 2 analysts +
+quant dev + risk manager): ~$2–3M/yr in total comp.</p>
+<p><strong>Essentially no commercial equivalent</strong> (every fund
+builds itself): - Meta-model on own predictions - Alpha decay
+auto-retirement - Strategy auto-generation with AI-proposed specs -
+Specialist AI ensemble with structured verdicts - End-to-end
+event-driven architecture</p>
+<p><strong>Engineering to build and operate the non-commercial
+layers</strong>: 2–3 engineers × $300–500k = $1–1.5M/yr plus 12–18
+months initial build.</p>
+<p><strong>Conservative total for a small systematic fund replicating
+this stack</strong>: $3–6M/yr ongoing, $2–4M initial build. <strong>Our
+run cost</strong>: ~$15/mo hosting + $100–500/mo AI inference with all
+10 phases active.</p>
+<h3 id="what-this-system-is-and-isnt">What this system is — and
+isn’t</h3>
+<p><strong>What it is:</strong> a decision-support system with automated
+execution and learning loops, running on paper trading. The strategy
+library is 16 hand-coded strategies covering mean-reversion, momentum,
+event-driven, microstructure, and technical confirmation families — plus
+any AI-generated auto-strategies accumulated via Phase 7.</p>
+<p><strong>What it isn’t:</strong> proven. When Phase 2 rigorous
+validation ran against the first-wave individual strategies, <strong>all
+5 new ones failed in isolation</strong> (Sharpe &lt; 1.0, 100% OOS
+degradation, 0 profitable regimes). Many of the 10 additional seed
+strategies rely on classical academic anomalies that have decayed in
+published follow-up studies. The bet is that the <em>ensemble</em> — 16
+strategies combined with AI judgment, meta-learning, specialist
+consensus, and crisis gating — produces edge the individual strategies
+don’t have on their own. That’s the hypothesis, not a theorem.</p>
+<p><strong>Where edge plausibly comes from:</strong> 1. Breadth of
+signals the AI sees per decision — things no retail system sees 2.
+Meta-model learning the AI’s error patterns specifically — proprietary
+data by definition 3. Risk assessor VETOs + crisis gate — asymmetric
+payoff layers; can only help, never hurt 4. Strategy auto-generation
+producing variants you didn’t think of — compounding layer</p>
+<p><strong>Where it can fail:</strong> - AI hallucinations and
+overconfidence - Slippage and real-fill issues (this is paper trading) -
+Regime you haven’t trained on (March 2020-style shock) - Meta-model
+overfitting on small samples (100 predictions is barely above noise) -
+Option-heavy signals degrading in low-volatility environments</p>
+<hr />
+<h2 id="month-1-review-week-4">1. Month 1 Review (week 4)</h2>
+<h3 id="what-should-be-happening">What should be happening</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" /><strong>Meta-model</strong> — not
+trained yet. Crypto might hit 100 resolved predictions first (runs
+24/7). Equities need ~4 weeks of market days.</label></li>
+<li><label><input type="checkbox" /><strong>Auto-strategies</strong> — 4
+Sunday proposal cycles × 3 proposals = 12 proposals per profile. Most
+should fail Phase 2 validation (healthy). Expect <strong>1–3 per
+profile</strong> to survive into shadow.</label></li>
+<li><label><input type="checkbox" /><strong>Alpha decay</strong> — no
+deprecations yet (needs 30 consecutive bad days).</label></li>
+<li><label><input type="checkbox" /><strong>Ensemble</strong> — fires
+every cycle. No measurable signal yet.</label></li>
+<li><label><input type="checkbox" /><strong>Events</strong> — sparse;
+real triggers are rare.</label></li>
+</ul>
+<h3 id="metrics-to-pull-from-performanceai">Metrics to pull from
+<code>/performance#ai</code></h3>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Target range</th>
+<th>Observed</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Resolved predictions (crypto)</td>
+<td>≥ 100</td>
+<td></td>
+<td>Meta-model can train</td>
+</tr>
+<tr>
+<td>Resolved predictions (equity profiles)</td>
+<td>50–150</td>
+<td></td>
+<td>Growing but not trained yet</td>
+</tr>
+<tr>
+<td>Auto-strategy proposals attempted</td>
+<td>12 per profile</td>
+<td></td>
+<td>4 Sundays × 3</td>
+</tr>
+<tr>
+<td>Auto-strategy survival rate (to shadow)</td>
+<td>8–25%</td>
+<td></td>
+<td>&gt;25% = gate too lenient; &lt;8% = too strict</td>
+</tr>
+<tr>
+<td>Strategies deprecated</td>
+<td>0</td>
+<td></td>
+<td>Shouldn’t trigger yet</td>
+</tr>
+<tr>
+<td>Risk VETOs fired</td>
+<td>&gt; 0</td>
+<td></td>
+<td>Zero means risk specialist is too permissive</td>
+</tr>
+<tr>
+<td>Crisis level</td>
+<td>normal</td>
+<td></td>
+<td>Unless real market event occurred</td>
+</tr>
+<tr>
+<td>AI inference spend</td>
+<td>$100–200</td>
+<td></td>
+<td>Rough guide</td>
+</tr>
+</tbody>
+</table>
+<h3 id="pl-expectation-on-paper">P&amp;L expectation on paper</h3>
+<p><strong>-5% to +5%</strong>. Noise-dominated. Don’t over-interpret
+either direction.</p>
+<h3 id="red-flags">Red flags</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Meta-model trained on &lt; 100
+samples — if it did, reject and wait</label></li>
+<li><label><input type="checkbox" />Auto-strategy survival rate &gt; 50%
+— validation gate is broken</label></li>
+<li><label><input type="checkbox" />Zero risk VETOs after 4 weeks — risk
+specialist not engaging; inspect prompts</label></li>
+<li><label><input type="checkbox" />Same strategy name appearing as both
+active AND retired — lifecycle bug</label></li>
+<li><label><input type="checkbox" />Event stream empty for 4 weeks —
+detectors not firing; check scheduler logs</label></li>
+<li><label><input type="checkbox" />Any crisis state transition while
+VIX &lt; 20 and SPY stable — false positive; recalibrate</label></li>
+</ul>
+<h3 id="action-items">Action items</h3>
+<ul>
+<li>Review raw cycle data for 3 random trade decisions; confirm the AI
+saw the ensemble consensus + SEC alerts + options oracle + crisis
+context in its prompt</li>
+<li>Check <code>journalctl -u quantopsai</code> for any warnings or
+exceptions in the last 7 days</li>
+<li>Verify at least one event of each type appeared in the last 30 days:
+<code>sec_filing_detected</code>, <code>earnings_imminent</code>,
+<code>price_shock</code>, <code>prediction_big_winner</code>,
+<code>prediction_big_loser</code></li>
+</ul>
+<h3 id="observed-fill-in-at-review">Observed (fill in at review)</h3>
+<pre><code>Date of review:
+Meta-model status:
+Auto-strategy count (proposed / shadow / active / retired):
+Alpha decay events:
+Paper P&amp;L:
+AI spend MTD:
+Anything surprising:
+Decisions made:</code></pre>
+<hr />
+<h2 id="month-2-review-week-8">2. Month 2 Review (week 8)</h2>
+<h3 id="what-should-be-happening-1">What should be happening</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" /><strong>Meta-model</strong> — crypto
+profile first-train around week 5–6. Equity profiles around week 7–8.
+First re-weighting and suppression decisions. <strong>Early models often
+overfit to noise — initial calibration looks worse before
+better.</strong></label></li>
+<li><label><input type="checkbox" /><strong>Auto-strategies</strong> —
+2–4 per profile in shadow. None promoted yet (needs 50 resolved
+predictions + Sharpe ≥ 0.8).</label></li>
+<li><label><input type="checkbox" /><strong>Alpha decay</strong> —
+possible first deprecation events if any strategy had a rough 30-day
+run.</label></li>
+<li><label><input type="checkbox" /><strong>Ensemble</strong> — patterns
+emerge in which specialists tend to be right / wrong. We don’t track
+specialist accuracy explicitly yet (a future enhancement worth
+considering).</label></li>
+</ul>
+<h3 id="metrics-to-pull">Metrics to pull</h3>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Target range</th>
+<th>Observed</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Meta-model AUC (crypto)</td>
+<td>≥ 0.52</td>
+<td></td>
+<td>Above random</td>
+</tr>
+<tr>
+<td>Meta-model suppressed trades</td>
+<td>5–25% of proposals</td>
+<td></td>
+<td>&gt;25% = over-suppressing; &lt;5% = not engaging</td>
+</tr>
+<tr>
+<td>Meta-model training samples</td>
+<td>≥ 100 per profile</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Top 3 important features</td>
+<td>sensible (not pure noise)</td>
+<td></td>
+<td>E.g., confidence, RSI, sector</td>
+</tr>
+<tr>
+<td>Shadow auto-strategies</td>
+<td>2–4 per profile</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>Shadow Sharpe distribution</td>
+<td>mix of +/-</td>
+<td></td>
+<td>All negative = proposer is bad; all positive suspicious</td>
+</tr>
+<tr>
+<td>Deprecated strategies</td>
+<td>0–2 across all profiles</td>
+<td></td>
+<td>Above 3 means validation was too lenient upstream</td>
+</tr>
+<tr>
+<td>Specialist agreement rate</td>
+<td>40–70%</td>
+<td></td>
+<td>Too high = redundant; too low = noisy</td>
+</tr>
+<tr>
+<td>Risk VETOs / total candidates</td>
+<td>2–10%</td>
+<td></td>
+<td>Calibration check</td>
+</tr>
+<tr>
+<td>Paper P&amp;L</td>
+<td>-10% to +10%</td>
+<td></td>
+<td>Regime-dependent</td>
+</tr>
+<tr>
+<td>AI spend MTD</td>
+<td>$200–500</td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h3 id="red-flags-1">Red flags</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" />Meta-model AUC &lt; 0.50 after
+training — actively worse than random; suspect label leak or feature
+bug</label></li>
+<li><label><input type="checkbox" />Meta-model suppressed &gt; 50% of
+proposals — either the AI is terrible or the model overfit</label></li>
+<li><label><input type="checkbox" />Top features dominated by a single
+noise-looking indicator — likely leakage</label></li>
+<li><label><input type="checkbox" />A shadow strategy’s Sharpe suddenly
+spiking to &gt; 5 — check for look-ahead bias</label></li>
+<li><label><input type="checkbox" />Specialists agreeing on 100% of
+candidates — they’re not actually independent</label></li>
+<li><label><input type="checkbox" />Crisis gate fired during a normal
+week — thresholds too tight</label></li>
+</ul>
+<h3 id="action-items-1">Action items</h3>
+<ul>
+<li>Review the meta-model’s top 10 feature importances on the
+performance page</li>
+<li>Spot-check 5 suppressed trades — did the AI actually look bad in
+those cases?</li>
+<li>If any strategy got deprecated, look at its rolling Sharpe curve —
+was the decay real?</li>
+<li>Review specialist ensemble breakdowns for the 10 worst-performing
+trades this month — did any specialist flag them?</li>
+<li>Cost trend: verify AI spend is within forecast and not
+ballooning</li>
+</ul>
+<h3 id="observed-fill-in-at-review-1">Observed (fill in at review)</h3>
+<pre><code>Date of review:
+Meta-model AUC (per profile):
+Meta-model suppression rate:
+Auto-strategy lineage (gen 1 survivors, gen 2 proposals):
+Deprecation events:
+Paper P&amp;L:
+Biggest single winner / loser:
+Specialist with highest &quot;seemed-right&quot; rate:
+Anything surprising:
+Decisions made:</code></pre>
+<hr />
+<h2 id="month-3-review-week-12-the-first-real-verdict">3. Month 3 Review
+(week 12) — the first real verdict</h2>
+<h3 id="what-should-be-happening-2">What should be happening</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" /><strong>Meta-model</strong> — fully
+active on all profiles, suppressing low-probability trades. <strong>This
+is the month that tells you whether meta-model AUC &gt; 0.55.</strong>
+If AUC ≤ 0.52 the model is not learning anything useful and needs more
+data or a different feature set.</label></li>
+<li><label><input type="checkbox" /><strong>Auto-strategies</strong> —
+first shadow → active promotions become possible. Some will
+retire.</label></li>
+<li><label><input type="checkbox" /><strong>Alpha decay</strong> — 1–2
+deprecations likely. This is the system admitting what’s
+dead.</label></li>
+<li><label><input type="checkbox" /><strong>Event-driven</strong> —
+enough accumulated history to see which event types actually move the
+portfolio.</label></li>
+<li><label><input type="checkbox" /><strong>Crisis gate</strong> —
+probably never fired (needs sustained VIX &gt; 22). If it did fire,
+that’s the layer paying for itself.</label></li>
+</ul>
+<h3 id="the-gono-go-metrics">The go/no-go metrics</h3>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Green (continue)</th>
+<th>Yellow (investigate)</th>
+<th>Red (pause and diagnose)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Meta-model AUC, average across profiles</td>
+<td>≥ 0.55</td>
+<td>0.52–0.55</td>
+<td>&lt; 0.52</td>
+</tr>
+<tr>
+<td>Paper P&amp;L over 3 months</td>
+<td>&gt; 0%</td>
+<td>-10% to 0%</td>
+<td>&lt; -10%</td>
+</tr>
+<tr>
+<td>Sharpe (approximate, annualized from 3mo)</td>
+<td>&gt; 0.5</td>
+<td>0.0–0.5</td>
+<td>&lt; 0.0</td>
+</tr>
+<tr>
+<td>Auto-strategies active</td>
+<td>≥ 1 per profile</td>
+<td>0, but shadows viable</td>
+<td>0 and all shadows failing</td>
+</tr>
+<tr>
+<td>Specialist VETO accuracy</td>
+<td>majority of vetoed symbols underperformed</td>
+<td>mixed</td>
+<td>VETOs systematically wrong</td>
+</tr>
+<tr>
+<td>Crisis false-positive rate</td>
+<td>0 firings in normal weeks</td>
+<td>rare</td>
+<td>any firing during calm market</td>
+</tr>
+<tr>
+<td>Alpha decay triggers</td>
+<td>0–2</td>
+<td>3–4</td>
+<td>&gt; 4 (gate was too lenient upstream)</td>
+</tr>
+<tr>
+<td>AI spend MTD</td>
+<td>$300–800</td>
+<td></td>
+<td>&gt; $1500</td>
+</tr>
+</tbody>
+</table>
+<h3 id="what-3-months-of-data-will-tell-you">What 3 months of data
+<em>will</em> tell you</h3>
+<ul>
+<li><strong>Meta-model AUC</strong> — above 0.55 = learning real
+patterns; below 0.53 = still noise</li>
+<li><strong>Specialist agreement rate</strong> — whether they’re
+genuinely diverse or redundant</li>
+<li><strong>Auto-strategy survival rate</strong> — if &gt;20% of
+proposals clear validation, the proposer is over-approving; if &lt;5%,
+under-approving</li>
+<li><strong>Crisis signal false-positive rate</strong> — any firing in
+calm conditions means thresholds are too tight</li>
+<li><strong>Alpha decay triggers</strong> — should be rare; if &gt;30%
+of strategies got deprecated, validation gate was too lenient
+upstream</li>
+</ul>
+<h3 id="what-3-months-will-not-tell-you">What 3 months will <em>not</em>
+tell you</h3>
+<ul>
+<li>Whether the system is profitable long-term. Minimum reliable Sharpe
+measurement needs 1–2 years</li>
+<li>Whether it survives a true regime break — you need a market shock
+during the window to test Phase 10</li>
+<li>Whether auto-generated strategies produce real alpha — needs 50+
+resolved predictions each, so earliest measurable is month 4–5</li>
+</ul>
+<h3 id="decision-tree-at-month-3">Decision tree at month 3</h3>
+<pre><code>Meta-model AUC ≥ 0.55 AND Paper P&amp;L &gt; 0% → continue another 3 months of paper
+Meta-model AUC ≥ 0.55 AND Paper P&amp;L negative → keep learning; AI judgment may
+    still be improving; check if drawdown correlates with specific regime
+Meta-model AUC 0.50–0.55 → insufficient data; extend 3 months
+Meta-model AUC &lt; 0.50 → feature set or label construction is broken; diagnose
+    before adding more training data</code></pre>
+<h3 id="observed-fill-in-at-review-2">Observed (fill in at review)</h3>
+<pre><code>Date of review:
+Meta-model AUC per profile (crypto, equity1, equity2):
+Paper P&amp;L (total %, Sharpe, max drawdown):
+Auto-strategies promoted to active:
+Auto-strategies retired:
+Total deprecations (Phase 3):
+Crisis gate firings:
+Most material learning this quarter:
+Decision for months 4-6:</code></pre>
+<hr />
+<h2 id="ongoing-hygiene-monthly">4. Ongoing Hygiene (monthly)</h2>
+<ul class="task-list">
+<li><label><input type="checkbox" />Check
+<code>journalctl -u quantopsai --since '30 days ago' | grep -i 'error\|exception\|warning'</code>
+for unexpected failures</label></li>
+<li><label><input type="checkbox" />Verify dashboard panels all render
+(AI Cost, Strategy Allocation, Evolving Library, Specialist Ensemble,
+Event Stream, Crisis Monitor)</label></li>
+<li><label><input type="checkbox" /><strong>AI Cost panel</strong> —
+confirm 30-day spend is in the expected band (~$200–700); check that no
+single <code>purpose</code> is dominating unexpectedly. The breakdown by
+<code>purpose</code> and <code>model</code> columns are the truth, not
+invoice screenshots.</label></li>
+<li><label><input type="checkbox" />Pull one random cycle’s
+<code>cycle_data_*.json</code> and sanity-check the AI saw everything we
+think it saw</label></li>
+<li><label><input type="checkbox" /><strong>DB backups</strong> — verify
+<code>/var/backups/quantopsai/</code> on the droplet has a fresh entry
+per profile dated within the last 24h, and that the last 14 days are
+present (rotation working). Per-profile DBs hold all proprietary
+training data — the meta-model is useless without them.</label></li>
+</ul>
+<hr />
+<h2 id="when-to-go-live-with-real-capital">5. When to Go Live with Real
+Capital</h2>
+<p><strong>Do not</strong> until <strong>all</strong> of these are
+true:</p>
+<ul class="task-list">
+<li><label><input type="checkbox" />6+ months of continuous paper
+trading</label></li>
+<li><label><input type="checkbox" />Positive out-of-sample Sharpe
+(out-of-sample = after meta-model was trained)</label></li>
+<li><label><input type="checkbox" />Meta-model AUC ≥ 0.58 sustained for
+2+ months</label></li>
+<li><label><input type="checkbox" />At least one full regime transition
+observed (e.g., bull → sideways → bull) with stable behavior
+across</label></li>
+<li><label><input type="checkbox" />Crisis gate never fired a false
+positive in calm conditions</label></li>
+<li><label><input type="checkbox" />At least one auto-strategy
+successfully promoted, lived in active for 30+ days without
+deprecation</label></li>
+<li><label><input type="checkbox" />Max drawdown on paper &lt;
+15%</label></li>
+<li><label><input type="checkbox" />Total cost per trade (AI + infra)
+&lt; 0.5% of per-trade notional</label></li>
+</ul>
+<p>Everything before this is <strong>learning which assumptions were
+wrong</strong>, not trading.</p>
+</body>
+</html>

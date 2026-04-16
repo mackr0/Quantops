@@ -95,13 +95,23 @@ def check_trailing_stops(positions, ctx=None):
 
         try:
             bars = get_bars(symbol, limit=30)
-            if bars is None or bars.empty or len(bars) < 14:
+            # Defensive: guard against yfinance returning None, empty, or
+            # a DataFrame that's missing expected OHLC columns. The bare
+            # `bars["high"]` subscription used to surface as "'NoneType'
+            # object is not subscriptable" every cycle.
+            if bars is None or not hasattr(bars, "empty") or bars.empty:
+                continue
+            if len(bars) < 14:
+                continue
+            required = ("high", "low")
+            if not all(c in bars.columns for c in required):
                 continue
 
             # Compute ATR from last 14 bars
             ranges = (bars["high"] - bars["low"]).tail(14)
-            atr = float(ranges.mean())
-            if atr <= 0:
+            atr = float(ranges.mean()) if not ranges.empty else 0
+            import math
+            if not atr or atr <= 0 or math.isnan(atr):
                 continue
 
             recent_bars = bars.tail(5)
@@ -286,7 +296,8 @@ def check_portfolio_constraints(symbol, proposed_trade, current_positions, accou
 
 
 def check_stop_loss_take_profit(positions, stop_loss_pct=None, take_profit_pct=None,
-                                short_stop_loss_pct=None, short_take_profit_pct=None):
+                                short_stop_loss_pct=None, short_take_profit_pct=None,
+                                conviction_tp_skip=None):
     """Check all open positions against stop-loss and take-profit thresholds.
 
     Args:
@@ -301,6 +312,13 @@ def check_stop_loss_take_profit(positions, stop_loss_pct=None, take_profit_pct=N
                              back to stop_loss_pct when None.
         short_take_profit_pct: Take-profit percentage for short positions.
                                Falls back to take_profit_pct when None.
+        conviction_tp_skip: Optional callable `(symbol, pct_change) -> bool`.
+                            When truthy for a long position that would
+                            otherwise hit take-profit, skip the TP trigger
+                            and let the trailing stop manage the exit. Used
+                            to implement the conviction override so runaway
+                            winners aren't capped at a fixed %. Stop-loss
+                            and short TP are never skipped.
 
     Returns:
         List of sell signal dicts for positions that have triggered, each with:
@@ -381,6 +399,10 @@ def check_stop_loss_take_profit(positions, stop_loss_pct=None, take_profit_pct=N
                     "trigger": "stop_loss",
                 })
             elif pct_change >= pos_take_profit:
+                # Conviction override — let a runaway winner keep running
+                # and rely on the trailing stop instead of capping at TP.
+                if conviction_tp_skip and conviction_tp_skip(symbol, pct_change):
+                    continue
                 triggered.append({
                     "symbol": symbol,
                     "signal": "SELL",

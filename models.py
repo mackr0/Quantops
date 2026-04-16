@@ -124,6 +124,17 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
 
+        CREATE TABLE IF NOT EXISTS alpaca_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL DEFAULT 'Default',
+            alpaca_api_key_enc TEXT NOT NULL DEFAULT '',
+            alpaca_secret_key_enc TEXT NOT NULL DEFAULT '',
+            base_url TEXT NOT NULL DEFAULT 'https://paper-api.alpaca.markets',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+
         CREATE TABLE IF NOT EXISTS trading_profiles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -235,8 +246,30 @@ def init_user_db(db_path: Optional[str] = None) -> None:
     """)
     conn.commit()
 
-    # Auto-migrate: add columns that may not exist in older databases
+    # Auto-migrate: add columns that may not exist in older databases.
+    # EVERY column that was ever added after initial table creation MUST be here.
+    # This is the ONLY safe way to evolve the schema — CREATE TABLE IF NOT EXISTS
+    # will NOT add new columns to an existing table.
     _migrations = [
+        # --- users table ---
+        ("users", "excluded_symbols", "TEXT NOT NULL DEFAULT '[]'"),
+        ("users", "scanning_active", "INTEGER NOT NULL DEFAULT 1"),
+        # --- user_segment_configs table ---
+        ("user_segment_configs", "alpaca_api_key_enc", "TEXT NOT NULL DEFAULT ''"),
+        ("user_segment_configs", "alpaca_secret_key_enc", "TEXT NOT NULL DEFAULT ''"),
+        # --- trading_profiles table ---
+        ("trading_profiles", "maga_mode", "INTEGER NOT NULL DEFAULT 0"),
+        ("trading_profiles", "enable_short_selling", "INTEGER NOT NULL DEFAULT 0"),
+        ("trading_profiles", "short_stop_loss_pct", "REAL NOT NULL DEFAULT 0.08"),
+        ("trading_profiles", "short_take_profit_pct", "REAL NOT NULL DEFAULT 0.08"),
+        ("trading_profiles", "enable_self_tuning", "INTEGER NOT NULL DEFAULT 1"),
+        ("trading_profiles", "ai_provider", "TEXT NOT NULL DEFAULT 'anthropic'"),
+        ("trading_profiles", "ai_model", "TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001'"),
+        ("trading_profiles", "ai_api_key_enc", "TEXT NOT NULL DEFAULT ''"),
+        ("trading_profiles", "schedule_type", "TEXT NOT NULL DEFAULT 'market_hours'"),
+        ("trading_profiles", "custom_start", "TEXT NOT NULL DEFAULT '09:30'"),
+        ("trading_profiles", "custom_end", "TEXT NOT NULL DEFAULT '16:00'"),
+        ("trading_profiles", "custom_days", "TEXT NOT NULL DEFAULT '0,1,2,3,4'"),
         ("trading_profiles", "drawdown_pause_pct", "REAL NOT NULL DEFAULT 0.20"),
         ("trading_profiles", "drawdown_reduce_pct", "REAL NOT NULL DEFAULT 0.10"),
         ("trading_profiles", "avoid_earnings_days", "INTEGER NOT NULL DEFAULT 2"),
@@ -244,8 +277,6 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         ("trading_profiles", "enable_consensus", "INTEGER NOT NULL DEFAULT 0"),
         ("trading_profiles", "consensus_model", "TEXT NOT NULL DEFAULT ''"),
         ("trading_profiles", "consensus_api_key_enc", "TEXT NOT NULL DEFAULT ''"),
-        ("trading_profiles", "short_stop_loss_pct", "REAL NOT NULL DEFAULT 0.08"),
-        ("trading_profiles", "short_take_profit_pct", "REAL NOT NULL DEFAULT 0.08"),
         ("trading_profiles", "use_atr_stops", "INTEGER NOT NULL DEFAULT 1"),
         ("trading_profiles", "atr_multiplier_sl", "REAL NOT NULL DEFAULT 2.0"),
         ("trading_profiles", "atr_multiplier_tp", "REAL NOT NULL DEFAULT 3.0"),
@@ -254,6 +285,13 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         ("trading_profiles", "use_limit_orders", "INTEGER NOT NULL DEFAULT 0"),
         ("trading_profiles", "max_correlation", "REAL NOT NULL DEFAULT 0.7"),
         ("trading_profiles", "max_sector_positions", "INTEGER NOT NULL DEFAULT 5"),
+        ("trading_profiles", "use_conviction_tp_override", "INTEGER NOT NULL DEFAULT 0"),
+        ("trading_profiles", "conviction_tp_min_confidence", "REAL NOT NULL DEFAULT 70.0"),
+        ("trading_profiles", "conviction_tp_min_adx", "REAL NOT NULL DEFAULT 25.0"),
+        # Virtual account layer
+        ("trading_profiles", "is_virtual", "INTEGER NOT NULL DEFAULT 0"),
+        ("trading_profiles", "initial_capital", "REAL NOT NULL DEFAULT 100000.0"),
+        ("trading_profiles", "alpaca_account_id", "INTEGER"),
     ]
     for table, col, col_def in _migrations:
         try:
@@ -410,12 +448,12 @@ def get_active_users() -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def create_default_segment_configs(user_id: int) -> None:
-    """Insert default config rows for microsmall, midcap, and largecap segments.
+    """Insert default config rows for all market segments.
 
     Default values are pulled from the segment definitions in segments.py.
     """
     conn = _get_conn()
-    for seg_name in ("microsmall", "midcap", "largecap", "crypto"):
+    for seg_name in ("micro", "small", "midcap", "largecap", "crypto"):
         seg = get_segment(seg_name)
         conn.execute(
             """INSERT OR IGNORE INTO user_segment_configs
@@ -512,11 +550,49 @@ def update_user_segment_config(user_id: int, segment: str, **kwargs) -> None:
 MARKET_TYPE_NAMES = {
     "micro": "Micro Cap",
     "small": "Small Cap",
-    "microsmall": "Small Cap",  # backward compat alias
     "midcap": "Mid Cap",
     "largecap": "Large Cap",
     "crypto": "Crypto",
 }
+
+
+def create_alpaca_account(user_id: int, name: str,
+                          api_key_enc: str, secret_key_enc: str,
+                          base_url: str = "https://paper-api.alpaca.markets") -> int:
+    """Create a named Alpaca account reference. Returns account id."""
+    conn = _get_conn()
+    cursor = conn.execute(
+        "INSERT INTO alpaca_accounts (user_id, name, alpaca_api_key_enc, "
+        "alpaca_secret_key_enc, base_url) VALUES (?,?,?,?,?)",
+        (user_id, name, api_key_enc, secret_key_enc, base_url),
+    )
+    conn.commit()
+    aid = cursor.lastrowid
+    conn.close()
+    return aid
+
+
+def get_alpaca_accounts(user_id: int) -> List[Dict[str, Any]]:
+    """Return all Alpaca accounts for a user."""
+    conn = _get_conn()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM alpaca_accounts WHERE user_id=? ORDER BY id",
+        (user_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_alpaca_account(account_id: int) -> Optional[Dict[str, Any]]:
+    """Return a single Alpaca account by id."""
+    conn = _get_conn()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT * FROM alpaca_accounts WHERE id=?", (account_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 def create_trading_profile(user_id: int, name: str, market_type: str) -> int:
@@ -653,6 +729,9 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "use_trailing_stops", "trailing_atr_multiplier",
         "use_limit_orders",
         "max_correlation", "max_sector_positions",
+        "use_conviction_tp_override", "conviction_tp_min_confidence",
+        "conviction_tp_min_adx",
+        "is_virtual", "initial_capital", "alpaca_account_id",
     }
     updates = {}
     for key, value in kwargs.items():
@@ -702,15 +781,28 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
     if user is None:
         raise ValueError(f"User #{profile['user_id']} not found")
 
-    # Use per-profile Alpaca keys if set, otherwise fall back to user-level keys
-    prof_alpaca_key = profile.get("alpaca_api_key_enc", "")
-    prof_alpaca_secret = profile.get("alpaca_secret_key_enc", "")
-    if prof_alpaca_key:
-        alpaca_key = decrypt(prof_alpaca_key)
-        alpaca_secret = decrypt(prof_alpaca_secret)
+    # Resolve Alpaca credentials — priority order:
+    # 1. Shared alpaca_account (if alpaca_account_id is set)
+    # 2. Per-profile encrypted keys
+    # 3. User-level encrypted keys (fallback)
+    alpaca_account_id = profile.get("alpaca_account_id")
+    if alpaca_account_id:
+        acct = get_alpaca_account(alpaca_account_id)
+        if acct:
+            alpaca_key = decrypt(acct.get("alpaca_api_key_enc", ""))
+            alpaca_secret = decrypt(acct.get("alpaca_secret_key_enc", ""))
+        else:
+            alpaca_key = ""
+            alpaca_secret = ""
     else:
-        alpaca_key = decrypt(user.get("alpaca_api_key_enc", ""))
-        alpaca_secret = decrypt(user.get("alpaca_secret_key_enc", ""))
+        prof_alpaca_key = profile.get("alpaca_api_key_enc", "")
+        prof_alpaca_secret = profile.get("alpaca_secret_key_enc", "")
+        if prof_alpaca_key:
+            alpaca_key = decrypt(prof_alpaca_key)
+            alpaca_secret = decrypt(prof_alpaca_secret)
+        else:
+            alpaca_key = decrypt(user.get("alpaca_api_key_enc", ""))
+            alpaca_secret = decrypt(user.get("alpaca_secret_key_enc", ""))
 
     # Per-profile isolated DB path
     db_path = f"quantopsai_profile_{profile_id}.db"
@@ -796,6 +888,13 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         # Correlation management
         max_correlation=profile.get("max_correlation", 0.7),
         max_sector_positions=profile.get("max_sector_positions", 5),
+        # Conviction-based take-profit override
+        use_conviction_tp_override=bool(profile.get("use_conviction_tp_override", 0)),
+        conviction_tp_min_confidence=profile.get("conviction_tp_min_confidence", 70.0),
+        conviction_tp_min_adx=profile.get("conviction_tp_min_adx", 25.0),
+        # Virtual account layer
+        is_virtual=bool(profile.get("is_virtual", 0)),
+        initial_capital=profile.get("initial_capital", 100000.0),
     )
 
 

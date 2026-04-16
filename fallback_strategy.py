@@ -1,8 +1,9 @@
-"""Aggressive trading strategies for small/micro-cap paper trading.
+"""Fallback combined strategy used when a market type doesn't match any of
+the market-specific strategy engines (micro/small/midcap/largecap/crypto).
 
-These strategies use tighter entry/exit signals and higher conviction thresholds
-than the conservative strategies in strategies.py.  Designed for quick trades on
-volatile, lower-cap names.
+Kept for backward compatibility. The live system routes through
+strategy_router.py to market-specific engines; this module is only used
+as a safety fallback.
 """
 
 import pandas as pd
@@ -352,7 +353,7 @@ def gap_and_go_strategy(symbol, df=None,
 # 5. Aggressive Combined (master strategy)
 # ---------------------------------------------------------------------------
 
-def aggressive_combined_strategy(symbol, df=None, params=None):
+def fallback_combined_strategy(symbol, df=None, params=None):
     """Run all four aggressive strategies, score them, and return the
     strongest signal.
 

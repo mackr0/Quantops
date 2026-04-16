@@ -24,6 +24,7 @@ import sys
 import os
 import json as _json
 from datetime import datetime, timedelta
+from typing import Dict
 from zoneinfo import ZoneInfo
 
 from segments import list_segments, get_segment, SEGMENTS
@@ -93,17 +94,41 @@ def _build_ctx(segment_name):
 
 # ── Task Runner ──────────────────────────────────────────────────────
 
-def run_task(name, func):
-    """Run *func* with logging, timing, and error handling."""
+def run_task(name, func, db_path=None):
+    """Run *func* with logging, timing, error handling, and run tracking.
+
+    If db_path is provided, records start/end in the per-profile
+    task_runs table so the watchdog can detect stalled runs.
+    """
     logging.info(f"[TASK START] {name}")
     start = time.time()
+
+    tracker = None
+    if db_path:
+        try:
+            from task_watchdog import track_run
+            tracker = track_run(db_path, name)
+            tracker.__enter__()
+        except Exception:
+            tracker = None
+
     try:
         func()
         elapsed = time.time() - start
         logging.info(f"[TASK DONE]  {name} ({elapsed:.1f}s)")
-    except Exception:
+        if tracker:
+            try:
+                tracker.__exit__(None, None, None)
+            except Exception:
+                pass
+    except Exception as exc:
         elapsed = time.time() - start
         logging.exception(f"[TASK FAIL]  {name} ({elapsed:.1f}s)")
+        if tracker:
+            try:
+                tracker.__exit__(type(exc), exc, exc.__traceback__)
+            except Exception:
+                pass
 
 
 # ── Segment Cycle ────────────────────────────────────────────────────
@@ -115,53 +140,144 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
 
     All task functions receive ctx — no config.* globals are mutated.
     """
+    # Ensure per-profile DB tables exist before any task touches them
+    from journal import init_db
+    init_db(ctx.db_path)
+
     seg_label = ctx.display_name or ctx.segment
     logging.info(f"--- [{seg_label.upper()}] segment cycle start ---")
 
-    if run_scan:
-        run_task(
-            f"[{seg_label}] Aggressive Scan & Trade",
-            lambda: _task_aggressive_scan_and_trade(ctx),
-        )
-
+    # CRITICAL ORDERING: exits BEFORE scan.
+    # Exits are cheap (~1 sec per profile) and protect realized P&L.
+    # Scans can take 5-30 minutes and sometimes hang (yfinance timeouts,
+    # Alpaca rate limits, hung API calls). If the scan hangs BEFORE
+    # exits run, held positions pass their take-profit / stop-loss
+    # thresholds without firing — realized P&L evaporates. Running
+    # exits first guarantees they can't be blocked by a downstream
+    # failure in the scan pipeline.
     if run_exits:
         run_task(
             f"[{seg_label}] Check Exits",
             lambda: _task_check_exits(ctx),
+            db_path=ctx.db_path,
         )
         # Cancel stale limit orders every exit-check cycle
         run_task(
             f"[{seg_label}] Cancel Stale Orders",
             lambda: _task_cancel_stale_orders(ctx),
+            db_path=ctx.db_path,
         )
         # Update fill prices from Alpaca for slippage tracking
         run_task(
             f"[{seg_label}] Update Fill Prices",
             lambda: _task_update_fills(ctx),
+            db_path=ctx.db_path,
+        )
+        # Reconcile trade statuses — mark BUY rows closed when their
+        # positions go flat, and fix SELL rows whose status never
+        # flipped from 'open' to 'closed'.
+        run_task(
+            f"[{seg_label}] Reconcile Trade Statuses",
+            lambda: _task_reconcile_trade_statuses(ctx),
+            db_path=ctx.db_path,
+        )
+        if getattr(ctx, "is_virtual", False):
+            run_task(
+                f"[{seg_label}] Virtual Audit",
+                lambda: _task_virtual_audit(ctx),
+                db_path=ctx.db_path,
+            )
+
+    if run_scan:
+        run_task(
+            f"[{seg_label}] Scan & Trade",
+            lambda: _task_scan_and_trade(ctx),
+            db_path=ctx.db_path,
+        )
+        # Crisis monitoring (Phase 10) — BEFORE event tick so the event
+        # bus picks up crisis_state_change transitions in the same cycle
+        run_task(
+            f"[{seg_label}] Crisis Monitor",
+            lambda: _task_crisis_monitor(ctx),
+            db_path=ctx.db_path,
+        )
+        # Event bus tick (Phase 9) — detect new events, dispatch pending
+        run_task(
+            f"[{seg_label}] Event Bus Tick",
+            lambda: _task_event_tick(ctx),
+            db_path=ctx.db_path,
+        )
+        # Run watchdog — detect any task_runs rows stuck in 'running'
+        # state for > 30 minutes and alert. Cheap, idempotent.
+        run_task(
+            f"[{seg_label}] Run Watchdog",
+            lambda: _task_run_watchdog(ctx),
+            db_path=ctx.db_path,
         )
 
     if run_predictions:
         run_task(
             f"[{seg_label}] Resolve AI Predictions",
             lambda: _task_resolve_predictions(ctx),
+            db_path=ctx.db_path,
         )
 
     if run_snapshot:
         run_task(
             f"[{seg_label}] Daily Snapshot",
             lambda: _task_daily_snapshot(ctx),
+            db_path=ctx.db_path,
         )
         # Self-tuning runs once per day alongside the daily snapshot
         if getattr(ctx, "enable_self_tuning", True):
             run_task(
                 f"[{seg_label}] Self-Tune",
                 lambda: _task_self_tune(ctx),
+            db_path=ctx.db_path,
             )
+        # Meta-model retraining (Phase 1) — daily at snapshot time
+        run_task(
+            f"[{seg_label}] Meta-Model Retrain",
+            lambda: _task_retrain_meta_model(ctx),
+            db_path=ctx.db_path,
+        )
+        # Alpha decay monitoring (Phase 3) — snapshot + detect + deprecate
+        run_task(
+            f"[{seg_label}] Alpha Decay Monitor",
+            lambda: _task_alpha_decay(ctx),
+            db_path=ctx.db_path,
+        )
+        # SEC filing analysis (Phase 4) — fetch new filings, diff, alert
+        run_task(
+            f"[{seg_label}] SEC Filing Monitor",
+            lambda: _task_sec_filings(ctx),
+            db_path=ctx.db_path,
+        )
+        # Auto-strategy lifecycle (Phase 7) — promote matured shadows, retire failed
+        run_task(
+            f"[{seg_label}] Auto-Strategy Lifecycle",
+            lambda: _task_auto_strategy_lifecycle(ctx),
+            db_path=ctx.db_path,
+        )
+        # Daily DB backup with rotation (proprietary training data)
+        run_task(
+            f"[{seg_label}] DB Backup",
+            lambda: _task_db_backup(ctx),
+            db_path=ctx.db_path,
+        )
+        # Weekly proposal generation runs on Sundays; on other days this task
+        # is a near-immediate no-op.
+        run_task(
+            f"[{seg_label}] Auto-Strategy Generation",
+            lambda: _task_auto_strategy_generation(ctx),
+            db_path=ctx.db_path,
+        )
 
     if run_summary:
         run_task(
             f"[{seg_label}] Daily Summary Email",
             lambda: _task_daily_summary_email(ctx),
+            db_path=ctx.db_path,
         )
 
     logging.info(f"--- [{seg_label.upper()}] segment cycle end ---")
@@ -170,11 +286,28 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
 # ── Helpers ─────────────────────────────────────────────────────────
 
 def run_full_screen_for_segment(ctx, seg):
-    """Run the standard equity screener with ctx-specific parameters."""
-    from screener import screen_by_price_range, find_volume_surges, \
-        find_momentum_stocks, find_breakouts
+    """Run the standard equity screener with ctx-specific parameters.
 
-    universe = seg.get("universe")
+    Uses dynamic universe discovery first, falls back to hardcoded lists.
+    """
+    from screener import screen_by_price_range, find_volume_surges, \
+        find_momentum_stocks, find_breakouts, screen_dynamic_universe
+
+    hardcoded_universe = seg.get("universe")
+
+    # Try dynamic universe first (cached 24h), fall back to hardcoded
+    try:
+        universe = screen_dynamic_universe(
+            min_price=ctx.min_price,
+            max_price=ctx.max_price,
+            min_volume=ctx.min_volume,
+            market_type=ctx.segment,
+            fallback_universe=hardcoded_universe,
+            ctx=ctx,
+        )
+    except Exception:
+        universe = hardcoded_universe
+
     candidates = screen_by_price_range(
         min_price=ctx.min_price,
         max_price=ctx.max_price,
@@ -337,11 +470,11 @@ def _build_scan_summary(ctx, candidates, summary):
 # ── Task Implementations ─────────────────────────────────────────────
 # Each task receives a UserContext and passes it through.
 
-def _task_aggressive_scan_and_trade(ctx):
-    """Screen the segment's universe and auto-trade with AI review."""
+def _task_scan_and_trade(ctx):
+    """Screen the segment's universe and auto-trade via the AI-first pipeline."""
     from screener import screen_by_price_range, find_volume_surges, \
         find_momentum_stocks, find_breakouts, run_crypto_screen
-    from aggressive_trader import run_aggressive_scan_and_trade
+    from trade_pipeline import run_trade_cycle
     from notifications import notify_trade, notify_veto
 
     seg_label = ctx.display_name or ctx.segment
@@ -406,8 +539,8 @@ def _task_aggressive_scan_and_trade(ctx):
         )
         return
 
-    logging.info(f"[{seg_label}] Running aggressive scan on {len(symbols)} candidates")
-    summary = run_aggressive_scan_and_trade(symbols, ctx=ctx)
+    logging.info(f"[{seg_label}] Running scan on {len(symbols)} candidates")
+    summary = run_trade_cycle(symbols, ctx=ctx)
     logging.info(
         f"[{seg_label}] Trade summary: "
         f"buys={summary.get('buys', 0)}, "
@@ -583,6 +716,63 @@ def _task_update_fills(ctx):
         logging.exception(f"[{seg_label}] Failed to update fill prices")
 
 
+def _task_virtual_audit(ctx):
+    """Run data integrity checks on a virtual profile every exit cycle."""
+    from virtual_audit import audit_virtual_profile
+    seg_label = ctx.display_name or ctx.segment
+    try:
+        problems = audit_virtual_profile(
+            db_path=ctx.db_path,
+            initial_capital=getattr(ctx, "initial_capital", 100000.0),
+            profile_name=seg_label,
+        )
+        if problems:
+            _safe_log_activity(
+                getattr(ctx, "profile_id", 0), ctx.user_id,
+                "virtual_audit",
+                f"Data Integrity Warning: {len(problems)} issue(s)",
+                "\n".join(f"- {p}" for p in problems),
+            )
+    except Exception:
+        logging.exception(f"[{seg_label}] Virtual audit failed")
+
+
+def _task_reconcile_trade_statuses(ctx):
+    """Periodically reconcile trades.status.
+
+    For virtual profiles: the internal ledger IS the source of truth,
+    so we derive open_symbols from get_virtual_positions() instead of
+    asking Alpaca (which holds a combined view of all profiles sharing
+    the same account).
+
+    For non-virtual profiles: Alpaca is the source of truth (original
+    behavior).
+    """
+    from journal import reconcile_trade_statuses
+    seg_label = ctx.display_name or ctx.segment
+    try:
+        if getattr(ctx, "is_virtual", False):
+            from journal import get_virtual_positions
+            virtual_pos = get_virtual_positions(db_path=ctx.db_path)
+            open_symbols = {p["symbol"] for p in virtual_pos if p["qty"] > 0}
+        else:
+            from client import get_api
+            api = get_api(ctx)
+            positions = api.list_positions()
+            open_symbols = {p.symbol for p in positions}
+        result = reconcile_trade_statuses(
+            db_path=ctx.db_path, open_symbols=open_symbols,
+        )
+        total = result["sells_fixed"] + result["buys_fixed"]
+        if total > 0:
+            logging.info(
+                f"[{seg_label}] Reconciled trade statuses: "
+                f"{result['sells_fixed']} sells, {result['buys_fixed']} buys"
+            )
+    except Exception:
+        logging.exception(f"[{seg_label}] Reconcile trade statuses failed")
+
+
 def _task_check_exits(ctx):
     """Check stop-loss and take-profit triggers on open positions."""
     from trader import check_exits
@@ -616,6 +806,17 @@ def _task_check_exits(ctx):
                 f"Reason: {reason}",
                 symbol=sym,
             )
+            # Add to cooldown list so the next scan doesn't immediately
+            # re-enter the same symbol (the ASTS churn bug).
+            try:
+                from journal import record_exit
+                record_exit(
+                    ctx.db_path, sym,
+                    trigger=r.get("trigger", "exit"),
+                    exit_price=r.get("exit_price", 0) or 0,
+                )
+            except Exception as exc:
+                logging.debug(f"record_exit failed: {exc}")
     else:
         logging.info(f"[{seg_label}] No exit triggers fired.")
 
@@ -631,30 +832,72 @@ def _task_resolve_predictions(ctx):
 
 
 def _task_daily_snapshot(ctx):
-    """Save end-of-day portfolio snapshot."""
+    """Save end-of-day portfolio snapshot.
+
+    Computes daily_pnl as (today's equity - previous snapshot's equity) so
+    the daily_pnl column is actually populated. Previously it was always
+    NULL, which broke the equity-delta curve in metrics.
+    """
     from journal import init_db, log_daily_snapshot
     from client import get_account_info, get_positions
+    import sqlite3 as _sqlite3
 
     init_db(ctx.db_path)
     account = get_account_info(ctx=ctx)
     positions = get_positions(ctx=ctx)
+    equity = account["equity"]
+
+    # Find the most recent prior snapshot to compute a real daily_pnl.
+    # Use Python's local `date.today()` to match what log_daily_snapshot
+    # writes — SQLite's `date('now')` is UTC and would disagree across
+    # midnight UTC, causing the task to either skip its delta calc or
+    # double-count a same-day write.
+    from datetime import date as _date
+    today_str = _date.today().isoformat()
+    prior_equity = None
+    try:
+        conn = _sqlite3.connect(ctx.db_path)
+        row = conn.execute(
+            "SELECT equity FROM daily_snapshots "
+            "WHERE date < ? ORDER BY date DESC LIMIT 1",
+            (today_str,),
+        ).fetchone()
+        conn.close()
+        if row and row[0] is not None:
+            prior_equity = float(row[0])
+    except Exception:
+        prior_equity = None
+
+    daily_pnl = None
+    if prior_equity is not None:
+        daily_pnl = round(equity - prior_equity, 2)
+
     log_daily_snapshot(
-        equity=account["equity"],
+        equity=equity,
         cash=account["cash"],
         portfolio_value=account["portfolio_value"],
         num_positions=len(positions),
+        daily_pnl=daily_pnl,
         db_path=ctx.db_path,
     )
     logging.info(
-        f"Daily snapshot saved: equity=${account['equity']:,.2f}, "
-        f"positions={len(positions)}, cash=${account['cash']:,.2f}"
+        f"Daily snapshot saved: equity=${equity:,.2f}, "
+        f"positions={len(positions)}, cash=${account['cash']:,.2f}, "
+        f"daily_pnl={'$%.2f' % daily_pnl if daily_pnl is not None else 'N/A'}"
     )
 
 
 def _task_self_tune(ctx):
-    """Run self-tuning auto-adjustments based on AI prediction performance."""
-    from self_tuning import apply_auto_adjustments
+    """Run self-tuning auto-adjustments based on AI prediction performance.
 
+    Always logs an activity entry with the outcome — even when nothing
+    changed. Without this, the tuner appears dormant to the user even
+    though it's running daily and evaluating.
+    """
+    from self_tuning import apply_auto_adjustments, describe_tuning_state
+
+    seg_label = ctx.display_name or ctx.segment
+    state = describe_tuning_state(ctx)
     adjustments = apply_auto_adjustments(ctx)
     if adjustments:
         seg_label = ctx.display_name or ctx.segment
@@ -691,7 +934,453 @@ def _task_self_tune(ctx):
             "self_tune", title, "\n".join(detail_parts),
         )
     else:
-        logging.info("Self-tuning: no adjustments needed.")
+        # No changes made — but log WHY so the user sees the tuner ran
+        # and evaluated. Silent no-ops were confusing.
+        logging.info(f"[{seg_label}] Self-tune: no adjustments needed — {state['message']}")
+        if state.get("can_tune"):
+            title = "Self-Tuning: evaluated, no changes needed"
+            detail = (
+                f"Tuner reviewed {state['resolved']} resolved AI predictions and "
+                f"found no parameters worth adjusting — current settings are "
+                f"performing within acceptable bounds."
+            )
+        else:
+            title = "Self-Tuning: waiting for data"
+            detail = state["message"]
+        _safe_log_activity(
+            getattr(ctx, "profile_id", 0), ctx.user_id,
+            "self_tune", title, detail,
+        )
+
+
+def _task_retrain_meta_model(ctx):
+    """Retrain the meta-model on accumulated resolved predictions.
+
+    Phase 1 of the Quant Fund Evolution roadmap. See ROADMAP.md.
+
+    Needs >=100 resolved predictions with features_json. If insufficient data,
+    simply logs and exits (no error). Saves pickle to meta_model_{id}.pkl.
+    """
+    try:
+        import meta_model
+        profile_id = getattr(ctx, "profile_id", 0)
+        seg_label = ctx.display_name or ctx.segment
+        bundle = meta_model.train_and_save(profile_id, ctx.db_path)
+        if bundle is None:
+            logging.info(f"[{seg_label}] Meta-model: insufficient training data yet")
+            return
+
+        metrics = bundle["metrics"]
+        top_features = bundle["feature_importance"][:5]
+        top_str = ", ".join(f"{n}={i:.3f}" for n, i in top_features)
+        logging.info(f"[{seg_label}] Meta-model retrained: "
+                     f"AUC={metrics['auc']:.3f}, acc={metrics['accuracy']:.3f}, "
+                     f"n={metrics['n_samples']}, top features: {top_str}")
+
+        _safe_log_activity(
+            getattr(ctx, "profile_id", 0), ctx.user_id,
+            "meta_model",
+            f"Meta-Model Retrained: AUC {metrics['auc']:.3f}",
+            f"Trained on {metrics['n_samples']} predictions. "
+            f"Accuracy {metrics['accuracy']:.1%}. "
+            f"Top features: {top_str}",
+        )
+    except Exception as exc:
+        logging.warning(f"Meta-model retrain failed: {exc}")
+
+
+def _task_alpha_decay(ctx):
+    """Run the daily alpha decay monitoring cycle.
+
+    Phase 3 of the Quant Fund Evolution roadmap. See ROADMAP.md.
+
+    For every distinct strategy_type in ai_predictions:
+      1. Write today's rolling-window snapshot to signal_performance_history
+      2. Check for decay (rolling Sharpe < lifetime - 30% for 30+ days)
+      3. Auto-deprecate decayed strategies
+      4. Restore deprecated strategies whose edge has recovered
+
+    The trade pipeline's _rank_candidates() skips deprecated strategy signals.
+    """
+    try:
+        from alpha_decay import run_decay_cycle
+        seg_label = ctx.display_name or ctx.segment
+        summary = run_decay_cycle(ctx.db_path)
+
+        logging.info(
+            f"[{seg_label}] Alpha decay: "
+            f"snapshotted={len(summary['strategies_snapshotted'])}, "
+            f"newly_deprecated={summary['newly_deprecated']}, "
+            f"restored={summary['restored']}, "
+            f"errors={len(summary['errors'])}"
+        )
+
+        # Surface meaningful events as activity log entries
+        from display_names import display_name
+        for stype in summary["newly_deprecated"]:
+            _safe_log_activity(
+                getattr(ctx, "profile_id", 0), ctx.user_id,
+                "alpha_decay",
+                f"Strategy deprecated: {display_name(stype)}",
+                f"Alpha decay threshold crossed — strategy auto-retired. "
+                f"The trade pipeline will now skip signals from this strategy."
+            )
+        for stype in summary["restored"]:
+            _safe_log_activity(
+                getattr(ctx, "profile_id", 0), ctx.user_id,
+                "alpha_decay",
+                f"Strategy restored: {display_name(stype)}",
+                "Rolling edge recovered — strategy is active again."
+            )
+    except Exception as exc:
+        logging.warning(f"Alpha decay monitor failed: {exc}")
+
+
+def _task_sec_filings(ctx):
+    """Monitor SEC filings for watchlist symbols and AI-analyze material changes.
+
+    Phase 4 of the Quant Fund Evolution roadmap. See ROADMAP.md.
+
+    Scans the profile's current positions + any symbol that's been in a
+    recent shortlist for new 10-K/10-Q/8-K filings. Each new filing is
+    fetched, key sections extracted, and compared to the previous filing of
+    the same type via AI. Material language changes are saved as alerts
+    visible to the trade pipeline and dashboard.
+
+    Crypto profiles are skipped — SEC filings don't apply.
+    """
+    # SEC doesn't apply to crypto
+    if ctx is not None and ctx.segment == "crypto":
+        return
+
+    try:
+        from sec_filings import monitor_symbol
+        from client import get_positions
+
+        seg_label = ctx.display_name or ctx.segment
+
+        # Build watchlist: held positions + last cycle's shortlist (if any)
+        symbols = set()
+        try:
+            positions = get_positions(ctx=ctx)
+            for p in positions:
+                # Equity symbols only (no slashes)
+                if "/" not in p.get("symbol", ""):
+                    symbols.add(p["symbol"])
+        except Exception:
+            pass
+
+        # Add recent shortlist symbols from cycle_data if available
+        try:
+            import json as _json
+            import os as _os
+            cycle_file = f"cycle_data_{getattr(ctx, 'profile_id', 0)}.json"
+            if _os.path.exists(cycle_file):
+                with open(cycle_file) as f:
+                    cycle_data = _json.load(f)
+                for c in cycle_data.get("shortlist", [])[:10]:
+                    sym = c.get("symbol", "")
+                    if sym and "/" not in sym:
+                        symbols.add(sym)
+        except Exception:
+            pass
+
+        if not symbols:
+            logging.info(f"[{seg_label}] SEC filings: no symbols to check")
+            return
+
+        logging.info(f"[{seg_label}] SEC filings: checking {len(symbols)} symbols")
+
+        total_new = 0
+        total_alerts = 0
+        for sym in sorted(symbols):
+            try:
+                summary = monitor_symbol(sym, ctx.db_path, ctx=ctx, days_back=180)
+                total_new += summary["new_filings"]
+                total_alerts += len(summary["alerts"])
+                for alert in summary["alerts"]:
+                    _safe_log_activity(
+                        getattr(ctx, "profile_id", 0), ctx.user_id,
+                        "sec_alert",
+                        f"SEC Alert: {alert['symbol']} {alert['form']}",
+                        f"{alert['severity'].upper()} severity — {alert['summary']}",
+                        symbol=alert["symbol"],
+                    )
+            except Exception as exc:
+                logging.debug(f"SEC monitor failed for {sym}: {exc}")
+
+        logging.info(f"[{seg_label}] SEC filings: {total_new} new, {total_alerts} alerts")
+
+    except Exception as exc:
+        logging.warning(f"SEC filing monitor failed: {exc}")
+
+
+def _task_run_watchdog(ctx):
+    """Detect stalled task runs and alert.
+
+    Any row in `task_runs` with status='running' + started_at older than
+    30 min is treated as stalled. Mark it, log, emit an event, send a
+    notification email. Idempotent — repeated watchdog runs don't
+    re-alert the same stalled row.
+    """
+    try:
+        from task_watchdog import check_stalled_runs
+        seg_label = ctx.display_name or ctx.segment
+        stalled = check_stalled_runs(ctx.db_path, stall_minutes=30)
+        if not stalled:
+            return
+
+        logging.warning(
+            f"[{seg_label}] Watchdog: {len(stalled)} stalled tasks detected"
+        )
+        for row in stalled:
+            elapsed = row.get("minutes_elapsed", 0) or 0
+            logging.warning(
+                f"  STALLED: {row['task_name']} "
+                f"(started {row['started_at']}, {elapsed:.0f} min elapsed)"
+            )
+            _safe_log_activity(
+                getattr(ctx, "profile_id", 0), ctx.user_id,
+                "task_stalled",
+                f"Stalled task: {row['task_name']}",
+                f"Task started at {row['started_at']} but didn't complete "
+                f"within 30 minutes ({elapsed:.0f} min elapsed). Likely a "
+                f"hung API call or process kill. Investigate in journalctl.",
+            )
+            try:
+                from event_bus import emit
+                emit(
+                    ctx.db_path, "task_stalled",
+                    symbol=None, severity="high",
+                    payload={
+                        "task_name": row["task_name"],
+                        "started_at": row["started_at"],
+                        "minutes_elapsed": round(elapsed, 1),
+                    },
+                    dedup_key=f"task_stalled:{row['id']}",
+                )
+            except Exception:
+                pass
+            try:
+                from notifications import notify_error
+                notify_error(
+                    error_msg=(
+                        f"Stalled task: {row['task_name']} "
+                        f"(elapsed {elapsed:.0f} min)"
+                    ),
+                    context=(
+                        f"Profile: {seg_label}\n"
+                        f"Task started at: {row['started_at']}\n"
+                        f"Elapsed: {elapsed:.0f} minutes without completion.\n\n"
+                        f"The task was marked stalled by the watchdog. "
+                        f"Check journalctl -u quantopsai for the underlying "
+                        f"failure mode."
+                    ),
+                    ctx=ctx,
+                )
+            except Exception as exc:
+                logging.debug(f"Watchdog notification failed: {exc}")
+    except Exception as exc:
+        logging.warning(f"Watchdog task failed: {exc}")
+
+
+def _task_db_backup(ctx):
+    """Daily SQLite backup with rotation.
+
+    Per-profile DBs hold all proprietary training data. A plain `cp` of
+    a WAL-mode database can corrupt the copy — `backup_db.backup_all`
+    uses SQLite's native backup API to produce consistent snapshots
+    even while other tasks are writing.
+
+    Runs once per day from the daily snapshot block so we get exactly
+    one backup per profile per day. Dedup is per-date: re-running the
+    task later the same day overwrites atomically (atomic via .tmp).
+    """
+    try:
+        from backup_db import backup_all
+        seg_label = ctx.display_name or ctx.segment
+        project_dir = os.path.dirname(os.path.abspath(__file__))
+        summary = backup_all(project_dir)
+        logging.info(
+            f"[{seg_label}] DB backup: "
+            f"backed_up={summary['backed_up']}, "
+            f"pruned={summary['pruned']}, "
+            f"failed={summary['failed']}"
+        )
+        if summary["failed"] > 0:
+            logging.warning(f"[{seg_label}] DB backup had {summary['failed']} failures")
+    except Exception as exc:
+        logging.warning(f"DB backup task failed: {exc}")
+
+
+def _task_auto_strategy_lifecycle(ctx):
+    """Daily promotion / retirement pass for auto-generated strategies.
+
+    Phase 7 of the Quant Fund Evolution roadmap. See ROADMAP.md.
+
+    Promotes shadow strategies that have cleared the minimum prediction
+    count and Sharpe threshold to `active`. Retires shadows that have
+    exhausted their shadow period without developing an edge.
+    """
+    try:
+        from strategy_lifecycle import tick
+        seg_label = ctx.display_name or ctx.segment
+        result = tick(ctx.db_path)
+        n_promoted = len(result.get("promoted", []))
+        n_retired = len(result.get("retired", []))
+        logging.info(
+            f"[{seg_label}] Auto-strategy lifecycle: promoted={n_promoted}, retired={n_retired}"
+        )
+        from display_names import display_name
+        for ev in result.get("promoted", []):
+            _safe_log_activity(
+                getattr(ctx, "profile_id", 0), ctx.user_id,
+                "auto_strategy_promoted",
+                f"Strategy promoted to active: {display_name(ev['name'])}",
+                f"Shadow Sharpe {ev.get('sharpe', 0):.2f} after "
+                f"{ev.get('n', 0)} predictions — now trading live capital."
+            )
+        for ev in result.get("retired", []):
+            _safe_log_activity(
+                getattr(ctx, "profile_id", 0), ctx.user_id,
+                "auto_strategy_retired",
+                f"Strategy retired: {display_name(ev['name'])}",
+                f"Shadow period exceeded ({ev.get('shadow_days', 0)}d) "
+                f"with rolling Sharpe {ev.get('sharpe', 0):.2f}."
+            )
+    except Exception as exc:
+        logging.warning(f"Auto-strategy lifecycle failed: {exc}")
+
+
+def _task_auto_strategy_generation(ctx):
+    """Weekly AI-driven proposal + validation of new auto-strategies.
+
+    Phase 7 of the Quant Fund Evolution roadmap. See ROADMAP.md.
+
+    Runs on Sundays only. Asks the AI for 3 new strategy specs tailored
+    to recent performance, validates each via Phase 2 rigorous_backtest,
+    and promotes passers into shadow mode.
+    """
+    import datetime as _dt
+    # Only run on Sundays (weekday 6 = Sunday in Python's 0=Mon convention)
+    if _dt.datetime.utcnow().weekday() != 6:
+        return
+
+    try:
+        from strategy_proposer import propose_strategies
+        from strategy_generator import save_spec
+        from strategy_lifecycle import validate_and_promote
+        from multi_strategy import get_allocation_summary
+
+        seg_label = ctx.display_name or ctx.segment
+
+        # Recent performance summary — drives the proposer's context
+        try:
+            perf = get_allocation_summary(ctx.db_path, ctx.segment)
+        except Exception:
+            perf = []
+        recent_perf = [
+            {"name": p["name"], "sharpe": p.get("rolling_sharpe", 0),
+             "win_rate": p.get("rolling_win_rate", 0),
+             "n_predictions": p.get("rolling_n", 0)}
+            for p in perf
+        ]
+        ctx_summary = (f"{ctx.segment} market, profile '{seg_label}'. "
+                       f"Current strategy count: {len(perf)}.")
+
+        proposals = propose_strategies(
+            ctx_summary=ctx_summary,
+            recent_performance=recent_perf,
+            n_proposals=3,
+            ai_provider=ctx.ai_provider,
+            ai_model=ctx.ai_model,
+            ai_api_key=ctx.ai_api_key,
+            market_types=[ctx.segment],
+            db_path=ctx.db_path,
+        )
+        logging.info(f"[{seg_label}] Proposer returned {len(proposals)} valid specs")
+
+        validated = 0
+        retired = 0
+        for spec in proposals:
+            try:
+                spec_id = save_spec(ctx.db_path, spec)
+                result = validate_and_promote(ctx.db_path, spec_id, rigorous=True)
+                if result.get("outcome") == "validated":
+                    validated += 1
+                else:
+                    retired += 1
+            except Exception as exc:
+                logging.warning(f"Failed to validate proposal {spec.get('name')}: {exc}")
+
+        logging.info(
+            f"[{seg_label}] Auto-strategy generation: "
+            f"proposed={len(proposals)}, validated={validated}, retired={retired}"
+        )
+        if validated > 0:
+            _safe_log_activity(
+                getattr(ctx, "profile_id", 0), ctx.user_id,
+                "auto_strategy_generated",
+                f"{validated} new auto-strategies entered shadow mode",
+                f"AI proposed {len(proposals)} strategies; {validated} cleared "
+                f"the Phase 2 validation gate and are now running in shadow mode."
+            )
+    except Exception as exc:
+        logging.warning(f"Auto-strategy generation failed: {exc}")
+
+
+def _task_crisis_monitor(ctx):
+    """Detect cross-asset crisis conditions and persist transitions (Phase 10).
+
+    Runs before every trade cycle. Records state transitions and emits
+    `crisis_state_change` events — handled by the existing event bus
+    (log_activity handler flags the change in the activity feed).
+    """
+    try:
+        from crisis_state import run_crisis_tick
+        seg_label = ctx.display_name or ctx.segment
+        result = run_crisis_tick(ctx.db_path)
+        if result.get("changed"):
+            logging.warning(
+                f"[{seg_label}] Crisis transition: "
+                f"{result['prior_level']} → {result['level']} "
+                f"(size x{result['size_multiplier']:.2f}, "
+                f"{len(result['signals'])} signals)"
+            )
+        else:
+            logging.info(
+                f"[{seg_label}] Crisis monitor: level={result['level']} "
+                f"(unchanged, {len(result['signals'])} signals)"
+            )
+    except Exception as exc:
+        logging.warning(f"Crisis monitor failed: {exc}")
+
+
+def _task_event_tick(ctx):
+    """Run event detectors and dispatch pending events (Phase 9).
+
+    Idempotent: each detector uses a dedup key so repeat invocations
+    don't duplicate events. Handler failures are captured per-handler
+    and do not abort the tick.
+    """
+    try:
+        from event_bus import dispatch_pending
+        from event_detectors import run_all_detectors
+        from event_handlers import register_default_handlers
+
+        register_default_handlers()
+        emitted = run_all_detectors(ctx)
+        summary = dispatch_pending(ctx.db_path, ctx, limit=20)
+
+        seg_label = ctx.display_name or ctx.segment
+        n_emitted = sum(v for v in emitted.values() if v > 0)
+        logging.info(
+            f"[{seg_label}] Event tick: emitted={n_emitted}, "
+            f"dispatched={summary['dispatched']}, "
+            f"handler_errors={summary['handler_errors']}"
+        )
+    except Exception as exc:
+        logging.warning(f"Event tick failed: {exc}")
 
 
 def _task_daily_summary_email(ctx):
@@ -757,16 +1446,38 @@ def main_loop(active_segments=None, legacy_mode=False):
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    # ── Interval tracking (last-run timestamps) ──────────────────────
+    # ── Interval tracking ────────────────────────────────────────────
+    # Two kinds of state:
+    #   - `profile_runs[profile_id]`: per-profile last-run timestamps. Each
+    #     profile clocks its own scan/exit/predict interval so one slow
+    #     cycle on profile N doesn't starve profile M. Solves the
+    #     "Large Cap never runs" starvation bug (2026-04-14).
+    #   - `last_run`: kept for legacy segment mode + daily_snapshot (global
+    #     date-stamp that's shared across all profiles by design — one
+    #     snapshot per calendar day system-wide).
+    profile_runs: Dict[int, Dict[str, float]] = {}
     last_run = {
-        "aggressive_scan": 0.0,
-        "check_exits": 0.0,
-        "resolve_predictions": 0.0,
-        "daily_snapshot": None,  # Track by date string
+        "scan": 0.0,                 # legacy-mode only
+        "check_exits": 0.0,          # legacy-mode only
+        "resolve_predictions": 0.0,  # legacy-mode only
+        "daily_snapshot": None,
     }
 
-    INTERVAL_AGGRESSIVE_SCAN = 30 * 60   # 30 minutes
-    INTERVAL_CHECK_EXITS = 15 * 60       # 15 minutes
+    def _get_profile_runs(pid: int) -> Dict[str, float]:
+        """Return per-profile last-run dict, initializing on first access."""
+        if pid not in profile_runs:
+            profile_runs[pid] = {
+                "scan": 0.0,
+                "check_exits": 0.0,
+                "resolve_predictions": 0.0,
+            }
+        return profile_runs[pid]
+
+    INTERVAL_SCAN = 15 * 60   # 15 minutes
+    # Exits check every 5 min — cheap, time-critical (TP/SL triggers
+    # need to fire within minutes of price hitting threshold, not whenever
+    # the 15-min scan happens to complete).
+    INTERVAL_CHECK_EXITS = 5 * 60
     INTERVAL_RESOLVE_PREDICTIONS = 60 * 60  # 60 minutes
 
     while not _shutdown:
@@ -788,13 +1499,23 @@ def main_loop(active_segments=None, legacy_mode=False):
         current_time = time.time()
         market_open = is_market_open(now)
 
-        do_scan = (current_time - last_run["aggressive_scan"]
-                   >= INTERVAL_AGGRESSIVE_SCAN)
+        # Legacy-mode global interval checks (used only by the legacy
+        # segment-based branch below — profile branch computes these
+        # per-profile on each iteration).
+        do_scan = (current_time - last_run["scan"]
+                   >= INTERVAL_SCAN)
         do_exits = (current_time - last_run["check_exits"]
                     >= INTERVAL_CHECK_EXITS)
         do_predictions = (current_time - last_run["resolve_predictions"]
                           >= INTERVAL_RESOLVE_PREDICTIONS)
-        do_snapshot = (now.hour == 15 and now.minute >= 55
+        # Snapshot should fire once per day, on or after the close of the
+        # US cash session. The old trigger required exactly 15:55-15:59 —
+        # if the scheduler was restarted or paused through that 5-minute
+        # window, the day silently got no snapshot. New trigger: ≥ 15:55
+        # in server local time, any later time that same day is also fine,
+        # and we dedupe using `last_run["daily_snapshot"]` (the date string).
+        _after_close = (now.hour > 15 or (now.hour == 15 and now.minute >= 55))
+        do_snapshot = (_after_close
                        and last_run["daily_snapshot"] != today_str)
 
         ran_something = False
@@ -855,46 +1576,103 @@ def main_loop(active_segments=None, legacy_mode=False):
                     break
             has_crypto = has_always_on
 
-            if do_scan or do_exits or do_predictions or do_snapshot:
-                for prof in profiles:
-                    if _shutdown:
-                        break
-                    try:
-                        ctx = _build_ctx_from_profile(prof)
-                    except Exception:
-                        logging.exception(
-                            f"Failed to build context for profile #{prof['id']} ({prof['name']})")
+            # Per-profile due-checks: collect all profiles that are due,
+            # then run them in parallel (ThreadPoolExecutor). With 2+ CPUs
+            # this cuts total wall-clock from ~15 min (sequential) to ~5 min
+            # (the slowest single profile).
+            due_profiles = []
+            for prof in profiles:
+                if _shutdown:
+                    break
+                pr = _get_profile_runs(prof["id"])
+                now_t = time.time()
+                prof_do_scan = (now_t - pr["scan"]) >= INTERVAL_SCAN
+                prof_do_exits = (now_t - pr["check_exits"]) >= INTERVAL_CHECK_EXITS
+                prof_do_predictions = (now_t - pr["resolve_predictions"]) >= INTERVAL_RESOLVE_PREDICTIONS
+                if not (prof_do_scan or prof_do_exits or prof_do_predictions or do_snapshot):
+                    continue
+
+                try:
+                    ctx = _build_ctx_from_profile(prof)
+                except Exception:
+                    logging.exception(
+                        f"Failed to build context for profile #{prof['id']} ({prof['name']})")
+                    continue
+
+                if not ctx.is_within_schedule(now):
+                    continue
+
+                if ctx.skip_first_minutes > 0 and now.weekday() < 5:
+                    market_open_time = now.replace(
+                        hour=9, minute=30, second=0, microsecond=0)
+                    skip_until = market_open_time + timedelta(
+                        minutes=ctx.skip_first_minutes)
+                    if market_open_time <= now < skip_until:
+                        logging.info(
+                            f"Skipping profile {prof['name']} — within "
+                            f"first {ctx.skip_first_minutes} minutes of "
+                            f"market open (until {skip_until.strftime('%H:%M')} ET)")
                         continue
 
-                    if not ctx.is_within_schedule(now):
-                        continue  # Skip this profile — not within its schedule
+                due_profiles.append({
+                    "prof": prof, "ctx": ctx, "pr": pr,
+                    "do_scan": prof_do_scan, "do_exits": prof_do_exits,
+                    "do_predictions": prof_do_predictions,
+                })
 
-                    # Feature 7: Skip first N minutes after market open
-                    if ctx.skip_first_minutes > 0 and now.weekday() < 5:
-                        market_open_time = now.replace(
-                            hour=9, minute=30, second=0, microsecond=0)
-                        skip_until = market_open_time + timedelta(
-                            minutes=ctx.skip_first_minutes)
-                        if market_open_time <= now < skip_until:
-                            logging.info(
-                                f"Skipping profile {prof['name']} — within "
-                                f"first {ctx.skip_first_minutes} minutes of "
-                                f"market open (until {skip_until.strftime('%H:%M')} ET)")
-                            continue
+            def _run_one_profile(item):
+                """Run a single profile's cycle. Called from thread pool."""
+                prof = item["prof"]
+                ctx = item["ctx"]
+                logging.info(
+                    f"=== Processing profile: {prof['name']} "
+                    f"(#{prof['id']}, {prof['market_type']}, "
+                    f"schedule={ctx.schedule_type}) — "
+                    f"scan={item['do_scan']} exits={item['do_exits']} "
+                    f"preds={item['do_predictions']} snap={do_snapshot} ==="
+                )
+                run_segment_cycle(
+                    ctx,
+                    run_scan=item["do_scan"], run_exits=item["do_exits"],
+                    run_predictions=item["do_predictions"],
+                    run_snapshot=do_snapshot, run_summary=do_snapshot,
+                )
+                # Stamp per-profile timestamps
+                finish_t = time.time()
+                pr = item["pr"]
+                if item["do_scan"]:
+                    pr["scan"] = finish_t
+                if item["do_exits"]:
+                    pr["check_exits"] = finish_t
+                if item["do_predictions"]:
+                    pr["resolve_predictions"] = finish_t
+                return prof["name"]
 
-                    logging.info(f"=== Processing profile: {prof['name']} (#{prof['id']}, {prof['market_type']}, schedule={ctx.schedule_type}) ===")
-                    run_segment_cycle(
-                        ctx,
-                        run_scan=do_scan, run_exits=do_exits,
-                        run_predictions=do_predictions,
-                        run_snapshot=do_snapshot, run_summary=do_snapshot,
-                    )
-                    ran_something = True
+            if due_profiles:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                max_workers = min(len(due_profiles), 3)
+                logging.info(
+                    f"Running {len(due_profiles)} profile(s) in parallel "
+                    f"(max_workers={max_workers})"
+                )
+                with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    futures = {
+                        pool.submit(_run_one_profile, item): item["prof"]["name"]
+                        for item in due_profiles
+                    }
+                    for future in as_completed(futures):
+                        name = futures[future]
+                        try:
+                            future.result()
+                            logging.info(f"Profile {name} completed")
+                        except Exception:
+                            logging.exception(f"Profile {name} failed")
+                ran_something = True
 
-        # Update timestamps
+        # Update global timestamps (legacy mode + snapshot dedup)
         if ran_something:
             if do_scan:
-                last_run["aggressive_scan"] = time.time()
+                last_run["scan"] = time.time()
             if do_exits:
                 last_run["check_exits"] = time.time()
             if do_predictions:
@@ -905,13 +1683,13 @@ def main_loop(active_segments=None, legacy_mode=False):
             # Write status file for the web UI countdown timers
             try:
                 status = {
-                    "last_scan": last_run["aggressive_scan"],
-                    "next_scan": last_run["aggressive_scan"] + INTERVAL_AGGRESSIVE_SCAN,
+                    "last_scan": last_run["scan"],
+                    "next_scan": last_run["scan"] + INTERVAL_SCAN,
                     "last_exit_check": last_run["check_exits"],
                     "next_exit_check": last_run["check_exits"] + INTERVAL_CHECK_EXITS,
                     "last_ai_resolve": last_run["resolve_predictions"],
                     "next_ai_resolve": last_run["resolve_predictions"] + INTERVAL_RESOLVE_PREDICTIONS,
-                    "scan_interval_min": INTERVAL_AGGRESSIVE_SCAN // 60,
+                    "scan_interval_min": INTERVAL_SCAN // 60,
                     "exit_interval_min": INTERVAL_CHECK_EXITS // 60,
                     "ai_interval_min": INTERVAL_RESOLVE_PREDICTIONS // 60,
                     "market_open": market_open,

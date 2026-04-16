@@ -466,34 +466,32 @@ footer {
     cursor: help;
     border-bottom: 1px dotted #888;
 }
-.tip:hover::after {
-    content: attr(data-tip);
-    position: absolute;
-    bottom: 100%;
-    left: 50%;
-    transform: translateX(-50%);
-    background: #333;
-    color: #fff;
-    padding: 0.4rem 0.6rem;
-    border-radius: 4px;
-    font-size: 0.75rem;
-    font-weight: normal;
-    white-space: normal;
-    width: max-content;
-    max-width: 250px;
-    z-index: 100;
-    line-height: 1.3;
-    pointer-events: none;
+/* Sortable table headers */
+.sortable {
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
 }
-.tip:hover::before {
-    content: '';
-    position: absolute;
-    bottom: 100%;
-    left: 50%;
-    transform: translateX(-50%) translateY(100%);
-    border: 5px solid transparent;
-    border-top-color: #333;
-    z-index: 100;
+.sortable:hover {
+    background: rgba(0,0,0,0.04);
+}
+.sort-arrow {
+    font-size: 0.65rem;
+    color: #888;
+    margin-left: 0.2rem;
+}
+.sortable.sort-asc .sort-arrow::after { content: ' ▲'; }
+.sortable.sort-desc .sort-arrow::after { content: ' ▼'; }
+
+/* Tooltip rendered to body via JS in base.html — this lets it escape
+   overflow-hidden parents (e.g. .overflow-auto on the Scalability table
+   was clipping the CSS pseudo-element approach). Defensively suppress
+   any pseudo-element rendering in case browser cache or framework CSS
+   tries to add one. */
+.tip::before, .tip::after,
+.tip:hover::before, .tip:hover::after {
+    content: none !important;
+    display: none !important;
 }
 
 @media (max-width: 768px) {

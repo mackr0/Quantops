@@ -199,23 +199,6 @@ def relative_strength_strategy(symbol, ctx=None, df=None,
             "volume_ratio": round(vol_ratio, 2),
         }
 
-    # SELL -- stock underperforming SPY with weak momentum
-    if not outperforming and rsi > 60:
-        return {
-            "symbol": symbol,
-            "signal": "SELL",
-            "reason": (
-                f"Underperforming SPY: stock {stock_5d_return:+.1f}% vs "
-                f"SPY {spy_5d_return:+.1f}% (5d), RSI {rsi:.1f}"
-            ),
-            "price": price,
-            "rsi": rsi,
-            "stock_5d_return": round(stock_5d_return, 2),
-            "spy_5d_return": round(spy_5d_return, 2),
-            "relative_strength": round(relative_strength, 2),
-            "volume_ratio": round(vol_ratio, 2),
-        }
-
     return {
         "symbol": symbol,
         "signal": "HOLD",
@@ -260,16 +243,6 @@ def dividend_yield_strategy(symbol, ctx=None, df=None,
                 f"Blue chip oversold: RSI {rsi:.1f} (< 35), "
                 f"price ${price:.2f} (> $50) -- dividend yield play"
             ),
-            "price": price,
-            "rsi": rsi,
-        }
-
-    # SELL -- RSI recovered
-    if rsi > 55 and price > 50:
-        return {
-            "symbol": symbol,
-            "signal": "SELL",
-            "reason": f"RSI recovered to {rsi:.1f} (> 55) -- exit dividend play",
             "price": price,
             "rsi": rsi,
         }
@@ -323,23 +296,6 @@ def ma_alignment_strategy(symbol, ctx=None, df=None):
             "reason": (
                 f"MA alignment: price ({price:.2f}) > EMA12 ({ema_12:.2f}) > "
                 f"SMA20 ({sma_20:.2f}) > SMA50 ({sma_50:.2f}), vol {vol_ratio:.1f}x"
-            ),
-            "price": price,
-            "rsi": rsi,
-            "ema_12": ema_12,
-            "sma_20": sma_20,
-            "sma_50": sma_50,
-            "volume_ratio": round(vol_ratio, 2),
-        }
-
-    # SELL -- price below SMA20
-    if price < sma_20:
-        return {
-            "symbol": symbol,
-            "signal": "SELL",
-            "reason": (
-                f"Price ({price:.2f}) below SMA20 ({sma_20:.2f}) -- "
-                f"alignment broken"
             ),
             "price": price,
             "rsi": rsi,

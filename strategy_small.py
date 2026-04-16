@@ -82,31 +82,6 @@ def mean_reversion_strategy(symbol, ctx=None, df=None,
         }
 
     # SELL -- price recovered to SMA or RSI normalized
-    if price >= sma_20:
-        return {
-            "symbol": symbol,
-            "signal": "SELL",
-            "reason": (
-                f"Price ({price:.2f}) returned to SMA20 ({sma_20:.2f}) -- "
-                f"mean reversion target hit"
-            ),
-            "price": price,
-            "rsi": rsi,
-            "sma_20": sma_20,
-            "pct_below_sma": round(pct_below_sma, 2),
-        }
-
-    if rsi > 55:
-        return {
-            "symbol": symbol,
-            "signal": "SELL",
-            "reason": f"RSI recovered to {rsi:.1f} (> 55) -- exit mean reversion",
-            "price": price,
-            "rsi": rsi,
-            "sma_20": sma_20,
-            "pct_below_sma": round(pct_below_sma, 2),
-        }
-
     return {
         "symbol": symbol,
         "signal": "HOLD",
@@ -310,21 +285,6 @@ def momentum_continuation_strategy(symbol, ctx=None, df=None,
             "reason": (
                 f"Momentum continuation: above SMA20 ({sma_20:.2f}), "
                 f"slope positive, RSI {rsi:.1f}, vol {vol_ratio:.1f}x"
-            ),
-            "price": price,
-            "rsi": rsi,
-            "sma_20": sma_20,
-            "volume_ratio": round(vol_ratio, 2),
-        }
-
-    # SELL -- price closes below SMA20
-    if price < sma_20:
-        return {
-            "symbol": symbol,
-            "signal": "SELL",
-            "reason": (
-                f"Price ({price:.2f}) below SMA20 ({sma_20:.2f}) -- "
-                f"uptrend broken"
             ),
             "price": price,
             "rsi": rsi,

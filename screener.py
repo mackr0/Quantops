@@ -492,3 +492,225 @@ def run_crypto_screen(universe=None):
             "breakouts": 0,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Dynamic universe discovery (scan beyond hardcoded lists)
+# ---------------------------------------------------------------------------
+
+import time as _time
+import logging as _logging
+
+_dynamic_cache = {}  # {market_type: (timestamp, [symbols])}
+_DYNAMIC_TTL = 86400  # 24 hours — universe doesn't change much daily
+
+# On-disk cache file. Persists the dynamic universe across process
+# restarts so a redeploy during market hours doesn't force a 30-minute
+# yfinance re-scan. Still subject to _DYNAMIC_TTL.
+_DYNAMIC_CACHE_FILE = "dynamic_screener_cache.json"
+
+# Max wall-clock seconds for the yfinance bulk download. Above this we
+# fall back to whatever symbols we have (from Alpaca universe + fallback).
+_DYNAMIC_YF_BUDGET_SEC = 180   # 3 minutes
+
+
+def _load_disk_cache():
+    """Load the on-disk cache into memory at module import."""
+    global _dynamic_cache
+    try:
+        import json as _json
+        with open(_DYNAMIC_CACHE_FILE) as f:
+            raw = _json.load(f)
+        # Format: {cache_key: [timestamp, [symbols]]}
+        _dynamic_cache = {k: (float(v[0]), list(v[1])) for k, v in raw.items()}
+    except Exception:
+        pass
+
+
+def _save_disk_cache():
+    """Persist the current in-memory cache to disk. Best-effort."""
+    try:
+        import json as _json
+        with open(_DYNAMIC_CACHE_FILE, "w") as f:
+            _json.dump({k: [v[0], v[1]] for k, v in _dynamic_cache.items()}, f)
+    except Exception:
+        pass
+
+
+# Warm the cache at module import so the first scan after a restart
+# sees the last-known good result.
+_load_disk_cache()
+
+_dyn_logger = _logging.getLogger(__name__)
+
+
+def screen_dynamic_universe(min_price=1.0, max_price=20.0, min_volume=500_000,
+                             market_type="small", fallback_universe=None,
+                             ctx=None, max_symbols=100):
+    """Discover actively traded symbols beyond the hardcoded universe.
+
+    Uses Alpaca's asset list to find ALL tradable symbols, then yfinance
+    batch download to filter by price/volume. Cached for 24 hours.
+
+    Falls back to the hardcoded universe if dynamic screening fails.
+
+    Returns list of symbol strings.
+    """
+    cache_key = f"{market_type}_{min_price}_{max_price}_{min_volume}"
+    cached = _dynamic_cache.get(cache_key)
+    if cached and (_time.time() - cached[0]) < _DYNAMIC_TTL:
+        return cached[1]
+
+    try:
+        # Step 1: Get all tradable assets from Alpaca
+        from client import get_api
+        api = get_api(ctx)
+        assets = api.list_assets(status="active")
+
+        # Filter to US exchanges, tradable, no OTC
+        equity_symbols = []
+        for a in assets:
+            if (a.tradable and a.exchange in ("NYSE", "NASDAQ", "ARCA", "AMEX")
+                    and not a.symbol.endswith(".W")  # No warrants
+                    and "." not in a.symbol):  # No preferred shares
+                equity_symbols.append(a.symbol)
+
+        _dyn_logger.info(f"Dynamic screener: {len(equity_symbols)} tradable assets from Alpaca")
+
+        if len(equity_symbols) < 100:
+            raise ValueError(f"Too few assets ({len(equity_symbols)}), using fallback")
+
+        # Step 2: Batch download 5-day data from yfinance in chunks
+        import random
+        # Sample to avoid downloading all 8000 at once
+        # Take a random 500 to screen, plus the full fallback universe
+        sample = random.sample(equity_symbols, min(500, len(equity_symbols)))
+        if fallback_universe:
+            # Always include the curated universe
+            sample = list(set(sample + list(fallback_universe)))
+
+        # Primary path: Alpaca snapshots. One API call returns the last
+        # trade + minute bar + daily bar for up to 1000+ symbols at once,
+        # and the Algo Trader Plus subscription has no per-minute cap
+        # that we'd hit at this volume. Replaces the yfinance batch that
+        # used to hang for 30+ minutes during market open.
+        results = []
+        alpaca_worked = False
+        try:
+            from market_data import _get_alpaca_data_client
+            client = _get_alpaca_data_client()
+            if client is None:
+                raise RuntimeError("Alpaca client unavailable")
+
+            # Alpaca's get_snapshots takes a list and returns {sym: Snapshot}
+            # Chunk to 200 at a time to be conservative on payload size.
+            snaps = {}
+            for i in range(0, len(sample), 200):
+                chunk = sample[i:i + 200]
+                chunk_snaps = client.get_snapshots(chunk)
+                snaps.update(chunk_snaps)
+
+            for sym in sample:
+                snap = snaps.get(sym)
+                if snap is None:
+                    continue
+                # daily_bar is the current day's (or prior day's if pre-open)
+                # OHLCV aggregate — exactly what we need for price + volume
+                # filtering.
+                daily = getattr(snap, "daily_bar", None)
+                if daily is None:
+                    continue
+                try:
+                    last_price = float(daily.c)
+                    avg_volume = float(daily.v)
+                except (TypeError, AttributeError):
+                    continue
+
+                if min_price <= last_price <= max_price and avg_volume >= min_volume:
+                    results.append((sym, avg_volume))
+            alpaca_worked = True
+            _dyn_logger.info(
+                "Dynamic screener: Alpaca snapshots returned "
+                "%d filtered matches", len(results)
+            )
+        except Exception as exc:
+            _dyn_logger.warning(
+                "Alpaca screener path failed (%s), trying yfinance fallback",
+                exc,
+            )
+
+        # Fallback path: yfinance bulk download with wall-clock budget.
+        # Only runs if Alpaca failed.
+        if not alpaca_worked:
+            import threading
+            yf_symbols = " ".join(sample)
+            dl_result: dict = {"data": None, "error": None}
+
+            def _do_download():
+                try:
+                    dl_result["data"] = yf.download(
+                        yf_symbols, period="5d", progress=False,
+                        auto_adjust=True, threads=True,
+                    )
+                except Exception as exc:
+                    dl_result["error"] = exc
+
+            t = threading.Thread(target=_do_download, daemon=True)
+            t.start()
+            t.join(timeout=_DYNAMIC_YF_BUDGET_SEC)
+
+            if t.is_alive():
+                _dyn_logger.warning(
+                    "Dynamic screener: yfinance fallback also exceeded %d-sec budget",
+                    _DYNAMIC_YF_BUDGET_SEC,
+                )
+                raise TimeoutError(
+                    f"yfinance fallback exceeded {_DYNAMIC_YF_BUDGET_SEC}s"
+                )
+            if dl_result["error"] is not None:
+                raise dl_result["error"]
+            data = dl_result["data"]
+            if data is None or data.empty:
+                raise ValueError("yfinance fallback returned empty")
+
+            for sym in sample:
+                try:
+                    if len(sample) > 1 and isinstance(data.columns, pd.MultiIndex):
+                        close_data = data["Close"][sym].dropna()
+                        vol_data = data["Volume"][sym].dropna()
+                    else:
+                        close_data = data["Close"].dropna()
+                        vol_data = data["Volume"].dropna()
+                    if len(close_data) < 2:
+                        continue
+                    last_price = float(close_data.iloc[-1])
+                    avg_volume = float(vol_data.mean())
+                    if min_price <= last_price <= max_price and avg_volume >= min_volume:
+                        results.append((sym, avg_volume))
+                except Exception:
+                    continue
+
+        # Sort by volume (most active first), take top N
+        results.sort(key=lambda x: x[1], reverse=True)
+        symbols = [r[0] for r in results[:max_symbols]]
+
+        _dyn_logger.info(f"Dynamic screener: {len(symbols)} symbols match "
+                         f"${min_price}-${max_price}, vol>={min_volume:,}")
+
+        _dynamic_cache[cache_key] = (_time.time(), symbols)
+        _save_disk_cache()
+        return symbols
+
+    except Exception as exc:
+        # Prefer stale cache over the hardcoded fallback — a day-old
+        # universe is still closer to right than the curated list.
+        stale = _dynamic_cache.get(cache_key)
+        if stale and stale[1]:
+            age_hrs = (_time.time() - stale[0]) / 3600
+            _dyn_logger.warning(
+                f"Dynamic universe failed ({exc}); using stale cache "
+                f"({len(stale[1])} symbols, {age_hrs:.1f}h old)"
+            )
+            return stale[1]
+        _dyn_logger.warning(f"Dynamic universe failed ({exc}), using fallback")
+        return list(fallback_universe) if fallback_universe else []

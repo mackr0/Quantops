@@ -1,4 +1,10 @@
-"""Alpaca API client wrapper."""
+"""Alpaca API client wrapper.
+
+This module is the single interception point for the virtual-account
+layer. When a profile has `is_virtual=True`, `get_positions()` and
+`get_account_info()` return data from the internal trades ledger
+instead of Alpaca. Orders still go through Alpaca normally.
+"""
 
 import alpaca_trade_api as tradeapi
 import config
@@ -26,8 +32,36 @@ def get_api(ctx=None):
     return tradeapi.REST(api_key, secret_key, config.ALPACA_BASE_URL, api_version="v2")
 
 
+def _make_price_fetcher(api):
+    """Return a callable that gets the current price for a symbol
+    via the Alpaca last-trade endpoint."""
+    def fetch(symbol):
+        try:
+            from market_data import get_bars
+            bars = get_bars(symbol, limit=1)
+            if bars is not None and not bars.empty:
+                return float(bars.iloc[-1]["close"])
+        except Exception:
+            pass
+        return 0.0
+    return fetch
+
+
 def get_account_info(api=None, ctx=None):
-    """Get account details: equity, buying power, etc."""
+    """Get account details: equity, buying power, etc.
+
+    For virtual profiles, computes these from the internal trades ledger
+    instead of calling Alpaca.
+    """
+    if ctx is not None and getattr(ctx, "is_virtual", False):
+        from journal import get_virtual_account_info
+        api = api or get_api(ctx)
+        return get_virtual_account_info(
+            db_path=ctx.db_path,
+            initial_capital=getattr(ctx, "initial_capital", 100000.0),
+            price_fetcher=_make_price_fetcher(api),
+        )
+
     api = api or get_api(ctx)
     account = api.get_account()
     return {
@@ -40,7 +74,19 @@ def get_account_info(api=None, ctx=None):
 
 
 def get_positions(api=None, ctx=None):
-    """Get all current positions."""
+    """Get all current positions.
+
+    For virtual profiles, computes these from the internal trades ledger
+    instead of calling Alpaca.
+    """
+    if ctx is not None and getattr(ctx, "is_virtual", False):
+        from journal import get_virtual_positions
+        api = api or get_api(ctx)
+        return get_virtual_positions(
+            db_path=ctx.db_path,
+            price_fetcher=_make_price_fetcher(api),
+        )
+
     api = api or get_api(ctx)
     positions = api.list_positions()
     return [

@@ -3,7 +3,7 @@
 QuantOpsAI Autonomous Trading Scheduler
 
 Runs 24/7 on a server, executing trading tasks during market hours:
-  - Every 30 min: aggressive scan and trade
+  - Every 15 min: scan and trade (AI-first pipeline)
   - Every 15 min: check stop-loss / take-profit exits
   - Every 60 min: resolve AI predictions
   - At 3:55 PM ET: save daily portfolio snapshot
@@ -77,10 +77,10 @@ def run_task(name, func):
 
 # ── Task Implementations ─────────────────────────────────────────────
 
-def task_aggressive_scan_and_trade():
-    """Screen for small-cap candidates and auto-trade with AI review."""
+def task_scan_and_trade():
+    """Screen for candidates and auto-trade via the AI-first pipeline."""
     from screener import run_full_screen
-    from aggressive_trader import run_aggressive_scan_and_trade
+    from trade_pipeline import run_trade_cycle
     from notifications import notify_trade, notify_veto
 
     screen = run_full_screen()
@@ -94,10 +94,10 @@ def task_aggressive_scan_and_trade():
         logging.info("No candidates found in screen.")
         return
 
-    logging.info(f"Running aggressive scan on {len(symbols)} candidates")
-    summary = run_aggressive_scan_and_trade(symbols)
+    logging.info(f"Running scan on {len(symbols)} candidates")
+    summary = run_trade_cycle(symbols)
     logging.info(
-        f"Aggressive trade summary: "
+        f"Trade summary: "
         f"buys={summary.get('buys', 0)}, "
         f"sells={summary.get('sells', 0)}, "
         f"shorts={summary.get('shorts', 0)}, "
@@ -215,13 +215,13 @@ def main_loop():
 
     # ── Interval tracking (last-run timestamps) ──────────────────────
     last_run = {
-        "aggressive_scan": 0.0,
+        "scan": 0.0,
         "check_exits": 0.0,
         "resolve_predictions": 0.0,
         "daily_snapshot": None,  # Track by date string, not timestamp
     }
 
-    INTERVAL_AGGRESSIVE_SCAN = 30 * 60   # 30 minutes
+    INTERVAL_SCAN = 30 * 60   # 30 minutes
     INTERVAL_CHECK_EXITS = 15 * 60       # 15 minutes
     INTERVAL_RESOLVE_PREDICTIONS = 60 * 60  # 60 minutes
 
@@ -245,10 +245,10 @@ def main_loop():
         if is_market_open(now):
             current_time = time.time()
 
-            # Every 30 min: aggressive scan and trade
-            if current_time - last_run["aggressive_scan"] >= INTERVAL_AGGRESSIVE_SCAN:
-                run_task("Aggressive Scan & Trade", task_aggressive_scan_and_trade)
-                last_run["aggressive_scan"] = time.time()
+            # Every 15 min: scan and trade
+            if current_time - last_run["scan"] >= INTERVAL_SCAN:
+                run_task("Scan & Trade", task_scan_and_trade)
+                last_run["scan"] = time.time()
 
             # Every 15 min: check exits
             if current_time - last_run["check_exits"] >= INTERVAL_CHECK_EXITS:

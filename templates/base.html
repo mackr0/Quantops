@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}QuantOpsAI{% endblock %}</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=20260415-sortable">
 </head>
 <body>
     <nav class="container-fluid qnav">
@@ -34,6 +34,53 @@
     <footer class="container">
         <small class="muted">QuantOpsAI Automated Trading System</small>
     </footer>
+    <script>
+    // Tooltips — render to body so they escape any overflow:hidden / scroll
+    // ancestors (the Scalability tab's overflow-auto table container was
+    // clipping them).
+    (function() {
+        var tip = document.createElement('div');
+        tip.className = 'tip-popover';
+        tip.style.cssText = 'position:fixed; background:#333; color:#fff;'
+            + ' padding:0.5rem 0.7rem; border-radius:4px; font-size:0.78rem;'
+            + ' line-height:1.35; max-width:280px; pointer-events:none;'
+            + ' z-index:99999; display:none; box-shadow:0 4px 12px rgba(0,0,0,0.25);';
+        document.body.appendChild(tip);
+
+        function show(target) {
+            var text = target.getAttribute('data-tip');
+            if (!text) return;
+            tip.textContent = text;
+            tip.style.display = 'block';
+            // Position above trigger, centered
+            var r = target.getBoundingClientRect();
+            // First show to measure
+            var tipR = tip.getBoundingClientRect();
+            var top = r.top - tipR.height - 8;
+            var left = r.left + r.width / 2 - tipR.width / 2;
+            // Keep within viewport
+            if (top < 4) top = r.bottom + 8;
+            if (left < 4) left = 4;
+            if (left + tipR.width > window.innerWidth - 4) {
+                left = window.innerWidth - tipR.width - 4;
+            }
+            tip.style.top = top + 'px';
+            tip.style.left = left + 'px';
+        }
+        function hide() { tip.style.display = 'none'; }
+
+        document.addEventListener('mouseover', function(e) {
+            var target = e.target.closest('.tip');
+            if (target) show(target);
+        });
+        document.addEventListener('mouseout', function(e) {
+            var target = e.target.closest('.tip');
+            if (target) hide();
+        });
+        // Hide on scroll so it doesn't stay floating
+        window.addEventListener('scroll', hide, true);
+    })();
+    </script>
     {% block scripts %}{% endblock %}
 </body>
 </html>

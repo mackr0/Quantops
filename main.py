@@ -271,7 +271,7 @@ def cmd_screen():
 
 def cmd_aggro_scan():
     from screener import run_full_screen
-    from aggressive_strategy import aggressive_combined_strategy
+    from fallback_strategy import fallback_combined_strategy
     from dashboard import show_scan_results
 
     print("=== Aggressive Small-Cap Scan ===\n")
@@ -290,7 +290,7 @@ def cmd_aggro_scan():
     results = []
     for sym in symbols:
         try:
-            result = aggressive_combined_strategy(sym)
+            result = fallback_combined_strategy(sym)
             results.append(result)
             signal = result["signal"]
             if signal != "HOLD":
@@ -312,7 +312,7 @@ def cmd_aggro_scan():
 
 def cmd_aggro_trade():
     from screener import run_full_screen
-    from aggressive_trader import run_aggressive_scan_and_trade
+    from trade_pipeline import run_trade_cycle
 
     print("=== Aggressive Auto-Trade (AI-Reviewed) ===\n")
     print("Step 1: Screening for small-cap candidates...\n")
@@ -326,7 +326,7 @@ def cmd_aggro_trade():
     symbols = list(symbols)[:30]
     print(f"\nStep 2: Analyzing with AI review before trading ({len(symbols)} stocks)...\n")
 
-    summary = run_aggressive_scan_and_trade(symbols)
+    summary = run_trade_cycle(symbols)
 
     print(f"\n{'='*60}")
     print(f"  Stocks scanned:  {summary.get('total', 0)}")
@@ -356,10 +356,10 @@ def cmd_aggro_trade():
 
 
 def cmd_aggro_analyze(symbol):
-    from aggressive_strategy import aggressive_combined_strategy
+    from fallback_strategy import fallback_combined_strategy
     from dashboard import show_ai_analysis
     print(f"=== Aggressive Analysis: {symbol} ===\n")
-    result = aggressive_combined_strategy(symbol)
+    result = fallback_combined_strategy(symbol)
     print_json(result)
 
 

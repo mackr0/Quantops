@@ -65,6 +65,50 @@
 </article>
 
 <!-- Trading Profiles Section -->
+<h2>Alpaca Accounts</h2>
+<article>
+    <p class="muted">Alpaca accounts are the broker connections where trades execute. Multiple profiles can share one account — the system tracks positions internally per profile.</p>
+    {% if alpaca_accounts %}
+    <div class="overflow-auto">
+        <table class="striped">
+            <thead><tr><th>Name</th><th>API Key</th><th>Profiles Using</th><th></th></tr></thead>
+            <tbody>
+                {% for acct in alpaca_accounts %}
+                <tr>
+                    <td><strong>{{ acct.name }}</strong></td>
+                    <td class="muted">{{ acct._key_masked }}</td>
+                    <td>
+                        {% set ns = namespace(count=0) %}
+                        {% for p in profiles if p.get('alpaca_account_id') == acct.id %}{% set ns.count = ns.count + 1 %}{% endfor %}
+                        {{ ns.count }} profile{{ 's' if ns.count != 1 else '' }}
+                    </td>
+                    <td>
+                        <form method="post" action="/settings/alpaca-accounts" style="margin:0;">
+                            <input type="hidden" name="action" value="delete">
+                            <input type="hidden" name="account_id" value="{{ acct.id }}">
+                            <button type="submit" class="outline secondary" style="padding:0.2rem 0.5rem; font-size:0.8rem;" onclick="return confirm('Remove this Alpaca account?')">Remove</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+    <details>
+        <summary>Add Alpaca Account</summary>
+        <form method="post" action="/settings/alpaca-accounts" style="margin-top:0.5rem;">
+            <input type="hidden" name="action" value="create">
+            <div class="grid">
+                <label>Account Name <input type="text" name="account_name" placeholder="e.g. Paper Account 1" required></label>
+                <label>API Key <input type="text" name="account_api_key" placeholder="PK..." required></label>
+                <label>Secret Key <input type="password" name="account_secret_key" placeholder="Secret key" required></label>
+            </div>
+            <button type="submit">Add Account</button>
+        </form>
+    </details>
+</article>
+
 <h2>Your Trading Profiles</h2>
 
 <!-- Create New Profile -->
@@ -86,12 +130,32 @@
                     {% endfor %}
                 </select>
             </label>
+        </div>
+        <div class="grid">
+            <label>
+                <span class="tip" data-tip="Select a shared Alpaca account to create a virtual profile, or leave as Dedicated to use this profile's own Alpaca keys.">Alpaca Account</span>
+                <select name="alpaca_account_id" id="create-alpaca-account">
+                    <option value="">Dedicated (own keys)</option>
+                    {% for acct in alpaca_accounts %}
+                    <option value="{{ acct.id }}">{{ acct.name }} ({{ acct._key_masked }})</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label id="create-initial-capital-wrap" style="display:none;">
+                <span class="tip" data-tip="How much virtual money this profile starts with. Tracked internally — not real money on the Alpaca account.">Starting Capital ($)</span>
+                <input type="number" name="initial_capital" value="100000" min="1000" step="1000">
+            </label>
             <label>
                 &nbsp;
                 <button type="submit">Create Profile</button>
             </label>
         </div>
     </form>
+    <script>
+    document.getElementById('create-alpaca-account').addEventListener('change', function() {
+        document.getElementById('create-initial-capital-wrap').style.display = this.value ? '' : 'none';
+    });
+    </script>
 </article>
 
 <!-- Existing Profiles -->
@@ -407,6 +471,32 @@
                        data-display="trail_val_{{ prof.id }}" data-format="1f" data-suffix="x">
                 <output id="trail_val_{{ prof.id }}">{{ "%.1f"|format(prof.get('trailing_atr_multiplier', 1.5)) }}x</output>
             </label>
+
+            <fieldset>
+                <label style="display:flex;align-items:flex-start;gap:0.5rem;">
+                    <input type="checkbox" name="use_conviction_tp_override" value="1" style="flex-shrink:0;margin-top:0.2rem;"
+                           {{ 'checked' if prof.get('use_conviction_tp_override', 0) else '' }}>
+                    <span><span class="tip" data-tip="When a strong winner hits take-profit but the AI still wants it and the trend is intact, skip the fixed TP and let the trailing stop manage the exit. Prevents capping runaway winners.">Conviction Take-Profit Override</span><br><small style="color:#888;font-weight:normal;">Let runaway winners run — trailing stop takes over when AI conviction is still high and trend is intact</small></span>
+                </label>
+            </fieldset>
+            <div class="grid">
+                <label>
+                    <span class="tip" data-tip="Minimum AI confidence required to skip the fixed take-profit">Min AI Confidence</span>
+                    <input type="range" name="conviction_tp_min_confidence" class="slider"
+                           min="50" max="95" step="5"
+                           value="{{ prof.get('conviction_tp_min_confidence', 70) }}"
+                           data-display="conv_conf_val_{{ prof.id }}" data-format="int" data-suffix="%">
+                    <output id="conv_conf_val_{{ prof.id }}">{{ prof.get('conviction_tp_min_confidence', 70)|int }}%</output>
+                </label>
+                <label>
+                    <span class="tip" data-tip="Minimum ADX (trend strength) required to skip TP. 25+ is a moderate-to-strong trend.">Min ADX (Trend Strength)</span>
+                    <input type="range" name="conviction_tp_min_adx" class="slider"
+                           min="15" max="50" step="5"
+                           value="{{ prof.get('conviction_tp_min_adx', 25) }}"
+                           data-display="conv_adx_val_{{ prof.id }}" data-format="int">
+                    <output id="conv_adx_val_{{ prof.id }}">{{ prof.get('conviction_tp_min_adx', 25)|int }}</output>
+                </label>
+            </div>
 
             <fieldset>
                 <label style="display:flex;align-items:flex-start;gap:0.5rem;">

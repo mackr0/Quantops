@@ -303,17 +303,13 @@ SEGMENTS = {
     },
 }
 
-# Backward compatibility: "microsmall" maps to "small"
-SEGMENTS["microsmall"] = SEGMENTS["small"]
-
-
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
 
 def list_segments():
-    """Return list of segment names (excludes backward-compat aliases)."""
-    return [k for k in SEGMENTS.keys() if k != "microsmall"]
+    """Return list of segment names."""
+    return list(SEGMENTS.keys())
 
 
 def get_segment(name):
