@@ -151,6 +151,56 @@ carried `status=open` despite having realized `pnl`.
 
 ---
 
+## 2026-04-17 — Bad account allocation caused 3 data wipes in 2 days
+
+**Severity:** critical — user lost all accumulated trading data three times
+
+**What happened:** When setting up 10 virtual profiles across 3 Alpaca
+paper accounts ($1M each), the initial allocation put $1.625M of
+virtual capital on a single $1M Alpaca account. This was compounded by
+moving profiles between accounts after they had open positions,
+creating orphaned trades on the wrong accounts and "account_rebalance"
+sells that polluted trade history with non-strategy exits.
+
+**The mistakes, in order:**
+1. Created all profiles without thinking about which Alpaca account
+   each should use. The $1M Large Cap profile landed on the same
+   account as three other profiles totaling $625K — $1.625M virtual
+   on a $1M account.
+2. Attempted to fix by moving profiles between accounts while they
+   had open positions. This created orphaned positions on the old
+   account and forced-close trades logged as "account_rebalance"
+   that would have corrupted win rate, P&L, and self-tuning data.
+3. Each fix required wiping trade data to get back to clean state.
+   Total data wipes: 3 (April 15 evening, April 16 afternoon,
+   April 17 morning).
+
+**Root cause:** Failure to plan account allocation BEFORE creating
+profiles. The allocation should have been the FIRST step, not an
+afterthought corrected live with open positions.
+
+**Correct allocation (what we should have done from the start):**
+```
+Account 1: Large Cap 1M ($1M) = 100% (dedicated)
+Account 2: Mid Cap + Mid Cap 25K + Mid Cap 500K = $625K = 62%
+Account 3: Everything else = $525K = 52%
+```
+No account exceeds its Alpaca balance even at 100% utilization.
+
+**Lesson:** When setting up virtual profiles on shared broker accounts:
+1. Plan the allocation on paper first — total virtual capital per
+   account must not exceed the account balance
+2. NEVER move a profile between accounts while it has open positions
+3. If allocation must change, close positions on the old account
+   first, then move, then wipe that profile's trade history
+4. A few hours of planning saves days of lost data
+
+**Data impact:** All 10 profiles start from zero as of 2026-04-17.
+No historical trade data survives. The system is now correctly
+allocated and collecting clean data going forward.
+
+---
+
 ## 2026-04-16 — Critical fix: virtual profiles sized against Alpaca's balance, not their own
 
 **Severity:** critical — virtual profiles with $25K capital were buying $176K of stock
