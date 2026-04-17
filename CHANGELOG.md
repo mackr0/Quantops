@@ -151,6 +151,46 @@ carried `status=open` despite having realized `pnl`.
 
 ---
 
+## 2026-04-17 — Eliminate yfinance rate limiting: DB caching, Alpaca for SPY, ETF filter
+
+**Problem:** ~500+ yfinance errors per day from rate limiting.
+Alternative data (insider, fundamentals, short interest) was fetched
+per-symbol per-cycle from yfinance with only an in-memory cache that
+reset on every deploy. Market regime used yfinance for SPY. ETFs like
+SOXL and AMZD were in the screener universe but have no fundamentals,
+flooding "no data found" errors.
+
+**Fixes:**
+1. **Alternative data DB cache** — `alt_data_cache` SQLite table replaces
+   in-memory cache. Survives restarts. Each symbol fetched once per TTL
+   (24h for insider/fundamentals, 1h for short interest). Thread-locked
+   yfinance calls prevent race conditions.
+2. **Market regime uses Alpaca for SPY** — `get_bars("SPY")` instead of
+   `yf.Ticker("SPY")`. VIX stays on yfinance (Alpaca doesn't serve
+   index data) but is thread-locked.
+3. **ETF filter** — 40+ known ETFs/leveraged products (SOXL, TQQQ, SPY,
+   QQQ, AMZD, NVDL, etc.) excluded from the screener universe. They
+   don't have fundamentals data and aren't tradeable candidates.
+
+**Expected impact:** yfinance calls drop from ~3,000/day to ~300/day.
+Rate limiting errors should be near zero.
+
+**Tests** (`test_data_fixes_apr17.py` — 8 tests):
+- Alt data cache: persists to SQLite, respects TTL, survives reload
+- ETF blocklist contains key symbols
+- Market regime uses Alpaca get_bars, not yf.Ticker for SPY
+- Metrics capital: per-profile forward-fill, no double-multiply
+- Annualized return: no overflow on <7 days
+
+**Test count:** 596 (was 588 + 8).
+
+**"What the AI Sees" section updated** to match actual code: added
+Strategy Votes, Last Prediction memory, Portfolio State, Market Regime.
+Moved to collapsible reference at bottom of AI Performance tab. Tab
+renamed from "AI Intelligence" to "AI Performance."
+
+---
+
 ## 2026-04-17 — System hardening: cost alerting, cross-account reconciliation, metrics fixes
 
 **Fixes:**

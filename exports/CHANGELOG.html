@@ -376,6 +376,42 @@ with matching SELL → closed - Count-reporting correctness</p>
 features).</p>
 <hr />
 <h2
+id="eliminate-yfinance-rate-limiting-db-caching-alpaca-for-spy-etf-filter">2026-04-17
+— Eliminate yfinance rate limiting: DB caching, Alpaca for SPY, ETF
+filter</h2>
+<p><strong>Problem:</strong> ~500+ yfinance errors per day from rate
+limiting. Alternative data (insider, fundamentals, short interest) was
+fetched per-symbol per-cycle from yfinance with only an in-memory cache
+that reset on every deploy. Market regime used yfinance for SPY. ETFs
+like SOXL and AMZD were in the screener universe but have no
+fundamentals, flooding “no data found” errors.</p>
+<p><strong>Fixes:</strong> 1. <strong>Alternative data DB cache</strong>
+— <code>alt_data_cache</code> SQLite table replaces in-memory cache.
+Survives restarts. Each symbol fetched once per TTL (24h for
+insider/fundamentals, 1h for short interest). Thread-locked yfinance
+calls prevent race conditions. 2. <strong>Market regime uses Alpaca for
+SPY</strong> — <code>get_bars("SPY")</code> instead of
+<code>yf.Ticker("SPY")</code>. VIX stays on yfinance (Alpaca doesn’t
+serve index data) but is thread-locked. 3. <strong>ETF filter</strong> —
+40+ known ETFs/leveraged products (SOXL, TQQQ, SPY, QQQ, AMZD, NVDL,
+etc.) excluded from the screener universe. They don’t have fundamentals
+data and aren’t tradeable candidates.</p>
+<p><strong>Expected impact:</strong> yfinance calls drop from ~3,000/day
+to ~300/day. Rate limiting errors should be near zero.</p>
+<p><strong>Tests</strong> (<code>test_data_fixes_apr17.py</code> — 8
+tests): - Alt data cache: persists to SQLite, respects TTL, survives
+reload - ETF blocklist contains key symbols - Market regime uses Alpaca
+get_bars, not yf.Ticker for SPY - Metrics capital: per-profile
+forward-fill, no double-multiply - Annualized return: no overflow on
+&lt;7 days</p>
+<p><strong>Test count:</strong> 596 (was 588 + 8).</p>
+<p><strong>“What the AI Sees” section updated</strong> to match actual
+code: added Strategy Votes, Last Prediction memory, Portfolio State,
+Market Regime. Moved to collapsible reference at bottom of AI
+Performance tab. Tab renamed from “AI Intelligence” to “AI
+Performance.”</p>
+<hr />
+<h2
 id="system-hardening-cost-alerting-cross-account-reconciliation-metrics-fixes">2026-04-17
 — System hardening: cost alerting, cross-account reconciliation, metrics
 fixes</h2>

@@ -39,28 +39,25 @@ def detect_regime() -> Dict[str, Any]:
     }
 
     try:
-        # Fetch SPY 60-day history
-        spy = yf.Ticker("SPY")
-        spy_hist = spy.history(period="3mo")
+        # Use Alpaca for SPY (reliable, no rate limiting) instead of yfinance
+        from market_data import get_bars
+        spy_hist = get_bars("SPY", limit=60)
 
-        if spy_hist.empty or len(spy_hist) < 50:
+        if spy_hist is None or spy_hist.empty or len(spy_hist) < 50:
             logger.warning("Not enough SPY data for regime detection")
             return result
 
-        # SPY price and SMA50
-        spy_price = float(spy_hist["Close"].iloc[-1])
-        sma50 = float(spy_hist["Close"].tail(50).mean())
+        spy_price = float(spy_hist["close"].iloc[-1])
+        sma50 = float(spy_hist["close"].tail(50).mean())
         result["spy_price"] = round(spy_price, 2)
         result["spy_sma50"] = round(sma50, 2)
 
-        # SMA50 slope: compare current SMA50 to SMA50 from 10 days ago
         if len(spy_hist) >= 60:
-            sma50_10d_ago = float(spy_hist["Close"].iloc[-60:-10].tail(50).mean())
+            sma50_10d_ago = float(spy_hist["close"].iloc[-60:-10].tail(50).mean())
         else:
             sma50_10d_ago = sma50
         sma50_slope = sma50 - sma50_10d_ago
 
-        # Determine trend
         if spy_price > sma50 and sma50_slope > 0:
             result["spy_trend"] = "up"
         elif spy_price < sma50 and sma50_slope < 0:
@@ -68,15 +65,19 @@ def detect_regime() -> Dict[str, Any]:
         else:
             result["spy_trend"] = "flat"
 
-        # Fetch VIX
+        # VIX — yfinance only (Alpaca doesn't serve index data)
+        # Wrapped in lock + cached to minimize Yahoo calls
         try:
-            vix_ticker = yf.Ticker("^VIX")
-            vix_hist = vix_ticker.history(period="5d")
+            import threading
+            _vix_lock = threading.Lock()
+            with _vix_lock:
+                vix_ticker = yf.Ticker("^VIX")
+                vix_hist = vix_ticker.history(period="5d")
             if not vix_hist.empty:
                 vix_val = float(vix_hist["Close"].iloc[-1])
                 result["vix"] = round(vix_val, 2)
             else:
-                vix_val = 20.0  # Default moderate
+                vix_val = 20.0
         except Exception as vix_err:
             logger.warning("Failed to fetch VIX: %s", vix_err)
             vix_val = 20.0

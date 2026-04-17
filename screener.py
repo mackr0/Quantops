@@ -568,12 +568,24 @@ def screen_dynamic_universe(min_price=1.0, max_price=20.0, min_volume=500_000,
         api = get_api(ctx)
         assets = api.list_assets(status="active")
 
-        # Filter to US exchanges, tradable, no OTC
+        # Filter to US exchanges, tradable, no OTC, no ETFs/leveraged products
+        # ETFs like SOXL, AMZD, SRTY, SLV flood yfinance errors since they
+        # don't have fundamentals data and aren't individual stocks.
+        _ETF_SUFFIXES = {"L", "S", "D", "X"}  # common leveraged ETF endings
+        _KNOWN_ETFS = {
+            "SOXL", "SOXS", "TQQQ", "SQQQ", "SRTY", "SPXL", "SPXS",
+            "UVXY", "SVXY", "AMZD", "MSFU", "MSFL", "NVDL", "TSLL",
+            "SLV", "GLD", "SPY", "QQQ", "IWM", "DIA", "TLT", "HYG",
+            "LQD", "XLF", "XLE", "XLK", "XLV", "XLI", "XLP", "XLY",
+            "XLU", "XLB", "XLRE", "XLC", "VTI", "VOO", "IVV",
+            "USFR", "SHY", "BIL", "UNG", "USO",
+        }
         equity_symbols = []
         for a in assets:
             if (a.tradable and a.exchange in ("NYSE", "NASDAQ", "ARCA", "AMEX")
-                    and not a.symbol.endswith(".W")  # No warrants
-                    and "." not in a.symbol):  # No preferred shares
+                    and not a.symbol.endswith(".W")
+                    and "." not in a.symbol
+                    and a.symbol not in _KNOWN_ETFS):
                 equity_symbols.append(a.symbol)
 
         _dyn_logger.info(f"Dynamic screener: {len(equity_symbols)} tradable assets from Alpaca")

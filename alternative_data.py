@@ -2,38 +2,87 @@
 holdings, fundamentals, and options flow.
 
 All data is FREE from yfinance. No API keys or subscriptions needed.
-Each function caches results to avoid hammering Yahoo Finance.
+Cached in SQLite (survives restarts) with per-type TTLs to avoid
+hammering Yahoo Finance. Previous in-memory cache was lost on every
+deploy, causing 200+ yfinance calls that triggered rate limiting.
 """
 
+import json
 import logging
+import sqlite3
 import time
+import threading
 
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Caches (module-level, shared across calls)
-# ---------------------------------------------------------------------------
-_cache = {}
+_DB_PATH = "quantopsai.db"
+_yf_lock = threading.Lock()
+
 _CACHE_TTL = {
-    "insider": 86400,       # 24 hours (doesn't change often)
-    "fundamentals": 86400,  # 24 hours
-    "short_interest": 3600, # 1 hour
-    "institutional": 86400, # 24 hours
-    "options_flow": 1800,   # 30 minutes
+    "insider": 86400,
+    "fundamentals": 86400,
+    "short_interest": 3600,
+    "institutional": 86400,
+    "options_flow": 1800,
 }
 
 
+def _ensure_cache_table():
+    try:
+        conn = sqlite3.connect(_DB_PATH)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS alt_data_cache (
+                cache_key TEXT PRIMARY KEY,
+                data_json TEXT,
+                fetched_at REAL NOT NULL
+            )
+        """)
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+_table_ensured = False
+
+
 def _get_cached(key, ttl_type="insider"):
-    entry = _cache.get(key)
-    if entry and (time.time() - entry[0]) < _CACHE_TTL.get(ttl_type, 3600):
-        return entry[1]
+    global _table_ensured
+    if not _table_ensured:
+        _ensure_cache_table()
+        _table_ensured = True
+    try:
+        conn = sqlite3.connect(_DB_PATH)
+        row = conn.execute(
+            "SELECT data_json, fetched_at FROM alt_data_cache WHERE cache_key=?",
+            (key,)
+        ).fetchone()
+        conn.close()
+        if row and (time.time() - row[1]) < _CACHE_TTL.get(ttl_type, 3600):
+            return json.loads(row[0])
+    except Exception:
+        pass
     return None
 
 
 def _set_cached(key, value):
-    _cache[key] = (time.time(), value)
+    global _table_ensured
+    if not _table_ensured:
+        _ensure_cache_table()
+        _table_ensured = True
+    try:
+        conn = sqlite3.connect(_DB_PATH)
+        conn.execute(
+            "INSERT OR REPLACE INTO alt_data_cache (cache_key, data_json, fetched_at) "
+            "VALUES (?, ?, ?)",
+            (key, json.dumps(value, default=str), time.time())
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +113,8 @@ def get_insider_activity(symbol):
 
     try:
         yf_sym = symbol.replace("/", "-") if "/" in symbol else symbol
-        ticker = yf.Ticker(yf_sym)
+        with _yf_lock:
+            ticker = yf.Ticker(yf_sym)
 
         # Try insider_transactions first
         txns = getattr(ticker, "insider_transactions", None)
@@ -129,7 +179,8 @@ def get_short_interest(symbol):
 
     try:
         yf_sym = symbol.replace("/", "-") if "/" in symbol else symbol
-        info = yf.Ticker(yf_sym).info or {}
+        with _yf_lock:
+            info = yf.Ticker(yf_sym).info or {}
 
         result["short_pct_float"] = float(info.get("shortPercentOfFloat", 0) or 0) * 100
         result["short_ratio"] = float(info.get("shortRatio", 0) or 0)
@@ -170,7 +221,8 @@ def get_fundamentals(symbol):
 
     try:
         yf_sym = symbol.replace("/", "-") if "/" in symbol else symbol
-        info = yf.Ticker(yf_sym).info or {}
+        with _yf_lock:
+            info = yf.Ticker(yf_sym).info or {}
 
         result["market_cap"] = float(info.get("marketCap", 0) or 0)
         result["pe_trailing"] = float(info.get("trailingPE", 0) or 0)
@@ -219,7 +271,8 @@ def get_options_unusual(symbol):
 
     try:
         yf_sym = symbol.replace("/", "-") if "/" in symbol else symbol
-        ticker = yf.Ticker(yf_sym)
+        with _yf_lock:
+            ticker = yf.Ticker(yf_sym)
 
         # Get nearest expiration
         expirations = ticker.options
@@ -291,7 +344,8 @@ def get_intraday_patterns(symbol):
 
     try:
         yf_sym = symbol.replace("/", "-") if "/" in symbol else symbol
-        df = yf.Ticker(yf_sym).history(period="1d", interval="5m")
+        with _yf_lock:
+            df = yf.Ticker(yf_sym).history(period="1d", interval="5m")
 
         if df.empty or len(df) < 6:
             _set_cached(cache_key, result)

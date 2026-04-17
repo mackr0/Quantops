@@ -24,7 +24,7 @@
     <a href="#trades" class="perf-tab" onclick="showTab(event, 'trades')">Trade Analytics</a>
     <a href="#market" class="perf-tab" onclick="showTab(event, 'market')">Market Relationship</a>
     <a href="#scale" class="perf-tab" onclick="showTab(event, 'scale')">Scalability</a>
-    <a href="#ai" class="perf-tab" onclick="showTab(event, 'ai')">AI Intelligence</a>
+    <a href="#ai" class="perf-tab" onclick="showTab(event, 'ai')">AI Performance</a>
 </div>
 
 <!-- ===================================================================
@@ -972,132 +972,6 @@
         {% endif %}
     </article>
 
-    <!-- Full Data Suite -->
-    <article>
-        <header><h3>What the AI Sees</h3></header>
-        <p class="muted" style="margin-top:-0.5rem;">The full data context every candidate is evaluated against.</p>
-
-        <h4>Technical Indicators</h4>
-        <div class="grid">
-            <div>
-                <h5>Trend & Momentum</h5>
-                <small>RSI, StochRSI, ADX, MACD (3), ROC, SMA (2), EMA</small>
-            </div>
-            <div>
-                <h5>Institutional Flow</h5>
-                <small>MFI, CMF, OBV, A/D Line — volume-weighted money flow signals</small>
-            </div>
-            <div>
-                <h5>Volatility & Structure</h5>
-                <small>ATR, Bollinger Bands (3), Keltner Squeeze, VWAP, Volume SMA</small>
-            </div>
-        </div>
-        <div class="grid">
-            <div>
-                <h5>Price Context</h5>
-                <small>52-week high/low, Fibonacci levels (3 + distance), Pivot points (3), Gap %</small>
-            </div>
-            <div>
-                <h5>Sector Intelligence</h5>
-                <small>11 sector ETF rotation, per-stock relative strength vs sector</small>
-            </div>
-            <div>
-                <h5>News Headlines</h5>
-                <small>Up to 3 recent headlines per stock from yfinance</small>
-            </div>
-        </div>
-
-        <h4>Alternative Data</h4>
-        <div class="grid">
-            <div>
-                <h5>Insider Transactions</h5>
-                <small>Recent insider buys/sells from yfinance + SEC EDGAR Form 4 filings. Insider buying clusters are among the strongest predictive signals in finance.</small>
-            </div>
-            <div>
-                <h5>Short Interest</h5>
-                <small>Short % of float, days to cover, squeeze risk assessment. High short interest + positive catalyst = squeeze potential.</small>
-            </div>
-            <div>
-                <h5>Options Flow</h5>
-                <small>Unusual call/put volume, put/call ratio, bullish/bearish flow detection. Shows what smart money is betting on.</small>
-            </div>
-        </div>
-        <div class="grid">
-            <div>
-                <h5>Fundamentals</h5>
-                <small>PE ratio, beta, market cap, sector, industry, institutional ownership %, insider ownership %.</small>
-            </div>
-            <div>
-                <h5>Intraday Patterns</h5>
-                <small>Real-time VWAP position, opening range breakout, intraday trend, volume profile (front/back loaded).</small>
-            </div>
-            <div>
-                <h5>Social Sentiment</h5>
-                <small>Reddit mentions across r/wallstreetbets, r/stocks, r/investing. Trending detection and sentiment scoring. Requires Reddit API credentials.</small>
-            </div>
-        </div>
-
-        <h4>Institutional Intelligence</h4>
-        <div class="grid">
-            <div>
-                <h5>SEC Filing Alerts</h5>
-                <small>AI-analyzed 10-K / 10-Q / 8-K filings. Detects material language changes — new risk factors, going-concern disclosures, restatements — and injects severity tags into the candidate context.</small>
-            </div>
-            <div>
-                <h5>Options Chain Oracle</h5>
-                <small>Seven institutional-grade signals from free options chains: IV skew, IV term structure, implied move, put/call ratios, gamma exposure, max pain, IV rank.</small>
-            </div>
-            <div>
-                <h5>Specialist Ensemble Consensus</h5>
-                <small>Four specialist AIs (earnings, pattern, sentiment, risk) review each shortlisted candidate. Their confidence-weighted verdict is injected into the final AI prompt. The risk specialist can VETO a trade outright.</small>
-            </div>
-        </div>
-        <div class="grid">
-            <div>
-                <h5>Crisis State</h5>
-                <small>Cross-asset capital-preservation layer. When elevated/crisis/severe, the AI sees the active signals (VIX, bond/stock divergence, credit stress, event clusters) alongside its own reasoning context.</small>
-            </div>
-            <div>
-                <h5>Strategy Allocation</h5>
-                <small>Multi-strategy capital weighting by rolling Sharpe (risk parity). Candidates carry which strategies proposed them and their combined score.</small>
-            </div>
-            <div>
-                <h5>Evolving Library</h5>
-                <small>Auto-generated strategies run alongside built-in ones. Shadow strategies record predictions without deploying capital; active auto-strategies participate in the aggregation.</small>
-            </div>
-        </div>
-
-        <h4>Context & Intelligence</h4>
-        <div class="grid">
-            <div>
-                <h5>Political Sentiment (MAGA Mode)</h5>
-                <small>Sector-specific impact, ticker mentions, trade ideas from political news analysis.</small>
-            </div>
-            <div>
-                <h5>Pattern Learning</h5>
-                <small>Discovered failure/success patterns by regime, strategy type, and time of day.</small>
-            </div>
-            <div>
-                <h5>Per-Stock Memory</h5>
-                <small>Win/loss track record per symbol. Auto-blacklists chronic losers.</small>
-            </div>
-        </div>
-        <div class="grid">
-            <div>
-                <h5>Meta-Model Probability</h5>
-                <small>Gradient-boosted classifier trained on our own resolved predictions. Re-weights AI confidence and suppresses trades where the model predicts the AI is likely wrong.</small>
-            </div>
-            <div>
-                <h5>Alpha Decay Monitoring</h5>
-                <small>Every strategy's rolling Sharpe is tracked daily. Strategies that lose their edge for 30+ consecutive days are auto-deprecated and excluded from the pipeline until they recover.</small>
-            </div>
-            <div>
-                <h5>Event-Driven Reaction</h5>
-                <small>SEC filings, imminent earnings, price shocks, and big resolved predictions trigger immediate analysis — not just the 15-minute polling tick.</small>
-            </div>
-        </div>
-    </article>
-
     <!-- Phase 1: Meta-Model Panel -->
     <article>
         <header><h3>Meta-Model</h3></header>
@@ -1758,6 +1632,56 @@
         {% endfor %}
         {% endif %}
     </article>
+
+    <!-- What the AI Sees — informational reference at the bottom -->
+    <details>
+        <summary><strong>What the AI Sees</strong> <small class="muted">— the full data context every candidate is evaluated against</small></summary>
+        <div style="margin-top:0.5rem;">
+        <h4>Per-Candidate Data (13 indicators + 8 data sources)</h4>
+        <div class="grid">
+            <div><h5>Trend & Momentum</h5><small>RSI, StochRSI, ADX, ROC (10-day), Volume Ratio vs 20-day avg</small></div>
+            <div><h5>Institutional Flow</h5><small>MFI, CMF — volume-weighted money flow signals</small></div>
+            <div><h5>Volatility & Structure</h5><small>ATR, Keltner Squeeze flag, % from VWAP</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>Price Context</h5><small>% from 52-week high, nearest Fibonacci distance, Gap %</small></div>
+            <div><h5>Strategy Votes</h5><small>Which of the 16 strategies voted BUY/SELL/HOLD, combined score out of 4</small></div>
+            <div><h5>News Headlines</h5><small>Up to 3 recent headlines per stock</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>Insider Transactions</h5><small>Recent buys/sells count + dollar volume from SEC Form 4 filings</small></div>
+            <div><h5>Short Interest</h5><small>Short % of float, days to cover, squeeze risk</small></div>
+            <div><h5>Options Flow</h5><small>Put/call ratio, bullish/bearish flow detection</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>Options Chain Oracle</h5><small>IV skew, IV term structure, implied move, gamma exposure, max pain, IV rank</small></div>
+            <div><h5>Relative Strength</h5><small>Performance vs sector ETF over recent period</small></div>
+            <div><h5>Fundamentals</h5><small>PE ratio, beta, market cap, sector, institutional/insider ownership %</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>SEC Filing Alerts</h5><small>AI-analyzed 10-K/10-Q/8-K diffs. Severity tag injected when material changes detected.</small></div>
+            <div><h5>Earnings Warning</h5><small>Days until next earnings report. Flagged if within avoidance window.</small></div>
+            <div><h5>Social Sentiment</h5><small>Reddit mentions + trending detection (when configured)</small></div>
+        </div>
+        <h4>Per-Candidate Memory</h4>
+        <div class="grid">
+            <div><h5>Track Record</h5><small>Win/loss history for this specific symbol. Auto-blacklists chronic losers.</small></div>
+            <div><h5>Last Prediction</h5><small>The AI's previous reasoning + outcome for this symbol — so it remembers what it said last time and whether it was right.</small></div>
+            <div><h5>Specialist Ensemble Verdict</h5><small>Four specialist AIs' confidence-weighted consensus + risk VETO status</small></div>
+        </div>
+        <h4>Portfolio & Market Context (shared across all candidates)</h4>
+        <div class="grid">
+            <div><h5>Portfolio State</h5><small>Current equity, cash, buying power, all held positions with unrealized P&L, drawdown level</small></div>
+            <div><h5>Market Regime</h5><small>VIX level, SPY trend direction, crisis state (normal/elevated/crisis/severe)</small></div>
+            <div><h5>Political Context</h5><small>MAGA Mode: sector-specific political impact analysis, tariff/policy news (when enabled)</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>Learned Patterns</h5><small>Discovered failure/success patterns by regime, strategy type, and time of day</small></div>
+            <div><h5>Meta-Model</h5><small>Gradient-boosted classifier trained on resolved predictions — re-weights AI confidence</small></div>
+            <div><h5>Alpha Decay</h5><small>Auto-deprecation of strategies whose rolling Sharpe degrades for 30+ days</small></div>
+        </div>
+        </div>
+    </details>
 
 </div>
 
