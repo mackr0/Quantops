@@ -25,6 +25,40 @@ from strategy_router import run_strategy
 
 
 # ---------------------------------------------------------------------------
+# Shared ensemble cache — same candidates get the same specialist verdicts
+# regardless of which profile is evaluating them. Keyed by market_type,
+# expires every 15-minute cycle. Saves ~$3/day in AI calls.
+# ---------------------------------------------------------------------------
+_ensemble_cache = {}
+_ensemble_cache_cycle = 0
+
+
+def _get_shared_ensemble(candidates_data, ctx):
+    """Return ensemble result, cached per market_type per cycle."""
+    global _ensemble_cache, _ensemble_cache_cycle
+    import time as _t
+    now_bucket = int(_t.time() / 900)
+    if now_bucket != _ensemble_cache_cycle:
+        _ensemble_cache = {}
+        _ensemble_cache_cycle = now_bucket
+
+    cache_key = ctx.segment
+    if cache_key in _ensemble_cache:
+        logging.info("Using shared ensemble results for %s", cache_key)
+        return _ensemble_cache[cache_key]
+
+    from ensemble import run_ensemble
+    result = run_ensemble(
+        candidates_data, ctx,
+        ai_provider=ctx.ai_provider,
+        ai_model=ctx.ai_model,
+        ai_api_key=ctx.ai_api_key,
+    )
+    _ensemble_cache[cache_key] = result
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Default sizing / risk parameters — overridden by UserContext per-profile
 # ---------------------------------------------------------------------------
 DEFAULT_MAX_POSITION_PCT = 0.10
@@ -929,11 +963,12 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     if getattr(ctx, "enable_specialist_ensemble", True):
         try:
             from ensemble import run_ensemble, format_for_final_prompt
-            ensemble_result = run_ensemble(
+            # Share ensemble results across profiles with the same
+            # market_type. The specialist verdicts depend on the
+            # candidates (same for all profiles of the same type),
+            # not on the profile's capital or positions.
+            ensemble_result = _get_shared_ensemble(
                 candidates_data, ctx,
-                ai_provider=ctx.ai_provider,
-                ai_model=ctx.ai_model,
-                ai_api_key=ctx.ai_api_key,
             )
             per_symbol = ensemble_result.get("per_symbol", {})
             # Inject the ensemble summary into each candidate so the final

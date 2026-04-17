@@ -925,6 +925,8 @@ Each specialist is a small module with `NAME`, `DESCRIPTION`, `build_prompt(cand
 
 **Cost scales with specialist count, not candidate count.** Every specialist batches all shortlisted candidates into a single AI call. With 4 specialists on a shortlist of 15 candidates, the ensemble costs 4 AI calls per cycle (not 60).
 
+**Shared across profiles of the same market type (2026-04-17).** The ensemble evaluates candidates, not profiles. An earnings analyst's verdict on AAPL is the same whether the requesting profile has $25K or $500K. Profiles of the same market type (e.g. Mid Cap, Mid Cap 25K, Mid Cap 500K all = "midcap") share one ensemble run per cycle. Only the first profile triggers the AI calls; subsequent profiles reuse the cached verdicts. The batch trade selector remains per-profile because it makes capital-dependent sizing decisions. This optimization reduced AI costs by ~63% ($5.75/day → ~$2.10/day with 10 profiles).
+
 **Synthesis algorithm:**
 
 ```

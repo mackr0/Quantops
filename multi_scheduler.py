@@ -247,12 +247,16 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_alpha_decay(ctx),
             db_path=ctx.db_path,
         )
-        # SEC filing analysis (Phase 4) — fetch new filings, diff, alert
-        run_task(
-            f"[{seg_label}] SEC Filing Monitor",
-            lambda: _task_sec_filings(ctx),
-            db_path=ctx.db_path,
-        )
+        # SEC filing analysis (Phase 4) — runs once per market_type per
+        # cycle, not per profile. The same symbols get the same filings.
+        _sec_key = ctx.segment
+        if _sec_key not in _sec_checked_this_cycle:
+            _sec_checked_this_cycle.add(_sec_key)
+            run_task(
+                f"[{seg_label}] SEC Filing Monitor",
+                lambda: _task_sec_filings(ctx),
+                db_path=ctx.db_path,
+            )
         # Auto-strategy lifecycle (Phase 7) — promote matured shadows, retire failed
         run_task(
             f"[{seg_label}] Auto-Strategy Lifecycle",
@@ -475,6 +479,7 @@ def _build_scan_summary(ctx, candidates, summary):
 # running independently. Saves ~70% of non-AI calls.
 _screener_cache = {}
 _screener_cache_cycle = 0
+_sec_checked_this_cycle = set()
 
 
 def _get_screener_cache_key(market_type):
@@ -491,6 +496,7 @@ def _get_shared_candidates(ctx, seg, is_crypto):
     if now_bucket != _screener_cache_cycle:
         _screener_cache = {}
         _screener_cache_cycle = now_bucket
+        _sec_checked_this_cycle.clear()
 
     cache_key = _get_screener_cache_key(ctx.segment)
     if cache_key in _screener_cache:

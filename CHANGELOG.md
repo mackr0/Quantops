@@ -151,6 +151,51 @@ carried `status=open` despite having realized `pnl`.
 
 ---
 
+## 2026-04-17 — Specialist ensemble + SEC filings shared across profiles ($5.75 → ~$2/day)
+
+**Severity:** high — API costs were 3× the estimate
+
+**Problem:** Each of the 10 profiles ran its own specialist ensemble
+(4 AIs × 3 chunks = 12 calls) independently, even when profiles
+of the same market type evaluated the exact same candidates. Mid Cap,
+Mid Cap 25K, and Mid Cap 500K all asked the same 4 specialists the
+same questions about the same stocks — just with different capital.
+Same issue with SEC filing diffs: 612 AI calls/day instead of ~20.
+
+**Why sharing makes sense:** The specialist ensemble evaluates the
+CANDIDATES, not the profile. An earnings analyst's verdict on AAPL
+doesn't change because one profile has $25K and another has $500K.
+The candidates are identical (same screener, same market type), so
+the verdicts are identical. Only the final batch trade selector
+needs to be per-profile because it makes sizing decisions based on
+each profile's capital, positions, and risk parameters.
+
+**Fix:**
+- `_get_shared_ensemble()` in `trade_pipeline.py` caches ensemble
+  results per market_type per 15-minute cycle. First profile to
+  shortlist runs the ensemble; subsequent profiles of the same
+  market type reuse the cached verdicts.
+- SEC filing monitor (`_task_sec_filings`) now runs once per
+  market_type per cycle instead of per-profile. Same filings,
+  same AI diffs — no reason to repeat.
+
+**Cost impact:**
+| Call type | Before | After | Savings |
+|---|---|---|---|
+| Specialist ensemble | 1,437 calls ($4.20) | ~430 calls ($1.26) | 70% |
+| SEC filing diffs | 612 calls ($0.69) | ~60 calls ($0.07) | 90% |
+| Batch selector | 119 ($0.76) | 119 ($0.76) | 0% (correct) |
+| Political context | 18 ($0.09) | 18 ($0.09) | 0% (already cached) |
+| **Total** | **$5.75/day** | **~$2.10/day** | **63%** |
+
+**What stays per-profile (correctly):**
+- Batch trade selector — different capital = different sizing
+- Position sizing / risk checks — profile-specific
+- Order execution — routed to profile's Alpaca account
+- Trade logging — per-profile database
+
+---
+
 ## 2026-04-17 — Small return percentage now shows 2 decimal places
 
 When Total Return rounds to 0.0% but P&L is non-zero (e.g. $791 on

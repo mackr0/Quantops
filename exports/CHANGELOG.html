@@ -375,6 +375,44 @@ with matching SELL → closed - Count-reporting correctness</p>
 <p><strong>Test count:</strong> 543 (was 528 + 15 new across two
 features).</p>
 <hr />
+<h2
+id="specialist-ensemble-sec-filings-shared-across-profiles-5.75-2day">2026-04-17
+— Specialist ensemble + SEC filings shared across profiles ($5.75 →
+~$2/day)</h2>
+<p><strong>Severity:</strong> high — API costs were 3× the estimate</p>
+<p><strong>Problem:</strong> Each of the 10 profiles ran its own
+specialist ensemble (4 AIs × 3 chunks = 12 calls) independently, even
+when profiles of the same market type evaluated the exact same
+candidates. Mid Cap, Mid Cap 25K, and Mid Cap 500K all asked the same 4
+specialists the same questions about the same stocks — just with
+different capital. Same issue with SEC filing diffs: 612 AI calls/day
+instead of ~20.</p>
+<p><strong>Why sharing makes sense:</strong> The specialist ensemble
+evaluates the CANDIDATES, not the profile. An earnings analyst’s verdict
+on AAPL doesn’t change because one profile has $25K and another has
+$500K. The candidates are identical (same screener, same market type),
+so the verdicts are identical. Only the final batch trade selector needs
+to be per-profile because it makes sizing decisions based on each
+profile’s capital, positions, and risk parameters.</p>
+<p><strong>Fix:</strong> - <code>_get_shared_ensemble()</code> in
+<code>trade_pipeline.py</code> caches ensemble results per market_type
+per 15-minute cycle. First profile to shortlist runs the ensemble;
+subsequent profiles of the same market type reuse the cached verdicts. -
+SEC filing monitor (<code>_task_sec_filings</code>) now runs once per
+market_type per cycle instead of per-profile. Same filings, same AI
+diffs — no reason to repeat.</p>
+<p><strong>Cost impact:</strong> | Call type | Before | After | Savings
+| |—|—|—|—| | Specialist ensemble | 1,437 calls ($4.20) | ~430 calls
+($1.26) | 70% | | SEC filing diffs | 612 calls ($0.69) | ~60 calls
+($0.07) | 90% | | Batch selector | 119 ($0.76) | 119 ($0.76) | 0%
+(correct) | | Political context | 18 ($0.09) | 18 ($0.09) | 0% (already
+cached) | | <strong>Total</strong> | <strong>$5.75/day</strong> |
+<strong>~$2.10/day</strong> | <strong>63%</strong> |</p>
+<p><strong>What stays per-profile (correctly):</strong> - Batch trade
+selector — different capital = different sizing - Position sizing / risk
+checks — profile-specific - Order execution — routed to profile’s Alpaca
+account - Trade logging — per-profile database</p>
+<hr />
 <h2 id="small-return-percentage-now-shows-2-decimal-places">2026-04-17 —
 Small return percentage now shows 2 decimal places</h2>
 <p>When Total Return rounds to 0.0% but P&amp;L is non-zero (e.g. $791
