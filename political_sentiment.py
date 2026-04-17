@@ -204,7 +204,7 @@ def analyze_political_climate(ctx=None) -> Dict[str, Any]:
             provider=ctx.ai_provider if ctx else "anthropic",
             model=ctx.ai_model if ctx else config.CLAUDE_MODEL,
             api_key=ctx.ai_api_key if ctx else config.ANTHROPIC_API_KEY,
-            max_tokens=512,
+            max_tokens=1024,
             db_path=getattr(ctx, "db_path", None) if ctx else None,
             purpose="political_context",
         )

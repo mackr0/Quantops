@@ -236,6 +236,21 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
     action = signal.get("signal", "HOLD")
     price = signal.get("price", 0)
 
+    # If the signal has no price (screener race condition or failed fetch),
+    # get it now before we attempt execution. Without a valid price the
+    # trade silently skips, which is the bug that caused CRGY to show as
+    # "TRADES SELECTED" in the AI brain but never execute.
+    if price <= 0 and action in ("BUY", "STRONG_BUY", "SELL", "STRONG_SELL"):
+        try:
+            from market_data import get_bars
+            bars = get_bars(symbol, limit=1)
+            if bars is not None and not bars.empty:
+                price = float(bars.iloc[-1]["close"])
+                signal["price"] = price
+                logging.info("Re-fetched price for %s: $%.2f (was missing from signal)", symbol, price)
+        except Exception:
+            pass
+
     # Extract AI info for logging
     ai_reasoning = None
     ai_confidence = None
@@ -279,6 +294,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         if price <= 0:
             result["action"] = "SKIP"
             result["reason"] = "Invalid price"
+            logging.warning("Trade SKIPPED for %s: price is 0 after all fetch attempts", symbol)
             return result
 
         qty = int(dollars / price)
@@ -495,6 +511,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             if price <= 0:
                 result["action"] = "SKIP"
                 result["reason"] = "Invalid price"
+                logging.warning("Short SKIPPED for %s: price is 0 after all fetch attempts", symbol)
             else:
                 qty = int(dollars / price)
 
@@ -847,6 +864,22 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
 
     shortlist = _rank_candidates(strategy_results, held_symbols, enable_shorts,
                                   deprecated_strategies=deprecated_types)
+
+    # Ensure every shortlisted candidate has a valid price. If the
+    # strategy's get_bars call failed during scoring, the candidate
+    # arrives with price=0. Fetch it now — a candidate without a price
+    # cannot be sized or executed, and the AI wastes a call evaluating
+    # something we can't trade.
+    from market_data import get_bars as _get_bars_for_price
+    for c in shortlist:
+        if not c.get("price") or c["price"] <= 0:
+            try:
+                _bars = _get_bars_for_price(c["symbol"], limit=1)
+                if _bars is not None and not _bars.empty:
+                    c["price"] = float(_bars.iloc[-1]["close"])
+            except Exception:
+                pass
+    shortlist = [c for c in shortlist if c.get("price", 0) > 0]
 
     if not shortlist:
         logging.info(f"Pipeline complete: {len(candidates)} candidates -> "

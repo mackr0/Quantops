@@ -151,6 +151,62 @@ carried `status=open` despite having realized `pnl`.
 
 ---
 
+## 2026-04-17 — Multiple silent failures fixed: news, prices, yfinance crashes, MAGA mode
+
+**Severity:** high — AI was making decisions with missing data
+
+**Problems found and fixed:**
+
+1. **Alpaca news API 401s (silent):** Every news fetch was failing with
+   "Unauthorized" because the subscription doesn't include the news
+   endpoint. The system silently returned empty arrays — AI saw no news
+   for any symbol. **Fix:** `fetch_news()` redirected to yfinance news
+   (which works and was already used elsewhere in the pipeline).
+
+2. **Political sentiment JSON truncation:** max_tokens=512 was too small
+   for the political context response, causing JSON parse errors and
+   the AI losing political context. **Fix:** bumped to 1024.
+
+3. **yfinance thread-safety crash:** `yf.download()` uses a shared
+   global dict internally that isn't thread-safe. With 10 profiles
+   running in parallel, this caused `RuntimeError: dictionary changed
+   size during iteration` and crashed entire scan cycles.
+   **Fix:** new `yf_lock.py` module wraps all `yf.download()` calls
+   in a threading lock. All 10 call sites migrated.
+
+4. **MAGA mode scanner using yfinance batch download:** Still using
+   `yf.download(universe)` for 100+ symbols instead of Alpaca bars.
+   This caused the "possibly delisted" errors for valid symbols
+   (GPS, SQ, SKX) and was the source of the thread-safety crashes.
+   **Fix:** migrated to per-symbol `get_bars()` via Alpaca.
+
+5. **Price=0 causing trades to silently not execute:** The AI would
+   select a trade (visible in "TRADES SELECTED" on the dashboard)
+   but execution silently skipped it because the candidate's price
+   was 0 from a failed fetch during strategy scoring. The user sees
+   "BUY CRGY" in the brain panel but no trade happens and no error
+   appears. **Fix:** price is now verified and re-fetched at the
+   shortlist stage before sending to AI. Candidates without a valid
+   price are filtered out before wasting an AI call. Execution path
+   also re-fetches as a final safety net with a logged warning.
+
+6. **Price fetcher returning 0 silently:** Virtual position P&L showed
+   phantom losses when price fetch failed. **Fix:** tries Alpaca bars,
+   then Alpaca last trade, then logs a warning — never silently
+   returns 0 without explanation.
+
+7. **Earnings calendar logging at debug level:** Failures to check
+   earnings dates were invisible. **Fix:** bumped to warning level.
+
+8. **Crisis detector event cluster check:** Failed silently.
+   **Fix:** logs warning.
+
+**21 missed trades recovered:** The price=0 bug caused trades the AI
+recommended to not execute across multiple profiles. All 21 were
+manually executed at current market prices.
+
+---
+
 ## 2026-04-17 — Bad account allocation caused 3 data wipes in 2 days
 
 **Severity:** critical — user lost all accumulated trading data three times

@@ -336,8 +336,9 @@ def get_sector_rotation():
 
     try:
         symbols = list(SECTOR_ETFS.values())
-        data = yf.download(" ".join(symbols), period="1mo", progress=False,
-                           auto_adjust=True, threads=True)
+        import yf_lock
+        data = yf_lock.download(" ".join(symbols), period="1mo", progress=False,
+                                auto_adjust=True, threads=True)
         if data.empty:
             return {}
 

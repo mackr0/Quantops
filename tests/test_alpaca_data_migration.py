@@ -342,7 +342,7 @@ class TestMigrationContract:
         import inspect, screener
         src = inspect.getsource(screener.screen_dynamic_universe)
         alpaca_idx = src.find("get_snapshots")
-        yfinance_idx = src.find("yf.download")
+        yfinance_idx = src.find("yf_lock.download")
         assert alpaca_idx > 0
         assert yfinance_idx > 0
         assert alpaca_idx < yfinance_idx, (

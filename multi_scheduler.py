@@ -499,33 +499,25 @@ def _task_scan_and_trade(ctx):
     if maga_mode and not is_crypto:
         from market_data import get_bars, add_indicators
         universe = seg.get("universe", [])
-        import yfinance as _yf
         logging.info(f"[{seg_label}] MAGA Mode: scanning for oversold opportunities...")
-        try:
-            yf_data = _yf.download(universe, period="1mo", progress=False,
-                                   group_by="ticker", threads=True)
-            for sym in universe:
-                if sym in symbols:
+        maga_added = 0
+        for sym in universe:
+            if sym in symbols:
+                continue
+            try:
+                bars = get_bars(sym, limit=30)
+                if bars is None or bars.empty or len(bars) < 15:
                     continue
-                try:
-                    sym_df = yf_data[sym].dropna(subset=["Close"])
-                    if len(sym_df) < 15:
-                        continue
-                    # Quick RSI calculation
-                    close = sym_df["Close"]
-                    delta = close.diff()
-                    gain = delta.where(delta > 0, 0).rolling(14).mean()
-                    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-                    rs = gain / loss
-                    rsi = 100 - (100 / (1 + rs))
-                    latest_rsi = float(rsi.iloc[-1])
-                    if latest_rsi < ctx.rsi_oversold:
-                        symbols.add(sym)
-                except Exception:
-                    pass
-        except Exception:
-            logging.warning(f"[{seg_label}] MAGA oversold scan failed")
-        logging.info(f"[{seg_label}] After MAGA oversold scan: {len(symbols)} total candidates")
+                bars = add_indicators(bars)
+                if "rsi" not in bars.columns:
+                    continue
+                latest_rsi = float(bars.iloc[-1]["rsi"])
+                if latest_rsi < ctx.rsi_oversold:
+                    symbols.add(sym)
+                    maga_added += 1
+            except Exception:
+                continue
+        logging.info(f"[{seg_label}] MAGA oversold scan: added {maga_added} candidates, {len(symbols)} total")
 
     symbols = list(symbols)[:30]
 

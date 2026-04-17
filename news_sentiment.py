@@ -12,27 +12,16 @@ logger = logging.getLogger(__name__)
 
 def fetch_news(symbol, limit=10, api=None):
     """
-    Fetch recent news articles for *symbol* via the Alpaca news API.
+    Fetch recent news articles for *symbol*.
 
-    Returns a list of dicts with headline, summary, source, and created_at.
+    Uses yfinance (free) instead of Alpaca's news API which requires
+    a separate paid subscription we don't have. The Alpaca path was
+    silently failing with 401 Unauthorized on every call and flooding
+    the logs with errors.
+
+    Returns a list of dicts with headline, source, and link.
     """
-    try:
-        api = api or get_api()
-        raw_news = api.get_news(symbol=symbol, limit=limit)
-
-        articles = []
-        for item in raw_news:
-            articles.append({
-                "headline": getattr(item, "headline", ""),
-                "summary": getattr(item, "summary", ""),
-                "source": getattr(item, "source", ""),
-                "created_at": str(getattr(item, "created_at", "")),
-            })
-        return articles
-
-    except Exception as exc:
-        logger.error("Error fetching news for %s: %s", symbol, exc)
-        return []
+    return fetch_news_yfinance(symbol, limit=min(limit, 5))
 
 
 def analyze_sentiment(symbol, news_items):

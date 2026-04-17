@@ -33,16 +33,38 @@ def get_api(ctx=None):
 
 
 def _make_price_fetcher(api):
-    """Return a callable that gets the current price for a symbol
-    via the Alpaca last-trade endpoint."""
+    """Return a callable that gets the current price for a symbol.
+    Tries Alpaca bars first, then Alpaca last trade, then logs a
+    warning instead of silently returning 0 (which would show
+    phantom losses on virtual positions)."""
+    _cache = {}
+
     def fetch(symbol):
+        if symbol in _cache:
+            return _cache[symbol]
+        # Try 1: Alpaca bars (primary data path)
         try:
             from market_data import get_bars
             bars = get_bars(symbol, limit=1)
             if bars is not None and not bars.empty:
-                return float(bars.iloc[-1]["close"])
+                price = float(bars.iloc[-1]["close"])
+                if price > 0:
+                    _cache[symbol] = price
+                    return price
         except Exception:
             pass
+        # Try 2: Alpaca last trade API
+        try:
+            trade = api.get_latest_trade(symbol)
+            if trade and hasattr(trade, "price"):
+                price = float(trade.price)
+                if price > 0:
+                    _cache[symbol] = price
+                    return price
+        except Exception:
+            pass
+        import logging
+        logging.warning("Price fetch failed for %s — position will show stale price", symbol)
         return 0.0
     return fetch
 

@@ -47,6 +47,16 @@ def execute_trade(symbol, signal, ctx=None, strategy_name="combined", log=True):
     action = signal["signal"]
     price = signal.get("price", 0)
 
+    if price <= 0 and action in ("BUY", "STRONG_BUY", "WEAK_BUY", "SELL", "STRONG_SELL"):
+        try:
+            from market_data import get_bars
+            bars = get_bars(symbol, limit=1)
+            if bars is not None and not bars.empty:
+                price = float(bars.iloc[-1]["close"])
+                signal["price"] = price
+        except Exception:
+            pass
+
     result = {
         "symbol": symbol,
         "action": "NONE",

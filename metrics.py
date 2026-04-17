@@ -87,8 +87,8 @@ def _fetch_benchmark_returns(ticker: str, start_date: str, end_date: str) -> Dic
         return _benchmark_cache[cache_key]
 
     try:
-        import yfinance as yf
-        df = yf.download(ticker, start=start_date, end=end_date, progress=False, auto_adjust=True)
+        import yf_lock
+        df = yf_lock.download(ticker, start=start_date, end=end_date, progress=False, auto_adjust=True)
         if df is None or df.empty:
             return {}
         # Handle multi-level columns from yfinance

@@ -290,8 +290,8 @@ def _check_event_cluster(db_path: str,
                 "severity": "high",
                 "detail": f"{n} price shocks in last 30 minutes",
             }
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Event cluster check failed: %s", exc)
     return None
 
 

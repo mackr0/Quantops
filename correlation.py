@@ -27,7 +27,7 @@ def _fetch_returns(symbols: List[str], days: int = 20) -> Optional[Dict[str, np.
     or None if the fetch fails entirely.
     """
     try:
-        import yfinance as yf
+        import yf_lock
         from datetime import datetime, timedelta
 
         # Convert symbols for yfinance
@@ -38,7 +38,7 @@ def _fetch_returns(symbols: List[str], days: int = 20) -> Optional[Dict[str, np.
         start = end - timedelta(days=days * 2 + 10)
 
         # Batch download for efficiency
-        data = yf.download(
+        data = yf_lock.download(
             yf_symbols,
             start=start.strftime("%Y-%m-%d"),
             end=end.strftime("%Y-%m-%d"),

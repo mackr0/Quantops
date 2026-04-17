@@ -5,6 +5,7 @@ from datetime import datetime
 
 import pandas as pd
 import yfinance as yf
+import yf_lock
 
 from market_data import get_bars
 
@@ -121,7 +122,7 @@ def screen_by_price_range(min_price=1.0, max_price=20.0, min_volume=500_000,
     print(f"Downloading 1-month data for {len(universe)} symbols (yfinance batch)...")
 
     # Batch download — very fast, single HTTP request per batch
-    data = yf.download(universe, period="1mo", progress=False, group_by="ticker",
+    data = yf_lock.download(universe, period="1mo", progress=False, group_by="ticker",
                        threads=True)
 
     results = []
@@ -169,7 +170,7 @@ def find_volume_surges(candidates, volume_multiplier=2.0, api=None):
         print("\n  Found 0 volume surges")
         return []
 
-    data = yf.download(candidates, period="1mo", progress=False,
+    data = yf_lock.download(candidates, period="1mo", progress=False,
                        group_by="ticker", threads=True)
 
     surges = []
@@ -215,7 +216,7 @@ def find_momentum_stocks(candidates, min_gain_5d=3.0, min_gain_20d=5.0, api=None
         print("\n  Found 0 momentum stocks")
         return []
 
-    data = yf.download(candidates, period="1mo", progress=False,
+    data = yf_lock.download(candidates, period="1mo", progress=False,
                        group_by="ticker", threads=True)
 
     momentum = []
@@ -261,7 +262,7 @@ def find_breakouts(candidates, api=None):
         print("\n  Found 0 breakout candidates")
         return []
 
-    data = yf.download(candidates, period="1mo", progress=False,
+    data = yf_lock.download(candidates, period="1mo", progress=False,
                        group_by="ticker", threads=True)
 
     breakouts = []
@@ -385,7 +386,7 @@ def run_crypto_screen(universe=None):
     yf_symbols = [to_yfinance_symbol(s) for s in universe]
 
     print(f"\n[1/3] Downloading data for {len(yf_symbols)} crypto pairs...")
-    data = yf.download(yf_symbols, period="1mo", progress=False,
+    data = yf_lock.download(yf_symbols, period="1mo", progress=False,
                        group_by="ticker", threads=True)
 
     # Screen all crypto — no price/volume filter (they're all candidates)
@@ -648,7 +649,7 @@ def screen_dynamic_universe(min_price=1.0, max_price=20.0, min_volume=500_000,
 
             def _do_download():
                 try:
-                    dl_result["data"] = yf.download(
+                    dl_result["data"] = yf_lock.download(
                         yf_symbols, period="5d", progress=False,
                         auto_adjust=True, threads=True,
                     )

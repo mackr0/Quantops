@@ -93,7 +93,7 @@ def check_earnings(symbol: str) -> Optional[Dict]:
         }
 
     except Exception as exc:
-        logger.debug("Earnings check failed for %s: %s", symbol, exc)
+        logger.warning("Earnings check failed for %s: %s — earnings filter disabled for this symbol", symbol, exc)
         result = None
 
     _cache[cache_key] = {"result": result, "_cached_at": time.time()}
