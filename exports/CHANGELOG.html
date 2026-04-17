@@ -376,6 +376,38 @@ with matching SELL → closed - Count-reporting correctness</p>
 features).</p>
 <hr />
 <h2
+id="system-hardening-cost-alerting-cross-account-reconciliation-metrics-fixes">2026-04-17
+— System hardening: cost alerting, cross-account reconciliation, metrics
+fixes</h2>
+<p><strong>Fixes:</strong> - <strong>Metrics initial_capital
+bug</strong> — <code>calculate_all_metrics</code> was doubling the total
+capital (passed $2.15M total, then multiplied by num_profiles again).
+Showed +1279%, then -56%, then +33% at various stages. Now correctly
+shows -0.1%. Per-profile capital map passed for accurate snapshot
+forward-fill. - <strong>Legacy DB inclusion</strong> — old segment DBs
+(quantopsai_midcap.db etc.) were being included in the metrics
+aggregation despite being empty, inflating the profile count. -
+<strong>Disabled profiles included</strong> — Profile 2 (disabled
+crypto) was counted in DB paths and capital calculations. -
+<strong>Annualized return overflow</strong> —
+<code>(1+return)^(365/1)</code> crashed with OverflowError on day 1. Now
+requires 7+ days before computing. - <strong>Recovered trades
+backfilled</strong> — 21 manually recovered trades now have the original
+AI reasoning and confidence from their matching predictions. -
+<strong>Auto-exit label</strong> — exit trades (trailing stop, SL, TP)
+show “Auto-exit” instead of “–” in the AI Confidence column. -
+<strong>Admin page</strong> — reads from actual per-profile cost ledger
+instead of the dead <code>user_api_usage</code> table.</p>
+<p><strong>New features:</strong> - <strong>API cost alerting</strong> —
+daily spend check runs with the snapshot. Alerts in the activity feed
+when total exceeds $3/day. - <strong>Cross-account
+reconciliation</strong> — wired into scheduler. Runs once per Alpaca
+account per snapshot cycle. Compares sum of virtual positions against
+Alpaca’s actual holdings, logs drift warnings. - <strong>Cost per
+profile on dashboard</strong> — overview table shows each profile’s AI
+cost today.</p>
+<hr />
+<h2
 id="specialist-ensemble-sec-filings-shared-across-profiles-5.75-2day">2026-04-17
 — Specialist ensemble + SEC filings shared across profiles ($5.75 →
 ~$2/day)</h2>

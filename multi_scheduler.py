@@ -228,6 +228,19 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_daily_snapshot(ctx),
             db_path=ctx.db_path,
         )
+        # API cost check — alert if daily spend is getting high
+        run_task(
+            f"[{seg_label}] Cost Check",
+            lambda: _task_cost_check(ctx),
+            db_path=ctx.db_path,
+        )
+        # Cross-account reconciliation (virtual profiles only)
+        if getattr(ctx, "is_virtual", False):
+            run_task(
+                f"[{seg_label}] Cross-Account Reconcile",
+                lambda: _task_cross_account_reconcile(ctx),
+                db_path=ctx.db_path,
+            )
         # Self-tuning runs once per day alongside the daily snapshot
         if getattr(ctx, "enable_self_tuning", True):
             run_task(
@@ -771,6 +784,70 @@ def _task_virtual_audit(ctx):
             )
     except Exception:
         logging.exception(f"[{seg_label}] Virtual audit failed")
+
+
+_DAILY_COST_ALERT_THRESHOLD = 3.00  # USD — alert if daily spend exceeds this
+_cost_alerted_today = set()
+_cross_reconcile_checked = set()
+
+
+def _task_cross_account_reconcile(ctx):
+    """Compare sum of virtual positions against Alpaca's actual holdings.
+    Runs once per Alpaca account per snapshot cycle."""
+    acct_id = getattr(ctx, "alpaca_account_id", None)
+    if not acct_id or acct_id in _cross_reconcile_checked:
+        return
+    _cross_reconcile_checked.add(acct_id)
+    try:
+        from virtual_audit import audit_cross_account
+        from models import get_user_profiles
+        profiles = get_user_profiles(ctx.user_id)
+        pids = [p["id"] for p in profiles
+                if p.get("enabled") and p.get("alpaca_account_id") == acct_id]
+        if len(pids) < 2:
+            return
+        problems = audit_cross_account(acct_id, pids)
+        if problems:
+            _safe_log_activity(
+                getattr(ctx, "profile_id", 0), ctx.user_id,
+                "cross_reconcile",
+                "Cross-Account Drift: %d issue(s)" % len(problems),
+                "\n".join("- %s" % p for p in problems),
+            )
+    except Exception as exc:
+        logging.warning("Cross-account reconcile failed: %s", exc)
+
+
+def _task_cost_check(ctx):
+    """Check if daily AI spend is exceeding threshold."""
+    from ai_cost_ledger import spend_summary
+    pid = getattr(ctx, "profile_id", 0)
+    if pid in _cost_alerted_today:
+        return
+    try:
+        summary = spend_summary(ctx.db_path)
+        today_cost = summary["today"]["usd"]
+        if today_cost > _DAILY_COST_ALERT_THRESHOLD / 10:
+            # Sum across ALL profiles for total daily cost
+            import os, glob
+            total = 0
+            for f in glob.glob("quantopsai_profile_*.db"):
+                s = spend_summary(f)
+                total += s["today"]["usd"]
+            if total > _DAILY_COST_ALERT_THRESHOLD:
+                _cost_alerted_today.add(pid)
+                logging.warning(
+                    "API cost alert: $%.2f today (threshold $%.2f)",
+                    total, _DAILY_COST_ALERT_THRESHOLD)
+                _safe_log_activity(
+                    pid, ctx.user_id, "cost_alert",
+                    "API Cost Alert: $%.2f today" % total,
+                    "Daily AI spend has exceeded the $%.2f threshold. "
+                    "Consider reducing scan frequency or disabling "
+                    "specialist ensemble on test profiles." % _DAILY_COST_ALERT_THRESHOLD,
+                )
+    except Exception:
+        pass
 
 
 def _task_reconcile_trade_statuses(ctx):

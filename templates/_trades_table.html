@@ -39,7 +39,7 @@
                     </td>
                     <td>{{ t.qty|int }}{% if t.price and t.qty %}<br><small class="muted">${{ "{:,.0f}".format(t.qty * t.price) }}</small>{% endif %}</td>
                     <td>{{ "${:,.2f}".format(t.price) if t.price else '--' }}</td>
-                    <td>{{ "{}%".format(t.ai_confidence|int) if t.ai_confidence else '--' }}</td>
+                    <td>{% if t.ai_confidence %}{{ "{}%".format(t.ai_confidence|int) }}{% elif t.side in ('sell', 'cover') %}<small class="muted">Auto-exit</small>{% else %}--{% endif %}</td>
                     <td>
                         {% if t.pnl is not none %}
                             {% if t.price and t.qty %}

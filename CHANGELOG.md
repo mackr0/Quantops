@@ -151,6 +151,39 @@ carried `status=open` despite having realized `pnl`.
 
 ---
 
+## 2026-04-17 — System hardening: cost alerting, cross-account reconciliation, metrics fixes
+
+**Fixes:**
+- **Metrics initial_capital bug** — `calculate_all_metrics` was doubling
+  the total capital (passed $2.15M total, then multiplied by num_profiles
+  again). Showed +1279%, then -56%, then +33% at various stages. Now
+  correctly shows -0.1%. Per-profile capital map passed for accurate
+  snapshot forward-fill.
+- **Legacy DB inclusion** — old segment DBs (quantopsai_midcap.db etc.)
+  were being included in the metrics aggregation despite being empty,
+  inflating the profile count.
+- **Disabled profiles included** — Profile 2 (disabled crypto) was counted
+  in DB paths and capital calculations.
+- **Annualized return overflow** — `(1+return)^(365/1)` crashed with
+  OverflowError on day 1. Now requires 7+ days before computing.
+- **Recovered trades backfilled** — 21 manually recovered trades now have
+  the original AI reasoning and confidence from their matching predictions.
+- **Auto-exit label** — exit trades (trailing stop, SL, TP) show "Auto-exit"
+  instead of "--" in the AI Confidence column.
+- **Admin page** — reads from actual per-profile cost ledger instead of the
+  dead `user_api_usage` table.
+
+**New features:**
+- **API cost alerting** — daily spend check runs with the snapshot. Alerts
+  in the activity feed when total exceeds $3/day.
+- **Cross-account reconciliation** — wired into scheduler. Runs once per
+  Alpaca account per snapshot cycle. Compares sum of virtual positions
+  against Alpaca's actual holdings, logs drift warnings.
+- **Cost per profile on dashboard** — overview table shows each profile's
+  AI cost today.
+
+---
+
 ## 2026-04-17 — Specialist ensemble + SEC filings shared across profiles ($5.75 → ~$2/day)
 
 **Severity:** high — API costs were 3× the estimate

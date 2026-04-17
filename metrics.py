@@ -158,14 +158,25 @@ def _count_open_trades(db_paths) -> int:
     return total
 
 
-def _gather_snapshots(db_paths, initial_capital_per_profile: float = 10000) -> List[Dict]:
+def _gather_snapshots(db_paths, initial_capital_per_profile=None) -> List[Dict]:
     """Collect daily snapshots from all DBs and aggregate across profiles.
 
     For each date, sums equity across all profiles. If a profile is missing a
     snapshot for a given date, its most recent known equity (or initial capital)
     is carried forward. This prevents artificial return spikes when profiles
     have different snapshot dates.
+
+    initial_capital_per_profile: either a float (same for all) or a dict
+    mapping db_path -> float (per-profile capital for accurate forward-fill).
     """
+    if initial_capital_per_profile is None:
+        initial_capital_per_profile = 10000
+
+    def _get_ic(db_path):
+        if isinstance(initial_capital_per_profile, dict):
+            return initial_capital_per_profile.get(db_path, 100000)
+        return initial_capital_per_profile
+
     per_db_snaps: Dict[str, List[Dict]] = {}
     all_dates = set()
     for db_path in db_paths:
@@ -194,7 +205,7 @@ def _gather_snapshots(db_paths, initial_capital_per_profile: float = 10000) -> L
     for db_path, snaps in per_db_snaps.items():
         by_date = {s["date"]: s for s in snaps if s.get("date")}
         per_db_equity[db_path] = {}
-        last_eq = initial_capital_per_profile
+        last_eq = _get_ic(db_path)
         last_pnl = 0
         for d in sorted_dates:
             if d in by_date:
@@ -427,18 +438,20 @@ def render_rolling_sharpe_svg(rolling_data: List[Dict], width: int = 700, height
 # Master metrics calculator
 # ---------------------------------------------------------------------------
 
-def calculate_all_metrics(db_paths, initial_capital: float = 10000) -> Dict[str, Any]:
+def calculate_all_metrics(db_paths, initial_capital: float = 10000,
+                          capital_by_db: Any = None) -> Dict[str, Any]:
     """Calculate every institutional metric from trade and snapshot data.
 
     Returns a comprehensive dict used by all 5 dashboard pages.
     Handles empty data gracefully -- returns zeroes / empty lists.
     """
     trades = _gather_trades(db_paths)
-    # Pass per-profile initial capital so snapshots forward-fill correctly
-    snapshots = _gather_snapshots(db_paths, initial_capital_per_profile=initial_capital)
-    # Combined baseline = per-profile capital × number of profiles
-    num_profiles = max(len(list(db_paths)), 1)
-    combined_initial_capital = initial_capital * num_profiles
+    # initial_capital is the TOTAL across all selected profiles.
+    # capital_by_db maps each DB path to its profile's actual initial
+    # capital for accurate snapshot forward-fill.
+    combined_initial_capital = initial_capital
+    snapshots = _gather_snapshots(db_paths,
+                                   initial_capital_per_profile=capital_by_db)
 
     result: Dict[str, Any] = {}
 
@@ -495,11 +508,15 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000) -> Dict[str,
         days_active = 0
     result["days_active"] = days_active
 
-    # Annualised return
-    if days_active > 0 and total_return > -1:
-        result["annualized_return_pct"] = round(
-            ((1 + total_return) ** (365 / days_active) - 1) * 100, 2
-        )
+    # Annualised return — guard against overflow when days_active is
+    # very small (e.g. 1 day: (1.05)^365 overflows float64)
+    if days_active >= 7 and total_return > -1:
+        try:
+            result["annualized_return_pct"] = round(
+                ((1 + total_return) ** (365 / days_active) - 1) * 100, 2
+            )
+        except (OverflowError, ValueError):
+            result["annualized_return_pct"] = 0.0
     else:
         result["annualized_return_pct"] = 0.0
 

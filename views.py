@@ -265,6 +265,12 @@ def dashboard():
             account = _safe_account_info(ctx)
             positions = _enriched_positions(ctx, prof["id"])
             pending_orders = _safe_pending_orders(ctx)
+            # Per-profile AI cost today
+            try:
+                from ai_cost_ledger import spend_summary
+                cost_today = spend_summary(ctx.db_path)["today"]["usd"]
+            except Exception:
+                cost_today = 0
             profiles_data.append({
                 "id": prof["id"],
                 "name": prof["name"],
@@ -274,6 +280,7 @@ def dashboard():
                 "positions": positions,
                 "pending_orders": pending_orders,
                 "is_virtual": getattr(ctx, "is_virtual", False),
+                "cost_today": round(cost_today, 2),
             })
         except Exception as exc:
             logger.warning("Dashboard error for profile #%d: %s", prof["id"], exc)
@@ -1492,18 +1499,28 @@ def performance_dashboard():
                 break
     else:
         for p in profiles:
+            if not p.get("enabled"):
+                continue
             db_path = f"quantopsai_profile_{p['id']}.db"
             if os.path.exists(db_path):
                 db_paths.add(db_path)
-        # Legacy segment DBs
-        for legacy in ["quantopsai_microsmall.db", "quantopsai_midcap.db",
-                        "quantopsai_largecap.db", "quantopsai_crypto.db",
-                        "quantopsai_smallcap.db"]:
-            if os.path.exists(legacy):
-                db_paths.add(legacy)
 
-    # Calculate all institutional metrics
-    metrics = calculate_all_metrics(db_paths, initial_capital=10000)
+    # Calculate total initial capital across selected ENABLED profiles only
+    total_initial_capital = 0
+    capital_by_db = {}
+    for p in profiles:
+        if not p.get("enabled"):
+            continue
+        if selected_profile_int and p["id"] != selected_profile_int:
+            continue
+        capital = p.get("initial_capital", 100000)
+        total_initial_capital += capital
+        capital_by_db[f"quantopsai_profile_{p['id']}.db"] = capital
+    if total_initial_capital <= 0:
+        total_initial_capital = 100000
+
+    metrics = calculate_all_metrics(db_paths, initial_capital=total_initial_capital,
+                                     capital_by_db=capital_by_db)
 
     # Scaling projection — square-root market impact + migration ladder
     # + execution-style adjustment. See `scaling_projection.py`.
@@ -2211,11 +2228,18 @@ def admin():
     ).fetchall()
     users = [dict(u) for u in users]
 
-    # Get API usage for each user (today)
-    from datetime import date
-    today = date.today().isoformat()
+    # Get actual API usage from per-profile cost ledgers
+    import glob
+    from ai_cost_ledger import spend_summary
+    total_calls = 0
+    total_cost = 0
+    for f in glob.glob("quantopsai_profile_*.db"):
+        s = spend_summary(f)
+        total_calls += s["today"]["calls"]
+        total_cost += s["today"]["usd"]
     for u in users:
-        u["api_calls_today"] = get_api_usage(u["id"], today)
+        u["api_calls_today"] = total_calls
+        u["api_cost_today"] = round(total_cost, 2)
 
     conn.close()
     return render_template("admin.html", users=users)

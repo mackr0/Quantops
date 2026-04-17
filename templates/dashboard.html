@@ -62,7 +62,7 @@
                     <th>Equity</th>
                     <th>Cash</th>
                     <th>Positions</th>
-                    <th>P&L</th>
+                    <th>AI Cost Today</th>
                 </tr>
             </thead>
             <tbody>
@@ -78,10 +78,7 @@
                     <td><strong>${{ "{:,.0f}".format(prof.account.equity) }}</strong></td>
                     <td class="muted">${{ "{:,.0f}".format(prof.account.cash) }}</td>
                     <td>{{ prof.positions|length }}</td>
-                    <td class="{{ 'pnl-pos' if prof.account.equity - (prof.account.get('initial_capital', prof.account.equity)) > 0 else 'pnl-neg' if prof.account.equity - (prof.account.get('initial_capital', prof.account.equity)) < 0 else '' }}">
-                        {% set pnl_est = prof.account.equity - prof.account.cash - (prof.positions|sum(attribute='unrealized_pl') if prof.positions else 0) %}
-                        {{ prof.positions|length }} open
-                    </td>
+                    <td class="muted">${{ "{:.2f}".format(prof.cost_today or 0) }}</td>
                     {% set ns.total_equity = ns.total_equity + prof.account.equity %}
                     {% set ns.total_cash = ns.total_cash + prof.account.cash %}
                     {% set ns.total_positions = ns.total_positions + prof.positions|length %}
