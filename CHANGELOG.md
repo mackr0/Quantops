@@ -151,6 +151,25 @@ carried `status=open` despite having realized `pnl`.
 
 ---
 
+## 2026-04-17 — Position values visible, scan step status, yfinance crumb fix
+
+**Position values:** Qty column now shows the dollar value underneath
+the share count (qty × price). No more mental math.
+
+**Scan step status:** Dashboard schedule bars now show the current
+pipeline step instead of just "Scanning" — e.g. "Running 16 strategies
+(30 candidates)", "Specialist ensemble (15 candidates)", "AI selecting
+trades (15 shortlisted)". Polls every 3 seconds via `/api/scan-status/<id>`.
+New `scan_status.py` module writes per-profile step files. Cleared when
+scan completes.
+
+**yfinance Invalid Crumb fix:** Yahoo rotates session cookies, causing
+401 errors that disabled the earnings filter. Added auto-reset of
+yfinance's cookie cache when "Invalid Crumb" errors are detected.
+Rate-limited to once per 5 minutes.
+
+---
+
 ## 2026-04-17 — Multiple silent failures fixed: news, prices, yfinance crashes, MAGA mode
 
 **Severity:** high — AI was making decisions with missing data

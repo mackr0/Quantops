@@ -654,6 +654,10 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
         max_position_pct = ctx.max_position_pct if ctx is not None else DEFAULT_MAX_POSITION_PCT
 
     # ── STEP 0: Portfolio state (fetched ONCE) ──────────────────────
+    from scan_status import update_status, clear_status
+    _pid = getattr(ctx, "profile_id", 0) if ctx else 0
+    update_status(_pid, "Loading portfolio", "%d candidates" % len(candidates))
+
     api = get_api(ctx)
     account = get_account_info(api, ctx=ctx)
     positions_list = get_positions(api, ctx=ctx)
@@ -689,6 +693,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     max_positions = ctx.max_total_positions if ctx is not None else 10
     at_max_positions = num_positions >= max_positions
 
+    update_status(_pid, "Pre-filtering", "%d candidates" % len(candidates))
     # ── STEP 1: Pre-filter (NO AI calls, NO strategy calls) ────────
     # Load auto-blacklist
     symbol_reputation = {}
@@ -811,6 +816,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
 
     market_type = ctx.segment if ctx is not None else "small"
 
+    update_status(_pid, "Running 16 strategies", "%d candidates" % len(filtered_candidates))
     # ── STEP 3: Run strategy on ALL filtered candidates (free, no AI) ──
     logging.info(f"Pipeline: {len(candidates)} candidates -> {len(filtered_candidates)} after pre-filter "
                  f"({len(pre_filter_skips)} removed: "
@@ -882,6 +888,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     shortlist = [c for c in shortlist if c.get("price", 0) > 0]
 
     if not shortlist:
+        clear_status(_pid)
         logging.info(f"Pipeline complete: {len(candidates)} candidates -> "
                      f"{len(filtered_candidates)} post-filter -> 0 shortlisted -> "
                      f"0 sent to AI -> 0 buys, 0 sells, 0 shorts")
@@ -893,6 +900,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             "details": details, "vetoed_details": [],
         }
 
+    update_status(_pid, "AI selecting trades", "%d shortlisted" % len(shortlist))
     # ── STEP 4: AI batch selection (ONE call) ────────────────────────
     # Lazy-fetch MAGA political context only when we have candidates —
     # AND only for equity profiles. Political / tariff narrative has
@@ -910,6 +918,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     portfolio_state = _build_portfolio_state(account, positions_list, dd, ctx)
     market_ctx = _build_market_context(regime_info, political_context, ctx)
 
+    update_status(_pid, "Specialist ensemble", "%d candidates" % len(shortlist))
     # ── STEP 3.7: Specialist ensemble (Phase 8) ──────────────────────
     # Four specialist AIs (earnings, pattern, sentiment, risk) each see
     # the full shortlist in one batch call, returning per-symbol verdicts.
@@ -1146,6 +1155,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     except Exception as exc:
         logging.warning(f"Crisis gate skipped: {exc}")
 
+    update_status(_pid, "Executing trades", "%d selected" % len(ai_trades))
     # ── STEP 5: Execute AI-selected trades ───────────────────────────
     for ai_trade in ai_trades:
         symbol = ai_trade["symbol"]
@@ -1198,6 +1208,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                                                          "DRAWDOWN_PAUSE", "EXCLUDED",
                                                          "AUTO_BLACKLISTED", "EARNINGS_SKIP")]
 
+    clear_status(_pid)
     logging.info(f"Pipeline complete: {len(candidates)} candidates -> "
                  f"{len(filtered_candidates)} post-filter -> {len(shortlist)} shortlisted -> "
                  f"1 AI call -> {len(buys)} buys, {len(sells)} sells, {len(shorts)} shorts")

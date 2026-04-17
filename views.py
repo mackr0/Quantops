@@ -327,6 +327,7 @@ def dashboard():
                 next_session = f"{ctx.custom_start} ET"
 
             profile_schedules.append({
+                "profile_id": prof["id"],
                 "name": prof["name"],
                 "market_type_name": prof.get("market_type_name", prof["market_type"]),
                 "active": active,
@@ -2383,6 +2384,17 @@ def api_scheduler_status():
         return jsonify(status)
     except FileNotFoundError:
         return jsonify({"error": "Scheduler not running yet", "scan_remaining": 0, "exit_remaining": 0, "ai_remaining": 0})
+
+
+@views_bp.route("/api/scan-status/<int:profile_id>")
+@login_required
+def api_scan_status(profile_id):
+    """Return current scan step for a profile."""
+    from scan_status import get_status
+    status = get_status(profile_id)
+    if status:
+        return jsonify(status)
+    return jsonify({"step": None})
 
 
 @views_bp.route("/api/portfolio/<int:profile_id>")

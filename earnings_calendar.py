@@ -12,6 +12,27 @@ logger = logging.getLogger(__name__)
 # Cache per symbol, 24 hours
 _cache: Dict[str, Dict] = {}
 _CACHE_TTL = 24 * 60 * 60
+_crumb_reset_at = 0
+
+
+def _reset_yf_crumb_if_needed():
+    """Reset yfinance's cached crumb/cookie when Yahoo rotates them.
+    The 'Invalid Crumb' 401 error floods logs when the session expires.
+    Rate-limited to once per 5 minutes."""
+    global _crumb_reset_at
+    now = time.time()
+    if now - _crumb_reset_at < 300:
+        return
+    _crumb_reset_at = now
+    try:
+        import os
+        cache_dir = os.path.expanduser("~/.cache/py-yfinance")
+        for fname in ("cookies.db", "tkr-tz.db"):
+            path = os.path.join(cache_dir, fname)
+            if os.path.exists(path):
+                os.remove(path)
+    except Exception:
+        pass
 
 
 def check_earnings(symbol: str) -> Optional[Dict]:
@@ -94,6 +115,8 @@ def check_earnings(symbol: str) -> Optional[Dict]:
 
     except Exception as exc:
         logger.warning("Earnings check failed for %s: %s — earnings filter disabled for this symbol", symbol, exc)
+        if "Crumb" in str(exc) or "401" in str(exc):
+            _reset_yf_crumb_if_needed()
         result = None
 
     _cache[cache_key] = {"result": result, "_cached_at": time.time()}

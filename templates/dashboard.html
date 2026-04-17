@@ -12,7 +12,7 @@
 {% for ps in profile_schedules %}
 <div style="padding:0.25rem 0.6rem; border-left:3px solid {% if ps.active %}#00c853{% else %}#555{% endif %}; background:{% if ps.active %}#f0fff0{% else %}#f5f5f5{% endif %}; border-radius:0 4px 4px 0; font-size:0.85rem;">
     <strong>{{ ps.name }}</strong>
-    {% if ps.active %}<span style="color:#00c853; margin-left:0.3rem;">Scanning</span>
+    {% if ps.active %}<span id="scan-step-{{ ps.profile_id }}" style="color:#00c853; margin-left:0.3rem;">Scanning</span>
     {% else %}<span class="muted" style="margin-left:0.3rem;">{{ ps.next_session }}</span>{% endif %}
 </div>
 {% endfor %}
@@ -301,6 +301,31 @@ function showDashTab(event, tabName) {
         var link = document.querySelector('a[href="#' + hash + '"]');
         if (link) link.classList.add('active');
     }
+})();
+</script>
+
+<!-- Scan Step Status -->
+<script>
+(function() {
+    var profileIds = [{% for ps in profile_schedules %}{% if ps.active %}{{ ps.profile_id }},{% endif %}{% endfor %}];
+    function pollSteps() {
+        profileIds.forEach(function(pid) {
+            var el = document.getElementById('scan-step-' + pid);
+            if (!el) return;
+            fetch('/api/scan-status/' + pid)
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.step) {
+                        el.textContent = data.step + (data.detail ? ' (' + data.detail + ')' : '');
+                    } else {
+                        el.textContent = 'Idle';
+                    }
+                })
+                .catch(function() {});
+        });
+    }
+    pollSteps();
+    setInterval(pollSteps, 3000);
 })();
 </script>
 
