@@ -470,23 +470,38 @@ def _build_scan_summary(ctx, candidates, summary):
 # ── Task Implementations ─────────────────────────────────────────────
 # Each task receives a UserContext and passes it through.
 
-def _task_scan_and_trade(ctx):
-    """Screen the segment's universe and auto-trade via the AI-first pipeline."""
-    from screener import screen_by_price_range, find_volume_surges, \
-        find_momentum_stocks, find_breakouts, run_crypto_screen
-    from trade_pipeline import run_trade_cycle
-    from notifications import notify_trade, notify_veto
+# Screener cache: keyed by market_type, expires every cycle. Profiles
+# with the same market_type share one screener run instead of each
+# running independently. Saves ~70% of non-AI calls.
+_screener_cache = {}
+_screener_cache_cycle = 0
 
-    seg_label = ctx.display_name or ctx.segment
-    seg = get_segment(ctx.segment)
-    is_crypto = seg.get("is_crypto", False)
-    maga_mode = ctx.maga_mode if ctx is not None else False
+
+def _get_screener_cache_key(market_type):
+    return market_type
+
+
+def _get_shared_candidates(ctx, seg, is_crypto):
+    """Return screener + MAGA candidates, cached per market_type per cycle."""
+    global _screener_cache, _screener_cache_cycle
+
+    # Expire cache every cycle (roughly every 15 minutes)
+    import time as _time
+    now_bucket = int(_time.time() / 900)  # 15-minute buckets
+    if now_bucket != _screener_cache_cycle:
+        _screener_cache = {}
+        _screener_cache_cycle = now_bucket
+
+    cache_key = _get_screener_cache_key(ctx.segment)
+    if cache_key in _screener_cache:
+        logging.info(f"[{ctx.display_name}] Using shared screener results for {ctx.segment}")
+        return list(_screener_cache[cache_key])
+
+    from screener import run_crypto_screen
 
     if is_crypto:
-        # Crypto uses its own screener with symbol conversion
         screen_results = run_crypto_screen(universe=seg.get("universe"))
     else:
-        # Equity segments use the standard screener
         screen_results = run_full_screen_for_segment(ctx, seg)
 
     symbols = set()
@@ -494,12 +509,12 @@ def _task_scan_and_trade(ctx):
         for s in screen_results.get(cat, []):
             symbols.add(s["symbol"])
 
-    # MAGA Mode: also scan the full universe for deeply oversold stocks
-    # These might not pass normal screener filters but are mean reversion candidates
+    # MAGA Mode oversold scan — also shared
+    maga_mode = ctx.maga_mode if ctx is not None else False
     if maga_mode and not is_crypto:
         from market_data import get_bars, add_indicators
         universe = seg.get("universe", [])
-        logging.info(f"[{seg_label}] MAGA Mode: scanning for oversold opportunities...")
+        logging.info(f"[{ctx.display_name}] MAGA Mode: scanning for oversold opportunities...")
         maga_added = 0
         for sym in universe:
             if sym in symbols:
@@ -517,11 +532,32 @@ def _task_scan_and_trade(ctx):
                     maga_added += 1
             except Exception:
                 continue
-        logging.info(f"[{seg_label}] MAGA oversold scan: added {maga_added} candidates, {len(symbols)} total")
+        logging.info(f"[{ctx.display_name}] MAGA oversold scan: added {maga_added}, {len(symbols)} total")
 
-    symbols = list(symbols)[:30]
+    result = list(symbols)[:30]
+    _screener_cache[cache_key] = result
+    return list(result)
+
+
+def _task_scan_and_trade(ctx):
+    """Screen the segment's universe and auto-trade via the AI-first pipeline."""
+    from trade_pipeline import run_trade_cycle
+    from notifications import notify_trade, notify_veto
+    from scan_status import update_status, clear_status
+
+    seg_label = ctx.display_name or ctx.segment
+    seg = get_segment(ctx.segment)
+    is_crypto = seg.get("is_crypto", False)
+    _pid = getattr(ctx, "profile_id", 0)
+
+    update_status(_pid, "Screening universe", seg_label)
+
+    symbols = _get_shared_candidates(ctx, seg, is_crypto)
+
+    update_status(_pid, "Screener done", "%d candidates found" % len(symbols))
 
     if not symbols:
+        clear_status(_pid)
         logging.info(f"[{seg_label}] No candidates found in screen.")
         _safe_log_activity(
             getattr(ctx, "profile_id", 0), ctx.user_id,
@@ -531,8 +567,10 @@ def _task_scan_and_trade(ctx):
         )
         return
 
+    update_status(_pid, "Running trade pipeline", "%d candidates" % len(symbols))
     logging.info(f"[{seg_label}] Running scan on {len(symbols)} candidates")
     summary = run_trade_cycle(symbols, ctx=ctx)
+    clear_status(_pid)
     logging.info(
         f"[{seg_label}] Trade summary: "
         f"buys={summary.get('buys', 0)}, "

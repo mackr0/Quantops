@@ -151,6 +151,50 @@ carried `status=open` despite having realized `pnl`.
 
 ---
 
+## 2026-04-17 — Screener results shared across same-market-type profiles
+
+**Severity:** optimization — reduces API costs ~70% on screener/data calls
+
+**Problem:** 10 profiles were each running their own screener
+independently. Mid Cap, Mid Cap 25K, and Mid Cap 500K all screened the
+same "midcap" universe — 3× the Alpaca snapshot calls, 3× the MAGA
+oversold scan, 3× the alternative data lookups (insider trades, short
+interest, options chains).
+
+**Fix:** `_get_shared_candidates()` caches screener + MAGA results per
+market_type per 15-minute cycle. First profile to run screens the
+universe; subsequent profiles with the same market_type reuse the
+cached result. Logs "Using shared screener results for midcap" so
+it's visible.
+
+**Savings:** 10 screener runs → 3 (one per market type). Each screener
+run includes ~100 symbol-level data fetches. Net: ~700 fewer API calls
+per cycle.
+
+**AI calls unchanged:** Each profile still runs its own specialist
+ensemble + batch selector because they have different capital, positions,
+and risk parameters. That's correct — a $25K profile should make
+different sizing decisions than a $500K profile on the same candidates.
+
+---
+
+## 2026-04-17 — Earnings calendar moved to DB cache (eliminates yfinance error floods)
+
+**Severity:** high — yfinance earnings checks were flooding 401 errors
+
+**Root cause:** Every scan cycle checked each candidate's earnings date
+by calling `yf.Ticker(symbol).calendar` individually. With 10 profiles
+× 30 candidates = 300 yfinance calls per cycle, Yahoo rate-limited
+and returned "Invalid Crumb" 401 errors. The earnings filter silently
+failed, allowing trades into earnings announcements.
+
+**Fix:** Rewrote `earnings_calendar.py` to store dates in SQLite
+(`earnings_dates` table in main DB). yfinance is called only once per
+24 hours per symbol. All subsequent checks read from DB — instant,
+zero API calls, zero errors. 300 yfinance calls/cycle → 0.
+
+---
+
 ## 2026-04-17 — Position values visible, scan step status, yfinance crumb fix
 
 **Position values:** Qty column now shows the dollar value underneath
