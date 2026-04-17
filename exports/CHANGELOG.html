@@ -375,6 +375,226 @@ with matching SELL → closed - Count-reporting correctness</p>
 <p><strong>Test count:</strong> 543 (was 528 + 15 new across two
 features).</p>
 <hr />
+<h2 id="small-return-percentage-now-shows-2-decimal-places">2026-04-17 —
+Small return percentage now shows 2 decimal places</h2>
+<p>When Total Return rounds to 0.0% but P&amp;L is non-zero (e.g. $791
+on $2.15M combined capital = 0.04%), the display now shows +0.04%
+instead of the misleading +0.0%.</p>
+<hr />
+<h2 id="dashboard-tabbed-ui-for-10-profiles">2026-04-17 — Dashboard
+tabbed UI for 10 profiles</h2>
+<p>Replaced the vertically-stacked profile list with a tabbed layout:
+Overview tab (summary table of all profiles + activity + sectors) plus
+one tab per profile. Eliminates the massive scroll on the dashboard.</p>
+<hr />
+<h2 id="parallel-profile-execution-droplet-upgrade">2026-04-17 —
+Parallel profile execution + droplet upgrade</h2>
+<p>Upgraded DigitalOcean droplet from 1 CPU/1GB ($6) to 2 CPU/2GB ($18).
+Added ThreadPoolExecutor(max_workers=3) to run all profiles in parallel.
+Total cycle time dropped from ~15 min (sequential) to ~5-8 min.</p>
+<hr />
+<h2 id="order-guard-prevents-after-hours-trades">2026-04-17 — Order
+guard prevents after-hours trades</h2>
+<p>New <code>order_guard.py</code> checks
+<code>ctx.is_within_schedule()</code> at order submission time, not just
+at cycle start. Prevents accidental after-hours fills when pipeline
+takes longer than the schedule window. 10 tests covering market_hours,
+extended_hours, 24/7, weekends.</p>
+<hr />
+<h2
+id="sortable-trade-columns-et-timestamps-consistent-pl-format">2026-04-17
+— Sortable trade columns + ET timestamps + consistent P&amp;L
+format</h2>
+<p>Trades page: clickable column headers sort by any field. Timestamps
+converted from UTC to Eastern Time with “ET” label. All P&amp;L entries
+show both dollar and percentage consistently. Friendly time filter added
+to display_names.py.</p>
+<hr />
+<h2
+id="screener-results-shared-across-same-market-type-profiles">2026-04-17
+— Screener results shared across same-market-type profiles</h2>
+<p><strong>Severity:</strong> optimization — reduces API costs ~70% on
+screener/data calls</p>
+<p><strong>Problem:</strong> 10 profiles were each running their own
+screener independently. Mid Cap, Mid Cap 25K, and Mid Cap 500K all
+screened the same “midcap” universe — 3× the Alpaca snapshot calls, 3×
+the MAGA oversold scan, 3× the alternative data lookups (insider trades,
+short interest, options chains).</p>
+<p><strong>Fix:</strong> <code>_get_shared_candidates()</code> caches
+screener + MAGA results per market_type per 15-minute cycle. First
+profile to run screens the universe; subsequent profiles with the same
+market_type reuse the cached result. Logs “Using shared screener results
+for midcap” so it’s visible.</p>
+<p><strong>Savings:</strong> 10 screener runs → 3 (one per market type).
+Each screener run includes ~100 symbol-level data fetches. Net: ~700
+fewer API calls per cycle.</p>
+<p><strong>AI calls unchanged:</strong> Each profile still runs its own
+specialist ensemble + batch selector because they have different
+capital, positions, and risk parameters. That’s correct — a $25K profile
+should make different sizing decisions than a $500K profile on the same
+candidates.</p>
+<hr />
+<h2
+id="earnings-calendar-moved-to-db-cache-eliminates-yfinance-error-floods">2026-04-17
+— Earnings calendar moved to DB cache (eliminates yfinance error
+floods)</h2>
+<p><strong>Severity:</strong> high — yfinance earnings checks were
+flooding 401 errors</p>
+<p><strong>Root cause:</strong> Every scan cycle checked each
+candidate’s earnings date by calling
+<code>yf.Ticker(symbol).calendar</code> individually. With 10 profiles ×
+30 candidates = 300 yfinance calls per cycle, Yahoo rate-limited and
+returned “Invalid Crumb” 401 errors. The earnings filter silently
+failed, allowing trades into earnings announcements.</p>
+<p><strong>Fix:</strong> Rewrote <code>earnings_calendar.py</code> to
+store dates in SQLite (<code>earnings_dates</code> table in main DB).
+yfinance is called only once per 24 hours per symbol. All subsequent
+checks read from DB — instant, zero API calls, zero errors. 300 yfinance
+calls/cycle → 0.</p>
+<hr />
+<h2
+id="position-values-visible-scan-step-status-yfinance-crumb-fix">2026-04-17
+— Position values visible, scan step status, yfinance crumb fix</h2>
+<p><strong>Position values:</strong> Qty column now shows the dollar
+value underneath the share count (qty × price). No more mental math.</p>
+<p><strong>Scan step status:</strong> Dashboard schedule bars now show
+the current pipeline step instead of just “Scanning” — e.g. “Running 16
+strategies (30 candidates)”, “Specialist ensemble (15 candidates)”, “AI
+selecting trades (15 shortlisted)”. Polls every 3 seconds via
+<code>/api/scan-status/&lt;id&gt;</code>. New
+<code>scan_status.py</code> module writes per-profile step files.
+Cleared when scan completes.</p>
+<p><strong>yfinance Invalid Crumb fix:</strong> Yahoo rotates session
+cookies, causing 401 errors that disabled the earnings filter. Added
+auto-reset of yfinance’s cookie cache when “Invalid Crumb” errors are
+detected. Rate-limited to once per 5 minutes.</p>
+<hr />
+<h2
+id="multiple-silent-failures-fixed-news-prices-yfinance-crashes-maga-mode">2026-04-17
+— Multiple silent failures fixed: news, prices, yfinance crashes, MAGA
+mode</h2>
+<p><strong>Severity:</strong> high — AI was making decisions with
+missing data</p>
+<p><strong>Problems found and fixed:</strong></p>
+<ol type="1">
+<li><p><strong>Alpaca news API 401s (silent):</strong> Every news fetch
+was failing with “Unauthorized” because the subscription doesn’t include
+the news endpoint. The system silently returned empty arrays — AI saw no
+news for any symbol. <strong>Fix:</strong> <code>fetch_news()</code>
+redirected to yfinance news (which works and was already used elsewhere
+in the pipeline).</p></li>
+<li><p><strong>Political sentiment JSON truncation:</strong>
+max_tokens=512 was too small for the political context response, causing
+JSON parse errors and the AI losing political context.
+<strong>Fix:</strong> bumped to 1024.</p></li>
+<li><p><strong>yfinance thread-safety crash:</strong>
+<code>yf.download()</code> uses a shared global dict internally that
+isn’t thread-safe. With 10 profiles running in parallel, this caused
+<code>RuntimeError: dictionary changed size during iteration</code> and
+crashed entire scan cycles. <strong>Fix:</strong> new
+<code>yf_lock.py</code> module wraps all <code>yf.download()</code>
+calls in a threading lock. All 10 call sites migrated.</p></li>
+<li><p><strong>MAGA mode scanner using yfinance batch download:</strong>
+Still using <code>yf.download(universe)</code> for 100+ symbols instead
+of Alpaca bars. This caused the “possibly delisted” errors for valid
+symbols (GPS, SQ, SKX) and was the source of the thread-safety crashes.
+<strong>Fix:</strong> migrated to per-symbol <code>get_bars()</code> via
+Alpaca.</p></li>
+<li><p><strong>Price=0 causing trades to silently not execute:</strong>
+The AI would select a trade (visible in “TRADES SELECTED” on the
+dashboard) but execution silently skipped it because the candidate’s
+price was 0 from a failed fetch during strategy scoring. The user sees
+“BUY CRGY” in the brain panel but no trade happens and no error appears.
+<strong>Fix:</strong> price is now verified and re-fetched at the
+shortlist stage before sending to AI. Candidates without a valid price
+are filtered out before wasting an AI call. Execution path also
+re-fetches as a final safety net with a logged warning.</p></li>
+<li><p><strong>Price fetcher returning 0 silently:</strong> Virtual
+position P&amp;L showed phantom losses when price fetch failed.
+<strong>Fix:</strong> tries Alpaca bars, then Alpaca last trade, then
+logs a warning — never silently returns 0 without explanation.</p></li>
+<li><p><strong>Earnings calendar logging at debug level:</strong>
+Failures to check earnings dates were invisible. <strong>Fix:</strong>
+bumped to warning level.</p></li>
+<li><p><strong>Crisis detector event cluster check:</strong> Failed
+silently. <strong>Fix:</strong> logs warning.</p></li>
+</ol>
+<p><strong>21 missed trades recovered:</strong> The price=0 bug caused
+trades the AI recommended to not execute across multiple profiles. All
+21 were manually executed at current market prices.</p>
+<hr />
+<h2 id="bad-account-allocation-caused-3-data-wipes-in-2-days">2026-04-17
+— Bad account allocation caused 3 data wipes in 2 days</h2>
+<p><strong>Severity:</strong> critical — user lost all accumulated
+trading data three times</p>
+<p><strong>What happened:</strong> When setting up 10 virtual profiles
+across 3 Alpaca paper accounts ($1M each), the initial allocation put
+$1.625M of virtual capital on a single $1M Alpaca account. This was
+compounded by moving profiles between accounts after they had open
+positions, creating orphaned trades on the wrong accounts and
+“account_rebalance” sells that polluted trade history with non-strategy
+exits.</p>
+<p><strong>The mistakes, in order:</strong> 1. Created all profiles
+without thinking about which Alpaca account each should use. The $1M
+Large Cap profile landed on the same account as three other profiles
+totaling $625K — $1.625M virtual on a $1M account. 2. Attempted to fix
+by moving profiles between accounts while they had open positions. This
+created orphaned positions on the old account and forced-close trades
+logged as “account_rebalance” that would have corrupted win rate,
+P&amp;L, and self-tuning data. 3. Each fix required wiping trade data to
+get back to clean state. Total data wipes: 3 (April 15 evening, April 16
+afternoon, April 17 morning).</p>
+<p><strong>Root cause:</strong> Failure to plan account allocation
+BEFORE creating profiles. The allocation should have been the FIRST
+step, not an afterthought corrected live with open positions.</p>
+<p><strong>Correct allocation (what we should have done from the
+start):</strong></p>
+<pre><code>Account 1: Large Cap 1M ($1M) = 100% (dedicated)
+Account 2: Mid Cap + Mid Cap 25K + Mid Cap 500K = $625K = 62%
+Account 3: Everything else = $525K = 52%</code></pre>
+<p>No account exceeds its Alpaca balance even at 100% utilization.</p>
+<p><strong>Lesson:</strong> When setting up virtual profiles on shared
+broker accounts: 1. Plan the allocation on paper first — total virtual
+capital per account must not exceed the account balance 2. NEVER move a
+profile between accounts while it has open positions 3. If allocation
+must change, close positions on the old account first, then move, then
+wipe that profile’s trade history 4. A few hours of planning saves days
+of lost data</p>
+<p><strong>Data impact:</strong> All 10 profiles start from zero as of
+2026-04-17. No historical trade data survives. The system is now
+correctly allocated and collecting clean data going forward.</p>
+<hr />
+<h2
+id="critical-fix-virtual-profiles-sized-against-alpacas-balance-not-their-own">2026-04-16
+— Critical fix: virtual profiles sized against Alpaca’s balance, not
+their own</h2>
+<p><strong>Severity:</strong> critical — virtual profiles with $25K
+capital were buying $176K of stock</p>
+<p><strong>Symptom:</strong> Mid Cap 25K profile showed cash of
+-$151,074. Small Cap 25K showed -$12,492.</p>
+<p><strong>Root cause:</strong> <code>trade_pipeline.py</code> line 190
+and 641, and <code>trader.py</code> lines 43-44 and 208 called
+<code>get_account_info(api)</code> and <code>get_positions(api)</code>
+passing only the API client but NOT <code>ctx</code>. Without
+<code>ctx</code>, the virtual interception in <code>client.py</code>
+never fired — the pipeline saw Alpaca’s $1M account balance and sized
+positions accordingly.</p>
+<p><strong>Fix:</strong> All 5 call sites now pass <code>ctx=ctx</code>:
+- <code>trade_pipeline.py:190</code> —
+<code>get_account_info(api, ctx=ctx)</code> -
+<code>trade_pipeline.py:641-642</code> — both
+<code>get_account_info</code> and <code>get_positions</code> -
+<code>trader.py:43-44</code> — <code>execute_trade</code> path -
+<code>trader.py:208</code> — <code>check_exits</code> path</p>
+<p><strong>Data impact:</strong> Profiles 5 (Small Cap 25K) and 6 (Mid
+Cap 25K) had corrupted trade data from oversized positions. Both were
+wiped clean and reset to their $25K starting balance. All other profiles
+were unaffected — their trade history is intact.</p>
+<p><strong>Lesson:</strong> The virtual account layer requires that
+EVERY code path reading equity or positions passes <code>ctx</code>
+through to <code>client.py</code>. Added this as an invariant to watch
+for in future code changes.</p>
+<hr />
 <h2 id="virtual-account-layer-broker-decoupling">2026-04-16 — Virtual
 Account Layer (broker decoupling)</h2>
 <p><strong>Severity:</strong> architectural — major new capability</p>
@@ -412,11 +632,11 @@ Virtual profiles show “(Virtual)” badge on the dashboard.</p>
 behavior change — they continue using per-profile Alpaca keys and
 reading positions/equity from Alpaca.</p>
 <p><strong>Schema:</strong></p>
-<div class="sourceCode" id="cb1"><pre
-class="sourceCode sql"><code class="sourceCode sql"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> <span class="kw">TABLE</span> alpaca_accounts (<span class="kw">id</span>, user_id, name, keys, base_url);</span>
-<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="kw">ALTER</span> <span class="kw">TABLE</span> trading_profiles <span class="kw">ADD</span> <span class="kw">COLUMN</span> alpaca_account_id <span class="dt">INTEGER</span>;</span>
-<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="kw">ALTER</span> <span class="kw">TABLE</span> trading_profiles <span class="kw">ADD</span> <span class="kw">COLUMN</span> is_virtual <span class="dt">INTEGER</span> <span class="kw">DEFAULT</span> <span class="dv">0</span>;</span>
-<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="kw">ALTER</span> <span class="kw">TABLE</span> trading_profiles <span class="kw">ADD</span> <span class="kw">COLUMN</span> initial_capital <span class="dt">REAL</span> <span class="kw">DEFAULT</span> <span class="dv">100000</span>;</span></code></pre></div>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode sql"><code class="sourceCode sql"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">CREATE</span> <span class="kw">TABLE</span> alpaca_accounts (<span class="kw">id</span>, user_id, name, keys, base_url);</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="kw">ALTER</span> <span class="kw">TABLE</span> trading_profiles <span class="kw">ADD</span> <span class="kw">COLUMN</span> alpaca_account_id <span class="dt">INTEGER</span>;</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="kw">ALTER</span> <span class="kw">TABLE</span> trading_profiles <span class="kw">ADD</span> <span class="kw">COLUMN</span> is_virtual <span class="dt">INTEGER</span> <span class="kw">DEFAULT</span> <span class="dv">0</span>;</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="kw">ALTER</span> <span class="kw">TABLE</span> trading_profiles <span class="kw">ADD</span> <span class="kw">COLUMN</span> initial_capital <span class="dt">REAL</span> <span class="kw">DEFAULT</span> <span class="dv">100000</span>;</span></code></pre></div>
 <p><strong>Tests:</strong> 26 new (test_virtual_positions.py: 15,
 test_virtual_account.py: 11) covering FIFO lots, partial sells,
 unrealized P&amp;L, equity math, output shape compatibility, price
@@ -1702,24 +1922,24 @@ submit.</p>
 <hr />
 <h2 id="how-to-add-a-new-entry">How to add a new entry</h2>
 <p>When fixing a production bug, copy this template:</p>
-<div class="sourceCode" id="cb7"><pre
-class="sourceCode markdown"><code class="sourceCode markdown"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="fu">## YYYY-MM-DD — Short title</span></span>
-<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>**Severity:** critical | high | medium | low</span>
-<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>**Symptoms:** What the user/operator saw.</span>
-<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>**Root cause:** What was actually wrong in the code.</span>
-<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>**Why it wasn&#39;t caught:** Honest answer — missing test coverage,</span>
-<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a>wrong assumption, etc.</span>
-<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a>**Fix:** What changed. Point at files.</span>
-<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-14"><a href="#cb7-14" aria-hidden="true" tabindex="-1"></a>**Tests added:** Named tests in <span class="in">`test_*.py`</span> that prevent regression.</span>
-<span id="cb7-15"><a href="#cb7-15" aria-hidden="true" tabindex="-1"></a>If none exist yet, track it as a follow-up TODO.</span>
-<span id="cb7-16"><a href="#cb7-16" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-17"><a href="#cb7-17" aria-hidden="true" tabindex="-1"></a>**Follow-up (optional):** Related work not done in this fix.</span></code></pre></div>
+<div class="sourceCode" id="cb8"><pre
+class="sourceCode markdown"><code class="sourceCode markdown"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="fu">## YYYY-MM-DD — Short title</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>**Severity:** critical | high | medium | low</span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>**Symptoms:** What the user/operator saw.</span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>**Root cause:** What was actually wrong in the code.</span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>**Why it wasn&#39;t caught:** Honest answer — missing test coverage,</span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>wrong assumption, etc.</span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a>**Fix:** What changed. Point at files.</span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a>**Tests added:** Named tests in <span class="in">`test_*.py`</span> that prevent regression.</span>
+<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a>If none exist yet, track it as a follow-up TODO.</span>
+<span id="cb8-16"><a href="#cb8-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-17"><a href="#cb8-17" aria-hidden="true" tabindex="-1"></a>**Follow-up (optional):** Related work not done in this fix.</span></code></pre></div>
 <p>Add the entry <strong>before the deploy ships</strong>, not after.
 Severity is assessed on impact, not how hard the fix was.</p>
 </body>

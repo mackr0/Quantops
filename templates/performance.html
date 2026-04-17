@@ -43,14 +43,14 @@
         <div class="stat-card" style="text-align:center;">
             <small class="muted"><span class="tip" data-tip="Change in total account value (cash + open positions) since the start — includes unrealized gains on positions you still hold">Total Return</span></small>
             <strong style="font-size:2rem;" class="{{ 'pnl-pos' if m.total_return_pct >= 0 else 'pnl-neg' }}">
-                {{ "{:+.1f}".format(m.total_return_pct) }}%
+                {% if m.total_return_pct|abs < 0.1 and m.total_return_pct != 0 %}{{ "{:+.2f}".format(m.total_return_pct) }}%{% else %}{{ "{:+.1f}".format(m.total_return_pct) }}%{% endif %}
             </strong>
             <small class="muted">{{ m.days_active }} days · includes unrealized</small>
         </div>
         <div class="stat-card" style="text-align:center;">
             <small class="muted"><span class="tip" data-tip="Total Return scaled to a full year — useful for comparison but unreliable with less than 90 days of data">Annualized Return</span></small>
             <strong style="font-size:2rem;" class="{{ 'pnl-pos' if m.annualized_return_pct >= 0 else 'pnl-neg' }}">
-                {{ "{:+.1f}".format(m.annualized_return_pct) }}%
+                {% if m.annualized_return_pct|abs < 0.1 and m.annualized_return_pct != 0 %}{{ "{:+.2f}".format(m.annualized_return_pct) }}%{% else %}{{ "{:+.1f}".format(m.annualized_return_pct) }}%{% endif %}
             </strong>
             {% if m.days_active < 90 %}<small class="muted">low confidence (&lt;90 days)</small>{% endif %}
         </div>

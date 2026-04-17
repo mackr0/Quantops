@@ -151,6 +151,48 @@ carried `status=open` despite having realized `pnl`.
 
 ---
 
+## 2026-04-17 — Small return percentage now shows 2 decimal places
+
+When Total Return rounds to 0.0% but P&L is non-zero (e.g. $791 on
+$2.15M combined capital = 0.04%), the display now shows +0.04% instead
+of the misleading +0.0%.
+
+---
+
+## 2026-04-17 — Dashboard tabbed UI for 10 profiles
+
+Replaced the vertically-stacked profile list with a tabbed layout:
+Overview tab (summary table of all profiles + activity + sectors) plus
+one tab per profile. Eliminates the massive scroll on the dashboard.
+
+---
+
+## 2026-04-17 — Parallel profile execution + droplet upgrade
+
+Upgraded DigitalOcean droplet from 1 CPU/1GB ($6) to 2 CPU/2GB ($18).
+Added ThreadPoolExecutor(max_workers=3) to run all profiles in parallel.
+Total cycle time dropped from ~15 min (sequential) to ~5-8 min.
+
+---
+
+## 2026-04-17 — Order guard prevents after-hours trades
+
+New `order_guard.py` checks `ctx.is_within_schedule()` at order
+submission time, not just at cycle start. Prevents accidental
+after-hours fills when pipeline takes longer than the schedule window.
+10 tests covering market_hours, extended_hours, 24/7, weekends.
+
+---
+
+## 2026-04-17 — Sortable trade columns + ET timestamps + consistent P&L format
+
+Trades page: clickable column headers sort by any field. Timestamps
+converted from UTC to Eastern Time with "ET" label. All P&L entries
+show both dollar and percentage consistently. Friendly time filter
+added to display_names.py.
+
+---
+
 ## 2026-04-17 — Screener results shared across same-market-type profiles
 
 **Severity:** optimization — reduces API costs ~70% on screener/data calls
