@@ -505,7 +505,7 @@ def _get_shared_candidates(ctx, seg, is_crypto):
 
     # Expire cache every cycle (roughly every 15 minutes)
     import time as _time
-    now_bucket = int(_time.time() / 900)  # 15-minute buckets
+    now_bucket = int(_time.time() / 1800)  # 30-minute cache
     if now_bucket != _screener_cache_cycle:
         _screener_cache = {}
         _screener_cache_cycle = now_bucket

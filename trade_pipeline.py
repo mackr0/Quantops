@@ -42,7 +42,7 @@ def _get_shared_ensemble(candidates_data, ctx):
     import time as _t
 
     with _ensemble_lock:
-        now_bucket = int(_t.time() / 900)
+        now_bucket = int(_t.time() / 1800)  # 30-min cache (was 15)
         if now_bucket != _ensemble_cache_cycle:
             _ensemble_cache = {}
             _ensemble_cache_cycle = now_bucket
