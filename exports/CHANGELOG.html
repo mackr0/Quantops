@@ -376,6 +376,21 @@ with matching SELL → closed - Count-reporting correctness</p>
 features).</p>
 <hr />
 <h2
+id="fix-ensemble-sharing-race-condition-disable-intraday-emails">2026-04-20
+— Fix ensemble sharing race condition + disable intraday emails</h2>
+<p><strong>Ensemble race condition:</strong> Parallel profiles of the
+same market type were both missing the ensemble cache simultaneously and
+running duplicate AI calls. Added a threading lock to
+<code>_get_shared_ensemble()</code> so only one thread runs the ensemble
+per market type — the others wait and reuse the cached result. Mid Cap
+had 60 ensemble calls today when it should have had ~12.</p>
+<p><strong>Email reduction:</strong> Disabled <code>notify_trade</code>,
+<code>notify_exit</code>, and <code>notify_veto</code> — all visible on
+the dashboard. Only EOD summary, self-tuning adjustments, and system
+errors are emailed now. Prevents hitting the Resend daily limit with 10
+profiles.</p>
+<hr />
+<h2
 id="eliminate-yfinance-rate-limiting-db-caching-alpaca-for-spy-etf-filter">2026-04-17
 — Eliminate yfinance rate limiting: DB caching, Alpaca for SPY, ETF
 filter</h2>

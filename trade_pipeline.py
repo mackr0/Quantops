@@ -31,31 +31,36 @@ from strategy_router import run_strategy
 # ---------------------------------------------------------------------------
 _ensemble_cache = {}
 _ensemble_cache_cycle = 0
+_ensemble_lock = __import__("threading").Lock()
 
 
 def _get_shared_ensemble(candidates_data, ctx):
-    """Return ensemble result, cached per market_type per cycle."""
+    """Return ensemble result, cached per market_type per cycle.
+    Thread-locked to prevent parallel profiles from both missing
+    the cache and running duplicate ensemble calls."""
     global _ensemble_cache, _ensemble_cache_cycle
     import time as _t
-    now_bucket = int(_t.time() / 900)
-    if now_bucket != _ensemble_cache_cycle:
-        _ensemble_cache = {}
-        _ensemble_cache_cycle = now_bucket
 
-    cache_key = ctx.segment
-    if cache_key in _ensemble_cache:
-        logging.info("Using shared ensemble results for %s", cache_key)
-        return _ensemble_cache[cache_key]
+    with _ensemble_lock:
+        now_bucket = int(_t.time() / 900)
+        if now_bucket != _ensemble_cache_cycle:
+            _ensemble_cache = {}
+            _ensemble_cache_cycle = now_bucket
 
-    from ensemble import run_ensemble
-    result = run_ensemble(
-        candidates_data, ctx,
-        ai_provider=ctx.ai_provider,
-        ai_model=ctx.ai_model,
-        ai_api_key=ctx.ai_api_key,
-    )
-    _ensemble_cache[cache_key] = result
-    return result
+        cache_key = ctx.segment
+        if cache_key in _ensemble_cache:
+            logging.info("Using shared ensemble results for %s", cache_key)
+            return _ensemble_cache[cache_key]
+
+        from ensemble import run_ensemble
+        result = run_ensemble(
+            candidates_data, ctx,
+            ai_provider=ctx.ai_provider,
+            ai_model=ctx.ai_model,
+            ai_api_key=ctx.ai_api_key,
+        )
+        _ensemble_cache[cache_key] = result
+        return result
 
 
 # ---------------------------------------------------------------------------

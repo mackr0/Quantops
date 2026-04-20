@@ -151,6 +151,22 @@ carried `status=open` despite having realized `pnl`.
 
 ---
 
+## 2026-04-20 — Fix ensemble sharing race condition + disable intraday emails
+
+**Ensemble race condition:** Parallel profiles of the same market type
+were both missing the ensemble cache simultaneously and running
+duplicate AI calls. Added a threading lock to `_get_shared_ensemble()`
+so only one thread runs the ensemble per market type — the others
+wait and reuse the cached result. Mid Cap had 60 ensemble calls today
+when it should have had ~12.
+
+**Email reduction:** Disabled `notify_trade`, `notify_exit`, and
+`notify_veto` — all visible on the dashboard. Only EOD summary,
+self-tuning adjustments, and system errors are emailed now. Prevents
+hitting the Resend daily limit with 10 profiles.
+
+---
+
 ## 2026-04-17 — Eliminate yfinance rate limiting: DB caching, Alpaca for SPY, ETF filter
 
 **Problem:** ~500+ yfinance errors per day from rate limiting.

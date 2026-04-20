@@ -173,7 +173,13 @@ def send_email(subject, html_body, ctx=None):
 # ---------------------------------------------------------------------------
 
 def notify_trade(trade_result, signal=None, ai_result=None, ctx=None):
-    """Send a rich notification after a trade is executed.
+    """Disabled — too many emails with 10 profiles. Trade activity is
+    visible on the dashboard. Only EOD summary + self-tuning emails sent."""
+    return
+
+
+def _notify_trade_disabled(trade_result, signal=None, ai_result=None, ctx=None):
+    """Original trade notification — kept for reference.
 
     All data can come from trade_result alone (signal and ai_result are
     optional overrides for backward compatibility).
@@ -280,7 +286,12 @@ def notify_trade(trade_result, signal=None, ai_result=None, ctx=None):
 # ---------------------------------------------------------------------------
 
 def notify_veto(symbol, technical_signal, ai_result, ctx=None):
-    """Notify when AI vetoes a trade.
+    """Disabled — veto activity visible on dashboard."""
+    return
+
+
+def _notify_veto_disabled(symbol, technical_signal, ai_result, ctx=None):
+    """Original veto notification — kept for reference.
 
     Args:
         symbol: Ticker string.
@@ -328,7 +339,12 @@ def notify_veto(symbol, technical_signal, ai_result, ctx=None):
 # ---------------------------------------------------------------------------
 
 def notify_exit(symbol, trigger, qty, reason, ctx=None):
-    """Notify when a stop-loss or take-profit triggers an exit.
+    """Disabled — exit activity visible on dashboard."""
+    return
+
+
+def _notify_exit_disabled(symbol, trigger, qty, reason, ctx=None):
+    """Original exit notification — kept for reference.
 
     Args:
         symbol: Ticker string.
