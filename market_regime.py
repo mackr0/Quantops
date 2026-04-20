@@ -93,9 +93,9 @@ def detect_regime() -> Dict[str, Any]:
             result["vix_level"] = "extreme"
 
         # Calculate 14-day ATR for volatility
-        high = spy_hist["High"].tail(15)
-        low = spy_hist["Low"].tail(15)
-        close_prev = spy_hist["Close"].shift(1).tail(15)
+        high = spy_hist["high"].tail(15)
+        low = spy_hist["low"].tail(15)
+        close_prev = spy_hist["close"].shift(1).tail(15)
         tr = []
         for i in range(len(high)):
             h = float(high.iloc[i])
@@ -117,7 +117,7 @@ def detect_regime() -> Dict[str, Any]:
         # (A true breadth calculation would need the full universe, but
         # we use a simplified approach based on how many of the last 20 days
         # had closes above the 20-day SMA)
-        closes_20 = spy_hist["Close"].tail(20)
+        closes_20 = spy_hist["close"].tail(20)
         if len(closes_20) >= 20:
             sma20 = float(closes_20.mean())
             above_sma20 = sum(1 for c in closes_20 if float(c) > sma20)

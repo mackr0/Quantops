@@ -579,6 +579,7 @@ def screen_dynamic_universe(min_price=1.0, max_price=20.0, min_volume=500_000,
             "LQD", "XLF", "XLE", "XLK", "XLV", "XLI", "XLP", "XLY",
             "XLU", "XLB", "XLRE", "XLC", "VTI", "VOO", "IVV",
             "USFR", "SHY", "BIL", "UNG", "USO",
+            "JPST", "RSP", "SRTY", "SOXS", "LABU", "LABD",
         }
         equity_symbols = []
         for a in assets:

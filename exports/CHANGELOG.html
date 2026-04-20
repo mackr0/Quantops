@@ -376,6 +376,26 @@ with matching SELL → closed - Count-reporting correctness</p>
 features).</p>
 <hr />
 <h2
+id="market-regime-broken-all-day-silent-failure-test-suite">2026-04-20 —
+Market regime broken all day + silent failure test suite</h2>
+<p><strong>Market regime bug:</strong> When I migrated SPY data from
+yfinance to Alpaca, I left <code>spy_hist["High"]</code> /
+<code>["Low"]</code> / <code>["Close"]</code> in title case. Alpaca
+returns lowercase. Result: “Failed to detect market regime: ‘High’” 174
+times today. <strong>Every trade decision today was made without knowing
+if the market was bullish, bearish, or sideways.</strong> Fixed to
+lowercase.</p>
+<p><strong>Silent failure test suite</strong>
+(<code>test_silent_failures.py</code> — 11 tests): Catches the exact
+class of bugs that keep recurring — column case mismatches, Alpaca vs
+yfinance format differences, missing thread locks, API calls to services
+we don’t subscribe to. These tests would have caught the market regime
+bug before deploy.</p>
+<p><strong>ETF filter expanded:</strong> Added JPST, RSP, SRTY, SOXS,
+LABU, LABD.</p>
+<p><strong>Test count:</strong> 607 (was 596 + 11).</p>
+<hr />
+<h2
 id="fix-ensemble-sharing-race-condition-disable-intraday-emails">2026-04-20
 — Fix ensemble sharing race condition + disable intraday emails</h2>
 <p><strong>Ensemble race condition:</strong> Parallel profiles of the

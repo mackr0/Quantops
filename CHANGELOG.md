@@ -151,6 +151,26 @@ carried `status=open` despite having realized `pnl`.
 
 ---
 
+## 2026-04-20 — Market regime broken all day + silent failure test suite
+
+**Market regime bug:** When I migrated SPY data from yfinance to Alpaca,
+I left `spy_hist["High"]` / `["Low"]` / `["Close"]` in title case.
+Alpaca returns lowercase. Result: "Failed to detect market regime: 'High'"
+174 times today. **Every trade decision today was made without knowing
+if the market was bullish, bearish, or sideways.** Fixed to lowercase.
+
+**Silent failure test suite** (`test_silent_failures.py` — 11 tests):
+Catches the exact class of bugs that keep recurring — column case
+mismatches, Alpaca vs yfinance format differences, missing thread
+locks, API calls to services we don't subscribe to. These tests
+would have caught the market regime bug before deploy.
+
+**ETF filter expanded:** Added JPST, RSP, SRTY, SOXS, LABU, LABD.
+
+**Test count:** 607 (was 596 + 11).
+
+---
+
 ## 2026-04-20 — Fix ensemble sharing race condition + disable intraday emails
 
 **Ensemble race condition:** Parallel profiles of the same market type
