@@ -151,6 +151,31 @@ carried `status=open` despite having realized `pnl`.
 
 ---
 
+## 2026-04-21 — Prediction resolution too slow for self-tuning to activate
+
+**Problem:** 82 actual trades across 10 profiles, but self-tuning
+hadn't activated on any profile. Self-tuning requires 20 resolved
+predictions, but most profiles had 0-7 resolved despite hundreds of
+pending predictions.
+
+**Root cause:** Resolution thresholds were too strict. BUY predictions
+needed a +5% price move to count as "win" — most stocks don't move 5%
+in a few days. Meanwhile the system's actual stop-loss is 3% and
+take-profit is 10%, so the resolution criteria didn't match the
+trading parameters.
+
+**Fix:** Lowered thresholds to match actual trading behavior:
+- BUY/SELL win/loss: 5%/3% → 2%/2%
+- HOLD resolve: 5 days → 3 days
+- Timeout: 20 days → 10 days
+
+**UI:** Added explanation on the AI Performance tab explaining the
+difference between resolved predictions (AI forecasting accuracy
+across all candidates) and closed trades (actual executed trades
+with real P&L). Tooltips on each metric card.
+
+---
+
 ## 2026-04-20 — Market regime broken all day + silent failure test suite
 
 **Market regime bug:** When I migrated SPY data from yfinance to Alpaca,

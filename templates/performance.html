@@ -732,17 +732,25 @@
     {% endif %}
 
     <!-- AI Prediction Accuracy -->
+    <p class="muted" style="margin-bottom:0.5rem;font-size:0.85rem;">
+        <strong>Predictions vs Trades:</strong> The AI evaluates ~30 candidates every cycle but only trades 0-3.
+        A "prediction" is the AI's directional call on ANY candidate (traded or not). A "resolved prediction" means
+        we checked later whether the price moved in the predicted direction — the AI was right (win) or wrong (loss).
+        This measures forecasting accuracy across everything the AI evaluates, not just what it trades.
+        The self-tuner needs 20+ resolved predictions before it starts adjusting parameters.
+        A prediction resolves when the price moves 2%+ in either direction, or after 3-10 trading days.
+    </p>
     <div class="grid">
         <article style="text-align:center;">
-            <small class="muted"><span class="tip" data-tip="Total number of predictions the AI has made">Total Predictions</span></small>
+            <small class="muted"><span class="tip" data-tip="Every BUY/SELL/HOLD call the AI made on any candidate — whether or not we actually traded it">Total Predictions</span></small>
             <strong style="font-size:2rem; display:block;">{{ ai_perf.total_predictions if ai_perf else 0 }}</strong>
         </article>
         <article style="text-align:center;">
-            <small class="muted">Resolved</small>
+            <small class="muted"><span class="tip" data-tip="Predictions where we checked: did the price move in the direction the AI predicted? Resolves at 2% price move or after 3-10 trading days.">Resolved</span></small>
             <strong style="font-size:2rem; display:block;">{{ ai_perf.resolved if ai_perf else 0 }}</strong>
         </article>
         <article style="text-align:center;">
-            <small class="muted">Pending</small>
+            <small class="muted"><span class="tip" data-tip="Predictions still waiting to resolve — the price hasn't moved enough yet or not enough time has passed">Pending</span></small>
             <strong style="font-size:2rem; display:block;">{{ ai_perf.pending if ai_perf else 0 }}</strong>
         </article>
     </div>

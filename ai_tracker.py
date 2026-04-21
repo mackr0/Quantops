@@ -16,13 +16,13 @@ from market_data import get_bars
 logger = logging.getLogger(__name__)
 
 # --- Resolution thresholds ---
-BUY_WIN_PCT = 5.0       # Price must rise >= 5% for a BUY to WIN
-BUY_LOSS_PCT = 3.0      # Price drops >= 3% for a BUY to LOSS
-SELL_WIN_PCT = 5.0       # Price must drop >= 5% for a SELL to WIN
-SELL_LOSS_PCT = 3.0      # Price rises >= 3% for a SELL to LOSS
-HOLD_MAX_CHANGE_PCT = 3.0  # HOLD is correct if abs(change) < 3%
-HOLD_RESOLVE_DAYS = 5    # Trading days before resolving a HOLD prediction
-TIMEOUT_DAYS = 20        # Max trading days before force-resolving as neutral
+BUY_WIN_PCT = 2.0       # Price must rise >= 2% for a BUY to WIN
+BUY_LOSS_PCT = 2.0      # Price drops >= 2% for a BUY to LOSS
+SELL_WIN_PCT = 2.0       # Price must drop >= 2% for a SELL to WIN
+SELL_LOSS_PCT = 2.0      # Price rises >= 2% for a SELL to LOSS
+HOLD_MAX_CHANGE_PCT = 2.0  # HOLD is correct if abs(change) < 2%
+HOLD_RESOLVE_DAYS = 3    # Trading days before resolving a HOLD prediction
+TIMEOUT_DAYS = 10        # Max trading days before force-resolving as neutral
 
 
 # ---------------------------------------------------------------------------
