@@ -24,8 +24,7 @@
                     <th class="sortable" data-sort="number" data-col="{{ 5 if show_profile else 4 }}">Qty</th>
                     <th class="sortable" data-sort="number" data-col="{{ 6 if show_profile else 5 }}">Price</th>
                     <th class="sortable" data-sort="number" data-col="{{ 7 if show_profile else 6 }}">AI Conf</th>
-                    <th class="sortable" data-sort="number" data-col="{{ 8 if show_profile else 7 }}"><span class="tip" data-tip="Live P&L on positions you still hold — changes with the market price">Unrealized</span></th>
-                    <th class="sortable" data-sort="number" data-col="{{ 9 if show_profile else 8 }}"><span class="tip" data-tip="Locked-in P&L from positions that have been closed">Realized</span></th>
+                    <th class="sortable" data-sort="number" data-col="{{ 8 if show_profile else 7 }}">P&L</th>
                 </tr>
             </thead>
             <tbody>
@@ -41,13 +40,7 @@
                     <td>{{ t.qty|int }}{% if t.price and t.qty %}<br><small class="muted">${{ "{:,.0f}".format(t.qty * t.price) }}</small>{% endif %}</td>
                     <td>{{ "${:,.2f}".format(t.price) if t.price else '--' }}</td>
                     <td>{% if t.ai_confidence %}{{ "{}%".format(t.ai_confidence|int) }}{% elif t.side in ('sell', 'cover') %}<small class="muted">Auto-exit</small>{% else %}--{% endif %}</td>
-                    {# Unrealized column — live P&L on open positions #}
-                    <td>
-                        {% if t.unrealized_pl is defined and t.unrealized_pl is not none %}
-                            <span class="{{ 'pnl-pos' if t.unrealized_pl > 0 else 'pnl-neg' }}">{% if t.unrealized_pl >= 0 %}+${{ "{:,.2f}".format(t.unrealized_pl) }}{% else %}-${{ "{:,.2f}".format(-t.unrealized_pl) }}{% endif %} ({{ "{:+.1f}%".format(t.unrealized_plpc * 100) }})</span>
-                        {% endif %}
-                    </td>
-                    {# Realized column — locked-in P&L on closed positions (SELL rows only) #}
+                    {# P&L — only on SELL/exit rows, like a traditional brokerage #}
                     <td>
                         {% if t.side in ('sell', 'cover') and t.pnl is not none %}
                             {% if t.price and t.qty %}
@@ -65,7 +58,7 @@
                     </td>
                 </tr>
                 <tr class="detail-row" style="display:none;">
-                    <td colspan="{{ 10 if show_profile else 9 }}" style="background:#f8f9fa; padding:0.75rem; max-width:0;">
+                    <td colspan="{{ 9 if show_profile else 8 }}" style="background:#f8f9fa; padding:0.75rem; max-width:0;">
                         <div style="font-size:0.85rem;">
                             {% if t.current_price is defined and t.current_price is not none and t.market_value is defined %}
                             <small class="muted" style="display:block; margin-bottom:0.5rem;">

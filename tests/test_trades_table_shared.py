@@ -121,8 +121,8 @@ class TestProfileColumnToggle:
             "{{ tpl.render_trades(trades, show_profile=False) }}",
             trades=[_sample_trade()],
         )
-        assert 'colspan="10"' in html_with
-        assert 'colspan="9"' in html_without
+        assert 'colspan="9"' in html_with
+        assert 'colspan="8"' in html_without
 
 
 class TestEmptyState:
@@ -144,8 +144,8 @@ class TestEmptyState:
 
 
 class TestPnlRendering:
-    def test_sell_row_shows_realized_pnl(self):
-        """SELL rows show realized P&L in the Realized column."""
+    def test_sell_row_shows_pnl(self):
+        """SELL rows show realized P&L — like a traditional brokerage."""
         t = _sample_trade()
         t["pnl"] = 42.50
         t["side"] = "sell"
@@ -155,44 +155,30 @@ class TestPnlRendering:
             trades=[t],
         )
         assert "42.50" in html
-        assert "Realized" in html
 
-    def test_open_buy_shows_unrealized_pnl(self):
-        """Open BUY rows show unrealized P&L in the Unrealized column."""
+    def test_buy_row_has_no_pnl(self):
+        """BUY rows don't show P&L — just entry info. P&L belongs on
+        the SELL row, like a traditional brokerage trade history."""
         t = _sample_trade()
         t["pnl"] = None
         t["side"] = "buy"
-        t["unrealized_pl"] = 12.75
-        t["unrealized_plpc"] = 0.025
         html = _render(
             "{% import '_trades_table.html' as tpl %}"
             "{{ tpl.render_trades(trades, show_profile=False) }}",
             trades=[t],
         )
-        assert "12.75" in html
-        assert "Unrealized" in html
+        assert "P&L" in html  # header exists
+        # The P&L cell for a BUY should be empty
+        assert "unrealized" not in html.lower()
 
-    def test_closed_buy_shows_blank_pnl(self):
-        """Closed BUY rows show blank — the SELL row carries the realized P&L."""
-        t = _sample_trade()
-        t["pnl"] = None
-        t["status"] = "closed"
-        t["side"] = "buy"
-        html = _render(
-            "{% import '_trades_table.html' as tpl %}"
-            "{{ tpl.render_trades(trades, show_profile=False) }}",
-            trades=[t],
-        )
-        # Both columns should be empty for a closed BUY
-        assert ">open<" not in html.lower()
-
-    def test_both_columns_exist(self):
-        """The table must have separate Unrealized and Realized headers."""
+    def test_single_pnl_column(self):
+        """One P&L column, not two. Like Schwab/Fidelity."""
         t = _sample_trade()
         html = _render(
             "{% import '_trades_table.html' as tpl %}"
             "{{ tpl.render_trades(trades, show_profile=False) }}",
             trades=[t],
         )
-        assert "Unrealized" in html
-        assert "Realized" in html
+        assert "Unrealized" not in html
+        assert "Realized" not in html
+        assert ">P&L<" in html or ">P&amp;L<" in html
