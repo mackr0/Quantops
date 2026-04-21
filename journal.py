@@ -618,15 +618,9 @@ def reconcile_trade_statuses(db_path=None, open_symbols=None):
                     lot[3] += (price - lot[2]) * consumed
                     lot[1] -= consumed
                     remaining -= consumed
-        # Write realized pnl back to each fully-consumed BUY lot so every
-        # row in the trades page shows a dollar value consistently.
-        for tid, qty_left, _entry, realized in lots:
-            if qty_left <= 0.001 and realized != 0.0:
-                cur = conn.execute(
-                    "UPDATE trades SET pnl=? WHERE id=? AND pnl IS NULL",
-                    (round(realized, 4), tid),
-                )
-                pnl_computed += cur.rowcount
+        # BUY rows no longer get pnl backfilled — realized P&L belongs
+        # on the SELL row only. The UI now has separate Unrealized and
+        # Realized columns so there's no need to duplicate the number.
 
     conn.commit()
     conn.close()

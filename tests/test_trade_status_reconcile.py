@@ -175,27 +175,18 @@ class TestReturnedCounts:
 # FIFO pnl attribution on BUY rows
 # ---------------------------------------------------------------------------
 
-class TestFifoPnlAttribution:
-    def test_simple_roundtrip_assigns_pnl_to_buy(self, fresh_db):
+class TestBuyRowsPnlNotBackfilled:
+    """BUY rows no longer get pnl backfilled — realized P&L belongs on
+    the SELL row only. The UI has separate Unrealized/Realized columns."""
+
+    def test_closed_buy_stays_null_pnl(self, fresh_db):
         from journal import reconcile_trade_statuses
         _insert(fresh_db, "AAPL", "buy", qty=10, price=100,
                 timestamp="2026-04-15T10:00:00")
         _insert(fresh_db, "AAPL", "sell", qty=10, price=110, pnl=100.0,
                 timestamp="2026-04-15T14:00:00", status="closed")
-        result = reconcile_trade_statuses(db_path=fresh_db, open_symbols=set())
-        assert result["pnl_computed"] == 1
-        assert _get_pnl(fresh_db, "AAPL", "buy") == [100.0]
-
-    def test_partial_sells_sum_on_buy_row(self, fresh_db):
-        from journal import reconcile_trade_statuses
-        _insert(fresh_db, "HIMS", "buy", qty=20, price=100,
-                timestamp="2026-04-13T10:00:00")
-        _insert(fresh_db, "HIMS", "sell", qty=5, price=110, pnl=50.0,
-                timestamp="2026-04-15T14:00:00", status="closed")
-        _insert(fresh_db, "HIMS", "sell", qty=15, price=115, pnl=225.0,
-                timestamp="2026-04-15T15:00:00", status="closed")
         reconcile_trade_statuses(db_path=fresh_db, open_symbols=set())
-        assert _get_pnl(fresh_db, "HIMS", "buy") == [275.0]
+        assert _get_pnl(fresh_db, "AAPL", "buy") == [None]
 
     def test_open_buy_stays_null_pnl(self, fresh_db):
         from journal import reconcile_trade_statuses

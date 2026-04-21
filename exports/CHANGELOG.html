@@ -375,6 +375,20 @@ with matching SELL → closed - Count-reporting correctness</p>
 <p><strong>Test count:</strong> 543 (was 528 + 15 new across two
 features).</p>
 <hr />
+<h2 id="split-pl-into-unrealized-realized-columns">2026-04-21 — Split
+P&amp;L into Unrealized + Realized columns</h2>
+<p><strong>Problem:</strong> BUY and SELL rows both showed the same
+realized P&amp;L, making it look like double the profit or loss on every
+trade.</p>
+<p><strong>Fix:</strong> Replaced the single “P&amp;L” column with two:
+- <strong>Unrealized</strong> — live P&amp;L on positions still held
+(BUY rows with open positions). Blank once the position closes. -
+<strong>Realized</strong> — locked-in P&amp;L from closed positions
+(SELL rows only). Blank while position is still open.</p>
+<p>Every dollar amount appears exactly once. No double-counting.</p>
+<p>Removed the FIFO backfill that wrote pnl onto BUY rows. Cleared
+existing backfilled values from all profile databases.</p>
+<hr />
 <h2
 id="prediction-resolution-too-slow-for-self-tuning-to-activate">2026-04-21
 — Prediction resolution too slow for self-tuning to activate</h2>

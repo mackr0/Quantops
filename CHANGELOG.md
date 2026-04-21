@@ -151,6 +151,24 @@ carried `status=open` despite having realized `pnl`.
 
 ---
 
+## 2026-04-21 — Split P&L into Unrealized + Realized columns
+
+**Problem:** BUY and SELL rows both showed the same realized P&L,
+making it look like double the profit or loss on every trade.
+
+**Fix:** Replaced the single "P&L" column with two:
+- **Unrealized** — live P&L on positions still held (BUY rows with
+  open positions). Blank once the position closes.
+- **Realized** — locked-in P&L from closed positions (SELL rows only).
+  Blank while position is still open.
+
+Every dollar amount appears exactly once. No double-counting.
+
+Removed the FIFO backfill that wrote pnl onto BUY rows. Cleared
+existing backfilled values from all profile databases.
+
+---
+
 ## 2026-04-21 — Prediction resolution too slow for self-tuning to activate
 
 **Problem:** 82 actual trades across 10 profiles, but self-tuning
