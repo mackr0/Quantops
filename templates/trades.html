@@ -74,7 +74,7 @@
 
 <article>
     <header><h3>Trades</h3></header>
-    {{ trades_tpl.render_trades(trades, show_profile=True,
+    {{ trades_tpl.render_trades(trades, show_profile=True, sortable=True,
         empty_message="No trades yet. Trades will appear here once the AI selects and executes positions.") }}
 </article>
 {% endblock %}

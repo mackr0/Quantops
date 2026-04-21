@@ -127,6 +127,8 @@ def _enriched_positions(ctx, profile_id):
             "unrealized_pl": p["unrealized_pl"],
             "unrealized_plpc": p["unrealized_plpc"],
         })
+    # Most recently opened positions first
+    out.sort(key=lambda x: x.get("timestamp") or "", reverse=True)
     return out
 
 
@@ -306,7 +308,7 @@ def dashboard():
     any_profile_active = False
     profile_schedules = []
 
-    all_profiles = get_user_profiles(current_user.id)
+    all_profiles = [p for p in get_user_profiles(current_user.id) if p.get("enabled")]
     for prof in all_profiles:
         if not prof.get("enabled"):
             continue
@@ -903,7 +905,7 @@ def reset_segment(segment):
 @views_bp.route("/trades")
 @login_required
 def trades():
-    profiles = get_user_profiles(current_user.id)
+    profiles = [p for p in get_user_profiles(current_user.id) if p.get("enabled")]
 
     # Parse optional profile filter
     selected_profile = request.args.get("profile_id", "", type=str)
@@ -943,26 +945,9 @@ def trades():
                 t["segment"] = prof["name"]
             all_trades.extend(prof_trades)
 
-    # Enrich open trades with unrealized P&L from live positions
-    positions_by_profile = {}
-    for prof in profiles:
-        try:
-            ctx = build_user_context_from_profile(prof["id"])
-            positions = _safe_positions(ctx)
-            if positions:
-                pos_map = {p["symbol"]: p for p in positions}
-                positions_by_profile[prof["id"]] = pos_map
-        except Exception:
-            pass
-
-    for t in all_trades:
-        if t.get("pnl") is None and t.get("status") == "open":
-            pid = t.get("profile_id")
-            pos_map = positions_by_profile.get(pid, {})
-            pos = pos_map.get(t.get("symbol"))
-            if pos:
-                t["unrealized_pl"] = pos.get("unrealized_pl", 0)
-                t["unrealized_plpc"] = pos.get("unrealized_plpc", 0)
+    # Trades page is a clean order log — no live P&L enrichment.
+    # Unrealized P&L belongs on the dashboard (open positions view).
+    # SELL rows show realized P&L from the pnl column. BUY rows are blank.
 
     # Sort by timestamp descending
     all_trades.sort(key=lambda t: t.get("timestamp", ""), reverse=True)
@@ -1276,7 +1261,7 @@ def ai_performance_legacy():
     }
 
     # Parse optional profile filter
-    profiles = get_user_profiles(current_user.id)
+    profiles = [p for p in get_user_profiles(current_user.id) if p.get("enabled")]
     selected_profile = request.args.get("profile_id", "", type=str)
     selected_profile_int = int(selected_profile) if selected_profile else None
     selected_profile_name = None
@@ -1482,7 +1467,7 @@ def performance_dashboard():
     import os
     from metrics import calculate_all_metrics
 
-    profiles = get_user_profiles(current_user.id)
+    profiles = [p for p in get_user_profiles(current_user.id) if p.get("enabled")]
     selected_profile = request.args.get("profile_id", "", type=str)
     selected_profile_int = int(selected_profile) if selected_profile else None
     selected_profile_name = None

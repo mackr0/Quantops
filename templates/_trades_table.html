@@ -10,13 +10,14 @@
         table_id        unique ID for JS sorting (each table on the page needs
                         its own ID). Defaults to "trades-table".
 #}
-{% macro render_trades(trades, show_profile=False, empty_message=None, table_id="trades-table") -%}
+{% macro render_trades(trades, show_profile=False, empty_message=None, table_id="trades-table", sortable=False) -%}
     {% if trades %}
     <div class="overflow-auto">
-        <table class="striped sortable-table" id="{{ table_id }}">
+        <table class="striped{% if sortable %} sortable-table{% endif %}" id="{{ table_id }}">
             <thead>
                 <tr>
                     <th style="width:1.5rem;"></th>
+                    {% if sortable %}
                     <th class="sortable" data-sort="string" data-col="1">Time <span class="sort-arrow">▼</span></th>
                     {% if show_profile %}<th class="sortable" data-sort="string" data-col="2">Profile</th>{% endif %}
                     <th class="sortable" data-sort="string" data-col="{{ 3 if show_profile else 2 }}">Symbol</th>
@@ -25,6 +26,16 @@
                     <th class="sortable" data-sort="number" data-col="{{ 6 if show_profile else 5 }}">Price</th>
                     <th class="sortable" data-sort="number" data-col="{{ 7 if show_profile else 6 }}">AI Conf</th>
                     <th class="sortable" data-sort="number" data-col="{{ 8 if show_profile else 7 }}">P&L</th>
+                    {% else %}
+                    <th>Time</th>
+                    {% if show_profile %}<th>Profile</th>{% endif %}
+                    <th>Symbol</th>
+                    <th>Side</th>
+                    <th>Qty</th>
+                    <th>Price</th>
+                    <th>AI Conf</th>
+                    <th>P&L</th>
+                    {% endif %}
                 </tr>
             </thead>
             <tbody>
@@ -40,7 +51,8 @@
                     <td>{{ t.qty|int }}{% if t.price and t.qty %}<br><small class="muted">${{ "{:,.0f}".format(t.qty * t.price) }}</small>{% endif %}</td>
                     <td>{{ "${:,.2f}".format(t.price) if t.price else '--' }}</td>
                     <td>{% if t.ai_confidence %}{{ "{}%".format(t.ai_confidence|int) }}{% elif t.side in ('sell', 'cover') %}<small class="muted">Auto-exit</small>{% else %}--{% endif %}</td>
-                    {# P&L — only on SELL/exit rows, like a traditional brokerage #}
+                    {# P&L — realized on SELL rows (trades page), unrealized on
+                       open positions (dashboard). Never both on the same row. #}
                     <td>
                         {% if t.side in ('sell', 'cover') and t.pnl is not none %}
                             {% if t.price and t.qty %}
@@ -54,6 +66,8 @@
                                 {% set pnl_pct = 0 %}
                             {% endif %}
                             <span class="{{ 'pnl-pos' if t.pnl > 0 else 'pnl-neg' }}">{{ "${:+,.2f}".format(t.pnl) }} ({{ "{:+.1f}%".format(pnl_pct) }})</span>
+                        {% elif t.unrealized_pl is defined and t.unrealized_pl is not none %}
+                            <span class="{{ 'pnl-pos' if t.unrealized_pl > 0 else 'pnl-neg' }}">{% if t.unrealized_pl >= 0 %}+${{ "{:,.2f}".format(t.unrealized_pl) }}{% else %}-${{ "{:,.2f}".format(-t.unrealized_pl) }}{% endif %} ({{ "{:+.1f}%".format(t.unrealized_plpc * 100) }})</span>
                         {% endif %}
                     </td>
                 </tr>

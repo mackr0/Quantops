@@ -159,6 +159,16 @@
 </article>
 
 <!-- Existing Profiles -->
+{% set ns = namespace(archived_count=0) %}
+{% for p in profiles %}{% if not p.enabled %}{% set ns.archived_count = ns.archived_count + 1 %}{% endif %}{% endfor %}
+
+{% if ns.archived_count > 0 %}
+<label style="margin-bottom:0.5rem; display:flex; align-items:center; gap:0.5rem;">
+    <input type="checkbox" id="show-archived" style="margin:0;" onchange="document.querySelectorAll('.archived-profile').forEach(function(el){el.style.display=this.checked?'':'none';}.bind(this));">
+    <span class="muted">Show archived profiles ({{ ns.archived_count }})</span>
+</label>
+{% endif %}
+
 {% if not profiles %}
 <article>
     <p class="muted">No trading profiles yet. Create one above to get started.</p>
@@ -166,7 +176,7 @@
 {% endif %}
 
 {% for prof in profiles %}
-<article id="profile-{{ prof.id }}">
+<article id="profile-{{ prof.id }}" {% if not prof.enabled %}class="archived-profile" style="display:none; opacity:0.6;"{% endif %}
     <header>
         <div style="display:flex; justify-content:space-between; align-items:center;">
             <h3 style="margin:0;">{{ prof.name }}

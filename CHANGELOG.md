@@ -151,6 +151,36 @@ carried `status=open` despite having realized `pnl`.
 
 ---
 
+## 2026-04-21 — Max positions cap removed (10 → 100)
+
+All profiles were maxed at 10/10 positions by mid-morning, blocking
+all new trades for the rest of the day. The arbitrary cap was
+redundant — position sizing (10% max per position), correlation
+limits (0.7), and sector caps (5) already control concentration
+risk based on actual portfolio characteristics, not an arbitrary
+count. Set to 100 (effectively uncapped) to maximize data collection.
+
+---
+
+## 2026-04-21 — Trades page: single P&L column, brokerage-standard layout
+
+Replaced the two-column Unrealized/Realized layout with a single P&L
+column. BUY rows show entry info only (no P&L). SELL rows show
+realized P&L. Dashboard shows unrealized on open positions. Matches
+Schwab/Fidelity trade history view. Removed trades page enrichment
+that was adding unrealized to BUY rows.
+
+---
+
+## 2026-04-21 — Archived profiles hidden from all UI pages
+
+Disabled profiles (e.g. "Crypto (archived)") no longer appear in
+dashboard tabs, trades dropdown, performance dropdown, or AI
+performance dropdown. Settings page has a "Show archived profiles"
+checkbox that reveals them dimmed when needed.
+
+---
+
 ## 2026-04-21 — Split P&L into Unrealized + Realized columns
 
 **Problem:** BUY and SELL rows both showed the same realized P&L,
