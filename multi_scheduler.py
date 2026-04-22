@@ -1021,10 +1021,8 @@ def _task_self_tune(ctx):
     state = describe_tuning_state(ctx)
     adjustments = apply_auto_adjustments(ctx)
 
-    # Separate real parameter changes from cross-profile suggestions/reviews
-    suggestions = [a for a in adjustments if "Cross-profile" in a or "Recommendation:" in a]
     reviews = [a for a in adjustments if a.startswith("Reviewed") or a.startswith("REVERSED")]
-    real_changes = [a for a in adjustments if a not in suggestions and a not in reviews]
+    real_changes = [a for a in adjustments if a not in reviews]
 
     if adjustments:
         for adj in adjustments:
@@ -1037,13 +1035,8 @@ def _task_self_tune(ctx):
         if real_changes:
             if detail_parts:
                 detail_parts.append("")
-            detail_parts.append("NEW ADJUSTMENTS:")
+            detail_parts.append("ADJUSTMENTS:")
             detail_parts.extend(f"  - {a}" for a in real_changes)
-        if suggestions:
-            if detail_parts:
-                detail_parts.append("")
-            detail_parts.append("SUGGESTIONS (not auto-applied):")
-            detail_parts.extend(f"  - {s}" for s in suggestions)
         if not detail_parts:
             detail_parts = [f"- {a}" for a in adjustments]
 
@@ -1052,8 +1045,6 @@ def _task_self_tune(ctx):
             title_parts.append(f"{len(real_changes)} adjustment(s)")
         if reviews:
             title_parts.append(f"{len(reviews)} review(s)")
-        if suggestions and not real_changes and not reviews:
-            title_parts.append("suggestions only")
         title = f"Self-Tuning: {', '.join(title_parts)}" if title_parts else "Self-Tuning: evaluated"
 
         _safe_log_activity(
@@ -1081,11 +1072,7 @@ def _task_self_tune(ctx):
             wr, n_resolved = _get_current_win_rate(_c)
             _c.close()
             from models import log_tuning_change, _get_conn as _get_main_conn
-            summary = f"Evaluated {state['resolved']} predictions, win rate {wr:.0f}%"
-            if suggestions:
-                summary += f" — {len(suggestions)} cross-profile suggestion(s)"
-            else:
-                summary += " — no changes needed"
+            summary = f"Evaluated {state['resolved']} predictions, win rate {wr:.0f}% — no changes needed"
             row_id = log_tuning_change(
                 getattr(ctx, "profile_id", 0), ctx.user_id,
                 "evaluation", "none",

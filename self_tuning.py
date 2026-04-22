@@ -1422,48 +1422,6 @@ def apply_auto_adjustments(ctx, db_path=None):
                 f"SELL win rate {sell_wr:.0f}%"
             )
 
-        # --- Cross-profile learning: recommend confidence threshold from better profiles ---
-        try:
-            from models import get_user_profiles as _get_profiles
-            other_profiles = _get_profiles(user_id)
-            for other_prof in other_profiles:
-                if other_prof["id"] == profile_id:
-                    continue
-                other_db = f"quantopsai_profile_{other_prof['id']}.db"
-                try:
-                    other_conn = _get_conn(other_db)
-                    other_table = other_conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_predictions'"
-                    ).fetchone()
-                    if not other_table:
-                        other_conn.close()
-                        continue
-                    other_resolved = other_conn.execute(
-                        "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved'"
-                    ).fetchone()[0]
-                    if other_resolved < 20:
-                        other_conn.close()
-                        continue
-                    other_wins = other_conn.execute(
-                        "SELECT COUNT(*) FROM ai_predictions "
-                        "WHERE status='resolved' AND actual_outcome='win'"
-                    ).fetchone()[0]
-                    other_wr = (other_wins / other_resolved * 100) if other_resolved > 0 else 0
-                    other_conn.close()
-
-                    if other_wr - overall_wr >= 20:
-                        other_threshold = other_prof.get("ai_confidence_threshold", 25)
-                        adjustments_made.append(
-                            f"Cross-profile suggestion: \"{other_prof['name']}\" has "
-                            f"{other_wr:.0f}% win rate vs this profile's {overall_wr:.0f}%. "
-                            f"Consider raising confidence threshold to match "
-                            f"({other_threshold}) — not auto-applied (cross-profile)"
-                        )
-                except Exception:
-                    continue
-        except Exception as _cross_exc:
-            logger.warning("Cross-profile auto-adjust check failed: %s", _cross_exc)
-
         # --- Short trade performance — auto-widen stops if 0% win rate ---
         try:
             trade_table = conn.execute(
