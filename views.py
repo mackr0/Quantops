@@ -2639,27 +2639,23 @@ def api_sec_alerts():
     if profile_id:
         profiles = [p for p in profiles if p["id"] == profile_id]
 
+    from sec_filings import get_active_alerts
+
     alerts = []
     for p in profiles:
         db_path = f"quantopsai_profile_{p['id']}.db"
         if not os.path.exists(db_path):
             continue
         try:
-            import sqlite3 as _sq
-            conn = _sq.connect(db_path)
-            conn.row_factory = _sq.Row
-            rows = conn.execute(
-                "SELECT symbol, form, filed_date, severity, signal, summary "
-                "FROM sec_alerts WHERE timestamp >= datetime('now', '-90 days') "
-                "ORDER BY timestamp DESC"
-            ).fetchall()
-            conn.close()
-            for r in rows:
+            for a in get_active_alerts(db_path, min_severity="medium")[:20]:
                 alerts.append({
-                    "profile_name": p["name"], "symbol": r["symbol"],
-                    "form": r["form"], "filed_date": r["filed_date"],
-                    "severity": r["severity"], "signal": r["signal"],
-                    "summary": r["summary"],
+                    "profile_name": p["name"],
+                    "symbol": a.get("symbol", ""),
+                    "form": a.get("form_type", ""),
+                    "filed_date": a.get("filed_date", ""),
+                    "severity": a.get("alert_severity", ""),
+                    "signal": a.get("alert_signal", ""),
+                    "summary": a.get("alert_summary", ""),
                 })
         except Exception:
             pass
