@@ -19,6 +19,11 @@ class User:
         self.email = user_dict["email"]
         self.display_name = user_dict.get("display_name", "")
         self.is_admin = bool(user_dict.get("is_admin", 0))
+        self.role = user_dict.get("role", "admin")
+
+    @property
+    def is_viewer(self):
+        return self.role == "viewer"
 
     @property
     def is_authenticated(self):

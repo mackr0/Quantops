@@ -50,6 +50,7 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             is_active INTEGER NOT NULL DEFAULT 1,
             is_admin INTEGER NOT NULL DEFAULT 0,
+            role TEXT NOT NULL DEFAULT 'admin',
             alpaca_api_key_enc TEXT NOT NULL DEFAULT '',
             alpaca_secret_key_enc TEXT NOT NULL DEFAULT '',
             anthropic_api_key_enc TEXT NOT NULL DEFAULT '',
@@ -254,6 +255,7 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         # --- users table ---
         ("users", "excluded_symbols", "TEXT NOT NULL DEFAULT '[]'"),
         ("users", "scanning_active", "INTEGER NOT NULL DEFAULT 1"),
+        ("users", "role", "TEXT NOT NULL DEFAULT 'admin'"),
         # --- user_segment_configs table ---
         ("user_segment_configs", "alpaca_api_key_enc", "TEXT NOT NULL DEFAULT ''"),
         ("user_segment_configs", "alpaca_secret_key_enc", "TEXT NOT NULL DEFAULT ''"),
@@ -310,19 +312,23 @@ def init_user_db(db_path: Optional[str] = None) -> None:
 # ---------------------------------------------------------------------------
 
 def create_user(email: str, password: str, display_name: str = "",
-                is_admin: bool = False) -> int:
-    """Insert a new user with a bcrypt-hashed password. Returns user_id."""
+                is_admin: bool = False, role: str = "admin") -> int:
+    """Insert a new user with a bcrypt-hashed password. Returns user_id.
+
+    Roles: 'admin' (full access), 'viewer' (read-only — can see everything
+    but cannot change settings, create/delete profiles, or modify keys).
+    """
     password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
     conn = _get_conn()
     cursor = conn.execute(
-        """INSERT INTO users (email, password_hash, display_name, is_admin)
-           VALUES (?, ?, ?, ?)""",
-        (email.lower().strip(), password_hash, display_name, int(is_admin)),
+        """INSERT INTO users (email, password_hash, display_name, is_admin, role)
+           VALUES (?, ?, ?, ?, ?)""",
+        (email.lower().strip(), password_hash, display_name, int(is_admin), role),
     )
     conn.commit()
     user_id = cursor.lastrowid
     conn.close()
-    logger.info("Created user #%d (%s)", user_id, email)
+    logger.info("Created user #%d (%s, role=%s)", user_id, email, role)
     return user_id
 
 

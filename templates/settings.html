@@ -3,6 +3,18 @@
 {% block content %}
 <h1>Settings</h1>
 
+{% if current_user.is_viewer %}
+<article style="background:#fff3cd;border-left:4px solid #ffc107;padding:0.75rem 1rem;margin-bottom:1rem;">
+    <strong>View-only mode</strong> — You can see all settings but cannot make changes. Contact the account administrator for modifications.
+</article>
+<style>
+    input, select, textarea { pointer-events: none; opacity: 0.6; }
+    button[type="submit"], .btn-danger, a[role="button"],
+    button.outline { pointer-events: none; opacity: 0.4; }
+    form { cursor: default; }
+</style>
+{% endif %}
+
 <!-- API Keys Section -->
 <article>
     <header><h3>API Keys</h3></header>

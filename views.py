@@ -36,11 +36,14 @@ views_bp = Blueprint("views", __name__, template_folder="templates")
 # ---------------------------------------------------------------------------
 
 def admin_required(f):
-    """Decorator that requires the current user to be an admin."""
+    """Decorator that requires the current user to be an admin (not a viewer)."""
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not current_user.is_admin:
+        if not current_user.is_admin and not getattr(current_user, 'role', 'admin') == 'admin':
             abort(403)
+        if getattr(current_user, 'is_viewer', False):
+            flash("View-only accounts cannot make changes.", "error")
+            return redirect(url_for("views.dashboard"))
         return f(*args, **kwargs)
     return decorated
 
@@ -417,6 +420,7 @@ def settings():
 
 @views_bp.route("/settings/exclusions", methods=["POST"])
 @login_required
+@admin_required
 def save_exclusions():
     raw = request.form.get("excluded_symbols", "").strip()
     symbols = [s.strip().upper() for s in raw.split(",") if s.strip()]
@@ -431,6 +435,7 @@ def save_exclusions():
 
 @views_bp.route("/settings/keys", methods=["POST"])
 @login_required
+@admin_required
 def save_keys():
     alpaca_key = request.form.get("alpaca_api_key", "").strip()
     alpaca_secret = request.form.get("alpaca_secret_key", "").strip()
@@ -469,6 +474,7 @@ def save_keys():
 
 @views_bp.route("/settings/keys/test", methods=["POST"])
 @login_required
+@admin_required
 def test_keys():
     """Test Alpaca connection with the user's saved credentials."""
     try:
@@ -509,6 +515,7 @@ def _get_main_conn():
 
 @views_bp.route("/settings/alpaca-accounts", methods=["POST"])
 @login_required
+@admin_required
 def manage_alpaca_account():
     """Create or delete a named Alpaca account reference."""
     from models import create_alpaca_account
@@ -540,6 +547,7 @@ def manage_alpaca_account():
 
 @views_bp.route("/settings/profile/create", methods=["POST"])
 @login_required
+@admin_required
 def create_profile():
     name = request.form.get("profile_name", "").strip()
     market_type = request.form.get("market_type", "").strip()
@@ -570,6 +578,7 @@ def create_profile():
 
 @views_bp.route("/settings/profile/<int:profile_id>", methods=["POST"])
 @login_required
+@admin_required
 def save_profile(profile_id):
     profile = get_trading_profile(profile_id)
     if not profile or profile["user_id"] != current_user.id:
@@ -680,6 +689,7 @@ def save_profile(profile_id):
 
 @views_bp.route("/api/backtest/<int:profile_id>", methods=["POST"])
 @login_required
+@admin_required
 def api_backtest(profile_id):
     """Start a backtest in background. Returns job_id immediately."""
     profile = get_trading_profile(profile_id)
@@ -781,6 +791,7 @@ def api_backtest_status(job_id):
 
 @views_bp.route("/settings/profile/<int:profile_id>/delete", methods=["POST"])
 @login_required
+@admin_required
 def delete_profile_route(profile_id):
     profile = get_trading_profile(profile_id)
     if not profile or profile["user_id"] != current_user.id:
@@ -794,6 +805,7 @@ def delete_profile_route(profile_id):
 
 @views_bp.route("/settings/profile/<int:profile_id>/toggle", methods=["POST"])
 @login_required
+@admin_required
 def toggle_profile(profile_id):
     profile = get_trading_profile(profile_id)
     if not profile or profile["user_id"] != current_user.id:
@@ -812,6 +824,7 @@ def toggle_profile(profile_id):
 
 @views_bp.route("/settings/segment/<segment>", methods=["POST"])
 @login_required
+@admin_required
 def save_segment(segment):
     if segment not in SEGMENTS:
         abort(404)
@@ -865,6 +878,7 @@ def save_segment(segment):
 
 @views_bp.route("/settings/segment/<segment>/reset", methods=["POST"])
 @login_required
+@admin_required
 def reset_segment(segment):
     if segment not in SEGMENTS:
         abort(404)
@@ -2346,6 +2360,7 @@ def api_universe(profile_id):
 
 @views_bp.route("/api/universe/<int:profile_id>/cache-names", methods=["POST"])
 @login_required
+@admin_required
 def api_cache_universe_names(profile_id):
     """Trigger background caching of symbol names for a profile's universe."""
     profile = get_trading_profile(profile_id)
@@ -2365,6 +2380,7 @@ def api_cache_universe_names(profile_id):
 
 @views_bp.route("/scanning/toggle", methods=["POST"])
 @login_required
+@admin_required
 def toggle_scanning():
     """Admin-only: start/stop AI scanning for the current user."""
     if not current_user.is_admin:

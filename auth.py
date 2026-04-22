@@ -74,12 +74,12 @@ def register():
             return render_template("auth/register.html")
 
         try:
-            user_id = create_user(email, password, display_name=display_name)
+            user_id = create_user(email, password, display_name=display_name, role="viewer")
             create_default_segment_configs(user_id)
             user = get_user_by_email(email)
             login_user(User(user), remember=True)
-            flash("Account created successfully. Configure your API keys in Settings.", "success")
-            return redirect(url_for("views.settings"))
+            flash("Account created successfully. You have view-only access.", "success")
+            return redirect(url_for("views.dashboard"))
         except Exception as exc:
             flash(f"Registration failed: {exc}", "error")
             return render_template("auth/register.html")
