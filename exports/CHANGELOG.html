@@ -375,6 +375,53 @@ with matching SELL → closed - Count-reporting correctness</p>
 <p><strong>Test count:</strong> 543 (was 528 + 15 new across two
 features).</p>
 <hr />
+<h2 id="universal-schema-migration-cost-tracking-fix">2026-04-22 —
+Universal schema migration + cost tracking fix</h2>
+<p><strong>“Resolve AI Predictions” failing every cycle on 3
+profiles:</strong>
+<code>sqlite3.OperationalError: no such column: days_held</code> —
+profiles 4, 5, and 9 were created before the <code>days_held</code>
+column was added to the <code>ai_predictions</code> schema. The old
+per-column migration functions (<code>_migrate_slippage_columns</code>,
+<code>_migrate_prediction_columns</code>) only covered specific columns
+and missed <code>days_held</code>.</p>
+<p><strong>Fix:</strong> Replaced the per-column migrations with
+<code>_migrate_all_columns()</code> — a single function that defines
+every expected column for every table and adds any that are missing via
+ALTER TABLE. Runs on every <code>init_db()</code> call. Safe to run
+repeatedly. Will catch any future schema additions automatically.</p>
+<p><strong>AI cost “today” was showing last 24 hours, not calendar
+day:</strong> <code>spend_summary()</code> used
+<code>datetime('now', '-1 day')</code> which is a rolling 24-hour
+window. Changed to <code>date('now')</code> for the “today” bucket so it
+matches the Anthropic billing console. Added total cost row to dashboard
+overview table.</p>
+<hr />
+<h2 id="max-positions-cap-removed-10-100">2026-04-21 — Max positions cap
+removed (10 → 100)</h2>
+<p>All profiles were maxed at 10/10 positions by mid-morning, blocking
+all new trades for the rest of the day. The arbitrary cap was redundant
+— position sizing (10% max per position), correlation limits (0.7), and
+sector caps (5) already control concentration risk based on actual
+portfolio characteristics, not an arbitrary count. Set to 100
+(effectively uncapped) to maximize data collection.</p>
+<hr />
+<h2
+id="trades-page-single-pl-column-brokerage-standard-layout">2026-04-21 —
+Trades page: single P&amp;L column, brokerage-standard layout</h2>
+<p>Replaced the two-column Unrealized/Realized layout with a single
+P&amp;L column. BUY rows show entry info only (no P&amp;L). SELL rows
+show realized P&amp;L. Dashboard shows unrealized on open positions.
+Matches Schwab/Fidelity trade history view. Removed trades page
+enrichment that was adding unrealized to BUY rows.</p>
+<hr />
+<h2 id="archived-profiles-hidden-from-all-ui-pages">2026-04-21 —
+Archived profiles hidden from all UI pages</h2>
+<p>Disabled profiles (e.g. “Crypto (archived)”) no longer appear in
+dashboard tabs, trades dropdown, performance dropdown, or AI performance
+dropdown. Settings page has a “Show archived profiles” checkbox that
+reveals them dimmed when needed.</p>
+<hr />
 <h2 id="split-pl-into-unrealized-realized-columns">2026-04-21 — Split
 P&amp;L into Unrealized + Realized columns</h2>
 <p><strong>Problem:</strong> BUY and SELL rows both showed the same

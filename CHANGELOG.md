@@ -151,6 +151,29 @@ carried `status=open` despite having realized `pnl`.
 
 ---
 
+## 2026-04-22 — Universal schema migration + cost tracking fix
+
+**"Resolve AI Predictions" failing every cycle on 3 profiles:**
+`sqlite3.OperationalError: no such column: days_held` — profiles 4, 5,
+and 9 were created before the `days_held` column was added to the
+`ai_predictions` schema. The old per-column migration functions
+(`_migrate_slippage_columns`, `_migrate_prediction_columns`) only
+covered specific columns and missed `days_held`.
+
+**Fix:** Replaced the per-column migrations with `_migrate_all_columns()`
+— a single function that defines every expected column for every table
+and adds any that are missing via ALTER TABLE. Runs on every `init_db()`
+call. Safe to run repeatedly. Will catch any future schema additions
+automatically.
+
+**AI cost "today" was showing last 24 hours, not calendar day:**
+`spend_summary()` used `datetime('now', '-1 day')` which is a rolling
+24-hour window. Changed to `date('now')` for the "today" bucket so
+it matches the Anthropic billing console. Added total cost row to
+dashboard overview table.
+
+---
+
 ## 2026-04-21 — Max positions cap removed (10 → 100)
 
 All profiles were maxed at 10/10 positions by mid-morning, blocking

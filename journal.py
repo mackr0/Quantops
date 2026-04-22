@@ -253,10 +253,11 @@ def init_db(db_path=None):
             ON auto_generated_strategies(status);
     """)
 
-    # Auto-migration: add slippage columns to existing databases
-    _migrate_slippage_columns(conn)
-    # Auto-migration: add pattern learning columns to ai_predictions
-    _migrate_prediction_columns(conn)
+    # Universal schema migration: ensures every column defined in the
+    # CREATE TABLE statements above actually exists in the DB. Catches
+    # any column added to the schema that wasn't present when the DB
+    # was first created. Replaces the old per-column migration functions.
+    _migrate_all_columns(conn)
 
     conn.commit()
     conn.close()
@@ -293,41 +294,48 @@ def get_recently_exited(db_path: str, cooldown_minutes: int = 60) -> set:
         return set()
 
 
-def _migrate_slippage_columns(conn):
-    """Add decision_price, fill_price, slippage_pct columns if missing."""
-    try:
-        existing = {
-            row[1] for row in conn.execute("PRAGMA table_info(trades)").fetchall()
-        }
-        for col, col_type in [
+def _migrate_all_columns(conn):
+    """Universal schema migration — ensures every column defined in the
+    CREATE TABLE statements exists in the actual DB.
+
+    This replaces the old per-column migration functions
+    (_migrate_slippage_columns, _migrate_prediction_columns) that
+    missed columns and caused 'no such column' runtime errors
+    (e.g. days_held on ai_predictions, 2026-04-22).
+
+    For each table, we define the full expected column set. Any column
+    present in the definition but missing from the actual table gets
+    added via ALTER TABLE. Safe to run repeatedly — already-existing
+    columns are skipped.
+    """
+    _EXPECTED_COLUMNS = {
+        "trades": [
             ("decision_price", "REAL"),
             ("fill_price", "REAL"),
             ("slippage_pct", "REAL"),
-        ]:
-            if col not in existing:
-                conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {col_type}")
-    except Exception:
-        pass  # Table may not exist yet (first run)
-
-
-def _migrate_prediction_columns(conn):
-    """Add regime_at_prediction, strategy_type, and features_json columns if missing."""
-    try:
-        existing = {
-            row[1] for row in conn.execute("PRAGMA table_info(ai_predictions)").fetchall()
-        }
-        # features_json stores the full feature vector the AI saw at prediction time
-        # (all 33 indicators + alt data + sector context + track record). This is
-        # the training data for Phase 1 meta-model. See ROADMAP.md Phase 1.
-        for col, col_type in [
+        ],
+        "ai_predictions": [
             ("regime_at_prediction", "TEXT"),
             ("strategy_type", "TEXT"),
             ("features_json", "TEXT"),
-        ]:
-            if col not in existing:
-                conn.execute(f"ALTER TABLE ai_predictions ADD COLUMN {col} {col_type}")
-    except Exception:
-        pass
+            ("days_held", "INTEGER"),
+        ],
+    }
+
+    for table, columns in _EXPECTED_COLUMNS.items():
+        try:
+            existing = {
+                row[1] for row in conn.execute(
+                    f"PRAGMA table_info({table})"
+                ).fetchall()
+            }
+            for col, col_type in columns:
+                if col not in existing:
+                    conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"
+                    )
+        except Exception:
+            pass
 
 
 def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,

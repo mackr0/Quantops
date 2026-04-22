@@ -66,7 +66,7 @@
                 </tr>
             </thead>
             <tbody>
-                {% set ns = namespace(total_equity=0, total_cash=0, total_positions=0) %}
+                {% set ns = namespace(total_equity=0, total_cash=0, total_positions=0, total_cost=0) %}
                 {% for prof in profiles_data %}
                 <tr style="cursor:pointer;" onclick="showDashTab(event, 'p{{ prof.id }}'); document.querySelector('a[href=\'#p{{ prof.id }}\']').classList.add('active');">
                     <td>
@@ -82,6 +82,7 @@
                     {% set ns.total_equity = ns.total_equity + prof.account.equity %}
                     {% set ns.total_cash = ns.total_cash + prof.account.cash %}
                     {% set ns.total_positions = ns.total_positions + prof.positions|length %}
+                    {% set ns.total_cost = ns.total_cost + (prof.cost_today or 0) %}
                     {% else %}
                     <td colspan="4" class="muted">Not connected</td>
                     {% endif %}
@@ -95,7 +96,7 @@
                     <td>${{ "{:,.0f}".format(ns.total_equity) }}</td>
                     <td class="muted">${{ "{:,.0f}".format(ns.total_cash) }}</td>
                     <td>{{ ns.total_positions }}</td>
-                    <td></td>
+                    <td class="muted">${{ "{:.2f}".format(ns.total_cost) }}</td>
                 </tr>
             </tfoot>
         </table>

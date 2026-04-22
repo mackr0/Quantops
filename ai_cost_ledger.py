@@ -77,17 +77,20 @@ def spend_summary(db_path: str) -> Dict[str, Any]:
         return result
 
     try:
-        for key, window in (("today", "-1 day"),
+        for key, window in (("today", "start of day"),
                             ("7d",    "-7 days"),
                             ("30d",   "-30 days")):
+            if key == "today":
+                sql_where = "timestamp >= date('now')"
+            else:
+                sql_where = "timestamp >= datetime('now', '%s')" % window
             row = conn.execute(
                 """SELECT COUNT(*) AS n,
                           COALESCE(SUM(estimated_cost_usd), 0) AS usd,
                           COALESCE(SUM(input_tokens), 0)  AS in_tok,
                           COALESCE(SUM(output_tokens), 0) AS out_tok
                    FROM ai_cost_ledger
-                   WHERE timestamp >= datetime('now', ?)""",
-                (window,),
+                   WHERE """ + sql_where,
             ).fetchone()
             if row:
                 result[key] = {
