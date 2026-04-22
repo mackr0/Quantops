@@ -881,7 +881,7 @@
                 </thead>
                 <tbody>
                     {% for s in tuning_status %}
-                    <tr>
+                    <tr class="tuning-status-row" {% if loop.index > 5 %}style="display:none;"{% endif %}>
                         <td><strong>{{ s.profile_name }}</strong></td>
                         <td>
                             {{ s.resolved }} / {{ s.required }}
@@ -908,6 +908,9 @@
                     {% endfor %}
                 </tbody>
             </table>
+            {% if tuning_status|length > 5 %}
+            <button class="outline secondary" style="margin-top:0.5rem;padding:0.25rem 0.75rem;font-size:0.85rem;" onclick="var rows=document.querySelectorAll('.tuning-status-row');var hidden=rows[5]&&rows[5].style.display==='none';rows.forEach(function(r,i){if(i>=5)r.style.display=hidden?'':'none';});this.textContent=hidden?'Show less':'Show all ('+rows.length+')';">Show all ({{ tuning_status|length }})</button>
+            {% endif %}
         </div>
     </article>
     {% endif %}
@@ -931,7 +934,7 @@
                 </thead>
                 <tbody>
                     {% for h in tuning_history %}
-                    <tr>
+                    <tr class="tuning-history-row" {% if loop.index > 5 %}style="display:none;"{% endif %}>
                         <td>{{ h.timestamp[:10] }}</td>
                         <td>{{ h.profile_name }}</td>
                         {% if h.adjustment_type == 'evaluation' %}
@@ -960,6 +963,9 @@
                     {% endfor %}
                 </tbody>
             </table>
+            {% if tuning_history|length > 5 %}
+            <button class="outline secondary" style="margin-top:0.5rem;padding:0.25rem 0.75rem;font-size:0.85rem;" onclick="var rows=document.querySelectorAll('.tuning-history-row');var hidden=rows[5]&&rows[5].style.display==='none';rows.forEach(function(r,i){if(i>=5)r.style.display=hidden?'':'none';});this.textContent=hidden?'Show less':'Show all ('+rows.length+')';">Show all ({{ tuning_history|length }})</button>
+            {% endif %}
         </div>
     </article>
     {% else %}
