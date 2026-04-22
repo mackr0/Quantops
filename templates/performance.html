@@ -861,138 +861,25 @@
     </article>
     {% endif %}
 
-    <!-- Self-Tuning Status — current state of the tuner per profile -->
-    {% if tuning_status %}
+    <!-- Self-Tuning Status — loaded via API -->
     <article>
         <header><h3>Self-Tuning Status</h3></header>
-        <p class="muted" style="margin-top:-0.5rem;">
-            The tuner runs daily and evaluates whether any parameters should change based on recent performance.
-            It needs at least 20 resolved AI predictions per profile before it will adjust anything.
-        </p>
-        <div class="overflow-auto">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Profile</th>
-                        <th><span class="tip" data-tip="How many AI predictions have been resolved with a known outcome. The tuner needs 20+ before it starts adjusting parameters.">Resolved Predictions</span></th>
-                        <th>Status</th>
-                        <th>Last Run</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for s in tuning_status %}
-                    <tr class="tuning-status-row" {% if loop.index > 5 %}style="display:none;"{% endif %}>
-                        <td><strong>{{ s.profile_name }}</strong></td>
-                        <td>
-                            {{ s.resolved }} / {{ s.required }}
-                            {% if s.resolved < s.required %}
-                            <small class="muted">({{ "%.0f"|format(s.resolved / s.required * 100) }}%)</small>
-                            {% endif %}
-                        </td>
-                        <td>
-                            {% if s.can_tune %}
-                            <span class="pnl-pos">Active</span>
-                            {% else %}
-                            <span class="muted">Collecting data</span>
-                            {% endif %}
-                            <br><small class="muted">{{ s.message }}</small>
-                        </td>
-                        <td>
-                            {% if s.last_run %}
-                            <small>{{ s.last_run[:16] }}</small>
-                            {% else %}
-                            <small class="muted">never</small>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-            {% if tuning_status|length > 5 %}
-            <div class="paginator" data-target="tuning-status-row" data-per-page="5"></div>
-            {% endif %}
-        </div>
+        <p class="muted" style="margin-top:-0.5rem;">Needs at least 20 resolved AI predictions per profile before adjusting anything.</p>
+        <div id="tuning-status-widget"><p class="muted">Loading...</p></div>
     </article>
-    {% endif %}
 
-    <!-- Self-Tuning History -->
-    {% if tuning_history %}
+    <!-- Self-Tuning History — loaded via API -->
     <article>
         <header><h3>Self-Tuning History</h3></header>
-        <p class="muted" style="margin-top:-0.5rem;"><span class="tip" data-tip="The AI learns from its past wins and losses and automatically adjusts its approach">Automatic adjustments</span> the system has made based on its own performance.</p>
-        <div class="overflow-auto">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Date</th>
-                        <th>Profile</th>
-                        <th>Change</th>
-                        <th>Reason</th>
-                        <th>Win Rate Then</th>
-                        <th>Outcome</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for h in tuning_history %}
-                    <tr class="tuning-history-row" {% if loop.index > 5 %}style="display:none;"{% endif %}>
-                        <td>{{ h.timestamp[:10] }}</td>
-                        <td>{{ h.profile_name }}</td>
-                        {% if h.adjustment_type == 'evaluation' %}
-                        <td colspan="2" class="muted" style="font-size:0.85rem;">{{ h.reason }}</td>
-                        {% else %}
-                        <td><strong>{{ h.parameter_label or h.parameter_name }}</strong><br>
-                            <small>{{ h.old_value }} &rarr; {{ h.new_value }}</small>
-                        </td>
-                        <td style="font-size:0.85rem;">{{ h.reason[:80] }}</td>
-                        {% endif %}
-                        <td>{{ "%.1f"|format(h.win_rate_at_change) }}%</td>
-                        <td>
-                            {% if h.adjustment_type == 'evaluation' or h.outcome_after == 'n/a' %}
-                                <span class="muted">No changes</span>
-                            {% elif h.outcome_after == 'improved' %}
-                                <span class="pnl-pos">Improved{% if h.win_rate_after %} ({{ "%.1f"|format(h.win_rate_after) }}%){% endif %}</span>
-                            {% elif h.outcome_after == 'worsened' %}
-                                <span class="pnl-neg">Worsened{% if h.win_rate_after %} ({{ "%.1f"|format(h.win_rate_after) }}%){% endif %}</span>
-                            {% elif h.outcome_after == 'unchanged' %}
-                                <span class="muted">Unchanged</span>
-                            {% else %}
-                                <span class="muted">Pending review</span>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-            {% if tuning_history|length > 5 %}
-            <div class="paginator" data-target="tuning-history-row" data-per-page="5"></div>
-            {% endif %}
-        </div>
+        <p class="muted" style="margin-top:-0.5rem;">Automatic adjustments the system has made based on its own performance.</p>
+        <div id="tuning-history-widget"><p class="muted">Loading...</p></div>
     </article>
-    {% else %}
-    <article>
-        <header><h3>Self-Tuning History</h3></header>
-        <p class="muted">No self-tuning adjustments yet. The system will start adjusting after enough trade data accumulates.</p>
-    </article>
-    {% endif %}
 
-    <!-- Learned Patterns -->
+    <!-- Learned Patterns — loaded via API -->
     <article>
         <header><h3>Learned Patterns</h3></header>
         <p class="muted" style="margin-top:-0.5rem;">Patterns the system has discovered from historical predictions — which conditions lead to wins vs losses.</p>
-        {% if learned_patterns %}
-        <ul style="list-style:none;padding:0;">
-            {% for pattern in learned_patterns %}
-            <li class="learned-pattern-row" style="{% if loop.index > 5 %}display:none;{% endif %}padding:0.4rem 0.75rem;margin-bottom:0.25rem;border-left:3px solid {% if 'Avoid' in pattern or 'cautious' in pattern %}#f44336{% elif 'Favor' in pattern or 'edge' in pattern %}#00c853{% else %}#888{% endif %};background:#f9f9f9;border-radius:0 4px 4px 0;font-size:0.9rem;">
-                {{ pattern }}
-            </li>
-            {% endfor %}
-        </ul>
-        {% if learned_patterns|length > 5 %}
-        <div class="paginator" data-target="learned-pattern-row" data-per-page="5"></div>
-        {% endif %}
-        {% else %}
-        <p class="muted">Patterns will appear after the system has enough resolved predictions with regime and strategy data. New predictions now store market regime and strategy type for pattern analysis.</p>
-        {% endif %}
+        <div id="learned-patterns-widget"><p class="muted">Loading...</p></div>
     </article>
 
     <!-- Phase 1: Meta-Model Panel -->
@@ -1542,62 +1429,11 @@
         {% endif %}
     </article>
 
-    <!-- Phase 4: SEC Filing Alerts -->
+    <!-- Phase 4: SEC Filing Alerts — loaded via API -->
     <article>
         <header><h3>SEC Filing Alerts</h3></header>
-        <p class="muted" style="margin-top:-0.5rem;">AI-analyzed 10-K / 10-Q / 8-K filings for positions and shortlist symbols. Detects material language changes — new risk factors, going-concern disclosures, material weakness, restatements. Updated daily via EDGAR.</p>
-
-        {% if not sec_alerts %}
-        <p class="muted">No active alerts. The daily SEC filing monitor scans held positions + shortlisted candidates and flags material language changes. Alerts persist for 90 days.</p>
-        {% else %}
-        <div class="overflow-auto">
-            <table class="striped">
-                <thead>
-                    <tr>
-                        <th>Profile</th>
-                        <th>Symbol</th>
-                        <th>Filing</th>
-                        <th>Date</th>
-                        <th>Severity</th>
-                        <th>Signal</th>
-                        <th>Summary</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for a in sec_alerts %}
-                    <tr class="sec-alert-row" {% if loop.index > 5 %}style="display:none;"{% endif %}>
-                        <td class="muted">{{ a.profile_name }}</td>
-                        <td><strong>{{ a.symbol }}</strong></td>
-                        <td>{{ a.form }}</td>
-                        <td class="muted">{{ a.filed_date }}</td>
-                        <td>
-                            {% if a.severity == 'high' %}
-                                <span class="pnl-neg">HIGH</span>
-                            {% elif a.severity == 'medium' %}
-                                <span style="color:#f57c00;">MEDIUM</span>
-                            {% else %}
-                                <span class="muted">LOW</span>
-                            {% endif %}
-                        </td>
-                        <td>
-                            {% if a.signal == 'concerning' %}
-                                <span class="pnl-neg">concerning</span>
-                            {% elif a.signal == 'positive' %}
-                                <span class="pnl-pos">positive</span>
-                            {% else %}
-                                <span class="muted">neutral</span>
-                            {% endif %}
-                        </td>
-                        <td style="font-size:0.85rem;">{{ a.summary }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-            {% if sec_alerts|length > 5 %}
-            <div class="paginator" data-target="sec-alert-row" data-per-page="5"></div>
-            {% endif %}
-        </div>
-        {% endif %}
+        <p class="muted" style="margin-top:-0.5rem;">AI-analyzed 10-K / 10-Q / 8-K filings. Detects material language changes. Updated daily via EDGAR.</p>
+        <div id="sec-alerts-widget"><p class="muted">Loading...</p></div>
     </article>
 
     <!-- Phase 3: Alpha Decay Monitoring -->
@@ -1748,48 +1584,138 @@ function showTab(event, tabName) {
 })();
 </script>
 
-<!-- Reusable paginator for any table/list with a .paginator div -->
+<!-- Server-side paginated widgets -->
 <script>
 (function() {
-    document.querySelectorAll('.paginator').forEach(function(el) {
-        var cls = el.getAttribute('data-target');
-        var perPage = parseInt(el.getAttribute('data-per-page')) || 5;
-        var rows = document.querySelectorAll('.' + cls);
-        var total = rows.length;
-        var pages = Math.ceil(total / perPage);
-        var current = 1;
+    var profileFilter = '{{ selected_profile or "" }}';
+    var pfParam = profileFilter ? '&profile_id=' + profileFilter : '';
+    var esc = function(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
 
-        if (pages <= 1) { el.style.display = 'none'; return; }
+    function paginator(container, page, pages, total, loadFn) {
+        var el = document.createElement('div');
+        el.style.cssText = 'margin-top:0.5rem;';
+        var prev = document.createElement('button');
+        prev.textContent = '\u2190'; prev.className = 'outline secondary';
+        prev.style.cssText = 'padding:0.2rem 0.5rem;margin-right:0.25rem;font-size:0.85rem;';
+        prev.disabled = page <= 1;
+        prev.onclick = function() { loadFn(page - 1); };
+        el.appendChild(prev);
+        var info = document.createElement('span');
+        info.style.cssText = 'font-size:0.85rem;margin:0 0.5rem;color:#888;';
+        info.textContent = 'Page ' + page + ' of ' + pages + ' (' + total + ' total)';
+        el.appendChild(info);
+        var next = document.createElement('button');
+        next.textContent = '\u2192'; next.className = 'outline secondary';
+        next.style.cssText = 'padding:0.2rem 0.5rem;margin-left:0.25rem;font-size:0.85rem;';
+        next.disabled = page >= pages;
+        next.onclick = function() { loadFn(page + 1); };
+        el.appendChild(next);
+        container.appendChild(el);
+    }
 
-        function render() {
-            rows.forEach(function(r, i) {
-                var show = (i >= (current - 1) * perPage && i < current * perPage);
-                r.style.display = show ? '' : 'none';
+    // --- Tuning Status ---
+    function loadTuningStatus(page) {
+        var w = document.getElementById('tuning-status-widget');
+        fetch('/api/tuning-status?page=' + page + '&per_page=5' + pfParam)
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d.items || !d.items.length) { w.innerHTML = '<p class="muted">No tuning status data yet.</p>'; return; }
+                var h = '<div class="overflow-auto"><table><thead><tr><th>Profile</th><th>Resolved</th><th>Status</th><th>Last Run</th></tr></thead><tbody>';
+                d.items.forEach(function(s) {
+                    var status = s.can_tune ? '<span class="pnl-pos">Active</span>' : '<span class="muted">Collecting data</span>';
+                    var lr = s.last_run ? '<small>' + esc(s.last_run.substring(0,16)) + '</small>' : '<small class="muted">never</small>';
+                    h += '<tr><td><strong>' + esc(s.profile_name) + '</strong></td>';
+                    h += '<td>' + s.resolved + ' / ' + s.required + '</td>';
+                    h += '<td>' + status + '<br><small class="muted">' + esc(s.message) + '</small></td>';
+                    h += '<td>' + lr + '</td></tr>';
+                });
+                h += '</tbody></table></div>';
+                w.innerHTML = h;
+                if (d.pages > 1) paginator(w, d.page, d.pages, d.total, loadTuningStatus);
             });
-            el.innerHTML = '';
-            var prev = document.createElement('button');
-            prev.textContent = '\u2190';
-            prev.className = 'outline secondary';
-            prev.style.cssText = 'padding:0.2rem 0.5rem;margin-right:0.25rem;font-size:0.85rem;';
-            prev.disabled = (current <= 1);
-            prev.onclick = function() { if (current > 1) { current--; render(); } };
-            el.appendChild(prev);
+    }
+    loadTuningStatus(1);
 
-            var info = document.createElement('span');
-            info.style.cssText = 'font-size:0.85rem;margin:0 0.5rem;color:#888;';
-            info.textContent = 'Page ' + current + ' of ' + pages + ' (' + total + ' total)';
-            el.appendChild(info);
+    // --- Tuning History ---
+    function loadTuningHistory(page) {
+        var w = document.getElementById('tuning-history-widget');
+        fetch('/api/tuning-history?page=' + page + '&per_page=5' + pfParam)
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d.items || !d.items.length) { w.innerHTML = '<p class="muted">No self-tuning history yet.</p>'; return; }
+                var h = '<div class="overflow-auto"><table><thead><tr><th>Date</th><th>Profile</th><th>Change</th><th>Reason</th><th>Win Rate</th><th>Outcome</th></tr></thead><tbody>';
+                d.items.forEach(function(r) {
+                    h += '<tr><td>' + esc((r.timestamp||'').substring(0,10)) + '</td>';
+                    h += '<td>' + esc(r.profile_name||'') + '</td>';
+                    if (r.adjustment_type === 'evaluation') {
+                        h += '<td colspan="2" class="muted" style="font-size:0.85rem;">' + esc(r.reason||'') + '</td>';
+                    } else {
+                        h += '<td><strong>' + esc(r.parameter_label || r.parameter_name || '') + '</strong><br><small>' + esc(r.old_value||'') + ' &rarr; ' + esc(r.new_value||'') + '</small></td>';
+                        h += '<td style="font-size:0.85rem;">' + esc((r.reason||'').substring(0,80)) + '</td>';
+                    }
+                    var wr = (r.win_rate_at_change != null) ? r.win_rate_at_change.toFixed(1) + '%' : '';
+                    h += '<td>' + wr + '</td>';
+                    var outcome;
+                    if (r.adjustment_type === 'evaluation' || r.outcome_after === 'n/a') outcome = '<span class="muted">No changes</span>';
+                    else if (r.outcome_after === 'improved') outcome = '<span class="pnl-pos">Improved</span>';
+                    else if (r.outcome_after === 'worsened') outcome = '<span class="pnl-neg">Worsened</span>';
+                    else if (r.outcome_after === 'unchanged') outcome = '<span class="muted">Unchanged</span>';
+                    else outcome = '<span class="muted">Pending review</span>';
+                    h += '<td>' + outcome + '</td></tr>';
+                });
+                h += '</tbody></table></div>';
+                w.innerHTML = h;
+                if (d.pages > 1) paginator(w, d.page, d.pages, d.total, loadTuningHistory);
+            });
+    }
+    loadTuningHistory(1);
 
-            var next = document.createElement('button');
-            next.textContent = '\u2192';
-            next.className = 'outline secondary';
-            next.style.cssText = 'padding:0.2rem 0.5rem;margin-left:0.25rem;font-size:0.85rem;';
-            next.disabled = (current >= pages);
-            next.onclick = function() { if (current < pages) { current++; render(); } };
-            el.appendChild(next);
-        }
-        render();
-    });
+    // --- Learned Patterns ---
+    function loadLearnedPatterns(page) {
+        var w = document.getElementById('learned-patterns-widget');
+        fetch('/api/learned-patterns?page=' + page + '&per_page=5' + pfParam)
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d.items || !d.items.length) { w.innerHTML = '<p class="muted">Patterns will appear after enough resolved predictions accumulate.</p>'; return; }
+                var h = '<ul style="list-style:none;padding:0;">';
+                d.items.forEach(function(p) {
+                    var color = '#888';
+                    if (p.indexOf('Avoid') >= 0 || p.indexOf('cautious') >= 0) color = '#f44336';
+                    else if (p.indexOf('Favor') >= 0 || p.indexOf('edge') >= 0) color = '#00c853';
+                    h += '<li style="padding:0.4rem 0.75rem;margin-bottom:0.25rem;border-left:3px solid ' + color + ';background:#f9f9f9;border-radius:0 4px 4px 0;font-size:0.9rem;">' + esc(p) + '</li>';
+                });
+                h += '</ul>';
+                w.innerHTML = h;
+                if (d.pages > 1) paginator(w, d.page, d.pages, d.total, loadLearnedPatterns);
+            });
+    }
+    loadLearnedPatterns(1);
+
+    // --- SEC Alerts ---
+    function loadSecAlerts(page) {
+        var w = document.getElementById('sec-alerts-widget');
+        fetch('/api/sec-alerts?page=' + page + '&per_page=5' + pfParam)
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d.items || !d.items.length) { w.innerHTML = '<p class="muted">No active alerts.</p>'; return; }
+                var h = '<div class="overflow-auto"><table class="striped"><thead><tr><th>Profile</th><th>Symbol</th><th>Filing</th><th>Date</th><th>Severity</th><th>Signal</th><th>Summary</th></tr></thead><tbody>';
+                d.items.forEach(function(a) {
+                    h += '<tr><td class="muted">' + esc(a.profile_name) + '</td>';
+                    h += '<td><strong>' + esc(a.symbol) + '</strong></td>';
+                    h += '<td>' + esc(a.form) + '</td>';
+                    h += '<td class="muted">' + esc(a.filed_date) + '</td>';
+                    var sev = a.severity === 'high' ? '<span class="pnl-neg">HIGH</span>' : a.severity === 'medium' ? '<span style="color:#f57c00;">MEDIUM</span>' : '<span class="muted">LOW</span>';
+                    h += '<td>' + sev + '</td>';
+                    var sig = a.signal === 'concerning' ? '<span class="pnl-neg">concerning</span>' : a.signal === 'positive' ? '<span class="pnl-pos">positive</span>' : '<span class="muted">neutral</span>';
+                    h += '<td>' + sig + '</td>';
+                    h += '<td style="font-size:0.85rem;">' + esc(a.summary) + '</td></tr>';
+                });
+                h += '</tbody></table></div>';
+                w.innerHTML = h;
+                if (d.pages > 1) paginator(w, d.page, d.pages, d.total, loadSecAlerts);
+            });
+    }
+    loadSecAlerts(1);
 })();
 </script>
 

@@ -2068,13 +2068,13 @@ def performance_dashboard():
                            ai_perf=ai_perf,
                            slippage=slippage,
                            scaling=scaling,
-                           tuning_history=tuning_history[:20],
-                           tuning_status=tuning_status,
-                           learned_patterns=learned_patterns,
+                           tuning_history=[],
+                           tuning_status=[],
+                           learned_patterns=[],
                            meta_info=meta_info,
                            validations=validations,
                            decay_info=decay_info,
-                           sec_alerts=sec_alerts,
+                           sec_alerts=[],
                            allocation_info=allocation_info,
                            auto_strategy_info=auto_strategy_info,
                            ensemble_info=ensemble_info,
@@ -2510,6 +2510,168 @@ def api_sector_rotation():
         return jsonify(rotation)
     except Exception as exc:
         return jsonify({"error": str(exc)})
+
+
+# ---------------------------------------------------------------------------
+# Server-side paginated widgets for performance dashboard
+# ---------------------------------------------------------------------------
+
+@views_bp.route("/api/tuning-status")
+@login_required
+def api_tuning_status():
+    """Paginated self-tuning readiness per profile."""
+    page = request.args.get("page", 1, type=int)
+    per_page = request.args.get("per_page", 5, type=int)
+    profile_id = request.args.get("profile_id", type=int)
+
+    from self_tuning import describe_tuning_state
+    import sqlite3 as _sq
+
+    profiles = [p for p in get_user_profiles(current_user.effective_user_id) if p.get("enabled")]
+    if profile_id:
+        profiles = [p for p in profiles if p["id"] == profile_id]
+
+    items = []
+    for p in profiles:
+        try:
+            ctx = build_user_context_from_profile(p["id"])
+            state = describe_tuning_state(ctx)
+        except Exception:
+            state = {"can_tune": False, "resolved": 0, "required": 20, "message": "Error"}
+        last_run = None
+        try:
+            c = _sq.connect(ctx.db_path)
+            row = c.execute(
+                "SELECT started_at FROM task_runs WHERE task_name LIKE '%Self-Tune%' "
+                "ORDER BY started_at DESC LIMIT 1"
+            ).fetchone()
+            c.close()
+            if row:
+                last_run = row[0]
+        except Exception:
+            pass
+        items.append({
+            "profile_name": p["name"], "resolved": state["resolved"],
+            "required": state["required"], "can_tune": state["can_tune"],
+            "message": state["message"], "last_run": last_run,
+        })
+
+    total = len(items)
+    start = (page - 1) * per_page
+    return jsonify({"items": items[start:start + per_page], "total": total,
+                     "page": page, "pages": -(-total // per_page)})
+
+
+@views_bp.route("/api/tuning-history")
+@login_required
+def api_tuning_history():
+    """Paginated self-tuning history."""
+    page = request.args.get("page", 1, type=int)
+    per_page = request.args.get("per_page", 5, type=int)
+    profile_id = request.args.get("profile_id", type=int)
+
+    from models import get_tuning_history
+
+    profiles = [p for p in get_user_profiles(current_user.effective_user_id) if p.get("enabled")]
+    if profile_id:
+        profiles = [p for p in profiles if p["id"] == profile_id]
+
+    all_history = []
+    for p in profiles:
+        try:
+            history = get_tuning_history(p["id"], limit=100)
+            for h in history:
+                h["profile_name"] = p["name"]
+                h["parameter_label"] = _format_param_name(h.get("parameter_name", ""))
+            all_history.extend(history)
+        except Exception:
+            pass
+    all_history.sort(key=lambda h: h.get("timestamp", ""), reverse=True)
+
+    total = len(all_history)
+    start = (page - 1) * per_page
+    return jsonify({"items": all_history[start:start + per_page], "total": total,
+                     "page": page, "pages": -(-total // per_page)})
+
+
+@views_bp.route("/api/learned-patterns")
+@login_required
+def api_learned_patterns():
+    """Paginated learned patterns."""
+    page = request.args.get("page", 1, type=int)
+    per_page = request.args.get("per_page", 5, type=int)
+    profile_id = request.args.get("profile_id", type=int)
+    import os
+
+    profiles = [p for p in get_user_profiles(current_user.effective_user_id) if p.get("enabled")]
+    if profile_id:
+        profiles = [p for p in profiles if p["id"] == profile_id]
+
+    patterns = []
+    for p in profiles:
+        db_path = f"quantopsai_profile_{p['id']}.db"
+        if not os.path.exists(db_path):
+            continue
+        try:
+            from self_tuning import _analyze_failure_patterns
+            patterns.extend(_analyze_failure_patterns(db_path))
+        except Exception:
+            pass
+
+    # Deduplicate
+    patterns = list(dict.fromkeys(patterns))
+    total = len(patterns)
+    start = (page - 1) * per_page
+    return jsonify({"items": patterns[start:start + per_page], "total": total,
+                     "page": page, "pages": -(-total // per_page)})
+
+
+@views_bp.route("/api/sec-alerts")
+@login_required
+def api_sec_alerts():
+    """Paginated SEC filing alerts."""
+    page = request.args.get("page", 1, type=int)
+    per_page = request.args.get("per_page", 5, type=int)
+    profile_id = request.args.get("profile_id", type=int)
+    import os
+
+    profiles = [p for p in get_user_profiles(current_user.effective_user_id) if p.get("enabled")]
+    if profile_id:
+        profiles = [p for p in profiles if p["id"] == profile_id]
+
+    alerts = []
+    for p in profiles:
+        db_path = f"quantopsai_profile_{p['id']}.db"
+        if not os.path.exists(db_path):
+            continue
+        try:
+            import sqlite3 as _sq
+            conn = _sq.connect(db_path)
+            conn.row_factory = _sq.Row
+            rows = conn.execute(
+                "SELECT symbol, form, filed_date, severity, signal, summary "
+                "FROM sec_alerts WHERE timestamp >= datetime('now', '-90 days') "
+                "ORDER BY timestamp DESC"
+            ).fetchall()
+            conn.close()
+            for r in rows:
+                alerts.append({
+                    "profile_name": p["name"], "symbol": r["symbol"],
+                    "form": r["form"], "filed_date": r["filed_date"],
+                    "severity": r["severity"], "signal": r["signal"],
+                    "summary": r["summary"],
+                })
+        except Exception:
+            pass
+
+    sev_rank = {"high": 0, "medium": 1, "low": 2}
+    alerts.sort(key=lambda a: (sev_rank.get(a["severity"], 3), a.get("filed_date", "")),
+                reverse=False)
+
+    total = len(alerts)
+    start = (page - 1) * per_page
+    return jsonify({"items": alerts[start:start + per_page], "total": total,
+                     "page": page, "pages": -(-total // per_page)})
 
 
 # ---------------------------------------------------------------------------
