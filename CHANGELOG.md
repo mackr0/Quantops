@@ -17,6 +17,36 @@ Rules going forward:
 
 ---
 
+## 2026-04-22 — UI clarity, viewer accounts, server-side pagination (Severity: medium)
+
+**Profit factor clarity**: Renamed to "Portfolio Profit Factor" (trades tab, dollars) vs "Prediction Accuracy" (AI tab, directional %). Added tooltips explaining the difference. The AI picks winners at 1.50 but portfolio is at 0.95 because losing trades had larger positions — the upward optimizer's position sizing adjustments target this gap.
+
+**AI profit factor was always N/A**: The `ai_perf["profit_factor"]` was initialized to 0.0 but never computed. Fixed. Also fixed to exclude HOLD predictions — HOLD "losses" aren't real losses (AI said don't trade, price moved, no money lost).
+
+**Viewer accounts**: New `role` column on users (`admin` / `viewer`). Viewers see all data (linked to an admin via `linked_to_user_id`) but cannot change settings — all form controls disabled, POST routes blocked by `@admin_required`. New accounts default to viewer. Guest account created.
+
+**Server-side pagination**: Tuning Status, Tuning History, Learned Patterns, and SEC Alerts load via AJAX API endpoints (`/api/tuning-status`, `/api/tuning-history`, `/api/learned-patterns`, `/api/sec-alerts`) with `page`/`per_page` parameters. Performance page loads instantly.
+
+**SEC alerts broken by pagination**: API endpoint queried nonexistent `sec_alerts` table instead of using `sec_filings.get_active_alerts()`. Fixed.
+
+**Tuning history missing profiles**: Profiles with only cross-profile suggestions went through the `if adjustments:` branch and skipped the `tuning_history` log. Now logs an "evaluation" row for every profile that was evaluated, regardless of whether changes were made.
+
+**Confidence threshold cascade**: Was raising 25→60→70 in one run. Fixed to check the tighter band first and pick the right level in one step.
+
+**Display names**: Added 30+ feature name entries to `display_names.py` (RSI, ATR, ADX, etc). Fixed `_analyze_failure_patterns` to use `display_name()`. Added test enforcing every meta-model feature has a display name entry.
+
+**Activity ticker profile names**: Activity feed entries now show `[Profile Name]` so you can tell which account generated the activity.
+
+**Stalled task diagnostics**: Watchdog now diagnoses probable cause (service restart, slow API, hung fetch) instead of generic "investigate in journalctl."
+
+**Smart deploy script**: `sync.sh` now auto-detects changed files, only restarts affected services, waits for cycle boundaries before restarting the scheduler.
+
+**Daily backups**: Cron job at 1 AM ET, 14-day retention, uses `sqlite3 .backup` for consistency.
+
+**Earnings calendar**: Refresh interval 24h→7d. Smart cache: if a future earnings date is stored, no refetch until that date passes.
+
+---
+
 ## 2026-04-22 — Self-tuner upward optimization (Severity: feature)
 
 **Problem**: The self-tuner only prevented disasters (win rate < 35%) but never tried to improve a profile already performing at 50-60%. A profile at 61% win rate got "no changes needed" when it should be pursuing 70%+.
