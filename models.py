@@ -51,6 +51,7 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             is_active INTEGER NOT NULL DEFAULT 1,
             is_admin INTEGER NOT NULL DEFAULT 0,
             role TEXT NOT NULL DEFAULT 'admin',
+            linked_to_user_id INTEGER,
             alpaca_api_key_enc TEXT NOT NULL DEFAULT '',
             alpaca_secret_key_enc TEXT NOT NULL DEFAULT '',
             anthropic_api_key_enc TEXT NOT NULL DEFAULT '',
@@ -256,6 +257,7 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         ("users", "excluded_symbols", "TEXT NOT NULL DEFAULT '[]'"),
         ("users", "scanning_active", "INTEGER NOT NULL DEFAULT 1"),
         ("users", "role", "TEXT NOT NULL DEFAULT 'admin'"),
+        ("users", "linked_to_user_id", "INTEGER"),
         # --- user_segment_configs table ---
         ("user_segment_configs", "alpaca_api_key_enc", "TEXT NOT NULL DEFAULT ''"),
         ("user_segment_configs", "alpaca_secret_key_enc", "TEXT NOT NULL DEFAULT ''"),
@@ -312,23 +314,27 @@ def init_user_db(db_path: Optional[str] = None) -> None:
 # ---------------------------------------------------------------------------
 
 def create_user(email: str, password: str, display_name: str = "",
-                is_admin: bool = False, role: str = "admin") -> int:
+                is_admin: bool = False, role: str = "admin",
+                linked_to_user_id: int = None) -> int:
     """Insert a new user with a bcrypt-hashed password. Returns user_id.
 
     Roles: 'admin' (full access), 'viewer' (read-only — can see everything
     but cannot change settings, create/delete profiles, or modify keys).
+
+    linked_to_user_id: for viewer accounts, the admin user whose data
+    they can see. Viewers with no link see nothing.
     """
     password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
     conn = _get_conn()
     cursor = conn.execute(
-        """INSERT INTO users (email, password_hash, display_name, is_admin, role)
-           VALUES (?, ?, ?, ?, ?)""",
-        (email.lower().strip(), password_hash, display_name, int(is_admin), role),
+        """INSERT INTO users (email, password_hash, display_name, is_admin, role, linked_to_user_id)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (email.lower().strip(), password_hash, display_name, int(is_admin), role, linked_to_user_id),
     )
     conn.commit()
     user_id = cursor.lastrowid
     conn.close()
-    logger.info("Created user #%d (%s, role=%s)", user_id, email, role)
+    logger.info("Created user #%d (%s, role=%s, linked_to=%s)", user_id, email, role, linked_to_user_id)
     return user_id
 
 

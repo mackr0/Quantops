@@ -261,7 +261,7 @@ def index():
 @views_bp.route("/dashboard")
 @login_required
 def dashboard():
-    profiles = get_active_profiles(user_id=current_user.id)
+    profiles = get_active_profiles(user_id=current_user.effective_user_id)
     profiles_data = []
 
     for prof in profiles:
@@ -302,7 +302,7 @@ def dashboard():
             })
 
     # Get recent decisions
-    decisions = get_decisions(current_user.id, limit=20)
+    decisions = get_decisions(current_user.effective_user_id, limit=20)
 
     # Build per-profile schedule status
     from datetime import datetime as _dt
@@ -311,7 +311,7 @@ def dashboard():
     any_profile_active = False
     profile_schedules = []
 
-    all_profiles = [p for p in get_user_profiles(current_user.id) if p.get("enabled")]
+    all_profiles = [p for p in get_user_profiles(current_user.effective_user_id) if p.get("enabled")]
     for prof in all_profiles:
         if not prof.get("enabled"):
             continue
@@ -359,7 +359,7 @@ def dashboard():
 @views_bp.route("/settings")
 @login_required
 def settings():
-    user = get_user_by_id(current_user.id)
+    user = get_user_by_id(current_user.effective_user_id)
 
     # Decrypt keys for display (masked)
     alpaca_key = decrypt(user.get("alpaca_api_key_enc", ""))
@@ -380,7 +380,7 @@ def settings():
     }
 
     # Get trading profiles
-    profiles = get_user_profiles(current_user.id)
+    profiles = get_user_profiles(current_user.effective_user_id)
 
     # Add masked Alpaca key for each profile
     for prof in profiles:
@@ -394,13 +394,13 @@ def settings():
 
     # Get excluded symbols
     from models import get_excluded_symbols
-    excluded = get_excluded_symbols(current_user.id)
+    excluded = get_excluded_symbols(current_user.effective_user_id)
     excluded_str = ", ".join(excluded)
 
     ai_providers = get_providers()
 
     from models import get_alpaca_accounts
-    alpaca_accounts = get_alpaca_accounts(current_user.id)
+    alpaca_accounts = get_alpaca_accounts(current_user.effective_user_id)
     for acct in alpaca_accounts:
         try:
             acct["_key_masked"] = _mask_key(decrypt(acct.get("alpaca_api_key_enc", "")))
@@ -425,7 +425,7 @@ def save_exclusions():
     raw = request.form.get("excluded_symbols", "").strip()
     symbols = [s.strip().upper() for s in raw.split(",") if s.strip()]
     from models import update_excluded_symbols
-    update_excluded_symbols(current_user.id, symbols)
+    update_excluded_symbols(current_user.effective_user_id, symbols)
     if symbols:
         flash(f"Restricted symbols updated: {', '.join(symbols)}", "success")
     else:
@@ -444,7 +444,7 @@ def save_keys():
     resend_key = request.form.get("resend_api_key", "").strip()
 
     # Only update fields that were actually provided (not masked placeholders)
-    user = get_user_by_id(current_user.id)
+    user = get_user_by_id(current_user.effective_user_id)
     current_alpaca_key = decrypt(user.get("alpaca_api_key_enc", ""))
     current_alpaca_secret = decrypt(user.get("alpaca_secret_key_enc", ""))
     current_anthropic_key = decrypt(user.get("anthropic_api_key_enc", ""))
@@ -461,7 +461,7 @@ def save_keys():
         resend_key = current_resend_key
 
     update_user_credentials(
-        current_user.id,
+        current_user.effective_user_id,
         alpaca_key=alpaca_key,
         alpaca_secret=alpaca_secret,
         anthropic_key=anthropic_key,
@@ -478,7 +478,7 @@ def save_keys():
 def test_keys():
     """Test Alpaca connection with the user's saved credentials."""
     try:
-        user = get_user_by_id(current_user.id)
+        user = get_user_by_id(current_user.effective_user_id)
         alpaca_key = decrypt(user.get("alpaca_api_key_enc", ""))
         alpaca_secret = decrypt(user.get("alpaca_secret_key_enc", ""))
 
@@ -525,7 +525,7 @@ def manage_alpaca_account():
         if account_id:
             conn = _get_main_conn()
             conn.execute("DELETE FROM alpaca_accounts WHERE id=? AND user_id=?",
-                         (int(account_id), current_user.id))
+                         (int(account_id), current_user.effective_user_id))
             conn.commit()
             conn.close()
             flash("Alpaca account removed.", "success")
@@ -538,7 +538,7 @@ def manage_alpaca_account():
         flash("Both API key and secret key are required.", "error")
         return redirect(url_for("views.settings"))
     create_alpaca_account(
-        current_user.id, name,
+        current_user.effective_user_id, name,
         encrypt(api_key), encrypt(secret_key),
     )
     flash(f'Alpaca account "{name}" added.', "success")
@@ -560,7 +560,7 @@ def create_profile():
         flash("Invalid market type.", "error")
         return redirect(url_for("views.settings"))
 
-    profile_id = create_trading_profile(current_user.id, name, market_type)
+    profile_id = create_trading_profile(current_user.effective_user_id, name, market_type)
 
     # Virtual account setup
     alpaca_account_id = request.form.get("alpaca_account_id", "").strip()
@@ -581,7 +581,7 @@ def create_profile():
 @admin_required
 def save_profile(profile_id):
     profile = get_trading_profile(profile_id)
-    if not profile or profile["user_id"] != current_user.id:
+    if not profile or profile["user_id"] != current_user.effective_user_id:
         abort(404)
 
     form = request.form
@@ -693,7 +693,7 @@ def save_profile(profile_id):
 def api_backtest(profile_id):
     """Start a backtest in background. Returns job_id immediately."""
     profile = get_trading_profile(profile_id)
-    if not profile or profile["user_id"] != current_user.id:
+    if not profile or profile["user_id"] != current_user.effective_user_id:
         return jsonify({"error": "Profile not found"}), 404
 
     market_type = profile["market_type"]
@@ -794,7 +794,7 @@ def api_backtest_status(job_id):
 @admin_required
 def delete_profile_route(profile_id):
     profile = get_trading_profile(profile_id)
-    if not profile or profile["user_id"] != current_user.id:
+    if not profile or profile["user_id"] != current_user.effective_user_id:
         abort(404)
 
     name = profile["name"]
@@ -808,7 +808,7 @@ def delete_profile_route(profile_id):
 @admin_required
 def toggle_profile(profile_id):
     profile = get_trading_profile(profile_id)
-    if not profile or profile["user_id"] != current_user.id:
+    if not profile or profile["user_id"] != current_user.effective_user_id:
         abort(404)
 
     new_state = 0 if profile["enabled"] else 1
@@ -871,7 +871,7 @@ def save_segment(segment):
     elif alpaca_key and not alpaca_secret:
         flash("Alpaca secret key is required when updating the API key.", "warning")
 
-    update_user_segment_config(current_user.id, segment, **config_updates)
+    update_user_segment_config(current_user.effective_user_id, segment, **config_updates)
     flash(f"{SEGMENTS[segment]['name']} configuration saved.", "success")
     return redirect(url_for("views.settings") + f"#segment-{segment}")
 
@@ -907,7 +907,7 @@ def reset_segment(segment):
         "strategy_gap_and_go": 1,
         "custom_watchlist": [],
     }
-    update_user_segment_config(current_user.id, segment, **defaults)
+    update_user_segment_config(current_user.effective_user_id, segment, **defaults)
     flash(f"{SEGMENTS[segment]['name']} configuration reset to defaults.", "info")
     return redirect(url_for("views.settings") + f"#segment-{segment}")
 
@@ -919,7 +919,7 @@ def reset_segment(segment):
 @views_bp.route("/trades")
 @login_required
 def trades():
-    profiles = [p for p in get_user_profiles(current_user.id) if p.get("enabled")]
+    profiles = [p for p in get_user_profiles(current_user.effective_user_id) if p.get("enabled")]
 
     # Parse optional profile filter
     selected_profile = request.args.get("profile_id", "", type=str)
@@ -933,9 +933,9 @@ def trades():
             if p["id"] == selected_profile_int:
                 prof_name = p["name"]
                 break
-        decisions = get_decisions(current_user.id, segment=prof_name, limit=200) if prof_name else []
+        decisions = get_decisions(current_user.effective_user_id, segment=prof_name, limit=200) if prof_name else []
     else:
-        decisions = get_decisions(current_user.id, limit=200)
+        decisions = get_decisions(current_user.effective_user_id, limit=200)
 
     # Pull trades from profile journal DBs
     all_trades = []
@@ -980,7 +980,7 @@ def trade_detail(decision_id):
     conn = _get_conn()
     row = conn.execute(
         "SELECT * FROM decision_log WHERE id = ? AND user_id = ?",
-        (decision_id, current_user.id),
+        (decision_id, current_user.effective_user_id),
     ).fetchone()
     conn.close()
     if not row:
@@ -1275,7 +1275,7 @@ def ai_performance_legacy():
     }
 
     # Parse optional profile filter
-    profiles = [p for p in get_user_profiles(current_user.id) if p.get("enabled")]
+    profiles = [p for p in get_user_profiles(current_user.effective_user_id) if p.get("enabled")]
     selected_profile = request.args.get("profile_id", "", type=str)
     selected_profile_int = int(selected_profile) if selected_profile else None
     selected_profile_name = None
@@ -1481,7 +1481,7 @@ def performance_dashboard():
     import os
     from metrics import calculate_all_metrics
 
-    profiles = [p for p in get_user_profiles(current_user.id) if p.get("enabled")]
+    profiles = [p for p in get_user_profiles(current_user.effective_user_id) if p.get("enabled")]
     selected_profile = request.args.get("profile_id", "", type=str)
     selected_profile_int = int(selected_profile) if selected_profile else None
     selected_profile_name = None
@@ -1553,7 +1553,7 @@ def performance_dashboard():
     if selected_profile_int:
         try:
             profile = get_trading_profile(selected_profile_int)
-            if profile and profile["user_id"] == current_user.id:
+            if profile and profile["user_id"] == current_user.effective_user_id:
                 ctx = build_user_context_from_profile(profile)
                 positions = _safe_positions(ctx)
                 account = _safe_account_info(ctx)
@@ -2077,7 +2077,7 @@ def api_backtest_vs_reality(profile_id):
     from datetime import datetime, timedelta
 
     profile = get_trading_profile(profile_id)
-    if not profile or profile["user_id"] != current_user.id:
+    if not profile or profile["user_id"] != current_user.effective_user_id:
         return jsonify({"error": "Profile not found"}), 404
 
     db_path = f"quantopsai_profile_{profile_id}.db"
@@ -2199,7 +2199,7 @@ def api_slippage_stats(profile_id):
     import os
 
     profile = get_trading_profile(profile_id)
-    if not profile or profile["user_id"] != current_user.id:
+    if not profile or profile["user_id"] != current_user.effective_user_id:
         return jsonify({"error": "Profile not found"}), 404
 
     db_path = f"quantopsai_profile_{profile_id}.db"
@@ -2257,9 +2257,9 @@ def api_activity():
     limit = request.args.get("limit", 10, type=int)
     limit = min(limit, 100)  # cap at 100
 
-    entries = get_activity_feed(current_user.id, profile_id=profile_id,
+    entries = get_activity_feed(current_user.effective_user_id, profile_id=profile_id,
                                 limit=limit, offset=offset)
-    total = get_activity_count(current_user.id, profile_id=profile_id)
+    total = get_activity_count(current_user.effective_user_id, profile_id=profile_id)
     return jsonify({"entries": entries, "total": total})
 
 
@@ -2268,7 +2268,7 @@ def api_activity():
 def universe_popup(profile_id):
     """Render the universe popup window page."""
     profile = get_trading_profile(profile_id)
-    if not profile or profile["user_id"] != current_user.id:
+    if not profile or profile["user_id"] != current_user.effective_user_id:
         abort(404)
 
     market_type = profile["market_type"]
@@ -2310,7 +2310,7 @@ def universe_popup(profile_id):
 def api_universe(profile_id):
     """Return the full symbol universe for a trading profile."""
     profile = get_trading_profile(profile_id)
-    if not profile or profile["user_id"] != current_user.id:
+    if not profile or profile["user_id"] != current_user.effective_user_id:
         return jsonify({"error": "Not found"}), 404
 
     market_type = profile["market_type"]
@@ -2364,7 +2364,7 @@ def api_universe(profile_id):
 def api_cache_universe_names(profile_id):
     """Trigger background caching of symbol names for a profile's universe."""
     profile = get_trading_profile(profile_id)
-    if not profile or profile["user_id"] != current_user.id:
+    if not profile or profile["user_id"] != current_user.effective_user_id:
         return jsonify({"error": "Not found"}), 404
 
     market_type = profile["market_type"]
@@ -2386,8 +2386,8 @@ def toggle_scanning():
     if not current_user.is_admin:
         abort(403)
     from models import is_scanning_active, set_scanning_active
-    currently_active = is_scanning_active(current_user.id)
-    set_scanning_active(current_user.id, not currently_active)
+    currently_active = is_scanning_active(current_user.effective_user_id)
+    set_scanning_active(current_user.effective_user_id, not currently_active)
     status = "started" if not currently_active else "stopped"
     flash(f"AI scanning {status}.", "success")
     return redirect(url_for("views.dashboard"))
@@ -2428,7 +2428,7 @@ def api_portfolio(profile_id):
     """Return live portfolio data for a profile (positions, account info)."""
     try:
         profile = get_trading_profile(profile_id)
-        if not profile or profile["user_id"] != current_user.id:
+        if not profile or profile["user_id"] != current_user.effective_user_id:
             return jsonify({"error": "not found"}), 404
 
         ctx = build_user_context_from_profile(profile_id)
@@ -2454,7 +2454,7 @@ def api_positions_html(profile_id):
     from flask import render_template_string
     try:
         profile = get_trading_profile(profile_id)
-        if not profile or profile["user_id"] != current_user.id:
+        if not profile or profile["user_id"] != current_user.effective_user_id:
             return "not found", 404
         ctx = build_user_context_from_profile(profile_id)
         positions = _enriched_positions(ctx, profile_id)

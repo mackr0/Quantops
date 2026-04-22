@@ -20,10 +20,20 @@ class User:
         self.display_name = user_dict.get("display_name", "")
         self.is_admin = bool(user_dict.get("is_admin", 0))
         self.role = user_dict.get("role", "admin")
+        self.linked_to_user_id = user_dict.get("linked_to_user_id")
 
     @property
     def is_viewer(self):
         return self.role == "viewer"
+
+    @property
+    def effective_user_id(self):
+        """The user_id to use for data queries. For viewers linked to an
+        admin account, returns the admin's user_id so they see the admin's
+        data. For admins, returns their own id."""
+        if self.is_viewer and self.linked_to_user_id:
+            return self.linked_to_user_id
+        return self.id
 
     @property
     def is_authenticated(self):
