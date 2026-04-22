@@ -489,8 +489,13 @@ Runs daily at 3:55 PM ET:
    - If overall win rate < 30% → reduce position size by 20%
    - If short selling has 0% win rate on 5+ trades → widen short stops 50%
 
-3. **Cross-profile learning:**
-   - If another profile has 20%+ higher win rate → suggest adopting its settings (logged but not auto-applied)
+3. **Upward optimization** (when win rate >= 35%):
+   - Find the best confidence band and raise threshold to focus on it
+   - Reduce position size in losing market regimes, increase in winning ones
+   - Disable worst-performing strategies (never the last one)
+   - Widen stops that trigger too early, tighten take-profits that never hit
+   - Increase position size when edge is proven (55%+ WR, 30+ samples)
+   - One change per run for clean auto-reversal attribution
 
 ### 7.3 Tuning Memory
 

@@ -81,10 +81,6 @@ This means the system can undo its own mistakes. If raising the confidence thres
 
 Before making any adjustment, the tuner checks if the same type of change was tried before and worsened performance. If a previous confidence threshold increase was reversed as "worsened," the tuner won't try it again.
 
-#### Cross-Profile Learning
-
-If another profile has a 20%+ higher win rate, the tuner logs a suggestion to adopt that profile's settings — but does NOT auto-apply it. Cross-profile changes are recommendations only, visible in the activity log and dashboard.
-
 ---
 
 ## What Gets Logged

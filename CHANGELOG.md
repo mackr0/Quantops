@@ -17,6 +17,12 @@ Rules going forward:
 
 ---
 
+## 2026-04-22 — Remove cross-profile suggestions (Severity: cleanup)
+
+Removed the cross-profile suggestion logic from `apply_auto_adjustments()`. It recommended copying another profile's confidence threshold but never auto-applied it, generating noise like "raise to 25" (the default floor). The upward optimizer now handles this better by analyzing each profile's own confidence band data and making targeted, auto-reversible adjustments.
+
+---
+
 ## 2026-04-22 — UI clarity, viewer accounts, server-side pagination (Severity: medium)
 
 **Profit factor clarity**: Renamed to "Portfolio Profit Factor" (trades tab, dollars) vs "Prediction Accuracy" (AI tab, directional %). Added tooltips explaining the difference. The AI picks winners at 1.50 but portfolio is at 0.95 because losing trades had larger positions — the upward optimizer's position sizing adjustments target this gap.
