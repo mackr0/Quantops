@@ -157,6 +157,8 @@ def get_bars(symbol, timeframe="1Day", limit=200, api=None):
 def get_bars_daterange(symbol, start, end, timeframe="1Day", api=None):
     """Fetch historical bars for a symbol within a specific date range.
 
+    Primary: Alpaca. Fallback: yfinance (for crypto or if Alpaca fails).
+
     Args:
         symbol: Ticker symbol (e.g. 'AAPL').
         start: Start date as ISO-8601 string (e.g. '2025-01-01').
@@ -167,9 +169,33 @@ def get_bars_daterange(symbol, start, end, timeframe="1Day", api=None):
     Returns:
         DataFrame with OHLCV data indexed by timestamp.
     """
-    yf_symbol = symbol.replace("/", "-") if "/" in symbol else symbol
-    ticker = yf.Ticker(yf_symbol)
-    df = ticker.history(start=start, end=end, auto_adjust=True)
+    # Crypto → yfinance (Alpaca equity endpoint doesn't serve crypto)
+    is_crypto = "/" in symbol
+
+    if not is_crypto:
+        client = _get_alpaca_data_client()
+        if client is not None:
+            try:
+                bars = client.get_bars(symbol, "1Day", start=start, end=end,
+                                       adjustment="all").df
+                if bars is not None and not bars.empty:
+                    keep = [c for c in ("open", "high", "low", "close", "volume")
+                            if c in bars.columns]
+                    bars = bars[keep]
+                    if bars.index.tz is None:
+                        bars.index = bars.index.tz_localize("UTC")
+                    bars.index = bars.index.tz_convert("US/Eastern")
+                    return bars
+            except Exception as exc:
+                logger.debug("Alpaca daterange fetch failed for %s: %s", symbol, exc)
+
+    # Fallback: yfinance
+    yf_symbol = symbol.replace("/", "-") if is_crypto else symbol
+    try:
+        ticker = yf.Ticker(yf_symbol)
+        df = ticker.history(start=start, end=end, auto_adjust=True)
+    except Exception:
+        return pd.DataFrame()
 
     if df.empty:
         return df
@@ -335,24 +361,14 @@ def get_sector_rotation():
         return _sector_cache["data"]
 
     try:
-        symbols = list(SECTOR_ETFS.values())
-        import yf_lock
-        data = yf_lock.download(" ".join(symbols), period="1mo", progress=False,
-                                auto_adjust=True, threads=True)
-        if data.empty:
-            return {}
-
         result = {}
         for sector, etf in SECTOR_ETFS.items():
             try:
-                if isinstance(data.columns, pd.MultiIndex):
-                    close = data["Close"][etf].dropna()
-                else:
-                    close = data["Close"].dropna()
-
-                if len(close) < 20:
+                df = get_bars(etf, limit=30)
+                if df is None or df.empty or len(df) < 20:
                     continue
 
+                close = df["close"].dropna()
                 ret_5d = float((close.iloc[-1] / close.iloc[-5] - 1) * 100)
                 ret_20d = float((close.iloc[-1] / close.iloc[0] - 1) * 100)
                 trend = "inflow" if ret_5d > 1 else "outflow" if ret_5d < -1 else "flat"
@@ -371,7 +387,7 @@ def get_sector_rotation():
         return result
 
     except Exception as exc:
-        _md_logger.getLogger(__name__).warning("Sector rotation fetch failed: %s", exc)
+        logger.warning("Sector rotation fetch failed: %s", exc)
         return {}
 
 
@@ -390,12 +406,11 @@ def get_relative_strength_vs_sector(symbol, sector=None):
         return None
 
     try:
-        yf_sym = symbol.replace("/", "-") if "/" in symbol else symbol
-        hist = yf.Ticker(yf_sym).history(period="5d", auto_adjust=True)
-        if hist.empty or len(hist) < 2:
+        hist = get_bars(symbol, limit=5)
+        if hist is None or hist.empty or len(hist) < 2:
             return None
 
-        stock_5d = float((hist["Close"].iloc[-1] / hist["Close"].iloc[0] - 1) * 100)
+        stock_5d = float((hist["close"].iloc[-1] / hist["close"].iloc[0] - 1) * 100)
         sector_5d = sector_data["return_5d"]
 
         return {
@@ -432,28 +447,59 @@ def _guess_sector(symbol):
 
 
 def get_snapshot(symbol, api=None):
-    """Get the latest quote/trade snapshot for a symbol using yfinance.
+    """Get the latest quote/trade snapshot for a symbol.
 
-    The ``api`` parameter is ignored (kept for backward compatibility).
+    Primary: Alpaca (latest trade + recent bars).
+    Fallback: yfinance (crypto or if Alpaca fails).
     """
-    yf_symbol = symbol.replace("/", "-") if "/" in symbol else symbol
-    ticker = yf.Ticker(yf_symbol)
-    info = ticker.fast_info
+    is_crypto = "/" in symbol
 
-    # Get the most recent 1-day bar for volume
-    hist = ticker.history(period="2d", auto_adjust=True)
+    # Primary: Alpaca
+    if not is_crypto:
+        client = _get_alpaca_data_client()
+        if client is not None:
+            try:
+                trade = client.get_latest_trade(symbol)
+                bars = get_bars(symbol, limit=2)
+                latest_price = float(trade.price) if trade else 0.0
+                prev_close = float(bars["close"].iloc[-2]) if bars is not None and len(bars) >= 2 else latest_price
+                daily_volume = int(bars["volume"].iloc[-1]) if bars is not None and not bars.empty else 0
+                return {
+                    "latest_trade_price": latest_price,
+                    "latest_bid": latest_price,
+                    "latest_ask": latest_price,
+                    "daily_bar_close": prev_close,
+                    "daily_bar_volume": daily_volume,
+                }
+            except Exception:
+                pass
 
-    latest_price = float(info.last_price) if hasattr(info, "last_price") else 0.0
-    prev_close = float(info.previous_close) if hasattr(info, "previous_close") else latest_price
+    # Fallback: yfinance (crypto or Alpaca failure)
+    yf_symbol = symbol.replace("/", "-") if is_crypto else symbol
+    try:
+        ticker = yf.Ticker(yf_symbol)
+        info = ticker.fast_info
+        hist = ticker.history(period="2d", auto_adjust=True)
 
-    daily_volume = 0
-    if not hist.empty:
-        daily_volume = int(hist["Volume"].iloc[-1])
+        latest_price = float(info.last_price) if hasattr(info, "last_price") else 0.0
+        prev_close = float(info.previous_close) if hasattr(info, "previous_close") else latest_price
 
-    return {
-        "latest_trade_price": latest_price,
-        "latest_bid": latest_price,   # yfinance free data doesn't provide live bid/ask
-        "latest_ask": latest_price,
-        "daily_bar_close": prev_close,
-        "daily_bar_volume": daily_volume,
-    }
+        daily_volume = 0
+        if not hist.empty:
+            daily_volume = int(hist["Volume"].iloc[-1])
+
+        return {
+            "latest_trade_price": latest_price,
+            "latest_bid": latest_price,
+            "latest_ask": latest_price,
+            "daily_bar_close": prev_close,
+            "daily_bar_volume": daily_volume,
+        }
+    except Exception:
+        return {
+            "latest_trade_price": 0.0,
+            "latest_bid": 0.0,
+            "latest_ask": 0.0,
+            "daily_bar_close": 0.0,
+            "daily_bar_volume": 0,
+        }

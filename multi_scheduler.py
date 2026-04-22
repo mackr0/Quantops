@@ -27,6 +27,14 @@ from datetime import datetime, timedelta
 from typing import Dict
 from zoneinfo import ZoneInfo
 
+# Load .env BEFORE any module that reads env vars (e.g. market_data uses
+# ALPACA_API_KEY for the shared data client). Without this, the scheduler
+# process had no env vars → Alpaca data API returned 401 → fell back to
+# unreliable yfinance for price resolution, causing 0 resolutions on
+# many profiles.
+from dotenv import load_dotenv
+load_dotenv()
+
 from segments import list_segments, get_segment, SEGMENTS
 
 # ── Timezone ─────────────────────────────────────────────────────────
@@ -1012,58 +1020,88 @@ def _task_self_tune(ctx):
     seg_label = ctx.display_name or ctx.segment
     state = describe_tuning_state(ctx)
     adjustments = apply_auto_adjustments(ctx)
+
+    # Separate real parameter changes from cross-profile suggestions/reviews
+    suggestions = [a for a in adjustments if "Cross-profile" in a or "Recommendation:" in a]
+    reviews = [a for a in adjustments if a.startswith("Reviewed") or a.startswith("REVERSED")]
+    real_changes = [a for a in adjustments if a not in suggestions and a not in reviews]
+
     if adjustments:
-        seg_label = ctx.display_name or ctx.segment
-
-        # Separate reviews from new adjustments for clearer logging
-        reviews = [a for a in adjustments if a.startswith("Reviewed") or a.startswith("REVERSED")]
-        new_adj = [a for a in adjustments if a not in reviews]
-
         for adj in adjustments:
             logging.info(f"[{seg_label}] Self-tune: {adj}")
 
-        # Build a structured detail message
         detail_parts = []
         if reviews:
             detail_parts.append("PAST ADJUSTMENT REVIEWS:")
             detail_parts.extend(f"  - {r}" for r in reviews)
-        if new_adj:
+        if real_changes:
             if detail_parts:
                 detail_parts.append("")
             detail_parts.append("NEW ADJUSTMENTS:")
-            detail_parts.extend(f"  - {a}" for a in new_adj)
+            detail_parts.extend(f"  - {a}" for a in real_changes)
+        if suggestions:
+            if detail_parts:
+                detail_parts.append("")
+            detail_parts.append("SUGGESTIONS (not auto-applied):")
+            detail_parts.extend(f"  - {s}" for s in suggestions)
         if not detail_parts:
             detail_parts = [f"- {a}" for a in adjustments]
 
         title_parts = []
-        if new_adj:
-            title_parts.append(f"{len(new_adj)} new adjustment(s)")
+        if real_changes:
+            title_parts.append(f"{len(real_changes)} adjustment(s)")
         if reviews:
             title_parts.append(f"{len(reviews)} review(s)")
-        title = f"Self-Tuning: {', '.join(title_parts)}"
+        if suggestions and not real_changes and not reviews:
+            title_parts.append("suggestions only")
+        title = f"Self-Tuning: {', '.join(title_parts)}" if title_parts else "Self-Tuning: evaluated"
 
         _safe_log_activity(
             getattr(ctx, "profile_id", 0), ctx.user_id,
             "self_tune", title, "\n".join(detail_parts),
         )
     else:
-        # No changes made — but log WHY so the user sees the tuner ran
-        # and evaluated. Silent no-ops were confusing.
         logging.info(f"[{seg_label}] Self-tune: no adjustments needed — {state['message']}")
         if state.get("can_tune"):
             title = "Self-Tuning: evaluated, no changes needed"
-            detail = (
-                f"Tuner reviewed {state['resolved']} resolved AI predictions and "
-                f"found no parameters worth adjusting — current settings are "
-                f"performing within acceptable bounds."
-            )
         else:
             title = "Self-Tuning: waiting for data"
-            detail = state["message"]
         _safe_log_activity(
             getattr(ctx, "profile_id", 0), ctx.user_id,
-            "self_tune", title, detail,
+            "self_tune", title, state["message"],
         )
+
+    # Always log to tuning_history when the tuner can evaluate — whether
+    # changes were made or not. This ensures every profile appears in the
+    # Self-Tuning History table on every run.
+    if state.get("can_tune") and not real_changes:
+        try:
+            from self_tuning import _get_conn, _get_current_win_rate
+            _c = _get_conn(ctx.db_path)
+            wr, n_resolved = _get_current_win_rate(_c)
+            _c.close()
+            from models import log_tuning_change, _get_conn as _get_main_conn
+            summary = f"Evaluated {state['resolved']} predictions, win rate {wr:.0f}%"
+            if suggestions:
+                summary += f" — {len(suggestions)} cross-profile suggestion(s)"
+            else:
+                summary += " — no changes needed"
+            row_id = log_tuning_change(
+                getattr(ctx, "profile_id", 0), ctx.user_id,
+                "evaluation", "none",
+                "-", "-", summary,
+                win_rate_at_change=wr,
+                predictions_resolved=n_resolved,
+            )
+            mc = _get_main_conn()
+            mc.execute(
+                "UPDATE tuning_history SET outcome_after='n/a' WHERE id=?",
+                (row_id,),
+            )
+            mc.commit()
+            mc.close()
+        except Exception:
+            pass
 
 
 def _task_retrain_meta_model(ctx):
@@ -1083,9 +1121,10 @@ def _task_retrain_meta_model(ctx):
             logging.info(f"[{seg_label}] Meta-model: insufficient training data yet")
             return
 
+        from display_names import display_name as _dn
         metrics = bundle["metrics"]
         top_features = bundle["feature_importance"][:5]
-        top_str = ", ".join(f"{n}={i:.3f}" for n, i in top_features)
+        top_str = ", ".join(f"{_dn(n)} ({i:.3f})" for n, i in top_features)
         logging.info(f"[{seg_label}] Meta-model retrained: "
                      f"AUC={metrics['auc']:.3f}, acc={metrics['accuracy']:.3f}, "
                      f"n={metrics['n_samples']}, top features: {top_str}")
@@ -1248,17 +1287,32 @@ def _task_run_watchdog(ctx):
         )
         for row in stalled:
             elapsed = row.get("minutes_elapsed", 0) or 0
+            task_name = row["task_name"]
+            started_at = row["started_at"]
+
+            # Diagnose probable cause
+            if elapsed > 120:
+                cause = "Service was restarted while this task was running (task survived restart as orphaned 'running' row)."
+            elif "Scan" in task_name and elapsed > 30:
+                cause = "Scan cycle exceeded 30-minute timeout — likely slow API responses from Alpaca or the AI provider."
+            elif "Resolve" in task_name:
+                cause = "Prediction resolution hung — likely a price fetch timeout for one or more symbols."
+            elif "Snapshot" in task_name:
+                cause = "Daily snapshot hung — likely a slow position/account fetch from the broker."
+            else:
+                cause = "Task did not complete within 30 minutes. Could be a hung API call, a crash, or a service restart."
+
             logging.warning(
-                f"  STALLED: {row['task_name']} "
-                f"(started {row['started_at']}, {elapsed:.0f} min elapsed)"
+                f"  STALLED: {task_name} "
+                f"(started {started_at}, {elapsed:.0f} min elapsed)"
             )
             _safe_log_activity(
                 getattr(ctx, "profile_id", 0), ctx.user_id,
                 "task_stalled",
-                f"Stalled task: {row['task_name']}",
-                f"Task started at {row['started_at']} but didn't complete "
-                f"within 30 minutes ({elapsed:.0f} min elapsed). Likely a "
-                f"hung API call or process kill. Investigate in journalctl.",
+                f"Stalled task: {task_name} ({elapsed:.0f} min)",
+                f"Started: {started_at}\n"
+                f"Elapsed: {elapsed:.0f} minutes\n"
+                f"Diagnosis: {cause}",
             )
             try:
                 from event_bus import emit
@@ -1266,9 +1320,10 @@ def _task_run_watchdog(ctx):
                     ctx.db_path, "task_stalled",
                     symbol=None, severity="high",
                     payload={
-                        "task_name": row["task_name"],
-                        "started_at": row["started_at"],
+                        "task_name": task_name,
+                        "started_at": started_at,
                         "minutes_elapsed": round(elapsed, 1),
+                        "diagnosis": cause,
                     },
                     dedup_key=f"task_stalled:{row['id']}",
                 )

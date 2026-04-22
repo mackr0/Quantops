@@ -934,13 +934,19 @@
                     <tr>
                         <td>{{ h.timestamp[:10] }}</td>
                         <td>{{ h.profile_name }}</td>
+                        {% if h.adjustment_type == 'evaluation' %}
+                        <td colspan="2" class="muted" style="font-size:0.85rem;">{{ h.reason }}</td>
+                        {% else %}
                         <td><strong>{{ h.parameter_label or h.parameter_name }}</strong><br>
                             <small>{{ h.old_value }} &rarr; {{ h.new_value }}</small>
                         </td>
                         <td style="font-size:0.85rem;">{{ h.reason[:80] }}</td>
+                        {% endif %}
                         <td>{{ "%.1f"|format(h.win_rate_at_change) }}%</td>
                         <td>
-                            {% if h.outcome_after == 'improved' %}
+                            {% if h.adjustment_type == 'evaluation' or h.outcome_after == 'n/a' %}
+                                <span class="muted">No changes</span>
+                            {% elif h.outcome_after == 'improved' %}
                                 <span class="pnl-pos">Improved{% if h.win_rate_after %} ({{ "%.1f"|format(h.win_rate_after) }}%){% endif %}</span>
                             {% elif h.outcome_after == 'worsened' %}
                                 <span class="pnl-neg">Worsened{% if h.win_rate_after %} ({{ "%.1f"|format(h.win_rate_after) }}%){% endif %}</span>
@@ -1024,7 +1030,7 @@
                     <tbody>
                         {% for name, imp in mp.top_features %}
                         <tr>
-                            <td>{{ name }}</td>
+                            <td>{{ name | display_name }}</td>
                             <td style="text-align:right;font-family:monospace;">{{ "%.4f"|format(imp) }}</td>
                         </tr>
                         {% endfor %}
@@ -1285,6 +1291,7 @@
                                 {% endif %}
                             </td>
                             <td class="muted" style="font-size:0.8rem;">
+                                {% if e.payload.diagnosis %}{{ e.payload.diagnosis }}{% endif %}
                                 {% if e.payload.move_pct %}{{ "%+.1f"|format(e.payload.move_pct) }}%{% endif %}
                                 {% if e.payload.return_pct %}{{ "%+.1f"|format(e.payload.return_pct) }}% ({{ e.payload.strategy | display_name }}){% endif %}
                                 {% if e.payload.form_type %}{{ e.payload.form_type }} — {{ e.payload.signal or '' }}{% endif %}

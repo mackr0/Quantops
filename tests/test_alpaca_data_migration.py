@@ -349,3 +349,113 @@ class TestMigrationContract:
             "screen_dynamic_universe must call Alpaca get_snapshots BEFORE "
             "yfinance yf.download"
         )
+
+    def test_screener_equity_functions_use_alpaca(self):
+        """screen_by_price_range, find_volume_surges, find_momentum_stocks,
+        find_breakouts must use market_data.get_bars (Alpaca), not yf.download."""
+        import inspect, screener
+        for fn_name in ("screen_by_price_range", "find_volume_surges",
+                        "find_momentum_stocks", "find_breakouts"):
+            fn = getattr(screener, fn_name)
+            src = inspect.getsource(fn)
+            assert "yf_lock.download" not in src and "yf.download" not in src, (
+                f"screener.{fn_name} still uses yfinance batch download. "
+                f"Must use _get_bars_for_symbols (Alpaca) instead."
+            )
+            assert "_get_bars_for_symbols" in src or "get_bars" in src, (
+                f"screener.{fn_name} must use Alpaca via get_bars or _get_bars_for_symbols"
+            )
+
+    def test_no_yfinance_in_equity_price_paths(self):
+        """Critical files that fetch equity prices must use Alpaca, not yfinance.
+        yfinance is only acceptable for: crypto, VIX, fundamentals, insider data,
+        options chains, earnings dates, analyst recs, news."""
+        import inspect
+
+        # ai_tracker: must use api.get_latest_trade, not yf
+        import ai_tracker
+        src = inspect.getsource(ai_tracker._get_current_price)
+        assert "get_latest_trade" in src, (
+            "ai_tracker._get_current_price must use api.get_latest_trade as primary"
+        )
+        assert "yf.Ticker" not in src and "yf.download" not in src, (
+            "ai_tracker._get_current_price must not use yfinance directly"
+        )
+
+        # correlation: must use market_data.get_bars
+        import correlation
+        src = inspect.getsource(correlation._fetch_returns)
+        assert "yf_lock.download" not in src and "yf.download" not in src, (
+            "correlation._fetch_returns must use Alpaca via get_bars, not yfinance"
+        )
+
+        # metrics: must use market_data.get_bars_daterange
+        import metrics
+        src = inspect.getsource(metrics._fetch_benchmark_returns)
+        assert "yf_lock.download" not in src and "yf.download" not in src, (
+            "metrics._fetch_benchmark_returns must use Alpaca, not yfinance"
+        )
+
+        # market_data: get_snapshot must try Alpaca first
+        import market_data
+        src = inspect.getsource(market_data.get_snapshot)
+        assert "get_latest_trade" in src or "_get_alpaca_data_client" in src, (
+            "market_data.get_snapshot must try Alpaca before yfinance"
+        )
+
+        # market_data: get_bars_daterange must try Alpaca first
+        src = inspect.getsource(market_data.get_bars_daterange)
+        assert "_get_alpaca_data_client" in src, (
+            "market_data.get_bars_daterange must try Alpaca before yfinance"
+        )
+
+        # market_data: get_sector_rotation must use get_bars
+        src = inspect.getsource(market_data.get_sector_rotation)
+        assert "yf_lock.download" not in src and "yf.download" not in src, (
+            "market_data.get_sector_rotation must use Alpaca via get_bars"
+        )
+
+        # market_data: get_relative_strength_vs_sector must use get_bars
+        src = inspect.getsource(market_data.get_relative_strength_vs_sector)
+        assert "yf.Ticker" not in src, (
+            "market_data.get_relative_strength_vs_sector must use get_bars, not yf.Ticker"
+        )
+
+    def test_multi_scheduler_loads_dotenv(self):
+        """multi_scheduler.py must call load_dotenv() before importing modules
+        that use env vars (market_data, client, etc). Without this, the Alpaca
+        data client gets empty keys and silently falls back to yfinance."""
+        import inspect, multi_scheduler
+        src = inspect.getsource(multi_scheduler)
+        dotenv_idx = src.find("load_dotenv()")
+        assert dotenv_idx > 0, "multi_scheduler must call load_dotenv()"
+        # Check it comes before the actual import statement (not docstring mentions)
+        import_idx = src.find("\nfrom segments import")
+        assert import_idx > 0, "multi_scheduler must import from segments"
+        assert dotenv_idx < import_idx, (
+            "multi_scheduler must call load_dotenv() BEFORE importing "
+            "other modules that read env vars"
+        )
+
+    def test_backtester_uses_alpaca(self):
+        """Backtester must use market_data.get_bars, not yf.download."""
+        import inspect, backtester
+        src_download = inspect.getsource(backtester._download_symbol)
+        assert "yf.Ticker" not in src_download and "yf.download" not in src_download, (
+            "backtester._download_symbol must use Alpaca via get_bars_daterange"
+        )
+        src_batch = inspect.getsource(backtester._fetch_universe_batch)
+        assert "yf.download" not in src_batch, (
+            "backtester._fetch_universe_batch must use Alpaca via get_bars"
+        )
+
+    def test_app_loads_dotenv(self):
+        """app.py (gunicorn entry point) must call load_dotenv() so the web
+        process has Alpaca credentials for dashboard data fetches (sector
+        rotation, snapshots, etc)."""
+        import inspect, app
+        src = inspect.getsource(app)
+        assert "load_dotenv()" in src, (
+            "app.py must call load_dotenv() — without it, the gunicorn web "
+            "process has no env vars and all Alpaca data calls fail silently"
+        )

@@ -375,9 +375,11 @@ function showDashTab(event, tabName) {
             case 'market_status': badgeClass = 'ticker-badge-market'; typeBadge = 'MARKET'; break;
             default: typeBadge = 'SCAN'; break;
         }
+        var profileTag = entry.profile_name ? ' <span class="ticker-profile">[' + escapeHtml(entry.profile_name) + ']</span>' : '';
         contentEl.innerHTML = '<div class="ticker-entry">' +
             '<div class="ticker-meta"><span class="ticker-timestamp muted">' + escapeHtml(formatTimestamp(entry.timestamp)) + '</span>' +
             ' <span class="ticker-badge ' + badgeClass + '">' + typeBadge + '</span>' +
+            profileTag +
             (entry.symbol ? ' <span class="ticker-symbol">' + escapeHtml(entry.symbol) + '</span>' : '') + '</div>' +
             '<div class="ticker-title">' + escapeHtml(entry.title) + '</div>' +
             '<div class="ticker-detail">' + escapeHtml(entry.detail) + '</div></div>';

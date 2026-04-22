@@ -69,10 +69,11 @@ def _fetch_chain(symbol: str) -> Optional[Dict[str, Any]]:
 
     try:
         import yfinance as yf
+        import yf_lock as _yfl
         yf_sym = symbol.replace("/", "-") if "/" in symbol else symbol
-        ticker = yf.Ticker(yf_sym)
-
-        expirations = ticker.options
+        with _yfl._lock:
+            ticker = yf.Ticker(yf_sym)
+            expirations = ticker.options
         if not expirations:
             _set_cached(cache_key, None)
             return None

@@ -102,3 +102,48 @@ class TestDescribeTuningState:
         # Should communicate that it's a waiting state, not a failure
         msg = state["message"].lower()
         assert "wait" in msg or "more" in msg or "ready" in msg
+
+
+class TestLearnedPatterns:
+    def test_strategy_names_use_display_names(self, monkeypatch, tmp_path):
+        """Learned patterns must show human-readable strategy names,
+        not raw snake_case identifiers like 'gap_reversal'."""
+        from self_tuning import _analyze_failure_patterns
+        monkeypatch.chdir(tmp_path)
+        db = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db)
+        conn.execute("""
+            CREATE TABLE ai_predictions (
+                id INTEGER PRIMARY KEY,
+                timestamp TEXT DEFAULT (datetime('now')),
+                symbol TEXT, predicted_signal TEXT, confidence REAL,
+                price_at_prediction REAL, status TEXT DEFAULT 'resolved',
+                actual_outcome TEXT, actual_return_pct REAL,
+                regime_at_prediction TEXT, strategy_type TEXT,
+                features_json TEXT, resolved_at TEXT, resolution_price REAL,
+                days_held INTEGER
+            )
+        """)
+        # Insert predictions with a snake_case strategy name and low win rate
+        for i in range(10):
+            outcome = "loss"  # 0% win rate → should trigger pattern
+            conn.execute(
+                "INSERT INTO ai_predictions (symbol, predicted_signal, confidence, "
+                "price_at_prediction, status, actual_outcome, actual_return_pct, "
+                "regime_at_prediction, strategy_type) "
+                "VALUES (?, 'BUY', 75, 100, 'resolved', ?, -3.0, 'bull', ?)",
+                (f"SYM{i}", outcome, "sector_momentum_rotation"),
+            )
+        conn.commit()
+        conn.close()
+
+        patterns = _analyze_failure_patterns(db)
+        # Find the pattern about this strategy
+        strat_patterns = [p for p in patterns if "Sector Momentum Rotation" in p
+                          or "sector_momentum_rotation" in p]
+        assert strat_patterns, f"Expected a pattern for the losing strategy, got: {patterns}"
+        for p in strat_patterns:
+            assert "sector_momentum_rotation" not in p, (
+                f"Learned pattern shows raw snake_case: '{p}'. "
+                f"Must use display_names.py for human-readable labels."
+            )

@@ -470,6 +470,18 @@ class TestExpandedRegistry:
             assert first_alpha is not None and first_alpha.isupper(), \
                 f"{name} display name '{label}' should start with a capital"
 
+    def test_every_meta_model_feature_has_display_name(self):
+        """Every feature the meta-model reports to the UI must have a
+        human-readable display name — no snake_case in the dashboard."""
+        from display_names import display_name, _DISPLAY_NAMES
+        from meta_model import NUMERIC_FEATURES, CATEGORICAL_FEATURES
+        all_features = list(NUMERIC_FEATURES) + list(CATEGORICAL_FEATURES.keys())
+        for name in all_features:
+            assert name in _DISPLAY_NAMES, (
+                f"Meta-model feature '{name}' has no entry in display_names.py. "
+                f"Add it to _DISPLAY_NAMES so the UI shows a human-readable label."
+            )
+
     def test_crypto_has_new_applicable_strategies(self):
         """news_sentiment_spike and macd_cross_confirmation should apply to crypto."""
         from strategies import discover_strategies

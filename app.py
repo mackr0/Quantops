@@ -1,6 +1,9 @@
 """Flask application factory for QuantOpsAI web dashboard."""
 
 import os
+from dotenv import load_dotenv
+load_dotenv()
+
 from flask import Flask
 from flask_login import LoginManager
 

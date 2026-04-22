@@ -125,10 +125,13 @@ def fetch_political_news(limit: int = 30) -> List[Dict[str, str]]:
             _add(item["title"], item["source"])
 
     # 2. Yahoo Finance via yfinance (market ETFs)
+    import yf_lock as _yfl
     for sym in ["SPY", "QQQ", "DIA"]:
         try:
-            ticker = yf.Ticker(sym)
-            for item in (ticker.news or []):
+            with _yfl._lock:
+                ticker = yf.Ticker(sym)
+                news_items = ticker.news or []
+            for item in news_items:
                 _add(item.get("title", ""), item.get("publisher", "Yahoo Finance"))
         except Exception as exc:
             logger.warning("yfinance news failed for %s: %s", sym, exc)

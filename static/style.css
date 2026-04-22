@@ -261,6 +261,11 @@ article h4 {
     background: #2a2a4e;
     color: #9e9ebe;
 }
+.ticker-profile {
+    font-size: 0.8rem;
+    color: #aaa;
+    font-weight: 500;
+}
 .ticker-symbol {
     font-weight: bold;
     color: #aac4ff;

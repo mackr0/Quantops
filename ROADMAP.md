@@ -590,6 +590,22 @@ Build a gradient-boosted classifier that takes the feature context the AI saw fo
 
 ---
 
+## Upcoming Enhancements (Queued)
+
+### Self-Tuning Parameter Expansion (~Late May 2026)
+
+The self-tuner currently adjusts 4 parameters: `confidence_threshold`, `stop_loss_pct`, `take_profit_pct`, `position_size_pct`. After these have 2-3 weeks of stable track record, add three new parameters:
+
+1. **Trailing Stop ATR Multiplier** — tune how tight/loose trailing stops are relative to volatility. Data source: ATR values in `features_json`, stop/TP prices in `trades` table.
+2. **RSI Entry Thresholds** — tune overbought/oversold cutoffs for entry signals. Data source: RSI in `features_json` (one of 33 technical indicators).
+3. **Volume Surge Multiplier** — tune the volume ratio required to confirm breakout signals. Data source: volume ratio in `features_json` candidate screening data.
+
+**Prerequisites:** Current 4 parameters have 2-3 weeks of live tuning history. At least 50+ resolved predictions per profile. Self-tuning reversal logs confirm current parameters are stable.
+
+**Key point:** All historical data is already being collected. The self-tuner will calibrate immediately from the full backlog — it will NOT start from zero.
+
+---
+
 ## Cross-Session Continuity
 
 **If you are an AI assistant reading this in a new session:**

@@ -469,6 +469,13 @@ This forces the AI to consider its own accuracy when making decisions.
 
 ### 7.2 Automatic Parameter Adjustment
 
+**Status (2026-04-22):** All 10 active profiles have sufficient resolved predictions and are actively tuning daily at EOD. The self-tuner operates in two modes:
+
+- **Disaster prevention** (win rate < 35%): raises confidence threshold, reduces position size, widens short stops
+- **Upward optimization** (win rate >= 35%): actively seeks higher win rates via confidence band analysis, regime-aware sizing, strategy selection, stop/TP tuning, and position size increases
+
+See `SELF_TUNING.md` for complete documentation of all 5 upward optimization strategies.
+
 Runs daily at 3:55 PM ET:
 
 1. **Review past adjustments** (3+ days old with 10+ new predictions)

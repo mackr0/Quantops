@@ -1,9 +1,10 @@
 """Earnings calendar — avoid trading around earnings dates.
 
-Earnings dates are scheduled events that don't change frequently.
-Instead of hitting yfinance on every symbol check (which floods Yahoo
-with requests and triggers 401 "Invalid Crumb" errors), we fetch
-dates once per day per symbol and store them in the main DB.
+Earnings dates are scheduled quarterly events that don't change
+frequently. We cache them for 7 days per symbol to avoid flooding
+Yahoo with requests. The only time we need to re-check sooner is
+when a cached date is within 14 days (imminent earnings may get
+rescheduled, so we refresh weekly instead of monthly).
 """
 
 import logging
@@ -15,7 +16,7 @@ from typing import Optional, Dict
 logger = logging.getLogger(__name__)
 
 _DB_PATH = "quantopsai.db"
-_REFRESH_INTERVAL = 24 * 60 * 60  # 24 hours
+_REFRESH_INTERVAL = 7 * 24 * 60 * 60  # 7 days (was 24 hours — way too aggressive)
 
 
 def _ensure_table():
@@ -41,8 +42,10 @@ def _fetch_and_store(symbol: str) -> Optional[str]:
     import yfinance as yf
 
     try:
-        ticker = yf.Ticker(symbol)
-        cal = ticker.calendar
+        import yf_lock as _yfl
+        with _yfl._lock:
+            ticker = yf.Ticker(symbol)
+            cal = ticker.calendar
 
         if cal is None:
             _store(symbol, None)
@@ -105,7 +108,13 @@ def _store(symbol: str, earnings_date: Optional[str]):
 
 
 def _get_cached(symbol: str) -> tuple:
-    """Return (earnings_date_str_or_None, is_fresh_bool)."""
+    """Return (earnings_date_str_or_None, is_fresh_bool).
+
+    Cache is considered fresh if:
+      - We have a future earnings date (no need to re-check until it passes)
+      - OR the fetch happened within _REFRESH_INTERVAL (for symbols with
+        no known date, we re-check periodically)
+    """
     try:
         conn = sqlite3.connect(_DB_PATH)
         row = conn.execute(
@@ -115,14 +124,27 @@ def _get_cached(symbol: str) -> tuple:
         conn.close()
         if row is None:
             return None, False
+
+        earnings_date_str = row[0]
         fetched_at = row[1]
+
+        # If we have a future earnings date, no need to refetch until it passes
+        if earnings_date_str:
+            try:
+                ed = datetime.strptime(earnings_date_str[:10], "%Y-%m-%d").date()
+                if ed >= date.today():
+                    return earnings_date_str, True
+            except Exception:
+                pass
+
+        # No future date — check if the fetch itself is recent enough
         try:
             fetched_dt = datetime.strptime(fetched_at, "%Y-%m-%d %H:%M:%S")
             age = (datetime.utcnow() - fetched_dt).total_seconds()
             is_fresh = age < _REFRESH_INTERVAL
         except Exception:
             is_fresh = False
-        return row[0], is_fresh
+        return earnings_date_str, is_fresh
     except Exception:
         return None, False
 
@@ -154,7 +176,9 @@ def check_earnings(symbol: str) -> Optional[Dict]:
     Returns dict with keys: symbol, earnings_date, days_until.
     Returns None if no upcoming earnings or lookup fails.
 
-    Uses DB cache — only hits yfinance once per 24 hours per symbol.
+    Cache logic: if a future earnings date is stored, serves from cache
+    indefinitely (no refetch needed until that date passes). For symbols
+    with no known date, re-checks every 7 days.
     """
     if "/" in symbol:
         return None

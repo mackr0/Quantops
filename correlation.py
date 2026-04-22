@@ -21,55 +21,27 @@ def _yf_symbol(symbol: str) -> str:
 
 
 def _fetch_returns(symbols: List[str], days: int = 20) -> Optional[Dict[str, np.ndarray]]:
-    """Fetch daily returns for a list of symbols using yfinance batch download.
+    """Fetch daily returns for a list of symbols via Alpaca (market_data).
 
     Returns a dict mapping symbol -> numpy array of daily returns,
     or None if the fetch fails entirely.
     """
     try:
-        import yf_lock
-        from datetime import datetime, timedelta
-
-        # Convert symbols for yfinance
-        yf_symbols = [_yf_symbol(s) for s in symbols]
-
-        end = datetime.now()
-        # Fetch extra days to account for weekends/holidays
-        start = end - timedelta(days=days * 2 + 10)
-
-        # Batch download for efficiency
-        data = yf_lock.download(
-            yf_symbols,
-            start=start.strftime("%Y-%m-%d"),
-            end=end.strftime("%Y-%m-%d"),
-            progress=False,
-            auto_adjust=True,
-        )
-
-        if data.empty:
-            return None
+        from market_data import get_bars
 
         returns = {}
-        for orig_sym, yf_sym in zip(symbols, yf_symbols):
+        for sym in symbols:
             try:
-                if len(yf_symbols) == 1:
-                    # Single symbol: data["Close"] is a Series
-                    close = data["Close"].dropna()
-                else:
-                    # Multiple symbols: data["Close"] is a DataFrame
-                    close = data["Close"][yf_sym].dropna()
-
-                if len(close) < days:
-                    # Not enough data, skip this symbol
+                df = get_bars(sym, limit=days + 5)
+                if df is None or df.empty or len(df) < days:
                     continue
 
-                # Take the last `days` closing prices and compute returns
-                close = close.tail(days + 1)
+                close = df["close"].dropna().tail(days + 1)
                 daily_returns = close.pct_change().dropna().values
-                if len(daily_returns) >= days - 2:  # Allow a little slack
-                    returns[orig_sym] = daily_returns
+                if len(daily_returns) >= days - 2:
+                    returns[sym] = daily_returns
             except Exception as exc:
-                logger.debug("Could not extract returns for %s: %s", orig_sym, exc)
+                logger.debug("Could not extract returns for %s: %s", sym, exc)
                 continue
 
         return returns if returns else None

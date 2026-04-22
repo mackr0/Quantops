@@ -33,6 +33,35 @@ _ensemble_cache = {}
 _ensemble_cache_cycle = 0
 _ensemble_lock = __import__("threading").Lock()
 
+# Political context cache — same climate for all MAGA-mode profiles
+# within a 30-minute window. One AI call instead of one per profile.
+_political_cache = {}
+_political_cache_cycle = 0
+_political_lock = __import__("threading").Lock()
+
+
+def _get_shared_political_context(ctx):
+    """Return MAGA political context, cached for 30 minutes.
+    All profiles see the same political climate — no need to re-analyze."""
+    global _political_cache, _political_cache_cycle
+    import time as _t
+
+    with _political_lock:
+        now_bucket = int(_t.time() / 1800)
+        if now_bucket != _political_cache_cycle:
+            _political_cache = {}
+            _political_cache_cycle = now_bucket
+
+        if "context" in _political_cache:
+            logging.info("Using cached political context")
+            return _political_cache["context"]
+
+        from political_sentiment import get_maga_mode_context
+        print("  MAGA Mode active — fetching political context...", flush=True)
+        result = get_maga_mode_context(ctx=ctx)
+        _political_cache["context"] = result
+        return result
+
 
 def _get_shared_ensemble(candidates_data, ctx):
     """Return ensemble result, cached per market_type per cycle.
@@ -946,9 +975,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     # minimal bearing on crypto, and the call costs ~$0.02 × many cycles.
     is_crypto = ctx is not None and ctx.segment == "crypto"
     if maga_mode and political_context is None and not is_crypto:
-        from political_sentiment import get_maga_mode_context
-        print("  MAGA Mode active — fetching political context...", flush=True)
-        political_context = get_maga_mode_context(ctx=ctx)
+        political_context = _get_shared_political_context(ctx)
         if political_context:
             print(f"  {political_context.splitlines()[0]}")
 

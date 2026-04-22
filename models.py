@@ -1214,16 +1214,20 @@ def get_activity_feed(user_id: int, profile_id: Optional[int] = None,
     conn = _get_conn()
     if profile_id is not None:
         rows = conn.execute(
-            """SELECT * FROM activity_log
-               WHERE user_id = ? AND profile_id = ?
-               ORDER BY timestamp DESC LIMIT ? OFFSET ?""",
+            """SELECT a.*, p.name AS profile_name
+               FROM activity_log a
+               LEFT JOIN trading_profiles p ON a.profile_id = p.id
+               WHERE a.user_id = ? AND a.profile_id = ?
+               ORDER BY a.timestamp DESC LIMIT ? OFFSET ?""",
             (user_id, profile_id, limit, offset),
         ).fetchall()
     else:
         rows = conn.execute(
-            """SELECT * FROM activity_log
-               WHERE user_id = ?
-               ORDER BY timestamp DESC LIMIT ? OFFSET ?""",
+            """SELECT a.*, p.name AS profile_name
+               FROM activity_log a
+               LEFT JOIN trading_profiles p ON a.profile_id = p.id
+               WHERE a.user_id = ?
+               ORDER BY a.timestamp DESC LIMIT ? OFFSET ?""",
             (user_id, limit, offset),
         ).fetchall()
     conn.close()

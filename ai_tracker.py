@@ -114,6 +114,14 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
 
     init_tracker_db(db_path)
 
+    # Guard: predictions with no valid price can never resolve.
+    if not price_at_prediction or price_at_prediction <= 0:
+        logger.warning(
+            "Skipping prediction for %s: invalid price_at_prediction=%s",
+            symbol, price_at_prediction,
+        )
+        return -1
+
     price_targets = price_targets or {}
     features_json = _json.dumps(features) if features else None
 
@@ -156,16 +164,33 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
 # ---------------------------------------------------------------------------
 
 def _get_current_price(symbol, api=None):
-    """Fetch the latest closing price for a symbol."""
+    """Fetch the latest price for a symbol.
+
+    Primary: use the per-profile Alpaca REST client directly (already
+    authenticated via UserContext credentials). This avoids the
+    module-level market_data client which depends on env vars that may
+    not be loaded.
+
+    Fallback: market_data.get_bars (shared Alpaca data client → yfinance).
+    """
+    # Primary: Alpaca last trade via the profile's own API client
+    if api is not None:
+        try:
+            trade = api.get_latest_trade(symbol)
+            if trade and trade.price:
+                return float(trade.price)
+        except Exception:
+            pass
+
+    # Fallback: market_data pipeline (shared data client → yfinance)
     try:
-        api = api or get_api()
-        df = get_bars(symbol, limit=5, api=api)
-        if df.empty:
-            return None
-        return float(df.iloc[-1]["close"])
+        df = get_bars(symbol, limit=5)
+        if df is not None and not df.empty:
+            return float(df.iloc[-1]["close"])
     except Exception as exc:
         logger.warning("Could not fetch price for %s: %s", symbol, exc)
-        return None
+
+    return None
 
 
 def _trading_days_since(timestamp_str):

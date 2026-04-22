@@ -381,26 +381,18 @@ def _fetch_yf_history(symbol: str, days: int) -> Optional[pd.DataFrame]:
 
 
 def _download_symbol(symbol: str, days: int) -> Optional[pd.DataFrame]:
-    """Actually download data from yfinance (no caching)."""
+    """Download historical bars via Alpaca (primary) or yfinance (crypto fallback)."""
     try:
-        import yfinance as yf
-
-        yf_sym = symbol.replace("/", "-")
-
+        from market_data import get_bars_daterange
         end = datetime.now()
         start = end - timedelta(days=days + 10)
-
-        ticker = yf.Ticker(yf_sym)
-        df = ticker.history(
+        df = get_bars_daterange(
+            symbol,
             start=start.strftime("%Y-%m-%d"),
             end=end.strftime("%Y-%m-%d"),
-            auto_adjust=True,
         )
-
         if df is None or df.empty:
             return None
-
-        df.columns = [c.lower() for c in df.columns]
 
         for col in ("open", "high", "low", "close", "volume"):
             if col not in df.columns:
@@ -409,7 +401,7 @@ def _download_symbol(symbol: str, days: int) -> Optional[pd.DataFrame]:
         return df
 
     except Exception as exc:
-        logger.debug("yfinance fetch failed for %s: %s", symbol, exc)
+        logger.debug("Bar fetch failed for %s: %s", symbol, exc)
         return None
 
 
@@ -722,14 +714,16 @@ def print_strategy_backtest_report(results: Dict) -> None:
 # ---------------------------------------------------------------------------
 
 def _fetch_universe_batch(market_type: str, days: int) -> Optional[pd.DataFrame]:
-    """Batch-download historical data for the full universe of a market type.
+    """Fetch historical data for the full universe of a market type.
 
-    Uses yfinance batch download with module-level caching (24-hour TTL).
+    Uses Alpaca via market_data.get_bars per symbol with module-level
+    caching (24-hour TTL). Constructs a MultiIndex DataFrame matching the
+    shape that downstream _extract_symbol_df expects.
 
     Returns:
         MultiIndex DataFrame grouped by ticker, or None on failure.
     """
-    import yfinance as yf
+    from market_data import get_bars
     from segments import get_segment
 
     cache_key = f"{market_type}_{days}"
@@ -747,43 +741,34 @@ def _fetch_universe_batch(market_type: str, days: int) -> Optional[pd.DataFrame]
     if not universe:
         return None
 
-    # Convert symbols for yfinance (e.g. BTC/USD -> BTC-USD)
-    yf_symbols = [s.replace("/", "-") for s in universe]
-
-    # Calculate period string from days
-    total_days = days + 60  # buffer for warmup + weekends/holidays
-    if total_days <= 30:
-        period = "1mo"
-    elif total_days <= 90:
-        period = "3mo"
-    elif total_days <= 180:
-        period = "6mo"
-    elif total_days <= 365:
-        period = "1y"
-    else:
-        period = "2y"
+    limit = days + 60  # buffer for warmup + weekends/holidays
 
     try:
-        logger.info("Batch downloading %d symbols for %s (%s)...",
-                     len(yf_symbols), market_type, period)
-        data = yf.download(
-            yf_symbols,
-            period=period,
-            progress=False,
-            group_by="ticker",
-            threads=True,
-            auto_adjust=True,
-        )
+        logger.info("Fetching %d symbols for %s via Alpaca...",
+                     len(universe), market_type)
+        frames = {}
+        for sym in universe:
+            try:
+                df = get_bars(sym, limit=limit)
+                if df is not None and not df.empty:
+                    # Capitalize columns for MultiIndex compat with _extract_symbol_df
+                    df.columns = [c.capitalize() for c in df.columns]
+                    frames[sym] = df
+            except Exception:
+                continue
 
-        if data is None or data.empty:
+        if not frames:
             return None
+
+        # Build MultiIndex DataFrame: columns = (ticker, OHLCV)
+        data = pd.concat(frames, axis=1)
 
         # Cache it
         _data_cache[cache_key] = {"data": data, "ts": now}
         return data
 
     except Exception as exc:
-        logger.warning("Batch download failed for %s: %s", market_type, exc)
+        logger.warning("Universe fetch failed for %s: %s", market_type, exc)
         return None
 
 
@@ -794,17 +779,21 @@ def _extract_symbol_df(batch_data: pd.DataFrame, symbol: str,
     Handles both MultiIndex (multi-ticker) and single-level (single-ticker)
     column layouts returned by yfinance.
     """
-    yf_sym = symbol.replace("/", "-")
-
     try:
         if universe_size == 1:
             # Single ticker: columns are just Price levels (Open, High, ...)
             df = batch_data.copy()
         else:
             # Multi-ticker: columns are (Ticker, Price)
-            if yf_sym not in batch_data.columns.get_level_values(0):
-                return None
-            df = batch_data[yf_sym].copy()
+            level0 = batch_data.columns.get_level_values(0)
+            if symbol in level0:
+                df = batch_data[symbol].copy()
+            else:
+                # Fallback: try yfinance-style symbol (BTC/USD -> BTC-USD)
+                yf_sym = symbol.replace("/", "-")
+                if yf_sym not in level0:
+                    return None
+                df = batch_data[yf_sym].copy()
 
         # Normalize column names to lowercase
         if isinstance(df.columns, pd.MultiIndex):

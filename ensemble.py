@@ -35,7 +35,7 @@ CONFIDENCE_FLOOR = 25.0
 # Chunk size for specialist calls. With tool_use (Anthropic) the model
 # reliably returns every requested entry, so chunking is only a hedge.
 # With plain-prompt fallback, chunks of 5 help reduce drop rate.
-CHUNK_SIZE = 5
+CHUNK_SIZE = 15
 
 
 # Some specialists don't have usable input data for certain markets.

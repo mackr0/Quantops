@@ -1,4 +1,9 @@
-"""Small-cap and micro-cap stock screener using Yahoo Finance (yfinance)."""
+"""Small-cap and micro-cap stock screener.
+
+Primary data source: Alpaca Market Data API (via market_data.get_bars).
+yfinance is used only for crypto (Alpaca doesn't serve crypto via the
+equity endpoint) and as a last-resort fallback in the dynamic screener.
+"""
 
 import sys
 from datetime import datetime
@@ -8,6 +13,23 @@ import yfinance as yf
 import yf_lock
 
 from market_data import get_bars
+
+
+def _get_bars_for_symbols(symbols, limit=30):
+    """Fetch bars for multiple symbols via Alpaca (market_data.get_bars).
+
+    Returns dict of {symbol: DataFrame} for symbols that succeeded.
+    Skips symbols that fail silently.
+    """
+    result = {}
+    for sym in symbols:
+        try:
+            df = get_bars(sym, limit=limit)
+            if df is not None and not df.empty and len(df) >= 2:
+                result[sym] = df
+        except Exception:
+            pass
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -119,27 +141,16 @@ def screen_by_price_range(min_price=1.0, max_price=20.0, min_volume=500_000,
     if universe is None:
         universe = get_small_cap_universe()
 
-    print(f"Downloading 1-month data for {len(universe)} symbols (yfinance batch)...")
+    print(f"  Screening {len(universe)} symbols via Alpaca...")
 
-    # Batch download — very fast, single HTTP request per batch
-    data = yf_lock.download(universe, period="1mo", progress=False, group_by="ticker",
-                       threads=True)
+    bars_map = _get_bars_for_symbols(universe, limit=30)
 
     results = []
-    for sym in universe:
+    for sym, sym_df in bars_map.items():
         try:
-            if len(universe) == 1:
-                sym_df = data
-            else:
-                sym_df = data[sym]
-
-            sym_df = sym_df.dropna(subset=["Close"])
-            if sym_df.empty or len(sym_df) < 2:
-                continue
-
-            price = float(sym_df["Close"].iloc[-1])
-            volume = int(sym_df["Volume"].iloc[-1])
-            prev_close = float(sym_df["Close"].iloc[-2])
+            price = float(sym_df["close"].iloc[-1])
+            volume = int(sym_df["volume"].iloc[-1])
+            prev_close = float(sym_df["close"].iloc[-2])
             change_pct = ((price - prev_close) / prev_close * 100) if prev_close > 0 else 0
 
             if min_price <= price <= max_price and volume >= min_volume:
@@ -170,24 +181,17 @@ def find_volume_surges(candidates, volume_multiplier=2.0, api=None):
         print("\n  Found 0 volume surges")
         return []
 
-    data = yf_lock.download(candidates, period="1mo", progress=False,
-                       group_by="ticker", threads=True)
+    bars_map = _get_bars_for_symbols(candidates, limit=30)
 
     surges = []
-    for sym in candidates:
+    for sym, sym_df in bars_map.items():
         try:
-            if len(candidates) == 1:
-                sym_df = data
-            else:
-                sym_df = data[sym]
-
-            sym_df = sym_df.dropna(subset=["Close"])
             if len(sym_df) < 20:
                 continue
 
-            avg_vol = float(sym_df["Volume"].iloc[-21:-1].mean())
-            today_vol = float(sym_df["Volume"].iloc[-1])
-            price = float(sym_df["Close"].iloc[-1])
+            avg_vol = float(sym_df["volume"].iloc[-21:-1].mean())
+            today_vol = float(sym_df["volume"].iloc[-1])
+            price = float(sym_df["close"].iloc[-1])
 
             if avg_vol > 0:
                 ratio = today_vol / avg_vol
@@ -216,24 +220,17 @@ def find_momentum_stocks(candidates, min_gain_5d=3.0, min_gain_20d=5.0, api=None
         print("\n  Found 0 momentum stocks")
         return []
 
-    data = yf_lock.download(candidates, period="1mo", progress=False,
-                       group_by="ticker", threads=True)
+    bars_map = _get_bars_for_symbols(candidates, limit=30)
 
     momentum = []
-    for sym in candidates:
+    for sym, sym_df in bars_map.items():
         try:
-            if len(candidates) == 1:
-                sym_df = data
-            else:
-                sym_df = data[sym]
-
-            sym_df = sym_df.dropna(subset=["Close"])
             if len(sym_df) < 21:
                 continue
 
-            price = float(sym_df["Close"].iloc[-1])
-            price_5d = float(sym_df["Close"].iloc[-6])
-            price_20d = float(sym_df["Close"].iloc[-21])
+            price = float(sym_df["close"].iloc[-1])
+            price_5d = float(sym_df["close"].iloc[-6])
+            price_20d = float(sym_df["close"].iloc[-21])
 
             gain_5d = ((price - price_5d) / price_5d) * 100
             gain_20d = ((price - price_20d) / price_20d) * 100
@@ -262,25 +259,18 @@ def find_breakouts(candidates, api=None):
         print("\n  Found 0 breakout candidates")
         return []
 
-    data = yf_lock.download(candidates, period="1mo", progress=False,
-                       group_by="ticker", threads=True)
+    bars_map = _get_bars_for_symbols(candidates, limit=30)
 
     breakouts = []
-    for sym in candidates:
+    for sym, sym_df in bars_map.items():
         try:
-            if len(candidates) == 1:
-                sym_df = data
-            else:
-                sym_df = data[sym]
-
-            sym_df = sym_df.dropna(subset=["Close"])
             if len(sym_df) < 21:
                 continue
 
-            price = float(sym_df["Close"].iloc[-1])
-            high_20d = float(sym_df["High"].iloc[-21:-1].max())
-            avg_vol = float(sym_df["Volume"].iloc[-21:-1].mean())
-            today_vol = float(sym_df["Volume"].iloc[-1])
+            price = float(sym_df["close"].iloc[-1])
+            high_20d = float(sym_df["high"].iloc[-21:-1].max())
+            avg_vol = float(sym_df["volume"].iloc[-21:-1].mean())
+            today_vol = float(sym_df["volume"].iloc[-1])
 
             vol_ratio = (today_vol / avg_vol) if avg_vol > 0 else 0
 

@@ -16,6 +16,16 @@ import config
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Strategy type → profile toggle column mapping (for auto-disable)
+# ---------------------------------------------------------------------------
+_STRATEGY_TYPE_TO_TOGGLE = {
+    "momentum_breakout": "strategy_momentum_breakout",
+    "volume_spike": "strategy_volume_spike",
+    "mean_reversion": "strategy_mean_reversion",
+    "gap_and_go": "strategy_gap_and_go",
+}
+
+# ---------------------------------------------------------------------------
 # In-memory cache (30-minute TTL, keyed by profile db_path)
 # ---------------------------------------------------------------------------
 _cache: Dict[str, Any] = {}
@@ -1193,9 +1203,12 @@ def describe_tuning_state(ctx, db_path=None):
                     f"evaluating once the threshold is met."
                 ),
             }
+        msg = f"Tuner is evaluating against {resolved} resolved predictions."
+        if resolved >= 30:
+            msg += " Upward optimization active."
         return {
             "can_tune": True, "resolved": resolved, "required": required,
-            "message": f"Tuner is evaluating against {resolved} resolved predictions.",
+            "message": msg,
         }
     except Exception as exc:
         return {"can_tune": False, "resolved": 0, "required": required,
@@ -1309,42 +1322,11 @@ def apply_auto_adjustments(ctx, db_path=None):
             profile_id, "ai_confidence_threshold", days=3)
 
         if not recent_conf:
-            # --- Check win rate at confidence < 60 ---
-            band60_total = conn.execute(
-                "SELECT COUNT(*) FROM ai_predictions "
-                "WHERE status='resolved' AND confidence < 60"
-            ).fetchone()[0]
-            band60_wins = conn.execute(
-                "SELECT COUNT(*) FROM ai_predictions "
-                "WHERE status='resolved' AND actual_outcome='win' AND confidence < 60"
-            ).fetchone()[0]
+            # Pick the right confidence threshold in ONE step — don't cascade.
+            # Check the tighter band (70) first. If both bands are bad, go
+            # straight to 70 instead of 60→70 in the same run.
+            conf_adjusted = False
 
-            if band60_total > 5:
-                wr60 = band60_wins / band60_total * 100
-                if wr60 < 35 and ctx.ai_confidence_threshold < 60:
-                    # Check if raising threshold previously worsened things
-                    past_outcome = _was_adjustment_effective(
-                        profile_id, "ai_confidence_threshold")
-                    if past_outcome != "worsened":
-                        old_val = ctx.ai_confidence_threshold
-                        update_trading_profile(profile_id, ai_confidence_threshold=60)
-                        reason = (
-                            f"Win rate at <60% confidence was {wr60:.0f}% "
-                            f"({band60_wins}/{band60_total})"
-                        )
-                        log_tuning_change(
-                            profile_id, user_id or 0,
-                            "confidence_threshold", "ai_confidence_threshold",
-                            str(old_val), "60", reason,
-                            win_rate_at_change=overall_wr,
-                            predictions_resolved=resolved,
-                        )
-                        adjustments_made.append(
-                            f"Raised AI confidence threshold from {old_val} "
-                            f"to 60 ({reason})"
-                        )
-
-            # --- Check win rate at confidence < 70 ---
             band70_total = conn.execute(
                 "SELECT COUNT(*) FROM ai_predictions "
                 "WHERE status='resolved' AND confidence < 70"
@@ -1374,8 +1356,44 @@ def apply_auto_adjustments(ctx, db_path=None):
                             predictions_resolved=resolved,
                         )
                         adjustments_made.append(
-                            f"Raised AI confidence threshold to 70 ({reason})"
+                            f"Raised AI confidence threshold from {old_val} "
+                            f"to 70 ({reason})"
                         )
+                        conf_adjusted = True
+
+            if not conf_adjusted:
+                band60_total = conn.execute(
+                    "SELECT COUNT(*) FROM ai_predictions "
+                    "WHERE status='resolved' AND confidence < 60"
+                ).fetchone()[0]
+                band60_wins = conn.execute(
+                    "SELECT COUNT(*) FROM ai_predictions "
+                    "WHERE status='resolved' AND actual_outcome='win' AND confidence < 60"
+                ).fetchone()[0]
+
+                if band60_total > 5:
+                    wr60 = band60_wins / band60_total * 100
+                    if wr60 < 35 and ctx.ai_confidence_threshold < 60:
+                        past_outcome = _was_adjustment_effective(
+                            profile_id, "ai_confidence_threshold")
+                        if past_outcome != "worsened":
+                            old_val = ctx.ai_confidence_threshold
+                            update_trading_profile(profile_id, ai_confidence_threshold=60)
+                            reason = (
+                                f"Win rate at <60% confidence was {wr60:.0f}% "
+                                f"({band60_wins}/{band60_total})"
+                            )
+                            log_tuning_change(
+                                profile_id, user_id or 0,
+                                "confidence_threshold", "ai_confidence_threshold",
+                                str(old_val), "60", reason,
+                                win_rate_at_change=overall_wr,
+                                predictions_resolved=resolved,
+                            )
+                            adjustments_made.append(
+                                f"Raised AI confidence threshold from {old_val} "
+                                f"to 60 ({reason})"
+                            )
 
         # --- BUY vs SELL performance ---
         buy_total = conn.execute(
@@ -1523,6 +1541,13 @@ def apply_auto_adjustments(ctx, db_path=None):
                         f"to {new_pct:.1%} ({reason})"
                     )
 
+        # --- Upward optimizations (only when not in disaster mode) ---
+        if overall_wr >= 35:
+            upward = _apply_upward_optimizations(
+                conn, ctx, profile_id, user_id, overall_wr, resolved
+            )
+            adjustments_made.extend(upward)
+
         conn.close()
         return adjustments_made
 
@@ -1561,6 +1586,402 @@ def _cast_param_value(param_name, value_str):
     elif param_name in bool_params:
         return int(float(value_str))
     return value_str
+
+
+# ---------------------------------------------------------------------------
+# Upward optimization — actively improve win rate, not just prevent disaster
+# ---------------------------------------------------------------------------
+
+def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, resolved):
+    """Run upward optimization strategies on a healthy profile.
+
+    Called only when overall_wr >= 35 (disaster prevention has exclusive
+    control below that). Each sub-function makes at most ONE change.
+    The orchestrator stops after the first change so auto-reversal can
+    attribute any win-rate shift to that specific adjustment.
+    """
+    from models import update_trading_profile, log_tuning_change
+
+    optimizers = [
+        _optimize_confidence_threshold_upward,
+        _optimize_regime_position_sizing,
+        _optimize_strategy_toggles,
+        _optimize_stop_take_profit,
+        _optimize_position_size_upward,
+    ]
+
+    results = []
+    for optimizer in optimizers:
+        try:
+            result = optimizer(conn, ctx, profile_id, user_id, overall_wr, resolved)
+            if result:
+                results.append(result)
+                break  # One change per run
+        except Exception as exc:
+            logger.warning("Upward optimizer %s failed: %s", optimizer.__name__, exc)
+
+    return results
+
+
+def _optimize_confidence_threshold_upward(conn, ctx, profile_id, user_id,
+                                          overall_wr, resolved):
+    """Find the confidence band with the best win rate and raise the
+    threshold to focus on that band. Only raises one band at a time."""
+    if _get_recent_adjustment(profile_id, "ai_confidence_threshold", days=3):
+        return None
+    if _was_adjustment_effective(profile_id, "ai_confidence_threshold") == "worsened":
+        return None
+
+    rows = conn.execute(
+        """SELECT
+             CASE WHEN confidence >= 80 THEN 80
+                  WHEN confidence >= 70 THEN 70
+                  WHEN confidence >= 60 THEN 60
+                  WHEN confidence >= 50 THEN 50
+                  ELSE 0 END as band_floor,
+             COUNT(*) as total,
+             SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) as wins
+           FROM ai_predictions WHERE status='resolved'
+           GROUP BY band_floor HAVING COUNT(*) >= 10
+           ORDER BY band_floor"""
+    ).fetchall()
+
+    if not rows:
+        return None
+
+    # Find the band with the highest win rate
+    best_band = None
+    best_wr = 0
+    for r in rows:
+        wr = (r["wins"] / r["total"] * 100) if r["total"] > 0 else 0
+        if wr > best_wr:
+            best_wr = wr
+            best_band = r["band_floor"]
+
+    if best_band is None or best_band <= ctx.ai_confidence_threshold:
+        return None
+
+    # Best band must be meaningfully better than overall
+    if best_wr < overall_wr + 10:
+        return None
+
+    # Only raise one band at a time
+    current = ctx.ai_confidence_threshold
+    band_levels = [50, 60, 70, 80]
+    new_threshold = current
+    for level in band_levels:
+        if level > current and level <= best_band:
+            new_threshold = level
+            break
+
+    if new_threshold <= current or new_threshold > 80:
+        return None
+
+    # Verify enough predictions exist above the new threshold
+    above_count = conn.execute(
+        "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved' AND confidence >= ?",
+        (new_threshold,),
+    ).fetchone()[0]
+    if above_count < 10:
+        return None
+
+    from models import update_trading_profile, log_tuning_change
+    update_trading_profile(profile_id, ai_confidence_threshold=new_threshold)
+    reason = (
+        f"Confidence {new_threshold}+ band has {best_wr:.0f}% win rate "
+        f"vs {overall_wr:.0f}% overall — focusing on higher-conviction trades"
+    )
+    log_tuning_change(
+        profile_id, user_id, "confidence_threshold_optimization",
+        "ai_confidence_threshold", str(current), str(new_threshold), reason,
+        win_rate_at_change=overall_wr, predictions_resolved=resolved,
+    )
+    return f"Raised confidence threshold from {current} to {new_threshold} ({reason})"
+
+
+def _optimize_regime_position_sizing(conn, ctx, profile_id, user_id,
+                                     overall_wr, resolved):
+    """Reduce position size in losing regimes, increase in winning regimes."""
+    if overall_wr < 45:
+        return None  # Profile must be healthy enough for regime analysis
+    if _get_recent_adjustment(profile_id, "max_position_pct", days=3):
+        return None
+
+    # Check if regime column exists
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(ai_predictions)").fetchall()}
+    if "regime_at_prediction" not in cols:
+        return None
+
+    rows = conn.execute(
+        """SELECT regime_at_prediction, COUNT(*) as total,
+                  SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) as wins
+           FROM ai_predictions
+           WHERE status='resolved' AND regime_at_prediction IS NOT NULL
+           GROUP BY regime_at_prediction HAVING COUNT(*) >= 10"""
+    ).fetchall()
+
+    if not rows:
+        return None
+
+    # Get current regime
+    try:
+        from market_regime import detect_regime
+        regime_info = detect_regime()
+        current_regime = regime_info.get("regime", "unknown") if regime_info else "unknown"
+    except Exception:
+        return None
+
+    # Find current regime's win rate
+    current_regime_wr = None
+    for r in rows:
+        if r["regime_at_prediction"] == current_regime:
+            current_regime_wr = (r["wins"] / r["total"] * 100) if r["total"] > 0 else None
+            break
+
+    if current_regime_wr is None:
+        return None
+
+    diff = current_regime_wr - overall_wr
+    current_pct = ctx.max_position_pct
+
+    if diff <= -15:
+        # Losing regime — reduce by 25%
+        if _was_adjustment_effective(profile_id, "max_position_pct") == "worsened":
+            return None
+        new_pct = round(max(0.03, current_pct * 0.75), 4)
+        if new_pct >= current_pct:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, max_position_pct=new_pct)
+        reason = (
+            f"{current_regime} regime win rate {current_regime_wr:.0f}% "
+            f"vs {overall_wr:.0f}% overall — reducing exposure"
+        )
+        log_tuning_change(
+            profile_id, user_id, "regime_position_sizing",
+            "max_position_pct", str(current_pct), str(new_pct), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return f"Reduced position size from {current_pct:.1%} to {new_pct:.1%} ({reason})"
+
+    elif diff >= 15:
+        # Winning regime — increase by 15%
+        if _was_adjustment_effective(profile_id, "max_position_pct") == "worsened":
+            return None
+        new_pct = round(min(0.20, current_pct * 1.15), 4)
+        if new_pct <= current_pct:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, max_position_pct=new_pct)
+        reason = (
+            f"{current_regime} regime win rate {current_regime_wr:.0f}% "
+            f"vs {overall_wr:.0f}% overall — increasing exposure to edge"
+        )
+        log_tuning_change(
+            profile_id, user_id, "regime_position_sizing",
+            "max_position_pct", str(current_pct), str(new_pct), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return f"Increased position size from {current_pct:.1%} to {new_pct:.1%} ({reason})"
+
+    return None
+
+
+def _optimize_strategy_toggles(conn, ctx, profile_id, user_id,
+                                overall_wr, resolved):
+    """Disable the worst-performing strategy if it's dragging down results."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(ai_predictions)").fetchall()}
+    if "strategy_type" not in cols:
+        return None
+
+    rows = conn.execute(
+        """SELECT strategy_type, COUNT(*) as total,
+                  SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) as wins
+           FROM ai_predictions
+           WHERE status='resolved' AND strategy_type IS NOT NULL
+           GROUP BY strategy_type HAVING COUNT(*) >= 10
+           ORDER BY (CAST(SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) AS REAL)
+                     / COUNT(*)) ASC"""
+    ).fetchall()
+
+    if not rows:
+        return None
+
+    # Count currently enabled toggles
+    enabled_count = sum(1 for col in _STRATEGY_TYPE_TO_TOGGLE.values()
+                        if getattr(ctx, col, True))
+    if enabled_count < 2:
+        return None  # Never disable the last strategy
+
+    for r in rows:
+        stype = r["strategy_type"]
+        total = r["total"]
+        wr = (r["wins"] / total * 100) if total > 0 else 0
+
+        # Must be both bad absolutely AND bad relative to overall
+        if wr >= 30 or (overall_wr - wr) < 15:
+            continue
+
+        toggle_col = _STRATEGY_TYPE_TO_TOGGLE.get(stype)
+        if not toggle_col:
+            # No toggle — log as recommendation only
+            from display_names import display_name as _dn
+            return (
+                f"Recommendation: {_dn(stype)} has {wr:.0f}% win rate "
+                f"({r['wins']}/{total}) vs {overall_wr:.0f}% overall — "
+                f"consider removing from strategy mix"
+            )
+
+        if not getattr(ctx, toggle_col, True):
+            continue  # Already disabled
+
+        if _get_recent_adjustment(profile_id, toggle_col, days=3):
+            continue
+        if _was_adjustment_effective(profile_id, toggle_col) == "worsened":
+            continue
+
+        from models import update_trading_profile, log_tuning_change
+        from display_names import display_name as _dn
+        update_trading_profile(profile_id, **{toggle_col: 0})
+        reason = (
+            f"{_dn(stype)} win rate {wr:.0f}% ({r['wins']}/{total}) "
+            f"vs {overall_wr:.0f}% overall"
+        )
+        log_tuning_change(
+            profile_id, user_id, "strategy_toggle",
+            toggle_col, "1", "0", reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return f"Disabled {_dn(stype)} strategy ({reason})"
+
+    return None
+
+
+def _optimize_stop_take_profit(conn, ctx, profile_id, user_id,
+                                overall_wr, resolved):
+    """Adjust stop-loss and take-profit based on actual trade P&L distribution."""
+    table_check = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='trades'"
+    ).fetchone()
+    if not table_check:
+        return None
+
+    # Get closed trades with P&L
+    trades = conn.execute(
+        """SELECT price, qty, pnl, stop_loss, take_profit
+           FROM trades
+           WHERE pnl IS NOT NULL AND lower(side) = 'buy'
+             AND price > 0 AND qty > 0"""
+    ).fetchall()
+
+    if len(trades) < 15:
+        return None
+
+    losses = []
+    wins = []
+    for t in trades:
+        ret_pct = (t["pnl"] / (t["price"] * t["qty"])) * 100
+        if t["pnl"] < 0:
+            losses.append(ret_pct)
+        elif t["pnl"] > 0:
+            wins.append(ret_pct)
+
+    # --- Stop-loss optimization ---
+    if not _get_recent_adjustment(profile_id, "stop_loss_pct", days=3):
+        if _was_adjustment_effective(profile_id, "stop_loss_pct") != "worsened":
+            if losses and overall_wr > 45:
+                sl_pct = ctx.stop_loss_pct * 100  # e.g., 3.0
+                # Count losses that are near the stop level (within 1% of stop)
+                near_stop = [l for l in losses if abs(l) <= sl_pct + 1.0]
+                if len(near_stop) > len(losses) * 0.4:
+                    # 40%+ of losses cluster near the stop → stop is too tight
+                    new_sl = round(min(0.08, ctx.stop_loss_pct * 1.20), 4)
+                    if new_sl > ctx.stop_loss_pct:
+                        from models import update_trading_profile, log_tuning_change
+                        old_val = ctx.stop_loss_pct
+                        update_trading_profile(profile_id, stop_loss_pct=new_sl)
+                        reason = (
+                            f"{len(near_stop)}/{len(losses)} losses cluster near "
+                            f"{sl_pct:.1f}% stop — widening to give trades more room"
+                        )
+                        log_tuning_change(
+                            profile_id, user_id, "stop_loss_optimization",
+                            "stop_loss_pct", str(old_val), str(new_sl), reason,
+                            win_rate_at_change=overall_wr,
+                            predictions_resolved=resolved,
+                        )
+                        return (
+                            f"Widened stop-loss from {old_val:.1%} to {new_sl:.1%} "
+                            f"({reason})"
+                        )
+
+    # --- Take-profit optimization ---
+    if not _get_recent_adjustment(profile_id, "take_profit_pct", days=3):
+        if _was_adjustment_effective(profile_id, "take_profit_pct") != "worsened":
+            if wins:
+                tp_pct = ctx.take_profit_pct * 100  # e.g., 10.0
+                avg_win = sum(wins) / len(wins)
+                # If average win is less than 50% of the TP, TP is too ambitious
+                if avg_win < tp_pct * 0.5 and tp_pct > 3.0:
+                    new_tp = round(max(0.03, ctx.take_profit_pct * 0.80), 4)
+                    if new_tp < ctx.take_profit_pct:
+                        from models import update_trading_profile, log_tuning_change
+                        old_val = ctx.take_profit_pct
+                        update_trading_profile(profile_id, take_profit_pct=new_tp)
+                        reason = (
+                            f"Average win is +{avg_win:.1f}% but TP is at "
+                            f"{tp_pct:.1f}% — tightening to capture more gains"
+                        )
+                        log_tuning_change(
+                            profile_id, user_id, "take_profit_optimization",
+                            "take_profit_pct", str(old_val), str(new_tp), reason,
+                            win_rate_at_change=overall_wr,
+                            predictions_resolved=resolved,
+                        )
+                        return (
+                            f"Tightened take-profit from {old_val:.1%} to {new_tp:.1%} "
+                            f"({reason})"
+                        )
+
+    return None
+
+
+def _optimize_position_size_upward(conn, ctx, profile_id, user_id,
+                                    overall_wr, resolved):
+    """Increase position size when there is a proven, consistent edge."""
+    if overall_wr < 55 or resolved < 30:
+        return None
+    if ctx.max_position_pct >= 0.15:
+        return None  # Already at cap
+    if _get_recent_adjustment(profile_id, "max_position_pct", days=3):
+        return None
+    if _was_adjustment_effective(profile_id, "max_position_pct") == "worsened":
+        return None
+
+    # Verify average return is positive
+    avg_ret = conn.execute(
+        "SELECT AVG(actual_return_pct) FROM ai_predictions WHERE status='resolved'"
+    ).fetchone()[0]
+    if avg_ret is None or avg_ret <= 0:
+        return None
+
+    current = ctx.max_position_pct
+    new_pct = round(min(0.15, current * 1.15), 4)
+    if new_pct <= current:
+        return None
+
+    from models import update_trading_profile, log_tuning_change
+    update_trading_profile(profile_id, max_position_pct=new_pct)
+    reason = (
+        f"Win rate {overall_wr:.0f}% with +{avg_ret:.2f}% avg return "
+        f"on {resolved} predictions — increasing position size to capitalize"
+    )
+    log_tuning_change(
+        profile_id, user_id, "position_size_optimization",
+        "max_position_pct", str(current), str(new_pct), reason,
+        win_rate_at_change=overall_wr, predictions_resolved=resolved,
+    )
+    return f"Increased position size from {current:.1%} to {new_pct:.1%} ({reason})"
 
 
 # ---------------------------------------------------------------------------
@@ -1622,6 +2043,7 @@ def _analyze_failure_patterns(db_path):
 
         # Pattern 2: Win rate by strategy type
         if has_strategy:
+            from display_names import display_name as _dn
             rows = conn.execute(
                 "SELECT strategy_type, COUNT(*) as total, "
                 "SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) as wins "
@@ -1629,7 +2051,7 @@ def _analyze_failure_patterns(db_path):
                 "GROUP BY strategy_type HAVING COUNT(*) >= 5"
             ).fetchall()
             for r in rows:
-                stype = r[0]
+                stype = _dn(r[0])
                 total = r[1]
                 wr = r[2] / total * 100
                 if wr < 30:

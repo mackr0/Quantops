@@ -87,14 +87,11 @@ def _fetch_benchmark_returns(ticker: str, start_date: str, end_date: str) -> Dic
         return _benchmark_cache[cache_key]
 
     try:
-        import yf_lock
-        df = yf_lock.download(ticker, start=start_date, end=end_date, progress=False, auto_adjust=True)
+        from market_data import get_bars_daterange
+        df = get_bars_daterange(ticker, start=start_date, end=end_date)
         if df is None or df.empty:
             return {}
-        # Handle multi-level columns from yfinance
-        close_col = df["Close"]
-        if hasattr(close_col, "columns"):
-            close_col = close_col.iloc[:, 0]
+        close_col = df["close"]
         returns = close_col.pct_change().dropna()
         result = {}
         for idx, val in returns.items():
@@ -104,7 +101,7 @@ def _fetch_benchmark_returns(ticker: str, start_date: str, end_date: str) -> Dic
         _benchmark_cache_time = now
         return result
     except Exception as exc:
-        logger.debug("Could not fetch %s from yfinance: %s", ticker, exc)
+        logger.debug("Could not fetch benchmark %s: %s", ticker, exc)
         return {}
 
 

@@ -17,6 +17,86 @@ Rules going forward:
 
 ---
 
+## 2026-04-22 — Self-tuner upward optimization (Severity: feature)
+
+**Problem**: The self-tuner only prevented disasters (win rate < 35%) but never tried to improve a profile already performing at 50-60%. A profile at 61% win rate got "no changes needed" when it should be pursuing 70%+.
+
+**Solution**: Added 5 upward optimization strategies to `apply_auto_adjustments()` in `self_tuning.py`, gated on `overall_wr >= 35%`:
+
+1. **Confidence threshold optimization** — finds the best-performing confidence band and raises the threshold one band at a time
+2. **Regime-aware position sizing** — reduces exposure in losing market regimes, increases in winning ones
+3. **Strategy toggle optimization** — disables worst-performing strategies (never the last one)
+4. **Stop-loss/take-profit optimization** — widens stops that trigger too early, tightens TPs that never hit
+5. **Position size increase** — increases position size when edge is proven (55%+ WR, 30+ samples, cap 15%)
+
+**Safety**: One change per run (for clean auto-reversal attribution), 3-day cooldown, history check prevents repeating failed adjustments, hard caps on all parameters.
+
+**Also fixed**: Confidence threshold cascade bug — was raising 25→60→70 in one run instead of picking the right level once. Deploy script now auto-detects changed files and only restarts affected services, waits for cycle boundaries before restarting scheduler.
+
+**Tests**: 13 new in `test_self_tuning_upward.py`. 625 total passing.
+
+---
+
+## 2026-04-22 — Complete yfinance→Alpaca migration for all equity data paths (Severity: high)
+
+**Problem**: Multiple modules were still using yfinance (`yf.download`, `yf.Ticker`) for equity price data instead of the paid Alpaca API. This caused Yahoo rate limit errors (`YFRateLimitError: Too Many Requests`), thread-safety crashes, and silent data failures. The screener batch downloads were the worst offenders — hitting Yahoo with 50+ symbols simultaneously and getting rate-limited.
+
+**Files migrated to Alpaca primary**:
+- `screener.py`: `screen_by_price_range`, `find_volume_surges`, `find_momentum_stocks`, `find_breakouts` — all now use `_get_bars_for_symbols()` via Alpaca
+- `market_data.py`: `get_sector_rotation` (sector ETFs), `get_relative_strength_vs_sector`, `get_snapshot`, `get_bars_daterange` — all now try Alpaca first
+- `correlation.py`: `_fetch_returns` — now uses `get_bars` per symbol via Alpaca
+- `metrics.py`: `_fetch_benchmark_returns` — now uses `get_bars_daterange` via Alpaca
+- `backtester.py`: `_download_symbol`, `_fetch_universe_batch` — both now use Alpaca
+- `ai_tracker.py`: `_get_current_price` — now uses `api.get_latest_trade()` directly
+- `app.py`: added `load_dotenv()` — gunicorn web process had no env vars, causing all Alpaca calls from the dashboard to fail silently (broke sector rotation widget)
+
+**Earnings calendar optimization**: Changed refresh interval from 24 hours to 7 days, and added smart cache: if a future earnings date is stored, no refetch needed until that date passes. Earnings are quarterly events — daily re-checking was pointless and hammered Yahoo.
+
+**Ensemble cost optimization**: Raised `CHUNK_SIZE` from 5 to 15 in `ensemble.py`. Each specialist now processes the full shortlist in 1 API call instead of 3. Cuts ensemble AI cost ~60%.
+
+**Political context cache**: Added 30-minute cache in `trade_pipeline.py` so all MAGA-mode profiles share one political analysis call instead of each making their own.
+
+**Tests added**: 6 new tests in `test_alpaca_data_migration.py` enforcing Alpaca-first in screener, ai_tracker, correlation, metrics, market_data, backtester, and both app.py/multi_scheduler.py dotenv loading. 610 total tests passing.
+
+---
+
+## 2026-04-22 — AI prediction resolution broken for all profiles (Severity: critical)
+
+**Problem**: Dashboard showed "0 / 20 (0%)" for Large Cap resolved predictions despite having trades going back 5 days. Small Cap Aggressive had only 5 resolved out of 380 total. Multiple profiles were silently failing to resolve predictions every cycle.
+
+**Root causes (three cascading failures)**:
+
+1. **`days_held` column missing** — The `ai_predictions` table in several profile DBs lacked the `days_held` column. The resolution `UPDATE` statement included `days_held = ?` which threw `sqlite3.OperationalError: no such column: days_held`, killing the entire resolution task. Fixed in the earlier `_migrate_all_columns` patch, but that fix wasn't deployed to all profile DBs until this session.
+
+2. **Alpaca data API returning 401 in scheduler** — `multi_scheduler.py` never imported `config.py` or called `load_dotenv()`. Environment variables `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` were not loaded in the scheduler process. The shared `market_data._get_alpaca_data_client()` got empty keys → 401 Unauthorized → fell back to yfinance. yfinance then failed intermittently due to thread-safety issues in the ThreadPoolExecutor, causing 0 prices → 0 resolutions.
+
+3. **`_get_current_price` ignored the per-profile API client** — The function called `market_data.get_bars(symbol, api=api)` but `get_bars` ignores the `api` parameter entirely and uses its own module-level client. The per-profile API client (which has valid, authenticated credentials) was passed but never used.
+
+**Fix**:
+- Added `from dotenv import load_dotenv; load_dotenv()` at top of `multi_scheduler.py` before any imports that read env vars
+- Rewrote `ai_tracker._get_current_price()` to use `api.get_latest_trade(symbol)` as primary path (uses the per-profile authenticated API directly), falling back to `market_data.get_bars()` only if that fails
+- Added price validation guard in `record_prediction()`: rejects predictions with `price_at_prediction <= 0` to prevent unresolvable records
+- Fixed 40 existing predictions with `price=0` (all from Apr 17 profile setup day) by marking them `status='resolved', actual_outcome='data_error'`
+- Added thread-safety locks to `political_sentiment.py` and `options_oracle.py` yfinance calls
+
+**After fix**: Manual resolution run resolved 124 predictions for Small Cap Aggressive (was stuck at 5), 79 for Small Cap Shorts, 42 for Small Cap, 35 for Mid Cap. All profiles now resolving correctly.
+
+**Why it wasn't caught**: The resolution task swallowed the `OperationalError` inside the task runner's generic try/except, logging `[TASK FAIL]` but continuing. The subsequent price-fetch failures returned None silently (no warning logged because `get_bars` returns empty DataFrames, not exceptions). The dashboard showed "0 resolved" which looked like "no data yet" rather than "resolution is broken."
+
+**Test coverage**: Existing 605 tests pass. The `_get_current_price` change is covered by the prediction resolution integration test which mocks the API client. The `record_prediction` price guard prevents future price=0 records.
+
+---
+
+## 2026-04-22 — yfinance thread safety audit (Severity: medium)
+
+**Problem**: Thread-safety wrappers (`yf_lock`) were missing on `yf.Ticker()` calls in `political_sentiment.py` and `options_oracle.py`. These could cause `RuntimeError: dictionary changed size during iteration` when multiple profiles run concurrently in the ThreadPoolExecutor.
+
+**Fix**: Wrapped yfinance Ticker creation in both modules with `yf_lock._lock`. No functional change — purely thread safety.
+
+**Honest assessment of remaining yfinance usage**: yfinance is correctly used as the ONLY source for: VIX index data, fundamentals, insider trades, options chains, earnings dates, analyst recommendations. These have no Alpaca equivalent. For equity price data (bars, latest trade), Alpaca is now the primary source everywhere. `backtester.py` still uses yfinance directly for bulk historical data (intentional — 720-day cache per symbol for backtesting).
+
+---
+
 ## 2026-04-15 — FIFO P&L backfilled onto closed BUY rows (no more useless "open" or "closed" labels)
 
 **Severity:** medium UX — user feedback: "having a bunch of random closed
