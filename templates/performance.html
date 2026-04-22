@@ -909,7 +909,7 @@
                 </tbody>
             </table>
             {% if tuning_status|length > 5 %}
-            <button class="outline secondary" style="margin-top:0.5rem;padding:0.25rem 0.75rem;font-size:0.85rem;" onclick="var rows=document.querySelectorAll('.tuning-status-row');var hidden=rows[5]&&rows[5].style.display==='none';rows.forEach(function(r,i){if(i>=5)r.style.display=hidden?'':'none';});this.textContent=hidden?'Show less':'Show all ('+rows.length+')';">Show all ({{ tuning_status|length }})</button>
+            <div class="paginator" data-target="tuning-status-row" data-per-page="5"></div>
             {% endif %}
         </div>
     </article>
@@ -964,7 +964,7 @@
                 </tbody>
             </table>
             {% if tuning_history|length > 5 %}
-            <button class="outline secondary" style="margin-top:0.5rem;padding:0.25rem 0.75rem;font-size:0.85rem;" onclick="var rows=document.querySelectorAll('.tuning-history-row');var hidden=rows[5]&&rows[5].style.display==='none';rows.forEach(function(r,i){if(i>=5)r.style.display=hidden?'':'none';});this.textContent=hidden?'Show less':'Show all ('+rows.length+')';">Show all ({{ tuning_history|length }})</button>
+            <div class="paginator" data-target="tuning-history-row" data-per-page="5"></div>
             {% endif %}
         </div>
     </article>
@@ -982,11 +982,14 @@
         {% if learned_patterns %}
         <ul style="list-style:none;padding:0;">
             {% for pattern in learned_patterns %}
-            <li style="padding:0.4rem 0.75rem;margin-bottom:0.25rem;border-left:3px solid {% if 'Avoid' in pattern or 'cautious' in pattern %}#f44336{% elif 'Favor' in pattern or 'edge' in pattern %}#00c853{% else %}#888{% endif %};background:#f9f9f9;border-radius:0 4px 4px 0;font-size:0.9rem;">
+            <li class="learned-pattern-row" style="{% if loop.index > 5 %}display:none;{% endif %}padding:0.4rem 0.75rem;margin-bottom:0.25rem;border-left:3px solid {% if 'Avoid' in pattern or 'cautious' in pattern %}#f44336{% elif 'Favor' in pattern or 'edge' in pattern %}#00c853{% else %}#888{% endif %};background:#f9f9f9;border-radius:0 4px 4px 0;font-size:0.9rem;">
                 {{ pattern }}
             </li>
             {% endfor %}
         </ul>
+        {% if learned_patterns|length > 5 %}
+        <div class="paginator" data-target="learned-pattern-row" data-per-page="5"></div>
+        {% endif %}
         {% else %}
         <p class="muted">Patterns will appear after the system has enough resolved predictions with regime and strategy data. New predictions now store market regime and strategy type for pattern analysis.</p>
         {% endif %}
@@ -1562,7 +1565,7 @@
                 </thead>
                 <tbody>
                     {% for a in sec_alerts %}
-                    <tr>
+                    <tr class="sec-alert-row" {% if loop.index > 5 %}style="display:none;"{% endif %}>
                         <td class="muted">{{ a.profile_name }}</td>
                         <td><strong>{{ a.symbol }}</strong></td>
                         <td>{{ a.form }}</td>
@@ -1578,7 +1581,7 @@
                         </td>
                         <td>
                             {% if a.signal == 'concerning' %}
-                                <span class="pnl-neg">⚠ concerning</span>
+                                <span class="pnl-neg">concerning</span>
                             {% elif a.signal == 'positive' %}
                                 <span class="pnl-pos">positive</span>
                             {% else %}
@@ -1590,6 +1593,9 @@
                     {% endfor %}
                 </tbody>
             </table>
+            {% if sec_alerts|length > 5 %}
+            <div class="paginator" data-target="sec-alert-row" data-per-page="5"></div>
+            {% endif %}
         </div>
         {% endif %}
     </article>
@@ -1739,6 +1745,51 @@ function showTab(event, tabName) {
             }
         });
     }
+})();
+</script>
+
+<!-- Reusable paginator for any table/list with a .paginator div -->
+<script>
+(function() {
+    document.querySelectorAll('.paginator').forEach(function(el) {
+        var cls = el.getAttribute('data-target');
+        var perPage = parseInt(el.getAttribute('data-per-page')) || 5;
+        var rows = document.querySelectorAll('.' + cls);
+        var total = rows.length;
+        var pages = Math.ceil(total / perPage);
+        var current = 1;
+
+        if (pages <= 1) { el.style.display = 'none'; return; }
+
+        function render() {
+            rows.forEach(function(r, i) {
+                var show = (i >= (current - 1) * perPage && i < current * perPage);
+                r.style.display = show ? '' : 'none';
+            });
+            el.innerHTML = '';
+            var prev = document.createElement('button');
+            prev.textContent = '\u2190';
+            prev.className = 'outline secondary';
+            prev.style.cssText = 'padding:0.2rem 0.5rem;margin-right:0.25rem;font-size:0.85rem;';
+            prev.disabled = (current <= 1);
+            prev.onclick = function() { if (current > 1) { current--; render(); } };
+            el.appendChild(prev);
+
+            var info = document.createElement('span');
+            info.style.cssText = 'font-size:0.85rem;margin:0 0.5rem;color:#888;';
+            info.textContent = 'Page ' + current + ' of ' + pages + ' (' + total + ' total)';
+            el.appendChild(info);
+
+            var next = document.createElement('button');
+            next.textContent = '\u2192';
+            next.className = 'outline secondary';
+            next.style.cssText = 'padding:0.2rem 0.5rem;margin-left:0.25rem;font-size:0.85rem;';
+            next.disabled = (current >= pages);
+            next.onclick = function() { if (current < pages) { current++; render(); } };
+            el.appendChild(next);
+        }
+        render();
+    });
 })();
 </script>
 
