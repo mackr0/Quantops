@@ -1094,6 +1094,12 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 features_payload["put_call_ratio"] = alt.get("options", {}).get("put_call_ratio", 0)
                 features_payload["vwap_position"] = alt.get("intraday", {}).get("vwap_position", "at")
                 features_payload["pe_trailing"] = alt.get("fundamentals", {}).get("pe_trailing", 0)
+                # New per-symbol alt data
+                features_payload["congress_direction"] = alt.get("congressional", {}).get("net_direction", "neutral")
+                features_payload["finra_short_vol_ratio"] = alt.get("finra_short_vol", {}).get("short_volume_ratio", 0)
+                features_payload["insider_cluster"] = 1 if alt.get("insider_cluster", {}).get("is_cluster") else 0
+                features_payload["eps_revision_direction"] = alt.get("analyst_estimates", {}).get("eps_revision_direction", "flat")
+                features_payload["eps_revision_magnitude"] = alt.get("analyst_estimates", {}).get("revision_magnitude_pct", 0)
             social = c.get("social") or {}
             if social:
                 features_payload["reddit_mentions"] = social.get("mentions", 0)
@@ -1101,6 +1107,15 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             # Market context
             features_payload["_regime"] = current_regime
             features_payload["_market_signal_count"] = len([v for v in votes.values() if v != "HOLD"])
+            # Market-wide macro features
+            _macro = market_ctx.get("macro_context", {})
+            _yc = _macro.get("yield_curve", {})
+            features_payload["_yield_spread_10y2y"] = _yc.get("spread_10y_2y", 0)
+            features_payload["_curve_status"] = _yc.get("curve_status", "normal")
+            features_payload["_cboe_skew"] = _macro.get("cboe_skew", {}).get("skew_value", 0)
+            _fm = _macro.get("fred_macro", {})
+            features_payload["_unemployment_rate"] = _fm.get("unemployment_rate", 0)
+            features_payload["_cpi_yoy"] = _fm.get("cpi_yoy", 0)
 
             record_prediction(
                 symbol=sym,
@@ -1720,6 +1735,14 @@ def _build_market_context(regime_info, political_context, ctx):
         except Exception:
             pass
 
+    # Macro data (yield curve, CBOE skew, economic indicators, ETF flows)
+    macro_context = {}
+    try:
+        from macro_data import get_all_macro_data
+        macro_context = get_all_macro_data()
+    except Exception:
+        pass
+
     return {
         "regime": regime.get("regime", "unknown"),
         "vix": regime.get("vix", 0),
@@ -1729,4 +1752,5 @@ def _build_market_context(regime_info, political_context, ctx):
         "learned_patterns": learned_patterns,
         "sector_rotation": sector_rotation,
         "crisis_context": crisis_ctx,
+        "macro_context": macro_context,
     }

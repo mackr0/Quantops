@@ -47,6 +47,8 @@ THRESHOLDS = {
     "gold_rally_pct":          3.0,    # GLD 5d move to trigger safe-haven flag
     "credit_stress_drop_pct": -2.0,    # HYG/LQD ratio drop over 10 days
     "event_cluster_count":     3,      # price shocks in last 30 minutes
+    "skew_extreme":            150.0,  # CBOE Skew — institutional tail-risk hedging
+    "yield_curve_inverted":    0.0,    # 10y-2y spread <= 0
 }
 
 
@@ -107,6 +109,14 @@ def detect_crisis_state(db_path: Optional[str] = None) -> Dict[str, Any]:
         cluster_signal = _check_event_cluster(db_path, readings)
         if cluster_signal:
             signals.append(cluster_signal)
+
+    skew_signal = _check_cboe_skew(readings)
+    if skew_signal:
+        signals.append(skew_signal)
+
+    yc_signal = _check_yield_curve_inversion(readings)
+    if yc_signal:
+        signals.append(yc_signal)
 
     level = _classify_level(signals, readings.get("vix", 0) or 0)
     return {
@@ -292,6 +302,42 @@ def _check_event_cluster(db_path: str,
             }
     except Exception as exc:
         logger.warning("Event cluster check failed: %s", exc)
+    return None
+
+
+def _check_cboe_skew(readings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """CBOE Skew Index > 150 = extreme tail-risk hedging by institutions."""
+    try:
+        from macro_data import get_cboe_skew
+        skew_data = get_cboe_skew()
+        skew_val = skew_data.get("skew_value", 0)
+        readings["cboe_skew"] = skew_val
+        if skew_val >= THRESHOLDS["skew_extreme"]:
+            return {
+                "name": "skew_extreme",
+                "severity": "medium",
+                "detail": f"CBOE Skew {skew_val:.0f} (institutions hedging tail risk)",
+            }
+    except Exception as exc:
+        logger.debug("CBOE skew crisis check failed: %s", exc)
+    return None
+
+
+def _check_yield_curve_inversion(readings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """10-year minus 2-year Treasury spread <= 0 = yield curve inverted."""
+    try:
+        from macro_data import get_yield_curve
+        yc = get_yield_curve()
+        spread = yc.get("spread_10y_2y", 0)
+        readings["yield_spread_10y2y"] = spread
+        if spread <= THRESHOLDS["yield_curve_inverted"] and yc.get("rate_10y", 0) > 0:
+            return {
+                "name": "yield_curve_inverted",
+                "severity": "medium",
+                "detail": f"10y-2y spread {spread:+.2f}% (inverted — recession signal)",
+            }
+    except Exception as exc:
+        logger.debug("Yield curve crisis check failed: %s", exc)
     return None
 
 

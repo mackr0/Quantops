@@ -602,6 +602,41 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         if outflows:
             market_section += f"\n  Sector outflows: {', '.join(outflows)}"
 
+    # Macro data (yield curve, CBOE skew, ETF flows, economic indicators)
+    macro = market_context.get("macro_context", {})
+    yc = macro.get("yield_curve", {})
+    if yc.get("rate_10y"):
+        spread = yc.get("spread_10y_2y", 0)
+        status = yc.get("curve_status", "normal").upper()
+        yc_line = (f"YIELD CURVE: 2y={yc['rate_2y']:.2f}% 10y={yc['rate_10y']:.2f}% "
+                   f"spread={spread:+.2f}% ({status})")
+        if status == "INVERTED":
+            yc_line += " — recession signal"
+        market_section += f"\n  {yc_line}"
+    skew = macro.get("cboe_skew", {})
+    if skew.get("skew_value"):
+        market_section += (f"\n  TAIL RISK: CBOE Skew {skew['skew_value']:.0f} "
+                           f"({skew.get('skew_signal', 'normal')})")
+    flows = macro.get("etf_flows", {})
+    if flows:
+        flow_in = [f"{_sector_display.get(s,s)}(${d['estimated_weekly_flow']/1e9:+.1f}B)"
+                   for s, d in flows.items() if d.get("flow_direction") == "inflow"
+                   and d.get("magnitude") in ("strong", "moderate")]
+        flow_out = [f"{_sector_display.get(s,s)}(${d['estimated_weekly_flow']/1e9:+.1f}B)"
+                    for s, d in flows.items() if d.get("flow_direction") == "outflow"
+                    and d.get("magnitude") in ("strong", "moderate")]
+        if flow_in:
+            market_section += f"\n  ETF INFLOWS: {', '.join(flow_in)}"
+        if flow_out:
+            market_section += f"\n  ETF OUTFLOWS: {', '.join(flow_out)}"
+    fred = macro.get("fred_macro", {})
+    if fred.get("unemployment_rate"):
+        market_section += (f"\n  MACRO: Unemployment {fred['unemployment_rate']:.1f}% "
+                           f"({fred.get('unemployment_trend', 'stable')}), "
+                           f"CPI {fred.get('cpi_yoy', 0):.1f}% YoY, "
+                           f"Consumer sentiment {fred.get('consumer_sentiment', 0):.0f} "
+                           f"({fred.get('consumer_sentiment_trend', 'stable')})")
+
     # --- Candidates section ---
     cand_lines = []
     for i, c in enumerate(candidates_data, 1):
@@ -679,6 +714,27 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             fund = alt.get("fundamentals", {})
             if fund.get("pe_trailing", 0) > 0:
                 alt_parts.append(f"PE: {fund['pe_trailing']:.1f}")
+            # New per-symbol sources
+            congress = alt.get("congressional", {})
+            if congress.get("net_direction") != "neutral":
+                alt_parts.append(
+                    f"Congress: {congress['recent_transactions']} members "
+                    f"{congress['net_direction']} "
+                    f"(${congress.get('total_value', 0):,.0f})")
+            finra = alt.get("finra_short_vol", {})
+            if finra.get("is_elevated"):
+                alt_parts.append(
+                    f"Short vol: {finra['short_volume_ratio']:.0%} of daily (elevated)")
+            cluster = alt.get("insider_cluster", {})
+            if cluster.get("is_cluster"):
+                alt_parts.append(
+                    f"INSIDER CLUSTER: {cluster['insider_count']} insiders "
+                    f"{cluster['cluster_direction']} ${cluster['total_value']:,.0f}")
+            estimates = alt.get("analyst_estimates", {})
+            if estimates.get("eps_revision_direction") != "flat":
+                alt_parts.append(
+                    f"EPS revised {estimates['eps_revision_direction'].upper()} "
+                    f"{abs(estimates.get('revision_magnitude_pct', 0)):.0f}%")
             if alt_parts:
                 line += f"\n     ALT DATA: {' | '.join(alt_parts)}"
 

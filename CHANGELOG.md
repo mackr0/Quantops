@@ -17,6 +17,30 @@ Rules going forward:
 
 ---
 
+## 2026-04-22 — 8 free alternative data sources added (Severity: feature)
+
+Added 8 new data sources to give the AI richer context for trading decisions. All free, no API keys required.
+
+**Per-symbol (added to `alternative_data.py`):**
+1. **Congressional Trading** — QuiverQuant API: which members of Congress are buying/selling each stock
+2. **FINRA Daily Short Volume** — daily short volume ratio per symbol, flags when >50% (elevated)
+3. **Insider Cluster Detection** — flags when 3+ insiders buy the same stock within 90 days
+4. **Analyst Estimate Revisions** — EPS/revenue estimate direction (up/down/flat) from yfinance
+
+**Market-wide (new `macro_data.py`):**
+5. **Treasury Yield Curve** — FRED API: 2y, 10y, 30y rates, spread, inversion detection
+6. **ETF Sector Flow Estimates** — computed from existing Alpaca bar data for sector ETFs
+7. **CBOE Skew Index** — yfinance `^SKEW`: measures institutional tail-risk hedging
+8. **FRED Leading Economic Indicators** — unemployment, CPI YoY, consumer sentiment, initial claims
+
+**Pipeline integration:** All per-symbol data flows into the AI prompt per-candidate. All macro data renders in the market context section. New features flattened into `features_json` for meta-model training (7 new numeric, 3 new categorical).
+
+**Crisis detector:** Two new signals — CBOE Skew extreme (>150) and yield curve inversion (10y-2y < 0).
+
+**Tests:** 22 new in `test_alternative_data_new.py`. 647 total passing.
+
+---
+
 ## 2026-04-22 — Remove cross-profile suggestions (Severity: cleanup)
 
 Removed the cross-profile suggestion logic from `apply_auto_adjustments()`. It recommended copying another profile's confidence threshold but never auto-applied it, generating noise like "raise to 25" (the default floor). The upward optimizer now handles this better by analyzing each profile's own confidence band data and making targeted, auto-reversible adjustments.

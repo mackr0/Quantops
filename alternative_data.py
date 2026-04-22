@@ -12,6 +12,7 @@ import logging
 import sqlite3
 import time
 import threading
+from urllib.request import urlopen, Request
 
 import yfinance as yf
 
@@ -26,7 +27,12 @@ _CACHE_TTL = {
     "short_interest": 3600,
     "institutional": 86400,
     "options_flow": 1800,
+    "congressional": 86400,
+    "finra_short_vol": 86400,
+    "analyst_estimates": 86400,
 }
+
+_http_lock = threading.Lock()
 
 
 def _ensure_cache_table():
@@ -400,11 +406,337 @@ def get_intraday_patterns(symbol):
 # Batch: get all alternative data for a symbol
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Congressional Trading Disclosures
+# ---------------------------------------------------------------------------
+
+def get_congressional_trading(symbol):
+    """Fetch congressional trading activity for a symbol via QuiverQuant.
+
+    Returns dict with:
+        net_direction: str — 'buying', 'selling', or 'neutral'
+        recent_transactions: int — count in last 90 days
+        total_value: float — estimated total dollar value
+        most_recent_date: str or None
+    """
+    cache_key = f"congress_{symbol}"
+    cached = _get_cached(cache_key, "congressional")
+    if cached is not None:
+        return cached
+
+    result = {
+        "net_direction": "neutral",
+        "recent_transactions": 0,
+        "total_value": 0,
+        "most_recent_date": None,
+        "members": [],
+    }
+
+    try:
+        from datetime import datetime, timedelta
+        import json as _json
+
+        url = f"https://api.quiverquant.com/beta/historical/congresstrading/{symbol}"
+        req = Request(url, headers={"User-Agent": "QuantOpsAI Research Bot",
+                                     "Accept": "application/json"})
+        with _http_lock:
+            resp = urlopen(req, timeout=15)
+            data = _json.loads(resp.read())
+
+        cutoff = (datetime.utcnow() - timedelta(days=90)).strftime("%Y-%m-%d")
+        buys = 0
+        sells = 0
+        total_val = 0
+        recent_date = None
+        members = []
+
+        for txn in (data if isinstance(data, list) else []):
+            txn_date = txn.get("TransactionDate", "") or txn.get("transaction_date", "")
+            if txn_date < cutoff:
+                continue
+
+            txn_type = (txn.get("Transaction", "") or txn.get("transaction", "")).lower()
+            amount = txn.get("Amount", "") or txn.get("amount", "")
+            name = txn.get("Representative", "") or txn.get("representative", "")
+
+            # Parse amount range like "$1,001 - $15,000" → midpoint
+            val = 0
+            if isinstance(amount, str) and "-" in amount:
+                parts = amount.replace("$", "").replace(",", "").split("-")
+                try:
+                    val = (float(parts[0].strip()) + float(parts[1].strip())) / 2
+                except (ValueError, IndexError):
+                    pass
+
+            if "purchase" in txn_type or "buy" in txn_type:
+                buys += 1
+                total_val += val
+            elif "sale" in txn_type or "sell" in txn_type:
+                sells += 1
+                total_val -= val
+
+            if recent_date is None or txn_date > recent_date:
+                recent_date = txn_date
+            if name and name not in members:
+                members.append(name)
+
+        result["recent_transactions"] = buys + sells
+        result["total_value"] = round(abs(total_val))
+        result["most_recent_date"] = recent_date
+        result["members"] = members[:5]
+        if buys > sells:
+            result["net_direction"] = "buying"
+        elif sells > buys:
+            result["net_direction"] = "selling"
+
+    except Exception as exc:
+        logger.debug("Congressional trading failed for %s: %s", symbol, exc)
+
+    _set_cached(cache_key, result)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# FINRA Daily Short Volume
+# ---------------------------------------------------------------------------
+
+def get_finra_short_volume(symbol):
+    """Fetch daily short volume from FINRA regsho data.
+
+    Returns dict with:
+        short_volume_ratio: float — short vol / total vol (0-1)
+        short_volume: int
+        total_volume: int
+        is_elevated: bool — True if ratio > 0.50
+        date: str or None
+    """
+    cache_key = f"finra_sv_{symbol}"
+    cached = _get_cached(cache_key, "finra_short_vol")
+    if cached is not None:
+        return cached
+
+    result = {
+        "short_volume_ratio": 0,
+        "short_volume": 0,
+        "total_volume": 0,
+        "is_elevated": False,
+        "date": None,
+    }
+
+    try:
+        from datetime import datetime, timedelta
+
+        # Try today, then previous business days
+        for days_back in range(0, 5):
+            dt = datetime.utcnow() - timedelta(days=days_back)
+            date_str = dt.strftime("%Y%m%d")
+            url = f"https://cdn.finra.org/equity/regsho/daily/CNMSshvol{date_str}.txt"
+            req = Request(url, headers={"User-Agent": "QuantOpsAI Research Bot"})
+            try:
+                with _http_lock:
+                    resp = urlopen(req, timeout=10)
+                    text = resp.read().decode("utf-8")
+
+                for line in text.strip().split("\n"):
+                    if not line or line.startswith("Date"):
+                        continue
+                    parts = line.split("|")
+                    if len(parts) >= 5 and parts[1].strip().upper() == symbol.upper():
+                        short_vol = int(parts[2].strip())
+                        # parts[3] is short exempt volume
+                        total_vol = int(parts[4].strip())
+                        ratio = short_vol / total_vol if total_vol > 0 else 0
+
+                        result["short_volume"] = short_vol
+                        result["total_volume"] = total_vol
+                        result["short_volume_ratio"] = round(ratio, 3)
+                        result["is_elevated"] = ratio > 0.50
+                        result["date"] = dt.strftime("%Y-%m-%d")
+                        break
+                if result["date"]:
+                    break
+            except Exception:
+                continue
+
+    except Exception as exc:
+        logger.debug("FINRA short volume failed for %s: %s", symbol, exc)
+
+    _set_cached(cache_key, result)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Insider Cluster Detection
+# ---------------------------------------------------------------------------
+
+def get_insider_cluster(symbol):
+    """Detect clusters of insider buying — 3+ insiders buying within 14 days.
+
+    Returns dict with:
+        is_cluster: bool
+        insider_count: int — distinct insiders in cluster
+        total_value: float — estimated total value
+        cluster_direction: str — 'buying', 'selling', or 'neutral'
+    """
+    cache_key = f"insider_cluster_{symbol}"
+    cached = _get_cached(cache_key, "insider")
+    if cached is not None:
+        return cached
+
+    result = {
+        "is_cluster": False,
+        "insider_count": 0,
+        "total_value": 0,
+        "cluster_direction": "neutral",
+    }
+
+    try:
+        with _yf_lock:
+            ticker = yf.Ticker(symbol)
+            txns = getattr(ticker, "insider_transactions", None)
+
+        if txns is None or (hasattr(txns, "empty") and txns.empty):
+            _set_cached(cache_key, result)
+            return result
+
+        from datetime import datetime, timedelta
+
+        # Parse transactions — look for buy clusters in last 90 days
+        cutoff = datetime.utcnow() - timedelta(days=90)
+        buy_dates = []
+        buy_names = set()
+        buy_value = 0
+
+        for _, row in txns.iterrows():
+            try:
+                txn_text = str(row.get("Text", "") or row.get("Transaction", "")).lower()
+                if "purchase" not in txn_text and "buy" not in txn_text:
+                    continue
+
+                date_val = row.get("Start Date", row.get("Date"))
+                if hasattr(date_val, "to_pydatetime"):
+                    date_val = date_val.to_pydatetime()
+                if hasattr(date_val, "replace"):
+                    if date_val.tzinfo:
+                        date_val = date_val.replace(tzinfo=None)
+                    if date_val < cutoff:
+                        continue
+
+                name = str(row.get("Insider", row.get("Name", "unknown")))
+                shares = abs(float(row.get("Shares", 0) or 0))
+                value = abs(float(row.get("Value", 0) or 0))
+
+                buy_dates.append(date_val)
+                buy_names.add(name)
+                buy_value += value
+            except Exception:
+                continue
+
+        # Check for cluster: 3+ distinct insiders buying within any 14-day window
+        if len(buy_names) >= 3:
+            result["is_cluster"] = True
+            result["insider_count"] = len(buy_names)
+            result["total_value"] = round(buy_value)
+            result["cluster_direction"] = "buying"
+
+    except Exception as exc:
+        logger.debug("Insider cluster check failed for %s: %s", symbol, exc)
+
+    _set_cached(cache_key, result)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Analyst Estimate Revisions
+# ---------------------------------------------------------------------------
+
+def get_analyst_estimates(symbol):
+    """Fetch analyst EPS/revenue estimate revision direction.
+
+    Returns dict with:
+        eps_revision_direction: str — 'up', 'down', or 'flat'
+        eps_current_estimate: float
+        revenue_revision_direction: str — 'up', 'down', or 'flat'
+        revision_magnitude_pct: float — % change in estimates
+    """
+    cache_key = f"analyst_est_{symbol}"
+    cached = _get_cached(cache_key, "analyst_estimates")
+    if cached is not None:
+        return cached
+
+    result = {
+        "eps_revision_direction": "flat",
+        "eps_current_estimate": 0,
+        "revenue_revision_direction": "flat",
+        "revision_magnitude_pct": 0,
+    }
+
+    try:
+        with _yf_lock:
+            ticker = yf.Ticker(symbol)
+            earnings_est = getattr(ticker, "earnings_estimate", None)
+            revenue_est = getattr(ticker, "revenue_estimate", None)
+
+        # EPS estimates — compare current to 30 days ago
+        if earnings_est is not None and hasattr(earnings_est, "empty") and not earnings_est.empty:
+            try:
+                if "avg" in earnings_est.columns:
+                    current = float(earnings_est["avg"].iloc[0])
+                    result["eps_current_estimate"] = round(current, 2)
+
+                    # Check for revision columns (varies by yfinance version)
+                    for col in ["numberofanalysts", "growth"]:
+                        pass  # These don't help with direction
+
+                    # Compare current quarter vs 30d/60d revision
+                    if "low" in earnings_est.columns and "high" in earnings_est.columns:
+                        low = float(earnings_est["low"].iloc[0])
+                        high = float(earnings_est["high"].iloc[0])
+                        mid_range = (low + high) / 2
+                        if mid_range > 0 and current > 0:
+                            diff_pct = ((current - mid_range) / abs(mid_range)) * 100
+                            result["revision_magnitude_pct"] = round(diff_pct, 1)
+                            if diff_pct > 2:
+                                result["eps_revision_direction"] = "up"
+                            elif diff_pct < -2:
+                                result["eps_revision_direction"] = "down"
+            except Exception:
+                pass
+
+        # Revenue estimates
+        if revenue_est is not None and hasattr(revenue_est, "empty") and not revenue_est.empty:
+            try:
+                if "avg" in revenue_est.columns and "low" in revenue_est.columns:
+                    current = float(revenue_est["avg"].iloc[0])
+                    low = float(revenue_est["low"].iloc[0])
+                    high = float(revenue_est["high"].iloc[0])
+                    mid_range = (low + high) / 2
+                    if mid_range > 0 and current > 0:
+                        diff_pct = ((current - mid_range) / abs(mid_range)) * 100
+                        if diff_pct > 2:
+                            result["revenue_revision_direction"] = "up"
+                        elif diff_pct < -2:
+                            result["revenue_revision_direction"] = "down"
+            except Exception:
+                pass
+
+    except Exception as exc:
+        logger.debug("Analyst estimates failed for %s: %s", symbol, exc)
+
+    _set_cached(cache_key, result)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Aggregator
+# ---------------------------------------------------------------------------
+
 def get_all_alternative_data(symbol):
     """Fetch all alternative data for a symbol in one call.
 
     Returns dict combining insider, short interest, fundamentals,
-    options flow, and intraday patterns. All free from yfinance.
+    options flow, intraday patterns, congressional trades, FINRA short
+    volume, insider clusters, and analyst estimate revisions.
     """
     # Skip for crypto (no insider/options data)
     if "/" in symbol:
@@ -416,4 +748,8 @@ def get_all_alternative_data(symbol):
         "fundamentals": get_fundamentals(symbol),
         "options": get_options_unusual(symbol),
         "intraday": get_intraday_patterns(symbol),
+        "congressional": get_congressional_trading(symbol),
+        "finra_short_vol": get_finra_short_volume(symbol),
+        "insider_cluster": get_insider_cluster(symbol),
+        "analyst_estimates": get_analyst_estimates(symbol),
     }

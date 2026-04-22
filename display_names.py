@@ -126,6 +126,28 @@ _DISPLAY_NAMES = {
     "options_signal":          "Options Signal",
     "vwap_position":           "VWAP Position",
     "_regime":                 "Market Regime",
+
+    # New alternative data features
+    "congress_direction":       "Congressional Trading",
+    "finra_short_vol_ratio":    "FINRA Short Volume Ratio",
+    "insider_cluster":          "Insider Buying Cluster",
+    "eps_revision_direction":   "EPS Revision Direction",
+    "eps_revision_magnitude":   "EPS Revision %",
+
+    # New macro features
+    "_yield_spread_10y2y":      "10Y-2Y Yield Spread",
+    "_curve_status":            "Yield Curve Status",
+    "_cboe_skew":               "CBOE Skew Index",
+    "_unemployment_rate":       "Unemployment Rate",
+    "_cpi_yoy":                 "CPI Year-over-Year",
+
+    # New crisis signals
+    "skew_extreme":             "CBOE Skew Extreme",
+    "yield_curve_inverted":     "Yield Curve Inverted",
+
+    # New crisis readings
+    "cboe_skew":                "CBOE Skew",
+    "yield_spread_10y2y":       "10Y-2Y Spread",
 }
 
 

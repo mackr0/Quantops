@@ -50,6 +50,10 @@ NUMERIC_FEATURES = [
     "nearest_fib_dist", "gap_pct", "rel_strength_vs_sector", "short_pct_float",
     "put_call_ratio", "pe_trailing", "reddit_mentions", "reddit_sentiment",
     "_market_signal_count",
+    # New per-symbol features
+    "finra_short_vol_ratio", "insider_cluster", "eps_revision_magnitude",
+    # New macro features
+    "_yield_spread_10y2y", "_cboe_skew", "_unemployment_rate", "_cpi_yoy",
 ]
 
 # Categorical features — one-hot encoded
@@ -60,6 +64,10 @@ CATEGORICAL_FEATURES = {
     "vwap_position": ["above", "at", "below"],
     "sector_trend": ["inflow", "outflow", "flat"],
     "_regime": ["bull", "bear", "sideways", "volatile", "unknown"],
+    # New categorical features
+    "congress_direction": ["buying", "selling", "neutral"],
+    "eps_revision_direction": ["up", "down", "flat"],
+    "_curve_status": ["normal", "flat", "inverted"],
 }
 
 
