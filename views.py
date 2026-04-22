@@ -1643,21 +1643,23 @@ def performance_dashboard():
     if all_return_sells:
         ai_perf["avg_return_on_sells"] = round(sum(all_return_sells) / len(all_return_sells), 2)
 
-    # Profit factor from ALL resolved prediction returns
-    all_returns = []
+    # Profit factor from BUY/SELL predictions only (not HOLDs — a HOLD
+    # "loss" means the price moved but no trade was made, so no money lost)
+    trade_returns = []
     for db_path in db_paths:
         try:
             conn = _sqlite3.connect(db_path)
             rows = conn.execute(
                 "SELECT actual_return_pct FROM ai_predictions "
-                "WHERE status='resolved' AND actual_return_pct IS NOT NULL"
+                "WHERE status='resolved' AND actual_return_pct IS NOT NULL "
+                "AND predicted_signal IN ('BUY', 'SELL')"
             ).fetchall()
             conn.close()
-            all_returns.extend(r[0] for r in rows if r[0] is not None)
+            trade_returns.extend(r[0] for r in rows if r[0] is not None)
         except Exception:
             pass
-    total_gains = sum(r for r in all_returns if r > 0)
-    total_losses_abs = abs(sum(r for r in all_returns if r < 0))
+    total_gains = sum(r for r in trade_returns if r > 0)
+    total_losses_abs = abs(sum(r for r in trade_returns if r < 0))
     if total_gains > 0 and total_losses_abs > 0:
         ai_perf["profit_factor"] = round(total_gains / total_losses_abs, 2)
 
