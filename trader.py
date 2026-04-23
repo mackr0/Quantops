@@ -278,6 +278,19 @@ def check_exits(ctx=None):
         if not check_can_submit(ctx, symbol, exit_side):
             continue
 
+        # Cancel any open orders for this symbol before submitting the exit.
+        # Alpaca rejects sells when a buy limit order is still open.
+        try:
+            open_orders = api.list_orders(status="open", symbols=[symbol])
+            for oo in open_orders:
+                try:
+                    api.cancel_order(oo.id)
+                    logging.info(f"Cancelled conflicting order {oo.id} for {symbol} before exit")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         if is_short:
             order = api.submit_order(
                 symbol=symbol,
