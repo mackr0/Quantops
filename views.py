@@ -2336,7 +2336,7 @@ def ai_dashboard():
         pass
 
     # --- Operations data ---
-    ai_cost_info = []
+    ai_cost_info = {"per_profile": [], "totals": {"today": 0.0, "7d": 0.0, "30d": 0.0}}
     try:
         from ai_cost_ledger import spend_summary
         for p in profiles:
@@ -2345,7 +2345,12 @@ def ai_dashboard():
             db = f"quantopsai_profile_{p['id']}.db"
             try:
                 summary = spend_summary(db)
-                ai_cost_info.append({"profile_name": p["name"], "spend": summary})
+                ai_cost_info["per_profile"].append({
+                    "profile_name": p["name"], "spend": summary,
+                })
+                ai_cost_info["totals"]["today"] += summary["today"]["usd"]
+                ai_cost_info["totals"]["7d"] += summary["7d"]["usd"]
+                ai_cost_info["totals"]["30d"] += summary["30d"]["usd"]
             except Exception:
                 pass
     except Exception:
