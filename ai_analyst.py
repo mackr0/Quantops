@@ -706,13 +706,16 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         alt = c.get("alt_data", {})
         if alt:
             alt_parts = []
+            # EVERY field access below uses .get() with defaults.
+            # Direct dict['key'] access is BANNED — it crashes when
+            # data sources are disabled or return empty dicts.
             insider = alt.get("insider", {})
-            if insider.get("net_direction") != "neutral":
-                alt_parts.append(f"Insiders: {insider['net_direction']} "
+            if insider.get("net_direction") and insider.get("net_direction") != "neutral":
+                alt_parts.append(f"Insiders: {insider.get('net_direction', '')} "
                                  f"({insider.get('recent_buys',0)}B/{insider.get('recent_sells',0)}S)")
             short = alt.get("short", {})
             if short.get("short_pct_float", 0) > 5:
-                alt_parts.append(f"Short: {short['short_pct_float']:.1f}% float "
+                alt_parts.append(f"Short: {short.get('short_pct_float', 0):.1f}% float "
                                  f"(squeeze risk: {short.get('squeeze_risk','low')})")
             opts = alt.get("options", {})
             if opts.get("unusual"):
@@ -721,55 +724,55 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             intra = alt.get("intraday", {})
             if intra.get("opening_range_breakout"):
                 alt_parts.append("ORB breakout")
-            if intra.get("vwap_position") != "at":
-                alt_parts.append(f"Intraday: {intra['vwap_position']} VWAP")
+            if intra.get("vwap_position") and intra.get("vwap_position") != "at":
+                alt_parts.append(f"Intraday: {intra.get('vwap_position', '')} VWAP")
             fund = alt.get("fundamentals", {})
             if fund.get("pe_trailing", 0) > 0:
-                alt_parts.append(f"PE: {fund['pe_trailing']:.1f}")
-            # New per-symbol sources (congressional disabled — no free API)
+                alt_parts.append(f"PE: {fund.get('pe_trailing', 0):.1f}")
+            # Congressional (disabled — no free API)
             congress = alt.get("congressional", {})
-            if congress.get("net_direction") and congress["net_direction"] != "neutral":
+            if congress.get("net_direction") and congress.get("net_direction") != "neutral":
                 alt_parts.append(
                     f"Congress: {congress.get('recent_transactions', 0)} members "
-                    f"{congress['net_direction']} "
+                    f"{congress.get('net_direction', '')} "
                     f"(${congress.get('total_value', 0):,.0f})")
             finra = alt.get("finra_short_vol", {})
             if finra.get("is_elevated"):
                 alt_parts.append(
-                    f"Short vol: {finra['short_volume_ratio']:.0%} of daily (elevated)")
+                    f"Short vol: {finra.get('short_volume_ratio', 0):.0%} of daily (elevated)")
             cluster = alt.get("insider_cluster", {})
             if cluster.get("is_cluster"):
                 alt_parts.append(
-                    f"INSIDER CLUSTER: {cluster['insider_count']} insiders "
-                    f"{cluster['cluster_direction']} ${cluster['total_value']:,.0f}")
+                    f"INSIDER CLUSTER: {cluster.get('insider_count', 0)} insiders "
+                    f"{cluster.get('cluster_direction', '')} ${cluster.get('total_value', 0):,.0f}")
             estimates = alt.get("analyst_estimates", {})
-            if estimates.get("eps_revision_direction") != "flat":
+            if estimates.get("eps_revision_direction") and estimates.get("eps_revision_direction") != "flat":
                 alt_parts.append(
-                    f"EPS revised {estimates['eps_revision_direction'].upper()} "
+                    f"EPS revised {estimates.get('eps_revision_direction', '').upper()} "
                     f"{abs(estimates.get('revision_magnitude_pct', 0)):.0f}%")
             ie = alt.get("insider_earnings", {})
             if ie.get("insider_buying_near_earnings"):
                 alt_parts.append(
-                    f"Insiders buying {ie['days_to_earnings']}d before earnings (bullish)")
+                    f"Insiders buying {ie.get('days_to_earnings', '?')}d before earnings (bullish)")
             elif ie.get("insider_selling_near_earnings"):
                 alt_parts.append(
-                    f"Insiders selling {ie['days_to_earnings']}d before earnings (bearish)")
+                    f"Insiders selling {ie.get('days_to_earnings', '?')}d before earnings (bearish)")
             dp = alt.get("dark_pool", {})
             if dp.get("ats_volume", 0) > 0:
                 alt_parts.append(
-                    f"Dark pool: {dp['ats_volume']:,} shares across "
+                    f"Dark pool: {dp.get('ats_volume', 0):,} shares across "
                     f"{dp.get('num_venues', 0)} ATS venues")
             es = alt.get("earnings_surprise", {})
             if es.get("total_quarters", 0) >= 4:
                 alt_parts.append(
-                    f"Earnings: {es['surprise_direction']} "
-                    f"({es['beat_count']}/{es['total_quarters']} beats, "
-                    f"avg surprise {es['avg_surprise_pct']:+.1f}%)")
+                    f"Earnings: {es.get('surprise_direction', 'mixed')} "
+                    f"({es.get('beat_count', 0)}/{es.get('total_quarters', 0)} beats, "
+                    f"avg surprise {es.get('avg_surprise_pct', 0):+.1f}%)")
             transcript = alt.get("transcript_sentiment", {})
             if transcript.get("has_data"):
                 phrases = ", ".join(transcript.get("key_phrases", [])[:2])
                 alt_parts.append(
-                    f"Earnings call: {transcript['tone'].upper()}"
+                    f"Earnings call: {transcript.get('tone', 'neutral').upper()}"
                     f"{' — ' + phrases if phrases else ''}")
             patents = alt.get("patent_activity", {})
             if patents.get("has_data") and patents.get("recent_filings_365d", 0) > 0:
