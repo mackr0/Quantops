@@ -17,6 +17,58 @@ Rules going forward:
 
 ---
 
+## 2026-04-23 — Dead-ticker log spam: filter fallback universe against Alpaca active assets (Severity: medium)
+
+**Problem:** Every scan cycle produced ~20-30 `ERROR $SYMBOL: possibly delisted`
+yfinance errors for tickers like `SQ`, `PARA`, `X`, `CFLT`, `IAS`, `MAG`,
+`AUY`, `LILM`, `DLOCAL`, `HEAR`, `VTLE`, `ERJ`, `AZUL`, `SWI`, `GPS`. Yahoo's
+website still renders these tickers (cached marketing pages), but Yahoo's
+`/v8/finance/chart/SYMBOL` API returns 404 — the tickers moved or are gone:
+`SQ → XYZ` (Block rebrand), `PARA → PSKY` (Paramount/Skydance merger),
+`GPS → GAP`, `X` (US Steel acquired), `CFLT` (Confluent taken private),
+plus several acquisitions/bankruptcies. Production Alpaca `get_asset()` calls
+on every flagged symbol return `NOT FOUND`, confirming the source of truth.
+
+**Root cause:** `screener.py:592-594` in `screen_dynamic_universe()` had a
+"# Always include the curated universe" line that unioned the hand-curated
+`segments.py` universe into the dynamic Alpaca sample:
+
+```python
+if fallback_universe:
+    sample = list(set(sample + list(fallback_universe)))
+```
+
+The parameter name was misleading — `fallback_universe` was used as a
+*supplement* on every run, not only as a fallback. So even though dynamic
+discovery pulled fresh symbols from Alpaca, the hand-curated dead tickers
+were still forced into the sample every cycle and ended up in
+`get_snapshots()` and the yfinance fallback path, generating the log spam.
+
+**Fix:** Intersect the fallback list with Alpaca's active-asset set
+(`equity_symbols`, already built just above) before merging. Dead tickers
+get filtered out as Alpaca stops listing them — the fix is self-healing as
+future renames/delistings happen.
+
+**Why it wasn't caught:** Existing tests verified that fallback symbols
+*could* appear in output (`test_screener_alpaca_failure_falls_back_to_yfinance`),
+but no test asserted that *dead* fallback symbols get filtered. The leak was
+invisible to the test suite because no test mocked Alpaca returning fewer
+symbols than the fallback list contained.
+
+**Test coverage:** new `test_fallback_universe_filters_dead_symbols` in
+`test_alpaca_data_migration.py` asserts that `ZOMBIE1`, `ZOMBIE2` symbols
+passed in `fallback_universe` never reach `get_snapshots()` when Alpaca's
+asset list doesn't contain them. Alive fallback symbols (`ALIVE_A`, `ALIVE_B`)
+must still be carried through.
+
+**Scope:** Quick-win surgical patch. The broader refactor documented in
+`DYNAMIC_UNIVERSE_PLAN.md` (move sector classification to cached yfinance
+lookups, freeze hardcoded lists into `segments_historical.py` for backtests
+only, introduce a feature flag) remains queued as a separate multi-session
+effort.
+
+---
+
 ## 2026-04-23 — Continued fixes: exit order conflicts, confidence bypass, cache persistence (Severity: high)
 
 **Exit order conflict fix.** `check_exits` crashed with "cannot open a short sell while a long buy order is open" when a limit buy was pending for the same symbol. Now cancels all open orders for a symbol before submitting the exit order.

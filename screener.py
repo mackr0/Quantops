@@ -587,11 +587,19 @@ def screen_dynamic_universe(min_price=1.0, max_price=20.0, min_volume=500_000,
         # Step 2: Batch download 5-day data from yfinance in chunks
         import random
         # Sample to avoid downloading all 8000 at once
-        # Take a random 500 to screen, plus the full fallback universe
+        # Take a random 500 to screen, plus the curated universe
         sample = random.sample(equity_symbols, min(500, len(equity_symbols)))
         if fallback_universe:
-            # Always include the curated universe
-            sample = list(set(sample + list(fallback_universe)))
+            # Only keep curated symbols Alpaca still considers active —
+            # otherwise dead tickers (e.g. SQ→XYZ, PARA→PSKY, delisted
+            # names like X / CFLT / AZUL) get shipped into get_snapshots
+            # and downstream yfinance fallbacks, producing "possibly
+            # delisted" log spam on every cycle. The `equity_symbols`
+            # list above is Alpaca's own source of truth for what is
+            # currently tradable.
+            active_syms = set(equity_symbols)
+            alive_fallback = [s for s in fallback_universe if s in active_syms]
+            sample = list(set(sample + alive_fallback))
 
         # Primary path: Alpaca snapshots. One API call returns the last
         # trade + minute bar + daily bar for up to 1000+ symbols at once,

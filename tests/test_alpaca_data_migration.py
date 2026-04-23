@@ -307,6 +307,83 @@ class TestScreenerUsesAlpaca:
         # yfinance returned SYM0+SYM1 with qualifying price+vol
         assert len(result) >= 1
 
+    def test_fallback_universe_filters_dead_symbols(self, monkeypatch, tmp_path):
+        """The fallback universe must be intersected with Alpaca's active-asset
+        list before it's merged into the sample. Otherwise stale hand-curated
+        tickers (e.g. SQ→XYZ, PARA→PSKY, acquired/delisted names) flow into
+        get_snapshots and downstream yfinance fallbacks, producing "possibly
+        delisted" log spam every cycle.
+
+        Regression guard for the 2026-04-23 leak in the screen_dynamic_universe
+        fallback-union path.
+        """
+        monkeypatch.chdir(tmp_path)
+        import screener
+        screener._dynamic_cache = {}
+
+        # Alpaca knows only ALIVE1 and ALIVE2; ZOMBIE1/ZOMBIE2 are delisted.
+        class FakeAsset:
+            def __init__(self, sym):
+                self.tradable = True
+                self.exchange = "NYSE"
+                self.symbol = sym
+        fake_assets = [FakeAsset(s) for s in ("ALIVE1", "ALIVE2")]
+
+        class FakeApi:
+            def list_assets(self, status="active"):
+                return fake_assets
+
+        # Force equity_symbols below the 100-count guard by monkeypatching the
+        # threshold; otherwise `len(equity_symbols) < 100` raises before the
+        # fallback path runs. We only need 2 active assets to prove the filter.
+        monkeypatch.setattr("client.get_api", lambda ctx=None: FakeApi())
+
+        called_with = {}
+
+        fake_client = MagicMock()
+        def record_call(syms):
+            called_with["symbols"] = list(syms)
+            # Return empty snapshots — we only care about what was requested.
+            return {s: _fake_snapshot(close=100.0, vol=2_000_000) for s in syms}
+        fake_client.get_snapshots.side_effect = record_call
+        monkeypatch.setattr("market_data._get_alpaca_data_client",
+                            lambda: fake_client)
+
+        # Bypass the ">=100 assets" floor so the rest of the function runs.
+        orig = screener.screen_dynamic_universe
+        import inspect
+        assert "Too few assets" in inspect.getsource(orig), \
+            "Expected asset-count guard to exist"
+
+        # Patch the ValueError guard out for this test by monkey-patching
+        # the min threshold: simplest is to supply enough assets.
+        more_assets = [FakeAsset(f"ALIVE{i}") for i in range(150)]
+        fake_assets_full = more_assets + [FakeAsset("ALIVE_A"), FakeAsset("ALIVE_B")]
+
+        class FakeApi2:
+            def list_assets(self, status="active"):
+                return fake_assets_full
+        monkeypatch.setattr("client.get_api", lambda ctx=None: FakeApi2())
+
+        result = screener.screen_dynamic_universe(
+            min_price=50.0, max_price=200.0, min_volume=1_000_000,
+            market_type="test_zombie_filter",
+            fallback_universe=["ALIVE_A", "ALIVE_B", "ZOMBIE1", "ZOMBIE2"],
+        )
+
+        requested = set(called_with.get("symbols", []))
+        assert "ZOMBIE1" not in requested, (
+            "Dead ticker ZOMBIE1 leaked into get_snapshots — fallback "
+            "universe must be filtered against Alpaca's active-asset list"
+        )
+        assert "ZOMBIE2" not in requested, (
+            "Dead ticker ZOMBIE2 leaked into get_snapshots"
+        )
+        # Alive fallback symbols SHOULD be carried through.
+        assert "ALIVE_A" in requested and "ALIVE_B" in requested, (
+            "Active fallback symbols should still be included in the sample"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Contract tests — source pattern guards against regression
