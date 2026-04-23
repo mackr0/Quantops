@@ -17,6 +17,81 @@ Rules going forward:
 
 ---
 
+## 2026-04-23 — SEC filing backfill cost spike: cap AI diff calls per cycle (Severity: high)
+
+**Problem:** Post-restart this afternoon (18:41 UTC) the `sec_diff` AI call
+volume exploded to 487 calls in ~1 hour — 15-19 calls/minute sustained,
+driving per-profile spend up $0.63. Rate peaked at 192 calls in the
+20:05-20:09 window. Trajectory:
+
+```
+20:00-20:04:  46  calls
+20:05-20:09: 192  calls  (peak)
+20:10-20:14: 160
+20:15-20:19:  89
+```
+
+**Root cause (not a regression, but a bounded-work design gap):**
+
+`_task_sec_filings` calls `monitor_symbol(sym, days_back=180)` for every
+symbol in positions + shortlist, per profile, every scan cycle. The task
+had been blocked all morning by the `'recent_transactions'` KeyError
+crashes (fixed earlier today). Once crashes stopped at 15:41 UTC and the
+scheduler restarted at 18:41, `_task_sec_filings` finally ran — and
+discovered ~180 days of uncached filings across symbols like STRC (37
+filings), BMNR (49), RIG (14). The cache works correctly (verified:
+487 AI calls = 487 new rows in `sec_filings_history`, zero duplicates;
+delta = 0 between AI calls and rows written). But nothing bounded the
+first-encounter cost per symbol. Per-profile databases mean each
+profile pays the backfill cost independently when it first encounters
+a high-filing-volume ticker.
+
+**Fix (two changes to `sec_filings.monitor_symbol`):**
+
+1. **Cap AI diff calls per invocation** — new `max_filings_per_cycle=5`
+   param. After 5 filings analyzed, break out of the loop and record
+   `deferred_to_next_cycle`. Filings arrive newest-first from EDGAR, so
+   the cap always processes the MOST RECENT uncached filings first;
+   older ones roll in on subsequent cycles. No data is lost; cost is
+   just spread across time.
+2. **Reduce `days_back` default 180 → 90** — one full quarterly cycle
+   is enough context for `analyze_filing_diff` baseline comparison
+   (the diff is against the most-recent prior filing in our DB, not a
+   year-old one from EDGAR). Shrinks the backfill universe roughly
+   in half.
+
+Updated `multi_scheduler._task_sec_filings` caller to pass the new
+values explicitly.
+
+**Expected impact:**
+- First-encounter of a high-volume symbol: ~5 AI calls (was up to 50)
+- Subsequent cycles: same symbol, ~0 AI calls (cache hit)
+- Steady state across portfolios: same as before (no change when caches
+  are already warm)
+- Upper bound per-cycle per-profile: `watchlist_size × 5` AI calls max
+
+**What this explicitly is NOT:**
+- NOT a cache bug. The `sec_filings_history` idempotency via
+  `accession_number` lookup works correctly.
+- NOT related to the `alt_data_cache`-based transcript_sentiment fix
+  earlier today (that one IS working — 320 calls/day → 16/day confirmed
+  post-restart).
+
+**Test coverage:** 3 new tests in `TestBackfillCap`:
+- `test_monitor_symbol_caps_ai_calls_per_invocation` — 20 filings, cap=5,
+  assert exactly 5 AI calls and 15 deferred
+- `test_default_cap_is_applied` — no explicit kwarg, still capped
+- `test_cached_filings_skipped_before_cap_counts` — pre-cached filings
+  don't consume cap budget (3 new fillings all analyzed under cap)
+
+**Follow-up for a future session:**
+- Cross-profile SEC filing cache (one EDGAR fetch shared across profiles
+  of same user). Today's per-profile DB means N profiles × same symbol =
+  N backfill passes. Design would need a shared cache in the master
+  `quantopsai.db`. Not urgent — the cap bounds the per-profile cost.
+
+---
+
 ## 2026-04-23 — sync.sh silently skipping deploys for weeks (Severity: high)
 
 **Problem:** `./sync.sh 67.205.155.63` has been reporting "No files changed.

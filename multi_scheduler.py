@@ -1235,7 +1235,8 @@ def _task_sec_filings(ctx):
         total_alerts = 0
         for sym in sorted(symbols):
             try:
-                summary = monitor_symbol(sym, ctx.db_path, ctx=ctx, days_back=180)
+                summary = monitor_symbol(sym, ctx.db_path, ctx=ctx,
+                                         days_back=90, max_filings_per_cycle=5)
                 total_new += summary["new_filings"]
                 total_alerts += len(summary["alerts"])
                 for alert in summary["alerts"]:

@@ -548,12 +548,20 @@ def get_active_alerts(db_path: str, symbols: Optional[List[str]] = None,
 
 def monitor_symbol(symbol: str, db_path: str, ctx: Any = None,
                     form_types: Optional[List[str]] = None,
-                    days_back: int = 180) -> Dict[str, Any]:
+                    days_back: int = 90,
+                    max_filings_per_cycle: int = 5) -> Dict[str, Any]:
     """Check one symbol for new filings, analyze any we haven't seen before.
 
     Idempotent: if a filing is already in sec_filings_history, we skip it.
     For each NEW filing, we fetch, extract sections, and run the AI diff
     against the most recent previous filing of the same type.
+
+    `max_filings_per_cycle` caps the number of AI diff calls per invocation.
+    Filings arrive newest-first from EDGAR, so the cap always analyzes the
+    most-recent uncached filings first; older ones roll in on subsequent
+    cycles. This prevents the first-encounter of a high-filing-volume
+    symbol (e.g. a crypto-reserve corp with 40+ 8-Ks) from producing a
+    single-cycle cost spike.
 
     Returns summary dict with: new_filings, analyzed, errors, alerts.
     """
@@ -564,7 +572,7 @@ def monitor_symbol(symbol: str, db_path: str, ctx: Any = None,
 
     since_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
     summary = {"symbol": symbol, "new_filings": 0, "analyzed": 0,
-               "errors": [], "alerts": []}
+               "errors": [], "alerts": [], "deferred_to_next_cycle": 0}
 
     try:
         filings = get_company_filings(symbol, form_types, since_date)
@@ -588,6 +596,13 @@ def monitor_symbol(symbol: str, db_path: str, ctx: Any = None,
 
     for filing in filings:
         if filing["accession_number"] in existing:
+            continue
+
+        if summary["analyzed"] >= max_filings_per_cycle:
+            # Remaining uncached filings will be picked up next cycle —
+            # filings are ordered newest-first, so most-recent ones already
+            # got analyzed above.
+            summary["deferred_to_next_cycle"] += 1
             continue
 
         summary["new_filings"] += 1

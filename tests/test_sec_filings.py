@@ -279,3 +279,155 @@ class TestPipelineIntegration:
         assert "SEC ALERT" in prompt
         assert "HIGH" in prompt
         assert "going concern" in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
+# Per-cycle AI call cap — prevents backfill cost spikes
+# ---------------------------------------------------------------------------
+
+class TestBackfillCap:
+    """Regression guards for the 2026-04-23 sec_diff spike.
+
+    A single symbol (e.g. a crypto-reserve corp filing 40+ 8-Ks in 180 days)
+    used to trigger that many AI diff calls on first-encounter. Now capped
+    at max_filings_per_cycle so the burst spreads across cycles.
+    """
+
+    def test_monitor_symbol_caps_ai_calls_per_invocation(self, monkeypatch,
+                                                          tmp_filings_db):
+        from sec_filings import monitor_symbol
+        import sec_filings as sf
+
+        # Return 20 un-cached filings, newest-first
+        fake_filings = [
+            {
+                "accession_number": f"0000999999-25-{i:06d}",
+                "form_type": "8-K",
+                "filed_date": f"2025-10-{(i % 28) + 1:02d}",
+                "primary_doc_url": f"http://example.test/filing_{i}.htm",
+            }
+            for i in range(20)
+        ]
+        monkeypatch.setattr(sf, "get_company_filings",
+                            lambda sym, form_types, since: fake_filings)
+        monkeypatch.setattr(sf, "fetch_filing_text",
+                            lambda url: "dummy filing body text")
+        monkeypatch.setattr(sf, "extract_sections",
+                            lambda text: {"risk_factors": "dummy risk",
+                                          "mdna": "dummy mdna",
+                                          "going_concern_flag": False,
+                                          "material_weakness_flag": False})
+
+        ai_call_count = {"n": 0}
+        def fake_diff(old, new, section_name="", ctx=None):
+            ai_call_count["n"] += 1
+            return {"severity": "low", "signal": "neutral",
+                    "summary": "no material changes", "changes": []}
+        monkeypatch.setattr(sf, "analyze_filing_diff", fake_diff)
+
+        result = monitor_symbol("STRC", tmp_filings_db,
+                                max_filings_per_cycle=5)
+
+        assert ai_call_count["n"] == 5, (
+            f"monitor_symbol fired {ai_call_count['n']} AI calls; cap was 5. "
+            f"Backfill cost protection is broken."
+        )
+        assert result["analyzed"] == 5
+        assert result["deferred_to_next_cycle"] == 15
+
+    def test_default_cap_is_applied(self, monkeypatch, tmp_filings_db):
+        """Default max_filings_per_cycle caps calls without explicit kwarg."""
+        from sec_filings import monitor_symbol
+        import sec_filings as sf
+
+        fake_filings = [
+            {
+                "accession_number": f"0000111111-25-{i:06d}",
+                "form_type": "8-K",
+                "filed_date": f"2025-09-{(i % 28) + 1:02d}",
+                "primary_doc_url": f"http://example.test/f{i}.htm",
+            }
+            for i in range(50)
+        ]
+        monkeypatch.setattr(sf, "get_company_filings",
+                            lambda *a, **kw: fake_filings)
+        monkeypatch.setattr(sf, "fetch_filing_text", lambda url: "body")
+        monkeypatch.setattr(sf, "extract_sections",
+                            lambda text: {"risk_factors": None, "mdna": None,
+                                          "going_concern_flag": False,
+                                          "material_weakness_flag": False})
+        ai_calls = {"n": 0}
+        def count(*a, **kw):
+            ai_calls["n"] += 1
+            return {"severity": "low", "signal": "neutral", "summary": "",
+                    "changes": []}
+        monkeypatch.setattr(sf, "analyze_filing_diff", count)
+
+        # No kwargs — rely on default cap
+        result = monitor_symbol("BMNR", tmp_filings_db)
+        assert ai_calls["n"] <= 10, (
+            f"default cap too loose: {ai_calls['n']} AI calls on 50 filings"
+        )
+        assert result["deferred_to_next_cycle"] > 0
+
+    def test_cached_filings_skipped_before_cap_counts(self, monkeypatch,
+                                                      tmp_filings_db):
+        """Already-cached filings must NOT consume cap budget."""
+        from sec_filings import monitor_symbol, save_filing_row
+        import sec_filings as sf
+
+        # Pre-cache 10 filings so they're in "existing"
+        for i in range(10):
+            save_filing_row(tmp_filings_db, {
+                "symbol": "BIGCORP",
+                "accession_number": f"0000222222-25-{i:06d}",
+                "form_type": "8-K",
+                "filed_date": "2025-08-01",
+                "filing_url": "",
+                "risk_factors_text": None,
+                "mdna_text": None,
+                "going_concern_flag": False,
+                "material_weakness_flag": False,
+                "analyzed_at": "2025-08-01T00:00:00",
+                "alert_severity": "low",
+                "alert_signal": "neutral",
+                "alert_summary": "",
+                "alert_changes_json": "[]",
+            })
+
+        # EDGAR returns 10 cached + 3 fresh
+        fake_filings = [
+            {
+                "accession_number": f"0000222222-25-{i:06d}",
+                "form_type": "8-K",
+                "filed_date": "2025-08-01",
+                "primary_doc_url": f"http://example.test/{i}.htm",
+            } for i in range(10)
+        ] + [
+            {
+                "accession_number": f"0000333333-25-{i:06d}",
+                "form_type": "8-K",
+                "filed_date": "2025-11-01",
+                "primary_doc_url": f"http://example.test/new{i}.htm",
+            } for i in range(3)
+        ]
+        monkeypatch.setattr(sf, "get_company_filings",
+                            lambda *a, **kw: fake_filings)
+        monkeypatch.setattr(sf, "fetch_filing_text", lambda url: "body")
+        monkeypatch.setattr(sf, "extract_sections",
+                            lambda text: {"risk_factors": None, "mdna": None,
+                                          "going_concern_flag": False,
+                                          "material_weakness_flag": False})
+        ai_calls = {"n": 0}
+        def fake(*a, **kw):
+            ai_calls["n"] += 1
+            return {"severity": "low", "signal": "neutral", "summary": "",
+                    "changes": []}
+        monkeypatch.setattr(sf, "analyze_filing_diff", fake)
+
+        result = monitor_symbol("BIGCORP", tmp_filings_db,
+                                max_filings_per_cycle=5)
+        # 3 new filings, all under the cap — all should be analyzed
+        assert ai_calls["n"] == 3
+        assert result["analyzed"] == 3
+        assert result["deferred_to_next_cycle"] == 0
