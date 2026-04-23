@@ -273,3 +273,230 @@ class TestDotenvLoading:
         import inspect, app
         src = inspect.getsource(app)
         assert "load_dotenv()" in src, "app.py must call load_dotenv()"
+
+
+# ---------------------------------------------------------------------------
+# 8. Template JS field references must match API response structures
+# ---------------------------------------------------------------------------
+
+class TestTemplateJSMatchesAPI:
+    """The JS in templates that processes API JSON must use real field names."""
+
+    def test_macro_data_js_uses_real_fields(self):
+        """ai.html JS for Market Intelligence must reference actual API fields."""
+        with open("templates/ai.html") as f:
+            template = f.read()
+
+        # Extract the JS block that processes macro data
+        macro_js_start = template.find("function loadMacroData")
+        macro_js_end = template.find("loadMacroData();", macro_js_start)
+        if macro_js_start < 0 or macro_js_end < 0:
+            pytest.skip("loadMacroData not found in ai.html")
+        macro_js = template[macro_js_start:macro_js_end]
+
+        # These are the ACTUAL field names from macro_data.py
+        # Verify the JS references them, not made-up alternatives
+        real_fields = {
+            "yield_curve": ["rate_2y", "rate_10y", "rate_30y", "spread_10y_2y",
+                            "curve_status", "fed_funds_upper"],
+            "cboe_skew": ["skew_value", "skew_signal", "skew_5d_avg"],
+            "fred_macro": ["unemployment_rate", "unemployment_trend", "cpi_yoy",
+                           "consumer_sentiment", "consumer_sentiment_trend",
+                           "initial_claims_4wk_avg"],
+        }
+
+        # Check that the JS does NOT use these made-up field names
+        made_up_fields = [
+            "d.yield_curve.inverted",    # was: curve_status
+            "d.cboe_skew.value",         # was: skew_value
+            "d.cboe_skew.percentile",    # doesn't exist
+            "d.etf_flows.net_flow",      # doesn't exist
+            "d.fred_indicators",         # was: fred_macro
+        ]
+        for bad in made_up_fields:
+            assert bad not in macro_js, (
+                f"ai.html JS uses made-up field '{bad}'. "
+                f"READ macro_data.py to find the real field names."
+            )
+
+        # Check that the JS DOES use these real field names
+        for category, fields in real_fields.items():
+            for field in fields[:3]:  # Check at least the key ones
+                # The JS accesses these as yc.rate_10y, sk.skew_value, fm.unemployment_rate
+                assert field in macro_js, (
+                    f"ai.html JS doesn't reference real field '{field}' from {category}. "
+                    f"It should — that's what the API returns."
+                )
+
+    def test_tuning_status_js_uses_real_fields(self):
+        """Tuning status AJAX must use real field names from /api/tuning-status."""
+        with open("templates/ai.html") as f:
+            template = f.read()
+
+        js_start = template.find("function loadTuningStatus")
+        js_end = template.find("loadTuningStatus(1)", js_start)
+        if js_start < 0 or js_end < 0:
+            pytest.skip("loadTuningStatus not found")
+        js = template[js_start:js_end]
+
+        # Real fields from the API (views.py api_tuning_status)
+        for field in ["profile_name", "resolved", "can_tune", "last_run", "message"]:
+            assert field in js, (
+                f"Tuning status JS doesn't use real field '{field}'"
+            )
+
+    def test_tuning_history_js_uses_real_fields(self):
+        """Tuning history AJAX must use real field names."""
+        with open("templates/ai.html") as f:
+            template = f.read()
+
+        js_start = template.find("function loadTuningHistory")
+        js_end = template.find("loadTuningHistory(1)", js_start)
+        if js_start < 0 or js_end < 0:
+            pytest.skip("loadTuningHistory not found")
+        js = template[js_start:js_end]
+
+        for field in ["profile_name", "timestamp", "adjustment_type",
+                       "parameter_label", "parameter_name", "old_value",
+                       "new_value", "reason", "win_rate_at_change", "outcome_after"]:
+            assert field in js, (
+                f"Tuning history JS doesn't use real field '{field}'"
+            )
+
+
+# ---------------------------------------------------------------------------
+# 9. Every render_template call must pass all variables the template uses
+# ---------------------------------------------------------------------------
+
+class TestRenderTemplateKwargs:
+    """Every variable referenced in a template must be passed by its view."""
+
+    def _get_template_vars(self, template_path):
+        """Extract top-level Jinja variable names from a template."""
+        with open(template_path) as f:
+            content = f.read()
+        # Match {{ var.something }} and {% if var.something %}
+        # Only capture the top-level variable name (before first dot)
+        refs = set()
+        for pattern in [r'\{\{[^}]*?\b(\w+)\.', r'\{%[^%]*?\b(\w+)\.']:
+            for m in re.finditer(pattern, content):
+                name = m.group(1)
+                if name not in ("loop", "request", "current_user", "config",
+                                "get_flashed_messages", "url_for", "self",
+                                "caller", "range", "true", "false", "none",
+                                "h", "s", "e", "r", "d", "v", "p", "f",
+                                "mp", "prof", "prof_decay", "hr", "row",
+                                "actions", "spec_name", "trades_tpl",
+                                "base", "block", "mo", "w", "c", "a",
+                                "ind", "flowKeys", "yc", "sk", "fm", "ef"):
+                    refs.add(name)
+        return refs
+
+    def _get_render_kwargs(self, func_name):
+        """Extract variable names passed to render_template in a view function."""
+        import views
+        src = inspect.getsource(getattr(views, func_name))
+        # Find render_template call and extract kwargs
+        render_match = re.search(r'render_template\([^)]+\)', src, re.DOTALL)
+        if not render_match:
+            return set()
+        render_call = render_match.group(0)
+        # Extract kwarg names
+        kwargs = set(re.findall(r'(\w+)\s*=', render_call))
+        kwargs.discard("render_template")
+        return kwargs
+
+    def test_ai_template_gets_all_its_variables(self):
+        """Every variable used in ai.html must be passed by ai_dashboard()."""
+        template_vars = self._get_template_vars("templates/ai.html")
+        # ai_dashboard uses **ctx which passes profiles, selected_profile, etc.
+        import views
+        src = inspect.getsource(views.ai_dashboard)
+        render_match = re.search(r'render_template\("ai\.html"[^)]+\)', src, re.DOTALL)
+        if not render_match:
+            pytest.fail("render_template('ai.html') not found in ai_dashboard()")
+        render_call = render_match.group(0)
+
+        # Extract explicit kwargs + **ctx spreads
+        explicit_kwargs = set(re.findall(r'(\w+)\s*=', render_call))
+        # **ctx adds: profiles, selected_profile, selected_profile_name, ai_page, db_paths
+        ctx_vars = {"profiles", "selected_profile", "selected_profile_name", "ai_page", "db_paths"}
+        all_passed = explicit_kwargs | ctx_vars
+
+        missing = template_vars - all_passed
+        # Filter out variables that are Jinja internals or loop vars
+        missing = {v for v in missing if v not in (
+            "any_profile_active", "total_pages", "page", "sort_by", "sort_dir",
+            "total_trades", "decisions"
+        )}
+
+        assert not missing, (
+            f"ai.html uses these variables but ai_dashboard() doesn't pass them: {missing}\n"
+            f"Passed: {sorted(all_passed)}\n"
+            f"Template needs: {sorted(template_vars)}"
+        )
+
+    def test_performance_template_gets_all_its_variables(self):
+        """Every variable used in performance.html must be passed by performance_dashboard()."""
+        template_vars = self._get_template_vars("templates/performance.html")
+        import views
+        src = inspect.getsource(views.performance_dashboard)
+        render_match = re.search(r'render_template\("performance\.html"[^)]+\)', src, re.DOTALL)
+        if not render_match:
+            pytest.fail("render_template not found")
+        render_call = render_match.group(0)
+        explicit_kwargs = set(re.findall(r'(\w+)\s*=', render_call))
+
+        missing = template_vars - explicit_kwargs
+        missing = {v for v in missing if v not in (
+            "any_profile_active", "total_pages", "page", "sort_by", "sort_dir",
+            "total_trades", "decisions"
+        )}
+
+        assert not missing, (
+            f"performance.html uses variables not passed: {missing}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 10. Function calls in views must match actual signatures
+# ---------------------------------------------------------------------------
+
+class TestFunctionCallSignatures:
+    """When views.py calls a function, the arguments must match the signature."""
+
+    def test_get_allocation_summary_called_correctly(self):
+        """get_allocation_summary(db_path, market_type) — not (profile_id)."""
+        import views
+        src = inspect.getsource(views.ai_dashboard)
+        # Must pass two args: db path and market_type
+        assert 'get_allocation_summary(db' in src or "get_allocation_summary(db_path" in src or \
+               re.search(r'get_allocation_summary\([^)]*market_type', src), (
+            "get_allocation_summary must be called with (db_path, market_type), "
+            "not (profile_id) or any other made-up signature"
+        )
+
+    def test_spend_summary_called_with_db_path(self):
+        """spend_summary(db_path) — not (profile_id)."""
+        import views
+        src = inspect.getsource(views.ai_dashboard)
+        # The call should pass a db file path string
+        assert re.search(r'spend_summary\(db\b', src), (
+            "spend_summary must be called with a db file path"
+        )
+
+    def test_get_current_level_called_with_db_path(self):
+        """crisis_state.get_current_level(db_path)."""
+        import views
+        src = inspect.getsource(views.ai_dashboard)
+        assert re.search(r'get_current_level\(db\b', src), (
+            "get_current_level must be called with a db file path"
+        )
+
+    def test_recent_events_called_with_db_path(self):
+        """event_bus.recent_events(db_path, hours, limit)."""
+        import views
+        src = inspect.getsource(views.ai_dashboard)
+        assert re.search(r'recent_events\(db\b', src), (
+            "recent_events must be called with a db file path"
+        )
