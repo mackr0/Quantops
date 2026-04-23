@@ -386,12 +386,39 @@ def dashboard():
             else:
                 next_session = f"{ctx.custom_start} ET"
 
+            # Per-profile scan timing from task_runs
+            next_scan_text = ""
+            if active:
+                try:
+                    import sqlite3 as _sq_sched
+                    import time as _time_sched
+                    _c = _sq_sched.connect(ctx.db_path)
+                    row = _c.execute(
+                        "SELECT started_at FROM task_runs "
+                        "WHERE task_name LIKE '%Scan%' AND status IN ('completed','failed') "
+                        "ORDER BY started_at DESC LIMIT 1"
+                    ).fetchone()
+                    _c.close()
+                    if row:
+                        from datetime import datetime as _dt2
+                        last_scan_dt = _dt2.strptime(row[0][:19], "%Y-%m-%d %H:%M:%S")
+                        elapsed = (_dt.now(ZoneInfo("UTC")).replace(tzinfo=None) - last_scan_dt).total_seconds()
+                        remaining = max(0, 900 - elapsed)  # 15 min = 900s
+                        if remaining > 0:
+                            mins = int(remaining // 60)
+                            next_scan_text = f"{mins}m"
+                        else:
+                            next_scan_text = "Due"
+                except Exception:
+                    next_scan_text = ""
+
             profile_schedules.append({
                 "profile_id": prof["id"],
                 "name": prof["name"],
                 "market_type_name": prof.get("market_type_name", prof["market_type"]),
                 "active": active,
                 "next_session": next_session,
+                "next_scan_text": next_scan_text,
                 "schedule_type": ctx.schedule_type,
             })
         except Exception:
@@ -2984,12 +3011,32 @@ def api_scheduler_status():
 @views_bp.route("/api/scan-status/<int:profile_id>")
 @login_required
 def api_scan_status(profile_id):
-    """Return current scan step for a profile."""
+    """Return current scan step for a profile + next scan countdown."""
     from scan_status import get_status
-    status = get_status(profile_id)
-    if status:
-        return jsonify(status)
-    return jsonify({"step": None})
+    status = get_status(profile_id) or {}
+
+    # Add next scan countdown from task_runs
+    try:
+        import sqlite3 as _sq_scan
+        import time as _t_scan
+        db = f"quantopsai_profile_{profile_id}.db"
+        conn = _sq_scan.connect(db)
+        row = conn.execute(
+            "SELECT started_at FROM task_runs "
+            "WHERE task_name LIKE '%Scan%' AND status IN ('completed','failed') "
+            "ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        if row:
+            from datetime import datetime as _dt_scan, timezone
+            last = _dt_scan.strptime(row[0][:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            now = _dt_scan.now(timezone.utc)
+            elapsed = (now - last).total_seconds()
+            status["next_scan_sec"] = max(0, int(900 - elapsed))
+    except Exception:
+        pass
+
+    return jsonify(status if status else {"step": None})
 
 
 @views_bp.route("/api/portfolio/<int:profile_id>")
