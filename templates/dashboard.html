@@ -18,23 +18,21 @@
 {% endfor %}
 </div>
 
-<!-- Countdown Timers -->
-{% if any_profile_active %}
+<!-- Countdown Timers (always visible) -->
 <div class="grid" style="margin-bottom:0.75rem;">
     <article style="text-align:center; padding:0.5rem; margin:0;">
         <small class="muted">Next Scan</small>
-        <div id="timer-scan" style="font-size:1.3rem; font-weight:bold; font-family:monospace;">--:--</div>
+        <div id="timer-scan" style="font-size:1.3rem; font-weight:bold; font-family:monospace;">{% if any_profile_active %}--:--{% else %}Market Closed{% endif %}</div>
     </article>
     <article style="text-align:center; padding:0.5rem; margin:0;">
         <small class="muted">Next Exit Check</small>
-        <div id="timer-exit" style="font-size:1.3rem; font-weight:bold; font-family:monospace;">--:--</div>
+        <div id="timer-exit" style="font-size:1.3rem; font-weight:bold; font-family:monospace;">{% if any_profile_active %}--:--{% else %}Market Closed{% endif %}</div>
     </article>
     <article style="text-align:center; padding:0.5rem; margin:0;">
         <small class="muted">Next AI Validation</small>
-        <div id="timer-ai" style="font-size:1.3rem; font-weight:bold; font-family:monospace;">--:--</div>
+        <div id="timer-ai" style="font-size:1.3rem; font-weight:bold; font-family:monospace;">{% if any_profile_active %}--:--{% else %}Market Closed{% endif %}</div>
     </article>
 </div>
-{% endif %}
 
 <!-- ================================================================
      TAB NAVIGATION
