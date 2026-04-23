@@ -48,23 +48,39 @@ def admin_required(f):
     return decorated
 
 
+_dashboard_cache = {}
+_DASHBOARD_CACHE_TTL = 30  # seconds — dashboard auto-refreshes every 15s
+
+
 def _safe_account_info(ctx):
-    """Fetch account info — routes through client.py which handles the
-    virtual-account interception automatically."""
+    """Fetch account info with 30s cache for dashboard."""
+    import time
+    cache_key = f"account_{getattr(ctx, 'db_path', id(ctx))}"
+    cached = _dashboard_cache.get(cache_key)
+    if cached and (time.time() - cached[0]) < _DASHBOARD_CACHE_TTL:
+        return cached[1]
     try:
         from client import get_account_info
-        return get_account_info(ctx=ctx)
+        result = get_account_info(ctx=ctx)
+        _dashboard_cache[cache_key] = (time.time(), result)
+        return result
     except Exception as exc:
         logger.warning("Could not fetch account for %s: %s", ctx.display_name or ctx.segment, exc)
         return None
 
 
 def _safe_positions(ctx):
-    """Fetch positions — routes through client.py which handles the
-    virtual-account interception automatically."""
+    """Fetch positions with 30s cache for dashboard."""
+    import time
+    cache_key = f"positions_{getattr(ctx, 'db_path', id(ctx))}"
+    cached = _dashboard_cache.get(cache_key)
+    if cached and (time.time() - cached[0]) < _DASHBOARD_CACHE_TTL:
+        return cached[1]
     try:
         from client import get_positions
-        return get_positions(ctx=ctx)
+        result = get_positions(ctx=ctx)
+        _dashboard_cache[cache_key] = (time.time(), result)
+        return result
     except Exception as exc:
         logger.warning("Could not fetch positions for %s: %s", ctx.display_name or ctx.segment, exc)
         return []
@@ -304,7 +320,7 @@ def dashboard():
     # Load all profiles in parallel — 10 sequential Alpaca API calls
     # was taking 17+ seconds; parallel cuts it to ~3-4s.
     from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=5) as pool:
+    with ThreadPoolExecutor(max_workers=10) as pool:
         profiles_data = list(pool.map(_load_profile, profiles))
 
     # Get recent decisions
