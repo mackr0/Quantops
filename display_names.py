@@ -156,6 +156,13 @@ _DISPLAY_NAMES = {
     "earnings_surprise_streak": "Earnings Surprise Streak",
     "earnings_surprise_direction": "Earnings Surprise Direction",
     "_market_gex_regime":       "Market GEX Regime",
+
+    # Exit trigger types
+    "trailing_stop":            "Trailing Stop",
+    "stop_loss":                "Stop Loss",
+    "take_profit":              "Take Profit",
+    "short_stop_loss":          "Short Stop Loss",
+    "short_take_profit":        "Short Take Profit",
     "transcript_tone":          "Earnings Call Tone",
     "patent_velocity":          "Patent Filing Velocity",
 }

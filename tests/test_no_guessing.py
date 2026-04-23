@@ -259,6 +259,33 @@ class TestNoYFinanceInEquityPaths:
 # 7. dotenv loaded before imports in both entry points
 # ---------------------------------------------------------------------------
 
+class TestActivityLogDisplayNames:
+    """Every string shown to users in activity logs must use display_name()."""
+
+    def test_exit_trigger_uses_display_name(self):
+        """Exit activity must format trigger through display_name, not capitalize()."""
+        import inspect, multi_scheduler
+        src = inspect.getsource(multi_scheduler._task_check_exits)
+        assert "display_name" in src or "_dn" in src, (
+            "_task_check_exits must use display_name() for trigger types, "
+            "not .capitalize() which turns 'trailing_stop' into 'Trailing_stop'"
+        )
+        assert ".capitalize()" not in src, (
+            "_task_check_exits must NOT use .capitalize() on trigger names — "
+            "use display_name() instead"
+        )
+
+    def test_all_exit_triggers_have_display_names(self):
+        """Every exit trigger type from portfolio_manager must have a display name."""
+        from display_names import _DISPLAY_NAMES
+        triggers = ["trailing_stop", "stop_loss", "take_profit",
+                     "short_stop_loss", "short_take_profit"]
+        for t in triggers:
+            assert t in _DISPLAY_NAMES, (
+                f"Exit trigger '{t}' missing from display_names.py"
+            )
+
+
 class TestDotenvLoading:
     def test_scheduler_loads_dotenv_before_imports(self):
         import inspect, multi_scheduler

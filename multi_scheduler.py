@@ -914,7 +914,8 @@ def _task_check_exits(ctx):
 
             # Log exit activity
             sym = r["symbol"]
-            trigger = r.get("trigger", "exit").capitalize()
+            from display_names import display_name as _dn
+            trigger = _dn(r.get("trigger", "exit"))
             reason = r.get("reason", "")
             _safe_log_activity(
                 getattr(ctx, "profile_id", 0), ctx.user_id,
