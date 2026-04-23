@@ -34,6 +34,8 @@ from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
 
+from alternative_data import _get_cached, _set_cached
+
 # ---------------------------------------------------------------------------
 # Caching / rate-limiting
 # ---------------------------------------------------------------------------
@@ -87,9 +89,9 @@ def get_sec_insider_filings(symbol: str) -> Dict[str, Any]:
     for the version that returns signal counts.
     """
     cache_key = f"insider_{symbol}"
-    cached = _cache.get(cache_key)
-    if cached and (time.time() - cached[0]) < _CACHE_TTL:
-        return cached[1]
+    cached = _get_cached(cache_key, "insider")  # 24h TTL, survives restarts
+    if cached is not None:
+        return cached
 
     result = {
         "filings_count": 0,
@@ -137,7 +139,7 @@ def get_sec_insider_filings(symbol: str) -> Dict[str, Any]:
     except Exception as exc:
         logger.debug("Form 4 parse failed for %s: %s", symbol, exc)
 
-    _cache[cache_key] = (time.time(), result)
+    _set_cached(cache_key, result)
     return result
 
 
@@ -199,12 +201,12 @@ def get_company_filings(symbol: str, form_types: Optional[List[str]] = None,
     list of dicts with: accession_number, form_type, filed_date, primary_doc_url
     """
     cache_key = f"filings_{symbol}"
-    cached = _cache.get(cache_key)
-    if cached and (time.time() - cached[0]) < _CACHE_TTL:
-        filings = cached[1]
+    cached = _get_cached(cache_key, "insider")
+    if cached is not None:
+        filings = cached
     else:
         filings = _fetch_company_filings(symbol)
-        _cache[cache_key] = (time.time(), filings)
+        _set_cached(cache_key, filings)
 
     if form_types:
         filings = [f for f in filings if f["form_type"] in form_types]
@@ -260,9 +262,9 @@ def _fetch_company_filings(symbol: str) -> List[Dict[str, Any]]:
 def fetch_filing_text(filing_url: str) -> Optional[str]:
     """Fetch a filing document and return its plain text content."""
     cache_key = f"text_{filing_url}"
-    cached = _cache.get(cache_key)
-    if cached and (time.time() - cached[0]) < _CACHE_TTL * 7:   # filings are immutable
-        return cached[1]
+    cached = _get_cached(cache_key, "insider")  # filings are immutable, 24h cache fine
+    if cached is not None:
+        return cached
 
     data = _rate_limited_get(filing_url, accept="text/html", timeout=30)
     if not data:
@@ -282,7 +284,7 @@ def fetch_filing_text(filing_url: str) -> Optional[str]:
         logger.warning("Filing text extract failed for %s: %s", filing_url, exc)
         return None
 
-    _cache[cache_key] = (time.time(), text)
+    _set_cached(cache_key, text)
     return text
 
 
@@ -657,9 +659,6 @@ def get_earnings_call_sentiment(symbol: str, ctx: Any = None) -> Dict[str, Any]:
         key_phrases: list of str — notable management quotes
         has_data: bool
     """
-    # Use persistent SQLite cache (survives restarts) — in-memory cache
-    # was being cleared on every deploy, causing 200+ AI calls per day.
-    from alternative_data import _get_cached, _set_cached
     cache_key = f"transcript_sentiment_{symbol}"
     cached = _get_cached(cache_key, "insider")  # 24h TTL (recheck daily)
     if cached is not None:
@@ -674,18 +673,18 @@ def get_earnings_call_sentiment(symbol: str, ctx: Any = None) -> Dict[str, Any]:
     try:
         filings = get_company_filings(symbol, form_types=["8-K"])
         if not filings:
-            _cache[cache_key] = (time.time(), result)
+            _set_cached(cache_key, result)
             return result
 
         latest = filings[0]
         doc_url = latest.get("primary_doc_url")
         if not doc_url:
-            _cache[cache_key] = (time.time(), result)
+            _set_cached(cache_key, result)
             return result
 
         text = fetch_filing_text(doc_url)
         if not text or len(text) < 200:
-            _cache[cache_key] = (time.time(), result)
+            _set_cached(cache_key, result)
             return result
 
         # Truncate to keep AI cost low
