@@ -657,10 +657,13 @@ def get_earnings_call_sentiment(symbol: str, ctx: Any = None) -> Dict[str, Any]:
         key_phrases: list of str — notable management quotes
         has_data: bool
     """
+    # Use persistent SQLite cache (survives restarts) — in-memory cache
+    # was being cleared on every deploy, causing 200+ AI calls per day.
+    from alternative_data import _get_cached, _set_cached
     cache_key = f"transcript_sentiment_{symbol}"
-    cached = _cache.get(cache_key)
-    if cached and (time.time() - cached[0]) < 86400 * 30:
-        return cached[1]
+    cached = _get_cached(cache_key, "insider")  # 24h TTL (recheck daily)
+    if cached is not None:
+        return cached
 
     result = {
         "tone": "neutral",
@@ -722,5 +725,5 @@ def get_earnings_call_sentiment(symbol: str, ctx: Any = None) -> Dict[str, Any]:
     except Exception as exc:
         logger.debug("Earnings call sentiment failed for %s: %s", symbol, exc)
 
-    _cache[cache_key] = (time.time(), result)
+    _set_cached(cache_key, result)
     return result
