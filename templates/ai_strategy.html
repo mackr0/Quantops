@@ -1,0 +1,238 @@
+{% extends "base.html" %}{% block title %}AI Strategy - QuantOpsAI{% endblock %}{% block content %}
+{% include "_ai_nav.html" %}
+
+    <!-- Phase 2: Strategy Validations -->
+    <article>
+        <header><h3>Strategy Validations</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Every strategy is validated against ten checks — Sharpe ratio, drawdown, win rate, statistical significance, Monte Carlo stress, out-of-sample degradation, regime consistency, walk-forward stability, capacity, and minimum activity — before being eligible to trade.</p>
+
+        {% if not validations %}
+        <div style="padding:0.75rem;background:#fafafa;border-left:3px solid #888;border-radius:0 4px 4px 0;">
+            <strong>No validation runs yet</strong>
+            <p class="muted" style="margin:0.25rem 0 0 0;font-size:0.9rem;">
+                Run validations from the command line or admin interface to build the library of certified strategies. Validation runs are stored in <code>strategy_validations.db</code> and displayed here with full gate-by-gate breakdowns.
+            </p>
+        </div>
+        {% else %}
+        <div class="overflow-auto">
+            <table class="striped">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Strategy</th>
+                        <th>Market</th>
+                        <th>Verdict</th>
+                        <th>Score</th>
+                        <th>Passed / Total</th>
+                        <th>Runtime</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for v in validations %}
+                    <tr>
+                        <td class="muted">{{ v.timestamp[:16] }}</td>
+                        <td><strong>{{ v.strategy_name | display_name }}</strong></td>
+                        <td>{{ v.market_type }}</td>
+                        <td>
+                            {% if v.verdict == 'PASS' %}
+                                <span class="pnl-pos">PASS</span>
+                            {% else %}
+                                <span class="pnl-neg">FAIL</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ "%.1f"|format(v.score) }}</td>
+                        <td>{{ v.passed_count }} / {{ v.total_gates }}</td>
+                        <td class="muted">{{ "%.1f"|format(v.elapsed_sec) }}s</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+    </article>
+
+    <!-- Phase 6: Multi-Strategy Capital Allocation -->
+    <article>
+        <header><h3>Strategy Allocation</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Capital is divided across multiple uncorrelated strategies. Each strategy's weight is set by its rolling Sharpe ratio (risk parity). New strategies start at the default share until they accumulate a track record.</p>
+
+        {% if not allocation_info.per_profile %}
+        <p class="muted">No strategy allocation data yet.</p>
+        {% else %}
+        {% for prof in allocation_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;"><h4 style="margin:0;">{{ prof.name }}</h4></header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                {% if prof.strategies %}
+                <table style="font-size:0.85rem;">
+                    <thead>
+                        <tr>
+                            <th>Strategy</th>
+                            <th style="text-align:right;">Weight</th>
+                            <th style="text-align:right;">Rolling Sharpe</th>
+                            <th style="text-align:right;">Lifetime Sharpe</th>
+                            <th style="text-align:right;">Resolved Preds (30d)</th>
+                            <th style="text-align:right;">Win Rate</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for s in prof.strategies %}
+                        <tr>
+                            <td><strong>{{ s.name | display_name }}</strong></td>
+                            <td style="text-align:right;font-family:monospace;">
+                                {{ "%.1f%%"|format(s.weight * 100) }}
+                            </td>
+                            <td style="text-align:right;font-family:monospace;">{{ "%.2f"|format(s.rolling_sharpe) }}</td>
+                            <td style="text-align:right;font-family:monospace;">{{ "%.2f"|format(s.lifetime_sharpe) }}</td>
+                            <td style="text-align:right;" class="muted">{{ s.rolling_n }}</td>
+                            <td style="text-align:right;font-family:monospace;">{{ "%.0f%%"|format(s.rolling_win_rate) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p class="muted" style="font-size:0.9rem;">No strategies active for this profile yet.</p>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+    <!-- Phase 7: Auto-Generated Strategies -->
+    <article>
+        <header><h3>Evolving Strategy Library</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">The AI proposes new strategy variants weekly against an allowlisted spec grammar. Each proposal is validated via walk-forward + out-of-sample backtesting; survivors run in shadow mode with no real capital until their rolling Sharpe earns promotion. Failures are retired automatically.</p>
+
+        {% if not auto_strategy_info.per_profile %}
+        <p class="muted">No auto-generated strategies yet.</p>
+        {% else %}
+        {% for prof in auto_strategy_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;">
+                <h4 style="margin:0;">{{ prof.name }}</h4>
+                <small class="muted">
+                    proposed {{ prof.counts.proposed }} ·
+                    shadow {{ prof.counts.shadow }} ·
+                    <strong>active {{ prof.counts.active }}</strong> ·
+                    retired {{ prof.counts.retired }}
+                </small>
+            </header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                {% if prof.strategies %}
+                <table style="font-size:0.85rem;">
+                    <thead>
+                        <tr>
+                            <th>Strategy</th>
+                            <th>Status</th>
+                            <th>Dir</th>
+                            <th>Markets</th>
+                            <th>Gen</th>
+                            <th>Description</th>
+                            <th>Milestone</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for s in prof.strategies %}
+                        <tr>
+                            <td>{{ s.name | display_name }}</td>
+                            <td>
+                                {% if s.status == 'active' %}
+                                <strong style="color:#2d7a3d;">Active</strong>
+                                {% elif s.status == 'shadow' %}
+                                <span style="color:#b87333;">Shadow</span>
+                                {% elif s.status == 'retired' %}
+                                <span class="muted">Retired</span>
+                                {% else %}
+                                {{ s.status | display_name }}
+                                {% endif %}
+                            </td>
+                            <td>{{ s.direction }}</td>
+                            <td class="muted" style="font-size:0.8rem;">{{ s.markets | map('display_name') | join(', ') }}</td>
+                            <td class="muted">g{{ s.generation }}</td>
+                            <td>{{ s.description }}</td>
+                            <td class="muted" style="font-size:0.8rem;">
+                                {% if s.status == 'active' and s.promoted_at %}
+                                promoted {{ s.promoted_at[:10] }}
+                                {% elif s.status == 'shadow' and s.shadow_started_at %}
+                                shadow since {{ s.shadow_started_at[:10] }}
+                                {% elif s.status == 'retired' and s.retired_at %}
+                                retired {{ s.retired_at[:10] }}
+                                {% else %}
+                                created {{ s.created_at[:10] }}
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p class="muted" style="font-size:0.9rem;">No proposals yet. The weekly generation task runs every Sunday.</p>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+    <!-- Phase 3: Alpha Decay Monitoring -->
+    <article>
+        <header><h3>Alpha Decay Monitoring</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Every signal decays eventually. This monitor tracks rolling 30-day Sharpe per strategy vs its lifetime baseline. Strategies whose edge stays degraded for 30+ consecutive days are auto-deprecated — the trade pipeline skips their signals until the edge recovers.</p>
+
+        {% if not decay_info.per_profile %}
+        <p class="muted">No strategy performance data yet. Alpha decay monitoring activates once resolved predictions accumulate.</p>
+        {% else %}
+        {% for prof_decay in decay_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;"><h4 style="margin:0;">{{ prof_decay.name }}</h4></header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                {% if prof_decay.deprecated %}
+                <div style="padding:0.5rem 0.75rem;margin-bottom:0.75rem;border-left:3px solid #f44336;background:#fff5f5;border-radius:0 4px 4px 0;">
+                    <strong style="color:#c62828;">Deprecated Strategies</strong>
+                    <ul style="margin:0.25rem 0 0 1rem;padding:0;font-size:0.85rem;">
+                        {% for d in prof_decay.deprecated %}
+                        <li><strong>{{ d.strategy_type | display_name }}</strong> — deprecated {{ d.deprecated_at[:10] }}: {{ d.reason }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+                {% if prof_decay.entries %}
+                <table style="font-size:0.85rem;">
+                    <thead>
+                        <tr>
+                            <th>Strategy</th>
+                            <th style="text-align:right;">Rolling Sharpe (30d)</th>
+                            <th style="text-align:right;">Lifetime Sharpe</th>
+                            <th style="text-align:right;">Edge Change</th>
+                            <th style="text-align:right;">Resolved Preds (30d)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for e in prof_decay.entries %}
+                        <tr>
+                            <td><strong>{{ e.strategy_type | display_name }}</strong></td>
+                            <td style="text-align:right;font-family:monospace;">{{ "%.2f"|format(e.rolling.sharpe_ratio) }}</td>
+                            <td style="text-align:right;font-family:monospace;">{{ "%.2f"|format(e.lifetime.sharpe_ratio) }}</td>
+                            <td style="text-align:right;font-family:monospace;" class="{{ 'pnl-pos' if e.edge_change_pct and e.edge_change_pct > 0 else ('pnl-neg' if e.edge_change_pct and e.edge_change_pct < -15 else '') }}">
+                                {% if e.edge_change_pct is not none %}
+                                    {{ "{:+.1f}%".format(e.edge_change_pct) }}
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </td>
+                            <td style="text-align:right;" class="muted">{{ e.rolling.n_predictions }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p class="muted" style="font-size:0.9rem;">No resolved predictions with strategy tags yet.</p>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+{% endblock %}

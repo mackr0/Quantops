@@ -2083,6 +2083,369 @@ def performance_dashboard():
                            ai_cost_info=ai_cost_info)
 
 
+# ---------------------------------------------------------------------------
+# AI Intelligence — 4 sub-pages
+# ---------------------------------------------------------------------------
+
+def _ai_common(page_name):
+    """Common setup for all AI pages: profiles, profile filter, db_paths."""
+    profiles = [p for p in get_user_profiles(current_user.effective_user_id) if p.get("enabled")]
+    selected_profile = request.args.get("profile_id", "", type=str)
+    selected_profile_int = int(selected_profile) if selected_profile else None
+    selected_profile_name = None
+
+    db_paths = set()
+    import os
+    for p in profiles:
+        if selected_profile_int and p["id"] != selected_profile_int:
+            if not selected_profile_name and p["id"] == selected_profile_int:
+                selected_profile_name = p["name"]
+            continue
+        if selected_profile_int and p["id"] == selected_profile_int:
+            selected_profile_name = p["name"]
+        db_path = f"quantopsai_profile_{p['id']}.db"
+        if os.path.exists(db_path):
+            db_paths.add(db_path)
+
+    return {
+        "profiles": profiles,
+        "selected_profile": selected_profile_int,
+        "selected_profile_name": selected_profile_name,
+        "ai_page": page_name,
+        "db_paths": db_paths,
+    }
+
+
+@views_bp.route("/ai/brain")
+@login_required
+def ai_brain():
+    """AI Brain — prediction accuracy, confidence calibration, meta-model."""
+    from ai_tracker import get_ai_performance
+    import sqlite3 as _sqlite3
+
+    ctx = _ai_common("brain")
+    db_paths = ctx["db_paths"]
+    profiles = ctx["profiles"]
+    selected_profile_int = ctx["selected_profile"]
+
+    ai_perf = {
+        "total_predictions": 0, "resolved": 0, "pending": 0,
+        "win_rate": 0.0, "avg_confidence_on_wins": 0.0,
+        "avg_confidence_on_losses": 0.0, "avg_return_on_buys": 0.0,
+        "avg_return_on_sells": 0.0, "best_prediction": None,
+        "worst_prediction": None, "profit_factor": 0.0,
+    }
+    all_wins = 0
+    all_losses = 0
+    conf_on_wins = []
+    conf_on_losses = []
+    all_return_buys = []
+    all_return_sells = []
+
+    for db_path in db_paths:
+        try:
+            p = get_ai_performance(db_path=db_path)
+            ai_perf["total_predictions"] += p.get("total_predictions", 0)
+            ai_perf["resolved"] += p.get("resolved", 0)
+            ai_perf["pending"] += p.get("pending", 0)
+            if p.get("best_prediction"):
+                if ai_perf["best_prediction"] is None or p["best_prediction"].get("return_pct", 0) > ai_perf["best_prediction"].get("return_pct", 0):
+                    ai_perf["best_prediction"] = p["best_prediction"]
+            if p.get("worst_prediction"):
+                if ai_perf["worst_prediction"] is None or p["worst_prediction"].get("return_pct", 0) < ai_perf["worst_prediction"].get("return_pct", 0):
+                    ai_perf["worst_prediction"] = p["worst_prediction"]
+        except Exception:
+            pass
+        try:
+            conn = _sqlite3.connect(db_path)
+            conn.row_factory = _sqlite3.Row
+            rows = conn.execute(
+                "SELECT predicted_signal, actual_outcome, actual_return_pct, confidence "
+                "FROM ai_predictions WHERE status = 'resolved'"
+            ).fetchall()
+            conn.close()
+            for r in rows:
+                outcome = r["actual_outcome"]
+                ret = r["actual_return_pct"]
+                conf = r["confidence"] or 0
+                sig = r["predicted_signal"] or ""
+                if outcome == "win":
+                    all_wins += 1
+                    conf_on_wins.append(conf)
+                elif outcome == "loss":
+                    all_losses += 1
+                    conf_on_losses.append(conf)
+                if ret is not None:
+                    if "BUY" in sig.upper():
+                        all_return_buys.append(ret)
+                    elif "SELL" in sig.upper():
+                        all_return_sells.append(ret)
+        except Exception:
+            pass
+
+    total_resolved = all_wins + all_losses
+    if total_resolved > 0:
+        ai_perf["win_rate"] = round(all_wins / total_resolved * 100, 1)
+    if conf_on_wins:
+        ai_perf["avg_confidence_on_wins"] = round(sum(conf_on_wins) / len(conf_on_wins), 1)
+    if conf_on_losses:
+        ai_perf["avg_confidence_on_losses"] = round(sum(conf_on_losses) / len(conf_on_losses), 1)
+    if all_return_buys:
+        ai_perf["avg_return_on_buys"] = round(sum(all_return_buys) / len(all_return_buys), 2)
+    if all_return_sells:
+        ai_perf["avg_return_on_sells"] = round(sum(all_return_sells) / len(all_return_sells), 2)
+
+    # Profit factor from BUY/SELL predictions only
+    trade_returns = []
+    for db_path in db_paths:
+        try:
+            conn = _sqlite3.connect(db_path)
+            rows = conn.execute(
+                "SELECT actual_return_pct FROM ai_predictions "
+                "WHERE status='resolved' AND actual_return_pct IS NOT NULL "
+                "AND predicted_signal IN ('BUY', 'SELL')"
+            ).fetchall()
+            conn.close()
+            trade_returns.extend(r[0] for r in rows if r[0] is not None)
+        except Exception:
+            pass
+    total_gains = sum(r for r in trade_returns if r > 0)
+    total_losses_abs = abs(sum(r for r in trade_returns if r < 0))
+    if total_gains > 0 and total_losses_abs > 0:
+        ai_perf["profit_factor"] = round(total_gains / total_losses_abs, 2)
+
+    # Slippage
+    slippage = {"avg_pct": 0, "total_cost": 0, "count": 0}
+    for db_path in db_paths:
+        try:
+            from journal import get_slippage_stats
+            s = get_slippage_stats(db_path=db_path)
+            if s:
+                slippage["count"] += s.get("count", 0)
+                slippage["total_cost"] += s.get("total_cost", 0)
+        except Exception:
+            pass
+    if slippage["count"] > 0 and slippage["total_cost"] != 0:
+        slippage["avg_pct"] = slippage["total_cost"] / slippage["count"]
+
+    # Meta-model
+    meta_info = {"loaded": False, "profiles": []}
+    try:
+        import meta_model
+        for p in profiles:
+            if selected_profile_int and p["id"] != selected_profile_int:
+                continue
+            path = meta_model.model_path_for_profile(p["id"])
+            bundle = meta_model.load_model(path)
+            if bundle:
+                meta_info["loaded"] = True
+                meta_info["profiles"].append({
+                    "name": p["name"],
+                    "auc": bundle["metrics"]["auc"],
+                    "accuracy": bundle["metrics"]["accuracy"],
+                    "n_samples": bundle["metrics"]["n_samples"],
+                    "positive_rate": bundle["metrics"].get("positive_rate", 0),
+                    "top_features": bundle["feature_importance"][:10],
+                })
+    except Exception:
+        pass
+
+    return render_template("ai_brain.html", ai_perf=ai_perf, slippage=slippage,
+                           meta_info=meta_info, **ctx)
+
+
+@views_bp.route("/ai/strategy")
+@login_required
+def ai_strategy():
+    """AI Strategy — allocation, validations, alpha decay, evolving library."""
+    import os
+
+    ctx = _ai_common("strategy")
+    db_paths = ctx["db_paths"]
+    profiles = ctx["profiles"]
+    selected_profile_int = ctx["selected_profile"]
+
+    # Strategy validations
+    validations = []
+    try:
+        import sqlite3 as _sq
+        val_db = "strategy_validations.db"
+        if os.path.exists(val_db):
+            conn = _sq.connect(val_db)
+            conn.row_factory = _sq.Row
+            rows = conn.execute(
+                "SELECT * FROM validations ORDER BY timestamp DESC LIMIT 50"
+            ).fetchall()
+            conn.close()
+            validations = [dict(r) for r in rows]
+    except Exception:
+        pass
+
+    # Alpha decay
+    decay_info = []
+    try:
+        from alpha_decay import get_strategy_performance
+        for p in profiles:
+            if selected_profile_int and p["id"] != selected_profile_int:
+                continue
+            db = f"quantopsai_profile_{p['id']}.db"
+            if not os.path.exists(db):
+                continue
+            try:
+                perf = get_strategy_performance(db)
+                if perf:
+                    decay_info.append({"profile_name": p["name"], "strategies": perf})
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Strategy allocation
+    allocation_info = []
+    try:
+        from multi_strategy import get_allocation_summary
+        for p in profiles:
+            if selected_profile_int and p["id"] != selected_profile_int:
+                continue
+            try:
+                alloc = get_allocation_summary(p["id"])
+                if alloc:
+                    allocation_info.append({"profile_name": p["name"], "allocation": alloc})
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Auto-generated strategies
+    auto_strategy_info = []
+    try:
+        from strategy_lifecycle import get_lifecycle_summary
+        for p in profiles:
+            if selected_profile_int and p["id"] != selected_profile_int:
+                continue
+            try:
+                summary = get_lifecycle_summary(p["id"])
+                if summary:
+                    auto_strategy_info.append({"profile_name": p["name"], "lifecycle": summary})
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    return render_template("ai_strategy.html", validations=validations,
+                           decay_info=decay_info, allocation_info=allocation_info,
+                           auto_strategy_info=auto_strategy_info, **ctx)
+
+
+@views_bp.route("/ai/awareness")
+@login_required
+def ai_awareness():
+    """AI Awareness — market intelligence, SEC alerts, crisis, events, ensemble."""
+    import os
+
+    ctx = _ai_common("awareness")
+    db_paths = ctx["db_paths"]
+    profiles = ctx["profiles"]
+    selected_profile_int = ctx["selected_profile"]
+
+    # Crisis info
+    crisis_info = []
+    try:
+        from crisis_state import get_current_level
+        for p in profiles:
+            if selected_profile_int and p["id"] != selected_profile_int:
+                continue
+            db = f"quantopsai_profile_{p['id']}.db"
+            if not os.path.exists(db):
+                continue
+            try:
+                cs = get_current_level(db)
+                crisis_info.append({"profile_name": p["name"], "state": cs})
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Event stream
+    event_info = []
+    try:
+        from event_bus import recent_events
+        for p in profiles:
+            if selected_profile_int and p["id"] != selected_profile_int:
+                continue
+            db = f"quantopsai_profile_{p['id']}.db"
+            if not os.path.exists(db):
+                continue
+            try:
+                events = recent_events(db, hours=24, limit=25)
+                if events:
+                    event_info.append({"profile_name": p["name"], "events": events})
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Ensemble info
+    ensemble_info = []
+    try:
+        import json as _json
+        for p in profiles:
+            if selected_profile_int and p["id"] != selected_profile_int:
+                continue
+            cycle_file = f"cycle_data_{p['id']}.json"
+            if os.path.exists(cycle_file):
+                try:
+                    with open(cycle_file) as f:
+                        cd = _json.load(f)
+                    ensemble_info.append({"profile_name": p["name"], "cycle": cd})
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    return render_template("ai_awareness.html", crisis_info=crisis_info,
+                           event_info=event_info, ensemble_info=ensemble_info, **ctx)
+
+
+@views_bp.route("/ai/operations")
+@login_required
+def ai_operations():
+    """AI Operations — self-tuning, AI cost tracking."""
+    ctx = _ai_common("operations")
+    db_paths = ctx["db_paths"]
+    profiles = ctx["profiles"]
+    selected_profile_int = ctx["selected_profile"]
+
+    # AI cost info
+    ai_cost_info = []
+    try:
+        from ai_cost_ledger import spend_summary
+        for p in profiles:
+            if selected_profile_int and p["id"] != selected_profile_int:
+                continue
+            db = f"quantopsai_profile_{p['id']}.db"
+            try:
+                summary = spend_summary(db)
+                ai_cost_info.append({"profile_name": p["name"], "spend": summary})
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    return render_template("ai_operations.html", ai_cost_info=ai_cost_info, **ctx)
+
+
+@views_bp.route("/api/macro-data")
+@login_required
+def api_macro_data():
+    """Return current macro data (yield curve, CBOE skew, ETF flows, FRED)."""
+    try:
+        from macro_data import get_all_macro_data
+        return jsonify(get_all_macro_data())
+    except Exception as exc:
+        return jsonify({"error": str(exc)})
+
+
 @views_bp.route("/api/backtest-vs-reality/<int:profile_id>")
 @login_required
 def api_backtest_vs_reality(profile_id):

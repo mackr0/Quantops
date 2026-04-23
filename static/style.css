@@ -1,6 +1,69 @@
 /* QuantOpsAI Custom Styles */
 
 /* ---------------------------------------------------------------------------
+   Nav dropdown for AI Intelligence
+--------------------------------------------------------------------------- */
+.nav-dropdown {
+    position: relative;
+}
+.nav-dropdown-menu {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    background: #1a1a2e;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 0.25rem 0;
+    min-width: 160px;
+    z-index: 100;
+    list-style: none;
+    margin: 0;
+}
+.nav-dropdown:hover .nav-dropdown-menu {
+    display: block;
+}
+.nav-dropdown-menu li {
+    margin: 0;
+    padding: 0;
+}
+.nav-dropdown-menu a {
+    display: block;
+    padding: 0.4rem 1rem;
+    color: #ccc;
+    text-decoration: none;
+    font-size: 0.9rem;
+}
+.nav-dropdown-menu a:hover {
+    background: #2a2a4e;
+    color: #fff;
+}
+
+/* AI sub-navigation */
+.ai-subnav {
+    display: flex;
+    gap: 0;
+    margin-bottom: 1.5rem;
+    border-bottom: 2px solid #eee;
+}
+.ai-subnav a {
+    padding: 0.5rem 1.25rem;
+    text-decoration: none;
+    color: #888;
+    font-size: 0.95rem;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+}
+.ai-subnav a:hover {
+    color: #333;
+}
+.ai-subnav a.active {
+    color: #1a1a2e;
+    border-bottom-color: #1a1a2e;
+    font-weight: 600;
+}
+
+/* ---------------------------------------------------------------------------
    Nav header - matches email theme (#1a1a2e)
 --------------------------------------------------------------------------- */
 .qnav {

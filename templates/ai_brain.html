@@ -1,0 +1,252 @@
+{% extends "base.html" %}{% block title %}AI Brain - QuantOpsAI{% endblock %}{% block content %}
+{% include "_ai_nav.html" %}
+
+    {% if not ai_perf %}
+    <p class="muted" style="margin-bottom:1rem;">AI prediction data will appear here as the system makes and resolves predictions.</p>
+    {% endif %}
+
+    <!-- AI Prediction Accuracy -->
+    <p class="muted" style="margin-bottom:0.5rem;font-size:0.85rem;">
+        <strong>Predictions vs Trades:</strong> The AI evaluates ~30 candidates every cycle but only trades 0-3.
+        A "prediction" is the AI's directional call on ANY candidate (traded or not). A "resolved prediction" means
+        we checked later whether the price moved in the predicted direction — the AI was right (win) or wrong (loss).
+        This measures forecasting accuracy across everything the AI evaluates, not just what it trades.
+        The self-tuner needs 20+ resolved predictions before it starts adjusting parameters.
+        A prediction resolves when the price moves 2%+ in either direction, or after 3-10 trading days.
+    </p>
+    <div class="grid">
+        <article style="text-align:center;">
+            <small class="muted"><span class="tip" data-tip="Every BUY/SELL/HOLD call the AI made on any candidate — whether or not we actually traded it">Total Predictions</span></small>
+            <strong style="font-size:2rem; display:block;">{{ ai_perf.total_predictions if ai_perf else 0 }}</strong>
+        </article>
+        <article style="text-align:center;">
+            <small class="muted"><span class="tip" data-tip="Predictions where we checked: did the price move in the direction the AI predicted? Resolves at 2% price move or after 3-10 trading days.">Resolved</span></small>
+            <strong style="font-size:2rem; display:block;">{{ ai_perf.resolved if ai_perf else 0 }}</strong>
+        </article>
+        <article style="text-align:center;">
+            <small class="muted"><span class="tip" data-tip="Predictions still waiting to resolve — the price hasn't moved enough yet or not enough time has passed">Pending</span></small>
+            <strong style="font-size:2rem; display:block;">{{ ai_perf.pending if ai_perf else 0 }}</strong>
+        </article>
+    </div>
+
+    <div class="grid">
+        <article style="text-align:center;">
+            <small class="muted"><span class="tip" data-tip="How often the AI correctly predicted price direction">Prediction Win Rate</span></small>
+            {% if ai_perf and ai_perf.resolved > 0 %}
+            <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if ai_perf.win_rate >= 50 else 'pnl-neg' }}">
+                {{ "%.1f"|format(ai_perf.win_rate) }}%
+            </strong>
+            <small class="muted">{{ ai_perf.resolved }} resolved predictions</small>
+            {% else %}
+            <strong style="font-size:2.5rem; display:block;" class="muted">N/A</strong>
+            <small class="muted">no resolved predictions yet</small>
+            {% endif %}
+        </article>
+        <article style="text-align:center;">
+            <small class="muted"><span class="tip" data-tip="Sum of positive price moves divided by sum of negative price moves on BUY/SELL predictions. Measures whether the AI picks the right direction, independent of position sizing. Above 1.5 is good, above 2.0 is strong.">Prediction Accuracy</span></small>
+            {% if ai_perf and ai_perf.profit_factor > 0 %}
+            <strong style="font-size:2.5rem; display:block;">{{ "%.2f"|format(ai_perf.profit_factor) }}</strong>
+            {% else %}
+            <strong style="font-size:2.5rem; display:block;" class="muted">N/A</strong>
+            <small class="muted">need at least one win and one loss</small>
+            {% endif %}
+        </article>
+    </div>
+
+    <!-- Confidence Calibration -->
+    <div class="grid">
+        <article>
+            <header><h4>Confidence Calibration</h4></header>
+            <div class="stat-card">
+                <small class="muted">Avg Confidence on Wins</small>
+                <strong>{{ "%.1f"|format(ai_perf.avg_confidence_on_wins if ai_perf else 0) }}%</strong>
+            </div>
+            <div class="stat-card">
+                <small class="muted">Avg Confidence on Losses</small>
+                <strong>{{ "%.1f"|format(ai_perf.avg_confidence_on_losses if ai_perf else 0) }}%</strong>
+            </div>
+        </article>
+        <article>
+            <header><h4>Returns by Signal</h4></header>
+            <div class="stat-card">
+                <small class="muted">Avg Return on BUYs</small>
+                <strong class="{{ 'pnl-pos' if (ai_perf.avg_return_on_buys if ai_perf else 0) >= 0 else 'pnl-neg' }}">
+                    {{ "{:+.2f}".format(ai_perf.avg_return_on_buys if ai_perf else 0) }}%
+                </strong>
+            </div>
+            <div class="stat-card">
+                <small class="muted">Avg Return on SELLs</small>
+                <strong class="{{ 'pnl-pos' if (ai_perf.avg_return_on_sells if ai_perf else 0) >= 0 else 'pnl-neg' }}">
+                    {{ "{:+.2f}".format(ai_perf.avg_return_on_sells if ai_perf else 0) }}%
+                </strong>
+            </div>
+        </article>
+    </div>
+
+    <!-- Best / Worst Predictions -->
+    <div class="grid">
+        {% if ai_perf and ai_perf.best_prediction %}
+        <article>
+            <header><h4>Best Prediction</h4></header>
+            <strong>{{ ai_perf.best_prediction.symbol }}</strong>
+            <small class="muted">({{ ai_perf.best_prediction.confidence }}% confidence)</small>
+            <p class="pnl-pos" style="font-size:1.5rem;">{{ "{:+.2f}".format(ai_perf.best_prediction.return_pct) }}%</p>
+        </article>
+        {% else %}
+        <article>
+            <header><h4>Best Prediction</h4></header>
+            <p class="muted">No resolved predictions yet</p>
+        </article>
+        {% endif %}
+
+        {% if ai_perf and ai_perf.worst_prediction %}
+        <article>
+            <header><h4>Worst Prediction</h4></header>
+            <strong>{{ ai_perf.worst_prediction.symbol }}</strong>
+            <small class="muted">({{ ai_perf.worst_prediction.confidence }}% confidence)</small>
+            <p class="pnl-neg" style="font-size:1.5rem;">{{ "{:+.2f}".format(ai_perf.worst_prediction.return_pct) }}%</p>
+        </article>
+        {% else %}
+        <article>
+            <header><h4>Worst Prediction</h4></header>
+            <p class="muted">No resolved predictions yet</p>
+        </article>
+        {% endif %}
+    </div>
+
+    <!-- Slippage Impact -->
+    {% if slippage and slippage.count > 0 %}
+    <article>
+        <header><h4>Slippage Impact</h4></header>
+        <div class="grid">
+            <div class="stat-card">
+                <small class="muted"><span class="tip" data-tip="The difference between the price you expected and the price you actually got">Avg Slippage</span></small>
+                <strong>{{ "%.3f"|format(slippage.avg_pct) }}%</strong>
+            </div>
+            <div class="stat-card">
+                <small class="muted">Total Slippage Cost</small>
+                <strong class="pnl-neg">${{ "{:,.2f}".format(slippage.total_cost) }}</strong>
+            </div>
+            <div class="stat-card">
+                <small class="muted">Trades with Fill Data</small>
+                <strong>{{ slippage.count }}</strong>
+            </div>
+        </div>
+    </article>
+    {% endif %}
+
+    <!-- Learned Patterns — loaded via API -->
+    <article>
+        <header><h3>Learned Patterns</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Patterns the system has discovered from historical predictions — which conditions lead to wins vs losses.</p>
+        <div id="learned-patterns-widget"><p class="muted">Loading...</p></div>
+    </article>
+
+    <!-- Phase 1: Meta-Model Panel -->
+    <article>
+        <header><h3>Meta-Model</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">A learned model of when the AI is likely to be wrong, trained on our own prediction history. It re-weights confidence and suppresses low-probability trades before execution.</p>
+
+        {% if not meta_info.loaded %}
+        <div style="padding:0.75rem;background:#fafafa;border-left:3px solid #888;border-radius:0 4px 4px 0;">
+            <strong>Collecting training data</strong>
+            <p class="muted" style="margin:0.25rem 0 0 0;font-size:0.9rem;">
+                The meta-model trains automatically once a profile has 100+ resolved predictions. Every scan cycle captures the full feature context the AI saw. As predictions resolve (win/loss), they become training samples. The first model typically trains after ~2 weeks of scanning.
+            </p>
+        </div>
+        {% else %}
+        {% for mp in meta_info.profiles %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;"><h4 style="margin:0;">{{ mp.name }}</h4></header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                <div class="grid">
+                    <div class="stat-card">
+                        <small class="muted"><span class="tip" data-tip="Area Under ROC Curve — how well the model distinguishes right from wrong predictions. 0.5 = random, 1.0 = perfect">AUC</span></small>
+                        <strong class="{{ 'pnl-pos' if mp.auc >= 0.6 else ('pnl-neg' if mp.auc < 0.52 else '') }}">{{ "%.3f"|format(mp.auc) }}</strong>
+                    </div>
+                    <div class="stat-card">
+                        <small class="muted">Accuracy</small>
+                        <strong>{{ "%.1f"|format(mp.accuracy * 100) }}%</strong>
+                    </div>
+                    <div class="stat-card">
+                        <small class="muted">Training Samples</small>
+                        <strong>{{ mp.n_samples }}</strong>
+                    </div>
+                    <div class="stat-card">
+                        <small class="muted">Win Rate (baseline)</small>
+                        <strong>{{ "%.1f"|format(mp.positive_rate * 100) }}%</strong>
+                    </div>
+                </div>
+                <h5 style="margin-top:1rem;">Top Predictive Features</h5>
+                <p class="muted" style="margin-top:-0.5rem;font-size:0.85rem;">Which data points most strongly predict whether the AI is correct. Sensible patterns here confirm the model is learning real signals (not noise).</p>
+                <table style="font-size:0.85rem;">
+                    <thead>
+                        <tr><th>Feature</th><th style="text-align:right;">Importance</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for name, imp in mp.top_features %}
+                        <tr>
+                            <td>{{ name | display_name }}</td>
+                            <td style="text-align:right;font-family:monospace;">{{ "%.4f"|format(imp) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+<script>
+(function() {
+    var profileFilter = '{{ selected_profile or "" }}';
+    var pfParam = profileFilter ? '&profile_id=' + profileFilter : '';
+    var esc = function(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+
+    function paginator(container, page, pages, total, loadFn) {
+        var el = document.createElement('div');
+        el.style.cssText = 'margin-top:0.5rem;';
+        var prev = document.createElement('button');
+        prev.textContent = '\u2190'; prev.className = 'outline secondary';
+        prev.style.cssText = 'padding:0.2rem 0.5rem;margin-right:0.25rem;font-size:0.85rem;';
+        prev.disabled = page <= 1;
+        prev.onclick = function() { loadFn(page - 1); };
+        el.appendChild(prev);
+        var info = document.createElement('span');
+        info.style.cssText = 'font-size:0.85rem;margin:0 0.5rem;color:#888;';
+        info.textContent = 'Page ' + page + ' of ' + pages + ' (' + total + ' total)';
+        el.appendChild(info);
+        var next = document.createElement('button');
+        next.textContent = '\u2192'; next.className = 'outline secondary';
+        next.style.cssText = 'padding:0.2rem 0.5rem;margin-left:0.25rem;font-size:0.85rem;';
+        next.disabled = page >= pages;
+        next.onclick = function() { loadFn(page + 1); };
+        el.appendChild(next);
+        container.appendChild(el);
+    }
+
+    // --- Learned Patterns ---
+    function loadLearnedPatterns(page) {
+        var w = document.getElementById('learned-patterns-widget');
+        fetch('/api/learned-patterns?page=' + page + '&per_page=5' + pfParam)
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d.items || !d.items.length) { w.innerHTML = '<p class="muted">Patterns will appear after enough resolved predictions accumulate.</p>'; return; }
+                var h = '<ul style="list-style:none;padding:0;">';
+                d.items.forEach(function(p) {
+                    var color = '#888';
+                    if (p.indexOf('Avoid') >= 0 || p.indexOf('cautious') >= 0) color = '#f44336';
+                    else if (p.indexOf('Favor') >= 0 || p.indexOf('edge') >= 0) color = '#00c853';
+                    h += '<li style="padding:0.4rem 0.75rem;margin-bottom:0.25rem;border-left:3px solid ' + color + ';background:#f9f9f9;border-radius:0 4px 4px 0;font-size:0.9rem;">' + esc(p) + '</li>';
+                });
+                h += '</ul>';
+                w.innerHTML = h;
+                if (d.pages > 1) paginator(w, d.page, d.pages, d.total, loadLearnedPatterns);
+            });
+    }
+    loadLearnedPatterns(1);
+})();
+</script>
+
+{% endblock %}

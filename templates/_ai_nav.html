@@ -1,0 +1,21 @@
+<!-- AI Intelligence sub-navigation + profile filter -->
+<h1>AI Intelligence{% if selected_profile_name %} &mdash; {{ selected_profile_name }}{% endif %}</h1>
+
+<div class="ai-subnav">
+    <a href="/ai/brain" class="{{ 'active' if ai_page == 'brain' }}">Brain</a>
+    <a href="/ai/strategy" class="{{ 'active' if ai_page == 'strategy' }}">Strategy</a>
+    <a href="/ai/awareness" class="{{ 'active' if ai_page == 'awareness' }}">Awareness</a>
+    <a href="/ai/operations" class="{{ 'active' if ai_page == 'operations' }}">Operations</a>
+</div>
+
+<div style="margin-bottom:1rem;">
+    <form method="get" style="display:flex;gap:0.5rem;align-items:center;">
+        <label style="margin:0;">Profile:</label>
+        <select name="profile_id" onchange="this.form.submit()">
+            <option value="">All Profiles</option>
+            {% for p in profiles %}
+            <option value="{{ p.id }}" {{ 'selected' if selected_profile == p.id }}>{{ p.name }}</option>
+            {% endfor %}
+        </select>
+    </form>
+</div>

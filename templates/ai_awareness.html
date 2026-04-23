@@ -1,0 +1,415 @@
+{% extends "base.html" %}{% block title %}AI Awareness - QuantOpsAI{% endblock %}{% block content %}
+{% include "_ai_nav.html" %}
+
+    <!-- Market Intelligence — loaded via API -->
+    <article>
+        <header><h3>Market Intelligence</h3></header>
+        <p class="muted">Real-time macro context the AI uses for decision-making.</p>
+        <div id="macro-data-widget"><p class="muted">Loading...</p></div>
+    </article>
+
+    <!-- Phase 4: SEC Filing Alerts — loaded via API -->
+    <article>
+        <header><h3>SEC Filing Alerts</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">AI-analyzed 10-K / 10-Q / 8-K filings. Detects material language changes. Updated daily via EDGAR.</p>
+        <div id="sec-alerts-widget"><p class="muted">Loading...</p></div>
+    </article>
+
+    <!-- Phase 10: Cross-Asset Crisis Detection -->
+    <article>
+        {% set crisis_level = crisis_info.max_level or 'normal' %}
+        <header style="{% if crisis_level != 'normal' %}background:#fff3e0;border-bottom:2px solid #ff8c00;padding:0.75rem 1rem;{% endif %}">
+            <h3 style="margin:0;">
+                Crisis Monitor
+                {% if crisis_level == 'normal' %}
+                <span style="color:#2d7a3d;font-weight:normal;font-size:0.9rem;">● all clear</span>
+                {% elif crisis_level == 'elevated' %}
+                <span style="color:#b87333;font-weight:bold;font-size:0.95rem;">⚠ ELEVATED</span>
+                {% elif crisis_level == 'crisis' %}
+                <span style="color:#b00;font-weight:bold;font-size:1rem;">⚠ CRISIS — new longs blocked</span>
+                {% else %}
+                <span style="color:#800;font-weight:bold;font-size:1.05rem;">⛔ SEVERE — liquidate / cash</span>
+                {% endif %}
+            </h3>
+        </header>
+        <p class="muted" style="margin-top:-0.5rem;">Cross-asset capital preservation layer. Monitors VIX level and term structure, SPY/TLT/GLD/UUP correlation spikes, bond/stock divergences, gold safe-haven rallies, HYG/LQD credit stress, and clusters of recent price shocks. When the level rises, position sizes scale down; at crisis/severe, the trade pipeline blocks new long entries.</p>
+
+        {% if not crisis_info.per_profile %}
+        <p class="muted">No crisis monitoring data yet.</p>
+        {% else %}
+        {% for prof in crisis_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;">
+                <h4 style="margin:0;">
+                    {{ prof.name }}
+                    {% if prof.level == 'normal' %}
+                    <span style="color:#2d7a3d;font-size:0.85rem;">normal (size x1.00)</span>
+                    {% elif prof.level == 'elevated' %}
+                    <span style="color:#b87333;font-weight:bold;font-size:0.85rem;">ELEVATED (size x{{ "%.2f"|format(prof.size_multiplier) }})</span>
+                    {% elif prof.level == 'crisis' %}
+                    <span style="color:#b00;font-weight:bold;font-size:0.9rem;">CRISIS</span>
+                    {% else %}
+                    <span style="color:#800;font-weight:bold;font-size:0.9rem;">SEVERE</span>
+                    {% endif %}
+                </h4>
+                {% if prof.transitioned_at %}
+                <small class="muted">since {{ prof.transitioned_at[:16] }}</small>
+                {% endif %}
+            </header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                {% if prof.signals %}
+                <p style="font-size:0.85rem;margin:0.5rem 0;"><strong>Active signals:</strong></p>
+                <ul style="font-size:0.85rem;margin-top:0;">
+                    {% for s in prof.signals %}
+                    <li>
+                        <strong>{{ s.name | display_name }}</strong>
+                        <span class="muted">({{ s.severity | title }})</span>
+                        — {{ s.detail }}
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+                {% if prof.readings %}
+                <p style="font-size:0.85rem;" class="muted" style="margin-top:0.5rem;">
+                    <strong>Readings:</strong>
+                </p>
+                <table style="font-size:0.8rem;">
+                    <tbody>
+                        {% for k, v in prof.readings.items() %}
+                        <tr>
+                            <td class="muted" style="padding:0.15rem 0.5rem 0.15rem 0;">{{ k | display_name }}</td>
+                            <td style="font-family:monospace;text-align:right;padding:0.15rem 0;">{{ k | reading_value(v) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% endif %}
+                {% if prof.history %}
+                <details>
+                    <summary style="font-size:0.85rem;cursor:pointer;">Transition history ({{ prof.history|length }})</summary>
+                    <table style="font-size:0.8rem;margin-top:0.5rem;">
+                        <thead>
+                            <tr><th>When</th><th>From</th><th>To</th><th>Size x</th></tr>
+                        </thead>
+                        <tbody>
+                            {% for h in prof.history %}
+                            <tr>
+                                <td>{{ h.transitioned_at[:16] }}</td>
+                                <td class="muted">{{ h.from_level | display_name }}</td>
+                                <td><strong>{{ h.to_level | display_name }}</strong></td>
+                                <td style="font-family:monospace;">{{ "%.2f"|format(h.size_multiplier) }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </details>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+    <!-- Phase 9: Event Stream -->
+    <article>
+        <header><h3>Event Stream</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">The system reacts to events in near-real-time, not just on 15-minute timers. Detectors watch for SEC filings, imminent earnings, price shocks on held positions, and big resolved predictions. High-severity SEC and price-shock events trigger an immediate specialist ensemble analysis; all events are logged to the activity feed.</p>
+
+        {% if not event_info.per_profile %}
+        <p class="muted">No events in the last 24 hours.</p>
+        {% else %}
+        {% for prof in event_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;">
+                <h4 style="margin:0;">{{ prof.name }}</h4>
+                <small class="muted">
+                    {{ prof.events|length }} events ·
+                    {% if prof.counts.high %}<strong style="color:#b00;">{{ prof.counts.high }} high</strong> · {% endif %}
+                    {% if prof.counts.medium %}{{ prof.counts.medium }} medium · {% endif %}
+                    {% if prof.counts.low %}{{ prof.counts.low }} low · {% endif %}
+                    {{ prof.counts.info }} info
+                </small>
+            </header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                <table style="font-size:0.85rem;">
+                    <thead>
+                        <tr>
+                            <th>When</th>
+                            <th>Type</th>
+                            <th>Symbol</th>
+                            <th>Severity</th>
+                            <th>Detail</th>
+                            <th>Handler</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for e in prof.events %}
+                        <tr>
+                            <td class="muted" style="font-size:0.75rem;">{{ e.detected_at[:16] }}</td>
+                            <td style="font-size:0.85rem;">{{ e.type | display_name }}</td>
+                            <td style="font-family:monospace;">{{ e.symbol or '-' }}</td>
+                            <td>
+                                {% if e.severity == 'high' or e.severity == 'critical' %}
+                                <strong style="color:#b00;">{{ e.severity }}</strong>
+                                {% elif e.severity == 'medium' %}
+                                <span style="color:#b87333;">{{ e.severity }}</span>
+                                {% else %}
+                                <span class="muted">{{ e.severity }}</span>
+                                {% endif %}
+                            </td>
+                            <td class="muted" style="font-size:0.8rem;">
+                                {% if e.payload.diagnosis %}{{ e.payload.diagnosis }}{% endif %}
+                                {% if e.payload.move_pct %}{{ "%+.1f"|format(e.payload.move_pct) }}%{% endif %}
+                                {% if e.payload.return_pct %}{{ "%+.1f"|format(e.payload.return_pct) }}% ({{ e.payload.strategy | display_name }}){% endif %}
+                                {% if e.payload.form_type %}{{ e.payload.form_type }} — {{ e.payload.signal or '' }}{% endif %}
+                                {% if e.payload.days_until is defined %}earnings in {{ e.payload.days_until }}d{% endif %}
+                            </td>
+                            <td class="muted" style="font-size:0.85rem;">
+                                {% set actions = [] %}
+                                {% for hr in e.handler_results %}
+                                  {% if hr.result.vetoed %}
+                                    {% if actions.append('<span style="color:#b00;">Ensemble VETO</span>') %}{% endif %}
+                                  {% elif hr.result.ensemble_verdict == 'BUY' %}
+                                    {% if actions.append('Ensemble → <span style="color:#2d7a3d;">Buy</span> (' ~ hr.result.ensemble_confidence ~ '% confidence)') %}{% endif %}
+                                  {% elif hr.result.ensemble_verdict == 'SELL' %}
+                                    {% if actions.append('Ensemble → <span style="color:#b87333;">Sell</span> (' ~ hr.result.ensemble_confidence ~ '% confidence)') %}{% endif %}
+                                  {% elif hr.result.ensemble_verdict == 'HOLD' %}
+                                    {% if actions.append('Ensemble → Hold (specialists abstained)') %}{% endif %}
+                                  {% elif hr.result.logged %}
+                                    {% if actions.append('Logged to activity feed') %}{% endif %}
+                                  {% elif hr.result.skipped %}
+                                    {# silent — handler intentionally skipped this event type #}
+                                  {% elif hr.result.error %}
+                                    {% if actions.append('<span style="color:#b00;">Handler error</span>') %}{% endif %}
+                                  {% endif %}
+                                {% endfor %}
+                                {% if actions %}
+                                  {{ actions | join(' · ') | safe }}
+                                {% else %}
+                                  <span class="muted">—</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+    <!-- Phase 8: Specialist Ensemble Breakdown -->
+    <article>
+        <header><h3>Specialist Ensemble</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Four specialist AIs — earnings analyst, pattern recognizer, sentiment/narrative, and risk assessor — each review every shortlisted candidate. Their verdicts are combined via confidence-weighted voting. The risk specialist holds VETO authority and can block a trade regardless of the others.</p>
+
+        {% if not ensemble_info.per_profile %}
+        <p class="muted">No ensemble decisions yet. The specialist ensemble runs during each scan cycle once the shortlist is built.</p>
+        {% else %}
+        {% for prof in ensemble_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;">
+                <h4 style="margin:0;">{{ prof.name }}</h4>
+                <small class="muted">
+                    {{ prof.cost_calls }} specialist calls ·
+                    {{ prof.vetoed|length }} vetoed this cycle
+                </small>
+            </header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                {% if prof.vetoed %}
+                <p style="font-size:0.85rem;">
+                    <strong>Risk VETOs:</strong>
+                    {% for v in prof.vetoed %}
+                    <span style="color:#b00;font-family:monospace;">{{ v.symbol }}</span>
+                    <span class="muted" style="font-size:0.8rem;">({{ v.reason[:70] }})</span>{% if not loop.last %} · {% endif %}
+                    {% endfor %}
+                </p>
+                {% endif %}
+                {% if prof.rows %}
+                <table style="font-size:0.85rem;">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Consensus</th>
+                            <th>Earnings</th>
+                            <th>Pattern</th>
+                            <th>Sentiment</th>
+                            <th>Risk</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in prof.rows %}
+                        <tr>
+                            <td style="font-family:monospace;">{{ r.symbol }}</td>
+                            <td>
+                                {% if r.vetoed %}
+                                <strong style="color:#b00;">Vetoed</strong>
+                                {% elif r.verdict == 'BUY' %}
+                                <strong style="color:#2d7a3d;">Buy {{ r.confidence }}%</strong>
+                                {% elif r.verdict == 'SELL' %}
+                                <strong style="color:#b87333;">Sell {{ r.confidence }}%</strong>
+                                {% else %}
+                                <span class="muted">{{ r.verdict | title }}</span>
+                                {% endif %}
+                            </td>
+                            {% for spec_name in ['earnings_analyst', 'pattern_recognizer', 'sentiment_narrative', 'risk_assessor'] %}
+                            <td class="muted" style="font-size:0.75rem;">
+                                {% for s in r.specialists if s.name == spec_name %}
+                                    {% if s.verdict == 'BUY' %}<span style="color:#2d7a3d;">↑{{ s.confidence }}</span>
+                                    {% elif s.verdict == 'SELL' %}<span style="color:#b87333;">↓{{ s.confidence }}</span>
+                                    {% elif s.verdict == 'VETO' %}<span style="color:#b00;">⊘{{ s.confidence }}</span>
+                                    {% else %}·{% endif %}
+                                {% else %}
+                                —
+                                {% endfor %}
+                            </td>
+                            {% endfor %}
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+<script>
+(function() {
+    var profileFilter = '{{ selected_profile or "" }}';
+    var pfParam = profileFilter ? '&profile_id=' + profileFilter : '';
+    var esc = function(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+
+    function paginator(container, page, pages, total, loadFn) {
+        var el = document.createElement('div');
+        el.style.cssText = 'margin-top:0.5rem;';
+        var prev = document.createElement('button');
+        prev.textContent = '\u2190'; prev.className = 'outline secondary';
+        prev.style.cssText = 'padding:0.2rem 0.5rem;margin-right:0.25rem;font-size:0.85rem;';
+        prev.disabled = page <= 1;
+        prev.onclick = function() { loadFn(page - 1); };
+        el.appendChild(prev);
+        var info = document.createElement('span');
+        info.style.cssText = 'font-size:0.85rem;margin:0 0.5rem;color:#888;';
+        info.textContent = 'Page ' + page + ' of ' + pages + ' (' + total + ' total)';
+        el.appendChild(info);
+        var next = document.createElement('button');
+        next.textContent = '\u2192'; next.className = 'outline secondary';
+        next.style.cssText = 'padding:0.2rem 0.5rem;margin-left:0.25rem;font-size:0.85rem;';
+        next.disabled = page >= pages;
+        next.onclick = function() { loadFn(page + 1); };
+        el.appendChild(next);
+        container.appendChild(el);
+    }
+
+    // --- SEC Alerts ---
+    function loadSecAlerts(page) {
+        var w = document.getElementById('sec-alerts-widget');
+        fetch('/api/sec-alerts?page=' + page + '&per_page=5' + pfParam)
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d.items || !d.items.length) { w.innerHTML = '<p class="muted">No active alerts.</p>'; return; }
+                var h = '<div class="overflow-auto"><table class="striped"><thead><tr><th>Profile</th><th>Symbol</th><th>Filing</th><th>Date</th><th>Severity</th><th>Signal</th><th>Summary</th></tr></thead><tbody>';
+                d.items.forEach(function(a) {
+                    h += '<tr><td class="muted">' + esc(a.profile_name) + '</td>';
+                    h += '<td><strong>' + esc(a.symbol) + '</strong></td>';
+                    h += '<td>' + esc(a.form) + '</td>';
+                    h += '<td class="muted">' + esc(a.filed_date) + '</td>';
+                    var sev = a.severity === 'high' ? '<span class="pnl-neg">HIGH</span>' : a.severity === 'medium' ? '<span style="color:#f57c00;">MEDIUM</span>' : '<span class="muted">LOW</span>';
+                    h += '<td>' + sev + '</td>';
+                    var sig = a.signal === 'concerning' ? '<span class="pnl-neg">concerning</span>' : a.signal === 'positive' ? '<span class="pnl-pos">positive</span>' : '<span class="muted">neutral</span>';
+                    h += '<td>' + sig + '</td>';
+                    h += '<td style="font-size:0.85rem;">' + esc(a.summary) + '</td></tr>';
+                });
+                h += '</tbody></table></div>';
+                w.innerHTML = h;
+                if (d.pages > 1) paginator(w, d.page, d.pages, d.total, loadSecAlerts);
+            });
+    }
+    loadSecAlerts(1);
+
+    // --- Market Intelligence (macro data) ---
+    function loadMacroData() {
+        var w = document.getElementById('macro-data-widget');
+        fetch('/api/macro-data?' + pfParam.replace(/^&/, ''))
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d || d.error) { w.innerHTML = '<p class="muted">' + esc(d.error || 'No macro data available.') + '</p>'; return; }
+                var h = '<div class="grid">';
+
+                // Yield Curve
+                h += '<article style="text-align:center;">';
+                h += '<header><h4 style="margin:0;">Yield Curve</h4></header>';
+                if (d.yield_curve) {
+                    var ycColor = d.yield_curve.inverted ? '#b00' : '#2d7a3d';
+                    var ycLabel = d.yield_curve.inverted ? 'INVERTED' : 'NORMAL';
+                    h += '<strong style="font-size:1.5rem;color:' + ycColor + ';">' + ycLabel + '</strong>';
+                    if (d.yield_curve.spread_10y_2y != null) {
+                        h += '<br><small class="muted">10Y-2Y spread: ' + d.yield_curve.spread_10y_2y.toFixed(2) + '%</small>';
+                    }
+                } else {
+                    h += '<p class="muted">No data</p>';
+                }
+                h += '</article>';
+
+                // CBOE Skew
+                h += '<article style="text-align:center;">';
+                h += '<header><h4 style="margin:0;">CBOE Skew</h4></header>';
+                if (d.cboe_skew) {
+                    var skewColor = d.cboe_skew.value > 140 ? '#b00' : (d.cboe_skew.value > 130 ? '#b87333' : '#2d7a3d');
+                    h += '<strong style="font-size:1.5rem;color:' + skewColor + ';">' + d.cboe_skew.value.toFixed(1) + '</strong>';
+                    if (d.cboe_skew.percentile != null) {
+                        h += '<br><small class="muted">' + d.cboe_skew.percentile.toFixed(0) + 'th percentile</small>';
+                    }
+                } else {
+                    h += '<p class="muted">No data</p>';
+                }
+                h += '</article>';
+
+                // ETF Flows
+                h += '<article style="text-align:center;">';
+                h += '<header><h4 style="margin:0;">ETF Flows</h4></header>';
+                if (d.etf_flows) {
+                    var flowColor = d.etf_flows.net_flow >= 0 ? '#2d7a3d' : '#b00';
+                    var flowSign = d.etf_flows.net_flow >= 0 ? '+' : '';
+                    h += '<strong style="font-size:1.5rem;color:' + flowColor + ';">' + flowSign + '$' + (d.etf_flows.net_flow / 1e6).toFixed(0) + 'M</strong>';
+                    if (d.etf_flows.period) {
+                        h += '<br><small class="muted">' + esc(d.etf_flows.period) + '</small>';
+                    }
+                } else {
+                    h += '<p class="muted">No data</p>';
+                }
+                h += '</article>';
+
+                h += '</div>';
+
+                // FRED Economic Indicators
+                if (d.fred_indicators && d.fred_indicators.length) {
+                    h += '<h4 style="margin-top:1rem;">FRED Economic Indicators</h4>';
+                    h += '<div class="overflow-auto"><table style="font-size:0.85rem;"><thead><tr><th>Indicator</th><th style="text-align:right;">Value</th><th style="text-align:right;">Change</th><th>Updated</th></tr></thead><tbody>';
+                    d.fred_indicators.forEach(function(ind) {
+                        var chgColor = (ind.change != null && ind.change < 0) ? 'pnl-neg' : (ind.change > 0 ? 'pnl-pos' : 'muted');
+                        var chgStr = ind.change != null ? (ind.change >= 0 ? '+' : '') + ind.change.toFixed(2) : '—';
+                        h += '<tr>';
+                        h += '<td>' + esc(ind.name || ind.series_id || '') + '</td>';
+                        h += '<td style="text-align:right;font-family:monospace;">' + (ind.value != null ? ind.value.toFixed(2) : '—') + '</td>';
+                        h += '<td style="text-align:right;font-family:monospace;" class="' + chgColor + '">' + chgStr + '</td>';
+                        h += '<td class="muted">' + esc(ind.date || '') + '</td>';
+                        h += '</tr>';
+                    });
+                    h += '</tbody></table></div>';
+                }
+
+                w.innerHTML = h;
+            })
+            .catch(function() {
+                w.innerHTML = '<p class="muted">Failed to load macro data.</p>';
+            });
+    }
+    loadMacroData();
+})();
+</script>
+
+{% endblock %}
