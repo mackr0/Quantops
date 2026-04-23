@@ -853,79 +853,84 @@
     // --- Market Intelligence (macro data) ---
     function loadMacroData() {
         var w = document.getElementById('macro-data-widget');
-        fetch('/api/macro-data?' + pfParam.replace(/^&/, ''))
+        fetch('/api/macro-data')
             .then(function(r) { return r.json(); })
             .then(function(d) {
-                if (!d || d.error) { w.innerHTML = '<p class="muted">' + esc(d.error || 'No macro data available.') + '</p>'; return; }
+                if (!d || d.error) { w.innerHTML = '<p class="muted">' + esc(d.error || 'No data') + '</p>'; return; }
                 var h = '<div class="grid">';
+                var yc = d.yield_curve || {};
+                var sk = d.cboe_skew || {};
+                var fm = d.fred_macro || {};
+                var ef = d.etf_flows || {};
 
                 // Yield Curve
                 h += '<article style="text-align:center;">';
                 h += '<header><h4 style="margin:0;">Yield Curve</h4></header>';
-                if (d.yield_curve) {
-                    var ycColor = d.yield_curve.inverted ? '#b00' : '#2d7a3d';
-                    var ycLabel = d.yield_curve.inverted ? 'INVERTED' : 'NORMAL';
-                    h += '<strong style="font-size:1.5rem;color:' + ycColor + ';">' + ycLabel + '</strong>';
-                    if (d.yield_curve.spread_10y_2y != null) {
-                        h += '<br><small class="muted">10Y-2Y spread: ' + d.yield_curve.spread_10y_2y.toFixed(2) + '%</small>';
-                    }
+                if (yc.rate_10y) {
+                    var status = (yc.curve_status || 'normal').toUpperCase();
+                    var ycColor = status === 'INVERTED' ? '#b00' : (status === 'FLAT' ? '#b87333' : '#2d7a3d');
+                    h += '<strong style="font-size:1.5rem;color:' + ycColor + ';">' + status + '</strong>';
+                    h += '<br><small class="muted">2Y: ' + yc.rate_2y.toFixed(2) + '% · 10Y: ' + yc.rate_10y.toFixed(2) + '% · 30Y: ' + yc.rate_30y.toFixed(2) + '%</small>';
+                    h += '<br><small class="muted">Spread: ' + (yc.spread_10y_2y >= 0 ? '+' : '') + yc.spread_10y_2y.toFixed(2) + '% · Fed funds: ' + yc.fed_funds_upper.toFixed(2) + '%</small>';
                 } else {
-                    h += '<p class="muted">No data</p>';
+                    h += '<p class="muted">No data (market closed)</p>';
                 }
                 h += '</article>';
 
                 // CBOE Skew
                 h += '<article style="text-align:center;">';
-                h += '<header><h4 style="margin:0;">CBOE Skew</h4></header>';
-                if (d.cboe_skew) {
-                    var skewColor = d.cboe_skew.value > 140 ? '#b00' : (d.cboe_skew.value > 130 ? '#b87333' : '#2d7a3d');
-                    h += '<strong style="font-size:1.5rem;color:' + skewColor + ';">' + d.cboe_skew.value.toFixed(1) + '</strong>';
-                    if (d.cboe_skew.percentile != null) {
-                        h += '<br><small class="muted">' + d.cboe_skew.percentile.toFixed(0) + 'th percentile</small>';
-                    }
+                h += '<header><h4 style="margin:0;">Tail Risk (CBOE Skew)</h4></header>';
+                if (sk.skew_value) {
+                    var signal = (sk.skew_signal || 'normal').toUpperCase();
+                    var skColor = signal === 'EXTREME' ? '#b00' : (signal === 'ELEVATED' ? '#b87333' : '#2d7a3d');
+                    h += '<strong style="font-size:1.5rem;color:' + skColor + ';">' + sk.skew_value.toFixed(0) + '</strong>';
+                    h += '<br><small class="muted">Signal: ' + signal + '</small>';
+                    if (sk.skew_5d_avg) h += '<br><small class="muted">5d avg: ' + sk.skew_5d_avg.toFixed(0) + '</small>';
                 } else {
-                    h += '<p class="muted">No data</p>';
+                    h += '<p class="muted">No data (market closed)</p>';
                 }
                 h += '</article>';
 
-                // ETF Flows
-                h += '<article style="text-align:center;">';
-                h += '<header><h4 style="margin:0;">ETF Flows</h4></header>';
-                if (d.etf_flows) {
-                    var flowColor = d.etf_flows.net_flow >= 0 ? '#2d7a3d' : '#b00';
-                    var flowSign = d.etf_flows.net_flow >= 0 ? '+' : '';
-                    h += '<strong style="font-size:1.5rem;color:' + flowColor + ';">' + flowSign + '$' + (d.etf_flows.net_flow / 1e6).toFixed(0) + 'M</strong>';
-                    if (d.etf_flows.period) {
-                        h += '<br><small class="muted">' + esc(d.etf_flows.period) + '</small>';
-                    }
+                // ETF Sector Flows
+                h += '<article>';
+                h += '<header><h4 style="margin:0;">Sector Flows (Est.)</h4></header>';
+                var flowKeys = Object.keys(ef);
+                if (flowKeys.length > 0) {
+                    h += '<div style="font-size:0.85rem;">';
+                    flowKeys.forEach(function(sector) {
+                        var f = ef[sector];
+                        var dir = f.flow_direction === 'inflow' ? '+' : '-';
+                        var color = f.flow_direction === 'inflow' ? '#2d7a3d' : '#b00';
+                        var amt = Math.abs(f.estimated_weekly_flow);
+                        var label = amt >= 1e9 ? (amt/1e9).toFixed(1)+'B' : (amt/1e6).toFixed(0)+'M';
+                        h += '<span style="margin-right:0.75rem;color:' + color + ';">' + esc(sector) + ' ' + dir + '$' + label + '</span>';
+                    });
+                    h += '</div>';
                 } else {
-                    h += '<p class="muted">No data</p>';
+                    h += '<p class="muted">No data (updates during market hours)</p>';
                 }
                 h += '</article>';
 
                 h += '</div>';
 
                 // FRED Economic Indicators
-                if (d.fred_indicators && d.fred_indicators.length) {
-                    h += '<h4 style="margin-top:1rem;">FRED Economic Indicators</h4>';
-                    h += '<div class="overflow-auto"><table style="font-size:0.85rem;"><thead><tr><th>Indicator</th><th style="text-align:right;">Value</th><th style="text-align:right;">Change</th><th>Updated</th></tr></thead><tbody>';
-                    d.fred_indicators.forEach(function(ind) {
-                        var chgColor = (ind.change != null && ind.change < 0) ? 'pnl-neg' : (ind.change > 0 ? 'pnl-pos' : 'muted');
-                        var chgStr = ind.change != null ? (ind.change >= 0 ? '+' : '') + ind.change.toFixed(2) : '—';
-                        h += '<tr>';
-                        h += '<td>' + esc(ind.name || ind.series_id || '') + '</td>';
-                        h += '<td style="text-align:right;font-family:monospace;">' + (ind.value != null ? ind.value.toFixed(2) : '—') + '</td>';
-                        h += '<td style="text-align:right;font-family:monospace;" class="' + chgColor + '">' + chgStr + '</td>';
-                        h += '<td class="muted">' + esc(ind.date || '') + '</td>';
-                        h += '</tr>';
-                    });
+                h += '<article><header><h4 style="margin:0;">Economic Indicators</h4></header>';
+                if (fm.unemployment_rate) {
+                    h += '<div class="overflow-auto"><table style="font-size:0.85rem;"><thead><tr><th>Indicator</th><th style="text-align:right;">Value</th><th>Trend</th></tr></thead><tbody>';
+                    h += '<tr><td>Unemployment</td><td style="text-align:right;font-family:monospace;">' + fm.unemployment_rate.toFixed(1) + '%</td><td class="muted">' + esc(fm.unemployment_trend) + '</td></tr>';
+                    if (fm.cpi_yoy) h += '<tr><td>CPI (YoY)</td><td style="text-align:right;font-family:monospace;">' + fm.cpi_yoy.toFixed(1) + '%</td><td></td></tr>';
+                    h += '<tr><td>Consumer Sentiment</td><td style="text-align:right;font-family:monospace;">' + fm.consumer_sentiment.toFixed(1) + '</td><td class="muted">' + esc(fm.consumer_sentiment_trend) + '</td></tr>';
+                    if (fm.initial_claims_4wk_avg) h += '<tr><td>Initial Claims (4wk avg)</td><td style="text-align:right;font-family:monospace;">' + fm.initial_claims_4wk_avg.toLocaleString() + '</td><td></td></tr>';
                     h += '</tbody></table></div>';
+                } else {
+                    h += '<p class="muted">No data</p>';
                 }
+                h += '</article>';
 
                 w.innerHTML = h;
             })
-            .catch(function() {
-                w.innerHTML = '<p class="muted">Failed to load macro data.</p>';
+            .catch(function(e) {
+                w.innerHTML = '<p class="muted">Failed to load macro data: ' + esc(e.message || '') + '</p>';
             });
     }
     loadMacroData();
