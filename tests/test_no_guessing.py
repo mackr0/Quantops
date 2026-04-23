@@ -259,6 +259,46 @@ class TestNoYFinanceInEquityPaths:
 # 7. dotenv loaded before imports in both entry points
 # ---------------------------------------------------------------------------
 
+class TestChangelogUpToDate:
+    """Every code change must be documented in CHANGELOG.md."""
+
+    def test_changelog_has_todays_date(self):
+        """If any .py file was modified today, CHANGELOG.md must have today's date."""
+        import subprocess
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+
+        # Check if any .py files were modified today (via git)
+        result = subprocess.run(
+            ["git", "log", "--since=midnight", "--name-only", "--pretty=format:"],
+            capture_output=True, text=True,
+        )
+        changed_files = [f.strip() for f in result.stdout.split("\n") if f.strip()]
+        py_files_changed = [f for f in changed_files if f.endswith(".py")]
+
+        if not py_files_changed:
+            return  # No code changes today, nothing to check
+
+        # CHANGELOG.md must mention today's date
+        with open("CHANGELOG.md") as f:
+            changelog = f.read()
+
+        assert today in changelog, (
+            f"Code files were modified today ({today}) but CHANGELOG.md "
+            f"does not contain today's date. Every code change must be "
+            f"documented in the changelog."
+        )
+
+    def test_changelog_not_empty(self):
+        """CHANGELOG.md must exist and have content."""
+        with open("CHANGELOG.md") as f:
+            content = f.read()
+        assert len(content) > 100, "CHANGELOG.md is empty or too short"
+        assert "## 2026-" in content, "CHANGELOG.md has no dated entries"
+
+
 class TestPromptBuildDoesNotCrash:
     """The AI prompt builder must not crash when alt data keys are missing."""
 

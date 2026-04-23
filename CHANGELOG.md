@@ -17,6 +17,22 @@ Rules going forward:
 
 ---
 
+## 2026-04-23 — Continued fixes: exit order conflicts, confidence bypass, cache persistence (Severity: high)
+
+**Exit order conflict fix.** `check_exits` crashed with "cannot open a short sell while a long buy order is open" when a limit buy was pending for the same symbol. Now cancels all open orders for a symbol before submitting the exit order.
+
+**Confidence threshold bypass removed.** BUY signals previously bypassed the confidence threshold entirely — a 46% confidence BUY executed even with threshold at 70. This undermined the self-tuner's data-driven adjustment. All trades now must meet the threshold regardless of signal type.
+
+**Transcript sentiment cache persisted to SQLite.** Was using in-memory cache that cleared on every restart, causing 221 AI calls ($0.29) in one day. Now uses `alt_data_cache` SQLite table. All SEC filings caches (filing metadata, text, insider data) also moved to persistent SQLite — no redundant EDGAR fetches on restart.
+
+**Per-profile scan status replaces global timers.** Each profile bar shows its own state: scan step when active, "Next: 8m" when idle, "Queued" (amber) when due but waiting its turn. Global countdown timer blocks removed.
+
+**friendly_time handles space-separated timestamps.** `task_runs.started_at` format is `2026-04-23 14:41:37` (space, not T) which `friendly_time` didn't parse, showing just "Apr 23" with no time.
+
+**Changelog enforcement test.** New test verifies CHANGELOG.md contains today's date when any .py file was modified. Prevents commits without documentation.
+
+---
+
 ## 2026-04-23 — Critical scan crash fix, dashboard hardening, performance (Severity: critical)
 
 **CRITICAL: Scan cycles crashing since congressional data disabled.** When the congressional trading source was removed from the aggregator, the AI prompt builder still referenced `congress['recent_transactions']` with direct dict access. Empty dict + `None != "neutral"` evaluated True → `KeyError` → every scan cycle crashed for 1.5+ hours. Zero buys all day, only trailing stop exits.
