@@ -726,11 +726,11 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             fund = alt.get("fundamentals", {})
             if fund.get("pe_trailing", 0) > 0:
                 alt_parts.append(f"PE: {fund['pe_trailing']:.1f}")
-            # New per-symbol sources
+            # New per-symbol sources (congressional disabled — no free API)
             congress = alt.get("congressional", {})
-            if congress.get("net_direction") != "neutral":
+            if congress.get("net_direction") and congress["net_direction"] != "neutral":
                 alt_parts.append(
-                    f"Congress: {congress['recent_transactions']} members "
+                    f"Congress: {congress.get('recent_transactions', 0)} members "
                     f"{congress['net_direction']} "
                     f"(${congress.get('total_value', 0):,.0f})")
             finra = alt.get("finra_short_vol", {})

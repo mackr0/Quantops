@@ -259,6 +259,61 @@ class TestNoYFinanceInEquityPaths:
 # 7. dotenv loaded before imports in both entry points
 # ---------------------------------------------------------------------------
 
+class TestPromptBuildDoesNotCrash:
+    """The AI prompt builder must not crash when alt data keys are missing."""
+
+    def test_prompt_handles_missing_alt_data_keys(self):
+        """_build_batch_prompt must not crash when any alt_data sub-key is missing."""
+        from ai_analyst import _build_batch_prompt
+
+        # Build a candidate with NO alt data at all
+        candidate_empty = {
+            "symbol": "TEST", "price": 100, "signal": "BUY", "score": 2,
+            "rsi": 50, "volume_ratio": 1.0, "atr": 2.0, "adx": 25,
+            "stoch_rsi": 50, "roc_10": 1.0, "pct_from_52w_high": -10,
+            "mfi": 50, "cmf": 0, "squeeze": 0, "pct_from_vwap": 0,
+            "nearest_fib_dist": 5, "gap_pct": 0,
+        }
+
+        # Build a candidate with empty alt_data sub-dicts
+        candidate_empty_alt = dict(candidate_empty)
+        candidate_empty_alt["alt_data"] = {
+            "insider": {}, "short": {}, "fundamentals": {},
+            "options": {}, "intraday": {},
+            # All wave 1+2 keys missing or empty
+        }
+
+        # Build a candidate with partial alt_data
+        candidate_partial = dict(candidate_empty)
+        candidate_partial["alt_data"] = {
+            "insider": {"net_direction": "buying", "recent_buys": 3},
+            # congressional MISSING entirely (the bug that crashed production)
+            # dark_pool MISSING
+            # earnings_surprise MISSING
+        }
+
+        portfolio = {"equity": 100000, "cash": 50000, "positions": []}
+        market_ctx = {
+            "regime": "bull", "vix": 20, "spy_trend": "up",
+            "political_context": None, "profile_summary": None,
+            "learned_patterns": [], "sector_rotation": {},
+            "crisis_context": None, "macro_context": {},
+        }
+
+        # None of these should raise
+        for candidate in [candidate_empty, candidate_empty_alt, candidate_partial]:
+            try:
+                prompt = _build_batch_prompt([candidate], portfolio, market_ctx, ctx=None)
+                assert isinstance(prompt, str)
+                assert len(prompt) > 100
+            except KeyError as e:
+                raise AssertionError(
+                    f"_build_batch_prompt crashed with KeyError: {e}. "
+                    f"Every alt_data field access must use .get() with defaults, "
+                    f"not direct dict indexing."
+                )
+
+
 class TestActivityLogDisplayNames:
     """Every string shown to users in activity logs must use display_name()."""
 
