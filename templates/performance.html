@@ -265,6 +265,7 @@
     {% endif %}
 
     <!-- Worst Periods -->
+    {% if m.num_daily_returns >= 7 %}
     <article>
         <header><h3>Worst Periods</h3></header>
         <div class="overflow-auto">
@@ -295,6 +296,7 @@
             </table>
         </div>
     </article>
+    {% endif %}
 
 </div>
 

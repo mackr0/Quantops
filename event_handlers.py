@@ -35,8 +35,8 @@ def handler_log_activity(event: Dict[str, Any], ctx: Any) -> Dict[str, Any]:
         "sec_filing_detected": f"SEC filing alert: {symbol} ({payload.get('form_type', '')})",
         "earnings_imminent":   f"Earnings imminent: {symbol} in {payload.get('days_until', 0)}d",
         "price_shock":         f"Price shock: {symbol} {payload.get('move_pct', 0):+.1f}%",
-        "prediction_big_winner": f"Big winner: {symbol} +{payload.get('return_pct', 0):.1f}%",
-        "prediction_big_loser":  f"Big loser: {symbol} {payload.get('return_pct', 0):.1f}%",
+        "prediction_big_winner": f"Big winner{'(HOLD prediction)' if payload.get('signal') == 'HOLD' else ''}: {symbol} +{payload.get('return_pct', 0):.1f}%",
+        "prediction_big_loser":  f"Big loser{'(HOLD prediction)' if payload.get('signal') == 'HOLD' else ''}: {symbol} {payload.get('return_pct', 0):.1f}%",
         "strategy_deprecated":   f"Strategy deprecated: {strat_label or '?'}",
     }
     title = title_map.get(ev_type, f"{display_name(ev_type)}: {symbol}")
