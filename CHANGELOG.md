@@ -17,6 +17,18 @@ Rules going forward:
 
 ---
 
+## 2026-04-22 — Trades pagination, countdown fix, AI cost timezone fix (Severity: medium)
+
+**Trades page server-side pagination**: 50 trades per page with prev/next navigation. Column sorting via URL params (`?sort=pnl&dir=desc&page=1`) so sorting and pagination work together across page loads. Replaced client-side JS sort.
+
+**Countdown timers always visible**: Timer blocks were hidden entirely after market close (`{% if any_profile_active %}` gate). Now always displayed — shows "Market Closed" after hours instead of disappearing. JS checks `market_open` flag from `/api/scheduler-status` to prevent showing "Scanning..." when market is closed.
+
+**AI cost "today" uses ET trading day**: `date('now')` in SQLite is UTC, which flips to the next calendar day at 7-8 PM ET. Costs recorded during the trading day showed as $0.00 after that. Now computes the ET date boundary so "today" means the current trading day until midnight ET.
+
+**Empty sections hidden**: Strategy Validations and Evolving Strategy Library sections hidden when no data exists instead of showing confusing "no data yet" messages.
+
+---
+
 ## 2026-04-22 — AI Intelligence separated into own top-level page (Severity: feature)
 
 **Problem**: The Performance page had 14 AI-related sections crammed into one tab alongside 5 tabs of traditional metrics. This is an AI-first system — it deserved proper organization.
