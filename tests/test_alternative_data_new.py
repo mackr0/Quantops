@@ -257,12 +257,13 @@ class TestAggregators:
             with patch("alternative_data.urlopen", side_effect=Exception("skip")):
                 result = get_all_alternative_data("TEST")
         expected_keys = ["insider", "short", "fundamentals", "options", "intraday",
-                         "congressional", "finra_short_vol", "insider_cluster",
-                         "analyst_estimates"]
+                         "finra_short_vol", "insider_cluster",
+                         "analyst_estimates", "insider_earnings",
+                         "dark_pool", "earnings_surprise"]
         for key in expected_keys:
             assert key in result, f"Missing key '{key}' in get_all_alternative_data"
 
-    def test_get_all_macro_data_has_four_sources(self, tmp_macro_db, monkeypatch):
+    def test_get_all_macro_data_has_all_sources(self, tmp_macro_db, monkeypatch):
         from macro_data import get_all_macro_data
         monkeypatch.setattr("macro_data._fred_fetch", MagicMock(return_value=[0]))
         import yfinance as yf
@@ -270,8 +271,10 @@ class TestAggregators:
         mock_ticker.history.return_value = MagicMock(empty=True)
         with patch.object(yf, "Ticker", return_value=mock_ticker):
             with patch("market_data.get_bars", return_value=None):
-                result = get_all_macro_data()
-        for key in ["yield_curve", "etf_flows", "cboe_skew", "fred_macro"]:
+                with patch("market_data.get_sector_rotation", return_value={}):
+                    result = get_all_macro_data()
+        for key in ["yield_curve", "etf_flows", "cboe_skew", "fred_macro",
+                     "sector_momentum", "market_gex"]:
             assert key in result, f"Missing key '{key}' in get_all_macro_data"
 
 
