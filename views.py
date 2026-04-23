@@ -2343,10 +2343,18 @@ def ai_dashboard():
             if selected_profile_int and p["id"] != selected_profile_int:
                 continue
             db = f"quantopsai_profile_{p['id']}.db"
+            if not os.path.exists(db):
+                continue
             try:
                 summary = spend_summary(db)
                 ai_cost_info["per_profile"].append({
-                    "profile_name": p["name"], "spend": summary,
+                    "profile_id": p["id"],
+                    "name": p["name"],
+                    "today": summary["today"],
+                    "seven_d": summary["7d"],
+                    "thirty_d": summary["30d"],
+                    "by_purpose": summary["by_purpose_30d"],
+                    "by_model": summary["by_model_30d"],
                 })
                 ai_cost_info["totals"]["today"] += summary["today"]["usd"]
                 ai_cost_info["totals"]["7d"] += summary["7d"]["usd"]
