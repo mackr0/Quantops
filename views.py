@@ -323,6 +323,32 @@ def dashboard():
     with ThreadPoolExecutor(max_workers=10) as pool:
         profiles_data = list(pool.map(_load_profile, profiles))
 
+    # Check for recent scan failures across all profiles
+    scan_failures = []
+    try:
+        import sqlite3 as _sq_fail
+        for prof in profiles:
+            db = f"quantopsai_profile_{prof['id']}.db"
+            try:
+                conn = _sq_fail.connect(db)
+                conn.row_factory = _sq_fail.Row
+                fails = conn.execute(
+                    "SELECT task_name, started_at FROM task_runs "
+                    "WHERE status='failed' AND started_at >= datetime('now', '-1 hour') "
+                    "ORDER BY started_at DESC LIMIT 1"
+                ).fetchall()
+                conn.close()
+                for f in fails:
+                    scan_failures.append({
+                        "profile_name": prof["name"],
+                        "task": f["task_name"],
+                        "time": f["started_at"],
+                    })
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     # Get recent decisions
     decisions = get_decisions(current_user.effective_user_id, limit=20)
 
@@ -375,7 +401,8 @@ def dashboard():
                            profiles_data=profiles_data,
                            decisions=decisions,
                            any_profile_active=any_profile_active,
-                           profile_schedules=profile_schedules)
+                           profile_schedules=profile_schedules,
+                           scan_failures=scan_failures)
 
 
 @views_bp.route("/settings")
