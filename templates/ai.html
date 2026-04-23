@@ -282,19 +282,11 @@
      TAB 2: STRATEGY — What strategies is it running?
      =================================================================== -->
 <div id="tab-strategy" class="perf-tab-content">
-<!-- Phase 2: Strategy Validations -->
+<!-- Phase 2: Strategy Validations (only show when data exists) -->
+    {% if validations %}
     <article>
         <header><h3>Strategy Validations</h3></header>
-        <p class="muted" style="margin-top:-0.5rem;">Every strategy is validated against ten checks — Sharpe ratio, drawdown, win rate, statistical significance, Monte Carlo stress, out-of-sample degradation, regime consistency, walk-forward stability, capacity, and minimum activity — before being eligible to trade.</p>
-
-        {% if not validations %}
-        <div style="padding:0.75rem;background:#fafafa;border-left:3px solid #888;border-radius:0 4px 4px 0;">
-            <strong>No validation runs yet</strong>
-            <p class="muted" style="margin:0.25rem 0 0 0;font-size:0.9rem;">
-                Run validations from the command line or admin interface to build the library of certified strategies. Validation runs are stored in <code>strategy_validations.db</code> and displayed here with full gate-by-gate breakdowns.
-            </p>
-        </div>
-        {% else %}
+        <p class="muted" style="margin-top:-0.5rem;">Rigorous backtest validation results — walk-forward, Monte Carlo, statistical significance gates.</p>
         <div class="overflow-auto">
             <table class="striped">
                 <thead>
@@ -329,8 +321,8 @@
                 </tbody>
             </table>
         </div>
-        {% endif %}
     </article>
+    {% endif %}
 
     <!-- Phase 6: Multi-Strategy Capital Allocation -->
     <article>
@@ -380,14 +372,11 @@
         {% endif %}
     </article>
 
-    <!-- Phase 7: Auto-Generated Strategies -->
+    <!-- Phase 7: Auto-Generated Strategies (only show when data exists) -->
+    {% if auto_strategy_info.per_profile %}
     <article>
         <header><h3>Evolving Strategy Library</h3></header>
-        <p class="muted" style="margin-top:-0.5rem;">The AI proposes new strategy variants weekly against an allowlisted spec grammar. Each proposal is validated via walk-forward + out-of-sample backtesting; survivors run in shadow mode with no real capital until their rolling Sharpe earns promotion. Failures are retired automatically.</p>
-
-        {% if not auto_strategy_info.per_profile %}
-        <p class="muted">No auto-generated strategies yet.</p>
-        {% else %}
+        <p class="muted" style="margin-top:-0.5rem;">AI-proposed strategy variants — validated via backtesting, run in shadow mode, promoted when edge is proven.</p>
         {% for prof in auto_strategy_info.per_profile %}
         <article style="margin:1rem 0;">
             <header style="padding:0.5rem 0.75rem;">
@@ -453,8 +442,8 @@
             </div>
         </article>
         {% endfor %}
-        {% endif %}
     </article>
+    {% endif %}
 
     <!-- Phase 3: Alpha Decay Monitoring -->
     <article>
