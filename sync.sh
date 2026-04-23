@@ -27,6 +27,7 @@ CHANGED=$(rsync -az --delete --dry-run --itemize-changes \
     --exclude 'venv/' \
     --exclude '__pycache__/' \
     --exclude '.git/' \
+    --exclude '.claude/' \
     --exclude '*.db' \
     --exclude '*.db-shm' \
     --exclude '*.db-wal' \
@@ -40,8 +41,9 @@ CHANGED=$(rsync -az --delete --dry-run --itemize-changes \
     --exclude 'cycle_data_*.json' \
     --exclude 'scheduler_status.json' \
     --exclude 'dynamic_screener_cache.json' \
+    --exclude '.sync_test_marker' \
     /Users/mackr0/Quantops/ \
-    root@${DROPLET_IP}:${REMOTE_DIR}/ 2>/dev/null | grep '^>f' | awk '{print $2}' || true)
+    root@${DROPLET_IP}:${REMOTE_DIR}/ 2>/dev/null | grep '^<f' | awk '{print $2}' || true)
 
 if [ -z "$CHANGED" ]; then
     echo "No files changed. Nothing to sync."
@@ -56,6 +58,7 @@ rsync -az --delete \
     --exclude 'venv/' \
     --exclude '__pycache__/' \
     --exclude '.git/' \
+    --exclude '.claude/' \
     --exclude '*.db' \
     --exclude '*.db-shm' \
     --exclude '*.db-wal' \
@@ -69,6 +72,7 @@ rsync -az --delete \
     --exclude 'cycle_data_*.json' \
     --exclude 'scheduler_status.json' \
     --exclude 'dynamic_screener_cache.json' \
+    --exclude '.sync_test_marker' \
     /Users/mackr0/Quantops/ \
     root@${DROPLET_IP}:${REMOTE_DIR}/
 

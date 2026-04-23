@@ -17,6 +17,53 @@ Rules going forward:
 
 ---
 
+## 2026-04-23 — sync.sh silently skipping deploys for weeks (Severity: high)
+
+**Problem:** `./sync.sh 67.205.155.63` has been reporting "No files changed.
+Nothing to sync." even when local files clearly differed from the droplet.
+Today's earlier deploy of the dead-ticker fix was silently skipped by
+sync.sh — had to be rsynced manually to land in production. This is the
+root cause of how the local repo was able to drift 60 commits ahead of
+origin without anyone noticing: each `./sync.sh` call appeared to succeed,
+so nothing screamed that deploys weren't happening.
+
+**Root cause:** Line 44 used `grep '^>f'` to pick file-transfer lines out of
+`rsync --itemize-changes` dry-run output. But rsync's itemize direction
+flags are:
+- `<` — file being *sent to remote* (outgoing)
+- `>` — file being *received from remote* (incoming)
+
+Since we're always pushing local → droplet, every outbound change is
+prefixed `<f...`, not `>f...`. The grep never matched, the `CHANGED`
+variable stayed empty, the `-z` guard said "nothing to sync" and the
+script exited cleanly without running the actual rsync or restarting any
+services.
+
+**Fix:** Changed `grep '^>f'` → `grep '^<f'` on line 44. One character.
+
+**Bonus hygiene:** While in the file, added two excludes that were leaking
+non-production files into the droplet when the detector finally did fire
+(e.g., during manual testing):
+- `.claude/` — Claude Code internal session state (scheduled tasks, caches)
+- `.sync_test_marker` — reserved for sync diagnostics
+
+**Why it wasn't caught:** No test exercises `sync.sh` end-to-end (it's a
+shell script that SSHes to production — not trivial to mock). The dry-run
+output has ordering subtleties that are easy to misremember; this kind of
+rsync flag reversal is a classic copy-paste-era bug.
+
+**Verification:** After the fix, `./sync.sh 67.205.155.63` correctly
+identifies "sync.sh" as the changed file and proceeds with the full rsync.
+Service restart logic (web vs scheduler detection) already worked
+correctly — the issue was purely the change-detection gate.
+
+**Follow-up (queued):** Add a smoke test that stubs `rsync --dry-run` with
+a synthetic itemize-output and asserts that sync.sh correctly parses
+outbound transfers. Would have caught this the moment the script was
+written.
+
+---
+
 ## 2026-04-23 — Dead-ticker log spam: filter fallback universe against Alpaca active assets (Severity: medium)
 
 **Problem:** Every scan cycle produced ~20-30 `ERROR $SYMBOL: possibly delisted`
