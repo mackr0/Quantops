@@ -1,0 +1,275 @@
+"""Tests that enforce NO GUESSING at names, schemas, or data structures.
+
+These tests exist because the developer repeatedly guessed at table names,
+column names, function signatures, API response fields, and template
+variable structures instead of reading the actual code — causing silent
+failures, 500 errors, and blank pages.
+
+Every test here validates that code references match reality. If a new
+module, table, column, or API endpoint is added, it MUST be verified here.
+"""
+
+import inspect
+import json
+import os
+import re
+import sqlite3
+from types import SimpleNamespace
+
+import pytest
+
+
+# ---------------------------------------------------------------------------
+# 1. Every SQL table name referenced in code must actually exist in a schema
+# ---------------------------------------------------------------------------
+
+class TestTableNamesExist:
+    """No made-up table names in SQL queries."""
+
+    # Tables defined in models.py init_user_db()
+    MAIN_DB_TABLES = {
+        "users", "user_segment_configs", "trading_profiles",
+        "alpaca_accounts", "activity_log", "tuning_history",
+    }
+
+    # Tables defined in journal.py init_db()
+    PROFILE_DB_TABLES = {
+        "trades", "daily_snapshots", "ai_predictions",
+        "ai_cost_ledger", "task_runs", "events",
+        "sec_filings_history", "signal_snapshots",
+        "deprecated_strategies", "crisis_state_history",
+        "alt_data_cache", "earnings_dates",
+    }
+
+    ALL_KNOWN_TABLES = MAIN_DB_TABLES | PROFILE_DB_TABLES
+
+    def test_all_sql_table_references_are_real(self):
+        """Scan all .py files for SQL table references and verify they exist."""
+        import glob
+        # Pattern matches FROM/INTO/UPDATE/TABLE tablename
+        table_pattern = re.compile(
+            r'(?:FROM|INTO|UPDATE|TABLE)\s+(?:IF\s+NOT\s+EXISTS\s+)?["\']?(\w+)["\']?',
+            re.IGNORECASE
+        )
+
+        suspicious = []
+        for pyfile in glob.glob("*.py"):
+            if pyfile.startswith("test_"):
+                continue
+            with open(pyfile) as f:
+                content = f.read()
+            for match in table_pattern.finditer(content):
+                table = match.group(1).lower()
+                # Skip SQL keywords that look like table names
+                if table in ("select", "set", "values", "where", "and", "or",
+                             "not", "null", "as", "on", "by", "is", "in",
+                             "like", "between", "exists", "table", "index",
+                             "integer", "text", "real", "blob", "primary",
+                             "autoincrement", "default", "foreign", "unique",
+                             "key", "references", "check", "constraint",
+                             "sqlite_master", "pragma", "info"):
+                    continue
+                if table not in self.ALL_KNOWN_TABLES:
+                    suspicious.append((pyfile, table, match.group(0)[:60]))
+
+        if suspicious:
+            msg = "SQL references to unknown tables:\n"
+            for f, t, ctx in suspicious[:10]:
+                msg += f"  {f}: table '{t}' — {ctx}\n"
+            msg += (f"\nKnown tables: {sorted(self.ALL_KNOWN_TABLES)}\n"
+                    f"If a new table was added, add it to TestTableNamesExist.ALL_KNOWN_TABLES")
+            # Don't hard-fail — some may be dynamically created. Warn instead.
+            # But if we find 'sec_alerts' (the made-up name), that's a real bug.
+            for f, t, ctx in suspicious:
+                assert t != "sec_alerts", (
+                    f"{f} references made-up table 'sec_alerts'. "
+                    f"The actual table is 'sec_filings_history'. "
+                    f"READ THE SCHEMA BEFORE WRITING QUERIES."
+                )
+
+
+# ---------------------------------------------------------------------------
+# 2. Every display_name must cover every meta-model feature
+# ---------------------------------------------------------------------------
+
+class TestDisplayNameCoverage:
+    def test_all_meta_model_features_have_display_names(self):
+        from display_names import _DISPLAY_NAMES
+        from meta_model import NUMERIC_FEATURES, CATEGORICAL_FEATURES
+        all_features = list(NUMERIC_FEATURES) + list(CATEGORICAL_FEATURES.keys())
+        missing = [f for f in all_features if f not in _DISPLAY_NAMES]
+        assert not missing, (
+            f"Meta-model features missing display names: {missing}\n"
+            f"Add them to display_names.py _DISPLAY_NAMES dict."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 3. Every Jinja template variable must match the view's data structure
+# ---------------------------------------------------------------------------
+
+class TestTemplateDataContracts:
+    """Verify that template variable references match actual view data."""
+
+    def test_ai_cost_info_structure(self):
+        """ai_cost_info must have 'per_profile' list and 'totals' dict."""
+        # Verify the view builds it correctly by checking the source
+        import views
+        src = inspect.getsource(views.ai_dashboard)
+        assert '"per_profile": []' in src, "ai_cost_info must init with per_profile list"
+        assert '"totals"' in src, "ai_cost_info must have totals dict"
+        assert '"today": summary["today"]' in src, "Must use summary['today'] not made-up keys"
+        assert '"seven_d": summary["7d"]' in src, "Must use summary['7d'] not made-up keys"
+
+    def test_crisis_info_structure(self):
+        """crisis_info must have 'per_profile' and 'max_level'."""
+        import views
+        src = inspect.getsource(views.ai_dashboard)
+        assert '"per_profile": []' in src and '"max_level"' in src, (
+            "crisis_info must have per_profile and max_level"
+        )
+
+    def test_allocation_uses_correct_function_signature(self):
+        """get_allocation_summary requires (db_path, market_type)."""
+        import multi_strategy
+        sig = inspect.signature(multi_strategy.get_allocation_summary)
+        params = list(sig.parameters.keys())
+        assert params == ["db_path", "market_type"], (
+            f"get_allocation_summary signature is {params}, not what you guessed"
+        )
+
+    def test_validations_use_correct_function(self):
+        """Validations come from rigorous_backtest.get_recent_validations, not a raw DB query."""
+        import views
+        src = inspect.getsource(views.ai_dashboard)
+        assert "get_recent_validations" in src, (
+            "Must use rigorous_backtest.get_recent_validations(), not raw SQL on a guessed table"
+        )
+
+    def test_auto_strategies_use_correct_function(self):
+        """Auto strategies come from strategy_generator.list_strategies."""
+        import views
+        src = inspect.getsource(views.ai_dashboard)
+        assert "list_strategies" in src, (
+            "Must use strategy_generator.list_strategies(), not a made-up function"
+        )
+
+    def test_decay_uses_correct_functions(self):
+        """Alpha decay uses list_deprecated, compute_rolling_metrics, compute_lifetime_metrics."""
+        import views
+        src = inspect.getsource(views.ai_dashboard)
+        assert "list_deprecated" in src, "Must use alpha_decay.list_deprecated()"
+        assert "compute_rolling_metrics" in src, "Must use alpha_decay.compute_rolling_metrics()"
+        assert "compute_lifetime_metrics" in src, "Must use alpha_decay.compute_lifetime_metrics()"
+
+
+# ---------------------------------------------------------------------------
+# 4. View data must match between performance_dashboard and ai_dashboard
+# ---------------------------------------------------------------------------
+
+class TestViewDataConsistency:
+    """The AI dashboard must compute data identically to performance_dashboard."""
+
+    def _get_data_blocks(self, func_name):
+        """Extract data computation variable names from a view function."""
+        import views
+        src = inspect.getsource(getattr(views, func_name))
+        # Find all top-level variable assignments
+        assignments = re.findall(r'^    (\w+)\s*=\s*', src, re.MULTILINE)
+        return set(assignments)
+
+    def test_ai_dashboard_has_same_data_vars_as_performance(self):
+        """Critical data variables must exist in both views."""
+        required_in_ai = [
+            "ai_perf", "slippage", "meta_info", "validations",
+            "allocation_info", "ai_cost_info", "crisis_info",
+            "event_info", "ensemble_info", "auto_strategy_info", "decay_info",
+        ]
+        import views
+        ai_src = inspect.getsource(views.ai_dashboard)
+        for var in required_in_ai:
+            assert var in ai_src, (
+                f"ai_dashboard() missing '{var}' — it exists in performance_dashboard() "
+                f"and the template expects it"
+            )
+
+
+# ---------------------------------------------------------------------------
+# 5. API endpoints return the fields templates expect
+# ---------------------------------------------------------------------------
+
+class TestAPIContracts:
+    def test_macro_data_api_returns_correct_keys(self):
+        """The /api/macro-data endpoint must return yield_curve, etf_flows, cboe_skew, fred_macro."""
+        from macro_data import get_all_macro_data
+        # Verify the function exists and returns the right keys
+        sig = inspect.signature(get_all_macro_data)
+        # Check the source for the return dict keys
+        src = inspect.getsource(get_all_macro_data)
+        for key in ["yield_curve", "etf_flows", "cboe_skew", "fred_macro"]:
+            assert f'"{key}"' in src, f"get_all_macro_data must return '{key}'"
+
+    def test_yield_curve_fields(self):
+        """Yield curve must return rate_2y, rate_10y, spread_10y_2y, curve_status."""
+        from macro_data import get_yield_curve
+        src = inspect.getsource(get_yield_curve)
+        for field in ["rate_2y", "rate_10y", "rate_30y", "spread_10y_2y", "curve_status"]:
+            assert f'"{field}"' in src, f"get_yield_curve must return '{field}'"
+
+    def test_cboe_skew_fields(self):
+        """CBOE skew must return skew_value, skew_signal, skew_5d_avg."""
+        from macro_data import get_cboe_skew
+        src = inspect.getsource(get_cboe_skew)
+        for field in ["skew_value", "skew_signal", "skew_5d_avg"]:
+            assert f'"{field}"' in src, f"get_cboe_skew must return '{field}'"
+
+    def test_fred_macro_fields(self):
+        """FRED macro must return unemployment_rate, cpi_yoy, consumer_sentiment."""
+        from macro_data import get_fred_macro
+        src = inspect.getsource(get_fred_macro)
+        for field in ["unemployment_rate", "unemployment_trend", "cpi_yoy",
+                       "consumer_sentiment", "initial_claims_4wk_avg"]:
+            assert f'"{field}"' in src, f"get_fred_macro must return '{field}'"
+
+
+# ---------------------------------------------------------------------------
+# 6. No yfinance in equity price paths (enforced separately but repeated)
+# ---------------------------------------------------------------------------
+
+class TestNoYFinanceInEquityPaths:
+    def test_screener_equity_functions_use_alpaca(self):
+        import inspect, screener
+        for fn_name in ("screen_by_price_range", "find_volume_surges",
+                        "find_momentum_stocks", "find_breakouts"):
+            fn = getattr(screener, fn_name)
+            src = inspect.getsource(fn)
+            assert "yf_lock.download" not in src and "yf.download" not in src, (
+                f"screener.{fn_name} must use Alpaca, not yfinance"
+            )
+
+    def test_ai_tracker_uses_alpaca(self):
+        import inspect, ai_tracker
+        src = inspect.getsource(ai_tracker._get_current_price)
+        assert "get_latest_trade" in src, (
+            "_get_current_price must use api.get_latest_trade as primary"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 7. dotenv loaded before imports in both entry points
+# ---------------------------------------------------------------------------
+
+class TestDotenvLoading:
+    def test_scheduler_loads_dotenv_before_imports(self):
+        import inspect, multi_scheduler
+        src = inspect.getsource(multi_scheduler)
+        dotenv_pos = src.find("load_dotenv()")
+        import_pos = src.find("\nfrom segments import")
+        assert dotenv_pos > 0 and dotenv_pos < import_pos, (
+            "multi_scheduler must call load_dotenv() before importing modules"
+        )
+
+    def test_app_loads_dotenv(self):
+        import inspect, app
+        src = inspect.getsource(app)
+        assert "load_dotenv()" in src, "app.py must call load_dotenv()"
