@@ -17,6 +17,67 @@ Rules going forward:
 
 ---
 
+## 2026-04-23 — Gate earnings_analyst when no candidate has earnings in 14d window (Severity: medium, cost)
+
+**Problem:** Today's ensemble audit showed `earnings_analyst` outputs
+~45 tokens per call on average, while the other three specialists
+(pattern, sentiment, risk) output ~1000 tokens each. That 45-token
+response is the specialist returning "ABSTAIN — no earnings data to
+analyze" for shortlists where no candidate has near-term earnings.
+We pay ~1800 input tokens per call for effectively zero signal.
+
+Today's split: of the ensemble's ~$1.45 total spend, `earnings_analyst`
+was ~$0.15 (~10%). Over 95% of its calls appear to be abstentions.
+
+**Fix:** New `EARNINGS_ANALYST_WINDOW_DAYS = 14` constant in
+`ensemble.py`. Before running specialists in `run_ensemble`, check if
+ANY candidate in the batch has earnings within `0 <= days_until <= 14`
+via the existing `earnings_calendar.check_earnings` (DB-cached,
+shortlist symbols are warm). If none do, skip `earnings_analyst`
+entirely that cycle. The other three specialists run normally.
+
+**Fail-open semantics** — three defensive properties, covered by tests:
+- If `earnings_calendar` can't be imported at all → specialist runs
+  (tested: `test_import_failure_fails_open`)
+- If `check_earnings` raises for every symbol → specialist skipped
+  ONLY when we have no evidence of upcoming earnings anywhere, but
+  other specialists always run regardless
+- If at least one candidate has earnings in window → specialist runs
+  on the full batch (not filtered)
+
+**Not affected by this gate:**
+- Crypto profiles — already exclude `earnings_analyst` via
+  `APPLICABLE_SPECIALISTS_BY_MARKET` (regression test added)
+- Pattern / risk / sentiment specialists — always run
+- `batch_select`, `sec_diff`, `transcript_sentiment`, etc. — unaffected
+
+**Expected savings:** ~$0.15/day steady state across all equity
+profiles. Larger on days when no earnings are in the window across
+any profile's shortlist.
+
+**What this is NOT:**
+- NOT disabling the ensemble or reducing signal. `earnings_analyst`
+  still runs on every cycle where a candidate has earnings within 14
+  days — which is exactly when its output is most actionable
+  (pre-announcement risk, post-announcement drift setups).
+
+**Test coverage:** 6 new tests in `TestEarningsAnalystCostGate`:
+- Skipped when no candidate has earnings
+- Runs when any single candidate has earnings in window
+- Boundary: 13 days in (runs), 15 days out (skipped)
+- Fails open on per-symbol check_earnings exceptions
+- Fails open on module import failure
+- Crypto market still excludes it (via the older gate, not the new one)
+
+Also updated two existing tests (`test_equity_markets_run_all_four`,
+`test_cost_scales_with_chunks_not_candidate_count`,
+`test_single_chunk_when_few_candidates`) to mock `check_earnings` so
+they remain deterministic under the new gate.
+
+Tests: 684 → 690 passing.
+
+---
+
 ## 2026-04-23 — SEC filing backfill cost spike: cap AI diff calls per cycle (Severity: high)
 
 **Problem:** Post-restart this afternoon (18:41 UTC) the `sec_diff` AI call

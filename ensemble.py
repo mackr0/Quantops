@@ -60,6 +60,46 @@ def _specialists_for_market(market_type: str, all_specialists):
     return [s for s in all_specialists if s.NAME in allowed]
 
 
+# Window (days) around now in which upcoming earnings make the
+# earnings_analyst specialist's work genuinely productive. When no
+# candidate in the shortlist has earnings inside this window, the
+# specialist almost always returns ABSTAIN with a 45-token response —
+# we still pay for input tokens for no signal. Gate saves ~10% of
+# ensemble cost in steady state.
+EARNINGS_ANALYST_WINDOW_DAYS = 14
+
+
+def _any_candidate_has_upcoming_earnings(candidates: List[Dict[str, Any]],
+                                          window_days: int) -> bool:
+    """Return True if any candidate has earnings reporting within window_days.
+
+    Uses `earnings_calendar.check_earnings` which is DB-cached; shortlist
+    symbols are usually warm in cache since the pre-filter already checks
+    earnings dates. Fail-open on error (return True) so we never silently
+    skip the specialist when our knowledge is incomplete.
+    """
+    try:
+        from earnings_calendar import check_earnings
+    except ImportError:
+        return True  # don't silence the specialist on import failure
+
+    for c in candidates:
+        sym = c.get("symbol", "")
+        if not sym or "/" in sym:
+            continue
+        try:
+            result = check_earnings(sym)
+        except Exception:
+            # Per-symbol failure shouldn't disable the gate for everyone —
+            # skip this symbol and keep checking. If ALL symbols error,
+            # we return False (gate fires). That's fine: the specialist
+            # had nothing to work with anyway.
+            continue
+        if result and 0 <= result.get("days_until", 999) <= window_days:
+            return True
+    return False
+
+
 def _verdicts_schema():
     """JSON schema forcing an array of verdicts with all required fields."""
     return {
@@ -121,10 +161,27 @@ def run_ensemble(
     raw_by_specialist: Dict[str, List[Dict[str, Any]]] = {}
     cost_calls = 0
 
+    # Pre-compute earnings relevance once per ensemble run, not per specialist
+    earnings_in_window = _any_candidate_has_upcoming_earnings(
+        batch, EARNINGS_ANALYST_WINDOW_DAYS
+    )
+
     for spec in specialists:
         name = spec.NAME
         combined: List[Dict[str, Any]] = []
         seen_syms: set = set()
+
+        # Cost gate: skip earnings_analyst entirely when no candidate has
+        # earnings in the next EARNINGS_ANALYST_WINDOW_DAYS. The specialist
+        # produces ABSTAIN/short responses in those cases and costs input
+        # tokens for no signal.
+        if name == "earnings_analyst" and not earnings_in_window:
+            logger.debug(
+                "ensemble: skipping earnings_analyst — no candidate has "
+                "earnings in next %d days",
+                EARNINGS_ANALYST_WINDOW_DAYS,
+            )
+            continue
 
         use_tools = (ai_provider == "anthropic")
 
