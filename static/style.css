@@ -4,39 +4,35 @@
    Nav dropdown for AI Intelligence
 --------------------------------------------------------------------------- */
 .nav-dropdown {
-    position: relative;
+    position: relative !important;
 }
 .nav-dropdown-menu {
     display: none;
-    position: absolute;
+    position: absolute !important;
     top: 100%;
     left: 0;
     background: #1a1a2e;
-    border: 1px solid #333;
-    border-radius: 4px;
-    padding: 0.25rem 0;
+    border: 1px solid #444;
+    border-radius: 6px;
+    padding: 0.4rem 0;
     min-width: 160px;
-    z-index: 100;
-    list-style: none;
-    margin: 0;
+    z-index: 1000;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
 }
-.nav-dropdown:hover .nav-dropdown-menu {
+.nav-dropdown:hover > .nav-dropdown-menu {
     display: block;
-}
-.nav-dropdown-menu li {
-    margin: 0;
-    padding: 0;
 }
 .nav-dropdown-menu a {
-    display: block;
-    padding: 0.4rem 1rem;
-    color: #ccc;
-    text-decoration: none;
-    font-size: 0.9rem;
+    display: block !important;
+    padding: 0.5rem 1rem !important;
+    color: #ccc !important;
+    text-decoration: none !important;
+    font-size: 0.9rem !important;
+    margin: 0 !important;
 }
 .nav-dropdown-menu a:hover {
-    background: #2a2a4e;
-    color: #fff;
+    background: #2a2a4e !important;
+    color: #fff !important;
 }
 
 /* AI sub-navigation */
