@@ -883,6 +883,13 @@
                 // ETF Sector Flows
                 h += '<article>';
                 h += '<header><h4 style="margin:0;">Sector Flows (Est.)</h4></header>';
+                var sectorNames = {
+                    'tech': 'Tech', 'finance': 'Finance', 'energy': 'Energy',
+                    'healthcare': 'Healthcare', 'industrial': 'Industrial',
+                    'consumer_disc': 'Consumer Disc.', 'consumer_staples': 'Consumer Staples',
+                    'utilities': 'Utilities', 'materials': 'Materials',
+                    'real_estate': 'Real Estate', 'comm_services': 'Comm. Services'
+                };
                 var flowKeys = Object.keys(ef);
                 if (flowKeys.length > 0) {
                     h += '<div style="font-size:0.85rem;">';
@@ -892,7 +899,7 @@
                         var color = f.flow_direction === 'inflow' ? '#2d7a3d' : '#b00';
                         var amt = Math.abs(f.estimated_weekly_flow);
                         var label = amt >= 1e9 ? (amt/1e9).toFixed(1)+'B' : (amt/1e6).toFixed(0)+'M';
-                        h += '<span style="margin-right:0.75rem;color:' + color + ';">' + esc(sector) + ' ' + dir + '$' + label + '</span>';
+                        h += '<span style="margin-right:0.75rem;color:' + color + ';">' + esc(sectorNames[sector] || sector) + ' ' + dir + '$' + label + '</span>';
                     });
                     h += '</div>';
                 } else {

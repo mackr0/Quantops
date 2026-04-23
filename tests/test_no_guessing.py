@@ -282,6 +282,51 @@ class TestDotenvLoading:
 class TestTemplateJSMatchesAPI:
     """The JS in templates that processes API JSON must use real field names."""
 
+    def test_js_never_outputs_raw_snake_case_keys(self):
+        """JS that renders API data must never output raw snake_case keys to the user.
+        Every key from the API must go through a display name mapping."""
+        with open("templates/ai.html") as f:
+            template = f.read()
+
+        # Find all places where JS outputs a variable that could be a snake_case key
+        # Pattern: esc(variable) where variable comes from an API object key
+        # Known bad patterns from past bugs:
+        bad_patterns = [
+            "esc(sector)",           # was outputting comm_services, consumer_disc
+            "esc(s.name)",           # could output strategy snake_case
+            "esc(e.type)",           # could output event type snake_case
+        ]
+        for bad in bad_patterns:
+            # Check it's either not present or has a display name lookup before it
+            if bad in template:
+                # Find the context — is there a name mapping nearby?
+                idx = template.find(bad)
+                context = template[max(0, idx-200):idx+50]
+                assert "sectorNames" in context or "display_name" in context or "Names[" in context, (
+                    f"ai.html outputs {bad} without a display name mapping. "
+                    f"Raw snake_case keys like 'comm_services' will show in the UI. "
+                    f"Add a JS name mapping object."
+                )
+
+    def test_sector_flow_js_has_display_names(self):
+        """ETF sector flow JS must have human-readable names for all sectors."""
+        with open("templates/ai.html") as f:
+            template = f.read()
+
+        # All sector keys from market_data.SECTOR_ETFS
+        from market_data import SECTOR_ETFS
+        sector_keys = list(SECTOR_ETFS.keys())
+
+        # Find the sectorNames mapping in JS
+        assert "sectorNames" in template, (
+            "ai.html must have a sectorNames JS object for sector display names"
+        )
+
+        for key in sector_keys:
+            assert f"'{key}'" in template or f'"{key}"' in template, (
+                f"Sector '{key}' missing from JS sectorNames mapping in ai.html"
+            )
+
     def test_macro_data_js_uses_real_fields(self):
         """ai.html JS for Market Intelligence must reference actual API fields."""
         with open("templates/ai.html") as f:
