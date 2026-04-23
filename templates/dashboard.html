@@ -18,6 +18,19 @@
 {% endfor %}
 </div>
 
+<!-- Profile health alerts -->
+{% set broken_profiles = profiles_data | selectattr("error", "defined") | selectattr("error") | list %}
+{% if broken_profiles %}
+<article style="background:#fff0f0;border-left:4px solid #b00;padding:0.75rem 1rem;margin-bottom:1rem;">
+    <strong style="color:#b00;">Profile Errors</strong>
+    {% for bp in broken_profiles %}
+    <div style="margin-top:0.25rem;font-size:0.9rem;">
+        <strong>{{ bp.name }}</strong>: {{ bp.error }}
+    </div>
+    {% endfor %}
+</article>
+{% endif %}
+
 <!-- Countdown Timers (always visible) -->
 <div class="grid" style="margin-bottom:0.75rem;">
     <article style="text-align:center; padding:0.5rem; margin:0;">
