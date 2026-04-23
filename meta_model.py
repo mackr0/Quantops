@@ -68,6 +68,9 @@ CATEGORICAL_FEATURES = {
     "congress_direction": ["buying", "selling", "neutral"],
     "eps_revision_direction": ["up", "down", "flat"],
     "_curve_status": ["normal", "flat", "inverted"],
+    # Wave 2
+    "insider_near_earnings": ["bullish", "bearish", "neutral"],
+    "_rotation_phase": ["risk_on", "risk_off", "mixed"],
 }
 
 

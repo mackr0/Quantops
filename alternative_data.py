@@ -728,6 +728,67 @@ def get_analyst_estimates(symbol):
 
 
 # ---------------------------------------------------------------------------
+# Insider Timing vs Earnings Correlation
+# ---------------------------------------------------------------------------
+
+def get_insider_earnings_signal(symbol):
+    """Correlate insider buying/selling with upcoming earnings dates.
+
+    Insiders buying within 14 days of earnings = they know the numbers
+    are good. Insiders selling before earnings = caution signal.
+
+    Uses existing get_insider_activity() and check_earnings() — no new
+    external calls.
+
+    Returns dict with:
+        insider_buying_near_earnings: bool
+        insider_selling_near_earnings: bool
+        days_to_earnings: int or None
+        insider_direction_near_earnings: str — 'bullish', 'bearish', or 'neutral'
+    """
+    result = {
+        "insider_buying_near_earnings": False,
+        "insider_selling_near_earnings": False,
+        "days_to_earnings": None,
+        "insider_direction_near_earnings": "neutral",
+    }
+
+    try:
+        from earnings_calendar import check_earnings
+
+        earnings = check_earnings(symbol)
+        if earnings is None:
+            return result
+
+        days_until = earnings.get("days_until")
+        if days_until is None or days_until > 14:
+            result["days_to_earnings"] = days_until
+            return result
+
+        result["days_to_earnings"] = days_until
+
+        insider = get_insider_activity(symbol)
+        if not insider:
+            return result
+
+        direction = insider.get("net_direction", "neutral")
+        buys = insider.get("recent_buys", 0)
+        sells = insider.get("recent_sells", 0)
+
+        if direction == "buying" and buys > 0 and days_until <= 14:
+            result["insider_buying_near_earnings"] = True
+            result["insider_direction_near_earnings"] = "bullish"
+        elif direction == "selling" and sells > 0 and days_until <= 14:
+            result["insider_selling_near_earnings"] = True
+            result["insider_direction_near_earnings"] = "bearish"
+
+    except Exception as exc:
+        logger.debug("Insider earnings signal failed for %s: %s", symbol, exc)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Aggregator
 # ---------------------------------------------------------------------------
 
@@ -752,4 +813,5 @@ def get_all_alternative_data(symbol):
         "finra_short_vol": get_finra_short_volume(symbol),
         "insider_cluster": get_insider_cluster(symbol),
         "analyst_estimates": get_analyst_estimates(symbol),
+        "insider_earnings": get_insider_earnings_signal(symbol),
     }

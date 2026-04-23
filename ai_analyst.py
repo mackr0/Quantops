@@ -636,6 +636,12 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                            f"CPI {fred.get('cpi_yoy', 0):.1f}% YoY, "
                            f"Consumer sentiment {fred.get('consumer_sentiment', 0):.0f} "
                            f"({fred.get('consumer_sentiment_trend', 'stable')})")
+    sector_mom = macro.get("sector_momentum", {})
+    if sector_mom.get("rankings"):
+        top = ", ".join(f"{r['sector']}(#{r['rank']})" for r in sector_mom["rankings"][:3])
+        bottom = ", ".join(f"{r['sector']}(#{r['rank']})" for r in sector_mom["rankings"][-3:])
+        phase = sector_mom.get("rotation_phase", "mixed").upper().replace("_", " ")
+        market_section += f"\n  SECTOR MOMENTUM: Top: {top} | Bottom: {bottom} ({phase})"
 
     # --- Candidates section ---
     cand_lines = []
@@ -735,6 +741,13 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                 alt_parts.append(
                     f"EPS revised {estimates['eps_revision_direction'].upper()} "
                     f"{abs(estimates.get('revision_magnitude_pct', 0)):.0f}%")
+            ie = alt.get("insider_earnings", {})
+            if ie.get("insider_buying_near_earnings"):
+                alt_parts.append(
+                    f"Insiders buying {ie['days_to_earnings']}d before earnings (bullish)")
+            elif ie.get("insider_selling_near_earnings"):
+                alt_parts.append(
+                    f"Insiders selling {ie['days_to_earnings']}d before earnings (bearish)")
             if alt_parts:
                 line += f"\n     ALT DATA: {' | '.join(alt_parts)}"
 

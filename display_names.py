@@ -148,6 +148,10 @@ _DISPLAY_NAMES = {
     # New crisis readings
     "cboe_skew":                "CBOE Skew",
     "yield_spread_10y2y":       "10Y-2Y Spread",
+
+    # Wave 2 signals
+    "insider_near_earnings":    "Insider Activity Near Earnings",
+    "_rotation_phase":          "Sector Rotation Phase",
 }
 
 

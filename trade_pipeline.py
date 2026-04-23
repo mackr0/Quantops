@@ -1100,6 +1100,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 features_payload["insider_cluster"] = 1 if alt.get("insider_cluster", {}).get("is_cluster") else 0
                 features_payload["eps_revision_direction"] = alt.get("analyst_estimates", {}).get("eps_revision_direction", "flat")
                 features_payload["eps_revision_magnitude"] = alt.get("analyst_estimates", {}).get("revision_magnitude_pct", 0)
+                features_payload["insider_near_earnings"] = alt.get("insider_earnings", {}).get("insider_direction_near_earnings", "neutral")
             social = c.get("social") or {}
             if social:
                 features_payload["reddit_mentions"] = social.get("mentions", 0)
@@ -1116,6 +1117,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             _fm = _macro.get("fred_macro", {})
             features_payload["_unemployment_rate"] = _fm.get("unemployment_rate", 0)
             features_payload["_cpi_yoy"] = _fm.get("cpi_yoy", 0)
+            features_payload["_rotation_phase"] = _macro.get("sector_momentum", {}).get("rotation_phase", "mixed")
 
             record_prediction(
                 symbol=sym,

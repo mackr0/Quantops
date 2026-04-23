@@ -350,18 +350,91 @@ def get_fred_macro() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# 5. Sector Momentum Ranking
+# ---------------------------------------------------------------------------
+
+def get_sector_momentum_ranking() -> Dict[str, Any]:
+    """Rank 11 sector ETFs by 5-day momentum. Detect risk-on vs risk-off.
+
+    Uses existing get_sector_rotation() from market_data.py — no new
+    external calls.
+
+    Returns dict with:
+        rankings: list of {sector, return_5d, rank} sorted by rank
+        top_3: list of sector names
+        bottom_3: list of sector names
+        rotation_phase: str — 'risk_on', 'risk_off', or 'mixed'
+    """
+    cached = _get_cached("sector_momentum", "etf_flows")  # same 24h TTL
+    if cached is not None:
+        return cached
+
+    result = {
+        "rankings": [],
+        "top_3": [],
+        "bottom_3": [],
+        "rotation_phase": "mixed",
+    }
+
+    try:
+        from market_data import get_sector_rotation
+        rotation = get_sector_rotation()
+        if not rotation:
+            _set_cached("sector_momentum", result)
+            return result
+
+        # Sort sectors by 5-day return descending
+        ranked = sorted(
+            [(sector, data.get("return_5d", 0)) for sector, data in rotation.items()],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+        rankings = []
+        for i, (sector, ret) in enumerate(ranked):
+            rankings.append({"sector": sector, "return_5d": ret, "rank": i + 1})
+
+        result["rankings"] = rankings
+        result["top_3"] = [r["sector"] for r in rankings[:3]]
+        result["bottom_3"] = [r["sector"] for r in rankings[-3:]]
+
+        # Detect rotation phase
+        risk_on_sectors = {"tech", "consumer_disc", "finance"}
+        risk_off_sectors = {"utilities", "consumer_staples", "healthcare"}
+        top_set = set(result["top_3"])
+        bottom_set = set(result["bottom_3"])
+
+        risk_on_score = len(top_set & risk_on_sectors) - len(bottom_set & risk_on_sectors)
+        risk_off_score = len(top_set & risk_off_sectors) - len(bottom_set & risk_off_sectors)
+
+        if risk_on_score >= 2:
+            result["rotation_phase"] = "risk_on"
+        elif risk_off_score >= 2:
+            result["rotation_phase"] = "risk_off"
+        else:
+            result["rotation_phase"] = "mixed"
+
+    except Exception as exc:
+        logger.debug("Sector momentum ranking failed: %s", exc)
+
+    _set_cached("sector_momentum", result)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Aggregator
 # ---------------------------------------------------------------------------
 
 def get_all_macro_data() -> Dict[str, Any]:
     """Fetch all market-wide macro data in one call.
 
-    Returns dict combining yield curve, ETF flows, CBOE skew, and
-    FRED economic indicators. All free, all cached.
+    Returns dict combining yield curve, ETF flows, CBOE skew,
+    FRED economic indicators, and sector momentum ranking.
     """
     return {
         "yield_curve": get_yield_curve(),
         "etf_flows": get_etf_flows(),
         "cboe_skew": get_cboe_skew(),
         "fred_macro": get_fred_macro(),
+        "sector_momentum": get_sector_momentum_ranking(),
     }
