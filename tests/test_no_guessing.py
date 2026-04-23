@@ -262,33 +262,50 @@ class TestNoYFinanceInEquityPaths:
 class TestChangelogUpToDate:
     """Every code change must be documented in CHANGELOG.md."""
 
-    def test_changelog_has_todays_date(self):
-        """If any .py file was modified today, CHANGELOG.md must have today's date."""
+    def test_last_py_commit_includes_changelog(self):
+        """The most recent commit that touches .py files must also touch CHANGELOG.md."""
         import subprocess
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
 
-        today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
-
-        # Check if any .py files were modified today (via git)
+        # Find the most recent commit that changed a .py file
         result = subprocess.run(
-            ["git", "log", "--since=midnight", "--name-only", "--pretty=format:"],
+            ["git", "log", "--diff-filter=M", "--name-only", "--pretty=format:%H", "-20"],
             capture_output=True, text=True,
         )
-        changed_files = [f.strip() for f in result.stdout.split("\n") if f.strip()]
-        py_files_changed = [f for f in changed_files if f.endswith(".py")]
+        if result.returncode != 0 or not result.stdout.strip():
+            return  # No git history
 
-        if not py_files_changed:
-            return  # No code changes today, nothing to check
+        # Parse commits and their files
+        current_hash = None
+        commits = {}
+        for line in result.stdout.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            if len(line) == 40 and all(c in "0123456789abcdef" for c in line):
+                current_hash = line
+                commits[current_hash] = []
+            elif current_hash:
+                commits[current_hash].append(line)
 
-        # CHANGELOG.md must mention today's date
-        with open("CHANGELOG.md") as f:
-            changelog = f.read()
+        # Find most recent commit with .py changes (excluding test files)
+        last_py_commit = None
+        last_py_files = []
+        for commit_hash, files in commits.items():
+            py_files = [f for f in files if f.endswith(".py")
+                        and not f.startswith("tests/")]
+            if py_files:
+                last_py_commit = commit_hash
+                last_py_files = py_files
+                break
 
-        assert today in changelog, (
-            f"Code files were modified today ({today}) but CHANGELOG.md "
-            f"does not contain today's date. Every code change must be "
-            f"documented in the changelog."
+        if not last_py_commit:
+            return  # No recent .py changes
+
+        files_in_commit = commits[last_py_commit]
+        assert "CHANGELOG.md" in files_in_commit, (
+            f"Most recent code commit ({last_py_commit[:8]}) modified "
+            f"{', '.join(last_py_files)} but did NOT update CHANGELOG.md. "
+            f"Every code change must be documented."
         )
 
     def test_changelog_not_empty(self):
