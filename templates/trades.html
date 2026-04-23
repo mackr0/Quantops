@@ -73,9 +73,25 @@
 {% endif %}
 
 <article>
-    <header><h3>Trades</h3></header>
+    <header>
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+            <h3 style="margin:0;">Trades</h3>
+            <small class="muted">{{ total_trades }} total{% if total_pages > 1 %} · Page {{ page }} of {{ total_pages }}{% endif %}</small>
+        </div>
+    </header>
     {{ trades_tpl.render_trades(trades, show_profile=True, sortable=True,
         empty_message="No trades yet. Trades will appear here once the AI selects and executes positions.") }}
+    {% if total_pages > 1 %}
+    <div style="display:flex;justify-content:center;align-items:center;gap:0.5rem;margin-top:0.75rem;">
+        {% if page > 1 %}
+        <a href="?page={{ page - 1 }}&sort={{ sort_by }}&dir={{ sort_dir }}{% if selected_profile %}&profile_id={{ selected_profile }}{% endif %}" class="outline secondary" style="padding:0.25rem 0.75rem;font-size:0.85rem;" role="button">&larr; Previous</a>
+        {% endif %}
+        <span class="muted" style="font-size:0.85rem;">Page {{ page }} of {{ total_pages }} ({{ total_trades }} trades)</span>
+        {% if page < total_pages %}
+        <a href="?page={{ page + 1 }}&sort={{ sort_by }}&dir={{ sort_dir }}{% if selected_profile %}&profile_id={{ selected_profile }}{% endif %}" class="outline secondary" style="padding:0.25rem 0.75rem;font-size:0.85rem;" role="button">Next &rarr;</a>
+        {% endif %}
+    </div>
+    {% endif %}
 </article>
 {% endblock %}
 
@@ -171,81 +187,29 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 
-// --- Sortable table columns ---
-document.querySelectorAll('.sortable-table').forEach(function(table) {
-    var headers = table.querySelectorAll('th.sortable');
-    var currentSort = { col: 1, dir: 'desc' }; // default: Time descending
-
-    headers.forEach(function(th) {
-        th.addEventListener('click', function() {
-            var col = parseInt(th.dataset.col);
-            var sortType = th.dataset.sort || 'string';
-            // Toggle direction if clicking same column
-            if (currentSort.col === col) {
-                currentSort.dir = currentSort.dir === 'asc' ? 'desc' : 'asc';
-            } else {
-                currentSort.col = col;
-                currentSort.dir = 'asc';
-            }
-
-            // Update arrow indicators
-            headers.forEach(function(h) {
-                var arrow = h.querySelector('.sort-arrow');
-                if (arrow) arrow.textContent = '';
-                h.classList.remove('sort-asc', 'sort-desc');
-            });
+// --- Sortable columns via server-side URL ---
+(function() {
+    var colMap = {1: 'timestamp', 2: 'profile', 3: 'symbol', 4: 'side', 5: 'qty', 6: 'price', 7: 'ai_confidence', 8: 'pnl'};
+    var currentSort = '{{ sort_by }}';
+    var currentDir = '{{ sort_dir }}';
+    document.querySelectorAll('.sortable-table th.sortable').forEach(function(th) {
+        var col = parseInt(th.dataset.col);
+        var sortKey = colMap[col] || 'timestamp';
+        // Show current sort arrow
+        if (sortKey === currentSort) {
             var arrow = th.querySelector('.sort-arrow');
-            if (!arrow) {
-                arrow = document.createElement('span');
-                arrow.className = 'sort-arrow';
-                th.appendChild(arrow);
-            }
-            arrow.textContent = currentSort.dir === 'asc' ? ' ▲' : ' ▼';
-            th.classList.add('sort-' + currentSort.dir);
-
-            // Gather rows: each trade = [summary-row, detail-row]
-            var tbody = table.querySelector('tbody');
-            var allRows = Array.from(tbody.querySelectorAll('tr'));
-            var pairs = [];
-            for (var i = 0; i < allRows.length; i += 2) {
-                pairs.push([allRows[i], allRows[i + 1]]);
-            }
-
-            pairs.sort(function(a, b) {
-                var cellA = a[0].children[col];
-                var cellB = b[0].children[col];
-                if (!cellA || !cellB) return 0;
-
-                var valA, valB;
-                if (col === 1) {
-                    // Time column: sort by raw ISO timestamp in data-raw
-                    valA = cellA.getAttribute('data-raw') || '';
-                    valB = cellB.getAttribute('data-raw') || '';
-                    return currentSort.dir === 'asc'
-                        ? valA.localeCompare(valB)
-                        : valB.localeCompare(valA);
-                }
-
-                var textA = (cellA.textContent || '').trim();
-                var textB = (cellB.textContent || '').trim();
-
-                if (sortType === 'number') {
-                    valA = parseFloat(textA.replace(/[$,%+]/g, '')) || 0;
-                    valB = parseFloat(textB.replace(/[$,%+]/g, '')) || 0;
-                    return currentSort.dir === 'asc' ? valA - valB : valB - valA;
-                }
-                return currentSort.dir === 'asc'
-                    ? textA.localeCompare(textB)
-                    : textB.localeCompare(textA);
-            });
-
-            // Re-append sorted pairs
-            pairs.forEach(function(pair) {
-                tbody.appendChild(pair[0]);
-                if (pair[1]) tbody.appendChild(pair[1]);
-            });
+            if (arrow) arrow.textContent = currentDir === 'asc' ? ' ▲' : ' ▼';
+        }
+        th.style.cursor = 'pointer';
+        th.addEventListener('click', function() {
+            var newDir = (sortKey === currentSort && currentDir === 'desc') ? 'asc' : 'desc';
+            var params = new URLSearchParams(window.location.search);
+            params.set('sort', sortKey);
+            params.set('dir', newDir);
+            params.set('page', '1');
+            window.location.search = params.toString();
         });
     });
-});
+})();
 </script>
 {% endblock %}

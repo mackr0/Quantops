@@ -963,13 +963,38 @@ def trades():
     # Unrealized P&L belongs on the dashboard (open positions view).
     # SELL rows show realized P&L from the pnl column. BUY rows are blank.
 
-    # Sort by timestamp descending
-    all_trades.sort(key=lambda t: t.get("timestamp", ""), reverse=True)
+    # Server-side sorting
+    sort_by = request.args.get("sort", "timestamp")
+    sort_dir = request.args.get("dir", "desc")
+    sort_key_map = {
+        "timestamp": lambda t: t.get("timestamp", ""),
+        "symbol": lambda t: t.get("symbol", ""),
+        "side": lambda t: t.get("side", ""),
+        "qty": lambda t: float(t.get("qty", 0) or 0),
+        "price": lambda t: float(t.get("price", 0) or 0),
+        "ai_confidence": lambda t: float(t.get("ai_confidence", 0) or 0),
+        "pnl": lambda t: float(t.get("pnl", 0) or 0),
+        "profile": lambda t: t.get("profile_name", ""),
+    }
+    key_fn = sort_key_map.get(sort_by, sort_key_map["timestamp"])
+    all_trades.sort(key=key_fn, reverse=(sort_dir == "desc"))
+
+    # Server-side pagination
+    page = request.args.get("page", 1, type=int)
+    per_page = 50
+    total = len(all_trades)
+    total_pages = max(1, -(-total // per_page))
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * per_page
+    page_trades = all_trades[start:start + per_page]
+
     return render_template("trades.html",
                            decisions=decisions,
-                           trades=all_trades[:200],
+                           trades=page_trades,
                            profiles=profiles,
-                           selected_profile=selected_profile_int)
+                           selected_profile=selected_profile_int,
+                           page=page, total_pages=total_pages,
+                           total_trades=total, sort_by=sort_by, sort_dir=sort_dir)
 
 
 @views_bp.route("/trades/<int:decision_id>")
