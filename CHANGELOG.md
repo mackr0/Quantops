@@ -17,6 +17,21 @@ Rules going forward:
 
 ---
 
+## 2026-04-22 — Wave 2: 7 more free data signals (15 total) (Severity: feature)
+
+Added 7 more alternative data sources, bringing the total to 15. The AI now sees:
+- **Insider timing vs earnings** — insiders buying before earnings = bullish
+- **Sector momentum ranking** — risk-on vs risk-off rotation detection
+- **Dark pool ATS volume** — institutional accumulation/distribution (FINRA)
+- **Market-wide GEX aggregate** — pinning vs expansion regime from options data
+- **Earnings surprise history** — serial beater/misser track record (yfinance)
+- **Earnings call transcript sentiment** — management tone via SEC EDGAR 8-K (AI-analyzed, cost-gated)
+- **USPTO patent filing velocity** — innovation pipeline acceleration (PatentsView API)
+
+All integrated into AI prompt, features_payload for meta-model, display names. 673 tests passing.
+
+---
+
 ## 2026-04-22 — No-guessing test suite (Severity: infrastructure)
 
 Added `test_no_guessing.py` with 26 tests that enforce correctness of names, schemas, data structures, and function signatures. Every bug caused by guessing during this session would now fail these tests before deploy:
