@@ -264,19 +264,19 @@ def dashboard():
     profiles = get_active_profiles(user_id=current_user.effective_user_id)
     profiles_data = []
 
-    for prof in profiles:
+    def _load_profile(prof):
+        """Load one profile's data. Called in parallel."""
         try:
             ctx = build_user_context_from_profile(prof["id"])
             account = _safe_account_info(ctx)
             positions = _enriched_positions(ctx, prof["id"])
             pending_orders = _safe_pending_orders(ctx)
-            # Per-profile AI cost today
             try:
                 from ai_cost_ledger import spend_summary
                 cost_today = spend_summary(ctx.db_path)["today"]["usd"]
             except Exception:
                 cost_today = 0
-            profiles_data.append({
+            return {
                 "id": prof["id"],
                 "name": prof["name"],
                 "market_type": prof["market_type"],
@@ -286,10 +286,10 @@ def dashboard():
                 "pending_orders": pending_orders,
                 "is_virtual": getattr(ctx, "is_virtual", False),
                 "cost_today": round(cost_today, 2),
-            })
+            }
         except Exception as exc:
             logger.warning("Dashboard error for profile #%d: %s", prof["id"], exc)
-            profiles_data.append({
+            return {
                 "id": prof["id"],
                 "name": prof["name"],
                 "market_type": prof["market_type"],
@@ -299,7 +299,13 @@ def dashboard():
                 "pending_orders": [],
                 "is_virtual": False,
                 "error": str(exc),
-            })
+            }
+
+    # Load all profiles in parallel — 10 sequential Alpaca API calls
+    # was taking 17+ seconds; parallel cuts it to ~3-4s.
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        profiles_data = list(pool.map(_load_profile, profiles))
 
     # Get recent decisions
     decisions = get_decisions(current_user.effective_user_id, limit=20)
