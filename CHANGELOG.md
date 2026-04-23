@@ -17,6 +17,12 @@ Rules going forward:
 
 ---
 
+## 2026-04-23 — Rename "AI Intelligence" to "AI" (Severity: cleanup)
+
+"AI Intelligence" = "Artificial Intelligence Intelligence." Renamed to "AI" in nav bar, page title, heading, and all documentation references.
+
+---
+
 ## 2026-04-23 — Continued fixes: exit order conflicts, confidence bypass, cache persistence (Severity: high)
 
 **Exit order conflict fix.** `check_exits` crashed with "cannot open a short sell while a long buy order is open" when a limit buy was pending for the same symbol. Now cancels all open orders for a symbol before submitting the exit order.
@@ -110,7 +116,7 @@ Added `test_no_guessing.py` with 26 tests that enforce correctness of names, sch
 
 ---
 
-## 2026-04-22 — AI Intelligence separated into own top-level page (Severity: feature)
+## 2026-04-22 — AI separated into own top-level page (Severity: feature)
 
 **Problem**: The Performance page had 14 AI-related sections crammed into one tab alongside 5 tabs of traditional metrics. This is an AI-first system — it deserved proper organization.
 
@@ -341,7 +347,7 @@ assumed the tuner was broken.
   needed, or is waiting for more data. The title + detail distinguish
   the three cases so the user can confirm the tuner is alive at a
   glance.
-- New "Self-Tuning Status" panel on Performance > AI Intelligence
+- New "Self-Tuning Status" panel on Performance > AI
   tab shows per-profile: resolved-predictions progress bar
   (e.g. "8 / 20 (40%)"), current status ("Collecting data" vs
   "Active"), last-run timestamp, and the human-readable message.
@@ -570,7 +576,7 @@ Rate limiting errors should be near zero.
 **"What the AI Sees" section updated** to match actual code: added
 Strategy Votes, Last Prediction memory, Portfolio State, Market Regime.
 Moved to collapsible reference at bottom of AI Performance tab. Tab
-renamed from "AI Intelligence" to "AI Performance."
+renamed from "AI" to "AI Performance."
 
 ---
 
