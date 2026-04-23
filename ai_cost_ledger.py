@@ -77,11 +77,16 @@ def spend_summary(db_path: str) -> Dict[str, Any]:
         return result
 
     try:
+        # Use ET date boundaries so "today" means today in Eastern Time,
+        # not UTC (which flips to the next day at 7/8 PM ET).
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        et_today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
         for key, window in (("today", "start of day"),
                             ("7d",    "-7 days"),
                             ("30d",   "-30 days")):
             if key == "today":
-                sql_where = "timestamp >= date('now')"
+                sql_where = f"timestamp >= '{et_today}'"
             else:
                 sql_where = "timestamp >= datetime('now', '%s')" % window
             row = conn.execute(
