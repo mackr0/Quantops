@@ -169,7 +169,7 @@ def ai_review(symbol, technical_signal, ctx=None, political_context=None):
         if ai_signal == "SELL":
             print(f"VETOED (AI says SELL, confidence {ai_confidence})")
             return False, ai_result
-        if ai_confidence < min_confidence and ai_signal != "BUY":
+        if ai_confidence < min_confidence:
             print(f"VETOED (AI confidence {ai_confidence} < {min_confidence})")
             return False, ai_result
         print(f"APPROVED (AI: {ai_signal}, confidence {ai_confidence})")
