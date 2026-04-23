@@ -164,7 +164,8 @@ def ai_review(symbol, technical_signal, ctx=None, political_context=None):
     # Determine the confidence threshold
     min_confidence = ctx.ai_confidence_threshold if ctx is not None else AI_MIN_CONFIDENCE
 
-    # Approval logic for BUY trades
+    # Approval logic for BUY trades — threshold applies to ALL signals,
+    # no bypass for BUY (removed 2026-04-23, was undermining self-tuner)
     if tech_direction == "BUY":
         if ai_signal == "SELL":
             print(f"VETOED (AI says SELL, confidence {ai_confidence})")
