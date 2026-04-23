@@ -17,6 +17,22 @@ Rules going forward:
 
 ---
 
+## 2026-04-22 — No-guessing test suite (Severity: infrastructure)
+
+Added `test_no_guessing.py` with 26 tests that enforce correctness of names, schemas, data structures, and function signatures. Every bug caused by guessing during this session would now fail these tests before deploy:
+
+- SQL table names must exist in known schemas (catches `sec_alerts` → real name `sec_filings_history`)
+- Template JS must use real API field names, with blacklist of known bad names (catches `d.cboe_skew.value` → real name `skew_value`)
+- `render_template` must pass every variable the template references (catches blank sections)
+- Function calls must match actual signatures (catches `get_allocation_summary(profile_id)` → real sig `(db_path, market_type)`)
+- API return fields verified against template consumers
+- Display names cover all meta-model features
+- View data consistency between performance and AI dashboards
+
+673 total tests passing.
+
+---
+
 ## 2026-04-22 — Trades pagination, countdown fix, AI cost timezone fix (Severity: medium)
 
 **Trades page server-side pagination**: 50 trades per page with prev/next navigation. Column sorting via URL params (`?sort=pnl&dir=desc&page=1`) so sorting and pagination work together across page loads. Replaced client-side JS sort.

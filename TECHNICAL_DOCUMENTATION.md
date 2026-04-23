@@ -1077,6 +1077,22 @@ Integration test coverage:
 
 The `tmp_strategies_dir` fixture in `conftest.py` redirects `STRATEGIES_DIR` per-test so rendering auto-strategy modules in tests never pollutes the real `strategies/` package.
 
+### 7.16 No-Guessing Test Suite
+
+`tests/test_no_guessing.py` (26 tests) enforces that code never uses made-up names for tables, columns, functions, API fields, or template variables. Covers:
+
+| Category | What it catches |
+|---|---|
+| SQL table names | References to non-existent tables (e.g., `sec_alerts` vs real `sec_filings_history`) |
+| Display names | Meta-model features without human-readable labels |
+| Template data contracts | View functions building data in wrong shape for templates |
+| Function signatures | Calling functions with wrong arguments (e.g., `(profile_id)` vs `(db_path, market_type)`) |
+| API field contracts | Python functions returning fields that don't match what template JS expects |
+| Template JS validation | JS referencing made-up API fields with blacklist of known bad names |
+| render_template kwargs | Templates using variables that the view never passes |
+| dotenv loading | Both entry points (scheduler, web) load .env before imports |
+| Alpaca-first | No yfinance in equity price paths |
+
 **Why This Matters:** As the system grows, the biggest regression risk isn't individual-phase bugs (unit tests catch those). It's silent breakage of the contracts *between* phases during refactoring — a change that looks local but silently violates a downstream expectation. These integration tests codify the phase-to-phase contracts so a refactor that violates them fails CI loudly, not silently in production.
 
 ---
