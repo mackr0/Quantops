@@ -2116,18 +2116,20 @@ def _ai_common(page_name):
     }
 
 
-@views_bp.route("/ai/brain")
+@views_bp.route("/ai")
 @login_required
-def ai_brain():
-    """AI Brain — prediction accuracy, confidence calibration, meta-model."""
+def ai_dashboard():
+    """AI Intelligence — unified 4-tab page."""
+    import os
     from ai_tracker import get_ai_performance
     import sqlite3 as _sqlite3
 
-    ctx = _ai_common("brain")
+    ctx = _ai_common("ai")
     db_paths = ctx["db_paths"]
     profiles = ctx["profiles"]
     selected_profile_int = ctx["selected_profile"]
 
+    # --- Brain data ---
     ai_perf = {
         "total_predictions": 0, "resolved": 0, "pending": 0,
         "win_rate": 0.0, "avg_confidence_on_wins": 0.0,
@@ -2195,7 +2197,6 @@ def ai_brain():
     if all_return_sells:
         ai_perf["avg_return_on_sells"] = round(sum(all_return_sells) / len(all_return_sells), 2)
 
-    # Profit factor from BUY/SELL predictions only
     trade_returns = []
     for db_path in db_paths:
         try:
@@ -2214,7 +2215,6 @@ def ai_brain():
     if total_gains > 0 and total_losses_abs > 0:
         ai_perf["profit_factor"] = round(total_gains / total_losses_abs, 2)
 
-    # Slippage
     slippage = {"avg_pct": 0, "total_cost": 0, "count": 0}
     for db_path in db_paths:
         try:
@@ -2228,7 +2228,6 @@ def ai_brain():
     if slippage["count"] > 0 and slippage["total_cost"] != 0:
         slippage["avg_pct"] = slippage["total_cost"] / slippage["count"]
 
-    # Meta-model
     meta_info = {"loaded": False, "profiles": []}
     try:
         import meta_model
@@ -2250,22 +2249,7 @@ def ai_brain():
     except Exception:
         pass
 
-    return render_template("ai_brain.html", ai_perf=ai_perf, slippage=slippage,
-                           meta_info=meta_info, **ctx)
-
-
-@views_bp.route("/ai/strategy")
-@login_required
-def ai_strategy():
-    """AI Strategy — allocation, validations, alpha decay, evolving library."""
-    import os
-
-    ctx = _ai_common("strategy")
-    db_paths = ctx["db_paths"]
-    profiles = ctx["profiles"]
-    selected_profile_int = ctx["selected_profile"]
-
-    # Strategy validations
+    # --- Strategy data ---
     validations = []
     try:
         import sqlite3 as _sq
@@ -2281,10 +2265,13 @@ def ai_strategy():
     except Exception:
         pass
 
-    # Alpha decay
     decay_info = []
+    allocation_info = []
+    auto_strategy_info = []
     try:
         from alpha_decay import get_strategy_performance
+        from multi_strategy import get_allocation_summary
+        from strategy_lifecycle import get_lifecycle_summary
         for p in profiles:
             if selected_profile_int and p["id"] != selected_profile_int:
                 continue
@@ -2297,32 +2284,12 @@ def ai_strategy():
                     decay_info.append({"profile_name": p["name"], "strategies": perf})
             except Exception:
                 pass
-    except Exception:
-        pass
-
-    # Strategy allocation
-    allocation_info = []
-    try:
-        from multi_strategy import get_allocation_summary
-        for p in profiles:
-            if selected_profile_int and p["id"] != selected_profile_int:
-                continue
             try:
                 alloc = get_allocation_summary(p["id"])
                 if alloc:
                     allocation_info.append({"profile_name": p["name"], "allocation": alloc})
             except Exception:
                 pass
-    except Exception:
-        pass
-
-    # Auto-generated strategies
-    auto_strategy_info = []
-    try:
-        from strategy_lifecycle import get_lifecycle_summary
-        for p in profiles:
-            if selected_profile_int and p["id"] != selected_profile_int:
-                continue
             try:
                 summary = get_lifecycle_summary(p["id"])
                 if summary:
@@ -2332,26 +2299,14 @@ def ai_strategy():
     except Exception:
         pass
 
-    return render_template("ai_strategy.html", validations=validations,
-                           decay_info=decay_info, allocation_info=allocation_info,
-                           auto_strategy_info=auto_strategy_info, **ctx)
-
-
-@views_bp.route("/ai/awareness")
-@login_required
-def ai_awareness():
-    """AI Awareness — market intelligence, SEC alerts, crisis, events, ensemble."""
-    import os
-
-    ctx = _ai_common("awareness")
-    db_paths = ctx["db_paths"]
-    profiles = ctx["profiles"]
-    selected_profile_int = ctx["selected_profile"]
-
-    # Crisis info
+    # --- Awareness data ---
     crisis_info = []
+    event_info = []
+    ensemble_info = []
     try:
         from crisis_state import get_current_level
+        from event_bus import recent_events
+        import json as _json
         for p in profiles:
             if selected_profile_int and p["id"] != selected_profile_int:
                 continue
@@ -2363,35 +2318,12 @@ def ai_awareness():
                 crisis_info.append({"profile_name": p["name"], "state": cs})
             except Exception:
                 pass
-    except Exception:
-        pass
-
-    # Event stream
-    event_info = []
-    try:
-        from event_bus import recent_events
-        for p in profiles:
-            if selected_profile_int and p["id"] != selected_profile_int:
-                continue
-            db = f"quantopsai_profile_{p['id']}.db"
-            if not os.path.exists(db):
-                continue
             try:
                 events = recent_events(db, hours=24, limit=25)
                 if events:
                     event_info.append({"profile_name": p["name"], "events": events})
             except Exception:
                 pass
-    except Exception:
-        pass
-
-    # Ensemble info
-    ensemble_info = []
-    try:
-        import json as _json
-        for p in profiles:
-            if selected_profile_int and p["id"] != selected_profile_int:
-                continue
             cycle_file = f"cycle_data_{p['id']}.json"
             if os.path.exists(cycle_file):
                 try:
@@ -2403,20 +2335,7 @@ def ai_awareness():
     except Exception:
         pass
 
-    return render_template("ai_awareness.html", crisis_info=crisis_info,
-                           event_info=event_info, ensemble_info=ensemble_info, **ctx)
-
-
-@views_bp.route("/ai/operations")
-@login_required
-def ai_operations():
-    """AI Operations — self-tuning, AI cost tracking."""
-    ctx = _ai_common("operations")
-    db_paths = ctx["db_paths"]
-    profiles = ctx["profiles"]
-    selected_profile_int = ctx["selected_profile"]
-
-    # AI cost info
+    # --- Operations data ---
     ai_cost_info = []
     try:
         from ai_cost_ledger import spend_summary
@@ -2432,7 +2351,37 @@ def ai_operations():
     except Exception:
         pass
 
-    return render_template("ai_operations.html", ai_cost_info=ai_cost_info, **ctx)
+    return render_template("ai.html",
+                           ai_perf=ai_perf, slippage=slippage, meta_info=meta_info,
+                           validations=validations, decay_info=decay_info,
+                           allocation_info=allocation_info,
+                           auto_strategy_info=auto_strategy_info,
+                           crisis_info=crisis_info, event_info=event_info,
+                           ensemble_info=ensemble_info,
+                           ai_cost_info=ai_cost_info, **ctx)
+
+
+# Keep old sub-routes as redirects so bookmarks don't break
+@views_bp.route("/ai/brain")
+@login_required
+def ai_brain_redirect():
+    return redirect(url_for("views.ai_dashboard") + "#brain")
+
+@views_bp.route("/ai/strategy")
+@login_required
+def ai_strategy_redirect():
+    return redirect(url_for("views.ai_dashboard") + "#strategy")
+
+@views_bp.route("/ai/awareness")
+@login_required
+def ai_awareness_redirect():
+    return redirect(url_for("views.ai_dashboard") + "#awareness")
+
+@views_bp.route("/ai/operations")
+@login_required
+def ai_operations_redirect():
+    return redirect(url_for("views.ai_dashboard") + "#operations")
+
 
 
 @views_bp.route("/api/macro-data")

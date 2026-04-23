@@ -1,0 +1,1181 @@
+{% extends "base.html" %}
+{% block title %}AI Intelligence - QuantOpsAI{% endblock %}
+{% block content %}
+
+<h1>AI Intelligence{% if selected_profile_name %} &mdash; {{ selected_profile_name }}{% endif %}</h1>
+
+<!-- Profile filter -->
+<div style="margin-bottom:1rem;">
+    <form method="get" action="/ai" style="display:flex;gap:0.5rem;align-items:center;">
+        <label style="margin:0;">Profile:</label>
+        <select name="profile_id" onchange="var h=window.location.hash;this.form.action=this.form.action.split('#')[0]+h;this.form.submit()">
+            <option value="">All Profiles</option>
+            {% for p in profiles %}
+            <option value="{{ p.id }}" {{ 'selected' if selected_profile == p.id }}>{{ p.name }}</option>
+            {% endfor %}
+        </select>
+    </form>
+</div>
+
+<!-- Tab navigation -->
+<div class="perf-tabs">
+    <a href="#brain" class="perf-tab active" onclick="showTab(event, 'brain')">Brain</a>
+    <a href="#strategy" class="perf-tab" onclick="showTab(event, 'strategy')">Strategy</a>
+    <a href="#awareness" class="perf-tab" onclick="showTab(event, 'awareness')">Awareness</a>
+    <a href="#operations" class="perf-tab" onclick="showTab(event, 'operations')">Operations</a>
+</div>
+
+<!-- ===================================================================
+     TAB 1: BRAIN — How smart is the AI?
+     =================================================================== -->
+<div id="tab-brain" class="perf-tab-content active">
+{% if not ai_perf %}
+    <p class="muted" style="margin-bottom:1rem;">AI prediction data will appear here as the system makes and resolves predictions.</p>
+    {% endif %}
+
+    <!-- AI Prediction Accuracy -->
+    <p class="muted" style="margin-bottom:0.5rem;font-size:0.85rem;">
+        <strong>Predictions vs Trades:</strong> The AI evaluates ~30 candidates every cycle but only trades 0-3.
+        A "prediction" is the AI's directional call on ANY candidate (traded or not). A "resolved prediction" means
+        we checked later whether the price moved in the predicted direction — the AI was right (win) or wrong (loss).
+        This measures forecasting accuracy across everything the AI evaluates, not just what it trades.
+        The self-tuner needs 20+ resolved predictions before it starts adjusting parameters.
+        A prediction resolves when the price moves 2%+ in either direction, or after 3-10 trading days.
+    </p>
+    <div class="grid">
+        <article style="text-align:center;">
+            <small class="muted"><span class="tip" data-tip="Every BUY/SELL/HOLD call the AI made on any candidate — whether or not we actually traded it">Total Predictions</span></small>
+            <strong style="font-size:2rem; display:block;">{{ ai_perf.total_predictions if ai_perf else 0 }}</strong>
+        </article>
+        <article style="text-align:center;">
+            <small class="muted"><span class="tip" data-tip="Predictions where we checked: did the price move in the direction the AI predicted? Resolves at 2% price move or after 3-10 trading days.">Resolved</span></small>
+            <strong style="font-size:2rem; display:block;">{{ ai_perf.resolved if ai_perf else 0 }}</strong>
+        </article>
+        <article style="text-align:center;">
+            <small class="muted"><span class="tip" data-tip="Predictions still waiting to resolve — the price hasn't moved enough yet or not enough time has passed">Pending</span></small>
+            <strong style="font-size:2rem; display:block;">{{ ai_perf.pending if ai_perf else 0 }}</strong>
+        </article>
+    </div>
+
+    <div class="grid">
+        <article style="text-align:center;">
+            <small class="muted"><span class="tip" data-tip="How often the AI correctly predicted price direction">Prediction Win Rate</span></small>
+            {% if ai_perf and ai_perf.resolved > 0 %}
+            <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if ai_perf.win_rate >= 50 else 'pnl-neg' }}">
+                {{ "%.1f"|format(ai_perf.win_rate) }}%
+            </strong>
+            <small class="muted">{{ ai_perf.resolved }} resolved predictions</small>
+            {% else %}
+            <strong style="font-size:2.5rem; display:block;" class="muted">N/A</strong>
+            <small class="muted">no resolved predictions yet</small>
+            {% endif %}
+        </article>
+        <article style="text-align:center;">
+            <small class="muted"><span class="tip" data-tip="Sum of positive price moves divided by sum of negative price moves on BUY/SELL predictions. Measures whether the AI picks the right direction, independent of position sizing. Above 1.5 is good, above 2.0 is strong.">Prediction Accuracy</span></small>
+            {% if ai_perf and ai_perf.profit_factor > 0 %}
+            <strong style="font-size:2.5rem; display:block;">{{ "%.2f"|format(ai_perf.profit_factor) }}</strong>
+            {% else %}
+            <strong style="font-size:2.5rem; display:block;" class="muted">N/A</strong>
+            <small class="muted">need at least one win and one loss</small>
+            {% endif %}
+        </article>
+    </div>
+
+    <!-- Confidence Calibration -->
+    <div class="grid">
+        <article>
+            <header><h4>Confidence Calibration</h4></header>
+            <div class="stat-card">
+                <small class="muted">Avg Confidence on Wins</small>
+                <strong>{{ "%.1f"|format(ai_perf.avg_confidence_on_wins if ai_perf else 0) }}%</strong>
+            </div>
+            <div class="stat-card">
+                <small class="muted">Avg Confidence on Losses</small>
+                <strong>{{ "%.1f"|format(ai_perf.avg_confidence_on_losses if ai_perf else 0) }}%</strong>
+            </div>
+        </article>
+        <article>
+            <header><h4>Returns by Signal</h4></header>
+            <div class="stat-card">
+                <small class="muted">Avg Return on BUYs</small>
+                <strong class="{{ 'pnl-pos' if (ai_perf.avg_return_on_buys if ai_perf else 0) >= 0 else 'pnl-neg' }}">
+                    {{ "{:+.2f}".format(ai_perf.avg_return_on_buys if ai_perf else 0) }}%
+                </strong>
+            </div>
+            <div class="stat-card">
+                <small class="muted">Avg Return on SELLs</small>
+                <strong class="{{ 'pnl-pos' if (ai_perf.avg_return_on_sells if ai_perf else 0) >= 0 else 'pnl-neg' }}">
+                    {{ "{:+.2f}".format(ai_perf.avg_return_on_sells if ai_perf else 0) }}%
+                </strong>
+            </div>
+        </article>
+    </div>
+
+    <!-- Best / Worst Predictions -->
+    <div class="grid">
+        {% if ai_perf and ai_perf.best_prediction %}
+        <article>
+            <header><h4>Best Prediction</h4></header>
+            <strong>{{ ai_perf.best_prediction.symbol }}</strong>
+            <small class="muted">({{ ai_perf.best_prediction.confidence }}% confidence)</small>
+            <p class="pnl-pos" style="font-size:1.5rem;">{{ "{:+.2f}".format(ai_perf.best_prediction.return_pct) }}%</p>
+        </article>
+        {% else %}
+        <article>
+            <header><h4>Best Prediction</h4></header>
+            <p class="muted">No resolved predictions yet</p>
+        </article>
+        {% endif %}
+
+        {% if ai_perf and ai_perf.worst_prediction %}
+        <article>
+            <header><h4>Worst Prediction</h4></header>
+            <strong>{{ ai_perf.worst_prediction.symbol }}</strong>
+            <small class="muted">({{ ai_perf.worst_prediction.confidence }}% confidence)</small>
+            <p class="pnl-neg" style="font-size:1.5rem;">{{ "{:+.2f}".format(ai_perf.worst_prediction.return_pct) }}%</p>
+        </article>
+        {% else %}
+        <article>
+            <header><h4>Worst Prediction</h4></header>
+            <p class="muted">No resolved predictions yet</p>
+        </article>
+        {% endif %}
+    </div>
+
+    <!-- Slippage Impact -->
+    {% if slippage and slippage.count > 0 %}
+    <article>
+        <header><h4>Slippage Impact</h4></header>
+        <div class="grid">
+            <div class="stat-card">
+                <small class="muted"><span class="tip" data-tip="The difference between the price you expected and the price you actually got">Avg Slippage</span></small>
+                <strong>{{ "%.3f"|format(slippage.avg_pct) }}%</strong>
+            </div>
+            <div class="stat-card">
+                <small class="muted">Total Slippage Cost</small>
+                <strong class="pnl-neg">${{ "{:,.2f}".format(slippage.total_cost) }}</strong>
+            </div>
+            <div class="stat-card">
+                <small class="muted">Trades with Fill Data</small>
+                <strong>{{ slippage.count }}</strong>
+            </div>
+        </div>
+    </article>
+    {% endif %}
+
+    <!-- Learned Patterns — loaded via API -->
+    <article>
+        <header><h3>Learned Patterns</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Patterns the system has discovered from historical predictions — which conditions lead to wins vs losses.</p>
+        <div id="learned-patterns-widget"><p class="muted">Loading...</p></div>
+    </article>
+
+    <!-- Phase 1: Meta-Model Panel -->
+    <article>
+        <header><h3>Meta-Model</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">A learned model of when the AI is likely to be wrong, trained on our own prediction history. It re-weights confidence and suppresses low-probability trades before execution.</p>
+
+        {% if not meta_info.loaded %}
+        <div style="padding:0.75rem;background:#fafafa;border-left:3px solid #888;border-radius:0 4px 4px 0;">
+            <strong>Collecting training data</strong>
+            <p class="muted" style="margin:0.25rem 0 0 0;font-size:0.9rem;">
+                The meta-model trains automatically once a profile has 100+ resolved predictions. Every scan cycle captures the full feature context the AI saw. As predictions resolve (win/loss), they become training samples. The first model typically trains after ~2 weeks of scanning.
+            </p>
+        </div>
+        {% else %}
+        {% for mp in meta_info.profiles %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;"><h4 style="margin:0;">{{ mp.name }}</h4></header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                <div class="grid">
+                    <div class="stat-card">
+                        <small class="muted"><span class="tip" data-tip="Area Under ROC Curve — how well the model distinguishes right from wrong predictions. 0.5 = random, 1.0 = perfect">AUC</span></small>
+                        <strong class="{{ 'pnl-pos' if mp.auc >= 0.6 else ('pnl-neg' if mp.auc < 0.52 else '') }}">{{ "%.3f"|format(mp.auc) }}</strong>
+                    </div>
+                    <div class="stat-card">
+                        <small class="muted">Accuracy</small>
+                        <strong>{{ "%.1f"|format(mp.accuracy * 100) }}%</strong>
+                    </div>
+                    <div class="stat-card">
+                        <small class="muted">Training Samples</small>
+                        <strong>{{ mp.n_samples }}</strong>
+                    </div>
+                    <div class="stat-card">
+                        <small class="muted">Win Rate (baseline)</small>
+                        <strong>{{ "%.1f"|format(mp.positive_rate * 100) }}%</strong>
+                    </div>
+                </div>
+                <h5 style="margin-top:1rem;">Top Predictive Features</h5>
+                <p class="muted" style="margin-top:-0.5rem;font-size:0.85rem;">Which data points most strongly predict whether the AI is correct. Sensible patterns here confirm the model is learning real signals (not noise).</p>
+                <table style="font-size:0.85rem;">
+                    <thead>
+                        <tr><th>Feature</th><th style="text-align:right;">Importance</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for name, imp in mp.top_features %}
+                        <tr>
+                            <td>{{ name | display_name }}</td>
+                            <td style="text-align:right;font-family:monospace;">{{ "%.4f"|format(imp) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+<script>
+(function() {
+    var profileFilter = '{{ selected_profile or "" }}';
+    var pfParam = profileFilter ? '&profile_id=' + profileFilter : '';
+    var esc = function(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+
+    function paginator(container, page, pages, total, loadFn) {
+        var el = document.createElement('div');
+        el.style.cssText = 'margin-top:0.5rem;';
+        var prev = document.createElement('button');
+        prev.textContent = '\u2190'; prev.className = 'outline secondary';
+        prev.style.cssText = 'padding:0.2rem 0.5rem;margin-right:0.25rem;font-size:0.85rem;';
+        prev.disabled = page <= 1;
+        prev.onclick = function() { loadFn(page - 1); };
+        el.appendChild(prev);
+        var info = document.createElement('span');
+        info.style.cssText = 'font-size:0.85rem;margin:0 0.5rem;color:#888;';
+        info.textContent = 'Page ' + page + ' of ' + pages + ' (' + total + ' total)';
+        el.appendChild(info);
+        var next = document.createElement('button');
+        next.textContent = '\u2192'; next.className = 'outline secondary';
+        next.style.cssText = 'padding:0.2rem 0.5rem;margin-left:0.25rem;font-size:0.85rem;';
+        next.disabled = page >= pages;
+        next.onclick = function() { loadFn(page + 1); };
+        el.appendChild(next);
+        container.appendChild(el);
+    }
+
+    // --- Learned Patterns ---
+    function loadLearnedPatterns(page) {
+        var w = document.getElementById('learned-patterns-widget');
+        fetch('/api/learned-patterns?page=' + page + '&per_page=5' + pfParam)
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d.items || !d.items.length) { w.innerHTML = '<p class="muted">Patterns will appear after enough resolved predictions accumulate.</p>'; return; }
+                var h = '<ul style="list-style:none;padding:0;">';
+                d.items.forEach(function(p) {
+                    var color = '#888';
+                    if (p.indexOf('Avoid') >= 0 || p.indexOf('cautious') >= 0) color = '#f44336';
+                    else if (p.indexOf('Favor') >= 0 || p.indexOf('edge') >= 0) color = '#00c853';
+                    h += '<li style="padding:0.4rem 0.75rem;margin-bottom:0.25rem;border-left:3px solid ' + color + ';background:#f9f9f9;border-radius:0 4px 4px 0;font-size:0.9rem;">' + esc(p) + '</li>';
+                });
+                h += '</ul>';
+                w.innerHTML = h;
+                if (d.pages > 1) paginator(w, d.page, d.pages, d.total, loadLearnedPatterns);
+            });
+    }
+    loadLearnedPatterns(1);
+})();
+</script>
+</div>
+
+<!-- ===================================================================
+     TAB 2: STRATEGY — What strategies is it running?
+     =================================================================== -->
+<div id="tab-strategy" class="perf-tab-content">
+<!-- Phase 2: Strategy Validations -->
+    <article>
+        <header><h3>Strategy Validations</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Every strategy is validated against ten checks — Sharpe ratio, drawdown, win rate, statistical significance, Monte Carlo stress, out-of-sample degradation, regime consistency, walk-forward stability, capacity, and minimum activity — before being eligible to trade.</p>
+
+        {% if not validations %}
+        <div style="padding:0.75rem;background:#fafafa;border-left:3px solid #888;border-radius:0 4px 4px 0;">
+            <strong>No validation runs yet</strong>
+            <p class="muted" style="margin:0.25rem 0 0 0;font-size:0.9rem;">
+                Run validations from the command line or admin interface to build the library of certified strategies. Validation runs are stored in <code>strategy_validations.db</code> and displayed here with full gate-by-gate breakdowns.
+            </p>
+        </div>
+        {% else %}
+        <div class="overflow-auto">
+            <table class="striped">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Strategy</th>
+                        <th>Market</th>
+                        <th>Verdict</th>
+                        <th>Score</th>
+                        <th>Passed / Total</th>
+                        <th>Runtime</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for v in validations %}
+                    <tr>
+                        <td class="muted">{{ v.timestamp[:16] }}</td>
+                        <td><strong>{{ v.strategy_name | display_name }}</strong></td>
+                        <td>{{ v.market_type }}</td>
+                        <td>
+                            {% if v.verdict == 'PASS' %}
+                                <span class="pnl-pos">PASS</span>
+                            {% else %}
+                                <span class="pnl-neg">FAIL</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ "%.1f"|format(v.score) }}</td>
+                        <td>{{ v.passed_count }} / {{ v.total_gates }}</td>
+                        <td class="muted">{{ "%.1f"|format(v.elapsed_sec) }}s</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+    </article>
+
+    <!-- Phase 6: Multi-Strategy Capital Allocation -->
+    <article>
+        <header><h3>Strategy Allocation</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Capital is divided across multiple uncorrelated strategies. Each strategy's weight is set by its rolling Sharpe ratio (risk parity). New strategies start at the default share until they accumulate a track record.</p>
+
+        {% if not allocation_info.per_profile %}
+        <p class="muted">No strategy allocation data yet.</p>
+        {% else %}
+        {% for prof in allocation_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;"><h4 style="margin:0;">{{ prof.name }}</h4></header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                {% if prof.strategies %}
+                <table style="font-size:0.85rem;">
+                    <thead>
+                        <tr>
+                            <th>Strategy</th>
+                            <th style="text-align:right;">Weight</th>
+                            <th style="text-align:right;">Rolling Sharpe</th>
+                            <th style="text-align:right;">Lifetime Sharpe</th>
+                            <th style="text-align:right;">Resolved Preds (30d)</th>
+                            <th style="text-align:right;">Win Rate</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for s in prof.strategies %}
+                        <tr>
+                            <td><strong>{{ s.name | display_name }}</strong></td>
+                            <td style="text-align:right;font-family:monospace;">
+                                {{ "%.1f%%"|format(s.weight * 100) }}
+                            </td>
+                            <td style="text-align:right;font-family:monospace;">{{ "%.2f"|format(s.rolling_sharpe) }}</td>
+                            <td style="text-align:right;font-family:monospace;">{{ "%.2f"|format(s.lifetime_sharpe) }}</td>
+                            <td style="text-align:right;" class="muted">{{ s.rolling_n }}</td>
+                            <td style="text-align:right;font-family:monospace;">{{ "%.0f%%"|format(s.rolling_win_rate) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p class="muted" style="font-size:0.9rem;">No strategies active for this profile yet.</p>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+    <!-- Phase 7: Auto-Generated Strategies -->
+    <article>
+        <header><h3>Evolving Strategy Library</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">The AI proposes new strategy variants weekly against an allowlisted spec grammar. Each proposal is validated via walk-forward + out-of-sample backtesting; survivors run in shadow mode with no real capital until their rolling Sharpe earns promotion. Failures are retired automatically.</p>
+
+        {% if not auto_strategy_info.per_profile %}
+        <p class="muted">No auto-generated strategies yet.</p>
+        {% else %}
+        {% for prof in auto_strategy_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;">
+                <h4 style="margin:0;">{{ prof.name }}</h4>
+                <small class="muted">
+                    proposed {{ prof.counts.proposed }} ·
+                    shadow {{ prof.counts.shadow }} ·
+                    <strong>active {{ prof.counts.active }}</strong> ·
+                    retired {{ prof.counts.retired }}
+                </small>
+            </header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                {% if prof.strategies %}
+                <table style="font-size:0.85rem;">
+                    <thead>
+                        <tr>
+                            <th>Strategy</th>
+                            <th>Status</th>
+                            <th>Dir</th>
+                            <th>Markets</th>
+                            <th>Gen</th>
+                            <th>Description</th>
+                            <th>Milestone</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for s in prof.strategies %}
+                        <tr>
+                            <td>{{ s.name | display_name }}</td>
+                            <td>
+                                {% if s.status == 'active' %}
+                                <strong style="color:#2d7a3d;">Active</strong>
+                                {% elif s.status == 'shadow' %}
+                                <span style="color:#b87333;">Shadow</span>
+                                {% elif s.status == 'retired' %}
+                                <span class="muted">Retired</span>
+                                {% else %}
+                                {{ s.status | display_name }}
+                                {% endif %}
+                            </td>
+                            <td>{{ s.direction }}</td>
+                            <td class="muted" style="font-size:0.8rem;">{{ s.markets | map('display_name') | join(', ') }}</td>
+                            <td class="muted">g{{ s.generation }}</td>
+                            <td>{{ s.description }}</td>
+                            <td class="muted" style="font-size:0.8rem;">
+                                {% if s.status == 'active' and s.promoted_at %}
+                                promoted {{ s.promoted_at[:10] }}
+                                {% elif s.status == 'shadow' and s.shadow_started_at %}
+                                shadow since {{ s.shadow_started_at[:10] }}
+                                {% elif s.status == 'retired' and s.retired_at %}
+                                retired {{ s.retired_at[:10] }}
+                                {% else %}
+                                created {{ s.created_at[:10] }}
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p class="muted" style="font-size:0.9rem;">No proposals yet. The weekly generation task runs every Sunday.</p>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+    <!-- Phase 3: Alpha Decay Monitoring -->
+    <article>
+        <header><h3>Alpha Decay Monitoring</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Every signal decays eventually. This monitor tracks rolling 30-day Sharpe per strategy vs its lifetime baseline. Strategies whose edge stays degraded for 30+ consecutive days are auto-deprecated — the trade pipeline skips their signals until the edge recovers.</p>
+
+        {% if not decay_info.per_profile %}
+        <p class="muted">No strategy performance data yet. Alpha decay monitoring activates once resolved predictions accumulate.</p>
+        {% else %}
+        {% for prof_decay in decay_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;"><h4 style="margin:0;">{{ prof_decay.name }}</h4></header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                {% if prof_decay.deprecated %}
+                <div style="padding:0.5rem 0.75rem;margin-bottom:0.75rem;border-left:3px solid #f44336;background:#fff5f5;border-radius:0 4px 4px 0;">
+                    <strong style="color:#c62828;">Deprecated Strategies</strong>
+                    <ul style="margin:0.25rem 0 0 1rem;padding:0;font-size:0.85rem;">
+                        {% for d in prof_decay.deprecated %}
+                        <li><strong>{{ d.strategy_type | display_name }}</strong> — deprecated {{ d.deprecated_at[:10] }}: {{ d.reason }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+                {% if prof_decay.entries %}
+                <table style="font-size:0.85rem;">
+                    <thead>
+                        <tr>
+                            <th>Strategy</th>
+                            <th style="text-align:right;">Rolling Sharpe (30d)</th>
+                            <th style="text-align:right;">Lifetime Sharpe</th>
+                            <th style="text-align:right;">Edge Change</th>
+                            <th style="text-align:right;">Resolved Preds (30d)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for e in prof_decay.entries %}
+                        <tr>
+                            <td><strong>{{ e.strategy_type | display_name }}</strong></td>
+                            <td style="text-align:right;font-family:monospace;">{{ "%.2f"|format(e.rolling.sharpe_ratio) }}</td>
+                            <td style="text-align:right;font-family:monospace;">{{ "%.2f"|format(e.lifetime.sharpe_ratio) }}</td>
+                            <td style="text-align:right;font-family:monospace;" class="{{ 'pnl-pos' if e.edge_change_pct and e.edge_change_pct > 0 else ('pnl-neg' if e.edge_change_pct and e.edge_change_pct < -15 else '') }}">
+                                {% if e.edge_change_pct is not none %}
+                                    {{ "{:+.1f}%".format(e.edge_change_pct) }}
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </td>
+                            <td style="text-align:right;" class="muted">{{ e.rolling.n_predictions }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p class="muted" style="font-size:0.9rem;">No resolved predictions with strategy tags yet.</p>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+</div>
+
+<!-- ===================================================================
+     TAB 3: AWARENESS — What does it see right now?
+     =================================================================== -->
+<div id="tab-awareness" class="perf-tab-content">
+<!-- Market Intelligence — loaded via API -->
+    <article>
+        <header><h3>Market Intelligence</h3></header>
+        <p class="muted">Real-time macro context the AI uses for decision-making.</p>
+        <div id="macro-data-widget"><p class="muted">Loading...</p></div>
+    </article>
+
+    <!-- Phase 4: SEC Filing Alerts — loaded via API -->
+    <article>
+        <header><h3>SEC Filing Alerts</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">AI-analyzed 10-K / 10-Q / 8-K filings. Detects material language changes. Updated daily via EDGAR.</p>
+        <div id="sec-alerts-widget"><p class="muted">Loading...</p></div>
+    </article>
+
+    <!-- Phase 10: Cross-Asset Crisis Detection -->
+    <article>
+        {% set crisis_level = crisis_info.max_level or 'normal' %}
+        <header style="{% if crisis_level != 'normal' %}background:#fff3e0;border-bottom:2px solid #ff8c00;padding:0.75rem 1rem;{% endif %}">
+            <h3 style="margin:0;">
+                Crisis Monitor
+                {% if crisis_level == 'normal' %}
+                <span style="color:#2d7a3d;font-weight:normal;font-size:0.9rem;">● all clear</span>
+                {% elif crisis_level == 'elevated' %}
+                <span style="color:#b87333;font-weight:bold;font-size:0.95rem;">⚠ ELEVATED</span>
+                {% elif crisis_level == 'crisis' %}
+                <span style="color:#b00;font-weight:bold;font-size:1rem;">⚠ CRISIS — new longs blocked</span>
+                {% else %}
+                <span style="color:#800;font-weight:bold;font-size:1.05rem;">⛔ SEVERE — liquidate / cash</span>
+                {% endif %}
+            </h3>
+        </header>
+        <p class="muted" style="margin-top:-0.5rem;">Cross-asset capital preservation layer. Monitors VIX level and term structure, SPY/TLT/GLD/UUP correlation spikes, bond/stock divergences, gold safe-haven rallies, HYG/LQD credit stress, and clusters of recent price shocks. When the level rises, position sizes scale down; at crisis/severe, the trade pipeline blocks new long entries.</p>
+
+        {% if not crisis_info.per_profile %}
+        <p class="muted">No crisis monitoring data yet.</p>
+        {% else %}
+        {% for prof in crisis_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;">
+                <h4 style="margin:0;">
+                    {{ prof.name }}
+                    {% if prof.level == 'normal' %}
+                    <span style="color:#2d7a3d;font-size:0.85rem;">normal (size x1.00)</span>
+                    {% elif prof.level == 'elevated' %}
+                    <span style="color:#b87333;font-weight:bold;font-size:0.85rem;">ELEVATED (size x{{ "%.2f"|format(prof.size_multiplier) }})</span>
+                    {% elif prof.level == 'crisis' %}
+                    <span style="color:#b00;font-weight:bold;font-size:0.9rem;">CRISIS</span>
+                    {% else %}
+                    <span style="color:#800;font-weight:bold;font-size:0.9rem;">SEVERE</span>
+                    {% endif %}
+                </h4>
+                {% if prof.transitioned_at %}
+                <small class="muted">since {{ prof.transitioned_at[:16] }}</small>
+                {% endif %}
+            </header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                {% if prof.signals %}
+                <p style="font-size:0.85rem;margin:0.5rem 0;"><strong>Active signals:</strong></p>
+                <ul style="font-size:0.85rem;margin-top:0;">
+                    {% for s in prof.signals %}
+                    <li>
+                        <strong>{{ s.name | display_name }}</strong>
+                        <span class="muted">({{ s.severity | title }})</span>
+                        — {{ s.detail }}
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+                {% if prof.readings %}
+                <p style="font-size:0.85rem;" class="muted" style="margin-top:0.5rem;">
+                    <strong>Readings:</strong>
+                </p>
+                <table style="font-size:0.8rem;">
+                    <tbody>
+                        {% for k, v in prof.readings.items() %}
+                        <tr>
+                            <td class="muted" style="padding:0.15rem 0.5rem 0.15rem 0;">{{ k | display_name }}</td>
+                            <td style="font-family:monospace;text-align:right;padding:0.15rem 0;">{{ k | reading_value(v) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% endif %}
+                {% if prof.history %}
+                <details>
+                    <summary style="font-size:0.85rem;cursor:pointer;">Transition history ({{ prof.history|length }})</summary>
+                    <table style="font-size:0.8rem;margin-top:0.5rem;">
+                        <thead>
+                            <tr><th>When</th><th>From</th><th>To</th><th>Size x</th></tr>
+                        </thead>
+                        <tbody>
+                            {% for h in prof.history %}
+                            <tr>
+                                <td>{{ h.transitioned_at[:16] }}</td>
+                                <td class="muted">{{ h.from_level | display_name }}</td>
+                                <td><strong>{{ h.to_level | display_name }}</strong></td>
+                                <td style="font-family:monospace;">{{ "%.2f"|format(h.size_multiplier) }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </details>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+    <!-- Phase 9: Event Stream -->
+    <article>
+        <header><h3>Event Stream</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">The system reacts to events in near-real-time, not just on 15-minute timers. Detectors watch for SEC filings, imminent earnings, price shocks on held positions, and big resolved predictions. High-severity SEC and price-shock events trigger an immediate specialist ensemble analysis; all events are logged to the activity feed.</p>
+
+        {% if not event_info.per_profile %}
+        <p class="muted">No events in the last 24 hours.</p>
+        {% else %}
+        {% for prof in event_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;">
+                <h4 style="margin:0;">{{ prof.name }}</h4>
+                <small class="muted">
+                    {{ prof.events|length }} events ·
+                    {% if prof.counts.high %}<strong style="color:#b00;">{{ prof.counts.high }} high</strong> · {% endif %}
+                    {% if prof.counts.medium %}{{ prof.counts.medium }} medium · {% endif %}
+                    {% if prof.counts.low %}{{ prof.counts.low }} low · {% endif %}
+                    {{ prof.counts.info }} info
+                </small>
+            </header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                <table style="font-size:0.85rem;">
+                    <thead>
+                        <tr>
+                            <th>When</th>
+                            <th>Type</th>
+                            <th>Symbol</th>
+                            <th>Severity</th>
+                            <th>Detail</th>
+                            <th>Handler</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for e in prof.events %}
+                        <tr>
+                            <td class="muted" style="font-size:0.75rem;">{{ e.detected_at[:16] }}</td>
+                            <td style="font-size:0.85rem;">{{ e.type | display_name }}</td>
+                            <td style="font-family:monospace;">{{ e.symbol or '-' }}</td>
+                            <td>
+                                {% if e.severity == 'high' or e.severity == 'critical' %}
+                                <strong style="color:#b00;">{{ e.severity }}</strong>
+                                {% elif e.severity == 'medium' %}
+                                <span style="color:#b87333;">{{ e.severity }}</span>
+                                {% else %}
+                                <span class="muted">{{ e.severity }}</span>
+                                {% endif %}
+                            </td>
+                            <td class="muted" style="font-size:0.8rem;">
+                                {% if e.payload.diagnosis %}{{ e.payload.diagnosis }}{% endif %}
+                                {% if e.payload.move_pct %}{{ "%+.1f"|format(e.payload.move_pct) }}%{% endif %}
+                                {% if e.payload.return_pct %}{{ "%+.1f"|format(e.payload.return_pct) }}% ({{ e.payload.strategy | display_name }}){% endif %}
+                                {% if e.payload.form_type %}{{ e.payload.form_type }} — {{ e.payload.signal or '' }}{% endif %}
+                                {% if e.payload.days_until is defined %}earnings in {{ e.payload.days_until }}d{% endif %}
+                            </td>
+                            <td class="muted" style="font-size:0.85rem;">
+                                {% set actions = [] %}
+                                {% for hr in e.handler_results %}
+                                  {% if hr.result.vetoed %}
+                                    {% if actions.append('<span style="color:#b00;">Ensemble VETO</span>') %}{% endif %}
+                                  {% elif hr.result.ensemble_verdict == 'BUY' %}
+                                    {% if actions.append('Ensemble → <span style="color:#2d7a3d;">Buy</span> (' ~ hr.result.ensemble_confidence ~ '% confidence)') %}{% endif %}
+                                  {% elif hr.result.ensemble_verdict == 'SELL' %}
+                                    {% if actions.append('Ensemble → <span style="color:#b87333;">Sell</span> (' ~ hr.result.ensemble_confidence ~ '% confidence)') %}{% endif %}
+                                  {% elif hr.result.ensemble_verdict == 'HOLD' %}
+                                    {% if actions.append('Ensemble → Hold (specialists abstained)') %}{% endif %}
+                                  {% elif hr.result.logged %}
+                                    {% if actions.append('Logged to activity feed') %}{% endif %}
+                                  {% elif hr.result.skipped %}
+                                    {# silent — handler intentionally skipped this event type #}
+                                  {% elif hr.result.error %}
+                                    {% if actions.append('<span style="color:#b00;">Handler error</span>') %}{% endif %}
+                                  {% endif %}
+                                {% endfor %}
+                                {% if actions %}
+                                  {{ actions | join(' · ') | safe }}
+                                {% else %}
+                                  <span class="muted">—</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+    <!-- Phase 8: Specialist Ensemble Breakdown -->
+    <article>
+        <header><h3>Specialist Ensemble</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Four specialist AIs — earnings analyst, pattern recognizer, sentiment/narrative, and risk assessor — each review every shortlisted candidate. Their verdicts are combined via confidence-weighted voting. The risk specialist holds VETO authority and can block a trade regardless of the others.</p>
+
+        {% if not ensemble_info.per_profile %}
+        <p class="muted">No ensemble decisions yet. The specialist ensemble runs during each scan cycle once the shortlist is built.</p>
+        {% else %}
+        {% for prof in ensemble_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;">
+                <h4 style="margin:0;">{{ prof.name }}</h4>
+                <small class="muted">
+                    {{ prof.cost_calls }} specialist calls ·
+                    {{ prof.vetoed|length }} vetoed this cycle
+                </small>
+            </header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                {% if prof.vetoed %}
+                <p style="font-size:0.85rem;">
+                    <strong>Risk VETOs:</strong>
+                    {% for v in prof.vetoed %}
+                    <span style="color:#b00;font-family:monospace;">{{ v.symbol }}</span>
+                    <span class="muted" style="font-size:0.8rem;">({{ v.reason[:70] }})</span>{% if not loop.last %} · {% endif %}
+                    {% endfor %}
+                </p>
+                {% endif %}
+                {% if prof.rows %}
+                <table style="font-size:0.85rem;">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Consensus</th>
+                            <th>Earnings</th>
+                            <th>Pattern</th>
+                            <th>Sentiment</th>
+                            <th>Risk</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in prof.rows %}
+                        <tr>
+                            <td style="font-family:monospace;">{{ r.symbol }}</td>
+                            <td>
+                                {% if r.vetoed %}
+                                <strong style="color:#b00;">Vetoed</strong>
+                                {% elif r.verdict == 'BUY' %}
+                                <strong style="color:#2d7a3d;">Buy {{ r.confidence }}%</strong>
+                                {% elif r.verdict == 'SELL' %}
+                                <strong style="color:#b87333;">Sell {{ r.confidence }}%</strong>
+                                {% else %}
+                                <span class="muted">{{ r.verdict | title }}</span>
+                                {% endif %}
+                            </td>
+                            {% for spec_name in ['earnings_analyst', 'pattern_recognizer', 'sentiment_narrative', 'risk_assessor'] %}
+                            <td class="muted" style="font-size:0.75rem;">
+                                {% for s in r.specialists if s.name == spec_name %}
+                                    {% if s.verdict == 'BUY' %}<span style="color:#2d7a3d;">↑{{ s.confidence }}</span>
+                                    {% elif s.verdict == 'SELL' %}<span style="color:#b87333;">↓{{ s.confidence }}</span>
+                                    {% elif s.verdict == 'VETO' %}<span style="color:#b00;">⊘{{ s.confidence }}</span>
+                                    {% else %}·{% endif %}
+                                {% else %}
+                                —
+                                {% endfor %}
+                            </td>
+                            {% endfor %}
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+<script>
+(function() {
+    var profileFilter = '{{ selected_profile or "" }}';
+    var pfParam = profileFilter ? '&profile_id=' + profileFilter : '';
+    var esc = function(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+
+    function paginator(container, page, pages, total, loadFn) {
+        var el = document.createElement('div');
+        el.style.cssText = 'margin-top:0.5rem;';
+        var prev = document.createElement('button');
+        prev.textContent = '\u2190'; prev.className = 'outline secondary';
+        prev.style.cssText = 'padding:0.2rem 0.5rem;margin-right:0.25rem;font-size:0.85rem;';
+        prev.disabled = page <= 1;
+        prev.onclick = function() { loadFn(page - 1); };
+        el.appendChild(prev);
+        var info = document.createElement('span');
+        info.style.cssText = 'font-size:0.85rem;margin:0 0.5rem;color:#888;';
+        info.textContent = 'Page ' + page + ' of ' + pages + ' (' + total + ' total)';
+        el.appendChild(info);
+        var next = document.createElement('button');
+        next.textContent = '\u2192'; next.className = 'outline secondary';
+        next.style.cssText = 'padding:0.2rem 0.5rem;margin-left:0.25rem;font-size:0.85rem;';
+        next.disabled = page >= pages;
+        next.onclick = function() { loadFn(page + 1); };
+        el.appendChild(next);
+        container.appendChild(el);
+    }
+
+    // --- SEC Alerts ---
+    function loadSecAlerts(page) {
+        var w = document.getElementById('sec-alerts-widget');
+        fetch('/api/sec-alerts?page=' + page + '&per_page=5' + pfParam)
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d.items || !d.items.length) { w.innerHTML = '<p class="muted">No active alerts.</p>'; return; }
+                var h = '<div class="overflow-auto"><table class="striped"><thead><tr><th>Profile</th><th>Symbol</th><th>Filing</th><th>Date</th><th>Severity</th><th>Signal</th><th>Summary</th></tr></thead><tbody>';
+                d.items.forEach(function(a) {
+                    h += '<tr><td class="muted">' + esc(a.profile_name) + '</td>';
+                    h += '<td><strong>' + esc(a.symbol) + '</strong></td>';
+                    h += '<td>' + esc(a.form) + '</td>';
+                    h += '<td class="muted">' + esc(a.filed_date) + '</td>';
+                    var sev = a.severity === 'high' ? '<span class="pnl-neg">HIGH</span>' : a.severity === 'medium' ? '<span style="color:#f57c00;">MEDIUM</span>' : '<span class="muted">LOW</span>';
+                    h += '<td>' + sev + '</td>';
+                    var sig = a.signal === 'concerning' ? '<span class="pnl-neg">concerning</span>' : a.signal === 'positive' ? '<span class="pnl-pos">positive</span>' : '<span class="muted">neutral</span>';
+                    h += '<td>' + sig + '</td>';
+                    h += '<td style="font-size:0.85rem;">' + esc(a.summary) + '</td></tr>';
+                });
+                h += '</tbody></table></div>';
+                w.innerHTML = h;
+                if (d.pages > 1) paginator(w, d.page, d.pages, d.total, loadSecAlerts);
+            });
+    }
+    loadSecAlerts(1);
+
+    // --- Market Intelligence (macro data) ---
+    function loadMacroData() {
+        var w = document.getElementById('macro-data-widget');
+        fetch('/api/macro-data?' + pfParam.replace(/^&/, ''))
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d || d.error) { w.innerHTML = '<p class="muted">' + esc(d.error || 'No macro data available.') + '</p>'; return; }
+                var h = '<div class="grid">';
+
+                // Yield Curve
+                h += '<article style="text-align:center;">';
+                h += '<header><h4 style="margin:0;">Yield Curve</h4></header>';
+                if (d.yield_curve) {
+                    var ycColor = d.yield_curve.inverted ? '#b00' : '#2d7a3d';
+                    var ycLabel = d.yield_curve.inverted ? 'INVERTED' : 'NORMAL';
+                    h += '<strong style="font-size:1.5rem;color:' + ycColor + ';">' + ycLabel + '</strong>';
+                    if (d.yield_curve.spread_10y_2y != null) {
+                        h += '<br><small class="muted">10Y-2Y spread: ' + d.yield_curve.spread_10y_2y.toFixed(2) + '%</small>';
+                    }
+                } else {
+                    h += '<p class="muted">No data</p>';
+                }
+                h += '</article>';
+
+                // CBOE Skew
+                h += '<article style="text-align:center;">';
+                h += '<header><h4 style="margin:0;">CBOE Skew</h4></header>';
+                if (d.cboe_skew) {
+                    var skewColor = d.cboe_skew.value > 140 ? '#b00' : (d.cboe_skew.value > 130 ? '#b87333' : '#2d7a3d');
+                    h += '<strong style="font-size:1.5rem;color:' + skewColor + ';">' + d.cboe_skew.value.toFixed(1) + '</strong>';
+                    if (d.cboe_skew.percentile != null) {
+                        h += '<br><small class="muted">' + d.cboe_skew.percentile.toFixed(0) + 'th percentile</small>';
+                    }
+                } else {
+                    h += '<p class="muted">No data</p>';
+                }
+                h += '</article>';
+
+                // ETF Flows
+                h += '<article style="text-align:center;">';
+                h += '<header><h4 style="margin:0;">ETF Flows</h4></header>';
+                if (d.etf_flows) {
+                    var flowColor = d.etf_flows.net_flow >= 0 ? '#2d7a3d' : '#b00';
+                    var flowSign = d.etf_flows.net_flow >= 0 ? '+' : '';
+                    h += '<strong style="font-size:1.5rem;color:' + flowColor + ';">' + flowSign + '$' + (d.etf_flows.net_flow / 1e6).toFixed(0) + 'M</strong>';
+                    if (d.etf_flows.period) {
+                        h += '<br><small class="muted">' + esc(d.etf_flows.period) + '</small>';
+                    }
+                } else {
+                    h += '<p class="muted">No data</p>';
+                }
+                h += '</article>';
+
+                h += '</div>';
+
+                // FRED Economic Indicators
+                if (d.fred_indicators && d.fred_indicators.length) {
+                    h += '<h4 style="margin-top:1rem;">FRED Economic Indicators</h4>';
+                    h += '<div class="overflow-auto"><table style="font-size:0.85rem;"><thead><tr><th>Indicator</th><th style="text-align:right;">Value</th><th style="text-align:right;">Change</th><th>Updated</th></tr></thead><tbody>';
+                    d.fred_indicators.forEach(function(ind) {
+                        var chgColor = (ind.change != null && ind.change < 0) ? 'pnl-neg' : (ind.change > 0 ? 'pnl-pos' : 'muted');
+                        var chgStr = ind.change != null ? (ind.change >= 0 ? '+' : '') + ind.change.toFixed(2) : '—';
+                        h += '<tr>';
+                        h += '<td>' + esc(ind.name || ind.series_id || '') + '</td>';
+                        h += '<td style="text-align:right;font-family:monospace;">' + (ind.value != null ? ind.value.toFixed(2) : '—') + '</td>';
+                        h += '<td style="text-align:right;font-family:monospace;" class="' + chgColor + '">' + chgStr + '</td>';
+                        h += '<td class="muted">' + esc(ind.date || '') + '</td>';
+                        h += '</tr>';
+                    });
+                    h += '</tbody></table></div>';
+                }
+
+                w.innerHTML = h;
+            })
+            .catch(function() {
+                w.innerHTML = '<p class="muted">Failed to load macro data.</p>';
+            });
+    }
+    loadMacroData();
+})();
+</script>
+</div>
+
+<!-- ===================================================================
+     TAB 4: OPERATIONS — How is it tuning itself?
+     =================================================================== -->
+<div id="tab-operations" class="perf-tab-content">
+<!-- Self-Tuning Status — loaded via API -->
+    <article>
+        <header><h3>Self-Tuning Status</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Needs at least 20 resolved AI predictions per profile before adjusting anything.</p>
+        <div id="tuning-status-widget"><p class="muted">Loading...</p></div>
+    </article>
+
+    <!-- Self-Tuning History — loaded via API -->
+    <article>
+        <header><h3>Self-Tuning History</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Automatic adjustments the system has made based on its own performance.</p>
+        <div id="tuning-history-widget"><p class="muted">Loading...</p></div>
+    </article>
+
+    <!-- AI Cost Tracking -->
+    <article>
+        <header>
+            <h3>AI Cost</h3>
+            <small class="muted">
+                Across all profiles —
+                today: <strong>${{ "%.2f"|format(ai_cost_info.totals.today) }}</strong> ·
+                7d: <strong>${{ "%.2f"|format(ai_cost_info.totals['7d']) }}</strong> ·
+                30d: <strong>${{ "%.2f"|format(ai_cost_info.totals['30d']) }}</strong>
+            </small>
+        </header>
+        <p class="muted" style="margin-top:-0.5rem;">Estimated USD spend on AI inference. Token counts come from each provider's response; USD is computed via a per-model price table that's an approximation (treat totals as order-of-magnitude, not billing-grade).</p>
+
+        {% if not ai_cost_info.per_profile %}
+        <p class="muted">No AI calls recorded yet.</p>
+        {% else %}
+        {% for prof in ai_cost_info.per_profile %}
+        <article style="margin:1rem 0;">
+            <header style="padding:0.5rem 0.75rem;">
+                <h4 style="margin:0;">{{ prof.name }}</h4>
+                <small class="muted">
+                    today: ${{ "%.3f"|format(prof.today.usd) }} ({{ prof.today.calls }} calls) ·
+                    7d: ${{ "%.2f"|format(prof.seven_d.usd) }} ({{ prof.seven_d.calls }}) ·
+                    30d: ${{ "%.2f"|format(prof.thirty_d.usd) }} ({{ prof.thirty_d.calls }})
+                </small>
+            </header>
+            <div style="padding:0 0.75rem 0.5rem;">
+                {% if prof.by_purpose %}
+                <p style="font-size:0.85rem;margin:0.5rem 0;"><strong>30-day spend by purpose:</strong></p>
+                <table style="font-size:0.85rem;">
+                    <thead><tr><th>Purpose</th><th>Calls</th><th style="text-align:right;">USD</th></tr></thead>
+                    <tbody>
+                        {% for row in prof.by_purpose[:8] %}
+                        <tr>
+                            <td>{{ row.purpose | display_name }}</td>
+                            <td class="muted">{{ row.calls }}</td>
+                            <td style="text-align:right;font-family:monospace;">${{ "%.4f"|format(row.usd) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% endif %}
+                {% if prof.by_model %}
+                <p style="font-size:0.8rem;" class="muted">
+                    <strong>By model (30d):</strong>
+                    {% for row in prof.by_model %}
+                    {{ row.model }} (${{ "%.3f"|format(row.usd) }}){% if not loop.last %} · {% endif %}
+                    {% endfor %}
+                </p>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+        {% endif %}
+    </article>
+
+    <!-- What the AI Sees — informational reference at the bottom -->
+    <details>
+        <summary><strong>What the AI Sees</strong> <small class="muted">— the full data context every candidate is evaluated against</small></summary>
+        <div style="margin-top:0.5rem;">
+        <h4>Per-Candidate Data (13 indicators + 8 data sources)</h4>
+        <div class="grid">
+            <div><h5>Trend & Momentum</h5><small>RSI, StochRSI, ADX, ROC (10-day), Volume Ratio vs 20-day avg</small></div>
+            <div><h5>Institutional Flow</h5><small>MFI, CMF — volume-weighted money flow signals</small></div>
+            <div><h5>Volatility & Structure</h5><small>ATR, Keltner Squeeze flag, % from VWAP</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>Price Context</h5><small>% from 52-week high, nearest Fibonacci distance, Gap %</small></div>
+            <div><h5>Strategy Votes</h5><small>Which of the 16 strategies voted BUY/SELL/HOLD, combined score out of 4</small></div>
+            <div><h5>News Headlines</h5><small>Up to 3 recent headlines per stock</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>Insider Transactions</h5><small>Recent buys/sells count + dollar volume from SEC Form 4 filings</small></div>
+            <div><h5>Short Interest</h5><small>Short % of float, days to cover, squeeze risk</small></div>
+            <div><h5>Options Flow</h5><small>Put/call ratio, bullish/bearish flow detection</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>Options Chain Oracle</h5><small>IV skew, IV term structure, implied move, gamma exposure, max pain, IV rank</small></div>
+            <div><h5>Relative Strength</h5><small>Performance vs sector ETF over recent period</small></div>
+            <div><h5>Fundamentals</h5><small>PE ratio, beta, market cap, sector, institutional/insider ownership %</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>SEC Filing Alerts</h5><small>AI-analyzed 10-K/10-Q/8-K diffs. Severity tag injected when material changes detected.</small></div>
+            <div><h5>Earnings Warning</h5><small>Days until next earnings report. Flagged if within avoidance window.</small></div>
+            <div><h5>Social Sentiment</h5><small>Reddit mentions + trending detection (when configured)</small></div>
+        </div>
+        <h4>Per-Candidate Memory</h4>
+        <div class="grid">
+            <div><h5>Track Record</h5><small>Win/loss history for this specific symbol. Auto-blacklists chronic losers.</small></div>
+            <div><h5>Last Prediction</h5><small>The AI's previous reasoning + outcome for this symbol — so it remembers what it said last time and whether it was right.</small></div>
+            <div><h5>Specialist Ensemble Verdict</h5><small>Four specialist AIs' confidence-weighted consensus + risk VETO status</small></div>
+        </div>
+        <h4>Portfolio & Market Context (shared across all candidates)</h4>
+        <div class="grid">
+            <div><h5>Portfolio State</h5><small>Current equity, cash, buying power, all held positions with unrealized P&L, drawdown level</small></div>
+            <div><h5>Market Regime</h5><small>VIX level, SPY trend direction, crisis state (normal/elevated/crisis/severe)</small></div>
+            <div><h5>Political Context</h5><small>MAGA Mode: sector-specific political impact analysis, tariff/policy news (when enabled)</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>Learned Patterns</h5><small>Discovered failure/success patterns by regime, strategy type, and time of day</small></div>
+            <div><h5>Meta-Model</h5><small>Gradient-boosted classifier trained on resolved predictions — re-weights AI confidence</small></div>
+            <div><h5>Alpha Decay</h5><small>Auto-deprecation of strategies whose rolling Sharpe degrades for 30+ days</small></div>
+        </div>
+        </div>
+    </details>
+
+<script>
+(function() {
+    var profileFilter = '{{ selected_profile or "" }}';
+    var pfParam = profileFilter ? '&profile_id=' + profileFilter : '';
+    var esc = function(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+
+    function paginator(container, page, pages, total, loadFn) {
+        var el = document.createElement('div');
+        el.style.cssText = 'margin-top:0.5rem;';
+        var prev = document.createElement('button');
+        prev.textContent = '\u2190'; prev.className = 'outline secondary';
+        prev.style.cssText = 'padding:0.2rem 0.5rem;margin-right:0.25rem;font-size:0.85rem;';
+        prev.disabled = page <= 1;
+        prev.onclick = function() { loadFn(page - 1); };
+        el.appendChild(prev);
+        var info = document.createElement('span');
+        info.style.cssText = 'font-size:0.85rem;margin:0 0.5rem;color:#888;';
+        info.textContent = 'Page ' + page + ' of ' + pages + ' (' + total + ' total)';
+        el.appendChild(info);
+        var next = document.createElement('button');
+        next.textContent = '\u2192'; next.className = 'outline secondary';
+        next.style.cssText = 'padding:0.2rem 0.5rem;margin-left:0.25rem;font-size:0.85rem;';
+        next.disabled = page >= pages;
+        next.onclick = function() { loadFn(page + 1); };
+        el.appendChild(next);
+        container.appendChild(el);
+    }
+
+    // --- Tuning Status ---
+    function loadTuningStatus(page) {
+        var w = document.getElementById('tuning-status-widget');
+        fetch('/api/tuning-status?page=' + page + '&per_page=5' + pfParam)
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d.items || !d.items.length) { w.innerHTML = '<p class="muted">No tuning status data yet.</p>'; return; }
+                var h = '<div class="overflow-auto"><table><thead><tr><th>Profile</th><th>Resolved</th><th>Status</th><th>Last Run</th></tr></thead><tbody>';
+                d.items.forEach(function(s) {
+                    var status = s.can_tune ? '<span class="pnl-pos">Active</span>' : '<span class="muted">Collecting data</span>';
+                    var lr = s.last_run ? '<small>' + esc(s.last_run.substring(0,16)) + '</small>' : '<small class="muted">never</small>';
+                    h += '<tr><td><strong>' + esc(s.profile_name) + '</strong></td>';
+                    h += '<td>' + s.resolved + ' / ' + s.required + '</td>';
+                    h += '<td>' + status + '<br><small class="muted">' + esc(s.message) + '</small></td>';
+                    h += '<td>' + lr + '</td></tr>';
+                });
+                h += '</tbody></table></div>';
+                w.innerHTML = h;
+                if (d.pages > 1) paginator(w, d.page, d.pages, d.total, loadTuningStatus);
+            });
+    }
+    loadTuningStatus(1);
+
+    // --- Tuning History ---
+    function loadTuningHistory(page) {
+        var w = document.getElementById('tuning-history-widget');
+        fetch('/api/tuning-history?page=' + page + '&per_page=5' + pfParam)
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d.items || !d.items.length) { w.innerHTML = '<p class="muted">No self-tuning history yet.</p>'; return; }
+                var h = '<div class="overflow-auto"><table><thead><tr><th>Date</th><th>Profile</th><th>Change</th><th>Reason</th><th>Win Rate</th><th>Outcome</th></tr></thead><tbody>';
+                d.items.forEach(function(r) {
+                    h += '<tr><td>' + esc((r.timestamp||'').substring(0,10)) + '</td>';
+                    h += '<td>' + esc(r.profile_name||'') + '</td>';
+                    if (r.adjustment_type === 'evaluation') {
+                        h += '<td colspan="2" class="muted" style="font-size:0.85rem;">' + esc(r.reason||'') + '</td>';
+                    } else {
+                        h += '<td><strong>' + esc(r.parameter_label || r.parameter_name || '') + '</strong><br><small>' + esc(r.old_value||'') + ' &rarr; ' + esc(r.new_value||'') + '</small></td>';
+                        h += '<td style="font-size:0.85rem;">' + esc((r.reason||'').substring(0,80)) + '</td>';
+                    }
+                    var wr = (r.win_rate_at_change != null) ? r.win_rate_at_change.toFixed(1) + '%' : '';
+                    h += '<td>' + wr + '</td>';
+                    var outcome;
+                    if (r.adjustment_type === 'evaluation' || r.outcome_after === 'n/a') outcome = '<span class="muted">No changes</span>';
+                    else if (r.outcome_after === 'improved') outcome = '<span class="pnl-pos">Improved</span>';
+                    else if (r.outcome_after === 'worsened') outcome = '<span class="pnl-neg">Worsened</span>';
+                    else if (r.outcome_after === 'unchanged') outcome = '<span class="muted">Unchanged</span>';
+                    else outcome = '<span class="muted">Pending review</span>';
+                    h += '<td>' + outcome + '</td></tr>';
+                });
+                h += '</tbody></table></div>';
+                w.innerHTML = h;
+                if (d.pages > 1) paginator(w, d.page, d.pages, d.total, loadTuningHistory);
+            });
+    }
+    loadTuningHistory(1);
+})();
+</script>
+</div>
+
+<script>
+function showTab(event, tabName) {
+    event.preventDefault();
+    document.querySelectorAll('.perf-tab-content').forEach(function(el) {
+        el.classList.remove('active');
+    });
+    document.querySelectorAll('.perf-tab').forEach(function(el) {
+        el.classList.remove('active');
+    });
+    document.getElementById('tab-' + tabName).classList.add('active');
+    event.target.classList.add('active');
+    history.replaceState(null, null, '#' + tabName);
+}
+
+(function() {
+    var hash = window.location.hash.replace('#', '');
+    if (hash && document.getElementById('tab-' + hash)) {
+        document.querySelectorAll('.perf-tab-content').forEach(function(el) {
+            el.classList.remove('active');
+        });
+        document.querySelectorAll('.perf-tab').forEach(function(el) {
+            el.classList.remove('active');
+        });
+        document.getElementById('tab-' + hash).classList.add('active');
+        document.querySelectorAll('.perf-tab').forEach(function(el) {
+            if (el.getAttribute('href') === '#' + hash) {
+                el.classList.add('active');
+            }
+        });
+    }
+})();
+</script>
+
+{% endblock %}

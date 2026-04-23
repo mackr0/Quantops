@@ -15,14 +15,7 @@
             <li><a href="/dashboard">Dashboard</a></li>
             <li><a href="/trades">Trades</a></li>
             <li><a href="/performance">Performance</a></li>
-            <li class="nav-dropdown"><a href="/ai/brain">AI Intelligence ▾</a>
-                <div class="nav-dropdown-menu">
-                    <a href="/ai/brain">Brain</a>
-                    <a href="/ai/strategy">Strategy</a>
-                    <a href="/ai/awareness">Awareness</a>
-                    <a href="/ai/operations">Operations</a>
-                </div>
-            </li>
+            <li><a href="/ai">AI Intelligence</a></li>
             <li><a href="/settings">Settings</a></li>
             {% if current_user.is_admin %}<li><a href="/admin">Admin</a></li>{% endif %}
             <li><a href="/logout" role="button" class="outline secondary btn-sm">Logout</a></li>
