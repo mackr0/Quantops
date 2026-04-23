@@ -17,6 +17,40 @@ Rules going forward:
 
 ---
 
+## 2026-04-23 — Critical scan crash fix, dashboard hardening, performance (Severity: critical)
+
+**CRITICAL: Scan cycles crashing since congressional data disabled.** When the congressional trading source was removed from the aggregator, the AI prompt builder still referenced `congress['recent_transactions']` with direct dict access. Empty dict + `None != "neutral"` evaluated True → `KeyError` → every scan cycle crashed for 1.5+ hours. Zero buys all day, only trailing stop exits.
+
+**Fix:** Replaced ALL direct dict access (`dict['key']`) with `.get('key', default)` across every alt data field in `_build_batch_prompt()`. New test `TestPromptBuildDoesNotCrash` verifies the prompt builds successfully with empty, partial, and missing alt data — would have caught this before deploy.
+
+**Scan failure banner on dashboard.** Red alert shows when any profile has failed scans in the last hour. Queries `task_runs` table for `status='failed'`. Would have immediately surfaced today's outage. Timestamps use `friendly_time` filter (ET).
+
+**Profile error banner on dashboard.** Red alert shows when any profile has API authentication errors. Caught Large Cap 1M unauthorized key (stale key in `alpaca_accounts` table after regeneration).
+
+**Dashboard load time: 17.5s → 2.2s.** Parallelized profile loading with `ThreadPoolExecutor(max_workers=10)` + 30-second in-memory cache for account info and positions.
+
+**Countdown timers use actual ET market hours.** Was checking if last scan was <30min ago (false at market open until first scan completed ~22min later). Now checks Mon-Fri 9:30-4:00 ET directly.
+
+**Display name fixes:**
+- Exit triggers: `trailing_stop` → "Trailing Stop" (was `Trailing_stop` via `.capitalize()`)
+- Sector flows: `comm_services` → "Comm. Services" (JS sectorNames mapping added)
+- Ticker: HOLD predictions labeled "(HOLD prediction)" to distinguish from actual trades
+
+**Data source corrections:**
+- Dark pool ATS: fixed to use FINRA POST API with `compareFilter` by symbol (was returning 12.8M aggregate rows)
+- Congressional trading: disabled (QuiverQuant paywalled, Senate/House GitHub repos dead since 2020, Finnhub premium-only)
+- Patent filing: disabled (USPTO `api.uspto.gov` returns 403 — PatentsView v1→v2 migration incomplete, `searchText` param doesn't filter by assignee)
+- "What the AI Sees" section updated: 12 per-symbol sources, 8 market-wide sources, 3 unavailable with honest explanations
+
+**Other fixes:**
+- AI cost "today" uses ET trading day (was UTC, showing $0 after 7-8 PM ET)
+- Worst Periods hidden when <7 days of data (was showing empty $0.00 rows)
+- Large Cap 1M Alpaca key updated in `alpaca_accounts` table (was stale after regeneration)
+
+**Tests:** 678 total passing. New: `TestPromptBuildDoesNotCrash`, exit trigger display name enforcement, JS snake_case detection, sector flow name coverage.
+
+---
+
 ## 2026-04-22 — Wave 2: 7 more free data signals (15 total) (Severity: feature)
 
 Added 7 more alternative data sources, bringing the total to 15. The AI now sees:

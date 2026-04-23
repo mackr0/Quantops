@@ -253,6 +253,8 @@ def friendly_time(iso_str: str) -> str:
             dt = datetime.strptime(clean, "%Y-%m-%dT%H:%M:%S.%f")
         elif "T" in clean:
             dt = datetime.strptime(clean[:19], "%Y-%m-%dT%H:%M:%S")
+        elif " " in clean and len(clean) >= 19:
+            dt = datetime.strptime(clean[:19], "%Y-%m-%d %H:%M:%S")
         else:
             dt = datetime.strptime(clean[:10], "%Y-%m-%d")
             return dt.strftime("%b %-d")
