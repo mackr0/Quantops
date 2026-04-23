@@ -1101,6 +1101,9 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 features_payload["eps_revision_direction"] = alt.get("analyst_estimates", {}).get("eps_revision_direction", "flat")
                 features_payload["eps_revision_magnitude"] = alt.get("analyst_estimates", {}).get("revision_magnitude_pct", 0)
                 features_payload["insider_near_earnings"] = alt.get("insider_earnings", {}).get("insider_direction_near_earnings", "neutral")
+                features_payload["dark_pool_pct"] = alt.get("dark_pool", {}).get("ats_pct_of_total", 0)
+                features_payload["earnings_surprise_streak"] = alt.get("earnings_surprise", {}).get("streak", 0)
+                features_payload["earnings_surprise_direction"] = alt.get("earnings_surprise", {}).get("surprise_direction", "mixed")
             social = c.get("social") or {}
             if social:
                 features_payload["reddit_mentions"] = social.get("mentions", 0)
@@ -1118,6 +1121,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             features_payload["_unemployment_rate"] = _fm.get("unemployment_rate", 0)
             features_payload["_cpi_yoy"] = _fm.get("cpi_yoy", 0)
             features_payload["_rotation_phase"] = _macro.get("sector_momentum", {}).get("rotation_phase", "mixed")
+            features_payload["_market_gex_regime"] = _macro.get("market_gex", {}).get("net_regime", "balanced")
 
             record_prediction(
                 symbol=sym,
@@ -1656,6 +1660,12 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
         try:
             alt = get_all_alternative_data(symbol)
             if alt and not alt.get("is_crypto"):
+                # Add earnings transcript sentiment (requires ctx for AI call)
+                try:
+                    from sec_filings import get_earnings_call_sentiment
+                    alt["transcript_sentiment"] = get_earnings_call_sentiment(symbol, ctx=ctx)
+                except Exception:
+                    pass
                 entry["alt_data"] = alt
         except Exception:
             pass

@@ -566,6 +566,74 @@ def get_finra_short_volume(symbol):
 
 
 # ---------------------------------------------------------------------------
+# Dark Pool / ATS Volume
+# ---------------------------------------------------------------------------
+
+_CACHE_TTL["dark_pool"] = 604800  # 7 days (weekly data)
+
+def get_dark_pool_volume(symbol):
+    """Fetch dark pool (ATS) trading volume from FINRA OTC transparency.
+
+    Returns dict with:
+        ats_volume: int — shares traded in dark pools
+        ats_pct_of_total: float — ATS volume as % of total (0-1)
+        is_elevated: bool — True if ATS > 40% of total
+        total_volume: int
+    """
+    cache_key = f"dark_pool_{symbol}"
+    cached = _get_cached(cache_key, "dark_pool")
+    if cached is not None:
+        return cached
+
+    result = {
+        "ats_volume": 0,
+        "ats_pct_of_total": 0,
+        "is_elevated": False,
+        "total_volume": 0,
+    }
+
+    try:
+        import json as _json
+        # FINRA OTC Transparency API — weekly ATS data
+        url = (
+            "https://api.finra.org/data/group/otcMarket/name/weeklySummary"
+            f"?symbol={symbol.upper()}&limit=1"
+        )
+        req = Request(url, headers={
+            "User-Agent": "QuantOpsAI Research Bot",
+            "Accept": "application/json",
+        })
+        try:
+            with _http_lock:
+                resp = urlopen(req, timeout=15)
+                data = _json.loads(resp.read())
+
+            if isinstance(data, list) and data:
+                row = data[0]
+                ats_vol = int(row.get("totalWeeklyShareQuantity", 0) or 0)
+                total_vol = int(row.get("totalWeeklyTradeCount", 0) or 0)
+                # Some responses use different field names
+                if not ats_vol:
+                    ats_vol = int(row.get("atsShareVolume", 0) or 0)
+                if not total_vol:
+                    total_vol = int(row.get("totalShareVolume", 0) or 0)
+
+                pct = ats_vol / total_vol if total_vol > 0 else 0
+                result["ats_volume"] = ats_vol
+                result["total_volume"] = total_vol
+                result["ats_pct_of_total"] = round(pct, 3)
+                result["is_elevated"] = pct > 0.40
+        except Exception:
+            pass
+
+    except Exception as exc:
+        logger.debug("Dark pool volume failed for %s: %s", symbol, exc)
+
+    _set_cached(cache_key, result)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Insider Cluster Detection
 # ---------------------------------------------------------------------------
 
@@ -728,6 +796,86 @@ def get_analyst_estimates(symbol):
 
 
 # ---------------------------------------------------------------------------
+# Earnings Surprise History
+# ---------------------------------------------------------------------------
+
+_CACHE_TTL["earnings_surprise"] = 86400  # 24h
+
+def get_earnings_surprise(symbol):
+    """Check if this company consistently beats or misses earnings.
+
+    Returns dict with:
+        beat_count: int — quarters that beat estimate
+        miss_count: int — quarters that missed
+        total_quarters: int
+        avg_surprise_pct: float — average surprise %
+        streak: int — consecutive beats (positive) or misses (negative)
+        surprise_direction: str — 'beats', 'misses', or 'mixed'
+    """
+    cache_key = f"earnings_surprise_{symbol}"
+    cached = _get_cached(cache_key, "earnings_surprise")
+    if cached is not None:
+        return cached
+
+    result = {
+        "beat_count": 0,
+        "miss_count": 0,
+        "total_quarters": 0,
+        "avg_surprise_pct": 0,
+        "streak": 0,
+        "surprise_direction": "mixed",
+    }
+
+    try:
+        with _yf_lock:
+            ticker = yf.Ticker(symbol)
+            # Try earnings_history first (has actual vs estimate)
+            eh = getattr(ticker, "earnings_history", None)
+
+        if eh is not None and hasattr(eh, "empty") and not eh.empty:
+            surprises = []
+            for _, row in eh.iterrows():
+                try:
+                    actual = float(row.get("epsActual", 0) or 0)
+                    estimate = float(row.get("epsEstimate", 0) or 0)
+                    if estimate != 0:
+                        surprise_pct = ((actual - estimate) / abs(estimate)) * 100
+                        surprises.append(surprise_pct)
+                except (ValueError, TypeError):
+                    continue
+
+            if surprises:
+                beats = sum(1 for s in surprises if s > 0)
+                misses = sum(1 for s in surprises if s < 0)
+                result["beat_count"] = beats
+                result["miss_count"] = misses
+                result["total_quarters"] = len(surprises)
+                result["avg_surprise_pct"] = round(sum(surprises) / len(surprises), 2)
+
+                # Streak: count consecutive beats/misses from most recent
+                streak = 0
+                if surprises:
+                    direction = 1 if surprises[0] > 0 else -1
+                    for s in surprises:
+                        if (s > 0 and direction > 0) or (s < 0 and direction < 0):
+                            streak += direction
+                        else:
+                            break
+                result["streak"] = streak
+
+                if beats > misses * 2:
+                    result["surprise_direction"] = "beats"
+                elif misses > beats * 2:
+                    result["surprise_direction"] = "misses"
+
+    except Exception as exc:
+        logger.debug("Earnings surprise failed for %s: %s", symbol, exc)
+
+    _set_cached(cache_key, result)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Insider Timing vs Earnings Correlation
 # ---------------------------------------------------------------------------
 
@@ -789,6 +937,108 @@ def get_insider_earnings_signal(symbol):
 
 
 # ---------------------------------------------------------------------------
+# USPTO Patent Filing Velocity
+# ---------------------------------------------------------------------------
+
+_CACHE_TTL["patents"] = 604800  # 7 days
+
+def get_patent_activity(symbol):
+    """Check recent patent filing velocity for a company via USPTO PatentsView API.
+
+    Returns dict with:
+        recent_filings_90d: int
+        recent_filings_365d: int
+        velocity_trend: str — 'accelerating', 'stable', or 'declining'
+        has_data: bool
+    """
+    cache_key = f"patents_{symbol}"
+    cached = _get_cached(cache_key, "patents")
+    if cached is not None:
+        return cached
+
+    result = {
+        "recent_filings_90d": 0,
+        "recent_filings_365d": 0,
+        "velocity_trend": "stable",
+        "has_data": False,
+    }
+
+    try:
+        import json as _json
+        from datetime import datetime, timedelta
+        import os
+        import re
+
+        # Get company name from yfinance
+        company_name = None
+        try:
+            with _yf_lock:
+                ticker = yf.Ticker(symbol)
+                info = getattr(ticker, "info", {}) or {}
+            company_name = info.get("shortName") or info.get("longName")
+        except Exception:
+            pass
+
+        if not company_name:
+            _set_cached(cache_key, result)
+            return result
+
+        # Clean company name for search
+        clean_name = re.sub(
+            r'\b(Inc|Corp|Ltd|LLC|Co|Group|Holdings|Plc)\.?\b',
+            '', company_name, flags=re.IGNORECASE
+        ).strip().strip(",").strip()
+        if len(clean_name) < 3:
+            _set_cached(cache_key, result)
+            return result
+
+        date_365 = (datetime.utcnow() - timedelta(days=365)).strftime("%Y-%m-%d")
+        date_90 = (datetime.utcnow() - timedelta(days=90)).strftime("%Y-%m-%d")
+
+        # PatentsView API — free, no key required for basic queries
+        url = (
+            f"https://api.patentsview.org/patents/query?"
+            f"q={{\"_and\":[{{\"_gte\":{{\"patent_date\":\"{date_365}\"}}}},"
+            f"{{\"_contains\":{{\"assignee_organization\":\"{clean_name}\"}}}}]}}"
+            f"&f=[\"patent_number\",\"patent_date\"]&o={{\"per_page\":100}}"
+        )
+        api_key = os.environ.get("USPTO_API_KEY", "")
+        headers = {"User-Agent": "QuantOpsAI Research Bot"}
+        if api_key:
+            headers["X-Api-Key"] = api_key
+
+        req = Request(url, headers=headers)
+        try:
+            with _http_lock:
+                resp = urlopen(req, timeout=15)
+                data = _json.loads(resp.read())
+
+            patents = data.get("patents") or []
+            result["recent_filings_365d"] = len(patents)
+            result["recent_filings_90d"] = sum(
+                1 for p in patents if p.get("patent_date", "") >= date_90
+            )
+            result["has_data"] = len(patents) > 0
+
+            # Compare last 90 days to avg of prior quarters
+            if result["recent_filings_365d"] >= 4:
+                prior = result["recent_filings_365d"] - result["recent_filings_90d"]
+                avg_prior_q = prior / 3 if prior > 0 else 0
+                if result["recent_filings_90d"] > avg_prior_q * 1.5:
+                    result["velocity_trend"] = "accelerating"
+                elif avg_prior_q > 0 and result["recent_filings_90d"] < avg_prior_q * 0.5:
+                    result["velocity_trend"] = "declining"
+        except Exception:
+            pass
+
+    except Exception as exc:
+        logger.debug("Patent activity failed for %s: %s", symbol, exc)
+
+    _set_cached(cache_key, result)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Aggregator
 # ---------------------------------------------------------------------------
 
@@ -814,4 +1064,7 @@ def get_all_alternative_data(symbol):
         "insider_cluster": get_insider_cluster(symbol),
         "analyst_estimates": get_analyst_estimates(symbol),
         "insider_earnings": get_insider_earnings_signal(symbol),
+        "dark_pool": get_dark_pool_volume(symbol),
+        "earnings_surprise": get_earnings_surprise(symbol),
+        "patent_activity": get_patent_activity(symbol),
     }

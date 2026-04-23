@@ -642,6 +642,12 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         bottom = ", ".join(f"{r['sector']}(#{r['rank']})" for r in sector_mom["rankings"][-3:])
         phase = sector_mom.get("rotation_phase", "mixed").upper().replace("_", " ")
         market_section += f"\n  SECTOR MOMENTUM: Top: {top} | Bottom: {bottom} ({phase})"
+    mgex = macro.get("market_gex", {})
+    if mgex.get("sample_size", 0) >= 5:
+        regime = mgex.get("net_regime", "balanced").upper()
+        pct = mgex.get("pct_positive", 0.5)
+        market_section += (f"\n  MARKET GEX: {pct:.0%} positive ({regime} — "
+                           f"{'mean reversion favored' if regime == 'PINNING' else 'breakouts favored' if regime == 'EXPANSION' else 'no dominant regime'})")
 
     # --- Candidates section ---
     cand_lines = []
@@ -748,6 +754,28 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             elif ie.get("insider_selling_near_earnings"):
                 alt_parts.append(
                     f"Insiders selling {ie['days_to_earnings']}d before earnings (bearish)")
+            dp = alt.get("dark_pool", {})
+            if dp.get("is_elevated"):
+                alt_parts.append(
+                    f"Dark pool: {dp['ats_pct_of_total']:.0%} off-exchange (elevated)")
+            es = alt.get("earnings_surprise", {})
+            if es.get("total_quarters", 0) >= 4:
+                alt_parts.append(
+                    f"Earnings: {es['surprise_direction']} "
+                    f"({es['beat_count']}/{es['total_quarters']} beats, "
+                    f"avg surprise {es['avg_surprise_pct']:+.1f}%)")
+            transcript = alt.get("transcript_sentiment", {})
+            if transcript.get("has_data"):
+                phrases = ", ".join(transcript.get("key_phrases", [])[:2])
+                alt_parts.append(
+                    f"Earnings call: {transcript['tone'].upper()}"
+                    f"{' — ' + phrases if phrases else ''}")
+            patents = alt.get("patent_activity", {})
+            if patents.get("has_data") and patents.get("recent_filings_365d", 0) > 0:
+                alt_parts.append(
+                    f"Patents: {patents['recent_filings_90d']} filed last 90d, "
+                    f"{patents['recent_filings_365d']} last year "
+                    f"({patents['velocity_trend']})")
             if alt_parts:
                 line += f"\n     ALT DATA: {' | '.join(alt_parts)}"
 

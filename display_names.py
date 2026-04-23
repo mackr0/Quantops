@@ -152,6 +152,12 @@ _DISPLAY_NAMES = {
     # Wave 2 signals
     "insider_near_earnings":    "Insider Activity Near Earnings",
     "_rotation_phase":          "Sector Rotation Phase",
+    "dark_pool_pct":            "Dark Pool % of Volume",
+    "earnings_surprise_streak": "Earnings Surprise Streak",
+    "earnings_surprise_direction": "Earnings Surprise Direction",
+    "_market_gex_regime":       "Market GEX Regime",
+    "transcript_tone":          "Earnings Call Tone",
+    "patent_velocity":          "Patent Filing Velocity",
 }
 
 

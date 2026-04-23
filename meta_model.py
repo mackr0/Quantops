@@ -54,6 +54,8 @@ NUMERIC_FEATURES = [
     "finra_short_vol_ratio", "insider_cluster", "eps_revision_magnitude",
     # New macro features
     "_yield_spread_10y2y", "_cboe_skew", "_unemployment_rate", "_cpi_yoy",
+    # Wave 2
+    "dark_pool_pct", "earnings_surprise_streak",
 ]
 
 # Categorical features — one-hot encoded
@@ -71,6 +73,8 @@ CATEGORICAL_FEATURES = {
     # Wave 2
     "insider_near_earnings": ["bullish", "bearish", "neutral"],
     "_rotation_phase": ["risk_on", "risk_off", "mixed"],
+    "earnings_surprise_direction": ["beats", "misses", "mixed"],
+    "_market_gex_regime": ["pinning", "expansion", "balanced"],
 }
 
 

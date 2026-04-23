@@ -437,4 +437,79 @@ def get_all_macro_data() -> Dict[str, Any]:
         "cboe_skew": get_cboe_skew(),
         "fred_macro": get_fred_macro(),
         "sector_momentum": get_sector_momentum_ranking(),
+        "market_gex": get_market_gex_aggregate(),
     }
+
+
+# ---------------------------------------------------------------------------
+# 6. Market-Wide Gamma Exposure Aggregate
+# ---------------------------------------------------------------------------
+
+def get_market_gex_aggregate() -> Dict[str, Any]:
+    """Aggregate GEX regime from recent AI predictions across all profiles.
+
+    Rather than making expensive options API calls for 20+ symbols,
+    reads the most recent predictions' features_json which already
+    contains per-stock GEX data from the last scan cycle.
+
+    Returns dict with:
+        net_regime: str — 'pinning', 'expansion', or 'balanced'
+        pct_positive: float — % of recent stocks with positive GEX
+        sample_size: int
+    """
+    cached = _get_cached("market_gex", "cboe_skew")  # 1h TTL
+    if cached is not None:
+        return cached
+
+    result = {
+        "net_regime": "balanced",
+        "pct_positive": 0.5,
+        "sample_size": 0,
+    }
+
+    try:
+        import sqlite3 as _sq
+        import glob
+
+        positive_count = 0
+        total_count = 0
+
+        for db_path in glob.glob("quantopsai_profile_*.db"):
+            try:
+                conn = _sq.connect(db_path)
+                rows = conn.execute(
+                    "SELECT features_json FROM ai_predictions "
+                    "WHERE features_json IS NOT NULL "
+                    "ORDER BY timestamp DESC LIMIT 30"
+                ).fetchall()
+                conn.close()
+
+                for row in rows:
+                    try:
+                        features = json.loads(row[0])
+                        oracle = features.get("options_oracle", {})
+                        if isinstance(oracle, dict):
+                            gex = oracle.get("gex", {})
+                            if isinstance(gex, dict) and gex.get("gex_sign"):
+                                total_count += 1
+                                if gex["gex_sign"] == "positive":
+                                    positive_count += 1
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+            except Exception:
+                continue
+
+        if total_count >= 5:
+            pct = positive_count / total_count
+            result["pct_positive"] = round(pct, 2)
+            result["sample_size"] = total_count
+            if pct >= 0.65:
+                result["net_regime"] = "pinning"
+            elif pct <= 0.35:
+                result["net_regime"] = "expansion"
+
+    except Exception as exc:
+        logger.debug("Market GEX aggregate failed: %s", exc)
+
+    _set_cached("market_gex", result)
+    return result

@@ -637,3 +637,90 @@ def monitor_symbol(symbol: str, db_path: str, ctx: Any = None,
             })
 
     return summary
+
+
+# ---------------------------------------------------------------------------
+# Earnings Call Transcript Sentiment (Signal 6)
+# ---------------------------------------------------------------------------
+
+def get_earnings_call_sentiment(symbol: str, ctx: Any = None) -> Dict[str, Any]:
+    """Analyze management tone from the most recent 8-K earnings exhibit.
+
+    Finds the latest 8-K filing, extracts exhibit text (typically the
+    press release or transcript), and runs it through Haiku for tone
+    analysis.
+
+    Cost-gated: cached 30 days (earnings are quarterly).
+
+    Returns dict with:
+        tone: str — 'positive', 'neutral', 'cautious', or 'negative'
+        key_phrases: list of str — notable management quotes
+        has_data: bool
+    """
+    cache_key = f"transcript_sentiment_{symbol}"
+    cached = _cache.get(cache_key)
+    if cached and (time.time() - cached[0]) < 86400 * 30:
+        return cached[1]
+
+    result = {
+        "tone": "neutral",
+        "key_phrases": [],
+        "has_data": False,
+    }
+
+    try:
+        filings = get_company_filings(symbol, form_types=["8-K"])
+        if not filings:
+            _cache[cache_key] = (time.time(), result)
+            return result
+
+        latest = filings[0]
+        doc_url = latest.get("primary_doc_url")
+        if not doc_url:
+            _cache[cache_key] = (time.time(), result)
+            return result
+
+        text = fetch_filing_text(doc_url)
+        if not text or len(text) < 200:
+            _cache[cache_key] = (time.time(), result)
+            return result
+
+        # Truncate to keep AI cost low
+        excerpt = text[:3000]
+
+        if ctx is not None:
+            try:
+                from ai_providers import call_ai
+                import json as _json
+                prompt = (
+                    f"Analyze the tone of this earnings press release for {symbol}. "
+                    f"Classify as: positive, neutral, cautious, or negative. "
+                    f"Extract 2-3 key phrases that indicate management sentiment.\n\n"
+                    f"Respond with ONLY a JSON object: "
+                    f'{{"tone": "positive|neutral|cautious|negative", '
+                    f'"key_phrases": ["phrase1", "phrase2"]}}\n\n'
+                    f"Text:\n{excerpt}"
+                )
+                ai_response = call_ai(
+                    prompt,
+                    provider=getattr(ctx, "ai_provider", "anthropic"),
+                    model=getattr(ctx, "ai_model", "claude-haiku-4-5-20251001"),
+                    api_key=getattr(ctx, "ai_api_key", ""),
+                    max_tokens=256,
+                    db_path=getattr(ctx, "db_path", None),
+                    purpose="transcript_sentiment",
+                )
+                if ai_response:
+                    parsed = _json.loads(ai_response)
+                    if isinstance(parsed, dict):
+                        result["tone"] = parsed.get("tone", "neutral")
+                        result["key_phrases"] = parsed.get("key_phrases", [])[:3]
+                        result["has_data"] = True
+            except Exception as exc:
+                logger.debug("Transcript AI analysis failed for %s: %s", symbol, exc)
+
+    except Exception as exc:
+        logger.debug("Earnings call sentiment failed for %s: %s", symbol, exc)
+
+    _cache[cache_key] = (time.time(), result)
+    return result
