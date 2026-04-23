@@ -117,7 +117,7 @@ This shows the tuner is running even when it has nothing to change.
 
 ## Viewing Self-Tuning Activity
 
-### Performance Dashboard (AI Tab)
+### Performance Dashboard (AI Intelligence Tab)
 
 - **Self-Tuning Readiness** table: shows each profile's resolved prediction count vs. the 20 required, with a progress bar
 - **Tuning History** section: shows the last 10 adjustments across all profiles, with parameter, old/new values, reason, and outcome

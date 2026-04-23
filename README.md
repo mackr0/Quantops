@@ -34,7 +34,7 @@ AI-powered autonomous paper trading platform. The AI is the portfolio manager �
 
 ## Key Features
 
-### AI (the edge)
+### AI Intelligence (the edge)
 - **AI as Portfolio Manager** — One smart batch call per cycle. AI sees the full picture and decides what to trade, not just approve/reject.
 - **33 Technical Indicators** — RSI, StochRSI, ADX, MACD, MFI, CMF, OBV, ATR, Bollinger Bands, Keltner Squeeze, VWAP, Fibonacci levels, Pivot Points, 52-week context, ROC, and more.
 - **Insider Transaction Data** — Recent insider buys/sells from yfinance + SEC EDGAR Form 4 filings. Insider buying clusters are among the strongest signals in finance.
@@ -66,7 +66,7 @@ AI-powered autonomous paper trading platform. The AI is the portfolio manager �
 - **Multi-User** — Flask + Flask-Login with bcrypt auth and Fernet-encrypted API keys
 - **AI Brain Dashboard** — Shows AI's last decision, reasoning, candidate shortlist with all indicators
 - **Sector Rotation Widget** — Live sector ETF inflows/outflows
-- **6-Tab Performance Dashboard** — Executive Summary, Risk & Stability, Trade Analytics, Market Relationship, Scalability, AI
+- **6-Tab Performance Dashboard** — Executive Summary, Risk & Stability, Trade Analytics, Market Relationship, Scalability, AI Intelligence
 - **Learned Patterns Display** — Shows discovered win/loss patterns
 - **Indicator Suite Reference** — All 33 indicators grouped by category
 - **What-If Backtesting** — Test parameter changes against 90 days of real market data

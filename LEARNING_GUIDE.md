@@ -328,7 +328,7 @@ What percentage of your gross (theoretical) profit is eaten by slippage. Target:
 
 ---
 
-## Chapter 8: AI — How Smart Is the AI?
+## Chapter 8: AI Intelligence — How Smart Is the AI?
 
 ### Prediction Win Rate vs Trade Win Rate
 

@@ -564,7 +564,7 @@ A second-layer gradient-boosted classifier trained on the system's own predictio
 
 **Retraining:** Daily at end-of-day snapshot time. Model saved to `meta_model_{profile_id}.pkl`. Requires >=100 resolved predictions with `features_json` populated to train.
 
-**Dashboard:** Performance page AI tab shows per-profile: current AUC, accuracy, training sample count, top 10 most predictive features. When insufficient data is available, shows "Collecting training data" placeholder.
+**Dashboard:** Performance page AI Intelligence tab shows per-profile: current AUC, accuracy, training sample count, top 10 most predictive features. When insufficient data is available, shows "Collecting training data" placeholder.
 
 **Why This Matters:** Most systems use AI as a single decision layer. This creates a second layer that ML-learns from the first layer's mistakes. Each new prediction strengthens the meta-model. Over time the system develops a sophisticated model of its own error patterns — compounding alpha that competitors cannot replicate because it's trained on our proprietary prediction data.
 
@@ -618,7 +618,7 @@ else:
 
 **Persistence:** All validation runs saved to `strategy_validations.db` with full gate-by-gate results, metrics, and configuration. Powers the Phase 3 alpha decay monitoring layer.
 
-**Dashboard:** Performance page AI tab shows all recent validations with verdict, score, gate pass/fail counts, and elapsed time.
+**Dashboard:** Performance page AI Intelligence tab shows all recent validations with verdict, score, gate pass/fail counts, and elapsed time.
 
 **Default Thresholds** (in `rigorous_backtest.THRESHOLDS`):
 
@@ -693,7 +693,7 @@ DECAY_THRESHOLDS = {
 
 **Scheduled Task:** `_task_alpha_decay(ctx)` in `multi_scheduler.py` runs daily at snapshot time alongside self-tuning and meta-model retraining.
 
-**Dashboard:** Performance page AI tab shows per-profile rolling vs lifetime Sharpe for each strategy, edge change %, and any currently-deprecated strategies with the reason they were retired.
+**Dashboard:** Performance page AI Intelligence tab shows per-profile rolling vs lifetime Sharpe for each strategy, edge change %, and any currently-deprecated strategies with the reason they were retired.
 
 **Why This Matters:** Without automatic decay monitoring, a strategy that was profitable for years can silently stop working and drain equity for months before anyone notices. This module catches it within weeks of actual decay and removes the strategy from the candidate pool automatically. Combined with Phase 7 (auto-generation), the strategy library refreshes continuously: dying strategies retire, new variants get proposed, validated, and deployed. The alpha pool stays fresh.
 
@@ -759,7 +759,7 @@ The AI can now condition its trade decision on breaking corporate disclosures wi
 
 **Scheduled Task:** `_task_sec_filings(ctx)` in `multi_scheduler.py` runs daily at snapshot time. Processes held positions plus symbols from the most recent cycle's shortlist.
 
-**Dashboard:** Performance page AI tab includes a "SEC Filing Alerts" panel showing all active (≤90 day) alerts with severity, signal, and summary.
+**Dashboard:** Performance page AI Intelligence tab includes a "SEC Filing Alerts" panel showing all active (≤90 day) alerts with severity, signal, and summary.
 
 **Why This Matters:** When a CEO inserts one new paragraph into a 10-K risk factors section about "material uncertainty regarding continued operations," the stock typically drops 10-40% over the next quarter. Humans miss this because the filing is 200 pages; institutional analysts catch it but only for their watchlist of a few dozen names. Our system scans every held position plus every shortlist candidate daily. This is genuine alternative data at our scale almost no one has.
 
@@ -1263,7 +1263,7 @@ Each profile has an isolated database containing:
 | `/settings` | API keys, profile management (create/edit/delete), strategy sliders |
 | `/trades` | Trade history with per-profile filtering |
 | `/performance` | 5-tab institutional metrics dashboard (returns, risk, trades, market, scaling) |
-| `/ai` | 4-tab AI dashboard (brain, strategy, awareness, operations) |
+| `/ai` | 4-tab AI Intelligence dashboard (brain, strategy, awareness, operations) |
 | `/ai-performance` | Legacy AI performance page (redirects to /ai) |
 | `/admin` | User management, API usage tracking |
 | `/universe/{id}` | Popup showing all symbols in a profile's universe |
@@ -1657,7 +1657,7 @@ The comparison only appears when there are at least 5 closed trades in the perio
 
 ## 20. Institutional Performance Dashboard
 
-The system includes a 5-tab performance dashboard at `/performance` (traditional metrics) and a separate 4-tab AI dashboard at `/ai` (brain, strategy, awareness, operations). Performance metrics are calculated by `metrics.py` using `calculate_all_metrics()`. AI data is served by dedicated view functions and AJAX API endpoints.
+The system includes a 5-tab performance dashboard at `/performance` (traditional metrics) and a separate 4-tab AI Intelligence dashboard at `/ai` (brain, strategy, awareness, operations). Performance metrics are calculated by `metrics.py` using `calculate_all_metrics()`. AI data is served by dedicated view functions and AJAX API endpoints.
 
 ### Tab 1: Executive Summary
 
@@ -1725,7 +1725,7 @@ SPY/QQQ/BTC data fetched from yfinance with 30-minute cache.
 | Slippage vs Gross Profit | Slippage total / gross profit | Should be <20% |
 | Capacity Projection | Position / daily volume ratio | $10K to $1M scaling table |
 
-### Tab 6: AI
+### Tab 6: AI Intelligence
 
 | Metric | Source | Purpose |
 |---|---|---|
