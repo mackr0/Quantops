@@ -574,11 +574,14 @@ _CACHE_TTL["dark_pool"] = 604800  # 7 days (weekly data)
 def get_dark_pool_volume(symbol):
     """Fetch dark pool (ATS) trading volume from FINRA OTC transparency.
 
+    Uses POST to filter by symbol. Sums across all ATS venues to get
+    total dark pool volume for the symbol.
+
     Returns dict with:
-        ats_volume: int — shares traded in dark pools
-        ats_pct_of_total: float — ATS volume as % of total (0-1)
-        is_elevated: bool — True if ATS > 40% of total
-        total_volume: int
+        ats_volume: int — total shares traded across all dark pools
+        ats_trade_count: int — number of dark pool trades
+        num_venues: int — how many ATS venues traded this symbol
+        week_start: str or None — week the data covers
     """
     cache_key = f"dark_pool_{symbol}"
     cached = _get_cached(cache_key, "dark_pool")
@@ -587,42 +590,47 @@ def get_dark_pool_volume(symbol):
 
     result = {
         "ats_volume": 0,
-        "ats_pct_of_total": 0,
-        "is_elevated": False,
-        "total_volume": 0,
+        "ats_trade_count": 0,
+        "num_venues": 0,
+        "week_start": None,
     }
 
     try:
         import json as _json
-        # FINRA OTC Transparency API — weekly ATS data
-        url = (
-            "https://api.finra.org/data/group/otcMarket/name/weeklySummary"
-            f"?symbol={symbol.upper()}&limit=1"
+
+        body = _json.dumps({
+            "compareFilters": [{
+                "fieldName": "issueSymbolIdentifier",
+                "fieldValue": symbol.upper(),
+                "compareType": "EQUAL",
+            }],
+            "limit": 50,
+        }).encode()
+
+        req = Request(
+            "https://api.finra.org/data/group/otcMarket/name/weeklySummary",
+            data=body,
+            method="POST",
+            headers={
+                "User-Agent": "QuantOpsAI Research Bot",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
         )
-        req = Request(url, headers={
-            "User-Agent": "QuantOpsAI Research Bot",
-            "Accept": "application/json",
-        })
+
         try:
             with _http_lock:
                 resp = urlopen(req, timeout=15)
                 data = _json.loads(resp.read())
 
             if isinstance(data, list) and data:
-                row = data[0]
-                ats_vol = int(row.get("totalWeeklyShareQuantity", 0) or 0)
-                total_vol = int(row.get("totalWeeklyTradeCount", 0) or 0)
-                # Some responses use different field names
-                if not ats_vol:
-                    ats_vol = int(row.get("atsShareVolume", 0) or 0)
-                if not total_vol:
-                    total_vol = int(row.get("totalShareVolume", 0) or 0)
-
-                pct = ats_vol / total_vol if total_vol > 0 else 0
-                result["ats_volume"] = ats_vol
-                result["total_volume"] = total_vol
-                result["ats_pct_of_total"] = round(pct, 3)
-                result["is_elevated"] = pct > 0.40
+                # Sum across all ATS venues for total dark pool volume
+                total_shares = sum(int(r.get("totalWeeklyShareQuantity", 0) or 0) for r in data)
+                total_trades = sum(int(r.get("totalWeeklyTradeCount", 0) or 0) for r in data)
+                result["ats_volume"] = total_shares
+                result["ats_trade_count"] = total_trades
+                result["num_venues"] = len(data)
+                result["week_start"] = data[0].get("weekStartDate")
         except Exception:
             pass
 
@@ -1059,12 +1067,13 @@ def get_all_alternative_data(symbol):
         "fundamentals": get_fundamentals(symbol),
         "options": get_options_unusual(symbol),
         "intraday": get_intraday_patterns(symbol),
-        "congressional": get_congressional_trading(symbol),
+        # congressional: DISABLED — QuiverQuant free API paywalled (401)
         "finra_short_vol": get_finra_short_volume(symbol),
         "insider_cluster": get_insider_cluster(symbol),
         "analyst_estimates": get_analyst_estimates(symbol),
         "insider_earnings": get_insider_earnings_signal(symbol),
         "dark_pool": get_dark_pool_volume(symbol),
+        # congressional: DISABLED — QuiverQuant free API is paywalled (401)
+        # patent_activity: DISABLED — PatentsView v1 API deprecated
         "earnings_surprise": get_earnings_surprise(symbol),
-        "patent_activity": get_patent_activity(symbol),
     }

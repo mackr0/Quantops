@@ -755,9 +755,10 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                 alt_parts.append(
                     f"Insiders selling {ie['days_to_earnings']}d before earnings (bearish)")
             dp = alt.get("dark_pool", {})
-            if dp.get("is_elevated"):
+            if dp.get("ats_volume", 0) > 0:
                 alt_parts.append(
-                    f"Dark pool: {dp['ats_pct_of_total']:.0%} off-exchange (elevated)")
+                    f"Dark pool: {dp['ats_volume']:,} shares across "
+                    f"{dp.get('num_venues', 0)} ATS venues")
             es = alt.get("earnings_surprise", {})
             if es.get("total_quarters", 0) >= 4:
                 alt_parts.append(

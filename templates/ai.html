@@ -1005,7 +1005,7 @@
     <details>
         <summary><strong>What the AI Sees</strong> <small class="muted">— the full data context every candidate is evaluated against</small></summary>
         <div style="margin-top:0.5rem;">
-        <h4>Per-Candidate Data (13 indicators + 8 data sources)</h4>
+        <h4>Per-Candidate Technical Indicators (13)</h4>
         <div class="grid">
             <div><h5>Trend & Momentum</h5><small>RSI, StochRSI, ADX, ROC (10-day), Volume Ratio vs 20-day avg</small></div>
             <div><h5>Institutional Flow</h5><small>MFI, CMF — volume-weighted money flow signals</small></div>
@@ -1013,35 +1013,66 @@
         </div>
         <div class="grid">
             <div><h5>Price Context</h5><small>% from 52-week high, nearest Fibonacci distance, Gap %</small></div>
-            <div><h5>Strategy Votes</h5><small>Which of the 16 strategies voted BUY/SELL/HOLD, combined score out of 4</small></div>
+            <div><h5>Strategy Votes</h5><small>Which of the 16 strategies voted BUY/SELL/HOLD, combined score</small></div>
             <div><h5>News Headlines</h5><small>Up to 3 recent headlines per stock</small></div>
         </div>
+
+        <h4>Per-Candidate Alternative Data (12 sources)</h4>
         <div class="grid">
             <div><h5>Insider Transactions</h5><small>Recent buys/sells count + dollar volume from SEC Form 4 filings</small></div>
-            <div><h5>Short Interest</h5><small>Short % of float, days to cover, squeeze risk</small></div>
-            <div><h5>Options Flow</h5><small>Put/call ratio, bullish/bearish flow detection</small></div>
+            <div><h5>Insider Clusters</h5><small>3+ insiders buying the same stock within 90 days = cluster signal</small></div>
+            <div><h5>Insider vs Earnings Timing</h5><small>Insiders buying/selling within 14 days of earnings = directional signal</small></div>
         </div>
         <div class="grid">
-            <div><h5>Options Chain Oracle</h5><small>IV skew, IV term structure, implied move, gamma exposure, max pain, IV rank</small></div>
-            <div><h5>Relative Strength</h5><small>Performance vs sector ETF over recent period</small></div>
+            <div><h5>Short Interest</h5><small>Short % of float, days to cover, squeeze risk</small></div>
+            <div><h5>FINRA Short Volume</h5><small>Daily short volume ratio — elevated when > 50% of volume is short selling</small></div>
+            <div><h5>Dark Pool (ATS) Volume</h5><small>Weekly dark pool trading volume across all ATS venues (FINRA)</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>Options Flow</h5><small>Put/call ratio, bullish/bearish flow detection, unusual volume</small></div>
+            <div><h5>Options Chain Oracle</h5><small>IV skew, term structure, implied move, gamma exposure, max pain, IV rank</small></div>
+            <div><h5>Analyst Estimate Revisions</h5><small>EPS/revenue estimate direction (up/down/flat) and magnitude</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>Earnings Surprise History</h5><small>Beat/miss track record over last 4-8 quarters, consecutive streak</small></div>
+            <div><h5>Earnings Call Sentiment</h5><small>AI-analyzed management tone from most recent 8-K press release (SEC EDGAR)</small></div>
             <div><h5>Fundamentals</h5><small>PE ratio, beta, market cap, sector, institutional/insider ownership %</small></div>
         </div>
         <div class="grid">
-            <div><h5>SEC Filing Alerts</h5><small>AI-analyzed 10-K/10-Q/8-K diffs. Severity tag injected when material changes detected.</small></div>
-            <div><h5>Earnings Warning</h5><small>Days until next earnings report. Flagged if within avoidance window.</small></div>
-            <div><h5>Social Sentiment</h5><small>Reddit mentions + trending detection (when configured)</small></div>
+            <div><h5>SEC Filing Alerts</h5><small>AI-analyzed 10-K/10-Q/8-K diffs — new risk factors, going-concern, material weakness</small></div>
+            <div><h5>Relative Strength</h5><small>Performance vs sector ETF over recent period</small></div>
+            <div><h5>Intraday Patterns</h5><small>VWAP position, opening range breakout, intraday trend, volume profile</small></div>
         </div>
-        <h4>Per-Candidate Memory</h4>
+
+        <h4 style="margin-top:0.5rem;">Unavailable Data Sources <small class="muted">(pending API access)</small></h4>
+        <div class="grid">
+            <div><h5 class="muted">Congressional Trading</h5><small class="muted">Requires QuiverQuant paid API. Would show which members of Congress are buying/selling.</small></div>
+            <div><h5 class="muted">Patent Filing Velocity</h5><small class="muted">USPTO PatentsView v1 API deprecated. Awaiting v2 integration.</small></div>
+            <div><h5 class="muted">Reddit Sentiment</h5><small class="muted">Requires Reddit PRAW API credentials. Would show mention counts + sentiment from WSB/stocks/investing.</small></div>
+        </div>
+
+        <h4 style="margin-top:0.5rem;">Per-Candidate Memory</h4>
         <div class="grid">
             <div><h5>Track Record</h5><small>Win/loss history for this specific symbol. Auto-blacklists chronic losers.</small></div>
-            <div><h5>Last Prediction</h5><small>The AI's previous reasoning + outcome for this symbol — so it remembers what it said last time and whether it was right.</small></div>
+            <div><h5>Last Prediction</h5><small>The AI's previous reasoning + outcome — remembers what it said and whether it was right.</small></div>
             <div><h5>Specialist Ensemble Verdict</h5><small>Four specialist AIs' confidence-weighted consensus + risk VETO status</small></div>
         </div>
-        <h4>Portfolio & Market Context (shared across all candidates)</h4>
+
+        <h4 style="margin-top:0.5rem;">Market-Wide Context (8 sources, shared across all candidates)</h4>
         <div class="grid">
             <div><h5>Portfolio State</h5><small>Current equity, cash, buying power, all held positions with unrealized P&L, drawdown level</small></div>
             <div><h5>Market Regime</h5><small>VIX level, SPY trend direction, crisis state (normal/elevated/crisis/severe)</small></div>
             <div><h5>Political Context</h5><small>MAGA Mode: sector-specific political impact analysis, tariff/policy news (when enabled)</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>Treasury Yield Curve</h5><small>2Y, 10Y, 30Y rates + spread + inversion detection (FRED API)</small></div>
+            <div><h5>CBOE Skew Index</h5><small>Institutional tail-risk hedging indicator — elevated = smart money nervous</small></div>
+            <div><h5>ETF Sector Flows</h5><small>Estimated weekly fund flows by sector — which sectors are getting money</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>FRED Economic Indicators</h5><small>Unemployment rate + trend, CPI YoY, consumer sentiment, initial claims</small></div>
+            <div><h5>Sector Momentum Ranking</h5><small>11 sectors ranked by 5-day return, risk-on vs risk-off rotation detection</small></div>
+            <div><h5>Market GEX Aggregate</h5><small>Aggregate gamma exposure regime — pinning (mean reversion) vs expansion (breakouts)</small></div>
         </div>
         <div class="grid">
             <div><h5>Learned Patterns</h5><small>Discovered failure/success patterns by regime, strategy type, and time of day</small></div>
