@@ -2892,6 +2892,10 @@ def api_scheduler_status():
         status["scan_remaining"] = max(0, int(status.get("next_scan", 0) - now))
         status["exit_remaining"] = max(0, int(status.get("next_exit_check", 0) - now))
         status["ai_remaining"] = max(0, int(status.get("next_ai_resolve", 0) - now))
+        # Market open flag — if all remaining are 0 and last scan was >30min ago, market is closed
+        status["market_open"] = (status["scan_remaining"] > 0 or
+                                  status["exit_remaining"] > 0 or
+                                  (now - status.get("last_scan", 0)) < 1800)
         return jsonify(status)
     except FileNotFoundError:
         return jsonify({"error": "Scheduler not running yet", "scan_remaining": 0, "exit_remaining": 0, "ai_remaining": 0})

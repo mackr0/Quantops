@@ -424,11 +424,12 @@ function showDashTab(event, tabName) {
     var exitEl = document.getElementById('timer-exit');
     var aiEl = document.getElementById('timer-ai');
     if (!scanEl) return;
-    var scanR = -1, exitR = -1, aiR = -1;
+    var scanR = -1, exitR = -1, aiR = -1, marketOpen = true;
     var atZero = {scan: 0, exit: 0, ai: 0};
-    function fmt(key, s) { if (s <= 0) { atZero[key]++; return atZero[key] > 3 ? '<span style="color:#f0ad4e;font-size:0.9rem;">Scanning...</span>' : '<span style="color:#00c853">NOW</span>'; } atZero[key] = 0; var m = Math.floor(s/60), sec = s%60; return (m<10?'0':'')+m+':'+(sec<10?'0':'')+sec; }
+    var closed = '<span class="muted" style="font-size:0.9rem;">Market Closed</span>';
+    function fmt(key, s) { if (!marketOpen) return closed; if (s <= 0) { atZero[key]++; return atZero[key] > 3 ? '<span style="color:#f0ad4e;font-size:0.9rem;">Scanning...</span>' : '<span style="color:#00c853">NOW</span>'; } atZero[key] = 0; var m = Math.floor(s/60), sec = s%60; return (m<10?'0':'')+m+':'+(sec<10?'0':'')+sec; }
     function upd() { scanEl.innerHTML = fmt('scan',scanR); exitEl.innerHTML = fmt('exit',exitR); aiEl.innerHTML = fmt('ai',aiR); }
-    function fetchS() { fetch('/api/scheduler-status').then(function(r){return r.json();}).then(function(d){scanR=d.scan_remaining||0;exitR=d.exit_remaining||0;aiR=d.ai_remaining||0;if(scanR>0)atZero.scan=0;if(exitR>0)atZero.exit=0;if(aiR>0)atZero.ai=0;upd();}).catch(function(){}); }
+    function fetchS() { fetch('/api/scheduler-status').then(function(r){return r.json();}).then(function(d){scanR=d.scan_remaining||0;exitR=d.exit_remaining||0;aiR=d.ai_remaining||0;marketOpen=d.market_open!==false;if(scanR>0)atZero.scan=0;if(exitR>0)atZero.exit=0;if(aiR>0)atZero.ai=0;upd();}).catch(function(){}); }
     fetchS(); setInterval(function(){if(scanR>0)scanR--;if(exitR>0)exitR--;if(aiR>0)aiR--;upd();},1000); setInterval(fetchS,10000);
 })();
 </script>
