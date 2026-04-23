@@ -17,6 +17,24 @@ Rules going forward:
 
 ---
 
+## 2026-04-22 — AI Intelligence separated into own top-level page (Severity: feature)
+
+**Problem**: The Performance page had 14 AI-related sections crammed into one tab alongside 5 tabs of traditional metrics. This is an AI-first system — it deserved proper organization.
+
+**Solution**: New `/ai` route with 4 tabs matching the Performance page's tab pattern:
+- **Brain** — prediction accuracy, confidence calibration, learned patterns, meta-model
+- **Strategy** — allocation, validations, alpha decay, evolving library
+- **Awareness** — Market Intelligence (NEW), SEC alerts, crisis monitor, events, ensemble
+- **Operations** — self-tuning status/history, AI cost tracking, "What the AI Sees"
+
+Performance page slimmed from 1721 to 762 lines — now only traditional metrics (tabs 1-5). All 18 original AI sections verified present in the new template via line-by-line diff against the original. Data computation copied verbatim from `performance_dashboard()` — no paraphrasing, no guessed field names.
+
+**New Market Intelligence panel** on Awareness tab shows yield curve status (FRED API), CBOE Skew, estimated sector ETF flows, and economic indicators (unemployment, CPI, consumer sentiment, initial claims). Requires free FRED API key (`FRED_API_KEY` in `.env`).
+
+**Full system audit** verified all pages load (10/10), all APIs return valid JSON (7/7), all 13 non-displayed system components functional (prediction resolution, trade pipeline, AI prompt, alt data, crisis detector, upward optimizer, display names, dotenv, backups, earnings cache, ensemble chunk size, political cache).
+
+---
+
 ## 2026-04-22 — 8 free alternative data sources added (Severity: feature)
 
 Added 8 new data sources to give the AI richer context for trading decisions. All free, no API keys required.

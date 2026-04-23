@@ -863,7 +863,7 @@ Raw weights are normalized to sum to 1.0. **No single strategy may exceed 40% of
 
 **Pipeline integration (`trade_pipeline.py` Step 3):** The former `strategy_router.run_strategy(symbol, market_type)` single-call is replaced by `aggregate_candidates(ctx, filtered_candidates, db_path=ctx.db_path)`. Every downstream stage — AI batch, risk gates, execution — sees the merged multi-strategy view.
 
-**Dashboard panel:** `Strategy Allocation` on `/performance#ai` shows per-profile per-strategy weight, rolling Sharpe, lifetime Sharpe, resolved prediction count, and win rate. New strategies display as "default (insufficient history)" until they accumulate track record.
+**Dashboard panel:** `Strategy Allocation` on `/ai` shows per-profile per-strategy weight, rolling Sharpe, lifetime Sharpe, resolved prediction count, and win rate. New strategies display as "default (insufficient history)" until they accumulate track record.
 
 **Why This Matters:** Every additional uncorrelated strategy adds marginal alpha that compounds with the others. Institutional funds gate capital by risk contribution, not by "which strategy feels good" — that discipline is the single biggest separator between hobbyist systems and real quant funds. Adding a new strategy is now a two-line change: drop a module into `strategies/`, list it in `STRATEGY_MODULES`, and the registry, validation gate, decay monitor, and capital allocator handle the rest automatically.
 
@@ -916,7 +916,7 @@ State is persisted in the per-profile `auto_generated_strategies` table with tim
 - Shadow strategies contribute zero to capital allocation until promoted
 - Every AI-proposed spec with a duplicate name or malformed payload is silently dropped — the AI cannot coerce the system into bad state by misbehaving
 
-**Dashboard.** `Evolving Strategy Library` panel on `/performance#ai` shows per-profile counts by status plus each strategy's lineage (generation number, parent, creation/promotion/retirement timestamps).
+**Dashboard.** `Evolving Strategy Library` panel on `/ai` shows per-profile counts by status plus each strategy's lineage (generation number, parent, creation/promotion/retirement timestamps).
 
 **Why This Matters:** Strategy discovery is a full-time job at real funds — teams of PhDs spend months designing, backtesting, and promoting new signals. Our system does it every week, for every profile, with a validation gate that is more rigorous than what most human-designed strategies ever receive. The compounding effect is dramatic: a system that loses its best strategy every year to alpha decay without replacing it slowly dies. A system that proposes and promotes new strategies faster than old ones decay is a system with structurally renewable edge. Combined with Phase 3 monitoring, this is the "self-improving" layer real quant funds dream about but can rarely ship because their legacy infrastructure forbids it.
 
@@ -958,7 +958,7 @@ Specialist weights: `pattern_recognizer=1.2`, `earnings_analyst=1.0`, `risk_asse
 
 **Safety:** malformed specialist responses parse to empty lists, treated as "specialist abstains" — one broken specialist does not abort the pipeline. Confidence values are clamped to [0, 100] on ingest so a hallucinated "confidence 250" from the AI cannot swing the consensus.
 
-**Dashboard.** `Specialist Ensemble` panel on `/performance#ai` shows per-profile, per-symbol consensus + each specialist's vote + confidence, plus a highlighted list of risk VETOs. Makes it trivial to debug bad trades: which specialist was wrong?
+**Dashboard.** `Specialist Ensemble` panel on `/ai` shows per-profile, per-symbol consensus + each specialist's vote + confidence, plus a highlighted list of risk VETOs. Makes it trivial to debug bad trades: which specialist was wrong?
 
 **Why This Matters:** A single generalist prompt rounds off its weaker signals. A specialist forced to focus on exactly one dimension produces sharper verdicts. Combining them with confidence-weighted voting + veto authority is how real institutional research desks decide positions — portfolio managers don't see "the answer," they see each analyst's position and synthesize. Phase 8 brings that structure to AI-first trading at a constant cost of 4 specialist calls per cycle, regardless of shortlist size.
 
@@ -991,7 +991,7 @@ Timers are for batch jobs. Markets react to events. A material 8-K filed at 9:31
 
 **Design: in-process SQLite, not external broker.** We considered Redis / Kafka but SQLite with WAL mode handles hundreds of events per hour trivially and keeps deployment simple. Handler and detector APIs don't depend on the persistence layer — switching to Redis later is a ~100-line change.
 
-**Dashboard.** `Event Stream` panel on `/performance#ai` shows the last 24h of events per profile with severity counts, the event payload (move %, SEC form type, etc), and handler outcomes (e.g., `ensemble=VETO/85%` means the reactive ensemble vetoed).
+**Dashboard.** `Event Stream` panel on `/ai` shows the last 24h of events per profile with severity counts, the event payload (move %, SEC form type, etc), and handler outcomes (e.g., `ensemble=VETO/85%` means the reactive ensemble vetoed).
 
 **Why This Matters:** The gap between "a market-moving event occurred" and "the AI saw it and reacted" is where real alpha comes from in intraday trading. A 15-minute scan tick is a 15-minute information lag — other funds with event-driven architectures trade against you every cycle. Phase 9 brings that lag down to the next scan tick (and eventually, with real-time push sources like WebSocket feeds, to seconds). The specialist ensemble (Phase 8) is the natural reaction engine for events; Phase 9 plugs them into a fast trigger loop.
 
@@ -1032,7 +1032,7 @@ The classifier uses VIX level as the primary gate then escalates with signal cou
    - `elevated`: all `size_pct` values are multiplied by 0.5
    - `crisis` / `severe`: SELL and SHORT orders pass through; BUY orders are removed entirely
 
-**Dashboard.** `Crisis Monitor` panel on `/performance#ai` shows the current level per profile with a colored banner at the top ("⚠ CRISIS" / "⛔ SEVERE"), the active signals and their severities, the current cross-asset readings (VIX, bond/stock deltas, correlation, credit stress), and a collapsible transition history.
+**Dashboard.** `Crisis Monitor` panel on `/ai` shows the current level per profile with a colored banner at the top ("⚠ CRISIS" / "⛔ SEVERE"), the active signals and their severities, the current cross-asset readings (VIX, bond/stock deltas, correlation, credit stress), and a collapsible transition history.
 
 **Why This Matters:** The March 2020, September 2008, February 2018, and August 2015 drawdowns were all foreseeable from cross-asset behavior in the preceding days. Funds with discretionary risk desks shrank early; funds trading strictly off single-asset indicators got clipped. Phase 10 codifies the discretionary risk desk: a small set of rules, run every cycle, that automatically disarm the alpha engines when the market says "not today." It is not a return generator. It is the reason a return generator can compound for years without a ruin event.
 
@@ -1048,7 +1048,7 @@ Two small operational layers that don't add alpha but make the system safe to ru
 
 USD is stored alongside tokens but recomputed from the pricing table on read. This means **re-pricing history is a single-file edit** to `ai_pricing.py` — no DB migration needed when providers change rates.
 
-The dashboard `AI Cost` panel (top of `/performance#ai`) shows per-profile spend over today / 7d / 30d windows plus a breakdown by `purpose` (e.g., `ensemble:earnings_analyst`, `batch_select`, `strategy_proposal`, `sec_diff`) and by `model`. Aggregation is done via `ai_cost_ledger.spend_summary(db_path)`.
+The dashboard `AI Cost` panel (top of `/ai`) shows per-profile spend over today / 7d / 30d windows plus a breakdown by `purpose` (e.g., `ensemble:earnings_analyst`, `batch_select`, `strategy_proposal`, `sec_diff`) and by `model`. Aggregation is done via `ai_cost_ledger.spend_summary(db_path)`.
 
 **Pricing is approximate.** The `PRICING` table in `ai_pricing.py` is best-effort and treats unknown models with a conservative mid-tier fallback (over-estimate is preferred to silent zero). Treat dashboard totals as order-of-magnitude, not billing-grade.
 
@@ -1246,8 +1246,9 @@ Each profile has an isolated database containing:
 | `/dashboard` | Portfolio overview, AI Brain panels (per-profile reasoning + candidate shortlist table with all indicators and alt data), Sector Rotation widget (11 ETFs with inflow/outflow), activity ticker, 15-min countdown timers |
 | `/settings` | API keys, profile management (create/edit/delete), strategy sliders |
 | `/trades` | Trade history with per-profile filtering |
-| `/performance` | 6-tab institutional metrics dashboard (returns, risk, trades, market, scaling, AI Intelligence with Learned Patterns + AI Data Suite reference) |
-| `/ai-performance` | Win rate, P&L, prediction accuracy, self-tuning history |
+| `/performance` | 5-tab institutional metrics dashboard (returns, risk, trades, market, scaling) |
+| `/ai` | 4-tab AI Intelligence dashboard (brain, strategy, awareness, operations) |
+| `/ai-performance` | Legacy AI performance page (redirects to /ai) |
 | `/admin` | User management, API usage tracking |
 | `/universe/{id}` | Popup showing all symbols in a profile's universe |
 | `/backtest/{type}` | Backtest a strategy engine against historical data |
@@ -1640,7 +1641,7 @@ The comparison only appears when there are at least 5 closed trades in the perio
 
 ## 20. Institutional Performance Dashboard
 
-The system includes a comprehensive 6-tab performance dashboard at `/performance` designed to meet institutional investor standards. All metrics are calculated by `metrics.py` using `calculate_all_metrics()`.
+The system includes a 5-tab performance dashboard at `/performance` (traditional metrics) and a separate 4-tab AI Intelligence dashboard at `/ai` (brain, strategy, awareness, operations). Performance metrics are calculated by `metrics.py` using `calculate_all_metrics()`. AI data is served by dedicated view functions and AJAX API endpoints.
 
 ### Tab 1: Executive Summary
 

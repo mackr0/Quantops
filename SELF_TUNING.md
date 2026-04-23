@@ -209,4 +209,4 @@ The meta-model will train automatically once any profile accumulates 100+ resolv
 | `multi_scheduler.py` | Scheduler integration: `_task_self_tune(ctx)` fires daily at snapshot time (3:55 PM ET) |
 | `models.py` | `tuning_history` table CRUD: `log_tuning_change()`, `review_past_adjustments()`, `get_tuning_history()` |
 | `views.py` | Dashboard display: `tuning_status` list built from `describe_tuning_state()` per profile |
-| `templates/performance.html` | UI: Self-Tuning Readiness table, Tuning History section |
+| `templates/ai.html` | UI: Self-Tuning Status/History on Operations tab, Learned Patterns on Brain tab |
