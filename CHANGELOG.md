@@ -17,6 +17,91 @@ Rules going forward:
 
 ---
 
+## 2026-04-24 — Blacklist: move from pre-filter to execution gate so stocks can recover (Severity: high, architectural)
+
+**Problem:** The auto-blacklist at `trade_pipeline.py:817-837` rejected
+any symbol with `win_rate == 0 AND total >= 3` resolved predictions
+directly in the pre-filter, BEFORE the AI ever saw the candidate. That
+meant no new predictions were ever recorded on blacklisted symbols,
+their 0% win rate stayed 0% forever, and the stock was permanently
+excluded from trading with no path back.
+
+User framing (correct): **the blacklist should block TRADING, not
+EVALUATION.** If the AI keeps predicting and those predictions start
+winning, the symbol should earn its way back into the tradable set
+automatically.
+
+**Root cause:** pre-filter conflates two concerns — "don't risk capital
+on this" (valid) and "don't even let the AI think about this" (side
+effect). The latter broke the feedback loop that would let a stock
+recover.
+
+**Fix:** two surgical changes to `trade_pipeline.run_trade_cycle`.
+
+1. **Pre-filter:** removed the `AUTO_BLACKLISTED` skip entirely. Kept
+   the `get_symbol_reputation()` lookup (used downstream by
+   `_build_candidates_data` to surface `track_record` to the AI).
+   Blacklisted symbols now flow through multi-strategy, ranking,
+   ensemble (4 AI calls), batch_select (1 AI call), and **prediction
+   recording** — Step 4's existing logic writes an `ai_predictions` row
+   for every candidate the AI evaluates, regardless of outcome.
+2. **New Step 4.95 "Blacklist gate"** — right after the crisis gate
+   and before execution. Filters `ai_trades` by reputation: entries
+   (BUY/SHORT) for symbols with `win_rate == 0 AND total >= 3` are
+   dropped with a `BLACKLIST_BLOCKED` detail entry and an activity-log
+   row ("AI wanted BUY X but 0/N win rate — prediction recorded for
+   re-evaluation"). Exits (SELL/COVER) are never blocked — blocking
+   them would trap positions.
+
+**Why this works without manual intervention:**
+- The AI keeps predicting on blacklisted symbols every cycle.
+- Those predictions resolve against price over 10 days.
+- `get_symbol_reputation()` recomputes win_rate on each cycle.
+- The instant a blacklisted symbol's win_rate rises above 0%
+  (e.g., 1 win in 4 predictions → 25%), it no longer matches the
+  blacklist predicate → gate passes → execution resumes.
+- No persistent blacklist flag, no manual un-blacklisting, no stale
+  state.
+
+**What does NOT change:**
+- The AI prompt is NOT modified — no "blacklisted" flag is injected
+  into `candidates_data`. The AI already sees `track_record` (e.g.
+  "0W/3L (0% win rate)") via `_build_candidates_data`, so it has
+  visibility into the poor history without us biasing its decision
+  with a dedicated flag.
+- Exits are never blocked (we always want to let positions close).
+- Symbols with < 3 resolved predictions are never blacklisted
+  (insufficient evidence).
+- Cost impact is marginal (+1-3 extra candidates per cycle in the
+  shortlist; most blacklisted symbols don't trigger strong strategy
+  signals and get filtered out at the ranking step anyway).
+
+**Dashboard surface:** `BLACKLIST_BLOCKED` entries appear in the
+pipeline output's `details` list. Each includes the AI's intended
+action, the symbol's win/loss record, and the reason. The activity
+feed logs the same event for historical review.
+
+**Test coverage:** 10 new tests in `tests/test_blacklist_at_execution.py`:
+
+Source-pattern contracts:
+- Pre-filter no longer skips with `AUTO_BLACKLISTED`
+- Step 4.95 gate + `BLACKLIST_BLOCKED` marker both present
+- Gate touches only BUY/SHORT, never SELL/COVER
+- `ai_analyst` source has no `blacklist` references (no prompt bias)
+
+Behavioral:
+- Entry blocked when reputation is 0% WR on 3+ predictions
+- SELL/COVER never blocked even when blacklisted
+- Symbols below 3 predictions not blacklisted (insufficient data)
+- Symbols with no reputation record pass through
+- **Recovered symbols (win_rate > 0%) pass the gate** — proves the
+  "earn your way back" mechanism
+- Mixed portfolio filters correctly (good/blacklisted/fresh/exit)
+
+Tests: 709 → 719 passing.
+
+---
+
 ## 2026-04-24 — Weekly AI-work digest email (Severity: feature)
 
 **What:** New weekly digest — one consolidated email across all active

@@ -813,28 +813,20 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             })
             continue
 
-        # Auto-blacklisted?
-        if symbol in symbol_reputation:
-            rep = symbol_reputation[symbol]
-            if rep["win_rate"] == 0 and rep["total"] >= 3:
-                logging.info(f"  Auto-blacklisted {symbol}: 0/{rep['total']} wins")
-                pre_filter_skips.append({
-                    "symbol": symbol, "action": "AUTO_BLACKLISTED",
-                    "reason": f"0% win rate on {rep['total']} predictions",
-                })
-                # Log to activity feed
-                if ctx is not None:
-                    try:
-                        from models import log_activity
-                        log_activity(
-                            ctx.profile_id, ctx.user_id, "auto_blacklist",
-                            f"Auto-blacklisted {symbol}",
-                            f"0/{rep['total']} wins — skipping until track record improves",
-                            symbol=symbol,
-                        )
-                    except Exception:
-                        pass
-                continue
+        # Blacklist evaluation — note: symbols with 0% win rate across 3+
+        # resolved predictions are NOT skipped here anymore. They flow
+        # through full AI evaluation so new predictions keep getting
+        # recorded. The execution-time blacklist gate (Step 4.95) is the
+        # one that prevents capital from going into them. This inversion
+        # is deliberate: pre-filtering blocked new predictions, which
+        # meant a blacklisted stock's 0% win rate stayed 0% forever with
+        # no path back to tradable. Now the AI keeps testing its call on
+        # these stocks, and win_rate recovers organically — if the AI
+        # starts predicting correctly, the blacklist check at execution
+        # naturally releases the stock.
+        # Note: the AI already sees `track_record` (e.g., "0W/3L (0% win
+        # rate)") in candidates_data, so it has visibility into the poor
+        # history without us injecting a dedicated "blacklisted" flag.
 
         # Earnings block?
         if symbol in earnings_blocklist:
@@ -887,11 +879,15 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
 
     update_status(_pid, "Running 16 strategies", "%d candidates" % len(filtered_candidates))
     # ── STEP 3: Run strategy on ALL filtered candidates (free, no AI) ──
+    # Note: blacklisted symbols flow through (they're blocked at the Step
+    # 4.95 execution gate, not here). This keeps the AI's prediction
+    # feedback loop alive on poorly-performing stocks so they can earn
+    # their way back to tradable.
     logging.info(f"Pipeline: {len(candidates)} candidates -> {len(filtered_candidates)} after pre-filter "
                  f"({len(pre_filter_skips)} removed: "
-                 f"{sum(1 for s in pre_filter_skips if s['action'] == 'AUTO_BLACKLISTED')} blacklisted, "
                  f"{sum(1 for s in pre_filter_skips if s['action'] == 'EARNINGS_SKIP')} earnings, "
-                 f"{sum(1 for s in pre_filter_skips if s['action'] == 'SKIP')} max-positions)")
+                 f"{sum(1 for s in pre_filter_skips if s['action'] == 'SKIP')} max-positions, "
+                 f"{sum(1 for s in pre_filter_skips if s['action'] == 'COOLDOWN')} cooldown)")
 
     details = list(pre_filter_skips)
     errors = []
@@ -1244,6 +1240,68 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     except Exception as exc:
         logging.warning(f"Crisis gate skipped: {exc}")
 
+    # ── STEP 4.95: Blacklist gate (capital protection) ────────────────
+    # Symbols with 0% win rate across 3+ resolved AI predictions are
+    # blocked from NEW ENTRIES (BUY/SHORT). The prediction record was
+    # already written in Step 4 so the AI keeps building data on these
+    # stocks — if its predictions start winning, win_rate rises above 0
+    # and the stock falls off the blacklist automatically without any
+    # manual intervention. Exits (SELL/COVER) are never blocked — we
+    # always want to let positions close.
+    blacklist_blocked = []
+    if symbol_reputation and ai_trades:
+        filtered = []
+        for t in ai_trades:
+            sym = t.get("symbol", "")
+            action = (t.get("action") or "").upper()
+            is_entry = action in ("BUY", "SHORT")
+            rep = symbol_reputation.get(sym)
+            if is_entry and rep and rep.get("win_rate", 1) == 0 and rep.get("total", 0) >= 3:
+                blacklist_blocked.append({
+                    "symbol": sym,
+                    "action": action,
+                    "losses": rep.get("total", 0),
+                    "ai_confidence": t.get("confidence"),
+                })
+                logging.info(
+                    f"  Blacklist gate BLOCKED {action} {sym}: "
+                    f"0/{rep['total']} win rate — keeping prediction recorded "
+                    f"for re-evaluation."
+                )
+                if ctx is not None:
+                    try:
+                        from models import log_activity
+                        log_activity(
+                            ctx.profile_id, ctx.user_id, "blacklist_block",
+                            f"Blacklist blocked {action} {sym}",
+                            f"AI wanted to trade but symbol has 0/{rep['total']} "
+                            f"win rate on resolved predictions. Prediction "
+                            f"recorded; stock re-evaluates automatically as "
+                            f"new predictions resolve.",
+                            symbol=sym,
+                        )
+                    except Exception:
+                        pass
+                continue
+            filtered.append(t)
+        if blacklist_blocked:
+            print(
+                f"  Blacklist gate: blocked {len(blacklist_blocked)} entries "
+                f"({', '.join(b['symbol'] for b in blacklist_blocked)})"
+            )
+            # Surface to the pipeline output so the dashboard shows these
+            for b in blacklist_blocked:
+                details.append({
+                    "symbol": b["symbol"],
+                    "action": "BLACKLIST_BLOCKED",
+                    "reason": (
+                        f"AI wanted {b['action']} but 0/{b['losses']} win "
+                        f"rate on resolved predictions. Prediction still "
+                        f"recorded for re-evaluation."
+                    ),
+                })
+        ai_trades = filtered
+
     update_status(_pid, "Executing trades", "%d selected" % len(ai_trades))
     # ── STEP 5: Execute AI-selected trades ───────────────────────────
     for ai_trade in ai_trades:
@@ -1295,7 +1353,8 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     holds_count = len([s for s in strategy_results if s.get("signal") == "HOLD"])
     skips = [d for d in details if d.get("action") in ("SKIP", "BLOCKED", "NONE",
                                                          "DRAWDOWN_PAUSE", "EXCLUDED",
-                                                         "AUTO_BLACKLISTED", "EARNINGS_SKIP")]
+                                                         "BLACKLIST_BLOCKED", "EARNINGS_SKIP",
+                                                         "COOLDOWN")]
 
     clear_status(_pid)
     logging.info(f"Pipeline complete: {len(candidates)} candidates -> "
