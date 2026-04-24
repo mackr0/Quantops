@@ -385,6 +385,113 @@ class TestScreenerUsesAlpaca:
         )
 
 
+class TestActiveAlpacaSymbolsHelper:
+    """Shared helper used anywhere a hand-curated list needs to be filtered
+    against Alpaca's current tradable set. Regression guard for the
+    2026-04-24 MAGA dead-ticker log-spam fix."""
+
+    def _reset_cache(self, screener):
+        screener._active_symbols_cache = {"timestamp": 0.0, "symbols": set()}
+
+    def test_returns_active_symbol_set(self, monkeypatch):
+        import screener
+        self._reset_cache(screener)
+
+        class FakeAsset:
+            def __init__(self, sym, tradable=True, ex="NYSE"):
+                self.symbol = sym
+                self.tradable = tradable
+                self.exchange = ex
+        fake = [
+            FakeAsset("AAPL"),
+            FakeAsset("MSFT"),
+            FakeAsset("DELISTED_OTC", ex="OTC"),  # wrong exchange — filtered
+            FakeAsset("NOT_TRADABLE", tradable=False),  # untradable
+            FakeAsset("HAS.DOT", ex="NYSE"),  # dot filtered
+        ]
+
+        class FakeApi:
+            def list_assets(self, status="active"):
+                return fake
+        monkeypatch.setattr("client.get_api", lambda ctx=None: FakeApi())
+
+        result = screener.get_active_alpaca_symbols()
+        assert result == {"AAPL", "MSFT"}
+
+    def test_cache_hit_skips_alpaca(self, monkeypatch):
+        import screener, time
+        self._reset_cache(screener)
+        # Pre-warm the cache
+        screener._active_symbols_cache = {
+            "timestamp": time.time(),
+            "symbols": {"CACHED_A", "CACHED_B"},
+        }
+
+        called = {"n": 0}
+        class FakeApi:
+            def list_assets(self, status="active"):
+                called["n"] += 1
+                return []
+        monkeypatch.setattr("client.get_api", lambda ctx=None: FakeApi())
+
+        result = screener.get_active_alpaca_symbols()
+        assert result == {"CACHED_A", "CACHED_B"}
+        assert called["n"] == 0, "cache hit must not call Alpaca"
+
+    def test_stale_cache_triggers_refresh(self, monkeypatch):
+        import screener
+        self._reset_cache(screener)
+        # Old timestamp (0) means cache is infinitely stale
+        screener._active_symbols_cache = {
+            "timestamp": 0.0, "symbols": {"OLD"},
+        }
+
+        class FakeAsset:
+            def __init__(self, sym):
+                self.symbol = sym
+                self.tradable = True
+                self.exchange = "NYSE"
+        class FakeApi:
+            def list_assets(self, status="active"):
+                return [FakeAsset("FRESH1"), FakeAsset("FRESH2")]
+        monkeypatch.setattr("client.get_api", lambda ctx=None: FakeApi())
+
+        result = screener.get_active_alpaca_symbols()
+        assert result == {"FRESH1", "FRESH2"}
+
+    def test_alpaca_failure_returns_stale(self, monkeypatch):
+        import screener
+        self._reset_cache(screener)
+        # Prime with stale data
+        screener._active_symbols_cache = {
+            "timestamp": 0.0, "symbols": {"STALE_A", "STALE_B"},
+        }
+
+        class FailingApi:
+            def list_assets(self, status="active"):
+                raise RuntimeError("Alpaca down")
+        monkeypatch.setattr("client.get_api", lambda ctx=None: FailingApi())
+
+        result = screener.get_active_alpaca_symbols()
+        assert result == {"STALE_A", "STALE_B"}, (
+            "on Alpaca failure, helper must return last-known-good set"
+        )
+
+    def test_alpaca_failure_and_no_cache_returns_empty(self, monkeypatch):
+        """First call with Alpaca down returns empty — callers must
+        fail-open by using their own fallback logic."""
+        import screener
+        self._reset_cache(screener)
+
+        class FailingApi:
+            def list_assets(self, status="active"):
+                raise RuntimeError("cold start, Alpaca unreachable")
+        monkeypatch.setattr("client.get_api", lambda ctx=None: FailingApi())
+
+        result = screener.get_active_alpaca_symbols()
+        assert result == set()
+
+
 # ---------------------------------------------------------------------------
 # Contract tests — source pattern guards against regression
 # ---------------------------------------------------------------------------
@@ -535,4 +642,30 @@ class TestMigrationContract:
         assert "load_dotenv()" in src, (
             "app.py must call load_dotenv() — without it, the gunicorn web "
             "process has no env vars and all Alpaca data calls fail silently"
+        )
+
+    def test_maga_scan_filters_universe_via_get_active_alpaca_symbols(self):
+        """The MAGA oversold scan in multi_scheduler previously looped the
+        raw segments.py universe and hit yfinance for every delisted ticker
+        (SQ→XYZ, PARA→PSKY, X, CFLT, AZUL, ...), generating 170+
+        'possibly delisted' errors per day. Filter via
+        `get_active_alpaca_symbols` to skip dead names.
+
+        This contract test asserts the call is present. Removing or renaming
+        the filter call re-introduces the log spam."""
+        import inspect, multi_scheduler
+        src = inspect.getsource(multi_scheduler)
+        # Find the MAGA block
+        assert "MAGA Mode oversold scan" in src, (
+            "MAGA oversold scan block should exist in multi_scheduler.py"
+        )
+        # Check the filter is applied somewhere in the MAGA region
+        maga_idx = src.find("MAGA Mode oversold scan")
+        # Look within the next ~2000 chars (should cover the MAGA block)
+        maga_block = src[maga_idx:maga_idx + 2500]
+        assert "get_active_alpaca_symbols" in maga_block, (
+            "MAGA oversold scan must filter segments.py universe against "
+            "Alpaca's active-asset set. Otherwise delisted tickers hit "
+            "yfinance every cycle and spam the log with 'possibly delisted' "
+            "errors. See screener.get_active_alpaca_symbols."
         )

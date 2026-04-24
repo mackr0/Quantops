@@ -535,6 +535,59 @@ _load_disk_cache()
 _dyn_logger = _logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Alpaca active-asset cache — lets any code path filter a hand-curated symbol
+# list against Alpaca's current "tradable US equity" set. Used by the MAGA
+# oversold scan to avoid hitting yfinance for delisted tickers (SQ→XYZ,
+# PARA→PSKY, acquired names like CFLT/X/AZUL) that still live in
+# segments.py's hardcoded universes.
+# ---------------------------------------------------------------------------
+
+_ACTIVE_SYMBOLS_TTL = 86400  # 24h — Alpaca's asset list rarely changes
+_active_symbols_cache = {"timestamp": 0.0, "symbols": set()}
+
+
+def get_active_alpaca_symbols(ctx=None, ttl=_ACTIVE_SYMBOLS_TTL):
+    """Return the set of Alpaca-active, tradable US equity symbols.
+
+    Cached 24h in-process. Filters to US exchange listings (NYSE, NASDAQ,
+    ARCA, AMEX) and excludes warrant/preferred suffixes. Identical filter
+    rules as `screen_dynamic_universe` so consumers see a consistent
+    view of "what can we actually trade."
+
+    On Alpaca failure, returns the last known good set (stale is better
+    than empty — the caller can always fall back to its own logic if it
+    sees an empty set). On first call with Alpaca down, returns empty.
+    """
+    now = _time.time()
+    if (now - _active_symbols_cache["timestamp"] < ttl
+            and _active_symbols_cache["symbols"]):
+        return _active_symbols_cache["symbols"]
+
+    try:
+        from client import get_api
+        api = get_api(ctx)
+        assets = api.list_assets(status="active")
+        active = set()
+        for a in assets:
+            if (a.tradable and a.exchange in ("NYSE", "NASDAQ", "ARCA", "AMEX")
+                    and "." not in a.symbol
+                    and not a.symbol.endswith(".W")):
+                active.add(a.symbol)
+        _active_symbols_cache["timestamp"] = now
+        _active_symbols_cache["symbols"] = active
+        _dyn_logger.info("Alpaca active-symbols cache refreshed: %d symbols",
+                         len(active))
+        return active
+    except Exception as exc:
+        _dyn_logger.warning(
+            "get_active_alpaca_symbols: Alpaca lookup failed (%s), "
+            "returning %d stale entries",
+            exc, len(_active_symbols_cache["symbols"]),
+        )
+        return _active_symbols_cache["symbols"]
+
+
 def screen_dynamic_universe(min_price=1.0, max_price=20.0, min_volume=500_000,
                              market_type="small", fallback_universe=None,
                              ctx=None, max_symbols=100):

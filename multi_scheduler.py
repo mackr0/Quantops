@@ -540,7 +540,27 @@ def _get_shared_candidates(ctx, seg, is_crypto):
     maga_mode = ctx.maga_mode if ctx is not None else False
     if maga_mode and not is_crypto:
         from market_data import get_bars, add_indicators
-        universe = seg.get("universe", [])
+        from screener import get_active_alpaca_symbols
+        raw_universe = seg.get("universe", [])
+        # Filter against Alpaca's active-asset list — skips renamed (SQ→XYZ,
+        # PARA→PSKY, GPS→GAP) and delisted names (CFLT/X/AZUL/etc.) that
+        # still live in segments.py hardcoded lists. Without this filter,
+        # each dead ticker triggers a yfinance "possibly delisted" error
+        # (log noise only — the scan already skips empty-bar symbols — but
+        # 170+ errors/day makes the journal unreadable). Fail-open: if
+        # Alpaca is unreachable and the active-set is empty, use the full
+        # raw universe (current behavior preserved).
+        active_set = get_active_alpaca_symbols(ctx)
+        if active_set:
+            universe = [s for s in raw_universe if s in active_set]
+            skipped = len(raw_universe) - len(universe)
+            if skipped:
+                logging.debug(
+                    f"[{ctx.display_name}] MAGA universe: {len(raw_universe)} hardcoded "
+                    f"→ {len(universe)} Alpaca-active ({skipped} dead tickers filtered)"
+                )
+        else:
+            universe = raw_universe
         logging.info(f"[{ctx.display_name}] MAGA Mode: scanning for oversold opportunities...")
         maga_added = 0
         for sym in universe:

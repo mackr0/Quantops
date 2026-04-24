@@ -17,6 +17,59 @@ Rules going forward:
 
 ---
 
+## 2026-04-24 — Stop MAGA oversold scan from spamming yfinance for dead tickers (Severity: low, log hygiene)
+
+**Problem:** Today's audit showed 175 "possibly delisted" errors in the
+production log across 30 unique symbols (`AUY, AZUL, CEIX, CFLT, CPE,
+DLOCAL, ERJ, GPS, HEAR, IAS, LILM, PARA, SQ, VTLE, X, ...`). Yesterday's
+screener fix filtered these out of `screen_dynamic_universe.fallback_universe`,
+but the errors kept appearing — because a different code path was still
+hitting yfinance for them every scan cycle.
+
+**Root cause:** `multi_scheduler.py:543` — the MAGA mode oversold scan
+loops directly over the raw hardcoded `seg["universe"]` from
+`segments.py` (containing the known-stale hand-curated list) and calls
+`get_bars(sym, limit=30)` for every symbol. Dead tickers return empty
+from Alpaca → fall through to yfinance → yfinance logs "possibly
+delisted" to stderr.
+
+**Not a cost issue:** `get_bars` with empty/short bars results in the
+MAGA loop's `if bars is None or bars.empty or len(bars) < 15: continue`
+skip — no AI calls triggered, no trading impact. Pure log noise.
+**Is a readability issue:** 170+ error lines/day make
+`journalctl -u quantopsai` unreadable and would mask real failures.
+
+**Fix:** New shared helper `screener.get_active_alpaca_symbols(ctx)` —
+returns the set of Alpaca-active, tradable US equity symbols (same
+filter rules as `screen_dynamic_universe`: US exchange, tradable,
+no warrant/preferred suffixes). 24h in-process cache. Fail-open: on
+Alpaca failure returns last-known-good set; on first-call-with-failure
+returns empty (caller's fallback kicks in).
+
+MAGA oversold scan now intersects `seg["universe"]` with this active
+set before the loop. When the active set is empty (Alpaca completely
+unreachable + no cache), uses the raw universe (preserves prior
+behavior).
+
+**Why the helper vs inline filter:** other hand-curated-universe paths
+may get this same treatment later (e.g. the bigger
+`DYNAMIC_UNIVERSE_PLAN.md` refactor). Centralizing the filter rules
+means a future audit fixes them all in one place.
+
+**Test coverage:** 6 new tests.
+- `TestActiveAlpacaSymbolsHelper` (5): returns filtered set, cache hit,
+  stale-refresh, stale-on-failure, empty-on-cold-failure
+- `TestMigrationContract.test_maga_scan_filters_universe_via_get_active_alpaca_symbols`
+  — source-pattern contract guards the MAGA block against regression
+
+Tests: 690 → 696 passing.
+
+**Expected impact:** delisted-ticker error lines drop from ~170/day to
+zero within one scan cycle after deploy (once 24h active-symbols cache
+warms). No trading behavior change. No cost change.
+
+---
+
 ## 2026-04-23 — Gate earnings_analyst when no candidate has earnings in 14d window (Severity: medium, cost)
 
 **Problem:** Today's ensemble audit showed `earnings_analyst` outputs
