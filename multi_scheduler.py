@@ -297,6 +297,15 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_auto_strategy_generation(ctx),
             db_path=ctx.db_path,
         )
+        # Weekly AI-work digest — single email across all profiles, fires
+        # once per week on Friday evenings. Cheap no-op on other days; the
+        # file-based idempotency marker means only the first profile to
+        # reach this task on Friday actually sends the email.
+        run_task(
+            f"[{seg_label}] Weekly AI Digest",
+            lambda: _task_weekly_digest(),
+            db_path=ctx.db_path,
+        )
 
     if run_summary:
         run_task(
@@ -1388,6 +1397,72 @@ def _task_db_backup(ctx):
             logging.warning(f"[{seg_label}] DB backup had {summary['failed']} failures")
     except Exception as exc:
         logging.warning(f"DB backup task failed: {exc}")
+
+
+def _task_weekly_digest(master_db_path=None):
+    """Send the weekly AI-work digest email.
+
+    Idempotent: only fires once per Friday, after 17:00 server-local
+    (5 PM, past the 15:55 self-tune). File-based marker survives
+    restarts AND ensures the 10 profiles that hit this task sequentially
+    from the daily snapshot block don't produce 10 emails.
+
+    Safe no-op on non-Fridays, before 17:00, or when already sent today.
+    """
+    try:
+        now = datetime.now(ET)
+        # Fridays only (weekday 4) in Eastern Time — market-close day
+        if now.weekday() != 4:
+            return
+        # 16:00 ET = market close. Fires with the daily-snapshot block
+        # which runs on the first scheduler tick after 15:55 ET. By 16:00
+        # the self-tune has already run (15:55 trigger), so the digest
+        # captures the week's FINAL tuning decisions.
+        # Server runs UTC — explicit ET conversion here matches the other
+        # timing-sensitive gates (snapshot, self-tune).
+        if now.hour < 16:
+            return
+
+        if master_db_path is None:
+            import config as _config
+            master_db_path = _config.DB_PATH
+
+        marker_path = os.path.join(
+            os.path.dirname(os.path.abspath(master_db_path)),
+            ".weekly_digest_sent.marker",
+        )
+        today_str = now.strftime("%Y-%m-%d")
+        try:
+            with open(marker_path) as f:
+                last_sent = f.read().strip()
+            if last_sent == today_str:
+                return  # already sent this Friday
+        except FileNotFoundError:
+            pass
+
+        from ai_weekly_summary import build_weekly_summary, render_html
+        from notifications import send_email
+        summary = build_weekly_summary(master_db_path=master_db_path)
+        subject, html = render_html(summary)
+        ok = send_email(subject, html, ctx=None)
+        if ok:
+            # Write marker AFTER a successful send — retry next cycle if failed
+            try:
+                with open(marker_path, "w") as f:
+                    f.write(today_str)
+            except Exception as exc:
+                logging.warning("Weekly digest marker write failed: %s", exc)
+            logging.info(
+                "Weekly AI digest sent: %s profiles=%d trades=%d pnl=$%.2f",
+                subject,
+                len(summary["profiles"]),
+                summary["totals"]["buys"] + summary["totals"]["sells"],
+                summary["totals"]["realized_pnl"],
+            )
+        else:
+            logging.warning("Weekly digest email failed — will retry next cycle")
+    except Exception as exc:
+        logging.warning("Weekly digest task failed: %s", exc)
 
 
 def _task_auto_strategy_lifecycle(ctx):

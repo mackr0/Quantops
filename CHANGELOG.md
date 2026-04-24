@@ -17,6 +17,64 @@ Rules going forward:
 
 ---
 
+## 2026-04-24 — Weekly AI-work digest email (Severity: feature)
+
+**What:** New weekly digest — one consolidated email across all active
+trading profiles — summarizing the autonomous changes the AI made, why,
+and their observed effect. Fires every Friday at market close
+(16:00 ET, right after the 15:55 ET self-tune run so the week's last
+tuning decisions are captured).
+
+**Sections:**
+- Week at a glance — total realized P&L, trades, resolved-prediction
+  win rate, AI cost, count of autonomous changes
+- Per-profile table — buys/sells, resolved (win rate), realized P&L,
+  AI cost per profile
+- Self-tuning changes — parameter, old → new, reason, outcome_after
+  (improved/worsened/neutral) with win_rate_after
+- Strategy deprecations & restorations (Phase 3 alpha decay)
+- Auto-strategy lifecycle transitions (Phase 7)
+- Crisis-state transitions (Phase 10)
+- Trading narrative — top 5 winners + bottom 3 losers with AI reasoning
+  and confidence, grouped by profile
+
+**Idempotency:** file marker at `{master_db_dir}/.weekly_digest_sent.marker`
+stores the last-send date. The task is called from the daily-snapshot
+block (per-profile) — the marker ensures only the first profile hitting
+the task on Friday actually sends; the other 9 no-op. On send failure
+the marker is NOT written, so next cycle retries.
+
+**Gates:**
+- `weekday() == 4` (Friday)
+- `hour >= 16` in ET (matches the snapshot-block fire time)
+- `marker_date != today` (not already sent today)
+
+All gates use `datetime.now(ET)` — server is UTC, explicit conversion
+matches the rest of the scheduler's timing-sensitive code.
+
+**Why not 17:00 ET (my first draft):** the snapshot block only fires
+once per day, on the first scheduler tick after 15:55 ET. A 17:00 gate
+would have skipped the snapshot's only call to the digest task, so the
+email would never send. 16:00 ET aligns with the snapshot fire time.
+
+**Files:**
+- `ai_weekly_summary.py` (new, ~420 lines) — `build_weekly_summary`
+  across master + per-profile DBs; `render_html` emits subject + full
+  HTML using existing `notifications.py` helpers
+  (`_wrap_html`, `_section`, `_table`, `_color_pnl`, etc.)
+- `multi_scheduler.py` — new `_task_weekly_digest` + hook inside the
+  daily snapshot block
+- `tests/test_weekly_digest.py` (new) — 13 tests covering build,
+  render, day/time gating, idempotency, and retry-on-failure
+
+**Uses existing infrastructure:** Resend via `notifications.send_email`,
+env-var-based recipient (`NOTIFICATION_EMAIL`), styling helpers shared
+with trade/veto/daily-summary emails.
+
+**Tests:** 696 → 709 passing.
+
+---
+
 ## 2026-04-24 — Stop MAGA oversold scan from spamming yfinance for dead tickers (Severity: low, log hygiene)
 
 **Problem:** Today's audit showed 175 "possibly delisted" errors in the
