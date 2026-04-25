@@ -42,6 +42,9 @@ CHANGED=$(rsync -az --delete --dry-run --itemize-changes \
     --exclude 'scheduler_status.json' \
     --exclude 'dynamic_screener_cache.json' \
     --exclude '.sync_test_marker' \
+    --exclude '.daily_snapshot_done.marker' \
+    --exclude '.daily_summary_sent_p*.marker' \
+    --exclude '.weekly_digest_sent.marker' \
     /Users/mackr0/Quantops/ \
     root@${DROPLET_IP}:${REMOTE_DIR}/ 2>/dev/null | grep '^<f' | awk '{print $2}' || true)
 
@@ -73,6 +76,9 @@ rsync -az --delete \
     --exclude 'scheduler_status.json' \
     --exclude 'dynamic_screener_cache.json' \
     --exclude '.sync_test_marker' \
+    --exclude '.daily_snapshot_done.marker' \
+    --exclude '.daily_summary_sent_p*.marker' \
+    --exclude '.weekly_digest_sent.marker' \
     /Users/mackr0/Quantops/ \
     root@${DROPLET_IP}:${REMOTE_DIR}/
 
