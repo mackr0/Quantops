@@ -1616,6 +1616,8 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_trailing_atr_multiplier,
         # Wave 4 — Layer 2 weighted signal intensity
         _optimize_signal_weights,
+        # Wave 5 — Layer 3 per-regime parameter overrides
+        _optimize_regime_overrides,
     ]
 
     results = []
@@ -2910,6 +2912,146 @@ def _optimize_trailing_atr_multiplier(conn, ctx, profile_id, user_id,
 # nudges weight up or down based on the differential WR. Same safety
 # scaffolding as Layer 1.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Wave 5 — Layer 3 per-regime parameter overrides. The tuner detects
+# parameters that perform meaningfully differently across regimes
+# (bull / bear / sideways / volatile / crisis) and creates per-regime
+# overrides so each regime gets the value that's empirically best for it.
+# ---------------------------------------------------------------------------
+
+# Which parameters are eligible for per-regime override creation. The
+# tuner needs both (a) a clear way to detect "this parameter would be
+# better at value X in regime R" and (b) the parameter must already be
+# in the global tuning system. Limit to parameters whose regime-specific
+# values are most likely to actually differ in practice.
+_REGIME_TUNABLE_PARAMS = {
+    "stop_loss_pct",
+    "take_profit_pct",
+    "max_position_pct",
+    "ai_confidence_threshold",
+    "max_total_positions",
+    "atr_multiplier_sl",
+    "atr_multiplier_tp",
+}
+
+_REGIME_MIN_SAMPLES = 10  # per regime — below this, fall back to global
+_REGIME_DIFF_THRESHOLD = 12  # percentage points WR diff to act on
+
+
+def _optimize_regime_overrides(conn, ctx, profile_id, user_id,
+                                 overall_wr, resolved):
+    """For each regime-tunable parameter, check if any one regime has a
+    materially different win-rate pattern. If so, create a per-regime
+    override that nudges the parameter in the regime-appropriate
+    direction.
+
+    Detection model: bucket resolved predictions by regime; if one regime
+    has WR >=12pt below overall AND >=10 samples, push that regime's
+    parameter toward the more-conservative end of its range. If WR is
+    >=12pt above, push toward more-aggressive.
+
+    Same safety scaffolding as Layer 1: cooldown keyed on
+    `regime:<regime>:<param>`, reverse-if-worsened, bound clamping.
+    """
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(ai_predictions)").fetchall()}
+    if "regime_at_prediction" not in cols:
+        return None
+
+    rows = conn.execute(
+        "SELECT regime_at_prediction, COUNT(*) as total, "
+        " SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) as wins "
+        "FROM ai_predictions "
+        "WHERE status='resolved' AND regime_at_prediction IS NOT NULL "
+        "GROUP BY regime_at_prediction"
+    ).fetchall()
+    if not rows:
+        return None
+
+    from regime_overrides import (
+        RECOGNISED_REGIMES, set_override, parse_overrides, resolve_param
+    )
+    raw = getattr(ctx, "regime_overrides", None)
+    overrides = parse_overrides(raw if isinstance(raw, str) else None)
+
+    # For each regime with enough samples, find a parameter to tune.
+    for r in rows:
+        regime = r["regime_at_prediction"]
+        if regime not in RECOGNISED_REGIMES:
+            continue
+        n = r["total"]
+        if n < _REGIME_MIN_SAMPLES:
+            continue
+        regime_wr = (r["wins"] / n) * 100.0 if n > 0 else 0
+        diff = regime_wr - overall_wr  # negative = underperforming
+
+        if abs(diff) < _REGIME_DIFF_THRESHOLD:
+            continue  # Regime not differentiated enough — no action
+
+        # Pick the most impactful parameter to override per regime.
+        # When a regime underperforms, the safest lever is position size
+        # (less capital at risk). When it outperforms, raise the
+        # confidence threshold so we ride the edge.
+        if diff < 0:
+            # Underperforming regime — reduce position size for it
+            param_name = "max_position_pct"
+            cool_key = f"regime:{regime}:{param_name}"
+            if not _safe_change_guarded(profile_id, cool_key):
+                continue
+            current = resolve_param(ctx, param_name, regime,
+                                    default=getattr(ctx, param_name, 0.10))
+            new_val = round(max(_bound(param_name, current * 0.75), 0.03), 4)
+            if new_val >= current:
+                continue
+            from models import log_tuning_change
+            set_override(profile_id, param_name, regime, new_val)
+            reason = (
+                f"{regime.title()} regime WR {regime_wr:.0f}% on {n} samples "
+                f"vs {overall_wr:.0f}% overall — reduce position size for "
+                f"this regime only"
+            )
+            log_tuning_change(
+                profile_id, user_id, "regime_override_down",
+                cool_key, str(current), str(new_val), reason,
+                win_rate_at_change=overall_wr, predictions_resolved=resolved,
+            )
+            return (
+                f"Set {regime} regime override: "
+                f"{_label(param_name)} {current:.0%} → {new_val:.0%} "
+                f"({reason})"
+            )
+
+        # diff > 0: outperforming regime — raise confidence threshold
+        # to focus on this regime's strongest setups
+        param_name = "ai_confidence_threshold"
+        cool_key = f"regime:{regime}:{param_name}"
+        if not _safe_change_guarded(profile_id, cool_key):
+            continue
+        current = resolve_param(ctx, param_name, regime,
+                                default=getattr(ctx, param_name, 25))
+        new_val = int(_bound(param_name, current + 5))
+        if new_val <= current:
+            continue
+        from models import log_tuning_change
+        set_override(profile_id, param_name, regime, new_val)
+        reason = (
+            f"{regime.title()} regime WR {regime_wr:.0f}% on {n} samples "
+            f"vs {overall_wr:.0f}% overall — raise confidence floor "
+            f"for this regime to focus on strongest setups"
+        )
+        log_tuning_change(
+            profile_id, user_id, "regime_override_up",
+            cool_key, str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (
+            f"Set {regime} regime override: "
+            f"{_label(param_name)} {current} → {new_val} ({reason})"
+        )
+
+    return None
+
 
 def _optimize_signal_weights(conn, ctx, profile_id, user_id,
                               overall_wr, resolved):

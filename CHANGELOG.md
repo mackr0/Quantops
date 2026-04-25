@@ -17,6 +17,62 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Autonomous tuning Wave 5: Layer 3 Per-Regime Parameter Overrides (Severity: medium, behavior + architecture)
+
+**The big architectural one.** Real quant funds use different
+parameters in different market regimes — a stop-loss right for sideways
+trading is too tight for volatile breakouts, a position size right in
+bull is too aggressive in crisis. This wave gives the tuner a place to
+express those overrides without forcing the user to maintain five
+copies of every profile.
+
+**New module: `regime_overrides.py`.**
+- `RECOGNISED_REGIMES = {"bull","bear","sideways","volatile","crisis"}`
+- `parse_overrides(json)` — defensive JSON parsing with bounds
+  clamping and unknown-regime/unknown-param filtering.
+- `resolve_param(profile, name, regime, default=...)` — single source
+  of truth for parameter access at decision time. Per-regime override
+  first, then global, then default.
+- `resolve_for_current_regime(profile, name, default=...)` — wrapper
+  that auto-detects current regime via `market_regime.detect_regime()`
+  with 5-minute cache.
+- `set_override(profile_id, name, regime, value)` — clamped persist;
+  `value=None` removes the override.
+
+**Schema migration:** `regime_overrides TEXT NOT NULL DEFAULT '{}'`
+column added to `trading_profiles` via the existing auto-migration
+framework.
+
+**Pipeline integration** (`trade_pipeline.py`): every decision-point
+read of `ai_confidence_threshold`, `max_position_pct`, `stop_loss_pct`,
+`take_profit_pct`, `max_total_positions` now goes through
+`resolve_for_current_regime`. Falls back gracefully on any error.
+
+**Tuner detection** (`self_tuning._optimize_regime_overrides`): walks
+each regime that has ≥10 resolved predictions. If regime WR diverges
+from overall by ≥12pt, creates a regime-specific override:
+- Underperforming regime → reduce `max_position_pct` 25% for that
+  regime only.
+- Outperforming regime → raise `ai_confidence_threshold` +5 to focus
+  on strongest setups.
+
+Same safety scaffolding as previous waves: cooldown keyed on
+`regime:<regime>:<param>`, reverse-if-worsened, snap to PARAM_BOUNDS.
+
+**Tests:** 17 new in `test_regime_overrides.py` covering parse/resolve
+fallback chains, current-regime auto-detection, tuner divergence
+detection, sample-size and cooldown respect. Full suite: 818 passed.
+
+**Documentation:** `SELF_TUNING.md` Layer 3 section added.
+
+This is the architectural enabler for per-context decision-making.
+Layer 4 (per-time-of-day) and Layer 7 (per-symbol) will reuse the
+exact same pattern: a JSON column + a `resolve_for_*` helper +
+fallback chain. The pattern generalizes; future context dimensions
+just plug in.
+
+---
+
 ## 2026-04-25 — Hotfix: sync.sh missed models.py → web restart, schema migration didn't auto-apply (Severity: high, deploy regression)
 
 **Problem:** W4 added a `signal_weights` column to `trading_profiles`

@@ -161,8 +161,18 @@ def ai_review(symbol, technical_signal, ctx=None, political_context=None):
         db_path=db_path,
     )
 
-    # Determine the confidence threshold
-    min_confidence = ctx.ai_confidence_threshold if ctx is not None else AI_MIN_CONFIDENCE
+    # Determine the confidence threshold — Layer 3 lookup so the
+    # tuner's per-regime overrides take effect transparently.
+    if ctx is not None:
+        try:
+            from regime_overrides import resolve_for_current_regime
+            min_confidence = resolve_for_current_regime(
+                ctx, "ai_confidence_threshold",
+                default=ctx.ai_confidence_threshold)
+        except Exception:
+            min_confidence = ctx.ai_confidence_threshold
+    else:
+        min_confidence = AI_MIN_CONFIDENCE
 
     # Approval logic for BUY trades — threshold applies to ALL signals,
     # no bypass for BUY (removed 2026-04-23, was undermining self-tuner)
@@ -246,11 +256,31 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             # Never block a trade due to earnings lookup failure
             pass
 
-    # Resolve parameters from ctx, explicit arg, or module-level constants
-    if max_position_pct is None:
-        max_position_pct = ctx.max_position_pct if ctx is not None else DEFAULT_MAX_POSITION_PCT
-    stop_loss_pct = ctx.stop_loss_pct if ctx is not None else DEFAULT_STOP_LOSS_PCT
-    take_profit_pct = ctx.take_profit_pct if ctx is not None else DEFAULT_TAKE_PROFIT_PCT
+    # Resolve parameters from ctx with per-regime override support, then
+    # explicit arg, or module-level constants. Layer 3 lookup means a
+    # tuner-set override for "stop_loss_pct in volatile regime" actually
+    # takes effect at order-placement time.
+    if ctx is not None:
+        try:
+            from regime_overrides import resolve_for_current_regime
+            if max_position_pct is None:
+                max_position_pct = resolve_for_current_regime(
+                    ctx, "max_position_pct",
+                    default=ctx.max_position_pct)
+            stop_loss_pct = resolve_for_current_regime(
+                ctx, "stop_loss_pct", default=ctx.stop_loss_pct)
+            take_profit_pct = resolve_for_current_regime(
+                ctx, "take_profit_pct", default=ctx.take_profit_pct)
+        except Exception:
+            if max_position_pct is None:
+                max_position_pct = ctx.max_position_pct
+            stop_loss_pct = ctx.stop_loss_pct
+            take_profit_pct = ctx.take_profit_pct
+    else:
+        if max_position_pct is None:
+            max_position_pct = DEFAULT_MAX_POSITION_PCT
+        stop_loss_pct = DEFAULT_STOP_LOSS_PCT
+        take_profit_pct = DEFAULT_TAKE_PROFIT_PCT
     db_path = ctx.db_path if ctx is not None else None
 
     api = get_api(ctx)
@@ -383,8 +413,15 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             result["reason"] = "Position size too small"
             return result
 
-        # Portfolio constraint check — pass ctx-derived params
-        max_total = ctx.max_total_positions if ctx is not None else None
+        # Portfolio constraint check — Layer 3 regime-aware lookup
+        try:
+            from regime_overrides import resolve_for_current_regime
+            max_total = (resolve_for_current_regime(
+                ctx, "max_total_positions",
+                default=ctx.max_total_positions)
+                if ctx is not None else None)
+        except Exception:
+            max_total = ctx.max_total_positions if ctx is not None else None
         proposed = {"side": "buy", "qty": qty, "price": price}
         allowed, constraint_reason = check_portfolio_constraints(
             symbol, proposed, positions, account,
@@ -720,7 +757,16 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     Returns summary dict with counts and details.
     """
     if max_position_pct is None:
-        max_position_pct = ctx.max_position_pct if ctx is not None else DEFAULT_MAX_POSITION_PCT
+        if ctx is not None:
+            try:
+                from regime_overrides import resolve_for_current_regime
+                max_position_pct = resolve_for_current_regime(
+                    ctx, "max_position_pct",
+                    default=ctx.max_position_pct)
+            except Exception:
+                max_position_pct = ctx.max_position_pct
+        else:
+            max_position_pct = DEFAULT_MAX_POSITION_PCT
 
     # ── STEP 0: Portfolio state (fetched ONCE) ──────────────────────
     from scan_status import update_status, clear_status
@@ -759,7 +805,15 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
 
     enable_shorts = ctx.enable_short_selling if ctx is not None else False
     num_positions = len(positions_list)
-    max_positions = ctx.max_total_positions if ctx is not None else 10
+    if ctx is not None:
+        try:
+            from regime_overrides import resolve_for_current_regime
+            max_positions = resolve_for_current_regime(
+                ctx, "max_total_positions", default=ctx.max_total_positions)
+        except Exception:
+            max_positions = ctx.max_total_positions
+    else:
+        max_positions = 10
     at_max_positions = num_positions >= max_positions
 
     update_status(_pid, "Pre-filtering", "%d candidates" % len(candidates))

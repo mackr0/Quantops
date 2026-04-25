@@ -76,6 +76,29 @@ The tuner currently autonomously adjusts these levers. Each rule fires at most o
 
 **Total levers auto-tuned today: 35** (8 pre-existing + 15 from Wave 1 + 8 from Wave 2 + 4 from Wave 3 + per-signal weight system from Wave 4 covering 21 signals).
 
+### Wave 5 — Per-Regime Parameter Overrides (Layer 3, newly active)
+
+Each parameter can have **regime-specific values** that override the
+profile's global value when the market is in that regime. Recognised
+regimes: `bull`, `bear`, `sideways`, `volatile`, `crisis`.
+
+Storage: `regime_overrides` JSON column on `trading_profiles`. Empty by
+default — every parameter resolves to its global value until the tuner
+detects a per-regime divergence worth correcting for.
+
+**Pipeline integration:** `regime_overrides.resolve_for_current_regime(profile, name, default=...)` is called instead of `getattr(profile, name)` at every decision point that reads a tunable parameter. The helper auto-detects the current regime (cached 5 min) and returns the per-regime override if one exists, else falls back to the profile's global. Today wired into:
+
+- Trade-pipeline confidence threshold (`ai_confidence_threshold`)
+- Position sizing (`max_position_pct`)
+- Stop-loss / take-profit (`stop_loss_pct`, `take_profit_pct`)
+- Concurrent-position cap (`max_total_positions`)
+
+**Tuner detection:** `_optimize_regime_overrides` walks each regime that has ≥10 resolved predictions. If a regime's WR diverges from baseline by ≥12pt, an override is created:
+- Underperforming regime → reduce `max_position_pct` 25% for that regime
+- Outperforming regime → raise `ai_confidence_threshold` +5 to focus on strongest setups
+
+Same safety scaffolding: cooldown keyed on `regime:<regime>:<param>`, reverse-if-worsened, snap to PARAM_BOUNDS.
+
 ### Wave 4 — Weighted Signal Intensity (Layer 2, newly active)
 
 Every signal the AI sees has a per-profile weight on a 4-step ladder:

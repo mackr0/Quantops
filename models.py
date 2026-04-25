@@ -298,6 +298,8 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         ("trading_profiles", "alpaca_account_id", "INTEGER"),
         # Layer 2 — weighted signal intensity
         ("trading_profiles", "signal_weights", "TEXT NOT NULL DEFAULT '{}'"),
+        # Layer 3 — per-regime parameter overrides
+        ("trading_profiles", "regime_overrides", "TEXT NOT NULL DEFAULT '{}'"),
     ]
     for table, col, col_def in _migrations:
         try:
