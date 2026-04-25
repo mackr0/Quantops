@@ -7,6 +7,11 @@
    last row so it sits flush with the article's reduced bottom padding —
    eliminates the trailing line + whitespace gap. */
 .econ-indicators tbody tr.econ-last td { border-bottom: 0; }
+/* Keep indicator names on one line — the 1/3-grid cell is narrow enough
+   that "Consumer Sentiment" and "Initial Claims (4wk avg)" otherwise
+   wrap to two lines. nowrap + tighter cell padding fits all three. */
+.econ-indicators td, .econ-indicators th { padding: 0.3rem 0.4rem; }
+.econ-indicators td:first-child, .econ-indicators th:first-child { white-space: nowrap; }
 </style>
 
 <h1>AI Intelligence{% if selected_profile_name %} &mdash; {{ selected_profile_name }}{% endif %}</h1>
