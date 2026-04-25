@@ -1648,10 +1648,37 @@ def _task_event_tick(ctx):
 
 
 def _task_daily_summary_email(ctx):
-    """Send end-of-day summary email."""
+    """Send end-of-day summary email — once per profile per calendar
+    day. File-based idempotency marker survives scheduler restarts so
+    every redeploy doesn't re-fire the email (incident 2026-04-25:
+    100+ summary emails sent because the in-memory snapshot flag was
+    reset on each of ~10 restarts during a heavy deploy day)."""
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZI
     from notifications import notify_daily_summary
+
+    profile_id = getattr(ctx, "profile_id", 0)
+    today_et = _dt.now(_ZI("America/New_York")).strftime("%Y-%m-%d")
+    marker_path = f".daily_summary_sent_p{profile_id}.marker"
+
+    try:
+        with open(marker_path) as f:
+            last_sent = f.read().strip()
+        if last_sent == today_et:
+            logging.info(
+                f"Daily summary already sent for profile {profile_id} "
+                f"today ({today_et}) — skipping.")
+            return
+    except FileNotFoundError:
+        pass
+
     notify_daily_summary(ctx=ctx)
-    logging.info("Daily summary email sent.")
+    try:
+        with open(marker_path, "w") as f:
+            f.write(today_et)
+    except OSError as exc:
+        logging.warning(f"Could not write daily-summary marker: {exc}")
+    logging.info(f"Daily summary email sent for profile {profile_id}.")
 
 
 # ── Profile-based Main Loop ──────────────────────────────────────────
@@ -1720,12 +1747,32 @@ def main_loop(active_segments=None, legacy_mode=False):
     #     date-stamp that's shared across all profiles by design — one
     #     snapshot per calendar day system-wide).
     profile_runs: Dict[int, Dict[str, float]] = {}
+    # daily_snapshot is restart-persistent via a marker file so the
+    # whole snapshot bundle (incl. summary email, DB backup, alpha-decay
+    # snapshot) doesn't re-fire on every scheduler restart. Incident
+    # 2026-04-25: 100+ daily summary emails sent because in-memory
+    # state was reset on each of ~10 deploys in a single day.
+    _SNAPSHOT_MARKER = ".daily_snapshot_done.marker"
+    _initial_snapshot_date = None
+    try:
+        with open(_SNAPSHOT_MARKER) as _f:
+            _initial_snapshot_date = _f.read().strip() or None
+    except FileNotFoundError:
+        pass
+
     last_run = {
         "scan": 0.0,                 # legacy-mode only
         "check_exits": 0.0,          # legacy-mode only
         "resolve_predictions": 0.0,  # legacy-mode only
-        "daily_snapshot": None,
+        "daily_snapshot": _initial_snapshot_date,
     }
+
+    def _persist_snapshot_marker(date_str: str) -> None:
+        try:
+            with open(_SNAPSHOT_MARKER, "w") as f:
+                f.write(date_str)
+        except OSError as exc:
+            logging.warning("Could not persist snapshot marker: %s", exc)
 
     def _get_profile_runs(pid: int) -> Dict[str, float]:
         """Return per-profile last-run dict, initializing on first access."""
@@ -1943,6 +1990,7 @@ def main_loop(active_segments=None, legacy_mode=False):
                 last_run["resolve_predictions"] = time.time()
             if do_snapshot:
                 last_run["daily_snapshot"] = today_str
+                _persist_snapshot_marker(today_str)
 
             # Write status file for the web UI countdown timers
             try:
@@ -1991,6 +2039,7 @@ def main_loop(active_segments=None, legacy_mode=False):
                         run_snapshot=True, run_summary=True,
                     )
                 last_run["daily_snapshot"] = today_str
+                _persist_snapshot_marker(today_str)
 
             nxt = next_market_open(now)
             logging.info(

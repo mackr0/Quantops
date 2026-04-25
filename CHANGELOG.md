@@ -17,6 +17,81 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — URGENT hotfix: 100+ daily summary emails sent in a single day (Severity: critical, regression)
+
+**Problem:** User hit their email-sending quota — ~100 daily-summary
+emails sent today across ~10 profiles. Root cause: every scheduler
+restart re-fired the snapshot bundle (snapshot, summary email, DB
+backup, alpha-decay snapshot) because the
+`last_run["daily_snapshot"]` flag was in-memory only. Today saw ~10
+deploys (W1 + W2 + W3 + 2 hotfixes + W4 + W5 + W6 + this fix), each
+restarting the scheduler. 10 restarts × 10 profiles = ~100 daily
+summary emails sent for the same calendar day.
+
+**Fix — file-based idempotency markers, like the weekly digest:**
+- `_task_daily_summary_email` now writes
+  `.daily_summary_sent_p<profile_id>.marker` after sending. Subsequent
+  restarts on the same calendar day (ET) skip the send with
+  "already sent today".
+- `last_run["daily_snapshot"]` now persists to/from
+  `.daily_snapshot_done.marker` so the entire snapshot bundle (not
+  just the email) doesn't re-fire on restart. Also stops re-running
+  expensive daily tasks like alpha-decay snapshot and DB backup.
+- Manually pre-created today's markers on prod via SSH so the next
+  scheduler tick after this deploy skips today's bundle entirely.
+
+**Why it wasn't caught:** The weekly digest already had this
+file-based idempotency pattern (introduced 2026-04 for this exact
+reason). The daily summary used in-memory state only — the missing
+mirror of the weekly pattern. Tests covered "the email gets sent at
+all" but not "the email doesn't get re-sent on restart."
+
+**Also fixed (related):** `RECOGNISED_TODS` and `RECOGNISED_REGIMES`
+are sets, so the W5/W6 tuner rules iterated buckets in
+hash-randomized order. Tests passed in isolation but failed in the
+full suite when the random order picked a different bucket. Fixed
+by using explicit ordered tuples for tuner iteration.
+
+---
+
+## 2026-04-25 — Autonomous tuning Wave 7: Cost Guard cross-cutting infrastructure (Severity: medium, infrastructure)
+
+**New module: `cost_guard.py`.** Daily-spend ceiling enforcement that
+wraps every autonomous action that could increase API costs. Today's
+projected spend (sum of today's actual + the action's estimated extra
+cost) is compared against the daily ceiling. If it would push us over,
+the action is queued as a "Recommendation: cost-gated" with explicit
+cost estimate — the ONLY recommendation prefix the
+no-recommendation-only guardrail allows.
+
+API:
+- `daily_ceiling_usd(user_id)` — defaults to trailing-7-day-avg × 1.5,
+  floored at $5/day so brand-new users aren't immediately blocked.
+- `today_spend(user_id)` — sum across user's enabled profile DBs.
+- `can_afford_action(user_id, estimated_extra_cost_usd)` — bool gate.
+- `format_cost_recommendation(action_summary, user_id, cost)` — the
+  standardized "Recommendation: cost-gated — ..." string.
+- `status(user_id)` — UI snapshot dict.
+
+**First integration:** the Layer-2 signal-weight nudge-up case (which
+re-includes a previously-omitted signal in prompts → longer prompts →
+higher API spend per scan). Estimated 1¢/day per re-included signal
+at typical scan rate. If the ceiling would be breached, surfaces as
+recommendation instead of auto-applying. Future waves (Layer 6
+adaptive prompt structure, Layer 8 self-commissioned strategies) will
+plug into the same gate.
+
+**Tests:** 11 new in `test_cost_guard.py` covering ceiling computation
+(floor + multiplier), can_afford gate (under/over/zero/negative),
+recommendation string format, status snapshot. The
+`test_no_recommendation_only.py` allowlist gained
+`"Recommendation: cost-gated"` with rationale; the staleness check
+expanded to scan both `self_tuning.py` and `cost_guard.py`.
+
+Full suite: 844 passed.
+
+---
+
 ## 2026-04-25 — Autonomous tuning Wave 6: Layer 4 Per-Time-of-Day Parameter Overrides (Severity: medium, behavior)
 
 Mirror of Wave 5's regime architecture, bucketed by intraday window

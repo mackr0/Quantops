@@ -2977,6 +2977,10 @@ def _optimize_regime_overrides(conn, ctx, profile_id, user_id,
     raw = getattr(ctx, "regime_overrides", None)
     overrides = parse_overrides(raw if isinstance(raw, str) else None)
 
+    # Sort rows by regime name for deterministic iteration — RECOGNISED_REGIMES
+    # is a set in regime_overrides, so without this the "first regime with
+    # divergence wins" pick depends on database row order which varies.
+    rows = sorted(rows, key=lambda r: r["regime_at_prediction"] or "")
     # For each regime with enough samples, find a parameter to tune.
     for r in rows:
         regime = r["regime_at_prediction"]
@@ -3092,8 +3096,12 @@ def _optimize_tod_overrides(conn, ctx, profile_id, user_id,
     except ImportError:
         return None
 
-    # Bucket each row.
-    buckets = {tod: {"wins": 0, "total": 0} for tod in RECOGNISED_TODS}
+    # Deterministic iteration order — RECOGNISED_TODS is a set, so we
+    # explicitly use the canonical chronological order. Without this the
+    # tuner's "first bucket with divergence wins" picks differently on
+    # each Python invocation depending on set hashing.
+    _ORDERED_TODS = ("open", "midday", "close")
+    buckets = {tod: {"wins": 0, "total": 0} for tod in _ORDERED_TODS}
     et = ZoneInfo("America/New_York")
     from datetime import datetime, timezone
     for r in rows:
@@ -3279,6 +3287,20 @@ def _optimize_signal_weights(conn, ctx, profile_id, user_id,
         # NUDGE UP when signal-present materially outperforms AND we
         # previously reduced it — recovery signal.
         if diff >= 5 and current_weight < 1.0:
+            # Cost guard: re-including a previously-omitted signal
+            # (weight 0.0 → 0.4) means longer prompts → more tokens →
+            # higher cost. Estimate generously: each restored signal
+            # adds about 1¢/day in token cost at typical scan rate.
+            from cost_guard import can_afford_action, format_cost_recommendation
+            estimated_extra_per_day = 0.01  # ~1¢/day per re-included signal
+            if not can_afford_action(user_id, estimated_extra_per_day):
+                # Surface as recommendation; don't auto-apply.
+                return format_cost_recommendation(
+                    f"restore intensity of {display_label(sig_name)} "
+                    f"from {current_weight:.1f} to "
+                    f"{(current_weight + 0.3):.1f}",
+                    user_id, estimated_extra_per_day,
+                )
             new_weight = nudge_up(profile_id, sig_name)
             if new_weight is None:
                 continue

@@ -35,6 +35,12 @@ ALLOWED = {
     # auto-actioned. Asymmetric on purpose: easy to turn dangerous things
     # off, hard to turn them on without a human in the loop.
     "Recommendation: enable short selling": "auto-enabling shorts is high-risk",
+    # The cost guard surfaces would-be-autonomous changes that would
+    # push today's API spend over the user's daily ceiling. Cost is the
+    # one true area where human approval is mandatory — the system
+    # cannot decide unilaterally to spend more money. Format produced
+    # by `cost_guard.format_cost_recommendation`.
+    "Recommendation: cost-gated": "cost ceiling — human approves spend",
 }
 
 
@@ -87,13 +93,22 @@ class TestNoNewRecommendationOnlyPaths:
 
     def test_allowlist_entries_actually_appear_in_source(self):
         """Stale allowlist entries hide newly-introduced rec-only paths.
-        Fail if any allowlist key no longer appears in self_tuning.py so
-        the list stays honest."""
+        Fail if any allowlist key no longer appears anywhere in the
+        tuning-related codebase so the list stays honest."""
+        # Scan self_tuning.py + cost_guard.py (which generates the
+        # cost-gated recommendation strings)
         src = _self_tuning_source()
-        stale = [k for k in ALLOWED if k not in src]
+        try:
+            cost_src = (Path(__file__).resolve().parent.parent
+                        / "cost_guard.py").read_text()
+        except FileNotFoundError:
+            cost_src = ""
+        combined = src + "\n" + cost_src
+        stale = [k for k in ALLOWED if k not in combined]
         if stale:
             pytest.fail(
-                "Allowlist contains entries no longer present in self_tuning.py:\n"
+                "Allowlist contains entries no longer present in "
+                "self_tuning.py or cost_guard.py:\n"
                 + "\n".join(f"  - {k!r}" for k in stale)
                 + "\n\nRemove them from ALLOWED to keep the guardrail tight."
             )
