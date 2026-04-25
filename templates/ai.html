@@ -955,17 +955,11 @@
      TAB 4: OPERATIONS — How is it tuning itself?
      =================================================================== -->
 <div id="tab-operations" class="perf-tab-content">
-<!-- Self-Tuning Status — loaded via API -->
+<!-- Self-Tuning (status + history merged into one widget) -->
     <article>
-        <header><h3>Self-Tuning Status</h3></header>
-        <p class="muted" style="margin-top:-0.5rem;">Needs at least 20 resolved AI predictions per profile before adjusting anything.</p>
-        <div id="tuning-status-widget"><p class="muted">Loading...</p></div>
-    </article>
-
-    <!-- Self-Tuning History — loaded via API -->
-    <article>
-        <header><h3>Self-Tuning History</h3></header>
-        <p class="muted" style="margin-top:-0.5rem;">Automatic adjustments the system has made based on its own performance.</p>
+        <header><h3>Self-Tuning</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Automatic adjustments the system has made based on its own performance. Each profile needs at least 20 resolved AI predictions before the tuner is allowed to change anything.</p>
+        <div id="tuning-status-pills" style="margin-bottom:0.5rem;"></div>
         <div id="tuning-history-widget"><p class="muted">Loading...</p></div>
     </article>
 
@@ -1134,28 +1128,29 @@
         container.appendChild(el);
     }
 
-    // --- Tuning Status ---
-    function loadTuningStatus(page) {
-        var w = document.getElementById('tuning-status-widget');
-        fetch('/api/tuning-status?page=' + page + '&per_page=5' + pfParam)
+    // --- Tuning Status (compact pill row above the history table) ---
+    function loadTuningStatusPills() {
+        var w = document.getElementById('tuning-status-pills');
+        // Pull all profiles in one shot — there are only ~10 max.
+        fetch('/api/tuning-status?page=1&per_page=50' + pfParam)
             .then(function(r) { return r.json(); })
             .then(function(d) {
-                if (!d.items || !d.items.length) { w.innerHTML = '<p class="muted">No tuning status data yet.</p>'; return; }
-                var h = '<div class="overflow-auto"><table><thead><tr><th>Profile</th><th>Resolved</th><th>Status</th><th>Last Run</th></tr></thead><tbody>';
+                if (!d.items || !d.items.length) { w.innerHTML = ''; return; }
+                var h = '<div style="display:flex;flex-wrap:wrap;gap:0.4rem;font-size:0.8rem;">';
                 d.items.forEach(function(s) {
-                    var status = s.can_tune ? '<span class="pnl-pos">Active</span>' : '<span class="muted">Collecting data</span>';
-                    var lr = s.last_run ? '<small>' + esc(s.last_run.substring(0,16)) + '</small>' : '<small class="muted">never</small>';
-                    h += '<tr><td><strong>' + esc(s.profile_name) + '</strong></td>';
-                    h += '<td>' + s.resolved + ' / ' + s.required + '</td>';
-                    h += '<td>' + status + '<br><small class="muted">' + esc(s.message) + '</small></td>';
-                    h += '<td>' + lr + '</td></tr>';
+                    var color = s.can_tune ? '#00c853' : '#888';
+                    var icon = s.can_tune ? '&#10003;' : '&#9203;';
+                    var state = s.can_tune ? 'Active' : 'Collecting';
+                    h += '<span title="' + esc(s.message || '') + '" style="display:inline-block;padding:0.2rem 0.5rem;border-radius:4px;border:1px solid ' + color + ';color:' + color + ';">' +
+                         icon + ' <strong>' + esc(s.profile_name) + '</strong> ' +
+                         s.resolved + '/' + s.required + ' &middot; ' + state +
+                         '</span>';
                 });
-                h += '</tbody></table></div>';
+                h += '</div>';
                 w.innerHTML = h;
-                if (d.pages > 1) paginator(w, d.page, d.pages, d.total, loadTuningStatus);
             });
     }
-    loadTuningStatus(1);
+    loadTuningStatusPills();
 
     // --- Tuning History ---
     function loadTuningHistory(page) {
