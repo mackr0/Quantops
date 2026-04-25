@@ -913,6 +913,35 @@ def toggle_profile(profile_id):
     return redirect(url_for("views.settings") + f"#profile-{profile_id}")
 
 
+@views_bp.route("/ai/profile/<int:profile_id>/restore-strategy/<strategy_type>",
+                methods=["POST"])
+@login_required
+def restore_deprecated_strategy(profile_id, strategy_type):
+    """Manually undo an alpha-decay (or self-tuner) deprecation. The
+    pipeline will start considering the strategy's signals again on the
+    next cycle."""
+    import os
+    profile = get_trading_profile(profile_id)
+    if not profile or profile["user_id"] != current_user.effective_user_id:
+        abort(404)
+    db_path = f"quantopsai_profile_{profile_id}.db"
+    if not os.path.exists(db_path):
+        abort(404)
+    try:
+        from alpha_decay import restore_strategy
+        restore_strategy(db_path, strategy_type)
+        from display_names import display_name
+        flash(
+            f'Restored "{display_name(strategy_type)}" — back in the active '
+            f'strategy mix on the next cycle.',
+            "success",
+        )
+    except Exception as exc:
+        logger.warning("Manual restore failed: %s", exc)
+        flash(f"Restore failed: {exc}", "error")
+    return redirect(url_for("views.ai_dashboard") + "#strategy")
+
+
 # ---------------------------------------------------------------------------
 # Legacy segment routes (kept for backward compatibility)
 # ---------------------------------------------------------------------------

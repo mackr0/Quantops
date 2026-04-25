@@ -1052,7 +1052,8 @@ def _task_self_tune(ctx):
     adjustments = apply_auto_adjustments(ctx)
 
     reviews = [a for a in adjustments if a.startswith("Reviewed") or a.startswith("REVERSED")]
-    real_changes = [a for a in adjustments if a not in reviews]
+    recommendations = [a for a in adjustments if a.startswith("Recommendation:")]
+    applied = [a for a in adjustments if a not in reviews and a not in recommendations]
 
     if adjustments:
         for adj in adjustments:
@@ -1062,20 +1063,32 @@ def _task_self_tune(ctx):
         if reviews:
             detail_parts.append("PAST ADJUSTMENT REVIEWS:")
             detail_parts.extend(f"  - {r}" for r in reviews)
-        if real_changes:
+        if applied:
             if detail_parts:
                 detail_parts.append("")
-            detail_parts.append("ADJUSTMENTS:")
-            detail_parts.extend(f"  - {a}" for a in real_changes)
+            detail_parts.append("APPLIED:")
+            detail_parts.extend(f"  - {a}" for a in applied)
+        if recommendations:
+            if detail_parts:
+                detail_parts.append("")
+            detail_parts.append("RECOMMENDATIONS (require human review):")
+            detail_parts.extend(f"  - {r}" for r in recommendations)
         if not detail_parts:
             detail_parts = [f"- {a}" for a in adjustments]
 
         title_parts = []
-        if real_changes:
-            title_parts.append(f"{len(real_changes)} adjustment(s)")
+        if applied:
+            title_parts.append(f"{len(applied)} applied")
+        if recommendations:
+            title_parts.append(f"{len(recommendations)} recommended")
         if reviews:
             title_parts.append(f"{len(reviews)} review(s)")
         title = f"Self-Tuning: {', '.join(title_parts)}" if title_parts else "Self-Tuning: evaluated"
+
+        # Backwards compat for the rest of the function — some downstream
+        # code refers to `real_changes` to decide whether to log "no changes
+        # needed". Treat applied as the real-change set.
+        real_changes = applied
 
         _safe_log_activity(
             getattr(ctx, "profile_id", 0), ctx.user_id,

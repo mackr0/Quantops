@@ -498,9 +498,16 @@
                 {% if prof_decay.deprecated %}
                 <div style="padding:0.5rem 0.75rem;margin-bottom:0.75rem;border-left:3px solid #f44336;background:#fff5f5;border-radius:0 4px 4px 0;">
                     <strong style="color:#c62828;">Deprecated Strategies</strong>
-                    <ul style="margin:0.25rem 0 0 1rem;padding:0;font-size:0.85rem;">
+                    <small class="muted" style="display:block;margin-top:0.15rem;">Auto-restored when their rolling Sharpe recovers, or restore manually below.</small>
+                    <ul style="margin:0.25rem 0 0 1rem;padding:0;font-size:0.85rem;list-style:none;">
                         {% for d in prof_decay.deprecated %}
-                        <li><strong>{{ d.strategy_type | display_name }}</strong> — deprecated {{ d.deprecated_at[:10] }}: {{ d.reason }}</li>
+                        <li style="margin:0.25rem 0;">
+                            <strong>{{ d.strategy_type | display_name }}</strong>
+                            <small class="muted">— deprecated {{ d.deprecated_at[:10] }}: {{ d.reason }}</small>
+                            <form method="post" action="/ai/profile/{{ prof_decay.profile_id }}/restore-strategy/{{ d.strategy_type }}" style="display:inline;margin-left:0.5rem;" onsubmit="return confirm('Restore {{ d.strategy_type | display_name }} into the active strategy mix?');">
+                                <button type="submit" class="outline" style="padding:0.1rem 0.5rem;font-size:0.75rem;margin:0;">Restore</button>
+                            </form>
+                        </li>
                         {% endfor %}
                     </ul>
                 </div>

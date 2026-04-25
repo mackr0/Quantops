@@ -1464,13 +1464,36 @@ def apply_auto_adjustments(ctx, db_path=None):
                                 f"{new_sl:.0%} ({reason})"
                             )
 
-                # Recommend disabling shorts if overall negative P&L with 10+ trades and <20% win rate
-                if short_cnt >= 10 and short_wr < 20 and short_pnl < 0:
-                    adjustments_made.append(
-                        f"Recommendation: DISABLE short selling — "
-                        f"{short_wins}/{short_cnt} wins ({short_wr:.0f}%), "
-                        f"total P&L ${short_pnl:,.0f}"
-                    )
+                # Auto-disable shorts when consistently losing money: 10+ trades,
+                # <20% win rate, negative total P&L. This is defensive (stops
+                # bleeding) — safe to auto-action. The reverse case
+                # (auto-enabling shorts) is intentionally left as a
+                # recommendation only because flipping a high-risk feature ON
+                # without human review is dangerous.
+                if (short_cnt >= 10 and short_wr < 20 and short_pnl < 0
+                        and getattr(ctx, "enable_short_selling", False)):
+                    if not _get_recent_adjustment(
+                            profile_id, "enable_short_selling", days=3):
+                        if _was_adjustment_effective(
+                                profile_id, "enable_short_selling") != "worsened":
+                            update_trading_profile(
+                                profile_id, enable_short_selling=0)
+                            reason = (
+                                f"Short selling losing across "
+                                f"{short_cnt} trades — "
+                                f"{short_wins} wins ({short_wr:.0f}%), "
+                                f"total P&L ${short_pnl:,.0f}"
+                            )
+                            log_tuning_change(
+                                profile_id, user_id or 0,
+                                "short_disable", "enable_short_selling",
+                                "1", "0", reason,
+                                win_rate_at_change=overall_wr,
+                                predictions_resolved=resolved,
+                            )
+                            adjustments_made.append(
+                                f"Disabled short selling ({reason})"
+                            )
         except Exception as _short_exc:
             logger.warning("Failed to check short trade performance: %s", _short_exc)
 
@@ -1782,13 +1805,56 @@ def _optimize_strategy_toggles(conn, ctx, profile_id, user_id,
 
         toggle_col = _STRATEGY_TYPE_TO_TOGGLE.get(stype)
         if not toggle_col:
-            # No toggle — log as recommendation only
+            # No profile-level toggle — these are the modular `strategies/`
+            # plugins (insider_cluster, options-flow-derived, etc.). The
+            # alpha_decay module already has a deprecation pipeline that
+            # excludes them from `get_active_strategies()`, with automatic
+            # restoration when their rolling Sharpe recovers. Wire to it.
             from display_names import display_name as _dn
-            return (
-                f"Recommendation: {_dn(stype)} has {wr:.0f}% win rate "
-                f"({r['wins']}/{total}) vs {overall_wr:.0f}% overall — "
-                f"consider removing from strategy mix"
-            )
+
+            # Per-strategy cooldown (3 days) under a synthetic param key so
+            # the existing tuning_history machinery can track and respect it.
+            deprecate_key = f"deprecate:{stype}"
+            if _get_recent_adjustment(profile_id, deprecate_key, days=3):
+                continue
+            if _was_adjustment_effective(profile_id, deprecate_key) == "worsened":
+                continue
+
+            db_path = getattr(ctx, "db_path", None)
+            if not db_path:
+                continue
+
+            try:
+                from alpha_decay import deprecate_strategy, is_deprecated
+                if is_deprecated(db_path, stype):
+                    continue
+                from models import log_tuning_change
+                detection = {
+                    "reason": (
+                        f"Self-tuner: {_dn(stype)} win rate "
+                        f"{wr:.0f}% ({r['wins']}/{total}) vs "
+                        f"{overall_wr:.0f}% overall"
+                    ),
+                    "current_rolling_sharpe": None,
+                    "lifetime_sharpe": None,
+                    "consecutive_bad_days": 0,
+                }
+                deprecate_strategy(db_path, stype, detection)
+                log_tuning_change(
+                    profile_id, user_id, "strategy_deprecate",
+                    deprecate_key, "active", "deprecated",
+                    detection["reason"],
+                    win_rate_at_change=overall_wr,
+                    predictions_resolved=resolved,
+                )
+                return (
+                    f"Deprecated {_dn(stype)} strategy "
+                    f"(win rate {wr:.0f}% — will auto-restore when rolling "
+                    f"Sharpe recovers)"
+                )
+            except Exception as _exc:
+                logger.warning("Deprecation failed for %s: %s", stype, _exc)
+                continue
 
         if not getattr(ctx, toggle_col, True):
             continue  # Already disabled

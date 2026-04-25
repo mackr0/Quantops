@@ -17,6 +17,65 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Self-tuner: act on what it identifies (close 'recommendation only' hole) (Severity: medium, behavior)
+
+**Problem:** When the tuner found a problem it knew the answer to, it
+sometimes just emitted a "Recommendation:" string and called it done.
+Concrete example flagged by user: "Insider Buying Cluster has 17% win
+rate (3/18) vs 42% overall — consider removing from strategy mix" was
+logged as 1 adjustment but no actual change was applied. The
+underlying cause: only 4 of 16+ strategies had profile-level toggles,
+so any modular strategy (insider_cluster, options-derived, etc.) the
+tuner couldn't disable. The whole point of self-tuning is to act,
+observe, and adjust — not to draft suggestions for a human.
+
+**Fix — three layers:**
+
+1. **Logic.** In `self_tuning._optimize_strategy_toggles`, the
+   no-toggle branch now calls `alpha_decay.deprecate_strategy()` to
+   actually remove the strategy from the active mix. The existing
+   alpha-decay restoration pipeline (rolling Sharpe recovery) handles
+   un-deprecating automatically. Cooldown applies via a synthetic
+   parameter key `deprecate:{strategy_type}`. Same 3-day rule and
+   reverse-if-worsened protection as the rest of the tuner. The
+   "Recommendation: DISABLE short selling" branch was promoted from
+   text to an actual `update_trading_profile(enable_short_selling=0)`
+   call when 10+ short trades have <20% win rate AND negative P&L —
+   defensive auto-action only. The reverse case ("ENABLE shorts") is
+   deliberately left as a recommendation because flipping a high-risk
+   feature ON without human review is dangerous (uncapped downside,
+   margin requirements).
+
+2. **Visibility.** `_task_self_tune` notification now separates
+   "applied" from "recommended" counts (e.g., "Self-Tuning: 2
+   applied, 1 recommended"). Body breaks them into APPLIED /
+   RECOMMENDATIONS sections so the user can scan at a glance.
+   Deprecated-strategies UI in the Strategy tab gets a "Restore"
+   button (POSTs to a new
+   `/ai/profile/<id>/restore-strategy/<strategy_type>` endpoint) so
+   manual override is one click. Tuning history rows for deprecations
+   surface via the existing display_name namespaced fallback —
+   "deprecate:insider_cluster" renders as "Deprecate — Insider Buying
+   Cluster".
+
+3. **Guardrail.** New test `test_no_recommendation_only.py` AST-walks
+   `self_tuning.py`, finds every "Recommendation:" string literal,
+   and fails unless it matches an entry on a small ALLOWED list with
+   a written rationale. Currently allowed: "Recommendation: enable
+   short selling" (asymmetric on purpose: defensive disables get
+   auto-applied; high-risk enables require human review). New
+   "Recommendation:"-only paths fail this test until the author
+   either wires a real action or adds an allowlist entry with
+   rationale.
+
+**Tests:** 6 new tests across `test_self_tuning_deprecation.py` and
+`test_no_recommendation_only.py`: deprecation auto-action, cooldown,
+already-deprecated short-circuit, toggleable strategies still use the
+toggle path, allowlist enforcement, allowlist staleness check. Full
+suite green at 735 passed / 1 skipped.
+
+---
+
 ## 2026-04-25 — AI Win-Rate Trend chart added to AI Intelligence > Brain tab (Severity: low, feature)
 
 **Problem:** No way to see whether the AI's prediction accuracy is
