@@ -880,7 +880,24 @@
                 }
                 h += '</article>';
 
-                // ETF Sector Flows
+                // FRED Economic Indicators (compact — fits in the 3-col grid)
+                h += '<article><header><h4 style="margin:0;">Economic Indicators</h4></header>';
+                if (fm.unemployment_rate) {
+                    h += '<div class="overflow-auto"><table style="font-size:0.85rem;"><thead><tr><th>Indicator</th><th style="text-align:right;">Value</th><th>Trend</th></tr></thead><tbody>';
+                    h += '<tr><td>Unemployment</td><td style="text-align:right;font-family:monospace;">' + fm.unemployment_rate.toFixed(1) + '%</td><td class="muted">' + esc(fm.unemployment_trend) + '</td></tr>';
+                    if (fm.cpi_yoy) h += '<tr><td>CPI (YoY)</td><td style="text-align:right;font-family:monospace;">' + fm.cpi_yoy.toFixed(1) + '%</td><td></td></tr>';
+                    h += '<tr><td>Consumer Sentiment</td><td style="text-align:right;font-family:monospace;">' + fm.consumer_sentiment.toFixed(1) + '</td><td class="muted">' + esc(fm.consumer_sentiment_trend) + '</td></tr>';
+                    if (fm.initial_claims_4wk_avg) h += '<tr><td>Initial Claims (4wk avg)</td><td style="text-align:right;font-family:monospace;">' + fm.initial_claims_4wk_avg.toLocaleString() + '</td><td></td></tr>';
+                    h += '</tbody></table></div>';
+                } else {
+                    h += '<p class="muted">No data</p>';
+                }
+                h += '</article>';
+
+                h += '</div>';
+
+                // ETF Sector Flows (full-width below the grid — pills wrap better
+                // here than inside a one-third-width column)
                 h += '<article>';
                 h += '<header><h4 style="margin:0;">Sector Flows (Est.)</h4></header>';
                 var sectorNames = {
@@ -908,22 +925,6 @@
                     h += '</div>';
                 } else {
                     h += '<p class="muted">No data (updates during market hours)</p>';
-                }
-                h += '</article>';
-
-                h += '</div>';
-
-                // FRED Economic Indicators
-                h += '<article><header><h4 style="margin:0;">Economic Indicators</h4></header>';
-                if (fm.unemployment_rate) {
-                    h += '<div class="overflow-auto"><table style="font-size:0.85rem;"><thead><tr><th>Indicator</th><th style="text-align:right;">Value</th><th>Trend</th></tr></thead><tbody>';
-                    h += '<tr><td>Unemployment</td><td style="text-align:right;font-family:monospace;">' + fm.unemployment_rate.toFixed(1) + '%</td><td class="muted">' + esc(fm.unemployment_trend) + '</td></tr>';
-                    if (fm.cpi_yoy) h += '<tr><td>CPI (YoY)</td><td style="text-align:right;font-family:monospace;">' + fm.cpi_yoy.toFixed(1) + '%</td><td></td></tr>';
-                    h += '<tr><td>Consumer Sentiment</td><td style="text-align:right;font-family:monospace;">' + fm.consumer_sentiment.toFixed(1) + '</td><td class="muted">' + esc(fm.consumer_sentiment_trend) + '</td></tr>';
-                    if (fm.initial_claims_4wk_avg) h += '<tr><td>Initial Claims (4wk avg)</td><td style="text-align:right;font-family:monospace;">' + fm.initial_claims_4wk_avg.toLocaleString() + '</td><td></td></tr>';
-                    h += '</tbody></table></div>';
-                } else {
-                    h += '<p class="muted">No data</p>';
                 }
                 h += '</article>';
 
