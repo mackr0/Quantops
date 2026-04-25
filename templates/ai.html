@@ -1080,17 +1080,17 @@
 
         <h4 style="margin-top:0.5rem;">Pending External APIs <small class="muted">(not yet feeding the AI)</small></h4>
         <div class="grid">
-            <div><h5 class="muted">Patent Filing Velocity</h5><small class="muted">PatentsView v1 API was deprecated; their v2 migration is still in progress. Code path exists in <code>alternative_data.get_patent_activity</code> but currently disabled. Will activate when v2 stabilizes.</small></div>
-            <div><h5 class="muted">Reddit Sentiment</h5><small class="muted">Requires Reddit PRAW credentials (<code>REDDIT_CLIENT_ID</code> / <code>REDDIT_CLIENT_SECRET</code>). Implementation in <code>social_sentiment.py</code> reads r/wallstreetbets, r/stocks, r/investing, r/options. Returns empty (graceful degrade) without keys.</small></div>
-            <div><h5 class="muted">QuiverQuant Congressional</h5><small class="muted">Free tier returns 401 (paywalled). Disabled in the aggregator. Superseded by the local <code>congresstrades</code> project (see below).</small></div>
+            <div><h5 class="muted">Patent Filing Velocity</h5><small class="muted">The public patent-search API we relied on was deprecated and the replacement isn't stable yet. Will turn on once it is.</small></div>
+            <div><h5 class="muted">Reddit Sentiment</h5><small class="muted">Mention counts and sentiment from r/wallstreetbets, r/stocks, r/investing, r/options. Currently off because no Reddit account credentials are configured.</small></div>
+            <div><h5 class="muted">Congressional Trades (third-party API)</h5><small class="muted">The free aggregator we tried is now paywalled. Replaced by a locally-built dataset (see below).</small></div>
         </div>
 
-        <h4 style="margin-top:0.5rem;">Built Locally — Not Yet Wired In <small class="muted">(standalone projects with their own SQLites; QuantOpsAI does not currently import them)</small></h4>
+        <h4 style="margin-top:0.5rem;">Built Locally — Not Yet Wired In <small class="muted">(data we already collect daily, not yet shown to the AI)</small></h4>
         <div class="grid">
-            <div><h5 class="muted">Congressional Trades</h5><small class="muted"><code>~/congresstrades</code> — Senate (eFD) + House (Clerk) STOCK Act disclosures, FIFO round-trip P&amp;L estimates with range-midpoint bounds. ~125 tests, daily refresh via <code>run-altdata-daily.sh</code>.</small></div>
-            <div><h5 class="muted">13F-HR Holdings</h5><small class="muted"><code>~/edgar13f</code> — Quarterly institutional holdings from SEC EDGAR 13F-HR XML. Validated against Berkshire's $274B AUM. ~71 tests.</small></div>
-            <div><h5 class="muted">Biotech Trial Events</h5><small class="muted"><code>~/biotechevents</code> — ClinicalTrials.gov v2 API. Trial start / phase change / completion / withdrawal events tagged by sponsor ticker. ~72 tests.</small></div>
-            <div><h5 class="muted">StockTwits Sentiment</h5><small class="muted"><code>~/stocktwits</code> — Trending tickers + per-message bullish/bearish sentiment from the StockTwits REST API. ~45 tests.</small></div>
+            <div><h5 class="muted">Congressional Trades</h5><small class="muted">Senate and House stock disclosures (under the STOCK Act). Includes round-trip P&amp;L estimates from the disclosed dollar ranges.</small></div>
+            <div><h5 class="muted">13F-HR Institutional Holdings</h5><small class="muted">Quarterly snapshots of what big funds (Berkshire, Bridgewater, etc.) own — pulled directly from their SEC filings.</small></div>
+            <div><h5 class="muted">Biotech Trial Events</h5><small class="muted">Clinical-trial milestones from ClinicalTrials.gov — phase changes, completions, withdrawals — tagged to the sponsor's ticker.</small></div>
+            <div><h5 class="muted">StockTwits Sentiment</h5><small class="muted">Trending tickers and per-message bullish/bearish sentiment from the StockTwits trader feed.</small></div>
         </div>
 
         <h4 style="margin-top:0.5rem;">Per-Candidate Memory</h4>
