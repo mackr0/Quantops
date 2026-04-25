@@ -25,6 +25,9 @@
 .ai-sees h4:first-child { margin-top: 0.25rem; }
 /* Slight breathing room around each row of grid cards. */
 .ai-sees .grid { margin-bottom: 0.5rem; }
+/* Pico's default h5 margin-bottom (~1rem) leaves a big gap between
+   the card title and its one-line description. Tighten it. */
+.ai-sees .grid h5 { margin: 0 0 0.15rem 0; }
 </style>
 
 <h1>AI Intelligence{% if selected_profile_name %} &mdash; {{ selected_profile_name }}{% endif %}</h1>
