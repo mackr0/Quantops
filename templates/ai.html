@@ -2,6 +2,13 @@
 {% block title %}AI Intelligence - QuantOpsAI{% endblock %}
 {% block content %}
 
+<style>
+/* Drop the bottom border + padding on the Economic Indicators table's
+   last row so it sits flush with the article's reduced bottom padding —
+   eliminates the trailing line + whitespace gap. */
+.econ-indicators tbody tr.econ-last td { border-bottom: 0; }
+</style>
+
 <h1>AI Intelligence{% if selected_profile_name %} &mdash; {{ selected_profile_name }}{% endif %}</h1>
 
 <!-- Profile filter -->
@@ -881,13 +888,13 @@
                 h += '</article>';
 
                 // FRED Economic Indicators (compact — fits in the 3-col grid)
-                h += '<article><header><h4 style="margin:0;">Economic Indicators</h4></header>';
+                h += '<article style="padding-bottom:0.5rem;"><header><h4 style="margin:0;">Economic Indicators</h4></header>';
                 if (fm.unemployment_rate) {
-                    h += '<div class="overflow-auto"><table style="font-size:0.85rem;"><thead><tr><th>Indicator</th><th style="text-align:right;">Value</th><th>Trend</th></tr></thead><tbody>';
+                    h += '<div class="overflow-auto"><table class="econ-indicators" style="font-size:0.85rem;margin-bottom:0;"><thead><tr><th>Indicator</th><th style="text-align:right;">Value</th><th>Trend</th></tr></thead><tbody>';
                     h += '<tr><td>Unemployment</td><td style="text-align:right;font-family:monospace;">' + fm.unemployment_rate.toFixed(1) + '%</td><td class="muted">' + esc(fm.unemployment_trend) + '</td></tr>';
                     if (fm.cpi_yoy) h += '<tr><td>CPI (YoY)</td><td style="text-align:right;font-family:monospace;">' + fm.cpi_yoy.toFixed(1) + '%</td><td></td></tr>';
                     h += '<tr><td>Consumer Sentiment</td><td style="text-align:right;font-family:monospace;">' + fm.consumer_sentiment.toFixed(1) + '</td><td class="muted">' + esc(fm.consumer_sentiment_trend) + '</td></tr>';
-                    if (fm.initial_claims_4wk_avg) h += '<tr><td>Initial Claims (4wk avg)</td><td style="text-align:right;font-family:monospace;">' + fm.initial_claims_4wk_avg.toLocaleString() + '</td><td></td></tr>';
+                    if (fm.initial_claims_4wk_avg) h += '<tr class="econ-last"><td>Initial Claims (4wk avg)</td><td style="text-align:right;font-family:monospace;">' + fm.initial_claims_4wk_avg.toLocaleString() + '</td><td></td></tr>';
                     h += '</tbody></table></div>';
                 } else {
                     h += '<p class="muted">No data</p>';
