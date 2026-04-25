@@ -1620,6 +1620,8 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_regime_overrides,
         # Wave 6 — Layer 4 per-time-of-day parameter overrides
         _optimize_tod_overrides,
+        # Wave 8 — Layer 7 per-symbol parameter overrides (most-specific tier)
+        _optimize_symbol_overrides,
     ]
 
     results = []
@@ -3185,6 +3187,119 @@ def _optimize_tod_overrides(conn, ctx, profile_id, user_id,
         )
         return (
             f"Set {tod_name} time-of-day override: "
+            f"{_label(param_name)} {current} → {new_val} ({reason})"
+        )
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Wave 8 — Layer 7 per-symbol parameter overrides. The most-specific
+# tier in the override chain. For symbols with materially different
+# behavior than the profile baseline, create per-symbol overrides.
+# Longer cooldown (7 days) because per-symbol samples are smaller and
+# we want to avoid over-fitting day-to-day noise.
+# ---------------------------------------------------------------------------
+
+_SYMBOL_MIN_SAMPLES = 20  # per-symbol samples — high bar; per-symbol over-fitting risk is real
+_SYMBOL_DIFF_THRESHOLD = 15  # WR pt divergence to act
+_SYMBOL_COOLDOWN_DAYS = 7   # vs 3 for global / regime / TOD
+
+
+def _optimize_symbol_overrides(conn, ctx, profile_id, user_id,
+                                 overall_wr, resolved):
+    """For symbols with >=20 individual resolved predictions, check if
+    that symbol's win-rate diverges materially from the profile's
+    overall WR. If so, create a per-symbol override on the most
+    impactful parameter (max_position_pct for underperformers,
+    ai_confidence_threshold for outperformers)."""
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(ai_predictions)").fetchall()}
+    if "symbol" not in cols:
+        return None
+
+    rows = conn.execute(
+        "SELECT symbol, COUNT(*) as total, "
+        " SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) as wins, "
+        " (CAST(SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) "
+        "  AS REAL) / COUNT(*)) as wr "
+        "FROM ai_predictions "
+        "WHERE status='resolved' AND symbol IS NOT NULL "
+        "  AND actual_outcome IN ('win','loss') "
+        "GROUP BY symbol HAVING total >= ? "
+        # Worst-WR-first so capital-protective overrides (reduce position
+        # size on underperformers) act before opportunity-capture ones
+        # (raise confidence floor on outperformers).
+        "ORDER BY wr ASC, symbol ASC",
+        (_SYMBOL_MIN_SAMPLES,),
+    ).fetchall()
+    if not rows:
+        return None
+
+    from symbol_overrides import set_override, resolve_param as resolve_sym
+
+    for r in rows:
+        symbol = r["symbol"]
+        n = r["total"]
+        sym_wr = r["wins"] / n * 100.0
+        diff = sym_wr - overall_wr
+
+        if abs(diff) < _SYMBOL_DIFF_THRESHOLD:
+            continue
+
+        if diff < 0:
+            # Underperforming symbol — reduce position size for it
+            param_name = "max_position_pct"
+            cool_key = f"symbol:{symbol}:{param_name}"
+            if not _safe_change_guarded(profile_id, cool_key):
+                continue
+            current = resolve_sym(ctx, param_name, symbol,
+                                   default=getattr(ctx, param_name, 0.10))
+            new_val = round(max(_bound(param_name, current * 0.75), 0.03), 4)
+            if new_val >= current:
+                continue
+            from models import log_tuning_change
+            set_override(profile_id, param_name, symbol, new_val)
+            reason = (
+                f"{symbol} WR {sym_wr:.0f}% on {n} samples vs "
+                f"{overall_wr:.0f}% overall — reduce position size "
+                f"for this symbol only"
+            )
+            log_tuning_change(
+                profile_id, user_id, "symbol_override_down",
+                cool_key, str(current), str(new_val), reason,
+                win_rate_at_change=overall_wr, predictions_resolved=resolved,
+            )
+            return (
+                f"Set {symbol} symbol override: "
+                f"{_label(param_name)} {current:.0%} → {new_val:.0%} "
+                f"({reason})"
+            )
+
+        # Outperforming symbol — raise confidence floor for it
+        param_name = "ai_confidence_threshold"
+        cool_key = f"symbol:{symbol}:{param_name}"
+        if not _safe_change_guarded(profile_id, cool_key):
+            continue
+        current = resolve_sym(ctx, param_name, symbol,
+                               default=getattr(ctx, param_name, 25))
+        new_val = int(_bound(param_name, current + 5))
+        if new_val <= current:
+            continue
+        from models import log_tuning_change
+        set_override(profile_id, param_name, symbol, new_val)
+        reason = (
+            f"{symbol} WR {sym_wr:.0f}% on {n} samples vs "
+            f"{overall_wr:.0f}% overall — raise confidence floor "
+            f"for this symbol"
+        )
+        log_tuning_change(
+            profile_id, user_id, "symbol_override_up",
+            cool_key, str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (
+            f"Set {symbol} symbol override: "
             f"{_label(param_name)} {current} → {new_val} ({reason})"
         )
 

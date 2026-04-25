@@ -17,6 +17,55 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Autonomous tuning Wave 8: Layer 7 Per-Symbol Parameter Overrides (Severity: medium, behavior)
+
+The most-specific tier of the override stack. Some symbols behave
+fundamentally differently from each other — NVDA's optimal stop-loss
+isn't KO's. The tuner now creates per-symbol parameter overrides for
+symbols with materially different track records than the profile
+baseline.
+
+New module `symbol_overrides.py` mirrors the regime/TOD pattern. Schema
+column `symbol_overrides TEXT NOT NULL DEFAULT '{}'` auto-migrated.
+Symbol keys normalised to uppercase on read/write.
+
+**Tuner detection** (`_optimize_symbol_overrides`): walks symbols with
+≥20 individual resolved predictions (high bar — over-fitting risk on
+small samples is real) ordered worst-WR-first. Symbols ≥15pt off
+overall WR get a per-symbol override. Cooldown 7 days (vs 3 for other
+tiers) for the same over-fitting reason. Underperformers get
+`max_position_pct` reduced for that symbol; outperformers get
+`ai_confidence_threshold` raised.
+
+**Pipeline chain** (`regime_overrides.resolve_for_current_regime`)
+extended with optional `symbol=` parameter. Full lookup order is now:
+
+  1. **Per-symbol override** (Layer 7, this wave)
+  2. Per-regime override (Layer 3)
+  3. Per-time-of-day override (Layer 4)
+  4. Profile global value
+  5. Caller default
+
+Wired into `trade_pipeline.ai_review` (confidence threshold) and
+`execute_trade` (position size, stop-loss, take-profit). Symbol is
+already in scope at every call site; passed through to the resolver.
+
+**Tests:** 14 new in `test_symbol_overrides.py` covering parse/resolve
+case-normalization, tuner detection (sample-size + threshold
+respect), and chain precedence (per-symbol wins over regime when both
+set; falls through to regime when no symbol override). Full suite:
+858 passed.
+
+The full chain shipped today means parameters can vary along 4
+dimensions at once: symbol × regime × time-of-day × global. The tuner
+acts on the dimension where the WR signal is strongest. A user with a
+profile that has `stop_loss_pct=0.03` could end up with NVDA-in-volatile
+at 0.08, NVDA-in-bull at 0.05, regular-symbol-in-volatile at 0.06,
+and regular-symbol-in-bull at 0.03 — all autonomously chosen,
+all reversible, all bounded.
+
+---
+
 ## 2026-04-25 — URGENT hotfix: 100+ daily summary emails sent in a single day (Severity: critical, regression)
 
 **Problem:** User hit their email-sending quota — ~100 daily-summary

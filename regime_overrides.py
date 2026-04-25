@@ -168,35 +168,43 @@ def _current_regime() -> Optional[str]:
 
 
 def resolve_for_current_regime(profile_or_dict: Any, param_name: str,
-                                default: Any = None) -> Any:
-    """`resolve_param` that auto-detects the current regime AND chains
-    with per-time-of-day overrides. Lookup order at decision time:
+                                default: Any = None,
+                                symbol: Optional[str] = None) -> Any:
+    """Single source of truth for parameter access at decision time.
+    Consults the full override chain in most-specific-first order:
 
-      1. Per-symbol override (Layer 7 — coming)
-      2. Per-regime override (this layer)
-      3. Per-time-of-day override (Layer 4)
+      1. Per-symbol override (Layer 7) — when `symbol` provided
+      2. Per-regime override (Layer 3) — auto-detected current regime
+      3. Per-time-of-day override (Layer 4) — auto-detected current TOD
       4. Profile global value
       5. Caller default
 
-    Each layer falls back to the next when no override exists. The
-    chain is intentionally most-specific-first so a tuner-set
-    per-symbol override beats a per-regime override beats a per-TOD
-    override beats global.
+    A non-default value from any layer wins; falls through otherwise.
     """
-    # Layer 3 — per-regime
-    regime = _current_regime()
-    regime_value = resolve_param(profile_or_dict, param_name, regime,
-                                 default=None)
-    # If the regime returned something other than the global value,
-    # the per-regime override won. Use it.
     if isinstance(profile_or_dict, dict):
         global_value = profile_or_dict.get(param_name, default)
     else:
         global_value = getattr(profile_or_dict, param_name, default)
+
+    # Layer 7 — per-symbol (most specific)
+    if symbol:
+        try:
+            from symbol_overrides import resolve_param as resolve_sym
+            sym_value = resolve_sym(profile_or_dict, param_name, symbol,
+                                     default=None)
+            if sym_value is not None and sym_value != global_value:
+                return sym_value
+        except Exception:
+            pass
+
+    # Layer 3 — per-regime
+    regime = _current_regime()
+    regime_value = resolve_param(profile_or_dict, param_name, regime,
+                                 default=None)
     if regime_value is not None and regime_value != global_value:
         return regime_value
 
-    # Layer 4 — per-time-of-day fallback
+    # Layer 4 — per-time-of-day
     try:
         from tod_overrides import resolve_for_current_tod
         return resolve_for_current_tod(profile_or_dict, param_name, default)

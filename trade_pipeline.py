@@ -161,14 +161,17 @@ def ai_review(symbol, technical_signal, ctx=None, political_context=None):
         db_path=db_path,
     )
 
-    # Determine the confidence threshold — Layer 3 lookup so the
-    # tuner's per-regime overrides take effect transparently.
+    # Determine the confidence threshold via the full override chain
+    # (per-symbol > per-regime > per-TOD > global). The tuner's
+    # per-symbol overrides take effect transparently when this symbol
+    # has a meaningful track record.
     if ctx is not None:
         try:
             from regime_overrides import resolve_for_current_regime
             min_confidence = resolve_for_current_regime(
                 ctx, "ai_confidence_threshold",
-                default=ctx.ai_confidence_threshold)
+                default=ctx.ai_confidence_threshold,
+                symbol=symbol)
         except Exception:
             min_confidence = ctx.ai_confidence_threshold
     else:
@@ -256,21 +259,22 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             # Never block a trade due to earnings lookup failure
             pass
 
-    # Resolve parameters from ctx with per-regime override support, then
-    # explicit arg, or module-level constants. Layer 3 lookup means a
-    # tuner-set override for "stop_loss_pct in volatile regime" actually
-    # takes effect at order-placement time.
+    # Resolve parameters via the full override chain (per-symbol >
+    # per-regime > per-TOD > global). A tuner-set per-symbol stop-loss
+    # for NVDA will override the regime-specific stop-loss for volatile.
     if ctx is not None:
         try:
             from regime_overrides import resolve_for_current_regime
             if max_position_pct is None:
                 max_position_pct = resolve_for_current_regime(
                     ctx, "max_position_pct",
-                    default=ctx.max_position_pct)
+                    default=ctx.max_position_pct, symbol=symbol)
             stop_loss_pct = resolve_for_current_regime(
-                ctx, "stop_loss_pct", default=ctx.stop_loss_pct)
+                ctx, "stop_loss_pct",
+                default=ctx.stop_loss_pct, symbol=symbol)
             take_profit_pct = resolve_for_current_regime(
-                ctx, "take_profit_pct", default=ctx.take_profit_pct)
+                ctx, "take_profit_pct",
+                default=ctx.take_profit_pct, symbol=symbol)
         except Exception:
             if max_position_pct is None:
                 max_position_pct = ctx.max_position_pct

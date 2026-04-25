@@ -302,6 +302,8 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         ("trading_profiles", "regime_overrides", "TEXT NOT NULL DEFAULT '{}'"),
         # Layer 4 — per-time-of-day parameter overrides
         ("trading_profiles", "tod_overrides", "TEXT NOT NULL DEFAULT '{}'"),
+        # Layer 7 — per-symbol parameter overrides (most-specific tier)
+        ("trading_profiles", "symbol_overrides", "TEXT NOT NULL DEFAULT '{}'"),
     ]
     for table, col, col_def in _migrations:
         try:
