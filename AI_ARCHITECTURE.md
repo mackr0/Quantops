@@ -192,15 +192,111 @@ At 4 cycles/hour × 6.5 market hours × 10 profiles:
 
 ---
 
-## Self-Learning Loop
+## Self-Learning Loop — 9 Layers of Autonomy
 
-The AI isn't static. Three feedback mechanisms improve it over time:
+The AI isn't static. The system continuously adjusts how it trades based on its own performance. The architecture is organized into 9 layers, each addressing a different decision surface. See `AUTONOMOUS_TUNING_PLAN.md` for the full design and `SELF_TUNING.md` for live status.
 
-### Self-Tuning (daily)
-Watches the AI's win rate and adjusts parameters (confidence threshold, stop/TP percentages). Reviews its own past adjustments and reverses ones that made things worse.
+The layers below the line are designed and rolling out wave by wave; the ones above the line are active in production today.
 
-### Meta-Model (Phase 1 — collecting data)
-A gradient-boosted classifier trained on the AI's own prediction history. Learns patterns like "the AI is overconfident on low-volume mid-caps in sideways markets" and adjusts confidence before execution. Needs 100+ resolved predictions to train.
+```
+┌────────────────────────────────────────────────────────────┐
+│                     COST GUARD (cross-cutting)              │
+│   Every spend-affecting autonomous action checks the daily  │
+│   API ceiling. Over-budget changes surface as recommendations│
+│   with cost estimates, not silent debits.                    │
+└────────────────────────────────────────────────────────────┘
+       │
+       ▼
+LAYER 1 — Parameter coverage
+LAYER 2 — Weighted signal intensity     ─── ACTIVE OR ROLLING OUT ───
+LAYER 3 — Per-regime overrides
+─────────────────────────────────────────────────────────────
+LAYER 4 — Per-time-of-day overrides
+LAYER 5 — Cross-profile insight sharing
+LAYER 6 — Adaptive AI prompt structure
+LAYER 7 — Per-symbol overrides
+LAYER 8 — Self-commissioned new strategies
+LAYER 9 — Automatic capital allocation (opt-in)
+```
 
-### Alpha Decay Monitor (continuous)
-Tracks each strategy's rolling 30-day Sharpe ratio. When a strategy's edge degrades by 30%+ for 30 consecutive days, it's automatically deprecated and removed from the active roster. Can restore if it recovers for 14 consecutive days.
+### Layer 1 — Parameter Coverage (active)
+
+Every numeric and binary parameter in `trading_profiles` either has a tuning rule that adjusts it based on observed performance, or is on a tight `MANUAL_PARAMETERS` allowlist enforced by an anti-regression test. Manual entries are limited to: AI provider/model (cost-sensitive strategic choice — opt-in toggle planned), consensus configuration (architectural), schedule (user lifestyle), secrets, identity, historical baselines.
+
+Today the tuner autonomously manages **~23 parameters** including:
+- Confidence threshold, position sizing, stop/take-profit (fixed and ATR-based)
+- Concentration limits (max positions, max correlation, max sector positions)
+- Drawdown thresholds (pause and reduce)
+- Entry filters (volume, momentum, gap, RSI bands, price band)
+- Timing (earnings avoidance, opening-minute skip)
+- Strategy toggles (4 legacy + auto-deprecation of all 16+ modular strategies via alpha_decay)
+- Short-selling enable/disable (defensive auto-disable on persistent losses)
+- MAGA mode (auto-disable when political context underperforms)
+
+Every adjustment respects: bound clamping (`param_bounds.PARAM_BOUNDS`), 3-day per-parameter cooldown, automatic reversal if the change worsens performance, and an explicit history check.
+
+### Layer 2 — Weighted Signal Intensity (designed)
+
+Every signal the AI sees gets a per-profile weight on a 4-step ladder (`1.0 → 0.7 → 0.4 → 0.0`). Weight `1.0` is full strength; `0.0` omits the signal entirely from the prompt. Intermediate weights inject a discount hint into the prompt so the AI knows the signal has been historically weak for this profile.
+
+This generalizes binary toggles. Insider buying cluster might be signal-positive overall but unreliable for a specific profile — instead of deleting it, drop its weight to 0.4 so the AI keeps the information but doesn't overweight it. Strategy toggles, alt-data signals, and even short-selling intensity all roll into this system.
+
+### Layer 3 — Per-Regime Overrides (designed)
+
+Each parameter can have regime-specific values: `bull`, `bear`, `sideways`, `volatile`, `crisis`. At decision time, `resolve_param(profile, name, regime)` returns the regime-specific value if it exists with sufficient sample size, else falls back to global. The tuner detects when a parameter performs differently per regime and creates per-regime overrides automatically.
+
+### Layer 4 — Per-Time-of-Day Overrides (designed)
+
+Same idea, bucketed by intraday window: open (09:30–10:30), midday (10:30–14:30), close (14:30–16:00). Different behaviors at the open vs close are well-documented in equities; the tuner learns which parameters are time-sensitive.
+
+### Layer 5 — Cross-Profile Insight Sharing (designed)
+
+When one profile makes a successful adjustment, the same detection rule runs against every other enabled profile's own data. Profiles with the same pattern apply the same change (their own data triggers it; no value-copying). The fleet learns ~10× faster than profiles in isolation, with no extra API cost.
+
+### Layer 6 — Adaptive AI Prompt Structure (designed)
+
+The prompt's structure — section order, section verbosity, signal grouping — is itself a tunable surface. The tuner runs implicit A/B tests across cycles and reinforces structures correlated with higher win rates. Cost-gated so it doesn't drift toward longer prompts.
+
+### Layer 7 — Per-Symbol Overrides (designed)
+
+Some symbols behave differently (NVDA's optimal stop-loss is not KO's). For symbols with ≥20 individual resolved predictions, the tuner can create per-symbol parameter overrides. Most fine-grained layer; longer cooldown (7 days) to prevent over-fitting on small symbol samples.
+
+### Layer 8 — Self-Commissioned New Strategies (designed)
+
+Builds on Phase 7 (auto-strategy generation). The tuner identifies *gaps* in current strategy coverage — patterns where the existing strategies didn't fire but the AI made correct calls anyway, representing untapped edges. It triggers the strategy generator with a focused brief, gated by cost.
+
+### Layer 9 — Automatic Capital Allocation (designed, opt-in)
+
+Across profiles, capital flows toward proven edge. Weekly rebalance computes a `capital_score = recent_sharpe × (1 + win_rate)` and reallocates within ±25%/+200% bounds per rebalance. Opt-in by default — flipped to auto-action when `auto_capital_allocation` is enabled, similar to `ai_model_auto_tune`.
+
+### Cost Guard (cross-cutting)
+
+`cost_guard.py` (designed) wraps every cost-affecting autonomous action. The tuner respects a per-user daily API spend ceiling. Cost-exceeding changes surface as the only legitimate "Recommendation:" — with explicit cost estimates — for human approval. This is the single carve-out that the anti-recommendation-only guardrail allows.
+
+---
+
+## Meta-Model (operates alongside the autonomy layers)
+
+A gradient-boosted classifier (`meta_model.py`) trained daily on the AI's own resolved predictions. Learns "given everything the main AI saw at decision time, was the AI right?" and re-weights the AI's confidence at decision time based on the historical pattern. Needs 100+ resolved predictions to start; AUC is reported in the activity feed (e.g., "AUC 0.83" means strong signal separating right from wrong calls).
+
+The meta-model and the self-tuner complement each other:
+- Meta-model: per-prediction probability adjustment.
+- Self-tuner: per-parameter, per-signal, per-regime adjustment.
+
+Both learn from the same resolved-prediction stream.
+
+---
+
+## Alpha Decay Monitor (continuous)
+
+`alpha_decay.py` tracks each strategy's rolling 30-day Sharpe vs lifetime baseline. Auto-deprecates strategies whose rolling Sharpe degrades for 30+ consecutive days; auto-restores when rolling Sharpe recovers for 14+ consecutive days. The self-tuner now also feeds into this pipeline — when it identifies a non-toggleable strategy underperforming, it calls `deprecate_strategy()` directly instead of waiting for the rolling-Sharpe trigger.
+
+Manual override via the **Restore** button on the AI Intelligence → Strategy tab.
+
+---
+
+## What This Means in Practice
+
+The end state of the autonomy layers is that humans set **strategic** direction (which AI provider, what daily cost ceiling, which markets to trade, what schedule) and the system handles every **tactical** decision: which signals to weight high or low, what stop-loss makes sense in volatile vs bull regimes, which sector cap fits today's correlation pattern, when to deprecate a strategy that's lost its edge, when to spin up a new one to fill a coverage gap, and how to allocate capital across profiles.
+
+The whole point is that the system makes better, faster, smarter decisions than a person can — and learns from every one of them.

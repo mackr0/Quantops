@@ -17,6 +17,68 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Autonomous tuning Wave 1: Group A (concentration/risk) + Group D (timing) — 10 new tunable parameters (Severity: medium, behavior)
+
+**Why this exists:** The whole point of QuantOpsAI is that it makes
+better, faster, smarter tactical decisions than a person can. The
+prior tuner managed only ~8 levers; the rest were either manually
+configured or completely untouched. The full plan (see
+`AUTONOMOUS_TUNING_PLAN.md`) brings every tactical parameter, signal,
+regime context, and prompt structure under autonomous control across
+9 layers, with cost discipline cross-cutting everything.
+
+**Wave 1 ships the foundation** — Layer 1 Group A (concentration / risk)
+and Group D (timing / flag) — plus the bounds-clamping infrastructure
+that every later wave will use.
+
+**New module: `param_bounds.py`.** Declarative `PARAM_BOUNDS` for every
+tunable parameter — absolute min/max safety bounds. `clamp(name, value)`
+helper. Tuning rules call `clamp` before writing so even a buggy
+detection rule can't push a parameter to a dangerous value.
+
+**10 new tuner functions** (all in `self_tuning.py`, registered in
+`_apply_upward_optimizations`):
+
+| Function | Parameter(s) | What it does |
+|----------|--------------|--------------|
+| `_optimize_max_total_positions` | `max_total_positions` | -1 on deep-loss + low-WR; +1 on strong-edge + healthy-winner |
+| `_optimize_max_correlation` | `max_correlation` | Tighten 0.05 on weekly loss-cluster rate ≥40%; loosen on clean history + WR ≥55% |
+| `_optimize_max_sector_positions` | `max_sector_positions` | -1 when overall WR < 35% |
+| `_optimize_drawdown_thresholds` | `drawdown_pause_pct` | Tighten 0.02 in the WR drift zone (35–45%) |
+| `_optimize_drawdown_reduce` | `drawdown_reduce_pct` | Tighten 0.01 in the WR drift zone |
+| `_optimize_price_band` | `min_price`, `max_price` | Raise floor / lower ceiling when band-edge entries WR < 30%; capped at 0.5×–2.0× current to prevent identity drift |
+| `_optimize_avoid_earnings_days` | `avoid_earnings_days` | Placeholder (no-op); activates when `days_to_earnings` is logged on each prediction |
+| `_optimize_skip_first_minutes` | `skip_first_minutes` | Placeholder; activates when intraday entry-time is structured |
+| `_optimize_maga_mode` | `maga_mode` | **Auto-disable** when predictions with political_context active WR ≥ 10pt below overall (≥20 samples) |
+
+Every rule inherits the existing safety scaffolding: 3-day per-parameter
+cooldown via `_get_recent_adjustment`, reverse-if-worsened guard via
+`_was_adjustment_effective`, bound clamping, logging to `tuning_history`,
+display via `display_name` namespaced fallback. Helper
+`_safe_change_guarded` wraps the cooldown+history check.
+
+**Documentation rewrite.** `SELF_TUNING.md` rewritten end-to-end —
+removes the outdated "4 parameters" / "Future Parameters Planned Late
+May 2026" sections and reflects the current 23 auto-tuned levers and
+the 9-layer roadmap. `AI_ARCHITECTURE.md` Self-Learning section
+expanded with the layered autonomy diagram and per-layer descriptions.
+
+**Tests:** 23 new tests in `test_self_tuning_wave1.py` covering every
+new rule (triggers correctly, respects bounds, respects cooldown, no-op
+when conditions not met) plus an orchestrator-registration test.
+`param_bounds.clamp` covered with under/over/in-range/unknown-param
+cases. Full suite: 758 passed / 1 skipped.
+
+**Next waves** (per `AUTONOMOUS_TUNING_PLAN.md`): W2 = entry filters,
+W3 = exit parameters, W4 = weighted signal intensity (Layer 2), W5 =
+per-regime overrides, W6 = per-time-of-day, W7 = cost guard, W8 =
+per-symbol, W9 = cross-profile insight sharing, W10 = adaptive prompt
+structure, W11 = self-commissioned strategies, W12 = capital
+allocation, W13 = guardrail tests + Settings UI Autonomy section + final
+doc pass.
+
+---
+
 ## 2026-04-25 — Self-tuner: act on what it identifies (close 'recommendation only' hole) (Severity: medium, behavior)
 
 **Problem:** When the tuner found a problem it knew the answer to, it

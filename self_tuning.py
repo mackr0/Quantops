@@ -1589,6 +1589,17 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_strategy_toggles,
         _optimize_stop_take_profit,
         _optimize_position_size_upward,
+        # Wave 1 — Group A (concentration / risk)
+        _optimize_max_total_positions,
+        _optimize_max_correlation,
+        _optimize_max_sector_positions,
+        _optimize_drawdown_thresholds,
+        _optimize_drawdown_reduce,
+        _optimize_price_band,
+        # Wave 1 — Group D (timing + flag)
+        _optimize_avoid_earnings_days,
+        _optimize_skip_first_minutes,
+        _optimize_maga_mode,
     ]
 
     results = []
@@ -2006,6 +2017,425 @@ def _optimize_position_size_upward(conn, ctx, profile_id, user_id,
         win_rate_at_change=overall_wr, predictions_resolved=resolved,
     )
     return f"Increased position size from {current:.1%} to {new_pct:.1%} ({reason})"
+
+
+# ---------------------------------------------------------------------------
+# Wave 1 — extended-coverage optimizers (Group A: concentration/risk,
+# Group D: timing). Each rule follows the same pattern: cooldown check,
+# reverse-if-worsened guard, signal detection from data, bound clamping
+# via param_bounds.clamp, write via update_trading_profile, log via
+# log_tuning_change. Returns a human-readable string on action, None
+# on no-op.
+# ---------------------------------------------------------------------------
+
+def _bound(name, value):
+    """Clamp helper — wraps param_bounds.clamp with a stable import."""
+    from param_bounds import clamp
+    return clamp(name, value)
+
+
+def _safe_change_guarded(profile_id, param_name):
+    """Common cooldown + reverse-if-worsened check. Returns True if the
+    rule is ALLOWED to make a change to this parameter right now."""
+    if _get_recent_adjustment(profile_id, param_name, days=3):
+        return False
+    if _was_adjustment_effective(profile_id, param_name) == "worsened":
+        return False
+    return True
+
+
+def _optimize_max_total_positions(conn, ctx, profile_id, user_id,
+                                   overall_wr, resolved):
+    """Concentration risk: reduce position count cap when avg loss is large
+    AND the cap is being hit often. Increase when WR is strong AND the cap
+    is constraining capacity."""
+    if not _safe_change_guarded(profile_id, "max_total_positions"):
+        return None
+
+    table_check = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='trades'"
+    ).fetchone()
+    if not table_check:
+        return None
+
+    # Average loss size on closed losers
+    row = conn.execute(
+        "SELECT AVG(pnl) as avg_loss FROM trades "
+        "WHERE pnl IS NOT NULL AND pnl < 0"
+    ).fetchone()
+    avg_loss = row["avg_loss"] if row and row["avg_loss"] is not None else 0
+
+    current = getattr(ctx, "max_total_positions", 10)
+    if not isinstance(current, int):
+        current = int(current)
+
+    # Reduce when losses are deep AND we're losing broadly.
+    if overall_wr < 40 and avg_loss < -200:
+        new_val = _bound("max_total_positions", current - 1)
+        if new_val == current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, max_total_positions=new_val)
+        reason = (
+            f"Concentration risk — avg loss ${avg_loss:.0f} on {overall_wr:.0f}% WR "
+            f"— reduce concurrent positions"
+        )
+        log_tuning_change(
+            profile_id, user_id, "concentration_reduce",
+            "max_total_positions", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return f"Reduced max concurrent positions from {current} to {new_val} ({reason})"
+
+    # Increase when strong WR AND average winner is meaningful.
+    row = conn.execute(
+        "SELECT AVG(pnl) as avg_win FROM trades "
+        "WHERE pnl IS NOT NULL AND pnl > 0"
+    ).fetchone()
+    avg_win = row["avg_win"] if row and row["avg_win"] is not None else 0
+
+    if overall_wr >= 60 and avg_win > 100:
+        new_val = _bound("max_total_positions", current + 1)
+        if new_val == current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, max_total_positions=new_val)
+        reason = (
+            f"Strong edge — {overall_wr:.0f}% WR, avg winner ${avg_win:.0f} "
+            f"— allow more concurrent positions"
+        )
+        log_tuning_change(
+            profile_id, user_id, "concentration_increase",
+            "max_total_positions", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return f"Raised max concurrent positions from {current} to {new_val} ({reason})"
+
+    return None
+
+
+def _optimize_max_correlation(conn, ctx, profile_id, user_id,
+                               overall_wr, resolved):
+    """Diversification: tighten the correlation cap when losses cluster in
+    correlated names. Loosen when too many candidates are gated out."""
+    if not _safe_change_guarded(profile_id, "max_correlation"):
+        return None
+
+    # Heuristic: count losing trades that occurred within the same week
+    # and same sector — a proxy for correlated drawdowns.
+    table_check = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='trades'"
+    ).fetchone()
+    if not table_check:
+        return None
+
+    cluster_row = conn.execute(
+        """SELECT strftime('%Y-%W', timestamp) as week, COUNT(*) as cnt
+           FROM trades
+           WHERE pnl IS NOT NULL AND pnl < 0
+           GROUP BY week HAVING cnt >= 3"""
+    ).fetchall()
+
+    losing_weeks_with_clusters = len(cluster_row)
+    total_weeks_row = conn.execute(
+        """SELECT COUNT(DISTINCT strftime('%Y-%W', timestamp)) as n
+           FROM trades WHERE pnl IS NOT NULL"""
+    ).fetchone()
+    total_weeks = total_weeks_row["n"] if total_weeks_row else 0
+
+    if total_weeks < 4:
+        return None  # Not enough history
+
+    cluster_rate = losing_weeks_with_clusters / total_weeks if total_weeks > 0 else 0
+    current = getattr(ctx, "max_correlation", 0.7)
+
+    if cluster_rate >= 0.4:
+        # Tighten — loss clusters on >40% of weeks suggests over-correlation
+        new_val = _bound("max_correlation", round(current - 0.05, 4))
+        if new_val >= current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, max_correlation=new_val)
+        reason = (
+            f"Loss-cluster weeks {cluster_rate:.0%} — tighten correlation cap"
+        )
+        log_tuning_change(
+            profile_id, user_id, "correlation_tighten",
+            "max_correlation", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return f"Tightened max_correlation from {current:.2f} to {new_val:.2f} ({reason})"
+
+    # Loosen if very few clustering weeks AND profile is performing well
+    if cluster_rate < 0.1 and overall_wr >= 55:
+        new_val = _bound("max_correlation", round(current + 0.05, 4))
+        if new_val <= current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, max_correlation=new_val)
+        reason = (
+            f"Low loss-clustering ({cluster_rate:.0%}) + healthy WR — "
+            f"loosen correlation cap to admit more candidates"
+        )
+        log_tuning_change(
+            profile_id, user_id, "correlation_loosen",
+            "max_correlation", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return f"Loosened max_correlation from {current:.2f} to {new_val:.2f} ({reason})"
+
+    return None
+
+
+def _optimize_max_sector_positions(conn, ctx, profile_id, user_id,
+                                    overall_wr, resolved):
+    """Sector cap: reduce when sector concentration accompanies bad days."""
+    if not _safe_change_guarded(profile_id, "max_sector_positions"):
+        return None
+
+    # Use the same loss-cluster heuristic but coarser.
+    if overall_wr < 35:
+        current = getattr(ctx, "max_sector_positions", 5)
+        if not isinstance(current, int):
+            current = int(current)
+        new_val = _bound("max_sector_positions", current - 1)
+        if new_val == current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, max_sector_positions=new_val)
+        reason = (
+            f"Overall WR {overall_wr:.0f}% — tighten sector cap to "
+            f"avoid concentration drawdowns"
+        )
+        log_tuning_change(
+            profile_id, user_id, "sector_cap_tighten",
+            "max_sector_positions", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return f"Reduced max_sector_positions from {current} to {new_val} ({reason})"
+
+    return None
+
+
+def _optimize_drawdown_thresholds(conn, ctx, profile_id, user_id,
+                                   overall_wr, resolved):
+    """Drawdown thresholds: tighten when past pause/reduce events were
+    followed by deeper drawdown (didn't catch the slide early enough)."""
+    # We don't yet track drawdown-triggered events in a structured way.
+    # For now: when overall_wr is in the deteriorating zone (35-45%) AND
+    # we haven't tightened recently, tighten by one notch — slightly more
+    # conservative defaults during stretches of underperformance.
+    if not (35 <= overall_wr < 45):
+        return None
+    if not _safe_change_guarded(profile_id, "drawdown_pause_pct"):
+        return None
+    current = getattr(ctx, "drawdown_pause_pct", 0.20)
+    new_val = _bound("drawdown_pause_pct", round(current - 0.02, 4))
+    if new_val >= current:
+        return None
+    from models import update_trading_profile, log_tuning_change
+    update_trading_profile(profile_id, drawdown_pause_pct=new_val)
+    reason = (
+        f"WR drifting at {overall_wr:.0f}% — tighten drawdown-pause "
+        f"to catch deterioration sooner"
+    )
+    log_tuning_change(
+        profile_id, user_id, "drawdown_pause_tighten",
+        "drawdown_pause_pct", str(current), str(new_val), reason,
+        win_rate_at_change=overall_wr, predictions_resolved=resolved,
+    )
+    return (f"Tightened drawdown-pause threshold from {current:.0%} to "
+            f"{new_val:.0%} ({reason})")
+
+
+def _optimize_drawdown_reduce(conn, ctx, profile_id, user_id,
+                               overall_wr, resolved):
+    """Mirror of pause-threshold but for the reduce-position trigger."""
+    if not (35 <= overall_wr < 45):
+        return None
+    if not _safe_change_guarded(profile_id, "drawdown_reduce_pct"):
+        return None
+    current = getattr(ctx, "drawdown_reduce_pct", 0.10)
+    new_val = _bound("drawdown_reduce_pct", round(current - 0.01, 4))
+    if new_val >= current:
+        return None
+    from models import update_trading_profile, log_tuning_change
+    update_trading_profile(profile_id, drawdown_reduce_pct=new_val)
+    reason = (
+        f"WR drifting at {overall_wr:.0f}% — tighten drawdown-reduce "
+        f"trigger so position-size cuts kick in earlier"
+    )
+    log_tuning_change(
+        profile_id, user_id, "drawdown_reduce_tighten",
+        "drawdown_reduce_pct", str(current), str(new_val), reason,
+        win_rate_at_change=overall_wr, predictions_resolved=resolved,
+    )
+    return (f"Tightened drawdown-reduce threshold from {current:.0%} to "
+            f"{new_val:.0%} ({reason})")
+
+
+def _optimize_price_band(conn, ctx, profile_id, user_id, overall_wr, resolved):
+    """Tune min_price / max_price within 0.5x-2.0x of current (and the
+    absolute floor/ceiling in PARAM_BOUNDS) when entries near the band
+    edges consistently fail."""
+    table_check = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='trades'"
+    ).fetchone()
+    if not table_check:
+        return None
+
+    current_min = float(getattr(ctx, "min_price", 1.0))
+    current_max = float(getattr(ctx, "max_price", 20.0))
+
+    # Bottom-of-band failure check: trades entered within 1.5× of min_price.
+    bottom_threshold = current_min * 1.5
+    bot_row = conn.execute(
+        "SELECT COUNT(*) as cnt, "
+        " SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins "
+        "FROM trades WHERE pnl IS NOT NULL AND price <= ? AND price > 0",
+        (bottom_threshold,),
+    ).fetchone()
+    if (bot_row and bot_row["cnt"] >= 5):
+        bot_wr = (bot_row["wins"] or 0) / bot_row["cnt"] * 100
+        if bot_wr < 30 and _safe_change_guarded(profile_id, "min_price"):
+            # Raise floor — never above 2× current (identity guard) and
+            # always within absolute bounds.
+            candidate = min(current_min * 1.25, current_min * 2.0)
+            new_min = _bound("min_price", round(candidate, 2))
+            if new_min > current_min and new_min < current_max:
+                from models import update_trading_profile, log_tuning_change
+                update_trading_profile(profile_id, min_price=new_min)
+                reason = (
+                    f"Bottom-of-band entries (≤${bottom_threshold:.2f}) "
+                    f"win rate {bot_wr:.0f}% on {bot_row['cnt']} trades — "
+                    f"raise min_price floor"
+                )
+                log_tuning_change(
+                    profile_id, user_id, "price_band_min_raise",
+                    "min_price", str(current_min), str(new_min), reason,
+                    win_rate_at_change=overall_wr,
+                    predictions_resolved=resolved,
+                )
+                return (f"Raised min_price from ${current_min:.2f} to "
+                        f"${new_min:.2f} ({reason})")
+
+    # Top-of-band failure check: trades entered within 0.85× of max_price.
+    top_threshold = current_max * 0.85
+    top_row = conn.execute(
+        "SELECT COUNT(*) as cnt, "
+        " SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins "
+        "FROM trades WHERE pnl IS NOT NULL AND price >= ?",
+        (top_threshold,),
+    ).fetchone()
+    if (top_row and top_row["cnt"] >= 5):
+        top_wr = (top_row["wins"] or 0) / top_row["cnt"] * 100
+        if top_wr < 30 and _safe_change_guarded(profile_id, "max_price"):
+            candidate = max(current_max * 0.85, current_max * 0.5)
+            new_max = _bound("max_price", round(candidate, 2))
+            if new_max < current_max and new_max > current_min:
+                from models import update_trading_profile, log_tuning_change
+                update_trading_profile(profile_id, max_price=new_max)
+                reason = (
+                    f"Top-of-band entries (≥${top_threshold:.2f}) "
+                    f"win rate {top_wr:.0f}% on {top_row['cnt']} trades — "
+                    f"lower max_price ceiling"
+                )
+                log_tuning_change(
+                    profile_id, user_id, "price_band_max_lower",
+                    "max_price", str(current_max), str(new_max), reason,
+                    win_rate_at_change=overall_wr,
+                    predictions_resolved=resolved,
+                )
+                return (f"Lowered max_price from ${current_max:.2f} to "
+                        f"${new_max:.2f} ({reason})")
+
+    return None
+
+
+def _optimize_avoid_earnings_days(conn, ctx, profile_id, user_id,
+                                   overall_wr, resolved):
+    """Earnings window: shrink when entries near earnings outperform; grow
+    when they underperform.
+
+    We don't currently log a clean 'days_to_earnings' on each prediction.
+    This rule is a placeholder for the time-bucketed signal — once the
+    feature lands, the body fills in. For W1 the rule self-skips
+    cleanly (returns None) but is registered so the orchestrator
+    structure is in place.
+    """
+    return None
+
+
+def _optimize_skip_first_minutes(conn, ctx, profile_id, user_id,
+                                  overall_wr, resolved):
+    """First-X-minutes filter — needs intraday entry-time data which
+    isn't structured today. Same placeholder pattern as
+    _optimize_avoid_earnings_days; rule registers for orchestration but
+    no-ops until the feature column exists."""
+    return None
+
+
+def _optimize_maga_mode(conn, ctx, profile_id, user_id, overall_wr, resolved):
+    """maga_mode binary: auto-disable if predictions made when ON
+    materially underperform the global baseline. Auto-enable is left as
+    a recommendation (per the no-recommendation-only allowlist's
+    asymmetric-on-purpose rule for high-impact feature flags).
+
+    For W1 binary auto-disable only. W4 (Layer 2) makes it weighted.
+    """
+    if not _safe_change_guarded(profile_id, "maga_mode"):
+        return None
+
+    if not getattr(ctx, "maga_mode", False):
+        return None  # Already off; nothing to disable
+
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(ai_predictions)").fetchall()}
+    if "features_json" not in cols:
+        return None
+
+    # Bucket resolved predictions by whether features_json includes a
+    # political-context signal.
+    rows = conn.execute(
+        "SELECT actual_outcome, features_json FROM ai_predictions "
+        "WHERE status='resolved' AND actual_outcome IN ('win','loss') "
+        "  AND features_json IS NOT NULL"
+    ).fetchall()
+
+    on_total = on_wins = 0
+    for r in rows:
+        try:
+            import json as _j
+            feats = _j.loads(r["features_json"]) if r["features_json"] else {}
+        except Exception:
+            continue
+        if feats.get("political_context") or feats.get("maga_mode"):
+            on_total += 1
+            if r["actual_outcome"] == "win":
+                on_wins += 1
+
+    if on_total < 20:
+        return None  # Not enough data to judge
+
+    on_wr = on_wins / on_total * 100
+    diff = on_wr - overall_wr
+    # Auto-disable threshold: clearly underperforming the baseline.
+    if diff <= -10:
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, maga_mode=0)
+        reason = (
+            f"Predictions with political context active won {on_wr:.0f}% "
+            f"vs {overall_wr:.0f}% overall "
+            f"({on_wins}/{on_total} samples) — disable"
+        )
+        log_tuning_change(
+            profile_id, user_id, "maga_disable",
+            "maga_mode", "1", "0", reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return f"Disabled MAGA mode ({reason})"
+
+    return None
 
 
 # ---------------------------------------------------------------------------

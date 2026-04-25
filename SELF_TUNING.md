@@ -1,8 +1,10 @@
 # Self-Tuning System
 
-QuantOpsAI's self-tuning system is an automated feedback loop that adjusts trading parameters based on the AI's own prediction accuracy. It runs daily at 3:55 PM ET — once per profile — and logs every decision it makes, whether it changes something or not.
+QuantOpsAI's self-tuning system is an autonomous feedback loop that adjusts trading parameters, signal weights, and (in upcoming waves) per-regime / per-time-of-day / per-symbol overrides based on the AI's own prediction accuracy and trade outcomes. It runs daily as part of the snapshot bundle (~3:55 PM ET) per profile and logs every decision it makes — even when it makes none.
 
-**Status (2026-04-22):** All 10 active profiles have sufficient data and are actively tuning.
+**The end goal:** every tactical decision is autonomous. Humans set strategic direction (cost ceilings, AI provider/model choice, secrets, schedule) and the system handles every dial that responds to data.
+
+See `AUTONOMOUS_TUNING_PLAN.md` for the complete 9-layer roadmap.
 
 ---
 
@@ -16,76 +18,123 @@ A prediction **resolves** when one of these conditions is met:
 
 | Signal | Win Condition | Loss Condition | Timeout |
 |--------|--------------|----------------|---------|
-| BUY | Price rises >= 2% | Price drops >= 2% | 10 trading days |
-| SELL | Price drops >= 2% | Price rises >= 2% | 10 trading days |
-| HOLD | Price stays within +/-2% for 3 trading days | Price moves > 2% within 3 trading days | 10 trading days |
+| BUY | Price rises ≥ 2% | Price drops ≥ 2% | 10 trading days |
+| SELL | Price drops ≥ 2% | Price rises ≥ 2% | 10 trading days |
+| HOLD | Price stays within ±2% for 3 trading days | Price moves > 2% within 3 trading days | 10 trading days |
 
 After 10 trading days with no threshold hit, the prediction resolves as "neutral."
 
-**Why this matters:** A closed trade and a resolved prediction are different things. The AI might predict HOLD on 20 stocks and BUY on 2. All 22 are tracked as predictions, but only the 2 BUYs become trades. The self-tuner learns from ALL predictions — not just the ones that led to trades — because the AI's accuracy on HOLD calls matters just as much (a false HOLD on a stock that jumped 10% is a missed opportunity the tuner should learn from).
+**Why this matters:** A closed trade and a resolved prediction are different things. The AI might predict HOLD on 20 stocks and BUY on 2. All 22 are tracked as predictions, but only the 2 BUYs become trades. The self-tuner learns from ALL predictions — not just the ones that led to trades — because the AI's accuracy on HOLD calls matters just as much (a false HOLD on a stock that jumped 10% is a missed opportunity worth learning from).
 
 ### The 20-Prediction Threshold
 
 The self-tuner requires **at least 20 resolved predictions** before it will adjust anything. This prevents premature optimization on tiny sample sizes that could be pure noise.
 
-### What It Adjusts (4 Parameters)
+---
 
-The self-tuner currently manages 4 parameters per profile:
+## What Gets Auto-Tuned (Today)
 
-#### 1. AI Confidence Threshold (`ai_confidence_threshold`)
+The tuner currently autonomously adjusts these levers. Each rule fires at most once per cycle (one change per run, for clean reversal attribution).
 
-Controls the minimum confidence score the AI must have before executing a trade.
+### Disaster prevention (always-on, runs below 35% WR)
 
-- **Trigger:** If the win rate on predictions below 60% confidence is under 35% (on 5+ samples), raise the threshold to 60
-- **Escalation:** If the win rate below 70% confidence is also under 35%, raise to 70
-- **Effect:** The AI stops executing low-conviction trades that are statistically losing money
+| Lever | Trigger | Action |
+|-------|---------|--------|
+| `ai_confidence_threshold` | Win rate at <60% conf < 35% | Raise to 60 (escalate to 70 if same problem) |
+| `max_position_pct` | Overall WR < 30% | Reduce 20% (floor 3%) |
+| `short_stop_loss_pct` | 5+ shorts, 0% WR | Widen 50% (cap 20%) |
+| `enable_short_selling` | 10+ shorts, <20% WR, negative P&L | **Auto-disable** |
 
-#### 2. Position Size (`max_position_pct`)
+### Upward optimization (runs at WR ≥ 35%)
 
-Controls what percentage of the portfolio each trade can use.
+| Lever | Trigger | Action |
+|-------|---------|--------|
+| `ai_confidence_threshold` (band-search) | A higher confidence band has 10+ pt better WR than overall | Raise threshold to that band |
+| `max_position_pct` (regime-aware) | Current regime WR ±15 pt vs overall | Reduce 25% / raise 15% |
+| `max_position_pct` (proven-edge) | 55%+ WR, 30+ predictions, positive avg return | Raise 15% (cap 15%) |
+| 4 legacy strategy toggles | Strategy WR < 30% AND 15+ pt below overall | Disable (never the last enabled) |
+| Modular strategies | Same trigger; no profile toggle | **Auto-deprecate via `alpha_decay`** (auto-restores when rolling Sharpe recovers) |
+| `stop_loss_pct` | 40%+ of losses cluster within 1% of stop | Widen 20% |
+| `take_profit_pct` | Avg winner < 50% of TP target | Tighten 20% |
 
-- **Trigger:** If overall win rate drops below 30%
-- **Action:** Reduce position size by 20% (floor at 3%)
-- **Effect:** Smaller bets while the AI is underperforming = less capital at risk
+### Wave 1 — Concentration / risk + Timing (newly active)
 
-#### 3. Stop-Loss (`stop_loss_pct`)
+| Lever | Trigger | Action |
+|-------|---------|--------|
+| `max_total_positions` | Avg loss < -$200 AND WR < 40% | -1 (concentration risk) |
+|                       | WR ≥ 60% AND avg winner > $100 | +1 (capacity) |
+| `max_correlation` | ≥40% of weeks have 3+ losing trades (loss clusters) | Tighten 0.05 |
+|                   | < 10% loss-cluster weeks AND WR ≥ 55% | Loosen 0.05 |
+| `max_sector_positions` | Overall WR < 35% | -1 (avoid sector drawdowns) |
+| `drawdown_pause_pct` | WR drift zone (35–45%) | Tighten 0.02 (catch deterioration earlier) |
+| `drawdown_reduce_pct` | WR drift zone (35–45%) | Tighten 0.01 |
+| `min_price` | Bottom-of-band entries (≤ 1.5× min) WR < 30% | Raise 25% (capped 0.5×–2.0× current) |
+| `max_price` | Top-of-band entries (≥ 0.85× max) WR < 30% | Lower to 0.85× current |
+| `avoid_earnings_days` | *(active once `days_to_earnings` is logged on each prediction)* | ±1 day |
+| `skip_first_minutes` | *(active once intraday entry-time is structured)* | ±5 min |
+| `maga_mode` | Predictions with political_context active WR ≥ 10pt below overall (≥20 samples) | **Auto-disable** |
 
-Currently adjusted indirectly via ATR-based stops. Future self-tuning expansion (planned for late May 2026) will directly tune the ATR multiplier.
+**Total levers auto-tuned today: 23** (8 already-existing + 15 from Wave 1 implementation).
 
-#### 4. Short Stop-Loss (`short_stop_loss_pct`)
+---
 
-- **Trigger:** If short selling has 0% win rate across 5+ trades
-- **Action:** Widen the short stop-loss by 50% (cap at 20%)
-- **Effect:** Gives short positions more room to work before stopping out
-- **Escalation:** If 10+ short trades with < 20% win rate and negative total P&L, recommends disabling shorts entirely
+## What Stays Manual (and Why)
 
-### Safety Mechanisms
+The tuner cannot change these. Each is on the `MANUAL_PARAMETERS` allowlist enforced by an anti-regression test.
 
-The self-tuner has several guardrails to prevent runaway adjustments:
+| Parameter | Why |
+|-----------|-----|
+| `ai_provider`, `ai_model` | Strategic AI choice. Cost vs capability tradeoff. Opt-in toggle `ai_model_auto_tune` (planned) will let the user enable A/B testing within a cost budget. |
+| `enable_consensus`, `consensus_model` | Architectural — multi-model setup is intentional. |
+| `schedule_type`, `custom_*` | When the user wants trading active. (Future: per-strategy schedules.) |
+| `enable_self_tuning` | Meta — the tuner can't disable itself. |
+| `*_api_key_enc` | Secrets. |
+| `initial_capital` | Historical baseline. |
+| `name`, `created_at`, `user_id`, `id` | Identity / metadata. |
 
-#### 3-Day Cooldown
+---
 
-After any adjustment, that same parameter cannot be changed again for 3 days. This prevents rapid oscillation (e.g., raising and lowering the confidence threshold every day based on the latest batch of predictions).
+## Safety Mechanisms
 
-#### Automatic Reversal
+The tuner has several guardrails to prevent runaway adjustments:
+
+### Bounds Clamping
+
+Every parameter has hard min/max bounds in `param_bounds.PARAM_BOUNDS`. The tuner clamps every change to these bounds. Even if a detection rule produces an extreme value, the bounds catch it. Bounds are **absolute** safety floors and ceilings; the tuner's per-rule logic restricts day-to-day movement to small steps.
+
+### 3-Day Cooldown
+
+After any adjustment, that same parameter cannot be changed again for 3 days. This prevents rapid oscillation (e.g., raising and lowering the confidence threshold every day).
+
+### Automatic Reversal
 
 Every adjustment is reviewed after 3 days (with at least 10 new predictions since the change):
 
-- **Improved:** The adjustment helped (win rate went up). Mark it as "improved" and keep it.
-- **Worsened:** The adjustment hurt (win rate went down). Automatically reverse it to the previous value.
+- **Improved:** WR went up. Mark as "improved" and keep.
+- **Worsened:** WR went down. **Automatically reverse** to the previous value.
 - **Neutral:** No meaningful change. Keep the adjustment but don't count it as a success.
 
-This means the system can undo its own mistakes. If raising the confidence threshold to 70 causes the AI to miss good trades and the win rate drops, the tuner will set it back to what it was.
+The system can undo its own mistakes. If raising the confidence threshold to 70 caused the AI to miss good trades, the tuner sets it back.
 
-#### History Check
+### History Check
 
-Before making any adjustment, the tuner checks if the same type of change was tried before and worsened performance. If a previous confidence threshold increase was reversed as "worsened," the tuner won't try it again.
+Before any adjustment, the tuner checks if the same change was tried before and worsened. If yes, it won't try again.
+
+### One Change Per Run
+
+The orchestrator runs optimizers in priority order and stops after the first change. This lets the auto-reversal system attribute any subsequent WR shift to that specific adjustment.
+
+### Anti-Regression Tests
+
+- `tests/test_no_recommendation_only.py` — every "Recommendation:" string in `self_tuning.py` must be on an explicit allowlist with rationale. New "recommendation only" code paths fail this test until the author wires a real action or adds an allowlist entry.
+- `tests/test_self_tuning_wave1.py` — covers every Wave 1 rule: triggers correctly, respects bounds, respects cooldown, registered in orchestrator.
+- `tests/test_every_lever_is_tuned.py` *(coming in W13)* — walks the `trading_profiles` schema and asserts every column is either tuned or on the manual allowlist.
 
 ---
 
 ## What Gets Logged
 
-Every self-tuning run produces a record, whether or not it makes changes:
+Every self-tuning run produces a record, whether or not it makes changes.
 
 ### When Changes Are Made
 
@@ -94,110 +143,67 @@ Stored in the `tuning_history` table (in `quantopsai.db`):
 | Field | Description |
 |-------|-------------|
 | `profile_id` | Which profile was tuned |
-| `change_type` | Category (confidence_threshold, position_size, short_stop_loss, auto_reversal) |
+| `change_type` | Category (e.g., `confidence_threshold`, `concentration_reduce`, `price_band_min_raise`) |
 | `parameter_name` | Exact DB column changed |
 | `old_value` | Value before the change |
 | `new_value` | Value after the change |
-| `reason` | Human-readable explanation (e.g., "Win rate at <60% confidence was 28% (7/25)") |
+| `reason` | Human-readable explanation |
 | `win_rate_at_change` | Overall win rate when the decision was made |
 | `predictions_resolved` | How many resolved predictions informed the decision |
 | `timestamp` | When it happened |
-| `outcome_after` | Filled in 3 days later: "improved", "worsened", or "neutral" |
+| `outcome_after` | Filled in 3 days later: `improved`, `worsened`, `unchanged`, or `n/a` |
 
 ### When No Changes Are Made
 
-An activity log entry is created:
-
-> **Self-Tuning: evaluated, no changes needed**
-> Tuner reviewed 147 resolved AI predictions and found no parameters worth adjusting — current settings are performing within acceptable bounds.
-
-This shows the tuner is running even when it has nothing to change.
+A `tuning_history` row with `change_type = 'evaluation'` is logged with the current WR and prediction count, plus an activity-feed entry visible in the dashboard. This shows the tuner is running even on quiet days.
 
 ---
 
 ## Viewing Self-Tuning Activity
 
-### Performance Dashboard (AI Intelligence Tab)
+### AI Intelligence Page → Operations Tab
 
-- **Self-Tuning Readiness** table: shows each profile's resolved prediction count vs. the 20 required, with a progress bar
-- **Tuning History** section: shows the last 10 adjustments across all profiles, with parameter, old/new values, reason, and outcome
+- **Self-Tuning** card: per-profile readiness pills (Active / Collecting) + the full Self-Tuning History table with parameter, old → new (formatted), reason, and outcome.
+- **Alpha Decay Monitoring** card (Strategy tab): currently-deprecated strategies with a manual **Restore** button.
 
-### Activity Feed
+### Weekly Digest Email (Fridays after market close)
 
-Every tuning run creates an activity entry visible in the dashboard's activity feed, tagged as `self_tune`.
-
----
-
-## Upward Optimization (Active)
-
-The self-tuner doesn't just prevent disasters — it actively seeks higher win rates. When a profile has a win rate of 35%+ and 20+ resolved predictions, the upward optimizer kicks in alongside the safety-net logic.
-
-**Key principle:** One change per run. The optimizer evaluates 5 strategies in priority order and applies only the first one that triggers. This lets the auto-reversal system attribute any win-rate change to that specific adjustment after 3 days.
-
-### Strategy 1: Confidence Threshold Optimization
-
-Analyzes win rate by confidence band (50-59, 60-69, 70-79, 80+). If a higher band has 10+ percentage points better win rate than overall, raises the threshold one band at a time. The AI then only executes trades where its confidence is strongest.
-
-**Example:** If trades at confidence 70+ win 72% but overall is 50%, raises threshold from 25 to 50 (one band per run). Next run could raise to 60, then 70.
-
-### Strategy 2: Regime-Aware Position Sizing
-
-Compares win rate in the current market regime (bull/bear/sideways/volatile) against overall. If the current regime underperforms by 15+ points, reduces position size by 25%. If it outperforms by 15+ points, increases by 15%.
-
-**Example:** In a sideways market with 27% win rate vs 47% overall, cuts position size from 10% to 7.5% to limit exposure until regime shifts.
-
-### Strategy 3: Strategy Toggle Optimization
-
-Identifies strategies with win rate below 30% AND 15+ points below overall. Disables the worst-performing one. Never disables the last remaining strategy.
-
-**Example:** If Gap Reversal wins only 20% while overall is 50%, disables it so the AI focuses on strategies that are working.
-
-### Strategy 4: Stop-Loss / Take-Profit Optimization
-
-Analyzes the actual P&L distribution of closed trades:
-- **Stop too tight:** If 40%+ of losses cluster within 1% of the stop-loss level, widens by 20% (giving trades more room to recover)
-- **Take-profit too ambitious:** If the average winning trade captures less than 50% of the TP target, tightens by 20% (capturing more gains instead of waiting for unrealistic targets)
-
-### Strategy 5: Position Size Increase
-
-When there is a proven edge (55%+ win rate, 30+ predictions, positive average return), increases position size by 15% to capitalize. Hard cap at 15% per position.
-
-### How These Interact with Safety Mechanisms
-
-Every upward optimization uses the same safety infrastructure as the disaster-prevention logic:
-- **3-day cooldown** per parameter — prevents rapid oscillation
-- **Auto-reversal** — if a change worsens win rate after 3 days, it's automatically reversed
-- **History check** — won't repeat a change that was previously reversed
-- **Priority order** — only one change per run for clean attribution
-- **Gate** — disabled entirely when win rate < 35% (disaster prevention takes over)
+- Self-Tuning Changes section with applied vs recommended counts and full per-profile breakdown.
 
 ---
 
-## Future Parameters (Planned Late May 2026)
+## Difference vs. the Meta-Model (Phase 1)
 
-After the current 4 parameters have 2-3 weeks of stable track record, three additional parameters will be added:
+The **self-tuner** adjusts trading parameters based on aggregate win/loss statistics — macro level.
 
-1. **Trailing Stop ATR Multiplier** — How tight/loose trailing stops are relative to volatility. Data is already being captured in `features_json` (ATR values) and the `trades` table (stop/take-profit prices).
+The **meta-model** is a gradient-boosted classifier that predicts "will this specific prediction be correct?" based on the full feature vector — per-prediction level.
 
-2. **RSI Entry Thresholds** — Overbought/oversold cutoffs for entry signals. RSI is stored in every prediction's `features_json` as one of the 33 technical indicators.
+They complement:
+- Tuner: "stop taking trades below 60% confidence."
+- Meta-model: "this specific 75% confidence trade on AAPL in a bear market with RSI 80 is likely wrong."
 
-3. **Volume Surge Multiplier** — Minimum volume ratio to confirm breakout signals. Volume ratio is captured in the candidate screening data stored in `features_json`.
-
-All three data sources are already being collected with every scan cycle. When implemented, the self-tuner will calibrate from the full historical backlog — it will not start from zero.
+Meta-model retrains daily from `_task_retrain_meta_model` and outputs an `auc` / `accuracy` / feature-importance ranking that's surfaced in the activity feed.
 
 ---
 
-## How This Differs from the Meta-Model (Phase 1)
+## Coming Next (per `AUTONOMOUS_TUNING_PLAN.md`)
 
-The **self-tuner** adjusts trading parameters (confidence threshold, position size, stop-loss) based on aggregate win/loss statistics.
+| Wave | Layer | Scope |
+|------|-------|-------|
+| W2 | Layer 1 Group C | 8 entry-filter parameter rules |
+| W3 | Layer 1 Group B | 6 exit parameter rules |
+| W4 | Layer 2 — Weighted signal intensity | Per-profile weights for ~16 signals (alt-data + strategies + booleans). Replaces binary toggles where appropriate. |
+| W5 | Layer 3 — Per-regime overrides | Bull / bear / sideways / volatile / crisis specific values per parameter |
+| W6 | Layer 4 — Per-time-of-day overrides | Open / midday / close specific values |
+| W7 | Cost guard | Cross-cutting daily-spend ceiling enforcement |
+| W8 | Layer 7 — Per-symbol overrides | Some tickers behave differently |
+| W9 | Layer 5 — Cross-profile insight sharing | Improvement on profile A triggers detection on B's own data |
+| W10 | Layer 6 — Adaptive AI prompt structure | Tuner reinforces high-WR prompt variants |
+| W11 | Layer 8 — Self-commissioned strategies | Tuner identifies coverage gaps → triggers Phase 7 generator |
+| W12 | Layer 9 — Auto capital allocation (opt-in) | Weight capital toward proven-edge profiles |
+| W13 | Final | Settings UI Autonomy section + `test_every_lever_is_tuned.py` + doc final pass |
 
-The **meta-model** (Phase 1 of the Quant Fund Evolution) is a gradient-boosted classifier that predicts "will this specific prediction be correct?" based on the full feature vector. It operates at the individual trade level, not the parameter level.
-
-They complement each other:
-- The self-tuner says "stop taking trades below 60% confidence" (macro adjustment)
-- The meta-model says "this specific 75% confidence trade on AAPL in a bear market with RSI 80 is likely wrong" (micro prediction)
-
-The meta-model will train automatically once any profile accumulates 100+ resolved predictions with feature data (~2-4 weeks from now).
+End state: ~50 autonomous decision surfaces with cost discipline. The system genuinely earns "makes better, faster, smarter decisions than a person can."
 
 ---
 
@@ -205,8 +211,14 @@ The meta-model will train automatically once any profile accumulates 100+ resolv
 
 | File | Purpose |
 |------|---------|
-| `self_tuning.py` | Core logic: `apply_auto_adjustments()`, `describe_tuning_state()`, `_analyze_failure_patterns()` |
-| `multi_scheduler.py` | Scheduler integration: `_task_self_tune(ctx)` fires daily at snapshot time (3:55 PM ET) |
-| `models.py` | `tuning_history` table CRUD: `log_tuning_change()`, `review_past_adjustments()`, `get_tuning_history()` |
-| `views.py` | Dashboard display: `tuning_status` list built from `describe_tuning_state()` per profile |
-| `templates/ai.html` | UI: Self-Tuning Status/History on Operations tab, Learned Patterns on Brain tab |
+| `self_tuning.py` | Core logic: `apply_auto_adjustments()`, `describe_tuning_state()`, `_apply_upward_optimizations()` and all `_optimize_*` rules |
+| `param_bounds.py` | `PARAM_BOUNDS` declarative bounds + `clamp(name, value)` |
+| `alpha_decay.py` | Strategy deprecation/restoration pipeline; called by tuner for non-toggleable strategies |
+| `multi_scheduler.py` | Scheduler integration: `_task_self_tune(ctx)` fires daily at snapshot time |
+| `models.py` | `tuning_history` CRUD: `log_tuning_change()`, `review_past_adjustments()`, `get_tuning_history()` |
+| `views.py` | Dashboard display + `/ai/profile/<id>/restore-strategy/<name>` endpoint |
+| `templates/ai.html` | Self-Tuning + Alpha Decay UI |
+| `display_names.py` | Snake_case → human label for every parameter and adjustment_type |
+| `tests/test_no_recommendation_only.py` | Guardrail: no new recommendation-only code paths |
+| `tests/test_self_tuning_wave1.py` | Wave 1 rule coverage |
+| `tests/test_self_tuning_deprecation.py` | Tuner → alpha_decay integration |
