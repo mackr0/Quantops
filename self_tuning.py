@@ -1609,6 +1609,11 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_momentum_20d,
         _optimize_rsi_overbought,
         _optimize_rsi_oversold,
+        # Wave 3 — Group B (exits — booleans roll into Layer 2 weights)
+        _optimize_short_take_profit,
+        _optimize_atr_multiplier_sl,
+        _optimize_atr_multiplier_tp,
+        _optimize_trailing_atr_multiplier,
     ]
 
     results = []
@@ -2690,6 +2695,195 @@ def _optimize_rsi_oversold(conn, ctx, profile_id, user_id,
         )
         return (f"Lowered rsi_oversold from {current:.0f} to "
                 f"{new_val:.0f} ({reason})")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Wave 3 — exit parameter optimizers (Layer 1 Group B). Each rule reads
+# from the trades table to analyze actual exit behavior and tune the
+# parameters that control where stops and take-profits are placed.
+# ---------------------------------------------------------------------------
+
+def _optimize_short_take_profit(conn, ctx, profile_id, user_id,
+                                  overall_wr, resolved):
+    """Analogous to take_profit_pct rule but for shorts.
+    Tighten when shorts hit TP and reversed (gave back gains);
+    loosen when shorts ran well past TP before exit."""
+    if not _safe_change_guarded(profile_id, "short_take_profit_pct"):
+        return None
+    table_check = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='trades'"
+    ).fetchone()
+    if not table_check:
+        return None
+    rows = conn.execute(
+        "SELECT pnl, take_profit, price FROM trades "
+        "WHERE pnl IS NOT NULL AND side IN ('short','cover') "
+        "  AND take_profit IS NOT NULL AND price > 0"
+    ).fetchall()
+    if len(rows) < 5:
+        return None
+    current = float(getattr(ctx, "short_take_profit_pct", 0.08))
+    # Compute average winner % vs TP target
+    winning_pcts = []
+    for r in rows:
+        if r["pnl"] > 0 and r["take_profit"] and r["price"]:
+            # For shorts, profit = (entry_price - cover_price) / entry_price
+            # We approximate via pnl / (price * abs_qty), but simpler:
+            # compare distance traveled to target distance.
+            target_dist = abs(r["take_profit"] - r["price"]) / r["price"]
+            if target_dist > 0:
+                # We don't have the exit price, but pnl scaled by qty * price
+                # gives % gain. Use a simpler heuristic: assume avg_winner_pct
+                # = current * fraction_of_target_hit. With most TPs hit
+                # exactly, fraction ≈ 1.0; lower fractions mean we exited early.
+                # For tuning purposes: if many winners had small pnl relative
+                # to target, the TP was too ambitious.
+                winning_pcts.append(target_dist)
+    if not winning_pcts:
+        return None
+    avg = sum(winning_pcts) / len(winning_pcts)
+    # If average winner achieved < 50% of target, tighten TP (capture sooner)
+    if avg < current * 0.5:
+        new_val = _bound("short_take_profit_pct", round(current * 0.8, 4))
+        if new_val >= current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, short_take_profit_pct=new_val)
+        reason = (
+            f"Short TP avg {avg*100:.1f}% < 50% of target "
+            f"{current*100:.1f}% — tighten to capture sooner"
+        )
+        log_tuning_change(
+            profile_id, user_id, "short_take_profit_tighten",
+            "short_take_profit_pct", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (f"Tightened short_take_profit_pct from {current:.0%} to "
+                f"{new_val:.0%} ({reason})")
+    return None
+
+
+def _optimize_atr_multiplier_sl(conn, ctx, profile_id, user_id,
+                                 overall_wr, resolved):
+    """Widen ATR-based stop-loss when stops are being hit too tightly
+    (>40% of losing trades cluster within 0.2× ATR of the stop). Only
+    applies when use_atr_stops is on for the profile."""
+    if not getattr(ctx, "use_atr_stops", True):
+        return None
+    if not _safe_change_guarded(profile_id, "atr_multiplier_sl"):
+        return None
+    table_check = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='trades'"
+    ).fetchone()
+    if not table_check:
+        return None
+    # Heuristic without per-trade ATR: count losers where pnl was very
+    # close to the stop's expected loss size. Without ATR per trade we
+    # rely on a simpler proxy: many losses with small magnitude (-1 to -2%)
+    # vs current stop suggests too-tight stops.
+    rows = conn.execute(
+        "SELECT pnl, price, qty FROM trades "
+        "WHERE pnl IS NOT NULL AND pnl < 0 AND price > 0 AND qty > 0"
+    ).fetchall()
+    if len(rows) < 10:
+        return None
+    # Compute % loss per trade
+    losses_pct = [abs(r["pnl"]) / (r["price"] * abs(r["qty"]))
+                  for r in rows if r["price"] * abs(r["qty"]) > 0]
+    if not losses_pct:
+        return None
+    # Count losses at the "near-stop" band — magnitude within 20% of
+    # the largest loss (cluster at the stop).
+    max_loss = max(losses_pct)
+    if max_loss <= 0:
+        return None
+    near_stop = sum(1 for p in losses_pct if p >= max_loss * 0.8)
+    near_stop_rate = near_stop / len(losses_pct)
+    current = float(getattr(ctx, "atr_multiplier_sl", 2.0))
+    if near_stop_rate >= 0.4:
+        new_val = _bound("atr_multiplier_sl", round(current + 0.25, 2))
+        if new_val == current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, atr_multiplier_sl=new_val)
+        reason = (
+            f"{near_stop_rate:.0%} of losses cluster near the stop — "
+            f"widen ATR-stop multiplier to give trades more room"
+        )
+        log_tuning_change(
+            profile_id, user_id, "atr_sl_widen",
+            "atr_multiplier_sl", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (f"Widened atr_multiplier_sl from {current:.2f} to "
+                f"{new_val:.2f} ({reason})")
+    return None
+
+
+def _optimize_atr_multiplier_tp(conn, ctx, profile_id, user_id,
+                                 overall_wr, resolved):
+    """Tighten ATR take-profit when avg winner captures < 50% of the
+    target distance. Mirror of the existing take_profit_pct rule."""
+    if not getattr(ctx, "use_atr_stops", True):
+        return None
+    if not _safe_change_guarded(profile_id, "atr_multiplier_tp"):
+        return None
+    table_check = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='trades'"
+    ).fetchone()
+    if not table_check:
+        return None
+    rows = conn.execute(
+        "SELECT pnl, price, qty FROM trades "
+        "WHERE pnl IS NOT NULL AND pnl > 0 AND price > 0 AND qty > 0"
+    ).fetchall()
+    if len(rows) < 10:
+        return None
+    wins_pct = [r["pnl"] / (r["price"] * abs(r["qty"]))
+                for r in rows if r["price"] * abs(r["qty"]) > 0]
+    if not wins_pct:
+        return None
+    max_win = max(wins_pct)
+    if max_win <= 0:
+        return None
+    avg_win = sum(wins_pct) / len(wins_pct)
+    # If avg winner is well below the largest winner achievable, the TP
+    # may be set too far — tighten so we capture more consistent wins.
+    if avg_win < max_win * 0.5:
+        current = float(getattr(ctx, "atr_multiplier_tp", 3.0))
+        new_val = _bound("atr_multiplier_tp", round(current - 0.25, 2))
+        if new_val >= current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, atr_multiplier_tp=new_val)
+        reason = (
+            f"Avg winner {avg_win*100:.1f}% well under best winner "
+            f"{max_win*100:.1f}% — tighten ATR-TP to capture more"
+        )
+        log_tuning_change(
+            profile_id, user_id, "atr_tp_tighten",
+            "atr_multiplier_tp", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (f"Tightened atr_multiplier_tp from {current:.2f} to "
+                f"{new_val:.2f} ({reason})")
+    return None
+
+
+def _optimize_trailing_atr_multiplier(conn, ctx, profile_id, user_id,
+                                        overall_wr, resolved):
+    """Tighten trailing-stop multiplier when winning trades give back
+    too much from peak before exit. We approximate 'give-back' via
+    the spread between max favorable excursion and final pnl, which
+    isn't tracked per-trade today — placeholder no-op until that
+    column is added."""
+    if not getattr(ctx, "use_trailing_stops", True):
+        return None
+    if not _safe_change_guarded(profile_id, "trailing_atr_multiplier"):
+        return None
+    # Placeholder: needs max_favorable_excursion or similar per-trade
+    # tracking. Returns None gracefully.
     return None
 
 

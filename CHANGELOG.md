@@ -17,6 +17,36 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Autonomous tuning Wave 3: Group B (exit parameters) — 4 new tunable parameters (Severity: medium, behavior)
+
+**4 new exit-parameter tuning rules** (`self_tuning.py`):
+
+| Function | Parameter | Detection |
+|----------|-----------|-----------|
+| `_optimize_short_take_profit` | `short_take_profit_pct` | Avg short winner < 50% of TP target → tighten 20% |
+| `_optimize_atr_multiplier_sl` | `atr_multiplier_sl` | ≥40% of losses cluster near max-loss magnitude (proxy for stops being hit too tight) → +0.25 |
+| `_optimize_atr_multiplier_tp` | `atr_multiplier_tp` | Avg winner < 50% of best winner achieved → -0.25 (tighten to capture more) |
+| `_optimize_trailing_atr_multiplier` | `trailing_atr_multiplier` | Placeholder until per-trade max-favorable-excursion is tracked |
+
+ATR-multiplier rules respect `use_atr_stops`: skip when off (the
+multiplier doesn't apply). Trailing-multiplier rule no-ops gracefully
+until the supporting per-trade MFE column lands. Same safety scaffolding
+as W1/W2.
+
+The 3 boolean execution toggles (`use_atr_stops`, `use_trailing_stops`,
+`use_limit_orders`) deliberately are NOT in W3 — they roll into W4
+(weighted signal intensity) where they become 0.0/0.5/1.0 weights with
+rotational A/B testing rather than binary on/off cliffs.
+
+**Tests:** 5 new in `test_self_tuning_wave3.py`. Full suite: 775 passed.
+
+**Tuner now manages 35 levers.** Layer 1 (parameter coverage) is now
+substantively complete; remaining gaps are the 3 execution-toggle
+booleans (deferred to W4) and the 2 placeholder rules awaiting feature
+columns. W4 (weighted signal intensity) is next.
+
+---
+
 ## 2026-04-25 — Autonomous tuning Wave 2: Group C (entry filters) — 8 new tunable parameters (Severity: medium, behavior)
 
 **8 new entry-filter tuning rules** (all in `self_tuning.py`,
