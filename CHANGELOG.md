@@ -17,6 +17,62 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Self-tuning UI/digest: humanize parameter names and format values as percentages (Severity: medium, UX)
+
+**Problem:** Two related leaks of internal identifiers and raw numeric
+values to the user:
+
+1. The weekly digest email's "Self-Tuning Changes" table showed
+   snake_case parameter names like `ai_confidence_threshold`,
+   `max_position_pct`, `strategy_gap_and_go` directly.
+2. The dashboard's Self-Tuning History table (and the same table in
+   `ai_performance.html` / `ai_operations.html`) rendered raw fractional
+   decimals like `0.07 → 0.0805` for percentage params, instead of the
+   user-facing `7.0% → 8.05%`.
+
+**Root cause:** `_render_tuning_changes` in `ai_weekly_summary.py` and
+the JS in `templates/ai.html` / `templates/ai_operations.html` both
+pulled `parameter_name`, `old_value`, `new_value` straight from the
+sqlite columns. There was no central knowledge of which params are
+percentages vs. booleans vs. integers, and `display_names.py` had no
+entries for self-tuning parameter keys.
+
+**Fix:**
+- Extended `display_names.py` with self-tuning parameter labels
+  (`ai_confidence_threshold` → "AI Confidence Threshold", etc.),
+  strategy-toggle labels (`strategy_gap_and_go` → "Strategy: Gap &
+  Go"), bare strategy_type entries (`gap_and_go` → "Gap & Go" for the
+  decay table), `_PERCENTAGE_PARAMS` and `_BOOLEAN_PARAMS` frozensets,
+  and a `format_param_value(name, value)` function that renders a
+  param value in its natural form (percentage / Enabled-Disabled /
+  int / 2-dp float).
+- `views.py`: `_format_param_name` now delegates to `display_name`;
+  added `_format_param_value` helper; `api_tuning_history` populates
+  `old_value_label` / `new_value_label` on each row; the two dashboard
+  views populating the inline table do the same.
+- `ai_weekly_summary.py`: `_render_tuning_changes` now passes
+  `display_name(pname)` and uses `format_param_value` for old/new;
+  `_render_decay_changes` wraps `strategy_type` with `display_name`.
+- `templates/ai.html` (line 1157), `templates/ai_operations.html`
+  (line 189): JS prefers `r.old_value_label` / `r.new_value_label`.
+- `templates/ai_performance.html` (line 459): server-rendered template
+  uses `| display_name` filter and `h.old_value_label or h.old_value`.
+
+**Why it wasn't caught:** Display-formatting logic was scattered across
+the API layer, JS templates, and the digest renderer, with no shared
+source of truth — each layer had a partial humanization that left the
+self-tuning params and percentage values uncovered. Tests covered the
+data shape (`test_weekly_digest.py` passes raw rows through) but not
+the rendered string content.
+
+**Tests:** Existing 719-test suite passes. The render path for the
+digest is exercised by `test_weekly_digest.py::TestRender::*` — they
+verified no crash with the new code path. Follow-up TODO: add a
+focused string-content assertion that "max_position_pct" and "0.07"
+never appear in the rendered HTML for a tuned profile.
+
+---
+
 ## 2026-04-24 — Blacklist: move from pre-filter to execution gate so stocks can recover (Severity: high, architectural)
 
 **Problem:** The auto-blacklist at `trade_pipeline.py:817-837` rejected

@@ -257,10 +257,29 @@ PARAMETER_LABELS = {
 
 
 def _format_param_name(name):
-    """Convert a parameter key to a human-readable label."""
+    """Convert a parameter key to a human-readable label.
+
+    Delegates to display_names.display_name (the single source of truth
+    for snake_case → human mapping). Local PARAMETER_LABELS above is
+    kept only for backward-compat references; new entries should land
+    in display_names._DISPLAY_NAMES.
+    """
     if not name:
         return ""
-    return PARAMETER_LABELS.get(name, name.replace("_", " ").title())
+    from display_names import display_name
+    return display_name(name)
+
+
+def _format_param_value(name, value):
+    """Convert a tuning-parameter VALUE to a human-readable string.
+
+    Decimal percentages (0.07 → '7.0%'), boolean toggles ('Enabled'),
+    integers, plain floats — each rendered correctly. Used by the
+    tuning-history API and the weekly digest so the dashboard never
+    has to display raw decimals like '0.07 → 0.0805'.
+    """
+    from display_names import format_param_value
+    return format_param_value(name, value)
 
 
 # ---------------------------------------------------------------------------
@@ -1510,7 +1529,10 @@ def ai_performance_legacy():
         history = get_tuning_history(p["id"], limit=10)
         for h in history:
             h["profile_name"] = p["name"]
-            h["parameter_label"] = _format_param_name(h.get("parameter_name", ""))
+            pname = h.get("parameter_name", "")
+            h["parameter_label"] = _format_param_name(pname)
+            h["old_value_label"] = _format_param_value(pname, h.get("old_value"))
+            h["new_value_label"] = _format_param_value(pname, h.get("new_value"))
         tuning_history.extend(history)
     tuning_history.sort(key=lambda h: h.get("timestamp", ""), reverse=True)
 
@@ -1788,7 +1810,10 @@ def performance_dashboard():
             history = get_tuning_history(p["id"], limit=10)
             for h in history:
                 h["profile_name"] = p["name"]
-                h["parameter_label"] = _format_param_name(h.get("parameter_name", ""))
+                pname = h.get("parameter_name", "")
+                h["parameter_label"] = _format_param_name(pname)
+                h["old_value_label"] = _format_param_value(pname, h.get("old_value"))
+                h["new_value_label"] = _format_param_value(pname, h.get("new_value"))
             tuning_history.extend(history)
         except Exception:
             pass
@@ -3179,7 +3204,14 @@ def api_tuning_history():
             history = get_tuning_history(p["id"], limit=100)
             for h in history:
                 h["profile_name"] = p["name"]
-                h["parameter_label"] = _format_param_name(h.get("parameter_name", ""))
+                pname = h.get("parameter_name", "")
+                h["parameter_label"] = _format_param_name(pname)
+                # Format old/new values — was leaking raw decimals like
+                # '0.07 → 0.0805' to the tuning-history widget. Now the
+                # API returns '7.0% → 8.05%' so the JS doesn't have to
+                # know about percentage-vs-int parameter conventions.
+                h["old_value_label"] = _format_param_value(pname, h.get("old_value"))
+                h["new_value_label"] = _format_param_value(pname, h.get("new_value"))
             all_history.extend(history)
         except Exception:
             pass

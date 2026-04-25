@@ -456,8 +456,8 @@
             <tr>
                 <td>{{ h.timestamp[:10] }}</td>
                 <td>{{ h.profile_name }}</td>
-                <td><strong>{{ h.parameter_name }}</strong><br>
-                    <small>{{ h.old_value }} → {{ h.new_value }}</small>
+                <td><strong>{{ h.parameter_name | display_name }}</strong><br>
+                    <small>{{ h.old_value_label or h.old_value }} → {{ h.new_value_label or h.new_value }}</small>
                 </td>
                 <td style="font-size:0.85rem;">{{ h.reason[:80] }}</td>
                 <td>{{ "%.1f"|format(h.win_rate_at_change) }}%</td>

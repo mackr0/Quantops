@@ -431,11 +431,15 @@ def render_html(summary: Dict[str, Any]) -> tuple:
 
 
 def _render_tuning_changes(profiles: List[Dict[str, Any]]) -> str:
+    from display_names import display_name, format_param_value
     rows = []
     for p in profiles:
         for t in p["tuning_changes"]:
-            old = t.get("old_value", "—")
-            new = t.get("new_value", "—")
+            pname = t.get("parameter_name", "")
+            old_raw = t.get("old_value")
+            new_raw = t.get("new_value")
+            old = format_param_value(pname, old_raw) if old_raw not in (None, "") else "—"
+            new = format_param_value(pname, new_raw) if new_raw not in (None, "") else "—"
             outcome = t.get("outcome_after") or "pending"
             outcome_badge = _outcome_badge(outcome)
             wr_after = t.get("win_rate_after")
@@ -445,7 +449,7 @@ def _render_tuning_changes(profiles: List[Dict[str, Any]]) -> str:
             )
             rows.append([
                 p["name"],
-                t.get("parameter_name", ""),
+                display_name(pname),
                 f"{old} → {new}",
                 (t.get("reason") or "")[:140],
                 outcome_badge + wr_str,
@@ -466,6 +470,7 @@ def _render_tuning_changes(profiles: List[Dict[str, Any]]) -> str:
 
 
 def _render_decay_changes(profiles: List[Dict[str, Any]]) -> str:
+    from display_names import display_name
     rows = []
     for p in profiles:
         for d in p["deprecated_strategies"]:
@@ -478,7 +483,7 @@ def _render_decay_changes(profiles: List[Dict[str, Any]]) -> str:
             rows.append([
                 p["name"],
                 "DEPRECATED",
-                d.get("strategy_type", ""),
+                display_name(d.get("strategy_type", "")),
                 sharpe_str,
                 (d.get("reason") or "")[:100],
             ])
@@ -486,7 +491,7 @@ def _render_decay_changes(profiles: List[Dict[str, Any]]) -> str:
             rows.append([
                 p["name"],
                 "RESTORED",
-                r.get("strategy_type", ""),
+                display_name(r.get("strategy_type", "")),
                 "—",
                 "Rolling Sharpe recovered for 14+ days",
             ])

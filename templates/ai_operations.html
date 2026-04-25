@@ -186,7 +186,11 @@
                     if (r.adjustment_type === 'evaluation') {
                         h += '<td colspan="2" class="muted" style="font-size:0.85rem;">' + esc(r.reason||'') + '</td>';
                     } else {
-                        h += '<td><strong>' + esc(r.parameter_label || r.parameter_name || '') + '</strong><br><small>' + esc(r.old_value||'') + ' &rarr; ' + esc(r.new_value||'') + '</small></td>';
+                        // Prefer formatted *_label fields from API
+                        // (percentages render as "7.0%" not "0.07").
+                        var oldV = r.old_value_label != null ? r.old_value_label : (r.old_value||'');
+                        var newV = r.new_value_label != null ? r.new_value_label : (r.new_value||'');
+                        h += '<td><strong>' + esc(r.parameter_label || r.parameter_name || '') + '</strong><br><small>' + esc(oldV) + ' &rarr; ' + esc(newV) + '</small></td>';
                         h += '<td style="font-size:0.85rem;">' + esc((r.reason||'').substring(0,80)) + '</td>';
                     }
                     var wr = (r.win_rate_at_change != null) ? r.win_rate_at_change.toFixed(1) + '%' : '';

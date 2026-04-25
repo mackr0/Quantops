@@ -165,7 +165,135 @@ _DISPLAY_NAMES = {
     "short_take_profit":        "Short Take Profit",
     "transcript_tone":          "Earnings Call Tone",
     "patent_velocity":          "Patent Filing Velocity",
+
+    # Self-tuning parameter names — what self_tuning logs as the
+    # `parameter_name` column in tuning_history. These are the
+    # primary leak point for snake_case in the dashboard tuning
+    # widget, the activity feed, and the weekly digest email.
+    "ai_confidence_threshold":  "AI Confidence Threshold",
+    "max_position_pct":         "Max Position Size (%)",
+    "max_total_positions":      "Max Total Positions",
+    "stop_loss_pct":            "Stop-Loss (%)",
+    "take_profit_pct":          "Take-Profit (%)",
+    "drawdown_pause_pct":       "Drawdown Pause Threshold",
+    "drawdown_reduce_pct":      "Drawdown Reduce Threshold",
+    "short_stop_loss_pct":      "Short Stop-Loss (%)",
+    "short_take_profit_pct":    "Short Take-Profit (%)",
+    "atr_multiplier_sl":        "ATR Stop Multiplier",
+    "atr_multiplier_tp":        "ATR Target Multiplier",
+    "trailing_atr_multiplier":  "Trailing Stop Multiplier",
+    "max_correlation":          "Max Correlation",
+    "max_sector_positions":     "Max Positions per Sector",
+    "min_price":                "Min Stock Price",
+    "max_price":                "Max Stock Price",
+    "min_volume":               "Min Volume",
+    "volume_surge_multiplier":  "Volume Surge Multiplier",
+    "rsi_overbought":           "RSI Overbought Threshold",
+    "rsi_oversold":             "RSI Oversold Threshold",
+    "momentum_5d_gain":         "5-Day Momentum Gain (%)",
+    "momentum_20d_gain":        "20-Day Momentum Gain (%)",
+    "breakout_volume_threshold":"Breakout Volume Threshold",
+    "gap_pct_threshold":        "Gap % Threshold",
+    "avoid_earnings_days":      "Avoid Earnings (days)",
+    "skip_first_minutes":       "Skip Opening Minutes",
+    "use_atr_stops":            "ATR-Based Stops",
+    "use_trailing_stops":       "Trailing Stops",
+    "use_limit_orders":         "Limit Orders",
+    "enable_short_selling":     "Short Selling",
+    "enable_self_tuning":       "Self-Tuning",
+    "enable_consensus":         "Multi-Model Consensus",
+    "maga_mode":                "MAGA Mode",
+
+    # Strategy-toggle parameter names (self-tuner can disable a strategy
+    # via these). Without explicit entries the fallback yields
+    # "Strategy Gap And Go" — almost right but the conjunction "And"
+    # reads weird; explicit entries fix it.
+    "strategy_momentum_breakout": "Strategy: Momentum Breakout",
+    "strategy_volume_spike":      "Strategy: Volume Spike",
+    "strategy_mean_reversion":    "Strategy: Mean Reversion",
+    "strategy_gap_and_go":        "Strategy: Gap & Go",
+
+    # Bare strategy_type column values (no "strategy_" prefix) — used in
+    # alpha-decay deprecation tables. Without these the fallback would
+    # produce "Gap And Go" which reads weirdly.
+    "momentum_breakout": "Momentum Breakout",
+    "volume_spike":      "Volume Spike",
+    "mean_reversion":    "Mean Reversion",
+    "gap_and_go":        "Gap & Go",
 }
+
+
+# ---------------------------------------------------------------------------
+# Value formatting
+# ---------------------------------------------------------------------------
+
+# Parameters whose stored value is a fractional decimal (0.07 = 7%) and
+# should be displayed as a percentage in any user-facing context.
+_PERCENTAGE_PARAMS = frozenset({
+    "max_position_pct",
+    "stop_loss_pct",
+    "take_profit_pct",
+    "drawdown_pause_pct",
+    "drawdown_reduce_pct",
+    "short_stop_loss_pct",
+    "short_take_profit_pct",
+    "max_correlation",
+    "gap_pct_threshold",
+    # NB: rsi_overbought / rsi_oversold / ai_confidence_threshold are
+    # already in 0-100 range — NOT fractional decimals — so they're
+    # NOT in this set.
+})
+
+# Boolean toggles — display as Enabled / Disabled rather than 0/1.
+_BOOLEAN_PARAMS = frozenset({
+    "enable_short_selling", "enable_self_tuning", "enable_consensus",
+    "use_atr_stops", "use_trailing_stops", "use_limit_orders",
+    "maga_mode",
+    "strategy_momentum_breakout", "strategy_volume_spike",
+    "strategy_mean_reversion", "strategy_gap_and_go",
+})
+
+
+def format_param_value(name: str, value) -> str:
+    """Render a tuning-parameter value for human display.
+
+    `name` is the snake_case parameter key. `value` may be a string,
+    int, or float (sqlite stores as TEXT). Returns a string in the
+    most natural form for the parameter type.
+
+    Examples:
+      format_param_value("max_position_pct", 0.07)    → "7.0%"
+      format_param_value("max_position_pct", 0.0805)  → "8.05%"
+      format_param_value("ai_confidence_threshold", 60) → "60"
+      format_param_value("enable_short_selling", 1)   → "Enabled"
+      format_param_value("rsi_oversold", 25.0)        → "25"
+    """
+    if value is None or value == "":
+        return ""
+    # Coerce string-stored numeric values
+    raw = value
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+    if name in _BOOLEAN_PARAMS:
+        return "Enabled" if v >= 0.5 else "Disabled"
+
+    if name in _PERCENTAGE_PARAMS:
+        # 0.07 → "7.0%"; 0.0805 → "8.05%". One decimal when exact at
+        # that precision, two otherwise. Avoids "7%" looking like an int.
+        pct = v * 100
+        if abs(pct - round(pct, 1)) < 1e-9:
+            return f"{pct:.1f}%"
+        return f"{pct:.2f}%"
+
+    # Integer-valued params display as int (avoid "60.0" for AI conf etc.)
+    if v == int(v):
+        return str(int(v))
+
+    # Generic float — 2 decimals
+    return f"{v:.2f}"
 
 
 def display_name(internal: str) -> str:
