@@ -17,6 +17,57 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Autonomous tuning Wave 4: Layer 2 Weighted Signal Intensity (Severity: medium, behavior + architecture)
+
+**The big one.** Previously every signal the AI saw was binary: present
+in the prompt or absent. The tuner could disable a whole strategy via
+the toggle pipeline but had no way to express "this signal is weak but
+not worthless — discount it." This wave adds per-profile signal weights
+on a 4-step discrete ladder (`1.0 → 0.7 → 0.4 → 0.0`).
+
+**New module: `signal_weights.py`** — declarative `WEIGHTABLE_SIGNALS`
+list (21 signals to start: insider/options/dark-pool/congressional/
+political-context alt-data + modular strategy votes), `WEIGHT_LADDER`
+constant, `parse_weights` / `get_weight` / `set_weight` / `nudge_up` /
+`nudge_down` helpers. Each signal has an `is_active(features_dict)`
+predicate the tuner uses to decide "was this signal materially present
+in this prediction" so per-signal WR is computable.
+
+**Schema migration:** added `signal_weights TEXT NOT NULL DEFAULT '{}'`
+column to `trading_profiles`. Auto-migration via the existing
+ALTER-TABLE-on-startup framework — production profiles get the column
+on first restart with no manual DBA work.
+
+**New tuner rule: `_optimize_signal_weights`.** Walks every weightable
+signal each cycle, buckets recent resolved predictions by signal
+presence, computes differential WR. Nudges DOWN when present-WR ≥10pt
+below absent-baseline; nudges UP when present-WR ≥5pt above (recovery).
+3-day cooldown per signal keyed on `weight:{signal_name}`.
+Reverse-if-worsened protection. Registered as the last entry in the
+upward optimizer chain.
+
+**Prompt builder integration** (`ai_analyst._build_batch_prompt`):
+introduces a `_weighted_signal_text(name, text)` wrapper around every
+`alt_parts.append`. Returns `None` (signal omitted) for weight 0.0;
+appends `[intensity 0.4]` for partial weights; passes through unchanged
+at full weight. Same logic guards the political-context block.
+
+**Tests (20 new in `test_signal_weights.py`):** parse/snap/round-trip,
+nudge ladder edge cases, predicate truthiness, tuner detection
+(triggers/doesn't trigger/insufficient-data), and prompt builder
+respects each weight tier (full / partial / zero). Full suite: 800
+passed.
+
+**Documentation:** `SELF_TUNING.md` Wave 4 section added with the
+per-signal ladder, action table, and prompt-builder behavior matrix.
+`AUTONOMOUS_TUNING_PLAN.md` Layer 2 marked active.
+
+**System now tunes 35+ levers.** Layer 2 is the architectural enabler
+for replacing every binary on/off in the system with graduated weights —
+future signals automatically join this system without new schema work.
+
+---
+
 ## 2026-04-25 — Hotfix: snake_case parameter names leaked to dashboard ticker via optimizer return strings (Severity: high, UX regression)
 
 **Problem:** User saw `atr_multiplier_tp` in the dashboard activity

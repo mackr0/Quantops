@@ -74,7 +74,27 @@ The tuner currently autonomously adjusts these levers. Each rule fires at most o
 | `skip_first_minutes` | *(active once intraday entry-time is structured)* | ±5 min |
 | `maga_mode` | Predictions with political_context active WR ≥ 10pt below overall (≥20 samples) | **Auto-disable** |
 
-**Total levers auto-tuned today: 23** (8 already-existing + 15 from Wave 1 implementation).
+**Total levers auto-tuned today: 35** (8 pre-existing + 15 from Wave 1 + 8 from Wave 2 + 4 from Wave 3 + per-signal weight system from Wave 4 covering 21 signals).
+
+### Wave 4 — Weighted Signal Intensity (Layer 2, newly active)
+
+Every signal the AI sees has a per-profile weight on a 4-step ladder:
+**1.0 → 0.7 → 0.4 → 0.0**. Stored as JSON on `trading_profiles.signal_weights`. Missing keys = default 1.0.
+
+The tuner walks every weightable signal each cycle (alt-data signals like insider clusters, options flow, dark pool, congressional trades, political context, plus the modular strategy votes). For each: bucket recent resolved predictions by whether the signal was materially present, compute differential WR vs absence baseline.
+
+| Signal-present WR vs absent baseline | Action |
+|--------------------------------------|--------|
+| ≤ -10pt below | Nudge weight DOWN one step |
+| ≥ +5pt above (recovery) | Nudge weight UP one step |
+| Within band | No change |
+
+The prompt builder reads weights at build time:
+- Weight `1.0`: signal presented as today.
+- Weight `0.7` / `0.4`: signal still presented, with appended `[intensity 0.4]` hint so the AI knows to discount it.
+- Weight `0.0`: signal **omitted entirely** from the prompt.
+
+Same safety scaffolding as Layer 1 — 3-day cooldown per signal (`weight:<sig>`), reverse-if-worsened, snapped to ladder values to prevent absurd drift.
 
 ---
 

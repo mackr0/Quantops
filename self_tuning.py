@@ -1614,6 +1614,8 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_atr_multiplier_sl,
         _optimize_atr_multiplier_tp,
         _optimize_trailing_atr_multiplier,
+        # Wave 4 — Layer 2 weighted signal intensity
+        _optimize_signal_weights,
     ]
 
     results = []
@@ -2898,6 +2900,132 @@ def _optimize_trailing_atr_multiplier(conn, ctx, profile_id, user_id,
         return None
     # Placeholder: needs max_favorable_excursion or similar per-trade
     # tracking. Returns None gracefully.
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Wave 4 — weighted signal intensity (Layer 2). Per-profile weights for
+# every signal the AI sees. Tuner walks each weightable signal, buckets
+# resolved predictions by whether the signal was materially present, and
+# nudges weight up or down based on the differential WR. Same safety
+# scaffolding as Layer 1.
+# ---------------------------------------------------------------------------
+
+def _optimize_signal_weights(conn, ctx, profile_id, user_id,
+                              overall_wr, resolved):
+    """Walk every weightable signal; for each, compute the win rate of
+    predictions where the signal was materially present vs the global
+    baseline. Nudge weight DOWN when present-WR is materially below
+    baseline, UP when present-WR has recovered above baseline.
+
+    Returns a single string describing the change (or None if no change).
+    The orchestrator's one-change-per-cycle pattern means we evaluate
+    signals in canonical order and act on the first one with a clear
+    signal — preserving clean reversal attribution."""
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(ai_predictions)").fetchall()}
+    if "features_json" not in cols:
+        return None
+
+    rows = conn.execute(
+        "SELECT actual_outcome, features_json FROM ai_predictions "
+        "WHERE status='resolved' AND actual_outcome IN ('win','loss') "
+        "  AND features_json IS NOT NULL"
+    ).fetchall()
+    if len(rows) < 30:
+        return None
+
+    import json as _j
+    from signal_weights import (
+        WEIGHTABLE_SIGNALS, get_weight, nudge_down, nudge_up,
+        display_label, WEIGHT_LADDER,
+    )
+
+    # Pre-decode all features once.
+    feature_rows = []
+    for r in rows:
+        try:
+            f = _j.loads(r["features_json"])
+        except Exception:
+            continue
+        feature_rows.append((f, r["actual_outcome"]))
+
+    # Walk each signal and find one with a clear nudge signal.
+    for sig_name, _label_text, predicate in WEIGHTABLE_SIGNALS:
+        # Cooldown is keyed on `weight:<sig>` so each signal has its
+        # own 3-day window.
+        cool_key = f"weight:{sig_name}"
+        if not _safe_change_guarded(profile_id, cool_key):
+            continue
+
+        present = absent = 0
+        present_wins = absent_wins = 0
+        for feats, outcome in feature_rows:
+            try:
+                active = bool(predicate(feats))
+            except Exception:
+                continue
+            if active:
+                present += 1
+                if outcome == "win":
+                    present_wins += 1
+            else:
+                absent += 1
+                if outcome == "win":
+                    absent_wins += 1
+
+        if present < 10:
+            continue  # Insufficient sample for this signal
+
+        present_wr = present_wins / present * 100.0
+        absent_wr = (absent_wins / absent * 100.0) if absent > 0 else overall_wr
+        diff = present_wr - absent_wr  # >0 signal-helps, <0 signal-hurts
+        current_weight = get_weight(ctx, sig_name)
+
+        # NUDGE DOWN when signal-present materially underperforms baseline
+        if diff <= -10 and current_weight > 0.0:
+            new_weight = nudge_down(profile_id, sig_name)
+            if new_weight is None:
+                continue
+            from models import log_tuning_change
+            from display_names import display_name as _dn
+            reason = (
+                f"{display_label(sig_name)} won {present_wr:.0f}% on "
+                f"{present} samples vs {absent_wr:.0f}% without ("
+                f"{diff:+.0f} pt) — reduce intensity"
+            )
+            log_tuning_change(
+                profile_id, user_id, "signal_weight_down",
+                cool_key, str(current_weight), str(new_weight), reason,
+                win_rate_at_change=overall_wr, predictions_resolved=resolved,
+            )
+            return (
+                f"Reduced intensity of {display_label(sig_name)} "
+                f"from {current_weight:.1f} to {new_weight:.1f} ({reason})"
+            )
+
+        # NUDGE UP when signal-present materially outperforms AND we
+        # previously reduced it — recovery signal.
+        if diff >= 5 and current_weight < 1.0:
+            new_weight = nudge_up(profile_id, sig_name)
+            if new_weight is None:
+                continue
+            from models import log_tuning_change
+            reason = (
+                f"{display_label(sig_name)} recovered to {present_wr:.0f}% "
+                f"on {present} samples vs {absent_wr:.0f}% without "
+                f"({diff:+.0f} pt) — restore intensity"
+            )
+            log_tuning_change(
+                profile_id, user_id, "signal_weight_up",
+                cool_key, str(current_weight), str(new_weight), reason,
+                win_rate_at_change=overall_wr, predictions_resolved=resolved,
+            )
+            return (
+                f"Restored intensity of {display_label(sig_name)} "
+                f"from {current_weight:.1f} to {new_weight:.1f} ({reason})"
+            )
+
     return None
 
 

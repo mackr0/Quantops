@@ -534,6 +534,31 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     enable_shorts = getattr(ctx, "enable_short_selling", False) if ctx else False
     market_type = getattr(ctx, "segment", "unknown") if ctx else "unknown"
 
+    # Layer 2 — per-profile signal weights. The tuner adjusts these based
+    # on which signals have been historically reliable for THIS profile.
+    # Read once at the top of the prompt build; every signal-emitting
+    # block consults this map.
+    try:
+        from signal_weights import parse_weights
+        _sig_weights = parse_weights(getattr(ctx, "signal_weights", None) if ctx else None)
+    except Exception:
+        _sig_weights = {}
+
+    def _signal_weight(name):
+        """1.0 default; respect per-profile override if set."""
+        return _sig_weights.get(name, 1.0)
+
+    def _weighted_signal_text(name, text):
+        """Apply weight to a signal's display text. Returns None if the
+        signal should be omitted (weight 0.0); appends an intensity hint
+        when partially weighted."""
+        w = _signal_weight(name)
+        if w <= 0.0:
+            return None
+        if w < 1.0:
+            return f"{text} [intensity {w:.1f}]"
+        return text
+
     # --- Portfolio section ---
     positions_text = "  None (all cash)"
     pos_list = portfolio_state.get("positions", [])
@@ -572,8 +597,16 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     if crisis_ctx:
         market_section += f"\n  *** {crisis_ctx} ***"
     if political:
-        for pline in political.splitlines()[:4]:
-            market_section += f"\n  {pline}"
+        political_w = _signal_weight("political_context")
+        if political_w > 0.0:
+            for pline in political.splitlines()[:4]:
+                market_section += f"\n  {pline}"
+            if political_w < 1.0:
+                market_section += (
+                    f"\n  [Note: political-context signal has been historically less "
+                    f"reliable for this profile (intensity {political_w:.1f}) — "
+                    f"discount its contribution accordingly.]"
+                )
     if profile_summary:
         market_section += f"\n  Track record: {profile_summary}"
 
@@ -711,45 +744,57 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             # data sources are disabled or return empty dicts.
             insider = alt.get("insider", {})
             if insider.get("net_direction") and insider.get("net_direction") != "neutral":
-                alt_parts.append(f"Insiders: {insider.get('net_direction', '')} "
-                                 f"({insider.get('recent_buys',0)}B/{insider.get('recent_sells',0)}S)")
+                txt = _weighted_signal_text("insider_direction",
+                    f"Insiders: {insider.get('net_direction', '')} "
+                    f"({insider.get('recent_buys',0)}B/{insider.get('recent_sells',0)}S)")
+                if txt: alt_parts.append(txt)
             short = alt.get("short", {})
             if short.get("short_pct_float", 0) > 5:
-                alt_parts.append(f"Short: {short.get('short_pct_float', 0):.1f}% float "
-                                 f"(squeeze risk: {short.get('squeeze_risk','low')})")
+                txt = _weighted_signal_text("short_pct_float",
+                    f"Short: {short.get('short_pct_float', 0):.1f}% float "
+                    f"(squeeze risk: {short.get('squeeze_risk','low')})")
+                if txt: alt_parts.append(txt)
             opts = alt.get("options", {})
             if opts.get("unusual"):
-                alt_parts.append(f"Options: {opts.get('signal','neutral')} "
-                                 f"(P/C ratio: {opts.get('put_call_ratio',0):.1f})")
+                txt = _weighted_signal_text("options_signal",
+                    f"Options: {opts.get('signal','neutral')} "
+                    f"(P/C ratio: {opts.get('put_call_ratio',0):.1f})")
+                if txt: alt_parts.append(txt)
             intra = alt.get("intraday", {})
             if intra.get("opening_range_breakout"):
                 alt_parts.append("ORB breakout")
             if intra.get("vwap_position") and intra.get("vwap_position") != "at":
-                alt_parts.append(f"Intraday: {intra.get('vwap_position', '')} VWAP")
+                txt = _weighted_signal_text("vwap_position",
+                    f"Intraday: {intra.get('vwap_position', '')} VWAP")
+                if txt: alt_parts.append(txt)
             fund = alt.get("fundamentals", {})
             if fund.get("pe_trailing", 0) > 0:
                 alt_parts.append(f"PE: {fund.get('pe_trailing', 0):.1f}")
             # Congressional (disabled — no free API)
             congress = alt.get("congressional", {})
             if congress.get("net_direction") and congress.get("net_direction") != "neutral":
-                alt_parts.append(
+                txt = _weighted_signal_text("congress_direction",
                     f"Congress: {congress.get('recent_transactions', 0)} members "
                     f"{congress.get('net_direction', '')} "
                     f"(${congress.get('total_value', 0):,.0f})")
+                if txt: alt_parts.append(txt)
             finra = alt.get("finra_short_vol", {})
             if finra.get("is_elevated"):
-                alt_parts.append(
+                txt = _weighted_signal_text("finra_short_vol_ratio",
                     f"Short vol: {finra.get('short_volume_ratio', 0):.0%} of daily (elevated)")
+                if txt: alt_parts.append(txt)
             cluster = alt.get("insider_cluster", {})
             if cluster.get("is_cluster"):
-                alt_parts.append(
+                txt = _weighted_signal_text("insider_cluster",
                     f"INSIDER CLUSTER: {cluster.get('insider_count', 0)} insiders "
                     f"{cluster.get('cluster_direction', '')} ${cluster.get('total_value', 0):,.0f}")
+                if txt: alt_parts.append(txt)
             estimates = alt.get("analyst_estimates", {})
             if estimates.get("eps_revision_direction") and estimates.get("eps_revision_direction") != "flat":
-                alt_parts.append(
+                txt = _weighted_signal_text("eps_revision_direction",
                     f"EPS revised {estimates.get('eps_revision_direction', '').upper()} "
                     f"{abs(estimates.get('revision_magnitude_pct', 0)):.0f}%")
+                if txt: alt_parts.append(txt)
             ie = alt.get("insider_earnings", {})
             if ie.get("insider_buying_near_earnings"):
                 alt_parts.append(
@@ -759,15 +804,17 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                     f"Insiders selling {ie.get('days_to_earnings', '?')}d before earnings (bearish)")
             dp = alt.get("dark_pool", {})
             if dp.get("ats_volume", 0) > 0:
-                alt_parts.append(
+                txt = _weighted_signal_text("dark_pool_pct",
                     f"Dark pool: {dp.get('ats_volume', 0):,} shares across "
                     f"{dp.get('num_venues', 0)} ATS venues")
+                if txt: alt_parts.append(txt)
             es = alt.get("earnings_surprise", {})
             if es.get("total_quarters", 0) >= 4:
-                alt_parts.append(
+                txt = _weighted_signal_text("earnings_surprise_streak",
                     f"Earnings: {es.get('surprise_direction', 'mixed')} "
                     f"({es.get('beat_count', 0)}/{es.get('total_quarters', 0)} beats, "
                     f"avg surprise {es.get('avg_surprise_pct', 0):+.1f}%)")
+                if txt: alt_parts.append(txt)
             transcript = alt.get("transcript_sentiment", {})
             if transcript.get("has_data"):
                 phrases = ", ".join(transcript.get("key_phrases", [])[:2])

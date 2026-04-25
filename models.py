@@ -296,6 +296,8 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         ("trading_profiles", "is_virtual", "INTEGER NOT NULL DEFAULT 0"),
         ("trading_profiles", "initial_capital", "REAL NOT NULL DEFAULT 100000.0"),
         ("trading_profiles", "alpaca_account_id", "INTEGER"),
+        # Layer 2 — weighted signal intensity
+        ("trading_profiles", "signal_weights", "TEXT NOT NULL DEFAULT '{}'"),
     ]
     for table, col, col_def in _migrations:
         try:
