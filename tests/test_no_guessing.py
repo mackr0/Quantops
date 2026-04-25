@@ -513,18 +513,27 @@ class TestTemplateJSMatchesAPI:
                 )
 
     def test_tuning_status_js_uses_real_fields(self):
-        """Tuning status AJAX must use real field names from /api/tuning-status."""
+        """Tuning status pills must use real field names from
+        /api/tuning-status. Renamed from loadTuningStatus to
+        loadTuningStatusPills when the Status + History widgets merged."""
         with open("templates/ai.html") as f:
             template = f.read()
 
-        js_start = template.find("function loadTuningStatus")
-        js_end = template.find("loadTuningStatus(1)", js_start)
-        if js_start < 0 or js_end < 0:
-            pytest.skip("loadTuningStatus not found")
+        js_start = template.find("function loadTuningStatusPills")
+        # Skip past the function definition's own self-reference; find
+        # the bare bottom-of-block invocation that comes after the body.
+        js_end = template.find("loadTuningStatusPills();", js_start)
+        assert js_start >= 0 and js_end > js_start, (
+            "loadTuningStatusPills function not found in ai.html — "
+            "did the Self-Tuning UI get reorganized again?"
+        )
         js = template[js_start:js_end]
 
-        # Real fields from the API (views.py api_tuning_status)
-        for field in ["profile_name", "resolved", "can_tune", "last_run", "message"]:
+        # Real fields from the API (views.py api_tuning_status). last_run
+        # was dropped from the pill render — the most recent change date
+        # in the History table below it covers that need.
+        for field in ["profile_name", "resolved", "required",
+                       "can_tune", "message"]:
             assert field in js, (
                 f"Tuning status JS doesn't use real field '{field}'"
             )

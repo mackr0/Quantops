@@ -17,6 +17,41 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Hotfix: sync.sh missed models.py → web restart, schema migration didn't auto-apply (Severity: high, deploy regression)
+
+**Problem:** W4 added a `signal_weights` column to `trading_profiles`
+via the auto-migration framework in `models.init_user_db()`, which only
+runs at web-server startup (called from `app.py:create_app()`). But
+`sync.sh`'s `WEB_PATTERNS` only matched `templates|static|views.py|
+display_names.py|app.py|auth.py` — `models.py` wasn't on that list, so
+W4 deploy didn't trigger a web restart, and the migration never ran.
+Result: every tuner cycle that tried to write a signal weight saw
+`UPDATE trading_profiles SET signal_weights=...` fail with `no such
+column: signal_weights`. The optimizer's exception was caught by the
+orchestrator (so the cycle didn't crash), but the new tuning surface
+was effectively dead.
+
+**Fix:**
+- Added `models.py` to the `WEB_PATTERNS` regex in `sync.sh` so any
+  schema change triggers a web restart on the next deploy.
+- Manually ran `init_user_db()` on prod via SSH to apply the missing
+  column without a full restart cycle.
+
+**Why it wasn't caught:** Tests don't simulate deploy paths. The
+auto-migration framework was assumed to fire on every code push;
+the WEB_PATTERNS regex hadn't been updated since the framework was
+introduced. Future schema additions to `models.py` now trigger a web
+restart automatically.
+
+**Also fixed:** Updated `test_tuning_status_js_uses_real_fields` —
+previously `pytest.skip()`-ing because the function was renamed to
+`loadTuningStatusPills` during the Self-Tuning widget merge. Test now
+asserts hard against the new function name and the actual fields the
+pills code uses (`profile_name`, `resolved`, `required`, `can_tune`,
+`message`). Suite is now 801 passing / 0 skipped.
+
+---
+
 ## 2026-04-25 — Autonomous tuning Wave 4: Layer 2 Weighted Signal Intensity (Severity: medium, behavior + architecture)
 
 **The big one.** Previously every signal the AI saw was binary: present

@@ -91,8 +91,11 @@ elif [ "$FORCE_MODE" = "scheduler" ]; then
     NEED_SCHEDULER=true
 else
     # Auto-detect from changed files
-    # Web-only files: templates, static, views.py, display_names.py, app.py, auth.py
-    WEB_PATTERNS="templates/|static/|views\.py|display_names\.py|app\.py|auth\.py"
+    # Web-needed files: anything the gunicorn process loads on startup,
+    # including the schema migration in models.py (init_user_db runs in
+    # create_app — without a web restart, ALTER TABLE migrations never
+    # apply and per-DB writes that need new columns fail).
+    WEB_PATTERNS="templates/|static/|views\.py|display_names\.py|app\.py|auth\.py|models\.py"
     # Scheduler files: everything else that's Python
     SCHED_PATTERNS="\.py$"
 
