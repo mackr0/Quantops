@@ -416,3 +416,15 @@ Deferred until all 3 new projects exist.
 - `edgar13f`: IN PROGRESS (this session).
 - `biotechevents`: NOT STARTED.
 - `stocktwits`: NOT STARTED.
+
+**Updated 2026-04-25:**
+- ✅ `congresstrades` — 125 tests, 10,500 trades, multi-year P&L estimator
+- ✅ `edgar13f` — 71 tests, validated against Berkshire's $274B portfolio
+- ✅ `biotechevents` — 72 tests, ClinicalTrials.gov + change tracking
+  (FDA PDUFA stubbed with documented reasoning)
+- ✅ `stocktwits` — 45 tests, REST API + daily sentiment rollup
+- ✅ Master runner — `~/run-altdata-daily.sh` orchestrates all four
+
+**One-button daily refresh:** `~/run-altdata-daily.sh`. Sequential
+across the four projects (each honors its own rate limit). Default
+~30-50 min total. Safe to interrupt; idempotent on re-run.
