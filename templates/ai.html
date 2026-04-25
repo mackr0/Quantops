@@ -890,16 +890,20 @@
                     'utilities': 'Utilities', 'materials': 'Materials',
                     'real_estate': 'Real Estate', 'comm_services': 'Comm. Services'
                 };
-                var flowKeys = Object.keys(ef);
-                if (flowKeys.length > 0) {
-                    h += '<div style="font-size:0.85rem;">';
-                    flowKeys.forEach(function(sector) {
-                        var f = ef[sector];
-                        var dir = f.flow_direction === 'inflow' ? '+' : '-';
-                        var color = f.flow_direction === 'inflow' ? '#2d7a3d' : '#b00';
+                var flowEntries = Object.entries(ef).sort(function(a, b) {
+                    return Math.abs(b[1].estimated_weekly_flow) - Math.abs(a[1].estimated_weekly_flow);
+                });
+                if (flowEntries.length > 0) {
+                    h += '<div style="display:flex;flex-wrap:wrap;gap:0.4rem;font-size:0.8rem;padding:0.25rem 0;">';
+                    flowEntries.forEach(function(entry) {
+                        var sector = entry[0], f = entry[1];
+                        var inflow = f.flow_direction === 'inflow';
+                        var color = inflow ? '#00c853' : '#f44336';
+                        var arrow = inflow ? '&#9650;' : '&#9660;';
+                        var sign = inflow ? '+' : '-';
                         var amt = Math.abs(f.estimated_weekly_flow);
                         var label = amt >= 1e9 ? (amt/1e9).toFixed(1)+'B' : (amt/1e6).toFixed(0)+'M';
-                        h += '<span style="margin-right:0.75rem;color:' + color + ';">' + esc(sectorNames[sector] || sector) + ' ' + dir + '$' + label + '</span>';
+                        h += '<span style="display:inline-block;padding:0.2rem 0.5rem;border-radius:4px;border:1px solid ' + color + ';color:' + color + ';">' + arrow + ' <strong>' + esc(sectorNames[sector] || sector) + '</strong> ' + sign + '$' + label + '</span>';
                     });
                     h += '</div>';
                 } else {
