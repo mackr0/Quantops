@@ -17,6 +17,32 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Hotfix: Self-Tune NameError on no-change path (Severity: high, regression)
+
+**Problem:** Production "Scan Failures" panel showed "Self-Tune failed"
+for every profile after the first weekend snapshot ran. Root cause:
+the earlier "applied vs recommended" notification rewrite moved
+`real_changes = applied` inside the `if adjustments:` branch in
+`_task_self_tune`. When the tuner found nothing to change (the common
+case — most cycles), `real_changes` was never defined, and the
+no-changes-needed log path 30 lines below raised `NameError`.
+
+**Fix:** Define `real_changes = applied` unconditionally at the top
+of the function, before any branching. Removed the now-redundant
+assignment inside the `if` branch.
+
+**Why it wasn't caught:** The original test coverage for
+`_task_self_tune` only exercised the changes-applied path. The
+no-adjustments path was never hit in tests despite being the most
+common production code path.
+
+**Tests:** New `test_self_tune_task_no_change_path.py` with 3 tests:
+no-change path (the regression), applied path (sanity), and
+recommendation-only path (the new asymmetric branch). Full suite
+778 passed.
+
+---
+
 ## 2026-04-25 — Autonomous tuning Wave 3: Group B (exit parameters) — 4 new tunable parameters (Severity: medium, behavior)
 
 **4 new exit-parameter tuning rules** (`self_tuning.py`):

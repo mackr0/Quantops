@@ -1054,6 +1054,10 @@ def _task_self_tune(ctx):
     reviews = [a for a in adjustments if a.startswith("Reviewed") or a.startswith("REVERSED")]
     recommendations = [a for a in adjustments if a.startswith("Recommendation:")]
     applied = [a for a in adjustments if a not in reviews and a not in recommendations]
+    # `real_changes` must be defined unconditionally — the no-changes-needed
+    # log path (~30 lines below) references it. Initialize here so when the
+    # if/else branches don't set it, the reference still resolves.
+    real_changes = applied
 
     if adjustments:
         for adj in adjustments:
@@ -1084,11 +1088,6 @@ def _task_self_tune(ctx):
         if reviews:
             title_parts.append(f"{len(reviews)} review(s)")
         title = f"Self-Tuning: {', '.join(title_parts)}" if title_parts else "Self-Tuning: evaluated"
-
-        # Backwards compat for the rest of the function — some downstream
-        # code refers to `real_changes` to decide whether to log "no changes
-        # needed". Treat applied as the real-change set.
-        real_changes = applied
 
         _safe_log_activity(
             getattr(ctx, "profile_id", 0), ctx.user_id,
