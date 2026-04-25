@@ -27,8 +27,8 @@
                     <td>{{ u.display_name or '--' }}</td>
                     <td>{{ 'Yes' if u.is_admin else 'No' }}</td>
                     <td>{{ 'Yes' if u.is_active else 'No' }}</td>
-                    <td class="muted">{{ u.created_at[:10] if u.created_at else '--' }}</td>
-                    <td class="muted">{{ u.last_login_at[:16] if u.last_login_at else 'Never' }}</td>
+                    <td class="muted">{{ u.created_at|friendly_date }}</td>
+                    <td class="muted">{{ u.last_login_at|friendly_time if u.last_login_at else 'Never' }}</td>
                     <td>{{ u.api_calls_today }}</td>
                 </tr>
                 {% endfor %}

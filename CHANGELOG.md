@@ -17,6 +17,24 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Admin user table: humanize Created and Last Login columns (Severity: low, UX)
+
+**Problem:** The admin user list showed raw ISO date/time strings:
+`2026-03-28` for Created and `2026-04-23T14:36` for Last Login. The
+"T" separator and lack of any natural formatting made the table read
+as machine output.
+
+**Fix:** Added a `friendly_date` Jinja filter to `display_names.py`
+that renders a date or timestamp string as `"Mar 28, 2026"`. Updated
+`templates/admin.html` to pipe `created_at` through `friendly_date`
+and `last_login_at` through the existing `friendly_time` filter
+(which renders `"Apr 23, 10:36 AM ET"`).
+
+**Tests:** Existing 718-test suite passes — `friendly_date` is a
+small additive function with no callers other than the template.
+
+---
+
 ## 2026-04-25 — Self-tuning UI/digest: humanize parameter names and format values as percentages (Severity: medium, UX)
 
 **Problem:** Two related leaks of internal identifiers and raw numeric

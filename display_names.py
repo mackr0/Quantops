@@ -393,8 +393,34 @@ def friendly_time(iso_str: str) -> str:
         return iso_str[:16] if len(iso_str) > 16 else iso_str
 
 
+def friendly_date(iso_str: str) -> str:
+    """Convert an ISO date or timestamp to "Mon DD, YYYY".
+
+    Accepts either bare dates ("2026-03-28") or full timestamps —
+    the time portion is dropped. Useful when only the calendar date
+    is meaningful but you still want the year visible (e.g., user
+    creation dates that may be months/years old).
+
+    Examples:
+        "2026-03-28"           → "Mar 28, 2026"
+        "2026-04-23T14:36:00"  → "Apr 23, 2026"
+        None or ""             → "--"
+    """
+    if not iso_str:
+        return "--"
+    try:
+        from datetime import datetime
+        clean = iso_str.replace("Z", "").split("+")[0][:10]
+        dt = datetime.strptime(clean, "%Y-%m-%d")
+        return dt.strftime("%b %-d, %Y")
+    except Exception:
+        return iso_str[:10] if len(iso_str) >= 10 else iso_str
+
+
 def register(app) -> None:
-    """Wire up the `display_name`, `reading_value`, and `friendly_time` Jinja filters."""
+    """Wire up the `display_name`, `reading_value`, `friendly_time`,
+    and `friendly_date` Jinja filters."""
     app.jinja_env.filters["display_name"] = display_name
     app.jinja_env.filters["reading_value"] = format_reading_value
     app.jinja_env.filters["friendly_time"] = friendly_time
+    app.jinja_env.filters["friendly_date"] = friendly_date
