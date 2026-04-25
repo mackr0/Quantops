@@ -7,7 +7,6 @@
 <!-- Profile filter -->
 <div style="margin-bottom:1rem;">
     <form method="get" action="/performance" style="display:flex;gap:0.5rem;align-items:center;">
-        <label style="margin:0;">Profile:</label>
         <select name="profile_id" onchange="var h=window.location.hash;this.form.action=this.form.action.split('#')[0]+h;this.form.submit()">
             <option value="">All Profiles</option>
             {% for p in profiles %}

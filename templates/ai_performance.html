@@ -5,7 +5,6 @@
 
 <div style="margin-bottom:1rem;">
     <form method="get" action="/ai-performance" style="display:flex;gap:0.5rem;align-items:center;">
-        <label style="margin:0;">Profile:</label>
         <select name="profile_id" onchange="this.form.submit()">
             <option value="">All Profiles</option>
             {% for p in profiles %}
