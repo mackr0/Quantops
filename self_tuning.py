@@ -1618,6 +1618,8 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_signal_weights,
         # Wave 5 — Layer 3 per-regime parameter overrides
         _optimize_regime_overrides,
+        # Wave 6 — Layer 4 per-time-of-day parameter overrides
+        _optimize_tod_overrides,
     ]
 
     results = []
@@ -3047,6 +3049,134 @@ def _optimize_regime_overrides(conn, ctx, profile_id, user_id,
         )
         return (
             f"Set {regime} regime override: "
+            f"{_label(param_name)} {current} → {new_val} ({reason})"
+        )
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Wave 6 — Layer 4 per-time-of-day overrides. Mirror of regime tuning,
+# bucketed by intraday window. TOD is derived from the prediction's
+# timestamp (no new column needed).
+# ---------------------------------------------------------------------------
+
+_TOD_MIN_SAMPLES = 10
+_TOD_DIFF_THRESHOLD = 12  # pts of WR divergence
+
+
+def _optimize_tod_overrides(conn, ctx, profile_id, user_id,
+                              overall_wr, resolved):
+    """Bucket recent resolved predictions into open / midday / close
+    based on their timestamp (UTC -> ET -> bucket). If any bucket has
+    a materially different WR, create a per-TOD override for that
+    bucket."""
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(ai_predictions)").fetchall()}
+    if "timestamp" not in cols:
+        return None
+
+    rows = conn.execute(
+        "SELECT timestamp, actual_outcome FROM ai_predictions "
+        "WHERE status='resolved' AND actual_outcome IN ('win','loss') "
+        "  AND timestamp IS NOT NULL"
+    ).fetchall()
+    if len(rows) < 30:
+        return None
+
+    from tod_overrides import (
+        _bucket_for_minute, RECOGNISED_TODS, set_override, resolve_param
+    )
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:
+        return None
+
+    # Bucket each row.
+    buckets = {tod: {"wins": 0, "total": 0} for tod in RECOGNISED_TODS}
+    et = ZoneInfo("America/New_York")
+    from datetime import datetime, timezone
+    for r in rows:
+        ts = r["timestamp"]
+        try:
+            # Predictions store UTC ISO timestamps
+            dt = datetime.fromisoformat(ts.replace("Z", "")[:19])
+            dt_utc = dt.replace(tzinfo=timezone.utc)
+            dt_et = dt_utc.astimezone(et)
+            if dt_et.weekday() >= 5:
+                continue
+            minutes = dt_et.hour * 60 + dt_et.minute
+            bucket = _bucket_for_minute(minutes)
+        except Exception:
+            continue
+        if not bucket:
+            continue
+        buckets[bucket]["total"] += 1
+        if r["actual_outcome"] == "win":
+            buckets[bucket]["wins"] += 1
+
+    for tod_name, b in buckets.items():
+        n = b["total"]
+        if n < _TOD_MIN_SAMPLES:
+            continue
+        bucket_wr = b["wins"] / n * 100.0
+        diff = bucket_wr - overall_wr
+        if abs(diff) < _TOD_DIFF_THRESHOLD:
+            continue
+
+        if diff < 0:
+            # Underperforming bucket — reduce position size for it
+            param_name = "max_position_pct"
+            cool_key = f"tod:{tod_name}:{param_name}"
+            if not _safe_change_guarded(profile_id, cool_key):
+                continue
+            current = resolve_param(ctx, param_name, tod_name,
+                                     default=getattr(ctx, param_name, 0.10))
+            new_val = round(max(_bound(param_name, current * 0.75), 0.03), 4)
+            if new_val >= current:
+                continue
+            from models import log_tuning_change
+            set_override(profile_id, param_name, tod_name, new_val)
+            reason = (
+                f"{tod_name.title()} bucket WR {bucket_wr:.0f}% on {n} samples "
+                f"vs {overall_wr:.0f}% overall — reduce position size for "
+                f"this time of day only"
+            )
+            log_tuning_change(
+                profile_id, user_id, "tod_override_down",
+                cool_key, str(current), str(new_val), reason,
+                win_rate_at_change=overall_wr, predictions_resolved=resolved,
+            )
+            return (
+                f"Set {tod_name} time-of-day override: "
+                f"{_label(param_name)} {current:.0%} → {new_val:.0%} "
+                f"({reason})"
+            )
+
+        # Outperforming bucket — raise confidence threshold for it
+        param_name = "ai_confidence_threshold"
+        cool_key = f"tod:{tod_name}:{param_name}"
+        if not _safe_change_guarded(profile_id, cool_key):
+            continue
+        current = resolve_param(ctx, param_name, tod_name,
+                                 default=getattr(ctx, param_name, 25))
+        new_val = int(_bound(param_name, current + 5))
+        if new_val <= current:
+            continue
+        from models import log_tuning_change
+        set_override(profile_id, param_name, tod_name, new_val)
+        reason = (
+            f"{tod_name.title()} bucket WR {bucket_wr:.0f}% on {n} samples "
+            f"vs {overall_wr:.0f}% overall — raise confidence floor for "
+            f"this time of day"
+        )
+        log_tuning_change(
+            profile_id, user_id, "tod_override_up",
+            cool_key, str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (
+            f"Set {tod_name} time-of-day override: "
             f"{_label(param_name)} {current} → {new_val} ({reason})"
         )
 

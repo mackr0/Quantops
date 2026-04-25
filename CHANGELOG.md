@@ -17,6 +17,38 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Autonomous tuning Wave 6: Layer 4 Per-Time-of-Day Parameter Overrides (Severity: medium, behavior)
+
+Mirror of Wave 5's regime architecture, bucketed by intraday window
+(open 09:30-10:30, midday 10:30-14:30, close 14:30-16:00 ET). New
+module `tod_overrides.py` with the same shape: `parse_overrides`,
+`resolve_param`, `set_override`, `resolve_for_current_tod`. Schema:
+`tod_overrides TEXT NOT NULL DEFAULT '{}'` column auto-migrated.
+
+Tuner detection (`_optimize_tod_overrides`): bucket recent resolved
+predictions by their timestamp's ET hour, find buckets with WR
+divergence ≥12pt from overall, create per-bucket override (reduce
+position size in underperforming bucket; raise confidence floor in
+outperforming bucket).
+
+Pipeline integration: `regime_overrides.resolve_for_current_regime`
+extended to a multi-layer chain — per-regime override beats per-TOD
+override beats global. So a profile with `stop_loss_pct=0.03`,
+`regime_overrides={"volatile": 0.06}`, and `tod_overrides={"open":
+0.05}` resolves to:
+- 0.06 in volatile regime (regime wins)
+- 0.05 at open in bull regime (TOD fallback)
+- 0.03 at midday in bull regime (global fallback)
+
+This is the architectural foundation for Layer 7 (per-symbol overrides)
+which will plug into the same chain as the most-specific tier.
+
+**Tests:** 14 new in `test_tod_overrides.py` covering bucket
+boundaries, parse/resolve, tuner detection, and chain precedence.
+Full suite: 832 passed.
+
+---
+
 ## 2026-04-25 — Autonomous tuning Wave 5: Layer 3 Per-Regime Parameter Overrides (Severity: medium, behavior + architecture)
 
 **The big architectural one.** Real quant funds use different

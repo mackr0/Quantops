@@ -169,12 +169,39 @@ def _current_regime() -> Optional[str]:
 
 def resolve_for_current_regime(profile_or_dict: Any, param_name: str,
                                 default: Any = None) -> Any:
-    """`resolve_param` that auto-detects the current regime. Use this
-    in pipeline decision points where you want the per-regime override
-    to take effect transparently — caller doesn't need to thread regime
-    state through."""
+    """`resolve_param` that auto-detects the current regime AND chains
+    with per-time-of-day overrides. Lookup order at decision time:
+
+      1. Per-symbol override (Layer 7 — coming)
+      2. Per-regime override (this layer)
+      3. Per-time-of-day override (Layer 4)
+      4. Profile global value
+      5. Caller default
+
+    Each layer falls back to the next when no override exists. The
+    chain is intentionally most-specific-first so a tuner-set
+    per-symbol override beats a per-regime override beats a per-TOD
+    override beats global.
+    """
+    # Layer 3 — per-regime
     regime = _current_regime()
-    return resolve_param(profile_or_dict, param_name, regime, default)
+    regime_value = resolve_param(profile_or_dict, param_name, regime,
+                                 default=None)
+    # If the regime returned something other than the global value,
+    # the per-regime override won. Use it.
+    if isinstance(profile_or_dict, dict):
+        global_value = profile_or_dict.get(param_name, default)
+    else:
+        global_value = getattr(profile_or_dict, param_name, default)
+    if regime_value is not None and regime_value != global_value:
+        return regime_value
+
+    # Layer 4 — per-time-of-day fallback
+    try:
+        from tod_overrides import resolve_for_current_tod
+        return resolve_for_current_tod(profile_or_dict, param_name, default)
+    except Exception:
+        return regime_value if regime_value is not None else default
 
 
 def get_all_overrides(profile_or_dict: Any) -> Dict[str, Dict[str, Any]]:
