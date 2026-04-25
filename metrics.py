@@ -431,6 +431,94 @@ def render_rolling_sharpe_svg(rolling_data: List[Dict], width: int = 700, height
 </svg>'''
 
 
+def render_win_rate_svg(series: List[Dict], width: int = 700, height: int = 180,
+                        window_days: int = 7) -> str:
+    """Inline SVG line chart for AI rolling win rate over time.
+
+    `series` is the output of `ai_tracker.compute_rolling_win_rate` —
+    a list of {date, win_rate, n}. Days with `win_rate is None` (no
+    resolved predictions in that day's window) break the line.
+    """
+    # Need at least two non-null points to draw a line.
+    valid = [(i, p) for i, p in enumerate(series) if p.get("win_rate") is not None]
+    if len(valid) < 2:
+        return (f'<svg viewBox="0 0 {width} {height}" '
+                f'style="width:100%;max-width:{width}px;">'
+                f'<text x="{width/2}" y="{height/2}" text-anchor="middle" '
+                f'fill="#888" font-size="14">'
+                f'Need more resolved predictions to draw the trend</text></svg>')
+
+    pad_top, pad_bottom, pad_left, pad_right = 15, 30, 45, 20
+    chart_w = width - pad_left - pad_right
+    chart_h = height - pad_top - pad_bottom
+
+    n = len(series)
+
+    def x_pos(i):
+        return pad_left + (i / max(n - 1, 1)) * chart_w
+
+    def y_pos(pct):
+        # 0% at bottom, 100% at top.
+        return pad_top + chart_h - (pct / 100.0) * chart_h
+
+    # Build polyline segments — break on null gaps.
+    segments = []
+    current = []
+    for i, p in enumerate(series):
+        wr = p.get("win_rate")
+        if wr is None:
+            if len(current) >= 2:
+                segments.append(current)
+            current = []
+        else:
+            current.append((x_pos(i), y_pos(wr)))
+    if len(current) >= 2:
+        segments.append(current)
+
+    # Reference line at 50% (coin-flip baseline).
+    y50 = y_pos(50)
+    ref = (f'<line x1="{pad_left}" y1="{y50:.1f}" x2="{pad_left + chart_w}" '
+           f'y2="{y50:.1f}" stroke="#888" stroke-width="0.5" '
+           f'stroke-dasharray="4,4"/>'
+           f'<text x="{pad_left - 5}" y="{y50 + 4:.1f}" text-anchor="end" '
+           f'fill="#888" font-size="10">50%</text>')
+
+    # Y-axis labels at 0/25/50/75/100 (skip 50 — already drawn).
+    y_labels = ""
+    for pct in (0, 25, 75, 100):
+        y = y_pos(pct)
+        y_labels += (f'<text x="{pad_left - 5}" y="{y + 4:.1f}" '
+                     f'text-anchor="end" fill="#888" font-size="10">{pct}%</text>'
+                     f'<line x1="{pad_left}" y1="{y:.1f}" '
+                     f'x2="{pad_left + chart_w}" y2="{y:.1f}" '
+                     f'stroke="#e0e0e0" stroke-width="0.5"/>')
+
+    # X-axis: first and last date.
+    dates = [p.get("date", "") for p in series]
+    date_labels = (f'<text x="{pad_left}" y="{pad_top + chart_h + 18}" '
+                   f'text-anchor="start" fill="#888" font-size="10">{dates[0]}</text>'
+                   f'<text x="{pad_left + chart_w}" y="{pad_top + chart_h + 18}" '
+                   f'text-anchor="end" fill="#888" font-size="10">{dates[-1]}</text>')
+
+    # Final point determines line color (above 50 = green, below = red).
+    last_wr = next((p["win_rate"] for p in reversed(series)
+                    if p.get("win_rate") is not None), 50)
+    color = "#00c853" if last_wr >= 50 else "#ff1744"
+
+    polylines = "".join(
+        f'<polyline points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in seg)}" '
+        f'fill="none" stroke="{color}" stroke-width="2"/>'
+        for seg in segments
+    )
+
+    return f'''<svg viewBox="0 0 {width} {height}" style="width:100%;max-width:{width}px;">
+    {y_labels}
+    {ref}
+    {date_labels}
+    {polylines}
+</svg>'''
+
+
 # ---------------------------------------------------------------------------
 # Master metrics calculator
 # ---------------------------------------------------------------------------

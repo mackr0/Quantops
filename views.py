@@ -2631,6 +2631,17 @@ def ai_dashboard():
 
     # === END COPIED BLOCK ===
 
+    # Rolling AI win-rate trend (7-day window, last 60 days).
+    try:
+        from ai_tracker import compute_rolling_win_rate
+        from metrics import render_win_rate_svg
+        win_rate_series = compute_rolling_win_rate(
+            db_paths, window_days=7, lookback_days=60)
+        ai_win_rate_chart_svg = render_win_rate_svg(win_rate_series)
+    except Exception as exc:
+        logger.warning("AI win-rate chart failed: %s", exc)
+        ai_win_rate_chart_svg = ""
+
     return render_template("ai.html",
                            ai_perf=ai_perf, slippage=slippage, meta_info=meta_info,
                            validations=validations, decay_info=decay_info,
@@ -2638,7 +2649,9 @@ def ai_dashboard():
                            auto_strategy_info=auto_strategy_info,
                            crisis_info=crisis_info, event_info=event_info,
                            ensemble_info=ensemble_info,
-                           ai_cost_info=ai_cost_info, **ctx)
+                           ai_cost_info=ai_cost_info,
+                           ai_win_rate_chart_svg=ai_win_rate_chart_svg,
+                           **ctx)
 
 
 # Keep old sub-routes as redirects so bookmarks don't break

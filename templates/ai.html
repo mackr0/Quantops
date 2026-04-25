@@ -108,6 +108,17 @@
         </article>
     </div>
 
+    <!-- Rolling Win-Rate Trend -->
+    {% if ai_win_rate_chart_svg %}
+    <article>
+        <header>
+            <h4 style="margin:0;">Win Rate Trend</h4>
+            <small class="muted">7-day rolling win rate over the last 60 days. The dashed line is the 50% coin-flip baseline; gaps mean no resolved predictions in that window.</small>
+        </header>
+        {{ ai_win_rate_chart_svg|safe }}
+    </article>
+    {% endif %}
+
     <!-- Confidence Calibration -->
     <div class="grid">
         <article>

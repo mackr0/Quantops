@@ -462,7 +462,92 @@ def get_ai_performance(db_path=None):
 
 
 # ---------------------------------------------------------------------------
-# 4. Pretty-print report
+# 4. Rolling win-rate timeseries (for charting)
+# ---------------------------------------------------------------------------
+
+def compute_rolling_win_rate(db_paths, window_days=7, lookback_days=60):
+    """Build a daily rolling win-rate series from resolved predictions.
+
+    For each calendar day in the lookback window, compute the win rate
+    over the trailing `window_days`. Days with no resolved predictions
+    in their window are skipped (returned as None for win_rate so the
+    caller can choose to break the line or interpolate).
+
+    Parameters
+    ----------
+    db_paths : iterable of str
+        Per-profile sqlite paths. Aggregated across all of them.
+    window_days : int
+        Trailing window size in calendar days for each rolling point.
+    lookback_days : int
+        How many days back from today to compute points for.
+
+    Returns
+    -------
+    list of dict
+        [{date: "YYYY-MM-DD", win_rate: float|None, n: int}, ...]
+        sorted oldest -> newest. `n` is the number of resolved
+        predictions inside that day's window.
+    """
+    from datetime import date, datetime, timedelta
+    import sqlite3 as _sqlite3
+
+    today = date.today()
+    earliest = today - timedelta(days=lookback_days + window_days)
+
+    # Pull all (resolved_at, outcome) tuples from each DB inside the
+    # earliest-needed range.
+    resolutions = []
+    for db_path in db_paths:
+        try:
+            conn = _sqlite3.connect(db_path)
+            rows = conn.execute(
+                "SELECT resolved_at, actual_outcome FROM ai_predictions "
+                "WHERE status = 'resolved' AND resolved_at IS NOT NULL "
+                "  AND actual_outcome IN ('win', 'loss') "
+                "  AND date(resolved_at) >= ?",
+                (earliest.isoformat(),),
+            ).fetchall()
+            conn.close()
+            for r in rows:
+                # Parse the date portion only — outcome is bucketed daily.
+                try:
+                    d = datetime.fromisoformat(r[0].replace("Z", "")).date()
+                except Exception:
+                    d = datetime.strptime(r[0][:10], "%Y-%m-%d").date()
+                resolutions.append((d, r[1]))
+        except Exception:
+            continue
+
+    # Bucket by day for fast windowed sums.
+    by_day_wins = {}
+    by_day_losses = {}
+    for d, outcome in resolutions:
+        if outcome == "win":
+            by_day_wins[d] = by_day_wins.get(d, 0) + 1
+        elif outcome == "loss":
+            by_day_losses[d] = by_day_losses.get(d, 0) + 1
+
+    series = []
+    for offset in range(lookback_days, -1, -1):
+        end = today - timedelta(days=offset)
+        start = end - timedelta(days=window_days - 1)
+        wins = sum(by_day_wins.get(start + timedelta(days=i), 0)
+                   for i in range(window_days))
+        losses = sum(by_day_losses.get(start + timedelta(days=i), 0)
+                     for i in range(window_days))
+        n = wins + losses
+        win_rate = (wins / n * 100.0) if n > 0 else None
+        series.append({
+            "date": end.isoformat(),
+            "win_rate": round(win_rate, 1) if win_rate is not None else None,
+            "n": n,
+        })
+    return series
+
+
+# ---------------------------------------------------------------------------
+# 5. Pretty-print report
 # ---------------------------------------------------------------------------
 
 def print_ai_report():

@@ -17,6 +17,41 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — AI Win-Rate Trend chart added to AI Intelligence > Brain tab (Severity: low, feature)
+
+**Problem:** No way to see whether the AI's prediction accuracy is
+trending up or down over time. The Brain tab showed only the
+all-time cumulative win rate — useful as a headline number, but
+it hides recent shifts.
+
+**Fix:** Added two pieces:
+
+1. `ai_tracker.compute_rolling_win_rate(db_paths, window_days=7,
+   lookback_days=60)` — returns a daily series of `{date, win_rate, n}`
+   where each point is the win rate over the trailing 7 days. Days
+   with zero resolved predictions in their window are returned with
+   `win_rate=None` so the chart breaks the line cleanly instead of
+   interpolating a fake value.
+2. `metrics.render_win_rate_svg(series)` — server-rendered SVG line
+   chart, mirroring the existing `render_equity_curve_svg` /
+   `render_rolling_sharpe_svg` pattern (no JS chart library
+   dependency). Y-axis 0–100% with grid lines at 0/25/50/75/100, a
+   dashed 50% coin-flip baseline, green line if the latest point ≥ 50%
+   else red. Gaps in resolved-prediction coverage render as broken
+   polyline segments.
+
+Wired into `ai_dashboard()` in `views.py` and rendered in the Brain
+tab of `templates/ai.html` immediately after the headline win-rate
+metric (so the user sees the trend right next to the cumulative
+number).
+
+**Tests:** 11 new tests in `test_ai_win_rate_chart.py` cover empty /
+all-none series, pure winning/losing windows, mixed outcomes,
+neutral-outcome exclusion, multi-DB aggregation, gap segmentation,
+color selection. Full suite still green at 729 passed / 1 skipped.
+
+---
+
 ## 2026-04-25 — Admin user table: humanize Created and Last Login columns (Severity: low, UX)
 
 **Problem:** The admin user list showed raw ISO date/time strings:
