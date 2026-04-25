@@ -17,6 +17,41 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Autonomous tuning Wave 2: Group C (entry filters) — 8 new tunable parameters (Severity: medium, behavior)
+
+**8 new entry-filter tuning rules** (all in `self_tuning.py`,
+registered in `_apply_upward_optimizations` after the W1 set):
+
+| Function | Parameter | Detection |
+|----------|-----------|-----------|
+| `_optimize_min_volume` | `min_volume` | Marginal-volume entries (≤1.5× threshold) WR < 30% → +50% |
+| `_optimize_volume_surge_multiplier` | `volume_surge_multiplier` | Marginal surge entries WR < 35% → +0.25 |
+| `_optimize_breakout_volume_threshold` | `breakout_volume_threshold` | Marginal breakout entries WR < 35% → +0.25 |
+| `_optimize_gap_pct_threshold` | `gap_pct_threshold` | Marginal-gap entries (within 1.2×) WR < 35% → +0.5 |
+| `_optimize_momentum_5d` | `momentum_5d_gain` | Marginal 5d-momentum entries WR < 35% → +0.5 |
+| `_optimize_momentum_20d` | `momentum_20d_gain` | Marginal 20d-momentum entries WR < 35% → +0.5 |
+| `_optimize_rsi_overbought` | `rsi_overbought` | Near-overbought entries (RSI ±5 of threshold) WR ≥55% → raise +2 |
+| `_optimize_rsi_oversold` | `rsi_oversold` | Near-oversold entries WR ≥55% → lower -2 |
+
+All read from `features_json` on resolved predictions via the new
+shared helper `_bucket_by_feature(conn, feature_name)`. Rules
+gracefully no-op when the relevant feature isn't logged yet (some
+older predictions may not have full feature payloads). Same safety
+scaffolding as W1: cooldown, reverse-if-worsened, bound clamping via
+`param_bounds`, log to `tuning_history`.
+
+**Tests:** 11 new in `test_self_tuning_wave2.py` covering each rule's
+trigger logic, cooldown respect, no-op-on-missing-features, and
+orchestrator registration. Full suite: 769 passed / 1 skipped.
+
+**Tuner now manages 31 levers** (8 pre-existing + 10 W1 + 8 W2 + 5 wave-cross
+[evaluation row, alpha_decay deprecation, 4 legacy strategy toggles
+already counted as part of "8 pre-existing"]). Coverage of `trading_profiles`
+columns is approaching 100%; W3 (Group B exits) closes the remaining
+parameter rules.
+
+---
+
 ## 2026-04-25 — Autonomous tuning Wave 1: Group A (concentration/risk) + Group D (timing) — 10 new tunable parameters (Severity: medium, behavior)
 
 **Why this exists:** The whole point of QuantOpsAI is that it makes

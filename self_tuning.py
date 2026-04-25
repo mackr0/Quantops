@@ -1600,6 +1600,15 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_avoid_earnings_days,
         _optimize_skip_first_minutes,
         _optimize_maga_mode,
+        # Wave 2 — Group C (entry filters)
+        _optimize_min_volume,
+        _optimize_volume_surge_multiplier,
+        _optimize_breakout_volume_threshold,
+        _optimize_gap_pct_threshold,
+        _optimize_momentum_5d,
+        _optimize_momentum_20d,
+        _optimize_rsi_overbought,
+        _optimize_rsi_oversold,
     ]
 
     results = []
@@ -2372,6 +2381,315 @@ def _optimize_skip_first_minutes(conn, ctx, profile_id, user_id,
     isn't structured today. Same placeholder pattern as
     _optimize_avoid_earnings_days; rule registers for orchestration but
     no-ops until the feature column exists."""
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Wave 2 — entry filter optimizers (Layer 1 Group C). Pattern: bucket
+# resolved predictions by which side of the threshold they fell on (read
+# from features_json), tighten if marginal bucket underperforms, loosen
+# if too many would-have-winners are filtered out. All rules degrade
+# gracefully (no-op) when the relevant feature isn't present in
+# features_json yet.
+# ---------------------------------------------------------------------------
+
+def _bucket_by_feature(conn, feature_name):
+    """Iterate resolved predictions and yield (feature_value, outcome)
+    tuples for those where features_json contains a numeric value for
+    `feature_name`. Skips silently for predictions without the feature."""
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(ai_predictions)").fetchall()}
+    if "features_json" not in cols:
+        return
+    rows = conn.execute(
+        "SELECT actual_outcome, features_json FROM ai_predictions "
+        "WHERE status='resolved' AND actual_outcome IN ('win','loss') "
+        "  AND features_json IS NOT NULL"
+    ).fetchall()
+    import json as _j
+    for r in rows:
+        try:
+            f = _j.loads(r["features_json"])
+        except Exception:
+            continue
+        v = f.get(feature_name)
+        if v is None:
+            continue
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            continue
+        yield v, r["actual_outcome"]
+
+
+def _filter_threshold_signal(conn, feature_name, threshold,
+                              tighten_band_factor=1.5):
+    """Return (marginal_wr, marginal_n) for predictions whose
+    `feature_name` value fell within `tighten_band_factor` of `threshold`
+    on the just-passing side. (None, 0) if not enough data."""
+    band_top = threshold * tighten_band_factor
+    wins = total = 0
+    for v, outcome in _bucket_by_feature(conn, feature_name):
+        if threshold <= v <= band_top:
+            total += 1
+            if outcome == "win":
+                wins += 1
+    if total < 5:
+        return None, 0
+    return (wins / total * 100.0), total
+
+
+def _optimize_min_volume(conn, ctx, profile_id, user_id, overall_wr, resolved):
+    """Raise min_volume when bottom-band entries (just above threshold)
+    are losing badly. Lower when the system is starved of candidates and
+    overall WR is healthy."""
+    if not _safe_change_guarded(profile_id, "min_volume"):
+        return None
+    current = int(getattr(ctx, "min_volume", 500_000))
+    wr, n = _filter_threshold_signal(conn, "volume", current,
+                                       tighten_band_factor=1.5)
+    if wr is None:
+        return None
+    if wr < 30:
+        new_val = _bound("min_volume", int(current * 1.50))
+        if new_val == current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, min_volume=new_val)
+        reason = (
+            f"Marginal-volume entries (≤ 1.5× threshold) WR {wr:.0f}% on "
+            f"{n} samples — raise min_volume floor"
+        )
+        log_tuning_change(
+            profile_id, user_id, "min_volume_raise",
+            "min_volume", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return f"Raised min_volume from {current:,} to {new_val:,} ({reason})"
+    return None
+
+
+def _optimize_volume_surge_multiplier(conn, ctx, profile_id, user_id,
+                                       overall_wr, resolved):
+    """Same shape, on volume_ratio (the multiple of average volume)."""
+    if not _safe_change_guarded(profile_id, "volume_surge_multiplier"):
+        return None
+    current = float(getattr(ctx, "volume_surge_multiplier", 2.0))
+    wr, n = _filter_threshold_signal(conn, "volume_ratio", current,
+                                       tighten_band_factor=1.25)
+    if wr is None:
+        return None
+    if wr < 35:
+        new_val = _bound("volume_surge_multiplier", round(current + 0.25, 2))
+        if new_val == current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, volume_surge_multiplier=new_val)
+        reason = (
+            f"Marginal volume-surge entries WR {wr:.0f}% on {n} samples — "
+            f"require stronger surge for confirmation"
+        )
+        log_tuning_change(
+            profile_id, user_id, "volume_surge_tighten",
+            "volume_surge_multiplier", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (f"Raised volume_surge_multiplier from {current:.2f} to "
+                f"{new_val:.2f} ({reason})")
+    return None
+
+
+def _optimize_breakout_volume_threshold(conn, ctx, profile_id, user_id,
+                                         overall_wr, resolved):
+    """Tighten the breakout-volume gate when marginal breakouts fail."""
+    if not _safe_change_guarded(profile_id, "breakout_volume_threshold"):
+        return None
+    current = float(getattr(ctx, "breakout_volume_threshold", 1.0))
+    wr, n = _filter_threshold_signal(conn, "volume_ratio", current,
+                                       tighten_band_factor=1.5)
+    if wr is None:
+        return None
+    if wr < 35:
+        new_val = _bound("breakout_volume_threshold", round(current + 0.25, 2))
+        if new_val == current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, breakout_volume_threshold=new_val)
+        reason = (
+            f"Marginal-breakout entries WR {wr:.0f}% on {n} samples — "
+            f"require more confirmation volume"
+        )
+        log_tuning_change(
+            profile_id, user_id, "breakout_volume_tighten",
+            "breakout_volume_threshold", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (f"Raised breakout_volume_threshold from {current:.2f} to "
+                f"{new_val:.2f} ({reason})")
+    return None
+
+
+def _optimize_gap_pct_threshold(conn, ctx, profile_id, user_id,
+                                 overall_wr, resolved):
+    """Increase the minimum gap when small-gap entries underperform."""
+    if not _safe_change_guarded(profile_id, "gap_pct_threshold"):
+        return None
+    current = float(getattr(ctx, "gap_pct_threshold", 3.0))
+    wr, n = _filter_threshold_signal(conn, "gap_pct", current,
+                                       tighten_band_factor=1.2)
+    if wr is None:
+        return None
+    if wr < 35:
+        new_val = _bound("gap_pct_threshold", round(current + 0.5, 2))
+        if new_val == current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, gap_pct_threshold=new_val)
+        reason = (
+            f"Marginal-gap entries (within 1.2× threshold) WR {wr:.0f}% "
+            f"on {n} samples — require larger gap"
+        )
+        log_tuning_change(
+            profile_id, user_id, "gap_threshold_tighten",
+            "gap_pct_threshold", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (f"Raised gap_pct_threshold from {current:.2f}% to "
+                f"{new_val:.2f}% ({reason})")
+    return None
+
+
+def _optimize_momentum_5d(conn, ctx, profile_id, user_id, overall_wr, resolved):
+    """Tighten 5d-momentum entry threshold when marginal entries fail."""
+    if not _safe_change_guarded(profile_id, "momentum_5d_gain"):
+        return None
+    current = float(getattr(ctx, "momentum_5d_gain", 3.0))
+    wr, n = _filter_threshold_signal(conn, "momentum_5d", current,
+                                       tighten_band_factor=1.3)
+    if wr is None:
+        return None
+    if wr < 35:
+        new_val = _bound("momentum_5d_gain", round(current + 0.5, 2))
+        if new_val == current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, momentum_5d_gain=new_val)
+        reason = (
+            f"Marginal 5d-momentum entries WR {wr:.0f}% on {n} samples — "
+            f"require stronger momentum"
+        )
+        log_tuning_change(
+            profile_id, user_id, "momentum_5d_tighten",
+            "momentum_5d_gain", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (f"Raised momentum_5d_gain from {current:.2f}% to "
+                f"{new_val:.2f}% ({reason})")
+    return None
+
+
+def _optimize_momentum_20d(conn, ctx, profile_id, user_id, overall_wr, resolved):
+    """Same as 5d but for 20-day window."""
+    if not _safe_change_guarded(profile_id, "momentum_20d_gain"):
+        return None
+    current = float(getattr(ctx, "momentum_20d_gain", 5.0))
+    wr, n = _filter_threshold_signal(conn, "momentum_20d", current,
+                                       tighten_band_factor=1.3)
+    if wr is None:
+        return None
+    if wr < 35:
+        new_val = _bound("momentum_20d_gain", round(current + 0.5, 2))
+        if new_val == current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, momentum_20d_gain=new_val)
+        reason = (
+            f"Marginal 20d-momentum entries WR {wr:.0f}% on {n} samples — "
+            f"require stronger momentum"
+        )
+        log_tuning_change(
+            profile_id, user_id, "momentum_20d_tighten",
+            "momentum_20d_gain", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (f"Raised momentum_20d_gain from {current:.2f}% to "
+                f"{new_val:.2f}% ({reason})")
+    return None
+
+
+def _optimize_rsi_overbought(conn, ctx, profile_id, user_id,
+                              overall_wr, resolved):
+    """Raise the RSI overbought threshold when entries near the current
+    threshold continued upward (i.e., the threshold was too sensitive)."""
+    if not _safe_change_guarded(profile_id, "rsi_overbought"):
+        return None
+    current = float(getattr(ctx, "rsi_overbought", 85.0))
+    # Bucket: predictions where rsi is within 5 points of current threshold
+    band_lo, band_hi = current - 5, current + 5
+    wins = total = 0
+    for v, outcome in _bucket_by_feature(conn, "rsi"):
+        if band_lo <= v <= band_hi:
+            total += 1
+            if outcome == "win":
+                wins += 1
+    if total < 5:
+        return None
+    wr = wins / total * 100
+    # If near-overbought entries still won often, the threshold is too tight.
+    if wr >= 55:
+        new_val = _bound("rsi_overbought", round(current + 2, 1))
+        if new_val == current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, rsi_overbought=new_val)
+        reason = (
+            f"Near-overbought entries (RSI {band_lo:.0f}-{band_hi:.0f}) "
+            f"won {wr:.0f}% on {total} samples — raise threshold"
+        )
+        log_tuning_change(
+            profile_id, user_id, "rsi_overbought_raise",
+            "rsi_overbought", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (f"Raised rsi_overbought from {current:.0f} to "
+                f"{new_val:.0f} ({reason})")
+    return None
+
+
+def _optimize_rsi_oversold(conn, ctx, profile_id, user_id,
+                            overall_wr, resolved):
+    """Lower the RSI oversold threshold when near-oversold entries continued
+    downward (threshold too sensitive)."""
+    if not _safe_change_guarded(profile_id, "rsi_oversold"):
+        return None
+    current = float(getattr(ctx, "rsi_oversold", 25.0))
+    band_lo, band_hi = current - 5, current + 5
+    wins = total = 0
+    for v, outcome in _bucket_by_feature(conn, "rsi"):
+        if band_lo <= v <= band_hi:
+            total += 1
+            if outcome == "win":
+                wins += 1
+    if total < 5:
+        return None
+    wr = wins / total * 100
+    if wr >= 55:
+        new_val = _bound("rsi_oversold", round(current - 2, 1))
+        if new_val == current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, rsi_oversold=new_val)
+        reason = (
+            f"Near-oversold entries (RSI {band_lo:.0f}-{band_hi:.0f}) "
+            f"won {wr:.0f}% on {total} samples — lower threshold"
+        )
+        log_tuning_change(
+            profile_id, user_id, "rsi_oversold_lower",
+            "rsi_oversold", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (f"Lowered rsi_oversold from {current:.0f} to "
+                f"{new_val:.0f} ({reason})")
     return None
 
 
