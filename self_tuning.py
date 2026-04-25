@@ -2048,6 +2048,20 @@ def _bound(name, value):
     return clamp(name, value)
 
 
+def _label(param_name):
+    """Display-name shortcut for use in optimizer return strings.
+
+    The strings returned by optimizers flow into the dashboard activity
+    ticker and the weekly digest — both user-facing surfaces. Always
+    use this helper when interpolating a parameter name into a return
+    string so we never leak snake_case identifiers like
+    "atr_multiplier_tp" to the user. `tests/test_no_snake_case_in_optimizer_strings.py`
+    enforces this.
+    """
+    from display_names import display_name
+    return display_name(param_name)
+
+
 def _safe_change_guarded(profile_id, param_name):
     """Common cooldown + reverse-if-worsened check. Returns True if the
     rule is ALLOWED to make a change to this parameter right now."""
@@ -2178,7 +2192,7 @@ def _optimize_max_correlation(conn, ctx, profile_id, user_id,
             "max_correlation", str(current), str(new_val), reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return f"Tightened max_correlation from {current:.2f} to {new_val:.2f} ({reason})"
+        return f"Tightened {_label('max_correlation')} from {current:.2f} to {new_val:.2f} ({reason})"
 
     # Loosen if very few clustering weeks AND profile is performing well
     if cluster_rate < 0.1 and overall_wr >= 55:
@@ -2196,7 +2210,7 @@ def _optimize_max_correlation(conn, ctx, profile_id, user_id,
             "max_correlation", str(current), str(new_val), reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return f"Loosened max_correlation from {current:.2f} to {new_val:.2f} ({reason})"
+        return f"Loosened {_label('max_correlation')} from {current:.2f} to {new_val:.2f} ({reason})"
 
     return None
 
@@ -2226,7 +2240,7 @@ def _optimize_max_sector_positions(conn, ctx, profile_id, user_id,
             "max_sector_positions", str(current), str(new_val), reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return f"Reduced max_sector_positions from {current} to {new_val} ({reason})"
+        return f"Reduced {_label('max_sector_positions')} from {current} to {new_val} ({reason})"
 
     return None
 
@@ -2330,7 +2344,7 @@ def _optimize_price_band(conn, ctx, profile_id, user_id, overall_wr, resolved):
                     win_rate_at_change=overall_wr,
                     predictions_resolved=resolved,
                 )
-                return (f"Raised min_price from ${current_min:.2f} to "
+                return (f"Raised {_label('min_price')} from ${current_min:.2f} to "
                         f"${new_min:.2f} ({reason})")
 
     # Top-of-band failure check: trades entered within 0.85× of max_price.
@@ -2360,7 +2374,7 @@ def _optimize_price_band(conn, ctx, profile_id, user_id, overall_wr, resolved):
                     win_rate_at_change=overall_wr,
                     predictions_resolved=resolved,
                 )
-                return (f"Lowered max_price from ${current_max:.2f} to "
+                return (f"Lowered {_label('max_price')} from ${current_max:.2f} to "
                         f"${new_max:.2f} ({reason})")
 
     return None
@@ -2470,7 +2484,7 @@ def _optimize_min_volume(conn, ctx, profile_id, user_id, overall_wr, resolved):
             "min_volume", str(current), str(new_val), reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return f"Raised min_volume from {current:,} to {new_val:,} ({reason})"
+        return f"Raised {_label('min_volume')} from {current:,} to {new_val:,} ({reason})"
     return None
 
 
@@ -2499,7 +2513,7 @@ def _optimize_volume_surge_multiplier(conn, ctx, profile_id, user_id,
             "volume_surge_multiplier", str(current), str(new_val), reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return (f"Raised volume_surge_multiplier from {current:.2f} to "
+        return (f"Raised {_label('volume_surge_multiplier')} from {current:.2f} to "
                 f"{new_val:.2f} ({reason})")
     return None
 
@@ -2529,7 +2543,7 @@ def _optimize_breakout_volume_threshold(conn, ctx, profile_id, user_id,
             "breakout_volume_threshold", str(current), str(new_val), reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return (f"Raised breakout_volume_threshold from {current:.2f} to "
+        return (f"Raised {_label('breakout_volume_threshold')} from {current:.2f} to "
                 f"{new_val:.2f} ({reason})")
     return None
 
@@ -2559,7 +2573,7 @@ def _optimize_gap_pct_threshold(conn, ctx, profile_id, user_id,
             "gap_pct_threshold", str(current), str(new_val), reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return (f"Raised gap_pct_threshold from {current:.2f}% to "
+        return (f"Raised {_label('gap_pct_threshold')} from {current:.2f}% to "
                 f"{new_val:.2f}% ({reason})")
     return None
 
@@ -2588,7 +2602,7 @@ def _optimize_momentum_5d(conn, ctx, profile_id, user_id, overall_wr, resolved):
             "momentum_5d_gain", str(current), str(new_val), reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return (f"Raised momentum_5d_gain from {current:.2f}% to "
+        return (f"Raised {_label('momentum_5d_gain')} from {current:.2f}% to "
                 f"{new_val:.2f}% ({reason})")
     return None
 
@@ -2617,7 +2631,7 @@ def _optimize_momentum_20d(conn, ctx, profile_id, user_id, overall_wr, resolved)
             "momentum_20d_gain", str(current), str(new_val), reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return (f"Raised momentum_20d_gain from {current:.2f}% to "
+        return (f"Raised {_label('momentum_20d_gain')} from {current:.2f}% to "
                 f"{new_val:.2f}% ({reason})")
     return None
 
@@ -2656,7 +2670,7 @@ def _optimize_rsi_overbought(conn, ctx, profile_id, user_id,
             "rsi_overbought", str(current), str(new_val), reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return (f"Raised rsi_overbought from {current:.0f} to "
+        return (f"Raised {_label('rsi_overbought')} from {current:.0f} to "
                 f"{new_val:.0f} ({reason})")
     return None
 
@@ -2693,7 +2707,7 @@ def _optimize_rsi_oversold(conn, ctx, profile_id, user_id,
             "rsi_oversold", str(current), str(new_val), reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return (f"Lowered rsi_oversold from {current:.0f} to "
+        return (f"Lowered {_label('rsi_oversold')} from {current:.0f} to "
                 f"{new_val:.0f} ({reason})")
     return None
 
@@ -2759,7 +2773,7 @@ def _optimize_short_take_profit(conn, ctx, profile_id, user_id,
             "short_take_profit_pct", str(current), str(new_val), reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return (f"Tightened short_take_profit_pct from {current:.0%} to "
+        return (f"Tightened {_label('short_take_profit_pct')} from {current:.0%} to "
                 f"{new_val:.0%} ({reason})")
     return None
 
@@ -2816,7 +2830,7 @@ def _optimize_atr_multiplier_sl(conn, ctx, profile_id, user_id,
             "atr_multiplier_sl", str(current), str(new_val), reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return (f"Widened atr_multiplier_sl from {current:.2f} to "
+        return (f"Widened {_label('atr_multiplier_sl')} from {current:.2f} to "
                 f"{new_val:.2f} ({reason})")
     return None
 
@@ -2866,7 +2880,7 @@ def _optimize_atr_multiplier_tp(conn, ctx, profile_id, user_id,
             "atr_multiplier_tp", str(current), str(new_val), reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return (f"Tightened atr_multiplier_tp from {current:.2f} to "
+        return (f"Tightened {_label('atr_multiplier_tp')} from {current:.2f} to "
                 f"{new_val:.2f} ({reason})")
     return None
 

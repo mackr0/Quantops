@@ -17,6 +17,44 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Hotfix: snake_case parameter names leaked to dashboard ticker via optimizer return strings (Severity: high, UX regression)
+
+**Problem:** User saw `atr_multiplier_tp` in the dashboard activity
+ticker. Audit found 13 W1/W2/W3 optimizer functions returning strings
+that embedded raw snake_case column names directly:
+- `"Tightened atr_multiplier_tp from 3.00 to 2.75"`
+- `"Raised min_volume from 500,000 to 750,000"`
+- etc.
+
+These strings flow into the activity ticker, weekly digest body, and
+tuning-history detail. The `display_names` registry was already correct
+for every parameter (`atr_multiplier_tp` → "ATR Target Multiplier") —
+the bug was that the registry was never consulted when constructing
+these return messages.
+
+**Fix:**
+- Added `_label(param_name)` helper in `self_tuning.py` — single
+  shortcut to call `display_name()` from inside an f-string.
+- Rewrote every offending optimizer return string to use `_label()`.
+- Added `tests/test_no_snake_case_in_optimizer_strings.py` — AST-walks
+  every `_optimize_*` function in `self_tuning.py`, finds all string
+  literals returned, and fails the build if any contains a raw
+  parameter name from `PARAM_BOUNDS`. Excludes the legitimate case
+  where the parameter name appears as a direct argument to `_label()`
+  or `display_name()`. This is now the structural guardrail that
+  prevents this class of bug from recurring.
+
+**Why it wasn't caught:** Existing tests verified the tuner WROTE the
+right value to the database, but not that the human-readable string
+returned to the orchestrator was in plain English. The new test closes
+that gap with AST-level enforcement — no future optimizer can ship a
+parameter-name leak without explicitly bypassing it.
+
+**Tests:** 780 passed total (1 new guardrail test + label-helper
+sanity).
+
+---
+
 ## 2026-04-25 — Hotfix: Self-Tune NameError on no-change path (Severity: high, regression)
 
 **Problem:** Production "Scan Failures" panel showed "Self-Tune failed"
