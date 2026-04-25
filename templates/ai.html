@@ -12,6 +12,19 @@
    wrap to two lines. nowrap + tighter cell padding fits all three. */
 .econ-indicators td, .econ-indicators th { padding: 0.3rem 0.4rem; }
 .econ-indicators td:first-child, .econ-indicators th:first-child { white-space: nowrap; }
+/* "What the AI Sees" — make each h4 read as a clear section divider so
+   the user can tell the major data-context groups apart at a glance. */
+.ai-sees h4 {
+    margin-top: 1.5rem;
+    padding: 0.4rem 0.6rem;
+    border-left: 3px solid #00c853;
+    background: rgba(0, 200, 83, 0.06);
+    font-size: 1rem;
+    border-radius: 0 4px 4px 0;
+}
+.ai-sees h4:first-child { margin-top: 0.25rem; }
+/* Slight breathing room around each row of grid cards. */
+.ai-sees .grid { margin-bottom: 0.5rem; }
 </style>
 
 <h1>AI Intelligence{% if selected_profile_name %} &mdash; {{ selected_profile_name }}{% endif %}</h1>
@@ -1025,7 +1038,7 @@
         <summary style="cursor:pointer;font-size:1.25rem;font-weight:600;list-style:none;">
             What the AI Sees <small class="muted" style="font-weight:normal;font-size:0.85rem;">— the full data context every candidate is evaluated against</small>
         </summary>
-        <div style="margin-top:1rem;">
+        <div class="ai-sees" style="margin-top:1rem;">
         <h4>Per-Candidate Technical Indicators (13)</h4>
         <div class="grid">
             <div><h5>Trend & Momentum</h5><small>RSI, StochRSI, ADX, ROC (10-day), Volume Ratio vs 20-day avg</small></div>
