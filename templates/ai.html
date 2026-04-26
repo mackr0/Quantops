@@ -1007,7 +1007,7 @@
     <article>
         <header><h3>Active Lessons</h3></header>
         <p class="muted" style="margin-top:-0.5rem;">Post-mortem patterns + tuner-detected failure patterns currently being injected into the AI's prompt. These are the "be cautious" notes the AI sees at every decision.</p>
-        <div id="learned-patterns-widget"><p class="muted">Loading...</p></div>
+        <div id="active-lessons-widget"><p class="muted">Loading...</p></div>
     </article>
 
     <!-- Active Autonomy State — overrides the tuner has set per profile -->
@@ -1365,7 +1365,7 @@
 
     // --- Active Learned Patterns / Post-mortems ---
     function loadLearnedPatterns() {
-        var w = document.getElementById('learned-patterns-widget');
+        var w = document.getElementById('active-lessons-widget');
         if (!w) return;
         fetch('/api/active-lessons' + (pfParam ? '?' + pfParam.substr(1) : ''))
             .then(function(r) { return r.json(); })

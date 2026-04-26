@@ -17,6 +17,40 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Hotfix: Active Lessons widget stuck on "Loading..." (Severity: medium, regression)
+
+**Problem:** The new "Active Lessons" widget on the AI Operations
+tab showed "Loading..." indefinitely. Backend was fine — endpoint
+returned 200 in ~165ms with valid data — but the widget never updated.
+
+**Root cause:** duplicate DOM IDs. The new "Active Lessons" widget
+was assigned `id="learned-patterns-widget"`, which was already used
+by an older widget on the Brain tab. `getElementById` returns only
+the FIRST match, so my JS updated the Brain-tab widget (not visible
+on the Operations tab) and left the Active Lessons widget stuck on
+its "Loading..." placeholder forever.
+
+**Fix:** rename the new widget to `id="active-lessons-widget"` and
+update the JS to target it.
+
+**Structural fix — `test_no_duplicate_dom_ids.py`.** New guardrail
+that walks every template under `templates/`, parses `id="..."`
+attributes (skipping `<script>` and `<style>` blocks so JS string
+literals don't false-positive), and fails if any ID appears more
+than once in the same file. Allowlist supported for legitimate
+duplicates (e.g., a partial template intentionally included twice).
+
+Verified by reverting the fix: the test failed cleanly on
+`learned-patterns-widget appears 2× — JS getElementById returns only
+the first match, second/etc. silently orphaned.`
+
+This is the structural protection against the entire class of
+"silently orphaned widget" bugs.
+
+Full suite: 914 passed (913 + 1 new dup-id guardrail).
+
+---
+
 ## 2026-04-25 — URGENT: comprehensive snake_case guardrail + autonomy summary in weekly digest (Severity: high, regression + feature)
 
 **The snake_case leak that wasn't supposed to be possible.** User
