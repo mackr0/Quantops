@@ -76,6 +76,32 @@
     </form>
 </article>
 
+<!-- Autonomy section (per-user opt-in toggles) -->
+<h2 id="autonomy">Autonomy</h2>
+<article>
+    <p class="muted">
+        QuantOpsAI auto-tunes most trading parameters based on its own performance — confidence thresholds, position sizes, stop-losses, signal weights, per-regime overrides, and more. A few high-impact knobs are opt-in because they affect cost or capital deployment.
+    </p>
+    <form method="post" action="/settings/autonomy" style="margin:0;">
+        <label style="display:flex;align-items:flex-start;gap:0.75rem;padding:0.5rem 0;">
+            <input type="checkbox" name="auto_capital_allocation" value="1"
+                   {{ 'checked' if autonomy.auto_capital_allocation else '' }}
+                   style="margin-top:0.3rem;">
+            <span>
+                <strong>Auto capital allocation</strong>
+                <small class="muted" style="display:block;margin-top:0.25rem;">
+                    Weekly rebalance of capital across your profiles, weighted toward profiles with proven edge.
+                    <strong>Respects shared Alpaca accounts</strong> — profiles sharing an account
+                    have their allocations normalized within that account's pool, so the underlying
+                    capital is never over-committed. Solo profiles (1 per account) stay at 100%.
+                    Per-rebalance change capped at ±50%, absolute scale ∈ [25%, 200%].
+                </small>
+            </span>
+        </label>
+        <button type="submit" style="margin-top:0.75rem;">Save</button>
+    </form>
+</article>
+
 <!-- Trading Profiles Section -->
 <h2>Alpaca Accounts</h2>
 <article>

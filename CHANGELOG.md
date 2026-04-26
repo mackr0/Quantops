@@ -17,6 +17,70 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Autonomous tuning Wave 13: Final guardrail + Settings UI Autonomy section (Severity: medium, infrastructure)
+
+The closing wave of the autonomous-tuning rollout. Ships the
+structural guardrail that prevents future regressions in autonomy
+coverage, plus the user-facing Settings page surface for the per-user
+opt-in toggles.
+
+**Anti-regression test: `test_every_lever_is_tuned.py`.**
+AST-walks the `trading_profiles` schema (CREATE TABLE + ALTER TABLE
+migrations) and asserts every column is either:
+- Updated by `update_trading_profile()` somewhere in `self_tuning.py`
+  (covers direct param-tuning and the dynamic-key strategy-toggle
+  pattern via `_STRATEGY_TYPE_TO_TOGGLE.values()`); or
+- On the explicit `MANUAL_PARAMETERS` allowlist with a written
+  rationale.
+
+The allowlist captures every legitimate exception: secrets, identity,
+strategic AI choice (opt-in via `ai_model_auto_tune` planned), schedule,
+the override-stack JSON storage columns (tuned via layer-specific
+helpers, not `update_trading_profile`), boolean execution toggles
+(intensity tuned via Layer 2 weights, defaults stay user-set), and
+the three placeholder optimizers awaiting feature columns
+(avoid_earnings_days, skip_first_minutes, trailing_atr_multiplier).
+
+A second test (`test_no_stale_entries_in_manual_allowlist`) catches
+allowlisted-but-no-longer-existing columns so the list stays honest.
+
+**Settings page Autonomy section.** New `<h2 id="autonomy">Autonomy</h2>`
+block with a checkbox for `auto_capital_allocation` (default OFF).
+The accompanying copy explains the per-Alpaca-account constraint
+explicitly so the user understands what they're enabling. New POST
+endpoint `/settings/autonomy` persists the toggle to the user record.
+
+**Tests:** 2 new in `test_every_lever_is_tuned.py`. Full suite: 898
+passed.
+
+This closes the 12-wave plan. Final state of the autonomous-tuning
+system as of 2026-04-25:
+
+- 35+ parameters auto-tuned with cooldown/reversal/bound-clamping
+- 21 weighted signals + per-profile intensity ladder
+- Per-regime / per-time-of-day / per-symbol overrides chained at
+  every decision point
+- Cross-profile insight propagation from improvements
+- Adaptive AI prompt structure with cost gating
+- Self-commissioned new strategies via Phase 7 generator
+- Auto capital allocation (opt-in, per-Alpaca-account constrained)
+- Cost guard wrapping every spend-affecting action
+- Six anti-regression guardrails:
+  1. `test_no_recommendation_only` — every Recommendation: string
+     must be on a written-rationale allowlist
+  2. `test_no_snake_case_in_optimizer_strings` — optimizer return
+     strings can't embed raw column names
+  3. `test_self_tune_task_no_change_path` — the no-change branch
+     can't NameError
+  4. `test_signal_weights_lifecycle` — weight ladder + tuner +
+     prompt builder
+  5. `test_regime_overrides` / `test_tod_overrides` /
+     `test_symbol_overrides` — chain precedence
+  6. `test_every_lever_is_tuned` — every schema column is
+     autonomous or explicitly manual
+
+---
+
 ## 2026-04-25 — Autonomous tuning Wave 12: Layer 9 Auto Capital Allocation — opt-in (Severity: medium, behavior)
 
 The final functional layer. When the user flips

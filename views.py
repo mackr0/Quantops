@@ -502,6 +502,11 @@ def settings():
         except Exception:
             acct["_key_masked"] = "****"
 
+    # Layer 9 — auto capital allocation user opt-in
+    autonomy = {
+        "auto_capital_allocation": bool(user.get("auto_capital_allocation", 0)),
+    }
+
     return render_template("settings.html",
                            keys=keys,
                            profiles=profiles,
@@ -510,7 +515,29 @@ def settings():
                            excluded_symbols=excluded_str,
                            ai_providers=ai_providers,
                            ai_providers_json=json.dumps(ai_providers),
-                           alpaca_accounts=alpaca_accounts)
+                           alpaca_accounts=alpaca_accounts,
+                           autonomy=autonomy)
+
+
+@views_bp.route("/settings/autonomy", methods=["POST"])
+@login_required
+def update_autonomy():
+    """Toggle the per-user opt-in autonomy flags (Layer 9 capital
+    allocation, future ai_model_auto_tune)."""
+    from models import _get_conn
+    enabled = 1 if request.form.get("auto_capital_allocation") else 0
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE users SET auto_capital_allocation = ? WHERE id = ?",
+        (enabled, current_user.effective_user_id),
+    )
+    conn.commit()
+    conn.close()
+    flash(
+        "Auto capital allocation " + ("enabled" if enabled else "disabled") + ".",
+        "success",
+    )
+    return redirect(url_for("views.settings") + "#autonomy")
 
 
 @views_bp.route("/settings/exclusions", methods=["POST"])
