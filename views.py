@@ -3487,16 +3487,20 @@ def api_resolve_param():
     # parameters at execution time. Show it as a separate annotation.
     cap_scale = float(profile.get("capital_scale") or 1.0)
 
+    from display_names import display_name as _dn
     return jsonify({
         "profile_name": profile.get("name"),
         "param_name": param_name,
-        "param_label": profile.get("name"),
+        "param_label": _dn(param_name),
         "symbol": symbol,
         "current_regime": cur_regime,
+        "current_regime_label": _dn(cur_regime) if cur_regime else None,
         "current_tod": cur_tod,
+        "current_tod_label": _dn(cur_tod) if cur_tod else None,
         "chain": chain,
         "final_value": final_value,
         "final_source": final_source,
+        "final_source_label": _dn(final_source) if final_source not in (None, "global") else "Profile global",
         "capital_scale": cap_scale,
     })
 
@@ -3581,15 +3585,51 @@ def api_autonomy_status():
             layout = {k: v for k, v in layout_full.items() if v != "normal"}
         except Exception:
             layout = {}
+        # Pre-resolve display names server-side so the UI never sees a
+        # raw snake_case key. The signal_weights helper has a richer
+        # display_label; everything else flows through display_name.
+        from display_names import display_name as _dn
+        try:
+            from signal_weights import display_label as _sig_label
+        except Exception:
+            _sig_label = _dn
+
+        signal_weights_labeled = [
+            {"key": k, "label": _sig_label(k), "weight": v}
+            for k, v in weights.items()
+        ]
+        regime_overrides_labeled = [
+            {"key": pname, "label": _dn(pname), "regime": r,
+             "regime_label": _dn(r), "value": v}
+            for pname, rmap in regime.items()
+            for r, v in rmap.items()
+        ]
+        tod_overrides_labeled = [
+            {"key": pname, "label": _dn(pname), "tod": t,
+             "tod_label": _dn(t), "value": v}
+            for pname, tmap in tod.items()
+            for t, v in tmap.items()
+        ]
+        symbol_overrides_labeled = [
+            {"key": pname, "label": _dn(pname), "symbol": s,
+             "value": v}
+            for pname, smap in symbols.items()
+            for s, v in smap.items()
+        ]
+        prompt_layout_labeled = [
+            {"key": k, "label": _dn(k), "verbosity": v}
+            for k, v in layout.items()
+        ]
+
         items.append({
             "profile_id": p["id"],
             "profile_name": p["name"],
             "capital_scale": float(p.get("capital_scale") or 1.0),
-            "signal_weights": weights,
-            "regime_overrides": regime,
-            "tod_overrides": tod,
-            "symbol_overrides": symbols,
-            "prompt_layout": layout,
+            "signal_weights": signal_weights_labeled,
+            "regime_overrides": regime_overrides_labeled,
+            "tod_overrides": tod_overrides_labeled,
+            "symbol_overrides": symbol_overrides_labeled,
+            "prompt_layout": prompt_layout_labeled,
         })
     return jsonify({"items": items})
 

@@ -17,6 +17,73 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — URGENT: comprehensive snake_case guardrail + autonomy summary in weekly digest (Severity: high, regression + feature)
+
+**The snake_case leak that wasn't supposed to be possible.** User
+opened the AI Operations tab and saw raw `options_signal weight 0.7`,
+`vwap_position weight 0.7`, `ai_confidence_threshold (bull): 30` in
+the new "Active Autonomy State" card. Despite my repeated promises
+that the existing `test_no_snake_case_in_optimizer_strings` would
+catch this everywhere, **it didn't — because that test only covered
+`_optimize_*` function returns inside `self_tuning.py`**. Every new
+API endpoint and JS render path I built outside that file was
+uncovered.
+
+**Root cause:** the new `/api/autonomy-status` endpoint returned
+`signal_weights` / `regime_overrides` / `tod_overrides` /
+`symbol_overrides` / `prompt_layout` as dicts-of-dicts whose KEYS
+were raw PARAM_BOUNDS column names. The JS rendered them with
+`Object.entries(...).forEach(e => render(e[0]))` — leak.
+
+**Fix:**
+1. `/api/autonomy-status` now returns labeled-list shapes:
+   `[{"key": "options_signal", "label": "Options Flow Signal",
+   "weight": 0.7}, ...]`. Server-side `display_name(...)` resolves
+   every parameter name + regime/tod label.
+2. `/api/resolve-param` now includes `param_label`,
+   `current_regime_label`, `current_tod_label`, `final_source_label`
+   alongside their raw counterparts.
+3. AI Operations tab JS rewritten to consume the labeled fields
+   instead of raw keys.
+
+**The real fix — `test_no_snake_case_in_api_responses.py`.** A new
+end-to-end guardrail that:
+- Discovers every GET `/api/*` endpoint via `app.url_map`
+- Hits each one with a mocked logged-in user + profile data seeded
+  with overrides on every PARAM_BOUNDS key
+- Walks the JSON response recursively
+- Fails if any PARAM_BOUNDS key appears as either:
+  (a) a dict KEY anywhere in nested structures (the
+      Object.entries-render leak pattern), OR
+  (b) a string VALUE in a field whose name isn't on the
+      `ALLOWED_RAW_KEY_FIELDS` allowlist (param_name,
+      parameter_name, change_type, key, field, strategy_type —
+      all paired with explicit `*_label` siblings).
+
+Verified the test catches the exact regression by reverting the
+fix and re-running — it failed cleanly with all three leak paths
+(`regime_overrides`, `symbol_overrides`, `tod_overrides`).
+
+This guardrail is dynamic — every new API endpoint added going
+forward is automatically covered. No new endpoint can ship a
+PARAM_BOUNDS key as a dict KEY without explicitly bypassing the
+test.
+
+**Also: weekly digest gains an Autonomy Activity section.** Renders
+right after "This Week at a Glance" and includes:
+- counts of parameter tunings, strategy deprecations/restorations,
+  auto-strategy lifecycle and crisis transitions (this week)
+- snapshot of active overrides across all profiles (signal weights,
+  regime/TOD/symbol overrides, profiles with non-default capital
+  scale)
+- cost-guard status (today's spend, daily ceiling with source label,
+  7-day average)
+- post-mortem patterns extracted this week with examples
+
+Full suite: 913 passed (912 + 1 new comprehensive guardrail).
+
+---
+
 ## 2026-04-25 — User-controllable cost ceiling + Parameter Resolver + Autonomy Timeline (Severity: medium, feature)
 
 Three additions that put the user in control of the autonomy and

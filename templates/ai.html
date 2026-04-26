@@ -1289,11 +1289,11 @@
                 var h = '';
                 d.items.forEach(function(p) {
                     var hasAny = p.capital_scale !== 1.0
-                        || Object.keys(p.signal_weights).length > 0
-                        || Object.keys(p.regime_overrides).length > 0
-                        || Object.keys(p.tod_overrides).length > 0
-                        || Object.keys(p.symbol_overrides).length > 0
-                        || Object.keys(p.prompt_layout).length > 0;
+                        || (p.signal_weights || []).length > 0
+                        || (p.regime_overrides || []).length > 0
+                        || (p.tod_overrides || []).length > 0
+                        || (p.symbol_overrides || []).length > 0
+                        || (p.prompt_layout || []).length > 0;
                     h += '<article style="margin:0.5rem 0;padding:0.5rem 0.75rem;">';
                     h += '<header style="padding:0;margin-bottom:0.4rem;"><strong>' + esc(p.profile_name) + '</strong>';
                     if (!hasAny) {
@@ -1306,26 +1306,20 @@
                             var color = p.capital_scale > 1.0 ? '#00c853' : '#f57c00';
                             h += '<span style="padding:0.15rem 0.5rem;border-radius:4px;border:1px solid ' + color + ';color:' + color + ';">Capital scale: ' + p.capital_scale.toFixed(2) + '×</span>';
                         }
-                        Object.entries(p.signal_weights).forEach(function(e) {
-                            h += '<span style="padding:0.15rem 0.5rem;border-radius:4px;border:1px solid #888;color:#555;">' + esc(e[0]) + ' weight ' + e[1].toFixed(1) + '</span>';
+                        (p.signal_weights || []).forEach(function(s) {
+                            h += '<span style="padding:0.15rem 0.5rem;border-radius:4px;border:1px solid #888;color:#555;">' + esc(s.label) + ' (intensity ' + s.weight.toFixed(1) + ')</span>';
                         });
-                        Object.entries(p.regime_overrides).forEach(function(e) {
-                            Object.entries(e[1]).forEach(function(rv) {
-                                h += '<span style="padding:0.15rem 0.5rem;border-radius:4px;border:1px solid #2196f3;color:#1976d2;">' + esc(e[0]) + ' (' + esc(rv[0]) + '): ' + rv[1] + '</span>';
-                            });
+                        (p.regime_overrides || []).forEach(function(o) {
+                            h += '<span style="padding:0.15rem 0.5rem;border-radius:4px;border:1px solid #2196f3;color:#1976d2;">' + esc(o.label) + ' in ' + esc(o.regime_label) + ': ' + o.value + '</span>';
                         });
-                        Object.entries(p.tod_overrides).forEach(function(e) {
-                            Object.entries(e[1]).forEach(function(tv) {
-                                h += '<span style="padding:0.15rem 0.5rem;border-radius:4px;border:1px solid #9c27b0;color:#7b1fa2;">' + esc(e[0]) + ' (' + esc(tv[0]) + '): ' + tv[1] + '</span>';
-                            });
+                        (p.tod_overrides || []).forEach(function(o) {
+                            h += '<span style="padding:0.15rem 0.5rem;border-radius:4px;border:1px solid #9c27b0;color:#7b1fa2;">' + esc(o.label) + ' at ' + esc(o.tod_label) + ': ' + o.value + '</span>';
                         });
-                        Object.entries(p.symbol_overrides).forEach(function(e) {
-                            Object.entries(e[1]).forEach(function(sv) {
-                                h += '<span style="padding:0.15rem 0.5rem;border-radius:4px;border:1px solid #ff5722;color:#e64a19;">' + esc(e[0]) + ' (' + esc(sv[0]) + '): ' + sv[1] + '</span>';
-                            });
+                        (p.symbol_overrides || []).forEach(function(o) {
+                            h += '<span style="padding:0.15rem 0.5rem;border-radius:4px;border:1px solid #ff5722;color:#e64a19;">' + esc(o.label) + ' for ' + esc(o.symbol) + ': ' + o.value + '</span>';
                         });
-                        Object.entries(p.prompt_layout).forEach(function(e) {
-                            h += '<span style="padding:0.15rem 0.5rem;border-radius:4px;border:1px solid #795548;color:#5d4037;">' + esc(e[0]) + ' verbosity: ' + esc(e[1]) + '</span>';
+                        (p.prompt_layout || []).forEach(function(o) {
+                            h += '<span style="padding:0.15rem 0.5rem;border-radius:4px;border:1px solid #795548;color:#5d4037;">' + esc(o.label) + ' verbosity: ' + esc(o.verbosity) + '</span>';
                         });
                         h += '</div>';
                     }

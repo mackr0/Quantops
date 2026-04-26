@@ -412,8 +412,11 @@ def render_html(summary: Dict[str, Any]) -> tuple:
     # --- Top/bottom trades with AI reasoning ---
     trades_html = _render_top_bottom_trades(profiles)
 
+    autonomy_html = _render_autonomy_summary(summary)
+
     body = (
         _section("This Week at a Glance", headline)
+        + _section("Autonomy Activity This Week", autonomy_html)
         + _section("Per-Profile Summary", profile_table)
         + _section("Self-Tuning Changes", tuning_html)
         + _section("Strategy Deprecations & Restorations", decay_html)
@@ -555,6 +558,182 @@ def _render_crisis(profiles: List[Dict[str, Any]]) -> str:
         ["Profile", "When", "Transition", "Size multiplier"],
         rows,
     )
+
+
+def _render_autonomy_summary(summary: Dict[str, Any]) -> str:
+    """High-level summary of the week's autonomous activity:
+      - count of changes by category
+      - currently-active overrides across all profiles
+      - cost guard status (today's spend / ceiling, ceiling source)
+      - post-mortem patterns extracted this week
+    """
+    from notifications import _table
+
+    profiles = summary.get("profiles", [])
+    user_id = None
+    for p in profiles:
+        if "user_id" in p and p["user_id"]:
+            user_id = p["user_id"]
+            break
+    # Profile dicts in summary are stats — fall back to looking up
+    # user_id from master DB on the first profile.
+    if user_id is None:
+        try:
+            conn = sqlite3.connect("quantopsai.db")
+            row = conn.execute(
+                "SELECT user_id FROM trading_profiles WHERE enabled=1 LIMIT 1"
+            ).fetchone()
+            conn.close()
+            if row:
+                user_id = row[0]
+        except Exception:
+            pass
+
+    # ─── Counts of autonomous changes this week ───
+    totals = summary.get("totals", {})
+    rows_kv = []
+    rows_kv.append(["Parameter tunings applied",
+                     str(totals.get("tuning_changes", 0))])
+    rows_kv.append(["Strategies deprecated",
+                     str(totals.get("deprecated_strategies", 0))])
+    rows_kv.append(["Strategies restored",
+                     str(totals.get("restored_strategies", 0))])
+    rows_kv.append(["Auto-strategy lifecycle transitions",
+                     str(totals.get("auto_strategy_transitions", 0))])
+    rows_kv.append(["Crisis-state transitions",
+                     str(totals.get("crisis_transitions", 0))])
+
+    # ─── Currently-active overrides (snapshot, not historical) ───
+    active_signal_weights = 0
+    active_regime_overrides = 0
+    active_tod_overrides = 0
+    active_symbol_overrides = 0
+    profiles_with_capital_scale = 0
+    try:
+        conn = sqlite3.connect("quantopsai.db")
+        prof_rows = conn.execute(
+            "SELECT id, signal_weights, regime_overrides, tod_overrides, "
+            " symbol_overrides, capital_scale "
+            "FROM trading_profiles WHERE enabled=1"
+        ).fetchall()
+        conn.close()
+        from signal_weights import get_all_weights
+        from regime_overrides import get_all_overrides as get_regime
+        from tod_overrides import get_all_overrides as get_tod
+        from symbol_overrides import get_all_overrides as get_sym
+        for r in prof_rows:
+            pdict = {
+                "signal_weights": r[1],
+                "regime_overrides": r[2],
+                "tod_overrides": r[3],
+                "symbol_overrides": r[4],
+                "capital_scale": r[5],
+            }
+            active_signal_weights += len(get_all_weights(pdict))
+            active_regime_overrides += sum(
+                len(v) for v in get_regime(pdict).values())
+            active_tod_overrides += sum(
+                len(v) for v in get_tod(pdict).values())
+            active_symbol_overrides += sum(
+                len(v) for v in get_sym(pdict).values())
+            if float(r[5] or 1.0) != 1.0:
+                profiles_with_capital_scale += 1
+    except Exception as exc:
+        logger.debug("autonomy summary overrides snapshot failed: %s", exc)
+
+    rows_kv.append(["—", "—"])  # separator-ish
+    rows_kv.append(["Active signal weights (across profiles)",
+                     str(active_signal_weights)])
+    rows_kv.append(["Active per-regime overrides",
+                     str(active_regime_overrides)])
+    rows_kv.append(["Active per-time-of-day overrides",
+                     str(active_tod_overrides)])
+    rows_kv.append(["Active per-symbol overrides",
+                     str(active_symbol_overrides)])
+    rows_kv.append(["Profiles with non-default capital scale",
+                     str(profiles_with_capital_scale)])
+
+    # ─── Post-mortem patterns extracted this week ───
+    pm_extracted = 0
+    pm_pattern_examples = []
+    try:
+        import os
+        for p in profiles:
+            pid = p.get("profile_id") or p.get("id")
+            if not pid:
+                continue
+            db_path = f"quantopsai_profile_{pid}.db"
+            if not os.path.exists(db_path):
+                continue
+            conn = sqlite3.connect(db_path)
+            tbl = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='learned_patterns'"
+            ).fetchone()
+            if not tbl:
+                conn.close()
+                continue
+            rows = conn.execute(
+                "SELECT pattern_text FROM learned_patterns "
+                "WHERE datetime(created_at) >= datetime('now', '-7 days') "
+                "ORDER BY created_at DESC LIMIT 3"
+            ).fetchall()
+            conn.close()
+            pm_extracted += len(rows)
+            for r in rows[:1]:  # one example per profile, max
+                pm_pattern_examples.append(
+                    (p.get("name", f"Profile {pid}"), r[0]))
+    except Exception as exc:
+        logger.debug("autonomy summary post-mortem fetch failed: %s", exc)
+
+    rows_kv.append(["—", "—"])
+    rows_kv.append(["Losing-week post-mortems extracted",
+                     str(pm_extracted)])
+
+    # ─── Cost guard status ───
+    cost_status = None
+    if user_id:
+        try:
+            from cost_guard import status as _cost_status
+            cost_status = _cost_status(user_id)
+        except Exception as exc:
+            logger.debug("autonomy summary cost-guard fetch failed: %s", exc)
+
+    if cost_status:
+        rows_kv.append(["—", "—"])
+        rows_kv.append([
+            "Today's API spend",
+            f"${cost_status['today_usd']:.2f}",
+        ])
+        rows_kv.append([
+            f"Daily ceiling ({cost_status.get('ceiling_source', 'auto')}-set)",
+            f"${cost_status['ceiling_usd']:.2f}",
+        ])
+        rows_kv.append([
+            "7-day average",
+            f"${cost_status['trailing_7d_avg_usd']:.2f}/day",
+        ])
+
+    main = _table(["Metric", "Value"], rows_kv)
+
+    # Pattern examples in their own block below the kv table
+    extras = ""
+    if pm_pattern_examples:
+        extras += (
+            '<div style="margin-top:0.75rem;padding:0.5rem 0.75rem;'
+            'background:#f3e5f5;border-left:3px solid #9c27b0;'
+            'border-radius:0 4px 4px 0;font-size:0.85rem;">'
+            '<strong>This week\'s post-mortem learnings '
+            '(now in the AI prompt):</strong><ul style="margin:0.25rem 0 0 1.25rem;padding:0;">'
+        )
+        for prof_name, pattern in pm_pattern_examples:
+            extras += (
+                f'<li><strong>{_escape(prof_name)}:</strong> '
+                f'{_escape(pattern)}</li>'
+            )
+        extras += '</ul></div>'
+
+    return main + extras
 
 
 def _render_top_bottom_trades(profiles: List[Dict[str, Any]]) -> str:
