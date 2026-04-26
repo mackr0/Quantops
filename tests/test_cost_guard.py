@@ -92,17 +92,99 @@ class TestStatus:
         with patch("cost_guard.today_spend", return_value=4.0):
             with patch("cost_guard.daily_ceiling_usd", return_value=10.0):
                 with patch("cost_guard.trailing_avg_daily_spend", return_value=6.0):
-                    s = status(1)
-                    assert s["today_usd"] == 4.0
-                    assert s["ceiling_usd"] == 10.0
-                    assert s["headroom_usd"] == 6.0
-                    assert s["trailing_7d_avg_usd"] == 6.0
+                    with patch("cost_guard.ceiling_source", return_value="auto"):
+                        s = status(1)
+                        assert s["today_usd"] == 4.0
+                        assert s["ceiling_usd"] == 10.0
+                        assert s["headroom_usd"] == 6.0
+                        assert s["trailing_7d_avg_usd"] == 6.0
+                        assert s["ceiling_source"] == "auto"
 
     def test_headroom_floors_at_zero(self):
         from cost_guard import status
-        # Already over the ceiling
         with patch("cost_guard.today_spend", return_value=12.0):
             with patch("cost_guard.daily_ceiling_usd", return_value=10.0):
                 with patch("cost_guard.trailing_avg_daily_spend", return_value=6.0):
-                    s = status(1)
-                    assert s["headroom_usd"] == 0.0
+                    with patch("cost_guard.ceiling_source", return_value="auto"):
+                        s = status(1)
+                        assert s["headroom_usd"] == 0.0
+
+
+class TestUserCeilingOverride:
+    def test_user_set_ceiling_wins_over_auto_compute(self, tmp_path):
+        """When daily_cost_ceiling_usd is set on the user record, it
+        overrides the auto-computed default."""
+        from cost_guard import daily_ceiling_usd
+
+        # Mock the DB lookup to return a user-set ceiling
+        class _MockConn:
+            def execute(self, *args, **kwargs):
+                class _R:
+                    def fetchone(self):
+                        return (25.0,)  # user-set $25/day
+                return _R()
+            def close(self): pass
+
+        with patch("models._get_conn", return_value=_MockConn()):
+            with patch("cost_guard.trailing_avg_daily_spend", return_value=2.0):
+                # Auto would be max(5, 2*1.5)=5; user-set 25 wins
+                assert daily_ceiling_usd(1) == 25.0
+
+    def test_no_user_ceiling_falls_back_to_auto(self, tmp_path):
+        from cost_guard import daily_ceiling_usd
+
+        class _MockConn:
+            def execute(self, *args, **kwargs):
+                class _R:
+                    def fetchone(self):
+                        return (None,)
+                return _R()
+            def close(self): pass
+
+        with patch("models._get_conn", return_value=_MockConn()):
+            with patch("cost_guard.trailing_avg_daily_spend", return_value=10.0):
+                # Auto: 10 * 1.5 = 15
+                assert daily_ceiling_usd(1) == 15.0
+
+    def test_zero_or_negative_user_ceiling_falls_back(self, tmp_path):
+        from cost_guard import daily_ceiling_usd
+
+        class _MockConn:
+            def execute(self, *args, **kwargs):
+                class _R:
+                    def fetchone(self):
+                        return (0.0,)
+                return _R()
+            def close(self): pass
+
+        with patch("models._get_conn", return_value=_MockConn()):
+            with patch("cost_guard.trailing_avg_daily_spend", return_value=10.0):
+                assert daily_ceiling_usd(1) == 15.0  # falls through to auto
+
+    def test_ceiling_source_returns_user_when_set(self, tmp_path):
+        from cost_guard import ceiling_source
+
+        class _MockConn:
+            def execute(self, *args, **kwargs):
+                class _R:
+                    def fetchone(self):
+                        return (10.0,)
+                return _R()
+            def close(self): pass
+
+        with patch("models._get_conn", return_value=_MockConn()):
+            assert ceiling_source(1) == "user"
+
+    def test_ceiling_source_returns_auto_when_unset(self, tmp_path):
+        from cost_guard import ceiling_source
+
+        class _MockConn:
+            def execute(self, *args, **kwargs):
+                class _R:
+                    def fetchone(self):
+                        return (None,)
+                return _R()
+            def close(self): pass
+
+        with patch("models._get_conn", return_value=_MockConn()):
+            assert ceiling_source(1) == "auto"

@@ -17,6 +17,52 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — User-controllable cost ceiling + Parameter Resolver + Autonomy Timeline (Severity: medium, feature)
+
+Three additions that put the user in control of the autonomy and
+make it inspectable.
+
+**1. User-configurable daily cost ceiling.** New
+`users.daily_cost_ceiling_usd` column (NULL = auto-compute). When
+set, overrides the auto-computed `trailing-7-day-avg × 1.5`. Settings
+> Autonomy gains an input field; current ceiling shows up with its
+source ("user-set" or "auto") so you always know whether your cap is
+authoritative. `cost_guard.daily_ceiling_usd()` honors the user
+value when present and falls back to auto-compute otherwise. New
+`cost_guard.ceiling_source()` helper exposes the provenance.
+
+**2. Parameter Resolver tool** (AI Operations tab). Pick a profile +
+parameter (+ optional symbol) → see exactly how the value resolves
+through the override chain *right now*. Shows global default +
+each layer that has an override + which one wins, with the final
+value highlighted. Also annotates position-size parameters with the
+current `capital_scale` multiplier (Layer 9). Backed by new
+`/api/resolve-param` endpoint.
+
+This is the "why is the AI behaving this way" debugging tool. When
+the system has 4 dimensions of overrides stacked, knowing which one
+is winning for a specific (param, regime, TOD, symbol) tuple is
+otherwise non-trivial to figure out.
+
+**3. Autonomy Timeline** (AI Operations tab). Per-profile
+chronological feed of every autonomous change in the last 30 days:
+parameter tunings (with from/to + reason + outcome), strategy
+deprecations / restorations, post-mortem patterns extracted. Color-
+coded by event type with vertical-rail timeline styling. Backed by
+new `/api/autonomy-timeline` endpoint that merges `tuning_history`
+(master DB) + `deprecated_strategies` + `learned_patterns`
+(per-profile DBs) into a single sorted feed.
+
+This is the "what has the system done autonomously" history view.
+The Self-Tuning History table covers parameter tunings; the
+timeline includes all event types in one place.
+
+**Tests:** 5 new in `test_cost_guard.py` covering user-set vs
+auto-computed ceiling precedence, zero/negative override fallback,
+and `ceiling_source` provenance. Full suite: 912 passed.
+
+---
+
 ## 2026-04-25 — UI surfaces: cost guard status + active lessons cards (Severity: low, UX)
 
 Two read-only widgets on the AI Operations tab so the new

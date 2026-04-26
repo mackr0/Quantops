@@ -81,10 +81,41 @@ def trailing_avg_daily_spend(user_id: int, days: int = 7) -> float:
 
 
 def daily_ceiling_usd(user_id: int) -> float:
-    """Compute today's ceiling. Trailing-7-day-avg × 1.5, floored at
-    $5. A user-configurable override would go here in the future."""
+    """Compute today's ceiling. User-configured override wins if set;
+    else auto-compute as trailing-7-day-avg × 1.5, floored at $5."""
+    # User override takes precedence — they've explicitly chosen a cap.
+    try:
+        from models import _get_conn
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT daily_cost_ceiling_usd FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        conn.close()
+        if row and row[0] is not None and float(row[0]) > 0:
+            return float(row[0])
+    except Exception:
+        pass
     avg = trailing_avg_daily_spend(user_id, days=7)
     return max(_FLOOR_DAILY_USD, avg * _DEFAULT_CEILING_MULTIPLIER)
+
+
+def ceiling_source(user_id: int) -> str:
+    """Returns 'user' if the ceiling is user-set, else 'auto' for the
+    auto-computed default. Useful for the UI to show provenance."""
+    try:
+        from models import _get_conn
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT daily_cost_ceiling_usd FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        conn.close()
+        if row and row[0] is not None and float(row[0]) > 0:
+            return "user"
+    except Exception:
+        pass
+    return "auto"
 
 
 def today_spend(user_id: int) -> float:
@@ -140,7 +171,7 @@ def format_cost_recommendation(action_summary: str, user_id: int,
     )
 
 
-def status(user_id: int) -> Dict[str, float]:
+def status(user_id: int) -> Dict[str, Any]:
     """A quick snapshot for the UI / activity feed."""
     today = today_spend(user_id)
     ceiling = daily_ceiling_usd(user_id)
@@ -150,4 +181,5 @@ def status(user_id: int) -> Dict[str, float]:
         "ceiling_usd": round(ceiling, 4),
         "headroom_usd": round(max(0.0, ceiling - today), 4),
         "trailing_7d_avg_usd": round(avg, 4),
+        "ceiling_source": ceiling_source(user_id),
     }

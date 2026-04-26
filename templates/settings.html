@@ -98,6 +98,28 @@
                 </small>
             </span>
         </label>
+
+        <hr style="margin:1rem 0;border:none;border-top:1px solid #ddd;">
+
+        <label style="display:block;padding:0.5rem 0;">
+            <strong>Daily cost ceiling (USD)</strong>
+            <small class="muted" style="display:block;margin-top:0.25rem;">
+                The cost guard blocks any autonomous action that would push today's API spend past this number — over-budget changes surface as cost-gated recommendations instead of auto-applying.
+                Leave blank to auto-compute as <em>trailing-7-day-average × 1.5</em> (floor $5/day).
+                {% if autonomy.cost_status %}
+                <br>Current ceiling:
+                <strong>${{ "%.2f"|format(autonomy.cost_status.ceiling_usd) }}/day</strong>
+                ({{ autonomy.cost_status.ceiling_source }}-set);
+                today's spend so far: ${{ "%.2f"|format(autonomy.cost_status.today_usd) }};
+                7-day avg: ${{ "%.2f"|format(autonomy.cost_status.trailing_7d_avg_usd) }}/day.
+                {% endif %}
+            </small>
+            <input type="number" name="daily_cost_ceiling_usd" step="0.50" min="0"
+                   value="{{ autonomy.daily_cost_ceiling_usd if autonomy.daily_cost_ceiling_usd is not none else '' }}"
+                   placeholder="(blank = auto-compute)"
+                   style="margin-top:0.4rem;max-width:14rem;">
+        </label>
+
         <button type="submit" style="margin-top:0.75rem;">Save</button>
     </form>
 </article>

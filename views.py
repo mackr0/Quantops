@@ -502,10 +502,16 @@ def settings():
         except Exception:
             acct["_key_masked"] = "****"
 
-    # Layer 9 — auto capital allocation user opt-in
+    # Layer 9 — auto capital allocation user opt-in + cost ceiling
     autonomy = {
         "auto_capital_allocation": bool(user.get("auto_capital_allocation", 0)),
+        "daily_cost_ceiling_usd": user.get("daily_cost_ceiling_usd"),
     }
+    try:
+        from cost_guard import status as _cost_status
+        autonomy["cost_status"] = _cost_status(current_user.effective_user_id)
+    except Exception:
+        autonomy["cost_status"] = None
 
     return render_template("settings.html",
                            keys=keys,
@@ -522,21 +528,38 @@ def settings():
 @views_bp.route("/settings/autonomy", methods=["POST"])
 @login_required
 def update_autonomy():
-    """Toggle the per-user opt-in autonomy flags (Layer 9 capital
-    allocation, future ai_model_auto_tune)."""
+    """Toggle the per-user opt-in autonomy flags + cost ceiling
+    override."""
     from models import _get_conn
     enabled = 1 if request.form.get("auto_capital_allocation") else 0
+
+    # Cost ceiling: empty string clears the override (back to auto-compute)
+    raw_ceiling = (request.form.get("daily_cost_ceiling_usd") or "").strip()
+    if raw_ceiling == "":
+        ceiling_value = None
+    else:
+        try:
+            ceiling_value = float(raw_ceiling)
+            if ceiling_value <= 0:
+                ceiling_value = None  # zero or negative = clear
+        except ValueError:
+            flash(f"Invalid cost ceiling value: {raw_ceiling!r}", "error")
+            return redirect(url_for("views.settings") + "#autonomy")
+
     conn = _get_conn()
     conn.execute(
-        "UPDATE users SET auto_capital_allocation = ? WHERE id = ?",
-        (enabled, current_user.effective_user_id),
+        "UPDATE users SET auto_capital_allocation = ?, "
+        " daily_cost_ceiling_usd = ? WHERE id = ?",
+        (enabled, ceiling_value, current_user.effective_user_id),
     )
     conn.commit()
     conn.close()
-    flash(
-        "Auto capital allocation " + ("enabled" if enabled else "disabled") + ".",
-        "success",
-    )
+    msgs = ["Auto capital allocation " + ("enabled" if enabled else "disabled") + "."]
+    if ceiling_value is None:
+        msgs.append("Cost ceiling: auto-computed (trailing-7d-avg × 1.5).")
+    else:
+        msgs.append(f"Cost ceiling locked to ${ceiling_value:.2f}/day.")
+    flash(" ".join(msgs), "success")
     return redirect(url_for("views.settings") + "#autonomy")
 
 
@@ -3264,6 +3287,218 @@ def api_cost_guard_status():
         return jsonify(status(current_user.effective_user_id))
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+
+
+@views_bp.route("/api/autonomy-timeline")
+@login_required
+def api_autonomy_timeline():
+    """Chronological merged timeline of every autonomous change for a
+    profile: tuning adjustments, strategy deprecations/restorations,
+    post-mortem patterns extracted, signal weight nudges, capital
+    rebalances. From tuning_history + deprecated_strategies +
+    learned_patterns tables."""
+    import os
+    profile_id = request.args.get("profile_id", type=int)
+    days = request.args.get("days", 30, type=int)
+    if not profile_id:
+        return jsonify({"error": "profile_id required"}), 400
+
+    profile = get_trading_profile(profile_id)
+    if not profile or profile.get("user_id") != current_user.effective_user_id:
+        return jsonify({"error": "profile not found"}), 404
+
+    events = []
+
+    # Tuning history (master DB)
+    try:
+        from models import _get_conn
+        from display_names import display_name
+        conn = _get_conn()
+        rows = conn.execute(
+            "SELECT timestamp, change_type, parameter_name, old_value, "
+            " new_value, reason, win_rate_at_change, outcome_after "
+            "FROM tuning_history "
+            "WHERE profile_id = ? "
+            "  AND datetime(timestamp) >= datetime('now', '-' || ? || ' days') "
+            "ORDER BY timestamp DESC",
+            (profile_id, days),
+        ).fetchall()
+        conn.close()
+        for r in rows:
+            events.append({
+                "timestamp": r["timestamp"],
+                "kind": "tuning",
+                "label": display_name(r["parameter_name"] or r["change_type"]),
+                "from": r["old_value"], "to": r["new_value"],
+                "reason": r["reason"],
+                "outcome": r["outcome_after"],
+                "win_rate_at": r["win_rate_at_change"],
+            })
+    except Exception as exc:
+        logger.debug("tuning_history fetch failed: %s", exc)
+
+    # Per-profile DB events
+    db_path = f"quantopsai_profile_{profile_id}.db"
+    if os.path.exists(db_path):
+        # Strategy deprecations
+        try:
+            import sqlite3
+            from display_names import display_name
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT strategy_type, deprecated_at, restored_at, reason "
+                "FROM deprecated_strategies "
+                "WHERE datetime(deprecated_at) >= datetime('now', '-' || ? || ' days') "
+                "ORDER BY deprecated_at DESC",
+                (days,),
+            ).fetchall()
+            conn.close()
+            for r in rows:
+                events.append({
+                    "timestamp": r["deprecated_at"],
+                    "kind": "strategy_deprecate",
+                    "label": display_name(r["strategy_type"]),
+                    "reason": r["reason"],
+                })
+                if r["restored_at"]:
+                    events.append({
+                        "timestamp": r["restored_at"],
+                        "kind": "strategy_restore",
+                        "label": display_name(r["strategy_type"]),
+                        "reason": "Rolling Sharpe recovered",
+                    })
+        except Exception as exc:
+            logger.debug("deprecated_strategies fetch failed: %s", exc)
+
+        # Post-mortem patterns
+        try:
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            # Tolerate missing table (profile may pre-date the post_mortem
+            # feature; analyze_recent_week creates it on first run).
+            tbl = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='learned_patterns'"
+            ).fetchone()
+            if tbl:
+                rows = conn.execute(
+                    "SELECT created_at, pattern_text, period_wr, baseline_wr, "
+                    " losing_trade_count "
+                    "FROM learned_patterns "
+                    "WHERE datetime(created_at) >= datetime('now', '-' || ? || ' days') "
+                    "ORDER BY created_at DESC",
+                    (days,),
+                ).fetchall()
+                for r in rows:
+                    events.append({
+                        "timestamp": r["created_at"],
+                        "kind": "post_mortem",
+                        "label": "Losing-week pattern extracted",
+                        "reason": r["pattern_text"],
+                        "period_wr": r["period_wr"],
+                        "baseline_wr": r["baseline_wr"],
+                        "losing_trade_count": r["losing_trade_count"],
+                    })
+            conn.close()
+        except Exception as exc:
+            logger.debug("learned_patterns fetch failed: %s", exc)
+
+    # Sort all events by timestamp DESC (most recent first)
+    events.sort(key=lambda e: e["timestamp"] or "", reverse=True)
+    return jsonify({
+        "profile_id": profile_id,
+        "profile_name": profile.get("name"),
+        "days": days,
+        "events": events,
+    })
+
+
+@views_bp.route("/api/resolve-param")
+@login_required
+def api_resolve_param():
+    """Show how a parameter resolves through the override chain
+    right now. Args: profile_id, param_name, optional symbol.
+    Returns the value at each layer + which one wins."""
+    profile_id = request.args.get("profile_id", type=int)
+    param_name = request.args.get("param_name", "")
+    symbol = (request.args.get("symbol") or "").strip().upper() or None
+    if not profile_id or not param_name:
+        return jsonify({"error": "profile_id and param_name required"}), 400
+
+    profile = get_trading_profile(profile_id)
+    if not profile or profile.get("user_id") != current_user.effective_user_id:
+        return jsonify({"error": "profile not found"}), 404
+
+    # Walk each layer. Return value at each tier so the UI can show
+    # the chain.
+    chain = []
+    final_value = None
+    final_source = None
+
+    global_value = profile.get(param_name)
+    chain.append({"layer": "global", "value": global_value, "source": "profile"})
+
+    # Layer 4 — TOD
+    try:
+        from tod_overrides import resolve_param as _tod_resolve, _current_tod
+        cur_tod = _current_tod()
+        if cur_tod:
+            tod_val = _tod_resolve(profile, param_name, cur_tod, default=None)
+            if tod_val is not None and tod_val != global_value:
+                chain.append({"layer": "tod", "tod": cur_tod,
+                                "value": tod_val, "source": "tod_overrides"})
+                final_value, final_source = tod_val, f"tod:{cur_tod}"
+    except Exception:
+        cur_tod = None
+
+    # Layer 3 — regime
+    try:
+        from regime_overrides import resolve_param as _regime_resolve, _current_regime
+        cur_regime = _current_regime()
+        if cur_regime:
+            reg_val = _regime_resolve(profile, param_name, cur_regime, default=None)
+            if reg_val is not None and reg_val != global_value:
+                chain.append({"layer": "regime", "regime": cur_regime,
+                                "value": reg_val, "source": "regime_overrides"})
+                final_value, final_source = reg_val, f"regime:{cur_regime}"
+    except Exception:
+        cur_regime = None
+
+    # Layer 7 — symbol (most specific; wins if set)
+    if symbol:
+        try:
+            from symbol_overrides import resolve_param as _sym_resolve
+            sym_val = _sym_resolve(profile, param_name, symbol, default=None)
+            if sym_val is not None and sym_val != global_value:
+                chain.append({"layer": "symbol", "symbol": symbol,
+                                "value": sym_val, "source": "symbol_overrides"})
+                final_value, final_source = sym_val, f"symbol:{symbol}"
+        except Exception:
+            pass
+
+    # If no override fired, the global value wins.
+    if final_value is None:
+        final_value = global_value
+        final_source = "global"
+
+    # capital_scale multiplier (Layer 9) applies to position-sizing
+    # parameters at execution time. Show it as a separate annotation.
+    cap_scale = float(profile.get("capital_scale") or 1.0)
+
+    return jsonify({
+        "profile_name": profile.get("name"),
+        "param_name": param_name,
+        "param_label": profile.get("name"),
+        "symbol": symbol,
+        "current_regime": cur_regime,
+        "current_tod": cur_tod,
+        "chain": chain,
+        "final_value": final_value,
+        "final_source": final_source,
+        "capital_scale": cap_scale,
+    })
 
 
 @views_bp.route("/api/active-lessons")

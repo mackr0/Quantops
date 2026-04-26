@@ -1017,6 +1017,63 @@
         <div id="autonomy-status-widget"><p class="muted">Loading...</p></div>
     </article>
 
+    <!-- Autonomy Timeline — chronological view of every autonomous change -->
+    <article>
+        <header><h3>Autonomy Timeline</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Chronological feed of every autonomous change for one profile: parameter tunings, strategy deprecations/restorations, post-mortem patterns extracted, signal-weight nudges, capital rebalances. Last 30 days.</p>
+        <form id="timeline-form" style="display:flex;gap:0.5rem;align-items:end;margin-bottom:0.75rem;">
+            <label style="margin:0;">
+                <small class="muted">Profile</small><br>
+                <select id="timeline-profile" style="margin:0;">
+                    {% for p in profiles %}
+                    <option value="{{ p.id }}">{{ p.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <button type="submit" style="margin:0;">Show timeline</button>
+        </form>
+        <div id="timeline-result"></div>
+    </article>
+
+    <!-- Parameter Resolver — debug tool: see how a parameter resolves through the chain -->
+    <article>
+        <header><h3>Parameter Resolver</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Pick a profile + parameter (+ optional symbol) to see how the value resolves through the override chain right now: per-symbol → per-regime → per-time-of-day → global.</p>
+        <form id="resolver-form" style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:end;margin-bottom:0.75rem;">
+            <label style="margin:0;">
+                <small class="muted">Profile</small><br>
+                <select id="resolver-profile" style="margin:0;">
+                    {% for p in profiles %}
+                    <option value="{{ p.id }}">{{ p.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label style="margin:0;">
+                <small class="muted">Parameter</small><br>
+                <select id="resolver-param" style="margin:0;">
+                    <option value="ai_confidence_threshold">AI Confidence Threshold</option>
+                    <option value="max_position_pct">Max Position Size (%)</option>
+                    <option value="max_total_positions">Max Total Positions</option>
+                    <option value="stop_loss_pct">Stop Loss (%)</option>
+                    <option value="take_profit_pct">Take Profit (%)</option>
+                    <option value="max_correlation">Max Correlation</option>
+                    <option value="max_sector_positions">Max Positions per Sector</option>
+                    <option value="rsi_overbought">RSI Overbought</option>
+                    <option value="rsi_oversold">RSI Oversold</option>
+                    <option value="gap_pct_threshold">Gap Threshold (%)</option>
+                    <option value="min_volume">Min Volume</option>
+                </select>
+            </label>
+            <label style="margin:0;">
+                <small class="muted">Symbol (optional)</small><br>
+                <input id="resolver-symbol" type="text" placeholder="e.g. NVDA"
+                       style="margin:0;text-transform:uppercase;width:8rem;">
+            </label>
+            <button type="submit" style="margin:0;">Resolve</button>
+        </form>
+        <div id="resolver-result"></div>
+    </article>
+
     <!-- AI Cost Tracking -->
     <article>
         <header>
@@ -1362,6 +1419,115 @@
             });
     }
     loadLearnedPatterns();
+
+    // --- Autonomy Timeline ---
+    var timelineForm = document.getElementById('timeline-form');
+    if (timelineForm) {
+        timelineForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            var resultEl = document.getElementById('timeline-result');
+            var pid = document.getElementById('timeline-profile').value;
+            resultEl.innerHTML = '<p class="muted">Loading...</p>';
+            fetch('/api/autonomy-timeline?profile_id=' + encodeURIComponent(pid))
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                    if (d.error) {
+                        resultEl.innerHTML = '<p class="muted">' + esc(d.error) + '</p>';
+                        return;
+                    }
+                    if (!d.events || !d.events.length) {
+                        resultEl.innerHTML = '<p class="muted">No autonomous changes for ' + esc(d.profile_name) + ' in the last ' + d.days + ' days.</p>';
+                        return;
+                    }
+                    var kindStyle = {
+                        "tuning":            { color: "#2196f3", label: "TUNING" },
+                        "strategy_deprecate":{ color: "#f44336", label: "DEPRECATED" },
+                        "strategy_restore":  { color: "#00c853", label: "RESTORED" },
+                        "post_mortem":       { color: "#9c27b0", label: "POST-MORTEM" },
+                    };
+                    var h = '<div style="border-left:2px solid #ccc;padding-left:1rem;">';
+                    d.events.forEach(function(ev) {
+                        var st = kindStyle[ev.kind] || { color: "#888", label: ev.kind.toUpperCase() };
+                        var ts = (ev.timestamp || '').substring(0, 16).replace('T', ' ');
+                        h += '<div style="margin-bottom:0.75rem;position:relative;">';
+                        h += '<div style="position:absolute;left:-1.4rem;top:0.4rem;width:0.7rem;height:0.7rem;background:' + st.color + ';border-radius:50%;"></div>';
+                        h += '<div style="font-size:0.8rem;color:#888;">' + esc(ts) + ' · <span style="color:' + st.color + ';font-weight:600;">' + esc(st.label) + '</span></div>';
+                        h += '<div style="font-size:0.9rem;"><strong>' + esc(ev.label) + '</strong>';
+                        if (ev.from !== undefined && ev.to !== undefined && ev.from !== null && ev.to !== null) {
+                            h += ' · <code>' + esc(String(ev.from)) + '</code> → <code>' + esc(String(ev.to)) + '</code>';
+                        }
+                        if (ev.outcome && ev.outcome !== 'pending' && ev.outcome !== 'n/a') {
+                            var oc = ev.outcome === 'improved' ? 'pnl-pos' : (ev.outcome === 'worsened' ? 'pnl-neg' : 'muted');
+                            h += ' · outcome <span class="' + oc + '">' + esc(ev.outcome) + '</span>';
+                        }
+                        h += '</div>';
+                        if (ev.reason) {
+                            h += '<div style="font-size:0.85rem;color:#555;margin-top:0.15rem;">' + esc(ev.reason) + '</div>';
+                        }
+                        h += '</div>';
+                    });
+                    h += '</div>';
+                    resultEl.innerHTML = h;
+                })
+                .catch(function() {
+                    resultEl.innerHTML = '<p class="muted">Failed to load timeline.</p>';
+                });
+        });
+    }
+
+    // --- Parameter Resolver ---
+    var resolverForm = document.getElementById('resolver-form');
+    if (resolverForm) {
+        resolverForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            var resultEl = document.getElementById('resolver-result');
+            var pid = document.getElementById('resolver-profile').value;
+            var pname = document.getElementById('resolver-param').value;
+            var sym = document.getElementById('resolver-symbol').value.trim();
+            var url = '/api/resolve-param?profile_id=' + encodeURIComponent(pid)
+                + '&param_name=' + encodeURIComponent(pname);
+            if (sym) url += '&symbol=' + encodeURIComponent(sym);
+            resultEl.innerHTML = '<p class="muted">Resolving...</p>';
+            fetch(url)
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                    if (d.error) {
+                        resultEl.innerHTML = '<p class="muted">' + esc(d.error) + '</p>';
+                        return;
+                    }
+                    var h = '<div style="font-size:0.9rem;">';
+                    h += '<div style="margin-bottom:0.5rem;">';
+                    h += '<strong>' + esc(d.profile_name) + '</strong> · ';
+                    h += esc(pname);
+                    if (d.symbol) h += ' · symbol <strong>' + esc(d.symbol) + '</strong>';
+                    h += ' · regime <strong>' + esc(d.current_regime || 'unknown') + '</strong>';
+                    if (d.current_tod) h += ' · TOD <strong>' + esc(d.current_tod) + '</strong>';
+                    h += '</div>';
+                    h += '<div style="margin-bottom:0.5rem;padding:0.5rem 0.75rem;background:#e8f5e9;border-left:3px solid #00c853;border-radius:0 4px 4px 0;">';
+                    h += '<strong>Final value: ' + d.final_value + '</strong>';
+                    h += ' <small class="muted">(from ' + esc(d.final_source) + ')</small>';
+                    if (d.capital_scale !== 1.0) {
+                        h += '<br><small>Position-size parameters then × <strong>' + d.capital_scale.toFixed(2) + '</strong> capital scale at execution.</small>';
+                    }
+                    h += '</div>';
+                    h += '<table class="striped" style="font-size:0.85rem;"><thead><tr><th>Layer</th><th>Context</th><th>Value</th></tr></thead><tbody>';
+                    d.chain.forEach(function(c) {
+                        var ctx = '';
+                        if (c.regime) ctx = c.regime;
+                        else if (c.tod) ctx = c.tod;
+                        else if (c.symbol) ctx = c.symbol;
+                        else ctx = '—';
+                        h += '<tr><td>' + esc(c.layer) + '</td><td>' + esc(ctx) + '</td><td><code>' + (c.value === null ? 'null' : c.value) + '</code></td></tr>';
+                    });
+                    h += '</tbody></table>';
+                    h += '</div>';
+                    resultEl.innerHTML = h;
+                })
+                .catch(function() {
+                    resultEl.innerHTML = '<p class="muted">Failed to resolve parameter.</p>';
+                });
+        });
+    }
 
     // --- Tuning History ---
     function loadTuningHistory(page) {

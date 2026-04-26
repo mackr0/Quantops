@@ -308,6 +308,9 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         ("trading_profiles", "prompt_layout", "TEXT NOT NULL DEFAULT '{}'"),
         # Layer 9 — auto capital allocation (per-user opt-in toggle)
         ("users", "auto_capital_allocation", "INTEGER NOT NULL DEFAULT 0"),
+        # Cost guard — user-configurable daily ceiling (NULL = auto-compute
+        # via trailing-7-day-avg × 1.5, floored at $5/day).
+        ("users", "daily_cost_ceiling_usd", "REAL"),
         # Per-profile opt-in: lets the tuner A/B test ai_provider/ai_model
         # within the cost guard. Default OFF so cost-conscious users
         # aren't surprised by Sonnet/Opus calls.
