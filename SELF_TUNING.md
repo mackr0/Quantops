@@ -76,6 +76,26 @@ The tuner currently autonomously adjusts these levers. Each rule fires at most o
 
 **Total levers auto-tuned today: 35** (8 pre-existing + 15 from Wave 1 + 8 from Wave 2 + 4 from Wave 3 + per-signal weight system from Wave 4 covering 25 signals — including the 4 standalone alt-data sources integrated 2026-04-26).
 
+**The 25 weightable signals** (each with a 4-step intensity ladder
+1.0/0.7/0.4/0.0, autonomously tuned per-profile based on resolved-prediction
+contribution):
+
+| Group | Signals |
+|---|---|
+| Insider activity | `insider_cluster`, `insider_direction`, `insider_near_earnings` |
+| Short interest | `short_pct_float`, `finra_short_vol_ratio`, `dark_pool_pct` |
+| Options flow | `options_signal`, `put_call_ratio` |
+| Analyst signals | `eps_revision_direction`, `earnings_surprise_streak` |
+| Strategy votes | `vote_momentum_breakout`, `vote_volume_spike`, `vote_mean_reversion`, `vote_gap_and_go`, `vote_insider_cluster`, `vote_short_squeeze_setup`, `vote_earnings_drift`, `vote_news_sentiment_spike` |
+| Relative / intraday | `rel_strength_vs_sector`, `vwap_position` |
+| Macro flag | `political_context` (MAGA mode signal) |
+| **Local-SQLite alt-data** (added 2026-04-26) | `congressional_recent`, `institutional_13f`, `biotech_milestones`, `stocktwits_sentiment` |
+
+When a signal underperforms baseline by ≥10pt for a profile, Layer 2
+nudges its intensity from 1.0 → 0.7 → 0.4 → 0.0 over time. When it
+recovers, the tuner nudges back up. Same 3-day cooldown, same
+reverse-if-worsened guard.
+
 ### Wave 5 — Per-Regime Parameter Overrides (Layer 3, newly active)
 
 Each parameter can have **regime-specific values** that override the

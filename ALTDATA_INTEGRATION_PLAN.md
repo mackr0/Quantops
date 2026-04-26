@@ -1,6 +1,16 @@
 # Alt-Data Integration Plan — Wire 4 Standalone Projects into the AI
 
-**Status:** Plan draft, ready for execution.
+**Status:** ✅ **DEPLOYED 2026-04-26.** All four waves shipped, end-to-end verified.
+
+**Final state on prod (verified):**
+- `/opt/quantopsai-altdata/` populated with all 4 projects + venvs + data
+- Cron at `06:00 UTC` daily (refresh ~30-50 min, network-bound)
+- `ALTDATA_BASE_PATH=/opt/quantopsai-altdata` in `/opt/quantopsai/.env`
+- 1,109 congressional trades / 470 unique tickers
+- 857,304 institutional 13F holdings / 35 resolved tickers (16 famous-investor CIKs, ~9-year backfill)
+- 5,342 clinical trials / 30 tickers / 0 PDUFA events (PDUFA scraper deferred)
+- 981 StockTwits messages / 37 tickers / 30 trending snapshots
+- AI prompt now consults all 4 helpers with 6h cache; Layer 2 weights tunable per-profile
 
 **Goal:** Move the four standalone alt-data projects from "built but
 not yet wired in" to fully integrated AI-feeding signals, deployed

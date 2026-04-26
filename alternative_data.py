@@ -1059,11 +1059,18 @@ def get_patent_activity(symbol):
 # ---------------------------------------------------------------------------
 # Local SQLite alt-data sources (the four standalone projects)
 # ---------------------------------------------------------------------------
-# Each project lives at {ALTDATA_BASE}/{project}/data/{db}.db. On prod,
-# ALTDATA_BASE = /opt/quantopsai-altdata. Local dev: ~/.
+# Each project lives at {ALTDATA_BASE}/{project}/data/{db}.db.
+#
+# Production (deployed 2026-04-26):
+#   ALTDATA_BASE_PATH = /opt/quantopsai-altdata
+#   Daily cron @ 06:00 UTC refreshes all four DBs.
+# Local dev (default):
+#   $HOME/{project}/data/{db}.db (set ALTDATA_BASE_PATH to override).
+#
 # Helpers all gracefully no-op when the DB file is missing or empty,
-# so this code can ship before the prod deploy without breaking
-# anything.
+# so the code is safe to load whether or not the data is present
+# (the read layer ships dormant if a host doesn't have the projects
+# deployed).
 
 def _altdata_db(project: str, db_filename: str) -> str:
     """Resolve absolute path to one alt-data project's DB."""

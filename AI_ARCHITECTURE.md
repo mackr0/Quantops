@@ -142,6 +142,25 @@ AI Sees" reference panel; the canonical signal registry is in
 `signal_weights.WEIGHTABLE_SIGNALS`. Each signal can be omitted or
 discounted per profile via Layer 2 weights (see §Part 2).
 
+**Local-SQLite alt-data signals (added 2026-04-26):** four data
+sources are refreshed daily by the standalone projects in
+`/opt/quantopsai-altdata/{project}/`. The QuantOpsAI read layer in
+`alternative_data.py` queries those SQLite databases at decision time
+(6-hour cache). Each helper gracefully no-ops when the DB is missing
+or empty.
+
+| Helper | Source | Per-symbol output |
+|---|---|---|
+| `get_congressional_recent` | `congresstrades` (Senate eFD + House Clerk STOCK Act) | 60-day count of buys/sells, dollar volume, party split, last filing date, net direction |
+| `get_13f_institutional` | `edgar13f` (SEC 13F-HR XML) | Latest-quarter total holders, total shares, top holder name, QoQ share-change % |
+| `get_biotech_milestones` | `biotechevents` (ClinicalTrials.gov v2 + PDUFA tracker) | Days to next PDUFA, drug name, active phase-3 count, recent phase change |
+| `get_stocktwits_sentiment` | `stocktwits` (StockTwits REST API) | 7-day net sentiment, message volume vs 30-day average, currently-trending flag |
+
+The AI prompt builder wraps each new signal in `_weighted_signal_text`
+so Layer 2 weights apply (omitted at 0.0, discount-hint decorated at
+0.4/0.7). The 4 signals are also flattened into `features_payload`
+so the meta-model trains on them.
+
 ### 1d. Cost per Cycle
 
 | Agent | Calls | Est. cost |
@@ -326,6 +345,8 @@ File-based idempotency marker prevents re-fire on scheduler restart. Per-profile
 | `multi_scheduler.py` | Per-profile cycle orchestration; weekly tasks (digest, capital rebalance, post-mortem); idempotency markers |
 | `trade_pipeline.py` | Decision-time parameter resolution; the override chain at every read |
 | `strategy_proposer.py` / `strategy_generator.py` / `strategies/` | Phase 7 strategy creation pipeline |
+| `post_mortem.py` | Losing-week pattern extraction (Sundays); writes to `learned_patterns` table |
+| `/opt/quantopsai-altdata/{congresstrades,edgar13f,biotechevents,stocktwits}/` | Standalone data-collection projects (deployed 2026-04-26). Daily cron at 06:00 UTC. Each project owns its own SQLite at `data/*.db`. QuantOpsAI's `alternative_data.py` helpers query these read-only. |
 
 ### Extensive Docs
 

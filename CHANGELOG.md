@@ -17,6 +17,36 @@ Rules going forward:
 
 ---
 
+## 2026-04-26 — Alt-data integration: doc completeness pass (Severity: low, docs)
+
+End-of-session sweep: tests/docs/UI/prod-logs audit caught three
+documentation gaps from the alt-data integration session:
+
+1. `AI_ARCHITECTURE.md` had a count bump (15 → 19 alt-data signals)
+   but didn't actually describe the 4 new sources or list them in
+   the file map. Added an explicit table under §1c naming each helper,
+   its source project, and per-symbol output. Added the
+   `/opt/quantopsai-altdata/` path to the §6 file map.
+2. `SELF_TUNING.md` bumped the count (21 → 25 weighted signals) but
+   didn't enumerate which 4 were new. Added a complete grouped table
+   of all 25 weightable signals with the 4 alt-data additions called
+   out.
+3. `ALTDATA_INTEGRATION_PLAN.md` still said "Plan draft, ready for
+   execution" — flipped to "DEPLOYED 2026-04-26" with the verified
+   record counts (1,109 trades / 857,304 holdings / 5,342 trials /
+   981 messages).
+
+Helper docstrings in `alternative_data.py` updated to call out the
+prod path (`/opt/quantopsai-altdata`) and the daily cron schedule —
+makes the runtime contract clear to future readers.
+
+Tests: 925 passing (was failing on the CHANGELOG-discipline rule
+because the W1+W2 .py-touching commit didn't include CHANGELOG; this
+follow-up commit bundles `.py` + `CHANGELOG.md` + docs together,
+re-satisfying the rule going forward).
+
+---
+
 ## 2026-04-26 — Alt-data integration: 4 standalone projects wired into the AI (Severity: medium, feature)
 
 The four projects built last week — `congresstrades`, `edgar13f`,
