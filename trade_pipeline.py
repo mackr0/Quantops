@@ -1847,6 +1847,15 @@ def _build_market_context(regime_info, political_context, ctx):
             learned_patterns = batch_ctx.get("learned_patterns", [])
         except Exception:
             pass
+        # Post-mortem patterns from losing-week analysis. Prepended so
+        # the most recent post-mortem reads first in the AI prompt.
+        try:
+            from post_mortem import get_active_patterns
+            pm_patterns = get_active_patterns(ctx.db_path)
+            if pm_patterns:
+                learned_patterns = pm_patterns + list(learned_patterns)
+        except Exception:
+            pass
 
     # Sector rotation (free, cached 30min)
     sector_rotation = {}

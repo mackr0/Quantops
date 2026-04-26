@@ -17,6 +17,50 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Closed-loop learning: post-mortems on losing weeks + false-negative tuning + comprehensive AI doc (Severity: medium, feature)
+
+Three additions that turn information into learning:
+
+**1. Losing-week post-mortems (`post_mortem.py`).** Weekly Sunday task
+per profile. Triggers when the past 7 days underperformed the
+long-term baseline by ≥10pt. Clusters losing predictions by feature
+signature, identifies the dominant pattern (e.g., "60% of losses had
+insider_cluster=high AND vwap_position=below"), stores it as a
+`learned_pattern`. The trade pipeline already injects active patterns
+into the AI prompt's `LEARNED PATTERNS` section, so the AI sees the
+post-mortem learning at its next decision automatically — no extra
+wiring needed.
+
+Storage in a new `learned_patterns` table per profile DB. Only the
+most recent post-mortem stays "active" so the prompt isn't drowned
+in stale lessons. Idempotency marker
+`.post_mortem_done_p<id>.marker` prevents re-fire on restart;
+excluded from rsync delete.
+
+**2. False-negative tuner rule (`_optimize_false_negatives`).** Scans
+HOLD predictions resolved as `loss` (price moved >2% in 3 days, so
+we missed an opportunity). When ≥60% of such misses cluster in the
+band just below the current confidence threshold (within 10 conf
+points), the threshold is rejecting trades it should be taking —
+auto-lower it by 5. Same safety scaffolding as other tuner rules.
+
+**3. AI_ARCHITECTURE.md comprehensive rewrite.** The doc now
+exhaustively describes everything the AI does end-to-end: 7 agents
+× 13–14 calls per cycle, the decision flow, the 12-layer autonomy
+system, the cross-cutting cost guard, the closed-loop learning
+surfaces (meta-model, alpha decay, post-mortems, false-negative
+analysis), the safety guardrails, the user surfaces, and a
+file-by-file map of where each piece lives. Should answer "what
+does the AI actually do" without code-spelunking.
+
+**Tests:** 9 new in `test_post_mortem.py` covering pattern
+extraction, idempotency, prior-pattern deactivation,
+get_active_patterns, and the false-negative trigger conditions
+(threshold lowering, floor respect, no-cluster no-op). Full suite:
+907 passed.
+
+---
+
 ## 2026-04-25 — Post-W13 follow-ups: ai_model_auto_tune toggle + namespaced display names (Severity: low, completion)
 
 Two small but real follow-ups to W13:

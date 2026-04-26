@@ -1644,6 +1644,9 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_prompt_layout,
         # Wave 11 — Layer 8 self-commissioned new strategies (cost-gated)
         _optimize_commission_strategy,
+        # Post-W13 — false-negative loosening (rejected trades that
+        # would have won → AI confidence threshold too tight)
+        _optimize_false_negatives,
     ]
 
     results = []
@@ -3326,6 +3329,88 @@ def _optimize_symbol_overrides(conn, ctx, profile_id, user_id,
         )
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# False-negative analysis — when the AI rejected a candidate (predicted
+# HOLD) but the price subsequently moved enough that we missed an
+# opportunity. HOLD predictions resolve as 'loss' when |return_pct| >=
+# 2%, so a HOLD-loss IS a missed opportunity. If many of these cluster
+# just below the current confidence threshold, the threshold is too
+# tight — recommend lowering it.
+# ---------------------------------------------------------------------------
+
+_FALSE_NEG_MIN_SAMPLES = 10        # min HOLD-losses to bother analyzing
+_FALSE_NEG_BAND_BELOW = 10         # within X confidence-points below threshold
+_FALSE_NEG_FRAC_TRIGGER = 0.6      # X% of misses within the marginal band
+
+
+def _optimize_false_negatives(conn, ctx, profile_id, user_id,
+                                overall_wr, resolved):
+    """Detect rejected trades that would have won. If a meaningful
+    fraction of the AI's HOLD-losses had confidence just below the
+    current threshold, the threshold is rejecting trades it shouldn't.
+    Lower it by 5 (with the standard cooldown + reverse safety)."""
+    if not _safe_change_guarded(profile_id, "ai_confidence_threshold"):
+        return None
+
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(ai_predictions)").fetchall()}
+    if "confidence" not in cols:
+        return None
+
+    threshold = int(getattr(ctx, "ai_confidence_threshold", 25))
+    if threshold <= 10:
+        return None  # Already at/near floor; nothing to lower
+
+    band_lo = max(0, threshold - _FALSE_NEG_BAND_BELOW)
+
+    # All HOLD predictions resolved as loss in the trailing 30 days
+    # (each one is a missed opportunity — the price moved enough to
+    # have made a trade profitable).
+    row = conn.execute(
+        "SELECT COUNT(*) as total, "
+        " SUM(CASE WHEN confidence >= ? AND confidence < ? "
+        "          THEN 1 ELSE 0 END) as marginal "
+        "FROM ai_predictions "
+        "WHERE status='resolved' AND predicted_signal='HOLD' "
+        "  AND actual_outcome='loss' "
+        "  AND datetime(resolved_at) >= datetime('now', '-30 days') "
+        "  AND confidence IS NOT NULL",
+        (band_lo, threshold),
+    ).fetchone()
+
+    if not row or (row["total"] or 0) < _FALSE_NEG_MIN_SAMPLES:
+        return None
+
+    total = row["total"]
+    marginal = row["marginal"] or 0
+    frac = marginal / total
+
+    if frac < _FALSE_NEG_FRAC_TRIGGER:
+        return None
+
+    new_threshold = max(10, threshold - 5)
+    if new_threshold >= threshold:
+        return None
+
+    from models import update_trading_profile, log_tuning_change
+    update_trading_profile(profile_id, ai_confidence_threshold=new_threshold)
+    reason = (
+        f"False-negative analysis: {marginal}/{total} ({frac:.0%}) of "
+        f"the AI's HOLD-losses had confidence in the marginal band "
+        f"{band_lo}-{threshold} — threshold rejecting trades that "
+        f"would have won. Lower from {threshold} to {new_threshold}."
+    )
+    log_tuning_change(
+        profile_id, user_id, "false_negative_loosen",
+        "ai_confidence_threshold", str(threshold), str(new_threshold), reason,
+        win_rate_at_change=overall_wr, predictions_resolved=resolved,
+    )
+    return (
+        f"Lowered {_label('ai_confidence_threshold')} from {threshold} "
+        f"to {new_threshold} ({reason})"
+    )
 
 
 # ---------------------------------------------------------------------------

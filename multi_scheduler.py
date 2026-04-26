@@ -315,6 +315,14 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_capital_rebalance(ctx),
             db_path=ctx.db_path,
         )
+        # Weekly losing-week post-mortem — Sundays only. Triggers a
+        # learned_pattern injection when the past 7 days
+        # underperformed the long-term baseline.
+        run_task(
+            f"[{seg_label}] Losing-Week Post-Mortem",
+            lambda: _task_post_mortem(ctx),
+            db_path=ctx.db_path,
+        )
 
     if run_summary:
         run_task(
@@ -1601,6 +1609,58 @@ def _task_capital_rebalance(ctx):
     except Exception as exc:
         logging.warning(
             f"[{seg_label}] Capital rebalance task failed: {exc}")
+
+
+def _task_post_mortem(ctx):
+    """Weekly losing-week post-mortem: when the past 7 days
+    materially underperformed the long-term baseline, cluster the
+    losing trades' features and store the dominant pattern as a
+    learned_pattern. The AI prompt picks it up automatically next
+    week via the existing learned_patterns plumbing.
+
+    Sundays only; file-based idempotency marker prevents re-fire on
+    restart. Per-profile (each profile's losses are clustered against
+    its own baseline)."""
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    now_et = _dt.datetime.now(ZoneInfo("America/New_York"))
+    if now_et.weekday() != 6:  # Sunday only
+        return
+
+    seg_label = ctx.display_name or ctx.segment
+    profile_id = getattr(ctx, "profile_id", 0)
+    today = now_et.strftime("%Y-%m-%d")
+    marker = f".post_mortem_done_p{profile_id}.marker"
+
+    try:
+        with open(marker) as f:
+            if f.read().strip() == today:
+                return  # already ran for this profile this week
+    except FileNotFoundError:
+        pass
+
+    try:
+        from post_mortem import analyze_recent_week
+        result = analyze_recent_week(ctx.db_path)
+        if result:
+            logging.info(
+                f"[{seg_label}] Post-mortem: WR {result['period_wr']:.0f}% "
+                f"vs baseline {result['baseline_wr']:.0f}%, "
+                f"{result['losing_trade_count']} losses analyzed. "
+                f"Pattern stored.")
+        else:
+            logging.info(
+                f"[{seg_label}] Post-mortem: week was healthy or "
+                f"insufficient data — no pattern stored.")
+        try:
+            with open(marker, "w") as f:
+                f.write(today)
+        except OSError:
+            pass
+    except Exception as exc:
+        logging.warning(
+            f"[{seg_label}] Post-mortem task failed: {exc}")
 
 
 def _task_auto_strategy_generation(ctx):

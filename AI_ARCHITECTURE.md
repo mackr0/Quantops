@@ -1,302 +1,335 @@
-# QuantOpsAI — AI Architecture Map
+# QuantOpsAI — AI Architecture
 
-How the system uses AI, every agent and its purpose, and how they flow together.
+Everything the AI does, end to end. This document is exhaustive on
+purpose: the system has grown across a lot of waves and "what does
+the AI actually do" should never require code-spelunking to answer.
+
+The system is built around three principles:
+
+1. **Decisions, not recommendations.** Wherever the AI or the tuner
+   identifies something worth changing, it changes it (within
+   bounded safety guards). Recommendation-only paths are forbidden
+   except for a tiny allowlist (see §Safety).
+2. **Layered overrides at decision time.** Every parameter the
+   pipeline reads is resolved through a precedence chain
+   (per-symbol → per-regime → per-time-of-day → profile global → caller default).
+   The system can express different behavior in different contexts
+   without humans maintaining N copies of every profile.
+3. **Cost discipline as a first-class concern.** Every spend-affecting
+   autonomous action checks a daily cost ceiling. Over-budget changes
+   surface as the only allowed `Recommendation: cost-gated` strings.
 
 ---
 
-## Overview
-
-QuantOpsAI makes **7 distinct types of AI calls** per scan cycle. Each serves a different analytical function. They execute in a pipeline — each stage feeds the next.
+## At a Glance
 
 ```
-                         ┌──────────────────────┐
-                         │   MARKET DATA FEED    │
-                         │  (Alpaca + yfinance)  │
-                         └──────────┬───────────┘
-                                    │
-                         ┌──────────▼───────────┐
-                         │   SCREENER            │
-                         │   8,000+ stocks → 15  │
-                         │   (no AI — rule-based) │
-                         └──────────┬───────────┘
-                                    │
-                    ┌───────────────▼───────────────┐
-                    │   MULTI-STRATEGY SCORING       │
-                    │   16 strategies vote BUY/SELL   │
-                    │   (no AI — rule-based)          │
-                    └───────────────┬───────────────┘
-                                    │
-              ┌─────────────────────▼─────────────────────┐
-              │          SPECIALIST ENSEMBLE (4 AI calls)  │
-              │                                            │
-              │  ┌──────────┐ ┌──────────┐ ┌──────────┐  │
-              │  │ Earnings  │ │ Pattern  │ │Sentiment │  │
-              │  │ Analyst   │ │Recognizer│ │Narrative │  │
-              │  └────┬─────┘ └────┬─────┘ └────┬─────┘  │
-              │       │            │             │         │
-              │  ┌────▼────────────▼─────────────▼────┐   │
-              │  │          Risk Assessor              │   │
-              │  │      (has VETO authority)            │   │
-              │  └────────────────┬────────────────────┘   │
-              │                   │                        │
-              │    Consensus verdict per candidate         │
-              └─────────────────────┬─────────────────────┘
-                                    │
-                    ┌───────────────▼───────────────┐
-                    │   BATCH TRADE SELECTOR         │
-                    │   (1 AI call)                   │
-                    │                                 │
-                    │   Sees ALL candidates + context: │
-                    │   • Ensemble verdicts            │
-                    │   • Portfolio state              │
-                    │   • Market regime (VIX, SPY)     │
-                    │   • Political context            │
-                    │   • Learned patterns             │
-                    │   • Per-stock track record       │
-                    │                                  │
-                    │   Picks 0-3 trades + sizes them  │
-                    └───────────────┬───────────────┘
-                                    │
-                         ┌──────────▼───────────┐
-                         │   ORDER EXECUTION     │
-                         │   (Alpaca API)         │
-                         └──────────┬───────────┘
-                                    │
-                         ┌──────────▼───────────┐
-                         │   INTERNAL LEDGER     │
-                         │   (SQLite per-profile) │
-                         └──────────────────────┘
+  USER ──────────────► Strategic settings (AI provider, schedule,
+                       cost ceiling, opt-in toggles, profile identity)
+        │
+        ▼
+  ┌─────────────────────────────────────────────────────────────┐
+  │  TRADING PIPELINE (per profile, every scan cycle)            │
+  │                                                              │
+  │  Screener (rule-based) → 16 strategies vote (rule-based) →  │
+  │  Specialist Ensemble (4 AI calls) → Batch Trade Selector    │
+  │  (1 AI call) → Order Execution → Internal Ledger            │
+  │                                                              │
+  │  At every read of a tunable parameter:                       │
+  │    resolve_for_current_regime(profile, name, symbol=...)     │
+  │    → checks per-symbol → per-regime → per-TOD → global       │
+  │  Position size further multiplied by capital_scale           │
+  │  (Layer 9, opt-in, per-Alpaca-account-conserving)            │
+  └─────────────────────────┬───────────────────────────────────┘
+                            │  resolved predictions
+                            ▼
+  ┌─────────────────────────────────────────────────────────────┐
+  │  AUTONOMOUS TUNING SYSTEM (daily, per profile)              │
+  │                                                              │
+  │  Layer 1: 35+ parameters tuned with cooldown/reverse/clamp  │
+  │  Layer 2: Per-signal weights (1.0/0.7/0.4/0.0 ladder)       │
+  │  Layer 3: Per-regime overrides (bull/bear/sideways/         │
+  │           volatile/crisis)                                   │
+  │  Layer 4: Per-time-of-day overrides (open/midday/close)     │
+  │  Layer 5: Cross-profile insight propagation                 │
+  │  Layer 6: Adaptive prompt structure (cost-gated)            │
+  │  Layer 7: Per-symbol overrides (most-specific tier)         │
+  │  Layer 8: Self-commissioned new strategies (cost-gated)     │
+  │  Layer 9: Auto capital allocation (opt-in, per-account)     │
+  │                                                              │
+  │  + Cost guard wraps every spend-affecting action             │
+  │  + 6 anti-regression guardrail tests                         │
+  │  + Post-mortem pattern extraction on losing weeks            │
+  │  + False-negative analysis on rejected trades                │
+  └──────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## The 7 AI Agent Types
+## Part 1 — The Trading Pipeline
 
-### 1. Earnings Analyst
-- **Purpose:** Evaluate financial fundamentals — recent earnings, revenue trends, guidance
-- **When:** Every scan cycle, on each batch of ~5 candidates
-- **Model:** Claude Haiku (cheapest, fastest)
-- **Output:** BUY / SELL / HOLD / ABSTAIN with confidence score + reasoning
-- **Abstains** when it has no earnings data for a symbol (rather than guessing)
-- **Cost label:** `ensemble:earnings_analyst`
+### 1a. The 7 AI Agent Types (per scan cycle)
 
-### 2. Pattern Recognizer
-- **Purpose:** Read technical chart patterns — price action, volume patterns, support/resistance, momentum
-- **When:** Every scan cycle, on each batch of ~5 candidates
-- **Model:** Claude Haiku
-- **Output:** BUY / SELL / HOLD with confidence + reasoning
-- **Cost label:** `ensemble:pattern_recognizer`
+Every scan cycle makes ~13–14 AI calls across 7 distinct agents.
+Each agent has a single job; the orchestration is rule-based.
 
-### 3. Sentiment & Narrative Analyst
-- **Purpose:** Evaluate the story around the stock — news headlines, sector headwinds/tailwinds, macro environment
-- **When:** Every scan cycle, on each batch of ~5 candidates
-- **Model:** Claude Haiku
-- **Output:** BUY / SELL / HOLD with confidence + reasoning
-- **Cost label:** `ensemble:sentiment_narrative`
+| Agent | Purpose | When | Model | Cost label |
+|---|---|---|---|---|
+| **Earnings Analyst** | Evaluate fundamentals — recent earnings, revenue trends, guidance. Abstains when no data (rather than guessing). | Per scan, batched 5 candidates | Claude Haiku | `ensemble:earnings_analyst` |
+| **Pattern Recognizer** | Read technical chart patterns — price action, volume, S/R, momentum | Per scan, batched 5 | Claude Haiku | `ensemble:pattern_recognizer` |
+| **Sentiment & Narrative** | Evaluate the story — news headlines, sector winds, macro | Per scan, batched 5 | Claude Haiku | `ensemble:sentiment_narrative` |
+| **Risk Assessor** | The skeptic. Concentration risk, regulatory exposure, event risk, regime sensitivity. Has VETO authority. | Per scan, batched 5 | Claude Haiku | `ensemble:risk_assessor` |
+| **Batch Trade Selector** | Final decision-maker. Sees all candidates + ensemble verdicts + portfolio + macro. Picks 0-3 trades, sizes them. | Once per scan | Claude Haiku (configurable) | `batch_select` |
+| **Political Context Analyst** | Tariff developments, executive orders, political news. Output injected into Batch Selector context. | Once per scan if MAGA Mode on (skipped for crypto) | Claude Haiku | `political_context` |
+| **Strategy Proposer** | Generate new strategy specs as JSON. AI never writes code, only parameters against a closed allowlist. | Weekly (Sundays) + on-demand when tuner detects a coverage gap | Claude Haiku | `strategy_proposal` |
 
-### 4. Risk Assessor
-- **Purpose:** The skeptic. Evaluates concentration risk, regulatory exposure, event risk, regime sensitivity
-- **When:** Every scan cycle, on each batch of ~5 candidates
-- **Model:** Claude Haiku
-- **Output:** BUY / SELL / HOLD / **VETO** with confidence + reasoning
-- **Special power:** Can VETO a trade outright regardless of what the other 3 specialists say. Used sparingly — only for genuine structural risks, not routine caution.
-- **Cost label:** `ensemble:risk_assessor`
+**Supporting AI calls (event-driven, not every cycle):**
 
-### 5. Batch Trade Selector (The Portfolio Manager)
-- **Purpose:** The final decision-maker. Sees all candidates with their ensemble verdicts, the current portfolio, market regime, and learned patterns. Picks which trades to actually execute and sizes them.
-- **When:** Once per scan cycle (after all specialists have voted)
-- **Model:** Claude Haiku (configurable per profile)
-- **Input:** 
-  - All ~15 candidates with full indicator data
-  - Ensemble verdicts from the 4 specialists
-  - Current portfolio holdings and P&L
-  - Market regime (VIX level, SPY trend, crisis state)
-  - Political context (if MAGA mode enabled)
-  - Per-stock track record (past wins/losses on each symbol)
-  - Learned patterns from self-tuning
-- **Output:** JSON array of 0-3 trades, each with: symbol, action (BUY/SELL), size (% of equity), confidence, reasoning
-- **Cost label:** `batch_select`
-
-### 6. Political Context Analyst
-- **Purpose:** Analyze current political news, tariff developments, executive orders — and flag stocks that could be affected (positively or negatively)
-- **When:** Once per scan cycle (if MAGA mode enabled on the profile)
-- **Model:** Claude Haiku
-- **Output:** Text summary injected into the batch selector's context
-- **Cost label:** `political_context`
-- **Skipped** for crypto profiles (politics don't move Bitcoin the same way)
-
-### 7. Strategy Proposer
-- **Purpose:** Generate new strategy ideas as JSON specifications. These are validated, backtested, and promoted through a lifecycle (proposed → validated → shadow → active → retired).
-- **When:** Weekly (Sundays), not every cycle
-- **Model:** Claude Haiku
-- **Output:** JSON strategy spec against a closed allowlist — AI never writes code, only parameters
-- **Safety:** Invalid specs are silently dropped. Max 5 auto-strategies per profile.
-- **Cost label:** `strategy_proposal`
-
----
-
-## Supporting AI Calls (not every cycle)
-
-### Single-Symbol Analyzer
-- **Purpose:** Deep-dive analysis on one specific stock (used by the event-driven system when a price shock or SEC filing triggers a reactive analysis)
-- **When:** On-demand, triggered by events
-- **Cost label:** `single_analyze`
-
-### Consensus Secondary Model
-- **Purpose:** A second AI model (different provider, e.g., GPT-4o-mini) reviews the primary AI's trade selections for a second opinion
-- **When:** Every cycle, only if "Multi-Model Consensus" is enabled on the profile
-- **Cost label:** `consensus_secondary`
-
-### SEC Filing Diff Analyzer
-- **Purpose:** When a new SEC filing (10-K, 10-Q, 8-K) is detected, the AI reads the filing and compares it to the previous version, flagging material language changes
-- **When:** When new filings are detected (event-driven)
-- **Cost label:** `sec_diff`
-
-### Portfolio Review
-- **Purpose:** Periodic holistic review of the entire portfolio — are positions still justified? Any correlated risks building up?
-- **When:** Less frequent than regular scans
-- **Cost label:** `portfolio_review`
-
----
-
-## Cost Per Scan Cycle
-
-| Agent | Calls per Cycle | Est. Cost |
+| Agent | When | Cost label |
 |---|---|---|
-| Earnings Analyst | 3 (chunked by 5 candidates) | $0.003 |
-| Pattern Recognizer | 3 | $0.003 |
-| Sentiment & Narrative | 3 | $0.003 |
-| Risk Assessor | 3 | $0.003 |
-| Batch Trade Selector | 1 | $0.001 |
-| Political Context | 1 (if MAGA mode) | $0.001 |
-| **Total per cycle** | **~13-14** | **~$0.014** |
+| Single-Symbol Analyzer | Event-driven (price shock, SEC filing) | `single_analyze` |
+| Consensus Secondary Model | If profile has multi-model consensus enabled | `consensus_secondary` |
+| SEC Filing Diff Analyzer | When new 10-K/10-Q/8-K is detected | `sec_diff` |
+| Earnings Call Sentiment | When new 8-K press release lands | `transcript_sentiment` |
+| Portfolio Review | Periodic holistic review | `portfolio_review` |
 
-At 4 cycles/hour × 6.5 market hours × 10 profiles:
-- **~$3.64/day** or **~$109/month** at full load
-
----
-
-## How They Work Together
-
-1. **Screener** (no AI) filters 8,000+ stocks to ~15 candidates based on price, volume, and technical rules.
-
-2. **16 Strategies** (no AI) each independently vote BUY/SELL/HOLD on each candidate. Votes are aggregated into a score.
-
-3. **4 Specialist AIs** each evaluate the ~15 candidates from their unique perspective. They're batched in chunks of 5 to prevent the AI from dropping entries. Each returns a verdict + confidence + reasoning.
-
-4. **The ensemble synthesizer** (code, not AI) combines the 4 specialist verdicts into a consensus using confidence-weighted voting. The Risk Assessor's VETO overrides everything.
-
-5. **The Batch Trade Selector** (1 AI call) sees the full picture — candidates, ensemble verdicts, portfolio state, market regime — and makes the final call on which 0-3 trades to execute and how to size them.
-
-6. **Order execution** sends the trades to Alpaca. The internal ledger records everything for metrics, self-tuning, and the meta-model.
-
----
-
-## Self-Learning Loop — 9 Layers of Autonomy
-
-The AI isn't static. The system continuously adjusts how it trades based on its own performance. The architecture is organized into 9 layers, each addressing a different decision surface. See `AUTONOMOUS_TUNING_PLAN.md` for the full design and `SELF_TUNING.md` for live status.
-
-The layers below the line are designed and rolling out wave by wave; the ones above the line are active in production today.
+### 1b. Decision Flow
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│                     COST GUARD (cross-cutting)              │
-│   Every spend-affecting autonomous action checks the daily  │
-│   API ceiling. Over-budget changes surface as recommendations│
-│   with cost estimates, not silent debits.                    │
-└────────────────────────────────────────────────────────────┘
-       │
-       ▼
-LAYER 1 — Parameter coverage
-LAYER 2 — Weighted signal intensity     ─── ACTIVE OR ROLLING OUT ───
-LAYER 3 — Per-regime overrides
-─────────────────────────────────────────────────────────────
-LAYER 4 — Per-time-of-day overrides
-LAYER 5 — Cross-profile insight sharing
-LAYER 6 — Adaptive AI prompt structure
-LAYER 7 — Per-symbol overrides
-LAYER 8 — Self-commissioned new strategies
-LAYER 9 — Automatic capital allocation (opt-in)
+Screener (no AI)            8,000+ symbols → ~15 candidates
+                              based on price/volume/technical filters
+        │
+        ▼
+16-strategy voting           Each strategy independently votes
+(no AI)                      BUY/SELL/HOLD per candidate.
+                              Votes aggregated into a score.
+        │
+        ▼
+4 specialists vote in        Batched in groups of 5 candidates so
+parallel (4 AI calls)         no candidate is dropped. Each returns
+                              verdict + confidence + reasoning.
+        │
+        ▼
+Ensemble synthesizer         Confidence-weighted vote across the 4.
+(no AI)                      Risk Assessor's VETO overrides everything.
+        │
+        ▼
+Batch Trade Selector         Sees: candidates, ensemble verdicts,
+(1 AI call)                   portfolio state, market regime, political
+                              context, learned patterns, post-mortems,
+                              per-stock track records.
+                              Picks 0-3 trades, sizes them.
+        │
+        ▼
+Parameter resolution         For each parameter the executor needs
+(per symbol)                  (max_position_pct, stop_loss_pct, etc.):
+                              resolve_for_current_regime(ctx, name,
+                                                          symbol=symbol)
+                              → per-symbol > per-regime > per-TOD > global
+                              → × capital_scale (Layer 9 multiplier)
+        │
+        ▼
+Order execution              Trades sent to Alpaca. Internal ledger
+                              records everything for metrics, tuning,
+                              and meta-model training.
 ```
 
-### Layer 1 — Parameter Coverage (active)
+### 1c. What the AI Sees per Candidate
 
-Every numeric and binary parameter in `trading_profiles` either has a tuning rule that adjusts it based on observed performance, or is on a tight `MANUAL_PARAMETERS` allowlist enforced by an anti-regression test. Manual entries are limited to: AI provider/model (cost-sensitive strategic choice — opt-in toggle planned), consensus configuration (architectural), schedule (user lifestyle), secrets, identity, historical baselines.
+15 alternative-data signals + 13 technical indicators + market context
++ per-stock memory. Detailed list lives in the AI page's "What the
+AI Sees" reference panel; the canonical signal registry is in
+`signal_weights.WEIGHTABLE_SIGNALS`. Each signal can be omitted or
+discounted per profile via Layer 2 weights (see §Part 2).
 
-Today the tuner autonomously manages **~23 parameters** including:
-- Confidence threshold, position sizing, stop/take-profit (fixed and ATR-based)
-- Concentration limits (max positions, max correlation, max sector positions)
-- Drawdown thresholds (pause and reduce)
-- Entry filters (volume, momentum, gap, RSI bands, price band)
-- Timing (earnings avoidance, opening-minute skip)
-- Strategy toggles (4 legacy + auto-deprecation of all 16+ modular strategies via alpha_decay)
-- Short-selling enable/disable (defensive auto-disable on persistent losses)
-- MAGA mode (auto-disable when political context underperforms)
+### 1d. Cost per Cycle
 
-Every adjustment respects: bound clamping (`param_bounds.PARAM_BOUNDS`), 3-day per-parameter cooldown, automatic reversal if the change worsens performance, and an explicit history check.
+| Agent | Calls | Est. cost |
+|---|---|---|
+| Earnings Analyst | 3 (5-candidate batches) | ~$0.003 |
+| Pattern Recognizer | 3 | ~$0.003 |
+| Sentiment & Narrative | 3 | ~$0.003 |
+| Risk Assessor | 3 | ~$0.003 |
+| Batch Trade Selector | 1 | ~$0.001 |
+| Political Context | 1 (if MAGA on) | ~$0.001 |
+| **Total** | **~13–14** | **~$0.014** |
 
-### Layer 2 — Weighted Signal Intensity (designed)
-
-Every signal the AI sees gets a per-profile weight on a 4-step ladder (`1.0 → 0.7 → 0.4 → 0.0`). Weight `1.0` is full strength; `0.0` omits the signal entirely from the prompt. Intermediate weights inject a discount hint into the prompt so the AI knows the signal has been historically weak for this profile.
-
-This generalizes binary toggles. Insider buying cluster might be signal-positive overall but unreliable for a specific profile — instead of deleting it, drop its weight to 0.4 so the AI keeps the information but doesn't overweight it. Strategy toggles, alt-data signals, and even short-selling intensity all roll into this system.
-
-### Layer 3 — Per-Regime Overrides (designed)
-
-Each parameter can have regime-specific values: `bull`, `bear`, `sideways`, `volatile`, `crisis`. At decision time, `resolve_param(profile, name, regime)` returns the regime-specific value if it exists with sufficient sample size, else falls back to global. The tuner detects when a parameter performs differently per regime and creates per-regime overrides automatically.
-
-### Layer 4 — Per-Time-of-Day Overrides (designed)
-
-Same idea, bucketed by intraday window: open (09:30–10:30), midday (10:30–14:30), close (14:30–16:00). Different behaviors at the open vs close are well-documented in equities; the tuner learns which parameters are time-sensitive.
-
-### Layer 5 — Cross-Profile Insight Sharing (designed)
-
-When one profile makes a successful adjustment, the same detection rule runs against every other enabled profile's own data. Profiles with the same pattern apply the same change (their own data triggers it; no value-copying). The fleet learns ~10× faster than profiles in isolation, with no extra API cost.
-
-### Layer 6 — Adaptive AI Prompt Structure (designed)
-
-The prompt's structure — section order, section verbosity, signal grouping — is itself a tunable surface. The tuner runs implicit A/B tests across cycles and reinforces structures correlated with higher win rates. Cost-gated so it doesn't drift toward longer prompts.
-
-### Layer 7 — Per-Symbol Overrides (designed)
-
-Some symbols behave differently (NVDA's optimal stop-loss is not KO's). For symbols with ≥20 individual resolved predictions, the tuner can create per-symbol parameter overrides. Most fine-grained layer; longer cooldown (7 days) to prevent over-fitting on small symbol samples.
-
-### Layer 8 — Self-Commissioned New Strategies (designed)
-
-Builds on Phase 7 (auto-strategy generation). The tuner identifies *gaps* in current strategy coverage — patterns where the existing strategies didn't fire but the AI made correct calls anyway, representing untapped edges. It triggers the strategy generator with a focused brief, gated by cost.
-
-### Layer 9 — Automatic Capital Allocation (designed, opt-in)
-
-Across profiles, capital flows toward proven edge. Weekly rebalance computes a `capital_score = recent_sharpe × (1 + win_rate)` and reallocates within ±25%/+200% bounds per rebalance. Opt-in by default — flipped to auto-action when `auto_capital_allocation` is enabled, similar to `ai_model_auto_tune`.
-
-### Cost Guard (cross-cutting)
-
-`cost_guard.py` (designed) wraps every cost-affecting autonomous action. The tuner respects a per-user daily API spend ceiling. Cost-exceeding changes surface as the only legitimate "Recommendation:" — with explicit cost estimates — for human approval. This is the single carve-out that the anti-recommendation-only guardrail allows.
+At 4 cycles/hour × 6.5 market hours × 10 profiles → **~$3.64/day** at full load.
+Cost guard ceiling defaults to trailing-7-day-avg × 1.5 (floor $5/day).
 
 ---
 
-## Meta-Model (operates alongside the autonomy layers)
+## Part 2 — The Autonomous Tuning System (12 Layers)
 
-A gradient-boosted classifier (`meta_model.py`) trained daily on the AI's own resolved predictions. Learns "given everything the main AI saw at decision time, was the AI right?" and re-weights the AI's confidence at decision time based on the historical pattern. Needs 100+ resolved predictions to start; AUC is reported in the activity feed (e.g., "AUC 0.83" means strong signal separating right from wrong calls).
+The system continuously adjusts how it trades based on its own
+performance. Every layer below is active in production; safety
+scaffolding (cooldown, reverse-if-worsened, bound clamping, cost
+gate) is shared across all of them.
 
-The meta-model and the self-tuner complement each other:
-- Meta-model: per-prediction probability adjustment.
-- Self-tuner: per-parameter, per-signal, per-regime adjustment.
+### Layer 1 — Parameter Coverage
 
-Both learn from the same resolved-prediction stream.
+**35+ parameters** auto-tuned with detection rules. Categories:
+
+- **AI behavior**: confidence threshold (band-search), maga_mode (auto-disable when underperforming), enable_short_selling (auto-disable on persistent losses)
+- **Sizing & concentration**: max_position_pct, max_total_positions, max_correlation, max_sector_positions, drawdown_pause_pct, drawdown_reduce_pct, min_price/max_price (band tuning)
+- **Exits**: stop_loss_pct, take_profit_pct, short_stop_loss_pct, short_take_profit_pct, ATR multipliers (SL/TP/trailing)
+- **Entry filters**: min_volume, volume_surge_multiplier, breakout_volume_threshold, gap_pct_threshold, momentum_5d_gain, momentum_20d_gain, rsi_overbought, rsi_oversold
+- **Strategy toggles**: 4 legacy + auto-deprecation of all 16+ modular strategies via alpha_decay (auto-restore on Sharpe recovery)
+
+Each parameter has explicit bounds in `param_bounds.PARAM_BOUNDS`. Tuner clamps every change to these bounds. Per-rule cooldown (3-day default, 7 for per-symbol overrides, 14 for prompt rotation). Reverse-if-worsened automatic.
+
+### Layer 2 — Weighted Signal Intensity
+
+Every signal the AI sees has a per-profile weight on a 4-step ladder (`1.0 → 0.7 → 0.4 → 0.0`). 21 weightable signals to start. Tuner buckets resolved predictions by "was this signal materially present" and nudges the weight up/down based on differential WR.
+
+Prompt builder reads the weight when formatting each signal:
+- `1.0`: present as today
+- `0.7` / `0.4`: present + `[intensity 0.4]` hint
+- `0.0`: omit entirely
+
+### Layer 3 — Per-Regime Overrides
+
+Every parameter can have regime-specific values (bull / bear / sideways / volatile / crisis). Detected via `market_regime.detect_regime()`. Tuner creates per-regime overrides when a parameter behaves materially differently across regimes (≥10 samples per regime, ≥12pt WR divergence).
+
+### Layer 4 — Per-Time-of-Day Overrides
+
+Same pattern as regime, bucketed intraday: open (09:30–10:30), midday (10:30–14:30), close (14:30–16:00) ET. Tuner detects time-of-day-specific patterns and creates per-bucket overrides.
+
+### Layer 5 — Cross-Profile Insight Propagation
+
+When an adjustment turns out to improve a profile's WR (`outcome_after = 'improved'`), the same detection rule runs against every OTHER enabled profile belonging to the same user. Each peer's own data must independently support the change — **no value-copying**. Fleet learns ~10× faster than profiles in isolation, with zero new API spend.
+
+### Layer 6 — Adaptive AI Prompt Structure
+
+The prompt's section verbosity per profile becomes tunable. 4 sections (alt_data, political_context, learned_patterns, portfolio_state); 3 verbosity levels (brief / normal / detailed). Tuner rotates one section's verbosity every 14 days to test which framing improves WR. Cost-gated — moves toward `detailed` (longer prompts → more tokens) checked against the daily ceiling.
+
+### Layer 7 — Per-Symbol Overrides
+
+Most-specific tier. For symbols with ≥20 individual resolved predictions and ≥15pt WR divergence, the tuner creates per-symbol overrides. NVDA's optimal stop-loss is not KO's. 7-day cooldown to prevent over-fitting on small samples.
+
+### Layer 8 — Self-Commissioned New Strategies
+
+Tuner detects coverage gaps — winning AI predictions where no strategy fired — and triggers Phase 7's strategy_proposer with a focused brief describing the gap. Heavily cost-gated. Rate-limited to ≤1 per profile per week. The proposed spec flows through Phase 7's existing pipeline (proposed → validated → shadow → active).
+
+### Layer 9 — Auto Capital Allocation (Opt-In)
+
+User flips `auto_capital_allocation` ON; weekly Sunday task rebalances per-profile `capital_scale` multipliers. **Critical: respects shared Alpaca accounts.** Profiles that share one real account have their scales normalized so the sum within the group equals N (the count) — the underlying real account is never over-committed. Solo profiles always at 1.0. Bounds: per-rebalance ±50%, absolute ∈ [0.25, 2.0]. Score = `recent_sharpe × (1 + win_rate)`.
+
+### The Cost Guard (Cross-Cutting)
+
+`cost_guard.py` defines a per-user daily API spend ceiling (default = trailing-7-day-avg × 1.5, floor $5). Every cost-affecting autonomous action calls `can_afford_action(user_id, est_extra_usd)`. If False, surfaced as `Recommendation: cost-gated — ...` with explicit cost estimate — the only Recommendation prefix allowed by the guardrail tests.
 
 ---
 
-## Alpha Decay Monitor (continuous)
+## Part 3 — Closed-Loop Learning Surfaces
 
-`alpha_decay.py` tracks each strategy's rolling 30-day Sharpe vs lifetime baseline. Auto-deprecates strategies whose rolling Sharpe degrades for 30+ consecutive days; auto-restores when rolling Sharpe recovers for 14+ consecutive days. The self-tuner now also feeds into this pipeline — when it identifies a non-toggleable strategy underperforming, it calls `deprecate_strategy()` directly instead of waiting for the rolling-Sharpe trigger.
+Beyond the parameter-tuning loop, three other feedback systems operate:
 
-Manual override via the **Restore** button on the AI Intelligence → Strategy tab.
+### 3a. Meta-Model
+
+Gradient-boosted classifier (`meta_model.py`) trained daily per profile on accumulated resolved predictions. Learns "given everything the main AI saw, was it right?" Outputs a probability used to re-weight the AI's confidence at decision time. Needs ≥100 resolved predictions to train. Reports AUC + accuracy + feature importance (visible in the AI page Brain tab).
+
+The meta-model and the self-tuner are complementary:
+- Meta-model: per-prediction probability adjustment (micro)
+- Self-tuner: per-parameter / per-signal / per-regime adjustment (macro)
+
+### 3b. Alpha Decay Monitor (`alpha_decay.py`)
+
+Tracks each strategy's rolling 30-day Sharpe vs lifetime baseline. Auto-deprecates when rolling Sharpe degrades for 30+ consecutive days; auto-restores when rolling Sharpe recovers for 14+ days. The self-tuner integrates: when it identifies a non-toggleable strategy underperforming, it calls `alpha_decay.deprecate_strategy()` directly. Manual restore via Restore button on AI page Strategy tab.
+
+### 3c. Losing-Week Post-Mortems (`post_mortem.py`)
+
+Weekly Sunday task per profile. When the past 7 days underperformed the long-term baseline by ≥10pt, clusters losing predictions by feature signature, identifies the dominant pattern (e.g., "60% of losses had insider_cluster=high AND vwap_position=below"), stores it as a `learned_pattern`. The trade pipeline injects active patterns into the AI prompt's `LEARNED PATTERNS` section so the AI sees the post-mortem learning at decision time.
+
+### 3d. False-Negative Analysis
+
+Tuner rule that scans HOLD predictions resolved as `loss` (price moved enough that we missed an opportunity). When ≥60% of recent HOLD-losses had confidence in the marginal band just below the current threshold, it lowers the threshold by 5. Catches the case where the AI is rejecting trades it should be taking.
 
 ---
 
-## What This Means in Practice
+## Part 4 — Safety
 
-The end state of the autonomy layers is that humans set **strategic** direction (which AI provider, what daily cost ceiling, which markets to trade, what schedule) and the system handles every **tactical** decision: which signals to weight high or low, what stop-loss makes sense in volatile vs bull regimes, which sector cap fits today's correlation pattern, when to deprecate a strategy that's lost its edge, when to spin up a new one to fill a coverage gap, and how to allocate capital across profiles.
+### What Stays Manual (and Why)
 
-The whole point is that the system makes better, faster, smarter decisions than a person can — and learns from every one of them.
+The `MANUAL_PARAMETERS` allowlist in `tests/test_every_lever_is_tuned.py` enumerates every column that's intentionally not autonomously tuned, with written rationale. Categories:
+
+- **Identity / metadata**: id, user_id, name, market_type, created_at, enabled
+- **Secrets**: alpaca_*_enc, ai_api_key_enc, consensus_api_key_enc
+- **Strategic AI choice**: ai_provider, ai_model — opt-in via `ai_model_auto_tune` toggle
+- **Architectural**: enable_consensus, consensus_model
+- **Schedule**: schedule_type + custom_*
+- **Meta**: enable_self_tuning (the tuner can't disable itself)
+- **Historical baselines**: initial_capital, is_virtual
+- **Conviction-TP-override knobs**: explicit risk-preference choice
+
+The guardrail test fails on (a) any new schema column not on this list and not auto-tuned, and (b) stale entries no longer in the schema.
+
+### Six Anti-Regression Guardrails
+
+1. `test_no_recommendation_only` — every "Recommendation:" string in `self_tuning.py` must be on a written-rationale allowlist
+2. `test_no_snake_case_in_optimizer_strings` — optimizer return strings can't embed raw column names
+3. `test_self_tune_task_no_change_path` — the no-change branch can't NameError
+4. `test_signal_weights_lifecycle` — weight ladder + tuner + prompt builder
+5. `test_regime_overrides` / `test_tod_overrides` / `test_symbol_overrides` — chain precedence
+6. `test_every_lever_is_tuned` — every schema column is autonomous or explicitly manual
+
+### Idempotency
+
+All weekly/daily-once tasks (snapshot bundle, summary emails, weekly digest, capital rebalance, post-mortem) write file-based markers. Markers are excluded from `rsync --delete` so deploys preserve them. This is what stopped the Apr-25 100-email storm caused by ~10 deploys re-firing the snapshot bundle each time.
+
+---
+
+## Part 5 — User Surfaces
+
+### AI Intelligence Page (`/ai`)
+
+- **Brain tab**: prediction accuracy, win rate trend, confidence calibration, meta-model status (AUC, top features per profile)
+- **Strategy tab**: alpha-decay monitoring, currently-deprecated strategies with Restore button
+- **Awareness tab**: market intelligence, SEC filing alerts, crisis monitor
+- **Operations tab**: Self-Tuning history, AI cost tracking, "Active Autonomy State" card showing all per-profile signal weights / regime / TOD / symbol / prompt-layout overrides + capital scale, "What the AI Sees" reference panel
+
+### Settings Page (`/settings`)
+
+- **Autonomy section**: per-user `auto_capital_allocation` toggle (Layer 9 opt-in)
+- **Per-profile**: `enable_self_tuning` toggle (default ON), `ai_model_auto_tune` toggle (default OFF, cost-sensitive)
+
+### Weekly Digest (Email, Fridays after market close)
+
+Single email across all profiles. Includes per-profile P&L, trades, win rate, AI cost; self-tuning changes (applied vs recommended counts); strategy deprecations/restorations; auto-strategy lifecycle transitions; crisis state transitions; trading narrative on top/bottom trades.
+
+### Daily Summary (Email, end-of-day per profile)
+
+File-based idempotency marker prevents re-fire on scheduler restart. Per-profile state snapshot.
+
+---
+
+## Part 6 — Where Each File Fits
+
+| File | Purpose |
+|---|---|
+| `ai_analyst.py` | Specialists + Batch Trade Selector + prompt builder (reads Layer 2 weights, Layer 6 verbosity) |
+| `ai_providers.py` | Provider abstraction (Anthropic / OpenAI / Google) + cost ledger logging |
+| `ai_tracker.py` | Records predictions, resolves them (BUY/SELL on price move, HOLD on time + stable price) |
+| `meta_model.py` | Gradient-boosted classifier — Phase 1 (re-weights AI confidence at decision time) |
+| `alpha_decay.py` | Strategy deprecation / restoration based on rolling Sharpe |
+| `self_tuning.py` | All 12 layers' tuner rules + safety scaffolding (cooldown, reverse, clamp) |
+| `param_bounds.py` | Declarative PARAM_BOUNDS + clamp() helper |
+| `signal_weights.py` | Layer 2 — per-signal intensity ladder + WEIGHTABLE_SIGNALS registry |
+| `regime_overrides.py` | Layer 3 — per-regime values + the `resolve_for_current_regime` chain entry |
+| `tod_overrides.py` | Layer 4 — per-time-of-day values |
+| `symbol_overrides.py` | Layer 7 — per-symbol values |
+| `prompt_layout.py` | Layer 6 — per-section verbosity |
+| `capital_allocator.py` | Layer 9 — per-Alpaca-account-conserving capital rebalance |
+| `cost_guard.py` | Cross-cutting daily-spend ceiling enforcement |
+| `insight_propagation.py` | Layer 5 — cross-profile insight fan-out |
+| `post_mortem.py` | Losing-week pattern extraction |
+| `multi_scheduler.py` | Per-profile cycle orchestration; weekly tasks (digest, capital rebalance, post-mortem); idempotency markers |
+| `trade_pipeline.py` | Decision-time parameter resolution; the override chain at every read |
+| `strategy_proposer.py` / `strategy_generator.py` / `strategies/` | Phase 7 strategy creation pipeline |
+
+### Extensive Docs
+
+- `SELF_TUNING.md` — every tuning rule, every signal, every safety guard
+- `AUTONOMOUS_TUNING_PLAN.md` — the 13-wave plan with acceptance criteria
+- `CHANGELOG.md` — every fix, every feature, every regression and how it was caught
+- `ROADMAP.md` — what's next
