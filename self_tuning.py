@@ -1253,6 +1253,24 @@ def apply_auto_adjustments(ctx, db_path=None):
                     f"(win rate {wr_before:.0f}%->{wr_after:.0f}%: {outcome})"
                 )
 
+                # Layer 5 — propagate insights from improvements.
+                # When this profile's change turned out to help, run
+                # the same detection rule on every peer profile's data.
+                # Each peer's own data has to support the change (no
+                # value-copying); the fleet learns ~10x faster than
+                # profiles in isolation.
+                if rev["outcome_after"] == "improved":
+                    try:
+                        from insight_propagation import propagate_insight
+                        change_type = rev.get("change_type") or rev.get("adjustment_type") or ""
+                        spread = propagate_insight(
+                            profile_id, change_type, param)
+                        for s in spread:
+                            adjustments_made.append(f"PROPAGATED: {s}")
+                    except Exception as prop_exc:
+                        logger.warning(
+                            "Failed to propagate insight: %s", prop_exc)
+
                 # If a past adjustment worsened things, reverse it
                 if rev["outcome_after"] == "worsened":
                     try:

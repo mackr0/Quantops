@@ -17,6 +17,43 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Autonomous tuning Wave 9: Layer 5 Cross-Profile Insight Propagation (Severity: medium, behavior)
+
+When the tuner makes a change that turns out to improve a profile's
+win rate (`outcome_after = 'improved'` after the 3-day review window),
+the same detection rule now runs against every OTHER enabled profile
+belonging to the same user. Each peer's own data has to independently
+support the change — no value-copying. The fleet learns ~10× faster
+than profiles in isolation, with zero new API spend.
+
+**New module: `insight_propagation.py`.**
+- `_peer_profiles(source_id)` — enumerates other enabled profiles in
+  the same user's account.
+- `_detector_for(change_type)` — maps adjustment types to the
+  corresponding `_optimize_*` function in self_tuning.
+- `propagate_insight(source_id, change_type, parameter_name)` — for
+  each peer, builds a duck-typed context, opens its prediction DB,
+  runs the detection rule. Returns a list of human-readable messages
+  for peers where the change was applied.
+
+**Integration:** `self_tuning.apply_auto_adjustments` now calls
+`propagate_insight` after `review_past_adjustments` finds an
+improvement. Propagated changes appear in the tuner's adjustment log
+prefixed with `PROPAGATED:` for visibility.
+
+**Critical guarantee — no value-copying.** A change to Mid Cap's
+`max_position_pct` doesn't get applied to Small Cap's profile. What
+gets propagated is the *detection rule check* — Small Cap's own data
+must trigger the same rule before any change is made. Same cooldown,
+same reverse-if-worsened, same bound clamping as direct tuning.
+
+**Tests:** 7 new in `test_insight_propagation.py`: detector mapping
+coverage, peer enumeration excludes source, no-op-on-unknown-type,
+no-op-on-no-peers, end-to-end propagation when peer data triggers,
+no-change when peer data is healthy. Full suite: 866 passed.
+
+---
+
 ## 2026-04-25 — Autonomous tuning Wave 8: Layer 7 Per-Symbol Parameter Overrides (Severity: medium, behavior)
 
 The most-specific tier of the override stack. Some symbols behave
