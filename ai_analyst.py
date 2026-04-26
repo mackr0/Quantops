@@ -544,6 +544,17 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     except Exception:
         _sig_weights = {}
 
+    # Layer 6 — adaptive prompt structure. Per-section verbosity
+    # overrides set by the tuner. Default is "normal" (no behavior
+    # change) for any section not explicitly tuned.
+    try:
+        from prompt_layout import get_verbosity as _get_verbosity
+        def _verbosity(section_name):
+            return _get_verbosity(ctx, section_name) if ctx else "normal"
+    except Exception:
+        def _verbosity(section_name):
+            return "normal"
+
     def _signal_weight(name):
         """1.0 default; respect per-profile override if set."""
         return _sig_weights.get(name, 1.0)
@@ -599,7 +610,11 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     if political:
         political_w = _signal_weight("political_context")
         if political_w > 0.0:
-            for pline in political.splitlines()[:4]:
+            # Layer 6 verbosity: brief = first 2 lines only; normal =
+            # first 4 (current behavior); detailed = up to 8 lines.
+            _v = _verbosity("political_context")
+            line_cap = {"brief": 2, "normal": 4, "detailed": 8}.get(_v, 4)
+            for pline in political.splitlines()[:line_cap]:
                 market_section += f"\n  {pline}"
             if political_w < 1.0:
                 market_section += (
@@ -612,8 +627,12 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
 
     learned = market_context.get("learned_patterns", [])
     if learned:
+        # Layer 6 verbosity: brief = top 2; normal = top 5 (current);
+        # detailed = top 10.
+        _v_lp = _verbosity("learned_patterns")
+        cap = {"brief": 2, "normal": 5, "detailed": 10}.get(_v_lp, 5)
         market_section += "\n  LEARNED PATTERNS (from your history):"
-        for pattern in learned[:5]:
+        for pattern in learned[:cap]:
             market_section += f"\n    - {pattern}"
 
     # Sector rotation
@@ -828,7 +847,14 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                     f"{patents['recent_filings_365d']} last year "
                     f"({patents['velocity_trend']})")
             if alt_parts:
-                line += f"\n     ALT DATA: {' | '.join(alt_parts)}"
+                # Layer 6 verbosity: brief = show only top 3 signals;
+                # normal = show all; detailed = show all + a "(X more)"
+                # tail hint when truncated alt-data lines were skipped.
+                _v = _verbosity("alt_data")
+                if _v == "brief" and len(alt_parts) > 3:
+                    line += f"\n     ALT DATA: {' | '.join(alt_parts[:3])} | (+{len(alt_parts) - 3} more, brief mode)"
+                else:
+                    line += f"\n     ALT DATA: {' | '.join(alt_parts)}"
 
         # Social sentiment
         social = c.get("social", {})

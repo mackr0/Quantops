@@ -1640,6 +1640,8 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_tod_overrides,
         # Wave 8 — Layer 7 per-symbol parameter overrides (most-specific tier)
         _optimize_symbol_overrides,
+        # Wave 10 — Layer 6 adaptive AI prompt structure (cost-gated)
+        _optimize_prompt_layout,
     ]
 
     results = []
@@ -3322,6 +3324,77 @@ def _optimize_symbol_overrides(conn, ctx, profile_id, user_id,
         )
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Wave 10 — Layer 6 adaptive AI prompt structure. Periodically rotate
+# one section's verbosity to test whether the AI does better with
+# brief / normal / detailed framing. Cost-gated: any move toward
+# 'detailed' that would push spend over the daily ceiling becomes a
+# recommendation, not an auto-action.
+# ---------------------------------------------------------------------------
+
+# Rotate at most once every 14 days per section so each variant has
+# enough resolved-prediction throughput to attribute outcomes cleanly.
+_PROMPT_ROTATE_COOLDOWN_DAYS = 14
+
+
+def _optimize_prompt_layout(conn, ctx, profile_id, user_id,
+                              overall_wr, resolved):
+    """Pick one section to rotate to a new verbosity. Cooldown is
+    long (14 days) so each variant has enough cycles to attribute
+    outcomes."""
+    # Need a reasonable baseline of resolved predictions before
+    # experimenting with the prompt itself.
+    if resolved < 50:
+        return None
+
+    # Cooldown is per-rotation across all sections — this is a
+    # whole-prompt experiment, not per-parameter tuning.
+    if _get_recent_adjustment(profile_id, "prompt_layout_rotate",
+                                days=_PROMPT_ROTATE_COOLDOWN_DAYS):
+        return None
+
+    try:
+        from prompt_layout import (
+            pick_rotation, set_verbosity, display_label,
+            estimate_daily_cost_delta,
+        )
+    except ImportError:
+        return None
+
+    section, current, new = pick_rotation(ctx)
+    cost_delta = estimate_daily_cost_delta(current, new)
+
+    # Cost gate: any rotation that would add cost gets checked
+    # against the daily ceiling. Cost-saving rotations
+    # (brief shifts) always pass.
+    if cost_delta > 0:
+        try:
+            from cost_guard import can_afford_action, format_cost_recommendation
+            if not can_afford_action(user_id, cost_delta):
+                return format_cost_recommendation(
+                    f"rotate {display_label(section)} from "
+                    f"{current} to {new}",
+                    user_id, cost_delta,
+                )
+        except Exception:
+            pass
+
+    set_verbosity(profile_id, section, new)
+    from models import log_tuning_change
+    reason = (
+        f"Rotating prompt verbosity (cost delta ${cost_delta:+.4f}/day) "
+        f"to test whether {new} framing improves WR"
+    )
+    log_tuning_change(
+        profile_id, user_id, "prompt_layout_rotate",
+        f"layout:{section}", current, new, reason,
+        win_rate_at_change=overall_wr, predictions_resolved=resolved,
+    )
+    return (
+        f"Rotated {display_label(section)}: {current} → {new} ({reason})"
+    )
 
 
 def _optimize_signal_weights(conn, ctx, profile_id, user_id,

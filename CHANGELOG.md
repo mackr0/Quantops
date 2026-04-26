@@ -17,6 +17,49 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Autonomous tuning Wave 10: Layer 6 Adaptive AI Prompt Structure (Severity: medium, behavior)
+
+The structure of the AI's prompt — section verbosity per profile —
+becomes a tunable surface. The tuner periodically rotates one section's
+verbosity across `brief / normal / detailed` to test whether the AI
+makes better decisions with different framing. Cost-gated to prevent
+verbosity drift toward longer prompts that would balloon API spend.
+
+**New module: `prompt_layout.py`** with sections registry (4 sections
+to start: `alt_data`, `political_context`, `learned_patterns`,
+`portfolio_state`), parse / get_verbosity / set_verbosity helpers, a
+deterministic `pick_rotation` for testability, and an
+`estimate_daily_cost_delta` that's used by the cost guard.
+
+**Schema migration:** `prompt_layout TEXT NOT NULL DEFAULT '{}'`
+column auto-migrated. Default behavior unchanged — every section is
+"normal" until the tuner rotates it.
+
+**Prompt builder integration** (`ai_analyst._build_batch_prompt`):
+each tunable section now consults `_verbosity(name)` and adjusts:
+- `alt_data` brief = top 3 signals + "(N more)" tail; detailed = same as normal (no extra noise).
+- `political_context` brief = 2 lines; normal = 4 (current); detailed = 8.
+- `learned_patterns` brief = 2; normal = 5 (current); detailed = 10.
+
+**Tuner rule** (`_optimize_prompt_layout`):
+- Requires ≥50 resolved predictions before experimenting.
+- 14-day cooldown per rotation (vs 3-day for parameters) so each
+  variant has enough cycles to attribute outcomes.
+- Cost-saving rotations (toward `brief`) are auto-applied.
+- Cost-adding rotations (toward `detailed`) are wrapped in
+  `cost_guard.can_afford_action`. If they'd push over the daily
+  ceiling, surfaced as `Recommendation: cost-gated` instead.
+
+**Tests:** 18 new in `test_prompt_layout.py` covering parse/get/set,
+rotation picking, cost estimation, tuner skip-conditions, cost-gate
+auto-apply vs recommend, and end-to-end prompt builder rendering at
+brief vs normal verbosity. Full suite: 884 passed.
+
+This is the last "decision-surface" layer before the meta-tuning waves
+W11 (self-commissioned strategies) and W12 (capital allocation).
+
+---
+
 ## 2026-04-25 — Autonomous tuning Wave 9: Layer 5 Cross-Profile Insight Propagation (Severity: medium, behavior)
 
 When the tuner makes a change that turns out to improve a profile's

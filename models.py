@@ -304,6 +304,8 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         ("trading_profiles", "tod_overrides", "TEXT NOT NULL DEFAULT '{}'"),
         # Layer 7 — per-symbol parameter overrides (most-specific tier)
         ("trading_profiles", "symbol_overrides", "TEXT NOT NULL DEFAULT '{}'"),
+        # Layer 6 — adaptive AI prompt structure (per-section verbosity)
+        ("trading_profiles", "prompt_layout", "TEXT NOT NULL DEFAULT '{}'"),
     ]
     for table, col, col_def in _migrations:
         try:
