@@ -45,6 +45,7 @@ CHANGED=$(rsync -az --delete --dry-run --itemize-changes \
     --exclude '.daily_snapshot_done.marker' \
     --exclude '.daily_summary_sent_p*.marker' \
     --exclude '.weekly_digest_sent.marker' \
+    --exclude '.capital_rebalance_done.marker' \
     /Users/mackr0/Quantops/ \
     root@${DROPLET_IP}:${REMOTE_DIR}/ 2>/dev/null | grep '^<f' | awk '{print $2}' || true)
 
@@ -79,6 +80,7 @@ rsync -az --delete \
     --exclude '.daily_snapshot_done.marker' \
     --exclude '.daily_summary_sent_p*.marker' \
     --exclude '.weekly_digest_sent.marker' \
+    --exclude '.capital_rebalance_done.marker' \
     /Users/mackr0/Quantops/ \
     root@${DROPLET_IP}:${REMOTE_DIR}/
 

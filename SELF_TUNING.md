@@ -99,6 +99,94 @@ detects a per-regime divergence worth correcting for.
 
 Same safety scaffolding: cooldown keyed on `regime:<regime>:<param>`, reverse-if-worsened, snap to PARAM_BOUNDS.
 
+### Wave 9 — Auto Capital Allocation (Layer 9, opt-in)
+
+**Per-user opt-in.** Default OFF. When the user enables
+`auto_capital_allocation` (Settings → Autonomy), a weekly task
+(`_task_capital_rebalance`, runs Sundays) shifts per-profile
+`capital_scale` multipliers based on each profile's risk-adjusted
+recent returns.
+
+**Critical: respects the per-Alpaca-account constraint.** Profiles are
+virtual on top of shared Alpaca paper accounts. Multiple profiles can
+share one $1M account. The allocator works **per-Alpaca-account-group**:
+
+- Profiles are grouped by `alpaca_account_id`.
+- Within each group, scales are normalized so they sum to N (group
+  size). Average stays at 1.0; relative shifts move toward
+  higher-scoring profiles.
+- Solo profiles (1 per account) always get scale=1.0.
+- The underlying real account is never over-committed — if
+  scale[A]=1.5, then scale[B]+scale[C]=1.5 in the same group.
+
+**Bounds:** per-rebalance ±50% max move; absolute scale ∈ [0.25, 2.0].
+Score formula: `recent_sharpe × (1 + win_rate)` over trailing 30 days.
+
+**Pipeline integration:** `trade_pipeline.execute_trade` multiplies
+`max_position_pct` by `capital_scale` after the override-chain
+resolution, so the allocator's decisions stack on every other tuning
+layer.
+
+### Wave 8 — Self-Commissioned New Strategies (Layer 8, cost-gated)
+
+When the tuner detects a coverage gap — winning AI predictions over
+the last 30 days where no strategy fired — it triggers Phase 7's
+strategy generator with a focused brief. Heavily cost-gated and
+rate-limited.
+
+- **Detection:** ≥5 no-strategy winners in last 30 days.
+- **Cost gate:** every commission call wrapped in
+  `cost_guard.can_afford_action`. If it would push spend over the
+  daily ceiling, surfaces as `Recommendation: cost-gated` instead.
+- **Rate limit:** 7-day cooldown per profile.
+- The proposed spec flows through the existing Phase 7 lifecycle:
+  proposed → validated → shadow → active.
+
+### Wave 7 — Per-Symbol Parameter Overrides (Layer 7, most-specific tier)
+
+Some symbols behave fundamentally differently. The tuner creates
+per-symbol overrides for symbols with materially different track
+records than the profile baseline.
+
+- **Detection:** ≥20 individual resolved predictions per symbol;
+  ≥15pt WR divergence from overall.
+- **Cooldown:** 7 days per-symbol per-parameter (vs 3 for other tiers)
+  to prevent over-fitting on small samples.
+- **Pipeline chain order at decision time:**
+  per-symbol → per-regime → per-time-of-day → global.
+
+Underperforming symbols get `max_position_pct` reduced for that
+symbol; outperforming symbols get `ai_confidence_threshold` raised.
+
+### Wave 6 — Adaptive AI Prompt Structure (Layer 6, cost-gated)
+
+The structure of the AI's prompt — section verbosity per profile —
+becomes a tunable surface. Rotates one section's verbosity every 14
+days to test whether different framing improves WR.
+
+- **Sections:** alt_data, political_context, learned_patterns,
+  portfolio_state.
+- **Verbosity ladder:** brief / normal / detailed.
+- **Cost gate:** moves toward `detailed` (longer prompts) checked
+  against the daily ceiling. Cost-saving moves (toward `brief`)
+  always auto-applied.
+- **Cooldown:** 14 days per rotation (vs 3 for parameters) so each
+  variant has enough cycles to attribute outcomes.
+
+### Wave 5 — Cross-Profile Insight Propagation (Layer 5)
+
+When the tuner makes a change that turns out to improve a profile's
+win rate (review marks `outcome_after = 'improved'`), the same
+detection rule runs against every OTHER enabled profile belonging to
+the same user. Each peer's own data has to independently support the
+change — **no value-copying**.
+
+This means the fleet learns ~10× faster than profiles in isolation,
+with zero new API spend. Insights propagate via
+`insight_propagation.propagate_insight(source_id, change_type, name)`
+which iterates peers, builds a duck-typed context, and re-runs the
+appropriate `_optimize_*` function on the peer's own prediction DB.
+
 ### Wave 4 — Weighted Signal Intensity (Layer 2, newly active)
 
 Every signal the AI sees has a per-profile weight on a 4-step ladder:

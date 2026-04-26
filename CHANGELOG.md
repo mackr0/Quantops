@@ -17,6 +17,41 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Post-W13: scheduled the capital allocator, surfaced the autonomy state UI (Severity: medium, completion)
+
+Three real gaps caught after W13 declared "done":
+
+1. **Layer 9 had no scheduled task.** I built
+   `capital_allocator.rebalance(user_id)` in W12 and added the user
+   opt-in toggle in W13, but never registered the weekly task that
+   actually CALLS rebalance(). Without it, flipping the toggle did
+   nothing. Added `_task_capital_rebalance` to `multi_scheduler.py` —
+   runs Sundays only, file-based idempotency marker
+   (`.capital_rebalance_done.marker`) prevents re-firing on restart.
+   Iterates users with `auto_capital_allocation = 1`, calls
+   `rebalance(user_id)`, logs results. Marker added to sync.sh
+   exclude list so deploys don't wipe it.
+
+2. **No UI surface for active overrides.** Six layers of autonomy
+   were running invisibly — signal weights, regime/TOD/symbol
+   overrides, prompt layout, capital scale all lived in JSON columns
+   nobody could see without sqlite. Added `/api/autonomy-status`
+   endpoint that returns one entry per profile with all active
+   overrides. AI page Operations tab now has an "Active Autonomy
+   State" card rendering them as colored pills (green = capital
+   scale up, orange = down, blue = regime overrides, purple = TOD,
+   red = per-symbol, brown = prompt verbosity). Profiles with no
+   overrides show "all defaults, no autonomous overrides active".
+
+3. **SELF_TUNING.md only documented Layers 1-4.** Added sections for
+   Layers 5-9 (cross-profile propagation, adaptive prompt structure,
+   per-symbol, self-commission, capital allocation) with the same
+   detail level as the Layer 1-4 sections.
+
+Full suite: 898 passed.
+
+---
+
 ## 2026-04-25 — Autonomous tuning Wave 13: Final guardrail + Settings UI Autonomy section (Severity: medium, infrastructure)
 
 The closing wave of the autonomous-tuning rollout. Ships the

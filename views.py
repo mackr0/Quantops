@@ -3253,6 +3253,62 @@ def api_tuning_status():
                      "page": page, "pages": -(-total // per_page)})
 
 
+@views_bp.route("/api/autonomy-status")
+@login_required
+def api_autonomy_status():
+    """Snapshot of all active per-profile autonomy state — signal weights,
+    regime/TOD/symbol overrides, prompt-layout verbosity, capital_scale.
+
+    Returns one entry per enabled profile. Empty dicts mean no overrides
+    are active for that layer (i.e., everything at default)."""
+    profile_id = request.args.get("profile_id", type=int)
+    profiles = [p for p in get_user_profiles(current_user.effective_user_id) if p.get("enabled")]
+    if profile_id:
+        profiles = [p for p in profiles if p["id"] == profile_id]
+
+    items = []
+    for p in profiles:
+        # Each layer has its own helper that handles parse-and-default-strip
+        try:
+            from signal_weights import get_all_weights as _sw
+            weights = _sw(p)
+        except Exception:
+            weights = {}
+        try:
+            from regime_overrides import get_all_overrides as _ro
+            regime = _ro(p)
+        except Exception:
+            regime = {}
+        try:
+            from tod_overrides import get_all_overrides as _to
+            tod = _to(p)
+        except Exception:
+            tod = {}
+        try:
+            from symbol_overrides import get_all_overrides as _so
+            symbols = _so(p)
+        except Exception:
+            symbols = {}
+        try:
+            from prompt_layout import all_verbosities as _pl
+            layout_full = _pl(p)
+            # Strip "normal" — only show non-default
+            layout = {k: v for k, v in layout_full.items() if v != "normal"}
+        except Exception:
+            layout = {}
+        items.append({
+            "profile_id": p["id"],
+            "profile_name": p["name"],
+            "capital_scale": float(p.get("capital_scale") or 1.0),
+            "signal_weights": weights,
+            "regime_overrides": regime,
+            "tod_overrides": tod,
+            "symbol_overrides": symbols,
+            "prompt_layout": layout,
+        })
+    return jsonify({"items": items})
+
+
 @views_bp.route("/api/tuning-history")
 @login_required
 def api_tuning_history():

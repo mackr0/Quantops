@@ -306,6 +306,15 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_weekly_digest(),
             db_path=ctx.db_path,
         )
+        # Weekly capital rebalance — Sundays only, file-based idempotency
+        # marker prevents re-firing on restart. Iterates users with the
+        # auto_capital_allocation toggle ON; respects the per-Alpaca-account
+        # group constraint so shared accounts aren't over-committed.
+        run_task(
+            f"[{seg_label}] Capital Rebalance",
+            lambda: _task_capital_rebalance(ctx),
+            db_path=ctx.db_path,
+        )
 
     if run_summary:
         run_task(
@@ -1514,6 +1523,84 @@ def _task_auto_strategy_lifecycle(ctx):
             )
     except Exception as exc:
         logging.warning(f"Auto-strategy lifecycle failed: {exc}")
+
+
+def _task_capital_rebalance(ctx):
+    """Weekly capital rebalance for users with auto_capital_allocation
+    enabled. Runs on Sundays only; file-based idempotency marker
+    prevents re-firing if the scheduler restarts on the same Sunday.
+
+    For each enabled user, calls capital_allocator.rebalance(user_id)
+    which respects the per-Alpaca-account constraint — profiles
+    sharing one real account have their scales normalized within the
+    group so the underlying capital is never over-committed."""
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    now_et = _dt.datetime.now(ZoneInfo("America/New_York"))
+    if now_et.weekday() != 6:  # Sunday only
+        return
+
+    seg_label = ctx.display_name or ctx.segment
+    today = now_et.strftime("%Y-%m-%d")
+    marker = ".capital_rebalance_done.marker"
+
+    try:
+        with open(marker) as f:
+            if f.read().strip() == today:
+                logging.info(
+                    f"[{seg_label}] Capital rebalance already ran today — skipping.")
+                return
+    except FileNotFoundError:
+        pass
+
+    try:
+        from capital_allocator import rebalance
+        from models import _get_conn
+        # Iterate all users who have opted in.
+        conn = _get_conn()
+        users = conn.execute(
+            "SELECT id, email FROM users WHERE auto_capital_allocation = 1"
+        ).fetchall()
+        conn.close()
+
+        if not users:
+            logging.info(
+                f"[{seg_label}] No users with auto_capital_allocation enabled.")
+            try:
+                with open(marker, "w") as f:
+                    f.write(today)
+            except OSError:
+                pass
+            return
+
+        for user in users:
+            uid = user["id"] if hasattr(user, "keys") else user[0]
+            try:
+                changes = rebalance(uid)
+                if changes:
+                    summary = ", ".join(
+                        f"{c['name']}: {c['old_scale']:.2f}→{c['new_scale']:.2f}"
+                        for c in changes
+                    )
+                    logging.info(
+                        f"[{seg_label}] Capital rebalance for user {uid}: "
+                        f"{len(changes)} change(s) — {summary}")
+                else:
+                    logging.info(
+                        f"[{seg_label}] Capital rebalance for user {uid}: no changes.")
+            except Exception as exc:
+                logging.warning(
+                    f"[{seg_label}] Capital rebalance failed for user {uid}: {exc}")
+
+        try:
+            with open(marker, "w") as f:
+                f.write(today)
+        except OSError as exc:
+            logging.warning(f"Could not write capital-rebalance marker: {exc}")
+    except Exception as exc:
+        logging.warning(
+            f"[{seg_label}] Capital rebalance task failed: {exc}")
 
 
 def _task_auto_strategy_generation(ctx):

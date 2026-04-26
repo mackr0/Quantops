@@ -996,6 +996,13 @@
         <div id="tuning-history-widget"><p class="muted">Loading...</p></div>
     </article>
 
+    <!-- Active Autonomy State — overrides the tuner has set per profile -->
+    <article>
+        <header><h3>Active Autonomy State</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Per-profile overrides the tuner has set. Empty sections mean every parameter is at its default for that profile.</p>
+        <div id="autonomy-status-widget"><p class="muted">Loading...</p></div>
+    </article>
+
     <!-- AI Cost Tracking -->
     <article>
         <header>
@@ -1196,6 +1203,70 @@
             });
     }
     loadTuningStatusPills();
+
+    // --- Active Autonomy State ---
+    function loadAutonomyStatus() {
+        var w = document.getElementById('autonomy-status-widget');
+        if (!w) return;
+        fetch('/api/autonomy-status' + (pfParam ? '?' + pfParam.substr(1) : ''))
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d.items || !d.items.length) {
+                    w.innerHTML = '<p class="muted">No profiles.</p>';
+                    return;
+                }
+                var h = '';
+                d.items.forEach(function(p) {
+                    var hasAny = p.capital_scale !== 1.0
+                        || Object.keys(p.signal_weights).length > 0
+                        || Object.keys(p.regime_overrides).length > 0
+                        || Object.keys(p.tod_overrides).length > 0
+                        || Object.keys(p.symbol_overrides).length > 0
+                        || Object.keys(p.prompt_layout).length > 0;
+                    h += '<article style="margin:0.5rem 0;padding:0.5rem 0.75rem;">';
+                    h += '<header style="padding:0;margin-bottom:0.4rem;"><strong>' + esc(p.profile_name) + '</strong>';
+                    if (!hasAny) {
+                        h += ' <small class="muted">— all defaults, no autonomous overrides active</small>';
+                    }
+                    h += '</header>';
+                    if (hasAny) {
+                        h += '<div style="display:flex;flex-wrap:wrap;gap:0.5rem;font-size:0.85rem;">';
+                        if (p.capital_scale !== 1.0) {
+                            var color = p.capital_scale > 1.0 ? '#00c853' : '#f57c00';
+                            h += '<span style="padding:0.15rem 0.5rem;border-radius:4px;border:1px solid ' + color + ';color:' + color + ';">Capital scale: ' + p.capital_scale.toFixed(2) + '×</span>';
+                        }
+                        Object.entries(p.signal_weights).forEach(function(e) {
+                            h += '<span style="padding:0.15rem 0.5rem;border-radius:4px;border:1px solid #888;color:#555;">' + esc(e[0]) + ' weight ' + e[1].toFixed(1) + '</span>';
+                        });
+                        Object.entries(p.regime_overrides).forEach(function(e) {
+                            Object.entries(e[1]).forEach(function(rv) {
+                                h += '<span style="padding:0.15rem 0.5rem;border-radius:4px;border:1px solid #2196f3;color:#1976d2;">' + esc(e[0]) + ' (' + esc(rv[0]) + '): ' + rv[1] + '</span>';
+                            });
+                        });
+                        Object.entries(p.tod_overrides).forEach(function(e) {
+                            Object.entries(e[1]).forEach(function(tv) {
+                                h += '<span style="padding:0.15rem 0.5rem;border-radius:4px;border:1px solid #9c27b0;color:#7b1fa2;">' + esc(e[0]) + ' (' + esc(tv[0]) + '): ' + tv[1] + '</span>';
+                            });
+                        });
+                        Object.entries(p.symbol_overrides).forEach(function(e) {
+                            Object.entries(e[1]).forEach(function(sv) {
+                                h += '<span style="padding:0.15rem 0.5rem;border-radius:4px;border:1px solid #ff5722;color:#e64a19;">' + esc(e[0]) + ' (' + esc(sv[0]) + '): ' + sv[1] + '</span>';
+                            });
+                        });
+                        Object.entries(p.prompt_layout).forEach(function(e) {
+                            h += '<span style="padding:0.15rem 0.5rem;border-radius:4px;border:1px solid #795548;color:#5d4037;">' + esc(e[0]) + ' verbosity: ' + esc(e[1]) + '</span>';
+                        });
+                        h += '</div>';
+                    }
+                    h += '</article>';
+                });
+                w.innerHTML = h;
+            })
+            .catch(function() {
+                w.innerHTML = '<p class="muted">Failed to load autonomy status.</p>';
+            });
+    }
+    loadAutonomyStatus();
 
     // --- Tuning History ---
     function loadTuningHistory(page) {
