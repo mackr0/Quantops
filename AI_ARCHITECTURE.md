@@ -136,7 +136,7 @@ Order execution              Trades sent to Alpaca. Internal ledger
 
 ### 1c. What the AI Sees per Candidate
 
-15 alternative-data signals + 13 technical indicators + market context
+19 alternative-data signals + 13 technical indicators + market context
 + per-stock memory. Detailed list lives in the AI page's "What the
 AI Sees" reference panel; the canonical signal registry is in
 `signal_weights.WEIGHTABLE_SIGNALS`. Each signal can be omitted or

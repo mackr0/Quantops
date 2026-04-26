@@ -1149,7 +1149,7 @@
             <div><h5>News Headlines</h5><small>Up to 3 recent headlines per stock</small></div>
         </div>
 
-        <h4>Per-Candidate Alternative Data (15 sources)</h4>
+        <h4>Per-Candidate Alternative Data (19 sources)</h4>
         <div class="grid">
             <div><h5>Insider Transactions</h5><small>Recent buys/sells count + dollar volume from SEC Form 4 filings</small></div>
             <div><h5>Insider Clusters</h5><small>3+ insiders buying the same stock within 90 days = cluster signal</small></div>
@@ -1175,20 +1175,19 @@
             <div><h5>Relative Strength</h5><small>Performance vs sector ETF over recent period</small></div>
             <div><h5>Intraday Patterns</h5><small>VWAP position, opening range breakout, intraday trend, volume profile</small></div>
         </div>
+        <div class="grid">
+            <div><h5>Congressional Trades</h5><small>Senate and House stock disclosures (under the STOCK Act). Recent buys/sells per ticker, dollar volume, party split, last filing date. Refreshed daily.</small></div>
+            <div><h5>13F-HR Institutional Holdings</h5><small>Quarterly snapshots of what big funds (Berkshire, etc.) own — total holders, total shares, top holder, quarter-over-quarter share change. Refreshed daily from SEC filings.</small></div>
+            <div><h5>Biotech Trial Milestones</h5><small>Upcoming PDUFA dates, active phase-3 trial counts, recent phase changes from ClinicalTrials.gov. Tagged to the sponsor's ticker.</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>StockTwits Sentiment</h5><small>7-day net sentiment + message volume + currently-trending flag from the StockTwits trader feed.</small></div>
+        </div>
 
         <h4 style="margin-top:0.5rem;">Pending External APIs <small class="muted">(not yet feeding the AI)</small></h4>
         <div class="grid">
             <div><h5 class="muted">Patent Filing Velocity</h5><small class="muted">The public patent-search API we relied on was deprecated and the replacement isn't stable yet. Will turn on once it is.</small></div>
             <div><h5 class="muted">Reddit Sentiment</h5><small class="muted">Mention counts and sentiment from r/wallstreetbets, r/stocks, r/investing, r/options. Currently off because no Reddit account credentials are configured.</small></div>
-            <div><h5 class="muted">Congressional Trades (third-party API)</h5><small class="muted">The free aggregator we tried is now paywalled. Replaced by a locally-built dataset (see below).</small></div>
-        </div>
-
-        <h4 style="margin-top:0.5rem;">Built Locally — Not Yet Wired In <small class="muted">(data we already collect daily, not yet shown to the AI)</small></h4>
-        <div class="grid">
-            <div><h5 class="muted">Congressional Trades</h5><small class="muted">Senate and House stock disclosures (under the STOCK Act). Includes round-trip P&amp;L estimates from the disclosed dollar ranges.</small></div>
-            <div><h5 class="muted">13F-HR Institutional Holdings</h5><small class="muted">Quarterly snapshots of what big funds (Berkshire, Bridgewater, etc.) own — pulled directly from their SEC filings.</small></div>
-            <div><h5 class="muted">Biotech Trial Events</h5><small class="muted">Clinical-trial milestones from ClinicalTrials.gov — phase changes, completions, withdrawals — tagged to the sponsor's ticker.</small></div>
-            <div><h5 class="muted">StockTwits Sentiment</h5><small class="muted">Trending tickers and per-message bullish/bearish sentiment from the StockTwits trader feed.</small></div>
         </div>
 
         <h4 style="margin-top:0.5rem;">Per-Candidate Memory</h4>

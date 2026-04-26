@@ -74,7 +74,7 @@ The tuner currently autonomously adjusts these levers. Each rule fires at most o
 | `skip_first_minutes` | *(active once intraday entry-time is structured)* | ±5 min |
 | `maga_mode` | Predictions with political_context active WR ≥ 10pt below overall (≥20 samples) | **Auto-disable** |
 
-**Total levers auto-tuned today: 35** (8 pre-existing + 15 from Wave 1 + 8 from Wave 2 + 4 from Wave 3 + per-signal weight system from Wave 4 covering 21 signals).
+**Total levers auto-tuned today: 35** (8 pre-existing + 15 from Wave 1 + 8 from Wave 2 + 4 from Wave 3 + per-signal weight system from Wave 4 covering 25 signals — including the 4 standalone alt-data sources integrated 2026-04-26).
 
 ### Wave 5 — Per-Regime Parameter Overrides (Layer 3, newly active)
 

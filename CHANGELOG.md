@@ -17,6 +17,53 @@ Rules going forward:
 
 ---
 
+## 2026-04-26 — Alt-data integration: 4 standalone projects wired into the AI (Severity: medium, feature)
+
+The four projects built last week — `congresstrades`, `edgar13f`,
+`biotechevents`, `stocktwits` — are now feeding the AI's prompt as
+weighted signals on the same Layer 2 ladder as everything else.
+
+**W1 — Read layer** (`alternative_data.py`): four new helpers
+(`get_congressional_recent`, `get_13f_institutional`,
+`get_biotech_milestones`, `get_stocktwits_sentiment`) read each
+project's SQLite DB read-only with 6h cache, configurable path via
+`ALTDATA_BASE_PATH`. Graceful no-op when DB is missing or schema is
+partial. 12 new tests with seeded fixtures mirroring prod schema.
+
+**W2 — AI integration**: 4 new keys in `get_all_alternative_data`,
+4 new prompt blocks via `_weighted_signal_text` (so Layer 2 weights
+apply), 4 new entries in `signal_weights.WEIGHTABLE_SIGNALS` so the
+tuner can autonomously discount any signal that doesn't predict
+for a profile. Features flattened into `features_payload` so the
+meta-model can train on them too.
+
+**W3 — Production deployment**: 4 projects rsync'd to
+`/opt/quantopsai-altdata/{project}/` on the droplet. Fresh venvs +
+`pip install -r requirements.txt` per project (~217MB total). Cron
+entry at 06:00 UTC (02:00 ET, off hours):
+`0 6 * * * cd /opt/quantopsai-altdata && ALTDATA_BASE=/opt/quantopsai-altdata bash run-altdata-daily.sh >> logs/altdata-$(date +%Y%m%d).log 2>&1`.
+Driver script patched to honor `ALTDATA_BASE` env var with
+`$HOME` fallback for local-dev compat. `ALTDATA_BASE_PATH` added to
+`/opt/quantopsai/.env` so the QuantOpsAI services find the DBs at
+the right path. Manual seed run kicked off post-deploy.
+
+**W4 — Docs + UI**: "What the AI Sees" reference card on the AI page
+now shows the 4 cards as active sources (moved out of "Built Locally
+— Not Yet Wired In"). Alt-data source count bumped 15 → 19.
+`SELF_TUNING.md` Layer 2 inventory bumped 21 → 25 signals.
+`AI_ARCHITECTURE.md` updated.
+
+Each new signal joins the same self-correcting feedback loop as
+every other one — if congressional-trade signals don't predict for
+a profile, Layer 2 nudges the weight from 1.0 → 0.7 → 0.4 → 0.0
+within ~9 days. Layer 5 propagates that finding to peer profiles.
+Cost guard wraps prompt verbosity changes from any expanded
+signal set.
+
+Full suite: 926 passed (914 + 12 new alt-data reader tests).
+
+---
+
 ## 2026-04-25 — Hotfix: Active Lessons widget stuck on "Loading..." (Severity: medium, regression)
 
 **Problem:** The new "Active Lessons" widget on the AI Operations
