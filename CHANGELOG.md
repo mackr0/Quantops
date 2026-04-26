@@ -17,6 +17,40 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Autonomous tuning Wave 11: Layer 8 Self-Commissioned New Strategies (Severity: medium, behavior)
+
+The tuner can now identify *gaps* in current strategy coverage and
+trigger Phase 7's strategy generator with a focused brief. Heavily
+cost-gated (LLM tokens cost real money) and rate-limited to ≤1 per
+profile per week.
+
+**Detection** (`_optimize_commission_strategy`): scans the last 30
+days of resolved AI predictions. Counts winning BUY/SELL predictions
+where `strategy_type` was empty/null — i.e., the AI made the right call
+but no existing strategy fired on that pattern. ≥5 such gaps trigger
+the commission flow.
+
+**Cost guard**: every commission call is wrapped in
+`cost_guard.can_afford_action(user_id, ~$0.05)`. If it would push spend
+over the daily ceiling, the gap surfaces as
+`Recommendation: cost-gated` instead of firing the LLM.
+
+**Brief construction**: builds a focused prompt for
+`strategy_proposer.propose_strategies` describing the gap — sample
+symbols, average return — and asks for 1-2 new strategy specs. The
+returned specs flow through the existing Phase 7 pipeline:
+proposed → validated → shadow → active.
+
+**Rate limit**: 7-day cooldown via the existing
+`_get_recent_adjustment` machinery, keyed on `"self_commission"`.
+At most one commission per profile per week.
+
+**Tests:** 5 new in `test_self_commission.py` covering insufficient
+gaps, cooldown respect, cost-gated path, end-to-end proposal flow,
+and empty-proposer-result handling. Full suite: 889 passed.
+
+---
+
 ## 2026-04-25 — Autonomous tuning Wave 10: Layer 6 Adaptive AI Prompt Structure (Severity: medium, behavior)
 
 The structure of the AI's prompt — section verbosity per profile —

@@ -1642,6 +1642,8 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_symbol_overrides,
         # Wave 10 — Layer 6 adaptive AI prompt structure (cost-gated)
         _optimize_prompt_layout,
+        # Wave 11 — Layer 8 self-commissioned new strategies (cost-gated)
+        _optimize_commission_strategy,
     ]
 
     results = []
@@ -3324,6 +3326,129 @@ def _optimize_symbol_overrides(conn, ctx, profile_id, user_id,
         )
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Wave 11 — Layer 8 self-commissioned new strategies. The tuner
+# identifies coverage gaps — patterns where the AI made correct calls
+# but no existing strategy fired — and triggers Phase 7's
+# strategy_proposer with a focused brief. Cost-gated heavily because
+# strategy generation costs real LLM tokens. Rate-limited to one
+# commission per profile per week.
+# ---------------------------------------------------------------------------
+
+_COMMISSION_COOLDOWN_DAYS = 7
+_COMMISSION_MIN_GAPS = 5      # minimum no-strategy winners to bother
+_COMMISSION_EST_USD = 0.05    # rough cost of one strategy_proposal call
+
+
+def _optimize_commission_strategy(conn, ctx, profile_id, user_id,
+                                    overall_wr, resolved):
+    """Detect strategy coverage gaps and commission a new strategy via
+    Phase 7 generator if the gap is meaningful and cost-affordable."""
+    if not _safe_change_guarded(profile_id, "self_commission"):
+        return None
+
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(ai_predictions)").fetchall()}
+    if "strategy_type" not in cols:
+        return None
+
+    # Gaps = resolved winning BUY predictions where no strategy fired.
+    gap_rows = conn.execute(
+        "SELECT symbol, predicted_signal, actual_return_pct "
+        "FROM ai_predictions "
+        "WHERE status='resolved' AND actual_outcome='win' "
+        "  AND predicted_signal IN ('BUY', 'SELL') "
+        "  AND (strategy_type IS NULL OR strategy_type = '') "
+        "  AND datetime(timestamp) >= datetime('now', '-30 days') "
+        "ORDER BY timestamp DESC LIMIT 50"
+    ).fetchall()
+
+    if len(gap_rows) < _COMMISSION_MIN_GAPS:
+        return None
+
+    # Cost gate — strategy generation makes an LLM call. Always check.
+    try:
+        from cost_guard import can_afford_action, format_cost_recommendation
+        if not can_afford_action(user_id, _COMMISSION_EST_USD):
+            return format_cost_recommendation(
+                f"commission new strategy "
+                f"(detected {len(gap_rows)} no-strategy winners in last 30d)",
+                user_id, _COMMISSION_EST_USD,
+            )
+    except Exception:
+        pass
+
+    # Build a focused brief describing the gap.
+    sample_symbols = [r["symbol"] for r in gap_rows[:5]]
+    avg_return = (sum(r["actual_return_pct"] or 0 for r in gap_rows)
+                   / len(gap_rows))
+    ctx_summary = (
+        f"Strategy coverage gap detected: {len(gap_rows)} winning "
+        f"AI predictions over the last 30 days had no strategy fire "
+        f"on them (avg return {avg_return:+.1f}%). Sample symbols: "
+        f"{', '.join(sample_symbols)}. Propose 1-2 new strategies "
+        f"that could systematically catch these patterns."
+    )
+
+    # Trigger the Phase 7 strategy_proposer.
+    try:
+        from strategy_proposer import propose_strategies
+        from strategy_generator import save_spec
+        ai_provider = getattr(ctx, "ai_provider", "anthropic")
+        ai_model = getattr(ctx, "ai_model", "claude-haiku-4-5-20251001")
+        ai_api_key = getattr(ctx, "ai_api_key", None) or getattr(
+            ctx, "ai_api_key_enc", None)
+        if not ai_api_key:
+            # Fall back to environment-configured default
+            import os
+            ai_api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        if not ai_api_key:
+            return None
+
+        market_type = getattr(ctx, "market_type", None) or getattr(
+            ctx, "segment", None)
+        market_types = [market_type] if market_type else None
+
+        proposals = propose_strategies(
+            ctx_summary=ctx_summary,
+            recent_performance=[],  # no per-strategy stats needed
+            n_proposals=1,
+            ai_provider=ai_provider,
+            ai_model=ai_model,
+            ai_api_key=ai_api_key,
+            market_types=market_types,
+            db_path=ctx.db_path,
+        )
+        if not proposals:
+            return None
+
+        spec_ids = []
+        for spec in proposals:
+            try:
+                spec_id = save_spec(ctx.db_path, spec)
+                spec_ids.append(spec_id)
+            except Exception as save_exc:
+                logger.warning("save_spec failed: %s", save_exc)
+
+        if not spec_ids:
+            return None
+
+        from models import log_tuning_change
+        reason = (
+            f"Commissioned {len(spec_ids)} new strategy from "
+            f"{len(gap_rows)} no-strategy winners"
+        )
+        log_tuning_change(
+            profile_id, user_id, "self_commission",
+            "self_commission", "0", str(len(spec_ids)), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return f"Commissioned new strategy proposal ({reason})"
+    except Exception as exc:
+        logger.warning("Strategy commission failed: %s", exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
