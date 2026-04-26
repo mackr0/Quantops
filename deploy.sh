@@ -78,6 +78,37 @@ pip install yfinance tzdata -q 2>&1 | tail -1
 mkdir -p logs
 SETUP
 
+# ── Step 4b: Align prod .git/ to origin/main ─────────────────────────
+# rsync above ships files but never touches .git/. Without this step,
+# prod's git history silently drifts behind the deployed code, turning
+# any future `git reset/checkout/pull` on prod into a catastrophic revert.
+echo ""
+echo "[4b/7] Aligning prod .git/ to origin/main..."
+ssh ${REMOTE_USER}@${DROPLET_IP} "
+    set -e
+    git config --global --add safe.directory ${REMOTE_DIR} >/dev/null 2>&1 || true
+    cd ${REMOTE_DIR}
+    if [ -d .git ]; then
+        git fetch origin --quiet
+        git reset --hard origin/main >/dev/null
+        echo \"  prod HEAD = \$(git rev-parse --short HEAD)\"
+        DRIFT=\$(git status --porcelain | grep -v '^??' || true)
+        if [ -n \"\$DRIFT\" ]; then
+            echo 'WARNING: tracked files diverge from origin/main on prod after reset:'
+            echo \"\$DRIFT\"
+        fi
+    else
+        echo \"  no .git/ on prod yet — first deploy. Cloning to align refs...\"
+        git clone --quiet --bare https://github.com/mackr0/Quantops.git .git-tmp
+        mv .git-tmp/* .git-tmp/.git* . 2>/dev/null || true
+        rmdir .git-tmp 2>/dev/null || true
+        # Convert from bare to normal
+        git config --bool core.bare false
+        git reset --hard origin/main >/dev/null 2>&1 || true
+        echo \"  prod HEAD = \$(git rev-parse --short HEAD 2>/dev/null || echo 'unset')\"
+    fi
+"
+
 # ── Step 5: Run migration (safe to re-run) ───────────────────────────
 echo ""
 echo "[5/7] Running database migration..."

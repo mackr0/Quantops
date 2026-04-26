@@ -20,7 +20,35 @@ if [[ "$1" == "--all" || "$2" == "--all" ]]; then FORCE_MODE="all"; fi
 # Strip flags from DROPLET_IP if a flag was passed as $1
 if [[ "$DROPLET_IP" == --* ]]; then DROPLET_IP="67.205.155.63"; fi
 
+LOCAL_REPO="/Users/mackr0/Quantops"
+
+# ---------------------------------------------------------------------------
+# Pre-flight gate: prod's .git/ is updated to origin/main as part of every
+# deploy (see post-deploy block below). For that to be safe, local must be
+# clean and origin/main must equal local HEAD. Otherwise rsync would ship
+# code to prod that origin/main doesn't have, so the post-deploy reset
+# would silently revert the just-deployed files.
+# ---------------------------------------------------------------------------
+if ! git -C "$LOCAL_REPO" diff-index --quiet HEAD -- 2>/dev/null; then
+    echo "ERROR: Uncommitted changes in working tree."
+    echo "Commit (or stash) before running sync.sh. Otherwise rsync would"
+    echo "ship code to prod that origin/main doesn't reflect, and the"
+    echo "post-deploy 'git reset --hard origin/main' would revert it."
+    git -C "$LOCAL_REPO" status --short
+    exit 1
+fi
+git -C "$LOCAL_REPO" fetch origin --quiet 2>/dev/null || true
+LOCAL_HEAD=$(git -C "$LOCAL_REPO" rev-parse HEAD)
+ORIGIN_HEAD=$(git -C "$LOCAL_REPO" rev-parse origin/main 2>/dev/null || echo "UNKNOWN")
+if [ "$LOCAL_HEAD" != "$ORIGIN_HEAD" ]; then
+    echo "ERROR: Local HEAD ($LOCAL_HEAD) does not match origin/main ($ORIGIN_HEAD)."
+    echo "Run: git push origin main"
+    echo "(or pull, if you're behind) before deploying."
+    exit 1
+fi
+
 echo "Syncing code to ${DROPLET_IP}:${REMOTE_DIR}..."
+echo "  local HEAD = $LOCAL_HEAD (matches origin/main)"
 
 # Capture which files changed via rsync dry-run
 CHANGED=$(rsync -az --delete --dry-run --itemize-changes \
@@ -87,6 +115,38 @@ rsync -az --delete \
     root@${DROPLET_IP}:${REMOTE_DIR}/
 
 echo "Sync complete."
+
+# ---------------------------------------------------------------------------
+# Post-deploy: sync prod's .git/ to origin/main so prod's git HEAD always
+# tracks the deployed code. Without this step, rsync moves files but never
+# updates .git/, and prod's git history silently drifts behind the deployed
+# code — turning any future `git reset/checkout/pull` on prod into a
+# catastrophic revert. Pre-flight gate above guarantees origin/main equals
+# what we just rsync'd, so this reset is a no-op for tracked files.
+# ---------------------------------------------------------------------------
+echo ""
+echo "Aligning prod .git/ to origin/main..."
+ssh root@${DROPLET_IP} "
+    set -e
+    git config --global --add safe.directory ${REMOTE_DIR} >/dev/null 2>&1 || true
+    cd ${REMOTE_DIR}
+    git fetch origin --quiet
+    git reset --hard origin/main >/dev/null
+    PROD_HEAD=\$(git rev-parse HEAD)
+    if [ \"\$PROD_HEAD\" != \"$LOCAL_HEAD\" ]; then
+        echo \"ERROR: prod HEAD (\$PROD_HEAD) != local HEAD ($LOCAL_HEAD) after reset.\"
+        exit 1
+    fi
+    # Sanity: only untracked runtime artifacts should remain. Any 'modified'
+    # tracked file means rsync shipped something origin/main doesn't have.
+    DRIFT=\$(git status --porcelain | grep -v '^??' || true)
+    if [ -n \"\$DRIFT\" ]; then
+        echo 'ERROR: Tracked files on prod diverge from origin/main:'
+        echo \"\$DRIFT\"
+        exit 1
+    fi
+    echo \"  prod HEAD = \$(git rev-parse --short HEAD) (verified clean against origin/main)\"
+"
 
 # Determine what needs restarting
 NEED_WEB=false
