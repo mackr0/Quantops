@@ -280,6 +280,17 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 max_position_pct = ctx.max_position_pct
             stop_loss_pct = ctx.stop_loss_pct
             take_profit_pct = ctx.take_profit_pct
+
+        # Layer 9 — apply the auto-allocator's capital_scale multiplier
+        # to position sizing. capital_scale is normalized within each
+        # Alpaca-account group so siblings sharing real capital sum to N.
+        # Default 1.0 = unchanged; 0.5 = half-size; 2.0 = double-size.
+        try:
+            cap_scale = float(getattr(ctx, "capital_scale", 1.0) or 1.0)
+            if cap_scale != 1.0 and max_position_pct is not None:
+                max_position_pct = max_position_pct * cap_scale
+        except Exception:
+            pass
     else:
         if max_position_pct is None:
             max_position_pct = DEFAULT_MAX_POSITION_PCT

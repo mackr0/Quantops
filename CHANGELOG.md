@@ -17,6 +17,58 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Autonomous tuning Wave 12: Layer 9 Auto Capital Allocation — opt-in (Severity: medium, behavior)
+
+The final functional layer. When the user flips
+`auto_capital_allocation` ON for their account, a weekly task
+rebalances per-profile `capital_scale` multipliers based on each
+profile's risk-adjusted recent returns. The trading pipeline reads
+`capital_scale` before sizing, so a profile at 0.5 takes
+half-position-size relative to its own baseline. Default OFF.
+
+**Critical constraint respected:** profiles are virtual on top of
+shared Alpaca paper accounts. Multiple profiles can share one real
+$1M paper account. The allocator works **per-Alpaca-account**:
+
+1. Profiles are grouped by `alpaca_account_id`.
+2. Within each group, scales are normalized so they sum to N (the
+   group size). Average stays 1.0; relative shifts move toward
+   higher-scoring profiles.
+3. Group conservation means the underlying real account is never
+   over-committed — if scale[A]=1.5, then scale[B]+scale[C]=1.5 in
+   the same group.
+4. **Solo profiles** (1 per account) always get `scale=1.0`. There's
+   nothing to rebalance against.
+
+**Bounds (in addition to group conservation):**
+- Per-rebalance: each scale moves at most ±50% per week.
+- Absolute: scale ∈ [0.25, 2.0] — no profile drops below 25% or
+  rises above 200% of baseline.
+
+**Schema:** `users.auto_capital_allocation` boolean (default OFF) +
+`trading_profiles.capital_scale` REAL (default 1.0). Both
+auto-migrated.
+
+**Pipeline integration** (`trade_pipeline.execute_trade`): after the
+override-chain resolution of `max_position_pct`, the result is
+multiplied by `capital_scale`. So the auto-allocator's decisions stack
+on top of all other tuning layers — per-symbol stop-loss × regime ×
+TOD × global × `capital_scale` = final position size.
+
+**Tests:** 7 new in `test_capital_allocator.py`: solo-profile
+preservation, group-sum conservation, score-weighted shifts, mixed
+solo/shared groups, per-rebalance and absolute bound enforcement,
+opt-in gate respected. Full suite: 896 passed.
+
+This closes the 9-layer plan from `AUTONOMOUS_TUNING_PLAN.md`. The
+last wave (W13) is the cross-cutting guardrail: a test that walks
+`trading_profiles` schema and asserts every column is either tuned
+or on a manual allowlist. Then the user-facing Settings UI for
+opting into the per-user toggles (`auto_capital_allocation`,
+`ai_model_auto_tune`).
+
+---
+
 ## 2026-04-25 — Autonomous tuning Wave 11: Layer 8 Self-Commissioned New Strategies (Severity: medium, behavior)
 
 The tuner can now identify *gaps* in current strategy coverage and

@@ -306,6 +306,12 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         ("trading_profiles", "symbol_overrides", "TEXT NOT NULL DEFAULT '{}'"),
         # Layer 6 — adaptive AI prompt structure (per-section verbosity)
         ("trading_profiles", "prompt_layout", "TEXT NOT NULL DEFAULT '{}'"),
+        # Layer 9 — auto capital allocation (per-user opt-in toggle)
+        ("users", "auto_capital_allocation", "INTEGER NOT NULL DEFAULT 0"),
+        # Layer 9 — recommended capital scale per profile (1.0 = baseline,
+        # 0.5 = halved, 2.0 = doubled). The auto-allocator updates this;
+        # the trading pipeline reads it before computing position sizes.
+        ("trading_profiles", "capital_scale", "REAL NOT NULL DEFAULT 1.0"),
     ]
     for table, col, col_def in _migrations:
         try:
