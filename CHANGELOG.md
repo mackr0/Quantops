@@ -17,6 +17,31 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — UI surfaces: cost guard status + active lessons cards (Severity: low, UX)
+
+Two read-only widgets on the AI Operations tab so the new
+infrastructure is visible without console-spelunking.
+
+**Cost Guard card.** Shows today's spend vs ceiling, headroom
+remaining, trailing-7-day average, with a colored progress bar (green
+< 60%, orange < 90%, red ≥ 90%). The explanatory subtitle tells the
+user that over-ceiling auto-actions become recommendations, not
+silent debits. New `/api/cost-guard-status` endpoint backs it.
+
+**Active Lessons card.** Per-profile breakdown of currently-active
+post-mortem patterns and tuner-detected failure patterns —
+i.e., everything currently being injected into the AI prompt's
+LEARNED PATTERNS section. Profiles with no active lessons render as
+"AI is operating on default context — no post-mortem patterns or
+strong tuner-detected failure patterns to inject." New
+`/api/active-lessons` endpoint backs it (named to avoid colliding
+with the older `/api/learned-patterns` paginated endpoint).
+
+Tests: full suite 907 still green (UI changes only; no Python logic
+changes).
+
+---
+
 ## 2026-04-25 — Closed-loop learning: post-mortems on losing weeks + false-negative tuning + comprehensive AI doc (Severity: medium, feature)
 
 Three additions that turn information into learning:

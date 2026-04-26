@@ -3254,6 +3254,55 @@ def api_tuning_status():
                      "page": page, "pages": -(-total // per_page)})
 
 
+@views_bp.route("/api/cost-guard-status")
+@login_required
+def api_cost_guard_status():
+    """Cost-guard daily status snapshot — today's spend, ceiling,
+    headroom, trailing-7-day average."""
+    try:
+        from cost_guard import status
+        return jsonify(status(current_user.effective_user_id))
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@views_bp.route("/api/active-lessons")
+@login_required
+def api_active_lessons():
+    """Active post-mortem patterns + tuner-detected failure patterns
+    per profile — what the AI is being told to be cautious about right
+    now (everything currently being injected into the AI prompt's
+    LEARNED PATTERNS section)."""
+    import os
+    profile_id = request.args.get("profile_id", type=int)
+    profiles = [p for p in get_user_profiles(current_user.effective_user_id) if p.get("enabled")]
+    if profile_id:
+        profiles = [p for p in profiles if p["id"] == profile_id]
+
+    items = []
+    for p in profiles:
+        db_path = f"quantopsai_profile_{p['id']}.db"
+        if not os.path.exists(db_path):
+            continue
+        try:
+            from post_mortem import get_active_patterns
+            patterns = get_active_patterns(db_path)
+        except Exception:
+            patterns = []
+        try:
+            from self_tuning import _analyze_failure_patterns
+            tuner_patterns = _analyze_failure_patterns(db_path)
+        except Exception:
+            tuner_patterns = []
+        items.append({
+            "profile_id": p["id"],
+            "profile_name": p["name"],
+            "post_mortem_patterns": patterns,
+            "tuner_patterns": tuner_patterns,
+        })
+    return jsonify({"items": items})
+
+
 @views_bp.route("/api/autonomy-status")
 @login_required
 def api_autonomy_status():

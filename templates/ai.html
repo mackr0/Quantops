@@ -996,6 +996,20 @@
         <div id="tuning-history-widget"><p class="muted">Loading...</p></div>
     </article>
 
+    <!-- Cost Guard Daily Status — spend tracking + headroom -->
+    <article>
+        <header><h3>Cost Guard</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Daily API-spend ceiling. Every spend-affecting autonomous action checks this before firing — over-budget changes surface as cost-gated recommendations instead of auto-applying.</p>
+        <div id="cost-guard-widget"><p class="muted">Loading...</p></div>
+    </article>
+
+    <!-- Active Learned Patterns — what the AI has been told to be cautious about -->
+    <article>
+        <header><h3>Active Lessons</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Post-mortem patterns + tuner-detected failure patterns currently being injected into the AI's prompt. These are the "be cautious" notes the AI sees at every decision.</p>
+        <div id="learned-patterns-widget"><p class="muted">Loading...</p></div>
+    </article>
+
     <!-- Active Autonomy State — overrides the tuner has set per profile -->
     <article>
         <header><h3>Active Autonomy State</h3></header>
@@ -1267,6 +1281,87 @@
             });
     }
     loadAutonomyStatus();
+
+    // --- Cost Guard daily status ---
+    function loadCostGuard() {
+        var w = document.getElementById('cost-guard-widget');
+        if (!w) return;
+        fetch('/api/cost-guard-status')
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (d.error) {
+                    w.innerHTML = '<p class="muted">' + esc(d.error) + '</p>';
+                    return;
+                }
+                var pct = d.ceiling_usd > 0 ? (d.today_usd / d.ceiling_usd * 100) : 0;
+                var barColor = pct < 60 ? '#00c853' : (pct < 90 ? '#ff9800' : '#f44336');
+                var h = '<div style="display:flex;flex-wrap:wrap;gap:1rem;align-items:center;font-size:0.9rem;">';
+                h += '<div><strong>Today: $' + d.today_usd.toFixed(2) + '</strong> of $' + d.ceiling_usd.toFixed(2) + ' ceiling</div>';
+                h += '<div class="muted">Headroom: $' + d.headroom_usd.toFixed(2) + '</div>';
+                h += '<div class="muted">7-day avg: $' + d.trailing_7d_avg_usd.toFixed(2) + '/day</div>';
+                h += '</div>';
+                h += '<div style="margin-top:0.5rem;background:#eee;border-radius:4px;height:8px;overflow:hidden;">';
+                h += '<div style="width:' + Math.min(pct, 100) + '%;height:100%;background:' + barColor + ';transition:width 0.3s;"></div>';
+                h += '</div>';
+                h += '<small class="muted" style="display:block;margin-top:0.4rem;">Ceiling defaults to your trailing-7-day average × 1.5 (floor $5/day). Auto-actions that would push over the ceiling are surfaced as recommendations instead.</small>';
+                w.innerHTML = h;
+            })
+            .catch(function() {
+                w.innerHTML = '<p class="muted">Failed to load cost guard status.</p>';
+            });
+    }
+    loadCostGuard();
+
+    // --- Active Learned Patterns / Post-mortems ---
+    function loadLearnedPatterns() {
+        var w = document.getElementById('learned-patterns-widget');
+        if (!w) return;
+        fetch('/api/active-lessons' + (pfParam ? '?' + pfParam.substr(1) : ''))
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d.items || !d.items.length) {
+                    w.innerHTML = '<p class="muted">No profiles.</p>';
+                    return;
+                }
+                var anyPatterns = false;
+                var h = '';
+                d.items.forEach(function(p) {
+                    var pmCount = (p.post_mortem_patterns || []).length;
+                    var tunerCount = (p.tuner_patterns || []).length;
+                    if (pmCount === 0 && tunerCount === 0) return;
+                    anyPatterns = true;
+                    h += '<article style="margin:0.5rem 0;padding:0.5rem 0.75rem;">';
+                    h += '<header style="padding:0;margin-bottom:0.4rem;"><strong>' + esc(p.profile_name) + '</strong></header>';
+                    if (pmCount > 0) {
+                        h += '<div style="margin-bottom:0.5rem;">';
+                        h += '<small style="color:#c62828;font-weight:600;">POST-MORTEM (most recent losing-week analysis):</small>';
+                        h += '<ul style="margin:0.25rem 0 0 1.25rem;padding:0;font-size:0.85rem;">';
+                        p.post_mortem_patterns.forEach(function(pat) {
+                            h += '<li>' + esc(pat) + '</li>';
+                        });
+                        h += '</ul></div>';
+                    }
+                    if (tunerCount > 0) {
+                        h += '<div>';
+                        h += '<small style="color:#5d4037;font-weight:600;">TUNER-DETECTED PATTERNS (regime / strategy / hour-of-day):</small>';
+                        h += '<ul style="margin:0.25rem 0 0 1.25rem;padding:0;font-size:0.85rem;">';
+                        p.tuner_patterns.forEach(function(pat) {
+                            h += '<li>' + esc(pat) + '</li>';
+                        });
+                        h += '</ul></div>';
+                    }
+                    h += '</article>';
+                });
+                if (!anyPatterns) {
+                    h = '<p class="muted">No active lessons. The AI is operating on default context — no post-mortem patterns or strong tuner-detected failure patterns to inject.</p>';
+                }
+                w.innerHTML = h;
+            })
+            .catch(function() {
+                w.innerHTML = '<p class="muted">Failed to load active lessons.</p>';
+            });
+    }
+    loadLearnedPatterns();
 
     // --- Tuning History ---
     function loadTuningHistory(page) {
