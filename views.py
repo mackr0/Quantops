@@ -735,6 +735,7 @@ def save_profile(profile_id):
         "short_stop_loss_pct": float(form.get("short_stop_loss_pct", 0.08)),
         "short_take_profit_pct": float(form.get("short_take_profit_pct", 0.08)),
         "enable_self_tuning": 1 if form.get("enable_self_tuning") else 0,
+        "ai_model_auto_tune": 1 if form.get("ai_model_auto_tune") else 0,
         # Drawdown protection
         "drawdown_reduce_pct": float(form.get("drawdown_reduce_pct", 0.10)),
         "drawdown_pause_pct": float(form.get("drawdown_pause_pct", 0.20)),

@@ -220,6 +220,27 @@ _DISPLAY_NAMES = {
     "volume_spike":      "Volume Spike",
     "mean_reversion":    "Mean Reversion",
     "gap_and_go":        "Gap & Go",
+
+    # Namespace prefixes for compound parameter keys like
+    # `weight:insider_cluster`, `regime:volatile:stop_loss_pct`,
+    # `tod:open:max_position_pct`, `symbol:NVDA:max_position_pct`,
+    # `deprecate:insider_cluster`, `layout:alt_data`. The namespaced
+    # display_name fallback recursively resolves each segment, so
+    # explicit entries here make the prefix portion read naturally.
+    "weight":          "Signal Intensity",
+    "regime":          "Regime",
+    "tod":             "Time of Day",
+    "symbol":          "Symbol",
+    "deprecate":       "Deprecate Strategy",
+    "layout":          "Prompt Section",
+    "self_commission": "Self-Commissioned Strategy",
+    "capital_scale":   "Capital Scale",
+    # NOTE: Don't add bare entries for section names like `alt_data` /
+    # `political_context` here — `political_context` is also an AI-cost
+    # purpose label with a different (existing) display ("Political /
+    # Macro Context") and overriding it breaks AI cost rendering.
+    # The `layout:alt_data` fallback renders as "Prompt Section —
+    # Alt Data" which is perfectly readable.
 }
 
 
@@ -296,6 +317,13 @@ def format_param_value(name: str, value) -> str:
     return f"{v:.2f}"
 
 
+def _is_ticker_like(s: str) -> bool:
+    """A bare uppercase token is probably a stock ticker (NVDA, AAPL).
+    Don't title-case it — preserve as-is so the user sees the actual
+    symbol they know."""
+    return s.isupper() and 1 <= len(s) <= 6 and s.isalpha()
+
+
 def display_name(internal: str) -> str:
     """Return the human-readable label for an internal identifier.
 
@@ -308,6 +336,9 @@ def display_name(internal: str) -> str:
         return str(internal) if internal is not None else ""
     if internal in _DISPLAY_NAMES:
         return _DISPLAY_NAMES[internal]
+    # Preserve ticker-shaped tokens (NVDA, AAPL) verbatim
+    if _is_ticker_like(internal):
+        return internal
     # Fallback: pretty-print snake_case (and namespaced "x:y" keys like
     # "ensemble:earnings_analyst" → "Ensemble — Earnings Analyst")
     if ":" in internal:

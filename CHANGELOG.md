@@ -17,6 +17,35 @@ Rules going forward:
 
 ---
 
+## 2026-04-25 — Post-W13 follow-ups: ai_model_auto_tune toggle + namespaced display names (Severity: low, completion)
+
+Two small but real follow-ups to W13:
+
+1. **`ai_model_auto_tune` opt-in toggle** added — schema column on
+   `trading_profiles` (default OFF), Settings UI checkbox with
+   explicit copy ("OFF by default, flipping this on can increase API
+   spend"), wired into the profile-save form. The toggle is the
+   per-profile entry point for future tuner logic that A/B tests AI
+   models within the cost guard. The actual A/B tuning code is a
+   future expansion of Layer 1; for now the toggle exists so users
+   can express intent.
+
+2. **Display names cleaned up for the override-stack namespaced keys.**
+   Added explicit prefix labels: `weight` → "Signal Intensity",
+   `tod` → "Time of Day", `deprecate` → "Deprecate Strategy",
+   `layout` → "Prompt Section", `self_commission` →
+   "Self-Commissioned Strategy", `capital_scale` → "Capital Scale".
+   Plus a `_is_ticker_like` helper that preserves uppercase ticker
+   tokens (`NVDA`, `AAPL`) verbatim instead of title-casing them.
+   So `symbol:NVDA:max_position_pct` now reads as
+   "Symbol — NVDA — Max Position Size (%)" instead of
+   "Symbol — Nvda — Max Position Size (%)". Tested for collision
+   with the existing AI-cost-purpose `political_context` label.
+
+898 passed.
+
+---
+
 ## 2026-04-25 — Post-W13: scheduled the capital allocator, surfaced the autonomy state UI (Severity: medium, completion)
 
 Three real gaps caught after W13 declared "done":

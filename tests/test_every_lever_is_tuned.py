@@ -45,10 +45,10 @@ MANUAL_PARAMETERS = {
     "consensus_api_key_enc":  "Secret",
     "alpaca_account_id":      "Foreign key to alpaca_accounts (set by user)",
 
-    # AI provider/model — explicit per-user opt-in needed, see
-    # ai_model_auto_tune toggle (planned W13)
-    "ai_provider": "Strategic AI choice — opt-in via ai_model_auto_tune (cost concern)",
-    "ai_model":    "Strategic AI choice — opt-in via ai_model_auto_tune (cost concern)",
+    # AI provider/model — explicit per-profile opt-in needed
+    "ai_provider":         "Strategic AI choice — opt-in via ai_model_auto_tune (cost concern)",
+    "ai_model":            "Strategic AI choice — opt-in via ai_model_auto_tune (cost concern)",
+    "ai_model_auto_tune":  "Per-profile opt-in toggle (user-set; not autonomously tuned)",
 
     # Architectural — multi-model setup is intentional
     "enable_consensus": "Architectural choice (multi-model)",

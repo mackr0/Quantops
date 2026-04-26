@@ -308,6 +308,10 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         ("trading_profiles", "prompt_layout", "TEXT NOT NULL DEFAULT '{}'"),
         # Layer 9 — auto capital allocation (per-user opt-in toggle)
         ("users", "auto_capital_allocation", "INTEGER NOT NULL DEFAULT 0"),
+        # Per-profile opt-in: lets the tuner A/B test ai_provider/ai_model
+        # within the cost guard. Default OFF so cost-conscious users
+        # aren't surprised by Sonnet/Opus calls.
+        ("trading_profiles", "ai_model_auto_tune", "INTEGER NOT NULL DEFAULT 0"),
         # Layer 9 — recommended capital scale per profile (1.0 = baseline,
         # 0.5 = halved, 2.0 = doubled). The auto-allocator updates this;
         # the trading pipeline reads it before computing position sizes.
