@@ -1,9 +1,34 @@
 # QuantOpsAI — Technical Documentation
 
-**Version:** 4.0
-**Date:** April 12, 2026
+**Version:** 5.0
+**Date:** April 26, 2026
 **System:** AI-powered autonomous paper trading platform
 **Architecture:** Python 3.12 / Flask / SQLite / DigitalOcean
+
+---
+
+## Recent Additions Since v4.0 (April 12 → April 26)
+
+This file documents the system's stable architecture. Two large
+expansions shipped between v4.0 and v5.0; their canonical references
+are in dedicated documents:
+
+- **`AUTONOMOUS_TUNING_PLAN.md`** — the 9-layer autonomous-tuning
+  architecture (parameter coverage, weighted signal intensity,
+  per-regime / per-time-of-day / per-symbol overrides, cross-profile
+  insight propagation, adaptive prompt structure, self-commissioned
+  strategies, capital allocation). Cost guard cross-cutting all of it.
+- **`SELF_TUNING.md`** — every tuning rule, every signal, every safety
+  guardrail in the autonomy system.
+- **`ALTDATA_INTEGRATION_PLAN.md`** — the four standalone alt-data
+  projects (`congresstrades`, `edgar13f`, `biotechevents`, `stocktwits`)
+  deployed to `/opt/quantopsai-altdata/` with daily cron at 06:00 UTC.
+- **`AI_ARCHITECTURE.md`** — end-to-end map of every AI agent +
+  every feedback loop including the 12 autonomy layers.
+
+The sections below have been refreshed where needed (Self-Tuning
+summary, schema, scheduler, config, codebase). For the deep dive,
+follow the canonical docs above.
 
 ---
 
@@ -453,6 +478,71 @@ Each shortlisted candidate gets up to 3 recent headlines from yfinance (free, ca
 ---
 
 ## 7. Self-Tuning & Machine Learning
+
+### 7.0 Current State — 12-Layer Autonomy (v5.0, April 2026)
+
+The original 4-parameter tuner described in §7.2 below has expanded
+into a 9-layer architecture (plus cost guard) covering ~50 distinct
+autonomous decision surfaces. Canonical reference is
+`AUTONOMOUS_TUNING_PLAN.md`; per-rule detail is in `SELF_TUNING.md`.
+
+| Layer | Surface | Module |
+|---|---|---|
+| 1 | 35+ tunable parameters with cooldown / reverse / bound clamping | `self_tuning.py` + `param_bounds.py` |
+| 2 | Per-signal weighted intensity (4-step ladder: 1.0/0.7/0.4/0.0) | `signal_weights.py` |
+| 3 | Per-regime parameter overrides (bull/bear/sideways/volatile/crisis) | `regime_overrides.py` |
+| 4 | Per-time-of-day overrides (open/midday/close ET) | `tod_overrides.py` |
+| 5 | Cross-profile insight propagation | `insight_propagation.py` |
+| 6 | Adaptive AI prompt structure (cost-gated) | `prompt_layout.py` |
+| 7 | Per-symbol parameter overrides (most-specific tier) | `symbol_overrides.py` |
+| 8 | Self-commissioned new strategies (cost-gated) | `self_tuning._optimize_commission_strategy` + `strategy_proposer.py` |
+| 9 | Auto capital allocation (opt-in, per-Alpaca-account-conserving) | `capital_allocator.py` |
+| ✱ | Cost guard (cross-cutting daily-spend ceiling) | `cost_guard.py` |
+
+**Closed-loop learning surfaces** (operate alongside the tuning layers):
+- **Meta-model** (`meta_model.py`): gradient-boosted classifier trained
+  daily per profile; re-weights AI confidence at decision time.
+- **Alpha decay monitor** (`alpha_decay.py`): tracks rolling 30-day
+  Sharpe per strategy; auto-deprecates when degraded for 30+ days,
+  auto-restores when recovered for 14+ days.
+- **Losing-week post-mortems** (`post_mortem.py`): weekly Sunday task;
+  when the past 7 days underperformed baseline by ≥10pt, clusters
+  losing predictions by feature signature and stores the dominant
+  pattern as a `learned_pattern` that the AI prompt picks up.
+- **False-negative analysis** (`self_tuning._optimize_false_negatives`):
+  HOLD predictions that resolve as "loss" (price moved enough to be
+  a missed opportunity) trigger threshold loosening when clustered.
+
+**Decision-time parameter resolution** uses a precedence chain at
+every read:
+```
+per-symbol > per-regime > per-time-of-day > profile-global > caller-default
+× capital_scale (Layer 9 multiplier, opt-in)
+```
+Single entry point: `regime_overrides.resolve_for_current_regime(
+profile, name, default=..., symbol=...)`. Wired into `trade_pipeline`
+at every parameter read.
+
+**Anti-regression guardrails** (six structural tests):
+1. `test_no_recommendation_only` — every "Recommendation:" string in
+   `self_tuning.py` must be on an explicit allowlist with rationale.
+2. `test_no_snake_case_in_optimizer_strings` — optimizer return
+   strings can't embed raw column names.
+3. `test_no_snake_case_in_api_responses` — dynamically discovers every
+   `/api/*` endpoint, walks JSON responses, fails on raw PARAM_BOUNDS
+   keys in user-facing positions.
+4. `test_no_duplicate_dom_ids` — every `id="..."` in templates must be
+   unique within its file (prevents JS getElementById from silently
+   orphaning widgets).
+5. `test_self_tune_task_no_change_path` — the no-change branch can't
+   NameError.
+6. `test_every_lever_is_tuned` — every column in `trading_profiles` is
+   either auto-tuned or on the `MANUAL_PARAMETERS` allowlist with a
+   written rationale.
+
+The legacy detail in §7.2–§7.10 below is retained as historical
+reference for the disaster-prevention + upward-optimization modes that
+predate the layered architecture; both still operate as Layer 1 rules.
 
 ### 7.1 Performance Context Injection
 
@@ -1213,13 +1303,45 @@ Requires Reddit API credentials (`REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` in .
 | Table | Records | Purpose |
 |---|---|---|
 | `users` | User accounts with encrypted API keys |
-| `trading_profiles` | 50+ column config per profile |
+| `trading_profiles` | 60+ column config per profile (see §9.1 for v5.0 additions) |
 | `user_segment_configs` | Legacy segment configs |
 | `decision_log` | Full audit trail per trade decision |
 | `activity_log` | Strategy ticker feed |
 | `user_api_usage` | Daily AI API call counts |
 | `tuning_history` | Self-tuning adjustment records with outcomes |
 | `symbol_names` | Cached company names from yfinance |
+
+### 9.1 Schema Additions (v5.0, April 2026)
+
+The autonomous-tuning rollout added 9 schema columns. All are
+auto-migrated via the ALTER-TABLE-on-startup framework in
+`models.init_user_db()`.
+
+**`trading_profiles` (per-profile autonomy state):**
+
+| Column | Type | Default | Purpose |
+|---|---|---|---|
+| `signal_weights` | TEXT (JSON) | `'{}'` | Layer 2 — per-signal intensity overrides (4-step ladder) |
+| `regime_overrides` | TEXT (JSON) | `'{}'` | Layer 3 — `{param: {regime: value}}` |
+| `tod_overrides` | TEXT (JSON) | `'{}'` | Layer 4 — `{param: {tod: value}}` (open/midday/close) |
+| `symbol_overrides` | TEXT (JSON) | `'{}'` | Layer 7 — `{param: {symbol: value}}` |
+| `prompt_layout` | TEXT (JSON) | `'{}'` | Layer 6 — `{section: verbosity}` |
+| `capital_scale` | REAL | `1.0` | Layer 9 — capital allocator's per-profile multiplier (per-Alpaca-account-conserved) |
+| `ai_model_auto_tune` | INTEGER | `0` | Per-profile opt-in for tuner-driven AI model A/B testing (cost-sensitive) |
+
+**`users` (per-user autonomy preferences):**
+
+| Column | Type | Default | Purpose |
+|---|---|---|---|
+| `auto_capital_allocation` | INTEGER | `0` | Layer 9 opt-in — when ON, weekly cron rebalances capital |
+| `daily_cost_ceiling_usd` | REAL | NULL | Cost-guard ceiling override; NULL = auto-compute (trailing-7d-avg × 1.5, floor $5) |
+
+**Per-profile DBs gain:**
+
+| Table | Purpose |
+|---|---|
+| `learned_patterns` | Post-mortem patterns extracted from losing weeks; injected into AI prompt |
+| `deprecated_strategies` | Alpha-decay deprecation records with auto-restore tracking |
 
 ### Per-Profile Databases (`quantopsai_profile_{id}.db`)
 
@@ -1230,7 +1352,9 @@ Each profile has an isolated database containing:
 | `trades` | Trade execution log with P&L |
 | `signals` | Strategy signals (traded or not) |
 | `daily_snapshots` | End-of-day equity snapshots |
-| `ai_predictions` | Every AI prediction with resolution status |
+| `ai_predictions` | Every AI prediction with resolution status (incl. `features_json` for meta-model training) |
+| `deprecated_strategies` | Alpha-decay records (added v5.0) |
+| `learned_patterns` | Post-mortem learnings (added v5.0) |
 
 ### AI Prediction Resolution
 
@@ -1284,6 +1408,15 @@ Each profile has an isolated database containing:
 | `GET /api/cycle-data/{id}` | Last AI cycle decisions, shortlist, reasoning per profile |
 | `GET /api/sector-rotation` | Current sector rotation (11 ETFs, inflow/outflow) |
 | `POST /scanning/toggle` | Admin start/stop scanning |
+| `GET /api/autonomy-status` (v5.0) | Per-profile snapshot of all active overrides (signal weights, regime/TOD/symbol overrides, prompt layout, capital scale) — labeled-list shape, no raw param keys |
+| `GET /api/autonomy-timeline` (v5.0) | Per-profile chronological feed of every autonomous change in last 30 days |
+| `GET /api/resolve-param` (v5.0) | Show how a parameter resolves through the override chain right now (for a given profile + param + optional symbol) |
+| `GET /api/cost-guard-status` (v5.0) | Today's API spend, daily ceiling (with source label), headroom, 7-day average |
+| `GET /api/active-lessons` (v5.0) | Per-profile post-mortem patterns + tuner-detected failure patterns currently in the AI prompt |
+| `GET /api/tuning-status` | Per-profile self-tuning readiness pills |
+| `GET /api/tuning-history` | Paginated unified history of all autonomous changes |
+| `POST /ai/profile/<id>/restore-strategy/<strategy_type>` (v5.0) | Manually restore a deprecated strategy to the active mix |
+| `POST /settings/autonomy` (v5.0) | Save user opt-in toggles + cost ceiling override |
 
 ---
 
@@ -1297,9 +1430,41 @@ Each profile has an isolated database containing:
 | **Check Exits** | 15 min | Per profile within schedule | Stop-loss, take-profit, trailing stops |
 | **Cancel Stale Orders** | 15 min | Per profile | Cancel unfilled limit orders > 5 min old |
 | **Resolve Predictions** | 60 min | Per profile | Score past AI predictions against actuals |
-| **Self-Tune** | Daily (3:55 PM ET) | Per profile | Review adjustments, apply new ones |
+| **Self-Tune** | Daily (3:55 PM ET) | Per profile | Review adjustments, apply new ones (Layer 1–8 rules) |
 | **Daily Snapshot** | Daily (3:55 PM ET) | Per profile | Save equity/cash/positions |
 | **Daily Summary Email** | Daily (3:55 PM ET) | Per profile | Portfolio + performance email |
+| **Meta-Model Retrain** | Daily (3:55 PM ET) | Per profile | Re-train gradient-boosted classifier on resolved predictions |
+| **Alpha-Decay Monitor** | Daily (3:55 PM ET) | Per profile | Detect rolling-Sharpe degradation; deprecate / restore strategies |
+| **SEC Filing Monitor** | Daily (3:55 PM ET) | Per market type | Diff new 10-K/10-Q/8-K filings; analyze materiality with AI |
+| **Auto-Strategy Lifecycle** | Daily (3:55 PM ET) | Per profile | Promote shadow strategies to active; retire failed ones |
+| **DB Backup** | Daily (3:55 PM ET) | Per profile | Rotate proprietary training-data backups |
+| **Weekly Digest Email** | Friday 4 PM ET | All profiles (one email) | Cross-profile summary + autonomy activity (added v5.0) |
+| **Weekly Capital Rebalance** (v5.0) | Sunday 04:00 UTC | Per user (opt-in) | Layer 9: rebalance per-profile `capital_scale`; respects shared Alpaca accounts |
+| **Weekly Post-Mortem** (v5.0) | Sunday | Per profile | Cluster losing-week trades by feature signature; store as `learned_pattern` for AI prompt injection |
+| **Auto-Strategy Generation** | Weekly (Sundays) | Per profile | Phase 7: AI proposes new strategy specs |
+
+**File-based idempotency markers** prevent duplicate runs across
+scheduler restarts (introduced after a 100-email storm on 2026-04-25).
+Markers excluded from `rsync --delete` in `sync.sh`:
+`.daily_snapshot_done.marker`, `.daily_summary_sent_p*.marker`,
+`.weekly_digest_sent.marker`, `.capital_rebalance_done.marker`,
+`.post_mortem_done_p*.marker`.
+
+### External Cron (v5.0)
+
+Daily alt-data refresh runs as a separate cron entry (not via the
+QuantOpsAI scheduler — it's a sibling subsystem):
+
+```
+0 6 * * * cd /opt/quantopsai-altdata && \
+    ALTDATA_BASE=/opt/quantopsai-altdata bash run-altdata-daily.sh \
+    >> logs/altdata-$(date +%Y%m%d).log 2>&1
+```
+
+Runs sequentially across the 4 standalone projects
+(`congresstrades` → `edgar13f` → `biotechevents` → `stocktwits`).
+Each project is rate-limit-aware against its upstream API. Total
+runtime ~30-50 min depending on new data volume.
 
 ### Per-Profile Scheduling
 
@@ -1418,8 +1583,27 @@ Every database query includes `WHERE user_id = ?` or uses a per-profile database
 | `ENCRYPTION_KEY` | Yes | Fernet key for API key encryption |
 | `ALPACA_BASE_URL` | No | Default: `https://paper-api.alpaca.markets` |
 | `DB_PATH` | No | Default: `quantopsai.db` |
+| `ALTDATA_BASE_PATH` (v5.0) | No | Base path for the 4 standalone alt-data projects. Prod: `/opt/quantopsai-altdata`. Local dev: defaults to `$HOME`. Read by `alternative_data.py` helpers. |
+| `RESEND_API_KEY` | No | Email notifications via Resend API |
 
-All other credentials (Alpaca, Anthropic, Resend) are stored encrypted in the database per user/profile.
+All other credentials (Alpaca, Anthropic) are stored encrypted in the database per user/profile.
+
+### Per-User Configuration (v5.0)
+
+Stored on the `users` table; surfaced via Settings → Autonomy section:
+
+| Field | Default | Purpose |
+|---|---|---|
+| `auto_capital_allocation` | OFF | Layer 9 opt-in. When ON, weekly Sunday cron rebalances per-profile `capital_scale` toward proven edge. |
+| `daily_cost_ceiling_usd` | NULL (auto) | User-configured daily AI-spend cap. NULL → auto-compute as trailing-7-day-avg × 1.5, floor $5. Cost guard blocks any autonomous action that would push today's spend over this. |
+
+### Per-Profile Configuration (v5.0)
+
+Stored on `trading_profiles`; surfaced via Settings → per-profile form:
+
+| Field | Default | Purpose |
+|---|---|---|
+| `ai_model_auto_tune` | OFF | Per-profile opt-in. When ON, the tuner is allowed to A/B test alternative AI models for this profile within the cost guard. Off by default because flipping ON can increase API spend. |
 
 ### Default Risk Parameters by Market Type
 
@@ -1479,10 +1663,23 @@ The AI-first batch architecture uses 1 AI call per scan cycle (vs 20+ in the old
 │   ├── ai_analyst.py          Multi-model AI analysis
 │   ├── ai_providers.py        Provider abstraction layer
 │   ├── ai_tracker.py          Prediction tracking & resolution
-│   ├── self_tuning.py         Performance feedback & auto-adjustment
+│   ├── self_tuning.py         Performance feedback & auto-adjustment (Layer 1+8 rules)
 │   ├── political_sentiment.py MAGA mode news analysis
 │   ├── market_regime.py       Bull/bear/sideways detection
-│   └── news_sentiment.py     News-based sentiment analysis
+│   ├── news_sentiment.py      News-based sentiment analysis
+│   ├── meta_model.py          Phase 1 — gradient-boosted classifier
+│   ├── alpha_decay.py         Strategy auto-deprecation / restoration
+│   └── post_mortem.py (v5.0)  Losing-week pattern extraction
+├── Autonomy Layer Modules (v5.0, ~1,800 lines)
+│   ├── param_bounds.py            Declarative PARAM_BOUNDS + clamp()
+│   ├── signal_weights.py          Layer 2 — per-signal intensity
+│   ├── regime_overrides.py        Layer 3 + the resolve_for_current_regime entry point
+│   ├── tod_overrides.py           Layer 4 — per-time-of-day overrides
+│   ├── symbol_overrides.py        Layer 7 — per-symbol overrides
+│   ├── prompt_layout.py           Layer 6 — adaptive prompt verbosity
+│   ├── insight_propagation.py     Layer 5 — cross-profile fan-out
+│   ├── capital_allocator.py       Layer 9 — per-Alpaca-account capital allocation
+│   └── cost_guard.py              Cross-cutting daily-spend ceiling enforcement
 ├── Trading & Execution (5 files, ~1,800 lines)
 │   ├── trade_pipeline.py      Core trade pipeline (AI-first decision engine)
 │   ├── trader.py              Exit management & stop-loss
@@ -1519,14 +1716,26 @@ The AI-first batch architecture uses 1 AI call per scan cycle (vs 20+ in the old
 │   ├── sync.sh                Safe code-only rsync wrapper
 │   ├── stop_remote.sh         Stop services
 │   └── status_remote.sh       Check service status
-└── Documentation (4 files)
-    ├── TECHNICAL_DOCUMENTATION.md  This document
-    ├── STRATEGY_DOCUMENT.md        Strategy overview
-    ├── STRATEGY_ENGINES_PLAN.md    Engine design plan
-    └── SMART_EXECUTION_PLAN.md     Execution feature plan
+└── Documentation
+    ├── TECHNICAL_DOCUMENTATION.md     This document (system reference)
+    ├── EXECUTIVE_OVERVIEW.md          Plain-English "what is this"
+    ├── AI_ARCHITECTURE.md             End-to-end AI agent + autonomy map
+    ├── SELF_TUNING.md                 Every tuning rule + signal + safety guard
+    ├── AUTONOMOUS_TUNING_PLAN.md      The 9-layer autonomy roadmap
+    ├── ALTDATA_INTEGRATION_PLAN.md    The 4 standalone alt-data projects
+    ├── ROADMAP.md                     What's next
+    ├── CHANGELOG.md                   Every fix, feature, hotfix with rationale
+    └── README.md                      Quick orientation
+
+External (not in this repo):
+    /opt/quantopsai-altdata/{congresstrades,edgar13f,biotechevents,stocktwits}/
+        Standalone data-collection projects with their own SQLite DBs.
+        Refreshed daily by /opt/quantopsai-altdata/run-altdata-daily.sh
+        via cron at 06:00 UTC. Each project has its own venv +
+        requirements.txt; isolated from QuantOpsAI's Python env.
 ```
 
-**Total: ~45 Python files, ~17,000+ lines of code**
+**Total (QuantOpsAI proper): ~55 Python files, ~21,000+ lines of code**
 
 ---
 
