@@ -846,6 +846,63 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                     f"Patents: {patents['recent_filings_90d']} filed last 90d, "
                     f"{patents['recent_filings_365d']} last year "
                     f"({patents['velocity_trend']})")
+
+            # ── 4 local-SQLite alt-data sources (per-profile weighted) ──
+            cong = alt.get("congressional_recent") or {}
+            if cong.get("trades_60d", 0) > 0:
+                direction = cong.get("net_direction", "neutral")
+                amt = cong.get("dollar_volume_60d", 0) or 0
+                amt_label = (f"${amt/1e6:.1f}M" if amt >= 1_000_000
+                              else f"${amt/1000:.0f}k" if amt >= 1000
+                              else f"${amt:.0f}")
+                txt = _weighted_signal_text("congressional_recent",
+                    f"Congress: {cong['trades_60d']} trades / "
+                    f"{cong.get('buys_60d',0)}B / {cong.get('sells_60d',0)}S "
+                    f"({direction}, {amt_label} 60d)")
+                if txt: alt_parts.append(txt)
+
+            inst = alt.get("institutional_13f") or {}
+            if inst.get("total_holders", 0) > 0:
+                shares_m = (inst.get("total_shares", 0) or 0) / 1_000_000
+                top = inst.get("top_holder_name") or ""
+                qoq = inst.get("qoq_share_change_pct")
+                qoq_str = f", {qoq:+.0f}% QoQ" if qoq is not None else ""
+                top_str = f", top: {top}" if top else ""
+                txt = _weighted_signal_text("institutional_13f",
+                    f"13F: {inst['total_holders']} holders, "
+                    f"{shares_m:.1f}M shares{qoq_str}{top_str}")
+                if txt: alt_parts.append(txt)
+
+            bio = alt.get("biotech_milestones") or {}
+            if bio.get("days_to_pdufa") is not None or bio.get("active_phase3_count", 0) > 0:
+                bits = []
+                if bio.get("days_to_pdufa") is not None:
+                    bits.append(
+                        f"PDUFA in {bio['days_to_pdufa']}d "
+                        f"({bio.get('drug_name','?')})")
+                if bio.get("active_phase3_count", 0) > 0:
+                    bits.append(f"{bio['active_phase3_count']} active P3")
+                if bio.get("recent_phase_change"):
+                    rc = bio["recent_phase_change"]
+                    bits.append(
+                        f"recent {rc.get('field')} change: "
+                        f"{rc.get('from')}→{rc.get('to')}")
+                txt = _weighted_signal_text("biotech_milestones",
+                    f"Biotech: {' | '.join(bits)}")
+                if txt: alt_parts.append(txt)
+
+            twits = alt.get("stocktwits_sentiment") or {}
+            if twits.get("message_count_7d", 0) > 0:
+                ns = twits.get("net_sentiment_7d")
+                ns_label = (
+                    f"net {ns:+.2f}" if ns is not None else "")
+                trending = (f", trending #{twits['trending_rank']}"
+                             if twits.get("is_trending") else "")
+                txt = _weighted_signal_text("stocktwits_sentiment",
+                    f"StockTwits: {twits['message_count_7d']} msgs/7d "
+                    f"({ns_label}){trending}")
+                if txt: alt_parts.append(txt)
+
             if alt_parts:
                 # Layer 6 verbosity: brief = show only top 3 signals;
                 # normal = show all; detailed = show all + a "(X more)"

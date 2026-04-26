@@ -1170,6 +1170,24 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 features_payload["dark_pool_pct"] = alt.get("dark_pool", {}).get("ats_pct_of_total", 0)
                 features_payload["earnings_surprise_streak"] = alt.get("earnings_surprise", {}).get("streak", 0)
                 features_payload["earnings_surprise_direction"] = alt.get("earnings_surprise", {}).get("surprise_direction", "mixed")
+                # 4 local-SQLite alt-data sources — flatten into
+                # features_payload so the meta-model can train on them
+                # AND the Layer 2 weight tuner's `is_active` predicates
+                # can look them up at decision time.
+                cong = alt.get("congressional_recent") or {}
+                features_payload["congressional_trades_60d"] = cong.get("trades_60d", 0)
+                features_payload["congressional_dollar_volume_60d"] = cong.get("dollar_volume_60d", 0)
+                features_payload["congressional_net_direction"] = cong.get("net_direction", "neutral")
+                inst = alt.get("institutional_13f") or {}
+                features_payload["institutional_13f_holders"] = inst.get("total_holders", 0)
+                features_payload["institutional_13f_qoq_pct"] = inst.get("qoq_share_change_pct") or 0
+                bio = alt.get("biotech_milestones") or {}
+                features_payload["biotech_days_to_pdufa"] = bio.get("days_to_pdufa")
+                features_payload["biotech_phase3_count"] = bio.get("active_phase3_count", 0)
+                twits = alt.get("stocktwits_sentiment") or {}
+                features_payload["stocktwits_message_count_7d"] = twits.get("message_count_7d", 0)
+                features_payload["stocktwits_net_sentiment_7d"] = twits.get("net_sentiment_7d")
+                features_payload["stocktwits_is_trending"] = 1 if twits.get("is_trending") else 0
             social = c.get("social") or {}
             if social:
                 features_payload["reddit_mentions"] = social.get("mentions", 0)

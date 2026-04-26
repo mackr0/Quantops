@@ -90,6 +90,20 @@ WEIGHTABLE_SIGNALS: Tuple[Tuple[str, str, "callable"], ...] = (
         lambda f: abs(int(f.get("earnings_surprise_streak", 0) or 0)) >= 2),
     ("congress_direction",       "Congressional Trade Direction",
         lambda f: f.get("congress_direction") in ("bullish", "bearish")),
+
+    # Local-SQLite alt-data sources (the 4 standalone projects).
+    # Each predicate checks if the signal was materially present
+    # for that prediction so the tuner can compute differential WR
+    # and nudge the per-profile weight accordingly.
+    ("congressional_recent",     "Congressional Trades (Recent)",
+        lambda f: int(f.get("congressional_trades_60d", 0) or 0) > 0),
+    ("institutional_13f",        "Institutional 13F Holdings",
+        lambda f: int(f.get("institutional_13f_holders", 0) or 0) > 0),
+    ("biotech_milestones",       "Biotech Trial Milestones",
+        lambda f: f.get("biotech_days_to_pdufa") is not None
+                  or int(f.get("biotech_phase3_count", 0) or 0) > 0),
+    ("stocktwits_sentiment",     "StockTwits Sentiment",
+        lambda f: int(f.get("stocktwits_message_count_7d", 0) or 0) > 0),
     ("rel_strength_vs_sector",   "Relative Strength vs Sector",
         lambda f: abs(float(f.get("rel_strength_vs_sector", 0) or 0)) >= 5),
     ("vwap_position",            "VWAP Position (away from VWAP)",

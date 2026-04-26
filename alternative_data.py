@@ -9,9 +9,11 @@ deploy, causing 200+ yfinance calls that triggered rate limiting.
 
 import json
 import logging
+import os
 import sqlite3
 import time
 import threading
+from typing import Any, Dict
 from urllib.request import urlopen, Request
 
 import yfinance as yf
@@ -30,6 +32,10 @@ _CACHE_TTL = {
     "congressional": 86400,
     "finra_short_vol": 86400,
     "analyst_estimates": 86400,
+    # Local-SQLite alt-data sources refreshed daily by the
+    # /opt/quantopsai-altdata/ projects. Cache 6h so per-cycle reads
+    # are cheap.
+    "altdata_local": 21600,
 }
 
 _http_lock = threading.Lock()
@@ -1050,6 +1056,388 @@ def get_patent_activity(symbol):
 # Aggregator
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Local SQLite alt-data sources (the four standalone projects)
+# ---------------------------------------------------------------------------
+# Each project lives at {ALTDATA_BASE}/{project}/data/{db}.db. On prod,
+# ALTDATA_BASE = /opt/quantopsai-altdata. Local dev: ~/.
+# Helpers all gracefully no-op when the DB file is missing or empty,
+# so this code can ship before the prod deploy without breaking
+# anything.
+
+def _altdata_db(project: str, db_filename: str) -> str:
+    """Resolve absolute path to one alt-data project's DB."""
+    base = os.environ.get("ALTDATA_BASE_PATH")
+    if base:
+        return os.path.join(base, project, "data", db_filename)
+    # Local dev default
+    home = os.path.expanduser("~")
+    return os.path.join(home, project, "data", db_filename)
+
+
+def _altdata_query(project: str, db_filename: str, sql: str,
+                    params: tuple = ()) -> list:
+    """Read-only query against an alt-data SQLite. Returns list of
+    sqlite3.Row. Empty list on any error (missing file, bad query,
+    locked DB)."""
+    path = _altdata_db(project, db_filename)
+    if not os.path.exists(path):
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True,
+                                timeout=2.0)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(sql, params).fetchall()
+        conn.close()
+        return rows
+    except Exception as exc:
+        logger.debug("altdata query failed (%s): %s", project, exc)
+        return []
+
+
+def get_congressional_recent(symbol: str) -> Dict[str, Any]:
+    """Recent (last 60 days) congressional trades for `symbol` — count,
+    dollar volume, party split, last filing date.
+
+    Source: ~/congresstrades — Senate eFD + House Clerk STOCK Act
+    disclosures.
+    """
+    cache_key = f"congresstrades_recent:{symbol}"
+    cached = _get_cached(cache_key, "altdata_local")
+    if cached is not None:
+        return cached
+
+    rows = _altdata_query(
+        "congresstrades", "congress.db",
+        """
+        SELECT chamber, member_name, member_party, transaction_date,
+               transaction_type, amount_low, amount_high, filing_date
+        FROM trades
+        WHERE UPPER(ticker) = UPPER(?)
+          AND date(filing_date) >= date('now', '-60 days')
+        ORDER BY filing_date DESC
+        """,
+        (symbol,),
+    )
+
+    result: Dict[str, Any] = {
+        "trades_60d": 0,
+        "buys_60d": 0,
+        "sells_60d": 0,
+        "dollar_volume_60d": 0,
+        "net_direction": "neutral",
+        "last_filing_date": None,
+        "party_breakdown": {},
+    }
+    if not rows:
+        _set_cached(cache_key, result)
+        return result
+
+    party_counts: Dict[str, int] = {}
+    for r in rows:
+        result["trades_60d"] += 1
+        ttype = (r["transaction_type"] or "").lower()
+        if ttype == "buy":
+            result["buys_60d"] += 1
+        elif ttype in ("sell", "partial_sale"):
+            result["sells_60d"] += 1
+        # Use the midpoint of the disclosed range as a proxy
+        lo = r["amount_low"] or 0
+        hi = r["amount_high"] or 0
+        midpoint = (lo + hi) / 2 if (lo or hi) else 0
+        result["dollar_volume_60d"] += int(midpoint)
+        party = (r["member_party"] or "Unknown").strip() or "Unknown"
+        party_counts[party] = party_counts.get(party, 0) + 1
+
+    result["party_breakdown"] = party_counts
+    if rows:
+        result["last_filing_date"] = rows[0]["filing_date"]
+
+    if result["buys_60d"] > result["sells_60d"] * 1.5:
+        result["net_direction"] = "bullish"
+    elif result["sells_60d"] > result["buys_60d"] * 1.5:
+        result["net_direction"] = "bearish"
+
+    _set_cached(cache_key, result)
+    return result
+
+
+def get_13f_institutional(symbol: str) -> Dict[str, Any]:
+    """Latest-quarter 13F-HR institutional holdings for `symbol`.
+
+    Returns: total holders, total shares, total value, top holder
+    name, QoQ delta in aggregate shares.
+
+    Source: ~/edgar13f — SEC 13F-HR XML filings.
+    """
+    cache_key = f"edgar13f_holdings:{symbol}"
+    cached = _get_cached(cache_key, "altdata_local")
+    if cached is not None:
+        return cached
+
+    # Find the latest quarter where this symbol has any holdings.
+    # If period_of_report isn't populated yet on this DB (early seed
+    # data), fall back to using the latest filed_date to pick a
+    # filing — better than returning nothing.
+    latest = _altdata_query(
+        "edgar13f", "edgar13f.db",
+        """
+        SELECT MAX(f.period_of_report) as latest_quarter,
+               MAX(f.filed_date) as latest_filed
+        FROM holdings h
+        JOIN filings f ON h.accession_number = f.accession_number
+        WHERE UPPER(h.ticker) = UPPER(?)
+        """,
+        (symbol,),
+    )
+    if not latest:
+        result = {"total_holders": 0}
+        _set_cached(cache_key, result)
+        return result
+    latest_q = latest[0]["latest_quarter"] or ""
+    has_period = bool(latest_q)
+
+    # Aggregate the latest quarter (or all matching rows if
+    # period_of_report isn't populated on this DB).
+    if has_period:
+        period_clause = "AND f.period_of_report = ?"
+        period_params = (symbol, latest_q)
+    else:
+        period_clause = ""
+        period_params = (symbol,)
+
+    rows = _altdata_query(
+        "edgar13f", "edgar13f.db",
+        f"""
+        SELECT COUNT(DISTINCT f.cik) as total_holders,
+               SUM(h.shares) as total_shares,
+               SUM(h.value_usd) as total_value
+        FROM holdings h
+        JOIN filings f ON h.accession_number = f.accession_number
+        WHERE UPPER(h.ticker) = UPPER(?)
+          AND (h.put_call IS NULL OR h.put_call = '')
+          {period_clause}
+        """,
+        period_params,
+    )
+    summary = rows[0] if rows else None
+
+    # Top holder by shares
+    top_rows = _altdata_query(
+        "edgar13f", "edgar13f.db",
+        f"""
+        SELECT fr.name, h.shares
+        FROM holdings h
+        JOIN filings f ON h.accession_number = f.accession_number
+        JOIN filers fr ON f.cik = fr.cik
+        WHERE UPPER(h.ticker) = UPPER(?)
+          {period_clause}
+        ORDER BY h.shares DESC LIMIT 1
+        """,
+        period_params,
+    )
+
+    # Prior quarter for QoQ delta — only meaningful with period data
+    prior_rows = []
+    if has_period:
+        prior_rows = _altdata_query(
+            "edgar13f", "edgar13f.db",
+            """
+            SELECT SUM(h.shares) as prior_shares
+            FROM holdings h
+            JOIN filings f ON h.accession_number = f.accession_number
+            WHERE UPPER(h.ticker) = UPPER(?)
+              AND f.period_of_report < ?
+              AND f.period_of_report != ''
+            ORDER BY f.period_of_report DESC LIMIT 1
+            """,
+            (symbol, latest_q),
+        )
+
+    result = {
+        "quarter": latest_q,
+        "total_holders": (summary["total_holders"] or 0) if summary else 0,
+        "total_shares": (summary["total_shares"] or 0) if summary else 0,
+        "total_value_usd": (summary["total_value"] or 0) if summary else 0,
+        "top_holder_name": top_rows[0]["name"] if top_rows else None,
+        "top_holder_shares": top_rows[0]["shares"] if top_rows else 0,
+        "qoq_share_change_pct": None,
+    }
+    if prior_rows and prior_rows[0]["prior_shares"]:
+        prior = prior_rows[0]["prior_shares"]
+        cur = result["total_shares"]
+        if prior > 0:
+            result["qoq_share_change_pct"] = round(
+                (cur - prior) / prior * 100.0, 1)
+
+    _set_cached(cache_key, result)
+    return result
+
+
+def get_biotech_milestones(symbol: str) -> Dict[str, Any]:
+    """Upcoming clinical-trial milestones for `symbol` — nearest PDUFA
+    date, active phase-3 count, recent phase changes.
+
+    Source: ~/biotechevents — ClinicalTrials.gov v2 + PDUFA tracker.
+    """
+    cache_key = f"biotech_milestones:{symbol}"
+    cached = _get_cached(cache_key, "altdata_local")
+    if cached is not None:
+        return cached
+
+    # Nearest upcoming PDUFA event
+    pdufa_rows = _altdata_query(
+        "biotechevents", "biotechevents.db",
+        """
+        SELECT drug_name, pdufa_date
+        FROM pdufa_events
+        WHERE UPPER(ticker) = UPPER(?)
+          AND date(pdufa_date) >= date('now')
+        ORDER BY date(pdufa_date) ASC LIMIT 1
+        """,
+        (symbol,),
+    )
+
+    # Active phase-3 trial count
+    p3_rows = _altdata_query(
+        "biotechevents", "biotechevents.db",
+        """
+        SELECT COUNT(*) as p3_count
+        FROM trials
+        WHERE UPPER(ticker) = UPPER(?)
+          AND phase = 'PHASE3'
+          AND overall_status IN ('RECRUITING', 'ACTIVE_NOT_RECRUITING')
+        """,
+        (symbol,),
+    )
+
+    # Recent phase or status change (last 30d)
+    recent_change_rows = _altdata_query(
+        "biotechevents", "biotechevents.db",
+        """
+        SELECT tc.field, tc.old_value, tc.new_value, tc.detected_at
+        FROM trial_changes tc
+        JOIN trials t ON tc.nct_id = t.nct_id
+        WHERE UPPER(t.ticker) = UPPER(?)
+          AND date(tc.detected_at) >= date('now', '-30 days')
+          AND tc.field IN ('phase', 'overall_status')
+        ORDER BY tc.detected_at DESC LIMIT 1
+        """,
+        (symbol,),
+    )
+
+    result: Dict[str, Any] = {
+        "upcoming_pdufa_date": None,
+        "days_to_pdufa": None,
+        "drug_name": None,
+        "active_phase3_count": (p3_rows[0]["p3_count"] or 0)
+            if p3_rows else 0,
+        "recent_phase_change": None,
+    }
+
+    if pdufa_rows:
+        from datetime import datetime, date as _date
+        pdufa_date = pdufa_rows[0]["pdufa_date"]
+        result["upcoming_pdufa_date"] = pdufa_date
+        result["drug_name"] = pdufa_rows[0]["drug_name"]
+        try:
+            d = datetime.strptime(pdufa_date, "%Y-%m-%d").date()
+            result["days_to_pdufa"] = (d - _date.today()).days
+        except Exception:
+            pass
+
+    if recent_change_rows:
+        rc = recent_change_rows[0]
+        result["recent_phase_change"] = {
+            "field": rc["field"],
+            "from": rc["old_value"],
+            "to": rc["new_value"],
+            "detected_at": rc["detected_at"],
+        }
+
+    _set_cached(cache_key, result)
+    return result
+
+
+def get_stocktwits_sentiment(symbol: str) -> Dict[str, Any]:
+    """Recent (7d) StockTwits sentiment + currently-trending flag.
+
+    Source: ~/stocktwits — StockTwits REST API messages + trending.
+    """
+    cache_key = f"stocktwits_sentiment:{symbol}"
+    cached = _get_cached(cache_key, "altdata_local")
+    if cached is not None:
+        return cached
+
+    # 7-day rollup from the daily aggregate table
+    rows = _altdata_query(
+        "stocktwits", "stocktwits.db",
+        """
+        SELECT SUM(n_messages) as msg_count,
+               SUM(n_bullish) as bullish,
+               SUM(n_bearish) as bearish,
+               SUM(n_neutral) as neutral,
+               AVG(net_sentiment) as avg_net_sentiment
+        FROM ticker_sentiment_daily
+        WHERE UPPER(ticker) = UPPER(?)
+          AND date(date) >= date('now', '-7 days')
+        """,
+        (symbol,),
+    )
+
+    # Compare 7d to trailing-30d for "vs avg" magnitude
+    avg_rows = _altdata_query(
+        "stocktwits", "stocktwits.db",
+        """
+        SELECT AVG(n_messages) as avg_daily_messages
+        FROM ticker_sentiment_daily
+        WHERE UPPER(ticker) = UPPER(?)
+          AND date(date) >= date('now', '-30 days')
+        """,
+        (symbol,),
+    )
+
+    # Currently trending (any snapshot in last 24h)
+    trending_rows = _altdata_query(
+        "stocktwits", "stocktwits.db",
+        """
+        SELECT MIN(rank) as best_rank, MAX(snapshot_at) as latest
+        FROM trending_snapshots
+        WHERE UPPER(ticker) = UPPER(?)
+          AND datetime(snapshot_at) >= datetime('now', '-1 day')
+        """,
+        (symbol,),
+    )
+
+    result: Dict[str, Any] = {
+        "message_count_7d": 0,
+        "net_sentiment_7d": None,
+        "vs_avg_message_count": None,
+        "is_trending": False,
+        "trending_rank": None,
+    }
+    if rows and rows[0]["msg_count"]:
+        msg = rows[0]["msg_count"] or 0
+        result["message_count_7d"] = msg
+        result["net_sentiment_7d"] = (
+            round(rows[0]["avg_net_sentiment"], 3)
+            if rows[0]["avg_net_sentiment"] is not None else None
+        )
+
+    if avg_rows and avg_rows[0]["avg_daily_messages"]:
+        avg30 = avg_rows[0]["avg_daily_messages"]
+        avg7 = result["message_count_7d"] / 7.0
+        if avg30 > 0:
+            result["vs_avg_message_count"] = round(avg7 / avg30, 2)
+
+    if (trending_rows and trending_rows[0]["best_rank"] is not None):
+        result["is_trending"] = True
+        result["trending_rank"] = trending_rows[0]["best_rank"]
+
+    _set_cached(cache_key, result)
+    return result
+
+
 def get_all_alternative_data(symbol):
     """Fetch all alternative data for a symbol in one call.
 
@@ -1067,13 +1455,20 @@ def get_all_alternative_data(symbol):
         "fundamentals": get_fundamentals(symbol),
         "options": get_options_unusual(symbol),
         "intraday": get_intraday_patterns(symbol),
-        # congressional: DISABLED — QuiverQuant free API paywalled (401)
         "finra_short_vol": get_finra_short_volume(symbol),
         "insider_cluster": get_insider_cluster(symbol),
         "analyst_estimates": get_analyst_estimates(symbol),
         "insider_earnings": get_insider_earnings_signal(symbol),
         "dark_pool": get_dark_pool_volume(symbol),
-        # congressional: DISABLED — QuiverQuant free API is paywalled (401)
-        # patent_activity: DISABLED — PatentsView v1 API deprecated
         "earnings_surprise": get_earnings_surprise(symbol),
+        # Local-SQLite alt-data sources (the 4 standalone projects).
+        # Each returns {} or a small dict; the AI prompt has weighted
+        # signal blocks that consume these. No-op gracefully if the
+        # project DB isn't on this host yet (e.g., before the
+        # /opt/quantopsai-altdata/ deploy lands).
+        "congressional_recent": get_congressional_recent(symbol),
+        "institutional_13f": get_13f_institutional(symbol),
+        "biotech_milestones": get_biotech_milestones(symbol),
+        "stocktwits_sentiment": get_stocktwits_sentiment(symbol),
+        # patent_activity: DISABLED — PatentsView v1 API deprecated
     }
