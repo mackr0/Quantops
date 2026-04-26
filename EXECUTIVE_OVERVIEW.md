@@ -42,9 +42,27 @@ The system maintains a persistent memory of every prediction it makes, automatic
 
 - **Per-stock memory** tracks win/loss history on every symbol the AI has analyzed, automatically excluding chronic losers from future consideration
 - **Pattern discovery** identifies conditional success rates — which strategy types work in which market regimes, what time-of-day patterns are profitable, what combinations lead to losses
-- **Parameter self-tuning** automatically adjusts risk thresholds, confidence requirements, and position sizing based on outcomes, with built-in logic to reverse changes that degrade performance
 - **Reasoning recall** means the AI sees its own past analysis when a stock is re-evaluated, enabling it to evaluate whether the original thesis still holds
 - **Meta-model on own predictions** — a gradient-boosted classifier trained on the system's own resolved predictions learns when the AI is likely to be wrong, re-weighting its confidence and suppressing low-probability trades before execution. The training data is proprietary by definition: nobody else has our AI's error patterns.
+- **Losing-week post-mortems** — every Sunday, the system scans the past week's resolved predictions; if the win rate dropped materially below baseline, it clusters the losing trades by feature signature and stores the dominant common-thread pattern as a "lesson" that gets injected into next week's AI prompt. Bad weeks become learning, not just losses.
+- **Twelve-layer autonomous tuning** — see below.
+
+### Autonomous Self-Improvement (12 Layers + Cost Guard)
+
+The system's full autonomy stack covers ~50 distinct decision surfaces, each on a self-correcting feedback loop with bounded safety guards (cooldown, reverse-on-worsened, bound clamping). Humans set strategic direction; every tactical decision adapts on its own:
+
+- **Layer 1 — Parameter coverage.** ~35 trading parameters (confidence thresholds, position sizes, stop/take-profit, ATR multipliers, entry filters, drawdown thresholds, sector caps, correlation caps, etc.) auto-tune from observed performance with bounds clamping so the tuner can never push to dangerous values.
+- **Layer 2 — Weighted signal intensity.** Every signal the AI sees has a per-profile intensity weight on a four-step ladder (full, slight discount, heavy discount, omitted). When a signal stops predicting for a profile, the tuner discounts it; when it recovers, the tuner brings it back. Replaces binary on/off with reversible graduation.
+- **Layer 3 — Per-regime overrides.** Each parameter can hold different values in bull, bear, sideways, volatile, and crisis regimes. The tuner detects when behavior diverges by regime and creates regime-specific overrides automatically.
+- **Layer 4 — Per-time-of-day overrides.** Same idea, bucketed intraday (open / midday / close). Different morning vs afternoon behaviors are learned and applied.
+- **Layer 5 — Cross-profile insight propagation.** When a tuning change improves win rate on one profile, the same detection rule runs against every other enabled profile's own data. Each peer's data has to independently support the change — no value-copying. The fleet learns roughly an order of magnitude faster than profiles in isolation.
+- **Layer 6 — Adaptive AI prompt structure.** The verbosity and emphasis of each prompt section is itself tunable. The tuner runs implicit A/B tests across cycles and reinforces structures correlated with higher win rates. Cost-gated to prevent verbosity drift.
+- **Layer 7 — Per-symbol overrides.** Some tickers behave fundamentally differently (NVDA's optimal stop-loss is not KO's). With sufficient per-symbol track record, the tuner creates per-symbol parameter overrides — the most fine-grained tier of the override stack.
+- **Layer 8 — Self-commissioned strategies.** When the AI has been making correct calls on patterns no existing strategy fires on, the tuner identifies the coverage gap and triggers the strategy generator with a focused brief. Heavily cost-gated and rate-limited.
+- **Layer 9 — Auto capital allocation (opt-in).** Weekly rebalance of capital across profiles weighted by proven edge. Critically, respects the underlying real Alpaca paper accounts: profiles sharing one $1M account have their allocations normalized within that group so the underlying capital is never over-committed.
+- **Cost guard** — every spend-affecting autonomous action is wrapped in a daily cost ceiling. Over-budget changes surface as recommendations with explicit cost estimates rather than silent debits. The ceiling can be auto-computed (1.5× trailing-7-day average) or user-locked.
+
+The full override chain at decision time: per-symbol → per-regime → per-time-of-day → profile-global → caller-default, then multiplied by capital scale. Every parameter resolution flows through one entry point. Every override is reversible. Every change is logged.
 
 ### Advanced Analytical Stack
 

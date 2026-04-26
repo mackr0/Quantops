@@ -2,7 +2,7 @@
 
 **Purpose:** This document is the source of truth for the system's evolution from "excellent retail platform" to "world-class quant fund in miniature." It persists across development sessions so context is never lost.
 
-**Last updated:** 2026-04-15
+**Last updated:** 2026-04-26
 
 ---
 
@@ -590,19 +590,90 @@ Build a gradient-boosted classifier that takes the feature context the AI saw fo
 
 ---
 
-## Upcoming Enhancements (Queued)
+## Autonomous Tuning Expansion ✅ DELIVERED (2026-04-25)
 
-### Self-Tuning Parameter Expansion (~Late May 2026)
+The original "queued for late May 2026" plan called for adding 3 parameters
+to the self-tuner. **What actually shipped is much larger:** a full
+12-layer autonomous tuning stack that supersedes the modest 4→7 parameter
+expansion. The 3 parameters listed in the original plan (Trailing Stop ATR
+multiplier, RSI entry thresholds, volume surge multiplier) are all included
+inside Layer 1 and bounded by `param_bounds.PARAM_BOUNDS`.
 
-The self-tuner currently adjusts 4 parameters: `confidence_threshold`, `stop_loss_pct`, `take_profit_pct`, `position_size_pct`. After these have 2-3 weeks of stable track record, add three new parameters:
+### What shipped instead — the 12-wave rollout
 
-1. **Trailing Stop ATR Multiplier** — tune how tight/loose trailing stops are relative to volatility. Data source: ATR values in `features_json`, stop/TP prices in `trades` table.
-2. **RSI Entry Thresholds** — tune overbought/oversold cutoffs for entry signals. Data source: RSI in `features_json` (one of 33 technical indicators).
-3. **Volume Surge Multiplier** — tune the volume ratio required to confirm breakout signals. Data source: volume ratio in `features_json` candidate screening data.
+| Layer | What it tunes | Module |
+|---|---|---|
+| 1 | 35+ scalar parameters with PARAM_BOUNDS clamp | `param_bounds.py` |
+| 2 | Per-signal weight ladder (1.0 / 0.7 / 0.4 / 0.0) for 25 signals | `signal_weights.py` |
+| 3 | Per-regime parameter overlays | `regime_overrides.py` |
+| 4 | Per-time-of-day parameter overlays | `tod_overrides.py` |
+| 5 | Per-symbol parameter overlays | `symbol_overrides.py` |
+| 6 | AI prompt section order + presence | `prompt_layout.py` |
+| 7 | Insight propagation (lessons learned → in-flight prompt) | `insight_propagation.py` |
+| 8 | AI model auto-selection (gated by user toggle) | self-tuning |
+| 9 | Per-Alpaca-account-conserving capital allocation | `capital_allocator.py` |
+| Cost | Daily AI-spend ceiling (user-configurable) | `cost_guard.py` |
+| Closed loop | Losing-week + false-negative post-mortems | `post_mortem.py` |
 
-**Prerequisites:** Current 4 parameters have 2-3 weeks of live tuning history. At least 50+ resolved predictions per profile. Self-tuning reversal logs confirm current parameters are stable.
+### Override resolution chain
+```
+per-symbol → per-regime → per-time-of-day → profile-global → caller-default,
+then multiplied by capital_scale, then clamped by PARAM_BOUNDS.
+```
 
-**Key point:** All historical data is already being collected. The self-tuner will calibrate immediately from the full backlog — it will NOT start from zero.
+### Anti-regression guardrails (6 structural tests)
+- AST walker on every `_optimize_*` return prohibits raw snake_case keys
+  in user-facing strings.
+- API-response sweep dynamically discovers every `/api/*` endpoint via
+  `app.url_map`, hits each with seeded data, walks the JSON, fails the
+  build on any leaked PARAM_BOUNDS key.
+- Tuner must call `alpha_decay.deprecate(...)` for every "deprecate"
+  recommendation it emits.
+- Idempotency markers for daily summary email + snapshot bundle.
+- Duplicate-DOM-id detector across all templates.
+- Pre-commit gate requires `CHANGELOG.md` update with every `.py` commit.
+
+### Why this beat the original plan
+The original 3-parameter expansion was conservative — designed to inch
+forward once the existing 4 had 2-3 stable weeks. By 2026-04-25 the
+production system had enough resolved predictions that the user
+prioritized aggressive autonomy ("time and effort are meaningless,
+quality and function are all that matter"). Result: a full 12-layer
+architecture ships in one weekend with cost guard, override chain,
+post-mortems, and 6 structural anti-regression tests, instead of three
+isolated parameter additions a month from now.
+
+See `AUTONOMOUS_TUNING_PLAN.md` for the wave-by-wave rollout details
+and `SELF_TUNING.md` for the per-signal weight ladder and operator
+reference.
+
+---
+
+## Alternative Data Integration ✅ DELIVERED (2026-04-26)
+
+Four standalone alt-data projects (`congresstrades`, `edgar13f`,
+`biotechevents`, `stocktwits`) were stitched into the pipeline over the
+weekend so the 1-year normalization period for each new signal starts
+immediately rather than later.
+
+### What shipped
+- `alternative_data.py` gained 4 read-only helpers: `get_congressional_recent`,
+  `get_13f_institutional`, `get_biotech_milestones`, `get_stocktwits_sentiment`.
+- All four open the external SQLite stores read-only via `file:` URI with
+  a 2.0s timeout and tolerate missing DBs gracefully.
+- Each helper is wired into `get_all_alternative_data(symbol)` and cached
+  for 6 hours.
+- 4 new entries added to `signal_weights.WEIGHTABLE_SIGNALS` so each new
+  source flows through the Layer-2 weight ladder.
+- 4 new prompt blocks added to `ai_analyst.py` under the alt-data section,
+  all wrapped in `_weighted_signal_text` so weights apply.
+- 11 new alt-data feature keys added to the meta-model `features_payload`
+  so Phase-1 training can learn from them.
+- 12 new tests in `tests/test_altdata_readers.py` with seeded fixtures.
+- Path resolution via `ALTDATA_BASE_PATH` env var; defaults to `~/`.
+
+See `ALTDATA_INTEGRATION_PLAN.md` for verified record counts and the
+DEPLOYED-2026-04-26 status flip.
 
 ---
 
@@ -612,7 +683,7 @@ The self-tuner currently adjusts 4 parameters: `confidence_threshold`, `stop_los
 
 1. Check the "Phase Status" table above. The row marked 🟡 In Progress is where work is happening.
 2. Read that phase's detailed implementation plan in this document.
-3. Run `./run_tests.sh` first to confirm baseline (should be 104+ tests passing).
+3. Run `./run_tests.sh` first to confirm baseline (should be 920+ tests passing).
 4. Check the detailed plan at `/Users/mackr0/.claude/plans/serialized-nibbling-fern.md` for granular step-by-step instructions.
 5. Do NOT skip to a later phase. Phase order encodes dependencies.
 6. After completing any phase, update:

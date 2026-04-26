@@ -17,6 +17,54 @@ Rules going forward:
 
 ---
 
+## 2026-04-26 — Final doc sweep: README + ROADMAP + ALTDATA_PLAN (Severity: low, docs)
+
+Closing-out doc pass to bring the front-of-repo docs in line with what
+actually ships now.
+
+1. **`README.md`** — was still describing the system as it stood ~6
+   weeks ago. Refreshed:
+   - Top blurb: now names the 4 new alt-data sources and the 12-layer
+     autonomy stack instead of "self-tuning adjusts parameters daily".
+   - "Self-Tuning" feature bullet replaced with "12-Layer Autonomous
+     Self-Tuning" naming the override chain and cost guard.
+   - Web Platform list adds the 5 new dashboard widgets that landed in
+     the autonomy rollout: Active Lessons, Active Autonomy State, Cost
+     Guard, Parameter Resolver, Autonomy Timeline.
+   - "All 105 tests" → "All 926 tests".
+   - New §6 setup step documents the alt-data wiring (clone, `daily`,
+     `~/run-altdata-daily.sh`).
+   - Project Structure tree expanded with new groups: Phase 1-10
+     module additions (`meta_model`, `alpha_decay`, `options_oracle`,
+     `ensemble`, `event_bus`, `crisis_detector`, etc.) and a new
+     "Autonomy Layer" group naming all 10 modules.
+   - Documentation list lifted from "TECHNICAL_DOCUMENTATION.md (v4.0)"
+     to a full enumeration including `EXECUTIVE_OVERVIEW`, `ROADMAP`,
+     `AI_ARCHITECTURE`, `SELF_TUNING`, `AUTONOMOUS_TUNING_PLAN`,
+     `ALTDATA_INTEGRATION_PLAN`, `MONTHLY_REVIEW`, `CHANGELOG` and
+     bumps the TECHNICAL_DOCUMENTATION reference to v5.0.
+
+2. **`ROADMAP.md`** — replaced the "Upcoming Enhancements (Queued):
+   Self-Tuning Parameter Expansion (~Late May 2026)" section, which
+   claimed the self-tuner adjusts 4 parameters and 3 more were queued
+   for a month from now. That plan was superseded a week early by the
+   12-wave rollout. Section now reads "✅ DELIVERED (2026-04-25)"
+   with the full layer table, override-chain explanation, and the
+   6 anti-regression guardrails. Also added a parallel "Alternative
+   Data Integration ✅ DELIVERED (2026-04-26)" section so the roadmap
+   reflects what shipped this weekend. Bumped baseline test count in
+   cross-session continuity from 104+ → 920+.
+
+3. **`ALTDATA_PLAN.md`** — added a "STATUS: ✅ DELIVERED" banner at
+   the top pointing to `ALTDATA_INTEGRATION_PLAN.md` as the live
+   integration design, and clarified that the document is preserved
+   as the historical record of the project-build plan rather than a
+   living roadmap.
+
+Tests: 926 passing (no .py change in this commit; documentation-only).
+
+---
+
 ## 2026-04-26 — Alt-data integration: doc completeness pass (Severity: low, docs)
 
 End-of-session sweep: tests/docs/UI/prod-logs audit caught three

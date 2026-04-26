@@ -1,15 +1,29 @@
 # Alt-Data Expansion Plan
 
-**Purpose:** Build 3 new standalone data-source projects over the next 6 months
-that add unique signal to QuantOpsAI's 15-signal pipeline, following the
-`congresstrades` pattern (local-first, git-backed, one-button `daily`,
-strict engineering discipline).
+> **STATUS: ✅ DELIVERED — and integrated into QuantOpsAI on 2026-04-26.**
+> All four standalone projects (`congresstrades`, `edgar13f`,
+> `biotechevents`, `stocktwits`) shipped on the original schedule (well
+> ahead of the "6 months" the original plan estimated) and have been
+> stitched into the QuantOpsAI prompt + meta-model + signal-weights
+> pipeline. **For the integration design, see
+> [`ALTDATA_INTEGRATION_PLAN.md`](ALTDATA_INTEGRATION_PLAN.md).** This
+> document is preserved as the historical record of the alt-data
+> *project-build* plan (the standalone scrapers, schemas, and CLI
+> patterns); it is no longer a living roadmap.
+
+---
+
+**Purpose:** Build 3 new standalone data-source projects (the original
+plan; in practice 4 shipped) that add unique signal to QuantOpsAI's
+pipeline, following the `congresstrades` pattern (local-first,
+git-backed, one-button `daily`, strict engineering discipline).
 
 **Principle:** Each project is independent — its own repo, its own SQLite,
-its own CLI, its own tests. QuantOpsAI consumes their outputs later via
+its own CLI, its own tests. QuantOpsAI consumes their outputs via
 well-defined schemas. No tight coupling.
 
-**Last updated:** 2026-04-24. Status: Project 1 in progress.
+**Last updated:** 2026-04-26. Status: All four projects DELIVERED and
+integrated into QuantOpsAI.
 
 ---
 

@@ -1,6 +1,6 @@
 # QuantOpsAI
 
-AI-powered autonomous paper trading platform. The AI is the portfolio manager — it sees 33 technical indicators, per-stock news, sector rotation, political sentiment, and its own track record, then picks and sizes the best trades from each scan cycle. Multi-user Flask web app with 5 market-specific strategy engines, pattern learning, and institutional-grade performance analytics. Runs 24/7 on a cloud server.
+AI-powered autonomous paper trading platform. The AI is the portfolio manager — it sees 33 technical indicators, per-stock news, sector rotation, political sentiment, congressional trades, 13F institutional holdings, biotech milestones, StockTwits sentiment, and its own track record, then picks and sizes the best trades from each scan cycle. Multi-user Flask web app with 5 market-specific strategy engines, a 16-strategy alpha library + auto-generated variants, ensemble specialist AIs, full Phase-2 backtesting gauntlet, alpha-decay auto-deprecation, cross-asset crisis detection, and a **12-layer autonomous self-tuning stack** that adjusts 35+ parameters, signal weights, regime/time-of-day/per-symbol overrides, prompt layout, capital allocation, and AI model selection — all under a daily-cost guard. Runs 24/7 on a cloud server.
 
 ## Architecture
 
@@ -47,9 +47,13 @@ AI-powered autonomous paper trading platform. The AI is the portfolio manager �
 - **Fundamentals** — PE ratio, beta, market cap, sector, industry, institutional/insider ownership percentages
 - **Pattern Learning** — Discovers failure/success patterns: "breakouts fail in volatile markets", "mean reversion works midday". Feeds patterns to AI each cycle.
 - **MAGA Mode** — Political sentiment with sector-specific impact, ticker mentions, and trade ideas
+- **Congressional Trades** — Recent disclosures from `congresstrades` alt-data project (10,500+ trades)
+- **13F Institutional Holdings** — Top-fund quarterly holdings from `edgar13f` alt-data project
+- **Biotech Milestones** — PDUFA dates and clinical-trial transitions from `biotechevents` alt-data project
+- **StockTwits Sentiment** — Retail bullish/bearish daily rollups from `stocktwits` alt-data project
 - **Per-Stock Memory** — Tracks win/loss per symbol; auto-blacklists chronic losers
 - **Market Regime Detection** — SPY/VIX classifies bull/bear/sideways/volatile
-- **Self-Tuning** — Adjusts parameters daily, reverts bad changes, remembers what worked
+- **12-Layer Autonomous Self-Tuning** — Adjusts 35+ parameters, signal weights, regime/time-of-day/per-symbol overrides, prompt layout, AI model, and capital allocation daily; cross-checked by post-mortems on losing weeks; bounded everywhere by `param_bounds.PARAM_BOUNDS`; gated by a daily AI-cost guard.
 
 ### Strategy Engines
 - **5 Market-Specific Engines** — Micro Cap, Small Cap, Mid Cap, Large Cap, Crypto (each with 4 dedicated strategies)
@@ -66,8 +70,12 @@ AI-powered autonomous paper trading platform. The AI is the portfolio manager �
 - **Multi-User** — Flask + Flask-Login with bcrypt auth and Fernet-encrypted API keys
 - **AI Brain Dashboard** — Shows AI's last decision, reasoning, candidate shortlist with all indicators
 - **Sector Rotation Widget** — Live sector ETF inflows/outflows
-- **6-Tab Performance Dashboard** — Executive Summary, Risk & Stability, Trade Analytics, Market Relationship, Scalability, AI Intelligence
-- **Learned Patterns Display** — Shows discovered win/loss patterns
+- **6-Tab Performance Dashboard** — Executive Summary, Risk & Stability, Trade Analytics, Market Relationship, Scalability, AI
+- **Active Lessons Widget** — Live view of patterns the system is currently using to gate trades
+- **Active Autonomy State** — Snapshot of what every layer has learned and is currently applying
+- **Cost Guard Widget** — User-configurable daily AI-spend ceiling with live progress bar
+- **Parameter Resolver** — Inspect the override chain (per-symbol → regime → time-of-day → global) for any parameter
+- **Autonomy Timeline** — Audit trail of every autonomous adjustment across all 12 layers
 - **Indicator Suite Reference** — All 33 indicators grouped by category
 - **What-If Backtesting** — Test parameter changes against 90 days of real market data
 - **Slippage Tracking** — Decision price vs fill price on every trade
@@ -136,10 +144,24 @@ python multi_scheduler.py                             # Scheduler (separate term
 ### 5. Run tests
 
 ```bash
-./run_tests.sh          # All 105 tests
+./run_tests.sh          # All 926 tests
 ./run_tests.sh -x       # Stop on first failure
 ./run_tests.sh -k "strategy"  # Strategy tests only
 ```
+
+### 6. (Optional) Wire alt-data sources
+
+Four standalone projects feed extra signal into the pipeline. Clone each
+under `~/` (or set `ALTDATA_BASE_PATH`) and run their `daily` CLI to
+populate local SQLite stores:
+
+```bash
+~/run-altdata-daily.sh   # one-button: congresstrades + edgar13f + biotechevents + stocktwits
+```
+
+QuantOpsAI reads each store read-only via `file:` URI and tolerates
+missing DBs — the platform runs fine without them; alt-data signals
+just register as `None` until a store appears.
 
 ## Cloud Deployment (DigitalOcean)
 
@@ -183,15 +205,38 @@ Quantops/
 ├── AI & Intelligence
 │   ├── ai_analyst.py            AI-first batch trade selection + per-symbol analysis
 │   ├── ai_providers.py          Provider abstraction (Anthropic, OpenAI, Google)
+│   ├── ai_pricing.py            Per-model USD/M-token rate table
+│   ├── ai_cost_ledger.py        Per-profile AI spend ledger + window aggregation
 │   ├── ai_tracker.py            Prediction tracking with regime + strategy type
 │   ├── self_tuning.py           Pattern learning, auto-adjustment, failure analysis
-│   ├── alternative_data.py      Insider trades, short interest, options flow, fundamentals, intraday
-│   ├── sec_filings.py           SEC EDGAR Form 4 insider filing scraper
+│   ├── alternative_data.py      Insider trades, short interest, options flow, fundamentals, intraday + 4 alt-data project readers
+│   ├── sec_filings.py           SEC EDGAR Form 4 + 10-K/10-Q/8-K semantic analyzer
 │   ├── social_sentiment.py      Reddit sentiment via PRAW (r/wallstreetbets, r/stocks)
 │   ├── political_sentiment.py   MAGA mode: sector impact, ticker mentions, trade ideas
 │   ├── market_regime.py         Bull/bear/sideways/volatile detection
 │   ├── earnings_calendar.py     Earnings date checking
-│   └── news_sentiment.py        Per-stock news from yfinance
+│   ├── news_sentiment.py        Per-stock news from yfinance
+│   ├── meta_model.py            Gradient-boosted meta-model on past predictions (Phase 1)
+│   ├── alpha_decay.py           Rolling-Sharpe decay detection + auto-deprecation (Phase 3)
+│   ├── options_oracle.py        IV skew, GEX, max pain, term structure (Phase 5)
+│   ├── ensemble.py              Specialist-AI coordinator with VETO (Phase 8)
+│   ├── specialists/             4 specialist AIs: earnings, pattern, sentiment, risk
+│   ├── event_bus.py             SQLite-backed event bus (Phase 9)
+│   ├── event_detectors.py       SEC/earnings/price-shock/big-prediction detectors (Phase 9)
+│   ├── event_handlers.py        Event-routed handlers (log + ensemble fire)
+│   ├── crisis_detector.py       Cross-asset crisis classifier (Phase 10)
+│   └── crisis_state.py          Crisis state transitions + bus emission (Phase 10)
+├── Autonomy Layer (12 layers + cost guard)
+│   ├── param_bounds.py          PARAM_BOUNDS clamp on every tuned parameter (Layer 1)
+│   ├── signal_weights.py        4-step weight ladder for 25 signals (Layer 2)
+│   ├── regime_overrides.py      Per-regime parameter overlays (Layer 3)
+│   ├── tod_overrides.py         Per-time-of-day parameter overlays (Layer 4)
+│   ├── symbol_overrides.py      Per-symbol parameter overlays (Layer 5)
+│   ├── prompt_layout.py         AI-prompt section ordering + presence (Layer 6)
+│   ├── insight_propagation.py   Lessons learned → in-flight prompt injection
+│   ├── capital_allocator.py     Per-Alpaca-account-conserving allocation (Layer 9)
+│   ├── post_mortem.py           Closed-loop losing-week + false-negative analysis
+│   └── cost_guard.py            User-configurable daily AI-spend ceiling
 ├── Trading & Execution
 │   ├── trade_pipeline.py        AI-first pipeline: pre-filter -> strategy -> rank -> AI batch -> execute
 │   ├── trader.py                Exit management, stop-loss, trailing stops
@@ -219,7 +264,7 @@ Quantops/
 │   ├── crypto.py                Fernet encryption for API keys
 │   └── config.py                Environment configuration
 ├── Testing
-│   ├── tests/                   105 tests (imports, database, strategies, pipeline, web)
+│   ├── tests/                   926 tests (imports, database, strategies, pipeline, web, autonomy, alt-data, structural guardrails)
 │   ├── run_tests.sh             Test runner script
 │   ├── run_backtest_validation.py  Backtest all 5 engines against real data
 │   └── pytest.ini               Test configuration
@@ -230,9 +275,17 @@ Quantops/
 │   ├── status_remote.sh         Check service status
 │   └── stop_remote.sh           Stop services
 └── Documentation
-    ├── TECHNICAL_DOCUMENTATION.md   Complete system documentation (v4.0, 22 sections)
-    ├── SCALING_PLAN.md              $10K paper -> $1M+ live roadmap
-    └── requirements.txt             Python dependencies
+    ├── EXECUTIVE_OVERVIEW.md         Top-down summary for partners / non-technical readers
+    ├── TECHNICAL_DOCUMENTATION.md    Complete system documentation (v5.0, 22 sections)
+    ├── ROADMAP.md                    10-phase quant-fund evolution + completion log
+    ├── AI_ARCHITECTURE.md            All AI signal sources + how they reach the prompt
+    ├── SELF_TUNING.md                Self-tuning + 12-layer autonomy reference
+    ├── AUTONOMOUS_TUNING_PLAN.md     The 12-wave autonomy rollout plan + status
+    ├── ALTDATA_INTEGRATION_PLAN.md   How the 4 alt-data projects plug into the pipeline
+    ├── SCALING_PLAN.md               $10K paper -> $1M+ live roadmap
+    ├── MONTHLY_REVIEW.md             Operational review template
+    ├── CHANGELOG.md                  Per-day change log (enforced by pre-commit hook)
+    └── requirements.txt              Python dependencies
 ```
 
 ## Disclaimer
