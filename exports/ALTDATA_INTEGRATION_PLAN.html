@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>ALTDATA_INTEGRATION_PLAN</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">ALTDATA_INTEGRATION_PLAN</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a
+href="#alt-data-integration-plan-wire-4-standalone-projects-into-the-ai"
+id="toc-alt-data-integration-plan-wire-4-standalone-projects-into-the-ai">Alt-Data
+Integration Plan — Wire 4 Standalone Projects into the AI</a>
+<ul>
+<li><a href="#why-now-the-data-normalization-argument"
+id="toc-why-now-the-data-normalization-argument">Why now (the
+data-normalization argument)</a></li>
+<li><a href="#architecture" id="toc-architecture">Architecture</a>
+<ul>
+<li><a href="#read-layer-in-quantopsai-plain-sqlite-no-project-deps"
+id="toc-read-layer-in-quantopsai-plain-sqlite-no-project-deps">Read
+layer (in QuantOpsAI, plain SQLite, no project deps)</a></li>
+<li><a href="#ai-integration" id="toc-ai-integration">AI
+integration</a></li>
+<li><a href="#layer-2-weight-integration"
+id="toc-layer-2-weight-integration">Layer 2 weight integration</a></li>
+<li><a href="#meta-model-feature-integration"
+id="toc-meta-model-feature-integration">Meta-model feature
+integration</a></li>
+</ul></li>
+<li><a href="#production-deployment-droplet-resources-verified"
+id="toc-production-deployment-droplet-resources-verified">Production
+Deployment (Droplet Resources Verified)</a>
+<ul>
+<li><a href="#layout" id="toc-layout">Layout</a></li>
+<li><a href="#install-procedure" id="toc-install-procedure">Install
+procedure</a></li>
+<li><a href="#sync.sh-exclusions" id="toc-sync.sh-exclusions">Sync.sh
+exclusions</a></li>
+<li><a href="#api-key-handling" id="toc-api-key-handling">API key
+handling</a></li>
+</ul></li>
+<li><a href="#ui-documentation-updates"
+id="toc-ui-documentation-updates">UI / Documentation Updates</a></li>
+<li><a href="#anti-regression-tests"
+id="toc-anti-regression-tests">Anti-Regression Tests</a></li>
+<li><a href="#implementation-waves"
+id="toc-implementation-waves">Implementation Waves</a></li>
+<li><a href="#acceptance-criteria"
+id="toc-acceptance-criteria">Acceptance Criteria</a></li>
+</ul></li>
+</ul>
+</nav>
+<h1
+id="alt-data-integration-plan-wire-4-standalone-projects-into-the-ai">Alt-Data
+Integration Plan — Wire 4 Standalone Projects into the AI</h1>
+<p><strong>Status:</strong> ✅ <strong>DEPLOYED 2026-04-26.</strong> All
+four waves shipped, end-to-end verified.</p>
+<p><strong>Final state on prod (verified):</strong> -
+<code>/opt/quantopsai-altdata/</code> populated with all 4 projects +
+venvs + data - Cron at <code>06:00 UTC</code> daily (refresh ~30-50 min,
+network-bound) - <code>ALTDATA_BASE_PATH=/opt/quantopsai-altdata</code>
+in <code>/opt/quantopsai/.env</code> - 1,109 congressional trades / 470
+unique tickers - 857,304 institutional 13F holdings / 35 resolved
+tickers (16 famous-investor CIKs, ~9-year backfill) - 5,342 clinical
+trials / 30 tickers / 0 PDUFA events (PDUFA scraper deferred) - 981
+StockTwits messages / 37 tickers / 30 trending snapshots - AI prompt now
+consults all 4 helpers with 6h cache; Layer 2 weights tunable
+per-profile</p>
+<p><strong>Goal:</strong> Move the four standalone alt-data projects
+from “built but not yet wired in” to fully integrated AI-feeding
+signals, deployed autonomously on the production droplet, with Layer 2
+weight tuning so each new signal is on the same self-correcting feedback
+loop as everything else.</p>
+<p><strong>The four projects:</strong></p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Project</th>
+<th>Source</th>
+<th>Per-symbol Signal</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>congresstrades</code></td>
+<td>Senate eFD + House Clerk</td>
+<td>Recent congressional buys/sells (last 60 days) — count, dollar
+volume, party split</td>
+</tr>
+<tr>
+<td><code>edgar13f</code></td>
+<td>SEC EDGAR 13F-HR XML</td>
+<td>Latest-quarter institutional ownership — total holders, top holder
+names, QoQ delta in shares held</td>
+</tr>
+<tr>
+<td><code>biotechevents</code></td>
+<td>ClinicalTrials.gov v2 + PDUFA tracker</td>
+<td>Upcoming trial milestones for the sponsor — phase,
+days-until-milestone, recent phase changes</td>
+</tr>
+<tr>
+<td><code>stocktwits</code></td>
+<td>StockTwits REST API</td>
+<td>Recent sentiment — 7-day bullish/bearish ratio, message volume,
+currently trending flag</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="why-now-the-data-normalization-argument">Why now (the
+data-normalization argument)</h2>
+<p>The system has only ~1 week of resolved predictions. Adding 4 new
+signals will shift the AI’s behavior and a small pre-vs-post comparison
+would be noisy. But:</p>
+<ol type="1">
+<li>The tuner’s Layer 2 (signal weights) handles signal-level
+deprecation autonomously — if any new signal hurts WR, it gets nudged to
+0.4 then 0.0 within ~9 days.</li>
+<li>Layer 5 (cross-profile insight propagation) means a single profile
+discovering “stocktwits sentiment doesn’t help me” can propagate that
+finding to peers automatically.</li>
+<li>Doing it now means the long normalization period (~1 year of
+real-data accumulation) starts now. Delaying just delays the
+normalization clock.</li>
+</ol>
+<p>So the cost of a 1-2 week behavior blip from new signals is small
+compared to the lost runway if we wait.</p>
+<hr />
+<h2 id="architecture">Architecture</h2>
+<h3 id="read-layer-in-quantopsai-plain-sqlite-no-project-deps">Read
+layer (in QuantOpsAI, plain SQLite, no project deps)</h3>
+<p>Each project gets one helper in <code>alternative_data.py</code>. The
+helper:</p>
+<ul>
+<li>Takes a <code>symbol</code> (and optionally a configurable DB
+path).</li>
+<li>Opens the project’s SQLite DB read-only.</li>
+<li>Runs aggregation queries to produce a small dict of per-symbol
+stats.</li>
+<li>Caches results for 6 hours (alt-data refreshes once daily; no need
+to re-query within a cycle).</li>
+<li>Returns <code>{}</code> (graceful no-op) if the DB is missing /
+empty / errors.</li>
+</ul>
+<p>DB paths default to
+<code>/opt/quantopsai-altdata/{project}/data/{db}.db</code> on prod,
+<code>~/{project}/data/{db}.db</code> on local dev. Both via env vars
+(<code>ALTDATA_BASE_PATH</code>) so devs and prod are configurable.</p>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Approximate signatures</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> get_congressional_recent(symbol: <span class="bu">str</span>) <span class="op">-&gt;</span> Dict[<span class="bu">str</span>, Any]:</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;{trades_60d, dollar_volume_60d, net_direction, last_filing_date,</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="co">        party_breakdown}&quot;&quot;&quot;</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> get_13f_institutional(symbol: <span class="bu">str</span>) <span class="op">-&gt;</span> Dict[<span class="bu">str</span>, Any]:</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;{quarter, total_holders, total_shares, top_holder_name,</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="co">        top_holder_shares, qoq_share_change_pct}&quot;&quot;&quot;</span></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> get_biotech_milestones(symbol: <span class="bu">str</span>) <span class="op">-&gt;</span> Dict[<span class="bu">str</span>, Any]:</span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;{upcoming_pdufa_date, days_to_pdufa, drug_name, recent_phase_change,</span></span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a><span class="co">        active_phase3_count}&quot;&quot;&quot;</span></span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> get_stocktwits_sentiment(symbol: <span class="bu">str</span>) <span class="op">-&gt;</span> Dict[<span class="bu">str</span>, Any]:</span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;{net_sentiment_7d, message_count_7d, vs_avg_message_count,</span></span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a><span class="co">        is_trending, last_updated}&quot;&quot;&quot;</span></span></code></pre></div>
+<h3 id="ai-integration">AI integration</h3>
+<p>Wire each helper into
+<code>alternative_data.get_all_alternative_data(symbol)</code> under new
+keys: <code>congressional_recent</code>, <code>institutional_13f</code>,
+<code>biotech_milestones</code>, <code>stocktwits_sentiment</code>.</p>
+<p>Add to <code>ai_analyst._build_batch_prompt</code> four new
+<code>_weighted_signal_text</code> blocks under the existing alt-data
+section. Each block: - Renders a one-line summary if the data is
+meaningful (e.g., “Congress: 3 buys, $250k, last filed 5d ago” or skips
+entirely if the project has no data for that symbol). - Goes through
+<code>_weighted_signal_text(name, text)</code> so Layer 2 weights apply
+(omitted at weight 0.0, hint-decorated at 0.4/0.7).</p>
+<h3 id="layer-2-weight-integration">Layer 2 weight integration</h3>
+<p>Add 4 entries to <code>signal_weights.WEIGHTABLE_SIGNALS</code>:</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>(<span class="st">&quot;congressional_recent&quot;</span>,  <span class="st">&quot;Congressional Trading (Recent)&quot;</span>,</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">lambda</span> f: f.get(<span class="st">&quot;congressional_recent&quot;</span>, {}).get(<span class="st">&quot;trades_60d&quot;</span>, <span class="dv">0</span>) <span class="op">&gt;</span> <span class="dv">0</span>),</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>(<span class="st">&quot;institutional_13f&quot;</span>,     <span class="st">&quot;Institutional 13F Holdings&quot;</span>,</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">lambda</span> f: f.get(<span class="st">&quot;institutional_13f&quot;</span>, {}).get(<span class="st">&quot;total_holders&quot;</span>, <span class="dv">0</span>) <span class="op">&gt;</span> <span class="dv">0</span>),</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>(<span class="st">&quot;biotech_milestones&quot;</span>,    <span class="st">&quot;Biotech Trial Milestones&quot;</span>,</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">lambda</span> f: f.get(<span class="st">&quot;biotech_milestones&quot;</span>, {}).get(<span class="st">&quot;days_to_pdufa&quot;</span>) <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>),</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>(<span class="st">&quot;stocktwits_sentiment&quot;</span>,  <span class="st">&quot;StockTwits Sentiment&quot;</span>,</span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>    <span class="kw">lambda</span> f: f.get(<span class="st">&quot;stocktwits_sentiment&quot;</span>, {}).get(<span class="st">&quot;message_count_7d&quot;</span>, <span class="dv">0</span>) <span class="op">&gt;</span> <span class="dv">0</span>),</span></code></pre></div>
+<p>This puts them on the same 4-step ladder (1.0/0.7/0.4/0.0) as every
+other signal. The tuner can autonomously discount or omit any of them
+per-profile based on observed WR contribution.</p>
+<h3 id="meta-model-feature-integration">Meta-model feature
+integration</h3>
+<p>Add the same 4 keys to <code>features_payload</code> in
+<code>trade_pipeline.py</code>’s prediction-recording path. Bool/numeric
+versions only (not raw nested dicts) so the gradient-boosted classifier
+can use them.</p>
+<hr />
+<h2 id="production-deployment-droplet-resources-verified">Production
+Deployment (Droplet Resources Verified)</h2>
+<p>Droplet has <strong>52GB free disk</strong>, <strong>1.3GB available
+RAM</strong>, <strong>2 CPUs at 0.29 load</strong>. The 4 projects total
+~700MB on disk (fresh venvs + DBs); each daily-refresh peak is well
+under 200MB; sequential execution means no compounding pressure.</p>
+<h3 id="layout">Layout</h3>
+<pre><code>/opt/quantopsai-altdata/
+  congresstrades/
+    {project source}
+    venv/
+    data/congress.db
+  edgar13f/
+    {project source}
+    venv/
+    data/edgar13f.db
+  biotechevents/
+    {project source}
+    venv/
+    data/biotechevents.db
+  stocktwits/
+    {project source}
+    venv/
+    data/stocktwits.db
+  run-altdata-daily.sh   (copied from local)
+  logs/</code></pre>
+<h3 id="install-procedure">Install procedure</h3>
+<ol type="1">
+<li><code>rsync</code> each project’s source to the droplet (excluding
+existing venv/ and data/ — fresh on prod).</li>
+<li><code>python3 -m venv venv &amp;&amp; pip install -r requirements.txt</code>
+per project.</li>
+<li><code>chmod +x run-altdata-daily.sh</code>.</li>
+<li>Add to root crontab:
+<code>0 2 * * * cd /opt/quantopsai-altdata &amp;&amp; ./run-altdata-daily.sh &gt;&gt; logs/altdata-$(date +\%Y\%m\%d).log 2&gt;&amp;1</code>
+(02:00 ET = 06:00 UTC, off hours.)</li>
+<li><strong>First-run seeding</strong> — manually invoke
+<code>./run-altdata-daily.sh</code> right after install so the DBs are
+populated before the next AI scan cycle. Without this, the read layer
+would no-op for the first 24 hours.</li>
+</ol>
+<h3 id="sync.sh-exclusions">Sync.sh exclusions</h3>
+<p>Add to the rsync <code>--exclude</code> list so deploys don’t clobber
+the alt-data project DBs:</p>
+<pre><code>--exclude &#39;/opt/quantopsai-altdata/&#39;</code></pre>
+<p>(Actually moot — sync.sh syncs to <code>/opt/quantopsai/</code>, not
+<code>/opt/quantopsai-altdata/</code>. They’re sibling paths and
+naturally isolated. But documenting so future refactors don’t cross the
+streams.)</p>
+<h3 id="api-key-handling">API key handling</h3>
+<p><code>congresstrades</code> and <code>edgar13f</code> use no API keys
+(public scraping). <code>biotechevents</code> uses ClinicalTrials.gov v2
+(no key required). <code>stocktwits</code> uses the StockTwits REST API
+which is rate-limited but no key required.</p>
+<p>So nothing to provision — all four work out of the box on the
+droplet’s public-network IP.</p>
+<hr />
+<h2 id="ui-documentation-updates">UI / Documentation Updates</h2>
+<ol type="1">
+<li><strong><code>templates/ai.html</code> — “What the AI Sees”</strong>
+reference card:
+<ul>
+<li>Move 4 cards from “Built Locally — Not Yet Wired In” to
+“Per-Candidate Alternative Data”</li>
+<li>Update the source-count heading from 15 → 19</li>
+<li>Drop the “Built Locally — Not Yet Wired In” section if all four are
+now active (or update its wording if Patent Filing Velocity etc. remain
+placeholder).</li>
+</ul></li>
+<li><strong><code>AI_ARCHITECTURE.md</code></strong> — update §1c “What
+the AI Sees per Candidate” + the cost-per-cycle summary if call counts
+changed (they don’t — these signals are local SQLite reads, no AI
+calls).</li>
+<li><strong><code>SELF_TUNING.md</code></strong> — add the 4 new
+weightable signals to the Layer 2 inventory.</li>
+<li><strong><code>CHANGELOG.md</code></strong> — single entry covering
+the integration.</li>
+</ol>
+<hr />
+<h2 id="anti-regression-tests">Anti-Regression Tests</h2>
+<ol type="1">
+<li><strong>Read-layer unit tests</strong>
+(<code>test_altdata_readers.py</code>) — for each helper: returns
+<code>{}</code> on missing DB, returns expected shape on seeded DB,
+handles SQL errors gracefully.</li>
+<li><strong>Signal-weight registry coverage</strong> — extend the
+existing <code>test_signal_weights_lifecycle</code> to verify the 4 new
+signals are in <code>WEIGHTABLE_SIGNALS</code> and their
+<code>is_active</code> predicates work.</li>
+<li><strong>Prompt-builder integration</strong> — verify each new signal
+block renders correctly + responds to weight 0.0/0.4/0.7/1.0 (extends
+<code>test_signal_weights.py</code>).</li>
+<li><strong>No-snake-case guardrail</strong> — already covers the 4 new
+signals automatically because they go through
+<code>display_label</code>.</li>
+<li><strong>Schema-snapshot tests</strong> — assert the read helpers
+don’t regress when project schemas evolve. Use a seeded fixture per
+project that mirrors the production schema. If a project adds a column,
+the helper still works on the old schema (forward-compat).</li>
+</ol>
+<hr />
+<h2 id="implementation-waves">Implementation Waves</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Wave</th>
+<th>Scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>W1</strong></td>
+<td>Read layer: 4 helpers in <code>alternative_data.py</code> + caching
++ tests + display_names entries</td>
+</tr>
+<tr>
+<td><strong>W2</strong></td>
+<td>AI integration: <code>get_all_alternative_data</code> wiring + 4
+prompt blocks + Layer 2 weights + features_payload + tests</td>
+</tr>
+<tr>
+<td><strong>W3</strong></td>
+<td>Production deployment: rsync projects to
+<code>/opt/quantopsai-altdata/</code>, create venvs, seed DBs, install
+cron, verify first cron run</td>
+</tr>
+<tr>
+<td><strong>W4</strong></td>
+<td>UI + docs: “What the AI Sees” rewrite, AI_ARCHITECTURE.md update,
+SELF_TUNING.md update, CHANGELOG entry</td>
+</tr>
+</tbody>
+</table>
+<p>W1 + W2 can ship dormant (no harm if prod DBs aren’t there yet —
+helpers no-op gracefully). W3 makes them active. W4 closes the
+documentation loop.</p>
+<p>Total estimated scope: ~600 lines of new Python + ~300 lines of test
++ ~60 minutes of remote provisioning. Same shape and rigor as the
+12-wave autonomous tuning rollout.</p>
+<hr />
+<h2 id="acceptance-criteria">Acceptance Criteria</h2>
+<ul>
+<li>✅ All 4 helpers return real data on prod (verified by hitting the
+AI page Operations → Active Lessons / Active Autonomy and seeing the 4
+new signals show up in profiles’ contexts).</li>
+<li>✅ Cron runs nightly at 02:00 ET; logs visible in
+<code>/opt/quantopsai-altdata/logs/</code>.</li>
+<li>✅ Layer 2 weights for the 4 new signals appear in
+<code>signal_weights.WEIGHTABLE_SIGNALS</code> and are tunable.</li>
+<li>✅ “What the AI Sees” reference shows the signals as active.</li>
+<li>✅ AI_ARCHITECTURE.md + SELF_TUNING.md + CHANGELOG.md updated.</li>
+<li>✅ Full test suite green; new schema-snapshot tests cover the 4 read
+helpers.</li>
+<li>✅ Production deployed; first scan cycle after deploy includes the
+new signals in the AI prompt.</li>
+</ul>
+</body>
+</html>

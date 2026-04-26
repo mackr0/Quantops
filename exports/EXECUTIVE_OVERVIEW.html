@@ -175,6 +175,42 @@
 <header id="title-block-header">
 <h1 class="title">EXECUTIVE_OVERVIEW</h1>
 </header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#quantopsai" id="toc-quantopsai">QuantOpsAI</a>
+<ul>
+<li><a href="#the-system" id="toc-the-system">The System</a></li>
+<li><a href="#what-makes-it-different"
+id="toc-what-makes-it-different">What Makes It Different</a>
+<ul>
+<li><a href="#ai-as-portfolio-manager-not-a-filter"
+id="toc-ai-as-portfolio-manager-not-a-filter">AI as Portfolio Manager,
+Not a Filter</a></li>
+<li><a href="#institutional-grade-data-analysis"
+id="toc-institutional-grade-data-analysis">Institutional-Grade Data
+Analysis</a></li>
+<li><a href="#self-learning-intelligence"
+id="toc-self-learning-intelligence">Self-Learning Intelligence</a></li>
+<li><a href="#autonomous-self-improvement-12-layers-cost-guard"
+id="toc-autonomous-self-improvement-12-layers-cost-guard">Autonomous
+Self-Improvement (12 Layers + Cost Guard)</a></li>
+<li><a href="#advanced-analytical-stack"
+id="toc-advanced-analytical-stack">Advanced Analytical Stack</a></li>
+<li><a href="#rigorous-validation-infrastructure"
+id="toc-rigorous-validation-infrastructure">Rigorous Validation
+Infrastructure</a></li>
+<li><a href="#cost-efficiency-at-scale"
+id="toc-cost-efficiency-at-scale">Cost Efficiency at Scale</a></li>
+</ul></li>
+<li><a href="#architecture-highlights"
+id="toc-architecture-highlights">Architecture Highlights</a></li>
+<li><a href="#operating-infrastructure"
+id="toc-operating-infrastructure">Operating Infrastructure</a></li>
+<li><a href="#why-this-matters" id="toc-why-this-matters">Why This
+Matters</a></li>
+</ul></li>
+</ul>
+</nav>
 <h1 id="quantopsai">QuantOpsAI</h1>
 <p><strong>AI-First Autonomous Trading Platform</strong></p>
 <hr />
@@ -250,10 +286,6 @@ future consideration</li>
 rates — which strategy types work in which market regimes, what
 time-of-day patterns are profitable, what combinations lead to
 losses</li>
-<li><strong>Parameter self-tuning</strong> automatically adjusts risk
-thresholds, confidence requirements, and position sizing based on
-outcomes, with built-in logic to reverse changes that degrade
-performance</li>
 <li><strong>Reasoning recall</strong> means the AI sees its own past
 analysis when a stock is re-evaluated, enabling it to evaluate whether
 the original thesis still holds</li>
@@ -263,7 +295,75 @@ the AI is likely to be wrong, re-weighting its confidence and
 suppressing low-probability trades before execution. The training data
 is proprietary by definition: nobody else has our AI’s error
 patterns.</li>
+<li><strong>Losing-week post-mortems</strong> — every Sunday, the system
+scans the past week’s resolved predictions; if the win rate dropped
+materially below baseline, it clusters the losing trades by feature
+signature and stores the dominant common-thread pattern as a “lesson”
+that gets injected into next week’s AI prompt. Bad weeks become
+learning, not just losses.</li>
+<li><strong>Twelve-layer autonomous tuning</strong> — see below.</li>
 </ul>
+<h3 id="autonomous-self-improvement-12-layers-cost-guard">Autonomous
+Self-Improvement (12 Layers + Cost Guard)</h3>
+<p>The system’s full autonomy stack covers ~50 distinct decision
+surfaces, each on a self-correcting feedback loop with bounded safety
+guards (cooldown, reverse-on-worsened, bound clamping). Humans set
+strategic direction; every tactical decision adapts on its own:</p>
+<ul>
+<li><strong>Layer 1 — Parameter coverage.</strong> ~35 trading
+parameters (confidence thresholds, position sizes, stop/take-profit, ATR
+multipliers, entry filters, drawdown thresholds, sector caps,
+correlation caps, etc.) auto-tune from observed performance with bounds
+clamping so the tuner can never push to dangerous values.</li>
+<li><strong>Layer 2 — Weighted signal intensity.</strong> Every signal
+the AI sees has a per-profile intensity weight on a four-step ladder
+(full, slight discount, heavy discount, omitted). When a signal stops
+predicting for a profile, the tuner discounts it; when it recovers, the
+tuner brings it back. Replaces binary on/off with reversible
+graduation.</li>
+<li><strong>Layer 3 — Per-regime overrides.</strong> Each parameter can
+hold different values in bull, bear, sideways, volatile, and crisis
+regimes. The tuner detects when behavior diverges by regime and creates
+regime-specific overrides automatically.</li>
+<li><strong>Layer 4 — Per-time-of-day overrides.</strong> Same idea,
+bucketed intraday (open / midday / close). Different morning vs
+afternoon behaviors are learned and applied.</li>
+<li><strong>Layer 5 — Cross-profile insight propagation.</strong> When a
+tuning change improves win rate on one profile, the same detection rule
+runs against every other enabled profile’s own data. Each peer’s data
+has to independently support the change — no value-copying. The fleet
+learns roughly an order of magnitude faster than profiles in
+isolation.</li>
+<li><strong>Layer 6 — Adaptive AI prompt structure.</strong> The
+verbosity and emphasis of each prompt section is itself tunable. The
+tuner runs implicit A/B tests across cycles and reinforces structures
+correlated with higher win rates. Cost-gated to prevent verbosity
+drift.</li>
+<li><strong>Layer 7 — Per-symbol overrides.</strong> Some tickers behave
+fundamentally differently (NVDA’s optimal stop-loss is not KO’s). With
+sufficient per-symbol track record, the tuner creates per-symbol
+parameter overrides — the most fine-grained tier of the override
+stack.</li>
+<li><strong>Layer 8 — Self-commissioned strategies.</strong> When the AI
+has been making correct calls on patterns no existing strategy fires on,
+the tuner identifies the coverage gap and triggers the strategy
+generator with a focused brief. Heavily cost-gated and
+rate-limited.</li>
+<li><strong>Layer 9 — Auto capital allocation (opt-in).</strong> Weekly
+rebalance of capital across profiles weighted by proven edge.
+Critically, respects the underlying real Alpaca paper accounts: profiles
+sharing one $1M account have their allocations normalized within that
+group so the underlying capital is never over-committed.</li>
+<li><strong>Cost guard</strong> — every spend-affecting autonomous
+action is wrapped in a daily cost ceiling. Over-budget changes surface
+as recommendations with explicit cost estimates rather than silent
+debits. The ceiling can be auto-computed (1.5× trailing-7-day average)
+or user-locked.</li>
+</ul>
+<p>The full override chain at decision time: per-symbol → per-regime →
+per-time-of-day → profile-global → caller-default, then multiplied by
+capital scale. Every parameter resolution flows through one entry point.
+Every override is reversible. Every change is logged.</p>
 <h3 id="advanced-analytical-stack">Advanced Analytical Stack</h3>
 <p>Beyond the core AI-first pipeline, the system layers in several
 institutional-grade capabilities that most retail platforms never

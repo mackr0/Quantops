@@ -240,12 +240,381 @@
 <header id="title-block-header">
 <h1 class="title">TECHNICAL_DOCUMENTATION</h1>
 </header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#quantopsai-technical-documentation"
+id="toc-quantopsai-technical-documentation">QuantOpsAI — Technical
+Documentation</a>
+<ul>
+<li><a href="#recent-additions-since-v4.0-april-12-april-26"
+id="toc-recent-additions-since-v4.0-april-12-april-26">Recent Additions
+Since v4.0 (April 12 → April 26)</a></li>
+<li><a href="#table-of-contents" id="toc-table-of-contents">Table of
+Contents</a></li>
+<li><a href="#system-overview" id="toc-system-overview">1. System
+Overview</a></li>
+<li><a href="#architecture" id="toc-architecture">2. Architecture</a>
+<ul>
+<li><a href="#component-summary" id="toc-component-summary">Component
+Summary</a></li>
+</ul></li>
+<li><a href="#market-specific-strategy-engines"
+id="toc-market-specific-strategy-engines">3. Market-Specific Strategy
+Engines</a>
+<ul>
+<li><a href="#micro-cap-15-strategy_micro.py"
+id="toc-micro-cap-15-strategy_micro.py">3.1 Micro Cap ($1–$5) —
+<code>strategy_micro.py</code></a></li>
+<li><a href="#small-cap-520-strategy_small.py"
+id="toc-small-cap-520-strategy_small.py">3.2 Small Cap ($5–$20) —
+<code>strategy_small.py</code></a></li>
+<li><a href="#mid-cap-20100-strategy_mid.py"
+id="toc-mid-cap-20100-strategy_mid.py">3.3 Mid Cap ($20–$100) —
+<code>strategy_mid.py</code></a></li>
+<li><a href="#large-cap-50500-strategy_large.py"
+id="toc-large-cap-50500-strategy_large.py">3.4 Large Cap ($50–$500) —
+<code>strategy_large.py</code></a></li>
+<li><a href="#crypto-strategy_crypto.py"
+id="toc-crypto-strategy_crypto.py">3.5 Crypto —
+<code>strategy_crypto.py</code></a></li>
+<li><a href="#strategy-scoring-system"
+id="toc-strategy-scoring-system">Strategy Scoring System</a></li>
+</ul></li>
+<li><a href="#ai-first-analysis-pipeline"
+id="toc-ai-first-analysis-pipeline">4. AI-First Analysis Pipeline</a>
+<ul>
+<li><a href="#architecture-ai-as-the-brain"
+id="toc-architecture-ai-as-the-brain">4.1 Architecture: AI as the
+Brain</a></li>
+<li><a href="#multi-provider-support"
+id="toc-multi-provider-support">4.2 Multi-Provider Support</a></li>
+<li><a href="#batch-prompt-structure"
+id="toc-batch-prompt-structure">4.3 Batch Prompt Structure</a></li>
+<li><a href="#technical-indicators-fed-to-ai"
+id="toc-technical-indicators-fed-to-ai">4.4 Technical Indicators Fed to
+AI</a></li>
+<li><a href="#ai-response-schema" id="toc-ai-response-schema">4.5 AI
+Response Schema</a></li>
+<li><a href="#json-response-handling"
+id="toc-json-response-handling">4.6 JSON Response Handling</a></li>
+</ul></li>
+<li><a href="#trade-execution-pipeline"
+id="toc-trade-execution-pipeline">5. Trade Execution Pipeline</a>
+<ul>
+<li><a href="#pipeline-steps" id="toc-pipeline-steps">5.1 Pipeline
+Steps</a></li>
+<li><a href="#pipeline-efficiency" id="toc-pipeline-efficiency">5.2
+Pipeline Efficiency</a></li>
+<li><a href="#dynamic-universe-discovery"
+id="toc-dynamic-universe-discovery">5.3 Dynamic Universe
+Discovery</a></li>
+<li><a href="#per-stock-news-integration"
+id="toc-per-stock-news-integration">5.4 Per-Stock News
+Integration</a></li>
+</ul></li>
+<li><a href="#risk-management" id="toc-risk-management">6. Risk
+Management</a>
+<ul>
+<li><a href="#position-level-controls"
+id="toc-position-level-controls">6.1 Position-Level Controls</a></li>
+<li><a href="#portfolio-level-controls"
+id="toc-portfolio-level-controls">6.2 Portfolio-Level Controls</a></li>
+<li><a href="#pre-trade-filters" id="toc-pre-trade-filters">6.3
+Pre-Trade Filters</a></li>
+</ul></li>
+<li><a href="#self-tuning-machine-learning"
+id="toc-self-tuning-machine-learning">7. Self-Tuning &amp; Machine
+Learning</a>
+<ul>
+<li><a href="#current-state-12-layer-autonomy-v5.0-april-2026"
+id="toc-current-state-12-layer-autonomy-v5.0-april-2026">7.0 Current
+State — 12-Layer Autonomy (v5.0, April 2026)</a></li>
+<li><a href="#performance-context-injection"
+id="toc-performance-context-injection">7.1 Performance Context
+Injection</a></li>
+<li><a href="#automatic-parameter-adjustment"
+id="toc-automatic-parameter-adjustment">7.2 Automatic Parameter
+Adjustment</a></li>
+<li><a href="#tuning-memory" id="toc-tuning-memory">7.3 Tuning
+Memory</a></li>
+<li><a href="#pattern-learning" id="toc-pattern-learning">7.4 Pattern
+Learning</a></li>
+<li><a href="#meta-model-phase-1-of-quant-fund-evolution"
+id="toc-meta-model-phase-1-of-quant-fund-evolution">7.5 Meta-Model
+(Phase 1 of Quant Fund Evolution)</a></li>
+<li><a href="#rigorous-validation-gate-phase-2-of-quant-fund-evolution"
+id="toc-rigorous-validation-gate-phase-2-of-quant-fund-evolution">7.6
+Rigorous Validation Gate (Phase 2 of Quant Fund Evolution)</a></li>
+<li><a href="#alpha-decay-monitoring-phase-3-of-quant-fund-evolution"
+id="toc-alpha-decay-monitoring-phase-3-of-quant-fund-evolution">7.7
+Alpha Decay Monitoring (Phase 3 of Quant Fund Evolution)</a></li>
+<li><a
+href="#sec-filings-semantic-analysis-phase-4-of-quant-fund-evolution"
+id="toc-sec-filings-semantic-analysis-phase-4-of-quant-fund-evolution">7.8
+SEC Filings Semantic Analysis (Phase 4 of Quant Fund Evolution)</a></li>
+<li><a href="#options-chain-oracle-phase-5-of-quant-fund-evolution"
+id="toc-options-chain-oracle-phase-5-of-quant-fund-evolution">7.9
+Options Chain Oracle (Phase 5 of Quant Fund Evolution)</a></li>
+<li><a
+href="#multi-strategy-capital-allocation-phase-6-of-quant-fund-evolution"
+id="toc-multi-strategy-capital-allocation-phase-6-of-quant-fund-evolution">7.10
+Multi-Strategy Capital Allocation (Phase 6 of Quant Fund
+Evolution)</a></li>
+<li><a href="#evolving-strategy-library-phase-7-of-quant-fund-evolution"
+id="toc-evolving-strategy-library-phase-7-of-quant-fund-evolution">7.11
+Evolving Strategy Library (Phase 7 of Quant Fund Evolution)</a></li>
+<li><a href="#specialist-ai-ensemble-phase-8-of-quant-fund-evolution"
+id="toc-specialist-ai-ensemble-phase-8-of-quant-fund-evolution">7.12
+Specialist AI Ensemble (Phase 8 of Quant Fund Evolution)</a></li>
+<li><a href="#event-driven-architecture-phase-9-of-quant-fund-evolution"
+id="toc-event-driven-architecture-phase-9-of-quant-fund-evolution">7.13
+Event-Driven Architecture (Phase 9 of Quant Fund Evolution)</a></li>
+<li><a
+href="#cross-asset-crisis-detection-phase-10-of-quant-fund-evolution"
+id="toc-cross-asset-crisis-detection-phase-10-of-quant-fund-evolution">7.14
+Cross-Asset Crisis Detection (Phase 10 of Quant Fund Evolution)</a></li>
+<li><a href="#b-operational-hygiene-ai-cost-tracking-db-backup"
+id="toc-b-operational-hygiene-ai-cost-tracking-db-backup">7.14b
+Operational Hygiene: AI Cost Tracking + DB Backup</a></li>
+<li><a href="#cross-phase-integration-test-layer"
+id="toc-cross-phase-integration-test-layer">7.15 Cross-Phase Integration
+Test Layer</a></li>
+<li><a href="#no-guessing-test-suite"
+id="toc-no-guessing-test-suite">7.16 No-Guessing Test Suite</a></li>
+</ul></li>
+<li><a href="#intelligence-features" id="toc-intelligence-features">8.
+Intelligence Features</a>
+<ul>
+<li><a href="#market-regime-detection-market_regime.py"
+id="toc-market-regime-detection-market_regime.py">8.1 Market Regime
+Detection (<code>market_regime.py</code>)</a></li>
+<li><a href="#political-sentiment-maga-mode-political_sentiment.py"
+id="toc-political-sentiment-maga-mode-political_sentiment.py">8.2
+Political Sentiment — MAGA Mode
+(<code>political_sentiment.py</code>)</a></li>
+<li><a href="#earnings-calendar-earnings_calendar.py"
+id="toc-earnings-calendar-earnings_calendar.py">8.3 Earnings Calendar
+(<code>earnings_calendar.py</code>)</a></li>
+<li><a href="#per-stock-memory" id="toc-per-stock-memory">8.4 Per-Stock
+Memory</a></li>
+<li><a href="#time-of-day-patterns" id="toc-time-of-day-patterns">8.5
+Time-of-Day Patterns</a></li>
+<li><a href="#cross-profile-learning"
+id="toc-cross-profile-learning">8.6 Cross-Profile Learning</a></li>
+<li><a href="#correlation-management-correlation.py"
+id="toc-correlation-management-correlation.py">8.7 Correlation
+Management (<code>correlation.py</code>)</a></li>
+<li><a href="#alternative-data-alternative_data.py"
+id="toc-alternative-data-alternative_data.py">8.8 Alternative Data
+(<code>alternative_data.py</code>)</a></li>
+<li><a href="#sec-edgar-filings-sec_filings.py"
+id="toc-sec-edgar-filings-sec_filings.py">8.9 SEC EDGAR Filings
+(<code>sec_filings.py</code>)</a></li>
+<li><a href="#social-sentiment-social_sentiment.py"
+id="toc-social-sentiment-social_sentiment.py">8.10 Social Sentiment
+(<code>social_sentiment.py</code>)</a></li>
+</ul></li>
+<li><a href="#database-schema" id="toc-database-schema">9. Database
+Schema</a>
+<ul>
+<li><a href="#main-database-quantopsai.db"
+id="toc-main-database-quantopsai.db">Main Database
+(<code>quantopsai.db</code>)</a></li>
+<li><a href="#schema-additions-v5.0-april-2026"
+id="toc-schema-additions-v5.0-april-2026">9.1 Schema Additions (v5.0,
+April 2026)</a></li>
+<li><a href="#per-profile-databases-quantopsai_profile_id.db"
+id="toc-per-profile-databases-quantopsai_profile_id.db">Per-Profile
+Databases (<code>quantopsai_profile_{id}.db</code>)</a></li>
+<li><a href="#ai-prediction-resolution"
+id="toc-ai-prediction-resolution">AI Prediction Resolution</a></li>
+</ul></li>
+<li><a href="#web-application" id="toc-web-application">10. Web
+Application</a>
+<ul>
+<li><a href="#technology-stack" id="toc-technology-stack">Technology
+Stack</a></li>
+<li><a href="#pages" id="toc-pages">Pages</a></li>
+<li><a href="#api-endpoints" id="toc-api-endpoints">API
+Endpoints</a></li>
+</ul></li>
+<li><a href="#scheduler-automation" id="toc-scheduler-automation">11.
+Scheduler &amp; Automation</a>
+<ul>
+<li><a href="#task-schedule" id="toc-task-schedule">Task
+Schedule</a></li>
+<li><a href="#external-cron-v5.0" id="toc-external-cron-v5.0">External
+Cron (v5.0)</a></li>
+<li><a href="#per-profile-scheduling"
+id="toc-per-profile-scheduling">Per-Profile Scheduling</a></li>
+<li><a href="#process-architecture"
+id="toc-process-architecture">Process Architecture</a></li>
+</ul></li>
+<li><a href="#external-integrations" id="toc-external-integrations">12.
+External Integrations</a>
+<ul>
+<li><a href="#alpaca-paper-trading-api"
+id="toc-alpaca-paper-trading-api">Alpaca Paper Trading API</a></li>
+<li><a href="#yahoo-finance-yfinance"
+id="toc-yahoo-finance-yfinance">Yahoo Finance (yfinance)</a></li>
+<li><a href="#ai-providers" id="toc-ai-providers">AI Providers</a></li>
+<li><a href="#resend-email-api" id="toc-resend-email-api">Resend Email
+API</a></li>
+<li><a href="#rss-feeds-free-no-auth"
+id="toc-rss-feeds-free-no-auth">RSS Feeds (Free, No Auth)</a></li>
+</ul></li>
+<li><a href="#multi-user-security-model"
+id="toc-multi-user-security-model">13. Multi-User Security Model</a>
+<ul>
+<li><a href="#credential-storage" id="toc-credential-storage">Credential
+Storage</a></li>
+<li><a href="#account-isolation" id="toc-account-isolation">Account
+Isolation</a></li>
+<li><a href="#authentication"
+id="toc-authentication">Authentication</a></li>
+</ul></li>
+<li><a href="#configuration-reference"
+id="toc-configuration-reference">14. Configuration Reference</a>
+<ul>
+<li><a href="#environment-variables"
+id="toc-environment-variables">Environment Variables</a></li>
+<li><a href="#per-user-configuration-v5.0"
+id="toc-per-user-configuration-v5.0">Per-User Configuration
+(v5.0)</a></li>
+<li><a href="#per-profile-configuration-v5.0"
+id="toc-per-profile-configuration-v5.0">Per-Profile Configuration
+(v5.0)</a></li>
+<li><a href="#default-risk-parameters-by-market-type"
+id="toc-default-risk-parameters-by-market-type">Default Risk Parameters
+by Market Type</a></li>
+</ul></li>
+<li><a href="#cost-model" id="toc-cost-model">15. Cost Model</a>
+<ul>
+<li><a href="#infrastructure"
+id="toc-infrastructure">Infrastructure</a></li>
+<li><a href="#ai-api-costs-anthropic-haiku"
+id="toc-ai-api-costs-anthropic-haiku">AI API Costs (Anthropic
+Haiku)</a></li>
+</ul></li>
+<li><a href="#codebase-reference" id="toc-codebase-reference">16.
+Codebase Reference</a>
+<ul>
+<li><a href="#file-count-structure" id="toc-file-count-structure">File
+Count &amp; Structure</a></li>
+</ul></li>
+<li><a href="#what-if-backtesting" id="toc-what-if-backtesting">17.
+What-If Backtesting</a>
+<ul>
+<li><a href="#overview" id="toc-overview">Overview</a></li>
+<li><a href="#how-it-works" id="toc-how-it-works">How It Works</a></li>
+<li><a href="#technical-implementation"
+id="toc-technical-implementation">Technical Implementation</a></li>
+</ul></li>
+<li><a href="#slippage-tracking" id="toc-slippage-tracking">18. Slippage
+Tracking</a>
+<ul>
+<li><a href="#overview-1" id="toc-overview-1">Overview</a></li>
+<li><a href="#how-it-works-1" id="toc-how-it-works-1">How It
+Works</a></li>
+<li><a href="#database-fields-trades-table"
+id="toc-database-fields-trades-table">Database Fields (trades
+table)</a></li>
+<li><a href="#metrics-displayed" id="toc-metrics-displayed">Metrics
+Displayed</a></li>
+<li><a href="#backtester-slippage-model"
+id="toc-backtester-slippage-model">Backtester Slippage Model</a></li>
+</ul></li>
+<li><a href="#backtest-vs-reality-comparison"
+id="toc-backtest-vs-reality-comparison">19. Backtest vs Reality
+Comparison</a>
+<ul>
+<li><a href="#overview-2" id="toc-overview-2">Overview</a></li>
+<li><a href="#how-it-works-2" id="toc-how-it-works-2">How It
+Works</a></li>
+<li><a href="#interpreting-the-gap"
+id="toc-interpreting-the-gap">Interpreting the Gap</a></li>
+</ul></li>
+<li><a href="#institutional-performance-dashboard"
+id="toc-institutional-performance-dashboard">20. Institutional
+Performance Dashboard</a>
+<ul>
+<li><a href="#tab-1-executive-summary"
+id="toc-tab-1-executive-summary">Tab 1: Executive Summary</a></li>
+<li><a href="#tab-2-risk-stability" id="toc-tab-2-risk-stability">Tab 2:
+Risk &amp; Stability</a></li>
+<li><a href="#tab-3-trade-analytics" id="toc-tab-3-trade-analytics">Tab
+3: Trade Analytics</a></li>
+<li><a href="#tab-4-market-relationship"
+id="toc-tab-4-market-relationship">Tab 4: Market Relationship</a></li>
+<li><a href="#tab-5-scalability" id="toc-tab-5-scalability">Tab 5:
+Scalability</a></li>
+<li><a href="#tab-6-ai-intelligence" id="toc-tab-6-ai-intelligence">Tab
+6: AI Intelligence</a></li>
+<li><a href="#chart-generation" id="toc-chart-generation">Chart
+Generation</a></li>
+<li><a href="#previous-risk-analysis"
+id="toc-previous-risk-analysis">Previous Risk Analysis</a></li>
+<li><a href="#monthly-returns-consistency"
+id="toc-monthly-returns-consistency">Monthly Returns
+(Consistency)</a></li>
+<li><a href="#data-requirements" id="toc-data-requirements">Data
+Requirements</a></li>
+</ul></li>
+<li><a href="#tax-and-regulatory-considerations"
+id="toc-tax-and-regulatory-considerations">21. Tax and Regulatory
+Considerations</a>
+<ul>
+<li><a href="#current-status" id="toc-current-status">Current
+Status</a></li>
+<li><a href="#short-term-capital-gains"
+id="toc-short-term-capital-gains">Short-Term Capital Gains</a></li>
+<li><a href="#wash-sale-rule" id="toc-wash-sale-rule">Wash Sale
+Rule</a></li>
+<li><a href="#pattern-day-trader-pdt-rule"
+id="toc-pattern-day-trader-pdt-rule">Pattern Day Trader (PDT)
+Rule</a></li>
+<li><a href="#what-would-need-to-be-built"
+id="toc-what-would-need-to-be-built">What Would Need to Be
+Built</a></li>
+</ul></li>
+<li><a href="#scaling-roadmap" id="toc-scaling-roadmap">22. Scaling
+Roadmap</a></li>
+</ul></li>
+</ul>
+</nav>
 <h1 id="quantopsai-technical-documentation">QuantOpsAI — Technical
 Documentation</h1>
-<p><strong>Version:</strong> 4.0 <strong>Date:</strong> April 12, 2026
+<p><strong>Version:</strong> 5.0 <strong>Date:</strong> April 26, 2026
 <strong>System:</strong> AI-powered autonomous paper trading platform
 <strong>Architecture:</strong> Python 3.12 / Flask / SQLite /
 DigitalOcean</p>
+<hr />
+<h2 id="recent-additions-since-v4.0-april-12-april-26">Recent Additions
+Since v4.0 (April 12 → April 26)</h2>
+<p>This file documents the system’s stable architecture. Two large
+expansions shipped between v4.0 and v5.0; their canonical references are
+in dedicated documents:</p>
+<ul>
+<li><strong><code>AUTONOMOUS_TUNING_PLAN.md</code></strong> — the
+9-layer autonomous-tuning architecture (parameter coverage, weighted
+signal intensity, per-regime / per-time-of-day / per-symbol overrides,
+cross-profile insight propagation, adaptive prompt structure,
+self-commissioned strategies, capital allocation). Cost guard
+cross-cutting all of it.</li>
+<li><strong><code>SELF_TUNING.md</code></strong> — every tuning rule,
+every signal, every safety guardrail in the autonomy system.</li>
+<li><strong><code>ALTDATA_INTEGRATION_PLAN.md</code></strong> — the four
+standalone alt-data projects (<code>congresstrades</code>,
+<code>edgar13f</code>, <code>biotechevents</code>,
+<code>stocktwits</code>) deployed to
+<code>/opt/quantopsai-altdata/</code> with daily cron at 06:00 UTC.</li>
+<li><strong><code>AI_ARCHITECTURE.md</code></strong> — end-to-end map of
+every AI agent + every feedback loop including the 12 autonomy
+layers.</li>
+</ul>
+<p>The sections below have been refreshed where needed (Self-Tuning
+summary, schema, scheduler, config, codebase). For the deep dive, follow
+the canonical docs above.</p>
 <hr />
 <h2 id="table-of-contents">Table of Contents</h2>
 <ol type="1">
@@ -1181,6 +1550,122 @@ weakness)</td>
 <hr />
 <h2 id="self-tuning-machine-learning">7. Self-Tuning &amp; Machine
 Learning</h2>
+<h3 id="current-state-12-layer-autonomy-v5.0-april-2026">7.0 Current
+State — 12-Layer Autonomy (v5.0, April 2026)</h3>
+<p>The original 4-parameter tuner described in §7.2 below has expanded
+into a 9-layer architecture (plus cost guard) covering ~50 distinct
+autonomous decision surfaces. Canonical reference is
+<code>AUTONOMOUS_TUNING_PLAN.md</code>; per-rule detail is in
+<code>SELF_TUNING.md</code>.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Surface</th>
+<th>Module</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>35+ tunable parameters with cooldown / reverse / bound clamping</td>
+<td><code>self_tuning.py</code> + <code>param_bounds.py</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>Per-signal weighted intensity (4-step ladder: 1.0/0.7/0.4/0.0)</td>
+<td><code>signal_weights.py</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td>Per-regime parameter overrides
+(bull/bear/sideways/volatile/crisis)</td>
+<td><code>regime_overrides.py</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td>Per-time-of-day overrides (open/midday/close ET)</td>
+<td><code>tod_overrides.py</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td>Cross-profile insight propagation</td>
+<td><code>insight_propagation.py</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td>Adaptive AI prompt structure (cost-gated)</td>
+<td><code>prompt_layout.py</code></td>
+</tr>
+<tr>
+<td>7</td>
+<td>Per-symbol parameter overrides (most-specific tier)</td>
+<td><code>symbol_overrides.py</code></td>
+</tr>
+<tr>
+<td>8</td>
+<td>Self-commissioned new strategies (cost-gated)</td>
+<td><code>self_tuning._optimize_commission_strategy</code> +
+<code>strategy_proposer.py</code></td>
+</tr>
+<tr>
+<td>9</td>
+<td>Auto capital allocation (opt-in, per-Alpaca-account-conserving)</td>
+<td><code>capital_allocator.py</code></td>
+</tr>
+<tr>
+<td>✱</td>
+<td>Cost guard (cross-cutting daily-spend ceiling)</td>
+<td><code>cost_guard.py</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Closed-loop learning surfaces</strong> (operate alongside the
+tuning layers): - <strong>Meta-model</strong>
+(<code>meta_model.py</code>): gradient-boosted classifier trained daily
+per profile; re-weights AI confidence at decision time. - <strong>Alpha
+decay monitor</strong> (<code>alpha_decay.py</code>): tracks rolling
+30-day Sharpe per strategy; auto-deprecates when degraded for 30+ days,
+auto-restores when recovered for 14+ days. - <strong>Losing-week
+post-mortems</strong> (<code>post_mortem.py</code>): weekly Sunday task;
+when the past 7 days underperformed baseline by ≥10pt, clusters losing
+predictions by feature signature and stores the dominant pattern as a
+<code>learned_pattern</code> that the AI prompt picks up. -
+<strong>False-negative analysis</strong>
+(<code>self_tuning._optimize_false_negatives</code>): HOLD predictions
+that resolve as “loss” (price moved enough to be a missed opportunity)
+trigger threshold loosening when clustered.</p>
+<p><strong>Decision-time parameter resolution</strong> uses a precedence
+chain at every read:</p>
+<pre><code>per-symbol &gt; per-regime &gt; per-time-of-day &gt; profile-global &gt; caller-default
+× capital_scale (Layer 9 multiplier, opt-in)</code></pre>
+<p>Single entry point:
+<code>regime_overrides.resolve_for_current_regime( profile, name, default=..., symbol=...)</code>.
+Wired into <code>trade_pipeline</code> at every parameter read.</p>
+<p><strong>Anti-regression guardrails</strong> (six structural tests):
+1. <code>test_no_recommendation_only</code> — every “Recommendation:”
+string in <code>self_tuning.py</code> must be on an explicit allowlist
+with rationale. 2. <code>test_no_snake_case_in_optimizer_strings</code>
+— optimizer return strings can’t embed raw column names. 3.
+<code>test_no_snake_case_in_api_responses</code> — dynamically discovers
+every <code>/api/*</code> endpoint, walks JSON responses, fails on raw
+PARAM_BOUNDS keys in user-facing positions. 4.
+<code>test_no_duplicate_dom_ids</code> — every <code>id="..."</code> in
+templates must be unique within its file (prevents JS getElementById
+from silently orphaning widgets). 5.
+<code>test_self_tune_task_no_change_path</code> — the no-change branch
+can’t NameError. 6. <code>test_every_lever_is_tuned</code> — every
+column in <code>trading_profiles</code> is either auto-tuned or on the
+<code>MANUAL_PARAMETERS</code> allowlist with a written rationale.</p>
+<p>The legacy detail in §7.2–§7.10 below is retained as historical
+reference for the disaster-prevention + upward-optimization modes that
+predate the layered architecture; both still operate as Layer 1
+rules.</p>
 <h3 id="performance-context-injection">7.1 Performance Context
 Injection</h3>
 <p>Before every AI review, the prompt includes the AI’s own track
@@ -1193,6 +1678,19 @@ EARNINGS: SOFI reports in 3 days. High uncertainty.</code></pre>
 decisions.</p>
 <h3 id="automatic-parameter-adjustment">7.2 Automatic Parameter
 Adjustment</h3>
+<p><strong>Status (2026-04-22):</strong> All 10 active profiles have
+sufficient resolved predictions and are actively tuning daily at EOD.
+The self-tuner operates in two modes:</p>
+<ul>
+<li><strong>Disaster prevention</strong> (win rate &lt; 35%): raises
+confidence threshold, reduces position size, widens short stops</li>
+<li><strong>Upward optimization</strong> (win rate &gt;= 35%): actively
+seeks higher win rates via confidence band analysis, regime-aware
+sizing, strategy selection, stop/TP tuning, and position size
+increases</li>
+</ul>
+<p>See <code>SELF_TUNING.md</code> for complete documentation of all 5
+upward optimization strategies.</p>
 <p>Runs daily at 3:55 PM ET:</p>
 <ol type="1">
 <li><strong>Review past adjustments</strong> (3+ days old with 10+ new
@@ -1211,10 +1709,18 @@ predictions)
 <li>If short selling has 0% win rate on 5+ trades → widen short stops
 50%</li>
 </ul></li>
-<li><strong>Cross-profile learning:</strong>
+<li><strong>Upward optimization</strong> (when win rate &gt;= 35%):
 <ul>
-<li>If another profile has 20%+ higher win rate → suggest adopting its
-settings (logged but not auto-applied)</li>
+<li>Find the best confidence band and raise threshold to focus on
+it</li>
+<li>Reduce position size in losing market regimes, increase in winning
+ones</li>
+<li>Disable worst-performing strategies (never the last one)</li>
+<li>Widen stops that trigger too early, tighten take-profits that never
+hit</li>
+<li>Increase position size when edge is proven (55%+ WR, 30+
+samples)</li>
+<li>One change per run for clean auto-reversal attribution</li>
 </ul></li>
 </ol>
 <h3 id="tuning-memory">7.3 Tuning Memory</h3>
@@ -1308,21 +1814,21 @@ Rigorous Validation Gate (Phase 2 of Quant Fund Evolution)</h3>
 without passing this gauntlet. See <code>rigorous_backtest.py</code> and
 <code>ROADMAP.md</code>.</p>
 <p><strong>Entry Point:</strong></p>
-<div class="sourceCode" id="cb10"><pre
-class="sourceCode python"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> rigorous_backtest <span class="im">import</span> validate_strategy, save_validation</span>
-<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>result <span class="op">=</span> validate_strategy(</span>
-<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>    strategy_fn<span class="op">=</span>my_strategy,</span>
-<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>    market_type<span class="op">=</span><span class="st">&#39;midcap&#39;</span>,</span>
-<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>    history_days<span class="op">=</span><span class="dv">540</span>,        <span class="co"># ~2 years</span></span>
-<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>    params<span class="op">=</span><span class="va">None</span>,</span>
-<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a>)</span>
-<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> result[<span class="st">&#39;verdict&#39;</span>] <span class="op">==</span> <span class="st">&#39;PASS&#39;</span>:</span>
-<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a>    save_validation(<span class="st">&#39;my_strategy&#39;</span>, result)</span>
-<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a>    <span class="co"># now safe to deploy</span></span>
-<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a><span class="cf">else</span>:</span>
-<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(result[<span class="st">&#39;failed_gates&#39;</span>])</span></code></pre></div>
+<div class="sourceCode" id="cb11"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> rigorous_backtest <span class="im">import</span> validate_strategy, save_validation</span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>result <span class="op">=</span> validate_strategy(</span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>    strategy_fn<span class="op">=</span>my_strategy,</span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>    market_type<span class="op">=</span><span class="st">&#39;midcap&#39;</span>,</span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>    history_days<span class="op">=</span><span class="dv">540</span>,        <span class="co"># ~2 years</span></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a>    params<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> result[<span class="st">&#39;verdict&#39;</span>] <span class="op">==</span> <span class="st">&#39;PASS&#39;</span>:</span>
+<span id="cb11-11"><a href="#cb11-11" aria-hidden="true" tabindex="-1"></a>    save_validation(<span class="st">&#39;my_strategy&#39;</span>, result)</span>
+<span id="cb11-12"><a href="#cb11-12" aria-hidden="true" tabindex="-1"></a>    <span class="co"># now safe to deploy</span></span>
+<span id="cb11-13"><a href="#cb11-13" aria-hidden="true" tabindex="-1"></a><span class="cf">else</span>:</span>
+<span id="cb11-14"><a href="#cb11-14" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(result[<span class="st">&#39;failed_gates&#39;</span>])</span></code></pre></div>
 <p><strong>The 10 Gates (all must PASS):</strong></p>
 <table>
 <colgroup>
@@ -1437,20 +1943,20 @@ shows all recent validations with verdict, score, gate pass/fail counts,
 and elapsed time.</p>
 <p><strong>Default Thresholds</strong> (in
 <code>rigorous_backtest.THRESHOLDS</code>):</p>
-<div class="sourceCode" id="cb11"><pre
-class="sourceCode python"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a>THRESHOLDS <span class="op">=</span> {</span>
-<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_total_trades&quot;</span>: <span class="dv">30</span>,</span>
-<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_sharpe&quot;</span>: <span class="fl">1.0</span>,</span>
-<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_sortino&quot;</span>: <span class="fl">1.0</span>,</span>
-<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;max_drawdown_pct&quot;</span>: <span class="op">-</span><span class="fl">25.0</span>,</span>
-<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_win_rate&quot;</span>: <span class="fl">35.0</span>,</span>
-<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_profit_factor&quot;</span>: <span class="fl">1.3</span>,</span>
-<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;max_p_value&quot;</span>: <span class="fl">0.05</span>,</span>
-<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;max_oos_sharpe_degradation_pct&quot;</span>: <span class="fl">30.0</span>,</span>
-<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_regimes_profitable&quot;</span>: <span class="dv">2</span>,</span>
-<span id="cb11-11"><a href="#cb11-11" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_monte_carlo_positive_pct&quot;</span>: <span class="fl">60.0</span>,</span>
-<span id="cb11-12"><a href="#cb11-12" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;max_pct_daily_volume&quot;</span>: <span class="fl">0.01</span>,</span>
-<span id="cb11-13"><a href="#cb11-13" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb12"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>THRESHOLDS <span class="op">=</span> {</span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_total_trades&quot;</span>: <span class="dv">30</span>,</span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_sharpe&quot;</span>: <span class="fl">1.0</span>,</span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_sortino&quot;</span>: <span class="fl">1.0</span>,</span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;max_drawdown_pct&quot;</span>: <span class="op">-</span><span class="fl">25.0</span>,</span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_win_rate&quot;</span>: <span class="fl">35.0</span>,</span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_profit_factor&quot;</span>: <span class="fl">1.3</span>,</span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;max_p_value&quot;</span>: <span class="fl">0.05</span>,</span>
+<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;max_oos_sharpe_degradation_pct&quot;</span>: <span class="fl">30.0</span>,</span>
+<span id="cb12-10"><a href="#cb12-10" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_regimes_profitable&quot;</span>: <span class="dv">2</span>,</span>
+<span id="cb12-11"><a href="#cb12-11" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;min_monte_carlo_positive_pct&quot;</span>: <span class="fl">60.0</span>,</span>
+<span id="cb12-12"><a href="#cb12-12" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;max_pct_daily_volume&quot;</span>: <span class="fl">0.01</span>,</span>
+<span id="cb12-13"><a href="#cb12-13" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>These thresholds are the absolute minimum bar. Strategies exceeding
 them meaningfully (Sharpe &gt; 1.5, OOS degradation &lt; 10%, etc.) are
 ranked higher for deployment priority.</p>
@@ -1526,16 +2032,16 @@ consecutive_bad_days, restored_at</td>
 </table>
 <p><strong>Thresholds</strong> (in
 <code>alpha_decay.DECAY_THRESHOLDS</code>):</p>
-<div class="sourceCode" id="cb13"><pre
-class="sourceCode python"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a>DECAY_THRESHOLDS <span class="op">=</span> {</span>
-<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;rolling_window_days&quot;</span>: <span class="dv">30</span>,</span>
-<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;lifetime_min_predictions&quot;</span>: <span class="dv">50</span>,</span>
-<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;rolling_min_predictions&quot;</span>: <span class="dv">10</span>,</span>
-<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;sharpe_degradation_pct&quot;</span>: <span class="fl">30.0</span>,</span>
-<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;consecutive_bad_days&quot;</span>: <span class="dv">30</span>,</span>
-<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;restoration_recovery_pct&quot;</span>: <span class="fl">15.0</span>,</span>
-<span id="cb13-8"><a href="#cb13-8" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;restoration_good_days&quot;</span>: <span class="dv">14</span>,</span>
-<span id="cb13-9"><a href="#cb13-9" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<div class="sourceCode" id="cb14"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a>DECAY_THRESHOLDS <span class="op">=</span> {</span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;rolling_window_days&quot;</span>: <span class="dv">30</span>,</span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;lifetime_min_predictions&quot;</span>: <span class="dv">50</span>,</span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;rolling_min_predictions&quot;</span>: <span class="dv">10</span>,</span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;sharpe_degradation_pct&quot;</span>: <span class="fl">30.0</span>,</span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;consecutive_bad_days&quot;</span>: <span class="dv">30</span>,</span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;restoration_recovery_pct&quot;</span>: <span class="fl">15.0</span>,</span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;restoration_good_days&quot;</span>: <span class="dv">14</span>,</span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p><strong>Scheduled Task:</strong> <code>_task_alpha_decay(ctx)</code>
 in <code>multi_scheduler.py</code> runs daily at snapshot time alongside
 self-tuning and meta-model retraining.</p>
@@ -1611,16 +2117,16 @@ alert_changes_json</td>
 </tbody>
 </table>
 <p><strong>AI Diff Output Schema:</strong></p>
-<div class="sourceCode" id="cb15"><pre
-class="sourceCode json"><code class="sourceCode json"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
-<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;severity&quot;</span><span class="fu">:</span> <span class="st">&quot;low | medium | high&quot;</span><span class="fu">,</span></span>
-<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;signal&quot;</span><span class="fu">:</span> <span class="st">&quot;concerning | positive | neutral&quot;</span><span class="fu">,</span></span>
-<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;summary&quot;</span><span class="fu">:</span> <span class="st">&quot;one-sentence human-readable&quot;</span><span class="fu">,</span></span>
-<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;changes&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
-<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span><span class="dt">&quot;type&quot;</span><span class="fu">:</span> <span class="st">&quot;new_risk | removed_language | language_shift&quot;</span><span class="fu">,</span></span>
-<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a>     <span class="dt">&quot;old&quot;</span><span class="fu">:</span> <span class="st">&quot;...&quot;</span><span class="fu">,</span> <span class="dt">&quot;new&quot;</span><span class="fu">:</span> <span class="st">&quot;...&quot;</span><span class="fu">,</span> <span class="dt">&quot;impact&quot;</span><span class="fu">:</span> <span class="st">&quot;trade short | avoid | none&quot;</span><span class="fu">}</span></span>
-<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span></span>
-<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb16"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;severity&quot;</span><span class="fu">:</span> <span class="st">&quot;low | medium | high&quot;</span><span class="fu">,</span></span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;signal&quot;</span><span class="fu">:</span> <span class="st">&quot;concerning | positive | neutral&quot;</span><span class="fu">,</span></span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;summary&quot;</span><span class="fu">:</span> <span class="st">&quot;one-sentence human-readable&quot;</span><span class="fu">,</span></span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;changes&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span><span class="dt">&quot;type&quot;</span><span class="fu">:</span> <span class="st">&quot;new_risk | removed_language | language_shift&quot;</span><span class="fu">,</span></span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a>     <span class="dt">&quot;old&quot;</span><span class="fu">:</span> <span class="st">&quot;...&quot;</span><span class="fu">,</span> <span class="dt">&quot;new&quot;</span><span class="fu">:</span> <span class="st">&quot;...&quot;</span><span class="fu">,</span> <span class="dt">&quot;impact&quot;</span><span class="fu">:</span> <span class="st">&quot;trade short | avoid | none&quot;</span><span class="fu">}</span></span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span></span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
 <p><strong>Integration with AI batch prompt:</strong> Medium- and
 high-severity alerts appear on the candidate line in the form:</p>
 <pre><code>SEC ALERT [HIGH/concerning]: 10-Q filed 2024-04-01 — New going concern
@@ -1745,10 +2251,10 @@ dominate single-strategy systems. See <code>strategies/</code>,
 <p><strong>Strategy registry
 (<code>strategies/__init__.py</code>):</strong> Every alpha strategy is
 a self-contained module exposing a uniform interface:</p>
-<div class="sourceCode" id="cb19"><pre
-class="sourceCode python"><code class="sourceCode python"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a>NAME <span class="op">=</span> <span class="st">&quot;my_strategy&quot;</span>                          <span class="co"># must match strategy_type in ai_predictions</span></span>
-<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a>APPLICABLE_MARKETS <span class="op">=</span> [<span class="st">&quot;small&quot;</span>, <span class="st">&quot;midcap&quot;</span>]      <span class="co"># or [&quot;*&quot;] for every market</span></span>
-<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> find_candidates(ctx, universe) <span class="op">-&gt;</span> <span class="bu">list</span>[<span class="bu">dict</span>]: ...</span></code></pre></div>
+<div class="sourceCode" id="cb20"><pre
+class="sourceCode python"><code class="sourceCode python"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a>NAME <span class="op">=</span> <span class="st">&quot;my_strategy&quot;</span>                          <span class="co"># must match strategy_type in ai_predictions</span></span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a>APPLICABLE_MARKETS <span class="op">=</span> [<span class="st">&quot;small&quot;</span>, <span class="st">&quot;midcap&quot;</span>]      <span class="co"># or [&quot;*&quot;] for every market</span></span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> find_candidates(ctx, universe) <span class="op">-&gt;</span> <span class="bu">list</span>[<span class="bu">dict</span>]: ...</span></code></pre></div>
 <p>The registry discovers modules, filters by market type, and skips any
 strategy present in the per-profile <code>deprecated_strategies</code>
 table (set by Phase 3 alpha decay monitoring).</p>
@@ -1909,10 +2415,10 @@ single-call is replaced by
 Every downstream stage — AI batch, risk gates, execution — sees the
 merged multi-strategy view.</p>
 <p><strong>Dashboard panel:</strong> <code>Strategy Allocation</code> on
-<code>/performance#ai</code> shows per-profile per-strategy weight,
-rolling Sharpe, lifetime Sharpe, resolved prediction count, and win
-rate. New strategies display as “default (insufficient history)” until
-they accumulate track record.</p>
+<code>/ai</code> shows per-profile per-strategy weight, rolling Sharpe,
+lifetime Sharpe, resolved prediction count, and win rate. New strategies
+display as “default (insufficient history)” until they accumulate track
+record.</p>
 <p><strong>Why This Matters:</strong> Every additional uncorrelated
 strategy adds marginal alpha that compounds with the others.
 Institutional funds gate capital by risk contribution, not by “which
@@ -1932,19 +2438,19 @@ shadow and then live trading. Failures retire automatically. See
 <code>strategy_lifecycle.py</code>, and <code>ROADMAP.md</code>.</p>
 <p><strong>Spec grammar.</strong> The AI never writes Python. It writes
 JSON matching this schema:</p>
-<div class="sourceCode" id="cb21"><pre
-class="sourceCode json"><code class="sourceCode json"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
-<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;auto_oversold_vol&quot;</span><span class="fu">,</span></span>
-<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;description&quot;</span><span class="fu">:</span> <span class="st">&quot;Deep oversold with volume confirmation&quot;</span><span class="fu">,</span></span>
-<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;applicable_markets&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;small&quot;</span><span class="ot">,</span> <span class="st">&quot;midcap&quot;</span><span class="ot">]</span><span class="fu">,</span></span>
-<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;direction&quot;</span><span class="fu">:</span> <span class="st">&quot;BUY&quot;</span><span class="fu">,</span></span>
-<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;score&quot;</span><span class="fu">:</span> <span class="dv">2</span><span class="fu">,</span></span>
-<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;conditions&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
-<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span><span class="dt">&quot;field&quot;</span><span class="fu">:</span> <span class="st">&quot;rsi&quot;</span><span class="fu">,</span> <span class="dt">&quot;op&quot;</span><span class="fu">:</span> <span class="st">&quot;&lt;&quot;</span><span class="fu">,</span> <span class="dt">&quot;value&quot;</span><span class="fu">:</span> <span class="dv">25</span><span class="fu">}</span><span class="ot">,</span></span>
-<span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span><span class="dt">&quot;field&quot;</span><span class="fu">:</span> <span class="st">&quot;volume_ratio&quot;</span><span class="fu">,</span> <span class="dt">&quot;op&quot;</span><span class="fu">:</span> <span class="st">&quot;&gt;&quot;</span><span class="fu">,</span> <span class="dt">&quot;value&quot;</span><span class="fu">:</span> <span class="fl">1.8</span><span class="fu">}</span><span class="ot">,</span></span>
-<span id="cb21-10"><a href="#cb21-10" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span><span class="dt">&quot;field&quot;</span><span class="fu">:</span> <span class="st">&quot;close&quot;</span><span class="fu">,</span> <span class="dt">&quot;op&quot;</span><span class="fu">:</span> <span class="st">&quot;&gt;&quot;</span><span class="fu">,</span> <span class="dt">&quot;field_ref&quot;</span><span class="fu">:</span> <span class="st">&quot;sma_50&quot;</span><span class="fu">}</span></span>
-<span id="cb21-11"><a href="#cb21-11" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span></span>
-<span id="cb21-12"><a href="#cb21-12" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb22"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;auto_oversold_vol&quot;</span><span class="fu">,</span></span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;description&quot;</span><span class="fu">:</span> <span class="st">&quot;Deep oversold with volume confirmation&quot;</span><span class="fu">,</span></span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;applicable_markets&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;small&quot;</span><span class="ot">,</span> <span class="st">&quot;midcap&quot;</span><span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;direction&quot;</span><span class="fu">:</span> <span class="st">&quot;BUY&quot;</span><span class="fu">,</span></span>
+<span id="cb22-6"><a href="#cb22-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;score&quot;</span><span class="fu">:</span> <span class="dv">2</span><span class="fu">,</span></span>
+<span id="cb22-7"><a href="#cb22-7" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;conditions&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb22-8"><a href="#cb22-8" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span><span class="dt">&quot;field&quot;</span><span class="fu">:</span> <span class="st">&quot;rsi&quot;</span><span class="fu">,</span> <span class="dt">&quot;op&quot;</span><span class="fu">:</span> <span class="st">&quot;&lt;&quot;</span><span class="fu">,</span> <span class="dt">&quot;value&quot;</span><span class="fu">:</span> <span class="dv">25</span><span class="fu">}</span><span class="ot">,</span></span>
+<span id="cb22-9"><a href="#cb22-9" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span><span class="dt">&quot;field&quot;</span><span class="fu">:</span> <span class="st">&quot;volume_ratio&quot;</span><span class="fu">,</span> <span class="dt">&quot;op&quot;</span><span class="fu">:</span> <span class="st">&quot;&gt;&quot;</span><span class="fu">,</span> <span class="dt">&quot;value&quot;</span><span class="fu">:</span> <span class="fl">1.8</span><span class="fu">}</span><span class="ot">,</span></span>
+<span id="cb22-10"><a href="#cb22-10" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span><span class="dt">&quot;field&quot;</span><span class="fu">:</span> <span class="st">&quot;close&quot;</span><span class="fu">,</span> <span class="dt">&quot;op&quot;</span><span class="fu">:</span> <span class="st">&quot;&gt;&quot;</span><span class="fu">,</span> <span class="dt">&quot;field_ref&quot;</span><span class="fu">:</span> <span class="st">&quot;sma_50&quot;</span><span class="fu">}</span></span>
+<span id="cb22-11"><a href="#cb22-11" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span></span>
+<span id="cb22-12"><a href="#cb22-12" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
 <p>Every <code>field</code>, <code>op</code>, <code>direction</code>,
 and <code>applicable_markets</code> value is checked against a closed
 allowlist before the spec is accepted. An AI-proposed spec cannot
@@ -2023,8 +2529,8 @@ contribute zero to capital allocation until promoted - Every AI-proposed
 spec with a duplicate name or malformed payload is silently dropped —
 the AI cannot coerce the system into bad state by misbehaving</p>
 <p><strong>Dashboard.</strong> <code>Evolving Strategy Library</code>
-panel on <code>/performance#ai</code> shows per-profile counts by status
-plus each strategy’s lineage (generation number, parent,
+panel on <code>/ai</code> shows per-profile counts by status plus each
+strategy’s lineage (generation number, parent,
 creation/promotion/retirement timestamps).</p>
 <p><strong>Why This Matters:</strong> Strategy discovery is a full-time
 job at real funds — teams of PhDs spend months designing, backtesting,
@@ -2134,10 +2640,9 @@ does not abort the pipeline. Confidence values are clamped to [0, 100]
 on ingest so a hallucinated “confidence 250” from the AI cannot swing
 the consensus.</p>
 <p><strong>Dashboard.</strong> <code>Specialist Ensemble</code> panel on
-<code>/performance#ai</code> shows per-profile, per-symbol consensus +
-each specialist’s vote + confidence, plus a highlighted list of risk
-VETOs. Makes it trivial to debug bad trades: which specialist was
-wrong?</p>
+<code>/ai</code> shows per-profile, per-symbol consensus + each
+specialist’s vote + confidence, plus a highlighted list of risk VETOs.
+Makes it trivial to debug bad trades: which specialist was wrong?</p>
 <p><strong>Why This Matters:</strong> A single generalist prompt rounds
 off its weaker signals. A specialist forced to focus on exactly one
 dimension produces sharper verdicts. Combining them with
@@ -2236,10 +2741,10 @@ events per hour trivially and keeps deployment simple. Handler and
 detector APIs don’t depend on the persistence layer — switching to Redis
 later is a ~100-line change.</p>
 <p><strong>Dashboard.</strong> <code>Event Stream</code> panel on
-<code>/performance#ai</code> shows the last 24h of events per profile
-with severity counts, the event payload (move %, SEC form type, etc),
-and handler outcomes (e.g., <code>ensemble=VETO/85%</code> means the
-reactive ensemble vetoed).</p>
+<code>/ai</code> shows the last 24h of events per profile with severity
+counts, the event payload (move %, SEC form type, etc), and handler
+outcomes (e.g., <code>ensemble=VETO/85%</code> means the reactive
+ensemble vetoed).</p>
 <p><strong>Why This Matters:</strong> The gap between “a market-moving
 event occurred” and “the AI saw it and reacted” is where real alpha
 comes from in intraday trading. A 15-minute scan tick is a 15-minute
@@ -2381,9 +2886,9 @@ pass through; BUY orders are removed entirely</li>
 </ul></li>
 </ol>
 <p><strong>Dashboard.</strong> <code>Crisis Monitor</code> panel on
-<code>/performance#ai</code> shows the current level per profile with a
-colored banner at the top (“⚠ CRISIS” / “⛔ SEVERE”), the active signals
-and their severities, the current cross-asset readings (VIX, bond/stock
+<code>/ai</code> shows the current level per profile with a colored
+banner at the top (“⚠ CRISIS” / “⛔ SEVERE”), the active signals and
+their severities, the current cross-asset readings (VIX, bond/stock
 deltas, correlation, credit stress), and a collapsible transition
 history.</p>
 <p><strong>Why This Matters:</strong> The March 2020, September 2008,
@@ -2420,13 +2925,12 @@ OpenAI <code>usage.prompt_tokens</code>, Google
 on read. This means <strong>re-pricing history is a single-file
 edit</strong> to <code>ai_pricing.py</code> — no DB migration needed
 when providers change rates.</p>
-<p>The dashboard <code>AI Cost</code> panel (top of
-<code>/performance#ai</code>) shows per-profile spend over today / 7d /
-30d windows plus a breakdown by <code>purpose</code> (e.g.,
-<code>ensemble:earnings_analyst</code>, <code>batch_select</code>,
-<code>strategy_proposal</code>, <code>sec_diff</code>) and by
-<code>model</code>. Aggregation is done via
-<code>ai_cost_ledger.spend_summary(db_path)</code>.</p>
+<p>The dashboard <code>AI Cost</code> panel (top of <code>/ai</code>)
+shows per-profile spend over today / 7d / 30d windows plus a breakdown
+by <code>purpose</code> (e.g., <code>ensemble:earnings_analyst</code>,
+<code>batch_select</code>, <code>strategy_proposal</code>,
+<code>sec_diff</code>) and by <code>model</code>. Aggregation is done
+via <code>ai_cost_ledger.spend_summary(db_path)</code>.</p>
 <p><strong>Pricing is approximate.</strong> The <code>PRICING</code>
 table in <code>ai_pricing.py</code> is best-effort and treats unknown
 models with a conservative mid-tier fallback (over-estimate is preferred
@@ -2514,6 +3018,64 @@ count) match the documented contract</td>
 <code>conftest.py</code> redirects <code>STRATEGIES_DIR</code> per-test
 so rendering auto-strategy modules in tests never pollutes the real
 <code>strategies/</code> package.</p>
+<h3 id="no-guessing-test-suite">7.16 No-Guessing Test Suite</h3>
+<p><code>tests/test_no_guessing.py</code> (26 tests) enforces that code
+never uses made-up names for tables, columns, functions, API fields, or
+template variables. Covers:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Category</th>
+<th>What it catches</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SQL table names</td>
+<td>References to non-existent tables (e.g., <code>sec_alerts</code> vs
+real <code>sec_filings_history</code>)</td>
+</tr>
+<tr>
+<td>Display names</td>
+<td>Meta-model features without human-readable labels</td>
+</tr>
+<tr>
+<td>Template data contracts</td>
+<td>View functions building data in wrong shape for templates</td>
+</tr>
+<tr>
+<td>Function signatures</td>
+<td>Calling functions with wrong arguments (e.g.,
+<code>(profile_id)</code> vs <code>(db_path, market_type)</code>)</td>
+</tr>
+<tr>
+<td>API field contracts</td>
+<td>Python functions returning fields that don’t match what template JS
+expects</td>
+</tr>
+<tr>
+<td>Template JS validation</td>
+<td>JS referencing made-up API fields with blacklist of known bad
+names</td>
+</tr>
+<tr>
+<td>render_template kwargs</td>
+<td>Templates using variables that the view never passes</td>
+</tr>
+<tr>
+<td>dotenv loading</td>
+<td>Both entry points (scheduler, web) load .env before imports</td>
+</tr>
+<tr>
+<td>Alpaca-first</td>
+<td>No yfinance in equity price paths</td>
+</tr>
+</tbody>
+</table>
 <p><strong>Why This Matters:</strong> As the system grows, the biggest
 regression risk isn’t individual-phase bugs (unit tests catch those).
 It’s silent breakage of the contracts <em>between</em> phases during
@@ -2713,6 +3275,11 @@ works without Reddit data.</p>
 <h3 id="main-database-quantopsai.db">Main Database
 (<code>quantopsai.db</code>)</h3>
 <table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
 <thead>
 <tr>
 <th>Table</th>
@@ -2728,7 +3295,7 @@ works without Reddit data.</p>
 </tr>
 <tr>
 <td><code>trading_profiles</code></td>
-<td>50+ column config per profile</td>
+<td>60+ column config per profile (see §9.1 for v5.0 additions)</td>
 <td></td>
 </tr>
 <tr>
@@ -2763,10 +3330,141 @@ works without Reddit data.</p>
 </tr>
 </tbody>
 </table>
+<h3 id="schema-additions-v5.0-april-2026">9.1 Schema Additions (v5.0,
+April 2026)</h3>
+<p>The autonomous-tuning rollout added 9 schema columns. All are
+auto-migrated via the ALTER-TABLE-on-startup framework in
+<code>models.init_user_db()</code>.</p>
+<p><strong><code>trading_profiles</code> (per-profile autonomy
+state):</strong></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>signal_weights</code></td>
+<td>TEXT (JSON)</td>
+<td><code>'{}'</code></td>
+<td>Layer 2 — per-signal intensity overrides (4-step ladder)</td>
+</tr>
+<tr>
+<td><code>regime_overrides</code></td>
+<td>TEXT (JSON)</td>
+<td><code>'{}'</code></td>
+<td>Layer 3 — <code>{param: {regime: value}}</code></td>
+</tr>
+<tr>
+<td><code>tod_overrides</code></td>
+<td>TEXT (JSON)</td>
+<td><code>'{}'</code></td>
+<td>Layer 4 — <code>{param: {tod: value}}</code>
+(open/midday/close)</td>
+</tr>
+<tr>
+<td><code>symbol_overrides</code></td>
+<td>TEXT (JSON)</td>
+<td><code>'{}'</code></td>
+<td>Layer 7 — <code>{param: {symbol: value}}</code></td>
+</tr>
+<tr>
+<td><code>prompt_layout</code></td>
+<td>TEXT (JSON)</td>
+<td><code>'{}'</code></td>
+<td>Layer 6 — <code>{section: verbosity}</code></td>
+</tr>
+<tr>
+<td><code>capital_scale</code></td>
+<td>REAL</td>
+<td><code>1.0</code></td>
+<td>Layer 9 — capital allocator’s per-profile multiplier
+(per-Alpaca-account-conserved)</td>
+</tr>
+<tr>
+<td><code>ai_model_auto_tune</code></td>
+<td>INTEGER</td>
+<td><code>0</code></td>
+<td>Per-profile opt-in for tuner-driven AI model A/B testing
+(cost-sensitive)</td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>users</code> (per-user autonomy
+preferences):</strong></p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>auto_capital_allocation</code></td>
+<td>INTEGER</td>
+<td><code>0</code></td>
+<td>Layer 9 opt-in — when ON, weekly cron rebalances capital</td>
+</tr>
+<tr>
+<td><code>daily_cost_ceiling_usd</code></td>
+<td>REAL</td>
+<td>NULL</td>
+<td>Cost-guard ceiling override; NULL = auto-compute (trailing-7d-avg ×
+1.5, floor $5)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Per-profile DBs gain:</strong></p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Table</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>learned_patterns</code></td>
+<td>Post-mortem patterns extracted from losing weeks; injected into AI
+prompt</td>
+</tr>
+<tr>
+<td><code>deprecated_strategies</code></td>
+<td>Alpha-decay deprecation records with auto-restore tracking</td>
+</tr>
+</tbody>
+</table>
 <h3 id="per-profile-databases-quantopsai_profile_id.db">Per-Profile
 Databases (<code>quantopsai_profile_{id}.db</code>)</h3>
 <p>Each profile has an isolated database containing:</p>
 <table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
 <thead>
 <tr>
 <th>Table</th>
@@ -2788,7 +3486,16 @@ Databases (<code>quantopsai_profile_{id}.db</code>)</h3>
 </tr>
 <tr>
 <td><code>ai_predictions</code></td>
-<td>Every AI prediction with resolution status</td>
+<td>Every AI prediction with resolution status
+(incl. <code>features_json</code> for meta-model training)</td>
+</tr>
+<tr>
+<td><code>deprecated_strategies</code></td>
+<td>Alpha-decay records (added v5.0)</td>
+</tr>
+<tr>
+<td><code>learned_patterns</code></td>
+<td>Post-mortem learnings (added v5.0)</td>
 </tr>
 </tbody>
 </table>
@@ -2897,13 +3604,17 @@ sliders</td>
 </tr>
 <tr>
 <td><code>/performance</code></td>
-<td>6-tab institutional metrics dashboard (returns, risk, trades,
-market, scaling, AI Intelligence with Learned Patterns + AI Data Suite
-reference)</td>
+<td>5-tab institutional metrics dashboard (returns, risk, trades,
+market, scaling)</td>
+</tr>
+<tr>
+<td><code>/ai</code></td>
+<td>4-tab AI Intelligence dashboard (brain, strategy, awareness,
+operations)</td>
 </tr>
 <tr>
 <td><code>/ai-performance</code></td>
-<td>Win rate, P&amp;L, prediction accuracy, self-tuning history</td>
+<td>Legacy AI performance page (redirects to /ai)</td>
 </tr>
 <tr>
 <td><code>/admin</code></td>
@@ -2976,6 +3687,49 @@ reference)</td>
 <td><code>POST /scanning/toggle</code></td>
 <td>Admin start/stop scanning</td>
 </tr>
+<tr>
+<td><code>GET /api/autonomy-status</code> (v5.0)</td>
+<td>Per-profile snapshot of all active overrides (signal weights,
+regime/TOD/symbol overrides, prompt layout, capital scale) —
+labeled-list shape, no raw param keys</td>
+</tr>
+<tr>
+<td><code>GET /api/autonomy-timeline</code> (v5.0)</td>
+<td>Per-profile chronological feed of every autonomous change in last 30
+days</td>
+</tr>
+<tr>
+<td><code>GET /api/resolve-param</code> (v5.0)</td>
+<td>Show how a parameter resolves through the override chain right now
+(for a given profile + param + optional symbol)</td>
+</tr>
+<tr>
+<td><code>GET /api/cost-guard-status</code> (v5.0)</td>
+<td>Today’s API spend, daily ceiling (with source label), headroom,
+7-day average</td>
+</tr>
+<tr>
+<td><code>GET /api/active-lessons</code> (v5.0)</td>
+<td>Per-profile post-mortem patterns + tuner-detected failure patterns
+currently in the AI prompt</td>
+</tr>
+<tr>
+<td><code>GET /api/tuning-status</code></td>
+<td>Per-profile self-tuning readiness pills</td>
+</tr>
+<tr>
+<td><code>GET /api/tuning-history</code></td>
+<td>Paginated unified history of all autonomous changes</td>
+</tr>
+<tr>
+<td><code>POST /ai/profile/&lt;id&gt;/restore-strategy/&lt;strategy_type&gt;</code>
+(v5.0)</td>
+<td>Manually restore a deprecated strategy to the active mix</td>
+</tr>
+<tr>
+<td><code>POST /settings/autonomy</code> (v5.0)</td>
+<td>Save user opt-in toggles + cost ceiling override</td>
+</tr>
 </tbody>
 </table>
 <hr />
@@ -3025,7 +3779,7 @@ reference)</td>
 <td><strong>Self-Tune</strong></td>
 <td>Daily (3:55 PM ET)</td>
 <td>Per profile</td>
-<td>Review adjustments, apply new ones</td>
+<td>Review adjustments, apply new ones (Layer 1–8 rules)</td>
 </tr>
 <tr>
 <td><strong>Daily Snapshot</strong></td>
@@ -3039,8 +3793,84 @@ reference)</td>
 <td>Per profile</td>
 <td>Portfolio + performance email</td>
 </tr>
+<tr>
+<td><strong>Meta-Model Retrain</strong></td>
+<td>Daily (3:55 PM ET)</td>
+<td>Per profile</td>
+<td>Re-train gradient-boosted classifier on resolved predictions</td>
+</tr>
+<tr>
+<td><strong>Alpha-Decay Monitor</strong></td>
+<td>Daily (3:55 PM ET)</td>
+<td>Per profile</td>
+<td>Detect rolling-Sharpe degradation; deprecate / restore
+strategies</td>
+</tr>
+<tr>
+<td><strong>SEC Filing Monitor</strong></td>
+<td>Daily (3:55 PM ET)</td>
+<td>Per market type</td>
+<td>Diff new 10-K/10-Q/8-K filings; analyze materiality with AI</td>
+</tr>
+<tr>
+<td><strong>Auto-Strategy Lifecycle</strong></td>
+<td>Daily (3:55 PM ET)</td>
+<td>Per profile</td>
+<td>Promote shadow strategies to active; retire failed ones</td>
+</tr>
+<tr>
+<td><strong>DB Backup</strong></td>
+<td>Daily (3:55 PM ET)</td>
+<td>Per profile</td>
+<td>Rotate proprietary training-data backups</td>
+</tr>
+<tr>
+<td><strong>Weekly Digest Email</strong></td>
+<td>Friday 4 PM ET</td>
+<td>All profiles (one email)</td>
+<td>Cross-profile summary + autonomy activity (added v5.0)</td>
+</tr>
+<tr>
+<td><strong>Weekly Capital Rebalance</strong> (v5.0)</td>
+<td>Sunday 04:00 UTC</td>
+<td>Per user (opt-in)</td>
+<td>Layer 9: rebalance per-profile <code>capital_scale</code>; respects
+shared Alpaca accounts</td>
+</tr>
+<tr>
+<td><strong>Weekly Post-Mortem</strong> (v5.0)</td>
+<td>Sunday</td>
+<td>Per profile</td>
+<td>Cluster losing-week trades by feature signature; store as
+<code>learned_pattern</code> for AI prompt injection</td>
+</tr>
+<tr>
+<td><strong>Auto-Strategy Generation</strong></td>
+<td>Weekly (Sundays)</td>
+<td>Per profile</td>
+<td>Phase 7: AI proposes new strategy specs</td>
+</tr>
 </tbody>
 </table>
+<p><strong>File-based idempotency markers</strong> prevent duplicate
+runs across scheduler restarts (introduced after a 100-email storm on
+2026-04-25). Markers excluded from <code>rsync --delete</code> in
+<code>sync.sh</code>: <code>.daily_snapshot_done.marker</code>,
+<code>.daily_summary_sent_p*.marker</code>,
+<code>.weekly_digest_sent.marker</code>,
+<code>.capital_rebalance_done.marker</code>,
+<code>.post_mortem_done_p*.marker</code>.</p>
+<h3 id="external-cron-v5.0">External Cron (v5.0)</h3>
+<p>Daily alt-data refresh runs as a separate cron entry (not via the
+QuantOpsAI scheduler — it’s a sibling subsystem):</p>
+<pre><code>0 6 * * * cd /opt/quantopsai-altdata &amp;&amp; \
+    ALTDATA_BASE=/opt/quantopsai-altdata bash run-altdata-daily.sh \
+    &gt;&gt; logs/altdata-$(date +%Y%m%d).log 2&gt;&amp;1</code></pre>
+<p>Runs sequentially across the 4 standalone projects
+(<code>congresstrades</code> → <code>edgar13f</code> →
+<code>biotechevents</code> → <code>stocktwits</code>). Each project is
+rate-limit-aware against its upstream API. Total runtime ~30-50 min
+depending on new data volume.</p>
 <h3 id="per-profile-scheduling">Per-Profile Scheduling</h3>
 <p>Each profile has its own trading schedule:</p>
 <table>
@@ -3272,6 +4102,11 @@ a per-profile database file.</p>
 <h2 id="configuration-reference">14. Configuration Reference</h2>
 <h3 id="environment-variables">Environment Variables</h3>
 <table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
 <thead>
 <tr>
 <th>Variable</th>
@@ -3300,10 +4135,82 @@ a per-profile database file.</p>
 <td>No</td>
 <td>Default: <code>quantopsai.db</code></td>
 </tr>
+<tr>
+<td><code>ALTDATA_BASE_PATH</code> (v5.0)</td>
+<td>No</td>
+<td>Base path for the 4 standalone alt-data projects. Prod:
+<code>/opt/quantopsai-altdata</code>. Local dev: defaults to
+<code>$HOME</code>. Read by <code>alternative_data.py</code>
+helpers.</td>
+</tr>
+<tr>
+<td><code>RESEND_API_KEY</code></td>
+<td>No</td>
+<td>Email notifications via Resend API</td>
+</tr>
 </tbody>
 </table>
-<p>All other credentials (Alpaca, Anthropic, Resend) are stored
-encrypted in the database per user/profile.</p>
+<p>All other credentials (Alpaca, Anthropic) are stored encrypted in the
+database per user/profile.</p>
+<h3 id="per-user-configuration-v5.0">Per-User Configuration (v5.0)</h3>
+<p>Stored on the <code>users</code> table; surfaced via Settings →
+Autonomy section:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>auto_capital_allocation</code></td>
+<td>OFF</td>
+<td>Layer 9 opt-in. When ON, weekly Sunday cron rebalances per-profile
+<code>capital_scale</code> toward proven edge.</td>
+</tr>
+<tr>
+<td><code>daily_cost_ceiling_usd</code></td>
+<td>NULL (auto)</td>
+<td>User-configured daily AI-spend cap. NULL → auto-compute as
+trailing-7-day-avg × 1.5, floor $5. Cost guard blocks any autonomous
+action that would push today’s spend over this.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="per-profile-configuration-v5.0">Per-Profile Configuration
+(v5.0)</h3>
+<p>Stored on <code>trading_profiles</code>; surfaced via Settings →
+per-profile form:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ai_model_auto_tune</code></td>
+<td>OFF</td>
+<td>Per-profile opt-in. When ON, the tuner is allowed to A/B test
+alternative AI models for this profile within the cost guard. Off by
+default because flipping ON can increase API spend.</td>
+</tr>
+</tbody>
+</table>
 <h3 id="default-risk-parameters-by-market-type">Default Risk Parameters
 by Market Type</h3>
 <table>
@@ -3464,10 +4371,23 @@ the shortlist is non-empty.</p>
 │   ├── ai_analyst.py          Multi-model AI analysis
 │   ├── ai_providers.py        Provider abstraction layer
 │   ├── ai_tracker.py          Prediction tracking &amp; resolution
-│   ├── self_tuning.py         Performance feedback &amp; auto-adjustment
+│   ├── self_tuning.py         Performance feedback &amp; auto-adjustment (Layer 1+8 rules)
 │   ├── political_sentiment.py MAGA mode news analysis
 │   ├── market_regime.py       Bull/bear/sideways detection
-│   └── news_sentiment.py     News-based sentiment analysis
+│   ├── news_sentiment.py      News-based sentiment analysis
+│   ├── meta_model.py          Phase 1 — gradient-boosted classifier
+│   ├── alpha_decay.py         Strategy auto-deprecation / restoration
+│   └── post_mortem.py (v5.0)  Losing-week pattern extraction
+├── Autonomy Layer Modules (v5.0, ~1,800 lines)
+│   ├── param_bounds.py            Declarative PARAM_BOUNDS + clamp()
+│   ├── signal_weights.py          Layer 2 — per-signal intensity
+│   ├── regime_overrides.py        Layer 3 + the resolve_for_current_regime entry point
+│   ├── tod_overrides.py           Layer 4 — per-time-of-day overrides
+│   ├── symbol_overrides.py        Layer 7 — per-symbol overrides
+│   ├── prompt_layout.py           Layer 6 — adaptive prompt verbosity
+│   ├── insight_propagation.py     Layer 5 — cross-profile fan-out
+│   ├── capital_allocator.py       Layer 9 — per-Alpaca-account capital allocation
+│   └── cost_guard.py              Cross-cutting daily-spend ceiling enforcement
 ├── Trading &amp; Execution (5 files, ~1,800 lines)
 │   ├── trade_pipeline.py      Core trade pipeline (AI-first decision engine)
 │   ├── trader.py              Exit management &amp; stop-loss
@@ -3504,12 +4424,25 @@ the shortlist is non-empty.</p>
 │   ├── sync.sh                Safe code-only rsync wrapper
 │   ├── stop_remote.sh         Stop services
 │   └── status_remote.sh       Check service status
-└── Documentation (4 files)
-    ├── TECHNICAL_DOCUMENTATION.md  This document
-    ├── STRATEGY_DOCUMENT.md        Strategy overview
-    ├── STRATEGY_ENGINES_PLAN.md    Engine design plan
-    └── SMART_EXECUTION_PLAN.md     Execution feature plan</code></pre>
-<p><strong>Total: ~45 Python files, ~17,000+ lines of code</strong></p>
+└── Documentation
+    ├── TECHNICAL_DOCUMENTATION.md     This document (system reference)
+    ├── EXECUTIVE_OVERVIEW.md          Plain-English &quot;what is this&quot;
+    ├── AI_ARCHITECTURE.md             End-to-end AI agent + autonomy map
+    ├── SELF_TUNING.md                 Every tuning rule + signal + safety guard
+    ├── AUTONOMOUS_TUNING_PLAN.md      The 9-layer autonomy roadmap
+    ├── ALTDATA_INTEGRATION_PLAN.md    The 4 standalone alt-data projects
+    ├── ROADMAP.md                     What&#39;s next
+    ├── CHANGELOG.md                   Every fix, feature, hotfix with rationale
+    └── README.md                      Quick orientation
+
+External (not in this repo):
+    /opt/quantopsai-altdata/{congresstrades,edgar13f,biotechevents,stocktwits}/
+        Standalone data-collection projects with their own SQLite DBs.
+        Refreshed daily by /opt/quantopsai-altdata/run-altdata-daily.sh
+        via cron at 06:00 UTC. Each project has its own venv +
+        requirements.txt; isolated from QuantOpsAI&#39;s Python env.</code></pre>
+<p><strong>Total (QuantOpsAI proper): ~55 Python files, ~21,000+ lines
+of code</strong></p>
 <hr />
 <h2 id="what-if-backtesting">17. What-If Backtesting</h2>
 <h3 id="overview">Overview</h3>
@@ -3674,10 +4607,12 @@ in the period.</p>
 <hr />
 <h2 id="institutional-performance-dashboard">20. Institutional
 Performance Dashboard</h2>
-<p>The system includes a comprehensive 6-tab performance dashboard at
-<code>/performance</code> designed to meet institutional investor
-standards. All metrics are calculated by <code>metrics.py</code> using
-<code>calculate_all_metrics()</code>.</p>
+<p>The system includes a 5-tab performance dashboard at
+<code>/performance</code> (traditional metrics) and a separate 4-tab AI
+Intelligence dashboard at <code>/ai</code> (brain, strategy, awareness,
+operations). Performance metrics are calculated by
+<code>metrics.py</code> using <code>calculate_all_metrics()</code>. AI
+data is served by dedicated view functions and AJAX API endpoints.</p>
 <h3 id="tab-1-executive-summary">Tab 1: Executive Summary</h3>
 <table>
 <colgroup>

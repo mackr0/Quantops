@@ -240,13 +240,265 @@
 <header id="title-block-header">
 <h1 class="title">ROADMAP</h1>
 </header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#quantopsai-quant-fund-evolution-roadmap"
+id="toc-quantopsai-quant-fund-evolution-roadmap">QuantOpsAI — Quant Fund
+Evolution Roadmap</a>
+<ul>
+<li><a href="#vision" id="toc-vision">Vision</a></li>
+<li><a href="#the-10-phases" id="toc-the-10-phases">The 10 Phases</a>
+<ul>
+<li><a href="#phase-1-meta-model-on-own-prediction-data-current"
+id="toc-phase-1-meta-model-on-own-prediction-data-current">Phase 1 —
+Meta-Model on Own Prediction Data [CURRENT]</a></li>
+<li><a href="#phase-2-scientific-backtesting-infrastructure"
+id="toc-phase-2-scientific-backtesting-infrastructure">Phase 2 —
+Scientific Backtesting Infrastructure</a></li>
+<li><a href="#phase-3-alpha-decay-monitoring"
+id="toc-phase-3-alpha-decay-monitoring">Phase 3 — Alpha Decay
+Monitoring</a></li>
+<li><a href="#phase-4-sec-filings-semantic-analysis"
+id="toc-phase-4-sec-filings-semantic-analysis">Phase 4 — SEC Filings
+Semantic Analysis</a></li>
+<li><a href="#phase-5-options-chain-oracle"
+id="toc-phase-5-options-chain-oracle">Phase 5 — Options Chain
+Oracle</a></li>
+<li><a href="#phase-6-multi-strategy-parallel-execution"
+id="toc-phase-6-multi-strategy-parallel-execution">Phase 6 —
+Multi-Strategy Parallel Execution</a></li>
+<li><a href="#phase-7-strategy-auto-generation"
+id="toc-phase-7-strategy-auto-generation">Phase 7 — Strategy
+Auto-Generation</a></li>
+<li><a href="#phase-8-ensemble-of-specialized-ais"
+id="toc-phase-8-ensemble-of-specialized-ais">Phase 8 — Ensemble of
+Specialized AIs</a></li>
+<li><a href="#phase-9-event-driven-architecture"
+id="toc-phase-9-event-driven-architecture">Phase 9 — Event-Driven
+Architecture</a></li>
+<li><a href="#phase-10-cross-asset-crisis-detection"
+id="toc-phase-10-cross-asset-crisis-detection">Phase 10 — Cross-Asset
+Crisis Detection</a></li>
+</ul></li>
+<li><a href="#phase-order-dependencies"
+id="toc-phase-order-dependencies">Phase Order &amp;
+Dependencies</a></li>
+<li><a href="#non-negotiable-principles"
+id="toc-non-negotiable-principles">Non-Negotiable Principles</a></li>
+<li><a href="#phase-status" id="toc-phase-status">Phase Status</a>
+<ul>
+<li><a href="#phase-1-completion-summary"
+id="toc-phase-1-completion-summary">Phase 1 Completion Summary</a></li>
+</ul></li>
+<li><a href="#phase-2-implementation-complete"
+id="toc-phase-2-implementation-complete">Phase 2 Implementation
+(Complete)</a>
+<ul>
+<li><a href="#what-was-built" id="toc-what-was-built">What was
+built</a></li>
+<li><a href="#the-10-gates" id="toc-the-10-gates">The 10 Gates</a></li>
+<li><a href="#usage" id="toc-usage">Usage</a></li>
+<li><a href="#why-this-matters-for-phases-3-10"
+id="toc-why-this-matters-for-phases-3-10">Why This Matters for Phases
+3-10</a></li>
+<li><a href="#first-validation-run-results-2026-04-13"
+id="toc-first-validation-run-results-2026-04-13">First Validation Run
+Results (2026-04-13)</a></li>
+<li><a href="#phase-2.1-completion-2026-04-13"
+id="toc-phase-2.1-completion-2026-04-13">Phase 2.1 Completion
+(2026-04-13)</a></li>
+</ul></li>
+<li><a href="#phase-3-implementation-complete"
+id="toc-phase-3-implementation-complete">Phase 3 Implementation
+(Complete)</a>
+<ul>
+<li><a href="#what-was-built-1" id="toc-what-was-built-1">What was
+built</a></li>
+<li><a href="#detection-algorithm"
+id="toc-detection-algorithm">Detection Algorithm</a></li>
+<li><a href="#pipeline-integration"
+id="toc-pipeline-integration">Pipeline Integration</a></li>
+<li><a href="#why-this-matters-for-phases-6-10"
+id="toc-why-this-matters-for-phases-6-10">Why This Matters for Phases
+6-10</a></li>
+<li><a href="#whats-waiting-for-live-data"
+id="toc-whats-waiting-for-live-data">What’s waiting for live
+data</a></li>
+</ul></li>
+<li><a href="#phase-4-implementation-complete"
+id="toc-phase-4-implementation-complete">Phase 4 Implementation
+(Complete)</a>
+<ul>
+<li><a href="#what-was-built-2" id="toc-what-was-built-2">What was
+built</a></li>
+<li><a href="#architecture" id="toc-architecture">Architecture</a></li>
+<li><a href="#rate-limiting-and-identification"
+id="toc-rate-limiting-and-identification">Rate limiting and
+identification</a></li>
+<li><a href="#why-this-matters-for-phases-5-10"
+id="toc-why-this-matters-for-phases-5-10">Why This Matters for Phases
+5-10</a></li>
+</ul></li>
+<li><a href="#phase-5-implementation-complete"
+id="toc-phase-5-implementation-complete">Phase 5 Implementation
+(Complete)</a>
+<ul>
+<li><a href="#what-was-built-3" id="toc-what-was-built-3">What was
+built</a></li>
+<li><a href="#compact-summary-format-injected-into-ai-prompt"
+id="toc-compact-summary-format-injected-into-ai-prompt">Compact summary
+format injected into AI prompt</a></li>
+<li><a href="#why-this-matters-for-phases-6-10-1"
+id="toc-why-this-matters-for-phases-6-10-1">Why This Matters for Phases
+6-10</a></li>
+</ul></li>
+<li><a href="#live-incidents-fixes-2026-04-15"
+id="toc-live-incidents-fixes-2026-04-15">Live Incidents &amp; Fixes
+(2026-04-15)</a>
+<ul>
+<li><a href="#market-data-migration-yfinance-alpaca-algo-trader-plus"
+id="toc-market-data-migration-yfinance-alpaca-algo-trader-plus">Market-data
+migration: yfinance → Alpaca (Algo Trader Plus)</a></li>
+<li><a href="#strategy-sell-bias-small-cap-starved-of-trades-for-days"
+id="toc-strategy-sell-bias-small-cap-starved-of-trades-for-days">Strategy
+SELL-bias: Small Cap starved of trades for days</a></li>
+<li><a href="#operational" id="toc-operational">Operational</a></li>
+</ul></li>
+<li><a href="#operational-hygiene-2026-04-14"
+id="toc-operational-hygiene-2026-04-14">Operational Hygiene
+(2026-04-14)</a>
+<ul>
+<li><a href="#ai-cost-ledger" id="toc-ai-cost-ledger">AI cost
+ledger</a></li>
+<li><a href="#database-backup-with-rotation"
+id="toc-database-backup-with-rotation">Database backup with
+rotation</a></li>
+</ul></li>
+<li><a href="#expanded-seed-strategy-library-2026-04-14"
+id="toc-expanded-seed-strategy-library-2026-04-14">Expanded Seed
+Strategy Library (2026-04-14)</a>
+<ul>
+<li><a href="#what-was-added" id="toc-what-was-added">What was
+added</a></li>
+<li><a href="#registry-coverage-by-market"
+id="toc-registry-coverage-by-market">Registry coverage by
+market</a></li>
+<li><a href="#infrastructure-fix"
+id="toc-infrastructure-fix">Infrastructure fix</a></li>
+<li><a href="#honest-caveats" id="toc-honest-caveats">Honest
+caveats</a></li>
+</ul></li>
+<li><a href="#phase-10-implementation-complete"
+id="toc-phase-10-implementation-complete">Phase 10 Implementation
+(Complete)</a>
+<ul>
+<li><a href="#what-was-built-4" id="toc-what-was-built-4">What was
+built</a></li>
+<li><a href="#design" id="toc-design">Design</a></li>
+<li><a
+href="#this-is-the-final-phase-of-the-quant-fund-evolution-roadmap."
+id="toc-this-is-the-final-phase-of-the-quant-fund-evolution-roadmap.">🎯
+This is the final phase of the Quant Fund Evolution roadmap.</a></li>
+<li><a
+href="#cross-phase-integration-tests-previously-deferred-now-complete"
+id="toc-cross-phase-integration-tests-previously-deferred-now-complete">Cross-Phase
+Integration Tests (previously deferred — now complete)</a></li>
+</ul></li>
+<li><a href="#phase-9-implementation-complete"
+id="toc-phase-9-implementation-complete">Phase 9 Implementation
+(Complete)</a>
+<ul>
+<li><a href="#what-was-built-5" id="toc-what-was-built-5">What was
+built</a></li>
+<li><a href="#design-choices" id="toc-design-choices">Design
+choices</a></li>
+<li><a href="#why-this-matters-for-phase-10"
+id="toc-why-this-matters-for-phase-10">Why This Matters for Phase
+10</a></li>
+</ul></li>
+<li><a href="#phase-8-implementation-complete"
+id="toc-phase-8-implementation-complete">Phase 8 Implementation
+(Complete)</a>
+<ul>
+<li><a href="#what-was-built-6" id="toc-what-was-built-6">What was
+built</a></li>
+<li><a href="#cost-design" id="toc-cost-design">Cost design</a></li>
+<li><a href="#why-this-matters-for-phases-9-10"
+id="toc-why-this-matters-for-phases-9-10">Why This Matters for Phases
+9-10</a></li>
+</ul></li>
+<li><a href="#phase-7-implementation-complete"
+id="toc-phase-7-implementation-complete">Phase 7 Implementation
+(Complete)</a>
+<ul>
+<li><a href="#what-was-built-7" id="toc-what-was-built-7">What was
+built</a></li>
+<li><a href="#safety-design" id="toc-safety-design">Safety
+design</a></li>
+<li><a href="#why-this-matters-for-phases-8-10"
+id="toc-why-this-matters-for-phases-8-10">Why This Matters for Phases
+8-10</a></li>
+</ul></li>
+<li><a href="#phase-6-implementation-complete"
+id="toc-phase-6-implementation-complete">Phase 6 Implementation
+(Complete)</a>
+<ul>
+<li><a href="#what-was-built-8" id="toc-what-was-built-8">What was
+built</a></li>
+<li><a href="#allocation-math" id="toc-allocation-math">Allocation
+math</a></li>
+<li><a href="#why-this-matters-for-phases-7-10"
+id="toc-why-this-matters-for-phases-7-10">Why This Matters for Phases
+7-10</a></li>
+</ul></li>
+<li><a href="#phase-1-implementation-current"
+id="toc-phase-1-implementation-current">Phase 1 Implementation
+(Current)</a>
+<ul>
+<li><a href="#goal" id="toc-goal">Goal</a></li>
+<li><a href="#flow" id="toc-flow">Flow</a></li>
+<li><a href="#why-this-works" id="toc-why-this-works">Why This
+Works</a></li>
+<li><a href="#files-modified-created-phase-1"
+id="toc-files-modified-created-phase-1">Files Modified / Created (Phase
+1)</a></li>
+<li><a href="#success-criteria" id="toc-success-criteria">Success
+Criteria</a></li>
+</ul></li>
+<li><a href="#autonomous-tuning-expansion-delivered-2026-04-25"
+id="toc-autonomous-tuning-expansion-delivered-2026-04-25">Autonomous
+Tuning Expansion ✅ DELIVERED (2026-04-25)</a>
+<ul>
+<li><a href="#what-shipped-instead-the-12-wave-rollout"
+id="toc-what-shipped-instead-the-12-wave-rollout">What shipped instead —
+the 12-wave rollout</a></li>
+<li><a href="#override-resolution-chain"
+id="toc-override-resolution-chain">Override resolution chain</a></li>
+<li><a href="#anti-regression-guardrails-6-structural-tests"
+id="toc-anti-regression-guardrails-6-structural-tests">Anti-regression
+guardrails (6 structural tests)</a></li>
+<li><a href="#why-this-beat-the-original-plan"
+id="toc-why-this-beat-the-original-plan">Why this beat the original
+plan</a></li>
+</ul></li>
+<li><a href="#alternative-data-integration-delivered-2026-04-26"
+id="toc-alternative-data-integration-delivered-2026-04-26">Alternative
+Data Integration ✅ DELIVERED (2026-04-26)</a>
+<ul>
+<li><a href="#what-shipped" id="toc-what-shipped">What shipped</a></li>
+</ul></li>
+<li><a href="#cross-session-continuity"
+id="toc-cross-session-continuity">Cross-Session Continuity</a></li>
+</ul></li>
+</ul>
+</nav>
 <h1 id="quantopsai-quant-fund-evolution-roadmap">QuantOpsAI — Quant Fund
 Evolution Roadmap</h1>
 <p><strong>Purpose:</strong> This document is the source of truth for
 the system’s evolution from “excellent retail platform” to “world-class
 quant fund in miniature.” It persists across development sessions so
 context is never lost.</p>
-<p><strong>Last updated:</strong> 2026-04-15</p>
+<p><strong>Last updated:</strong> 2026-04-26</p>
 <hr />
 <h2 id="vision">Vision</h2>
 <p>QuantOpsAI is already better than 95% of retail trading systems. The
@@ -1290,6 +1542,156 @@ features to record_prediction, integrates meta-model before execution -
 2 weeks</li>
 </ul>
 <hr />
+<h2 id="autonomous-tuning-expansion-delivered-2026-04-25">Autonomous
+Tuning Expansion ✅ DELIVERED (2026-04-25)</h2>
+<p>The original “queued for late May 2026” plan called for adding 3
+parameters to the self-tuner. <strong>What actually shipped is much
+larger:</strong> a full 12-layer autonomous tuning stack that supersedes
+the modest 4→7 parameter expansion. The 3 parameters listed in the
+original plan (Trailing Stop ATR multiplier, RSI entry thresholds,
+volume surge multiplier) are all included inside Layer 1 and bounded by
+<code>param_bounds.PARAM_BOUNDS</code>.</p>
+<h3 id="what-shipped-instead-the-12-wave-rollout">What shipped instead —
+the 12-wave rollout</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Layer</th>
+<th>What it tunes</th>
+<th>Module</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>35+ scalar parameters with PARAM_BOUNDS clamp</td>
+<td><code>param_bounds.py</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>Per-signal weight ladder (1.0 / 0.7 / 0.4 / 0.0) for 25 signals</td>
+<td><code>signal_weights.py</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td>Per-regime parameter overlays</td>
+<td><code>regime_overrides.py</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td>Per-time-of-day parameter overlays</td>
+<td><code>tod_overrides.py</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td>Per-symbol parameter overlays</td>
+<td><code>symbol_overrides.py</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td>AI prompt section order + presence</td>
+<td><code>prompt_layout.py</code></td>
+</tr>
+<tr>
+<td>7</td>
+<td>Insight propagation (lessons learned → in-flight prompt)</td>
+<td><code>insight_propagation.py</code></td>
+</tr>
+<tr>
+<td>8</td>
+<td>AI model auto-selection (gated by user toggle)</td>
+<td>self-tuning</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Per-Alpaca-account-conserving capital allocation</td>
+<td><code>capital_allocator.py</code></td>
+</tr>
+<tr>
+<td>Cost</td>
+<td>Daily AI-spend ceiling (user-configurable)</td>
+<td><code>cost_guard.py</code></td>
+</tr>
+<tr>
+<td>Closed loop</td>
+<td>Losing-week + false-negative post-mortems</td>
+<td><code>post_mortem.py</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="override-resolution-chain">Override resolution chain</h3>
+<pre><code>per-symbol → per-regime → per-time-of-day → profile-global → caller-default,
+then multiplied by capital_scale, then clamped by PARAM_BOUNDS.</code></pre>
+<h3 id="anti-regression-guardrails-6-structural-tests">Anti-regression
+guardrails (6 structural tests)</h3>
+<ul>
+<li>AST walker on every <code>_optimize_*</code> return prohibits raw
+snake_case keys in user-facing strings.</li>
+<li>API-response sweep dynamically discovers every <code>/api/*</code>
+endpoint via <code>app.url_map</code>, hits each with seeded data, walks
+the JSON, fails the build on any leaked PARAM_BOUNDS key.</li>
+<li>Tuner must call <code>alpha_decay.deprecate(...)</code> for every
+“deprecate” recommendation it emits.</li>
+<li>Idempotency markers for daily summary email + snapshot bundle.</li>
+<li>Duplicate-DOM-id detector across all templates.</li>
+<li>Pre-commit gate requires <code>CHANGELOG.md</code> update with every
+<code>.py</code> commit.</li>
+</ul>
+<h3 id="why-this-beat-the-original-plan">Why this beat the original
+plan</h3>
+<p>The original 3-parameter expansion was conservative — designed to
+inch forward once the existing 4 had 2-3 stable weeks. By 2026-04-25 the
+production system had enough resolved predictions that the user
+prioritized aggressive autonomy (“time and effort are meaningless,
+quality and function are all that matter”). Result: a full 12-layer
+architecture ships in one weekend with cost guard, override chain,
+post-mortems, and 6 structural anti-regression tests, instead of three
+isolated parameter additions a month from now.</p>
+<p>See <code>AUTONOMOUS_TUNING_PLAN.md</code> for the wave-by-wave
+rollout details and <code>SELF_TUNING.md</code> for the per-signal
+weight ladder and operator reference.</p>
+<hr />
+<h2 id="alternative-data-integration-delivered-2026-04-26">Alternative
+Data Integration ✅ DELIVERED (2026-04-26)</h2>
+<p>Four standalone alt-data projects (<code>congresstrades</code>,
+<code>edgar13f</code>, <code>biotechevents</code>,
+<code>stocktwits</code>) were stitched into the pipeline over the
+weekend so the 1-year normalization period for each new signal starts
+immediately rather than later.</p>
+<h3 id="what-shipped">What shipped</h3>
+<ul>
+<li><code>alternative_data.py</code> gained 4 read-only helpers:
+<code>get_congressional_recent</code>,
+<code>get_13f_institutional</code>, <code>get_biotech_milestones</code>,
+<code>get_stocktwits_sentiment</code>.</li>
+<li>All four open the external SQLite stores read-only via
+<code>file:</code> URI with a 2.0s timeout and tolerate missing DBs
+gracefully.</li>
+<li>Each helper is wired into
+<code>get_all_alternative_data(symbol)</code> and cached for 6
+hours.</li>
+<li>4 new entries added to
+<code>signal_weights.WEIGHTABLE_SIGNALS</code> so each new source flows
+through the Layer-2 weight ladder.</li>
+<li>4 new prompt blocks added to <code>ai_analyst.py</code> under the
+alt-data section, all wrapped in <code>_weighted_signal_text</code> so
+weights apply.</li>
+<li>11 new alt-data feature keys added to the meta-model
+<code>features_payload</code> so Phase-1 training can learn from
+them.</li>
+<li>12 new tests in <code>tests/test_altdata_readers.py</code> with
+seeded fixtures.</li>
+<li>Path resolution via <code>ALTDATA_BASE_PATH</code> env var; defaults
+to <code>~/</code>.</li>
+</ul>
+<p>See <code>ALTDATA_INTEGRATION_PLAN.md</code> for verified record
+counts and the DEPLOYED-2026-04-26 status flip.</p>
+<hr />
 <h2 id="cross-session-continuity">Cross-Session Continuity</h2>
 <p><strong>If you are an AI assistant reading this in a new
 session:</strong></p>
@@ -1299,7 +1701,7 @@ is where work is happening.</li>
 <li>Read that phase’s detailed implementation plan in this
 document.</li>
 <li>Run <code>./run_tests.sh</code> first to confirm baseline (should be
-104+ tests passing).</li>
+920+ tests passing).</li>
 <li>Check the detailed plan at
 <code>/Users/mackr0/.claude/plans/serialized-nibbling-fern.md</code> for
 granular step-by-step instructions.</li>

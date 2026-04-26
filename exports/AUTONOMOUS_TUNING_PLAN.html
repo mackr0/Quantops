@@ -1,0 +1,959 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>AUTONOMOUS_TUNING_PLAN</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">AUTONOMOUS_TUNING_PLAN</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#autonomous-tuning-comprehensive-plan"
+id="toc-autonomous-tuning-comprehensive-plan">Autonomous Tuning —
+Comprehensive Plan</a>
+<ul>
+<li><a href="#architecture-overview-9-layers-cost-guard"
+id="toc-architecture-overview-9-layers-cost-guard">Architecture Overview
+— 9 Layers + Cost Guard</a></li>
+<li><a href="#manual-allowlist-the-only-things-humans-still-control"
+id="toc-manual-allowlist-the-only-things-humans-still-control">Manual
+Allowlist (the only things humans still control)</a></li>
+<li><a href="#layer-1-parameter-coverage"
+id="toc-layer-1-parameter-coverage">Layer 1 — Parameter Coverage</a>
+<ul>
+<li><a href="#already-tuned-8" id="toc-already-tuned-8">Already tuned
+(8)</a></li>
+<li><a href="#group-a-concentration-risk-7-parameters"
+id="toc-group-a-concentration-risk-7-parameters">Group A — Concentration
+&amp; Risk (7 parameters)</a></li>
+<li><a
+href="#group-b-exits-order-behavior-6-parameters-the-boolean-execution-toggles-roll-into-layer-2"
+id="toc-group-b-exits-order-behavior-6-parameters-the-boolean-execution-toggles-roll-into-layer-2">Group
+B — Exits &amp; Order Behavior (6 parameters; the boolean execution
+toggles roll into Layer 2)</a></li>
+<li><a href="#group-c-entry-filters-8-parameters"
+id="toc-group-c-entry-filters-8-parameters">Group C — Entry Filters (8
+parameters)</a></li>
+<li><a href="#group-d-timing-3-parameters"
+id="toc-group-d-timing-3-parameters">Group D — Timing (3
+parameters)</a></li>
+</ul></li>
+<li><a href="#layer-2-weighted-signal-intensity"
+id="toc-layer-2-weighted-signal-intensity">Layer 2 — Weighted Signal
+Intensity</a></li>
+<li><a href="#layer-3-per-regime-parameter-overrides"
+id="toc-layer-3-per-regime-parameter-overrides">Layer 3 — Per-Regime
+Parameter Overrides</a></li>
+<li><a href="#layer-4-per-time-of-day-overrides"
+id="toc-layer-4-per-time-of-day-overrides">Layer 4 — Per-Time-of-Day
+Overrides</a></li>
+<li><a href="#layer-5-cross-profile-insight-sharing"
+id="toc-layer-5-cross-profile-insight-sharing">Layer 5 — Cross-Profile
+Insight Sharing</a></li>
+<li><a href="#layer-6-adaptive-ai-prompt-structure"
+id="toc-layer-6-adaptive-ai-prompt-structure">Layer 6 — Adaptive AI
+Prompt Structure</a></li>
+<li><a href="#layer-7-per-symbol-parameter-overrides"
+id="toc-layer-7-per-symbol-parameter-overrides">Layer 7 — Per-Symbol
+Parameter Overrides</a></li>
+<li><a href="#layer-8-self-commissioned-new-strategies"
+id="toc-layer-8-self-commissioned-new-strategies">Layer 8 —
+Self-Commissioned New Strategies</a></li>
+<li><a href="#layer-9-automatic-capital-allocation"
+id="toc-layer-9-automatic-capital-allocation">Layer 9 — Automatic
+Capital Allocation</a></li>
+<li><a href="#cost-guard-cross-cutting"
+id="toc-cost-guard-cross-cutting">Cost Guard (Cross-Cutting)</a></li>
+<li><a href="#anti-regression-tests"
+id="toc-anti-regression-tests">Anti-Regression Tests</a>
+<ul>
+<li><a href="#existing-already-added"
+id="toc-existing-already-added">Existing (already added)</a></li>
+<li><a href="#new" id="toc-new">New</a></li>
+</ul></li>
+<li><a href="#ui-documentation-updates"
+id="toc-ui-documentation-updates">UI / Documentation Updates</a></li>
+<li><a href="#implementation-waves"
+id="toc-implementation-waves">Implementation Waves</a></li>
+<li><a href="#acceptance-criteria"
+id="toc-acceptance-criteria">Acceptance Criteria</a></li>
+</ul></li>
+</ul>
+</nav>
+<h1 id="autonomous-tuning-comprehensive-plan">Autonomous Tuning —
+Comprehensive Plan</h1>
+<p><strong>Goal:</strong> QuantOpsAI makes better, faster, smarter
+decisions than a person can — autonomously. Every parameter, signal,
+regime context, and prompt structure is on a feedback loop. Humans set
+strategic direction (cost ceilings, AI model choice, secrets, identity);
+the system handles every tactical decision.</p>
+<p><strong>Cost discipline is a first-class concern.</strong> Every
+autonomous action is cost-aware. The tuner respects a daily API spend
+ceiling and surfaces only the rare cost-exceeding changes for human
+approval.</p>
+<hr />
+<h2 id="architecture-overview-9-layers-cost-guard">Architecture Overview
+— 9 Layers + Cost Guard</h2>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Surface</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Parameter coverage (every column)</td>
+<td>Designed below</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Weighted signal intensity (per-signal weights)</td>
+<td>Designed below</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Per-regime overrides</td>
+<td>Designed below</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Per-time-of-day overrides</td>
+<td>Designed below</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Cross-profile insight sharing</td>
+<td>Designed below</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Adaptive AI prompt structure</td>
+<td>Designed below</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Per-symbol overrides</td>
+<td>Designed below</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Self-commissioned new strategies</td>
+<td>Designed below</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Automatic capital allocation</td>
+<td>Designed below</td>
+</tr>
+<tr>
+<td>✱</td>
+<td>Cost guard (cross-cutting)</td>
+<td>Designed below</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="manual-allowlist-the-only-things-humans-still-control">Manual
+Allowlist (the only things humans still control)</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Why Manual</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ai_provider</code>, <code>ai_model</code></td>
+<td>Strategic AI choice. <strong>Opt-in toggle</strong>:
+<code>ai_model_auto_tune</code> (default OFF, per-profile). When user
+flips it on, tuner can A/B test models within the cost guard.</td>
+</tr>
+<tr>
+<td><code>enable_consensus</code>, <code>consensus_model</code></td>
+<td>Architectural choice — multi-model setup is intentional.</td>
+</tr>
+<tr>
+<td><code>schedule_type</code>, <code>custom_start</code>,
+<code>custom_end</code>, <code>custom_days</code></td>
+<td>When the user wants trading active. (Future: per-strategy
+schedules.)</td>
+</tr>
+<tr>
+<td><code>enable_self_tuning</code></td>
+<td>Meta — tuner can’t disable itself.</td>
+</tr>
+<tr>
+<td><code>alpaca_api_key_enc</code>, <code>alpaca_secret_key_enc</code>,
+<code>ai_api_key_enc</code>, <code>consensus_api_key_enc</code></td>
+<td>Secrets.</td>
+</tr>
+<tr>
+<td><code>initial_capital</code></td>
+<td>Historical baseline, not tunable.</td>
+</tr>
+<tr>
+<td><code>name</code>, <code>created_at</code>, <code>user_id</code>,
+<code>id</code></td>
+<td>Identity / metadata.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Everything else is autonomous.</strong> A guardrail test
+enforces this — see “Anti-Regression Tests” section.</p>
+<hr />
+<h2 id="layer-1-parameter-coverage">Layer 1 — Parameter Coverage</h2>
+<p>Every parameter in <code>trading_profiles</code> not on the manual
+allowlist gets a tuning rule. All rules share the same scaffolding:
+minimum data threshold (≥20 resolved predictions or rule-specific
+minimum), 3-day per-parameter cooldown, reverse-if-worsened guard, bound
+clamping, logged to <code>tuning_history</code>, surfaced via
+<code>display_name</code>.</p>
+<h3 id="already-tuned-8">Already tuned (8)</h3>
+<p><code>ai_confidence_threshold</code>, <code>max_position_pct</code>,
+<code>stop_loss_pct</code>, <code>take_profit_pct</code>,
+<code>short_stop_loss_pct</code>, <code>enable_short_selling</code>
+(auto-disable), 4 legacy strategy toggles (auto-disable), modular
+strategies via alpha_decay (auto-deprecate + auto-restore).</p>
+<h3 id="group-a-concentration-risk-7-parameters">Group A — Concentration
+&amp; Risk (7 parameters)</h3>
+<table>
+<colgroup>
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 44%" />
+<col style="width: 14%" />
+</colgroup>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Detection</th>
+<th>Direction &amp; Magnitude</th>
+<th>Bounds</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>max_total_positions</code></td>
+<td>Avg loss large + cap hit often</td>
+<td>-1 / +1</td>
+<td>3–25</td>
+</tr>
+<tr>
+<td><code>max_correlation</code></td>
+<td>&gt;50% of losing trades within 7d are correlated &gt;0.6</td>
+<td>-0.05 / +0.05</td>
+<td>0.30–0.95</td>
+</tr>
+<tr>
+<td><code>max_sector_positions</code></td>
+<td>Sector-concentrated losing days</td>
+<td>-1 / +1</td>
+<td>1–10</td>
+</tr>
+<tr>
+<td><code>drawdown_pause_pct</code></td>
+<td>Pause threshold hit + got worse</td>
+<td>-0.02 / +0.02</td>
+<td>0.10–0.30</td>
+</tr>
+<tr>
+<td><code>drawdown_reduce_pct</code></td>
+<td>Reduce-trigger fired + further drawdown</td>
+<td>-0.01 / +0.01</td>
+<td>0.05–0.15</td>
+</tr>
+<tr>
+<td><code>min_price</code></td>
+<td>Bottom-of-band entries (within 1.5×) &lt;30% WR</td>
+<td>+25% / -10% (clamped)</td>
+<td>0.5× to 2× of current, abs floor $0.50</td>
+</tr>
+<tr>
+<td><code>max_price</code></td>
+<td>Top-of-band entries (within 0.85×) &lt;30% WR</td>
+<td>-10% / +25%</td>
+<td>0.5× to 2× of current, abs ceiling $1000</td>
+</tr>
+</tbody>
+</table>
+<h3
+id="group-b-exits-order-behavior-6-parameters-the-boolean-execution-toggles-roll-into-layer-2">Group
+B — Exits &amp; Order Behavior (6 parameters; the boolean execution
+toggles roll into Layer 2)</h3>
+<table>
+<colgroup>
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 44%" />
+<col style="width: 14%" />
+</colgroup>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Detection</th>
+<th>Direction &amp; Magnitude</th>
+<th>Bounds</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>short_take_profit_pct</code></td>
+<td>Shorts hit TP then reversed / shorts ran past TP</td>
+<td>±20%</td>
+<td>0.03–0.20</td>
+</tr>
+<tr>
+<td><code>atr_multiplier_sl</code></td>
+<td>ATR stops hit on &gt;40% of losers within 0.2× ATR</td>
+<td>±0.25</td>
+<td>1.0–4.0</td>
+</tr>
+<tr>
+<td><code>atr_multiplier_tp</code></td>
+<td>Avg winner &lt; 50% of ATR target distance</td>
+<td>±0.25</td>
+<td>1.0–5.0</td>
+</tr>
+<tr>
+<td><code>trailing_atr_multiplier</code></td>
+<td>Avg give-back from peak &gt;40% / stopped before continuation</td>
+<td>±0.25</td>
+<td>0.5–3.0</td>
+</tr>
+<tr>
+<td><code>use_atr_stops</code> (becomes weight 0.0/0.5/1.0)</td>
+<td>Compare ATR-on vs ATR-off period Sharpe</td>
+<td>weight nudge</td>
+<td>0.0–1.0</td>
+</tr>
+<tr>
+<td><code>use_trailing_stops</code> (becomes weight)</td>
+<td>Same shape</td>
+<td>weight nudge</td>
+<td>0.0–1.0</td>
+</tr>
+<tr>
+<td><code>use_limit_orders</code> (becomes weight)</td>
+<td>Slippage as market vs limit fill rate</td>
+<td>weight nudge</td>
+<td>0.0–1.0</td>
+</tr>
+</tbody>
+</table>
+<h3 id="group-c-entry-filters-8-parameters">Group C — Entry Filters (8
+parameters)</h3>
+<p>Same shape: bucket recent resolved predictions by which side of the
+threshold they fell on; tighten if marginal bucket underperforms; loosen
+if too many would-have-winners are filtered out.</p>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Direction &amp; Magnitude</th>
+<th>Bounds</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>min_volume</code></td>
+<td>+50% / -25%</td>
+<td>100K–5M</td>
+</tr>
+<tr>
+<td><code>volume_surge_multiplier</code></td>
+<td>±0.25</td>
+<td>1.0–5.0</td>
+</tr>
+<tr>
+<td><code>breakout_volume_threshold</code></td>
+<td>±0.25</td>
+<td>0.5–3.0</td>
+</tr>
+<tr>
+<td><code>gap_pct_threshold</code></td>
+<td>±0.5</td>
+<td>1.0–10.0</td>
+</tr>
+<tr>
+<td><code>momentum_5d_gain</code></td>
+<td>±0.5</td>
+<td>1.0–15.0</td>
+</tr>
+<tr>
+<td><code>momentum_20d_gain</code></td>
+<td>±0.5</td>
+<td>1.0–15.0</td>
+</tr>
+<tr>
+<td><code>rsi_overbought</code></td>
+<td>±2</td>
+<td>70–95</td>
+</tr>
+<tr>
+<td><code>rsi_oversold</code></td>
+<td>±2</td>
+<td>5–30</td>
+</tr>
+</tbody>
+</table>
+<h3 id="group-d-timing-3-parameters">Group D — Timing (3
+parameters)</h3>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 55%" />
+<col style="width: 18%" />
+</colgroup>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Direction &amp; Magnitude</th>
+<th>Bounds</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>avoid_earnings_days</code></td>
+<td>±1 day</td>
+<td>0–7</td>
+</tr>
+<tr>
+<td><code>skip_first_minutes</code></td>
+<td>±5 min</td>
+<td>0–30</td>
+</tr>
+<tr>
+<td><code>maga_mode</code> (becomes weight)</td>
+<td>weight nudge based on with-vs-without WR</td>
+<td>0.0–1.0</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Layer 1 net new tunings: 24 parameters.</strong></p>
+<hr />
+<h2 id="layer-2-weighted-signal-intensity">Layer 2 — Weighted Signal
+Intensity</h2>
+<p>Every signal the AI sees gets a per-profile weight on a 4-step
+ladder: <strong><code>1.0 → 0.7 → 0.4 → 0.0</code></strong>. Weight
+<code>1.0</code> is full strength (default, omitted from storage);
+<code>0.0</code> means omit the signal entirely from the prompt.</p>
+<p>Storage: new column
+<code>signal_weights TEXT NOT NULL DEFAULT '{}'</code> on
+<code>trading_profiles</code>. JSON dict
+<code>{signal_name: weight}</code>. Helper module
+<code>signal_weights.py</code> provides get/set/list with the 1.0
+default fallback.</p>
+<p><strong>Weightable signals (initial set):</strong> - Strategy
+weights: all 16+ strategies including the 4 legacy ones (consistency —
+replace binary toggles) - Alt-data: insider_cluster,
+insider_selling_cluster, options_flow, options_chain_oracle, dark_pool,
+sec_filing_alerts, earnings_call_sentiment, analyst_estimate_revisions,
+short_interest, finra_short_volume, intraday_patterns, fundamentals - AI
+behavior: maga_mode (political_context), enable_short_selling,
+use_atr_stops, use_trailing_stops, use_limit_orders</p>
+<p><strong>Tuner detection:</strong> for each weightable signal, bucket
+recent resolved predictions by “signal materially present vs absent”
+(per signal-specific <code>is_active</code> predicate) and compute
+differential WR. If signal-present consistently underperforms, nudge
+weight down. If recovers (signal-present WR ≥ overall + 5pts for 14+
+days), nudge up.</p>
+<p><strong>Prompt builder integration:</strong> - Weight 1.0: present
+signal as today - Weight 0.7 / 0.4: include signal + inject hint
+<em>“Note: {signal} has been historically weak for this profile
+(intensity: 0.4) — weight its contribution accordingly”</em> - Weight
+0.0: omit signal entirely from prompt - For execution toggles
+(use_atr_stops etc.), weight 0.5 means use 50% of the time at random
+(rotational A/B), enabling continued data collection</p>
+<p><strong>Cooldown / reversal</strong>: same as Layer 1, keyed on
+<code>f"weight:{signal_name}"</code>.</p>
+<hr />
+<h2 id="layer-3-per-regime-parameter-overrides">Layer 3 — Per-Regime
+Parameter Overrides</h2>
+<p>Each parameter can have regime-specific values. Regimes:
+<code>bull</code>, <code>bear</code>, <code>sideways</code>,
+<code>volatile</code>, <code>crisis</code>.</p>
+<p>Storage: new column
+<code>regime_overrides TEXT NOT NULL DEFAULT '{}'</code> on
+<code>trading_profiles</code>. JSON dict
+<code>{parameter_name: {regime: value}}</code>. Empty / missing = use
+global value.</p>
+<p><strong>Pipeline integration:</strong> at decision time, before
+reading any parameter, the pipeline calls
+<code>resolve_param(profile, param_name, regime)</code> which returns
+the regime-specific value if it exists AND has sufficient sample size
+(≥10 resolved predictions in that regime), else falls back to
+global.</p>
+<p><strong>Tuner detection:</strong> for each Layer 1 parameter the
+tuner adjusts, it also bucket-analyzes per regime. If a parameter’s
+optimal value differs materially by regime (e.g.,
+<code>stop_loss_pct = 0.04</code> works best in <code>volatile</code>,
+<code>0.03</code> in <code>sideways</code>), the tuner creates
+per-regime overrides instead of (or in addition to) a global change.</p>
+<p>Same cooldown / reversal infrastructure, keyed on
+<code>f"regime:{regime}:{param_name}"</code>.</p>
+<hr />
+<h2 id="layer-4-per-time-of-day-overrides">Layer 4 — Per-Time-of-Day
+Overrides</h2>
+<p>Three intraday buckets (US ET): - <strong>Open:</strong> 09:30–10:30
+(high vol, gap-dependent) - <strong>Midday:</strong> 10:30–14:30 (lower
+vol, mean-reverting) - <strong>Close:</strong> 14:30–16:00 (vol picks
+up, MOC/LOC orders)</p>
+<p>Storage: new column
+<code>tod_overrides TEXT NOT NULL DEFAULT '{}'</code> on
+<code>trading_profiles</code>. Same JSON shape as
+<code>regime_overrides</code>.</p>
+<p><code>resolve_param</code> consults regime overrides first (more
+specific), then TOD overrides, then global value.</p>
+<p>Tuner detects time-of-day signal the same way as regime.</p>
+<hr />
+<h2 id="layer-5-cross-profile-insight-sharing">Layer 5 — Cross-Profile
+Insight Sharing</h2>
+<p>When one profile makes a successful adjustment
+(<code>outcome_after = "improved"</code> after the 3-day review window),
+the tuner runs the same detection rule against every other enabled
+profile’s own data. Profiles with the same pattern get the same change
+considered (their own data triggers it; no value-copying).</p>
+<p>Mechanism: new function
+<code>propagate_insight(source_profile_id, adjustment_type, parameter_name)</code>
+— called when the reversal-review finds an improvement. It iterates
+other profiles, runs the parameter’s detection function with their data,
+applies if the detection triggers.</p>
+<p>This means the fleet learns ~10× faster than profiles in isolation.
+<strong>No additional API cost</strong> — all analysis is from existing
+resolved predictions.</p>
+<hr />
+<h2 id="layer-6-adaptive-ai-prompt-structure">Layer 6 — Adaptive AI
+Prompt Structure</h2>
+<p>The prompt has structure: section order, section headers, section
+verbosity, signal grouping. Each of these is a tunable surface.</p>
+<p>Storage: new column
+<code>prompt_layout TEXT NOT NULL DEFAULT '{}'</code> on
+<code>trading_profiles</code>. Stores
+<code>{section_name: {order: int, verbosity: "brief"|"normal"|"detailed", included: bool}}</code>.</p>
+<p>Default layout matches today’s prompt (no behavior change at
+start).</p>
+<p><strong>Tuner runs implicit A/B tests:</strong> rotates layout
+variants across cycles (different ordering, different verbosity per
+section) and correlates with subsequent prediction outcomes. Layouts
+producing materially better WR get reinforced; underperforming ones get
+pruned.</p>
+<p><strong>Cost guard:</strong> verbosity changes that would push
+prompts past the cost ceiling are blocked. Tuner prefers shorter layouts
+when WR is equivalent.</p>
+<hr />
+<h2 id="layer-7-per-symbol-parameter-overrides">Layer 7 — Per-Symbol
+Parameter Overrides</h2>
+<p>Some symbols behave differently (e.g., NVDA has different optimal
+stop-loss than KO). Storage: new column
+<code>symbol_overrides TEXT NOT NULL DEFAULT '{}'</code> on
+<code>trading_profiles</code>. JSON dict
+<code>{symbol: {parameter_name: value}}</code>.</p>
+<p><code>resolve_param</code> consults per-symbol first (most specific),
+then regime, then TOD, then global.</p>
+<p>Tuner detection: for symbols with ≥20 resolved predictions
+individually, bucket-analyze and create per-symbol overrides for
+parameters that differ materially from the profile global.</p>
+<p>This is the most fine-grained layer. Cooldown 7 days (per-symbol,
+per-parameter) to prevent over-fitting on small symbol samples.</p>
+<hr />
+<h2 id="layer-8-self-commissioned-new-strategies">Layer 8 —
+Self-Commissioned New Strategies</h2>
+<p>Phase 7 (auto-strategy generation via LLM) already exists. This layer
+adds a feedback loop on top: the tuner identifies <em>gaps</em> in
+current strategy coverage (e.g., “we have no strategy for high-IV-rank
+breakouts” or “no strategy for post-earnings drift”) and triggers the
+strategy generator with a focused brief.</p>
+<p>Detection: analyze the universe of resolved predictions to find
+patterns where the existing strategies didn’t fire but the AI made
+correct calls anyway. These represent untapped edges.</p>
+<p><strong>Cost-gated:</strong> strategy generation costs LLM tokens.
+The tuner checks the cost guard before triggering and limits to ≤1
+generation per profile per week.</p>
+<hr />
+<h2 id="layer-9-automatic-capital-allocation">Layer 9 — Automatic
+Capital Allocation</h2>
+<p>Across profiles, capital should flow toward the ones with proven
+edge. Storage: new table <code>capital_allocation_history</code>
+tracking weekly rebalances.</p>
+<p>Mechanism: weekly task computes per-profile risk-adjusted return over
+trailing 30/60/90 days. Allocates capital proportionally to a
+<code>capital_score = recent_sharpe × (1 + win_rate)</code>, clamped so
+no profile drops below 25% or rises above 200% of its baseline
+allocation per rebalance.</p>
+<p>Re-allocation is a recommendation only by default — flipped to
+auto-action when a per-user toggle <code>auto_capital_allocation</code>
+is enabled (default OFF, similar to
+<code>ai_model_auto_tune</code>).</p>
+<hr />
+<h2 id="cost-guard-cross-cutting">Cost Guard (Cross-Cutting)</h2>
+<p>New module <code>cost_guard.py</code>: -
+<code>daily_ceiling_usd(user_id) -&gt; float</code> — configurable,
+defaults to user’s trailing-7-day-avg × 1.5 -
+<code>projected_daily_spend(user_id) -&gt; float</code> — current spend
++ projected remaining cycles -
+<code>can_afford_action(user_id, estimated_extra_cost_usd) -&gt; bool</code></p>
+<p>Every autonomous action that could increase API cost (Layer 6 prompt
+verbosity changes, Layer 8 strategy generation, Layer 2 weight changes
+that re-include omitted signals) calls <code>can_afford_action</code>
+first. If False, the action is queued as a recommendation surfacing the
+cost estimate.</p>
+<p>This is the <strong>only</strong> legitimate use of “Recommendation:”
+— the guardrail test allowlist is updated to include
+<code>"Recommendation: cost-gated"</code> as a valid prefix for
+these.</p>
+<hr />
+<h2 id="anti-regression-tests">Anti-Regression Tests</h2>
+<h3 id="existing-already-added">Existing (already added)</h3>
+<ul>
+<li><code>tests/test_no_recommendation_only.py</code> — every
+“Recommendation:” string in <code>self_tuning.py</code> must be on the
+allowlist with rationale.</li>
+</ul>
+<h3 id="new">New</h3>
+<ul>
+<li><p><code>tests/test_every_lever_is_tuned.py</code> — walks
+<code>trading_profiles</code> schema, asserts every column is
+either:</p>
+<ul>
+<li>On the <code>MANUAL_PARAMETERS</code> allowlist (with rationale
+string), OR</li>
+<li>Has a tuning rule
+(<code>update_trading_profile(... &lt;param&gt; ...)</code> called
+somewhere in <code>self_tuning.py</code>), OR</li>
+<li>Is in <code>signal_weights</code> / <code>regime_overrides</code> /
+<code>tod_overrides</code> / <code>symbol_overrides</code> JSON dicts
+(handled by Layer 2/3/4/7)</li>
+</ul></li>
+<li><p><code>tests/test_signal_weights_lifecycle.py</code> — round-trip
+on storage; tuner nudge down / up / cooldown / reversal.</p></li>
+<li><p><code>tests/test_regime_overrides.py</code> —
+<code>resolve_param</code> falls back correctly; tuner creates
+per-regime overrides only with sufficient sample.</p></li>
+<li><p><code>tests/test_tod_overrides.py</code> — same as
+regime.</p></li>
+<li><p><code>tests/test_cost_guard.py</code> — actions blocked when
+projected spend &gt; ceiling; allowed otherwise; recommendation surfaces
+with cost estimate.</p></li>
+<li><p><code>tests/test_cross_profile_propagation.py</code> —
+improvement on profile A triggers detection (not value-copy) on profile
+B.</p></li>
+<li><p><code>tests/test_per_symbol_overrides.py</code> —
+<code>resolve_param</code> precedence; tuner creates per-symbol only
+with ≥20 samples.</p></li>
+</ul>
+<hr />
+<h2 id="ui-documentation-updates">UI / Documentation Updates</h2>
+<ol type="1">
+<li><strong><code>SELF_TUNING.md</code></strong> — full rewrite. Replace
+“4 parameters” / “Future Parameters Planned Late May 2026” with the
+layered architecture above.</li>
+<li><strong><code>AI_ARCHITECTURE.md</code></strong> — add the 9-layer
+autonomy diagram.</li>
+<li><strong><code>README.md</code></strong> — one paragraph summary of
+full autonomy.</li>
+<li><strong><code>EXECUTIVE_OVERVIEW.md</code></strong> — mention the
+cost guard prominently.</li>
+<li><strong>Settings page</strong> — add an “Autonomy” section showing
+every parameter, current value, current regime/TOD overrides, and
+“Auto-tuned by: {layer}” badge. Per-profile opt-in toggles for
+<code>ai_model_auto_tune</code> and
+<code>auto_capital_allocation</code>.</li>
+<li><strong>AI Operations tab</strong> — add cards for: Active Signal
+Weights, Active Regime Overrides, Active TOD Overrides, Per-Symbol
+Overrides, Cost Guard Status.</li>
+<li><strong>Tuning history rows</strong> — every layer’s adjustments use
+namespaced parameter names (<code>weight:insider_cluster</code>,
+<code>regime:volatile:stop_loss_pct</code>,
+<code>tod:open:max_position_pct</code>,
+<code>symbol:NVDA:stop_loss_pct</code>) so the existing display_name
+fallback renders them cleanly.</li>
+</ol>
+<hr />
+<h2 id="implementation-waves">Implementation Waves</h2>
+<p>Each wave is a self-contained commit + deploy.</p>
+<table>
+<colgroup>
+<col style="width: 28%" />
+<col style="width: 38%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Wave</th>
+<th>Layers</th>
+<th>Scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>W1</td>
+<td>Layer 1 Group A + Group D</td>
+<td>10 parameters + bounds clamping infra</td>
+</tr>
+<tr>
+<td>W2</td>
+<td>Layer 1 Group C</td>
+<td>8 entry filter parameters</td>
+</tr>
+<tr>
+<td>W3</td>
+<td>Layer 1 Group B</td>
+<td>6 exit parameters (excluding the 3 booleans rolling into Layer
+2)</td>
+</tr>
+<tr>
+<td>W4</td>
+<td>Layer 2</td>
+<td>Weighted signal intensity infra + tuner + prompt builder + 16+
+initial weights</td>
+</tr>
+<tr>
+<td>W5</td>
+<td>Layer 3</td>
+<td>Per-regime overrides (<code>resolve_param</code>, schema, tuner,
+UI)</td>
+</tr>
+<tr>
+<td>W6</td>
+<td>Layer 4</td>
+<td>Per-time-of-day overrides</td>
+</tr>
+<tr>
+<td>W7</td>
+<td>Cost guard</td>
+<td>Module + integration into all spend-touching layers</td>
+</tr>
+<tr>
+<td>W8</td>
+<td>Layer 7</td>
+<td>Per-symbol overrides</td>
+</tr>
+<tr>
+<td>W9</td>
+<td>Layer 5</td>
+<td>Cross-profile insight sharing</td>
+</tr>
+<tr>
+<td>W10</td>
+<td>Layer 6</td>
+<td>Adaptive AI prompt structure (cost-gated)</td>
+</tr>
+<tr>
+<td>W11</td>
+<td>Layer 8</td>
+<td>Self-commissioned new strategies (cost-gated)</td>
+</tr>
+<tr>
+<td>W12</td>
+<td>Layer 9</td>
+<td>Automatic capital allocation (opt-in)</td>
+</tr>
+<tr>
+<td>W13</td>
+<td>Anti-regression tests + docs + Settings UI Autonomy section</td>
+<td>Final pass</td>
+</tr>
+</tbody>
+</table>
+<p>Each wave passes the full test suite, gets a CHANGELOG entry,
+commits, and deploys.</p>
+<hr />
+<h2 id="acceptance-criteria">Acceptance Criteria</h2>
+<ul>
+<li>✅ Every column in <code>trading_profiles</code> is autonomous OR on
+the manual allowlist with rationale</li>
+<li>✅ <code>signal_weights</code>, <code>regime_overrides</code>,
+<code>tod_overrides</code>, <code>symbol_overrides</code>,
+<code>prompt_layout</code> columns exist</li>
+<li>✅ <code>resolve_param(profile, name, regime, tod, symbol)</code> is
+the single source of truth for parameter access</li>
+<li>✅ Cost guard wraps every cost-affecting autonomous action</li>
+<li>✅ All anti-regression tests pass</li>
+<li>✅ <code>SELF_TUNING.md</code> accurate;
+<code>AI_ARCHITECTURE.md</code> updated; CHANGELOG documents the full
+change</li>
+<li>✅ Settings page Autonomy section + per-profile opt-in toggles
+deployed</li>
+<li>✅ Cross-profile insight sharing demonstrably triggers (test
+verifies)</li>
+<li>✅ Production deployed</li>
+</ul>
+</body>
+</html>
