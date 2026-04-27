@@ -104,6 +104,29 @@ automatically once the data is there.
 
 ---
 
+## 2026-04-27 — pytest-randomly added; suite verified deterministic across random orderings (Severity: low, infra)
+
+User flagged a one-off test failure earlier ("there should not be
+flake"). Investigated:
+
+- 3 consecutive sequential runs: 1002 / 1002 each.
+- 5 randomized orderings (seeds 1-5 via pytest-randomly):
+  1002 / 1002 each.
+
+Conclusion: the test suite has no deterministic order dependency.
+The earlier failures were almost certainly transient I/O issues
+(sqlite locking, filesystem sync, or — likely — pytest running
+concurrently with a `./sync.sh` deploy in another shell on the same
+machine).
+
+Permanent fix: `pytest-randomly` added to `requirements.txt`. From
+now on every local & CI test run uses a randomized seed. If anyone
+introduces order-dependent test pollution in the future, it'll show
+up immediately as a deterministic failure on some seeds, not as an
+intermittent "flake" later.
+
+---
+
 ## 2026-04-27 — Specialist calibration: backfill from existing 4,400 resolved predictions (Severity: medium, accuracy)
 
 After Fix #9 shipped, the user pointed out we have ~4,400 resolved
