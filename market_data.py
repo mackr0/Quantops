@@ -425,25 +425,14 @@ def get_relative_strength_vs_sector(symbol, sector=None):
 
 
 def _guess_sector(symbol):
-    """Rough sector guess based on common stocks. Falls back to 'tech'."""
-    _SECTOR_MAP = {
-        "finance": {"SOFI", "HOOD", "AFRM", "UPST", "COIN", "SQ", "V", "MA", "JPM",
-                     "BAC", "GS", "MS", "WFC", "AXP", "BLK", "SCHW", "ALLY", "LC"},
-        "tech": {"AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "AMD", "INTC",
-                 "CRM", "ORCL", "ADBE", "NOW", "DDOG", "NET", "ZS", "SNOW", "MDB"},
-        "energy": {"RIG", "ET", "AR", "CNX", "BTU", "KOS", "BTE", "OVV", "PLUG",
-                   "FCEL", "BE", "RUN"},
-        "healthcare": {"UNH", "JNJ", "PFE", "MRK", "LLY", "AMGN", "GILD", "ISRG",
-                       "HIMS", "DNA", "WVE", "CRSP", "NTLA", "BEAM"},
-        "consumer_disc": {"TSLA", "NKE", "SBUX", "MCD", "LULU", "DECK", "RIVN",
-                          "LCID", "NIO", "CVNA", "ETSY", "CHWY"},
-        "industrial": {"BA", "RTX", "LMT", "GE", "HON", "CAT", "DE", "JOBY"},
-        "comm_services": {"NFLX", "DIS", "ROKU", "SNAP", "PINS", "RBLX", "DKNG"},
-    }
-    for sector, symbols in _SECTOR_MAP.items():
-        if symbol.upper() in symbols:
-            return sector
-    return "tech"  # default fallback
+    """Return internal sector key for `symbol`. Thin wrapper around
+    `sector_classifier.get_sector` which adds SQLite caching + yfinance
+    GICS lookup + fallback. See DYNAMIC_UNIVERSE_PLAN.md Step 1."""
+    try:
+        from sector_classifier import get_sector
+        return get_sector(symbol)
+    except Exception:
+        return "tech"
 
 
 def get_snapshot(symbol, api=None):

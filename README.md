@@ -278,14 +278,13 @@ Quantops/
     ├── EXECUTIVE_OVERVIEW.md         Top-down summary for partners / non-technical readers
     ├── EXPERIMENTATION_AND_TUNING.md  How the system learns from itself end-to-end (7 feedback loops)
     ├── TECHNICAL_DOCUMENTATION.md    Complete system documentation (v5.0, 22 sections)
-    ├── METHODOLOGY_FIX_PLAN.md        2026-04-27 audit + fix log: how we know measurements are honest
     ├── ROADMAP.md                    10-phase quant-fund evolution + completion log
     ├── AI_ARCHITECTURE.md            All AI signal sources + how they reach the prompt
     ├── SELF_TUNING.md                Self-tuning + 12-layer autonomy reference
-    ├── AUTONOMOUS_TUNING_PLAN.md     The 12-wave autonomy rollout plan + status
     ├── ALTDATA_INTEGRATION_PLAN.md   How the 4 alt-data projects plug into the pipeline
     ├── SCALING_PLAN.md               $10K paper -> $1M+ live roadmap
     ├── MONTHLY_REVIEW.md             Operational review template
+    ├── LEARNING_GUIDE.md             Beginner-friendly walkthrough of every dashboard number
     ├── CHANGELOG.md                  Per-day change log (enforced by pre-commit hook)
     └── requirements.txt              Python dependencies
 ```

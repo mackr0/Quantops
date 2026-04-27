@@ -193,6 +193,85 @@ fresh outcomes.
 
 ---
 
+## 2026-04-27 — Closing every open item: sector_classifier, get_live_universe + flag, short_borrow accrual, doc cleanup (Severity: medium, hygiene + integrity)
+
+User instruction: "ALL THE THINGS, NO OPEN ISSUES." Cleared the
+remaining DYNAMIC_UNIVERSE_PLAN.md items + the deferred TECHNICAL
+DOC §15 short-borrow gap + stale plan-doc cleanup, all in one pass.
+
+**1. `sector_classifier.py` (new module)** — replaces the hardcoded
+~50-symbol `_SECTOR_MAP` in `market_data._guess_sector`. SQLite cache
+in `quantopsai.db.sector_cache` (7-day TTL). Lookup order:
+cache → yfinance GICS → static fallback map (~100 symbols) → "tech"
+default. Fail-open at every layer. `_guess_sector` now a one-line
+delegate. Means future sector reclassifications and rename events
+update automatically; the 50-symbol blind spots in the old map are
+gone.
+
+**2. `segments.get_live_universe(name, ctx)` + `USE_DYNAMIC_UNIVERSE`
+feature flag (off by default).** When the env flag is "true", live
+trading universe = hardcoded list ∩ Alpaca-active set (via the same
+`get_active_alpaca_symbols` helper the screener already uses — zero
+new API calls). Crypto bypasses the dynamic path. Default OFF
+preserves historical behavior; user can flip per-profile to A/B.
+
+**3. `short_borrow.py` (new module)** — overnight-short borrow
+accrual. `compute_borrow_cost(shares, price, days, bps_per_day)`
+implements the standard `notional × bps/day × days` formula.
+`accrue_for_cover(db, symbol, shares)` looks up the most-recent open
+sell_short, computes days held, returns USD cost (zero for sub-1-day
+intraday covers). `trader.check_exits` cover branch now subtracts
+the accrual from `pnl` before logging. Default rate 0.5 bps/day
+(~1.8% annualized) for general collateral; per-symbol overrides for
+known hard-to-borrow names (GME, AMC, BBBY, DJT). Closes the
+deferred-item gap in TECHNICAL_DOCUMENTATION.md §15.
+
+**4. Doc cleanup.** Three superseded plan docs deleted:
+- `ALTDATA_PLAN.md` — superseded by ALTDATA_INTEGRATION_PLAN.md
+- `AUTONOMOUS_TUNING_PLAN.md` — superseded by SELF_TUNING.md +
+  EXPERIMENTATION_AND_TUNING.md
+- `METHODOLOGY_FIX_PLAN.md` — fully fixed; coverage in CHANGELOG +
+  EXPERIMENTATION_AND_TUNING.md §4
+
+Their HTML exports also deleted.
+`DYNAMIC_UNIVERSE_PLAN.md` status header updated to ✅ COMPLETE
+with per-step commit attribution. README.md doc tree refreshed.
+
+**Anti-regression — 22 new structural tests:**
+
+`tests/test_sector_classifier.py` (7):
+- 7-key taxonomy contract.
+- Cache hit doesn't call yfinance.
+- Cache miss writes row after yfinance.
+- yfinance failure → fallback map.
+- Unknown symbol → "tech" default.
+- Stale cache (>7 days) is bypassed.
+- `_guess_sector` is a delegate (and old `_SECTOR_MAP` is gone).
+
+`tests/test_dynamic_live_universe.py` (6):
+- Default returns hardcoded list.
+- Flag-on filters by Alpaca-active.
+- Empty Alpaca + flag-on → falls back to hardcoded (self-healing).
+- Alpaca exception + flag-on → falls back (no crash).
+- Crypto bypasses dynamic filter.
+- Unknown segment raises KeyError.
+
+`tests/test_short_borrow.py` (9):
+- compute_borrow_cost basic math.
+- Zero/negative inputs return 0.
+- Hard-to-borrow override applies (GME 12 bps/day vs default 0.5).
+- Monotonic in shares, price, days, bps.
+- accrue_for_cover with no journal entry → 0 (fail-open).
+- Intraday cover (< 1 day) → 0.
+- 5-day overnight short charges expected accrual.
+- No db_path → 0.
+- `trader.check_exits` source-level guard: must reference
+  `accrue_for_cover` AND subtract `borrow_cost` from pnl.
+
+Tests: 1037 passing (was 1015; +22 new).
+
+---
+
 ## 2026-04-27 — Wave 4 / Issue #10: backtest survivorship bias — frozen baseline + auto-augmentation (Severity: medium, accuracy)
 
 User noted earlier today, after the 9-finding audit was declared

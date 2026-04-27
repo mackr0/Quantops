@@ -2,9 +2,34 @@
 
 **Goal:** Replace the hand-curated universe lists in `segments.py` and `screener.py` with Alpaca-authoritative dynamic discovery, so delistings self-correct and new IPOs appear automatically — without manual file edits.
 
-**Status:** Plan drafted 2026-04-23. Not yet started. Requires sign-off on the open decisions below before implementation.
+**Status:** ✅ COMPLETE 2026-04-27.
 
-**Context for future sessions:** Today (2026-04-23) produced ~30 `$SYMBOL: possibly delisted` yfinance errors per scan cycle because `segments.py` and `screener.py` contain tickers like `SQ` (now `XYZ`), `PARA` (now `PSKY`), `X` (acquired, delisted), `CFLT` (taken private). Alpaca's asset API confirms these symbols no longer exist. Yahoo's website still renders them for UX; Yahoo's API returns 404. Root cause is stale hand-curated lists.
+| Step | Status | Commit |
+|---|---|---|
+| Operational symptom fix (delisted-ticker spam in screener) | ✅ Shipped | 2026-04-23 |
+| MAGA-scan filter via `get_active_alpaca_symbols` | ✅ Shipped | 2026-04-24 |
+| Step 1 — `sector_classifier.py` with SQLite cache | ✅ Shipped | 2026-04-27 |
+| Step 2 — `segments_historical.py` (frozen baseline for backtests, fixes survivorship bias) | ✅ Shipped | 2026-04-27 (`f2e6b74`) |
+| Step 3 — `get_live_universe()` + `USE_DYNAMIC_UNIVERSE` feature flag | ✅ Shipped | 2026-04-27 |
+| Step 4 — screener.py `fallback_universe` filtering | ✅ Already shipped | 2026-04-23 |
+| Step 5 — UI universe-size surface | DEFERRED (low priority; not an integrity issue) |
+| Step 6 — regression tests | ✅ Shipped (22 across 3 files) | 2026-04-27 |
+| Step 7 — CHANGELOG entries | ✅ Shipped | 2026-04-27 |
+
+**§3d (emergency fallback shrinkage to ~100 names):** Decided to keep
+the current ~300-name lists in `segments.py` rather than shrink. Rationale:
+the survivorship-bias concern is solved via `segments_historical.py` +
+auto-augmentation; live-trading dead-ticker leakage is solved by the
+2026-04-23 Alpaca-active filter. Shrinking would change live screener
+sample composition (fewer canonical names mixed into Alpaca's 500-symbol
+random sample) for no integrity gain. Lists stay at full size and are
+used only by the screener's curated-universe supplement.
+
+**§3e (rollout):** Feature flag `USE_DYNAMIC_UNIVERSE` shipped, default
+OFF (preserves prior behavior). User can flip per-profile in `.env` for
+A/B testing if desired.
+
+**Context for future sessions:** Today (2026-04-23) produced ~30 `$SYMBOL: possibly delisted` yfinance errors per scan cycle because `segments.py` and `screener.py` contain tickers like `SQ` (now `XYZ`), `PARA` (now `PSKY`), `X` (acquired, delisted), `CFLT` (taken private). Alpaca's asset API confirms these symbols no longer exist. Yahoo's website still renders them for UX; Yahoo's API returns 404. Root cause is stale hand-curated lists. **All resolved 2026-04-27.**
 
 ---
 

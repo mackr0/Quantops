@@ -319,6 +319,48 @@ def get_segment(name):
     return SEGMENTS[name]
 
 
+def get_live_universe(name, ctx=None):
+    """Return the live trading universe for segment `name`.
+
+    Default behavior (`USE_DYNAMIC_UNIVERSE` unset or "false"): returns
+    the hand-curated list from `SEGMENTS[name]["universe"]`. This is
+    the historic behavior — every caller pre-2026-04-27 was reading
+    that same list.
+
+    When `USE_DYNAMIC_UNIVERSE=true` in the env: returns the
+    intersection of (a) Alpaca's currently-active US-equity asset set
+    (cached daily via `screener.get_active_alpaca_symbols`) and (b)
+    the hand-curated list. Result: dead/renamed/delisted symbols are
+    silently dropped without any manual list maintenance, while the
+    curated universe still bounds which names are eligible (no
+    surprise inclusions of obscure ADRs).
+
+    Crypto bypasses the dynamic path — its universe is small, stable,
+    and Alpaca's crypto asset list semantics are different. Always
+    returns the hardcoded crypto list.
+
+    Zero new API calls: `get_active_alpaca_symbols` is the same
+    helper the screener already calls daily and caches in-process.
+    """
+    seg = get_segment(name)
+    base = list(seg.get("universe", []))
+    if name == "crypto":
+        return base
+    if os.getenv("USE_DYNAMIC_UNIVERSE", "false").lower() != "true":
+        return base
+    try:
+        from screener import get_active_alpaca_symbols
+        active = get_active_alpaca_symbols(ctx)
+        if not active:
+            # Cold cache + Alpaca unreachable: don't blow up the
+            # caller — return the static base. Self-healing on next
+            # successful Alpaca call.
+            return base
+        return [s for s in base if s in active]
+    except Exception:
+        return base
+
+
 def get_segment_api(name):
     """Return an Alpaca REST client configured for the given segment."""
     import alpaca_trade_api as tradeapi

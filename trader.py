@@ -377,6 +377,22 @@ def check_exits(ctx=None):
             action_label = "SELL"
 
         pnl = pnl_by_symbol.get(symbol)
+        # Subtract accrued short-borrow cost on covers (overnight
+        # shorts pay a daily borrow fee that Alpaca's unrealized_pl
+        # doesn't reflect). Sub-1-day shorts get 0.0 — same-day cover
+        # has no overnight borrow charge.
+        if is_short and pnl is not None:
+            try:
+                from short_borrow import accrue_for_cover
+                borrow_cost = accrue_for_cover(db_path, symbol, qty)
+                if borrow_cost > 0:
+                    pnl = pnl - borrow_cost
+                    logging.info(
+                        "Short borrow cost on %s: $%.4f (subtracted from "
+                        "cover pnl)", symbol, borrow_cost,
+                    )
+            except Exception as _exc:
+                logging.debug("Borrow accrual failed for %s: %s", symbol, _exc)
 
         log_trade(
             symbol=symbol,
