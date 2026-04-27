@@ -193,6 +193,54 @@ fresh outcomes.
 
 ---
 
+## 2026-04-27 — Backfill historical activity_log rows with raw snake_case + decimals (Severity: medium, ux)
+
+User noticed that 3+ hours after the structural fix at `fb55c07`,
+their ticker still showed:
+> "Reviewed past adjustment: max_position_pct 0.08->0.092
+>  (win rate 48%->52%: IMPROVED)"
+
+Correctly identified the cause: that row was logged BEFORE the fix
+deployed. The activity_log table stores text as-is; a code change
+doesn't retroactively rewrite history. So the fix only affects
+rows logged AFTER the deploy.
+
+`migrate_activity_log_format.py` — one-shot rewriter that walks
+existing activity_log rows whose `detail` matches the old format
+and rewrites in place using the same `display_name()` +
+`format_param_value()` helpers the live code now uses.
+
+Three regex patterns covered:
+1. "Reviewed past adjustment: <param> <old>-><new>"
+2. "REVERSED: <param> back from <new> to <old>"
+3. "- Adjusting <param>: ..."
+
+Plus a cosmetic pass on "win rate 48%->52%" → "win rate 48% → 52%".
+
+Idempotent — re-running on already-rewritten text is a no-op
+(rewritten format no longer matches the regex). Defensive — only
+rewrites if the matched name is actually a key in PARAM_BOUNDS, so
+random English text containing underscores (e.g., "has_options",
+"easy_to_borrow") passes through untouched.
+
+Supports `--dry-run` to preview counts without committing.
+
+`tests/test_migrate_activity_log_format.py` — 8 tests covering:
+- The exact user-reported string roundtrips to friendly format
+- REVERSED message variant rewrites correctly
+- "- Adjusting <param>" summary lines
+- Re-running is idempotent
+- Unrelated text (no PARAM_BOUNDS match) passes through
+- Made-up snake_case names not in PARAM_BOUNDS pass through
+- End-to-end with a real SQLite DB
+- `--dry-run` doesn't write
+
+Tests: 1056 passing.
+
+Run on prod: `python migrate_activity_log_format.py --db /opt/quantopsai/quantopsai.db`
+
+---
+
 ## 2026-04-27 — Snake_case + raw-decimal leak in ticker: 6 fixes + strengthened guard (Severity: critical, regression-prevention)
 
 User saw on the activity ticker:
