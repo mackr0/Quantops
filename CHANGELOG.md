@@ -34,6 +34,16 @@ it would just repeat what's now visible in the main row.
 Zero new system load — uses the same data already fetched for the
 P&L calc.
 
+**Follow-up fix same day:** the first cut naively did
+`(current - entry) / entry` regardless of side, which would have
+shown a SHORT position GAINING when the underlying price ROSE
+(opposite of reality). Caught while no shorts were open in prod, so
+the bug never bit. Fix inverts the sign for `side in ('sell',
+'sell_short', 'short')`. Guardrail: `tests/test_trades_table_pnl_sign.py`
+covers long winner, long loser, short winner, short loser, the
+dashboard's `side='sell'` alias for shorts, and the closed-trade
+no-render case (6 tests).
+
 ---
 
 ## 2026-04-27 — Dashboard rate-limit storm: per-symbol bars → batched snapshots (Severity: critical, regression-prevention)

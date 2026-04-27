@@ -51,8 +51,10 @@
                     <td>{{ t.qty|int }}{% if t.price and t.qty %}<br><small class="muted">${{ "{:,.0f}".format(t.qty * t.price) }}</small>{% endif %}</td>
                     <td>
                         {{ "${:,.2f}".format(t.price) if t.price else '--' }}
-                        {% if t.current_price is defined and t.current_price is not none and t.current_price > 0 %}
-                            {% set chg_pct = ((t.current_price - t.price) / t.price * 100) if t.price else 0 %}
+                        {% if t.current_price is defined and t.current_price is not none and t.current_price > 0 and t.price %}
+                            {# Direction sign: long gains when price rises; short gains when price falls. #}
+                            {% set price_move = (t.current_price - t.price) / t.price * 100 %}
+                            {% set chg_pct = -price_move if t.side in ('sell', 'sell_short', 'short') else price_move %}
                             <br><small class="{{ 'pnl-pos' if chg_pct >= 0 else 'pnl-neg' }}">@ ${{ "{:,.2f}".format(t.current_price) }} ({{ "{:+.1f}%".format(chg_pct) }})</small>
                         {% endif %}
                     </td>
