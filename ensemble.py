@@ -263,7 +263,8 @@ def run_ensemble(
         raw_by_specialist[name] = combined
 
     # Synthesize per-symbol consensus
-    per_symbol = _synthesize(batch, raw_by_specialist)
+    per_symbol = _synthesize(batch, raw_by_specialist,
+                              db_path=getattr(ctx, "db_path", None))
 
     return {
         "per_symbol": per_symbol,
@@ -273,13 +274,37 @@ def run_ensemble(
 
 
 def _synthesize(candidates: List[Dict[str, Any]],
-                raw_by_specialist: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
-    """Combine specialist verdicts into a per-symbol final consensus."""
+                raw_by_specialist: Dict[str, List[Dict[str, Any]]],
+                db_path: Optional[str] = None) -> Dict[str, Any]:
+    """Combine specialist verdicts into a per-symbol final consensus.
+
+    Wave 3 / Fix #9 (METHODOLOGY_FIX_PLAN.md): when `db_path` is
+    provided, each specialist's RAW confidence is replaced with a
+    calibrated confidence derived from a Platt-scaling model fitted
+    on that specialist's historical raw_confidence → was_correct
+    pairs. Without calibration, an over-confident specialist would
+    dominate ensemble contributions; with it, every specialist's
+    weight reflects its empirical accuracy.
+
+    When the calibrator hasn't been fitted yet (insufficient resolved
+    data), `apply_calibration` returns the raw value unchanged so
+    the ensemble degrades gracefully to pre-fix behavior.
+    """
     # Reindex per (symbol, specialist) for fast lookup
     by_symbol_and_spec: Dict[Tuple[str, str], Dict[str, Any]] = {}
     for name, verdicts in raw_by_specialist.items():
         for v in verdicts:
             by_symbol_and_spec[(v["symbol"], name)] = v
+
+    # Pre-load calibrators once per ensemble run.
+    calibrators: Dict[str, Any] = {}
+    if db_path:
+        try:
+            from specialist_calibration import get_calibrator
+            for name in raw_by_specialist:
+                calibrators[name] = get_calibrator(db_path, name)
+        except Exception:
+            calibrators = {}
 
     out: Dict[str, Any] = {}
     for c in candidates:
@@ -299,13 +324,27 @@ def _synthesize(candidates: List[Dict[str, Any]],
                     "specialist": name,
                     "verdict": "ABSTAIN",
                     "confidence": 0,
+                    "raw_confidence": 0,
                     "reasoning": "",
                 })
                 continue
+
+            raw_conf = int(v["confidence"])
+            cal = calibrators.get(name)
+            if cal is not None:
+                try:
+                    from specialist_calibration import apply_calibration
+                    eff_conf = apply_calibration(raw_conf, cal)
+                except Exception:
+                    eff_conf = raw_conf
+            else:
+                eff_conf = raw_conf
+
             symbol_verdicts.append({
                 "specialist": name,
                 "verdict": v["verdict"],
-                "confidence": v["confidence"],
+                "confidence": eff_conf,
+                "raw_confidence": raw_conf,
                 "reasoning": v["reasoning"],
             })
 
@@ -315,11 +354,11 @@ def _synthesize(candidates: List[Dict[str, Any]],
                 veto_reason = v["reasoning"] or "risk veto"
                 continue
 
-            if v["confidence"] < CONFIDENCE_FLOOR:
+            if eff_conf < CONFIDENCE_FLOOR:
                 continue
 
             weight = SPECIALIST_WEIGHTS.get(name, 1.0)
-            contribution = (v["confidence"] / 100.0) * weight
+            contribution = (eff_conf / 100.0) * weight
             if v["verdict"] == "BUY":
                 buy_score += contribution
             elif v["verdict"] == "SELL":

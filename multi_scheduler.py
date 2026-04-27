@@ -262,6 +262,14 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_retrain_meta_model(ctx),
             db_path=ctx.db_path,
         )
+        # Specialist calibrators (Wave 3 / Fix #9 of
+        # METHODOLOGY_FIX_PLAN.md) — refit each specialist's
+        # Platt-scaling layer on accumulated outcomes
+        run_task(
+            f"[{seg_label}] Specialist Calibration",
+            lambda: _task_calibrate_specialists(ctx),
+            db_path=ctx.db_path,
+        )
         # Alpha decay monitoring (Phase 3) — snapshot + detect + deprecate
         run_task(
             f"[{seg_label}] Alpha Decay Monitor",
@@ -1185,6 +1193,29 @@ def _task_retrain_meta_model(ctx):
         )
     except Exception as exc:
         logging.warning(f"Meta-model retrain failed: {exc}")
+
+
+def _task_calibrate_specialists(ctx):
+    """Refit per-specialist Platt-scaling calibrators on each
+    profile's accumulated specialist outcomes. Wave 3 / Fix #9 of
+    METHODOLOGY_FIX_PLAN.md. Runs in the daily snapshot block; no-op
+    when there's insufficient resolved data per specialist."""
+    try:
+        from specialist_calibration import refit_all
+        from specialists import discover_specialists
+        seg_label = ctx.display_name or ctx.segment
+        names = list(discover_specialists().keys())
+        if not names:
+            return
+        results = refit_all(ctx.db_path, names)
+        fitted = [n for n, ok in results.items() if ok]
+        skipped = [n for n, ok in results.items() if not ok]
+        logging.info(
+            f"[{seg_label}] Specialist calibrators refit: "
+            f"fitted={fitted}, skipped (insufficient data)={skipped}"
+        )
+    except Exception as exc:
+        logging.warning(f"Specialist calibration refit failed: {exc}")
 
 
 def _task_alpha_decay(ctx):

@@ -323,6 +323,22 @@ def resolve_predictions(api=None, db_path=None):
              days_held, row["id"]),
         )
         resolved_count += 1
+        # Wave 3 / Fix #9 — backfill specialist outcomes for this
+        # prediction so the calibrators can learn from each
+        # specialist's empirical accuracy. Treat 'win' as correct,
+        # 'loss' as incorrect, 'neutral' as no-signal (not labeled —
+        # we skip the calibration update for neutrals).
+        if outcome in ("win", "loss"):
+            try:
+                from specialist_calibration import update_outcomes_on_resolve
+                update_outcomes_on_resolve(
+                    db_path, row["id"], was_correct=(outcome == "win"),
+                )
+            except Exception as _exc:
+                logger.debug(
+                    "Specialist calibration update failed for "
+                    "prediction %d: %s", row["id"], _exc,
+                )
         logger.info(
             "Resolved prediction #%d (%s %s): %s (%.2f%%, %d days)",
             row["id"], row["predicted_signal"], sym, outcome, return_pct,

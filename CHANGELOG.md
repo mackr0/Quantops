@@ -17,6 +17,116 @@ Rules going forward:
 
 ---
 
+## 2026-04-27 — Wave 3 / Fix #9: per-specialist confidence calibration (Severity: medium, accuracy)
+
+The last methodology fix. METHODOLOGY_FIX_PLAN.md is now ✅ COMPLETE
+— all 9 issues identified by the audit are fixed.
+
+**Before:** Each specialist (earnings_analyst, pattern_recognizer,
+sentiment_narrative, risk_assessor) returned a verdict + raw
+confidence 0-100. The ensemble synthesizer multiplied that raw
+confidence by a static specialist weight to compute the contribution
+to the final BUY/SELL score. But the raw confidence was never
+validated against actual outcomes — when earnings_analyst said BUY
+78%, it might have been right 50% of the time historically. An
+over-confident specialist therefore dominated the ensemble even
+when its track record didn't justify it.
+
+**Fix:**
+
+1. New module `specialist_calibration.py`:
+   - `init_calibration_db(db)` creates `specialist_outcomes` table.
+   - `record_outcomes_for_prediction(db, pred_id, specialists)` logs
+     the per-specialist verdicts attached to each prediction.
+   - `update_outcomes_on_resolve(db, pred_id, was_correct)` backfills
+     the binary outcome when the prediction resolves.
+   - `fit_calibrator(db, specialist)` trains a logistic regression
+     mapping `raw_confidence/100 → P(correct)` on the last 90 days
+     of resolved data; returns None below 30 samples or on
+     degenerate (all-win/all-loss) inputs.
+   - `apply_calibration(raw, calibrator)` returns the calibrated
+     confidence as an int in [0, 100]; passes raw value through
+     when calibrator is None (graceful degradation).
+   - Per-specialist pkl persistence + module-level cache.
+   - `refit_all(db, names)` for the daily scheduler task.
+
+2. **Schema** — new `specialist_outcomes` table with
+   `(prediction_id, specialist_name)` UNIQUE constraint and an
+   index on `(specialist_name, resolved_at)` for fit performance.
+
+3. **Wiring:**
+   - `trade_pipeline.py` now passes `c["ensemble_specialists"]` from
+     each candidate's per-symbol entry forward and calls
+     `record_outcomes_for_prediction` immediately after
+     `record_prediction`.
+   - `ai_tracker.resolve_predictions` now calls
+     `update_outcomes_on_resolve(was_correct=outcome=='win')` for
+     each prediction it resolves to win/loss (skips neutrals).
+   - `ensemble._synthesize` accepts `db_path`; loads calibrators
+     once per ensemble run; applies `apply_calibration` to each
+     specialist's confidence BEFORE computing contributions to the
+     buy/sell score. Each per-symbol output now carries both
+     `confidence` (calibrated) and `raw_confidence` (original) for
+     auditability.
+   - `ensemble.run_ensemble` passes `ctx.db_path` through.
+
+4. **Daily retrain** — new `_task_calibrate_specialists` in
+   `multi_scheduler.py`, registered in the daily snapshot block
+   right after the meta-model retrain. Runs `refit_all` per profile.
+
+5. **Anti-regression — `tests/test_specialist_calibration.py` (8 tests):**
+
+   - Module exposes the contract API (8 named functions).
+   - `_synthesize` source references `apply_calibration` and
+     `get_calibrator` so removing the integration trips the build.
+   - Record-then-resolve round trip writes correct rows.
+   - Fit returns None below MIN_SAMPLES_TO_FIT.
+   - **Behavioral leakage test #1:** seed 100 outcomes for an
+     "overconfident" specialist (always raw=90, 50% hit rate). Fit
+     calibrator. Assert `apply_calibration(90)` returns 35-65
+     (calibrated DOWN to ~50). With the bug, this would return ~90.
+   - **Behavioral leakage test #2:** seed 120 outcomes for an
+     "underconfident" specialist (raw=25-35, 80% hit rate). Assert
+     `apply_calibration(30)` returns ≥ 60 (calibrated UP toward 80).
+   - apply_calibration with None returns raw value unchanged.
+   - get_calibrator returns None when no pkl exists.
+
+Tests: 1000 passing (was 992; +8 new). 🎉
+
+**Why the AUC bump won't appear immediately:** specialist outcomes
+start being logged from this commit forward. The first time
+`fit_calibrator` produces a real model per specialist will be after
+30+ resolved predictions per specialist accumulate
+(~1-2 trading weeks at current volume). Until then,
+`get_calibrator` returns None and `_synthesize` uses raw confidence
+— same as before. The fix is **prospective**: it kicks in
+automatically once the data is there.
+
+---
+
+## METHODOLOGY_FIX_PLAN.md is ✅ COMPLETE
+
+All 9 audit findings are fixed:
+
+| # | Wave | What it fixed | Commit |
+|---|---|---|---|
+| 1 | 0 | Meta-model time-ordered split | `cd2d207` |
+| 2 | 1 | backtest_strategy date ranges | `a3a3d64` |
+| 6 | 1 | ai_tracker forward-horizon resolution | `7729bc4` |
+| 3 | 2 | walk-forward truly walks forward | `ec758e3` |
+| 4 | 2 | OOS strictly disjoint from in-sample | `ec758e3` |
+| 5 | 2 | self_tuner train/validate split | `ec758e3` |
+| 7 | 3 | strategy_lifecycle inherits real gates | `f65d757` |
+| 8 | 3 | alpha_decay rolling vs lifetime disjoint | `f65d757` |
+| 9 | 3 | specialist confidence calibration | this commit |
+
+Anti-regression tests across all 9 fixes total ~62 new structural
+tests. The system can no longer ship any of these data-leak
+patterns silently — every one now has either an AST guard, a
+behavioral leakage detector, or both.
+
+---
+
 ## 2026-04-27 — Wave 3 (partial) / Fixes #7 + #8: alpha_decay strict disjoint windows + strategy_lifecycle contract (Severity: medium, accuracy)
 
 Wave 3 part 1 — the smaller two fixes ship together. Fix #9

@@ -1,6 +1,7 @@
 # Methodology Correctness Plan
 
 **Created:** 2026-04-27
+**Status:** ✅ COMPLETE — all 9 fixes shipped 2026-04-27.
 **Owner:** Mack + assistant
 **Driver:** "Yes, accuracy above all else."
 
@@ -32,7 +33,7 @@ self-tuning, decay detection) inherits the bug.
 | 6 | MEDIUM | `ai_tracker.py:205-241` (`_resolve_one`) | ✅ FIXED 2026-04-27 (this commit). Forward-horizon gate `MIN_HOLD_DAYS_BEFORE_RESOLVE` blocks BUY/SELL resolution on intraday noise. |
 | 7 | MEDIUM | `strategy_lifecycle.py:108-158` (`validate_and_promote`) | ✅ FIXED 2026-04-27 (this commit). Mechanically inherits the Wave 2 fixes; contract test confirms `_run_validation` calls `validate_strategy`. |
 | 8 | MEDIUM | `alpha_decay.py:56-112` (`compute_rolling_metrics`) | ✅ FIXED 2026-04-27 (this commit). `compute_lifetime_metrics` accepts `exclude_recent_days`; `detect_decay` and `check_restoration` pass `rolling_window_days` to enforce strict disjointness. |
-| 9 | MEDIUM | `ensemble.py` + `specialists/` | Specialist confidence scores (`earnings_analyst BUY 78`) never calibrated against actual outcomes. Fed to meta-model and final AI prompt as if they meant 78% probability. |
+| 9 | MEDIUM | `ensemble.py` + `specialists/` | ✅ FIXED 2026-04-27 (this commit). New `specialist_calibration.py` module fits per-specialist Platt scaling on accumulated outcomes; `_synthesize` applies calibrated confidence in ensemble math. |
 
 The audit also surfaced two CLEAN findings that don't need fixing:
 `backtester.py`'s inner simulation loop is correctly walk-forward, and

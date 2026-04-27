@@ -1083,6 +1083,10 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     c["ensemble_summary"] = format_for_final_prompt(per_symbol, sym)
                     c["ensemble_verdict"] = verdict["verdict"]
                     c["ensemble_confidence"] = verdict["confidence"]
+                    # Carry the per-specialist verdicts forward so we
+                    # can persist them with the prediction (Wave 3 /
+                    # Fix #9 — specialist confidence calibration).
+                    c["ensemble_specialists"] = verdict.get("specialists", [])
                 kept.append(c)
             candidates_data = kept
             if vetoed_syms:
@@ -1207,7 +1211,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             features_payload["_rotation_phase"] = _macro.get("sector_momentum", {}).get("rotation_phase", "mixed")
             features_payload["_market_gex_regime"] = _macro.get("market_gex", {}).get("net_regime", "balanced")
 
-            record_prediction(
+            pred_id = record_prediction(
                 symbol=sym,
                 predicted_signal=pred_signal,
                 confidence=pred_confidence,
@@ -1219,6 +1223,22 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 strategy_type=strategy,
                 features=features_payload,
             )
+            # Wave 3 / Fix #9 — log the per-specialist verdicts that
+            # contributed to this prediction so the calibrators can
+            # learn from each specialist's track record.
+            if pred_id and pred_id > 0 and ctx and getattr(ctx, "db_path", None):
+                specialists_for_pred = c.get("ensemble_specialists", [])
+                if specialists_for_pred:
+                    try:
+                        from specialist_calibration import record_outcomes_for_prediction
+                        record_outcomes_for_prediction(
+                            ctx.db_path, pred_id, specialists_for_pred,
+                        )
+                    except Exception as _exc:
+                        logging.warning(
+                            "Failed to record specialist outcomes "
+                            "for prediction %s: %s", pred_id, _exc,
+                        )
     except Exception as exc:
         logging.warning(f"Failed to record batch predictions: {exc}")
 
