@@ -17,6 +17,29 @@ Rules going forward:
 
 ---
 
+## 2026-04-27 — Documented "trade-execution costs modeled at $0" decision (Severity: low, docs)
+
+User reviewed today's trailing-stop exits (mostly profitable; AMD
++$190, NXPI +$224, QCOM +$53; one stop-loss on TXN -$99) and asked
+why the system doesn't subtract per-trade commissions. Combined
+recall (his E*Trade account didn't charge him) with current market
+reality (every major US retail broker — Alpaca, Schwab, Fidelity,
+E*Trade, IBKR Lite, Robinhood, Charles Schwab — has been $0 stock
+commission since 2019) and the existing slippage-tracking that
+already captures the only material trade-cost (bid-ask spread).
+
+Result: trade execution costs stay modeled at $0; decision is now
+documented in `TECHNICAL_DOCUMENTATION.md` §15 ("Cost Model" → new
+"Trade Execution Costs" subsection) so the reasoning is preserved
+if anyone questions it later.
+
+The single small gap — short-borrow fees on overnight shorts — is
+explicitly noted as deferred (small magnitude; rarely held >1-3
+days; clean post-hoc add when a >5-day short shows up in the
+journal).
+
+---
+
 ## 2026-04-27 — check_exits: skip exits whose entry order hasn't filled at the broker (Severity: medium, bug)
 
 **Symptom:** Production scan-failures widget showed

@@ -1641,6 +1641,32 @@ Stored on `trading_profiles`; surfaced via Settings → per-profile form:
 
 The AI-first batch architecture uses 1 AI call per scan cycle (vs 20+ in the old per-symbol review system). MAGA context is only fetched when the shortlist is non-empty.
 
+### Trade Execution Costs (and why we model them at $0)
+
+The system intentionally does not subtract a per-trade commission or
+fee from P&L. This is **a deliberate modeling choice that reflects the
+real US retail-equity market**, not an oversight. Documented here so
+the reasoning is preserved if it ever comes up again.
+
+| Cost | Modeled? | Reality | Magnitude |
+|---|---|---|---|
+| **Stock commissions** | $0 | All major US retail brokers (Alpaca, Schwab, Fidelity, E*Trade, IBKR Lite, Robinhood) charge $0 commission on stock trades since 2019. Alpaca paper trading matches this exactly. | $0 / trade |
+| **SEC fee (Section 31)** | not modeled | Charged on sells only. Currently $8 per $1M proceeds (0.0008%). On a $10K trade, $0.008. | < $0.01 / typical trade |
+| **FINRA TAF** | not modeled | Charged on sells only. $0.000166/share, capped at $8.30/trade. A 1,000-share sell pays $0.17. | < $0.20 / typical trade |
+| **Bid-ask spread** | **modeled implicitly** | Real cost on every fill. Captured via `slippage_pct` (decision_price vs fill_price recorded on every trade — see §18). The system already learns and reports this. | varies; typically 1-10 bps |
+| **Short borrow fees** | not modeled | Annualized 0.25-2% for liquid names; the system rarely holds shorts longer than 1-3 days, so the unaccrued cost is small. | low; matters only on overnight shorts |
+| **AI model API cost** | tracked separately | Per-profile `ai_cost_ledger` (see above). Not subtracted from trade P&L because it's a fixed system cost, not a per-trade execution cost. | ~$1.30/day across all 11 profiles |
+
+**Why $0 commissions is the right model:** Adding a fictional $4.95-per-trade commission would make the simulation **less** realistic, not more. The $0 model matches what an actual user would experience opening an account at any major US broker today.
+
+**Why ignoring the regulatory micro-fees is fine:** SEC fee + FINRA TAF combined run ~$0.01-$0.20 on typical trade sizes. Compared to the bid-ask spread (already captured in slippage tracking) which routinely costs 1-10 basis points (i.e. $1-$10 on a $10K trade), regulatory fees are an order of magnitude or two smaller and would not change any signal-vs-noise judgement about strategy quality.
+
+**The cost that does matter — and is already captured:** **slippage**, recorded on every trade as `decision_price`, `fill_price`, and `slippage_pct`. See §18 (Slippage Tracking) for how this feeds back into self-tuning and the institutional performance dashboard.
+
+**Single small gap, deferred:** short-borrow accrual on overnight shorts. Could be added as a per-symbol `borrow_cost_bps_per_day` field accrued into pnl on cover. Deferred because (a) most shorts close same-day or within 1-3 days, (b) the amount is small relative to slippage and the cost-of-being-wrong, and (c) it's a clean post-hoc add when a real short held >5 days appears in the journal.
+
+**Source of decision:** user + assistant analysis on 2026-04-27 reviewing today's exits (CHANGELOG entry of same date). The user explicitly recalled E*Trade not charging him for trades and asked for an opinion; my recommendation was "leave commissions/fees at $0, you're right." Both agreed; this section is the record of the reasoning.
+
 ---
 
 ## 16. Codebase Reference
