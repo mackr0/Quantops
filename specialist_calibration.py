@@ -304,6 +304,92 @@ def apply_calibration(raw_confidence: int, calibrator: Any) -> int:
         return int(raw_confidence)
 
 
+# ---------------------------------------------------------------------------
+# Backfill from existing resolved predictions
+# ---------------------------------------------------------------------------
+
+# Maps the 4-char prefix used in `format_for_final_prompt` back to the
+# full specialist name. earnings_analyst[:4] = "earn", etc.
+_PREFIX_TO_SPECIALIST = {
+    "earn": "earnings_analyst",
+    "patt": "pattern_recognizer",
+    "sent": "sentiment_narrative",
+    "risk": "risk_assessor",
+}
+
+# Regex: "earn=BUY(72), patt=HOLD(45), sent=SELL(72), risk=HOLD(55)"
+import re as _re
+_ENSEMBLE_PREFIX_RE = _re.compile(r"(earn|patt|sent|risk)=([A-Z]+)\((\d+)\)")
+
+
+def backfill_from_resolved_predictions(db_path: str) -> int:
+    """Parse features_json.ensemble_summary on every resolved
+    prediction and seed the specialist_outcomes table from history.
+
+    Why this exists: the calibration system needs (raw_confidence,
+    was_correct) pairs per specialist to fit. Without backfill, the
+    table starts empty and calibrators don't fit until 30+ new
+    outcomes accumulate per specialist (~1-2 weeks). But the
+    information is ALREADY in `features_json["ensemble_summary"]`
+    on every prediction with a feature payload — we just need to
+    parse it back out.
+
+    Idempotent: the (prediction_id, specialist_name) UNIQUE
+    constraint means re-running is safe; existing rows aren't
+    overwritten. Skips ABSTAIN (zero confidence; no signal) and
+    VETO (separate code path; not part of the
+    confidence-weighted contribution math).
+
+    Returns the number of newly-inserted rows.
+    """
+    if not db_path:
+        return 0
+    init_calibration_db(db_path)
+    inserted = 0
+    try:
+        import json as _json
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute(
+            "SELECT id, features_json, actual_outcome "
+            "FROM ai_predictions "
+            "WHERE status='resolved' AND features_json IS NOT NULL "
+            "AND actual_outcome IN ('win', 'loss')"
+        ).fetchall()
+        for pred_id, fjson, outcome in rows:
+            try:
+                features = _json.loads(fjson)
+            except Exception:
+                continue
+            summary = features.get("ensemble_summary", "")
+            if not summary:
+                continue
+            was_correct = 1 if outcome == "win" else 0
+            for prefix, verdict, conf_str in _ENSEMBLE_PREFIX_RE.findall(summary):
+                name = _PREFIX_TO_SPECIALIST.get(prefix)
+                if not name:
+                    continue
+                # Skip ABSTAIN (no opinion) and VETO (separate path)
+                if verdict in ("ABSTAIN", "VETO"):
+                    continue
+                try:
+                    cur = conn.execute(
+                        "INSERT OR IGNORE INTO specialist_outcomes "
+                        "(prediction_id, specialist_name, verdict, "
+                        " raw_confidence, was_correct, resolved_at) "
+                        "VALUES (?, ?, ?, ?, ?, datetime('now'))",
+                        (pred_id, name, verdict, int(conf_str), was_correct),
+                    )
+                    if cur.rowcount > 0:
+                        inserted += 1
+                except Exception:
+                    continue
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        logger.warning("Backfill failed for %s: %s", db_path, exc)
+    return inserted
+
+
 def refit_all(db_path: str, specialist_names: List[str]) -> Dict[str, bool]:
     """Refit and persist calibrators for every named specialist.
 

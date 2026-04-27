@@ -246,3 +246,108 @@ def test_get_calibrator_returns_none_for_missing_pkl(fresh_db):
     """No fitted model on disk → cache returns None, application
     falls back to raw confidence."""
     assert sc.get_calibrator(fresh_db, "never_fitted") is None
+
+
+# ---------------------------------------------------------------------------
+# Backfill — parse existing features_json.ensemble_summary
+# ---------------------------------------------------------------------------
+
+def test_backfill_parses_ensemble_summary_format(fresh_db):
+    """Seed ai_predictions with realistic features_json containing
+    an ensemble_summary string in the prod format. Backfill should
+    parse the per-specialist verdicts and populate specialist_outcomes
+    with was_correct already set from actual_outcome."""
+    import json as _json
+    # Build the ai_predictions table on fresh_db to simulate a real
+    # journal db (the fresh_db fixture only created specialist_outcomes).
+    conn = sqlite3.connect(fresh_db)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ai_predictions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            status TEXT,
+            actual_outcome TEXT,
+            features_json TEXT
+        )
+    """)
+    # Insert 3 resolved predictions with realistic ensemble summaries
+    conn.execute(
+        "INSERT INTO ai_predictions (status, actual_outcome, features_json) "
+        "VALUES (?, ?, ?)",
+        ("resolved", "win", _json.dumps({
+            "ensemble_summary": "ENSEMBLE: BUY @ 100% — earn=BUY(72), patt=HOLD(45), sent=BUY(78), risk=HOLD(55)",
+        })),
+    )
+    conn.execute(
+        "INSERT INTO ai_predictions (status, actual_outcome, features_json) "
+        "VALUES (?, ?, ?)",
+        ("resolved", "loss", _json.dumps({
+            "ensemble_summary": "ENSEMBLE: SELL @ 100% — earn=ABSTAIN(0), patt=SELL(78), sent=SELL(72), risk=SELL(70)",
+        })),
+    )
+    conn.execute(
+        "INSERT INTO ai_predictions (status, actual_outcome, features_json) "
+        "VALUES (?, ?, ?)",
+        ("resolved", "neutral", _json.dumps({  # neutrals must be skipped
+            "ensemble_summary": "ENSEMBLE: HOLD @ 50% — earn=HOLD(60), patt=HOLD(55), sent=HOLD(50), risk=HOLD(50)",
+        })),
+    )
+    conn.commit()
+    conn.close()
+
+    inserted = sc.backfill_from_resolved_predictions(fresh_db)
+    # Pred 1: 4 specialists, but earn=BUY/patt=HOLD/sent=BUY/risk=HOLD all kept = 4
+    # Pred 2: earn=ABSTAIN skipped; patt/sent/risk = 3
+    # Pred 3: actual_outcome='neutral', whole prediction skipped = 0
+    assert inserted == 7, (
+        f"Expected 7 backfilled rows (4 from pred1 + 3 from pred2), "
+        f"got {inserted}"
+    )
+
+    # Verify the rows look right
+    conn = sqlite3.connect(fresh_db)
+    rows = conn.execute(
+        "SELECT specialist_name, verdict, raw_confidence, was_correct "
+        "FROM specialist_outcomes ORDER BY prediction_id, specialist_name"
+    ).fetchall()
+    conn.close()
+    # Pred 1 (win) — was_correct=1 for all 4
+    pred1_rows = [r for r in rows if r[3] == 1]
+    assert len(pred1_rows) == 4
+    assert {r[0] for r in pred1_rows} == {
+        "earnings_analyst", "pattern_recognizer",
+        "sentiment_narrative", "risk_assessor",
+    }
+    # Pred 2 (loss) — was_correct=0 for all 3
+    pred2_rows = [r for r in rows if r[3] == 0]
+    assert len(pred2_rows) == 3
+    assert "earnings_analyst" not in {r[0] for r in pred2_rows}, (
+        "earn=ABSTAIN must be skipped — ABSTAIN means no signal"
+    )
+
+
+def test_backfill_is_idempotent(fresh_db):
+    """Re-running backfill on the same data must not duplicate rows."""
+    import json as _json
+    conn = sqlite3.connect(fresh_db)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ai_predictions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT, status TEXT, actual_outcome TEXT,
+            features_json TEXT
+        )
+    """)
+    conn.execute(
+        "INSERT INTO ai_predictions (status, actual_outcome, features_json) "
+        "VALUES (?, ?, ?)",
+        ("resolved", "win", _json.dumps({
+            "ensemble_summary": "ENSEMBLE: BUY @ 100% — earn=BUY(72), patt=BUY(60), sent=BUY(78), risk=BUY(55)",
+        })),
+    )
+    conn.commit()
+    conn.close()
+
+    n1 = sc.backfill_from_resolved_predictions(fresh_db)
+    n2 = sc.backfill_from_resolved_predictions(fresh_db)
+    assert n1 == 4
+    assert n2 == 0, "Second backfill must insert zero new rows (idempotent)"

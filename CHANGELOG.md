@@ -104,6 +104,37 @@ automatically once the data is there.
 
 ---
 
+## 2026-04-27 — Specialist calibration: backfill from existing 4,400 resolved predictions (Severity: medium, accuracy)
+
+After Fix #9 shipped, the user pointed out we have ~4,400 resolved
+predictions across all profiles already. They're right — the
+calibrator-data isn't actually starting from zero today. Each
+resolved prediction's `features_json["ensemble_summary"]` carries
+the per-specialist verdict + confidence in a parseable format (e.g.
+`earn=BUY(72), patt=HOLD(45), sent=SELL(78), risk=HOLD(55)`).
+
+Added `specialist_calibration.backfill_from_resolved_predictions(db)`
+that parses every resolved prediction's ensemble_summary and seeds
+the `specialist_outcomes` table with `was_correct` already set from
+the prediction's `actual_outcome`. Idempotent via the
+`(prediction_id, specialist_name)` UNIQUE constraint. Skips ABSTAIN
+(no signal) and VETO (separate code path). Skips neutrals
+(actual_outcome NOT IN ('win', 'loss')).
+
+Two new behavioral tests:
+- Parse format check: 3 seeded predictions → expected row count by
+  outcome and skip-rule.
+- Idempotency: re-running inserts zero rows.
+
+Tests: 1002 passing (+2 new).
+
+After deploy: a one-shot script runs `backfill_from_resolved_predictions`
+on every profile DB, then triggers the daily calibration retrain so
+calibrators are fitted immediately rather than waiting 1-2 weeks for
+fresh outcomes.
+
+---
+
 ## METHODOLOGY_FIX_PLAN.md is ✅ COMPLETE
 
 All 9 audit findings are fixed:
