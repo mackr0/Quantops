@@ -124,8 +124,25 @@ def validate_strategy(
     # Pre-sample symbols once so every gate tests the SAME universe.
     # This lets the per-symbol yfinance cache serve every subsequent gate
     # instantly (huge speedup: ~5x for the default configuration).
+    #
+    # Wave 4 / Issue #10 of METHODOLOGY_FIX_PLAN.md — survivorship-bias
+    # fix: backtests read the FROZEN historical universe + auto-captured
+    # departures, NOT the live segments.py list (which is curated to
+    # tradeable-today and silently excludes delisted/renamed names).
+    # Crypto stays on the live universe — its symbol set is small and
+    # crypto names don't get delisted in the same way.
     seg = get_segment(market_type)
-    universe = list(seg.get("universe", []))
+    if market_type == "crypto":
+        universe = list(seg.get("universe", []))
+    else:
+        from historical_universe_augment import get_augmented_universe
+        universe = get_augmented_universe(market_type)
+        if not universe:
+            # Fail-open: if the historical baseline is unavailable for
+            # any reason, fall back to the live universe rather than
+            # break the backtest.
+            universe = list(seg.get("universe", []))
+
     if len(universe) > sample_size:
         shared_symbols = random.sample(universe, sample_size)
     else:

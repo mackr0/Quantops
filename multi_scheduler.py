@@ -270,6 +270,15 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_calibrate_specialists(ctx),
             db_path=ctx.db_path,
         )
+        # Universe audit (Wave 4 / Issue #10 of METHODOLOGY_FIX_PLAN.md)
+        # — daily diff of Alpaca's active asset set; captures departures
+        # for backtest survivorship-bias correction. Idempotent across
+        # the day so it only really runs once per UTC date.
+        run_task(
+            f"[{seg_label}] Universe Audit",
+            lambda: _task_universe_audit(ctx),
+            db_path=ctx.db_path,
+        )
         # Alpha decay monitoring (Phase 3) — snapshot + detect + deprecate
         run_task(
             f"[{seg_label}] Alpha Decay Monitor",
@@ -1193,6 +1202,87 @@ def _task_retrain_meta_model(ctx):
         )
     except Exception as exc:
         logging.warning(f"Meta-model retrain failed: {exc}")
+
+
+def _task_universe_audit(ctx):
+    """Daily snapshot of Alpaca's active US-equity asset set + diff vs
+    yesterday. Symbols that fell off the active list are recorded in
+    `historical_universe_additions` so future backtests over windows
+    that include their `last_seen_active` date can include them in
+    the universe.
+
+    Wave 4 / Issue #10 of METHODOLOGY_FIX_PLAN.md (survivorship bias).
+
+    Uses `screener.get_active_alpaca_symbols` which is already cached
+    daily in-process — adds ZERO extra Alpaca calls. Runs once per
+    daily snapshot block; subsequent profiles in the same scheduler
+    cycle hit the no-op idempotency check below.
+    """
+    seg_label = ctx.display_name or ctx.segment
+    # Idempotency: only run once per UTC day across the whole
+    # scheduler. Master DB is shared.
+    try:
+        from datetime import datetime as _dt
+        import sqlite3 as _sq
+        today = _dt.utcnow().date().isoformat()
+        marker_db = "quantopsai.db"
+        conn = _sq.connect(marker_db)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS universe_audit_runs (
+                run_date TEXT PRIMARY KEY,
+                ran_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        existing = conn.execute(
+            "SELECT 1 FROM universe_audit_runs WHERE run_date = ?",
+            (today,),
+        ).fetchone()
+        if existing:
+            conn.close()
+            logging.info(
+                f"[{seg_label}] Universe audit already ran today; skipping."
+            )
+            return
+        conn.close()
+    except Exception as exc:
+        logging.warning(f"Universe audit idempotency check failed: {exc}")
+        # Continue — better to potentially run twice than to fail silently.
+
+    try:
+        from screener import get_active_alpaca_symbols
+        from historical_universe_augment import (
+            record_daily_snapshot, diff_and_record_departures,
+        )
+        active = get_active_alpaca_symbols(ctx)
+        if not active:
+            logging.info(
+                f"[{seg_label}] Universe audit: empty active set "
+                "(Alpaca cache miss + cold lookup failed). Skipping; "
+                "will retry tomorrow."
+            )
+            return
+        new_departures = diff_and_record_departures(active)
+        recorded = record_daily_snapshot(active)
+        # Mark today's run as complete (idempotency for the rest of
+        # today's profile loop).
+        try:
+            import sqlite3 as _sq
+            conn = _sq.connect("quantopsai.db")
+            conn.execute(
+                "INSERT OR IGNORE INTO universe_audit_runs (run_date) "
+                "VALUES (?)",
+                (today,),
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+        logging.info(
+            f"[{seg_label}] Universe audit: {recorded} active symbols "
+            f"snapshotted; {new_departures} new departures recorded."
+        )
+    except Exception as exc:
+        logging.warning(f"Universe audit failed: {exc}")
 
 
 def _task_calibrate_specialists(ctx):

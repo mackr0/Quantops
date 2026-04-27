@@ -518,7 +518,16 @@ def backtest_strategy(
     from strategy_router import run_strategy
 
     segment = get_segment(market_type)
-    universe = segment.get("universe", [])
+    # Wave 4 / Issue #10 of METHODOLOGY_FIX_PLAN.md — survivorship bias.
+    # Backtests read the frozen historical universe + auto-captured
+    # departures, not the live curated-to-tradeable-today list.
+    if market_type == "crypto":
+        universe = segment.get("universe", [])
+    else:
+        from historical_universe_augment import get_augmented_universe
+        universe = get_augmented_universe(market_type)
+        if not universe:
+            universe = segment.get("universe", [])
 
     if not universe:
         return {"error": f"No universe found for market type: {market_type}"}
@@ -850,7 +859,16 @@ def _fetch_universe_batch(market_type: str, days: int) -> Optional[pd.DataFrame]
             return entry["data"]
 
     segment = get_segment(market_type)
-    universe = segment.get("universe", [])
+    # Wave 4 / Issue #10 — backtest universe must include historically-
+    # tradeable names that have since delisted/merged. See
+    # METHODOLOGY_FIX_PLAN.md.
+    if market_type == "crypto":
+        universe = segment.get("universe", [])
+    else:
+        from historical_universe_augment import get_augmented_universe
+        universe = get_augmented_universe(market_type)
+        if not universe:
+            universe = segment.get("universe", [])
     if not universe:
         return None
 
@@ -963,7 +981,15 @@ def backtest_with_params(market_type: str, params: dict, days: int = 90,
     from strategy_router import run_strategy
 
     segment = get_segment(market_type)
-    universe = segment.get("universe", [])
+    # Wave 4 / Issue #10 — backtest universe = historical baseline +
+    # captured departures, not the live (survivor-biased) list.
+    if market_type == "crypto":
+        universe = segment.get("universe", [])
+    else:
+        from historical_universe_augment import get_augmented_universe
+        universe = get_augmented_universe(market_type)
+        if not universe:
+            universe = segment.get("universe", [])
 
     if not universe:
         return {"error": f"No universe found for market type: {market_type}"}

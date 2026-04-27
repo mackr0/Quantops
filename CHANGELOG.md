@@ -193,9 +193,112 @@ fresh outcomes.
 
 ---
 
+## 2026-04-27 — Wave 4 / Issue #10: backtest survivorship bias — frozen baseline + auto-augmentation (Severity: medium, accuracy)
+
+User noted earlier today, after the 9-finding audit was declared
+complete, that there was a related-but-separate integrity issue
+which I'd flagged in the dynamic-universe doc audit but not rolled
+into the methodology plan: backtests were reading the same
+hand-curated "tradeable today" universe as live trading. That list
+was curated to exclude delisted/renamed/acquired names, so every
+backtest silently dropped exactly the symbols whose outcomes
+mattered most for honest measurement (bankruptcies, severe
+drawdowns, fraud disclosures). Backtest results were therefore
+biased UP — the well-known survivorship-bias trap.
+
+User instruction: "roll it into METHODOLOGY_FIX_PLAN.md as a §10
+to make the audit honestly complete, and fucking do it, and do it
+in a way that doesn't cause regressions or add unnecessary API
+calls or break something else."
+
+**Two-part architecture:**
+
+1. **`segments_historical.py` (frozen baseline)** — verbatim
+   one-time snapshot of `segments.py`'s four equity universes as of
+   2026-04-27. Includes every name the system has tracked
+   dead-or-alive (SQ, PARA, CFLT, X, AZUL, GPS, etc.). Crypto stays
+   only in segments.py — its set is small and stable.
+
+2. **`historical_universe_augment.py` (auto-augmentation)** — daily
+   diff of Alpaca's active asset list against yesterday's snapshot.
+   Symbols that disappeared get appended to
+   `historical_universe_additions` with `last_seen_active=today`.
+   `get_augmented_universe(segment, start_date)` returns the frozen
+   baseline ∪ additions whose `last_seen_active >= start_date`.
+   This way the historical universe **grows organically forever**
+   without manual refresh — answering the user's pointed question
+   "and do future dead ones get moved into the historical when it
+   is their time?" — yes, every day, automatically.
+
+**Constraint compliance:**
+
+- **No new API calls.** The daily `_task_universe_audit` reads
+  `screener.get_active_alpaca_symbols(ctx)` which is already cached
+  daily in-process from the screener's existing `list_assets` call.
+  Zero net new requests to Alpaca.
+- **No regressions.** Live trading paths read `segments.py` exactly
+  as before (verified by `test_live_trading_does_not_use_augmented_universe`
+  + `test_screener_does_not_use_augmented_universe`). The Alpaca
+  filter that protects live paths (CHANGELOG 2026-04-23 / 04-24) is
+  unchanged. Only the four backtest call sites were updated.
+- **Idempotent.** Daily snapshot is keyed by date (UPSERT). Diff
+  uses `INSERT OR IGNORE` semantics so re-running is a no-op for
+  already-recorded departures. New scheduler task has its own
+  `universe_audit_runs` marker table so multi-profile cycles only
+  do the work once per UTC day.
+
+**Wired into 4 backtest read sites + 1 scheduler write site:**
+
+- `rigorous_backtest.py:128` — `validate_strategy` shared-symbol
+  selection
+- `backtester.py:521` — `backtest_strategy` (the new date-range +
+  legacy days= entry point)
+- `backtester.py:862` — `_fetch_universe_batch` cache build
+- `backtester.py:984` — `validate_strategy_with_params` (what-if
+  backtest)
+- `multi_scheduler.py` — new `_task_universe_audit` registered in
+  the daily snapshot block right after specialist calibration.
+  Idempotent across the day so it only runs once even though
+  multiple profiles enter the snapshot block.
+
+**Anti-regression — `tests/test_historical_universe_augment.py` (13 tests):**
+
+A. `test_segments_historical_module_exists` — frozen file present.
+B. `test_segments_historical_includes_known_dead_tickers` — must
+   contain SQ, PARA, CFLT, X, AZUL, GPS (the canonical examples
+   from prior fixes). If absent, the freeze didn't capture state.
+C. `test_segments_historical_excludes_crypto` — design constraint.
+D-F. `test_diff_records_departures_after_snapshot`, `_idempotent_on_rerun`,
+   `_first_run_with_no_prior_snapshot_records_nothing` — the
+   diff-and-record contract.
+G-H. `test_augmented_universe_includes_recent_departures`,
+   `_excludes_pre_window_departures` — backtest read path
+   correctness.
+I. `test_augmented_universe_returns_baseline_for_unknown_segment` —
+   crypto fallback path.
+J-K. `test_rigorous_backtest_uses_augmented_universe`,
+   `test_backtester_uses_augmented_universe` — source-level
+   contract guards on the 4 backtest entry points (all 3 entries
+   in backtester.py + the rigorous one).
+L-M. `test_live_trading_does_not_use_augmented_universe`,
+   `test_screener_does_not_use_augmented_universe` — **the most
+   important regression guards**: prevent any future change from
+   slipping the backtest-only helper into live-trading paths,
+   which would re-introduce the dead-ticker spam fixed on
+   2026-04-23.
+
+Tests: 1014 passing (was 1002; +13 new -1 reordered).
+
+**Status:** Wave 4 / Issue #10 ✅ COMPLETE. The methodology audit
+is now honestly closed across all 10 findings. The augmentation
+ledger is empty today; it accumulates one day's worth of departures
+on the next daily snapshot block.
+
+---
+
 ## METHODOLOGY_FIX_PLAN.md is ✅ COMPLETE
 
-All 9 audit findings are fixed:
+All 10 audit findings are fixed:
 
 | # | Wave | What it fixed | Commit |
 |---|---|---|---|
@@ -207,9 +310,10 @@ All 9 audit findings are fixed:
 | 5 | 2 | self_tuner train/validate split | `ec758e3` |
 | 7 | 3 | strategy_lifecycle inherits real gates | `f65d757` |
 | 8 | 3 | alpha_decay rolling vs lifetime disjoint | `f65d757` |
-| 9 | 3 | specialist confidence calibration | this commit |
+| 9 | 3 | specialist confidence calibration | `3675ba1` |
+| 10 | 4 | backtest survivorship bias — frozen baseline + auto-augmentation | this commit |
 
-Anti-regression tests across all 9 fixes total ~62 new structural
+Anti-regression tests across all 10 fixes total ~75 new structural
 tests. The system can no longer ship any of these data-leak
 patterns silently — every one now has either an AST guard, a
 behavioral leakage detector, or both.

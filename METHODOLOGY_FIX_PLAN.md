@@ -34,6 +34,7 @@ self-tuning, decay detection) inherits the bug.
 | 7 | MEDIUM | `strategy_lifecycle.py:108-158` (`validate_and_promote`) | ✅ FIXED 2026-04-27 (this commit). Mechanically inherits the Wave 2 fixes; contract test confirms `_run_validation` calls `validate_strategy`. |
 | 8 | MEDIUM | `alpha_decay.py:56-112` (`compute_rolling_metrics`) | ✅ FIXED 2026-04-27 (this commit). `compute_lifetime_metrics` accepts `exclude_recent_days`; `detect_decay` and `check_restoration` pass `rolling_window_days` to enforce strict disjointness. |
 | 9 | MEDIUM | `ensemble.py` + `specialists/` | ✅ FIXED 2026-04-27 (this commit). New `specialist_calibration.py` module fits per-specialist Platt scaling on accumulated outcomes; `_synthesize` applies calibrated confidence in ensemble math. |
+| 10 | MEDIUM | `backtester.py:521,862,984` + `rigorous_backtest.py:128` (backtest survivorship bias) | ✅ FIXED 2026-04-27. Backtests now read the FROZEN historical baseline (`segments_historical.py`) ∪ auto-captured departures (`historical_universe_augment.py`). Daily `_task_universe_audit` diffs Alpaca's active asset list and records departures so the historical universe grows organically — no manual refresh needed. Live trading paths untouched. |
 
 The audit also surfaced two CLEAN findings that don't need fixing:
 `backtester.py`'s inner simulation loop is correctly walk-forward, and
