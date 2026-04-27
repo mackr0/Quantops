@@ -1204,7 +1204,10 @@ def _task_calibrate_specialists(ctx):
         from specialist_calibration import refit_all
         from specialists import discover_specialists
         seg_label = ctx.display_name or ctx.segment
-        names = list(discover_specialists().keys())
+        # discover_specialists() returns a list of module objects;
+        # each exposes a NAME constant we use as the calibrator key.
+        names = [getattr(m, "NAME", None) for m in discover_specialists()]
+        names = [n for n in names if n]
         if not names:
             return
         results = refit_all(ctx.db_path, names)
