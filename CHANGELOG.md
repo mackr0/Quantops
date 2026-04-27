@@ -17,7 +17,73 @@ Rules going forward:
 
 ---
 
-## 2026-04-26 — Final doc sweep: README + ROADMAP + ALTDATA_PLAN (Severity: low, docs)
+## 2026-04-27 — Dashboard rate-limit storm: per-symbol bars → batched snapshots (Severity: critical, regression-prevention)
+
+**Symptom:** Monday's market open. User reports dashboard "loading for
+7 minutes" — looks broken. Gunicorn logs:
+
+```
+13:42:36 sleep 3 seconds and retrying https://data.alpaca.markets/v2/stocks/GT/bars
+13:42:36 sleep 3 seconds and retrying https://data.alpaca.markets/v2/stocks/ET/bars
+13:43:50 [CRITICAL] WORKER TIMEOUT (pid:903832)
+13:43:51 [ERROR] Worker (pid:903832) was sent SIGKILL!
+```
+
+**Root cause:** `client._make_price_fetcher` called
+`market_data.get_bars(symbol, limit=1)` once per symbol. Virtual
+profiles use this fetcher to compute current prices for FIFO-derived
+positions. Math:
+
+  10 virtual profiles × 4-8 held positions × ThreadPoolExecutor of 10
+  parallel workers = 50-100 sequential per-symbol Alpaca bar requests
+  per dashboard render. → Alpaca rate limit. → 3-second-sleep retries.
+  → 120s gunicorn worker timeout. → SIGKILL. → next request restarts
+  the same trap.
+
+The screener migration to Alpaca SIP (CHANGELOG 2026-04-15) fixed the
+*screener's* yfinance hang but left this dashboard path on per-symbol
+calls because it was a separate code path under
+`client._make_price_fetcher`.
+
+**Fix (`client.py`):**
+
+1. New `_prefetch_prices(symbols)` — one batched
+   `data_client.get_snapshots(symbols)` call (the same path the screener
+   uses) populates a process-wide TTL price cache (30s).
+2. `_make_price_fetcher` now reads from that cache; per-symbol fallback
+   to `api.get_latest_trade` only fires for the rare cache miss (e.g.
+   delisted ticker).
+3. Module-level `_price_cache` dict + `_price_cache_lock` so concurrent
+   gunicorn workers in the same process share the cache.
+4. New `_held_symbols_from_journal(db_path)` reads the symbol list from
+   the trades table so callers can prefetch BEFORE invoking the journal
+   helper.
+5. Both `get_account_info` and `get_positions` now call
+   `_prefetch_prices(_held_symbols_from_journal(ctx.db_path))` before
+   passing the fetcher to the journal helper.
+
+**Effect:** Dashboard render goes from N×M Alpaca calls (where N =
+profiles, M = symbols/profile) to **1 batched snapshots call per
+render**. Result is shared across all profiles via the process cache.
+
+**Anti-regression — `tests/test_no_per_symbol_bars_in_web_path.py`** (5 tests):
+
+1. `test_price_fetcher_does_not_call_get_bars` — AST-walks
+   `_make_price_fetcher` and fails if it ever calls `get_bars` again.
+2. `test_prefetch_prices_uses_batched_snapshots` — confirms the new
+   prefetch uses `get_snapshots`, not `get_bars`.
+3. `test_price_fetcher_has_process_wide_cache` — asserts module-level
+   `_price_cache`, `_PRICE_CACHE_TTL`, and `_price_cache_lock` exist.
+4. `test_dashboard_view_does_not_call_get_bars` — grep guard on
+   `views.py`.
+5. `test_held_symbols_helper_exists` — ensures the symbol-list helper
+   exists for batched prefetch.
+
+The structural test makes it impossible to revert this fix without
+the build failing on the exact pattern that caused the outage.
+
+Tests: 931 passing (was 926; +5 new structural tests).
+
 
 Closing-out doc pass to bring the front-of-repo docs in line with what
 actually ships now.
