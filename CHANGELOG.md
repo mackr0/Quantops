@@ -193,6 +193,76 @@ fresh outcomes.
 
 ---
 
+## 2026-04-27 — All three placeholder optimizers + MFE tracking + days_to_earnings feature (Severity: medium, accuracy)
+
+User scoured for "any open item I missed." Found three `_optimize_*`
+functions that were registered but `return None`-only placeholders,
+plus stale references in 3 docs.
+
+**Three optimizers implemented for real:**
+
+1. `_optimize_skip_first_minutes` — buckets resolved predictions by
+   minutes-since-market-open (parsed directly from `timestamp`).
+   Recommends raising the skip threshold when opening-window WR is
+   materially below the rest-of-day; lowering when it's fine.
+
+2. `_optimize_avoid_earnings_days` — buckets by `days_to_earnings`
+   (now captured in `features_json` for new predictions).
+   Recommends tightening when in-window predictions underperform
+   out-of-window; loosening when they outperform (post-earnings
+   drift catch).
+
+3. `_optimize_trailing_atr_multiplier` — uses new
+   `max_favorable_excursion` (MFE) column to compute give-back %
+   per closed long. Tightens when avg give-back > 50% (winners
+   evaporate too much before exit); loosens when give-back < 10%
+   AND avg pnl positive (winners getting whipsawed near peak).
+
+**Schema additions (idempotent migrations in `journal._migrate_all_columns`):**
+
+- `trades.max_favorable_excursion REAL` — populated by a new MFE
+  updater in `trader.check_exits` that runs every cycle. For longs:
+  `MAX(current, MFE)`. For shorts: `MIN(current, MFE)`. Cheap (1
+  UPDATE per held symbol per tick).
+- `features_json["days_to_earnings"]` — added by `trade_pipeline`
+  via `earnings_calendar.check_earnings(sym)` at prediction-record
+  time. Older predictions get -1 (excluded from the bucketing).
+
+**Doc-cleanliness pass (additional findings from the scour):**
+
+- `SELF_TUNING.md` "Coming Next (per AUTONOMOUS_TUNING_PLAN.md)"
+  section pointed to a deleted file. Replaced with "All 12-Wave
+  Layers ✅ Shipped" status table.
+- `ROADMAP.md` "Phase 1 Implementation (Current)" heading was stale
+  (Phase 1 long since complete). Updated to
+  "(✅ Complete — kept here as design reference)".
+- `ROADMAP.md` cross-session continuity section instructed future
+  contributors to "find the row marked 🟡 In Progress" — but no
+  such row exists anymore. Rewritten to point at the current
+  partner-facing doc set instead.
+- `TECHNICAL_DOCUMENTATION.md` §15 was still describing
+  short-borrow accrual as a "Single small gap, deferred" — that
+  shipped in commit `e2c040d`. Updated to ✅ Shipped with the
+  details + test reference.
+
+**10 new behavioral tests** in
+`tests/test_self_tuning_placeholder_optimizers.py`:
+- 3 cases each for skip_first_minutes and avoid_earnings_days
+  (self-skip, tighten, loosen, plus a no-feature-data skip case).
+- 3 cases for trailing_atr_multiplier (self-skip < 30 samples,
+  tighten on excessive give-back, loosen on small give-back +
+  positive pnl).
+
+Integration verified by the existing snake_case AST guard
+(`tests/test_no_snake_case_in_optimizer_strings.py`) — all three
+new implementations route their user-facing reason strings through
+`_label('param_name')` instead of embedding the snake_case key
+directly.
+
+Tests: 1047 passing (was 1037; +10 new).
+
+---
+
 ## 2026-04-27 — Closing every open item: sector_classifier, get_live_universe + flag, short_borrow accrual, doc cleanup (Severity: medium, hygiene + integrity)
 
 User instruction: "ALL THE THINGS, NO OPEN ISSUES." Cleared the

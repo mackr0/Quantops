@@ -337,24 +337,34 @@ Meta-model retrains daily from `_task_retrain_meta_model` and outputs an `auc` /
 
 ---
 
-## Coming Next (per `AUTONOMOUS_TUNING_PLAN.md`)
+## All 12-Wave Autonomy Layers — ✅ Shipped
 
-| Wave | Layer | Scope |
-|------|-------|-------|
-| W2 | Layer 1 Group C | 8 entry-filter parameter rules |
-| W3 | Layer 1 Group B | 6 exit parameter rules |
-| W4 | Layer 2 — Weighted signal intensity | Per-profile weights for ~16 signals (alt-data + strategies + booleans). Replaces binary toggles where appropriate. |
-| W5 | Layer 3 — Per-regime overrides | Bull / bear / sideways / volatile / crisis specific values per parameter |
-| W6 | Layer 4 — Per-time-of-day overrides | Open / midday / close specific values |
-| W7 | Cost guard | Cross-cutting daily-spend ceiling enforcement |
-| W8 | Layer 7 — Per-symbol overrides | Some tickers behave differently |
-| W9 | Layer 5 — Cross-profile insight sharing | Improvement on profile A triggers detection on B's own data |
-| W10 | Layer 6 — Adaptive AI prompt structure | Tuner reinforces high-WR prompt variants |
-| W11 | Layer 8 — Self-commissioned strategies | Tuner identifies coverage gaps → triggers Phase 7 generator |
-| W12 | Layer 9 — Auto capital allocation (opt-in) | Weight capital toward proven-edge profiles |
-| W13 | Final | Settings UI Autonomy section + `test_every_lever_is_tuned.py` + doc final pass |
+The original wave plan called for layered build-out of autonomous
+tuning surfaces. **All waves are now live.** The previously-separate
+`AUTONOMOUS_TUNING_PLAN.md` design doc was retired on 2026-04-27 once
+all rollouts shipped — its content is fully captured in
+`EXPERIMENTATION_AND_TUNING.md` (operator perspective) and the per-
+module references in §"Technical Reference" below.
 
-End state: ~50 autonomous decision surfaces with cost discipline. The system genuinely earns "makes better, faster, smarter decisions than a person can."
+| Wave | Layer | Status |
+|------|-------|--------|
+| W1 | Layer 1 — 35+ scalar parameters (PARAM_BOUNDS) | ✅ Shipped |
+| W2 | Layer 1 Group C — entry-filter rules | ✅ Shipped |
+| W3 | Layer 1 Group B — exit-parameter rules | ✅ Shipped |
+| W4 | Layer 2 — Weighted signal intensity (25 signals) | ✅ Shipped |
+| W5 | Layer 3 — Per-regime parameter overrides | ✅ Shipped |
+| W6 | Layer 4 — Per-time-of-day overrides | ✅ Shipped |
+| W7 | Cost guard | ✅ Shipped |
+| W8 | Layer 7 — Per-symbol overrides | ✅ Shipped |
+| W9 | Layer 5 — Cross-profile insight sharing | ✅ Shipped |
+| W10 | Layer 6 — Adaptive AI prompt structure | ✅ Shipped |
+| W11 | Layer 8 — Self-commissioned strategies (Phase 7) | ✅ Shipped |
+| W12 | Layer 9 — Auto capital allocation (opt-in) | ✅ Shipped |
+| Final | Settings UI Autonomy section + `test_every_lever_is_tuned.py` | ✅ Shipped |
+
+End state achieved: ~50 autonomous decision surfaces with cost
+discipline. See `EXPERIMENTATION_AND_TUNING.md` for the closed-loop
+diagram and per-loop integrity guarantees.
 
 ---
 

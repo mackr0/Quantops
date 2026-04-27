@@ -1156,6 +1156,19 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             if rs:
                 features_payload["rel_strength_vs_sector"] = rs.get("relative_strength", 0)
                 features_payload["sector_trend"] = rs.get("sector_trend", "flat")
+            # Capture days-to-earnings so the self-tuner's
+            # _optimize_avoid_earnings_days rule can bucket resolved
+            # predictions by proximity to earnings. Negative values
+            # mean earnings already past or unknown — store as -1.
+            try:
+                from earnings_calendar import check_earnings as _ck_earn
+                _ec = _ck_earn(sym)
+                features_payload["days_to_earnings"] = (
+                    int(_ec["days_until"]) if _ec and _ec.get("days_until") is not None
+                    else -1
+                )
+            except Exception:
+                features_payload["days_to_earnings"] = -1
             alt = c.get("alt_data") or {}
             if alt:
                 features_payload["insider_direction"] = alt.get("insider", {}).get("net_direction", "neutral")

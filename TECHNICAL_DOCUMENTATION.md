@@ -1663,7 +1663,7 @@ the reasoning is preserved if it ever comes up again.
 
 **The cost that does matter — and is already captured:** **slippage**, recorded on every trade as `decision_price`, `fill_price`, and `slippage_pct`. See §18 (Slippage Tracking) for how this feeds back into self-tuning and the institutional performance dashboard.
 
-**Single small gap, deferred:** short-borrow accrual on overnight shorts. Could be added as a per-symbol `borrow_cost_bps_per_day` field accrued into pnl on cover. Deferred because (a) most shorts close same-day or within 1-3 days, (b) the amount is small relative to slippage and the cost-of-being-wrong, and (c) it's a clean post-hoc add when a real short held >5 days appears in the journal.
+**Short-borrow accrual on overnight shorts ✅ Shipped 2026-04-27.** New module `short_borrow.py` computes `notional × bps/day × calendar_days_held` at cover time. Default 0.5 bps/day (~1.8% annualized) for general collateral, with per-symbol overrides for known hard-to-borrow names (GME, AMC, BBBY, DJT). `trader.check_exits` cover branch calls `short_borrow.accrue_for_cover(...)` and subtracts the result from `pnl` before logging the cover trade. Same-day covers (held < 1 calendar day) get $0. 9 structural tests in `tests/test_short_borrow.py` including a source-level guard against the integration silently disappearing.
 
 **Source of decision:** user + assistant analysis on 2026-04-27 reviewing today's exits (CHANGELOG entry of same date). The user explicitly recalled E*Trade not charging him for trades and asked for an opinion; my recommendation was "leave commissions/fees at $0, you're right." Both agreed; this section is the record of the reasoning.
 

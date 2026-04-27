@@ -544,7 +544,7 @@ Profitable     (rolling Sharpe > 0) → min(Sharpe, 4.0)
 
 ---
 
-## Phase 1 Implementation (Current)
+## Phase 1 Implementation (✅ Complete — kept here as design reference)
 
 ### Goal
 Build a gradient-boosted classifier that takes the feature context the AI saw for each prediction and predicts the probability that prediction will be correct. This probability re-weights the AI's confidence before execution.
@@ -681,14 +681,15 @@ DEPLOYED-2026-04-26 status flip.
 
 **If you are an AI assistant reading this in a new session:**
 
-1. Check the "Phase Status" table above. The row marked 🟡 In Progress is where work is happening.
-2. Read that phase's detailed implementation plan in this document.
-3. Run `./run_tests.sh` first to confirm baseline (should be 920+ tests passing).
-4. Check the detailed plan at `/Users/mackr0/.claude/plans/serialized-nibbling-fern.md` for granular step-by-step instructions.
-5. Do NOT skip to a later phase. Phase order encodes dependencies.
-6. After completing any phase, update:
-   - The status table in this file
-   - `TECHNICAL_DOCUMENTATION.md` with architecture changes
-   - The plan file with a completion summary
+1. All 10 phases are ✅ Complete. There is no "current" phase to resume.
+   This document is now a design archive describing what shipped and why.
+2. For new work, read in this order:
+   - `EXECUTIVE_OVERVIEW.md` — top-down summary
+   - `EXPERIMENTATION_AND_TUNING.md` — how the closed loop works
+   - `TECHNICAL_DOCUMENTATION.md` — system reference
+   - `CHANGELOG.md` — most recent fixes (search for "Severity: critical, accuracy" for methodology-related work)
+3. Run `./run_tests.sh` first to confirm baseline (should be 1000+ tests passing). Tests run in randomized order via `pytest-randomly`.
+4. Future work falls outside this 10-phase framework — use a new plan
+   doc rather than retrofitting onto these phases.
 
 The user has explicitly emphasized documentation because context is lost between sessions. Every architectural decision must be persisted here.

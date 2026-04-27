@@ -313,6 +313,12 @@ def _migrate_all_columns(conn):
             ("decision_price", "REAL"),
             ("fill_price", "REAL"),
             ("slippage_pct", "REAL"),
+            # Max favorable excursion — highest price the position
+            # touched between entry and exit. Sampled by the
+            # exit-cycle's MFE updater. Used by the trailing-stop
+            # tuner to compute "give-back" (MFE - exit_price) per
+            # bucket of trailing_atr_multiplier.
+            ("max_favorable_excursion", "REAL"),
         ],
         "ai_predictions": [
             ("regime_at_prediction", "TEXT"),

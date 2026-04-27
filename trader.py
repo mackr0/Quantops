@@ -286,6 +286,43 @@ def check_exits(ctx=None):
 
     init_db(db_path)
 
+    # Update max-favorable-excursion (MFE) on every open position
+    # using the current Alpaca-reported price. The trailing-stop
+    # tuner reads MFE on closed trades to compute "give-back" =
+    # MFE - exit_price; tighter trailing on names that consistently
+    # give back too much. Cheap (1 UPDATE per held symbol). Any
+    # failure is swallowed so MFE tracking can never break exits.
+    if db_path and positions:
+        try:
+            import sqlite3 as _sqlite_mfe
+            mfe_conn = _sqlite_mfe.connect(db_path)
+            for p in positions:
+                sym = p.get("symbol")
+                cur_price = float(p.get("current_price") or 0)
+                if not sym or cur_price <= 0:
+                    continue
+                # Long: MFE = highest price seen. Short: MFE = lowest.
+                if float(p.get("qty", 0)) < 0:
+                    mfe_conn.execute(
+                        "UPDATE trades SET max_favorable_excursion = "
+                        "MIN(COALESCE(max_favorable_excursion, ?), ?) "
+                        "WHERE symbol = ? AND side = 'sell_short' "
+                        "AND status = 'open'",
+                        (cur_price, cur_price, sym),
+                    )
+                else:
+                    mfe_conn.execute(
+                        "UPDATE trades SET max_favorable_excursion = "
+                        "MAX(COALESCE(max_favorable_excursion, ?), ?) "
+                        "WHERE symbol = ? AND side = 'buy' "
+                        "AND status = 'open'",
+                        (cur_price, cur_price, sym),
+                    )
+            mfe_conn.commit()
+            mfe_conn.close()
+        except Exception as _exc:
+            logging.debug("MFE update skipped (non-fatal): %s", _exc)
+
     # Conviction-based take-profit override: build the skip predicate if
     # the profile has it enabled. Runaway winners (IONQ-style) keep running
     # while the trailing stop manages the exit, instead of being capped.

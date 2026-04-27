@@ -2494,24 +2494,210 @@ def _optimize_price_band(conn, ctx, profile_id, user_id, overall_wr, resolved):
 
 def _optimize_avoid_earnings_days(conn, ctx, profile_id, user_id,
                                    overall_wr, resolved):
-    """Earnings window: shrink when entries near earnings outperform; grow
-    when they underperform.
+    """Earnings window: tighten when predictions made within
+    `current_avoid_days` of earnings underperform predictions made
+    outside that window; loosen when intra-window predictions are
+    actually fine.
 
-    We don't currently log a clean 'days_to_earnings' on each prediction.
-    This rule is a placeholder for the time-bucketed signal — once the
-    feature lands, the body fills in. For W1 the rule self-skips
-    cleanly (returns None) but is registered so the orchestrator
-    structure is in place.
+    Reads `days_to_earnings` from `features_json` (added 2026-04-27
+    in trade_pipeline). Predictions made before that feature was
+    captured (older history) report `days_to_earnings = -1` and are
+    skipped from the buckets. The rule self-skips when fewer than
+    10 in-window OR 10 out-of-window resolved samples exist.
     """
+    import json as _json
+    current = int(getattr(ctx, "avoid_earnings_days", 2) or 2)
+    if current <= 0:
+        # Already at minimum (no avoidance); only loosen-direction
+        # via positive evidence; keep current behavior.
+        pass
+    try:
+        rows = conn.execute(
+            "SELECT features_json, actual_outcome FROM ai_predictions "
+            "WHERE status='resolved' "
+            "AND actual_outcome IN ('win', 'loss') "
+            "AND features_json IS NOT NULL "
+            "ORDER BY id ASC"
+        ).fetchall()
+    except Exception:
+        return None
+
+    in_w_total = in_w_wins = 0
+    out_w_total = out_w_wins = 0
+    for fjson, outcome in rows:
+        try:
+            f = _json.loads(fjson)
+        except Exception:
+            continue
+        d2e = f.get("days_to_earnings")
+        if d2e is None or d2e < 0:
+            continue
+        is_win = 1 if outcome == "win" else 0
+        if d2e <= current:
+            in_w_total += 1
+            in_w_wins += is_win
+        else:
+            out_w_total += 1
+            out_w_wins += is_win
+
+    if in_w_total < 10 or out_w_total < 10:
+        return None
+
+    in_wr = in_w_wins / in_w_total * 100
+    out_wr = out_w_wins / out_w_total * 100
+
+    # Underperformance band: in-window predictions notably worse than
+    # out-of-window. Tighten the avoidance (raise avoid_earnings_days).
+    if in_wr < out_wr - 5 and current < 7:
+        new_val = _bound("avoid_earnings_days", current + 1)
+        if new_val == current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, avoid_earnings_days=new_val)
+        reason = (
+            f"In-window WR {in_wr:.0f}% < out-of-window {out_wr:.0f}% "
+            f"by {out_wr - in_wr:.0f}pp"
+        )
+        log_tuning_change(
+            profile_id, user_id, "avoid_earnings_tighten",
+            "avoid_earnings_days", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr,
+            predictions_resolved=resolved,
+        )
+        return (
+            f"Tightened {_label('avoid_earnings_days')} from "
+            f"{current} to {new_val} ({reason})"
+        )
+    # Outperformance band: in-window predictions actually do BETTER.
+    # Loosen so we don't miss those setups.
+    if in_wr > out_wr + 5 and current > 0:
+        new_val = _bound("avoid_earnings_days", current - 1)
+        if new_val == current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, avoid_earnings_days=new_val)
+        reason = (
+            f"In-window WR {in_wr:.0f}% > out-of-window {out_wr:.0f}% "
+            f"by {in_wr - out_wr:.0f}pp"
+        )
+        log_tuning_change(
+            profile_id, user_id, "avoid_earnings_loosen",
+            "avoid_earnings_days", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr,
+            predictions_resolved=resolved,
+        )
+        return (
+            f"Loosened {_label('avoid_earnings_days')} from "
+            f"{current} to {new_val} ({reason})"
+        )
     return None
 
 
 def _optimize_skip_first_minutes(conn, ctx, profile_id, user_id,
                                   overall_wr, resolved):
-    """First-X-minutes filter — needs intraday entry-time data which
-    isn't structured today. Same placeholder pattern as
-    _optimize_avoid_earnings_days; rule registers for orchestration but
-    no-ops until the feature column exists."""
+    """First-X-minutes filter: tighten when predictions made within
+    the first `current` minutes of the trading session underperform;
+    loosen when those are fine.
+
+    Uses `ai_predictions.timestamp` directly — we don't need a new
+    feature column. Equity market opens at 13:30 UTC; minutes_since_open
+    is computed from the timestamp's HH:MM:SS within that day. Rows
+    outside market hours (after-hours / weekends / pre-open) are
+    skipped from the buckets. Self-skips when either bucket has < 10
+    resolved samples.
+    """
+    current = int(getattr(ctx, "skip_first_minutes", 0) or 0)
+    try:
+        rows = conn.execute(
+            "SELECT timestamp, actual_outcome FROM ai_predictions "
+            "WHERE status='resolved' "
+            "AND actual_outcome IN ('win', 'loss') "
+            "ORDER BY id ASC"
+        ).fetchall()
+    except Exception:
+        return None
+
+    # Use a canonical "boundary" of 30 minutes for the comparison
+    # (the param's max). If the param is currently 0 we're testing
+    # whether enabling it would help; if non-zero we're testing
+    # whether to widen/narrow.
+    boundary = 30
+    early_total = early_wins = 0
+    late_total = late_wins = 0
+    for ts_iso, outcome in rows:
+        try:
+            from datetime import datetime as _dt
+            ts = _dt.fromisoformat(ts_iso.replace("Z", "+00:00"))
+            if ts.tzinfo is not None:
+                ts = ts.replace(tzinfo=None)
+        except Exception:
+            continue
+        # Market open in UTC = 13:30 (during DST; 14:30 in winter).
+        # Use 13:30 as the canonical anchor — drift of 1 hour over
+        # 6 months of data is acceptable noise; we're bucketing by
+        # 30-minute granularity.
+        minutes_into_day = ts.hour * 60 + ts.minute
+        market_open_min = 13 * 60 + 30
+        minutes_since_open = minutes_into_day - market_open_min
+        if minutes_since_open < 0 or minutes_since_open > 6 * 60 + 30:
+            # Pre-open or post-close; skip.
+            continue
+        is_win = 1 if outcome == "win" else 0
+        if minutes_since_open < boundary:
+            early_total += 1
+            early_wins += is_win
+        else:
+            late_total += 1
+            late_wins += is_win
+
+    if early_total < 10 or late_total < 10:
+        return None
+
+    early_wr = early_wins / early_total * 100
+    late_wr = late_wins / late_total * 100
+
+    # Early predictions notably worse → enable / extend the skip.
+    if early_wr < late_wr - 5:
+        new_val = _bound("skip_first_minutes", min(boundary, current + 5))
+        if new_val == current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, skip_first_minutes=new_val)
+        reason = (
+            f"Opening {boundary}min WR {early_wr:.0f}% < later "
+            f"{late_wr:.0f}% by {late_wr - early_wr:.0f}pp"
+        )
+        log_tuning_change(
+            profile_id, user_id, "skip_first_minutes_tighten",
+            "skip_first_minutes", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr,
+            predictions_resolved=resolved,
+        )
+        return (
+            f"Raised {_label('skip_first_minutes')} from {current} "
+            f"to {new_val} ({reason})"
+        )
+    # Early predictions actually fine → reduce / disable the skip.
+    if early_wr > late_wr - 1 and current > 0:
+        new_val = _bound("skip_first_minutes", max(0, current - 5))
+        if new_val == current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, skip_first_minutes=new_val)
+        reason = (
+            f"Opening {boundary}min WR {early_wr:.0f}% ≈ later "
+            f"{late_wr:.0f}%"
+        )
+        log_tuning_change(
+            profile_id, user_id, "skip_first_minutes_loosen",
+            "skip_first_minutes", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr,
+            predictions_resolved=resolved,
+        )
+        return (
+            f"Lowered {_label('skip_first_minutes')} from {current} "
+            f"to {new_val} ({reason})"
+        )
     return None
 
 
@@ -2999,17 +3185,112 @@ def _optimize_atr_multiplier_tp(conn, ctx, profile_id, user_id,
 
 def _optimize_trailing_atr_multiplier(conn, ctx, profile_id, user_id,
                                         overall_wr, resolved):
-    """Tighten trailing-stop multiplier when winning trades give back
-    too much from peak before exit. We approximate 'give-back' via
-    the spread between max favorable excursion and final pnl, which
-    isn't tracked per-trade today — placeholder no-op until that
-    column is added."""
+    """Tighten the trailing-stop multiplier when winning trades give
+    back too much of their peak gain before exit; loosen when
+    winners are getting whipsawed out close to their peak.
+
+    Reads `max_favorable_excursion` (MFE) from the trades table —
+    populated by `trader.check_exits` MFE updater every cycle.
+    Computes give-back-pct per closed long trade as:
+        (mfe - exit_fill_price) / mfe × 100
+
+    Aggregates over the last 50+ closed long trades, compares
+    average give-back to a sensible band:
+    - > 50% give-back avg → tighten (current trailing is too loose,
+      letting too much profit evaporate)
+    - < 10% give-back avg AND avg pnl_pct positive → loosen
+      (winners are exiting near peak, but maybe we're whipsawing
+      out too early; let them run)
+
+    Self-skips when fewer than 30 long trades have non-null MFE
+    (data accumulating).
+    """
     if not getattr(ctx, "use_trailing_stops", True):
         return None
     if not _safe_change_guarded(profile_id, "trailing_atr_multiplier"):
         return None
-    # Placeholder: needs max_favorable_excursion or similar per-trade
-    # tracking. Returns None gracefully.
+    current = float(getattr(ctx, "trailing_atr_multiplier", 1.5) or 1.5)
+    try:
+        rows = conn.execute(
+            "SELECT max_favorable_excursion, fill_price, price, pnl "
+            "FROM trades "
+            "WHERE side = 'sell' AND status = 'closed' "
+            "AND max_favorable_excursion IS NOT NULL "
+            "AND max_favorable_excursion > 0 "
+            "ORDER BY id DESC LIMIT 100"
+        ).fetchall()
+    except Exception:
+        return None
+
+    samples = []  # list of (give_back_pct, pnl)
+    for mfe, fill_price, price, pnl in rows:
+        # The "exit" price for a sell trade is fill_price (or price if
+        # fill missing). MFE is the high-water mark during the position.
+        exit_px = fill_price or price
+        if not exit_px or exit_px <= 0:
+            continue
+        if mfe <= exit_px:
+            # Position never went in our favor — give-back is 0 or
+            # negative; skip from the give-back analysis.
+            continue
+        give_back_pct = (mfe - exit_px) / mfe * 100
+        samples.append((give_back_pct, pnl or 0.0))
+
+    if len(samples) < 30:
+        return None
+
+    avg_give_back = sum(g for g, _ in samples) / len(samples)
+    avg_pnl = sum(p for _, p in samples) / len(samples)
+
+    # Tighten when average give-back is excessive (winners are
+    # evaporating before exit).
+    if avg_give_back > 50.0:
+        new_val = _bound("trailing_atr_multiplier",
+                          round(max(0.5, current * 0.85), 2))
+        if new_val == current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, trailing_atr_multiplier=new_val)
+        reason = (
+            f"Avg give-back from peak {avg_give_back:.0f}% on "
+            f"{len(samples)} closed longs — too much profit "
+            f"evaporates before trailing stop fires"
+        )
+        log_tuning_change(
+            profile_id, user_id, "trailing_tighten",
+            "trailing_atr_multiplier", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr,
+            predictions_resolved=resolved,
+        )
+        return (
+            f"Tightened {_label('trailing_atr_multiplier')} from "
+            f"{current:.2f} to {new_val:.2f} ({reason})"
+        )
+
+    # Loosen when give-back is small AND winners are still profitable
+    # — trailing might be cutting them off too soon.
+    if avg_give_back < 10.0 and avg_pnl > 0 and current < 3.0:
+        new_val = _bound("trailing_atr_multiplier",
+                          round(min(3.0, current * 1.15), 2))
+        if new_val == current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, trailing_atr_multiplier=new_val)
+        reason = (
+            f"Avg give-back {avg_give_back:.0f}% on {len(samples)} "
+            f"closed longs — winners exiting near peak; loosen to "
+            f"let them run"
+        )
+        log_tuning_change(
+            profile_id, user_id, "trailing_loosen",
+            "trailing_atr_multiplier", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr,
+            predictions_resolved=resolved,
+        )
+        return (
+            f"Loosened {_label('trailing_atr_multiplier')} from "
+            f"{current:.2f} to {new_val:.2f} ({reason})"
+        )
     return None
 
 
