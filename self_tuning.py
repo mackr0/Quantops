@@ -996,11 +996,11 @@ def _build_lessons_learned(profile_id):
             improved = outcomes.count("improved")
             worsened = outcomes.count("worsened")
             if improved > worsened:
-                lines.append(f"- Adjusting {param}: has worked well")
+                lines.append(f"- Adjusting {_label(param)}: has worked well")
             elif worsened > improved:
-                lines.append(f"- Adjusting {param}: has NOT worked, avoid")
+                lines.append(f"- Adjusting {_label(param)}: has NOT worked, avoid")
             else:
-                lines.append(f"- Adjusting {param}: mixed results")
+                lines.append(f"- Adjusting {_label(param)}: mixed results")
 
     lines.append("Use this knowledge. Don't repeat strategies that failed.")
     return "\n".join(lines)
@@ -1319,6 +1319,7 @@ def apply_auto_adjustments(ctx, db_path=None):
     if profile_id:
         try:
             from models import review_past_adjustments
+            from display_names import format_param_value as _fmt
             reviews = review_past_adjustments(profile_id, db_path=db)
             for rev in reviews:
                 outcome = rev["outcome_after"].upper()
@@ -1327,9 +1328,18 @@ def apply_auto_adjustments(ctx, db_path=None):
                 new_v = rev["new_value"]
                 wr_before = rev.get("win_rate_at_change") or 0
                 wr_after = rev.get("win_rate_after") or 0
+                # Format the param NAME and VALUES through the
+                # display-name + value-formatter helpers so the
+                # ticker shows "Max Position Size 8.0% → 9.2%"
+                # instead of "max_position_pct 0.08->0.092".
+                # Caught 2026-04-27 — the AST guard previously only
+                # walked _optimize_* functions and missed this
+                # orchestrator-level string. Test extended
+                # accordingly so the gap can't reappear.
                 adjustments_made.append(
-                    f"Reviewed past adjustment: {param} {old_v}->{new_v} "
-                    f"(win rate {wr_before:.0f}%->{wr_after:.0f}%: {outcome})"
+                    f"Reviewed past adjustment: {_label(param)} "
+                    f"{_fmt(param, old_v)} → {_fmt(param, new_v)} "
+                    f"(win rate {wr_before:.0f}%→{wr_after:.0f}%: {outcome})"
                 )
 
                 # Layer 5 — propagate insights from improvements.
@@ -1376,7 +1386,8 @@ def apply_auto_adjustments(ctx, db_path=None):
                             predictions_resolved=cur_resolved,
                         )
                         adjustments_made.append(
-                            f"REVERSED: {param} back from {new_v} to {old_v} "
+                            f"REVERSED: {_label(param)} back from "
+                            f"{_fmt(param, new_v)} to {_fmt(param, old_v)} "
                             f"(previous change worsened performance)"
                         )
                     except Exception as rev_exc:
@@ -2448,7 +2459,7 @@ def _optimize_price_band(conn, ctx, profile_id, user_id, overall_wr, resolved):
                 reason = (
                     f"Bottom-of-band entries (≤${bottom_threshold:.2f}) "
                     f"win rate {bot_wr:.0f}% on {bot_row['cnt']} trades — "
-                    f"raise min_price floor"
+                    f"raise {_label('min_price')} floor"
                 )
                 log_tuning_change(
                     profile_id, user_id, "price_band_min_raise",
@@ -2478,7 +2489,7 @@ def _optimize_price_band(conn, ctx, profile_id, user_id, overall_wr, resolved):
                 reason = (
                     f"Top-of-band entries (≥${top_threshold:.2f}) "
                     f"win rate {top_wr:.0f}% on {top_row['cnt']} trades — "
-                    f"lower max_price ceiling"
+                    f"lower {_label('max_price')} ceiling"
                 )
                 log_tuning_change(
                     profile_id, user_id, "price_band_max_lower",
@@ -2775,7 +2786,7 @@ def _optimize_min_volume(conn, ctx, profile_id, user_id, overall_wr, resolved):
         update_trading_profile(profile_id, min_volume=new_val)
         reason = (
             f"Marginal-volume entries (≤ 1.5× threshold) WR {wr:.0f}% on "
-            f"{n} samples — raise min_volume floor"
+            f"{n} samples — raise {_label('min_volume')} floor"
         )
         log_tuning_change(
             profile_id, user_id, "min_volume_raise",
