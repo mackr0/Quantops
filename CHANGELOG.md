@@ -17,6 +17,43 @@ Rules going forward:
 
 ---
 
+## 2026-04-27 — METHODOLOGY_FIX_PLAN.md: durable plan for the 7 remaining accuracy bugs (Severity: low, docs)
+
+After the meta-model data-leakage fix landed (`cd2d207`), the user
+asked: "are there other aspects of this system that are equally
+incorrect or inaccurate?" An Explore-agent audit (assistant verified
+the top 3 findings personally) surfaced 7 issues sharing the same
+root pattern: wrappers around `backtester.backtest_strategy()` use
+`days=N` parameters that always fetch from `datetime.now()` backwards,
+so every "walk-forward" / "out-of-sample" / "in-sample" test reads
+overlapping recent data. Plus `self_tuning` optimizes parameters on
+full history, predictions resolve on same-day close, alpha-decay
+windows have forward-looking bias, and specialist confidence is
+never calibrated against actual outcomes.
+
+`METHODOLOGY_FIX_PLAN.md` documents:
+
+- The full inventory of 7 issues with severity, file, line range,
+  and brief description.
+- A 3-wave dependency graph: Wave 1 (`backtest_strategy` date ranges
+  + forward-bar resolution) is structural foundation; Wave 2
+  (walk-forward, OOS, self-tuning hold-out) becomes mechanically
+  correct once Wave 1 ships; Wave 3 (alpha-decay discipline,
+  lifecycle gates, specialist calibration) consumes the clean data
+  produced by 1+2.
+- Per-fix execution plan: implementation, anti-regression test,
+  migration, expected metric impact.
+- Honest expected-impact table — meta-model AUCs probably drop to
+  0.50-0.65, validation reports become more sobering, self-tuner
+  applies fewer changes, alpha-decay flags more strategies. Calibrated
+  numbers are the goal.
+- Cross-session continuity rules so this plan survives context loss.
+
+User instruction was explicit: "we need to do it all." Wave 1 starts
+in the next commit.
+
+---
+
 ## 2026-04-27 — Meta-model: fix data-leakage from random train/test split (Severity: critical, accuracy)
 
 **The problem we found.** Per-profile dashboard reported AUC values
