@@ -193,6 +193,32 @@ fresh outcomes.
 
 ---
 
+## 2026-04-27 — transcript_sentiment cache: 24h → 30d (closes ~$0.30/day token leak) (Severity: medium, cost)
+
+User flagged elevated AI spend today ($3.54 vs Fri's $0.42/profile
+baseline). Audited per-purpose breakdown: ensemble specialist fires
+tripled (7 → 21 per market_type) — but that's a one-time artifact
+of 16 deploys today (each restart wipes the in-memory ensemble
+cache). Tomorrow with normal cadence the ensemble normalizes.
+
+Genuine bug found in the audit: `sec_filings.get_earnings_call_sentiment`
+docstring claims "Cost-gated: cached 30 days (earnings are quarterly)"
+but the actual code routed through `_get_cached(key, "insider")`
+which has a 24-hour TTL. So the per-symbol AI call was re-firing
+every day per held position even though the underlying 8-K text
+only changes quarterly. ~30 redundant calls per profile per day.
+
+Fix:
+- New `_CACHE_TTL["transcript"] = 86400 * 30` in alternative_data.py
+- get_earnings_call_sentiment switched to the "transcript" bucket
+- Comment in both files explains the rationale
+
+Saves ~$0.30/day system-wide. Projected normal-cadence daily total:
+$2.50-$2.80 (under the $3 ceiling on quiet days; over on heavy-news
+days when sec_diff fires more).
+
+---
+
 ## 2026-04-27 — Backfill historical activity_log rows with raw snake_case + decimals (Severity: medium, ux)
 
 User noticed that 3+ hours after the structural fix at `fb55c07`,

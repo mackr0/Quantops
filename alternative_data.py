@@ -36,6 +36,11 @@ _CACHE_TTL = {
     # /opt/quantopsai-altdata/ projects. Cache 6h so per-cycle reads
     # are cheap.
     "altdata_local": 21600,
+    # Earnings transcripts are quarterly events. The AI tone analysis
+    # of an 8-K release doesn't change between scans — cache 30 days.
+    # Was misfiled under "insider" (24h) until 2026-04-27 — caused
+    # ~30 redundant per-symbol AI calls per profile per day.
+    "transcript": 86400 * 30,
 }
 
 _http_lock = threading.Lock()

@@ -675,7 +675,11 @@ def get_earnings_call_sentiment(symbol: str, ctx: Any = None) -> Dict[str, Any]:
         has_data: bool
     """
     cache_key = f"transcript_sentiment_{symbol}"
-    cached = _get_cached(cache_key, "insider")  # 24h TTL (recheck daily)
+    # 30-day TTL — earnings transcripts are quarterly events; the AI's
+    # tone analysis of a published 8-K doesn't change between scans.
+    # Was misfiled under "insider" (24h) until 2026-04-27, causing
+    # ~30 redundant AI calls per profile per day.
+    cached = _get_cached(cache_key, "transcript")
     if cached is not None:
         return cached
 
