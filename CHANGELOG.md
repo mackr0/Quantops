@@ -17,6 +17,25 @@ Rules going forward:
 
 ---
 
+## 2026-04-27 — Show current price + % change inline on position rows (Severity: low, ui)
+
+User asked to see current price on the dashboard without having to
+click-expand each position row. The data was already in the row dict
+(`current_price` from Alpaca, used for unrealized P&L) and was already
+rendered — but only inside the click-to-expand detail panel.
+
+`templates/_trades_table.html`: the Price column now stacks the entry
+price (top) with the current price + % change (below, color-coded
+green/red). Renders only when `current_price > 0` so closed/SELL rows
+on the trades page don't grow a redundant line. The duplicate
+"Current: ..." line in the expanded detail panel was removed since
+it would just repeat what's now visible in the main row.
+
+Zero new system load — uses the same data already fetched for the
+P&L calc.
+
+---
+
 ## 2026-04-27 — Dashboard rate-limit storm: per-symbol bars → batched snapshots (Severity: critical, regression-prevention)
 
 **Symptom:** Monday's market open. User reports dashboard "loading for
