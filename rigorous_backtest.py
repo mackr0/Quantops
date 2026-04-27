@@ -451,33 +451,51 @@ def out_of_sample_degradation(
 ) -> Dict[str, Any]:
     """Compare in-sample and out-of-sample performance.
 
-    Splits history: first (1-fraction) is in-sample, last `fraction` is OOS.
-    Returns degradation in Sharpe ratio. High degradation = overfit.
+    Splits history into two DISJOINT calendar periods:
+      - In-sample:  [today - history_days, today - oos_days]
+      - Out-of-sample: (today - oos_days, today]
+
+    The strategy is evaluated on each separately. A strategy with
+    real edge should generalize — OOS Sharpe within ~30% of in-sample.
+
+    Wave 2 / Fix #4 (METHODOLOGY_FIX_PLAN.md): the previous
+    implementation passed `days=in_sample_days` and `days=oos_days`
+    to `backtest_strategy`, both anchored at `datetime.now()`. The
+    OOS window was contained inside the in-sample window — a
+    classic data leak. Now uses `start_date` / `end_date` to enforce
+    strict separation.
     """
+    from datetime import datetime, timedelta
     from backtester import backtest_strategy
 
+    today = datetime.utcnow().date()
     in_sample_days = int(history_days * (1 - oos_fraction))
     oos_days = history_days - in_sample_days
 
-    # Baseline over in-sample period
+    is_start = today - timedelta(days=history_days)
+    is_end = today - timedelta(days=oos_days)
+    oos_start = is_end
+    oos_end = today
+
     is_result = backtest_strategy(
         market_type=market_type,
-        days=in_sample_days,
         initial_capital=initial_capital,
         sample_size=sample_size,
         symbols=symbols,
         signal_fn=strategy_fn,
+        start_date=is_start.isoformat(),
+        end_date=is_end.isoformat(),
     )
     is_sharpe = is_result.get("sharpe_ratio", 0) or 0
 
-    # OOS — we run over just the recent window
     oos_result = backtest_strategy(
         market_type=market_type,
-        days=oos_days,
         initial_capital=initial_capital,
         sample_size=sample_size,
         symbols=symbols,
         signal_fn=strategy_fn,
+        start_date=oos_start.isoformat(),
+        end_date=oos_end.isoformat(),
     )
     oos_sharpe = oos_result.get("sharpe_ratio", 0) or 0
 
@@ -492,6 +510,10 @@ def out_of_sample_degradation(
         "degradation_pct": round(degradation, 1),
         "in_sample_days": in_sample_days,
         "oos_days": oos_days,
+        "in_sample_start": is_start.isoformat(),
+        "in_sample_end": is_end.isoformat(),
+        "oos_start": oos_start.isoformat(),
+        "oos_end": oos_end.isoformat(),
     }
 
 
@@ -553,9 +575,19 @@ def walk_forward_analysis(
 ) -> Dict[str, Any]:
     """Roll a backtest window forward through history, measuring consistency.
 
-    Instead of one backtest, we run `folds` sequential non-overlapping windows.
-    A strategy with real edge should be profitable in most folds.
+    Splits `[today - history_days, today]` into `folds` consecutive
+    DISJOINT calendar windows of equal length, and runs one backtest
+    per window. A strategy with real edge should be profitable in
+    most folds.
+
+    Wave 2 / Fix #3 (METHODOLOGY_FIX_PLAN.md): the previous
+    implementation passed `days=fold_days` to `backtest_strategy`,
+    which always anchored to `datetime.now()` — every fold tested
+    overlapping recent data instead of disjoint historical periods.
+    Now uses `start_date` / `end_date` parameters so each fold reads
+    its own calendar slice.
     """
+    from datetime import datetime, timedelta
     from backtester import backtest_strategy
 
     fold_days = history_days // folds
@@ -565,25 +597,29 @@ def walk_forward_analysis(
             "consistency_pct": 0, "note": "insufficient history for walk-forward"
         }
 
+    today = datetime.utcnow().date()
+    start_anchor = today - timedelta(days=history_days)
+
     fold_results = []
     profitable = 0
     for i in range(folds):
-        # Each fold uses a subset of the most recent days.
-        # yfinance fetches the latest N days, so we emulate rolling by
-        # requesting a shorter window per fold.
-        days_for_fold = fold_days
+        fold_start = start_anchor + timedelta(days=i * fold_days)
+        fold_end = start_anchor + timedelta(days=(i + 1) * fold_days)
         result = backtest_strategy(
             market_type=market_type,
-            days=days_for_fold,
             initial_capital=initial_capital,
             sample_size=sample_size,
             symbols=symbols,
             signal_fn=strategy_fn,
+            start_date=fold_start.isoformat(),
+            end_date=fold_end.isoformat(),
         )
         total_ret = result.get("total_return_pct", 0) or 0
         fold_results.append({
             "fold": i + 1,
-            "days": days_for_fold,
+            "start_date": fold_start.isoformat(),
+            "end_date": fold_end.isoformat(),
+            "days": fold_days,
             "total_return_pct": round(total_ret, 2),
             "sharpe_ratio": round(result.get("sharpe_ratio", 0) or 0, 3),
             "num_trades": result.get("num_trades", 0),

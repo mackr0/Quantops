@@ -1066,36 +1066,115 @@ def get_auto_adjustments(ctx, db_path=None):
             recent_conf = None
             recent_pos = None
 
+        # ---------------------------------------------------------------
+        # Wave 2 / Fix #5 — train/validate split for parameter changes.
+        #
+        # Adjustment window: predictions resolved older than
+        # VALIDATION_WINDOW_DAYS days ago. Used to PROPOSE a change.
+        # Validation window: predictions resolved within the last
+        # VALIDATION_WINDOW_DAYS days. Used to VERIFY the proposed
+        # change would have improved (or not hurt) recent performance.
+        # An adjustment is only recommended if the validation window
+        # confirms the adjustment-window finding.
+        # See METHODOLOGY_FIX_PLAN.md.
+        # ---------------------------------------------------------------
+        VALIDATION_WINDOW_DAYS = 14
+        validation_cutoff_sql = (
+            f"datetime('now', '-{VALIDATION_WINDOW_DAYS} days')"
+        )
+
         # Win rate by confidence band
         if not recent_conf:  # Only suggest if not adjusted in last 3 days
             for threshold, label in [(60, "<60%"), (70, "<70%")]:
+                # ADJUSTMENT WINDOW (resolved before validation cutoff)
                 band_total = conn.execute(
-                    "SELECT COUNT(*) FROM ai_predictions "
-                    "WHERE status='resolved' AND confidence < ?",
+                    f"SELECT COUNT(*) FROM ai_predictions "
+                    f"WHERE status='resolved' AND confidence < ? "
+                    f"AND (resolved_at IS NULL OR resolved_at < {validation_cutoff_sql})",
                     (threshold,),
                 ).fetchone()[0]
                 band_wins = conn.execute(
-                    "SELECT COUNT(*) FROM ai_predictions "
-                    "WHERE status='resolved' AND actual_outcome='win' AND confidence < ?",
+                    f"SELECT COUNT(*) FROM ai_predictions "
+                    f"WHERE status='resolved' AND actual_outcome='win' "
+                    f"AND confidence < ? "
+                    f"AND (resolved_at IS NULL OR resolved_at < {validation_cutoff_sql})",
                     (threshold,),
                 ).fetchone()[0]
-                if band_total > 5:
-                    bwr = band_wins / band_total * 100
-                    if bwr < 35:
-                        # Check if a past adjustment in this direction worsened things
-                        past_outcome = _was_adjustment_effective(
-                            profile_id, "ai_confidence_threshold") if profile_id else None
-                        if past_outcome == "worsened":
-                            result["reasons"].append(
-                                f"Win rate at confidence {label} is {bwr:.0f}%, "
-                                f"but previous threshold raise worsened results — skipping"
-                            )
-                        else:
-                            result["confidence_threshold"] = threshold
-                            result["reasons"].append(
-                                f"Win rate at confidence {label} is {bwr:.0f}%, "
-                                f"raising threshold to {threshold}"
-                            )
+                if band_total <= 5:
+                    continue
+                bwr = band_wins / band_total * 100
+                if bwr >= 35:
+                    continue
+
+                # VALIDATION WINDOW (resolved within last N days)
+                val_total = conn.execute(
+                    f"SELECT COUNT(*) FROM ai_predictions "
+                    f"WHERE status='resolved' "
+                    f"AND resolved_at IS NOT NULL "
+                    f"AND resolved_at >= {validation_cutoff_sql}"
+                ).fetchone()[0]
+                val_kept_total = conn.execute(
+                    f"SELECT COUNT(*) FROM ai_predictions "
+                    f"WHERE status='resolved' AND confidence >= ? "
+                    f"AND resolved_at IS NOT NULL "
+                    f"AND resolved_at >= {validation_cutoff_sql}",
+                    (threshold,),
+                ).fetchone()[0]
+                val_kept_wins = conn.execute(
+                    f"SELECT COUNT(*) FROM ai_predictions "
+                    f"WHERE status='resolved' AND actual_outcome='win' "
+                    f"AND confidence >= ? "
+                    f"AND resolved_at IS NOT NULL "
+                    f"AND resolved_at >= {validation_cutoff_sql}",
+                    (threshold,),
+                ).fetchone()[0]
+                val_total_wins = conn.execute(
+                    f"SELECT COUNT(*) FROM ai_predictions "
+                    f"WHERE status='resolved' AND actual_outcome='win' "
+                    f"AND resolved_at IS NOT NULL "
+                    f"AND resolved_at >= {validation_cutoff_sql}"
+                ).fetchone()[0]
+                if val_total < 5 or val_kept_total < 3:
+                    result["reasons"].append(
+                        f"Win rate at confidence {label} is {bwr:.0f}% "
+                        f"(adjustment window) but only {val_total} resolved "
+                        f"predictions in the last {VALIDATION_WINDOW_DAYS} "
+                        f"days — not enough validation data to apply"
+                    )
+                    continue
+
+                wr_kept_validation = val_kept_wins / val_kept_total * 100
+                wr_full_validation = (val_total_wins / val_total * 100) if val_total else 0
+                # The proposed threshold-raise would FILTER predictions
+                # with confidence < T. The validation question: does the
+                # surviving (confidence ≥ T) cohort have a higher win
+                # rate than the full validation cohort?
+                if wr_kept_validation < wr_full_validation:
+                    result["reasons"].append(
+                        f"Win rate at confidence {label} is {bwr:.0f}% "
+                        f"(adjustment window) but the proposed threshold "
+                        f"raise would worsen recent performance "
+                        f"({wr_kept_validation:.0f}% vs {wr_full_validation:.0f}%) — "
+                        f"validation rejected"
+                    )
+                    continue
+
+                # Re-check past-effectiveness gate
+                past_outcome = _was_adjustment_effective(
+                    profile_id, "ai_confidence_threshold") if profile_id else None
+                if past_outcome == "worsened":
+                    result["reasons"].append(
+                        f"Win rate at confidence {label} is {bwr:.0f}%, "
+                        f"but previous threshold raise worsened results — skipping"
+                    )
+                    continue
+
+                result["confidence_threshold"] = threshold
+                result["reasons"].append(
+                    f"Win rate at confidence {label} is {bwr:.0f}% "
+                    f"(adjustment window). Validation confirmed: "
+                    f"raising to {threshold}"
+                )
         else:
             result["reasons"].append(
                 "Confidence threshold was adjusted recently — "

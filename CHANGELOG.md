@@ -17,6 +17,74 @@ Rules going forward:
 
 ---
 
+## 2026-04-27 — Wave 2 / Fixes #3, #4, #5: walk-forward, OOS, and self-tuner now use disjoint windows (Severity: critical, accuracy)
+
+Wave 2 of `METHODOLOGY_FIX_PLAN.md` shipped — all three "uses the
+foundation" fixes in one commit. With Wave 1 + Wave 2 together, the
+methodology stack is now coherent: every test that claims to read
+"different data" actually reads different data.
+
+**Fix #3 — `walk_forward_analysis` actually walks forward.**
+Previously: every fold passed `days=fold_days` to backtest_strategy,
+which always anchored on `datetime.now()` — every fold tested
+overlapping recent data. Fix: split `[today - history_days, today]`
+into N consecutive disjoint calendar windows, pass each as
+`start_date` / `end_date` to backtest_strategy. Each fold result
+now records its actual `start_date` and `end_date`.
+
+**Fix #4 — `out_of_sample_degradation` separates IS from OOS.**
+Previously: IS = `days=in_sample_days` (today-anchored), OOS =
+`days=oos_days` (today-anchored). The OOS window was INSIDE the IS
+window — strategy trained on data we claimed was held out. Fix: IS
+runs `[today - history_days, today - oos_days]`, OOS runs
+`[today - oos_days, today]`. Strict separation. Output now includes
+`in_sample_start`, `in_sample_end`, `oos_start`, `oos_end` for
+auditability.
+
+**Fix #5 — self-tuner train/validate split on `resolved_at`.**
+Previously: confidence-threshold raises were proposed AND validated
+on the same full-history dataset. Classic in-sample optimization.
+Fix: split resolved predictions into:
+- Adjustment window: `resolved_at < now - 14 days` (used to detect
+  the bad band)
+- Validation window: `resolved_at >= now - 14 days` (used to verify
+  the proposed raise would have improved or at least not hurt
+  recent performance)
+A threshold raise is now ONLY recommended if BOTH the adjustment
+window confirms the band underperforms (< 35% win rate) AND the
+validation window's surviving cohort (confidence ≥ proposed
+threshold) outperforms the full validation cohort. If validation
+data is too thin (< 5 resolved in last 14 days, or < 3 in the kept
+cohort), no recommendation is made — we err toward not changing.
+
+**Anti-regression — 11 new structural tests across 2 files:**
+
+`tests/test_walk_forward_and_oos_disjoint.py` (6 tests):
+- AST-walks both wrapper functions, fails on any
+  `backtest_strategy(..., days=...)` call (only `start_date` /
+  `end_date` allowed).
+- Behavioral: mocks backtest_strategy, records the date ranges of
+  each call, asserts walk-forward folds are pairwise disjoint and
+  OOS in-sample-end ≤ out-of-sample-start.
+
+`tests/test_self_tuning_validation_window.py` (5 tests):
+- Source guards: `VALIDATION_WINDOW_DAYS` exists, query references
+  `resolved_at`.
+- Behavioral: validation-confirms case (recommends), validation-
+  rejects case (recent data disagrees → blocks), validation-too-thin
+  case (defers).
+
+Tests: 986 passing (was 975; +11 new).
+
+**Wave 2 status:** ✅ COMPLETE. Wave 1 + Wave 2 both done.
+
+**Wave 3 starts next:**
+- Fix #8 (`alpha_decay` rolling-window discipline)
+- Fix #7 (`strategy_lifecycle`; mostly auto-fixed by #3 + #4)
+- Fix #9 (specialist confidence calibration)
+
+---
+
 ## 2026-04-27 — Wave 1 / Fix #6: forward-horizon gate on prediction resolution (Severity: medium-going-on-critical, accuracy)
 
 Wave 1 of `METHODOLOGY_FIX_PLAN.md` is now complete (Fix #2 + Fix #6).

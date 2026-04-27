@@ -26,9 +26,9 @@ self-tuning, decay detection) inherits the bug.
 |---|---|---|---|
 | 1 | CRITICAL | `meta_model.py:210` | ✅ FIXED 2026-04-27 (`cd2d207`). Random train/test split → time leakage. |
 | 2 | CRITICAL | `backtester.py: backtest_strategy` (root cause) | ✅ FIXED 2026-04-27 (`a3a3d64`). Now accepts `start_date` / `end_date`; legacy `days=` preserved for backwards compat. |
-| 3 | CRITICAL | `rigorous_backtest.py:570-582` (`walk_forward_analysis`) | Not walking forward — every fold reads recent data, just for shorter spans. |
-| 4 | CRITICAL | `rigorous_backtest.py:463-481` (`out_of_sample_degradation`) | The "OOS" window is contained inside the "IS" window. Strategy trained on data we claim is held out. |
-| 5 | CRITICAL | `self_tuning.py:1070-1098` | Tunes confidence threshold on win rate of **all** resolved predictions, then applies the threshold and we measure on the same data. No hold-out. |
+| 3 | CRITICAL | `rigorous_backtest.py:570-582` (`walk_forward_analysis`) | ✅ FIXED 2026-04-27 (this commit). Now passes disjoint `start_date` / `end_date` to backtest_strategy. |
+| 4 | CRITICAL | `rigorous_backtest.py:463-481` (`out_of_sample_degradation`) | ✅ FIXED 2026-04-27 (this commit). IS and OOS windows now strictly separated. |
+| 5 | CRITICAL | `self_tuning.py:1070-1098` | ✅ FIXED 2026-04-27 (this commit). Train/validate split on `resolved_at`. Threshold raises only fire if recent data confirms the change would have helped. |
 | 6 | MEDIUM | `ai_tracker.py:205-241` (`_resolve_one`) | ✅ FIXED 2026-04-27 (this commit). Forward-horizon gate `MIN_HOLD_DAYS_BEFORE_RESOLVE` blocks BUY/SELL resolution on intraday noise. |
 | 7 | MEDIUM | `strategy_lifecycle.py:108-158` (`validate_and_promote`) | Auto-strategies promoted by passing flawed Phase 2 gates (#3, #4). Auto-fixed once #3 + #4 are real. |
 | 8 | MEDIUM | `alpha_decay.py:56-112` (`compute_rolling_metrics`) | Rolling window includes the same data the snapshot is being evaluated against. Inflates apparent stability. |
