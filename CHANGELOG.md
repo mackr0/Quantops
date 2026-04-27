@@ -17,6 +17,72 @@ Rules going forward:
 
 ---
 
+## 2026-04-27 — Wave 3 (partial) / Fixes #7 + #8: alpha_decay strict disjoint windows + strategy_lifecycle contract (Severity: medium, accuracy)
+
+Wave 3 part 1 — the smaller two fixes ship together. Fix #9
+(specialist confidence calibration) is the larger one and gets its
+own commit.
+
+**Fix #8 — alpha_decay rolling vs lifetime is now strictly disjoint.**
+
+Before: `compute_lifetime_metrics(db, strategy)` returned metrics
+over ALL resolved predictions including the rolling window itself.
+When `detect_decay` compared rolling Sharpe vs lifetime Sharpe to
+flag degradation, both sides shared the most-recent data — biasing
+the lifetime baseline toward whatever was happening recently and
+dampening decay signals.
+
+After: `compute_lifetime_metrics` gained `exclude_recent_days`
+parameter (default 0 for backwards compat). `detect_decay` and
+`check_restoration` now pass `rolling_window_days` (=30) so the
+lifetime baseline is `[earliest, as_of - 30 days]` and the rolling
+window is `[as_of - 30 days, as_of]`. Strictly disjoint.
+
+The default-of-0 keeps the legacy "all resolved predictions"
+behavior for any direct callers; the production code path
+(decay detector + restoration checker) explicitly opts into the
+disjoint window. Pre-existing tests that asserted the legacy
+behavior keep passing.
+
+**Fix #7 — strategy_lifecycle contract test.**
+
+Mostly auto-fixed by Wave 2 (#3 + #4): `_run_validation` calls
+`validate_strategy`, which internally uses the now-fixed
+`walk_forward_analysis` and `out_of_sample_degradation`. So
+auto-strategies inherit the disjoint-window discipline without
+code changes. Added a contract test asserting
+`_run_validation` still calls `validate_strategy` — prevents a
+silent decoupling that would let auto-strategies bypass the gates.
+
+**Anti-regression — `tests/test_alpha_decay_lifetime_disjoint.py` (6 tests):**
+
+Source guards:
+- `compute_lifetime_metrics` accepts `exclude_recent_days` parameter.
+- `detect_decay` source mentions `exclude_recent_days`.
+- `check_restoration` source mentions `exclude_recent_days`.
+- `strategy_lifecycle._run_validation` calls `validate_strategy`.
+
+Behavioral:
+- Old data profitable + recent rolling losses → lifetime with
+  `exclude_recent_days=30` shows higher win rate (excluded losses)
+  vs `exclude_recent_days=0` baseline.
+- `exclude_recent_days=0` matches legacy "all resolved" semantics
+  exactly.
+
+Plus pre-existing `test_no_snapshots_yet` updated to seed enough
+older predictions to clear the 50-sample lifetime threshold even
+after the 30-day exclusion (so it reaches the "no snapshots yet"
+code path it was originally testing).
+
+Tests: 992 passing (was 986; +6 new, +0 modified).
+
+**Wave 3 status:** PARTIAL. Fix #7 + #8 ✅. Fix #9 (specialist
+confidence calibration) is the last one and gets its own commit
+because it requires a new module + integration with the ensemble +
+data-dependent test seeding.
+
+---
+
 ## 2026-04-27 — Wave 2 / Fixes #3, #4, #5: walk-forward, OOS, and self-tuner now use disjoint windows (Severity: critical, accuracy)
 
 Wave 2 of `METHODOLOGY_FIX_PLAN.md` shipped — all three "uses the

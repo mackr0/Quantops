@@ -30,8 +30,8 @@ self-tuning, decay detection) inherits the bug.
 | 4 | CRITICAL | `rigorous_backtest.py:463-481` (`out_of_sample_degradation`) | ✅ FIXED 2026-04-27 (this commit). IS and OOS windows now strictly separated. |
 | 5 | CRITICAL | `self_tuning.py:1070-1098` | ✅ FIXED 2026-04-27 (this commit). Train/validate split on `resolved_at`. Threshold raises only fire if recent data confirms the change would have helped. |
 | 6 | MEDIUM | `ai_tracker.py:205-241` (`_resolve_one`) | ✅ FIXED 2026-04-27 (this commit). Forward-horizon gate `MIN_HOLD_DAYS_BEFORE_RESOLVE` blocks BUY/SELL resolution on intraday noise. |
-| 7 | MEDIUM | `strategy_lifecycle.py:108-158` (`validate_and_promote`) | Auto-strategies promoted by passing flawed Phase 2 gates (#3, #4). Auto-fixed once #3 + #4 are real. |
-| 8 | MEDIUM | `alpha_decay.py:56-112` (`compute_rolling_metrics`) | Rolling window includes the same data the snapshot is being evaluated against. Inflates apparent stability. |
+| 7 | MEDIUM | `strategy_lifecycle.py:108-158` (`validate_and_promote`) | ✅ FIXED 2026-04-27 (this commit). Mechanically inherits the Wave 2 fixes; contract test confirms `_run_validation` calls `validate_strategy`. |
+| 8 | MEDIUM | `alpha_decay.py:56-112` (`compute_rolling_metrics`) | ✅ FIXED 2026-04-27 (this commit). `compute_lifetime_metrics` accepts `exclude_recent_days`; `detect_decay` and `check_restoration` pass `rolling_window_days` to enforce strict disjointness. |
 | 9 | MEDIUM | `ensemble.py` + `specialists/` | Specialist confidence scores (`earnings_analyst BUY 78`) never calibrated against actual outcomes. Fed to meta-model and final AI prompt as if they meant 78% probability. |
 
 The audit also surfaced two CLEAN findings that don't need fixing:

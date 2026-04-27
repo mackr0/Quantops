@@ -139,7 +139,13 @@ class TestDecayDetection:
 
     def test_no_snapshots_yet(self, tmp_path):
         from alpha_decay import detect_decay
-        rows = [("s1", "win", 2.0 + i * 0.05, d) for i, d in enumerate(range(60))]
+        # Seed 90 days of resolved predictions. Wave 3 / Fix #8
+        # excludes the most-recent 30 days from the "lifetime"
+        # baseline to keep rolling-vs-lifetime disjoint, so we need
+        # ≥ 50 predictions OLDER than 30 days for the lifetime_min
+        # gate to pass — meaning we reach the snapshot-checking path
+        # this test is exercising. Use 90 days to be safe.
+        rows = [("s1", "win", 2.0 + i * 0.05, d) for i, d in enumerate(range(90))]
         db = _make_prediction_db(tmp_path, rows)
         # No snapshots written yet
         result = detect_decay(db, "s1")

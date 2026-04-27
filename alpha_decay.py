@@ -115,17 +115,56 @@ def compute_rolling_metrics(
 def compute_lifetime_metrics(
     db_path: str,
     strategy_type: str,
+    exclude_recent_days: int = 0,
+    as_of: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Same as compute_rolling_metrics but over the full resolved history."""
+    """Compute the strategy's "lifetime" baseline metrics on
+    resolved predictions STRICTLY OLDER than the rolling window.
+
+    Wave 3 / Fix #8 (METHODOLOGY_FIX_PLAN.md): the previous
+    implementation queried ALL resolved predictions, which meant the
+    rolling-window data was INCLUDED in the lifetime baseline. When
+    `decay_detector` compared rolling vs lifetime Sharpe to detect
+    degradation, the comparison was less sensitive than it should be
+    because both sides shared the most-recent data.
+
+    Now: `lifetime` covers `[earliest, as_of - exclude_recent_days]`,
+    `rolling` (separate function) covers
+    `[as_of - exclude_recent_days, as_of]`. The two windows are
+    strictly disjoint in time.
+
+    Pass `exclude_recent_days=0` to get the legacy "all resolved
+    predictions" behavior (kept for backwards compatibility).
+    """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
     try:
-        rows = conn.execute(
-            "SELECT actual_outcome, actual_return_pct FROM ai_predictions "
-            "WHERE strategy_type = ? AND status = 'resolved'",
-            (strategy_type,),
-        ).fetchall()
+        if exclude_recent_days <= 0:
+            rows = conn.execute(
+                "SELECT actual_outcome, actual_return_pct "
+                "FROM ai_predictions "
+                "WHERE strategy_type = ? AND status = 'resolved'",
+                (strategy_type,),
+            ).fetchall()
+        elif as_of:
+            rows = conn.execute(
+                "SELECT actual_outcome, actual_return_pct "
+                "FROM ai_predictions "
+                "WHERE strategy_type = ? AND status = 'resolved' "
+                "AND resolved_at IS NOT NULL "
+                "AND resolved_at <= datetime(?, ? || ' days')",
+                (strategy_type, as_of, f"-{exclude_recent_days}"),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT actual_outcome, actual_return_pct "
+                "FROM ai_predictions "
+                "WHERE strategy_type = ? AND status = 'resolved' "
+                "AND resolved_at IS NOT NULL "
+                "AND resolved_at <= datetime('now', ? || ' days')",
+                (strategy_type, f"-{exclude_recent_days}"),
+            ).fetchall()
     except sqlite3.OperationalError:
         conn.close()
         return _empty_metrics()
@@ -260,7 +299,15 @@ def detect_decay(
     if thresholds:
         t.update(thresholds)
 
-    lifetime = compute_lifetime_metrics(db_path, strategy_type)
+    # Lifetime baseline excludes the recent rolling window so the
+    # comparison "rolling vs lifetime" reads disjoint data. Without
+    # this, rolling-window predictions are inside lifetime, biasing
+    # the baseline toward recent performance and dampening decay
+    # detection. See METHODOLOGY_FIX_PLAN.md Wave 3 / Fix #8.
+    lifetime = compute_lifetime_metrics(
+        db_path, strategy_type,
+        exclude_recent_days=int(t.get("rolling_window_days", 30)),
+    )
     if lifetime["n_predictions"] < t["lifetime_min_predictions"]:
         return {
             "decay_detected": False,
@@ -426,7 +473,10 @@ def check_restoration(
     if not is_deprecated(db_path, strategy_type):
         return False
 
-    lifetime = compute_lifetime_metrics(db_path, strategy_type)
+    lifetime = compute_lifetime_metrics(
+        db_path, strategy_type,
+        exclude_recent_days=int(t.get("rolling_window_days", 30)),
+    )
     if lifetime["sharpe_ratio"] <= 0:
         return False
 
