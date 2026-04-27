@@ -25,11 +25,11 @@ self-tuning, decay detection) inherits the bug.
 | # | Severity | File:lines | What's wrong |
 |---|---|---|---|
 | 1 | CRITICAL | `meta_model.py:210` | ✅ FIXED 2026-04-27 (`cd2d207`). Random train/test split → time leakage. |
-| 2 | CRITICAL | `backtester.py: backtest_strategy` (root cause) | Accepts only `days=N`, fetches last N days from `datetime.now()`. Every higher-level test that wraps it inherits the "all windows end at today" defect. |
+| 2 | CRITICAL | `backtester.py: backtest_strategy` (root cause) | ✅ FIXED 2026-04-27 (`a3a3d64`). Now accepts `start_date` / `end_date`; legacy `days=` preserved for backwards compat. |
 | 3 | CRITICAL | `rigorous_backtest.py:570-582` (`walk_forward_analysis`) | Not walking forward — every fold reads recent data, just for shorter spans. |
 | 4 | CRITICAL | `rigorous_backtest.py:463-481` (`out_of_sample_degradation`) | The "OOS" window is contained inside the "IS" window. Strategy trained on data we claim is held out. |
 | 5 | CRITICAL | `self_tuning.py:1070-1098` | Tunes confidence threshold on win rate of **all** resolved predictions, then applies the threshold and we measure on the same data. No hold-out. |
-| 6 | MEDIUM | `ai_tracker.py:205-241` (`_resolve_one`) | Predictions can resolve on same-day's close. On a flat day, win-or-loss labels reflect noise, not signal. Also no fixed forward horizon. |
+| 6 | MEDIUM | `ai_tracker.py:205-241` (`_resolve_one`) | ✅ FIXED 2026-04-27 (this commit). Forward-horizon gate `MIN_HOLD_DAYS_BEFORE_RESOLVE` blocks BUY/SELL resolution on intraday noise. |
 | 7 | MEDIUM | `strategy_lifecycle.py:108-158` (`validate_and_promote`) | Auto-strategies promoted by passing flawed Phase 2 gates (#3, #4). Auto-fixed once #3 + #4 are real. |
 | 8 | MEDIUM | `alpha_decay.py:56-112` (`compute_rolling_metrics`) | Rolling window includes the same data the snapshot is being evaluated against. Inflates apparent stability. |
 | 9 | MEDIUM | `ensemble.py` + `specialists/` | Specialist confidence scores (`earnings_analyst BUY 78`) never calibrated against actual outcomes. Fed to meta-model and final AI prompt as if they meant 78% probability. |

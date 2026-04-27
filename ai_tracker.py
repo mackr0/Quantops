@@ -24,6 +24,14 @@ HOLD_MAX_CHANGE_PCT = 2.0  # HOLD is correct if abs(change) < 2%
 HOLD_RESOLVE_DAYS = 3    # Trading days before resolving a HOLD prediction
 TIMEOUT_DAYS = 10        # Max trading days before force-resolving as neutral
 
+# Minimum trading days a prediction must age BEFORE we evaluate
+# whether the price target was hit. Without this, BUY predictions
+# made at 10am that drift +2% by 11am resolve as "win" within an
+# hour — testing intraday noise rather than real signal. Wave 1 of
+# the methodology fix plan introduces this gate so labels reflect
+# meaningful forward-horizon outcomes. See METHODOLOGY_FIX_PLAN.md.
+MIN_HOLD_DAYS_BEFORE_RESOLVE = 5  # 5 trading days ≈ 1 trading week
+
 
 # ---------------------------------------------------------------------------
 # Database helpers (mirrors journal.py patterns)
@@ -206,6 +214,13 @@ def _resolve_one(prediction, current_price):
     """Determine outcome for a single prediction.
 
     Returns (outcome, return_pct, days_held) or None if not yet resolvable.
+
+    Wave 1 / Fix #6: enforces MIN_HOLD_DAYS_BEFORE_RESOLVE so a BUY
+    that drifts +2% in an hour does NOT resolve as "win" same-day.
+    Predictions only check the win/loss thresholds AFTER aging at
+    least MIN_HOLD_DAYS_BEFORE_RESOLVE trading days — meaning the
+    label captures whether the price target held over a meaningful
+    forward horizon, not whether it was crossed by noise.
     """
     pred_price = prediction["price_at_prediction"]
     signal = prediction["predicted_signal"]
@@ -215,6 +230,13 @@ def _resolve_one(prediction, current_price):
         return None
 
     return_pct = ((current_price - pred_price) / pred_price) * 100.0
+
+    # Forward-horizon gate. Without this, BUY/SELL predictions can
+    # resolve to win/loss within hours of being made, testing noise
+    # not signal. HOLD already had its own days-elapsed gate; we
+    # extend the same discipline to BUY/SELL.
+    if signal in ("BUY", "SELL") and days_elapsed < MIN_HOLD_DAYS_BEFORE_RESOLVE:
+        return None
 
     if signal == "BUY":
         if return_pct >= BUY_WIN_PCT:

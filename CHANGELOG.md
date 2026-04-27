@@ -17,6 +17,66 @@ Rules going forward:
 
 ---
 
+## 2026-04-27 — Wave 1 / Fix #6: forward-horizon gate on prediction resolution (Severity: medium-going-on-critical, accuracy)
+
+Wave 1 of `METHODOLOGY_FIX_PLAN.md` is now complete (Fix #2 + Fix #6).
+
+**Before:** `ai_tracker._resolve_one` checked the ±2% win/loss
+thresholds against the current price as soon as the next resolve-tick
+ran. A BUY made at 10am that drifted +2.5% by 11am resolved as
+"win" within an hour — the label captured intraday noise, not the
+forward outcome the AI was actually predicting. With a 2% threshold
+and typical retail-cap volatility (small-caps routinely move ±2%
+intraday on no news), a meaningful fraction of resolved labels were
+random.
+
+**After:** new constant `MIN_HOLD_DAYS_BEFORE_RESOLVE = 5` (5 trading
+days ≈ 1 trading week). `_resolve_one` returns `None` (still pending)
+for any BUY/SELL prediction younger than that, regardless of price
+movement. After the horizon, the same threshold logic runs and the
+prediction resolves to win/loss. HOLD's existing `HOLD_RESOLVE_DAYS`
+gate is preserved (already had this discipline). `TIMEOUT_DAYS`
+escape hatch still force-resolves stale pending predictions to
+neutral.
+
+**Effect on observable metrics:**
+
+- Pending count climbs temporarily as young predictions wait their
+  horizon out (instead of resolving immediately on noise).
+- Win rate on freshly-resolved predictions becomes a meaningful
+  forward-horizon measurement instead of a noise estimate.
+- The meta-model's training labels (which feed off resolved
+  predictions) become more predictive — combined with the
+  time-ordered split fix from `cd2d207`, this is the second of
+  two changes that determine whether the meta-model has any real
+  edge to learn.
+
+**Anti-regression — `tests/test_resolve_min_hold_horizon.py` (10 tests):**
+
+1. Constant exists and is ≥ 1.
+2. Source-level: `_resolve_one` references the constant.
+3. Young BUY at +2.5% returns None (was: "win").
+4. Young BUY at -2.5% returns None (was: "loss").
+5. Young SELL at -3% returns None.
+6. Aged BUY at +3% resolves as "win" (gate doesn't block real wins).
+7. Aged BUY at -3% resolves as "loss".
+8. HOLD path preserved — too-young HOLD stays pending.
+9. HOLD path preserved — past-horizon HOLD with quiet price resolves win.
+10. TIMEOUT escape hatch — old pending BUY with no threshold cross
+    still force-resolves to neutral.
+
+Tests: 975 passing (was 965; +10 new).
+
+**Wave 1 status:** ✅ COMPLETE.
+- Fix #2 (backtest_strategy date ranges) — `a3a3d64`
+- Fix #6 (forward-horizon resolution gate) — this commit
+
+**Wave 2 starts next:** rewire `walk_forward_analysis` and
+`out_of_sample_degradation` to use the new date-range path, then
+add the train/validate split to `self_tuning`.
+
+---
+
 ## 2026-04-27 — Wave 1 / Fix #2: backtest_strategy accepts explicit date ranges (Severity: critical, accuracy)
 
 Foundation for the methodology fix. Wave 1 of `METHODOLOGY_FIX_PLAN.md`.
