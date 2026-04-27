@@ -17,6 +17,85 @@ Rules going forward:
 
 ---
 
+## 2026-04-27 — check_exits: skip exits whose entry order hasn't filled at the broker (Severity: medium, bug)
+
+**Symptom:** Production scan-failures widget showed
+`Large Cap Limit Orders: [Large Cap Limit Orders] Check Exits failed
+at Apr 27, 1:53 PM ET`. Stack trace from journal:
+
+```
+alpaca_trade_api.rest.APIError:
+    cannot open a short sell while a long buy order is open
+```
+
+**Root cause:** Virtual profiles compute "open positions" from the
+trades journal as soon as the entry order is logged — even before
+Alpaca actually fills it. For most profiles this is fine because
+their entry orders are market orders that fill in milliseconds. But
+"Large Cap Limit Orders" places limit BUYs that can sit unfilled at
+Alpaca for minutes or hours.
+
+Sequence that broke:
+
+1. 17:50 — limit BUY for symbol X submitted, journal records an
+   open virtual position.
+2. 17:53 — `check_exits` runs, sees the journal-derived position,
+   detects a stop-loss/take-profit trigger, submits a market SELL.
+3. Alpaca: "you have 0 real shares (the BUY hasn't filled) AND
+   there's still a long BUY pending — this SELL is a short
+   attempt — rejected." Task fails.
+
+The existing defense at `trader.py:281-292` (cancel any open orders
+for this symbol before submitting the exit) didn't help because the
+cancel hits Alpaca asynchronously; the submit fired before the
+cancel landed.
+
+**Fix (`trader.py`):**
+
+New helper `_entry_order_filled_at_broker(api, db_path, symbol,
+is_short)` looks up the most recent matching open entry row in the
+journal, reads its `order_id`, calls `api.get_order(...)`, and
+returns:
+
+- `True` if status is `filled` or `partially_filled` (real shares
+  exist → SELL is safe).
+- `False` for any pending state (`new`, `accepted`, `pending_new`,
+  `pending_replace`, `pending_cancel`, `accepted_for_bidding`,
+  `held`, `suspended`).
+- `True` (fail-open) on every uncertain path: missing db_path, no
+  matching journal row, NULL order_id, broker-unrecognized id, or
+  SQL error. Reason: a too-conservative gate would block legitimate
+  exits when the journal is healthy but its row→Alpaca link is
+  stale; the prior behavior was "always allow," so fail-open is the
+  conservative regression-free choice.
+
+`check_exits` now calls this gate immediately after the schedule
+guard. If `False`, it logs an INFO line and continues — the trigger
+re-fires on the next exit cycle, by which time the entry has
+typically filled.
+
+**Effect on the failing profile:** the limit-order profile no longer
+errors on exits during the entry-pending window. Alpaca-state is
+now the source of truth for "does this position really exist?", not
+the optimistic journal.
+
+**Anti-regression — `tests/test_exit_gates_unfilled_entry.py` (18 tests):**
+
+- `filled` and `partially_filled` allow the exit.
+- All 8 known pending Alpaca statuses block the exit (parameterized).
+- Short positions: `sell_short` entry side is looked up correctly,
+  and pending shorts block the cover.
+- All 5 fail-open paths return `True`: no db_path, no matching row,
+  NULL order_id, broker raises on `get_order`, SQL error.
+- **Contract test** uses `inspect.getsource(check_exits)` to assert
+  the gate call is still present in `check_exits` itself — prevents
+  a silent regression where someone removes the wiring but leaves
+  the helper.
+
+Tests: 955 passing (was 937; +18 new).
+
+---
+
 ## 2026-04-27 — Show current price + % change inline on position rows (Severity: low, ui)
 
 User asked to see current price on the dashboard without having to

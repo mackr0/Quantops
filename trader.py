@@ -198,6 +198,57 @@ def execute_trade(symbol, signal, ctx=None, strategy_name="combined", log=True):
     return result
 
 
+def _entry_order_filled_at_broker(api, db_path, symbol, is_short):
+    """Return True iff the most-recent matching entry order for this
+    symbol has actually filled at Alpaca (i.e. shares exist).
+
+    Why this exists: virtual profiles using LIMIT entry orders compute
+    "open positions" from the journal as soon as the order is logged,
+    even before Alpaca fills it. If `check_exits` then submits a SELL
+    against zero real shares, Alpaca interprets the SELL as a short and
+    rejects it because the long BUY is still open
+    ("cannot open a short sell while a long buy order is open" — see
+    CHANGELOG 2026-04-27). This helper is the gate that makes
+    check_exits Alpaca-state-aware.
+
+    Returns True (allow exit) on any uncertain path — journal lookup
+    failure, missing order_id, broker doesn't recognize the id —
+    because being too-conservative here would block legitimate exits
+    on positions whose entry rows lost their order_id link. Only an
+    explicit "this entry is still pending at the broker" answer
+    blocks the exit.
+    """
+    if not db_path:
+        return True
+    entry_side = "sell_short" if is_short else "buy"
+    try:
+        import sqlite3 as _sqlite
+        conn = _sqlite.connect(db_path)
+        row = conn.execute(
+            "SELECT order_id FROM trades "
+            "WHERE symbol=? AND side=? AND status='open' "
+            "ORDER BY id DESC LIMIT 1",
+            (symbol, entry_side),
+        ).fetchone()
+        conn.close()
+    except Exception:
+        return True
+    if not row or not row[0]:
+        return True
+    try:
+        order = api.get_order(row[0])
+    except Exception:
+        # Alpaca doesn't recognize the id (already canceled/replaced
+        # /cleaned up). Don't gate the exit on a stale lookup.
+        return True
+    status = (getattr(order, "status", "") or "").lower()
+    # Alpaca order states that mean shares actually exist:
+    #   "filled", "partially_filled" (some shares present)
+    # Everything else (new/accepted/pending_*/held/canceled/etc.)
+    # means no shares — the SELL would be interpreted as a short.
+    return status in ("filled", "partially_filled")
+
+
 def check_exits(ctx=None):
     """Check all positions for stop-loss/take-profit triggers and execute sells.
 
@@ -276,6 +327,19 @@ def check_exits(ctx=None):
         from order_guard import check_can_submit
         exit_side = "buy" if is_short else "sell"
         if not check_can_submit(ctx, symbol, exit_side):
+            continue
+
+        # Broker-state guard: skip the exit if the underlying entry
+        # order is still pending at Alpaca (e.g. an unfilled limit
+        # buy). Submitting a SELL against zero real shares makes Alpaca
+        # treat it as a short attempt and reject with "cannot open a
+        # short sell while a long buy order is open."
+        if not _entry_order_filled_at_broker(api, db_path, symbol, is_short):
+            logging.info(
+                "Deferring exit for %s: entry order has not filled at "
+                "the broker yet. Will retry on next exit cycle.",
+                symbol,
+            )
             continue
 
         # Cancel any open orders for this symbol before submitting the exit.
