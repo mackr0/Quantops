@@ -361,6 +361,9 @@ def _fetch_yf_history(symbol: str, days: int) -> Optional[pd.DataFrame]:
 
     Returns DataFrame with columns: open, high, low, close, volume,
     indexed by datetime. Returns None on failure.
+
+    Today-relative slicer. Used by legacy callers passing `days=`. New
+    callers should use `_fetch_yf_history_range` with explicit dates.
     """
     now = time.time()
     cached = _symbol_cache.get(symbol)
@@ -378,6 +381,72 @@ def _fetch_yf_history(symbol: str, days: int) -> Optional[pd.DataFrame]:
     if len(full_df) > needed_rows:
         return full_df.iloc[-needed_rows:].copy()
     return full_df.copy()
+
+
+def _fetch_yf_history_range(
+    symbol: str,
+    start_date,
+    end_date,
+    warmup_days: int = 80,
+) -> Optional[pd.DataFrame]:
+    """Fetch bars sliced by EXPLICIT calendar date range.
+
+    This is the date-range counterpart to `_fetch_yf_history(days=)`.
+    Accepts pandas-parseable date inputs (str like "2025-09-01",
+    `datetime.date`, `datetime.datetime`, or `pd.Timestamp`) and
+    returns the bars in `[start_date - warmup_days, end_date]`. The
+    extra `warmup_days` of pre-period data is so indicator
+    computation is fully primed BEFORE the simulation period starts.
+
+    Why this exists: the legacy `days=` slicer always anchors to
+    `datetime.now()`, which means walk-forward and out-of-sample
+    callers were silently reading overlapping recent windows
+    (CHANGELOG 2026-04-27 — methodology audit). Calling this helper
+    instead is what makes a backtest actually use disjoint data.
+
+    Returns DataFrame with columns: open, high, low, close, volume,
+    indexed by datetime. Returns None on failure.
+    """
+    now = time.time()
+    cached = _symbol_cache.get(symbol)
+    if cached and (now - cached["ts"]) < _CACHE_TTL and cached["data"] is not None:
+        full_df = cached["data"]
+    else:
+        full_df = _download_symbol(symbol, _SYMBOL_CACHE_MAX_DAYS)
+        _symbol_cache[symbol] = {"data": full_df, "ts": now}
+
+    if full_df is None or full_df.empty:
+        return None
+
+    start_ts = pd.Timestamp(start_date)
+    end_ts = pd.Timestamp(end_date)
+    warm_start = start_ts - pd.Timedelta(days=int(warmup_days))
+
+    # Ensure index is a DatetimeIndex; some yfinance / Alpaca returns
+    # may have a date column instead.
+    df = full_df
+    if not isinstance(df.index, pd.DatetimeIndex):
+        if "date" in df.columns:
+            df = df.set_index(pd.to_datetime(df["date"]))
+        else:
+            df = df.copy()
+            df.index = pd.to_datetime(df.index)
+
+    # Tz-naive comparisons: strip tz on both sides if either has one.
+    try:
+        if df.index.tz is not None:
+            df = df.tz_localize(None)
+    except Exception:
+        pass
+    if warm_start.tz is not None:
+        warm_start = warm_start.tz_localize(None)
+    if end_ts.tz is not None:
+        end_ts = end_ts.tz_localize(None)
+
+    sliced = df.loc[(df.index >= warm_start) & (df.index <= end_ts)]
+    if sliced.empty:
+        return None
+    return sliced.copy()
 
 
 def _download_symbol(symbol: str, days: int) -> Optional[pd.DataFrame]:
@@ -414,6 +483,8 @@ def backtest_strategy(
     atr_tp_mult: float = 3.0,
     symbols: Optional[List[str]] = None,
     signal_fn: Optional[Callable] = None,
+    start_date=None,
+    end_date=None,
 ) -> Dict:
     """Backtest a market-specific strategy against historical data.
 
@@ -422,7 +493,14 @@ def backtest_strategy(
 
     Args:
         market_type: "micro", "small", "midcap", "largecap", "crypto"
-        days: Number of trading days to test.
+        days: Number of trading days to test (today-relative; legacy).
+        start_date: Inclusive simulation start date (str, datetime, or
+            pd.Timestamp). When set together with `end_date`, this
+            takes precedence over `days` and the simulation reads
+            EXACTLY the bars in [start_date, end_date]. Use this for
+            walk-forward, out-of-sample, and any test that requires
+            disjoint historical windows. See CHANGELOG 2026-04-27.
+        end_date: Inclusive simulation end date.
         initial_capital: Starting capital.
         sample_size: Number of symbols to sample from the universe.
         atr_sl_mult: ATR multiplier for stop-loss (default 2x).
@@ -454,12 +532,20 @@ def backtest_strategy(
     else:
         symbols = list(universe)
 
-    print(f"\nBacktesting {market_type} strategy on {len(symbols)} symbols over {days} days...")
+    use_date_range = start_date is not None and end_date is not None
+    warmup_days = 50
+
+    if use_date_range:
+        print(f"\nBacktesting {market_type} strategy on {len(symbols)} symbols "
+              f"over {start_date} to {end_date}...")
+    else:
+        print(f"\nBacktesting {market_type} strategy on {len(symbols)} symbols "
+              f"over {days} days...")
     print(f"  ATR stops: SL={atr_sl_mult}x, TP={atr_tp_mult}x")
     print(f"  Initial capital: ${initial_capital:,.2f}\n")
 
-    # Warmup: extra days for indicators
-    warmup_days = 50
+    # Warmup: extra days for indicators (legacy days= path uses row-count
+    # warmup; date-range path uses calendar-day warmup inside the helper)
     total_fetch_days = days + warmup_days + 30  # buffer for weekends/holidays
 
     all_trades: List[Dict] = []
@@ -471,7 +557,11 @@ def backtest_strategy(
     for idx, symbol in enumerate(symbols):
         print(f"  [{idx + 1}/{len(symbols)}] {symbol}...", end=" ", flush=True)
 
-        df = _fetch_yf_history(symbol, total_fetch_days)
+        if use_date_range:
+            df = _fetch_yf_history_range(symbol, start_date, end_date,
+                                         warmup_days=warmup_days + 30)
+        else:
+            df = _fetch_yf_history(symbol, total_fetch_days)
         if df is None or len(df) < warmup_days + 20:
             print("skipped (insufficient data)")
             symbols_skipped += 1
@@ -498,7 +588,30 @@ def backtest_strategy(
         take_profit = 0.0
         symbol_trades = 0
 
-        for i in range(warmup_days, len(df)):
+        # Resolve the simulation-start index. In date-range mode we
+        # iterate ONLY bars on or after start_date — bars before that
+        # are warmup. This is what makes walk-forward/OOS callers
+        # actually read disjoint data.
+        if use_date_range:
+            start_ts = pd.Timestamp(start_date)
+            try:
+                if df.index.tz is not None:
+                    start_ts = start_ts.tz_localize(df.index.tz) if start_ts.tz is None else start_ts
+            except Exception:
+                pass
+            mask = df.index >= start_ts
+            sim_start_idx = int(mask.argmax()) if mask.any() else len(df)
+            # Guarantee enough warmup history exists before sim_start_idx;
+            # if not, skip this symbol (insufficient pre-period data).
+            if sim_start_idx < warmup_days:
+                print(f"skipped (insufficient warmup before {start_date})")
+                symbols_skipped += 1
+                continue
+            sim_range = range(sim_start_idx, len(df))
+        else:
+            sim_range = range(warmup_days, len(df))
+
+        for i in sim_range:
             window = df.iloc[:i + 1]   # view, not copy — strategy doesn't mutate
             current_bar = df.iloc[i]
             current_price = float(current_bar["close"])

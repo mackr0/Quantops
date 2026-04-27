@@ -17,6 +17,57 @@ Rules going forward:
 
 ---
 
+## 2026-04-27 — Wave 1 / Fix #2: backtest_strategy accepts explicit date ranges (Severity: critical, accuracy)
+
+Foundation for the methodology fix. Wave 1 of `METHODOLOGY_FIX_PLAN.md`.
+
+**Before:** `backtest_strategy(market_type, days=N, ...)` always
+fetched the latest N days from `datetime.now()`. Every wrapper that
+called it (walk_forward_analysis, out_of_sample_degradation, plus
+any future caller wanting "historical period X") inherited the
+"all windows end at today" defect.
+
+**After:** `backtest_strategy` now also accepts `start_date` and
+`end_date` parameters. When both are passed, simulation reads
+EXACTLY the bars in `[start_date, end_date]`, with warmup from
+`start_date - 80 calendar days` for indicator priming. The
+sim-loop's start index is the first bar at or after `start_date`,
+so bars before it are warmup and bars after `end_date` are
+ignored.
+
+**New helper `backtester._fetch_yf_history_range(symbol, start, end,
+warmup_days)`** is the date-range counterpart to
+`_fetch_yf_history(symbol, days)`. Slices the cached full-history
+dataframe by date instead of row count. Tz-aware against tz-naive
+indices. Returns None when the requested range is outside cached
+data.
+
+**Backwards compat:** `days=` parameter remains accepted as the
+legacy entry point. Positional-argument order preserved (`days`
+ahead of `start_date` in the signature) so no existing caller
+breaks. Wave 2 fixes (#3, #4) will migrate walk_forward_analysis
+and out_of_sample_degradation to the date-range path.
+
+**Anti-regression — `tests/test_backtest_date_range_split.py` (6 tests):**
+
+1. Public API has `start_date` and `end_date` parameters.
+2. `_fetch_yf_history_range` helper exists.
+3. Slicing returns bars inside the requested window plus warmup.
+4. Out-of-cache windows return None gracefully.
+5. **The leakage detector:** two backtests with disjoint date
+   ranges read disjoint simulation bars (the property
+   walk-forward and OOS depend on).
+6. Legacy `days=` path still works and parameter order is
+   preserved for positional-arg compat.
+
+Tests: 965 passing (was 959; +6 new).
+
+**Next:** Fix #6 (ai_tracker forward-bar resolution) completes
+Wave 1. Then Wave 2: rewire walk_forward_analysis and
+out_of_sample_degradation to use the new date-range path.
+
+---
+
 ## 2026-04-27 — METHODOLOGY_FIX_PLAN.md: durable plan for the 7 remaining accuracy bugs (Severity: low, docs)
 
 After the meta-model data-leakage fix landed (`cd2d207`), the user
