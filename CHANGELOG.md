@@ -104,6 +104,41 @@ automatically once the data is there.
 
 ---
 
+## 2026-04-27 — EXPERIMENTATION_AND_TUNING.md: unified partner-facing doc on how the system learns (Severity: low, docs)
+
+User asked: "Do we have a document that explains in detail how our
+experimentation and tuning works?" Honest answer was: scattered
+across SELF_TUNING.md, AUTONOMOUS_TUNING_PLAN.md, ROADMAP.md
+(Phases 1, 3, 7), and METHODOLOGY_FIX_PLAN.md — no single unified
+doc.
+
+Wrote `EXPERIMENTATION_AND_TUNING.md` (~270 lines) that pulls all
+the threads together:
+
+- The headline (1 page): 7 feedback loops grinding on AI's own
+  outcomes, all daily, all gated by cost ceiling.
+- The closed-loop diagram (1 ASCII figure showing the entire data
+  flow from universe → execution → resolution → 7 loops).
+- All 7 loops described in detail: meta-model, self-tuner, 12-layer
+  autonomy stack, alpha-decay, specialist calibration (added today),
+  strategy auto-generation (Phase 7), post-mortems on losing weeks.
+  Each loop includes its file, DB table, run frequency, and the
+  specific integrity guarantee from the methodology audit.
+- The 9 integrity guarantees (the audit fixes) summarized in a
+  single table with status.
+- A concrete worked example: today's pattern_recognizer
+  inversely-calibrated finding (raw 90 → calibrated 28 on Small
+  Cap) — uses the actual prod data to show the system surfacing
+  its own failure mode automatically.
+- "What to expect over time" — week 1, 2, 4, 6, 12 timeline.
+- Where to look in the dashboard for each loop.
+- Cross-session continuity — which doc to read in what order.
+
+README.md doc tree updated to include this + METHODOLOGY_FIX_PLAN.md.
+HTML export at exports/EXPERIMENTATION_AND_TUNING.html (33K).
+
+---
+
 ## 2026-04-27 — pytest-randomly added; suite verified deterministic across random orderings (Severity: low, infra)
 
 User flagged a one-off test failure earlier ("there should not be

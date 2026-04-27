@@ -1,0 +1,921 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>EXPERIMENTATION_AND_TUNING</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">EXPERIMENTATION_AND_TUNING</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#experimentation-tuning-how-the-system-learns-from-itself"
+id="toc-experimentation-tuning-how-the-system-learns-from-itself">Experimentation
+&amp; Tuning — How the System Learns From Itself</a>
+<ul>
+<li><a href="#the-headline" id="toc-the-headline">1. The
+headline</a></li>
+<li><a href="#the-closed-loop-in-one-diagram"
+id="toc-the-closed-loop-in-one-diagram">2. The closed loop, in one
+diagram</a></li>
+<li><a href="#the-seven-loops-in-detail"
+id="toc-the-seven-loops-in-detail">3. The seven loops in detail</a>
+<ul>
+<li><a href="#loop-1-meta-model-phase-1-of-the-roadmap"
+id="toc-loop-1-meta-model-phase-1-of-the-roadmap">Loop 1 — Meta-model
+(Phase 1 of the roadmap)</a></li>
+<li><a href="#loop-2-self-tuner-the-original-4-parameters"
+id="toc-loop-2-self-tuner-the-original-4-parameters">Loop 2 — Self-tuner
+(the original 4 parameters)</a></li>
+<li><a href="#loop-3-12-layer-autonomy-stack"
+id="toc-loop-3-12-layer-autonomy-stack">Loop 3 — 12-layer autonomy
+stack</a></li>
+<li><a href="#loop-4-alpha-decay-detector-phase-3"
+id="toc-loop-4-alpha-decay-detector-phase-3">Loop 4 — Alpha-decay
+detector (Phase 3)</a></li>
+<li><a href="#loop-5-specialist-calibration-added-2026-04-27"
+id="toc-loop-5-specialist-calibration-added-2026-04-27">Loop 5 —
+Specialist calibration (added 2026-04-27)</a></li>
+<li><a href="#loop-6-strategy-auto-generation-phase-7"
+id="toc-loop-6-strategy-auto-generation-phase-7">Loop 6 — Strategy
+auto-generation (Phase 7)</a></li>
+<li><a href="#loop-7-post-mortems-on-losing-weeks"
+id="toc-loop-7-post-mortems-on-losing-weeks">Loop 7 — Post-mortems on
+losing weeks</a></li>
+</ul></li>
+<li><a href="#integrity-guarantees-the-2026-04-27-methodology-audit"
+id="toc-integrity-guarantees-the-2026-04-27-methodology-audit">4.
+Integrity guarantees (the 2026-04-27 methodology audit)</a></li>
+<li><a href="#concrete-example-todays-pattern_recognizer-finding"
+id="toc-concrete-example-todays-pattern_recognizer-finding">5. Concrete
+example: today’s pattern_recognizer finding</a></li>
+<li><a href="#what-to-expect-over-time"
+id="toc-what-to-expect-over-time">6. What to expect over time</a></li>
+<li><a href="#where-to-look-in-the-dashboard"
+id="toc-where-to-look-in-the-dashboard">7. Where to look in the
+dashboard</a></li>
+<li><a href="#the-two-numbers-that-matter"
+id="toc-the-two-numbers-that-matter">8. The two numbers that
+matter</a></li>
+<li><a href="#cross-session-continuity"
+id="toc-cross-session-continuity">9. Cross-session continuity</a></li>
+</ul></li>
+</ul>
+</nav>
+<h1
+id="experimentation-tuning-how-the-system-learns-from-itself">Experimentation
+&amp; Tuning — How the System Learns From Itself</h1>
+<p><strong>Audience:</strong> technical partners, operators, future
+contributors. <strong>Goal:</strong> explain end-to-end how QuantOpsAI
+auto-experiments with strategies and parameters and how those
+experiments turn into permanent improvements — without any human in the
+loop.</p>
+<p>This is the single document for “what makes this system special.”</p>
+<hr />
+<h2 id="the-headline">1. The headline</h2>
+<p>QuantOpsAI is not just an AI that picks trades. It is an AI
+<strong>plus seven feedback loops grinding on its own outcomes</strong>,
+all running daily, all gated by an explicit cost ceiling, all
+anti-regressed by structural tests so a future change cannot silently
+break the integrity of what’s measured.</p>
+<p>Concretely: every prediction the AI makes is labeled with the full
+feature snapshot the AI saw at decision time. Every prediction that
+resolves is labeled with what actually happened. Seven loops feed off
+that growing dataset:</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>#</th>
+<th>Loop</th>
+<th>What it learns</th>
+<th>Frequency</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Meta-model</td>
+<td>“When is the AI likely to be correct, given the features it
+saw?”</td>
+<td>Daily retrain</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Self-tuner</td>
+<td>“Should we raise the confidence threshold? Tighten stops?”</td>
+<td>Daily</td>
+</tr>
+<tr>
+<td>3</td>
+<td>12-layer autonomy stack</td>
+<td>35+ parameters + signal weights + regime/ToD/symbol overrides + AI
+model + capital scale</td>
+<td>Daily</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Alpha-decay detector</td>
+<td>“Has any strategy’s rolling Sharpe degraded vs lifetime?”</td>
+<td>Daily</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Specialist calibration</td>
+<td>“What does an <code>earnings_analyst BUY 78%</code> actually mean
+for THIS profile?”</td>
+<td>Daily</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Strategy auto-generation</td>
+<td>AI proposes a new strategy variant → validate → shadow →
+promote</td>
+<td>Weekly</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Post-mortems on losing weeks</td>
+<td>“What patterns are common in last week’s losers?”</td>
+<td>Weekly</td>
+</tr>
+</tbody>
+</table>
+<p>All seven feed back into the next decision the AI makes. The system
+in 6 months is not the same system that’s running today — by design.</p>
+<hr />
+<h2 id="the-closed-loop-in-one-diagram">2. The closed loop, in one
+diagram</h2>
+<pre><code>       ┌────────────────────────────────────────────────────────┐
+       │              QuantOpsAI — Closed Learning Loop          │
+       └────────────────────────────────────────────────────────┘
+
+   Universe (8,000+)              ┌─→  Meta-model (re-weights AI conf)
+        │                         │
+        ▼                         │    ┌─→ Self-tuner (4 params/day)
+   Strategy library (16 + auto-N) │    │
+        │                         │    ├─→ 12-layer autonomy (35+ params,
+        ▼                         │    │   weights, regime/ToD/symbol)
+   Specialist Ensemble (4 AIs) ───┤    │
+        │                         │    ├─→ Alpha-decay deprecator
+        ▼                         │    │
+   Final AI batch decision ───────┤    ├─→ Specialist calibrators
+        │                         │    │
+        ▼                         │    ├─→ Auto-strategy proposer
+   Execution (ATR stops, trail)   │    │   (weekly, AI-driven)
+        │                         │    │
+        ▼                         │    └─→ Post-mortems on losing weeks
+   Position resolves ─────────────┘
+        │
+        ▼
+   ai_predictions.actual_outcome ─────► (feeds 7 loops above)
+
+   Cross-cutting: Cost Guard caps daily AI spend; methodology guards
+   ensure every loop reads only out-of-sample data.</code></pre>
+<p>Outputs of the loops re-shape inputs of the AI’s next decision:
+parameter bounds, signal weights, prompt structure, the candidate
+shortlist, the meta-model’s veto threshold, capital allocated per
+profile, even the ensemble specialists’ effective confidence.</p>
+<hr />
+<h2 id="the-seven-loops-in-detail">3. The seven loops in detail</h2>
+<h3 id="loop-1-meta-model-phase-1-of-the-roadmap">Loop 1 — Meta-model
+(Phase 1 of the roadmap)</h3>
+<p><strong>File:</strong> <code>meta_model.py</code> ·
+<strong>DB:</strong> <code>ai_predictions.features_json</code> ·
+<strong>Retrain:</strong> daily,
+<code>_task_retrain_meta_model</code></p>
+<p><strong>What it does.</strong> Trains a gradient-boosted classifier
+on every resolved prediction’s feature vector. Label = was that
+prediction correct? Inference: at the moment a candidate clears the AI
+batch decision and is about to execute, the meta-model says “P(this
+prediction is correct given what the AI saw).” The prediction’s
+confidence is re-weighted as
+<code>final_conf = ai_conf × (0.5 + meta_prob × 0.5)</code>. If
+<code>meta_prob &lt; 0.3</code>, the trade is suppressed entirely.</p>
+<p><strong>Why this works.</strong> Our predictions are proprietary data
+nobody else has. The meta-model isn’t predicting the market — it’s
+predicting our AI’s systematic blind spots. “AI overconfident on
+low-volume mid-caps in sideways markets, RSI 45-55 band” is the kind of
+pattern a tree learns from labeled history.</p>
+<p><strong>Integrity guarantee.</strong> Train/test split is
+<strong>time-ordered</strong> (<code>X[:n_train], X[n_train:]</code>),
+not random. Without this guard, financial features are autocorrelated
+enough that a random split inflates AUC from a realistic ~0.55 to an
+artifact ~0.95. See
+<code>tests/test_meta_model_time_ordered_split.py</code> — AST +
+behavioral guards prevent regression.</p>
+<h3 id="loop-2-self-tuner-the-original-4-parameters">Loop 2 — Self-tuner
+(the original 4 parameters)</h3>
+<p><strong>File:</strong> <code>self_tuning.py</code> ·
+<strong>Tunes:</strong> <code>confidence_threshold</code>,
+<code>stop_loss_pct</code>, <code>take_profit_pct</code>,
+<code>position_size_pct</code></p>
+<p><strong>What it does.</strong> Daily, looks at
+win-rate-by-confidence-band on resolved predictions. If predictions with
+<code>confidence &lt; 60</code> are winning &lt;35% of the time,
+recommend raising the threshold to 60. Same logic for stops and
+sizing.</p>
+<p><strong>Integrity guarantee.</strong> <strong>Train/validate
+split.</strong> Adjustment window = predictions resolved more than 14
+days ago. Validation window = the last 14 days. A threshold raise is
+only applied if BOTH: - The adjustment window confirms the band
+underperforms. - The proposed change would have IMPROVED (or at least
+not hurt) recent performance on the validation window.</p>
+<p>If validation-window data is too thin (&lt;5 resolved or &lt;3
+surviving), the change is deferred. See
+<code>tests/test_self_tuning_validation_window.py</code>.</p>
+<h3 id="loop-3-12-layer-autonomy-stack">Loop 3 — 12-layer autonomy
+stack</h3>
+<p><strong>Files:</strong> <code>param_bounds.py</code>,
+<code>signal_weights.py</code>, <code>regime_overrides.py</code>,
+<code>tod_overrides.py</code>, <code>symbol_overrides.py</code>,
+<code>prompt_layout.py</code>, <code>insight_propagation.py</code>,
+<code>capital_allocator.py</code>, <code>post_mortem.py</code>,
+<code>cost_guard.py</code> · <strong>Plan:</strong>
+<code>AUTONOMOUS_TUNING_PLAN.md</code></p>
+<p><strong>What it does.</strong> Goes far beyond the 4 parameters.
+Layer-by-layer:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Layer</th>
+<th>What it tunes</th>
+<th>Sample effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>35+ scalar parameters with PARAM_BOUNDS clamp</td>
+<td>RSI thresholds, ATR multipliers, squeeze tolerance, momentum
+windows</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Per-signal weight ladder (1.0 / 0.7 / 0.4 / 0.0) for 25 signals</td>
+<td>“StockTwits sentiment” gets weight 0.4 on Mid Cap, 0.0 on
+Crypto</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Per-regime parameter overlays</td>
+<td>Bull regime uses tighter stops; volatile regime widens them</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Per-time-of-day overlays</td>
+<td>Opening 30-min uses larger position sizing for momentum names</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Per-symbol overlays</td>
+<td>SPY-specific take-profit different from XOM-specific</td>
+</tr>
+<tr>
+<td>6</td>
+<td>AI prompt section ordering + presence</td>
+<td>If “earnings memory” stops correlating with outcomes, drop the
+section</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Lessons-learned propagation</td>
+<td>Patterns from post-mortems injected directly into next AI
+prompt</td>
+</tr>
+<tr>
+<td>8</td>
+<td>AI model auto-selection (gated by user toggle)</td>
+<td>Off by default; user can opt-in</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Per-Alpaca-account-conserving capital allocation</td>
+<td>Profiles sharing one Alpaca paper account collectively can’t exceed
+that account’s $1M cap</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Resolution chain at runtime:</strong></p>
+<pre><code>per-symbol → per-regime → per-time-of-day → profile-global → caller-default,
+then × capital_scale, then clamped by PARAM_BOUNDS.</code></pre>
+<p><strong>Cross-cutting Cost Guard.</strong> User-configurable daily
+AI-spend ceiling. When projected daily spend would exceed it, the system
+gracefully degrades (skip non-essential AI calls, route to cheaper
+model) instead of blowing the budget.</p>
+<h3 id="loop-4-alpha-decay-detector-phase-3">Loop 4 — Alpha-decay
+detector (Phase 3)</h3>
+<p><strong>File:</strong> <code>alpha_decay.py</code> ·
+<strong>DB:</strong> <code>signal_performance_history</code> (daily
+snapshots), <code>deprecated_strategies</code> · <strong>Run:</strong>
+daily, <code>_task_alpha_decay</code></p>
+<p><strong>What it does.</strong> Every day, write a snapshot of each
+<code>strategy_type</code>’s rolling-30-day metrics (win rate, Sharpe,
+profit factor). Compare rolling Sharpe to lifetime baseline. If
+<code>rolling ≤ lifetime × 0.7</code> for 30 consecutive snapshot days →
+auto-deprecate. Deprecated strategies are excluded from the candidate
+ranker. If a deprecated strategy recovers (rolling within 15% of
+lifetime for 14 consecutive days) → auto-restore.</p>
+<p><strong>Integrity guarantee.</strong> Lifetime baseline EXCLUDES the
+rolling window. Otherwise the rolling-window data is INSIDE the lifetime
+baseline, biasing the comparison toward recent performance and dampening
+decay signals. <code>compute_lifetime_metrics(...)</code> accepts
+<code>exclude_recent_days</code> and the production callers
+(<code>detect_decay</code>, <code>check_restoration</code>) explicitly
+pass <code>rolling_window_days</code>. See
+<code>tests/test_alpha_decay_lifetime_disjoint.py</code>.</p>
+<h3 id="loop-5-specialist-calibration-added-2026-04-27">Loop 5 —
+Specialist calibration (added 2026-04-27)</h3>
+<p><strong>File:</strong> <code>specialist_calibration.py</code> ·
+<strong>DB:</strong> <code>specialist_outcomes</code> table ·
+<strong>Refit:</strong> daily,
+<code>_task_calibrate_specialists</code></p>
+<p><strong>What it does.</strong> Every prediction the ensemble produces
+stores per-specialist verdicts:
+<code>[earnings_analyst BUY 72, pattern_recognizer HOLD 45, sentiment_narrative BUY 78, risk_assessor HOLD 65]</code>.
+When the prediction resolves, the specialists’ rows get backfilled with
+<code>was_correct</code>. A daily Platt-scaling layer per specialist
+learns: “when this specialist says raw=78, what is its empirical
+P(correct)?” The ensemble’s contribution math now uses CALIBRATED
+confidence.</p>
+<p><strong>Concrete finding from the 2026-04-27 backfill.</strong> With
+9,692 specialist outcomes seeded from existing predictions:</p>
+<table>
+<thead>
+<tr>
+<th>Profile</th>
+<th>Specialist</th>
+<th>raw=90 confidence</th>
+<th>calibrated to</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Mid Cap</td>
+<td>pattern_recognizer</td>
+<td>90</td>
+<td><strong>29</strong></td>
+</tr>
+<tr>
+<td>Small Cap</td>
+<td>pattern_recognizer</td>
+<td>90</td>
+<td><strong>28</strong></td>
+</tr>
+<tr>
+<td>Small Cap Shorts</td>
+<td>pattern_recognizer</td>
+<td>90</td>
+<td><strong>24</strong></td>
+</tr>
+<tr>
+<td>Mid Cap</td>
+<td>risk_assessor</td>
+<td>90</td>
+<td>43</td>
+</tr>
+<tr>
+<td>Large Cap</td>
+<td>sentiment_narrative</td>
+<td>90</td>
+<td>37</td>
+</tr>
+</tbody>
+</table>
+<p>Translation: when <code>pattern_recognizer</code> screamed BUY at 90%
+confidence on Small Cap, it was historically right 28% of the time. The
+previous ensemble math gave its vote weight
+<code>0.90 × specialist_weight</code>. Now it weights
+<code>0.28 × specialist_weight</code> — much closer to “ignore.” Bad
+signals attenuated automatically; good ones (e.g.,
+<code>risk_assessor</code> on Mid Cap, which calibrates UP from raw 30
+to 32 and from raw 90 to 43) keep their weight.</p>
+<p><strong>Integrity guarantee.</strong> Outcomes table is keyed by
+<code>(prediction_id, specialist_name) UNIQUE</code>, so the backfill is
+idempotent and the daily resolution write doesn’t double-count. ABSTAINs
+and VETOs are excluded from calibration data — ABSTAIN means “no
+opinion” (no signal) and VETO is a hard-block on a separate code path.
+See <code>tests/test_specialist_calibration.py</code> — behavioral
+leakage detector seeds an over-confident specialist (raw=90, 50% hit
+rate) and asserts the calibrator maps it down to 35-65.</p>
+<h3 id="loop-6-strategy-auto-generation-phase-7">Loop 6 — Strategy
+auto-generation (Phase 7)</h3>
+<p><strong>Files:</strong> <code>strategy_generator.py</code>,
+<code>strategy_proposer.py</code>, <code>strategy_lifecycle.py</code> ·
+<strong>Run:</strong> weekly (Sundays),
+<code>_task_auto_strategy_generation</code> +
+<code>_task_auto_strategy_lifecycle</code></p>
+<p><strong>What it does.</strong> Sundays the AI proposes 3 new strategy
+specs in strict JSON. Each spec is a structured object:
+<code>{name, market, direction, conditions: [{indicator, op, value}, ...]}</code>.
+The generator validates the spec against a closed allowlist (no
+arbitrary code can be injected), renders it into Python from a fixed
+template, drops it as <code>strategies/auto_NAME.py</code>. Each new
+module gets the full Phase-2 validation gauntlet (walk-forward, OOS,
+regime consistency, Monte Carlo, capacity, statistical significance — 10
+gates total). Specs that PASS are promoted to “validated,” then to
+“shadow” trading where they generate predictions for tracking but don’t
+drive real capital. Once a shadow has 50+ resolved predictions with
+rolling Sharpe ≥ 0.8, it’s promoted to “active.” Strategies that fail
+validation or sit in shadow &gt;60 days without earning their slot are
+retired.</p>
+<p><strong>Five-state lifecycle:</strong>
+<code>proposed → validated → shadow → active → retired</code>.</p>
+<p><strong>Active cap:</strong> 5 auto-strategies per profile so the
+library doesn’t bloat.</p>
+<p><strong>Integrity guarantee.</strong> Phase 2’s gauntlet was the
+methodology-audit’s nightmare zone — the original walk-forward and OOS
+implementations read overlapping recent data, so a strategy could “PASS”
+without ever being tested on data it hadn’t seen. As of 2026-04-27,
+walk-forward folds use disjoint date ranges
+(<code>start_date + k×W</code> to <code>start_date + (k+1)×W</code>) and
+OOS strictly separates <code>[history_start, train_end]</code> from
+<code>[train_end, today]</code>. See
+<code>tests/test_walk_forward_and_oos_disjoint.py</code> — AST guards
+reject any <code>backtest_strategy(..., days=...)</code> call from these
+wrappers, plus a behavioral test that mocks the data fetcher and asserts
+the date ranges are pairwise disjoint. Auto-strategies inherit this
+discipline mechanically.</p>
+<h3 id="loop-7-post-mortems-on-losing-weeks">Loop 7 — Post-mortems on
+losing weeks</h3>
+<p><strong>File:</strong> <code>post_mortem.py</code> ·
+<strong>DB:</strong> <code>learned_patterns</code> (with
+<code>still_active</code> flag) · <strong>Run:</strong> weekly</p>
+<p><strong>What it does.</strong> When a profile has a losing week, the
+system loads ALL the resolved predictions from that week, identifies the
+worst N, and asks the AI: “What pattern do these losers share that the
+system missed?” The output is a structured “lesson” stored in
+<code>learned_patterns</code>. Lessons are then injected into the next
+batch-decision prompt under “Active Lessons.” Lessons get a
+<code>still_active</code> flag so the same pattern doesn’t get
+re-discovered every week.</p>
+<p><strong>False-negative mining.</strong> A symmetric mechanism
+analyzes HOLDS that should have been BUY/SELL based on subsequent price
+action. Patterns like “AI held when StochRSI was oversold AND insider
+buying was present, but the price ran” get registered as lessons too,
+biasing the next decision toward acting in similar setups.</p>
+<p><strong>Why it matters.</strong> Post-mortems close the loop on
+<strong>direction</strong> of error. The meta-model handles “is the AI’s
+confidence calibrated to truth?” Post-mortems handle “is the AI
+systematically missing setups?” Different kind of edge.</p>
+<hr />
+<h2 id="integrity-guarantees-the-2026-04-27-methodology-audit">4.
+Integrity guarantees (the 2026-04-27 methodology audit)</h2>
+<p>A system that auto-tunes itself is only valuable if its measurements
+are honest. Today’s audit + fix sweep eliminated nine specific data-leak
+patterns that would have made the system look like it was learning when
+it wasn’t. Each fix is locked down by structural tests so future changes
+can’t silently regress.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>#</th>
+<th>Issue</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Meta-model used a RANDOM train/test split — leaked future state</td>
+<td>✅ Time-ordered split + AST guard</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>backtest_strategy</code> only accepted today-relative
+<code>days=N</code></td>
+<td>✅ Date-range params</td>
+</tr>
+<tr>
+<td>3</td>
+<td>“Walk-forward” actually re-tested overlapping recent windows</td>
+<td>✅ Disjoint folds + behavioral test</td>
+</tr>
+<tr>
+<td>4</td>
+<td>OOS window was contained INSIDE in-sample window</td>
+<td>✅ Strict separation + behavioral test</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Self-tuner optimized on full history, no hold-out</td>
+<td>✅ 14-day validation window + 3 behavioral tests</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Predictions resolved on intraday noise (2% threshold, no
+min-hold)</td>
+<td>✅ 5-day forward-horizon gate</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Auto-strategy lifecycle inherited the broken Phase 2 gates</td>
+<td>✅ Auto-fixed by #3 + #4; contract test</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Alpha-decay lifetime baseline included the rolling window</td>
+<td>✅ <code>exclude_recent_days</code> parameter</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Specialist confidence never validated against outcomes</td>
+<td>✅ Per-specialist Platt calibration</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The system can no longer ship any of these patterns
+silently.</strong> ~62 new structural tests sit between any future
+change and the source.</p>
+<hr />
+<h2 id="concrete-example-todays-pattern_recognizer-finding">5. Concrete
+example: today’s pattern_recognizer finding</h2>
+<p>To make this real: as soon as the calibration backfill ran (9,692
+outcomes, 30 fitted calibrators), it surfaced an immediately actionable
+insight nobody had noticed.</p>
+<p><strong>Finding.</strong> The <code>pattern_recognizer</code>
+specialist is <strong>inversely calibrated</strong> on every primary
+equity profile:</p>
+<pre><code>Profile          raw=30  raw=50  raw=70  raw=90
+Mid Cap            47     41     35     29
+Small Cap          47     40     34     28
+Small Cap Shorts   35     31     27     24
+Large Cap          54     53     52     51   (mostly random)</code></pre>
+<p>Read: when pattern_recognizer says BUY at 90% confidence on Small
+Cap, the empirical hit rate is <strong>28%</strong>. When it shyly says
+30%, it’s right <strong>47%</strong> of the time. The signal is
+anti-correlated with success on small/mid caps — the more confident the
+specialist, the worse the outcome.</p>
+<p><strong>Implication.</strong> The previous ensemble math weighted
+contributions linearly by raw confidence. Pattern_recognizer’s “strong
+BUYs” were therefore dominating the ensemble verdict on exactly the
+trades where it was wrong most of the time. Some non-trivial fraction of
+Small Cap’s -19% cumulative-return underperformance was the system
+acting on the loudest-but-most-wrong specialist.</p>
+<p><strong>Auto-fix.</strong> The calibration layer now multiplies
+pattern_recognizer’s vote by 0.28 instead of 0.90 in those cases.
+<strong>No human had to discover this and override it.</strong> The
+system surfaced its own failure mode with one daily-fitted logistic
+regression per specialist.</p>
+<p>This is the texture of “auto-experimenting and tuning” working as
+advertised. Not “the AI is so smart it figures everything out” — but
+“the AI logs honest data, the system reads it honestly, and
+miscalibrations correct themselves.”</p>
+<hr />
+<h2 id="what-to-expect-over-time">6. What to expect over time</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Horizon</th>
+<th>Expected change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Tonight (3:55 PM ET)</strong></td>
+<td>Meta-model retrain produces the first honest AUC reading. Likely
+drop from artifact 0.83-0.96 to real 0.50-0.65.</td>
+</tr>
+<tr>
+<td><strong>1-3 trading days</strong></td>
+<td>Trade volume drops on Small/Mid Cap profiles where
+pattern_recognizer was inversely calibrated. Large Cap volume holds
+(specialists were near-random there anyway).</td>
+</tr>
+<tr>
+<td><strong>1 trading week</strong></td>
+<td>Per-profile win rates start to converge — Small/Mid should rise as
+the system stops acting on bad specialist signals; Large Cap might dip
+slightly.</td>
+</tr>
+<tr>
+<td><strong>2 trading weeks</strong></td>
+<td>Self-tuner starts emitting validation-confirmed adjustments. Expect
+FEWER changes than before — many proposed raises will be rejected at
+validation.</td>
+</tr>
+<tr>
+<td><strong>30 days</strong></td>
+<td>Alpha-decay can detect its first deprecation candidate. Expect 1-3
+strategies to be flagged for retirement on at least one profile.</td>
+</tr>
+<tr>
+<td><strong>45 days</strong></td>
+<td>Strategy auto-generation has run 6-7 weekly cycles. Some
+auto-strategies should be approaching shadow→active promotion.</td>
+</tr>
+<tr>
+<td><strong>90 days</strong></td>
+<td>First real read on whether the AI has alpha. With every loop
+measuring honestly, in-sample-vs-out-of-sample performance is
+comparable, and the system either is or isn’t beating SPY net of
+slippage.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="where-to-look-in-the-dashboard">7. Where to look in the
+dashboard</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Tab</th>
+<th>Widget</th>
+<th>What it tells you</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/performance#ai</code></td>
+<td>Meta-Model</td>
+<td>Per-profile AUC, accuracy, top features, sample count</td>
+</tr>
+<tr>
+<td><code>/performance#ai</code></td>
+<td>Specialist Ensemble</td>
+<td>Per-symbol breakdown including calibrated vs raw confidence</td>
+</tr>
+<tr>
+<td><code>/performance#ai</code></td>
+<td>Active Lessons</td>
+<td>Patterns from post-mortems currently injected into AI prompt</td>
+</tr>
+<tr>
+<td><code>/performance#ai</code></td>
+<td>Active Autonomy State</td>
+<td>Snapshot of every layer’s currently-applied adjustments</td>
+</tr>
+<tr>
+<td><code>/performance#ai</code></td>
+<td>Autonomy Timeline</td>
+<td>Chronological audit trail of every autonomous change</td>
+</tr>
+<tr>
+<td><code>/performance#ai</code></td>
+<td>Cost Guard</td>
+<td>Per-profile + cross-profile daily AI spend vs ceiling</td>
+</tr>
+<tr>
+<td><code>/performance#ai</code></td>
+<td>Alpha Decay Monitoring</td>
+<td>Per-strategy rolling vs lifetime Sharpe + active deprecations</td>
+</tr>
+<tr>
+<td><code>/performance#ai</code></td>
+<td>Evolving Strategy Library</td>
+<td>Auto-strategy lineage: proposed → validated → shadow → active →
+retired</td>
+</tr>
+<tr>
+<td><code>/performance#scalability</code></td>
+<td>Strategy Allocation</td>
+<td>Capital allocator weights per strategy per profile</td>
+</tr>
+<tr>
+<td><code>/performance#executive</code></td>
+<td>Win Rate / Sharpe / Drawdown</td>
+<td>The honest topline numbers</td>
+</tr>
+<tr>
+<td>Dashboard cards</td>
+<td>Per-profile equity / positions / today’s trades</td>
+<td>Ground truth</td>
+</tr>
+<tr>
+<td><code>/api/resolve-param</code></td>
+<td>Parameter Resolver</td>
+<td>Inspect: for THIS profile, THIS parameter, RIGHT NOW, what value
+would the override chain return?</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="the-two-numbers-that-matter">8. The two numbers that matter</h2>
+<p><strong>Meta-model AUC &gt; 0.55 per profile.</strong> If the
+meta-model can learn the AI’s blind spots better than chance, the AI’s
+confidence is calibratable and the second-order edge exists. If it sits
+at 0.50, the AI is acting as if its features matter when they don’t, and
+the response is to widen the feature set or simplify the strategy
+library.</p>
+<p><strong>Cumulative win rate vs SPY over 90 days, per
+profile.</strong> If at least 2 of the 3 primary profiles beat SPY over
+a quarter, the system has alpha. If all 3 trail SPY by &gt;5%, the
+methodology-honest finding is the strategies don’t generalize beyond
+their training context — and the next move is a deeper audit of the
+strategy library, not more autonomy layers on top.</p>
+<p>The system is now finally honest enough for those numbers to mean
+something.</p>
+<hr />
+<h2 id="cross-session-continuity">9. Cross-session continuity</h2>
+<p>If a future contributor (or future-you) picks this up cold:</p>
+<ol type="1">
+<li>Read <code>EXECUTIVE_OVERVIEW.md</code> for the top-down
+summary.</li>
+<li>Read this document for the experimentation/tuning surface.</li>
+<li><code>METHODOLOGY_FIX_PLAN.md</code> is the audit-and-fix log of how
+we know the measurements are honest.</li>
+<li><code>AUTONOMOUS_TUNING_PLAN.md</code> is the architectural design
+rationale for the 12-layer stack.</li>
+<li><code>ROADMAP.md</code> is the 10-phase quant-fund evolution
+context.</li>
+<li><code>TECHNICAL_DOCUMENTATION.md</code> is the full reference
+(database schemas, API endpoints, scheduler tasks).</li>
+<li><code>CHANGELOG.md</code> is every fix in chronological order —
+search for “(Severity: critical, accuracy)” entries to see
+methodology-related changes.</li>
+</ol>
+<p>Every one of these is up to date as of 2026-04-27.</p>
+</body>
+</html>
