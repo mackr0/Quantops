@@ -1,16 +1,42 @@
 """Per-symbol sector classification with SQLite cache.
 
 DYNAMIC_UNIVERSE_PLAN.md Step 1 — replaces the hardcoded ~50-symbol
-`_SECTOR_MAP` in `market_data._guess_sector()` with:
+`_SECTOR_MAP` in `market_data._guess_sector()`.
 
-1. **Cache-first lookup** in master `quantopsai.db` table
-   `sector_cache(symbol, sector, fetched_at)`. 7-day TTL.
-2. **yfinance** as the primary source on cache miss — `Ticker(sym).info["sector"]`
-   returns a GICS sector string we map to our 7 internal keys.
+WHY yfinance, not Alpaca
+------------------------
+Verified 2026-04-27 via direct curl to `/v2/assets/AAPL`: Alpaca's
+asset endpoint exposes only:
+
+    id, class, exchange, symbol, name, status, tradable, marginable,
+    shortable, easy_to_borrow, fractionable,
+    maintenance_margin_requirement, margin_requirement_long/short,
+    attributes (fractional_eh_enabled, has_options, overnight_tradable)
+
+NO `sector`, NO `industry`, NO GICS classification. Alpaca is a
+brokerage API — fundamentals data like sector is out of scope for
+their paper / Algo Trader Plus tiers. yfinance's
+`Ticker(sym).info["sector"]` is the documented free path with the
+GICS taxonomy that the sector-momentum strategy expects.
+
+Same well-justified yfinance use as the other 3 call sites in the
+codebase (alt-data fundamentals, earnings calendar, backtest fallback).
+
+Lookup order
+------------
+1. **Cache-first** in master `quantopsai.db` table
+   `sector_cache(symbol, sector, fetched_at)`. 7-day TTL — sector
+   classification rarely changes for stable names. Most lookups
+   hit cache and never touch yfinance.
+2. **yfinance** on cache miss — `Ticker(sym).info["sector"]` returns
+   a GICS sector string we map to our 7 internal keys.
 3. **Static fallback map** for the top ~100 symbols when yfinance is
-   unreachable or returns nothing useful.
+   unreachable or returns nothing useful (offline mode safety net).
 4. **`"tech"` default** when nothing else lands (matches prior
    behavior of `_guess_sector`).
+
+Cold yfinance lookups happen only on brand-new tickers — 1-3/week as
+the universe rotates. Production load is negligible.
 
 Live `market_data._guess_sector` becomes a thin wrapper around
 `get_sector(symbol)` from this module.
