@@ -17,6 +17,81 @@ Rules going forward:
 
 ---
 
+## 2026-04-27 — Meta-model: fix data-leakage from random train/test split (Severity: critical, accuracy)
+
+**The problem we found.** Per-profile dashboard reported AUC values
+of 0.83-0.96 across every profile. Realistic out-of-sample financial
+AUCs are ~0.55. The numbers were not real edge — they were a known
+data-leakage artifact.
+
+**Root cause.** `meta_model.train_meta_model` was using
+sklearn's `train_test_split(X, y, test_size=0.2, random_state=42)`
+— a RANDOM 80/20 split with no time awareness. Test predictions
+were interleaved in time with training predictions. Because
+financial features are heavily autocorrelated day-to-day (RSI today
+≈ RSI tomorrow, regime today ≈ regime tomorrow), the classifier
+effectively memorized "this market state ≈ this outcome" instead
+of learning predictive patterns. AUC inflated from a realistic
+~0.55 to an artifact ~0.95.
+
+Compounding it: `build_training_set` selected from `ai_predictions`
+without an `ORDER BY`. SQLite's row order in that case is
+implementation-defined, so even a deterministic slice of the result
+would have been random in time.
+
+**Fix:**
+
+1. `build_training_set` query now `ORDER BY id ASC` — guarantees
+   time-ascending order. Comment in code references this CHANGELOG
+   entry as the reason.
+2. `train_meta_model` no longer imports or calls
+   `sklearn.model_selection.train_test_split`. Replaced with a
+   deterministic tail split:
+   ```python
+   n_test = max(1, int(round(n * 0.2)))
+   n_train = n - n_test
+   X_train, X_test = X[:n_train], X[n_train:]
+   y_train, y_test = y[:n_train], y[n_train:]
+   ```
+   The most-recent 20% becomes the held-out test set. No shuffling.
+   No `random_state` on the split. (Classifier `random_state=42` is
+   kept — that's reproducibility, not data leakage.)
+
+**Honest expectation.** AUCs will drop on the next retrain, possibly
+significantly. A drop from ~0.95 to ~0.55-0.65 would be GOOD news —
+that's a real edge, just much smaller than the leakage made it look.
+A drop to ~0.50 means the AI's confidence has no learnable
+correction from these features and we'd need to either widen the
+feature set or accept raw AI confidence. Either outcome is more
+useful than continuing to operate on inflated numbers.
+
+The user's explicit guidance: "yes, accuracy above all else."
+
+**Anti-regression — `tests/test_meta_model_time_ordered_split.py` (4 tests):**
+
+1. `test_train_meta_model_does_not_import_train_test_split` —
+   AST-walks `train_meta_model` source; fails the build if anyone
+   reintroduces sklearn's random splitter.
+2. `test_build_training_set_orders_by_id_asc` — regex-asserts the
+   query has `ORDER BY id ASC` (or `ORDER BY timestamp ASC`).
+3. `test_train_meta_model_uses_deterministic_tail_split` — confirms
+   the slice-based split idiom is present.
+4. `test_split_takes_most_recent_data_as_test_set` — behavioral
+   end-to-end: feeds 100 samples where the LAST 20 deliberately
+   invert the training pattern. With the time-ordered split, AUC
+   on test data must be ≤ 0.5 (because the test half contradicts
+   what the model learned). With a random split, the inverted
+   samples interleave into training and AUC would stay artificially
+   high. This test is the actual leakage detector.
+
+Tests: 959 passing (was 955; +4 new).
+
+**Post-deploy step:** delete `meta_model_*.pkl` files on prod so
+the next daily retrain (3:55 PM ET) trains fresh on the corrected
+methodology. Dashboard AUCs will reflect reality from that point.
+
+---
+
 ## 2026-04-27 — Documented "trade-execution costs modeled at $0" decision (Severity: low, docs)
 
 User reviewed today's trailing-stop exits (mostly profitable; AMD

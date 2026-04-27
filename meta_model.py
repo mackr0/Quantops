@@ -145,12 +145,18 @@ def build_training_set(db_path: str,
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
+        # ORDER BY id ASC is REQUIRED for time-ordered train/test split.
+        # Without it SQLite's row order is not guaranteed, and the
+        # downstream split would be effectively random — leaking future
+        # data into the training set and inflating AUC. See CHANGELOG
+        # 2026-04-27 for the data-leak bug this guards against.
         rows = conn.execute(
             "SELECT features_json, actual_outcome "
             "FROM ai_predictions "
             "WHERE status = 'resolved' "
             "AND actual_outcome IN ('win', 'loss') "
-            "AND features_json IS NOT NULL"
+            "AND features_json IS NOT NULL "
+            "ORDER BY id ASC"
         ).fetchall()
         conn.close()
     except Exception as exc:
@@ -204,12 +210,24 @@ def train_meta_model(X: List[List[float]], y: List[int],
         feature_importance: list of (name, importance) sorted desc
     """
     from sklearn.ensemble import GradientBoostingClassifier
-    from sklearn.model_selection import train_test_split
     from sklearn.metrics import accuracy_score, roc_auc_score
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y if sum(y) > 1 and sum(y) < len(y) else None
-    )
+    # Time-ordered split (NOT random). Inputs are required to arrive in
+    # ascending time order from build_training_set's `ORDER BY id ASC`.
+    # We use the most recent 20% as the held-out test set so the model
+    # is evaluated only on predictions made AFTER its training horizon.
+    #
+    # Why this matters: financial features are highly autocorrelated
+    # day-to-day (RSI today ≈ RSI tomorrow, regime today ≈ regime
+    # tomorrow), so a random split lets the model memorize "this regime
+    # ≈ this outcome" rather than learn predictive patterns. The 0.95
+    # AUCs we saw with random splitting were a known data-leakage
+    # artifact, not real edge. See CHANGELOG 2026-04-27.
+    n = len(X)
+    n_test = max(1, int(round(n * 0.2)))
+    n_train = n - n_test
+    X_train, X_test = X[:n_train], X[n_train:]
+    y_train, y_test = y[:n_train], y[n_train:]
 
     model = GradientBoostingClassifier(
         n_estimators=100,
