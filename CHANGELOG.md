@@ -17,6 +17,89 @@ Rules going forward:
 
 ---
 
+## 2026-04-28 — Three real bugs from the morning's anomaly scan (Severity: critical, reliability+accuracy)
+
+User flagged two anomalies on the dashboard ticker:
+
+1. `Large Cap Limit Orders: Check Exits failed at 11:06 AM ET`
+2. `SHORT VALE (2% equity, 53% confidence) — Perfect fit: 100% personal win rate (13W/0L) on VALE SHORT signals`
+3. (User follow-up) "the SHORT was listed but never went through"
+
+All three are real, all three are fixed.
+
+### Bug 1 — Missing `import logging` in trader.py (CRITICAL)
+
+`trader.py` was using `logging.info(...)` and `logging.debug(...)`
+in the short-borrow accrual + MFE updater code I added on
+2026-04-27 (commit `e2c040d`), but the module never imported
+`logging`. Result: `NameError: name 'logging' is not defined`
+fired every Check Exits cycle for the Large Cap Limit Orders
+profile (the only profile holding limit-order positions long
+enough to enter the short-borrow path).
+
+Silent regression for ~24 hours. Caught only because the user saw
+the failure in the Scan Failures dashboard panel.
+
+Fix: `import logging` at the top of trader.py.
+
+Anti-regression: `tests/test_no_missing_logging_import.py` —
+AST-walks every .py file in the repo. If a file uses `logging.X`
+at any depth, it MUST `import logging` at any scope. Catches the
+entire class of bug.
+
+### Bug 2 — AI confabulating signal-specific track records
+
+The AI's "100% on VALE SHORT signals (13W/0L)" claim was
+fabricated. Actual data: VALE had 13 RESOLVED predictions, all of
+them HOLD signals, ZERO resolved SHORTs. Root cause:
+`get_symbol_reputation()` aggregated wins/losses across ALL signal
+types into a single number. The prompt then injected
+`Your record on VALE: 13W/0L (100% win rate)` and the AI
+reasonably attributed those wins to whatever signal it was
+currently considering (in this case, SHORT).
+
+Fix:
+- `get_symbol_reputation` now returns a `by_signal` breakdown
+  alongside the aggregate.
+- `_build_candidates_data` formats the prompt's `track_record`
+  field with explicit signal splits:
+  `"13W/0L overall (100%) — BUY 0W/0L (0%); SHORT 0W/0L (0%);
+   HOLD 13W/0L (100%)"`.
+- The AI now sees that VALE has zero SHORT history and can't
+  cite signal-specific edge from HOLD outcomes.
+
+Anti-regression: `tests/test_track_record_split_by_signal.py` —
+4 tests including the exact VALE repro (13 HOLD wins, asserts
+no by_signal entry claims SHORT credit).
+
+### Bug 3 — Silent error-swallow on trade execution
+
+User: "the SHORT was listed but never went through." Dashboard
+showed `Executing: SHORT VALE` at 14:35:02 UTC but no order_id,
+no submitted log, no error trace. The code at
+`run_trade_cycle:1628` had a try/except wrapping `execute_trade`
+that appended exceptions to `errors[]` with **no log emission**.
+Plus the SKIP / EXCLUDED / EARNINGS_SKIP non-exception paths also
+returned silently — the user only ever saw "Executing:" with no
+follow-up.
+
+Fix:
+- Exception path: `logging.error(..., exc_info=True)` so the
+  full traceback hits the journal. Alpaca rejections (e.g.,
+  not-shortable, halt, regulatory restriction) now produce a
+  visible error line.
+- Non-exception SKIP path: `logging.warning(...)` when
+  `execute_trade` returns a non-trade action, with the symbol +
+  action + reason.
+
+Anti-regression: `tests/test_trade_execution_logging.py` —
+2 source-level guards (logging.error with exc_info=True;
+warning emitted on non-trade action).
+
+Tests: 1084 passing (was 1077; +7 new across 3 files).
+
+---
+
 ## 2026-04-27 — Wave 3 / Fix #9: per-specialist confidence calibration (Severity: medium, accuracy)
 
 The last methodology fix. METHODOLOGY_FIX_PLAN.md is now ✅ COMPLETE

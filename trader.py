@@ -1,5 +1,7 @@
 """Execute trades based on strategy signals with risk management and journaling."""
 
+import logging
+
 from client import get_api, get_account_info, get_positions
 from portfolio_manager import (
     calculate_position_size,

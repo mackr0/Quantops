@@ -1625,9 +1625,31 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 _dd=dd,
             )
             details.append(trade_result)
+            # Visibility: when the trade dict says SKIP / EXCLUDED /
+            # ERROR / etc., surface it. The previous behavior was
+            # silent — the user only saw "Executing: SHORT X" and
+            # never knew the order was rejected. Caused 2026-04-28
+            # confusion when SHORT VALE printed "Executing" but no
+            # order was actually submitted.
+            ta = (trade_result or {}).get("action") if isinstance(trade_result, dict) else None
+            if ta and ta not in ("BUY", "SELL", "SHORT", "COVER"):
+                logging.warning(
+                    "Trade NOT submitted for %s (%s): action=%s reason=%s",
+                    symbol, action, ta,
+                    (trade_result or {}).get("reason", "no reason given"),
+                )
         except Exception as exc:
             errors.append({"symbol": symbol, "error": str(exc)})
             details.append({"symbol": symbol, "action": "ERROR", "reason": str(exc)})
+            # Loud log: previously this exception was silently
+            # swallowed, leaving no trace of why an order failed.
+            # `exc_info=True` captures the full traceback into the
+            # journal so we can diagnose Alpaca rejections,
+            # not-shortable errors, etc.
+            logging.error(
+                "Trade execution raised for %s (%s): %s",
+                symbol, action, exc, exc_info=True,
+            )
 
     # Build summary
     buys = [d for d in details if d.get("action") == "BUY"]
@@ -1929,11 +1951,31 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
             "reason": signal.get("reason", "")[:120],
         }
 
-        # Per-stock track record + last prediction reasoning
+        # Per-stock track record + last prediction reasoning.
+        #
+        # The string is split by signal type (BUY / SHORT / HOLD)
+        # so the AI can cite signal-specific edge instead of lumping
+        # HOLD outcomes into a SHORT decision narrative. See the
+        # 2026-04-28 confabulation incident: AI claimed "100% on VALE
+        # SHORTs" when all 13 wins were HOLDs and zero SHORTs had
+        # resolved. Aggregate is shown alongside the per-signal lines
+        # so the AI sees both views.
         if symbol in symbol_reputation:
             rep = symbol_reputation[symbol]
-            entry["track_record"] = (f"{rep['wins']}W/{rep['losses']}L "
-                                     f"({rep['win_rate']:.0f}% win rate)")
+            by_sig = rep.get("by_signal", {})
+            parts = []
+            for sig in ("BUY", "SHORT", "SELL", "HOLD"):
+                s = by_sig.get(sig)
+                if s and s["total"] > 0:
+                    parts.append(
+                        f"{sig} {s['wins']}W/{s['losses']}L "
+                        f"({s['win_rate']:.0f}%)"
+                    )
+            sig_breakdown = "; ".join(parts) if parts else "no resolved signals"
+            entry["track_record"] = (
+                f"{rep['wins']}W/{rep['losses']}L overall "
+                f"({rep['win_rate']:.0f}%) — {sig_breakdown}"
+            )
 
         # Fetch last prediction reasoning for this symbol so AI remembers
         # WHY it made its previous call

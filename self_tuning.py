@@ -286,10 +286,24 @@ def _build_cross_profile_insights(user_id, current_profile_id, current_db_path):
 # ---------------------------------------------------------------------------
 
 def get_symbol_reputation(db_path, min_predictions=3):
-    """Get win rate per symbol from ai_predictions.
+    """Get win rate per symbol from ai_predictions, split by signal type.
 
-    Returns dict: {symbol: {"wins": N, "losses": N, "win_rate": float, "avg_return": float}}
-    Only includes symbols with min_predictions resolved.
+    Returns dict: {symbol: {
+        "wins": N, "losses": N, "total": N, "win_rate": float,
+        "avg_return": float,
+        "by_signal": {"BUY": {wins, losses, total, win_rate}, "SHORT": {...}, ...},
+    }}
+
+    The `by_signal` breakdown lets the AI prompt cite signal-specific
+    track records instead of lumping HOLD outcomes into BUY/SHORT
+    confidence. Without this split, a symbol with 13W/0L on HOLDs
+    looks like a 100% BUY/SHORT track record to the AI prompt — which
+    triggered the 2026-04-28 confabulation bug where the system
+    narrated "100% win rate on VALE SHORT signals" while shorting a
+    name that had only ever been HELD.
+
+    Only includes symbols with min_predictions resolved (across all
+    signal types combined).
     """
     try:
         conn = _get_conn(db_path)
@@ -304,30 +318,57 @@ def get_symbol_reputation(db_path, min_predictions=3):
             conn.close()
             return {}
 
+        # Per-signal-type aggregation. Group by (symbol, signal) so
+        # we can build the by_signal breakdown.
         rows = conn.execute(
-            "SELECT symbol, COUNT(*) as total, "
+            "SELECT symbol, predicted_signal, COUNT(*) as total, "
             "SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) as wins, "
             "AVG(actual_return_pct) as avg_return "
             "FROM ai_predictions WHERE status='resolved' "
-            "GROUP BY symbol HAVING COUNT(*) >= ?",
-            (min_predictions,),
+            "GROUP BY symbol, predicted_signal"
         ).fetchall()
         conn.close()
 
         result = {}
         for r in rows:
+            sym = r["symbol"]
+            signal = (r["predicted_signal"] or "").upper()
             total = r["total"]
             wins = r["wins"]
             losses = total - wins
             win_rate = (wins / total * 100) if total > 0 else 0
-            result[r["symbol"]] = {
-                "wins": wins,
-                "losses": losses,
-                "total": total,
-                "win_rate": win_rate,
-                "avg_return": r["avg_return"] or 0,
+            avg_ret = r["avg_return"] or 0
+
+            if sym not in result:
+                result[sym] = {
+                    "wins": 0, "losses": 0, "total": 0,
+                    "win_rate": 0, "avg_return": 0,
+                    "by_signal": {},
+                }
+            result[sym]["wins"] += wins
+            result[sym]["losses"] += losses
+            result[sym]["total"] += total
+            result[sym]["by_signal"][signal] = {
+                "wins": wins, "losses": losses, "total": total,
+                "win_rate": win_rate, "avg_return": avg_ret,
             }
-        return result
+
+        # Compute aggregate win_rate + avg_return per symbol AFTER
+        # accumulation, then drop symbols below the floor.
+        out = {}
+        for sym, agg in result.items():
+            if agg["total"] < min_predictions:
+                continue
+            agg["win_rate"] = (agg["wins"] / agg["total"] * 100) if agg["total"] else 0
+            # Weight avg_return by per-signal totals
+            total_count = sum(s["total"] for s in agg["by_signal"].values())
+            if total_count:
+                agg["avg_return"] = sum(
+                    s["avg_return"] * s["total"]
+                    for s in agg["by_signal"].values()
+                ) / total_count
+            out[sym] = agg
+        return out
 
     except Exception as exc:
         logger.warning("Failed to get symbol reputation: %s", exc)
