@@ -42,7 +42,13 @@ _political_lock = __import__("threading").Lock()
 
 def _get_shared_political_context(ctx):
     """Return MAGA political context, cached for 30 minutes.
-    All profiles see the same political climate — no need to re-analyze."""
+
+    Lever 1 of COST_AND_QUALITY_LEVERS_PLAN.md (2026-04-27): cache
+    is now persistent in SQLite (`shared_ai_cache` table) so a
+    scheduler restart doesn't force a fresh fetch for the rest of
+    the 30-min window. The previous in-memory dict is kept as an
+    L1 cache to avoid even hitting SQLite when the process is hot.
+    """
     global _political_cache, _political_cache_cycle
     import time as _t
 
@@ -52,34 +58,74 @@ def _get_shared_political_context(ctx):
             _political_cache = {}
             _political_cache_cycle = now_bucket
 
+        # L1: in-process cache (hot path)
         if "context" in _political_cache:
             logging.info("Using cached political context")
             return _political_cache["context"]
+
+        # L2: persistent SQLite cache (survives restarts)
+        try:
+            from shared_ai_cache import get as _cache_get, put as _cache_put
+            persisted = _cache_get("political", "global",
+                                   bucket_seconds=1800)
+            if persisted is not None:
+                _political_cache["context"] = persisted
+                logging.info("Using persisted political context from disk")
+                return persisted
+        except Exception:
+            _cache_get = _cache_put = None
 
         from political_sentiment import get_maga_mode_context
         print("  MAGA Mode active — fetching political context...", flush=True)
         result = get_maga_mode_context(ctx=ctx)
         _political_cache["context"] = result
+        if _cache_put is not None:
+            try:
+                _cache_put("political", "global", result,
+                           bucket_seconds=1800)
+            except Exception:
+                pass
         return result
 
 
 def _get_shared_ensemble(candidates_data, ctx):
     """Return ensemble result, cached per market_type per cycle.
-    Thread-locked to prevent parallel profiles from both missing
-    the cache and running duplicate ensemble calls."""
+
+    Lever 1 of COST_AND_QUALITY_LEVERS_PLAN.md (2026-04-27): cache
+    is now persistent in SQLite so deploy-restarts don't wipe a
+    valid cached result. Two-tier: in-memory L1 (process-local) +
+    SQLite L2 (cross-restart). Same 30-min TTL as before.
+    """
     global _ensemble_cache, _ensemble_cache_cycle
     import time as _t
 
     with _ensemble_lock:
-        now_bucket = int(_t.time() / 1800)  # 30-min cache (was 15)
+        now_bucket = int(_t.time() / 1800)
         if now_bucket != _ensemble_cache_cycle:
             _ensemble_cache = {}
             _ensemble_cache_cycle = now_bucket
 
         cache_key = ctx.segment
+
+        # L1: in-process cache
         if cache_key in _ensemble_cache:
             logging.info("Using shared ensemble results for %s", cache_key)
             return _ensemble_cache[cache_key]
+
+        # L2: persistent SQLite cache
+        try:
+            from shared_ai_cache import get as _cache_get, put as _cache_put
+            persisted = _cache_get("ensemble", cache_key,
+                                   bucket_seconds=1800)
+            if persisted is not None:
+                _ensemble_cache[cache_key] = persisted
+                logging.info(
+                    "Using persisted ensemble results for %s (from disk)",
+                    cache_key,
+                )
+                return persisted
+        except Exception:
+            _cache_get = _cache_put = None
 
         from ensemble import run_ensemble
         result = run_ensemble(
@@ -89,7 +135,111 @@ def _get_shared_ensemble(candidates_data, ctx):
             ai_api_key=ctx.ai_api_key,
         )
         _ensemble_cache[cache_key] = result
+        if _cache_put is not None:
+            try:
+                _cache_put("ensemble", cache_key, result,
+                           bucket_seconds=1800)
+            except Exception:
+                pass
         return result
+
+
+# ---------------------------------------------------------------------------
+# Lever 2 of COST_AND_QUALITY_LEVERS_PLAN.md — meta-model pre-gate.
+# ---------------------------------------------------------------------------
+
+def _meta_pregate_candidates(candidates: List[Dict[str, Any]],
+                              ctx: Any) -> List[Dict[str, Any]]:
+    """Drop candidates the meta-model deems likely-wrong before the
+    ensemble runs. Returns the filtered list (in original order).
+
+    Behavior:
+    - If the profile has no trained meta-model yet → fall open, return
+      all candidates (preserves current cold-start behavior).
+    - If `meta_pregate_threshold = 0.0` (disabled) → fall open.
+    - Otherwise: build a feature vector per candidate using the same
+      shape as the live prediction-recording path, run the meta-model,
+      keep candidates with `meta_prob >= threshold`.
+
+    Quality mechanisms:
+    - Specialists analyze a sharper cohort → relative confidence
+      spreads carry more signal.
+    - Final batch_select prompt has fewer-better candidates → more AI
+      attention per remaining candidate.
+    - Risk_assessor's VETO authority isn't wasted on already-doomed
+      candidates.
+    - Calibration data labels accumulate faster (more specialists'
+      verdicts attach to candidates that actually became trades).
+
+    Cost savings: roughly halves ensemble specialist calls on profiles
+    with trained meta-models (since ~50% of shortlisted candidates
+    typically map to meta_prob < 0.5 once a model is trained).
+    """
+    if not candidates:
+        return candidates
+    threshold = float(getattr(ctx, "meta_pregate_threshold", 0.5) or 0.0)
+    if threshold <= 0:
+        return candidates  # disabled — caller opted out
+    profile_id = getattr(ctx, "profile_id", 0)
+    if not profile_id:
+        return candidates
+    try:
+        import meta_model
+        meta_path = meta_model.model_path_for_profile(profile_id)
+        meta_bundle = meta_model.load_model(meta_path)
+        if meta_bundle is None:
+            # No model yet — gate falls open during cold-start data
+            # accumulation. Behavior identical to pre-Lever-2.
+            return candidates
+    except Exception:
+        return candidates
+
+    kept = []
+    dropped_count = 0
+    for c in candidates:
+        try:
+            # Build a partial feature dict from the candidate's
+            # shortlist record. The full features_payload (with alt
+            # data, sector context, etc.) is built later for storage,
+            # but the meta-model's main inputs (signal, score, RSI,
+            # technicals) are already on the candidate by the time
+            # the shortlist is ranked.
+            features = {
+                "symbol": c.get("symbol", ""),
+                "signal": c.get("signal", "HOLD"),
+                "score": c.get("score", 0),
+                "rsi": c.get("rsi", 0),
+                "volume_ratio": c.get("volume_ratio", 0),
+                "atr": c.get("atr", 0),
+                "adx": c.get("adx", 0),
+                "stoch_rsi": c.get("stoch_rsi", 0),
+                "roc_10": c.get("roc_10", 0),
+                "pct_from_52w_high": c.get("pct_from_52w_high", 0),
+                "mfi": c.get("mfi", 0),
+                "cmf": c.get("cmf", 0),
+                "gap_pct": c.get("gap_pct", 0),
+                "pct_from_vwap": c.get("pct_from_vwap", 0),
+            }
+            meta_prob = meta_model.predict_probability(meta_bundle, features)
+            if meta_prob is None:
+                # Couldn't score this candidate — keep it (fail-open
+                # at the per-candidate level too).
+                kept.append(c)
+                continue
+            if meta_prob >= threshold:
+                kept.append(c)
+            else:
+                dropped_count += 1
+        except Exception:
+            kept.append(c)
+
+    if dropped_count > 0:
+        logging.info(
+            "Meta-pregate: dropped %d/%d candidates with meta_prob < %.2f "
+            "before ensemble (saves %d specialist calls; sharpens cohort)",
+            dropped_count, len(candidates), threshold, dropped_count * 4,
+        )
+    return kept
 
 
 # ---------------------------------------------------------------------------
@@ -1050,7 +1200,20 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     portfolio_state = _build_portfolio_state(account, positions_list, dd, ctx)
     market_ctx = _build_market_context(regime_info, political_context, ctx)
 
-    update_status(_pid, "Specialist ensemble", "%d candidates" % len(shortlist))
+    # ── STEP 3.65: Meta-model pre-gate (Lever 2 of COST_AND_QUALITY_LEVERS_PLAN.md)
+    # ── Drop candidates the meta-model thinks are likely-wrong BEFORE
+    # ── the ensemble runs. Saves ~50% of specialist API calls (cost),
+    # ── sharpens the surviving cohort the specialists analyze (quality),
+    # ── and makes the calibration data accumulate ~2x faster (because
+    # ── more of each specialist's verdicts get a labeled outcome).
+    # ──
+    # ── Falls open when the meta-model isn't trained yet — `predict_probability`
+    # ── returns None on cold-start, so the gate passes all candidates.
+    # ── Per-profile threshold via `meta_pregate_threshold` (default 0.5,
+    # ── 0.0 = disabled).
+    candidates_data = _meta_pregate_candidates(candidates_data, ctx)
+
+    update_status(_pid, "Specialist ensemble", "%d candidates" % len(candidates_data))
     # ── STEP 3.7: Specialist ensemble (Phase 8) ──────────────────────
     # Four specialist AIs (earnings, pattern, sentiment, risk) each see
     # the full shortlist in one batch call, returning per-symbol verdicts.

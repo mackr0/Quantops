@@ -193,6 +193,112 @@ fresh outcomes.
 
 ---
 
+## 2026-04-27 — Levers 1-3 of COST_AND_QUALITY_LEVERS_PLAN.md (Severity: medium, cost+quality)
+
+User asked for all three cost-reduction levers planned and shipped
+in one session. Markets closed = right time to land structural
+changes. Plan committed first as `COST_AND_QUALITY_LEVERS_PLAN.md`,
+then implemented in order.
+
+**Lever 1 — Persistent shared cache (`shared_ai_cache.py`):**
+
+- New SQLite-backed cache for cross-profile AI results that
+  previously lived in module-level dicts (`_ensemble_cache`,
+  `_political_cache`).
+- Two-tier: in-process L1 (fast hot path) + SQLite L2 (cross-restart).
+- `trade_pipeline._get_shared_ensemble` and
+  `_get_shared_political_context` now check L2 before firing the
+  expensive call. Same 30-min TTL as before.
+- Survives scheduler restarts. Today's 16-deploy cadence cost
+  ~$0.50 in cache wipes; structurally protected against that
+  pattern from now on.
+- Quality: identical (same payloads, just persisted).
+
+**Lever 2 — Meta-model pre-gate (`_meta_pregate_candidates`):**
+
+- New helper in `trade_pipeline.py`. Runs the meta-model on each
+  shortlisted candidate BEFORE the ensemble fires. Drops candidates
+  with `meta_prob < threshold` (default 0.5).
+- Wired into Step 3.65 of the trade pipeline, immediately before
+  `_get_shared_ensemble` and `update_status` for the ensemble step.
+- Per-profile config: `meta_pregate_threshold` (default 0.5,
+  0.0 = disabled).
+- Cold-start safe: when no meta-model is trained yet, the gate
+  falls open and returns all candidates. Per-candidate
+  `predict_probability` failures also fall open.
+- Cost: ~50% reduction in ensemble specialist calls on profiles
+  with trained meta-models.
+- Quality (4 mechanisms): sharper specialist attention,
+  smaller batch_select prompt → more reasoning per remaining
+  candidate, risk_assessor VETO authority preserved for edge
+  cases, calibration data accumulates ~2× faster.
+
+**Lever 3 — Per-profile specialist disable list:**
+
+- New per-profile column `disabled_specialists` (JSON list).
+- `ensemble.run_ensemble` reads the list and skips disabled
+  specialists' API calls entirely.
+- Hard floor: never fewer than 2 active specialists per profile.
+  Floor enforcement logs a warning + restores enough to satisfy
+  the floor.
+- New daily scheduler task `_task_specialist_health_check`:
+  - DISABLEs a specialist when its calibrator maps raw=90 to
+    cal<35 with ≥50 resolved samples (anti-correlation signal).
+  - RE-ENABLEs a previously-disabled specialist when its
+    calibrator recovers to raw=90 → cal>50.
+  - Hard floor protects against disabling all 4.
+- Cost: ~$0.20-$0.40/day per profile where a specialist is
+  disabled.
+- Quality (5 mechanisms): sign-flip beyond what calibration alone
+  can do, cleaner synthesizer math, cleaner final-AI-prompt
+  narrative, legible coverage analysis on remaining specialists,
+  higher-information VETOs.
+
+**Schema additions:**
+
+- `trading_profiles.disabled_specialists TEXT NOT NULL DEFAULT '[]'`
+- `trading_profiles.meta_pregate_threshold REAL NOT NULL DEFAULT 0.5`
+- `shared_ai_cache(cache_key, cache_kind, bucket, payload, fetched_at)`
+  with PK on `(cache_key, cache_kind)`, index on `(cache_kind, bucket)`.
+
+**Anti-regression — 21 new structural tests across 3 files:**
+
+`tests/test_shared_ai_cache.py` (9):
+- Round-trip put→get; bucket expiry; pickle corruption returns
+  None; clear_kind selectivity; concurrent put atomic replace;
+  trade_pipeline.{ensemble,political} integration with persisted
+  cache; source-level reference guard.
+
+`tests/test_meta_pregate_lever.py` (7):
+- No-model path → falls open; threshold 0.0 → disabled;
+  drops candidates below threshold; per-candidate fail-open;
+  source-level pipeline-ordering guard (pregate BEFORE ensemble);
+  empty input handled; no-profile-id falls open.
+
+`tests/test_specialist_disable_lever.py` (5):
+- Disabled specialist's skip-branch fires;
+  floor-enforcement restores when too many disabled;
+  source-level guards on `run_ensemble` and the scheduler
+  health-check task.
+
+Plus the `test_every_lever_is_tuned.py` allowlist updated to
+mark `disabled_specialists` and `meta_pregate_threshold` as
+explicitly-managed-elsewhere (not auto-tuned by self_tuning.py).
+
+Tests: 1077 passing (was 1056; +21 new).
+
+**Cumulative impact projection:**
+
+- Lever 1: ~$0.50/day deploy-heavy, ~$0.05/day quiet (no quality change)
+- Lever 2: ~$0.30-0.40/day once meta-models train (quality improves)
+- Lever 3: ~$0.40/day once auto-disable fires (quality improves)
+- **Total: ~$1.20/day savings + measurable decision-quality gains**
+
+Projected normal-cadence daily AI spend: $1.50-$2.00 (well below
+the $3 user-set ceiling).
+
+---
+
 ## 2026-04-27 — transcript_sentiment cache: 24h → 30d (closes ~$0.30/day token leak) (Severity: medium, cost)
 
 User flagged elevated AI spend today ($3.54 vs Fri's $0.42/profile

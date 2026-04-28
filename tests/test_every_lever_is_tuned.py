@@ -100,14 +100,16 @@ MANUAL_PARAMETERS = {
     "use_trailing_stops": "Default user choice; intensity tuned via Layer 2 signal_weights['use_trailing_stops']",
     "use_limit_orders":   "Default user choice; intensity tuned via Layer 2 signal_weights['use_limit_orders']",
 
-    # Placeholder rules — wired into the optimizer chain but no-op
-    # until supporting feature columns exist (days_to_earnings on each
-    # prediction; intraday entry-time bucket; per-trade max favorable
-    # excursion). Listed here so the test passes; remove from this
-    # list when the underlying feature lands and the rule activates.
-    "avoid_earnings_days":     "Placeholder optimizer (no-op until days_to_earnings is logged per-prediction)",
-    "skip_first_minutes":      "Placeholder optimizer (no-op until intraday entry-time is structured)",
-    "trailing_atr_multiplier": "Placeholder optimizer (no-op until per-trade MFE column exists)",
+    # Lever 2 / Lever 3 of COST_AND_QUALITY_LEVERS_PLAN.md.
+    # disabled_specialists is auto-managed by
+    # `_task_specialist_health_check` in multi_scheduler.py (not
+    # self_tuning.py), so the regex-based tuned-detector doesn't
+    # see the update_trading_profile call. meta_pregate_threshold
+    # is a per-profile config, not auto-tuned — the gate is
+    # binary-effective (on/off) and the threshold itself doesn't
+    # need autonomous tuning beyond the user-set default.
+    "disabled_specialists":    "Lever 3 — auto-managed by multi_scheduler._task_specialist_health_check (calibrator-driven)",
+    "meta_pregate_threshold":  "Lever 2 — per-profile gate threshold, default 0.5; user override; not autonomously tuned",
 }
 
 

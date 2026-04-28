@@ -158,6 +158,38 @@ def run_ensemble(
 
     market_type = getattr(ctx, "segment", "") or ""
     specialists = _specialists_for_market(market_type, discover_specialists())
+
+    # Lever 3 of COST_AND_QUALITY_LEVERS_PLAN.md — per-profile
+    # disable list. When calibration data shows a specialist is
+    # anti-correlated on this profile, skip its API call entirely.
+    # Daily `_task_specialist_health_check` maintains the list.
+    # Hard floor: ensure at least 2 specialists remain so the
+    # ensemble still has a meaningful synthesis.
+    disabled = set()
+    try:
+        import json as _json
+        raw = getattr(ctx, "disabled_specialists", "[]") or "[]"
+        if isinstance(raw, str):
+            disabled = set(_json.loads(raw))
+        elif isinstance(raw, list):
+            disabled = set(raw)
+    except Exception:
+        disabled = set()
+    if len(specialists) - len(disabled) < 2:
+        # Floor enforcement — un-disable arbitrarily until at least
+        # 2 specialists run. Logged so operators can see when this
+        # protective fallback fired.
+        kept = [s.NAME for s in specialists]
+        excess = (len(disabled) - (len(specialists) - 2))
+        if excess > 0:
+            for nm in list(disabled)[:excess]:
+                disabled.discard(nm)
+            logger.warning(
+                "ensemble: disabled_specialists list would leave fewer "
+                "than 2 specialists active; restoring %d specialists "
+                "(floor enforcement)", excess,
+            )
+
     raw_by_specialist: Dict[str, List[Dict[str, Any]]] = {}
     cost_calls = 0
 
@@ -168,6 +200,15 @@ def run_ensemble(
 
     for spec in specialists:
         name = spec.NAME
+
+        # Per-profile disabled list: skip the API call entirely.
+        # Synthesizer treats a missing specialist as ABSTAIN.
+        if name in disabled:
+            logger.debug(
+                "ensemble: skipping %s — in profile disabled_specialists",
+                name,
+            )
+            continue
         combined: List[Dict[str, Any]] = []
         seen_syms: set = set()
 

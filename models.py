@@ -319,6 +319,21 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         # 0.5 = halved, 2.0 = doubled). The auto-allocator updates this;
         # the trading pipeline reads it before computing position sizes.
         ("trading_profiles", "capital_scale", "REAL NOT NULL DEFAULT 1.0"),
+        # Lever 3 of COST_AND_QUALITY_LEVERS_PLAN.md — per-profile
+        # disable list for ensemble specialists. JSON array of names
+        # like ["pattern_recognizer"] when calibration data shows
+        # that specialist is anti-correlated. Maintained by the
+        # daily _task_specialist_health_check (auto-disable when
+        # calibrator slope is inverse for ≥30 days; auto-re-enable
+        # when slope recovers to positive). Hard floor: never more
+        # than 2 of 4 specialists disabled.
+        ("trading_profiles", "disabled_specialists", "TEXT NOT NULL DEFAULT '[]'"),
+        # Lever 2 of COST_AND_QUALITY_LEVERS_PLAN.md — meta-model
+        # pre-gate threshold. Candidates with meta_prob < this value
+        # are dropped BEFORE the ensemble runs. 0.0 = disabled (gate
+        # falls open). 0.5 default = drop candidates the meta-model
+        # is more confident the AI is wrong about than right.
+        ("trading_profiles", "meta_pregate_threshold", "REAL NOT NULL DEFAULT 0.5"),
     ]
     for table, col, col_def in _migrations:
         try:

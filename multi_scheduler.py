@@ -270,6 +270,15 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_calibrate_specialists(ctx),
             db_path=ctx.db_path,
         )
+        # Specialist health check (Lever 3 of
+        # COST_AND_QUALITY_LEVERS_PLAN.md) — auto-disable specialists
+        # whose calibrators show anti-correlation; auto-re-enable
+        # when slope recovers. Hard floor: ≥2 specialists active.
+        run_task(
+            f"[{seg_label}] Specialist Health Check",
+            lambda: _task_specialist_health_check(ctx),
+            db_path=ctx.db_path,
+        )
         # Universe audit (Wave 4 / Issue #10 of METHODOLOGY_FIX_PLAN.md)
         # — daily diff of Alpaca's active asset set; captures departures
         # for backtest survivorship-bias correction. Idempotent across
@@ -1283,6 +1292,124 @@ def _task_universe_audit(ctx):
         )
     except Exception as exc:
         logging.warning(f"Universe audit failed: {exc}")
+
+
+def _task_specialist_health_check(ctx):
+    """Auto-(dis)enable specialists based on calibrator slope.
+
+    Lever 3 of COST_AND_QUALITY_LEVERS_PLAN.md. Reads each
+    specialist's fitted calibrator and applies a "health" rule:
+
+    - DISABLE specialist if calibrator maps raw=90 to cal<35 AND
+      we have ≥50 resolved samples for that specialist (avoid
+      acting on small samples). Indicates clearly-inverse
+      correlation; specialist is anti-signal.
+    - RE-ENABLE specialist if it's currently disabled AND its
+      calibrator now maps raw=90 to cal>50. Indicates the slope
+      flipped back to positive (fresh regime / new training data).
+
+    Hard floor: never DISABLE if it would leave <2 specialists
+    active per profile (the ensemble synth needs ≥2 to mean
+    anything). Floor enforcement also lives in ensemble.py.
+
+    Reads/writes profile.disabled_specialists JSON column.
+    """
+    profile_id = getattr(ctx, "profile_id", None)
+    if profile_id is None:
+        return
+    try:
+        import json as _json
+        from specialist_calibration import (
+            get_calibrator, apply_calibration,
+        )
+        from specialists import discover_specialists
+        seg_label = ctx.display_name or ctx.segment
+
+        all_names = [getattr(m, "NAME", None) for m in discover_specialists()]
+        all_names = [n for n in all_names if n]
+        if not all_names:
+            return
+
+        # Read current disabled list
+        current_raw = getattr(ctx, "disabled_specialists", "[]") or "[]"
+        current = set(_json.loads(current_raw)) if isinstance(current_raw, str) else set(current_raw)
+
+        # Count resolved samples per specialist (need ≥50 to act)
+        import sqlite3 as _sq
+        sample_counts = {}
+        try:
+            conn = _sq.connect(ctx.db_path)
+            for name in all_names:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM specialist_outcomes "
+                    "WHERE specialist_name = ? AND was_correct IS NOT NULL",
+                    (name,),
+                ).fetchone()
+                sample_counts[name] = (row[0] if row else 0)
+            conn.close()
+        except Exception:
+            sample_counts = {n: 0 for n in all_names}
+
+        new_disabled = set(current)
+        actions = []
+
+        for name in all_names:
+            if sample_counts.get(name, 0) < 50:
+                continue
+            cal = get_calibrator(ctx.db_path, name)
+            if cal is None:
+                continue
+            # Probe slope by mapping raw=90 → calibrated value.
+            cal_at_90 = apply_calibration(90, cal)
+
+            if name not in current and cal_at_90 < 35:
+                new_disabled.add(name)
+                actions.append(
+                    f"DISABLE {name} (raw=90 → cal={cal_at_90}, "
+                    f"n={sample_counts[name]}; clear anti-signal)"
+                )
+            elif name in current and cal_at_90 > 50:
+                new_disabled.discard(name)
+                actions.append(
+                    f"RE-ENABLE {name} (raw=90 → cal={cal_at_90}, "
+                    f"n={sample_counts[name]}; slope recovered)"
+                )
+
+        # Hard floor: ensure ≥2 specialists active. If applying the
+        # new disabled set would leave fewer, undo the most-recent
+        # disable until floor satisfied.
+        active_count = len(all_names) - len(new_disabled)
+        if active_count < 2:
+            # Sort newly-added disables alphabetically for deterministic
+            # tie-break, then restore until we have ≥2 active.
+            newly_added = sorted(new_disabled - current)
+            while active_count < 2 and newly_added:
+                restore = newly_added.pop()
+                new_disabled.discard(restore)
+                active_count = len(all_names) - len(new_disabled)
+                actions.append(
+                    f"FLOOR-RESTORE {restore} (would leave <2 active)"
+                )
+
+        if new_disabled != current:
+            from models import update_trading_profile
+            update_trading_profile(
+                profile_id,
+                disabled_specialists=_json.dumps(sorted(new_disabled)),
+            )
+            logging.info(
+                f"[{seg_label}] Specialist health check applied: "
+                + "; ".join(actions)
+            )
+        else:
+            logging.info(
+                f"[{seg_label}] Specialist health check: no changes "
+                f"(disabled={sorted(current)}, samples="
+                + ",".join(f"{n}={sample_counts.get(n,0)}" for n in all_names)
+                + ")"
+            )
+    except Exception as exc:
+        logging.warning(f"Specialist health check failed: {exc}")
 
 
 def _task_calibrate_specialists(ctx):
