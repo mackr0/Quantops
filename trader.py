@@ -303,22 +303,32 @@ def check_exits(ctx=None):
                 cur_price = float(p.get("current_price") or 0)
                 if not sym or cur_price <= 0:
                     continue
-                # Long: MFE = highest price seen. Short: MFE = lowest.
+                # Long: MFE = max(entry_price, max(price_seen)). Floor
+                # at entry_price because a long never had its position
+                # at a price below entry "in our favor." Without this
+                # floor, a position that drops on day 1 had MFE set
+                # to the day-1 low and the trailing-stop tuner's
+                # give-back math (mfe-exit)/mfe would be garbage.
+                # Short: MFE = min(entry_price, min(price_seen)) —
+                # symmetric. Self-heals on next update against rows
+                # that were initialized incorrectly before this fix.
                 if float(p.get("qty", 0)) < 0:
                     mfe_conn.execute(
                         "UPDATE trades SET max_favorable_excursion = "
-                        "MIN(COALESCE(max_favorable_excursion, ?), ?) "
+                        "MIN(COALESCE(max_favorable_excursion, price), "
+                        "    price, ?) "
                         "WHERE symbol = ? AND side = 'sell_short' "
                         "AND status = 'open'",
-                        (cur_price, cur_price, sym),
+                        (cur_price, sym),
                     )
                 else:
                     mfe_conn.execute(
                         "UPDATE trades SET max_favorable_excursion = "
-                        "MAX(COALESCE(max_favorable_excursion, ?), ?) "
+                        "MAX(COALESCE(max_favorable_excursion, price), "
+                        "    price, ?) "
                         "WHERE symbol = ? AND side = 'buy' "
                         "AND status = 'open'",
-                        (cur_price, cur_price, sym),
+                        (cur_price, sym),
                     )
             mfe_conn.commit()
             mfe_conn.close()

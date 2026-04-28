@@ -17,6 +17,53 @@ Rules going forward:
 
 ---
 
+## 2026-04-28 — MFE floor bug: max_favorable_excursion can't be below entry (Severity: medium, accuracy)
+
+End-of-day verification of yesterday's Lever-3 work surfaced a
+real bug. AVGO long: entry $414.74, max_favorable_excursion
+$405.07. MFE below entry is impossible by definition.
+
+**Root cause:** the MFE updater initialized with
+`MAX(COALESCE(mfe, current_price), current_price)`. On first
+observation that returns whatever current_price was at that
+moment — even if it had already dropped below entry. For a long,
+the MFE floor IS entry price (the position never had a price
+below entry "in our favor"). For shorts, symmetrically, the
+ceiling is entry.
+
+**Why it matters:** the trailing-stop optimizer
+(`_optimize_trailing_atr_multiplier`) computes
+`give_back_pct = (mfe - exit_fill_price) / mfe` to bucket
+trades. With MFE below entry, give-back math is nonsensical —
+which means the trailing-stop tuner would make wrong decisions
+once it had enough samples to fire (it hasn't fired yet —
+sample-size gate at 30 closed longs not met).
+
+**Fix:** include the row's `price` column in the MAX/MIN:
+```sql
+UPDATE trades SET max_favorable_excursion =
+  MAX(COALESCE(max_favorable_excursion, price), price, ?)
+WHERE symbol = ? AND side = 'buy' AND status = 'open'
+```
+
+Self-heals on next Check Exits cycle. Existing rows with bad
+MFE auto-correct.
+
+**Anti-regression — `tests/test_mfe_floor_at_entry.py` (7 tests):**
+
+- Long with current below entry → MFE floored at entry
+- Long sequence (high then drop) → MFE tracks max correctly
+- Short with current above entry → MFE ceilinged at entry
+- Short sequence → MFE tracks min correctly
+- Long self-heal: pre-fix bad row corrects on next update
+- Short self-heal: same
+- Source-level guard: SQL must reference the row's `price` column
+  in both long and short paths.
+
+Tests: 1094 passing.
+
+---
+
 ## 2026-04-28 — update_trading_profile silently dropped disabled_specialists writes (Severity: critical, reliability)
 
 Verifying yesterday's Lever 3 health check on prod, found the
