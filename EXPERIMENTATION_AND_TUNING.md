@@ -34,31 +34,51 @@ All seven feed back into the next decision the AI makes. The system in 6 months 
        │              QuantOpsAI — Closed Learning Loop          │
        └────────────────────────────────────────────────────────┘
 
-   Universe (8,000+)              ┌─→  Meta-model (re-weights AI conf)
-        │                         │
-        ▼                         │    ┌─→ Self-tuner (4 params/day)
-   Strategy library (16 + auto-N) │    │
-        │                         │    ├─→ 12-layer autonomy (35+ params,
-        ▼                         │    │   weights, regime/ToD/symbol)
-   Specialist Ensemble (4 AIs) ───┤    │
-        │                         │    ├─→ Alpha-decay deprecator
-        ▼                         │    │
-   Final AI batch decision ───────┤    ├─→ Specialist calibrators
-        │                         │    │
-        ▼                         │    ├─→ Auto-strategy proposer
-   Execution (ATR stops, trail)   │    │   (weekly, AI-driven)
-        │                         │    │
-        ▼                         │    └─→ Post-mortems on losing weeks
-   Position resolves ─────────────┘
+   Universe (8,000+)
         │
         ▼
-   ai_predictions.actual_outcome ─────► (feeds 7 loops above)
+   Strategy library (16 + auto-N)        ┌─→ Meta-model (re-weights conf)
+        │                                │
+        ▼                                ├─→ Self-tuner (35+ params,
+   Meta-model PRE-GATE ───────────────┐  │   validation-window-gated)
+   (drops meta_prob<0.5; Lever 2)     │  │
+        │                             │  ├─→ 12-layer autonomy (weights,
+        ▼                             │  │   regime/ToD/symbol overrides)
+   Specialist Ensemble (≤4 AIs) ─────┤  │
+   - calibrated confidence per spec  │  ├─→ Alpha-decay deprecator
+   - per-profile disabled list       │  │
+   - L1 in-process + L2 SQLite cache │  ├─→ Specialist calibrators +
+        │                             │  │   auto-(dis)enable
+        ▼                             │  │
+   Final AI batch decision ──────────┤  ├─→ Auto-strategy proposer
+   (sees signal-split track records, │  │   (weekly, AI-driven)
+    calibrated ensemble verdicts)    │  │
+        │                             │  └─→ Post-mortems on losing weeks
+        ▼                             │
+   Meta-model RE-WEIGHT (post-pick)  │
+   (suppress meta_prob<0.3 trades)   │
+        │                             │
+        ▼                             │
+   Execution (ATR stops, trailing,    │
+    short-borrow accrual on covers,   │
+    MFE updater on every Check Exits) │
+        │                             │
+        ▼                             │
+   Position resolves ─────────────────┘
+        │
+        ▼
+   ai_predictions.actual_outcome ─────► feeds all loops above
+   specialist_outcomes ────────────► feeds specialist calibrators
+   trades.max_favorable_excursion ─► feeds trailing-stop tuner
 
    Cross-cutting: Cost Guard caps daily AI spend; methodology guards
-   ensure every loop reads only out-of-sample data.
+   ensure every loop reads only out-of-sample data; structural tests
+   enforce contracts on snake_case leakage, decimal formatting,
+   logging-import discipline, signal-split track records, and
+   loud error logging on order rejections.
 ```
 
-Outputs of the loops re-shape inputs of the AI's next decision: parameter bounds, signal weights, prompt structure, the candidate shortlist, the meta-model's veto threshold, capital allocated per profile, even the ensemble specialists' effective confidence.
+Outputs of the loops re-shape inputs of the AI's next decision: parameter bounds, signal weights, prompt structure, the candidate shortlist (now meta-model-pre-gated), the meta-model's veto threshold, capital allocated per profile, the ensemble specialists' effective confidence (calibrated + per-profile-disabled), even per-symbol track records (now split by signal type so the AI can't claim SHORT credit for HOLD wins).
 
 ---
 
@@ -227,7 +247,7 @@ This is the texture of "auto-experimenting and tuning" working as advertised. No
 | Tab | Widget | What it tells you |
 |---|---|---|
 | `/performance#ai` | Meta-Model | Per-profile AUC, accuracy, top features, sample count |
-| `/performance#ai` | Specialist Ensemble | Per-symbol breakdown including calibrated vs raw confidence |
+| `/performance#ai` | Specialist Ensemble | Per-symbol breakdown including calibrated vs raw confidence; disabled-specialists badge per profile |
 | `/performance#ai` | Active Lessons | Patterns from post-mortems currently injected into AI prompt |
 | `/performance#ai` | Active Autonomy State | Snapshot of every layer's currently-applied adjustments |
 | `/performance#ai` | Autonomy Timeline | Chronological audit trail of every autonomous change |
@@ -237,7 +257,9 @@ This is the texture of "auto-experimenting and tuning" working as advertised. No
 | `/performance#scalability` | Strategy Allocation | Capital allocator weights per strategy per profile |
 | `/performance#executive` | Win Rate / Sharpe / Drawdown | The honest topline numbers |
 | Dashboard cards | Per-profile equity / positions / today's trades | Ground truth |
+| Dashboard cards | Scan Failures (last hour) | Any task that raised — Check Exits, Scan & Trade, etc. Watch this whenever you deploy. |
 | `/api/resolve-param` | Parameter Resolver | Inspect: for THIS profile, THIS parameter, RIGHT NOW, what value would the override chain return? |
+| `journalctl -u quantopsai --since '...' \| grep -iE 'error\|traceback'` | Raw scheduler log | Loud `logging.error(..., exc_info=True)` lines now fire on order rejections — diagnostic source-of-truth when a trade prints "Executing:" but doesn't show up in Alpaca. |
 
 ---
 

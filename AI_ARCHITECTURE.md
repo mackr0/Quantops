@@ -105,20 +105,50 @@ Screener (no AI)            8,000+ symbols → ~15 candidates
                               Votes aggregated into a score.
         │
         ▼
+Meta-model pre-gate          For each candidate, the per-profile
+(no AI; loads existing      meta-model returns P(this prediction is
+ model)                       correct). Candidates with meta_prob below
+                              `meta_pregate_threshold` (default 0.5)
+                              are dropped BEFORE the ensemble fires.
+                              Falls open if no model is trained yet.
+                              See COST_AND_QUALITY_LEVERS_PLAN.md
+                              Lever 2.
+        │
+        ▼
 4 specialists vote in        Batched in groups of 5 candidates so
-parallel (4 AI calls)         no candidate is dropped. Each returns
+parallel (≤4 AI calls)        no candidate is dropped. Each returns
                               verdict + confidence + reasoning.
+                              Per-profile `disabled_specialists` skips
+                              specialists whose calibration data shows
+                              anti-correlation (Lever 3). Hard floor:
+                              ≥2 active specialists per profile.
         │
         ▼
-Ensemble synthesizer         Confidence-weighted vote across the 4.
-(no AI)                      Risk Assessor's VETO overrides everything.
+Ensemble synthesizer         Confidence-weighted vote across remaining
+(no AI; applies              specialists. EACH specialist's confidence
+ calibration)                 is mapped through its per-profile
+                              Platt-scaling layer (raw 90 → empirical
+                              P(correct), e.g., 28% on Small Cap for
+                              pattern_recognizer). Risk Assessor's
+                              VETO overrides everything.
         │
         ▼
-Batch Trade Selector         Sees: candidates, ensemble verdicts,
-(1 AI call)                   portfolio state, market regime, political
-                              context, learned patterns, post-mortems,
-                              per-stock track records.
+Batch Trade Selector         Sees: candidates, calibrated ensemble
+(1 AI call)                   verdicts, portfolio state, market regime,
+                              political context, learned patterns,
+                              post-mortems, per-stock track records
+                              SPLIT BY SIGNAL TYPE
+                              (e.g., "VALE: BUY 0W/0L; SHORT 0W/0L;
+                              HOLD 13W/0L" — prevents the AI from
+                              attributing HOLD outcomes to a SHORT
+                              decision narrative).
                               Picks 0-3 trades, sizes them.
+        │
+        ▼
+Meta-model re-weighting      Final per-trade meta_prob check. Trades
+(no AI)                      with meta_prob < SUPPRESSION_THRESHOLD
+                              (0.3) are dropped. Confidence on
+                              survivors blended with meta_prob.
         │
         ▼
 Parameter resolution         For each parameter the executor needs
@@ -131,7 +161,15 @@ Parameter resolution         For each parameter the executor needs
         ▼
 Order execution              Trades sent to Alpaca. Internal ledger
                               records everything for metrics, tuning,
-                              and meta-model training.
+                              and meta-model training. Order rejections
+                              are logged with full traceback (added
+                              2026-04-28 after silent-swallow incident).
+                              Short covers subtract accrued borrow
+                              cost (`short_borrow.py`) before P&L log.
+                              MFE per open position updated every
+                              Check Exits cycle (long: max price
+                              reached; short: min price reached) →
+                              feeds the trailing-stop tuner.
 ```
 
 ### 1c. What the AI Sees per Candidate
@@ -141,6 +179,28 @@ Order execution              Trades sent to Alpaca. Internal ledger
 AI Sees" reference panel; the canonical signal registry is in
 `signal_weights.WEIGHTABLE_SIGNALS`. Each signal can be omitted or
 discounted per profile via Layer 2 weights (see §Part 2).
+
+**Per-stock memory is split by signal type** (added 2026-04-28). For
+each candidate the prompt's `track_record` field reads:
+
+```
+13W/0L overall (100%) — BUY 0W/0L (0%); SHORT 0W/0L (0%); HOLD 13W/0L (100%)
+```
+
+Without the split, the prompt previously emitted just `13W/0L
+(100%)` and the AI would attribute that aggregate record to whatever
+signal it was currently considering. (Example incident:
+`SHORT VALE` reasoning included "100% personal win rate (13W/0L) on
+VALE SHORT signals" when zero SHORTs had ever been resolved on
+VALE — all 13 wins were HOLDs.) The signal-split prompt makes that
+class of confabulation structurally impossible.
+
+**Days to earnings** (added 2026-04-27). `features_payload[days_to_earnings]`
+is captured at prediction time via `earnings_calendar.check_earnings(symbol)`.
+Used by the self-tuner's `_optimize_avoid_earnings_days` rule to
+bucket resolved predictions by proximity to earnings. Older
+predictions (pre-2026-04-27) carry `-1` and are excluded from the
+buckets.
 
 **Local-SQLite alt-data signals (added 2026-04-26):** four data
 sources are refreshed daily by the standalone projects in
@@ -165,16 +225,37 @@ so the meta-model trains on them.
 
 | Agent | Calls | Est. cost |
 |---|---|---|
-| Earnings Analyst | 3 (5-candidate batches) | ~$0.003 |
-| Pattern Recognizer | 3 | ~$0.003 |
-| Sentiment & Narrative | 3 | ~$0.003 |
-| Risk Assessor | 3 | ~$0.003 |
+| Earnings Analyst | ≤3 (5-candidate batches; abstains when no candidate has imminent earnings) | ~$0.003 |
+| Pattern Recognizer | ≤3 (skipped per-profile if `disabled_specialists` includes it) | ~$0.003 |
+| Sentiment & Narrative | ≤3 | ~$0.003 |
+| Risk Assessor | ≤3 | ~$0.003 |
 | Batch Trade Selector | 1 | ~$0.001 |
-| Political Context | 1 (if MAGA on) | ~$0.001 |
-| **Total** | **~13–14** | **~$0.014** |
+| Political Context | 1 (if MAGA on; cached 30 min cross-restart) | ~$0.001 |
+| **Total** | **≤13** | **~$0.014** |
 
-At 4 cycles/hour × 6.5 market hours × 10 profiles → **~$3.64/day** at full load.
-Cost guard ceiling defaults to trailing-7-day-avg × 1.5 (floor $5/day).
+**Three cost levers shipped 2026-04-27 (`COST_AND_QUALITY_LEVERS_PLAN.md`):**
+
+1. **Persistent shared cache** (`shared_ai_cache.py`) — ensemble +
+   political context cached to SQLite, not just module-level dicts.
+   Survives scheduler restarts. Saves ~$0.50/day on deploy-heavy days.
+2. **Meta-model pre-gate** — drops candidates with meta_prob < 0.5
+   BEFORE the ensemble fires. Cuts specialist call count by ~50%
+   on profiles with trained meta-models. Saves ~$0.30-0.40/day.
+3. **Per-profile specialist disable** — anti-calibrated specialists
+   (e.g., pattern_recognizer on small-cap profiles per the
+   2026-04-27 calibrator findings) skip their API call entirely.
+   Daily `_task_specialist_health_check` auto-(dis)enables based
+   on Platt-scaling slope. Hard floor: ≥2 active per profile.
+   Saves ~$0.40/day once auto-disable fires.
+
+**Other recent cost fixes:**
+
+- `transcript_sentiment` cache: 24h → 30 days (earnings transcripts
+  are quarterly events; saves ~$0.30/day, fixed 2026-04-27).
+
+**Projected normal-cadence daily AI spend with all levers active:**
+$1.50-$2.00 across 10 profiles. Cost guard ceiling defaults to
+trailing-7-day-avg × 1.5 (floor $5/day); user-configurable.
 
 ---
 
@@ -193,9 +274,12 @@ gate) is shared across all of them.
 - **Sizing & concentration**: max_position_pct, max_total_positions, max_correlation, max_sector_positions, drawdown_pause_pct, drawdown_reduce_pct, min_price/max_price (band tuning)
 - **Exits**: stop_loss_pct, take_profit_pct, short_stop_loss_pct, short_take_profit_pct, ATR multipliers (SL/TP/trailing)
 - **Entry filters**: min_volume, volume_surge_multiplier, breakout_volume_threshold, gap_pct_threshold, momentum_5d_gain, momentum_20d_gain, rsi_overbought, rsi_oversold
+- **Time-of-day**: skip_first_minutes (buckets resolved predictions by minutes-since-open from timestamp; tightens / loosens based on opening-window WR delta)
+- **Earnings proximity**: avoid_earnings_days (buckets by `days_to_earnings` from features_json; tightens when in-window predictions underperform, loosens when in-window outperforms — catches post-earnings drift setups)
+- **Trailing stop**: trailing_atr_multiplier (uses `max_favorable_excursion` per closed long to compute give-back % — tightens when avg give-back > 50%, loosens when winners exit near peak)
 - **Strategy toggles**: 4 legacy + auto-deprecation of all 16+ modular strategies via alpha_decay (auto-restore on Sharpe recovery)
 
-Each parameter has explicit bounds in `param_bounds.PARAM_BOUNDS`. Tuner clamps every change to these bounds. Per-rule cooldown (3-day default, 7 for per-symbol overrides, 14 for prompt rotation). Reverse-if-worsened automatic.
+Each parameter has explicit bounds in `param_bounds.PARAM_BOUNDS`. Tuner clamps every change to these bounds. Per-rule cooldown (3-day default, 7 for per-symbol overrides, 14 for prompt rotation). Reverse-if-worsened automatic. Self-tuner adjustments are gated by a 14-day validation window (added 2026-04-27) — proposed changes only apply if they would have helped on recent data.
 
 ### Layer 2 — Weighted Signal Intensity
 
@@ -264,6 +348,50 @@ Weekly Sunday task per profile. When the past 7 days underperformed the long-ter
 
 Tuner rule that scans HOLD predictions resolved as `loss` (price moved enough that we missed an opportunity). When ≥60% of recent HOLD-losses had confidence in the marginal band just below the current threshold, it lowers the threshold by 5. Catches the case where the AI is rejecting trades it should be taking.
 
+### 3e. Specialist Confidence Calibration (`specialist_calibration.py`)
+
+Per-specialist Platt-scaling layer fitted daily from accumulated
+`specialist_outcomes` (one row per specialist per resolved
+prediction). Maps raw confidence (0-100) to empirical P(correct)
+using a 1-feature logistic regression on the last 90 days.
+
+**What it surfaced 2026-04-27:** `pattern_recognizer` is *inversely
+calibrated* on every primary equity profile (raw=90 → cal≈28 on
+Mid/Small/Small-Shorts). When the specialist is loudly confident,
+its empirical hit rate is in the high-20s. The calibration layer
+attenuates its vote weight, but the synthesizer math can't flip
+the sign — that's why Lever 3 (per-profile disable) was added.
+
+**Daily auto-(dis)enable** via
+`multi_scheduler._task_specialist_health_check`. With ≥50 resolved
+samples for a specialist:
+- DISABLE if calibrator maps raw=90 → cal<35 (clear anti-signal)
+- RE-ENABLE a previously-disabled specialist if calibrator
+  recovers to raw=90 → cal>50 (slope flipped back)
+- Hard floor: never disable below 2 active specialists per profile.
+
+The disable list lives in `trading_profiles.disabled_specialists`
+(JSON array). Skipped specialists' API calls don't fire (cost
+saving), and their slot in the synthesizer is treated as ABSTAIN
+(no synthesizer pollution).
+
+### 3f. Backtest Survivorship-Bias Correction
+
+The `historical_universe_augment.py` daily diff captures symbols
+as they fall off Alpaca's active asset list, so backtests over
+windows that include a delisted symbol's `last_seen_active` date
+include it in the universe. Combined with `segments_historical.py`
+(frozen baseline of segments.py as of 2026-04-27), backtests no
+longer silently survivorship-bias-up by excluding names that
+delisted/merged/renamed since.
+
+The frozen baseline carries everything dead-or-alive as of today;
+auto-augmentation accumulates every future death. Backtest universe
+= baseline ∪ {additions where last_seen_active >= start_date}.
+Live trading paths read `segments.py` (unchanged); structural
+guards prevent the augmented universe from leaking into live
+code paths.
+
 ---
 
 ## Part 4 — Safety
@@ -282,6 +410,47 @@ The `MANUAL_PARAMETERS` allowlist in `tests/test_every_lever_is_tuned.py` enumer
 - **Conviction-TP-override knobs**: explicit risk-preference choice
 
 The guardrail test fails on (a) any new schema column not on this list and not auto-tuned, and (b) stale entries no longer in the schema.
+
+### Structural Tests Across the AI Path
+
+Beyond the manual-allowlist guard, several AST/source-level tests
+sit between any future regression and the source — each catches a
+specific class of bug we've been bitten by:
+
+- `test_no_snake_case_in_optimizer_strings.py` — every function in
+  `self_tuning.py` is walked; raw `max_position_pct` etc. embedded
+  inside user-facing strings fails the build. Plus a separate
+  decimal-format guard fails on raw `old_v`/`new_v` interpolation
+  for percentage-typed parameters (catches the 2026-04-27 ticker
+  leak: "max_position_pct 0.08->0.092").
+- `test_no_missing_logging_import.py` — every `.py` file using
+  `logging.X` must `import logging`. Catches the 2026-04-28
+  `NameError` that silently broke Check Exits for ~24 hours.
+- `test_track_record_split_by_signal.py` — the per-symbol track
+  record returned by `get_symbol_reputation` must include
+  `by_signal` breakdown; the prompt builder must emit the split
+  string. Catches the 2026-04-28 confabulation incident.
+- `test_trade_execution_logging.py` — `run_trade_cycle`'s
+  exception handler must call `logging.error(..., exc_info=True)`;
+  non-trade SKIP returns must emit a `logging.warning`. Catches
+  the 2026-04-28 silent-swallow of order rejections.
+- `test_no_per_symbol_bars_in_web_path.py` — dashboard render
+  paths must NOT call per-symbol `get_bars()`; use batched
+  `get_snapshots()`. Catches the 2026-04-27 rate-limit storm.
+- `test_meta_model_time_ordered_split.py` — the meta-model train
+  /test split must be time-ordered (slice the most-recent 20%),
+  never random. Catches inflated-AUC data leakage.
+- `test_walk_forward_and_oos_disjoint.py` — `walk_forward_analysis`
+  + `out_of_sample_degradation` must call `backtest_strategy` with
+  disjoint date ranges, never `days=N` (today-anchored).
+- `test_self_tuning_validation_window.py` — confidence-threshold
+  raises must be confirmed against a 14-day held-out window.
+- `test_no_per_symbol_bars_in_web_path.py`, `test_shared_ai_cache.py`,
+  `test_meta_pregate_lever.py`, `test_specialist_disable_lever.py`,
+  `test_alpha_decay_lifetime_disjoint.py`, `test_specialist_calibration.py`,
+  `test_historical_universe_augment.py`, `test_resolve_min_hold_horizon.py`
+  — each enforces a specific architectural contract; collectively
+  ~100+ structural tests across the AI path.
 
 ### Six Anti-Regression Guardrails
 
