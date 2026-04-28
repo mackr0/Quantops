@@ -17,6 +17,55 @@ Rules going forward:
 
 ---
 
+## 2026-04-28 — update_trading_profile silently dropped disabled_specialists writes (Severity: critical, reliability)
+
+Verifying yesterday's Lever 3 health check on prod, found the
+detection logic correctly identified pattern_recognizer as anti-
+correlated on Small Cap (raw=90 → cal=28, n=360) and called
+`update_trading_profile(profile_id, disabled_specialists=...)`.
+The health check logged "Specialist health check applied: DISABLE
+pattern_recognizer" successfully.
+
+But `disabled_specialists` was NOT in the `allowed_cols` allowlist
+inside `update_trading_profile`. The kwarg was silently filtered
+out and the UPDATE never executed. Across all profiles, the column
+stayed `[]` after the health check ran — health check thought it
+won, DB said otherwise.
+
+Same bug pattern as the morning's silent-execute_trade-swallow:
+hide a side-effect failure behind a `return None` so callers
+can't tell their action didn't take.
+
+**Fix:**
+
+1. Add `disabled_specialists` and `meta_pregate_threshold` to
+   `allowed_cols` in `models.update_trading_profile`.
+2. Loud `logger.warning(...)` when ANY kwarg is rejected as
+   unknown. Future schema additions trigger a visible log line
+   instead of silent swallow.
+
+**Anti-regression — `tests/test_update_trading_profile_allowlist.py` (3 tests):**
+
+- `test_every_kwarg_passed_is_in_allowed_cols` — repo-wide AST
+  scan: every kwarg name passed to `update_trading_profile()`
+  anywhere in the codebase must appear in `allowed_cols`.
+  Catches the ENTIRE class — adding a new column without
+  updating the allowlist fails the build.
+- `test_lever_2_3_columns_in_allowlist` — explicit guard for
+  `disabled_specialists` and `meta_pregate_threshold`.
+- `test_update_trading_profile_logs_rejected_kwargs` — verifies
+  the loud-log discipline.
+
+After deploy, the next daily snapshot block will re-run the
+specialist health check and the disable list will actually
+persist this time. Verified detection-side data:
+- Small Cap: pattern_recognizer should be disabled (cal_at_90=28)
+- Mid Cap: pattern_recognizer + sentiment_narrative both flagged
+
+Tests: 1087 passing.
+
+---
+
 ## 2026-04-28 — Three real bugs from the morning's anomaly scan (Severity: critical, reliability+accuracy)
 
 User flagged two anomalies on the dashboard ticker:

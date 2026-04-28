@@ -782,8 +782,15 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "use_conviction_tp_override", "conviction_tp_min_confidence",
         "conviction_tp_min_adx",
         "is_virtual", "initial_capital", "alpaca_account_id",
+        # Lever 2 + Lever 3 of COST_AND_QUALITY_LEVERS_PLAN.md
+        # (added 2026-04-28). Without these, the daily
+        # _task_specialist_health_check's update_trading_profile
+        # call was silently filtered out — health check logged
+        # "DISABLE pattern_recognizer" but the column stayed [].
+        "disabled_specialists", "meta_pregate_threshold",
     }
     updates = {}
+    rejected = []
     for key, value in kwargs.items():
         if key in allowed_cols:
             if key == "custom_watchlist" and isinstance(value, list):
@@ -791,6 +798,20 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
             if isinstance(value, bool):
                 value = int(value)
             updates[key] = value
+        else:
+            rejected.append(key)
+
+    if rejected:
+        # Loud log instead of silent swallow. The 2026-04-28
+        # disabled_specialists incident hid for hours because the
+        # rejected kwargs were dropped quietly — caller couldn't
+        # tell its UPDATE didn't apply.
+        logger.warning(
+            "update_trading_profile(%s) rejected unknown columns: %s. "
+            "If these are valid columns, add them to allowed_cols in "
+            "models.py:update_trading_profile.",
+            profile_id, rejected,
+        )
 
     if not updates:
         return
