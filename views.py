@@ -1228,10 +1228,15 @@ def _calculate_risk_metrics(db_paths):
                     "qty": r["qty"] or 0,
                 })
 
-            # Daily snapshots for drawdown
+            # Daily snapshots for drawdown — pick latest row per date
+            # so historical days with multiple snapshot writes (pre-2026-04-25
+            # marker fix) don't inflate drawdown by treating intra-day
+            # variations as separate days.
             snap_rows = conn.execute(
                 "SELECT date, equity FROM daily_snapshots "
-                "WHERE equity IS NOT NULL ORDER BY date ASC"
+                "WHERE equity IS NOT NULL "
+                "AND rowid IN (SELECT MAX(rowid) FROM daily_snapshots GROUP BY date) "
+                "ORDER BY date ASC"
             ).fetchall()
             for r in snap_rows:
                 all_snapshots.append({
@@ -2859,7 +2864,8 @@ def api_backtest_vs_reality(profile_id):
         conn2 = sqlite3.connect(db_path)
         conn2.row_factory = sqlite3.Row
         snap = conn2.execute(
-            "SELECT equity FROM daily_snapshots ORDER BY date DESC LIMIT 1"
+            "SELECT equity FROM daily_snapshots "
+            "ORDER BY date DESC, rowid DESC LIMIT 1"
         ).fetchone()
         conn2.close()
         equity_base = snap["equity"] if snap else 10_000

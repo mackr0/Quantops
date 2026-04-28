@@ -62,7 +62,7 @@ def init_db(db_path=None):
 
         CREATE TABLE IF NOT EXISTS daily_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL,
+            date TEXT NOT NULL UNIQUE,
             equity REAL,
             cash REAL,
             portfolio_value REAL,
@@ -259,6 +259,13 @@ def init_db(db_path=None):
     # was first created. Replaces the old per-column migration functions.
     _migrate_all_columns(conn)
 
+    # daily_snapshots: dedupe + add UNIQUE(date) constraint.
+    # Existing DBs created before 2026-04-28 had no UNIQUE constraint
+    # and accumulated duplicate rows when the scheduler restarted
+    # before the marker-file fix landed. Combine the dedupe and the
+    # constraint addition in one table-rebuild migration.
+    _migrate_daily_snapshots_unique(conn)
+
     conn.commit()
     conn.close()
 
@@ -342,6 +349,62 @@ def _migrate_all_columns(conn):
                     )
         except Exception:
             pass
+
+
+def _migrate_daily_snapshots_unique(conn):
+    """Ensure daily_snapshots has UNIQUE(date) and one row per date.
+
+    SQLite can't ALTER TABLE ADD CONSTRAINT, so we rebuild the table.
+    The rebuild also dedupes — for any date with multiple rows, only
+    the row with MAX(id) survives (latest write wins, which matches
+    what the readers were already picking by accident).
+
+    Idempotent: if the constraint is already present we skip.
+    """
+    try:
+        # Detect whether `date` already has a UNIQUE index. PRAGMA
+        # index_list returns one row per index; PRAGMA index_info
+        # tells us which column the index covers. The implicit index
+        # SQLite creates for UNIQUE columns has unique=1.
+        idx_rows = conn.execute(
+            "PRAGMA index_list(daily_snapshots)"
+        ).fetchall()
+        for idx in idx_rows:
+            # idx columns: seq, name, unique, origin, partial
+            if int(idx[2]) != 1:
+                continue
+            cols = conn.execute(
+                f"PRAGMA index_info({idx[1]!r})"
+            ).fetchall()
+            if len(cols) == 1 and cols[0][2] == "date":
+                return  # already migrated
+    except Exception:
+        return  # table missing entirely — init_db just created it fresh
+
+    try:
+        conn.execute("BEGIN")
+        conn.execute(
+            "CREATE TABLE daily_snapshots_new ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "date TEXT NOT NULL UNIQUE, "
+            "equity REAL, cash REAL, portfolio_value REAL, "
+            "num_positions INTEGER, daily_pnl REAL"
+            ")"
+        )
+        conn.execute(
+            "INSERT INTO daily_snapshots_new "
+            "(id, date, equity, cash, portfolio_value, num_positions, daily_pnl) "
+            "SELECT id, date, equity, cash, portfolio_value, num_positions, daily_pnl "
+            "FROM daily_snapshots WHERE id IN ("
+            "SELECT MAX(id) FROM daily_snapshots GROUP BY date"
+            ")"
+        )
+        conn.execute("DROP TABLE daily_snapshots")
+        conn.execute("ALTER TABLE daily_snapshots_new RENAME TO daily_snapshots")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
@@ -675,11 +738,16 @@ def log_daily_snapshot(equity, cash, portfolio_value, num_positions, daily_pnl=N
                        db_path=None):
     """Log an end-of-day portfolio snapshot.
 
+    Uses INSERT OR REPLACE against the UNIQUE(date) constraint so that
+    if the writer fires more than once on the same calendar day (deploy
+    restart, manual re-run, etc.) the latest snapshot overwrites the
+    earlier one instead of accumulating duplicate rows.
+
     Returns the row id.
     """
     conn = _get_conn(db_path)
     cursor = conn.execute(
-        """INSERT INTO daily_snapshots
+        """INSERT OR REPLACE INTO daily_snapshots
            (date, equity, cash, portfolio_value, num_positions, daily_pnl)
            VALUES (?, ?, ?, ?, ?, ?)""",
         (

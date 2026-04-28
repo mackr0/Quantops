@@ -1053,7 +1053,8 @@ def _task_daily_snapshot(ctx):
         conn = _sqlite3.connect(ctx.db_path)
         row = conn.execute(
             "SELECT equity FROM daily_snapshots "
-            "WHERE date < ? ORDER BY date DESC LIMIT 1",
+            "WHERE date < ? "
+            "ORDER BY date DESC, rowid DESC LIMIT 1",
             (today_str,),
         ).fetchone()
         conn.close()

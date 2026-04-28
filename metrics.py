@@ -180,9 +180,16 @@ def _gather_snapshots(db_paths, initial_capital_per_profile=None) -> List[Dict]:
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
+            # Pick latest row per date (rowid works on all SQLite tables,
+            # including ones that don't declare an explicit `id` column —
+            # safer than referencing `id` directly). On the real schema
+            # `id INTEGER PRIMARY KEY AUTOINCREMENT` is an alias for rowid
+            # so MAX(rowid) and MAX(id) return the same value.
             rows = conn.execute(
                 "SELECT date, equity, cash, portfolio_value, num_positions, daily_pnl "
-                "FROM daily_snapshots WHERE equity IS NOT NULL ORDER BY date ASC"
+                "FROM daily_snapshots WHERE equity IS NOT NULL "
+                "AND rowid IN (SELECT MAX(rowid) FROM daily_snapshots GROUP BY date) "
+                "ORDER BY date ASC"
             ).fetchall()
             snaps = [dict(r) for r in rows]
             per_db_snaps[db_path] = snaps

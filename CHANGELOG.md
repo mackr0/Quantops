@@ -17,6 +17,59 @@ Rules going forward:
 
 ---
 
+## 2026-04-28 — daily_snapshots: dedupe + UNIQUE(date) + INSERT OR REPLACE (Severity: medium, data hygiene)
+
+**What broke.** While walking the Performance Dashboard with the user
+(All Profiles view, validating each metric vs source data), I noticed
+`daily_snapshots` had many rows per date — 13 rows for 2026-04-17, 8 for
+2026-04-22, 11 for 2026-04-25. Per-DB pattern was identical. The metric
+readers (`metrics.py:185`, `views.py:1233`, `views.py:2862`,
+`multi_scheduler.py:1055`) happened to pick the right row most of the time
+because `dict[date] = snapshot` overwrites in iteration order, but that
+behavior is undocumented in SQLite and one VACUUM / migration could break
+it silently.
+
+**Why it wasn't caught.** The marker-file fix from 2026-04-25 ("100+
+daily summary emails ... in-memory state reset on each of ~10 deploys")
+stopped re-snapping per scheduler restart, so 2026-04-27 and 2026-04-28
+each had exactly 1 row per date. But the scar tissue from before the
+fix stayed in the DB, and there was no schema constraint preventing the
+duplicates from re-appearing if anything regressed.
+
+**The fix (3 layers, belt-and-suspenders).**
+
+1. **Reader hardening** (`metrics.py`, `views.py` x2, `multi_scheduler.py`):
+   all 4 daily_snapshots readers now filter to `MAX(rowid) GROUP BY date`
+   so the latest write per date is picked deterministically. Used
+   `rowid` instead of `id` so test fixtures with minimal schemas still
+   work.
+
+2. **Writer upsert** (`journal.py:log_daily_snapshot`): switched
+   `INSERT INTO` → `INSERT OR REPLACE INTO daily_snapshots`. With the
+   UNIQUE(date) constraint below, same-day re-runs now overwrite
+   instead of accumulating.
+
+3. **Schema migration** (`journal.py:_migrate_daily_snapshots_unique`):
+   one-shot table rebuild that adds `UNIQUE(date)` and dedupes existing
+   rows in the same step (`INSERT INTO new SELECT ... WHERE id IN
+   (SELECT MAX(id) GROUP BY date)`). Idempotent — checks for the
+   UNIQUE index via PRAGMA before rebuilding. Wired into `init_db`,
+   so it runs once on each profile DB on next scheduler start.
+
+**Verified.** Migration on a copy of `quantopsai_profile_8.db`
+(production data): 100% of computed metrics match (Sharpe, Sortino,
+max DD, daily returns, etc.). No displayed numbers change — confirming
+the readers were already picking the same row by accident. After
+migration the table has 1 row per date and the implicit unique
+index `sqlite_autoindex_daily_snapshots_1`. Re-running `init_db`
+is a no-op.
+
+**Regression test.** `tests/test_database.py::TestProfileDatabase`
+covers `journal_init_idempotent`. The migration's idempotency check
+(via `PRAGMA index_list`) is exercised on every `init_db` call.
+
+---
+
 ## 2026-04-28 — Silent ctx ↔ DB disconnect on 9 columns (Severity: critical, reliability)
 
 User asked me to be fully sure nothing was left. While doing one
