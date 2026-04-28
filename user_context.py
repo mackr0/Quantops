@@ -116,6 +116,40 @@ class UserContext:
     is_virtual: bool = False
     initial_capital: float = 100000.0
 
+    # Lever 2 + Lever 3 of COST_AND_QUALITY_LEVERS_PLAN.md.
+    # disabled_specialists: JSON list of specialist names whose API
+    # call is skipped (e.g. ["pattern_recognizer"]). Updated by the
+    # daily _task_specialist_health_check based on calibrator slope.
+    # Read by ensemble.run_ensemble via getattr — must be on
+    # UserContext or the disable list is silently ignored.
+    # meta_pregate_threshold: candidates with meta_prob below this
+    # are dropped before the ensemble fires. 0.0 = disabled.
+    disabled_specialists: str = "[]"
+    meta_pregate_threshold: float = 0.5
+
+    # Layer storage JSON columns. These ARE accessed by
+    # `getattr(ctx, X, ...)` from self_tuning.py and ai_analyst.py.
+    # Without the field on UserContext, the ctx access silently
+    # returns None and the live code falls back to defaults — i.e.
+    # all 7 autonomy layers were partly inert in production until
+    # this fix landed.
+    signal_weights: str = "{}"        # Layer 2
+    regime_overrides: str = "{}"      # Layer 3
+    tod_overrides: str = "{}"         # Layer 4
+    symbol_overrides: str = "{}"      # Layer 7
+    prompt_layout: str = "{}"         # Layer 6
+
+    # Layer 9 — capital allocator's recommended scale (1.0 baseline,
+    # 0.5 = halved, 2.0 = doubled). Read by trade_pipeline:439.
+    capital_scale: float = 1.0
+
+    # Multi-Alpaca-account linkage. Read by multi_scheduler:877.
+    alpaca_account_id: Optional[int] = None
+
+    # Per-profile opt-in for AI model auto-tuning (off by default to
+    # prevent surprise Sonnet/Opus calls under cost guard).
+    ai_model_auto_tune: bool = False
+
     # Limit orders
     use_limit_orders: bool = False
 

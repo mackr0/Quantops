@@ -966,6 +966,31 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         # Virtual account layer
         is_virtual=bool(profile.get("is_virtual", 0)),
         initial_capital=profile.get("initial_capital", 100000.0),
+        # Lever 2 + Lever 3 (COST_AND_QUALITY_LEVERS_PLAN.md).
+        # Without these on ctx, ensemble.run_ensemble can't see the
+        # disable list / pregate threshold the DB has stored — auto-
+        # disable would write to DB but the running scheduler would
+        # ignore it. Found via verification 2026-04-28.
+        disabled_specialists=profile.get("disabled_specialists", "[]") or "[]",
+        meta_pregate_threshold=profile.get("meta_pregate_threshold", 0.5)
+        if profile.get("meta_pregate_threshold") is not None else 0.5,
+        # Layer storage columns. Same silent-disconnect class as the
+        # 2026-04-28 disabled_specialists incident — code reads
+        # via getattr(ctx, X, default), so without explicit
+        # population each ctx.X returns the dataclass default and
+        # the per-profile DB value is ignored.
+        signal_weights=profile.get("signal_weights", "{}") or "{}",
+        regime_overrides=profile.get("regime_overrides", "{}") or "{}",
+        tod_overrides=profile.get("tod_overrides", "{}") or "{}",
+        symbol_overrides=profile.get("symbol_overrides", "{}") or "{}",
+        prompt_layout=profile.get("prompt_layout", "{}") or "{}",
+        # Layer 9 — auto-allocator recommendation
+        capital_scale=profile.get("capital_scale", 1.0)
+        if profile.get("capital_scale") is not None else 1.0,
+        # Multi-account linkage
+        alpaca_account_id=profile.get("alpaca_account_id"),
+        # AI-model auto-tune toggle
+        ai_model_auto_tune=bool(profile.get("ai_model_auto_tune", 0)),
     )
 
 

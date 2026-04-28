@@ -3895,8 +3895,12 @@ def _optimize_commission_strategy(conn, ctx, profile_id, user_id,
         from strategy_generator import save_spec
         ai_provider = getattr(ctx, "ai_provider", "anthropic")
         ai_model = getattr(ctx, "ai_model", "claude-haiku-4-5-20251001")
-        ai_api_key = getattr(ctx, "ai_api_key", None) or getattr(
-            ctx, "ai_api_key_enc", None)
+        # ai_api_key on ctx is always the decrypted form (decryption
+        # happens in build_user_context_from_profile). Earlier code
+        # had a dead-fallback to the encrypted-form attribute that
+        # never existed on UserContext. Removed 2026-04-28 after the
+        # ctx-round-trip test surfaced the silent-disconnect class.
+        ai_api_key = getattr(ctx, "ai_api_key", None)
         if not ai_api_key:
             # Fall back to environment-configured default
             import os
@@ -3904,8 +3908,10 @@ def _optimize_commission_strategy(conn, ctx, profile_id, user_id,
         if not ai_api_key:
             return None
 
-        market_type = getattr(ctx, "market_type", None) or getattr(
-            ctx, "segment", None)
+        # ctx.segment is the canonical market-type field. Earlier
+        # code had a dead first-try to a non-existent UserContext
+        # attribute; cleaned up 2026-04-28.
+        market_type = getattr(ctx, "segment", None)
         market_types = [market_type] if market_type else None
 
         proposals = propose_strategies(

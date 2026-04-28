@@ -17,6 +17,74 @@ Rules going forward:
 
 ---
 
+## 2026-04-28 — Silent ctx ↔ DB disconnect on 9 columns (Severity: critical, reliability)
+
+User asked me to be fully sure nothing was left. While doing one
+more verification pass, I traced whether `disabled_specialists`
+(written by the auto-disable health check) actually reaches
+`ensemble.run_ensemble` via ctx. It doesn't — the column wasn't
+on `UserContext` and wasn't populated by
+`build_user_context_from_profile`. So the DB write was real, but
+the running scheduler couldn't see it through ctx; the disable
+list was ignored at decision time. Lever 3's effect on actual
+trading was silently zero in production, even though the DB row
+was correct.
+
+I wrote a structural test that walks every `.py` file for
+`ctx.<col>` and `getattr(ctx, "<col>", ...)` patterns where
+`<col>` is also a `trading_profiles` column name. The test then
+fails for any name that isn't a `UserContext` field AND populated
+in `build_user_context_from_profile`.
+
+**Test surfaced 4 more silent disconnects beyond `disabled_specialists`:**
+
+- `signal_weights` (Layer 2) — `ai_analyst.py:543` reads via
+  `getattr(ctx, "signal_weights", None)`. Layer 2 weighted-signal
+  intensity was inert through ctx.
+- `regime_overrides` (Layer 3) — `self_tuning.py:3416`. Layer 3
+  bull/bear/sideways/volatile overrides inert.
+- `capital_scale` (Layer 9) — `trade_pipeline.py:439` defaulted to
+  1.0 always. The auto-allocator's recommendation never reached
+  position sizing.
+- `alpaca_account_id` — `multi_scheduler.py:877` defaulted to None
+  always. Multi-Alpaca-account linkage didn't see DB updates
+  through ctx.
+
+Plus 2 more I haven't verified are accessed: `tod_overrides`
+(Layer 4), `symbol_overrides` (Layer 7), `prompt_layout` (Layer 6),
+and `ai_model_auto_tune` — added preventively.
+
+**Fixes:**
+
+1. Added all 9 fields to `UserContext` dataclass with sensible
+   defaults matching the DB defaults.
+2. Populated each in `build_user_context_from_profile`.
+3. Cleaned up two dead-fallback patterns in `self_tuning.py`
+   (was reading `ctx.market_type` then falling back to
+   `ctx.segment` — first try always failed because market_type
+   wasn't on ctx; same pattern for ai_api_key_enc).
+
+**Anti-regression — `tests/test_ctx_field_round_trip.py` (4 tests):**
+
+- AST-walks the repo for `ctx.<col>` and `getattr(ctx, ...)` —
+  every column-named attribute access must be a UserContext field
+  AND assigned in `build_user_context_from_profile`. Catches the
+  ENTIRE class going forward.
+- Explicit guards for `disabled_specialists` and
+  `meta_pregate_threshold` round-trip.
+
+**Honest read:** The Lever 3 health check's reasoning has been
+correct since I added it (auto-detect anti-correlated specialists,
+write disable list to DB). But because of this silent-disconnect
+bug, the disable list never reached the running ensemble at scan
+time. Same pattern means Layers 2/3/4/6/7/9 + multi-account
+linkage have all been partially inert in production. After this
+fix, the next scan cycle will read all of these correctly.
+
+Tests: 1098 passing.
+
+---
+
 ## 2026-04-28 — MFE floor bug: max_favorable_excursion can't be below entry (Severity: medium, accuracy)
 
 End-of-day verification of yesterday's Lever-3 work surfaced a
