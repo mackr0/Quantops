@@ -140,10 +140,42 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Check 9: AI cost trending under ceiling
+# Check 9: LONG_SHORT_PLAN Phase 1 — does the new short pipeline emit?
 # ---------------------------------------------------------------------------
 echo
-echo "[9/9] AI cost so far today"
+echo "[9/10] LONG_SHORT_PLAN Phase 1 — short emission on shorts-enabled profiles"
+
+# Count NEW SHORT predictions emitted today (since 13:30 UTC) by
+# the 4 shorts-enabled profiles. Pre-Phase-1 baseline: ~0/cycle.
+# Post-Phase-1 in strong_bull regime: catalyst shorts only.
+NEW_SHORTS=0
+for pid in 1 3 4 10; do
+    db="quantopsai_profile_${pid}.db"
+    N=$(ssh root@$DROPLET "sqlite3 /opt/quantopsai/$db \"SELECT COUNT(*) FROM ai_predictions WHERE predicted_signal IN ('SHORT', 'STRONG_SHORT') AND date(timestamp) = '2026-04-29';\"" 2>/dev/null)
+    NEW_SHORTS=$((NEW_SHORTS + ${N:-0}))
+done
+if [ "$NEW_SHORTS" -gt 0 ]; then
+    ok "$NEW_SHORTS NEW SHORT predictions today across shorts-enabled profiles"
+else
+    warn "0 NEW SHORT predictions today — may be regime gate (strong_bull suppresses non-catalyst shorts) or may be unwanted"
+fi
+
+# Run the Phase 1 real-data validator
+echo
+echo "[9b/10] Phase 1 real-data validation script"
+VALIDATE_OUT=$(ssh root@$DROPLET "cd /opt/quantopsai && /opt/quantopsai/venv/bin/python3 validate_phase1_realdata.py 2>&1 | tail -10")
+if echo "$VALIDATE_OUT" | grep -q "ISSUES"; then
+    bad "Phase 1 validator found issues — see output"
+    echo "$VALIDATE_OUT"
+else
+    ok "Phase 1 validator clean (or warnings only)"
+fi
+
+# ---------------------------------------------------------------------------
+# Check 10: AI cost trending under ceiling
+# ---------------------------------------------------------------------------
+echo
+echo "[10/10] AI cost so far today"
 TOTAL=0
 for db in quantopsai_profile_1.db quantopsai_profile_3.db quantopsai_profile_4.db quantopsai_profile_5.db quantopsai_profile_6.db quantopsai_profile_7.db quantopsai_profile_8.db quantopsai_profile_9.db quantopsai_profile_10.db quantopsai_profile_11.db; do
     C=$(ssh root@$DROPLET "sqlite3 /opt/quantopsai/$db 'SELECT printf(\"%.4f\",COALESCE(SUM(estimated_cost_usd),0)) FROM ai_cost_ledger WHERE date(timestamp)=\"2026-04-29\";'" 2>/dev/null)
