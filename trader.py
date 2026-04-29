@@ -313,11 +313,17 @@ def check_exits(ctx=None):
                 # symmetric. Self-heals on next update against rows
                 # that were initialized incorrectly before this fix.
                 if float(p.get("qty", 0)) < 0:
+                    # Short MFE = MIN price seen since entry (the lowest
+                    # — most favorable — price the short has touched).
+                    # P1.10 of LONG_SHORT_PLAN.md fixes a 'side' mismatch:
+                    # log_trade writes side='short', but the old query
+                    # used side='sell_short' so no short MFE row ever
+                    # got updated. Result: every short MFE was None.
                     mfe_conn.execute(
                         "UPDATE trades SET max_favorable_excursion = "
                         "MIN(COALESCE(max_favorable_excursion, price), "
                         "    price, ?) "
-                        "WHERE symbol = ? AND side = 'sell_short' "
+                        "WHERE symbol = ? AND side = 'short' "
                         "AND status = 'open'",
                         (cur_price, sym),
                     )

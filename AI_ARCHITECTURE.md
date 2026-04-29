@@ -100,9 +100,14 @@ Screener (no AI)            8,000+ symbols → ~15 candidates
                               based on price/volume/technical filters
         │
         ▼
-16-strategy voting           Each strategy independently votes
-(no AI)                      BUY/SELL/HOLD per candidate.
+21-strategy voting           Each strategy independently votes
+(no AI)                      BUY/SELL/SHORT/HOLD per candidate.
                               Votes aggregated into a score.
+                              Includes 5 dedicated bearish strategies
+                              (breakdown_support, distribution_at_highs,
+                              failed_breakout, parabolic_exhaustion,
+                              relative_weakness_in_strong_sector) —
+                              see LONG_SHORT_PLAN.md Phase 1.1.
         │
         ▼
 Meta-model pre-gate          For each candidate, the per-profile

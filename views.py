@@ -110,7 +110,10 @@ def _enriched_positions(ctx, profile_id):
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT * FROM trades "
-            "WHERE side='buy' OR side='sell_short' "
+            # log_trade writes side='short' for new short positions, not
+            # 'sell_short' (P1.10 of LONG_SHORT_PLAN.md). Old query
+            # missed every short.
+            "WHERE side='buy' OR side='short' "
             "ORDER BY timestamp DESC"
         ).fetchall()
         conn.close()

@@ -7,6 +7,29 @@ technicals. Modeled on what real long/short equity hedge funds
 actually do (Citadel, Millennium, Point72) — not just
 "buying with the sign flipped."
 
+## Status (live)
+
+Phase 1 — Short capability (parity with longs):
+  P1.0  ✓ done — SELL semantic fix + prediction_type column
+  P1.1  ✓ done — 5 dedicated bearish strategies
+  P1.2  ✓ done — borrow / shortable filter
+  P1.3  ✓ done — squeeze risk filter
+  P1.4  ✓ done — regime gate
+  P1.5  ✓ done — time stops on shorts
+  P1.6  ✓ done — asymmetric position sizing
+  P1.7  ✓ done — two shortlists (long/short with reserved slots)
+  P1.8  ✓ done — AI prompt with explicit long/short sections
+  P1.9  ✓ done (MVP) — per-direction win rate surfaced to AI prompt
+  P1.9b ⏳ pending — per-direction self-tuning of short params
+  P1.10 ⏳ pending — MFE tracking on shorts (LFE, technically)
+  P1.11 ⏳ pending — specialist calibrators for bearish strategies
+  P1.12 ⏳ pending — meta-model retrained with prediction_type feature
+  P1.13 ⏳ pending — strategy generator extended for bearish patterns
+  P1.14 ⏳ pending — borrow rate as feature + sizing input
+
+Phase 2 — Pair / sector / factor neutrality: not started
+Phase 3 — Real alpha sources: not started
+
 ## Why this matters
 
 Today the system has:
@@ -224,7 +247,146 @@ BUY because the candidates are pre-ranked bullish.
 proportional to short candidates seen (target: 20-30% of trades on
 profile_10 should be SHORT, vs <1% today).
 
-### 1.9 — Per-direction self-tuning
+### 1.9b — Per-direction self-tuning (FULL)
+
+**Why:** the MVP P1.9 surfaces per-direction stats to the AI prompt
+context, but the **self-tuner doesn't act on them**. The ~30
+`_optimize_*` rules in self_tuning.py all read aggregate or BUY-side
+performance. Real long/short funds tune long-side and short-side
+parameters independently because their failure modes are different:
+shorts can lose to squeezes (huge loss tail) while longs can lose to
+slow drift (many small losses).
+
+**Build:** for every parameter that has a short-side variant
+(`short_stop_loss_pct`, `short_take_profit_pct`,
+`short_max_position_pct`, `short_max_hold_days`), add a tuning rule
+that:
+- Reads ONLY directional_short and exit_short resolved predictions
+- Computes per-direction win rate, profit factor, MFE/LFE distribution
+- Adjusts the short-side parameter independently of any long-side rule
+
+Also: split signal_weights so a strategy can have different weights
+when its signal is BUY vs SHORT (e.g. macd_cross_confirmation might
+be 1.0 for BUY but 0.5 for SHORT if its short calls have lower
+edge).
+
+**Done when:** the tuning_history table shows separate long/short
+adjustments and the optimizer explanation mentions
+"directional_short performance: X% win rate over N predictions".
+
+### 1.10 — MFE / LFE tracking on shorts
+
+**Why:** the MFE updater in trader.check_exits at the moment only
+runs `WHERE side = 'buy'` — shorts are completely excluded. Without
+it the trailing-stop tuner has no data on how shorts behave at
+different excursion levels.
+
+For a short, MFE doesn't directly apply (price going UP is bad);
+the equivalent is **LFE** (lowest favorable excursion = lowest price
+the short reached). Used to compute "give-back" for shorts:
+LFE − cover_price = how much profit was on the table that we gave
+back by covering too late.
+
+**Build:**
+- Add `min_favorable_excursion` column to `trades` (mirrors
+  `max_favorable_excursion`)
+- check_exits MFE updater iterates BOTH long and short positions:
+  - Longs: MAX of price (existing behavior)
+  - Shorts: MIN of price
+- Trailing-stop tuner reads both columns and tunes
+  `trailing_atr_multiplier` per direction.
+
+**Done when:** an open short position has its `min_favorable_excursion`
+column populated on each exit-cycle pass and the value is the lowest
+price the position has touched since entry.
+
+### 1.11 — Specialist calibrators for bearish strategies
+
+**Why:** every Wave-3 specialist calibrator (Platt scaling per
+strategy) trained ONLY on bullish predictions. The 5 new bearish
+strategies have no calibrators, so their outputs feed the ensemble
+unweighted — every short prediction has the same "weight" regardless
+of which strategy emitted it, even when one strategy historically
+outperforms.
+
+**Build:**
+- specialist_calibration.fit_calibrator() expand to handle each
+  strategy's bearish predictions separately:
+  - Each strategy now gets two calibrators: one for BUY/long, one
+    for SHORT/short.
+  - The ensemble weights specialist outputs by the matching
+    direction's calibrator
+- Backfill calibrators on the (small) existing bearish prediction
+  sample; they'll improve as data accumulates.
+
+**Done when:** record_outcomes_for_prediction stores per-direction
+specialist outcomes and the ensemble's specialist-skip logic
+respects the direction.
+
+### 1.12 — Meta-model retrained with prediction_type feature
+
+**Why:** the meta-model (Phase 1 ROADMAP) was trained on
+~6,000 bullish predictions. Its feature space doesn't include
+prediction_type. So it has zero ability to predict short outcomes
+— if you ask it "is this SHORT going to win?" it has no model
+that's seen a SHORT before.
+
+**Build:**
+- meta_model.extract_features() adds `prediction_type` (one-hot:
+  is_directional_long, is_directional_short, is_exit_long,
+  is_exit_short).
+- Retrain on the existing data so the new features get coefficients
+  (most will be near zero today since shorts are rare).
+- Once shorts accumulate, the meta-model auto-relearns the
+  short-specific feature weights.
+
+**Done when:** meta_model predictions for SHORT predictions return
+a non-trivial probability and the calibration plot per direction
+looks reasonable (not just "predict 0.5 for every short").
+
+### 1.13 — Strategy generator extended to produce bearish strategies
+
+**Why:** the auto-generator (Phase 7 ROADMAP) produces new bullish
+strategy variants (`auto_*.py` files). It has no concept of bearish
+patterns. So even with continuous evolution, the strategy library
+stays bullish-biased.
+
+**Build:**
+- strategy_generator: add a "direction" mode parameter
+  (`long` | `short` | `both`).
+- For shorts-enabled profiles, the weekly generation task creates
+  N bullish proposals AND N bearish proposals (currently it makes
+  M bullish only).
+- Bearish proposal templates pull from the breakdown / distribution
+  / exhaustion vocabulary defined in P1.1.
+
+**Done when:** the Evolving Strategy Library on the AI dashboard
+shows mixed-direction proposals over time, not just bullish ones.
+
+### 1.14 — Borrow rate as feature + sizing input
+
+**Why:** today we check `shortable=True/False` but ignore the
+**actual borrow rate** Alpaca reports. A name with 5% annual borrow
+is fine to short; one with 80% borrow eats most of the upside on a
+typical 3-week hold. The AI doesn't see this and the sizer doesn't
+account for it.
+
+**Build:**
+- client.get_borrow_info() returns `borrow_rate_pct` (annual) when
+  available. Alpaca exposes this on the asset endpoint for HTB names.
+- Add to the AI prompt's per-candidate alt-data:
+  `Borrow: 5.2%/yr (low cost)` or `Borrow: 67%/yr (HIGH — expect
+  it to eat ~5% over a typical 3-week hold)`.
+- Sizing: scale short_max_position_pct DOWN as borrow rate goes UP.
+  Above 30% annual borrow → halve the position size again.
+- Optionally: skip entirely if borrow > 100% annual (those names
+  have other problems).
+
+**Done when:** an HTB candidate shows its borrow rate in the AI
+prompt and gets a smaller position than an easy-to-borrow name with
+the same conviction.
+
+### 1.9 — Per-direction self-tuning (MVP, completed)
 
 **Why:** self-tuner today learns from aggregate. A profile with 200
 working longs and 5 random shorts will learn "the strategy works"
@@ -331,11 +493,17 @@ profile.
 
 ## Order of execution
 
-1. Phase 1.0 (SELL semantic fix) — foundation for clean data
-2. Phase 1.1 (bearish strategies) — supply of real short candidates
-3. Phase 1.6 + 1.5 (sizing + time stops) — cheap, foundational
-4. Phase 1.7 + 1.8 (two shortlists + prompt) — wire new strategies
-5. Phase 1.2 + 1.3 + 1.4 (borrow + squeeze + regime filters)
-6. Phase 1.9 (per-direction tuning) — closes the feedback loop
-7. Phase 2.x (pair / sector neutrality)
-8. Phase 3.x (real alpha sources, ongoing)
+1. ✓ Phase 1.0 (SELL semantic fix) — foundation for clean data
+2. ✓ Phase 1.1 (bearish strategies) — supply of real short candidates
+3. ✓ Phase 1.6 + 1.5 (sizing + time stops) — cheap, foundational
+4. ✓ Phase 1.7 + 1.8 (two shortlists + prompt) — wire new strategies
+5. ✓ Phase 1.2 + 1.3 + 1.4 (borrow + squeeze + regime filters)
+6. ✓ Phase 1.9 MVP (per-direction win rate visible to AI prompt)
+7. **→ Phase 1.10 (MFE/LFE on shorts) — small, foundational**
+8. **→ Phase 1.14 (borrow rate as feature) — small, immediate AI value**
+9. **→ Phase 1.9b (FULL per-direction self-tuning) — touches all tuning rules**
+10. → Phase 1.11 (specialist calibrators for bearish strategies)
+11. → Phase 1.12 (meta-model with prediction_type)
+12. → Phase 1.13 (strategy generator for bearish patterns)
+13. → Phase 2.x (pair / sector / factor neutrality)
+14. → Phase 3.x (real alpha sources — earnings, catalyst, sector rotation, IV regime, insider weighting)
