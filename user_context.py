@@ -89,6 +89,15 @@ class UserContext:
     short_max_hold_days: int = 10
     short_max_position_pct: Optional[float] = None  # None → derived as max_position_pct / 2
 
+    # P2.2 of LONG_SHORT_PLAN.md
+    # target_short_pct: target fraction of GROSS exposure that should
+    # be short. 0.0 = long-only (default for all existing profiles —
+    # backward-compat). 0.5 = balanced long/short. 0.7 = short-dominant
+    # (e.g. profile_10 "Small Cap Shorts" should run heavier short).
+    # The AI prompt sees current_short_pct vs target_short_pct on every
+    # batch decision and is told to bias toward the underweight side.
+    target_short_pct: float = 0.0
+
     # Self-tuning — AI learns from past wins/losses and adjusts approach
     enable_self_tuning: bool = True
 

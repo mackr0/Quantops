@@ -51,6 +51,11 @@ PARAM_BOUNDS: Dict[str, Tuple[Number, Number]] = {
     # ceiling at 30% to mirror the long max_position_pct ceiling.
     "short_max_position_pct":        (0.01, 0.30),
     "short_max_hold_days":           (1, 30),
+    # P2.2 of LONG_SHORT_PLAN.md — fraction of GROSS exposure
+    # targeted as short. 0.0 = long-only, 1.0 would be 100% short.
+    # Real long/short funds tend to run 0.3-0.5; few benefit from
+    # >0.7 short-heavy outside dedicated short-bias funds.
+    "target_short_pct":              (0.0, 1.0),
     "atr_multiplier_sl":             (1.0, 4.0),
     "atr_multiplier_tp":             (1.0, 5.0),
     "trailing_atr_multiplier":       (0.5, 3.0),

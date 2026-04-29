@@ -600,6 +600,40 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         except Exception:
             pass
 
+    # P2.2 of LONG_SHORT_PLAN.md — long/short balance target. Tell
+    # the AI whether we're under-/over-shorted vs the profile target
+    # so it can bias the next pick toward the underweight side.
+    target_block = ""
+    target_short_pct = float(getattr(ctx, "target_short_pct", 0.0) or 0.0) if ctx else 0.0
+    if enable_shorts and target_short_pct > 0 and exp and exp.get("gross_pct", 0) > 0:
+        gross = float(exp.get("gross_pct") or 0)
+        # Compute current short fraction of gross. by_sector totals
+        # would also work but we already have aggregate long/short
+        # mass in net/gross.
+        current_short = sum(
+            (b.get("short_pct") or 0) for b in (exp.get("by_sector") or {}).values()
+        )
+        cur_short_frac = (current_short / gross) if gross > 0 else 0.0
+        delta = target_short_pct - cur_short_frac
+        target_block = (
+            f"\nLONG/SHORT BALANCE TARGET:\n"
+            f"  Target short share of gross: {target_short_pct:.0%}\n"
+            f"  Current short share of gross: {cur_short_frac:.0%}\n"
+        )
+        if delta > 0.10:
+            target_block += (
+                f"  → UNDERSHORTED by {delta:.0%}. Strong preference: "
+                f"pick a SHORT this cycle (only if a quality short setup "
+                f"exists — don't force it).\n"
+            )
+        elif delta < -0.10:
+            target_block += (
+                f"  → OVERSHORTED by {abs(delta):.0%}. Strong preference: "
+                f"pick a LONG this cycle (or pass).\n"
+            )
+        else:
+            target_block += "  → Balance is on target; pick on conviction.\n"
+
     portfolio_section = (
         f"PORTFOLIO STATE:\n"
         f"  Equity: ${portfolio_state.get('equity', 0):,.0f} | "
@@ -608,6 +642,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"{positions_text}\n"
         f"  Drawdown: {dd_pct:.1f}% from peak ({dd_action})"
         f"{exposure_block}"
+        f"{target_block}"
     )
 
     # --- Market context section ---
