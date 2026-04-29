@@ -475,6 +475,43 @@ def _build_trade_performance_context(db_path):
         return ""
 
 
+def _get_track_record_by_direction(conn):
+    """Return win-rate stats grouped by prediction_type.
+
+    Returns dict like:
+      {'directional_long': {'wins': N, 'losses': N, 'total': N, 'win_rate': float},
+       'directional_short': {...}, 'exit_long': {...}, 'exit_short': {...}}
+
+    Used by P1.9 of LONG_SHORT_PLAN.md to surface per-direction
+    performance to the AI / self-tuner. The aggregate win rate
+    drowns out small short books — splitting by direction lets the
+    tuner see when shorts are working but longs aren't (or vice
+    versa) and act on each side independently.
+    """
+    out = {}
+    try:
+        rows = conn.execute(
+            "SELECT prediction_type, "
+            "SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) AS wins, "
+            "SUM(CASE WHEN actual_outcome='loss' THEN 1 ELSE 0 END) AS losses, "
+            "COUNT(*) AS total "
+            "FROM ai_predictions "
+            "WHERE status='resolved' AND prediction_type IS NOT NULL "
+            "GROUP BY prediction_type"
+        ).fetchall()
+        for r in rows:
+            ptype = r["prediction_type"]
+            wins = int(r["wins"] or 0)
+            losses = int(r["losses"] or 0)
+            total = int(r["total"] or 0)
+            wr = (wins / total * 100) if total > 0 else 0.0
+            out[ptype] = {"wins": wins, "losses": losses,
+                          "total": total, "win_rate": wr}
+    except Exception:
+        pass
+    return out
+
+
 def build_concise_context(ctx, symbol=None):
     """Build a concise AI prompt context (max 4 lines).
 
@@ -535,6 +572,25 @@ def build_concise_context(ctx, symbol=None):
                         f"YOUR OVERALL: {wr:.0f}% win rate "
                         f"({wins}W/{total - wins}L). {selectivity}"
                     )
+                # P1.9: per-direction breakdown for shorts-enabled
+                # profiles. Aggregate WR drowns out small short books;
+                # surfacing the split lets the AI act per-direction.
+                if getattr(ctx, "enable_short_selling", False):
+                    by_dir = _get_track_record_by_direction(conn)
+                    parts = []
+                    for ptype_label, ptype_key in [
+                        ("Longs", "directional_long"),
+                        ("Shorts", "directional_short"),
+                        ("Exits", "exit_long"),
+                    ]:
+                        d = by_dir.get(ptype_key)
+                        if d and d["total"] >= 5:
+                            parts.append(
+                                f"{ptype_label} {d['win_rate']:.0f}%W "
+                                f"({d['wins']}W/{d['losses']}L, n={d['total']})"
+                            )
+                    if parts:
+                        lines.append("BY DIRECTION: " + " | ".join(parts))
             conn.close()
         except Exception:
             pass
