@@ -766,15 +766,22 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                         return result
             except Exception:
                 pass  # If we can't check, proceed
-            # Position sizing same as BUY but for short
+            # Asymmetric short sizing (P1.6 of LONG_SHORT_PLAN.md):
+            # cap shorts at short_max_position_pct, defaulting to half
+            # the long cap when not explicitly set on the profile.
+            short_cap_pct = (getattr(ctx, "short_max_position_pct", None)
+                             if ctx else None)
+            if short_cap_pct is None:
+                short_cap_pct = max_position_pct / 2
+
             if action == "STRONG_SELL":
-                alloc_pct = max_position_pct
+                alloc_pct = short_cap_pct
             else:
-                alloc_pct = max_position_pct * 0.75
+                alloc_pct = short_cap_pct * 0.75
 
             # Boost if AI confident
             if ai_confidence and ai_confidence >= 80:
-                alloc_pct = min(alloc_pct * 1.25, max_position_pct)
+                alloc_pct = min(alloc_pct * 1.25, short_cap_pct)
 
             max_dollars = equity * alloc_pct
             dollars = min(max_dollars, cash)

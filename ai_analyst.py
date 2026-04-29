@@ -988,6 +988,14 @@ def _validate_ai_trades(result, candidates_data, ctx=None):
     """Validate and sanitize the AI batch response."""
 
     max_pos_pct = getattr(ctx, "max_position_pct", 0.10) if ctx else 0.10
+    # P1.6 of LONG_SHORT_PLAN.md — asymmetric sizing for shorts.
+    # Unlimited downside on shorts means smaller per-name caps are
+    # standard professional convention (half the long size). Falls
+    # back to half of long max if not explicitly set.
+    short_max_pos_pct = (getattr(ctx, "short_max_position_pct", None)
+                         if ctx else None)
+    if short_max_pos_pct is None:
+        short_max_pos_pct = max_pos_pct / 2
     enable_shorts = getattr(ctx, "enable_short_selling", False) if ctx else False
 
     # Ensure structure
@@ -1025,7 +1033,11 @@ def _validate_ai_trades(result, candidates_data, ctx=None):
         if action not in ("BUY", "SELL", "SHORT"):
             continue
 
-        size_pct = min(float(t.get("size_pct", 5.0)), max_pos_pct * 100)
+        # Cap by direction: longs against max_pos_pct, shorts against
+        # the smaller short_max_pos_pct (asymmetric-risk sizing).
+        cap_pct = (short_max_pos_pct if action in ("SHORT", "SELL")
+                   else max_pos_pct) * 100
+        size_pct = min(float(t.get("size_pct", 5.0)), cap_pct)
         size_pct = max(size_pct, 1.0)
 
         validated.append({

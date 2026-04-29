@@ -352,6 +352,48 @@ def check_exits(ctx=None):
         conviction_tp_skip=conviction_tp_skip,
     )
 
+    # P1.5 of LONG_SHORT_PLAN.md — time stops on shorts.
+    # Cover any short position older than ctx.short_max_hold_days
+    # regardless of P&L. Borrow keeps charging while a stuck short
+    # waits for a thesis that never plays out.
+    if db_path and ctx is not None and getattr(ctx, "short_max_hold_days", None):
+        try:
+            import sqlite3 as _sqlite_ts
+            from datetime import datetime as _dt, timedelta as _td
+            cutoff = (_dt.utcnow() - _td(days=int(ctx.short_max_hold_days))).isoformat()
+            ts_conn = _sqlite_ts.connect(db_path)
+            ts_conn.row_factory = _sqlite_ts.Row
+            stale_shorts = ts_conn.execute(
+                "SELECT symbol, qty FROM trades "
+                "WHERE side = 'short' AND status = 'open' AND timestamp < ?",
+                (cutoff,),
+            ).fetchall()
+            ts_conn.close()
+            stale_symbols = {r["symbol"] for r in stale_shorts}
+            already = {t["symbol"] for t in triggered}
+            # Match against current Alpaca positions to get accurate qty
+            for pos in positions:
+                sym = pos["symbol"]
+                if (sym in stale_symbols and sym not in already
+                        and float(pos.get("qty", 0)) < 0):
+                    triggered.append({
+                        "symbol": sym,
+                        "qty": abs(int(float(pos["qty"]))),
+                        "is_short": True,
+                        "trigger": "time_stop",
+                        "reason": (
+                            f"Short held > {int(ctx.short_max_hold_days)} days — "
+                            f"covering regardless of P&L (borrow eats capital "
+                            f"while thesis sits idle)."
+                        ),
+                    })
+                    logging.info(
+                        "Time stop on short %s: held > %d days",
+                        sym, int(ctx.short_max_hold_days),
+                    )
+        except Exception as _exc:
+            logging.debug("Short time-stop check skipped (non-fatal): %s", _exc)
+
     # Trailing stops: check profitable positions for trailing stop triggers
     if ctx is not None and getattr(ctx, "use_trailing_stops", False):
         # Don't trail symbols already triggered by regular stop/TP

@@ -74,10 +74,20 @@ class UserContext:
     # MAGA Mode — factor political volatility into AI analysis
     maga_mode: bool = False
 
-    # Short selling — allow opening short positions on SELL signals
+    # Short selling — allow opening short positions on SHORT signals
     enable_short_selling: bool = False
     short_stop_loss_pct: float = 0.08  # wider stop for shorts (8% vs 3% for longs)
     short_take_profit_pct: float = 0.08  # shorts profit faster on hard drops
+    # Phase 1.5+1.6 of LONG_SHORT_PLAN.md
+    # short_max_hold_days: cover any short older than this many calendar
+    # days regardless of P&L. Shorts that don't move down quickly are
+    # paying borrow + compounding the wrong-thesis risk; close them.
+    # short_max_position_pct: cap on individual short position as fraction
+    # of equity. Defaults to half of max_position_pct because unlimited
+    # downside on shorts means smaller per-name sizing is the standard
+    # professional convention.
+    short_max_hold_days: int = 10
+    short_max_position_pct: Optional[float] = None  # None → derived as max_position_pct / 2
 
     # Self-tuning — AI learns from past wins/losses and adjusts approach
     enable_self_tuning: bool = True
