@@ -44,7 +44,7 @@ Phase 3 — Real alpha sources: ✓ DONE 2026-04-29
   P3.6 ✓ done — real factor exposures (book/value, beta, momentum
                 12-1m) — replaces P2.5's stylized size proxy
 
-Phase 4 — Active factor construction:
+Phase 4 — Active factor construction: ✓ DONE 2026-04-28
   P4.1 ✓ done — beta-targeted construction (gross-weighted book
                 beta + AI prompt directive)
   P4.2 ✓ done — fractional Kelly position sizing (per-direction
