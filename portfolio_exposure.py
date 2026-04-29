@@ -133,6 +133,118 @@ def compute_exposure(
     }
 
 
+def find_pair_opportunities(
+    candidates: List[Dict[str, Any]],
+    sector_lookup=None,
+    max_pairs: int = 3,
+) -> List[Dict[str, Any]]:
+    """Identify same-sector long+short pair-trade candidates.
+
+    P2.3 of LONG_SHORT_PLAN.md. The highest-Sharpe quant funds run
+    pair trades — long the strong stock, short the weak stock within
+    the same sector. The pair isolates the relative-strength signal:
+    if Tech sells off broadly, both legs lose value but the spread
+    widens (the weak stock falls more than the strong one). Pure
+    market beta is hedged out.
+
+    Args:
+      candidates: list of candidate dicts from _rank_candidates,
+        each with 'symbol' and 'signal' (BUY / SHORT / etc).
+      sector_lookup: callable(symbol)->sector; defaults to
+        sector_classifier.get_sector. Pass a stub for tests.
+      max_pairs: cap on returned pairs (top N by combined score).
+
+    Returns list of pair dicts, sorted by combined score desc:
+      [
+        {
+          "sector": "Technology",
+          "long":  {symbol, score, signal, reason},
+          "short": {symbol, score, signal, reason},
+          "combined_score": float,
+        },
+        ...
+      ]
+    Empty list if no same-sector pairs exist or candidates is empty.
+    """
+    if not candidates:
+        return []
+    if sector_lookup is None:
+        from sector_classifier import get_sector
+        sector_lookup = get_sector
+
+    longs_by_sector: Dict[str, List[Dict[str, Any]]] = {}
+    shorts_by_sector: Dict[str, List[Dict[str, Any]]] = {}
+    for c in candidates:
+        sym = c.get("symbol")
+        sig = (c.get("signal") or "").upper()
+        if not sym or not sig:
+            continue
+        try:
+            sector = sector_lookup(sym) or "Unknown"
+        except Exception:
+            sector = "Unknown"
+        if sig in ("BUY", "STRONG_BUY"):
+            longs_by_sector.setdefault(sector, []).append(c)
+        elif sig in ("SHORT", "STRONG_SHORT", "SELL", "STRONG_SELL"):
+            shorts_by_sector.setdefault(sector, []).append(c)
+
+    pairs = []
+    for sector, longs in longs_by_sector.items():
+        shorts = shorts_by_sector.get(sector, [])
+        if not shorts:
+            continue
+        # Pair the highest-scoring long with the highest-scoring short
+        # in this sector. abs(score) for tiebreak symmetry.
+        longs_sorted = sorted(longs, key=lambda x: abs(x.get("score", 0)), reverse=True)
+        shorts_sorted = sorted(shorts, key=lambda x: abs(x.get("score", 0)), reverse=True)
+        long_pick = longs_sorted[0]
+        short_pick = shorts_sorted[0]
+        if long_pick["symbol"] == short_pick["symbol"]:
+            continue  # never pair a symbol with itself
+        combined = abs(long_pick.get("score", 0)) + abs(short_pick.get("score", 0))
+        pairs.append({
+            "sector": sector,
+            "long": {
+                "symbol": long_pick["symbol"],
+                "signal": long_pick.get("signal", "BUY"),
+                "score": long_pick.get("score", 0),
+                "reason": (long_pick.get("reason") or "")[:120],
+            },
+            "short": {
+                "symbol": short_pick["symbol"],
+                "signal": short_pick.get("signal", "SHORT"),
+                "score": short_pick.get("score", 0),
+                "reason": (short_pick.get("reason") or "")[:120],
+            },
+            "combined_score": combined,
+        })
+
+    pairs.sort(key=lambda p: p["combined_score"], reverse=True)
+    return pairs[:max_pairs]
+
+
+def render_pairs_for_prompt(pairs: List[Dict[str, Any]]) -> str:
+    """Format pair-trade opportunities as a compact AI prompt block.
+    Returns empty string when no pairs found.
+    """
+    if not pairs:
+        return ""
+    lines = ["PAIR OPPORTUNITIES (same-sector long+short — isolates relative strength):"]
+    for i, p in enumerate(pairs, 1):
+        lines.append(
+            f"  {i}. {p['sector']}: LONG {p['long']['symbol']} "
+            f"(score {p['long']['score']}) / SHORT {p['short']['symbol']} "
+            f"(score {p['short']['score']})"
+        )
+        lines.append(f"     Long thesis: {p['long']['reason']}")
+        lines.append(f"     Short thesis: {p['short']['reason']}")
+    lines.append(
+        "  → A high-conviction pair is often better than two independent "
+        "trades. Lower beta, isolates stock-picking edge from market drift."
+    )
+    return "\n".join(lines)
+
+
 def render_for_prompt(exposure: Dict[str, Any]) -> str:
     """Format the exposure breakdown as a compact string for the AI prompt.
 

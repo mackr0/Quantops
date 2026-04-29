@@ -1044,6 +1044,21 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                             + "\n".join(short_lines))
         else:
             sections.append("SHORT CANDIDATES: (none triggered this scan)")
+
+        # P2.3 of LONG_SHORT_PLAN.md — pair-trade opportunities.
+        # Same-sector long+short pairs surfaced separately so the AI
+        # can propose them. Isolates the relative-strength signal
+        # from market beta — the highest-Sharpe quant funds run
+        # heavily on pair trades.
+        try:
+            from portfolio_exposure import find_pair_opportunities, render_pairs_for_prompt
+            pairs = find_pair_opportunities(candidates_data, max_pairs=3)
+            pair_block = render_pairs_for_prompt(pairs)
+            if pair_block:
+                sections.append(pair_block)
+        except Exception:
+            pass
+
         candidates_section = "\n\n".join(sections)
     else:
         candidates_section = ("CANDIDATES (ranked by technical score):\n"

@@ -131,6 +131,93 @@ def test_render_for_prompt_handles_empty():
     assert "No open positions" in rendered
 
 
+def test_find_pairs_returns_empty_for_empty_candidates():
+    from portfolio_exposure import find_pair_opportunities
+    assert find_pair_opportunities([]) == []
+
+
+def test_find_pairs_returns_empty_when_no_same_sector_pair():
+    """Long Tech + short Energy → no pair (different sectors)."""
+    from portfolio_exposure import find_pair_opportunities
+    candidates = [
+        {"symbol": "AAPL", "signal": "BUY", "score": 3, "reason": "tech rip"},
+        {"symbol": "XOM", "signal": "SHORT", "score": 2, "reason": "energy weak"},
+    ]
+    lookup = _stub_lookup({"AAPL": "Technology", "XOM": "Energy"})
+    assert find_pair_opportunities(candidates, sector_lookup=lookup) == []
+
+
+def test_find_pairs_pairs_top_long_with_top_short_in_sector():
+    from portfolio_exposure import find_pair_opportunities
+    candidates = [
+        {"symbol": "AAPL", "signal": "BUY", "score": 3,
+         "reason": "tech leader"},
+        {"symbol": "MSFT", "signal": "BUY", "score": 1,
+         "reason": "tech mid"},
+        {"symbol": "INTC", "signal": "SHORT", "score": 2,
+         "reason": "tech laggard"},
+    ]
+    lookup = _stub_lookup({"AAPL": "Technology", "MSFT": "Technology",
+                            "INTC": "Technology"})
+    pairs = find_pair_opportunities(candidates, sector_lookup=lookup)
+    assert len(pairs) == 1
+    assert pairs[0]["sector"] == "Technology"
+    # AAPL has higher score than MSFT — should be the long pick
+    assert pairs[0]["long"]["symbol"] == "AAPL"
+    assert pairs[0]["short"]["symbol"] == "INTC"
+    assert pairs[0]["combined_score"] == 5
+
+
+def test_find_pairs_returns_multiple_sectors_sorted():
+    from portfolio_exposure import find_pair_opportunities
+    candidates = [
+        # Tech pair (combined score 4)
+        {"symbol": "AAPL", "signal": "BUY", "score": 2},
+        {"symbol": "INTC", "signal": "SHORT", "score": 2},
+        # Energy pair (combined score 6)
+        {"symbol": "CVX", "signal": "BUY", "score": 3},
+        {"symbol": "XOM", "signal": "SHORT", "score": 3},
+    ]
+    lookup = _stub_lookup({"AAPL": "Technology", "INTC": "Technology",
+                            "CVX": "Energy", "XOM": "Energy"})
+    pairs = find_pair_opportunities(candidates, sector_lookup=lookup)
+    assert len(pairs) == 2
+    # Energy pair has higher combined score → should sort first
+    assert pairs[0]["sector"] == "Energy"
+    assert pairs[1]["sector"] == "Technology"
+
+
+def test_find_pairs_respects_max_pairs():
+    from portfolio_exposure import find_pair_opportunities
+    candidates = []
+    for prefix, sector in [("A", "S1"), ("B", "S2"), ("C", "S3"), ("D", "S4")]:
+        candidates.append({"symbol": f"{prefix}L", "signal": "BUY", "score": 2})
+        candidates.append({"symbol": f"{prefix}S", "signal": "SHORT", "score": 2})
+    lookup = _stub_lookup({c["symbol"]: c["symbol"][0] for c in candidates})
+    pairs = find_pair_opportunities(candidates, sector_lookup=lookup, max_pairs=2)
+    assert len(pairs) == 2
+
+
+def test_render_pairs_for_prompt_renders_each_pair():
+    from portfolio_exposure import render_pairs_for_prompt
+    pairs = [
+        {"sector": "Technology",
+         "long":  {"symbol": "AAPL", "signal": "BUY", "score": 3, "reason": "leader"},
+         "short": {"symbol": "INTC", "signal": "SHORT", "score": 2, "reason": "laggard"},
+         "combined_score": 5},
+    ]
+    rendered = render_pairs_for_prompt(pairs)
+    assert "PAIR OPPORTUNITIES" in rendered
+    assert "Technology" in rendered
+    assert "AAPL" in rendered
+    assert "INTC" in rendered
+
+
+def test_render_pairs_for_prompt_empty_returns_empty_string():
+    from portfolio_exposure import render_pairs_for_prompt
+    assert render_pairs_for_prompt([]) == ""
+
+
 def test_render_for_prompt_warns_on_concentration():
     out = compute_exposure(
         [
