@@ -403,8 +403,17 @@
             <strong style="font-size:1.5rem;">{{ "%.1f"|format(m.avg_hold_days) }} days</strong>
         </article>
         <article>
+            <header><h4>Trades per Day</h4></header>
+            <strong style="font-size:1.5rem;">{{ "%.1f"|format(m.trades_per_day) }}</strong>
+        </article>
+        <article>
             <header><h4>Trades per Month</h4></header>
+            {% if m.trades_per_month_computable %}
             <strong style="font-size:1.5rem;">{{ "%.1f"|format(m.trades_per_month) }}</strong>
+            {% else %}
+            <strong style="font-size:1.5rem;" class="muted">N/A</strong>
+            <small class="muted">need 30+ days of data</small>
+            {% endif %}
         </article>
     </div>
 

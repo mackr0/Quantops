@@ -963,9 +963,25 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
             del open_positions[sym]
     result["avg_hold_days"] = round(_mean(hold_days_list), 1) if hold_days_list else 0.0
 
-    # Trades per month
-    months_active = max(days_active / 30.44, 1) if days_active > 0 else 1
-    result["trades_per_month"] = round(len(trades) / months_active, 1) if trades else 0.0
+    # Trades per month — only compute when we have at least 30 days of
+    # data. Below that, the old formula floored months_active to 1.0,
+    # which UNDERREPORTED throughput (329 trades in 11 days surfaced
+    # as "329/month" instead of the true ~910/month). Better: N/A with
+    # a "need 30+ days" gate, mirroring worst-month / Calmar / rolling.
+    #
+    # Trades per day is meaningful from day 1, so we always expose it
+    # alongside.
+    if days_active >= 30:
+        months_active = days_active / 30.44
+        result["trades_per_month"] = round(len(trades) / months_active, 1) if trades else 0.0
+        result["trades_per_month_computable"] = True
+    else:
+        result["trades_per_month"] = 0.0
+        result["trades_per_month_computable"] = False
+    if days_active > 0 and trades:
+        result["trades_per_day"] = round(len(trades) / days_active, 1)
+    else:
+        result["trades_per_day"] = 0.0
 
     # -----------------------------------------------------------------------
     # Monthly returns
