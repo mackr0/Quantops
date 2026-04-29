@@ -1753,16 +1753,14 @@ def performance_dashboard():
             except Exception:
                 pass
         else:
-            # All Profiles view: pick the dominant tier by capital weight
-            # so the projection ladder's migration recommendations make
-            # sense at the aggregate scale (e.g. $2.15M aggregate is in
-            # the Mid Cap range, even if individual profiles are Small Cap).
-            tier_weights = {}
-            for p in profiles:
-                t = (p.get("market_type") or "small").lower()
-                tier_weights[t] = tier_weights.get(t, 0) + (p.get("initial_capital") or 0)
-            if tier_weights:
-                mtype = max(tier_weights.items(), key=lambda kv: kv[1])[0]
+            # All Profiles view: there's no single "current" market_type
+            # because the user's portfolio spans multiple tiers. Use the
+            # tier that the migration ladder recommends for the total
+            # capital — this way the (current) row never reads as
+            # migrated, and projections above/below correctly mark
+            # upgrade/downgrade migrations.
+            from scaling_projection import _recommended_tier
+            mtype = _recommended_tier(current_cap, "small")
 
         scaling = project_scaling(
             all_trades,

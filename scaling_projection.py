@@ -282,12 +282,28 @@ def project_scaling(
 
         notes = []
         if migrated:
-            notes.append(
-                f"At this scale, you'd switch to a {_TIER_LABEL[target_tier]} "
-                f"profile. The bigger universe gives you ~"
-                f"{int(target_adv / current_adv)}× more daily volume per name, "
-                f"which keeps slippage manageable as positions grow."
-            )
+            # Upgrade or downgrade? Compare ADV.
+            if target_adv > current_adv and current_adv > 0:
+                ratio = target_adv / current_adv
+                notes.append(
+                    f"At this scale, you'd switch up to a "
+                    f"{_TIER_LABEL[target_tier]} profile — the larger universe "
+                    f"has ~{ratio:.1f}× more daily volume per name, which keeps "
+                    f"slippage manageable as positions grow."
+                )
+            elif target_adv < current_adv and target_adv > 0:
+                ratio = current_adv / target_adv
+                notes.append(
+                    f"At this scale, you'd run a {_TIER_LABEL[target_tier]} "
+                    f"profile instead — at smaller capital you don't need "
+                    f"the larger-cap universe (which has ~{ratio:.1f}× more "
+                    f"daily volume per name than you'd need)."
+                )
+            else:
+                notes.append(
+                    f"At this scale, you'd switch to a "
+                    f"{_TIER_LABEL[target_tier]} profile."
+                )
 
         rows.append({
             "label": label,
