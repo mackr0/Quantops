@@ -239,7 +239,7 @@ def render_equity_curve_svg(equity_data: List[Dict], width: int = 700, height: i
     Returns SVG markup string.
     """
     if not equity_data or len(equity_data) < 2:
-        return '<svg viewBox="0 0 700 200" style="width:100%;max-width:700px;"><text x="350" y="100" text-anchor="middle" fill="#888" font-size="14">Not enough data for equity curve</text></svg>'
+        return '<svg viewBox="0 0 700 200" style="width:100%;height:auto;display:block;"><text x="350" y="100" text-anchor="middle" fill="#888" font-size="14">Not enough data for equity curve</text></svg>'
 
     equities = [e.get("equity", 0) or 0 for e in equity_data]
     dates = [e.get("date", "") for e in equity_data]
@@ -281,7 +281,7 @@ def render_equity_curve_svg(equity_data: List[Dict], width: int = 700, height: i
         labels_svg += f'<text x="{pad_left}" y="{pad_top + chart_h + 18}" text-anchor="start" fill="#888" font-size="10">{dates[0]}</text>'
         labels_svg += f'<text x="{pad_left + chart_w}" y="{pad_top + chart_h + 18}" text-anchor="end" fill="#888" font-size="10">{dates[-1]}</text>'
 
-    return f'''<svg viewBox="0 0 {width} {height}" style="width:100%;max-width:{width}px;">
+    return f'''<svg viewBox="0 0 {width} {height}" style="width:100%;height:auto;display:block;">
     {labels_svg}
     <polygon points="{fill_points}" fill="{fill_color}"/>
     <polyline points="{points}" fill="none" stroke="{color}" stroke-width="2"/>
@@ -294,7 +294,7 @@ def render_drawdown_svg(drawdown_data: List[Dict], width: int = 700, height: int
     drawdown_data: list of {date, drawdown_pct} where drawdown_pct <= 0.
     """
     if not drawdown_data or len(drawdown_data) < 2:
-        return '<svg viewBox="0 0 700 150" style="width:100%;max-width:700px;"><text x="350" y="75" text-anchor="middle" fill="#888" font-size="14">Not enough data for drawdown chart</text></svg>'
+        return '<svg viewBox="0 0 700 150" style="width:100%;height:auto;display:block;"><text x="350" y="75" text-anchor="middle" fill="#888" font-size="14">Not enough data for drawdown chart</text></svg>'
 
     vals = [d.get("drawdown_pct", 0) for d in drawdown_data]
     dates = [d.get("date", "") for d in drawdown_data]
@@ -327,7 +327,7 @@ def render_drawdown_svg(drawdown_data: List[Dict], width: int = 700, height: int
         labels_svg += f'<text x="{pad_left}" y="{pad_top + chart_h + 18}" text-anchor="start" fill="#888" font-size="10">{dates[0]}</text>'
         labels_svg += f'<text x="{pad_left + chart_w}" y="{pad_top + chart_h + 18}" text-anchor="end" fill="#888" font-size="10">{dates[-1]}</text>'
 
-    return f'''<svg viewBox="0 0 {width} {height}" style="width:100%;max-width:{width}px;">
+    return f'''<svg viewBox="0 0 {width} {height}" style="width:100%;height:auto;display:block;">
     {labels_svg}
     <polygon points="{fill_points}" fill="#ff174430"/>
     <polyline points="{points}" fill="none" stroke="#ff1744" stroke-width="1.5"/>
@@ -342,7 +342,7 @@ def render_bar_chart_svg(data: List[Dict], value_key: str = "value", label_key: 
     data: list of dicts with value_key and label_key fields.
     """
     if not data:
-        return '<svg viewBox="0 0 700 150" style="width:100%;max-width:700px;"><text x="350" y="75" text-anchor="middle" fill="#888" font-size="14">No data</text></svg>'
+        return '<svg viewBox="0 0 700 150" style="width:100%;height:auto;display:block;"><text x="350" y="75" text-anchor="middle" fill="#888" font-size="14">No data</text></svg>'
 
     values = [d.get(value_key, 0) for d in data]
     labels = [d.get(label_key, "") for d in data]
@@ -387,7 +387,7 @@ def render_bar_chart_svg(data: List[Dict], value_key: str = "value", label_key: 
             x = pad_left + idx * (bar_width + gap) + bar_width / 2
             label_svg += f'<text x="{x:.1f}" y="{pad_top + chart_h + 15}" text-anchor="middle" fill="#888" font-size="9">{labels[idx]}</text>'
 
-    return f'''<svg viewBox="0 0 {width} {height}" style="width:100%;max-width:{width}px;">
+    return f'''<svg viewBox="0 0 {width} {height}" style="width:100%;height:auto;display:block;">
     {bars_svg}
     {label_svg}
 </svg>'''
@@ -396,7 +396,7 @@ def render_bar_chart_svg(data: List[Dict], value_key: str = "value", label_key: 
 def render_rolling_sharpe_svg(rolling_data: List[Dict], width: int = 700, height: int = 150) -> str:
     """Generate an inline SVG line chart for rolling Sharpe ratio."""
     if not rolling_data or len(rolling_data) < 2:
-        return '<svg viewBox="0 0 700 150" style="width:100%;max-width:700px;"><text x="350" y="75" text-anchor="middle" fill="#888" font-size="14">Need more data for rolling Sharpe</text></svg>'
+        return '<svg viewBox="0 0 700 150" style="width:100%;height:auto;display:block;"><text x="350" y="75" text-anchor="middle" fill="#888" font-size="14">Need more data for rolling Sharpe</text></svg>'
 
     vals = [d.get("sharpe", 0) for d in rolling_data]
     dates = [d.get("date", "") for d in rolling_data]
@@ -431,7 +431,7 @@ def render_rolling_sharpe_svg(rolling_data: List[Dict], width: int = 700, height
         labels_svg += f'<text x="{pad_left}" y="{pad_top + chart_h + 18}" text-anchor="start" fill="#888" font-size="10">{dates[0]}</text>'
         labels_svg += f'<text x="{pad_left + chart_w}" y="{pad_top + chart_h + 18}" text-anchor="end" fill="#888" font-size="10">{dates[-1]}</text>'
 
-    return f'''<svg viewBox="0 0 {width} {height}" style="width:100%;max-width:{width}px;">
+    return f'''<svg viewBox="0 0 {width} {height}" style="width:100%;height:auto;display:block;">
     {ref_lines}
     {labels_svg}
     <polyline points="{points}" fill="none" stroke="#2196f3" stroke-width="2"/>
@@ -449,8 +449,12 @@ def render_win_rate_svg(series: List[Dict], width: int = 700, height: int = 180,
     # Need at least two non-null points to draw a line.
     valid = [(i, p) for i, p in enumerate(series) if p.get("win_rate") is not None]
     if len(valid) < 2:
+        # Fill the parent. Was max-width:700px, which left ~half the
+        # container empty on wide dashboards. Default
+        # preserveAspectRatio="xMidYMid meet" keeps text proportions
+        # correct while the chart scales with width.
         return (f'<svg viewBox="0 0 {width} {height}" '
-                f'style="width:100%;max-width:{width}px;">'
+                f'style="width:100%;height:auto;display:block;">'
                 f'<text x="{width/2}" y="{height/2}" text-anchor="middle" '
                 f'fill="#888" font-size="14">'
                 f'Need more resolved predictions to draw the trend</text></svg>')
@@ -518,7 +522,7 @@ def render_win_rate_svg(series: List[Dict], width: int = 700, height: int = 180,
         for seg in segments
     )
 
-    return f'''<svg viewBox="0 0 {width} {height}" style="width:100%;max-width:{width}px;">
+    return f'''<svg viewBox="0 0 {width} {height}" style="width:100%;height:auto;display:block;">
     {y_labels}
     {ref}
     {date_labels}

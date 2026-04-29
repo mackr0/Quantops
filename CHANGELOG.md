@@ -17,6 +17,23 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — Chart SVGs fill their container (max-width regression) (Severity: medium, UX)
+
+**The bug.** All 5 chart renderers in `metrics.py` (Equity Curve, Drawdown, Bar Chart for PnL Distribution / Monthly Returns, Rolling Sharpe, Win Rate Trend) had `style="width:100%;max-width:700px;"`. On dashboards rendered into containers wider than 700px (the AI page is full-width), the SVG capped at 700px and left ~half the container empty. Visually broken even though the chart data was fine.
+
+**Fix.** Replaced `max-width:Npx` with `height:auto;display:block;` everywhere. The SVG's `viewBox` preserves coordinates while letting the rendered size scale up with the container. Default `preserveAspectRatio="xMidYMid meet"` keeps text proportions correct (no distortion).
+
+Covered: `render_equity_curve_svg`, `render_drawdown_svg`, `render_bar_chart_svg` (used by both PnL Distribution and Monthly Returns), `render_rolling_sharpe_svg`, `render_win_rate_svg`. Both data and empty-state SVG paths.
+
+**Tests.** New `test_chart_svg_responsive.py` (3 tests):
+- No chart renderer outputs `max-width:` in its SVG style
+- Every chart includes `width:100%`
+- Empty-state SVG (when there's not enough data) is also responsive — same regression class
+
+Full suite: 1314 passing.
+
+---
+
 ## 2026-04-29 — /ai page 500 + page-render smoke tests (Severity: critical, outage)
 
 **The outage.** User reported "/ai is no longer loading: Internal Server Error" after the last deploy. Root cause: my Awareness page expansion added a new `{% if has_risk_budget %}` panel but inadvertently removed the closing `{% endif %}` for the surrounding `{% if long_short_awareness %}` block. Jinja error: `Encountered unknown tag 'endblock'. The innermost block that needs to be closed is 'if'.`
