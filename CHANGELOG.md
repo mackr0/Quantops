@@ -17,6 +17,25 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — relative_weakness_universe: quality filters for short candidates (Severity: high, signal quality)
+
+**The problem.** First version emitted LCID for profile_10. The AI saw it and passed: *"LCID presents a superficially attractive mean-reversion setup (RSI 24, StochRSI 0, -83% vs 52wH) but fails conviction thresholds: (1) Your 0W/11L track record on LCID is disqualifying."* The strategy was finding deeply-crashed names, the AI was correctly rejecting them as bottom-pickers' graveyard. Quantity without quality.
+
+**Three new filters.**
+- **Recent weakness check.** Was: 20-day RS gap ≥ 5%. Now also requires 5-day RS gap ≥ 1% — the underperformance must be CURRENT, not just historical. Filters out names that crashed months ago and have been quietly mean-reverting upward (the worst kind of short — bouncing while we're betting on continuation).
+- **Drawdown filter.** Names down >40% from 252-day high are skipped. Real long/short profit comes from names with further to fall, not names already at the floor. The empirical pattern: names with 50%+ drawdowns more often bounce than continue lower (forced selling exhaustion).
+- **Ranking by 5d, not 20d.** Was: rank ascending by 20d return (most lifetime weakness first). Now: rank by 5d return (most acute current weakness first). Same candidate pool, different ordering — surface the names showing weakness NOW rather than the names that have been weak since forever.
+
+**Knobs.** New module-level constants: `RECENT_RS_GAP_THRESHOLD = 1.0`, `DRAWDOWN_FILTER_PCT = 40.0`, `RECENT_LOOKBACK_DAYS = 5`, `DRAWDOWN_LOOKBACK_DAYS = 252`. Self-tuning can adjust later; these defaults are conservative.
+
+**Tests.** 3 new (now 12 total): name with bad 20d but bouncing 5d is filtered; name down >40% from 252d high is filtered; when both qualify, the more-recently-weak name ranks first.
+
+**Why this matters.** Profile_10 had been showing the AI candidates that were structurally bad shorts (deep-drawdown, mean-reverting). Of course it passed. With these filters the strategy will surface names that are starting to break down NOW — the kind of setup the AI's risk gates respect.
+
+Full suite: 1300 passing.
+
+---
+
 ## 2026-04-29 — Awareness page: full coverage of AI prompt blocks (Severity: medium, completeness)
 
 **The gap.** First pass at the awareness page surfaced 4 of the 6 long/short prompt blocks (book beta target, balance target, Kelly, drawdown scale). Two remained invisible: P4.4 risk-budget per-position contributions, and P2.1 sector concentration warnings — both routinely appear in the AI prompt but weren't on the user-visible "what the AI sees" surface.

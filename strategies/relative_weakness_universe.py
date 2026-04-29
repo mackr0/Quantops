@@ -12,13 +12,22 @@ that need to fill a substantial short book even when textbook bearish
 technical patterns are rare (e.g., extended bull markets).
 
 Detection:
-  - Compute 20-day return for each name in the universe vs SPY.
-  - Rank by this gap (RS vs market). Lowest = weakest.
-  - Emit bottom WEAKNESS_FRACTION as SHORT candidates with score=1.
-  - Trend confirmation: stock must be below its 20-day MA (filter out
-    names that are weak on a single day spike).
-  - Min RS gap: stock must be at least RS_GAP_THRESHOLD percent below
-    SPY (0.5% over 1 day is noise; 5%+ over 20 days is a real trend).
+  - Compute 20-day return for each name in the universe vs SPY (the
+    structural weakness signal) AND 5-day return vs SPY (the CURRENT
+    weakness signal).
+  - Filters:
+    * 20d RS gap ≥ RS_GAP_THRESHOLD (5%): cumulative underperformance
+    * 5d RS gap ≥ RECENT_RS_GAP_THRESHOLD (1%): weakness is CURRENT,
+      not stale. Stops the strategy from picking names that crashed
+      months ago and have been quietly recovering since.
+    * Stock below 20-day MA (trend confirmation)
+    * Stock NOT down more than DRAWDOWN_FILTER_PCT (40%) from 252-day
+      high — avoids the "bottom-pickers' graveyard" of names that
+      already crashed and are more likely to bounce than continue
+      lower (real short profit comes from names with further to fall,
+      not names that already fell).
+  - Rank ascending by 5d return (most negative first); emit bottom
+    WEAKNESS_FRACTION (cap 5).
 
 Score is 1 (vs 2 for the focused setups) because there's no specific
 bearish catalyst — it's purely relative weakness. The AI sees this
@@ -39,8 +48,12 @@ APPLICABLE_MARKETS = ["small", "midcap", "largecap"]
 # if needed. Conservative defaults: bottom 5% AND a 5%+ underperformance
 # gap, so a small universe (20 names) returns ~1 candidate.
 WEAKNESS_FRACTION = 0.05
-RS_GAP_THRESHOLD = 5.0  # percent (cumulative underperformance vs SPY)
+RS_GAP_THRESHOLD = 5.0          # percent (cumulative 20d underperformance vs SPY)
+RECENT_RS_GAP_THRESHOLD = 1.0   # percent (5d underperformance — "weak NOW")
+DRAWDOWN_FILTER_PCT = 40.0      # max 1y drawdown — past this, name is too "crashed"
 LOOKBACK_DAYS = 20
+RECENT_LOOKBACK_DAYS = 5
+DRAWDOWN_LOOKBACK_DAYS = 252
 
 
 def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
@@ -49,45 +62,72 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
     if not universe or len(universe) < 5:
         return []
 
-    # Compute SPY return once per scan.
-    spy_ret = None
+    # Compute SPY 20d AND 5d returns once per scan.
+    needed_bars = max(LOOKBACK_DAYS, RECENT_LOOKBACK_DAYS) + 5
+    spy_ret_20d = None
+    spy_ret_5d = None
     try:
-        spy_df = get_bars("SPY", limit=LOOKBACK_DAYS + 5)
-        if (spy_df is not None and len(spy_df) >= LOOKBACK_DAYS + 1
-                and float(spy_df["close"].iloc[-(LOOKBACK_DAYS + 1)]) > 0):
-            close_back = float(spy_df["close"].iloc[-(LOOKBACK_DAYS + 1)])
+        spy_df = get_bars("SPY", limit=needed_bars)
+        if (spy_df is not None and len(spy_df) >= LOOKBACK_DAYS + 1):
             close_now = float(spy_df["close"].iloc[-1])
-            spy_ret = (close_now - close_back) / close_back * 100
+            close_20 = float(spy_df["close"].iloc[-(LOOKBACK_DAYS + 1)])
+            close_5 = float(spy_df["close"].iloc[-(RECENT_LOOKBACK_DAYS + 1)])
+            if close_20 > 0 and close_5 > 0:
+                spy_ret_20d = (close_now - close_20) / close_20 * 100
+                spy_ret_5d = (close_now - close_5) / close_5 * 100
     except Exception:
         return []
-    if spy_ret is None:
+    if spy_ret_20d is None or spy_ret_5d is None:
         return []
 
-    # Score every symbol with its RS gap.
+    # Score every symbol against the 20d/5d RS + drawdown filters.
     scored: List[Dict[str, Any]] = []
     for symbol in universe:
         try:
-            df = get_bars(symbol, limit=LOOKBACK_DAYS + 5)
+            df = get_bars(symbol, limit=DRAWDOWN_LOOKBACK_DAYS + 5)
             if df is None or len(df) < LOOKBACK_DAYS + 1:
                 continue
-            close_back = float(df["close"].iloc[-(LOOKBACK_DAYS + 1)])
             close_now = float(df["close"].iloc[-1])
-            if close_back <= 0:
+            close_20 = float(df["close"].iloc[-(LOOKBACK_DAYS + 1)])
+            close_5 = float(df["close"].iloc[-(RECENT_LOOKBACK_DAYS + 1)])
+            if close_20 <= 0 or close_5 <= 0:
                 continue
-            stock_ret = (close_now - close_back) / close_back * 100
-            rs_gap = spy_ret - stock_ret  # positive = stock lagging SPY
-            if rs_gap < RS_GAP_THRESHOLD:
+
+            stock_ret_20d = (close_now - close_20) / close_20 * 100
+            stock_ret_5d = (close_now - close_5) / close_5 * 100
+            rs_gap_20d = spy_ret_20d - stock_ret_20d
+            rs_gap_5d = spy_ret_5d - stock_ret_5d
+
+            # Cumulative weakness vs market.
+            if rs_gap_20d < RS_GAP_THRESHOLD:
                 continue
-            # Trend confirmation: below 20-day MA. Filters out single-day
-            # noise where a stock dropped today after weeks of strength.
+            # Recent weakness — confirms the underperformance is CURRENT,
+            # not just a leftover from old crashes the stock has been
+            # quietly recovering from.
+            if rs_gap_5d < RECENT_RS_GAP_THRESHOLD:
+                continue
+            # Trend confirmation: below 20-day MA.
             sma20 = df["close"].iloc[-(LOOKBACK_DAYS + 1):-1].astype(float).mean()
             if close_now >= sma20:
                 continue
+            # Drawdown filter — skip names that have already crashed too
+            # far (they're more likely to bounce than continue lower).
+            # Use 252d high if we have enough history; else skip the
+            # filter rather than fall back to a shorter window that
+            # would be too lenient.
+            if len(df) >= DRAWDOWN_LOOKBACK_DAYS + 1:
+                hi_252 = float(df["high"].iloc[-(DRAWDOWN_LOOKBACK_DAYS + 1):].max())
+                if hi_252 > 0:
+                    drawdown_pct = (hi_252 - close_now) / hi_252 * 100
+                    if drawdown_pct > DRAWDOWN_FILTER_PCT:
+                        continue
             scored.append({
                 "symbol": symbol,
-                "rs_gap": rs_gap,
-                "stock_ret": stock_ret,
-                "spy_ret": spy_ret,
+                "rs_gap_20d": rs_gap_20d,
+                "rs_gap_5d": rs_gap_5d,
+                "stock_ret_20d": stock_ret_20d,
+                "stock_ret_5d": stock_ret_5d,
+                "spy_ret_20d": spy_ret_20d,
                 "close_now": close_now,
             })
         except Exception:
@@ -96,8 +136,9 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
     if not scored:
         return []
 
-    # Rank ascending by stock_ret (most negative first = most relatively weak).
-    scored.sort(key=lambda x: x["stock_ret"])
+    # Rank ascending by recent (5d) return — surface CURRENT weakness
+    # over historical weakness.
+    scored.sort(key=lambda x: x["stock_ret_5d"])
     n_emit = max(1, int(len(scored) * WEAKNESS_FRACTION))
     n_emit = min(n_emit, 5)  # absolute cap — never flood the shortlist
 
@@ -110,9 +151,10 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
             "votes": {NAME: "SHORT"},
             "price": s["close_now"],
             "reason": (
-                f"Relative weakness vs SPY over {LOOKBACK_DAYS}d: "
-                f"stock {s['stock_ret']:+.1f}% vs SPY {s['spy_ret']:+.1f}% "
-                f"(gap {s['rs_gap']:.1f}%). Below 20d MA — confirmed downtrend."
+                f"Current weakness vs SPY: 5d {s['stock_ret_5d']:+.1f}% "
+                f"(gap {s['rs_gap_5d']:.1f}%) AND 20d {s['stock_ret_20d']:+.1f}% "
+                f"vs SPY {s['spy_ret_20d']:+.1f}% (gap {s['rs_gap_20d']:.1f}%). "
+                f"Below 20d MA, not a deep-drawdown bounce candidate."
             ),
         })
     return out
