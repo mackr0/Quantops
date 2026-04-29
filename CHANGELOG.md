@@ -17,6 +17,41 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — INTRADAY_STOPS Stage 2: broker-managed take-profit orders (Severity: high, P&L)
+
+**The problem.** Polling take-profit detection runs every 5 minutes. By the time we detect a position has hit its TP threshold, price has typically reverted some — we exit at a worse price than the target. Combined with trailing stops that fire after intraday reversals, profitable trades give back gains before the polling cycle catches them.
+
+**Fix.** Place broker-managed `type='limit'` orders at `entry × (1 + take_profit_pct)` (long) or `entry × (1 - take_profit_pct)` (short) on every open position. Limit orders fill ONLY at the target or better — won't slip past on gaps; will simply not fill if the target is never reached. Pairs with the Stage 1 stop-loss to bracket each position on both sides.
+
+**Implementation.**
+- New helpers in `bracket_orders.py`:
+  - `tp_price_for_entry(entry_price, take_profit_pct, is_short)` — symmetric to `stop_price_for_entry`.
+  - `submit_protective_take_profit(api, symbol, qty, side, limit_price)` — uses `type='limit'` with `time_in_force='gtc'`.
+- `ensure_protective_stops` extended to also place TP orders alongside the stop. Idempotent — checks `protective_tp_order_id` for each row, only places if missing or stale.
+- `cancel_for_symbol` extended to cancel BOTH the stop and the TP, and clear both DB columns.
+- New `protective_tp_order_id TEXT` column on the trades table (idempotent migration).
+- **Conviction-override integration.** When `conviction_tp_skip(symbol, pct_change)` returns True (the high-conviction "let runners run" mode), the sweep does NOT place a TP order on that position. Otherwise the broker would cap a runaway winner at +take_profit_pct, defeating the override.
+
+**API budget.** ~30 new entries per day × 2 protective orders each = ~60 calls/day vs the 200/min Alpaca rate limit. Trivial.
+
+**Failure modes (handled).**
+- Submit fails → returns None, polling fallback still detects threshold breach.
+- Cancel of already-filled order → treated as success.
+- TP fills before stop fires → position closes at TP, stop becomes orphan, next sweep skips (no position) and the stop remains until eventually cancelled by reconciliation or expires (GTC orders persist but Alpaca cancels them automatically when position is flat).
+
+**Tests.** 6 new in `test_bracket_orders.py` (now 23 total):
+- `submit_protective_take_profit` uses `type='limit'`, correct limit_price, GTC.
+- Long TP above entry, short TP below entry.
+- Sweep places stop AND TP alongside each other on bare positions.
+- Sweep skips TP placement when conviction-override predicate returns True.
+- `cancel_for_symbol` clears both stop and TP order IDs in the DB.
+
+**What's still polled.** Trailing stops. Stage 3 replaces those with broker `type='trailing_stop'` orders, addressing the IBM tiny-win pattern (intraday spike → EOD collapse → break-even exit).
+
+Full suite: 1350 passing.
+
+---
+
 ## 2026-04-29 — Fix 3: scratch-trade classification (Severity: high, metric correctness)
 
 **The problem.** Hundreds of trades closing at break-even ($1-$50 pnl on $50K notional = 0.0-0.1% returns) were counted as "wins" because `pnl > 0`. Profile_8 reported 30 wins / 10 losses (75% win rate) — but the median win was $43 (~0.09%). After commission and slippage that's a wash. The "win rate" was vapor.

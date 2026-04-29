@@ -106,6 +106,6 @@ Negligible impact on API budget.
 
 ## Status
 
-- [ ] Stage 1: Static stop-loss
-- [ ] Stage 2: Take-profit
+- [x] Stage 1: Static stop-loss (commit 3d84543)
+- [x] Stage 2: Take-profit (commit pending)
 - [ ] Stage 3: Trailing-stop replacement

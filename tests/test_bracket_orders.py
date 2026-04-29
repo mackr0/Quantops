@@ -127,7 +127,8 @@ def tmp_db(tmp_path):
             order_id TEXT, status TEXT,
             decision_price REAL, fill_price REAL, slippage_pct REAL,
             max_favorable_excursion REAL,
-            protective_stop_order_id TEXT
+            protective_stop_order_id TEXT,
+            protective_tp_order_id TEXT
         )
     """)
     conn.commit()
@@ -135,10 +136,15 @@ def tmp_db(tmp_path):
     return db
 
 
-def _make_ctx(stop_loss_pct=0.05, short_stop_loss_pct=0.08):
+def _make_ctx(stop_loss_pct=0.05, short_stop_loss_pct=0.08,
+                 take_profit_pct=None, short_take_profit_pct=None):
     ctx = MagicMock()
     ctx.stop_loss_pct = stop_loss_pct
     ctx.short_stop_loss_pct = short_stop_loss_pct
+    # Explicit None or value — never the default MagicMock attribute
+    # access (which would return a Mock that breaks numeric comparisons).
+    ctx.take_profit_pct = take_profit_pct
+    ctx.short_take_profit_pct = short_take_profit_pct
     return ctx
 
 
@@ -265,6 +271,128 @@ def test_cancel_for_symbol_noop_when_no_active_stop(tmp_db):
 # ---------------------------------------------------------------------------
 # Integration: trader.check_exits invokes the sweep
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Stage 2: Take-profit limit orders
+# ---------------------------------------------------------------------------
+
+def test_long_tp_price_above_entry():
+    from bracket_orders import tp_price_for_entry
+    tp = tp_price_for_entry(entry_price=100.0, take_profit_pct=0.10, is_short=False)
+    assert tp == pytest.approx(110.0, abs=0.001)
+
+
+def test_short_tp_price_below_entry():
+    from bracket_orders import tp_price_for_entry
+    tp = tp_price_for_entry(entry_price=100.0, take_profit_pct=0.10, is_short=True)
+    assert tp == pytest.approx(90.0, abs=0.001)
+
+
+def test_submit_take_profit_uses_limit_order_type():
+    """TP must use type='limit', not 'stop'. Limit fills only at the
+    target price or better — won't slip past on gaps."""
+    from bracket_orders import submit_protective_take_profit
+    api = MagicMock()
+    api.submit_order.return_value = MagicMock(id="tp-123")
+    order_id = submit_protective_take_profit(
+        api, "AAPL", qty=100, side="sell", limit_price=110.50,
+    )
+    assert order_id == "tp-123"
+    args = api.submit_order.call_args
+    assert args.kwargs["type"] == "limit"
+    assert args.kwargs["limit_price"] == 110.50
+    assert args.kwargs["time_in_force"] == "gtc"
+
+
+def test_sweep_places_take_profit_alongside_stop_loss(tmp_db):
+    """A position with neither stop nor TP gets both placed."""
+    from bracket_orders import ensure_protective_stops
+    _seed_open_buy(tmp_db, "AAPL", 100, 150.0)
+    api = MagicMock()
+    # Two distinct order_ids returned — first call is the stop, second the TP.
+    api.submit_order.side_effect = [
+        MagicMock(id="stop-id"),
+        MagicMock(id="tp-id"),
+    ]
+    ctx = _make_ctx(stop_loss_pct=0.05)
+    ctx.take_profit_pct = 0.10
+    positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
+
+    ensure_protective_stops(api, positions, ctx, tmp_db)
+
+    assert api.submit_order.call_count == 2
+    # Verify order types — stop first, limit second
+    calls = api.submit_order.call_args_list
+    assert calls[0].kwargs["type"] == "stop"
+    assert calls[1].kwargs["type"] == "limit"
+    # Stop at 142.50, TP at 165.00
+    assert calls[0].kwargs["stop_price"] == pytest.approx(142.50, abs=0.01)
+    assert calls[1].kwargs["limit_price"] == pytest.approx(165.00, abs=0.01)
+    # DB columns both updated
+    conn = sqlite3.connect(tmp_db)
+    row = conn.execute(
+        "SELECT protective_stop_order_id, protective_tp_order_id "
+        "FROM trades WHERE symbol='AAPL'"
+    ).fetchone()
+    conn.close()
+    assert row[0] == "stop-id"
+    assert row[1] == "tp-id"
+
+
+def test_sweep_skips_tp_when_conviction_override_is_active(tmp_db):
+    """conviction_tp_skip(symbol, pct) → True means 'don't cap this
+    runaway winner'. Sweep must NOT place a TP order in that case."""
+    from bracket_orders import ensure_protective_stops
+    _seed_open_buy(tmp_db, "TSLA", 100, 100.0)
+    api = MagicMock()
+    api.submit_order.return_value = MagicMock(id="stop-only")
+    ctx = _make_ctx(stop_loss_pct=0.05)
+    ctx.take_profit_pct = 0.10
+    positions = [{
+        "symbol": "TSLA", "qty": 100, "avg_entry_price": 100.0,
+        "current_price": 130.0,  # +30%, conviction override likely fires
+    }]
+
+    skip = lambda sym, pct: True  # always skip — runaway winner
+    ensure_protective_stops(api, positions, ctx, tmp_db,
+                              conviction_tp_skip=skip)
+
+    # Only one submit (the stop). TP suppressed.
+    assert api.submit_order.call_count == 1
+    assert api.submit_order.call_args.kwargs["type"] == "stop"
+
+
+def test_cancel_for_symbol_clears_both_stop_and_tp(tmp_db):
+    """AI early-exit must cancel BOTH protective orders. Otherwise a
+    leftover TP fires later on a flat position."""
+    from bracket_orders import cancel_for_symbol
+    conn = sqlite3.connect(tmp_db)
+    conn.execute(
+        "INSERT INTO trades (timestamp, symbol, side, qty, price, "
+        "status, protective_stop_order_id, protective_tp_order_id) "
+        "VALUES (?, ?, 'buy', ?, ?, 'open', ?, ?)",
+        ("2026-04-29", "AAPL", 100, 150.0, "stop-id", "tp-id"),
+    )
+    conn.commit()
+    conn.close()
+    api = MagicMock()
+
+    cancel_for_symbol(api, tmp_db, "AAPL")
+
+    # Both broker orders cancelled
+    cancelled_ids = [c.args[0] for c in api.cancel_order.call_args_list]
+    assert "stop-id" in cancelled_ids
+    assert "tp-id" in cancelled_ids
+    # Both DB columns cleared
+    conn = sqlite3.connect(tmp_db)
+    row = conn.execute(
+        "SELECT protective_stop_order_id, protective_tp_order_id "
+        "FROM trades WHERE symbol='AAPL'"
+    ).fetchone()
+    conn.close()
+    assert row[0] is None
+    assert row[1] is None
+
 
 def test_check_exits_invokes_protective_sweep():
     """Source-level pin: trader.check_exits must call

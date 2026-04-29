@@ -112,6 +112,65 @@ def stop_price_for_entry(
     return entry_price * (1 - stop_loss_pct)
 
 
+def tp_price_for_entry(
+    entry_price: float,
+    take_profit_pct: float,
+    is_short: bool,
+) -> Optional[float]:
+    """Compute the take-profit limit price.
+
+    Long: entry × (1 + take_profit_pct). Limit fires when price hits target.
+    Short: entry × (1 - take_profit_pct).
+    """
+    if not entry_price or entry_price <= 0:
+        return None
+    if take_profit_pct is None or take_profit_pct <= 0:
+        return None
+    if is_short:
+        return entry_price * (1 - take_profit_pct)
+    return entry_price * (1 + take_profit_pct)
+
+
+def submit_protective_take_profit(
+    api,
+    symbol: str,
+    qty: int,
+    side: str,
+    limit_price: float,
+) -> Optional[str]:
+    """Submit a broker limit order to lock in profit at a target level.
+
+    Use type='limit' (not stop) — fills only when price meets or beats
+    the target. Won't slip past the limit on gaps; will simply not fill
+    if the target is never reached. Pairs with the protective stop on
+    the downside.
+    """
+    if not symbol or qty <= 0 or limit_price <= 0 or side not in ("sell", "buy"):
+        return None
+    try:
+        order = api.submit_order(
+            symbol=symbol,
+            qty=int(qty),
+            side=side,
+            type="limit",
+            limit_price=round(float(limit_price), 2),
+            time_in_force="gtc",
+        )
+        order_id = getattr(order, "id", None)
+        if order_id:
+            logger.info(
+                "Protective take-profit placed: %s %s qty=%d limit=$%.2f order_id=%s",
+                side, symbol, qty, limit_price, order_id,
+            )
+        return order_id
+    except Exception as exc:
+        logger.warning(
+            "Could not place protective take-profit for %s (qty=%d, limit=$%.2f): %s",
+            symbol, qty, limit_price, exc,
+        )
+        return None
+
+
 def _is_order_active(api, order_id: str) -> bool:
     """Return True iff the order is still working at the broker. Fail-open
     on lookup errors — we'd rather submit a duplicate than leave a position
@@ -127,15 +186,21 @@ def _is_order_active(api, order_id: str) -> bool:
                        "accepted_for_bidding")
 
 
-def ensure_protective_stops(api, positions, ctx, db_path):
-    """Sweep all open positions and place a broker stop order on any
-    position lacking an active one.
+def ensure_protective_stops(api, positions, ctx, db_path,
+                              conviction_tp_skip=None):
+    """Sweep all open positions and place broker protective orders on
+    any position lacking active ones.
 
     Called from trader.check_exits each cycle. Idempotent — verifies
-    the stored protective_stop_order_id is still working before
-    deciding to submit a new one. Survives restarts (positions
-    created before restart get protected on the next sweep) and
-    races (entry path's own placement is best-effort).
+    the stored protective_stop_order_id / protective_tp_order_id is
+    still working before deciding to submit a new one. Survives
+    restarts (positions created before restart get protected on the
+    next sweep) and races (entry path's own placement is best-effort).
+
+    conviction_tp_skip: optional callable(symbol, pct_change) -> bool.
+    When truthy for a position, skip placing the take-profit order so
+    runaway winners aren't capped (matches the existing polling
+    semantics for take_profit_pct override).
     """
     import sqlite3
     if not db_path or not positions:
@@ -143,7 +208,10 @@ def ensure_protective_stops(api, positions, ctx, db_path):
     sl_pct_long = getattr(ctx, "stop_loss_pct", None) if ctx else None
     sl_pct_short = (getattr(ctx, "short_stop_loss_pct", None) or sl_pct_long
                      if ctx else None)
-    if not sl_pct_long and not sl_pct_short:
+    tp_pct_long = getattr(ctx, "take_profit_pct", None) if ctx else None
+    tp_pct_short = (getattr(ctx, "short_take_profit_pct", None) or tp_pct_long
+                     if ctx else None)
+    if not sl_pct_long and not sl_pct_short and not tp_pct_long and not tp_pct_short:
         return
 
     try:
@@ -163,7 +231,8 @@ def ensure_protective_stops(api, positions, ctx, db_path):
             is_short = qty < 0
             entry_side_in_db = "short" if is_short else "buy"
             row = conn.execute(
-                "SELECT id, protective_stop_order_id FROM trades "
+                "SELECT id, protective_stop_order_id, protective_tp_order_id "
+                "FROM trades "
                 "WHERE symbol = ? AND side = ? AND status = 'open' "
                 "ORDER BY id DESC LIMIT 1",
                 (symbol, entry_side_in_db),
@@ -171,30 +240,69 @@ def ensure_protective_stops(api, positions, ctx, db_path):
             if not row:
                 continue
 
-            existing_id = row["protective_stop_order_id"]
-            if existing_id and _is_order_active(api, existing_id):
-                continue  # already protected
+            close_side = "buy" if is_short else "sell"
+            abs_qty = abs(int(qty))
 
-            sl_pct = sl_pct_short if is_short else sl_pct_long
-            stop_price = stop_price_for_entry(entry_price, sl_pct, is_short)
-            if stop_price is None:
+            # ---- Stop-loss ----
+            existing_stop_id = row["protective_stop_order_id"]
+            if not (existing_stop_id and _is_order_active(api, existing_stop_id)):
+                sl_pct = sl_pct_short if is_short else sl_pct_long
+                stop_price = stop_price_for_entry(entry_price, sl_pct, is_short)
+                if stop_price is not None:
+                    order_id = submit_protective_stop(
+                        api, symbol, abs_qty, close_side, stop_price,
+                    )
+                    if order_id:
+                        try:
+                            conn.execute(
+                                "UPDATE trades SET protective_stop_order_id = ? "
+                                "WHERE id = ?",
+                                (order_id, row["id"]),
+                            )
+                            conn.commit()
+                        except Exception as exc:
+                            logger.warning(
+                                "Stop placed but couldn't store order_id: %s "
+                                "(symbol=%s)", exc, symbol,
+                            )
+
+            # ---- Take-profit ----
+            # Skip TP placement when conviction-override would skip the
+            # exit anyway. Without this, runaway winners would still be
+            # capped at +take_profit_pct, defeating the override.
+            if conviction_tp_skip is not None:
+                try:
+                    cur_price = float(pos.get("current_price") or 0)
+                    pct_change = ((cur_price - entry_price) / entry_price
+                                   if entry_price > 0 and cur_price > 0 else 0)
+                    if conviction_tp_skip(symbol, pct_change):
+                        continue
+                except Exception:
+                    pass
+
+            existing_tp_id = row["protective_tp_order_id"]
+            if existing_tp_id and _is_order_active(api, existing_tp_id):
+                continue  # TP already in place
+
+            tp_pct = tp_pct_short if is_short else tp_pct_long
+            limit_price = tp_price_for_entry(entry_price, tp_pct, is_short)
+            if limit_price is None:
                 continue
 
-            close_side = "buy" if is_short else "sell"
-            order_id = submit_protective_stop(
-                api, symbol, abs(int(qty)), close_side, stop_price,
+            order_id = submit_protective_take_profit(
+                api, symbol, abs_qty, close_side, limit_price,
             )
             if order_id:
                 try:
                     conn.execute(
-                        "UPDATE trades SET protective_stop_order_id = ? "
+                        "UPDATE trades SET protective_tp_order_id = ? "
                         "WHERE id = ?",
                         (order_id, row["id"]),
                     )
                     conn.commit()
                 except Exception as exc:
                     logger.warning(
-                        "Stop placed but couldn't store order_id: %s "
+                        "Take-profit placed but couldn't store order_id: %s "
                         "(symbol=%s)", exc, symbol,
                     )
     finally:
@@ -205,12 +313,13 @@ def ensure_protective_stops(api, positions, ctx, db_path):
 
 
 def cancel_for_symbol(api, db_path: str, symbol: str) -> None:
-    """Cancel any active protective stop order for the given symbol.
+    """Cancel any active protective stop OR take-profit orders for the
+    given symbol.
 
     Called before a manual exit (AI SELL, polling-triggered exit, etc.)
-    so the broker stop doesn't fire AFTER our market sell on a now-flat
-    position. The matching trade row's protective_stop_order_id is
-    cleared either way (cancel succeeded, or the order is already gone).
+    so the broker orders don't fire AFTER our market sell on a now-flat
+    position. The matching trade row's protective_*_order_id columns
+    are cleared either way (cancel succeeded, or the order is already gone).
     """
     import sqlite3
     if not db_path or not symbol:
@@ -219,15 +328,21 @@ def cancel_for_symbol(api, db_path: str, symbol: str) -> None:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT id, protective_stop_order_id FROM trades "
+            "SELECT id, protective_stop_order_id, protective_tp_order_id "
+            "FROM trades "
             "WHERE symbol = ? AND status = 'open' "
-            "AND protective_stop_order_id IS NOT NULL",
+            "AND (protective_stop_order_id IS NOT NULL "
+            "     OR protective_tp_order_id IS NOT NULL)",
             (symbol,),
         ).fetchall()
         for r in rows:
-            cancel_protective_stop(api, r["protective_stop_order_id"])
+            if r["protective_stop_order_id"]:
+                cancel_protective_stop(api, r["protective_stop_order_id"])
+            if r["protective_tp_order_id"]:
+                cancel_protective_stop(api, r["protective_tp_order_id"])
             conn.execute(
-                "UPDATE trades SET protective_stop_order_id = NULL "
+                "UPDATE trades SET protective_stop_order_id = NULL, "
+                "protective_tp_order_id = NULL "
                 "WHERE id = ?",
                 (r["id"],),
             )

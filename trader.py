@@ -341,26 +341,34 @@ def check_exits(ctx=None):
         except Exception as _exc:
             logging.debug("MFE update skipped (non-fatal): %s", _exc)
 
-    # INTRADAY_STOPS_PLAN Stage 1 — sweep open positions and ensure each
-    # has an active broker-managed stop order. Idempotent: positions
-    # already protected are skipped. Survives restarts and races with
-    # the entry path. Without this, polling stop-loss detection runs on
-    # a 5-min cycle while real prices move continuously — fills at
-    # next-cycle current price, typically far past the intended stop.
-    if db_path and ctx is not None and getattr(ctx, "stop_loss_pct", None):
-        try:
-            from bracket_orders import ensure_protective_stops
-            ensure_protective_stops(api, positions, ctx, db_path)
-        except Exception as _exc:
-            logging.debug("Protective stop sweep skipped: %s", _exc)
-
     # Conviction-based take-profit override: build the skip predicate if
     # the profile has it enabled. Runaway winners (IONQ-style) keep running
     # while the trailing stop manages the exit, instead of being capped.
+    # Built before the protective-orders sweep so the sweep can also
+    # honor it when deciding whether to place a TP order.
     conviction_tp_skip = None
     if ctx is not None and getattr(ctx, "use_conviction_tp_override", False):
         from conviction_tp import build_conviction_skip
         conviction_tp_skip = build_conviction_skip(ctx, db_path)
+
+    # INTRADAY_STOPS_PLAN Stages 1 + 2 — sweep open positions and
+    # ensure each has both an active broker stop-loss AND an active
+    # take-profit limit order. Idempotent. Without this, polling
+    # detection runs on a 5-min cycle while real prices move
+    # continuously — stop-loss fills at next-cycle current price
+    # (typically past the threshold), and trailing stops give back
+    # most of unrealized winners on intraday reversals.
+    if db_path and ctx is not None:
+        try:
+            from bracket_orders import ensure_protective_stops
+            # Pass through the conviction-override skip predicate so
+            # runaway winners aren't capped by a TP order.
+            ensure_protective_stops(
+                api, positions, ctx, db_path,
+                conviction_tp_skip=conviction_tp_skip,
+            )
+        except Exception as _exc:
+            logging.debug("Protective stop sweep skipped: %s", _exc)
 
     triggered = check_stop_loss_take_profit(
         positions,

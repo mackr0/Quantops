@@ -334,6 +334,13 @@ def _migrate_all_columns(conn):
             # sell). NULL when no protective stop has been placed yet
             # or the order has already filled.
             ("protective_stop_order_id", "TEXT"),
+            # INTRADAY_STOPS_PLAN Stage 2 — Alpaca order id for the
+            # broker-managed take-profit limit. Locks in wins at the
+            # take_profit_pct threshold instead of waiting for trail
+            # stops to fire after a reversal (which often gives back
+            # most of the gain). Skipped on positions covered by the
+            # conviction-tp override.
+            ("protective_tp_order_id", "TEXT"),
         ],
         "ai_predictions": [
             ("regime_at_prediction", "TEXT"),
