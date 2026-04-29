@@ -50,6 +50,13 @@ STRATEGY_MODULES = [
     "strategies.news_sentiment_spike",
     "strategies.volume_dryup_breakout",
     "strategies.macd_cross_confirmation",
+    # Phase 1 of LONG_SHORT_PLAN.md — dedicated bearish strategies.
+    # Built specifically for short setups, not bullish patterns flipped.
+    "strategies.breakdown_support",
+    "strategies.distribution_at_highs",
+    "strategies.failed_breakout",
+    "strategies.parabolic_exhaustion",
+    "strategies.relative_weakness_in_strong_sector",
 ]
 
 
