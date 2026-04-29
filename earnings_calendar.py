@@ -131,8 +131,10 @@ def _get_cached(symbol: str) -> tuple:
         # If we have a future earnings date, no need to refetch until it passes
         if earnings_date_str:
             try:
+                from zoneinfo import ZoneInfo
+                today_et = datetime.now(ZoneInfo("America/New_York")).date()
                 ed = datetime.strptime(earnings_date_str[:10], "%Y-%m-%d").date()
-                if ed >= date.today():
+                if ed >= today_et:
                     return earnings_date_str, True
             except Exception:
                 pass
@@ -196,8 +198,9 @@ def check_earnings(symbol: str) -> Optional[Dict]:
         return None
 
     try:
+        from zoneinfo import ZoneInfo
         ed_date = datetime.strptime(cached_date[:10], "%Y-%m-%d").date()
-        today = date.today()
+        today = datetime.now(ZoneInfo("America/New_York")).date()
         days_until = (ed_date - today).days
 
         if days_until < 0:

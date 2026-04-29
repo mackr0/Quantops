@@ -1042,12 +1042,13 @@ def _task_daily_snapshot(ctx):
     equity = account["equity"]
 
     # Find the most recent prior snapshot to compute a real daily_pnl.
-    # Use Python's local `date.today()` to match what log_daily_snapshot
-    # writes — SQLite's `date('now')` is UTC and would disagree across
-    # midnight UTC, causing the task to either skip its delta calc or
-    # double-count a same-day write.
-    from datetime import date as _date
-    today_str = _date.today().isoformat()
+    # Use ET-localized "today" to match what log_daily_snapshot writes —
+    # the droplet runs in UTC, so date.today() would roll into the next
+    # calendar day at midnight UTC (~8pm ET) and disagree with the
+    # snapshot's recorded date.
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    today_str = _dt.now(_ZoneInfo("America/New_York")).date().isoformat()
     prior_equity = None
     try:
         conn = _sqlite3.connect(ctx.db_path)

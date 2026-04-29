@@ -745,13 +745,19 @@ def log_daily_snapshot(equity, cash, portfolio_value, num_positions, daily_pnl=N
 
     Returns the row id.
     """
+    # ET-localized date so the snapshot's "day" matches what a US-market
+    # user expects. The droplet runs in UTC; date.today() would roll into
+    # the next calendar day at midnight UTC (~8pm ET), causing late-day
+    # snapshots to land under tomorrow's date from the user's perspective.
+    from zoneinfo import ZoneInfo
+    today_et = datetime.now(ZoneInfo("America/New_York")).date()
     conn = _get_conn(db_path)
     cursor = conn.execute(
         """INSERT OR REPLACE INTO daily_snapshots
            (date, equity, cash, portfolio_value, num_positions, daily_pnl)
            VALUES (?, ?, ?, ?, ?, ?)""",
         (
-            date.today().isoformat(),
+            today_et.isoformat(),
             equity, cash, portfolio_value, num_positions, daily_pnl,
         ),
     )

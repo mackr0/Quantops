@@ -1246,8 +1246,9 @@ def get_decisions(user_id: int, segment: Optional[str] = None,
 # ---------------------------------------------------------------------------
 
 def increment_api_usage(user_id: int) -> None:
-    """Bump the anthropic_calls counter for today."""
-    today = date.today().isoformat()
+    """Bump the anthropic_calls counter for today (ET)."""
+    from zoneinfo import ZoneInfo
+    today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
     conn = _get_conn()
     conn.execute(
         """INSERT INTO user_api_usage (user_id, date, anthropic_calls)
@@ -1263,7 +1264,8 @@ def increment_api_usage(user_id: int) -> None:
 def get_api_usage(user_id: int, date_str: Optional[str] = None) -> int:
     """Get today's Anthropic API call count for a user."""
     if date_str is None:
-        date_str = date.today().isoformat()
+        from zoneinfo import ZoneInfo
+        date_str = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
     conn = _get_conn()
     row = conn.execute(
         "SELECT anthropic_calls FROM user_api_usage WHERE user_id = ? AND date = ?",

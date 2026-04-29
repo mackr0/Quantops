@@ -528,9 +528,14 @@ def compute_rolling_win_rate(db_paths, window_days=7, lookback_days=60):
         predictions inside that day's window.
     """
     from datetime import date, datetime, timedelta
+    from zoneinfo import ZoneInfo
     import sqlite3 as _sqlite3
 
-    today = date.today()
+    # Use ET-localized date so the chart's x-axis matches the user's
+    # perception. date.today() returns the SERVER's local date (UTC on
+    # the prod droplet), which causes the right edge to label as "tomorrow"
+    # any time after ~8pm ET (= midnight UTC).
+    today = datetime.now(ZoneInfo("America/New_York")).date()
     earliest = today - timedelta(days=lookback_days + window_days)
 
     # Pull all (resolved_at, outcome) tuples from each DB inside the

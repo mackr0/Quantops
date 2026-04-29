@@ -423,7 +423,8 @@ def notify_daily_summary(ctx=None):
     # Derive db_path from ctx for downstream calls
     db_path = ctx.db_path if ctx is not None else None
 
-    today_str = date.today().isoformat()
+    from zoneinfo import ZoneInfo
+    today_str = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
     subject = f"QuantOpsAI Daily Summary \u2014 {today_str}"
 
     body = ""

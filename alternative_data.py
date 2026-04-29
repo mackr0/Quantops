@@ -1353,8 +1353,10 @@ def get_biotech_milestones(symbol: str) -> Dict[str, Any]:
         result["upcoming_pdufa_date"] = pdufa_date
         result["drug_name"] = pdufa_rows[0]["drug_name"]
         try:
+            from zoneinfo import ZoneInfo
             d = datetime.strptime(pdufa_date, "%Y-%m-%d").date()
-            result["days_to_pdufa"] = (d - _date.today()).days
+            today_et = datetime.now(ZoneInfo("America/New_York")).date()
+            result["days_to_pdufa"] = (d - today_et).days
         except Exception:
             pass
 
