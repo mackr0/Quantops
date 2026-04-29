@@ -194,8 +194,26 @@ def _meta_pregate_candidates(candidates: List[Dict[str, Any]],
     except Exception:
         return candidates
 
+    # Per-direction confidence: when the model was trained on too few
+    # samples of a given direction, its predictions for that direction
+    # are extrapolations (long-trained model scoring SHORT candidates)
+    # and shouldn't be used to filter. Threshold = 30 matches the
+    # MIN_SAMPLES_FOR_KELLY convention — below that, edge estimates
+    # are too noisy to act on.
+    #
+    # Backwards-compat: models trained before this metrics field was
+    # added don't carry n_train_short/n_train_long. For those, skip
+    # the bypass and apply the threshold uniformly (old behavior).
+    DIRECTION_CONFIDENCE_THRESHOLD = 30
+    metrics = (meta_bundle or {}).get("metrics") or {}
+    n_train_short = metrics.get("n_train_short")
+    n_train_long = metrics.get("n_train_long")
+    has_direction_counts = (n_train_short is not None
+                             and n_train_long is not None)
+
     kept = []
     dropped_count = 0
+    short_bypass_count = 0
     for c in candidates:
         try:
             # Build a partial feature dict from the candidate's
@@ -214,6 +232,22 @@ def _meta_pregate_candidates(candidates: List[Dict[str, Any]],
                 inferred_ptype = "directional_short"
             else:
                 inferred_ptype = "directional_long"
+            # Insufficient-data bypass: when the model has < 30 samples
+            # of this candidate's direction, pregate falls open for it.
+            # Critical for profiles in the cold-start of building short
+            # track record — without this, every short candidate gets
+            # filtered by a long-trained model that has no idea how to
+            # score them, defeating the whole long/short capability.
+            if has_direction_counts:
+                if (inferred_ptype == "directional_short"
+                        and int(n_train_short) < DIRECTION_CONFIDENCE_THRESHOLD):
+                    kept.append(c)
+                    short_bypass_count += 1
+                    continue
+                if (inferred_ptype == "directional_long"
+                        and int(n_train_long) < DIRECTION_CONFIDENCE_THRESHOLD):
+                    kept.append(c)
+                    continue
             features = {
                 "symbol": c.get("symbol", ""),
                 "signal": sig,
@@ -249,6 +283,13 @@ def _meta_pregate_candidates(candidates: List[Dict[str, Any]],
             "Meta-pregate: dropped %d/%d candidates with meta_prob < %.2f "
             "before ensemble (saves %d specialist calls; sharpens cohort)",
             dropped_count, len(candidates), threshold, dropped_count * 4,
+        )
+    if short_bypass_count > 0:
+        logging.info(
+            "Meta-pregate: bypassed %d short candidates (model has "
+            "n_train_short=%s < %d — insufficient direction-specific "
+            "training data to score reliably)",
+            short_bypass_count, n_train_short, DIRECTION_CONFIDENCE_THRESHOLD,
         )
     return kept
 

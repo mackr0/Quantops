@@ -280,6 +280,20 @@ def train_meta_model(X: List[List[float]], y: List[int],
     importances = list(zip(feature_names, model.feature_importances_.tolist()))
     importances.sort(key=lambda x: x[1], reverse=True)
 
+    # Per-direction sample counts. The pregate uses these to decide
+    # whether the model can reliably score a candidate of that direction.
+    # Without this, profiles with 0 short training samples would still
+    # score SHORT candidates with a long-trained model — extrapolation
+    # the model has no business doing.
+    n_train_short = 0
+    n_train_long = 0
+    if "prediction_type_directional_short" in feature_names:
+        idx_short = feature_names.index("prediction_type_directional_short")
+        n_train_short = sum(1 for row in X_train if row[idx_short] >= 0.5)
+    if "prediction_type_directional_long" in feature_names:
+        idx_long = feature_names.index("prediction_type_directional_long")
+        n_train_long = sum(1 for row in X_train if row[idx_long] >= 0.5)
+
     return {
         "model": model,
         "feature_names": feature_names,
@@ -289,6 +303,8 @@ def train_meta_model(X: List[List[float]], y: List[int],
             "n_samples": len(X),
             "n_train": len(X_train),
             "n_test": len(X_test),
+            "n_train_short": n_train_short,
+            "n_train_long": n_train_long,
             "positive_rate": round(sum(y) / len(y), 4),
         },
         "feature_importance": [(n, round(i, 4)) for n, i in importances],

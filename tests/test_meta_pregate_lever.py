@@ -125,6 +125,131 @@ def test_predict_failure_falls_open_per_candidate():
     )
 
 
+def test_short_candidate_bypassed_when_model_has_no_short_training_data():
+    """Critical for long/short cold-start: when meta-model has < 30
+    short training samples (n_train_short), the pregate must not
+    filter SHORT candidates — the model can't reliably score them.
+
+    Without this bypass, a long-trained model scores every SHORT as
+    low-prob (extrapolation) and the pregate drops them all, defeating
+    the long/short capability before it gets a chance to accumulate
+    its own training data."""
+    import trade_pipeline as tp
+    cands = [
+        _candidate("BUY1", signal="BUY"),       # long
+        _candidate("BUY2", signal="BUY"),       # long
+        _candidate("SHORT1", signal="SHORT"),   # short — should be bypassed
+        _candidate("SHORT2", signal="SHORT"),   # short — should be bypassed
+    ]
+    bundle = {
+        "model": "fake",
+        "metrics": {"n_train_short": 0, "n_train_long": 800},
+    }
+    # Predict: longs get 0.7 (kept), shorts get 0.1 (would be DROPPED
+    # under uniform threshold). With bypass, shorts must survive.
+    probs = {"BUY1": 0.7, "BUY2": 0.7, "SHORT1": 0.1, "SHORT2": 0.1}
+
+    def _fake_predict(bundle, features):
+        return probs.get(features.get("symbol", ""), 0.5)
+
+    with patch("meta_model.load_model", return_value=bundle):
+        with patch("meta_model.model_path_for_profile", return_value="/tmp/x"):
+            with patch("meta_model.predict_probability", side_effect=_fake_predict):
+                result = tp._meta_pregate_candidates(cands, _ctx(threshold=0.5))
+
+    surviving = {c["symbol"] for c in result}
+    assert "SHORT1" in surviving and "SHORT2" in surviving, (
+        f"SHORT candidates must bypass the pregate when n_train_short=0. "
+        f"Got: {sorted(surviving)}"
+    )
+    assert "BUY1" in surviving and "BUY2" in surviving, (
+        "Longs should still pass via the normal threshold path"
+    )
+
+
+def test_short_candidate_filtered_when_model_has_enough_short_training_data():
+    """Once the model has >= 30 short samples, the bypass turns off
+    and the normal threshold applies to shorts."""
+    import trade_pipeline as tp
+    cands = [
+        _candidate("SHORT_DROP", signal="SHORT"),
+        _candidate("SHORT_KEEP", signal="SHORT"),
+    ]
+    bundle = {
+        "model": "fake",
+        "metrics": {"n_train_short": 50, "n_train_long": 800},
+    }
+    probs = {"SHORT_DROP": 0.2, "SHORT_KEEP": 0.7}
+
+    def _fake_predict(bundle, features):
+        return probs.get(features.get("symbol", ""), 0.5)
+
+    with patch("meta_model.load_model", return_value=bundle):
+        with patch("meta_model.model_path_for_profile", return_value="/tmp/x"):
+            with patch("meta_model.predict_probability", side_effect=_fake_predict):
+                result = tp._meta_pregate_candidates(cands, _ctx(threshold=0.5))
+
+    surviving = {c["symbol"] for c in result}
+    assert "SHORT_DROP" not in surviving, (
+        "With 50 short samples, the bypass is OFF and SHORT_DROP at "
+        "0.2 prob should be filtered."
+    )
+    assert "SHORT_KEEP" in surviving
+
+
+def test_long_candidate_bypassed_when_model_has_no_long_training_data():
+    """Symmetric: a model with no LONG training data shouldn't filter
+    long candidates either. (Edge case: a hypothetical short-only
+    profile that has only built short training data.)"""
+    import trade_pipeline as tp
+    cands = [
+        _candidate("BUY_KEEP", signal="BUY"),  # would normally be dropped
+    ]
+    bundle = {
+        "model": "fake",
+        "metrics": {"n_train_short": 200, "n_train_long": 5},
+    }
+
+    def _fake_predict(bundle, features):
+        return 0.05  # very low
+
+    with patch("meta_model.load_model", return_value=bundle):
+        with patch("meta_model.model_path_for_profile", return_value="/tmp/x"):
+            with patch("meta_model.predict_probability", side_effect=_fake_predict):
+                result = tp._meta_pregate_candidates(cands, _ctx(threshold=0.5))
+
+    assert "BUY_KEEP" in [c["symbol"] for c in result], (
+        "Long should bypass when n_train_long < 30 — model is short-trained."
+    )
+
+
+def test_train_meta_model_records_per_direction_sample_counts():
+    """train_meta_model must populate n_train_short and n_train_long
+    in the metrics dict so the pregate can decide whether to bypass."""
+    import meta_model
+    # Minimal feature set + synthetic data
+    feature_names = [
+        "score", "rsi",
+        "prediction_type_directional_long",
+        "prediction_type_directional_short",
+        "prediction_type_exit_long",
+        "prediction_type_exit_short",
+    ]
+    # 60 long, 30 short
+    X = (
+        [[3, 50, 1.0, 0.0, 0.0, 0.0]] * 60 +
+        [[3, 50, 0.0, 1.0, 0.0, 0.0]] * 30
+    )
+    y = [1, 0] * 45  # alternating, exactly 90 long
+    bundle = meta_model.train_meta_model(X, y, feature_names)
+    metrics = bundle["metrics"]
+    # 80% train split → 72 train rows
+    # 60 long * 0.8 = 48; 30 short * 0.8 = 24 (approximately)
+    assert metrics["n_train_short"] >= 1
+    assert metrics["n_train_long"] >= 1
+    assert metrics["n_train_short"] + metrics["n_train_long"] <= metrics["n_train"]
+
+
 def test_pipeline_calls_pregate_before_ensemble():
     """Source-level guard: removing the pre-gate from the trade
     pipeline silently re-enables full-cost behavior. Test verifies

@@ -17,6 +17,38 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — Meta-pregate: bypass shorts when training data is insufficient (Severity: critical, structural blocker)
+
+**The hidden blocker.** Audit of meta-model training data on prod:
+
+| Profile | n_train_long | n_train_short |
+|---|---|---|
+| profile_1 (Mid Cap) | 926 | 1 |
+| profile_3 (Small Cap) | 1034 | 0 |
+| profile_10 (Small Cap Shorts) | 866 | 0 |
+
+The meta-model has been trained almost entirely on long predictions. When it scores a SHORT candidate, the prediction is extrapolation from data the model has never seen — and almost certainly biased low (the model has only learned what successful longs look like). With the uniform meta_pregate_threshold=0.5, every legit SHORT candidate gets dropped before reaching the ensemble. Even though the long/short pipeline now emits short candidates and the regime gate respects target_short_pct, the meta-pregate was silently filtering them out.
+
+**This is the missing link.** The user has been wondering why the AI doesn't enter shorts even with profile_10 configured for 50% short. Answer: shorts mostly weren't reaching the AI — pregate was dropping them based on a model that can't reliably score them.
+
+**Fix.**
+
+1. `meta_model.train_meta_model` — count training samples per direction by reading the `prediction_type_directional_short` and `prediction_type_directional_long` one-hot columns. Add `n_train_short` and `n_train_long` to the metrics dict on every saved bundle.
+
+2. `trade_pipeline._meta_pregate_candidates` — when the inferred prediction_type for a candidate is `directional_short` and `n_train_short < 30`, bypass the pregate (keep the candidate). Same for `directional_long` and `n_train_long < 30`. Threshold matches the MIN_SAMPLES_FOR_KELLY convention. Logged: `"Meta-pregate: bypassed N short candidates (model has n_train_short=0 < 30 — insufficient direction-specific training data)"`.
+
+3. Backwards-compat: models trained before this metrics field existed don't carry n_train_short/long. For those, the bypass is skipped and the threshold applies uniformly (old behavior preserved). Once meta-models are retrained (next daily cycle), the new metrics populate and the bypass takes effect.
+
+**Tests (4 new in `test_meta_pregate_lever.py`, 11 total):**
+- SHORT candidates with `n_train_short=0` bypass the threshold even when meta_prob is far below it
+- LONG candidates with `n_train_long=5` bypass symmetrically
+- Once `n_train_short=50`, the bypass turns OFF and shorts under threshold are filtered normally
+- `train_meta_model` populates per-direction sample counts in the metrics dict
+
+Full suite: 1305 passing.
+
+---
+
 ## 2026-04-29 — Lever 3 visibility: bump skip log to INFO + smarter verify check (Severity: medium, observability)
 
 **The false alarm.** verify_first_cycle.sh check 2 reported "zero 'skipping pattern_recognizer' events — ctx disconnect may have regressed" — making it look like Lever 3 (per-profile specialist disable list) was broken. But cross-checking against ensemble call counts on prod showed the disable list WAS being respected: profiles with `disabled_specialists=["pattern_recognizer", "risk_assessor"]` were running "Specialist ensemble: 2 calls" instead of 4. The disable was firing — the log line was just at `logger.debug`, invisible in journalctl.
