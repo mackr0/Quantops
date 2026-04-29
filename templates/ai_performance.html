@@ -359,16 +359,16 @@
     </article>
 
     <article>
-        <header><h4>Returns by Signal</h4></header>
+        <header><h4>Move by Signal</h4></header>
         <div class="stat-card">
-            <small class="muted">Avg Return on BUYs</small>
+            <small class="muted">Avg Move on BUYs (green = price went up as predicted)</small>
             <strong class="{{ 'pnl-pos' if perf.avg_return_on_buys >= 0 else 'pnl-neg' }}">
                 {{ "{:+.2f}".format(perf.avg_return_on_buys) }}%
             </strong>
         </div>
         <div class="stat-card">
-            <small class="muted">Avg Return on SELLs</small>
-            <strong class="{{ 'pnl-pos' if perf.avg_return_on_sells >= 0 else 'pnl-neg' }}">
+            <small class="muted">Avg Move on SELLs (green = price went down as predicted)</small>
+            <strong class="{{ 'pnl-pos' if perf.avg_return_on_sells <= 0 else 'pnl-neg' }}">
                 {{ "{:+.2f}".format(perf.avg_return_on_sells) }}%
             </strong>
         </div>

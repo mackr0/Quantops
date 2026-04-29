@@ -414,16 +414,24 @@ def get_ai_performance(db_path=None):
         "WHERE status='resolved' AND actual_outcome='loss'"
     ).fetchone()[0] or 0.0
 
-    # Average return by signal type
-    avg_ret_buys = conn.execute(
-        "SELECT AVG(actual_return_pct) FROM ai_predictions "
-        "WHERE status='resolved' AND predicted_signal='BUY'"
-    ).fetchone()[0] or 0.0
+    # Average return by signal type, plus the sample size behind each
+    # (so the dashboard can N/A small-sample readings instead of
+    # rendering "+1.63% on SELLs" computed from 3 predictions).
+    buys_row = conn.execute(
+        "SELECT COUNT(*), AVG(actual_return_pct) FROM ai_predictions "
+        "WHERE status='resolved' AND predicted_signal='BUY' "
+        "AND actual_return_pct IS NOT NULL"
+    ).fetchone()
+    n_buys = buys_row[0] or 0
+    avg_ret_buys = buys_row[1] or 0.0
 
-    avg_ret_sells = conn.execute(
-        "SELECT AVG(actual_return_pct) FROM ai_predictions "
-        "WHERE status='resolved' AND predicted_signal='SELL'"
-    ).fetchone()[0] or 0.0
+    sells_row = conn.execute(
+        "SELECT COUNT(*), AVG(actual_return_pct) FROM ai_predictions "
+        "WHERE status='resolved' AND predicted_signal='SELL' "
+        "AND actual_return_pct IS NOT NULL"
+    ).fetchone()
+    n_sells = sells_row[0] or 0
+    avg_ret_sells = sells_row[1] or 0.0
 
     # Accuracy by confidence band
     bands = {"0-25": (0, 25), "25-50": (25, 50), "50-75": (50, 75), "75-100": (75, 100)}
@@ -492,6 +500,8 @@ def get_ai_performance(db_path=None):
         "avg_confidence_on_losses": round(avg_conf_losses, 1),
         "avg_return_on_buys": round(avg_ret_buys, 2),
         "avg_return_on_sells": round(avg_ret_sells, 2),
+        "n_buys": n_buys,
+        "n_sells": n_sells,
         "accuracy_by_confidence": accuracy_by_confidence,
         "best_prediction": best_prediction,
         "worst_prediction": worst_prediction,

@@ -138,16 +138,28 @@
         <article>
             <header><h4>Returns by Signal</h4></header>
             <div class="stat-card">
-                <small class="muted">Avg Return on BUYs</small>
-                <strong class="{{ 'pnl-pos' if (ai_perf.avg_return_on_buys if ai_perf else 0) >= 0 else 'pnl-neg' }}">
-                    {{ "{:+.2f}".format(ai_perf.avg_return_on_buys if ai_perf else 0) }}%
+                <small class="muted"><span class="tip" data-tip="Average price move after BUY predictions. Green = price went up (AI predicted up correctly).">Avg Move on BUYs</span></small>
+                {% if ai_perf and ai_perf.n_buys >= 10 %}
+                <strong class="{{ 'pnl-pos' if ai_perf.avg_return_on_buys >= 0 else 'pnl-neg' }}">
+                    {{ "{:+.2f}".format(ai_perf.avg_return_on_buys) }}%
                 </strong>
+                <small class="muted">{{ ai_perf.n_buys }} resolved BUY predictions</small>
+                {% else %}
+                <strong class="muted">N/A</strong>
+                <small class="muted">need 10+ resolved BUY predictions ({{ ai_perf.n_buys if ai_perf else 0 }} so far)</small>
+                {% endif %}
             </div>
             <div class="stat-card">
-                <small class="muted">Avg Return on SELLs</small>
-                <strong class="{{ 'pnl-pos' if (ai_perf.avg_return_on_sells if ai_perf else 0) >= 0 else 'pnl-neg' }}">
-                    {{ "{:+.2f}".format(ai_perf.avg_return_on_sells if ai_perf else 0) }}%
+                <small class="muted"><span class="tip" data-tip="Average price move after SELL predictions. Green = price went down (AI predicted down correctly). Red = price went up — AI was directionally wrong.">Avg Move on SELLs</span></small>
+                {% if ai_perf and ai_perf.n_sells >= 10 %}
+                <strong class="{{ 'pnl-pos' if ai_perf.avg_return_on_sells <= 0 else 'pnl-neg' }}">
+                    {{ "{:+.2f}".format(ai_perf.avg_return_on_sells) }}%
                 </strong>
+                <small class="muted">{{ ai_perf.n_sells }} resolved SELL predictions</small>
+                {% else %}
+                <strong class="muted">N/A</strong>
+                <small class="muted">need 10+ resolved SELL predictions ({{ ai_perf.n_sells if ai_perf else 0 }} so far)</small>
+                {% endif %}
             </div>
         </article>
     </div>

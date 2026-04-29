@@ -1848,6 +1848,7 @@ def performance_dashboard():
         "avg_confidence_on_losses": 0.0, "avg_return_on_buys": 0.0,
         "avg_return_on_sells": 0.0, "best_prediction": None,
         "worst_prediction": None, "profit_factor": 0.0,
+        "n_buys": 0, "n_sells": 0,
     }
     all_wins = 0
     all_losses = 0
@@ -1905,6 +1906,8 @@ def performance_dashboard():
         ai_perf["avg_confidence_on_wins"] = round(sum(conf_on_wins) / len(conf_on_wins), 1)
     if conf_on_losses:
         ai_perf["avg_confidence_on_losses"] = round(sum(conf_on_losses) / len(conf_on_losses), 1)
+    ai_perf["n_buys"] = len(all_return_buys)
+    ai_perf["n_sells"] = len(all_return_sells)
     if all_return_buys:
         ai_perf["avg_return_on_buys"] = round(sum(all_return_buys) / len(all_return_buys), 2)
     if all_return_sells:
@@ -2414,6 +2417,7 @@ def ai_dashboard():
         "avg_confidence_on_losses": 0.0, "avg_return_on_buys": 0.0,
         "avg_return_on_sells": 0.0, "best_prediction": None,
         "worst_prediction": None, "profit_factor": 0.0,
+        "n_buys": 0, "n_sells": 0,
     }
     all_wins = 0
     all_losses = 0
@@ -2470,6 +2474,8 @@ def ai_dashboard():
         ai_perf["avg_confidence_on_wins"] = round(sum(conf_on_wins) / len(conf_on_wins), 1)
     if conf_on_losses:
         ai_perf["avg_confidence_on_losses"] = round(sum(conf_on_losses) / len(conf_on_losses), 1)
+    ai_perf["n_buys"] = len(all_return_buys)
+    ai_perf["n_sells"] = len(all_return_sells)
     if all_return_buys:
         ai_perf["avg_return_on_buys"] = round(sum(all_return_buys) / len(all_return_buys), 2)
     if all_return_sells:

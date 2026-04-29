@@ -37,11 +37,17 @@ def _color_pnl(value):
     return f'<span style="color:{color};font-weight:bold">{sign}{value:,.2f}</span>'
 
 
-def _color_pct(value):
-    """Return an inline-styled span coloring a percentage green or red."""
+def _color_pct(value, invert=False):
+    """Return an inline-styled span coloring a percentage green or red.
+
+    When invert=True, NEGATIVE values are green and positive are red — used
+    for metrics where a negative outcome is the desired direction (e.g.
+    'Avg Move on SELL predictions': price going DOWN is the AI being right).
+    """
     if value is None:
         return '<span style="color:#8a8a9a">--</span>'
-    color = _GREEN if value >= 0 else _RED
+    is_good = value <= 0 if invert else value >= 0
+    color = _GREEN if is_good else _RED
     sign = "+" if value > 0 else ""
     return f'<span style="color:{color};font-weight:bold">{sign}{value:.2f}%</span>'
 
@@ -524,8 +530,8 @@ def notify_daily_summary(ctx=None):
                 + _kv_row("Pending", ai_perf["pending"])
                 + _kv_row("Win Rate", f"{ai_perf['win_rate']:.1f}%")
                 + _kv_row("Profit Factor", ai_perf["profit_factor"])
-                + _kv_row("Avg Return on BUYs", _color_pct(ai_perf["avg_return_on_buys"]))
-                + _kv_row("Avg Return on SELLs", _color_pct(ai_perf["avg_return_on_sells"]))
+                + _kv_row("Avg Move on BUYs", _color_pct(ai_perf["avg_return_on_buys"]))
+                + _kv_row("Avg Move on SELLs", _color_pct(ai_perf["avg_return_on_sells"], invert=True))
             )
             body += _section("AI Performance", ai_info)
     except Exception as exc:
