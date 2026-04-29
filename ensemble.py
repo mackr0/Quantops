@@ -204,7 +204,11 @@ def run_ensemble(
         # Per-profile disabled list: skip the API call entirely.
         # Synthesizer treats a missing specialist as ABSTAIN.
         if name in disabled:
-            logger.debug(
+            # INFO level so operators can verify the disable list is
+            # being respected each cycle (was logger.debug — invisible
+            # in journalctl, made the operational behavior look broken
+            # in verify_first_cycle even though it worked).
+            logger.info(
                 "ensemble: skipping %s — in profile disabled_specialists",
                 name,
             )

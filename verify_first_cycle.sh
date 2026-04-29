@@ -39,13 +39,22 @@ fi
 # ---------------------------------------------------------------------------
 # Check 2: Lever 3 — disable list ACTUALLY reaches ensemble (the big one)
 # ---------------------------------------------------------------------------
+# Two ways to verify (use both):
+#   (a) The "ensemble: skipping" INFO log — direct evidence of the disable
+#       branch firing. Must be at logger.info level to appear here.
+#   (b) Specialist call counts — when a profile has N disabled, the call
+#       count drops from 4 to 4-N. If the disable list is not respected,
+#       every cycle would show 4 calls regardless.
 echo
-echo "[2/9] Lever 3 disable list reaching ensemble (skipping pattern_recognizer)"
-N=$(ssh root@$DROPLET "journalctl -u quantopsai --since '$SINCE_UTC' --no-pager 2>&1 | grep -c 'ensemble: skipping pattern_recognizer'")
-if [ "${N:-0}" -gt 0 ]; then
-    ok "$N skip events — disable list IS being read through ctx"
+echo "[2/9] Lever 3 disable list reaching ensemble"
+SKIP_N=$(ssh root@$DROPLET "journalctl -u quantopsai --since '$SINCE_UTC' --no-pager 2>&1 | grep -c 'ensemble: skipping'")
+LOW_CALL_N=$(ssh root@$DROPLET "journalctl -u quantopsai --since '$SINCE_UTC' --no-pager 2>&1 | grep -E 'Specialist ensemble: [123] calls' | wc -l")
+if [ "${SKIP_N:-0}" -gt 0 ]; then
+    ok "$SKIP_N skip-log events + $LOW_CALL_N reduced-call cycles — disable list IS being applied"
+elif [ "${LOW_CALL_N:-0}" -gt 0 ]; then
+    warn "no 'skipping' INFO logs but $LOW_CALL_N reduced-call cycles seen — disable IS firing but log may be at DEBUG (bump ensemble.py logger.debug → logger.info)"
 else
-    bad "zero 'skipping pattern_recognizer' events — ctx disconnect may have regressed"
+    bad "zero skip-logs AND every cycle shows 4 calls — disable list is being ignored"
 fi
 
 # ---------------------------------------------------------------------------

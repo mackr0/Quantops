@@ -44,10 +44,13 @@ def _fake_specialist(name):
 def test_disabled_specialist_skips_api_call(caplog):
     """When pattern_recognizer is in disabled_specialists, the log
     line "skipping pattern_recognizer" must appear, indicating the
-    code path took the disable branch BEFORE the API call site."""
+    code path took the disable branch BEFORE the API call site.
+    Log level is INFO (was DEBUG, but DEBUG is invisible in
+    journalctl, so operators couldn't verify the disable was firing
+    even when it was). See verify_first_cycle.sh check 2."""
     import ensemble
     import logging as _log
-    caplog.set_level(_log.DEBUG, logger="ensemble")
+    caplog.set_level(_log.INFO, logger="ensemble")
     ctx = _make_ctx(disabled=["pattern_recognizer"])
 
     fake_specs = [_fake_specialist(n) for n in (
@@ -108,6 +111,33 @@ def test_floor_restores_when_too_many_disabled(caplog):
         "specialists disabled, the floor (≥2 active) should have "
         "kicked in and restored at least 1 specialist."
     )
+
+
+def test_skipping_log_is_info_not_debug():
+    """The 'ensemble: skipping' log MUST be at INFO level so operators
+    can verify in journalctl. Was DEBUG → invisible, made
+    verify_first_cycle.sh report a failure even when the disable
+    branch was actually firing correctly."""
+    import inspect
+    import ensemble
+    src = inspect.getsource(ensemble.run_ensemble)
+    # Look for the logger.info call with "skipping"
+    assert "logger.info(" in src and "ensemble: skipping" in src, (
+        "REGRESSION: 'ensemble: skipping' log must be at logger.info "
+        "level so operators can verify the disable list is being "
+        "respected each cycle. logger.debug is invisible in journalctl."
+    )
+    # Anti-regression: explicitly fail if logger.debug is still being
+    # used for the skip message.
+    skip_block_match = inspect.getsource(ensemble.run_ensemble)
+    skip_idx = skip_block_match.find('"ensemble: skipping')
+    if skip_idx >= 0:
+        # Look at the surrounding 80 chars to find the logger call
+        surrounding = skip_block_match[max(0, skip_idx - 200):skip_idx]
+        assert "logger.debug(" not in surrounding, (
+            "REGRESSION: 'skipping' log reverted to logger.debug — must "
+            "be logger.info for journalctl visibility."
+        )
 
 
 def test_run_ensemble_references_disabled_specialists():

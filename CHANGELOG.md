@@ -17,6 +17,21 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — Lever 3 visibility: bump skip log to INFO + smarter verify check (Severity: medium, observability)
+
+**The false alarm.** verify_first_cycle.sh check 2 reported "zero 'skipping pattern_recognizer' events — ctx disconnect may have regressed" — making it look like Lever 3 (per-profile specialist disable list) was broken. But cross-checking against ensemble call counts on prod showed the disable list WAS being respected: profiles with `disabled_specialists=["pattern_recognizer", "risk_assessor"]` were running "Specialist ensemble: 2 calls" instead of 4. The disable was firing — the log line was just at `logger.debug`, invisible in journalctl.
+
+**The fix.**
+- `ensemble.run_ensemble`: bump the "skipping" log from `logger.debug` to `logger.info` so operators can verify the disable branch is firing each cycle.
+- `verify_first_cycle.sh`: cross-check both signals. Direct evidence is the INFO log; corroborating evidence is reduced call counts (1-3 instead of 4). When skip-log is missing but call counts ARE reduced, report a WARNING (something is being applied but log isn't visible — pointing to a regression in the log level rather than the underlying logic).
+- Test pin: `test_skipping_log_is_info_not_debug` enforces the level so this can't silently regress to `logger.debug` again.
+
+**Confirmed working on prod.** profile_1 (Mid Cap, 2 disabled) and profile_10 (Small Cap Shorts, 2 disabled) showing "Specialist ensemble: 2 calls" cycles. profile_3 (Small Cap, 1 disabled) showing "3 calls" cycles. Lever 3 was always working — just wasn't audible.
+
+Full suite: 1301 passing.
+
+---
+
 ## 2026-04-29 — relative_weakness_universe: quality filters for short candidates (Severity: high, signal quality)
 
 **The problem.** First version emitted LCID for profile_10. The AI saw it and passed: *"LCID presents a superficially attractive mean-reversion setup (RSI 24, StochRSI 0, -83% vs 52wH) but fails conviction thresholds: (1) Your 0W/11L track record on LCID is disqualifying."* The strategy was finding deeply-crashed names, the AI was correctly rejecting them as bottom-pickers' graveyard. Quantity without quality.
