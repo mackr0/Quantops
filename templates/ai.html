@@ -100,7 +100,8 @@
         <article style="text-align:center;">
             <small class="muted"><span class="tip" data-tip="Sum of positive price moves divided by sum of negative price moves on BUY/SELL predictions. Measures whether the AI picks the right direction, independent of position sizing. Above 1.5 is good, above 2.0 is strong.">Prediction Accuracy</span></small>
             {% if ai_perf and ai_perf.profit_factor > 0 %}
-            <strong style="font-size:2.5rem; display:block;">{{ "%.2f"|format(ai_perf.profit_factor) }}</strong>
+            <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if ai_perf.profit_factor >= 1.5 else 'pnl-neg' if ai_perf.profit_factor < 1 else '' }}">{{ "%.2f"|format(ai_perf.profit_factor) }}</strong>
+            <small class="muted">Target: &gt;1.5</small>
             {% else %}
             <strong style="font-size:2.5rem; display:block;" class="muted">N/A</strong>
             <small class="muted">need at least one win and one loss</small>
