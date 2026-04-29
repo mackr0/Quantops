@@ -17,6 +17,23 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — Phase 3.3 of LONG_SHORT_PLAN: sector_rotation_short strategy (Severity: medium, alpha)
+
+**The thesis.** Sector rotation has documented asymmetry: when capital flows OUT of a sector (bottom-3 by trailing 5d return), individual names in that sector continue underperforming for 5-15 days as the rotation completes. Standard practice in stat-arb funds.
+
+**Implementation.** `strategies/sector_rotation_short.py`. Reads from existing `macro_data.get_sector_momentum_ranking()` (already cached upstream — no new API hits). Triggers when ALL hold:
+1. Symbol's sector is in `bottom_3` per the ranking.
+2. Stock's own 5-day return is negative (rotation hitting THIS name, not just sector averages).
+3. Stock below 20-day SMA (trend confirmation).
+4. RSI between 35-70 (avoid oversold bounce candidates and overbought reversion candidates).
+5. Sector not also classified into top-3 (defends against bad sector data).
+
+**NOT tagged as catalyst** — sector rotation is technical/macro, not a company-specific thesis. Strong-bull regime filters it out, which is correct (rotation patterns are weaker when broader market is strongly bid). Score: 2 (medium-conviction).
+
+**Tests added.** `tests/test_sector_rotation_short.py` — 8 tests covering interface, registry membership, NOT-in-catalyst-set assertion, no-data degradation, sector-not-in-bottom-3 rejection, real trigger case, oversold RSI rejection, positive-stock-in-weak-sector rejection.
+
+---
+
 ## 2026-04-29 — Phase 3.2 of LONG_SHORT_PLAN: catalyst_filing_short strategy (Severity: high, alpha)
 
 **The thesis.** Material adverse SEC filings (going-concern warnings, material-weakness disclosures, high-severity concerning 8-K language) predict 6-12 month underperformance with statistical significance (Beneish 1999; Dechow et al. 2011). The signal is in the filing AND in the market's reaction — if the stock has already dropped post-filing, the catalyst is real and continuation is likely.
