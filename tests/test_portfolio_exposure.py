@@ -218,6 +218,92 @@ def test_render_pairs_for_prompt_empty_returns_empty_string():
     assert render_pairs_for_prompt([]) == ""
 
 
+# ---------------------------------------------------------------------------
+# P2.5 — factor exposure
+# ---------------------------------------------------------------------------
+
+def test_factor_exposure_empty_positions():
+    from portfolio_exposure import compute_factor_exposure
+    out = compute_factor_exposure([], equity=100_000)
+    for band in ("cheap", "mid", "expensive"):
+        assert out["size_bands"][band]["long_pct"] == 0.0
+        assert out["size_bands"][band]["short_pct"] == 0.0
+    assert out["direction"]["long_share"] == 0.0
+    assert not out["direction"]["single_direction_concentrated"]
+
+
+def test_factor_exposure_buckets_by_price():
+    from portfolio_exposure import compute_factor_exposure
+    positions = [
+        # cheap (price = 5000/1000 = $5)
+        {"symbol": "AAA", "qty": 1000, "market_value": 5000},
+        # mid (price = 30000/600 = $50)
+        {"symbol": "BBB", "qty": 600, "market_value": 30000},
+        # expensive (price = 200000/1000 = $200)
+        {"symbol": "CCC", "qty": 1000, "market_value": 200000},
+    ]
+    out = compute_factor_exposure(positions, equity=1_000_000)
+    assert out["size_bands"]["cheap"]["long_pct"] == 0.5
+    assert out["size_bands"]["mid"]["long_pct"] == 3.0
+    assert out["size_bands"]["expensive"]["long_pct"] == 20.0
+    assert out["size_bands"]["cheap"]["n_long"] == 1
+    assert out["size_bands"]["mid"]["n_long"] == 1
+    assert out["size_bands"]["expensive"]["n_long"] == 1
+
+
+def test_factor_exposure_short_breakdown():
+    from portfolio_exposure import compute_factor_exposure
+    # Long $20K cheap + short $10K cheap → both in cheap bucket
+    positions = [
+        {"symbol": "AAA", "qty": 4000, "market_value": 20_000},  # $5
+        {"symbol": "BBB", "qty": -2000, "market_value": -10_000},  # $5
+    ]
+    out = compute_factor_exposure(positions, equity=100_000)
+    cheap = out["size_bands"]["cheap"]
+    assert cheap["long_pct"] == 20.0
+    assert cheap["short_pct"] == 10.0
+    assert cheap["n_long"] == 1
+    assert cheap["n_short"] == 1
+
+
+def test_factor_exposure_directional_concentration_flag():
+    from portfolio_exposure import compute_factor_exposure
+    # All long → 100% long share → flag fires
+    positions = [
+        {"symbol": f"S{i}", "qty": 100, "market_value": 5000}
+        for i in range(3)
+    ]
+    out = compute_factor_exposure(positions, equity=100_000)
+    assert out["direction"]["long_share"] == 1.0
+    assert out["direction"]["short_share"] == 0.0
+    assert out["direction"]["single_direction_concentrated"] is True
+
+
+def test_factor_exposure_balanced_book_not_flagged():
+    from portfolio_exposure import compute_factor_exposure
+    positions = [
+        {"symbol": "L1", "qty": 100, "market_value": 5000},
+        {"symbol": "S1", "qty": -100, "market_value": -5000},
+    ]
+    out = compute_factor_exposure(positions, equity=100_000)
+    assert out["direction"]["long_share"] == 0.5
+    assert not out["direction"]["single_direction_concentrated"]
+
+
+def test_factor_exposure_bundled_into_compute_exposure():
+    """compute_exposure now includes 'factors' key wrapping the
+    new size + direction breakdown."""
+    from portfolio_exposure import compute_exposure
+    positions = [
+        {"symbol": "AAPL", "qty": 100, "market_value": 20_000},
+    ]
+    lookup = lambda sym: "Technology"
+    out = compute_exposure(positions, equity=100_000, sector_lookup=lookup)
+    assert "factors" in out
+    assert "size_bands" in out["factors"]
+    assert "direction" in out["factors"]
+
+
 def test_render_for_prompt_warns_on_concentration():
     out = compute_exposure(
         [

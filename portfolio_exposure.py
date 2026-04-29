@@ -124,12 +124,18 @@ def compute_exposure(
         if gross_pct >= SECTOR_CONCENTRATION_WARN_PCT:
             concentration_flags.append(sector)
 
+    # P2.5 of LONG_SHORT_PLAN.md — bundle factor exposure (size +
+    # direction balance) so the dashboard / AI prompt can show all
+    # three slices (sector / size / direction) from one source.
+    factors = compute_factor_exposure(positions, equity)
+
     return {
         "net_pct": round((long_val - short_val) / equity * 100, 1),
         "gross_pct": round((long_val + short_val) / equity * 100, 1),
         "num_positions": n_positions,
         "by_sector": sector_breakdown,
         "concentration_flags": concentration_flags,
+        "factors": factors,
     }
 
 
@@ -221,6 +227,105 @@ def find_pair_opportunities(
 
     pairs.sort(key=lambda p: p["combined_score"], reverse=True)
     return pairs[:max_pairs]
+
+
+def compute_factor_exposure(
+    positions: List[Dict[str, Any]],
+    equity: float,
+) -> Dict[str, Any]:
+    """Compute simple factor-style breakdowns from position data we
+    already have. Doesn't need fundamentals — uses price as a size
+    proxy and direction as a structural factor.
+
+    P2.5 of LONG_SHORT_PLAN.md (minimum viable). Real quant funds
+    track size / value / momentum / beta factors with proper market
+    data. We start with the two we can compute cheaply:
+
+      - size_band: cheap (price < $20) / mid ($20-$100) / expensive (>$100).
+        Stylized proxy — not a true small/mid/large cap classification,
+        but correlates strongly with size and is free to compute.
+      - direction_balance: long_pct of gross book vs short_pct.
+        Surfaces "single-direction concentrated" warnings when one
+        side carries >80% of the book.
+
+    Returns dict:
+      {
+        "size_bands": {
+            "cheap":     {"long_pct", "short_pct", "n_long", "n_short"},
+            "mid":       {...},
+            "expensive": {...},
+        },
+        "direction": {
+            "long_share":  long_gross / total_gross,    # 0.0 - 1.0
+            "short_share": short_gross / total_gross,
+            "single_direction_concentrated": bool,
+        },
+      }
+    """
+    out = {
+        "size_bands": {
+            "cheap": {"long_pct": 0.0, "short_pct": 0.0,
+                       "n_long": 0, "n_short": 0},
+            "mid": {"long_pct": 0.0, "short_pct": 0.0,
+                     "n_long": 0, "n_short": 0},
+            "expensive": {"long_pct": 0.0, "short_pct": 0.0,
+                           "n_long": 0, "n_short": 0},
+        },
+        "direction": {
+            "long_share": 0.0,
+            "short_share": 0.0,
+            "single_direction_concentrated": False,
+        },
+    }
+    if equity is None or equity <= 0 or not positions:
+        return out
+
+    long_gross = 0.0
+    short_gross = 0.0
+
+    for p in positions:
+        qty = float(p.get("qty", 0) or 0)
+        mv = float(p.get("market_value", 0) or 0)
+        if qty == 0 or mv == 0:
+            continue
+        # Price = |market_value| / |qty|
+        try:
+            price = abs(mv) / abs(qty)
+        except ZeroDivisionError:
+            continue
+        if price < 20:
+            band = "cheap"
+        elif price <= 100:
+            band = "mid"
+        else:
+            band = "expensive"
+        bucket = out["size_bands"][band]
+        if qty > 0:
+            bucket["long_pct"] += abs(mv) / equity * 100
+            bucket["n_long"] += 1
+            long_gross += abs(mv)
+        else:
+            bucket["short_pct"] += abs(mv) / equity * 100
+            bucket["n_short"] += 1
+            short_gross += abs(mv)
+
+    # Round size band pcts
+    for band in out["size_bands"].values():
+        band["long_pct"] = round(band["long_pct"], 1)
+        band["short_pct"] = round(band["short_pct"], 1)
+
+    total_gross = long_gross + short_gross
+    if total_gross > 0:
+        out["direction"]["long_share"] = round(long_gross / total_gross, 3)
+        out["direction"]["short_share"] = round(short_gross / total_gross, 3)
+        # Single-direction concentrated when one side carries >80% of
+        # the book. For a long/short profile this is a flag; for a
+        # long-only profile (target_short_pct=0) it's expected.
+        if (out["direction"]["long_share"] > 0.80
+                or out["direction"]["short_share"] > 0.80):
+            out["direction"]["single_direction_concentrated"] = True
+
+    return out
 
 
 def balance_gate(
@@ -343,5 +448,24 @@ def render_for_prompt(exposure: Dict[str, Any]) -> str:
         lines.append(
             f"  CONCENTRATION WARNING: {', '.join(exposure['concentration_flags'])} "
             f">= {int(SECTOR_CONCENTRATION_WARN_PCT)}% of book — avoid stacking."
+        )
+
+    # P2.5 — surface size-band + direction-balance summary.
+    factors = exposure.get("factors") or {}
+    bands = factors.get("size_bands") or {}
+    parts = []
+    for band_name in ("cheap", "mid", "expensive"):
+        b = bands.get(band_name) or {}
+        gross = (b.get("long_pct") or 0) + (b.get("short_pct") or 0)
+        if gross > 0:
+            parts.append(f"{band_name} {gross:.1f}%")
+    if parts:
+        lines.append(f"  By price-band size proxy: {' | '.join(parts)}")
+    direction = factors.get("direction") or {}
+    if direction.get("single_direction_concentrated"):
+        side = "long" if direction.get("long_share", 0) > 0.5 else "short"
+        lines.append(
+            f"  DIRECTIONAL CONCENTRATION: book is >80% {side} — "
+            f"diversifying across direction would hedge market beta."
         )
     return "\n".join(lines)

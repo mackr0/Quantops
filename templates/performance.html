@@ -599,6 +599,27 @@
             </div>
         </div>
 
+        {% if exposure.factors and exposure.factors.size_bands %}
+        <h4 style="margin-top:1rem;"><span class="tip" data-tip="Price-band size proxy. Cheap (under $20) tends to be small-cap; expensive (over $100) tends to be large-cap. Stylized — for cap-tier classification this is approximate.">By Price-Band Size Proxy</span></h4>
+        <div class="grid">
+            {% for band, b in exposure.factors.size_bands.items() %}
+            {% set gross = b.long_pct + b.short_pct %}
+            {% if gross > 0 %}
+            <div class="stat-card">
+                <small class="muted">{{ band|title }} ({{ b.n_long }}L / {{ b.n_short }}S)</small>
+                <strong>{{ "%.1f"|format(gross) }}% gross</strong>
+                {% if b.short_pct > 0 %}
+                <small class="muted">long {{ "%.1f"|format(b.long_pct) }}% / short {{ "%.1f"|format(b.short_pct) }}%</small>
+                {% endif %}
+            </div>
+            {% endif %}
+            {% endfor %}
+        </div>
+        {% if exposure.factors.direction.single_direction_concentrated %}
+        <p class="muted pnl-neg">DIRECTIONAL CONCENTRATION: book is >80% on one side. Diversifying direction would hedge market beta.</p>
+        {% endif %}
+        {% endif %}
+
         {% if exposure.by_sector %}
         <h4 style="margin-top:1rem;"><span class="tip" data-tip="Sector breakdown of your book. Real long/short funds typically target <20% gross per sector to avoid factor concentration. Sectors >=30% gross are flagged.">By Sector</span></h4>
         {% if exposure.concentration_flags %}
