@@ -17,6 +17,33 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — UI catch-up for long/short: settings + awareness + performance (Severity: high, completeness)
+
+**The gap.** Backend supported all four short configuration knobs (`target_short_pct`, `target_book_beta`, `short_max_position_pct`, `short_max_hold_days`) but the Settings page exposed none of them — users couldn't actually configure the most important short parameters through the UI. The AI awareness page didn't show any of the new long/short prompt blocks (Kelly, drawdown scale, balance, book-beta), so when a profile emitted zero shorts there was no way to verify the prompt was computing the expected numbers. Performance dashboard had factor breakdowns but didn't surface book beta as a single number.
+
+**Settings page.**
+- Added "Long/Short Mandate" section with `target_short_pct` slider (0% long-only → 50% market-neutral → 100% short-only) and `target_book_beta` slider (-0.5 to +2.0). Tooltips explain that target_short_pct ≥ 0.4 bypasses the strong-bull regime gate (the user has accepted regime risk by setting that mandate) and target_book_beta drives both the AI prompt directive AND the P4.5 hard neutrality gate.
+- Added `short_max_position_pct` and `short_max_hold_days` to the Short Selling Risk panel.
+- `views.save_profile` now parses each of the four fields. `target_book_beta` preserves None when the form value is empty.
+
+**AI awareness page.**
+- New "Long/Short Construction" panel at the top of the Awareness tab, one row per shorts-enabled profile. Shows: target vs current short share + balance gate state; target vs current book beta + delta with "out of band" flag; Kelly recommendation per direction (or "insufficient data"); current drawdown % + capital scale modifier.
+- Built by `views._build_long_short_awareness(profiles)` — pulls live positions, computes book beta, fetches Kelly recs, computes drawdown scale. Best-effort: profile-level failures keep the row with empty fields rather than dropping the profile.
+
+**Performance dashboard.**
+- "Book Beta" stat card alongside Net / Gross / Positions in the Current Exposure panel. When a single profile is selected, also shows target + delta with out-of-band flag.
+- "Kelly Position Sizing" panel with side-by-side LONG / SHORT cards. Each shows fractional Kelly % + supporting stats (WR, avg win, avg loss, n) or "need 30+ resolved entries with positive edge" placeholder.
+
+**Tests (8 new in `test_long_short_awareness.py`, 4 in `test_settings_short_knobs.py`):**
+- `_build_long_short_awareness` skips long-only profiles, skips profiles with no DB file, builds rows per shorts-enabled profile with empty fields when sub-fetches fail, surfaces Kelly when data exists.
+- Performance template has book_beta stat-card, Kelly panel, references the right view variables.
+- Performance view passes `profile_target_book_beta`, `perf_kelly_long`, `perf_kelly_short`.
+- Settings template has all four short-knob inputs, save_profile parses each one, values round-trip through DB → UserContext.
+
+Full suite: 1294 passing.
+
+---
+
 ## 2026-04-29 — Doc + display catch-up for the long/short build (Severity: medium, hygiene)
 
 **The gap.** Phases 1-4 of LONG_SHORT_PLAN shipped in code with full test coverage and CHANGELOG entries, but the canonical reference docs (ROADMAP, TECHNICAL_DOCUMENTATION, AI_ARCHITECTURE) and display-name registry were stale. ROADMAP's Phase 11 entry described only Phase 1; AI_ARCHITECTURE's Part 4 named only Phase 1's strategies and didn't document the Phase 2-4 prompt blocks the AI now sees on every cycle. `display_names.py` had no explicit entries for any of the 10 dedicated short strategies — they fell back to title-case from snake_case which works but leaves the system documentation visibly incomplete.

@@ -581,6 +581,7 @@ class TestRenderTemplateKwargs:
                                 "b",  # P2.1 sector loop: {% for sector, b in ... %}
                                 "f_btm", "f_beta", "f_mom",  # P3.6 factor locals
                                 "1",  # numeric literal in {% set ... 1.0 %}
+                                "0",  # numeric literal in `> 0.30` etc
                                 "mp", "prof", "prof_decay", "hr", "row",
                                 "actions", "spec_name", "trades_tpl",
                                 "base", "block", "mo", "w", "c", "a",

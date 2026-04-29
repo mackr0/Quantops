@@ -760,6 +760,15 @@ def save_profile(profile_id):
         "enable_short_selling": 1 if form.get("enable_short_selling") else 0,
         "short_stop_loss_pct": float(form.get("short_stop_loss_pct", 0.08)),
         "short_take_profit_pct": float(form.get("short_take_profit_pct", 0.08)),
+        # P1.5/P1.6 of LONG_SHORT_PLAN.md — short-side hold + sizing caps.
+        "short_max_position_pct": float(form.get("short_max_position_pct", 0.05)),
+        "short_max_hold_days": int(form.get("short_max_hold_days", 10)),
+        # P2.2 of LONG_SHORT_PLAN.md — long/short balance mandate.
+        "target_short_pct": float(form.get("target_short_pct", 0.0)),
+        # P4.1 of LONG_SHORT_PLAN.md — book beta target. Empty form
+        # value means "no target" (NULL); preserve existing if blank.
+        **({"target_book_beta": float(form["target_book_beta"])}
+           if form.get("target_book_beta", "").strip() != "" else {}),
         "enable_self_tuning": 1 if form.get("enable_self_tuning") else 0,
         "ai_model_auto_tune": 1 if form.get("ai_model_auto_tune") else 0,
         # Drawdown protection
@@ -1835,6 +1844,32 @@ def performance_dashboard():
     except Exception:
         pass
 
+    # P4.1 of LONG_SHORT_PLAN — surface target_book_beta when a single
+    # profile is selected (aggregate "All Profiles" view has no single
+    # target, so it stays None).
+    profile_target_book_beta = None
+    if selected_profile_int:
+        try:
+            sp = get_trading_profile(selected_profile_int)
+            if sp and sp["user_id"] == current_user.effective_user_id:
+                profile_target_book_beta = sp.get("target_book_beta")
+        except Exception:
+            pass
+
+    # P4.2 of LONG_SHORT_PLAN — Kelly recommendations per direction.
+    # Same scope: only meaningful when a single profile is selected.
+    perf_kelly_long = None
+    perf_kelly_short = None
+    if selected_profile_int:
+        try:
+            from kelly_sizing import compute_kelly_recommendation
+            prof_db = f"quantopsai_profile_{selected_profile_int}.db"
+            if os.path.exists(prof_db):
+                perf_kelly_long = compute_kelly_recommendation(prof_db, "long")
+                perf_kelly_short = compute_kelly_recommendation(prof_db, "short")
+        except Exception:
+            pass
+
     # AI prediction accuracy (for AI Intelligence tab)
     from ai_tracker import get_ai_performance
     from journal import get_performance_summary
@@ -2359,6 +2394,9 @@ def performance_dashboard():
                            selected_profile=selected_profile_int,
                            selected_profile_name=selected_profile_name,
                            exposure=exposure,
+                           profile_target_book_beta=profile_target_book_beta,
+                           perf_kelly_long=perf_kelly_long,
+                           perf_kelly_short=perf_kelly_short,
                            ai_perf=ai_perf,
                            slippage=slippage,
                            scaling_real=scaling_real,
@@ -2381,6 +2419,136 @@ def performance_dashboard():
 # ---------------------------------------------------------------------------
 # AI Intelligence — 4 sub-pages
 # ---------------------------------------------------------------------------
+
+def _build_long_short_awareness(profiles):
+    """Per-profile snapshot of the long/short construction context the
+    AI sees on every cycle. Used by both the AI awareness tab and the
+    performance dashboard so users can verify the prompt is computing
+    the same numbers they'd compute by hand.
+
+    Returns list of dicts shaped like:
+      {
+        "profile_id": int,
+        "profile_name": str,
+        "shorts_enabled": bool,
+        "target_short_pct": float | None,
+        "current_short_share": float | None,
+        "balance_state": "pass" | "block_shorts" | "block_longs" | "n/a",
+        "target_book_beta": float | None,
+        "current_book_beta": float | None,
+        "book_beta_delta": float | None,
+        "kelly_long": dict | None,
+        "kelly_short": dict | None,
+        "drawdown_pct": float | None,
+        "drawdown_scale": float | None,
+      }
+    """
+    import os
+    out = []
+    for p in profiles or []:
+        if not p.get("enable_short_selling"):
+            continue
+        prof_db = f"quantopsai_profile_{p['id']}.db"
+        if not os.path.exists(prof_db):
+            continue
+        row = {
+            "profile_id": p["id"],
+            "profile_name": p.get("name", f"Profile {p['id']}"),
+            "shorts_enabled": True,
+            "target_short_pct": p.get("target_short_pct"),
+            "target_book_beta": p.get("target_book_beta"),
+            "current_short_share": None,
+            "balance_state": "n/a",
+            "current_book_beta": None,
+            "book_beta_delta": None,
+            "kelly_long": None,
+            "kelly_short": None,
+            "drawdown_pct": None,
+            "drawdown_scale": None,
+        }
+        try:
+            from models import build_user_context_from_profile
+            from client import get_account_info, get_positions
+            ctx = build_user_context_from_profile(p["id"])
+            account = get_account_info(ctx=ctx) or {}
+            poss = get_positions(ctx=ctx) or []
+            equity = float(account.get("equity") or 0)
+            positions = []
+            for pos in poss:
+                qty = float(pos.get("qty") or 0)
+                mv = float(pos.get("market_value") or 0)
+                side = (pos.get("side") or "").lower()
+                if not qty or not mv:
+                    continue
+                if "short" in side and mv > 0:
+                    mv = -mv
+                if "short" in side and qty > 0:
+                    qty = -qty
+                positions.append({
+                    "symbol": pos.get("symbol"),
+                    "qty": qty,
+                    "market_value": mv,
+                })
+
+            # Current book beta
+            try:
+                from portfolio_exposure import compute_book_beta
+                row["current_book_beta"] = compute_book_beta(positions, equity)
+                if (row["current_book_beta"] is not None
+                        and row["target_book_beta"] is not None):
+                    row["book_beta_delta"] = (
+                        row["current_book_beta"] - row["target_book_beta"]
+                    )
+            except Exception:
+                pass
+
+            # Current short share + balance gate state
+            try:
+                from portfolio_exposure import compute_exposure, balance_gate
+                if equity > 0 and positions:
+                    exp = compute_exposure(positions, equity)
+                    gross = float(exp.get("gross_pct") or 0)
+                    if gross > 0:
+                        cur_short = sum(
+                            (b.get("short_pct") or 0)
+                            for b in (exp.get("by_sector") or {}).values()
+                        )
+                        row["current_short_share"] = cur_short / gross
+                        if row["target_short_pct"] is not None:
+                            row["balance_state"] = balance_gate(
+                                target_short_pct=row["target_short_pct"],
+                                current_exposure=exp,
+                            )
+            except Exception:
+                pass
+
+            # Kelly recommendations per direction
+            try:
+                from kelly_sizing import compute_kelly_recommendation
+                row["kelly_long"] = compute_kelly_recommendation(prof_db, "long")
+                row["kelly_short"] = compute_kelly_recommendation(prof_db, "short")
+            except Exception:
+                pass
+
+            # Drawdown + capital scale
+            try:
+                from portfolio_manager import check_drawdown
+                from drawdown_scaling import compute_capital_scale
+                dd = check_drawdown(ctx, account, db_path=prof_db) or {}
+                row["drawdown_pct"] = dd.get("drawdown_pct")
+                if row["drawdown_pct"] is not None:
+                    row["drawdown_scale"] = compute_capital_scale(
+                        row["drawdown_pct"]
+                    )
+            except Exception:
+                pass
+        except Exception:
+            # Profile-level failure: keep the empty row so the user
+            # sees that the profile is enabled but data wasn't readable.
+            pass
+        out.append(row)
+    return out
+
 
 def _ai_common(page_name):
     """Common setup for all AI pages: profiles, profile filter, db_paths."""
@@ -2836,6 +3004,8 @@ def ai_dashboard():
         logger.warning("AI win-rate chart failed: %s", exc)
         ai_win_rate_chart_svg = ""
 
+    long_short_awareness = _build_long_short_awareness(profiles)
+
     return render_template("ai.html",
                            ai_perf=ai_perf, slippage=slippage, meta_info=meta_info,
                            validations=validations, decay_info=decay_info,
@@ -2845,6 +3015,7 @@ def ai_dashboard():
                            ensemble_info=ensemble_info,
                            ai_cost_info=ai_cost_info,
                            ai_win_rate_chart_svg=ai_win_rate_chart_svg,
+                           long_short_awareness=long_short_awareness,
                            **ctx)
 
 

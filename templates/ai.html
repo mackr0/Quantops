@@ -588,6 +588,85 @@
      TAB 3: AWARENESS — What does it see right now?
      =================================================================== -->
 <div id="tab-awareness" class="perf-tab-content">
+<!-- Long/Short Construction — what the AI sees per profile -->
+{% if long_short_awareness %}
+<article>
+    <header><h3>Long/Short Construction</h3></header>
+    <p class="muted" style="margin-top:-0.5rem;">For every shorts-enabled profile, the actual numbers the AI sees in its prompt every cycle: target vs current long/short balance, target vs current book beta, per-direction Kelly recommendation, drawdown capital scale. If a number is empty, the AI sees no block (e.g., Kelly needs ≥30 resolved entries per direction).</p>
+    <table>
+        <thead>
+            <tr>
+                <th>Profile</th>
+                <th>Short Mandate</th>
+                <th>Book Beta</th>
+                <th>Kelly (Long / Short)</th>
+                <th>Drawdown</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in long_short_awareness %}
+            <tr>
+                <td><strong>{{ r.profile_name }}</strong></td>
+                <td>
+                    {% if r.target_short_pct is not none and r.target_short_pct > 0 %}
+                        target {{ "%.0f"|format(r.target_short_pct * 100) }}%
+                        {% if r.current_short_share is not none %}
+                            <br><span class="muted">current {{ "%.0f"|format(r.current_short_share * 100) }}%</span>
+                        {% endif %}
+                        {% if r.balance_state == 'block_shorts' %}
+                            <br><span style="color:#b87333;font-size:0.8rem;">→ over-shorted, blocking new shorts</span>
+                        {% elif r.balance_state == 'block_longs' %}
+                            <br><span style="color:#b87333;font-size:0.8rem;">→ under-shorted, blocking new longs</span>
+                        {% endif %}
+                    {% else %}
+                        <span class="muted">long-only</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if r.target_book_beta is not none %}
+                        target {{ "%+.2f"|format(r.target_book_beta) }}
+                        {% if r.current_book_beta is not none %}
+                            <br><span class="muted">current {{ "%+.2f"|format(r.current_book_beta) }}</span>
+                            {% if r.book_beta_delta is not none and r.book_beta_delta|abs > 0.30 %}
+                                <br><span style="color:#b87333;font-size:0.8rem;">Δ {{ "%+.2f"|format(r.book_beta_delta) }} — out of band</span>
+                            {% endif %}
+                        {% endif %}
+                    {% else %}
+                        <span class="muted">no target</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if r.kelly_long %}
+                        <strong>L:</strong> {{ "%.1f"|format(r.kelly_long.fractional_kelly * 100) }}%
+                        <span class="muted">(WR {{ "%.0f"|format(r.kelly_long.win_rate * 100) }}%, n={{ r.kelly_long.n }})</span>
+                    {% else %}
+                        <span class="muted">L: insufficient data</span>
+                    {% endif %}
+                    <br>
+                    {% if r.kelly_short %}
+                        <strong>S:</strong> {{ "%.1f"|format(r.kelly_short.fractional_kelly * 100) }}%
+                        <span class="muted">(WR {{ "%.0f"|format(r.kelly_short.win_rate * 100) }}%, n={{ r.kelly_short.n }})</span>
+                    {% else %}
+                        <span class="muted">S: insufficient data</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if r.drawdown_pct is not none %}
+                        {{ "%.1f"|format(r.drawdown_pct) }}% from peak
+                        {% if r.drawdown_scale is not none and r.drawdown_scale < 0.999 %}
+                            <br><span class="muted">size scale {{ "%.2f"|format(r.drawdown_scale) }}×</span>
+                        {% endif %}
+                    {% else %}
+                        <span class="muted">—</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</article>
+{% endif %}
+
 <!-- Market Intelligence — loaded via API -->
     <article>
         <header><h3>Market Intelligence</h3></header>

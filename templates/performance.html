@@ -597,7 +597,42 @@
                 <small class="muted">Positions</small>
                 <strong style="font-size:2rem;">{{ exposure.num_positions }}</strong>
             </div>
+            {% if exposure.book_beta is not none %}
+            <div class="stat-card" style="text-align:center;">
+                <small class="muted"><span class="tip" data-tip="Gross-weighted average beta of the book. Long positions add positive signed beta; shorts subtract. 0 = market-neutral. 1 = market-correlated. Real long/short funds typically target 0 ± 0.30.">Book Beta</span></small>
+                <strong style="font-size:2rem;">{{ "{:+.2f}".format(exposure.book_beta) }}</strong>
+                {% if profile_target_book_beta is not none %}
+                <br><small class="muted">target {{ "{:+.2f}".format(profile_target_book_beta) }}{% set bb_delta = exposure.book_beta - profile_target_book_beta %} | Δ {{ "{:+.2f}".format(bb_delta) }}{% if bb_delta|abs > 0.30 %} <span style="color:#b87333;">out of band</span>{% endif %}</small>
+                {% endif %}
+            </div>
+            {% endif %}
         </div>
+
+        {% if perf_kelly_long or perf_kelly_short %}
+        <h4 style="margin-top:1rem;"><span class="tip" data-tip="Quarter-Kelly position size that maximizes long-run growth given observed edge. Computed per direction from resolved entry trades. Surfaced to the AI as soft sizing guidance.">Kelly Position Sizing</span></h4>
+        <div class="grid">
+            <div class="stat-card" style="text-align:center;">
+                <small class="muted">LONG (suggested size per trade)</small>
+                {% if perf_kelly_long %}
+                <strong style="font-size:1.6rem;">{{ "%.1f"|format(perf_kelly_long.fractional_kelly * 100) }}%</strong>
+                <br><small class="muted">WR {{ "%.0f"|format(perf_kelly_long.win_rate * 100) }}% | avg win {{ "%.1f"|format(perf_kelly_long.avg_win_pct * 100) }}% / loss {{ "%.1f"|format(perf_kelly_long.avg_loss_pct * 100) }}% | n={{ perf_kelly_long.n }}</small>
+                {% else %}
+                <strong style="font-size:1.6rem;color:#888;">—</strong>
+                <br><small class="muted">need 30+ resolved long entries with positive edge</small>
+                {% endif %}
+            </div>
+            <div class="stat-card" style="text-align:center;">
+                <small class="muted">SHORT (suggested size per trade)</small>
+                {% if perf_kelly_short %}
+                <strong style="font-size:1.6rem;">{{ "%.1f"|format(perf_kelly_short.fractional_kelly * 100) }}%</strong>
+                <br><small class="muted">WR {{ "%.0f"|format(perf_kelly_short.win_rate * 100) }}% | avg win {{ "%.1f"|format(perf_kelly_short.avg_win_pct * 100) }}% / loss {{ "%.1f"|format(perf_kelly_short.avg_loss_pct * 100) }}% | n={{ perf_kelly_short.n }}</small>
+                {% else %}
+                <strong style="font-size:1.6rem;color:#888;">—</strong>
+                <br><small class="muted">need 30+ resolved short entries with positive edge</small>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
 
         {% if exposure.factors and exposure.factors.size_bands %}
         {# P3.6 of LONG_SHORT_PLAN.md — render real factor buckets when present #}

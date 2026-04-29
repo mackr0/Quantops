@@ -480,6 +480,42 @@
                            data-display="short_tp_val_{{ prof.id }}">
                     <output id="short_tp_val_{{ prof.id }}">{{ "%.0f"|format(prof.get('short_take_profit_pct', 0.08) * 100) }}%</output>
                 </label>
+                <label>
+                    <span class="tip" data-tip="Cap on each individual short position as a percent of equity. Defaults to half of the long cap (asymmetric-risk convention — shorts have unlimited upside loss).">Short Max Position %</span>
+                    <input type="range" name="short_max_position_pct" class="slider"
+                           min="0.01" max="0.30" step="0.01"
+                           value="{{ prof.get('short_max_position_pct', 0.05) }}"
+                           data-display="short_maxp_val_{{ prof.id }}">
+                    <output id="short_maxp_val_{{ prof.id }}">{{ "%.0f"|format(prof.get('short_max_position_pct', 0.05) * 100) }}%</output>
+                </label>
+                <label>
+                    <span class="tip" data-tip="Force-cover any short held longer than this. Shorts that haven't worked in N days are usually wrong; tighter time stops on shorts than longs is standard pro-fund practice.">Short Max Hold Days</span>
+                    <input type="number" name="short_max_hold_days" min="1" max="60"
+                           value="{{ prof.get('short_max_hold_days', 10) }}">
+                    <small class="muted">Default 10 — shorts are time-sensitive</small>
+                </label>
+            </div>
+
+            <h5 style="margin-top:1rem;">Long/Short Mandate</h5>
+            <div class="grid">
+                <label>
+                    <span class="tip" data-tip="Target share of gross book that should be SHORT. 0.0 = long-only. 0.5 = market-neutral mandate. When ≥ 0.4, the strong-bull regime gate bypasses for this profile (the user has explicitly accepted regime risk by setting the mandate).">Target Short %</span>
+                    <input type="range" name="target_short_pct" class="slider"
+                           min="0.0" max="1.0" step="0.05"
+                           value="{{ prof.get('target_short_pct', 0.0) }}"
+                           data-display="tgt_short_val_{{ prof.id }}">
+                    <output id="tgt_short_val_{{ prof.id }}">{{ "%.0f"|format(prof.get('target_short_pct', 0.0) * 100) }}%</output>
+                    <small class="muted">0% = long-only, 50% = market-neutral, 100% = short-only</small>
+                </label>
+                <label>
+                    <span class="tip" data-tip="Target gross-weighted book beta. 0 = market-neutral. The AI is told to pick defensive (low-beta) longs or levered shorts to close the gap. Hard gate blocks entries that worsen the gap by >0.5.">Target Book Beta</span>
+                    <input type="range" name="target_book_beta" class="slider"
+                           min="-0.5" max="2.0" step="0.05"
+                           value="{{ prof.get('target_book_beta', 1.0) }}"
+                           data-display="tgt_beta_val_{{ prof.id }}" data-format="2f">
+                    <output id="tgt_beta_val_{{ prof.id }}">{{ "%.2f"|format(prof.get('target_book_beta', 1.0)) }}</output>
+                    <small class="muted">0 = neutral, 1 = market-correlated, &gt;1 = levered</small>
+                </label>
             </div>
 
             <h5 style="margin-top:1rem;">Correlation Management</h5>
