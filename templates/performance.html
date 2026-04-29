@@ -242,9 +242,11 @@
     </article>
 
     <!-- Rolling 3-month returns -->
-    {% if m.rolling_3m_returns %}
     <article>
         <header><h3><span class="tip" data-tip="Your return over the last 3 months, recalculated each month. Shows consistency">Rolling 3-Month Returns</span></h3></header>
+        {% if m.needs_more_days_rolling > 0 %}
+        <p class="muted">Need {{ m.needs_more_days_rolling }} more trading days for rolling metrics.</p>
+        {% else %}
         <div class="overflow-auto">
             <table>
                 <thead>
@@ -260,8 +262,8 @@
                 </tbody>
             </table>
         </div>
+        {% endif %}
     </article>
-    {% endif %}
 
     <!-- Worst Periods -->
     {% if m.num_daily_returns >= 7 %}
