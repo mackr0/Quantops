@@ -156,6 +156,29 @@ def test_recommendation_falls_back_for_legacy_rows_without_prediction_type(
     assert rec["n"] == 35
 
 
+def test_recommendation_excludes_hold_predictions(tmp_predictions_db):
+    """HOLD predictions are tagged directional_long but represent
+    'keep current position' — not new entries. Their outcomes reflect
+    existing position drift, not Kelly-relevant edge. Must be filtered
+    out so the Kelly stats only reflect actual entries."""
+    from kelly_sizing import compute_kelly_recommendation
+    # 30 active BUYs with strong positive edge (70% WR, 4% win, 2% loss):
+    preds = (
+        [("BUY", "directional_long", "win", 4.0)] * 21 +
+        [("BUY", "directional_long", "loss", -2.0)] * 9 +
+        # Plus a flood of HOLD rows tagged directional_long with NEGATIVE
+        # outcomes. If HOLDs were counted, the win rate would crater
+        # and edge would go negative.
+        [("HOLD", "directional_long", "loss", -5.0)] * 500 +
+        [("HOLD", "directional_long", "win", 0.5)] * 100
+    )
+    _seed_predictions(tmp_predictions_db, preds)
+    rec = compute_kelly_recommendation(tmp_predictions_db, "long")
+    assert rec is not None, "HOLDs must not crowd out the real BUY edge"
+    assert rec["n"] == 30  # only BUYs counted, not HOLDs
+    assert rec["win_rate"] == pytest.approx(0.70, abs=0.01)
+
+
 def test_recommendation_none_when_no_negative_edge(tmp_predictions_db):
     """If win rate × win - (1-win_rate) × loss is non-positive, no
     recommendation."""

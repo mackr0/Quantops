@@ -17,6 +17,20 @@ Rules going forward:
 
 ---
 
+## 2026-04-28 — P4.2b Kelly: exclude HOLD predictions from edge stats (Severity: high, correctness)
+
+**The bug.** `compute_kelly_recommendation` read every row tagged `prediction_type='directional_long'`, including HOLD predictions. HOLDs aren't entries — their "actual_return_pct" reflects existing-position drift, not new-bet P&L. On profile_3 this meant 920 HOLD rows (601 losses, 314 wins-with-negative-avg-return) drowned out the 49 actual BUY rows. On profile_11, real positive edge (21W/9L = 70%, +2.95% / -2.23% — full Kelly ~47%) returned `None` in the recommendation because HOLDs flipped the aggregate edge negative.
+
+**Why it matters.** Kelly sizing is for sizing NEW entries. Including HOLD outcomes is a category error: the prediction "keep your current position" doesn't produce an entry-sized bet, so its win/loss outcome doesn't measure the edge that Kelly is supposed to size. With the bug present, NO profile in prod produced a non-None Kelly recommendation, despite profile_11 having a clean positive edge.
+
+**Fix.** Filter Kelly query on `predicted_signal IN ('BUY','STRONG_BUY')` for long, `IN ('SHORT','SELL','STRONG_SELL','STRONG_SHORT')` for short. Drops HOLDs (and any other ambiguous signals) from the Kelly-relevant population entirely.
+
+**Test.** `test_recommendation_excludes_hold_predictions` — seeds 30 BUYs with strong positive edge plus 600 HOLD rows with terrible outcomes; pre-fix would crater the win rate, post-fix returns Kelly ≈ quarter of full at 70% WR.
+
+**Caught by.** Real-data validation against prod predictions databases — Kelly returned None on every profile despite obvious positive edge on profile_11.
+
+---
+
 ## 2026-04-29 — Phase 4.2 of LONG_SHORT_PLAN: fractional Kelly position sizing (Severity: high, capability)
 
 **The thesis.** Position sizing is the silent killer of trading systems — the wrong size compounds wins poorly and amplifies losses faster than the edge is supposed to support. The Kelly criterion gives the position fraction that maximizes long-run logarithmic growth given a known edge. Fractional Kelly (typically quarter Kelly) cuts variance ~50% while keeping ~75% of the growth rate — the standard pro-fund variance/growth tradeoff.

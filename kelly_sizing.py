@@ -122,6 +122,15 @@ def compute_kelly_recommendation(
     try:
         conn = sqlite3.connect(db_path)
         ptype = "directional_long" if direction == "long" else "directional_short"
+        # Kelly is for sizing NEW entries — only count rows where we
+        # actually took a position. HOLD predictions tagged as
+        # directional_long must be excluded; their P&L reflects existing
+        # positions, not new bets, and pollutes win rate / avg win/loss.
+        if direction == "long":
+            entry_signals = ("BUY", "STRONG_BUY")
+        else:
+            entry_signals = ("SHORT", "SELL", "STRONG_SELL", "STRONG_SHORT")
+        placeholders = ",".join("?" * len(entry_signals))
         # Use prediction_type when present; fall back to predicted_signal
         # for legacy rows that haven't been backfilled.
         rows = conn.execute(
@@ -129,14 +138,12 @@ def compute_kelly_recommendation(
             "FROM ai_predictions "
             "WHERE status = 'resolved' "
             "AND actual_return_pct IS NOT NULL "
+            f"AND predicted_signal IN ({placeholders}) "
             "AND ("
             "  prediction_type = ? OR "
-            "  (prediction_type IS NULL AND ("
-            "    (? = 'directional_long' AND predicted_signal IN ('BUY', 'HOLD', 'STRONG_BUY')) OR "
-            "    (? = 'directional_short' AND predicted_signal IN ('SHORT', 'SELL', 'STRONG_SELL', 'STRONG_SHORT'))"
-            "  ))"
+            "  prediction_type IS NULL"
             ")",
-            (ptype, ptype, ptype),
+            (*entry_signals, ptype),
         ).fetchall()
         conn.close()
     except Exception as exc:
