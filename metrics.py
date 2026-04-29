@@ -842,20 +842,55 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
     result["needs_more_days_rolling"] = max(0, 63 - len(daily_returns))
 
     # -----------------------------------------------------------------------
-    # Trade analytics
+    # Trade analytics — bucketed wins / losses / scratches
     # -----------------------------------------------------------------------
-    winning_trades = [t for t in trades if (t.get("pnl") or 0) > 0]
-    losing_trades = [t for t in trades if (t.get("pnl") or 0) < 0]
+    # Scratch threshold: trades with |pnl_pct| below 0.5% are essentially
+    # break-even outcomes (commission + slippage typically eats this band).
+    # Counting them as "wins" inflates win-rate stats and gives Kelly a
+    # falsely rosy edge picture. From prod data: profile_8 had 30 "wins"
+    # with median = $43 — many of those were sub-0.5% trail-stop firings
+    # after intraday reversals. Reclassifying as scratches makes the
+    # win-rate honest. See INTRADAY_STOPS_PLAN.md / Fix 3.
+    SCRATCH_PCT_THRESHOLD = 0.5  # percent
+    winning_trades = []   # pnl_pct >= +SCRATCH_PCT_THRESHOLD
+    losing_trades = []    # pnl_pct <= -SCRATCH_PCT_THRESHOLD
+    scratch_trades = []   # in between (effectively break-even)
+    for t in trades:
+        pnl = float(t.get("pnl") or 0)
+        qty = float(t.get("qty") or 0)
+        price = float(t.get("price") or 0)
+        notional = abs(qty * price)
+        if pnl == 0 or notional <= 0:
+            # Zero pnl or unsizeable → scratch by definition
+            scratch_trades.append(t)
+            continue
+        pnl_pct = (pnl / notional) * 100.0
+        if pnl_pct >= SCRATCH_PCT_THRESHOLD:
+            winning_trades.append(t)
+        elif pnl_pct <= -SCRATCH_PCT_THRESHOLD:
+            losing_trades.append(t)
+        else:
+            scratch_trades.append(t)
 
     result["winning_trades"] = len(winning_trades)
     result["losing_trades"] = len(losing_trades)
-    # Win rate — undefined without any closed trades
-    if trades:
-        result["win_rate"] = round(len(winning_trades) / len(trades) * 100, 1)
+    result["scratch_trades"] = len(scratch_trades)
+    # Win rate uses the honest classification: real wins / (real wins +
+    # real losses). Scratches are excluded from the denominator — they're
+    # neither wins nor losses for edge-measurement purposes. Without this
+    # filter, a system that closes trades at break-even all day showed a
+    # 70%+ "win rate" while producing essentially zero P&L.
+    real_decisive = len(winning_trades) + len(losing_trades)
+    if real_decisive > 0:
+        result["win_rate"] = round(len(winning_trades) / real_decisive * 100, 1)
         result["win_rate_computable"] = True
     else:
         result["win_rate"] = 0.0
         result["win_rate_computable"] = False
+    if trades:
+        result["scratch_rate"] = round(len(scratch_trades) / len(trades) * 100, 1)
+    else:
+        result["scratch_rate"] = 0.0
 
     win_pnls = [t.get("pnl", 0) for t in winning_trades]
     loss_pnls = [t.get("pnl", 0) for t in losing_trades]

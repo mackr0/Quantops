@@ -329,15 +329,15 @@
     <!-- Win rate, profit factor, expectancy -->
     <div class="grid">
         <article style="text-align:center;">
-            <small class="muted"><span class="tip" data-tip="Percentage of trades that made money">Win Rate</span></small>
+            <small class="muted"><span class="tip" data-tip="Percentage of decisive trades that made money. Trades with |return| < 0.5% are classified as 'scratch' (effectively break-even after slippage/commission) and excluded from this rate. Without that filter, hundreds of trail-stop firings at break-even inflate the rate while producing no real P&L.">Win Rate</span></small>
             {% if m.win_rate_computable %}
             <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if m.win_rate >= 50 else 'pnl-neg' }}">
                 {{ "%.1f"|format(m.win_rate) }}%
             </strong>
-            <small class="muted">{{ m.winning_trades }}W / {{ m.losing_trades }}L of {{ m.closed_trades }} closed{% if m.open_trades %} ({{ m.open_trades }} still open){% endif %}</small>
+            <small class="muted">{{ m.winning_trades }}W / {{ m.losing_trades }}L decisive{% if m.scratch_trades %} · {{ m.scratch_trades }} scratch ({{ "%.1f"|format(m.scratch_rate) }}%){% endif %}{% if m.open_trades %} · {{ m.open_trades }} open{% endif %}</small>
             {% else %}
             <strong style="font-size:2.5rem; display:block;" class="muted">N/A</strong>
-            <small class="muted">no closed trades yet{% if m.open_trades %} ({{ m.open_trades }} open){% endif %}</small>
+            <small class="muted">no decisive trades yet{% if m.scratch_trades %} ({{ m.scratch_trades }} scratch){% endif %}{% if m.open_trades %} · {{ m.open_trades }} open{% endif %}</small>
             {% endif %}
         </article>
         <article style="text-align:center;">

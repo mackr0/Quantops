@@ -17,6 +17,45 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — Fix 3: scratch-trade classification (Severity: high, metric correctness)
+
+**The problem.** Hundreds of trades closing at break-even ($1-$50 pnl on $50K notional = 0.0-0.1% returns) were counted as "wins" because `pnl > 0`. Profile_8 reported 30 wins / 10 losses (75% win rate) — but the median win was $43 (~0.09%). After commission and slippage that's a wash. The "win rate" was vapor.
+
+**Source pattern.** Trail-stop firings on daily bars after intraday reversals (the IBM $2.70 case). The trade ran +11% intraday, reversed to entry, the EOD trail-stop check caught it at break-even. Counted as win because `pnl > 0`, but no real edge captured.
+
+**Fix.** Reclassify trades by pnl_pct against position notional, not by `pnl > 0`:
+
+- `|pnl_pct| < 0.5%` → **scratch** (effectively break-even, excluded from win rate)
+- `pnl_pct ≥ 0.5%` → **win**
+- `pnl_pct ≤ -0.5%` → **loss**
+
+Win rate denominator is now `winning + losing` (decisive trades only). Scratches surfaced as a separate field in metrics + dashboard so the user can see how many trades closed at break-even.
+
+The 0.5% threshold roughly matches commission + slippage costs on a typical position. A trade that nets less than that hasn't really won — it's traded round-trip cost.
+
+**What this changes on the dashboards.**
+- `m.winning_trades`, `m.losing_trades`, `m.scratch_trades` reflect the new buckets.
+- `m.win_rate` now reports `winning / (winning + losing) * 100`. Profiles that close at break-even all day will see win rates drop substantially — that's the honest number.
+- `m.scratch_rate` shows the proportion that's neither a real win nor a real loss.
+- `m.profit_factor` uses real wins / real losses (scratch pnls excluded from both).
+- `m.slippage_vs_gross` denominator is now real gains only — slippage as a fraction of *real* profits, not flattered by scratch pnls.
+
+**What this does NOT change.**
+- `ai_perf.win_rate` (prediction-side) was already on a 2% movement threshold — already honest.
+- Kelly recommendations were already computed from `actual_return_pct` of resolved predictions, which require ≥2% movement. Already honest.
+- Realized cumulative P&L is unchanged — same dollars, just bucketed differently.
+
+**Tests.** 6 new in `test_scratch_classification.py`:
+- 30 sub-0.5% "wins" + 5 real losses → win rate is 0%, not 86%
+- Scratch rate surfaces separately
+- 0.5% threshold is inclusive on the win side, exclusive below
+- Scratch pnls excluded from total_gains
+- Template surfaces scratch_rate
+
+Full suite: 1344 passing.
+
+---
+
 ## 2026-04-29 — INTRADAY_STOPS Stage 1: broker-managed stop-loss orders (Severity: critical, P&L)
 
 **The bug.** Polling-based exit detection runs `check_exits` every 5 minutes. Between cycles, prices move continuously. By the time we detect a stop-loss should fire, the price has moved past the level. We then submit a market sell at the *current* price — typically far worse than the intended stop.
