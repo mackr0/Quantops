@@ -1170,8 +1170,12 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
         except Exception as exc:
             logging.debug(f"alpha_decay unavailable: {exc}")
 
+    target_short_pct_for_rank = float(
+        getattr(ctx, "target_short_pct", 0.0) or 0.0
+    ) if ctx else 0.0
     shortlist = _rank_candidates(strategy_results, held_symbols, enable_shorts,
-                                  deprecated_strategies=deprecated_types)
+                                  deprecated_strategies=deprecated_types,
+                                  target_short_pct=target_short_pct_for_rank)
 
     # Ensure every shortlisted candidate has a valid price. If the
     # strategy's get_bars call failed during scoring, the candidate
@@ -1920,12 +1924,19 @@ def _squeeze_risk(symbol: str) -> str:
 
 
 def _rank_candidates(strategy_results, held_symbols, enable_shorts,
-                      deprecated_strategies=None):
+                      deprecated_strategies=None,
+                      target_short_pct=0.0):
     """Rank strategy results into a shortlist for AI batch review.
 
     When shorts are disabled: returns top ~15 long candidates by abs(score),
     and SELL/SHORT signals from non-held symbols are filtered out (existing
     behavior).
+
+    target_short_pct (0.0-1.0): when ≥ 0.4, the profile is configured for
+    a substantial short book and the user has accepted the regime risk.
+    The market regime gate is bypassed so technical shorts can flow even
+    in strong_bull — without this override, dedicated short profiles
+    (target_short_pct=0.5) cannot emit shorts in extended bull regimes.
 
     When shorts are enabled: reserves dedicated slots for shorts
     (P1.7 of LONG_SHORT_PLAN.md). Top 10 longs + top 5 shorts. This
@@ -1995,8 +2006,12 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
                 continue
             signal["_squeeze_risk"] = risk
             # 1.4 Regime gate — strong-bull market suppresses routine
-            # technical shorts; catalyst shorts pass through.
-            if market_regime == "strong_bull":
+            # technical shorts; catalyst shorts pass through. Skipped
+            # when the profile mandates a substantial short book
+            # (target_short_pct ≥ 0.4) — the user has explicitly
+            # accepted regime-side risk for that profile, and gating
+            # would prevent the mandate from ever being filled.
+            if market_regime == "strong_bull" and target_short_pct < 0.4:
                 primary = next(
                     (k for k, v in (signal.get("votes") or {}).items()
                      if v != "HOLD"), None

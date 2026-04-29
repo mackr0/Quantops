@@ -166,12 +166,12 @@ def test_bearish_strategies_in_strategy_registry():
 # P1.7 — Two shortlists with reserved slots
 # ---------------------------------------------------------------------------
 
-def _signal(symbol, action, score=2):
+def _signal(symbol, action, score=2, votes=None):
     return {
         "symbol": symbol,
         "signal": action,
         "score": score,
-        "votes": {"strat": action},
+        "votes": votes if votes is not None else {"strat": action},
     }
 
 
@@ -184,6 +184,66 @@ def test_rank_candidates_long_only_when_shorts_disabled():
     actions = {c["signal"] for c in out}
     assert "SHORT" not in actions
     assert all(a == "BUY" for a in actions)
+
+
+def test_regime_gate_blocks_routine_short_in_strong_bull(monkeypatch):
+    """In strong_bull regime, a non-catalyst short strategy is filtered
+    out unless the profile mandates a substantial short book."""
+    monkeypatch.setattr("trade_pipeline._classify_market_regime",
+                        lambda: "strong_bull")
+    monkeypatch.setattr("trade_pipeline._squeeze_risk", lambda s: "LOW")
+    monkeypatch.setattr(
+        "client.get_borrow_info",
+        lambda symbol, api=None, ctx=None: {"shortable": True, "easy_to_borrow": True},
+    )
+    from trade_pipeline import _rank_candidates
+    # Single short with a non-catalyst strategy (breakdown_support is
+    # technical, not in _CATALYST_SHORT_STRATEGIES).
+    sig = _signal("XYZ", "SHORT", score=3,
+                   votes={"breakdown_support": "SHORT"})
+    out = _rank_candidates([sig], held_symbols=set(), enable_shorts=True,
+                            target_short_pct=0.0)
+    assert all(c["signal"] != "SHORT" for c in out), \
+        "regime gate must block routine short when target_short_pct < 0.4"
+
+
+def test_regime_gate_bypassed_when_target_short_pct_high(monkeypatch):
+    """When the profile is configured for a substantial short book
+    (target_short_pct ≥ 0.4), the regime gate is bypassed — the user
+    has accepted regime risk by setting that mandate."""
+    monkeypatch.setattr("trade_pipeline._classify_market_regime",
+                        lambda: "strong_bull")
+    monkeypatch.setattr("trade_pipeline._squeeze_risk", lambda s: "LOW")
+    monkeypatch.setattr(
+        "client.get_borrow_info",
+        lambda symbol, api=None, ctx=None: {"shortable": True, "easy_to_borrow": True},
+    )
+    from trade_pipeline import _rank_candidates
+    sig = _signal("XYZ", "SHORT", score=3,
+                   votes={"breakdown_support": "SHORT"})
+    out = _rank_candidates([sig], held_symbols=set(), enable_shorts=True,
+                            target_short_pct=0.5)
+    short_count = sum(1 for c in out if c["signal"] == "SHORT")
+    assert short_count == 1, \
+        "target_short_pct=0.5 should bypass regime gate for shorts"
+
+
+def test_regime_gate_default_target_short_pct_zero(monkeypatch):
+    """target_short_pct defaults to 0.0 — preserves prior behavior so
+    existing call sites without the kwarg still get the regime gate."""
+    monkeypatch.setattr("trade_pipeline._classify_market_regime",
+                        lambda: "strong_bull")
+    monkeypatch.setattr("trade_pipeline._squeeze_risk", lambda s: "LOW")
+    monkeypatch.setattr(
+        "client.get_borrow_info",
+        lambda symbol, api=None, ctx=None: {"shortable": True, "easy_to_borrow": True},
+    )
+    from trade_pipeline import _rank_candidates
+    sig = _signal("XYZ", "SHORT", score=3,
+                   votes={"breakdown_support": "SHORT"})
+    # No target_short_pct kwarg — must behave like before (gate active).
+    out = _rank_candidates([sig], held_symbols=set(), enable_shorts=True)
+    assert all(c["signal"] != "SHORT" for c in out)
 
 
 def test_rank_candidates_reserves_short_slots_when_shorts_enabled(monkeypatch):

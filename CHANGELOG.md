@@ -17,6 +17,29 @@ Rules going forward:
 
 ---
 
+## 2026-04-28 — Regime gate respects target_short_pct mandate (Severity: critical, root cause)
+
+**The bug.** Profile_10 (Small Cap Shorts, target_short_pct=0.5) emitted only 3 SHORT predictions out of 1,497 in the last 30 days — essentially the same 0.2% rate as before Phases 1-4 shipped. The whole long/short build was blocked from producing visible results because of one upstream gate.
+
+**Root cause.** `trade_pipeline._rank_candidates`'s P1.4 regime gate filters out routine technical shorts whenever the market is in `strong_bull` (SPY > 200d MA AND 20d MA > 50d MA). Only catalyst strategies (`_CATALYST_SHORT_STRATEGIES`) flow through. Logs confirmed 5-9 shorts filtered for regime gate per cycle. SPY has been in strong_bull continuously, so the gate was permanently engaged.
+
+**The contradiction.** A profile configured with `target_short_pct=0.5` is explicitly mandated to hold a substantial short book. The user has accepted regime-side risk for that profile by design. The regime gate's "don't fight the tape" rationale doesn't apply — the user has ALREADY signed up for the opposite of trend-following.
+
+**Fix.** `_rank_candidates` now accepts `target_short_pct` (defaults to 0.0). When `target_short_pct >= 0.4`, the regime gate is bypassed for shorts on that profile. Lower-target profiles (regular long-tilt books) keep the gate. Caller in trade_pipeline reads `ctx.target_short_pct` and threads it through.
+
+**Why 0.4 (not 0.5).** Some profiles will run target_short_pct = 0.45 in mixed-balance configurations. Threshold at 0.4 captures the "substantially short" intent without requiring exactly 50/50.
+
+**Tests.** 3 new in `test_long_short_phase1.py`:
+- `test_regime_gate_blocks_routine_short_in_strong_bull` — gate active when target_short_pct=0.0 (regression pin)
+- `test_regime_gate_bypassed_when_target_short_pct_high` — gate bypassed at target_short_pct=0.5
+- `test_regime_gate_default_target_short_pct_zero` — call without kwarg preserves prior behavior
+
+**Caught by.** Real-data audit of SHORT prediction emission rates across all profiles — exactly the validation the user prompted with "make it the best thing the world has ever seen". A code-only review would have missed this; the gate was correctly implemented per the original P1.4 spec, just incompatible with the dedicated-shorts mandate added in P2.2.
+
+Full suite: 1273 passing.
+
+---
+
 ## 2026-04-28 — Phase 4.5 of LONG_SHORT_PLAN: market-neutrality enforcement (Severity: high, capability)
 
 **The thesis.** P4.1 added a beta target as a soft directive in the AI prompt; P4.5 makes it a HARD gate in `_validate_ai_trades`. Soft guidance and exposure visibility aren't enough when an AI proposes a high-beta long after we're already over-target — the trade can clear all other gates yet drift the book further from neutrality. Real long/short funds enforce this at the trade level, not via prompts.
