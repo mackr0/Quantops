@@ -136,29 +136,41 @@
             </div>
         </article>
         <article>
-            <header><h4>Returns by Signal</h4></header>
+            <header><h4>Move by Prediction Type</h4></header>
             <div class="stat-card">
-                <small class="muted"><span class="tip" data-tip="Average price move after BUY predictions. Green = price went up (AI predicted up correctly).">Avg Move on BUYs</span></small>
-                {% if ai_perf and ai_perf.n_buys >= 10 %}
-                <strong class="{{ 'pnl-pos' if ai_perf.avg_return_on_buys >= 0 else 'pnl-neg' }}">
-                    {{ "{:+.2f}".format(ai_perf.avg_return_on_buys) }}%
+                <small class="muted"><span class="tip" data-tip="Average price move after directional-long predictions (BUY/HOLD). Green = price went up as predicted.">Directional Longs</span></small>
+                {% if ai_perf and ai_perf.n_directional_long >= 10 %}
+                <strong class="{{ 'pnl-pos' if ai_perf.avg_return_on_directional_long >= 0 else 'pnl-neg' }}">
+                    {{ "{:+.2f}".format(ai_perf.avg_return_on_directional_long) }}%
                 </strong>
-                <small class="muted">{{ ai_perf.n_buys }} resolved BUY predictions</small>
+                <small class="muted">{{ ai_perf.n_directional_long }} resolved</small>
                 {% else %}
                 <strong class="muted">N/A</strong>
-                <small class="muted">need 10+ resolved BUY predictions ({{ ai_perf.n_buys if ai_perf else 0 }} so far)</small>
+                <small class="muted">need 10+ resolved ({{ ai_perf.n_directional_long if ai_perf else 0 }} so far)</small>
                 {% endif %}
             </div>
             <div class="stat-card">
-                <small class="muted"><span class="tip" data-tip="Average price move after SELL predictions. Green = price went down (AI predicted down correctly). Red = price went up — AI was directionally wrong.">Avg Move on SELLs</span></small>
-                {% if ai_perf and ai_perf.n_sells >= 10 %}
-                <strong class="{{ 'pnl-pos' if ai_perf.avg_return_on_sells <= 0 else 'pnl-neg' }}">
-                    {{ "{:+.2f}".format(ai_perf.avg_return_on_sells) }}%
+                <small class="muted"><span class="tip" data-tip="Average price move after directional-short predictions (SHORT, or SELL on a non-held name). Green = price went down as predicted. Red = price went up — AI was wrong.">Directional Shorts</span></small>
+                {% if ai_perf and ai_perf.n_directional_short >= 10 %}
+                <strong class="{{ 'pnl-pos' if ai_perf.avg_return_on_directional_short <= 0 else 'pnl-neg' }}">
+                    {{ "{:+.2f}".format(ai_perf.avg_return_on_directional_short) }}%
                 </strong>
-                <small class="muted">{{ ai_perf.n_sells }} resolved SELL predictions</small>
+                <small class="muted">{{ ai_perf.n_directional_short }} resolved</small>
                 {% else %}
                 <strong class="muted">N/A</strong>
-                <small class="muted">need 10+ resolved SELL predictions ({{ ai_perf.n_sells if ai_perf else 0 }} so far)</small>
+                <small class="muted">need 10+ resolved ({{ ai_perf.n_directional_short if ai_perf else 0 }} so far)</small>
+                {% endif %}
+            </div>
+            <div class="stat-card">
+                <small class="muted"><span class="tip" data-tip="Average price move after the AI exited a long position. Green = price stayed flat or dropped (good exit). Red = price kept rising — exited too early.">Exit-Long Quality</span></small>
+                {% if ai_perf and ai_perf.n_exit_long >= 10 %}
+                <strong class="{{ 'pnl-pos' if ai_perf.avg_return_on_exit_long <= 0 else 'pnl-neg' }}">
+                    {{ "{:+.2f}".format(ai_perf.avg_return_on_exit_long) }}%
+                </strong>
+                <small class="muted">{{ ai_perf.n_exit_long }} resolved exits</small>
+                {% else %}
+                <strong class="muted">N/A</strong>
+                <small class="muted">need 10+ exits ({{ ai_perf.n_exit_long if ai_perf else 0 }} so far)</small>
                 {% endif %}
             </div>
         </article>

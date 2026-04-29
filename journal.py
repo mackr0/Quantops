@@ -85,7 +85,8 @@ def init_db(db_path=None):
             actual_outcome TEXT,
             actual_return_pct REAL,
             resolved_at TEXT,
-            resolution_price REAL
+            resolution_price REAL,
+            prediction_type TEXT
         );
 
         -- Phase 3: rolling performance snapshots per strategy/signal type.
@@ -332,6 +333,14 @@ def _migrate_all_columns(conn):
             ("strategy_type", "TEXT"),
             ("features_json", "TEXT"),
             ("days_held", "INTEGER"),
+            # Classification of what the prediction means:
+            #   'directional_long'  — BUY: predict price goes up
+            #   'directional_short' — SHORT or SELL on unheld: predict price goes down
+            #   'exit_long'         — SELL on a long position we hold: lock in / exit
+            #   'exit_short'        — close a short position we hold
+            # The resolver applies different win/loss criteria per type so
+            # exit-quality doesn't get conflated with directional-bearish accuracy.
+            ("prediction_type", "TEXT"),
         ],
     }
 

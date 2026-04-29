@@ -1302,6 +1302,31 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 pred_reasoning = portfolio_reasoning[:300]
                 price_targets = None
 
+            # Classify the prediction so the resolver applies the right
+            # win/loss criteria (see LONG_SHORT_PLAN.md §1.0). SELL on a
+            # held LONG = exit-quality question; SELL on something we don't
+            # hold = directional-bearish question. Lumping them together
+            # made 'Avg Move on SELLs' uninterpretable.
+            sig_upper = (pred_signal or "").upper()
+            held_pos = positions_dict.get(sym)
+            held_qty = float(held_pos.get("qty", 0)) if held_pos else 0.0
+            if sig_upper == "BUY":
+                pred_type = "directional_long"
+            elif sig_upper == "SHORT":
+                pred_type = "directional_short"
+            elif sig_upper == "SELL":
+                if held_qty > 0:
+                    pred_type = "exit_long"
+                elif held_qty < 0:
+                    pred_type = "exit_short"
+                else:
+                    # AI hallucinated SELL on something we don't hold —
+                    # treat as directional_short.
+                    pred_type = "directional_short"
+            else:
+                # HOLD or unknown — keep neutral classification
+                pred_type = "directional_long"
+
             # Build feature payload for meta-model training (Phase 1).
             # Strip non-numeric/non-scalar fields — store only what a feature
             # extractor can reliably use (see meta_model.extract_features).
@@ -1398,6 +1423,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 regime=current_regime,
                 strategy_type=strategy,
                 features=features_payload,
+                prediction_type=pred_type,
             )
             # Wave 3 / Fix #9 — log the per-specialist verdicts that
             # contributed to this prediction so the calibrators can

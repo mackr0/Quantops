@@ -1849,6 +1849,14 @@ def performance_dashboard():
         "avg_return_on_sells": 0.0, "best_prediction": None,
         "worst_prediction": None, "profit_factor": 0.0,
         "n_buys": 0, "n_sells": 0,
+        # Per prediction_type breakdown so the dashboard can show
+        # exit-quality separately from directional-bearish accuracy.
+        "avg_return_on_directional_long": 0.0,
+        "avg_return_on_directional_short": 0.0,
+        "avg_return_on_exit_long": 0.0,
+        "n_directional_long": 0,
+        "n_directional_short": 0,
+        "n_exit_long": 0,
     }
     all_wins = 0
     all_losses = 0
@@ -1856,6 +1864,8 @@ def performance_dashboard():
     conf_on_losses = []
     all_return_buys = []
     all_return_sells = []
+    returns_by_type = {"directional_long": [], "directional_short": [],
+                       "exit_long": [], "exit_short": []}
 
     for db_path in db_paths:
         try:
@@ -1876,7 +1886,8 @@ def performance_dashboard():
             conn = _sqlite3.connect(db_path)
             conn.row_factory = _sqlite3.Row
             rows = conn.execute(
-                "SELECT predicted_signal, actual_outcome, actual_return_pct, confidence "
+                "SELECT predicted_signal, actual_outcome, actual_return_pct, "
+                "confidence, prediction_type "
                 "FROM ai_predictions WHERE status = 'resolved'"
             ).fetchall()
             conn.close()
@@ -1885,6 +1896,7 @@ def performance_dashboard():
                 ret = r["actual_return_pct"]
                 conf = r["confidence"] or 0
                 sig = r["predicted_signal"] or ""
+                ptype = r["prediction_type"]
                 if outcome == "win":
                     all_wins += 1
                     conf_on_wins.append(conf)
@@ -1892,10 +1904,15 @@ def performance_dashboard():
                     all_losses += 1
                     conf_on_losses.append(conf)
                 if ret is not None:
+                    # Legacy buckets (kept for backwards compat with the
+                    # n_buys/n_sells display the page already shows).
                     if "BUY" in sig.upper():
                         all_return_buys.append(ret)
-                    elif "SELL" in sig.upper():
+                    elif "SELL" in sig.upper() or "SHORT" in sig.upper():
                         all_return_sells.append(ret)
+                    # New per-type buckets for the split dashboard cards.
+                    if ptype and ptype in returns_by_type:
+                        returns_by_type[ptype].append(ret)
         except Exception:
             pass
 
@@ -1912,6 +1929,11 @@ def performance_dashboard():
         ai_perf["avg_return_on_buys"] = round(sum(all_return_buys) / len(all_return_buys), 2)
     if all_return_sells:
         ai_perf["avg_return_on_sells"] = round(sum(all_return_sells) / len(all_return_sells), 2)
+    # Per-type aggregates for the split dashboard cards.
+    for ptype, vals in returns_by_type.items():
+        ai_perf[f"n_{ptype}"] = len(vals)
+        if vals:
+            ai_perf[f"avg_return_on_{ptype}"] = round(sum(vals) / len(vals), 2)
 
     # Profit factor from BUY/SELL predictions only (not HOLDs — a HOLD
     # "loss" means the price moved but no trade was made, so no money lost)
@@ -2418,6 +2440,14 @@ def ai_dashboard():
         "avg_return_on_sells": 0.0, "best_prediction": None,
         "worst_prediction": None, "profit_factor": 0.0,
         "n_buys": 0, "n_sells": 0,
+        # Per prediction_type breakdown so the dashboard can show
+        # exit-quality separately from directional-bearish accuracy.
+        "avg_return_on_directional_long": 0.0,
+        "avg_return_on_directional_short": 0.0,
+        "avg_return_on_exit_long": 0.0,
+        "n_directional_long": 0,
+        "n_directional_short": 0,
+        "n_exit_long": 0,
     }
     all_wins = 0
     all_losses = 0
@@ -2425,6 +2455,8 @@ def ai_dashboard():
     conf_on_losses = []
     all_return_buys = []
     all_return_sells = []
+    returns_by_type = {"directional_long": [], "directional_short": [],
+                       "exit_long": [], "exit_short": []}
 
     for db_path in db_paths:
         try:
@@ -2444,7 +2476,8 @@ def ai_dashboard():
             conn = _sqlite3.connect(db_path)
             conn.row_factory = _sqlite3.Row
             rows = conn.execute(
-                "SELECT predicted_signal, actual_outcome, actual_return_pct, confidence "
+                "SELECT predicted_signal, actual_outcome, actual_return_pct, "
+                "confidence, prediction_type "
                 "FROM ai_predictions WHERE status = 'resolved'"
             ).fetchall()
             conn.close()
@@ -2453,6 +2486,7 @@ def ai_dashboard():
                 ret = r["actual_return_pct"]
                 conf = r["confidence"] or 0
                 sig = r["predicted_signal"] or ""
+                ptype = r["prediction_type"]
                 if outcome == "win":
                     all_wins += 1
                     conf_on_wins.append(conf)
@@ -2460,10 +2494,15 @@ def ai_dashboard():
                     all_losses += 1
                     conf_on_losses.append(conf)
                 if ret is not None:
+                    # Legacy buckets (kept for backwards compat with the
+                    # n_buys/n_sells display the page already shows).
                     if "BUY" in sig.upper():
                         all_return_buys.append(ret)
-                    elif "SELL" in sig.upper():
+                    elif "SELL" in sig.upper() or "SHORT" in sig.upper():
                         all_return_sells.append(ret)
+                    # New per-type buckets for the split dashboard cards.
+                    if ptype and ptype in returns_by_type:
+                        returns_by_type[ptype].append(ret)
         except Exception:
             pass
 
@@ -2480,6 +2519,11 @@ def ai_dashboard():
         ai_perf["avg_return_on_buys"] = round(sum(all_return_buys) / len(all_return_buys), 2)
     if all_return_sells:
         ai_perf["avg_return_on_sells"] = round(sum(all_return_sells) / len(all_return_sells), 2)
+    # Per-type aggregates for the split dashboard cards.
+    for ptype, vals in returns_by_type.items():
+        ai_perf[f"n_{ptype}"] = len(vals)
+        if vals:
+            ai_perf[f"avg_return_on_{ptype}"] = round(sum(vals) / len(vals), 2)
 
     trade_returns = []
     for db_path in db_paths:

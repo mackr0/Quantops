@@ -71,9 +71,12 @@ class TestDailyPnlPopulated:
         when the two resolve to different dates across midnight UTC.
         """
         from journal import log_daily_snapshot
-        from datetime import date, timedelta
-        today_local = date.today().isoformat()
-        yesterday_local = (date.today() - timedelta(days=1)).isoformat()
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+        # Match journal.log_daily_snapshot: ET-localized today, not server-local.
+        today_et = datetime.now(ZoneInfo("America/New_York")).date()
+        today_local = today_et.isoformat()
+        yesterday_local = (today_et - timedelta(days=1)).isoformat()
 
         conn = sqlite3.connect(tmp_profile_db)
         conn.execute(

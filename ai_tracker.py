@@ -23,6 +23,11 @@ SELL_LOSS_PCT = 2.0      # Price rises >= 2% for a SELL to LOSS
 HOLD_MAX_CHANGE_PCT = 2.0  # HOLD is correct if abs(change) < 2%
 HOLD_RESOLVE_DAYS = 3    # Trading days before resolving a HOLD prediction
 TIMEOUT_DAYS = 10        # Max trading days before force-resolving as neutral
+# An exit (SELL on a held long, or cover on a held short) is a "good
+# call" if the price didn't move materially against the exit direction
+# afterward. EXIT_BUFFER_PCT is how much the price can move "against"
+# us before we judge the exit as a missed-opportunity.
+EXIT_BUFFER_PCT = 2.0
 
 # Minimum trading days a prediction must age BEFORE we evaluate
 # whether the price target was hit. Without this, BUY predictions
@@ -52,6 +57,66 @@ def _get_conn(db_path=None):
     return conn
 
 
+def backfill_prediction_type(db_path=None):
+    """Set prediction_type on existing rows that don't have it yet.
+
+    Rules:
+      BUY / HOLD                 -> directional_long
+      SHORT                      -> directional_short
+      SELL with reasoning text containing 'exit'/'close existing'/'sell existing'
+                                 -> exit_long  (AI was suggesting to exit a held position)
+      SELL otherwise             -> directional_short  (legacy semantic;
+                                    matches what the old resolver assumed)
+
+    Idempotent — only updates rows where prediction_type IS NULL.
+    Returns counts dict for reporting.
+    """
+    init_tracker_db(db_path)
+    conn = _get_conn(db_path)
+    counts = {"directional_long": 0, "directional_short": 0,
+              "exit_long": 0, "skipped": 0}
+    try:
+        # BUY and HOLD → directional_long
+        c = conn.execute(
+            "UPDATE ai_predictions SET prediction_type='directional_long' "
+            "WHERE prediction_type IS NULL "
+            "AND predicted_signal IN ('BUY', 'HOLD', 'STRONG_BUY')"
+        )
+        counts["directional_long"] += c.rowcount
+        # SHORT → directional_short
+        c = conn.execute(
+            "UPDATE ai_predictions SET prediction_type='directional_short' "
+            "WHERE prediction_type IS NULL "
+            "AND predicted_signal IN ('SHORT', 'STRONG_SHORT')"
+        )
+        counts["directional_short"] += c.rowcount
+        # SELL with exit-y reasoning → exit_long
+        c = conn.execute(
+            "UPDATE ai_predictions SET prediction_type='exit_long' "
+            "WHERE prediction_type IS NULL "
+            "AND predicted_signal IN ('SELL', 'STRONG_SELL') "
+            "AND ("
+            "  LOWER(reasoning) LIKE '%exit%' OR "
+            "  LOWER(reasoning) LIKE '%close existing%' OR "
+            "  LOWER(reasoning) LIKE '%sell existing%' OR "
+            "  LOWER(reasoning) LIKE '%lock in%' OR "
+            "  LOWER(reasoning) LIKE '%take profit%'"
+            ")"
+        )
+        counts["exit_long"] += c.rowcount
+        # Remaining SELL → directional_short (legacy semantic)
+        c = conn.execute(
+            "UPDATE ai_predictions SET prediction_type='directional_short' "
+            "WHERE prediction_type IS NULL "
+            "AND predicted_signal IN ('SELL', 'STRONG_SELL')"
+        )
+        counts["directional_short"] += c.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    return counts
+
+
 def init_tracker_db(db_path=None):
     """Create the ai_predictions table if it doesn't exist."""
     conn = _get_conn(db_path)
@@ -72,7 +137,8 @@ def init_tracker_db(db_path=None):
             actual_return_pct REAL,
             resolved_at TEXT,
             resolution_price REAL,
-            days_held INTEGER
+            days_held INTEGER,
+            prediction_type TEXT
         );
     """)
     conn.commit()
@@ -85,7 +151,8 @@ def init_tracker_db(db_path=None):
 
 def record_prediction(symbol, predicted_signal, confidence, reasoning,
                       price_at_prediction, price_targets=None, db_path=None,
-                      regime=None, strategy_type=None, features=None):
+                      regime=None, strategy_type=None, features=None,
+                      prediction_type=None):
     """Save an AI prediction to the database.
 
     Parameters
@@ -139,8 +206,8 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
            (timestamp, symbol, predicted_signal, confidence, reasoning,
             price_at_prediction, target_entry, target_stop_loss,
             target_take_profit, status, regime_at_prediction, strategy_type,
-            features_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)""",
+            features_json, prediction_type)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
         (
             datetime.utcnow().isoformat(),
             symbol.upper(),
@@ -154,6 +221,7 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
             regime,
             strategy_type,
             features_json,
+            prediction_type,
         ),
     )
     conn.commit()
@@ -215,15 +283,24 @@ def _resolve_one(prediction, current_price):
 
     Returns (outcome, return_pct, days_held) or None if not yet resolvable.
 
-    Wave 1 / Fix #6: enforces MIN_HOLD_DAYS_BEFORE_RESOLVE so a BUY
-    that drifts +2% in an hour does NOT resolve as "win" same-day.
-    Predictions only check the win/loss thresholds AFTER aging at
-    least MIN_HOLD_DAYS_BEFORE_RESOLVE trading days — meaning the
-    label captures whether the price target held over a meaningful
-    forward horizon, not whether it was crossed by noise.
+    Uses prediction_type when present (post 2026-04-28) to apply the
+    right win/loss criteria per type. Legacy rows without prediction_type
+    fall back to inferring from predicted_signal — the inferred behavior
+    matches the old logic for those rows.
+
+    Types and their win conditions:
+      directional_long  — price up >= 2% wins, down >= 2% loses
+      directional_short — price down >= 2% wins, up >= 2% loses
+      exit_long         — price stays flat or drops (we got out OK).
+                          Loses if price runs up >= EXIT_BUFFER_PCT
+                          (we left money on the table).
+      exit_short        — price stays flat or rises (we covered OK).
+                          Loses if price keeps dropping >= EXIT_BUFFER_PCT
+                          (we covered too early).
     """
     pred_price = prediction["price_at_prediction"]
-    signal = prediction["predicted_signal"]
+    signal = (prediction.get("predicted_signal") or "").upper()
+    pred_type = prediction.get("prediction_type")
     days_elapsed = _trading_days_since(prediction["timestamp"])
 
     if pred_price is None or pred_price == 0:
@@ -234,27 +311,58 @@ def _resolve_one(prediction, current_price):
     # Forward-horizon gate. Without this, BUY/SELL predictions can
     # resolve to win/loss within hours of being made, testing noise
     # not signal. HOLD already had its own days-elapsed gate; we
-    # extend the same discipline to BUY/SELL.
-    if signal in ("BUY", "SELL") and days_elapsed < MIN_HOLD_DAYS_BEFORE_RESOLVE:
+    # extend the same discipline to BUY/SELL/SHORT.
+    if signal in ("BUY", "SELL", "SHORT") and days_elapsed < MIN_HOLD_DAYS_BEFORE_RESOLVE:
         return None
 
-    if signal == "BUY":
-        if return_pct >= BUY_WIN_PCT:
-            return ("win", return_pct, days_elapsed)
-        if return_pct <= -BUY_LOSS_PCT:
-            return ("loss", return_pct, days_elapsed)
-    elif signal == "SELL":
-        # For SELL, a price drop is a win
+    # Derive prediction_type when missing (legacy rows): infer from
+    # signal using pre-2026-04-28 logic. SELL was always "predict drop"
+    # in the old resolver, so legacy SELL → directional_short.
+    if not pred_type:
+        if signal == "BUY":
+            pred_type = "directional_long"
+        elif signal == "SHORT":
+            pred_type = "directional_short"
+        elif signal == "SELL":
+            pred_type = "directional_short"  # legacy semantic
+        elif signal == "HOLD":
+            pred_type = "directional_long"  # neutral / not-trading bucket
+
+    if pred_type == "directional_long":
+        if signal == "HOLD":
+            # Special case: HOLD predictions resolve faster (3 days)
+            # and "correctness" means price stayed range-bound.
+            if days_elapsed >= HOLD_RESOLVE_DAYS:
+                if abs(return_pct) < HOLD_MAX_CHANGE_PCT:
+                    return ("win", return_pct, days_elapsed)
+                else:
+                    return ("loss", return_pct, days_elapsed)
+        else:
+            if return_pct >= BUY_WIN_PCT:
+                return ("win", return_pct, days_elapsed)
+            if return_pct <= -BUY_LOSS_PCT:
+                return ("loss", return_pct, days_elapsed)
+    elif pred_type == "directional_short":
         if return_pct <= -SELL_WIN_PCT:
             return ("win", return_pct, days_elapsed)
         if return_pct >= SELL_LOSS_PCT:
             return ("loss", return_pct, days_elapsed)
-    elif signal == "HOLD":
-        if days_elapsed >= HOLD_RESOLVE_DAYS:
-            if abs(return_pct) < HOLD_MAX_CHANGE_PCT:
-                return ("win", return_pct, days_elapsed)
-            else:
-                return ("loss", return_pct, days_elapsed)
+    elif pred_type == "exit_long":
+        # We sold a long position. "Good exit" = price didn't run up
+        # materially after we got out. "Bad exit" = price kept rising
+        # significantly (we left money on the table).
+        if return_pct > EXIT_BUFFER_PCT:
+            return ("loss", return_pct, days_elapsed)
+        # Price flat or down → exit was correct judgement
+        if days_elapsed >= MIN_HOLD_DAYS_BEFORE_RESOLVE:
+            return ("win", return_pct, days_elapsed)
+    elif pred_type == "exit_short":
+        # We covered a short. "Good cover" = price didn't keep dropping
+        # materially. "Bad cover" = price continued lower (covered too early).
+        if return_pct < -EXIT_BUFFER_PCT:
+            return ("loss", return_pct, days_elapsed)
+        if days_elapsed >= MIN_HOLD_DAYS_BEFORE_RESOLVE:
+            return ("win", return_pct, days_elapsed)
 
     # Timeout: force-resolve after TIMEOUT_DAYS trading days as neutral
     if days_elapsed >= TIMEOUT_DAYS:
