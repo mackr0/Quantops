@@ -587,6 +587,19 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     dd_pct = portfolio_state.get("drawdown_pct", 0)
     dd_action = portfolio_state.get("drawdown_action", "normal")
 
+    # P2.1 of LONG_SHORT_PLAN.md — sector-exposure context. If
+    # portfolio_state carries a precomputed exposure dict (built by
+    # views.py / the live pipeline), surface it so the AI can avoid
+    # stacking Tech longs on top of Tech longs etc.
+    exposure_block = ""
+    exp = portfolio_state.get("exposure")
+    if exp and exp.get("num_positions", 0) > 0:
+        try:
+            from portfolio_exposure import render_for_prompt
+            exposure_block = "\nEXPOSURE BREAKDOWN:\n" + render_for_prompt(exp)
+        except Exception:
+            pass
+
     portfolio_section = (
         f"PORTFOLIO STATE:\n"
         f"  Equity: ${portfolio_state.get('equity', 0):,.0f} | "
@@ -594,6 +607,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"  Positions ({portfolio_state.get('num_positions', 0)}/{max_positions}):\n"
         f"{positions_text}\n"
         f"  Drawdown: {dd_pct:.1f}% from peak ({dd_action})"
+        f"{exposure_block}"
     )
 
     # --- Market context section ---

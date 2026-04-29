@@ -598,6 +598,40 @@
                 <strong style="font-size:2rem;">{{ exposure.num_positions }}</strong>
             </div>
         </div>
+
+        {% if exposure.by_sector %}
+        <h4 style="margin-top:1rem;"><span class="tip" data-tip="Sector breakdown of your book. Real long/short funds typically target <20% gross per sector to avoid factor concentration. Sectors >=30% gross are flagged.">By Sector</span></h4>
+        {% if exposure.concentration_flags %}
+        <p class="muted pnl-neg">CONCENTRATION WARNING: {{ exposure.concentration_flags|join(', ') }} sector(s) >= 30% of gross book.</p>
+        {% endif %}
+        <div class="overflow-auto">
+            <table style="font-size:0.9rem;">
+                <thead>
+                    <tr>
+                        <th>Sector</th>
+                        <th style="text-align:right;">Long %</th>
+                        <th style="text-align:right;">Short %</th>
+                        <th style="text-align:right;">Net %</th>
+                        <th style="text-align:right;">Gross %</th>
+                        <th style="text-align:right;">Positions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for sector, b in exposure.by_sector.items() | sort(attribute='1.gross_pct', reverse=True) %}
+                    <tr {% if sector in exposure.concentration_flags %}style="background:#ffe5e5;"{% endif %}>
+                        <td><strong>{{ sector }}</strong>{% if sector in exposure.concentration_flags %} ⚠{% endif %}</td>
+                        <td style="text-align:right;">{{ "%.1f"|format(b.long_pct) }}%</td>
+                        <td style="text-align:right;">{{ "%.1f"|format(b.short_pct) }}%</td>
+                        <td style="text-align:right;" class="{{ 'pnl-pos' if b.net_pct > 0 else 'pnl-neg' if b.net_pct < 0 else '' }}">{{ "{:+.1f}".format(b.net_pct) }}%</td>
+                        <td style="text-align:right;">{{ "%.1f"|format(b.gross_pct) }}%</td>
+                        <td style="text-align:right;" class="muted">{{ b.n_long }}L / {{ b.n_short }}S</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+
         {% else %}
         <p class="muted">No open positions across the selected profile{{ '' if selected_profile else 's' }} right now.</p>
         {% endif %}

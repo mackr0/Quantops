@@ -2268,6 +2268,18 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
 
 def _build_portfolio_state(account, positions_list, dd, ctx):
     """Bundle portfolio info for the AI batch prompt."""
+    # P2.1 of LONG_SHORT_PLAN.md — compute sector-exposure breakdown
+    # and pass it through so the AI prompt can surface concentration
+    # warnings ("you're already 35% long Tech, don't stack another").
+    exposure = None
+    try:
+        from portfolio_exposure import compute_exposure
+        equity = float(account.get("equity", 0) or 0)
+        if equity > 0 and positions_list:
+            exposure = compute_exposure(positions_list, equity)
+    except Exception:
+        pass
+
     return {
         "equity": account.get("equity", 0),
         "cash": account.get("cash", 0),
@@ -2284,6 +2296,7 @@ def _build_portfolio_state(account, positions_list, dd, ctx):
         "num_positions": len(positions_list),
         "drawdown_pct": dd.get("drawdown_pct", 0),
         "drawdown_action": dd.get("action", "normal"),
+        "exposure": exposure,
     }
 
 

@@ -1800,6 +1800,9 @@ def performance_dashboard():
     # source positions/equity from the journal DB; real Alpaca-linked
     # profiles hit the Alpaca account. On All Profiles we aggregate
     # across every enabled profile so the user sees their full book.
+    # P2.1 of LONG_SHORT_PLAN.md — also breaks down by sector so the
+    # dashboard surfaces concentration risk (long-tech stacked on
+    # long-tech etc.) and the AI prompt can avoid stacking it further.
     exposure = None
     try:
         if selected_profile_int:
@@ -1809,10 +1812,8 @@ def performance_dashboard():
         else:
             target_profiles = profiles  # already filtered to enabled, owned
 
-        long_val = 0.0
-        short_val = 0.0
+        all_positions = []  # gathered across target profiles
         equity_sum = 0.0
-        n_positions = 0
         n_profiles_with_data = 0
         for profile in target_profiles:
             try:
@@ -1822,20 +1823,15 @@ def performance_dashboard():
                 if account:
                     equity_sum += account.get("equity", 0) or 0
                 if positions:
-                    long_val += sum(p["market_value"] for p in positions if p["qty"] > 0)
-                    short_val += sum(abs(p["market_value"]) for p in positions if p["qty"] < 0)
-                    n_positions += len(positions)
+                    all_positions.extend(positions)
                 if positions or account:
                     n_profiles_with_data += 1
             except Exception:
                 continue
 
         if n_profiles_with_data and equity_sum > 0:
-            exposure = {
-                "net_pct": round((long_val - short_val) / equity_sum * 100, 1),
-                "gross_pct": round((long_val + short_val) / equity_sum * 100, 1),
-                "num_positions": n_positions,
-            }
+            from portfolio_exposure import compute_exposure
+            exposure = compute_exposure(all_positions, equity_sum)
     except Exception:
         pass
 
