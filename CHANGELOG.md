@@ -17,6 +17,27 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — Slippage scope alignment between /ai and /performance (Severity: medium, data correctness)
+
+**The discrepancy.** After the previous slippage-key-mismatch fix, the AI page reported 832 trades / $9,593 total slippage, but the Performance page Slippage Analysis panel showed 356 trades / $4,346 — same data, different numbers.
+
+**Root cause.** Two different code paths with two different scopes:
+
+- `journal.get_slippage_stats` (used on /ai): counts EVERY trade row with `fill_price IS NOT NULL AND decision_price IS NOT NULL` — entries + exits, open + closed = 832
+- `metrics.calculate_all_metrics` → `_gather_trades`: filters `WHERE pnl IS NOT NULL` (closed-trade rows only — typically the SELL rows) = 356
+
+Both are internally correct; they just measure different things. Slippage applies to every fill execution, so the all-fills count is more accurate as a measure of "trade execution slippage." The closed-trade count is appropriate for the `slippage_vs_gross` ratio (since gross profit only exists on closed trades).
+
+**Fix.** `metrics.calculate_all_metrics` now uses `get_slippage_stats` for the headline numbers (`slippage_avg_pct`, `slippage_total_cost`, `trades_with_slippage`) — so /ai and /performance agree on the same metrics. The `slippage_vs_gross` calculation continues to use closed-trade slippage (kept in `closed_slippage_costs`) since that's the only scope where gross_profit is defined.
+
+**Tests.** 2 new in `test_slippage_aggregation.py` (now 5 total):
+- Source-level pin: `calculate_all_metrics` references `get_slippage_stats`, reads `trades_with_fills` and `total_slippage_cost`
+- End-to-end: seed 5 trades (2 open + 3 closed), assert `metrics.trades_with_slippage == get_slippage_stats.trades_with_fills == 5` (both must see all fills, not just closed)
+
+Full suite: 1319 passing.
+
+---
+
 ## 2026-04-29 — Slippage Impact panel: fix key-mismatch silent failure (Severity: high, data correctness)
 
 **The bug.** Slippage Impact panel on `/ai` and `/performance` showed "No fill data yet — slippage impact populates once trades record both decision and fill prices" — but every profile had 50-100 trades with full decision_price + fill_price + slippage_pct data. Direct call to `journal.get_slippage_stats(db_path=...)` returned populated stats; the UI just never showed them.

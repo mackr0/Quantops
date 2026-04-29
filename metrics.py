@@ -1253,9 +1253,9 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
     # Scalability metrics
     # -----------------------------------------------------------------------
     position_sizes = []
-    slippage_pcts = []
-    slippage_costs = []
     gross_profit = total_gains
+
+    closed_slippage_costs = []  # for slippage_vs_gross — closed trades only
 
     for t in trades:
         price = t.get("price", 0) or 0
@@ -1263,28 +1263,54 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
         if price > 0 and qty > 0:
             position_sizes.append(price * qty)
 
+        # Closed-trade slippage cost — feeds slippage_vs_gross which
+        # only makes sense when there's a realized P&L to compare to.
         slip = t.get("slippage_pct", None)
-        if slip is not None:
-            slippage_pcts.append(slip)
-            dp = t.get("decision_price", 0) or 0
-            fp = t.get("fill_price", 0) or 0
-            if dp > 0 and fp > 0 and qty > 0:
-                slippage_costs.append(abs(fp - dp) * qty)
+        dp = t.get("decision_price", 0) or 0
+        fp = t.get("fill_price", 0) or 0
+        if slip is not None and dp > 0 and fp > 0 and qty > 0:
+            closed_slippage_costs.append(abs(fp - dp) * qty)
 
     result["avg_position_size"] = round(_mean(position_sizes), 2) if position_sizes else 0.0
-    result["slippage_avg_pct"] = round(_mean(slippage_pcts), 4) if slippage_pcts else 0.0
-    result["slippage_total_cost"] = round(sum(slippage_costs), 2) if slippage_costs else 0.0
-    # Slippage vs gross — undefined when gross profit ≤ 0 (can't express
-    # slippage as a fraction of profit that doesn't exist)
-    if gross_profit > 0 and slippage_costs:
+
+    # Slippage stats: aggregate ALL fills (entries + exits, open + closed)
+    # via get_slippage_stats — so the Performance page reports the same
+    # numbers as the AI page. Previously this scope was closed-trade only
+    # (filtered by `pnl IS NOT NULL`), which made the two pages disagree
+    # on the same metric.
+    all_fills_count = 0
+    all_fills_total_cost = 0.0
+    weighted_pct_sum = 0.0
+    for db_path in db_paths:
+        try:
+            from journal import get_slippage_stats
+            s = get_slippage_stats(db_path=db_path)
+            if s:
+                n = s.get("trades_with_fills", 0) or 0
+                all_fills_count += n
+                all_fills_total_cost += s.get("total_slippage_cost", 0) or 0
+                weighted_pct_sum += (s.get("avg_slippage_pct", 0) or 0) * n
+        except Exception:
+            pass
+
+    result["slippage_avg_pct"] = (
+        round(weighted_pct_sum / all_fills_count, 4) if all_fills_count > 0 else 0.0
+    )
+    result["slippage_total_cost"] = round(all_fills_total_cost, 2)
+    result["trades_with_slippage"] = all_fills_count
+
+    # Slippage vs gross — uses CLOSED-trade slippage costs only (the
+    # only ones that have a realized P&L to ratio against). Otherwise
+    # we'd be dividing all-fills slippage by closed-trade gross profit,
+    # mixing scopes.
+    if gross_profit > 0 and closed_slippage_costs:
         result["slippage_vs_gross"] = round(
-            sum(slippage_costs) / gross_profit * 100, 2
+            sum(closed_slippage_costs) / gross_profit * 100, 2
         )
         result["slippage_vs_gross_computable"] = True
     else:
         result["slippage_vs_gross"] = 0.0
         result["slippage_vs_gross_computable"] = False
-    result["trades_with_slippage"] = len(slippage_pcts)
 
     # Trade PnL distribution (for histogram)
     pnl_distribution = []

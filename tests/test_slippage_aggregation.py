@@ -59,6 +59,81 @@ def test_views_uses_correct_slippage_keys():
         )
 
 
+def test_calculate_all_metrics_uses_get_slippage_stats():
+    """Performance page (calculate_all_metrics) must use get_slippage_stats
+    for slippage_avg_pct / slippage_total_cost / trades_with_slippage —
+    same scope as the AI page. Without this, the two pages report
+    different numbers for the same metric on the same data (Performance
+    counts only closed trades; AI counts all fills)."""
+    import inspect
+    import metrics
+    src = inspect.getsource(metrics.calculate_all_metrics)
+    assert "get_slippage_stats" in src, (
+        "calculate_all_metrics doesn't call get_slippage_stats — "
+        "Performance page slippage scope will diverge from AI page."
+    )
+    assert "trades_with_fills" in src, (
+        "calculate_all_metrics doesn't read trades_with_fills key — "
+        "see the 2026-04-29 dict-key mismatch."
+    )
+    assert "total_slippage_cost" in src, (
+        "calculate_all_metrics doesn't read total_slippage_cost key."
+    )
+
+
+def test_metrics_slippage_matches_get_slippage_stats(tmp_path):
+    """End-to-end: same trades data → calculate_all_metrics and
+    get_slippage_stats agree on count and total cost. Catches future
+    re-divergence between the two scopes."""
+    import sqlite3
+    db = str(tmp_path / "trades.db")
+    conn = sqlite3.connect(db)
+    conn.execute("""
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY,
+            timestamp TEXT, symbol TEXT, side TEXT, qty REAL, price REAL,
+            decision_price REAL, fill_price REAL, slippage_pct REAL,
+            status TEXT, pnl REAL, strategy TEXT
+        )
+    """)
+    # Mix of open entries (no pnl) and closed exits (with pnl).
+    # All have slippage data.
+    rows = [
+        # (sym, qty, dp, fp, pnl)
+        ("AAPL", 100, 150.0, 150.30, None),    # open entry
+        ("MSFT",  50, 300.0, 300.50, None),    # open entry
+        ("TSLA",  30, 200.0, 199.50, 1500.0),  # closed exit
+        ("NVDA",  80, 400.0, 401.20, 2400.0),  # closed exit
+        ("GOOG",  20, 130.0, 130.05, 100.0),   # closed exit
+    ]
+    for i, (sym, qty, dp, fp, pnl) in enumerate(rows):
+        slip_pct = (fp - dp) / dp * 100
+        conn.execute(
+            "INSERT INTO trades (timestamp, symbol, side, qty, price, "
+            "decision_price, fill_price, slippage_pct, pnl, status) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (f"2026-04-{i+1:02d}", sym, "buy", qty, fp, dp, fp, slip_pct,
+             pnl, "filled"),
+        )
+    conn.commit()
+    conn.close()
+
+    from journal import get_slippage_stats
+    from metrics import calculate_all_metrics
+    s = get_slippage_stats(db_path=db)
+    m = calculate_all_metrics([db])
+
+    # Both must see all 5 fills (not just the 3 closed)
+    assert s["trades_with_fills"] == 5
+    assert m["trades_with_slippage"] == 5, (
+        "calculate_all_metrics is using a stricter scope than "
+        "get_slippage_stats — Performance page will under-count "
+        "trades vs AI page."
+    )
+    # Total dollar cost should match within rounding
+    assert abs(s["total_slippage_cost"] - m["slippage_total_cost"]) < 0.5
+
+
 def test_slippage_aggregation_round_trip(tmp_path, monkeypatch):
     """End-to-end: seed a trades table with realistic decision/fill
     prices, run the aggregation that views.py uses, verify the
