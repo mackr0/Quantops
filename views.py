@@ -1756,26 +1756,48 @@ def performance_dashboard():
     except Exception as exc:
         logger.warning("Scaling projection failed: %s", exc)
 
-    # Try to get current exposure from Alpaca (for Market Relationship tab)
+    # Current exposure across the selected profile(s). Virtual profiles
+    # source positions/equity from the journal DB; real Alpaca-linked
+    # profiles hit the Alpaca account. On All Profiles we aggregate
+    # across every enabled profile so the user sees their full book.
     exposure = None
-    if selected_profile_int:
-        try:
-            profile = get_trading_profile(selected_profile_int)
-            if profile and profile["user_id"] == current_user.effective_user_id:
+    try:
+        if selected_profile_int:
+            target_profiles = [get_trading_profile(selected_profile_int)]
+            target_profiles = [p for p in target_profiles
+                               if p and p["user_id"] == current_user.effective_user_id]
+        else:
+            target_profiles = profiles  # already filtered to enabled, owned
+
+        long_val = 0.0
+        short_val = 0.0
+        equity_sum = 0.0
+        n_positions = 0
+        n_profiles_with_data = 0
+        for profile in target_profiles:
+            try:
                 ctx = build_user_context_from_profile(profile)
                 positions = _safe_positions(ctx)
                 account = _safe_account_info(ctx)
-                if positions and account:
-                    equity = account.get("equity", 0) or 1
-                    long_val = sum(p["market_value"] for p in positions if p["qty"] > 0)
-                    short_val = sum(abs(p["market_value"]) for p in positions if p["qty"] < 0)
-                    exposure = {
-                        "net_pct": round((long_val - short_val) / equity * 100, 1),
-                        "gross_pct": round((long_val + short_val) / equity * 100, 1),
-                        "num_positions": len(positions),
-                    }
-        except Exception:
-            pass
+                if account:
+                    equity_sum += account.get("equity", 0) or 0
+                if positions:
+                    long_val += sum(p["market_value"] for p in positions if p["qty"] > 0)
+                    short_val += sum(abs(p["market_value"]) for p in positions if p["qty"] < 0)
+                    n_positions += len(positions)
+                if positions or account:
+                    n_profiles_with_data += 1
+            except Exception:
+                continue
+
+        if n_profiles_with_data and equity_sum > 0:
+            exposure = {
+                "net_pct": round((long_val - short_val) / equity_sum * 100, 1),
+                "gross_pct": round((long_val + short_val) / equity_sum * 100, 1),
+                "num_positions": n_positions,
+            }
+    except Exception:
+        pass
 
     # AI prediction accuracy (for AI Intelligence tab)
     from ai_tracker import get_ai_performance

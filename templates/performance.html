@@ -598,10 +598,8 @@
                 <strong style="font-size:2rem;">{{ exposure.num_positions }}</strong>
             </div>
         </div>
-        {% elif not selected_profile %}
-        <p class="muted">Pick a single profile (top-left dropdown) to see live position exposure — All Profiles aggregates across multiple Alpaca accounts so a single Net/Gross number isn't well-defined.</p>
         {% else %}
-        <p class="muted">No live position data available — Alpaca account may not be reachable, or this profile has no open positions.</p>
+        <p class="muted">No open positions across the selected profile{{ '' if selected_profile else 's' }} right now.</p>
         {% endif %}
     </article>
 
