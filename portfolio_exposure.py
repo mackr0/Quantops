@@ -28,6 +28,14 @@ from typing import Any, Dict, List, Optional
 # sector; we use 30% as a warn threshold (not a hard cap).
 SECTOR_CONCENTRATION_WARN_PCT = 30.0
 
+# Threshold for flagging single-direction concentration. When >80%
+# of gross book is on one side (long or short), we surface the flag.
+# Below 80% is genuine long/short; above is effectively long-only or
+# short-only despite the long/short label. The 80% cut matches the
+# "you're not really running long/short anymore" threshold most pro
+# allocators use when asking funds about their book.
+SINGLE_DIRECTION_THRESHOLD = 0.80
+
 
 def compute_exposure(
     positions: List[Dict[str, Any]],
@@ -321,8 +329,8 @@ def compute_factor_exposure(
         # Single-direction concentrated when one side carries >80% of
         # the book. For a long/short profile this is a flag; for a
         # long-only profile (target_short_pct=0) it's expected.
-        if (out["direction"]["long_share"] > 0.80
-                or out["direction"]["short_share"] > 0.80):
+        if (out["direction"]["long_share"] > SINGLE_DIRECTION_THRESHOLD
+                or out["direction"]["short_share"] > SINGLE_DIRECTION_THRESHOLD):
             out["direction"]["single_direction_concentrated"] = True
 
     return out
