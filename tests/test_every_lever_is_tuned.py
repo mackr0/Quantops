@@ -118,6 +118,12 @@ MANUAL_PARAMETERS = {
     # this would defeat the purpose — the target IS the user's
     # intent for what kind of book this profile runs.
     "target_short_pct": "Strategic balance preference — set by user, not autonomously tuned",
+    # P4.1 of LONG_SHORT_PLAN.md — book beta target. Strategic
+    # risk-preference choice (market-neutral 0.0, low-net 0.5,
+    # market-following 1.0). Auto-tuning would defeat the purpose;
+    # the AI prompt directive + balance gate are what enforce the
+    # target. Set by user.
+    "target_book_beta": "Strategic risk-preference target — set by user, not autonomously tuned",
     # P1.5 of LONG_SHORT_PLAN.md — short_max_hold_days has a tuning
     # rule (_optimize_short_max_hold_days) that currently returns
     # None pending the days_held column on closed shorts. Will fire

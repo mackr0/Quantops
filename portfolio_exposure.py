@@ -137,6 +137,10 @@ def compute_exposure(
     # three slices (sector / size / direction) from one source.
     factors = compute_factor_exposure(positions, equity)
 
+    # P4.1 of LONG_SHORT_PLAN.md — book-level beta as a single
+    # scalar. None when no positions or no beta data available.
+    book_beta = compute_book_beta(positions, equity)
+
     return {
         "net_pct": round((long_val - short_val) / equity * 100, 1),
         "gross_pct": round((long_val + short_val) / equity * 100, 1),
@@ -144,6 +148,7 @@ def compute_exposure(
         "by_sector": sector_breakdown,
         "concentration_flags": concentration_flags,
         "factors": factors,
+        "book_beta": (round(book_beta, 3) if book_beta is not None else None),
     }
 
 
@@ -235,6 +240,67 @@ def find_pair_opportunities(
 
     pairs.sort(key=lambda p: p["combined_score"], reverse=True)
     return pairs[:max_pairs]
+
+
+def compute_book_beta(
+    positions: List[Dict[str, Any]],
+    equity: float,
+    beta_lookup=None,
+) -> Optional[float]:
+    """Gross-weighted average beta of the book.
+
+    P4.1 of LONG_SHORT_PLAN.md. Aggregates per-position betas into a
+    single book-level number that the AI / risk dashboards can target.
+    The standard pro-fund construction: long_beta * long_share -
+    short_beta * short_share. Shorts contribute NEGATIVELY to book
+    beta because their P&L moves opposite to the underlying.
+
+    Args:
+      positions: list of dicts with 'symbol', 'qty', 'market_value'.
+      equity: total account equity (denominator).
+      beta_lookup: optional callable(symbol) -> Optional[float].
+        Defaults to factor_data.get_beta. Pass a stub for tests.
+
+    Returns:
+      Book beta as a float, OR None when:
+        - equity <= 0
+        - no positions
+        - we can't fetch beta for any position (all unknown)
+
+    Returning None is meaningful — caller renders "n/a" instead of
+    forcing a 0.0 that's indistinguishable from a real market-neutral
+    book.
+    """
+    if equity is None or equity <= 0 or not positions:
+        return None
+    if beta_lookup is None:
+        try:
+            from factor_data import get_beta as beta_lookup
+        except Exception:
+            return None
+
+    weighted_sum = 0.0
+    total_weight = 0.0
+    for p in positions:
+        sym = p.get("symbol")
+        qty = float(p.get("qty", 0) or 0)
+        mv = float(p.get("market_value", 0) or 0)
+        if not sym or qty == 0 or mv == 0:
+            continue
+        try:
+            beta = beta_lookup(sym)
+        except Exception:
+            beta = None
+        if beta is None:
+            continue
+        gross_weight = abs(mv) / equity
+        signed_beta = beta if qty > 0 else -beta
+        weighted_sum += signed_beta * gross_weight
+        total_weight += gross_weight
+
+    if total_weight <= 0:
+        return None
+    return weighted_sum  # already sums to book-level — gross_weight is fraction
 
 
 def compute_factor_exposure(

@@ -601,6 +601,38 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         except Exception:
             pass
 
+    # P4.1 of LONG_SHORT_PLAN.md — book-beta target directive.
+    # When ctx.target_book_beta is set and the book has measurable
+    # current beta, surface the gap so the AI can pick low-beta
+    # (defensive) or high-beta (levered) names to close it.
+    beta_target_block = ""
+    target_book_beta = (getattr(ctx, "target_book_beta", None)
+                         if ctx else None)
+    book_beta_now = (exp.get("book_beta") if exp else None)
+    if (target_book_beta is not None and book_beta_now is not None
+            and exp and exp.get("num_positions", 0) > 0):
+        delta = book_beta_now - target_book_beta
+        beta_target_block = (
+            f"\nBOOK-BETA TARGET:\n"
+            f"  Target beta: {target_book_beta:+.2f}\n"
+            f"  Current beta: {book_beta_now:+.2f}\n"
+        )
+        if delta > 0.30:
+            beta_target_block += (
+                f"  → BETA TOO HIGH by {delta:+.2f}. Strong preference: "
+                f"DEFENSIVE picks (beta < 0.7 — utilities, staples, "
+                f"healthcare) on the long side, or LEVERED shorts (beta > "
+                f"1.3 — high-vol tech, financials) to reduce book beta.\n"
+            )
+        elif delta < -0.30:
+            beta_target_block += (
+                f"  → BETA TOO LOW by {abs(delta):+.2f}. Strong preference: "
+                f"LEVERED long picks (beta > 1.3) or DEFENSIVE shorts to "
+                f"raise book beta toward target.\n"
+            )
+        else:
+            beta_target_block += "  → Book beta is on target; pick on conviction.\n"
+
     # P2.2 of LONG_SHORT_PLAN.md — long/short balance target. Tell
     # the AI whether we're under-/over-shorted vs the profile target
     # so it can bias the next pick toward the underweight side.
@@ -643,6 +675,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"{positions_text}\n"
         f"  Drawdown: {dd_pct:.1f}% from peak ({dd_action})"
         f"{exposure_block}"
+        f"{beta_target_block}"
         f"{target_block}"
     )
 

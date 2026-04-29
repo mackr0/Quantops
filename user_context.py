@@ -98,6 +98,16 @@ class UserContext:
     # batch decision and is told to bias toward the underweight side.
     target_short_pct: float = 0.0
 
+    # P4.1 of LONG_SHORT_PLAN.md — beta-targeted construction.
+    # target_book_beta: target gross-weighted book beta vs SPY. None
+    # = no target (existing behavior, no AI prompt directive). Pro
+    # long/short funds typically target book beta of 0.0 (market-
+    # neutral) to 0.5 (low net beta). Setting >1.0 is unusual.
+    # The AI prompt surfaces current_book_beta vs target_book_beta
+    # on each cycle so the AI can bias toward defensive (low-beta)
+    # or levered (high-beta) picks to close the gap.
+    target_book_beta: Optional[float] = None
+
     # Self-tuning — AI learns from past wins/losses and adjusts approach
     enable_self_tuning: bool = True
 

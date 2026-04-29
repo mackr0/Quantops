@@ -17,6 +17,47 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — Phase 4.1 of LONG_SHORT_PLAN: beta-targeted construction (Severity: high, capability)
+
+**The thesis.** Phase 3 surfaced book-level factor exposures to the AI. Phase 4.1 is the first piece of *active* factor management: the AI gets a directive on every cycle to bias picks toward a configured book-level beta target. The gold-standard construction technique for long/short funds — pro shops typically target book beta of 0.0 (market-neutral) to 0.5 (low-net).
+
+**Implementation.**
+
+- New `target_book_beta` column on `trading_profiles` (REAL, NULL = no target). Schema migration auto-applies.
+- `UserContext.target_book_beta: Optional[float]` plumbed through `build_user_context_from_profile`.
+- `param_bounds` clamp range -0.5 to 2.0 (covers reasonable: net-short bias to highly-levered long).
+- `update_trading_profile` allowlist updated.
+- `MANUAL_PARAMETERS` entry — strategic user choice, NOT auto-tuned.
+
+- New `portfolio_exposure.compute_book_beta(positions, equity, beta_lookup=None)`. Returns gross-weighted book beta with shorts contributing NEGATIVELY (industry-standard convention). Skips positions with unknown beta. Returns None when book is empty or no betas resolvable. Bundled into `compute_exposure()` output as `book_beta` key (rounded to 3 decimals or None).
+
+- AI prompt directive in `_build_batch_prompt`: when `ctx.target_book_beta` is set AND book has positions AND `book_beta` is computable, surface a `BOOK-BETA TARGET` block:
+    - `BETA TOO HIGH by +X.XX. Strong preference: DEFENSIVE picks ... or LEVERED shorts to reduce book beta.`
+    - `BETA TOO LOW by X.XX. Strong preference: LEVERED long picks or DEFENSIVE shorts to raise book beta.`
+    - `Book beta is on target; pick on conviction.`
+  Tolerance ±0.30 either side of target before triggering directive.
+
+**Tests added.** `tests/test_book_beta_target.py` (14 tests):
+- Empty positions / zero equity → None
+- Long-only book math
+- Short positions subtract from book beta
+- Market-neutral book lands near zero
+- Unknown beta positions skipped
+- All-unknown returns None
+- `compute_exposure` exposes `book_beta` key
+- Directive absent when target=None
+- Directive present + 'BETA TOO HIGH' when above target
+- 'BETA TOO LOW' when below target
+- 'on target' within tolerance
+- Skipped on empty book
+- UserContext default is None
+
+Total full-suite count: 1223 passing.
+
+**Why this is Phase 4 not Phase 3.** Phase 3 was alpha sources (real strategies). Phase 4 starts active *construction* — using the factor data to actively shape the portfolio rather than just observe it. Future Phase 4 entries will add fractional Kelly sizing, drawdown-aware capital scaling, and risk-budget position sizing.
+
+---
+
 ## 2026-04-29 — P3.6 docstring clarification + CHANGELOG pairing (Severity: trivial, docs)
 
 Tightened the `get_factor_classification` docstring to make the

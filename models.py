@@ -172,6 +172,7 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             short_max_position_pct REAL DEFAULT NULL,
             short_max_hold_days INTEGER NOT NULL DEFAULT 10,
             target_short_pct REAL NOT NULL DEFAULT 0.0,
+            target_book_beta REAL DEFAULT NULL,
             enable_self_tuning INTEGER NOT NULL DEFAULT 1,
             ai_provider TEXT NOT NULL DEFAULT 'anthropic',
             ai_model TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001',
@@ -274,6 +275,8 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         ("trading_profiles", "short_max_hold_days", "INTEGER NOT NULL DEFAULT 10"),
         # P2.2 of LONG_SHORT_PLAN.md
         ("trading_profiles", "target_short_pct", "REAL NOT NULL DEFAULT 0.0"),
+        # P4.1 of LONG_SHORT_PLAN.md — beta-targeted construction.
+        ("trading_profiles", "target_book_beta", "REAL DEFAULT NULL"),
         ("trading_profiles", "enable_self_tuning", "INTEGER NOT NULL DEFAULT 1"),
         ("trading_profiles", "ai_provider", "TEXT NOT NULL DEFAULT 'anthropic'"),
         ("trading_profiles", "ai_model", "TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001'"),
@@ -786,6 +789,8 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "short_max_position_pct", "short_max_hold_days",
         # P2.2 of LONG_SHORT_PLAN.md — long/short balance target.
         "target_short_pct",
+        # P4.1 of LONG_SHORT_PLAN.md — book beta target.
+        "target_book_beta",
         "enable_self_tuning",
         "ai_provider", "ai_model", "ai_api_key_enc",
         "schedule_type", "custom_start", "custom_end", "custom_days",
@@ -954,6 +959,11 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         # P2.2 of LONG_SHORT_PLAN.md — long/short balance target.
         # 0.0 = long-only (default), 0.5 = balanced, 1.0 = short-dominant.
         target_short_pct=float(profile.get("target_short_pct", 0.0) or 0.0),
+        # P4.1 of LONG_SHORT_PLAN.md — book beta target.
+        # None = no target (existing behavior); float = book beta to aim for.
+        target_book_beta=(profile.get("target_book_beta")
+                          if profile.get("target_book_beta") is not None
+                          else None),
         # Self-tuning
         enable_self_tuning=bool(profile.get("enable_self_tuning", 1)),
         # Trading schedule

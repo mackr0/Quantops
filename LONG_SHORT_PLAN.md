@@ -44,6 +44,17 @@ Phase 3 — Real alpha sources: ✓ DONE 2026-04-29
   P3.6 ✓ done — real factor exposures (book/value, beta, momentum
                 12-1m) — replaces P2.5's stylized size proxy
 
+Phase 4 — Active factor construction:
+  P4.1 ✓ done — beta-targeted construction (gross-weighted book
+                beta + AI prompt directive)
+  P4.2 — fractional Kelly position sizing (size by win rate × edge)
+  P4.3 — drawdown-aware capital scaling (shrink positions when
+         book is in drawdown)
+  P4.4 — risk-budget sizing (each position contributes equal
+         portfolio variance — risk parity)
+  P4.5 — market-neutrality enforcement (block entries that push
+         book beta further from target by > 0.5)
+
 ## Why this matters
 
 Today the system has:

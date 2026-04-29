@@ -56,6 +56,11 @@ PARAM_BOUNDS: Dict[str, Tuple[Number, Number]] = {
     # Real long/short funds tend to run 0.3-0.5; few benefit from
     # >0.7 short-heavy outside dedicated short-bias funds.
     "target_short_pct":              (0.0, 1.0),
+    # P4.1 of LONG_SHORT_PLAN.md — book beta target. -0.5 to 2.0
+    # covers the full reasonable range. Negative target = net-short
+    # leaning, market-hostile bet. Above 2.0 implies levered to
+    # market well beyond what most funds intentionally run.
+    "target_book_beta":              (-0.5, 2.0),
     "atr_multiplier_sl":             (1.0, 4.0),
     "atr_multiplier_tp":             (1.0, 5.0),
     "trailing_atr_multiplier":       (0.5, 3.0),
