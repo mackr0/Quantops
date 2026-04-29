@@ -248,6 +248,126 @@ def per_profile_breakdown(profile_data: List[Dict[str, Any]]) -> List[Dict[str, 
     return rows
 
 
+def capacity_analysis(profile_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Per-profile capacity-wall analysis.
+
+    For each profile, compute the capital level at which the strategy
+    saturates — the point where the avg position size would exceed
+    5% of typical daily volume in the profile's universe (a common
+    rule-of-thumb threshold for "you're moving the price when you
+    trade"). Slippage at the wall is also computed.
+
+    Assumptions (called out in the page copy too):
+      - Position size scales linearly with capital. The user's
+        observed pos_pct (avg position / current capital) stays
+        constant.
+      - The strategy STAYS IN ITS UNIVERSE as it scales. A Mid Cap
+        profile keeps trading mid caps; we don't pretend the strategy
+        gracefully migrates to Large Cap (that would be a different
+        strategy entirely).
+      - Tier ADV constants are stylized per-tier averages, not the
+        ADV of the specific names this profile actually trades.
+      - 5% of ADV per position is a conservative rule of thumb for
+        when market impact starts to bite. Different strategies have
+        different tolerances.
+
+    Each row returns:
+      - name
+      - tier_label
+      - current_capital
+      - current_avg_position (None if no fills yet)
+      - current_headroom_pct: avg_position as % of max-safe-position
+      - headroom_status: 'ok' (<25%), 'tight' (25-60%), 'wall' (>60%)
+      - capacity_wall_capital: the capital level where avg_position
+        equals max-safe-position
+      - scale_to_wall_multiple: capacity_wall / current_capital
+      - slippage_at_wall_pct: projected slippage at that capital
+      - measured_slippage_pct: current measured slippage
+      - notes: short caveat list for any unusual rows
+    """
+    rows = []
+    for p in profile_data:
+        trades = p.get("trades", []) or []
+        cap = float(p.get("capital") or 0)
+        market_type = _normalize_market_type(p.get("market_type") or "small")
+
+        sizes = [(t.get("price") or 0) * (t.get("qty") or 0) for t in trades
+                 if (t.get("price") or 0) > 0 and (t.get("qty") or 0) > 0]
+        slips = [abs(t.get("slippage_pct") or 0) for t in trades
+                 if t.get("slippage_pct") is not None
+                 and (t.get("slippage_pct") or 0) != 0]
+        avg_pos = (sum(sizes) / len(sizes)) if sizes else 0.0
+        avg_slip = (sum(slips) / len(slips)) if slips else None
+
+        notes = []
+        if cap <= 0:
+            rows.append({
+                "name": p.get("name", ""),
+                "tier_label": _TIER_LABEL.get(market_type, market_type),
+                "current_capital": cap,
+                "current_avg_position": None,
+                "current_headroom_pct": None,
+                "headroom_status": "unknown",
+                "capacity_wall_capital": None,
+                "scale_to_wall_multiple": None,
+                "slippage_at_wall_pct": None,
+                "measured_slippage_pct": None,
+                "notes": ["No initial capital set."],
+            })
+            continue
+
+        if avg_pos <= 0:
+            rows.append({
+                "name": p.get("name", ""),
+                "tier_label": _TIER_LABEL.get(market_type, market_type),
+                "current_capital": cap,
+                "current_avg_position": None,
+                "current_headroom_pct": None,
+                "headroom_status": "unknown",
+                "capacity_wall_capital": None,
+                "scale_to_wall_multiple": None,
+                "slippage_at_wall_pct": None,
+                "measured_slippage_pct": None,
+                "notes": ["No closed trades yet — capacity unknown."],
+            })
+            continue
+
+        pos_pct = avg_pos / cap
+        adv = _ADV_BY_TIER.get(market_type, _ADV_BY_TIER["small"])
+        max_safe_pos = adv * 0.05
+        wall_cap = max_safe_pos / pos_pct
+        scale_mult = wall_cap / cap
+        headroom_pct = avg_pos / max_safe_pos * 100
+
+        if headroom_pct < 25:
+            status = "ok"
+        elif headroom_pct < 60:
+            status = "tight"
+        else:
+            status = "wall"
+
+        # Slippage at the wall, using sqrt(capital ratio) — no tier change
+        # since the strategy stays in its tier.
+        slip_at_wall = None
+        if avg_slip and avg_slip > 0:
+            slip_at_wall = avg_slip * math.sqrt(scale_mult)
+
+        rows.append({
+            "name": p.get("name", ""),
+            "tier_label": _TIER_LABEL.get(market_type, market_type),
+            "current_capital": cap,
+            "current_avg_position": round(avg_pos, 2),
+            "current_headroom_pct": round(headroom_pct, 2),
+            "headroom_status": status,
+            "capacity_wall_capital": round(wall_cap, 0),
+            "scale_to_wall_multiple": round(scale_mult, 1),
+            "slippage_at_wall_pct": round(slip_at_wall, 4) if slip_at_wall is not None else None,
+            "measured_slippage_pct": round(avg_slip, 4) if avg_slip is not None else None,
+            "notes": notes,
+        })
+    return rows
+
+
 def theoretical_scaling(
     baseline_slip_pct: float,
     baseline_capital: float,

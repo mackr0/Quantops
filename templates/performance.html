@@ -718,81 +718,111 @@
         {% endif %}
     </article>
 
-    <!-- Section 2: Theoretical Scale-Up -->
+    <!-- Section 2: Capacity Analysis -->
     <article>
-        <header><h3>Theoretical Scale-Up</h3></header>
-        {% if not scaling_theoretical or scaling_theoretical.data_quality == 'insufficient' %}
-        <p class="muted">{{ scaling_theoretical.message if scaling_theoretical else 'No fill data yet — projections will populate after trades complete with both expected and actual prices recorded.' }}</p>
-        {% elif not scaling_theoretical.rows %}
-        <p class="muted">No projection rows above your current capital — already at or beyond the highest theoretical tier.</p>
-        {% else %}
+        <header><h3>Capacity Analysis — Where Each Strategy Saturates</h3></header>
+        {% if scaling_capacity %}
         <p class="muted">
-            What slippage and return would look like if you grew the existing system to each capital level. Baseline:
-            ${{ "{:,.0f}".format(scaling_theoretical.baseline_capital) }} of measured trading
-            ({{ scaling_theoretical.n_trades_with_fills }} fill{{ '' if scaling_theoretical.n_trades_with_fills == 1 else 's' }},
-            typical slippage {{ "%.4f"|format(scaling_theoretical.baseline_slippage_pct) }}%).
-            {% if scaling_theoretical.data_quality == 'modeled' %}
-            <span><em>Sample size is still small, so projections come with wide confidence intervals.</em></span>
-            {% endif %}
+            At what capital does each strategy stop fitting in its universe? "Capacity Wall"
+            is the capital level at which an avg-sized position would be ~5% of typical daily
+            volume in that profile's universe — the rule-of-thumb threshold above which
+            you start moving the price when you trade. Slippage at the wall comes from
+            sqrt(capital growth) × current measured slippage. <em>This is about whether
+            execution still works at scale, NOT whether the edge survives — that's
+            unknowable from a single capital data point.</em>
         </p>
         <div class="overflow-auto">
             <table>
                 <thead>
                     <tr>
-                        <th rowspan="2">Capital</th>
-                        <th rowspan="2"><span class="tip" data-tip="The universe of names that capital level would typically run in. Larger accounts need larger-cap names to absorb the orders cleanly.">Universe</span></th>
-                        <th colspan="2" style="text-align:center;border-bottom:1px solid #ddd;"><span class="tip" data-tip="Market orders take whatever price the market offers right now. Faster fills, higher slippage.">If Market Orders</span></th>
-                        <th colspan="2" style="text-align:center;border-bottom:1px solid #ddd;"><span class="tip" data-tip="Limit orders wait for the price you want. Lower slippage but may not fill if the price runs away.">If Limit Orders</span></th>
-                    </tr>
-                    <tr>
-                        <th>Slippage</th>
-                        <th>Return</th>
-                        <th>Slippage</th>
-                        <th>Return</th>
+                        <th>Profile</th>
+                        <th>Universe</th>
+                        <th>Current Capital</th>
+                        <th>Avg Position</th>
+                        <th><span class="tip" data-tip="Avg position as % of max-safe-position (5% of typical tier ADV). Green <25%, yellow 25-60%, red >60%.">Headroom Now</span></th>
+                        <th><span class="tip" data-tip="The capital level at which avg position equals the safe-trade threshold for the universe. Above this, market impact starts to dominate.">Capacity Wall</span></th>
+                        <th>Scale to Wall</th>
+                        <th>Slippage at Wall</th>
                     </tr>
                 </thead>
                 <tbody>
-                    {% for row in scaling_theoretical.rows %}
+                    {% for r in scaling_capacity %}
                     <tr>
-                        <td><strong>{{ row.label }}</strong></td>
-                        <td>{{ row.tier_label }}</td>
-                        <td class="{{ 'pnl-neg' if row.slippage_market_pct > 1.0 else '' }}">
-                            {{ "%.3f"|format(row.slippage_market_pct) }}%
-                            <small class="muted">
-                                ({{ "%.3f"|format(row.slippage_market_pct_low) }}–{{ "%.3f"|format(row.slippage_market_pct_high) }}%)
-                            </small>
+                        <td><strong>{{ r.name }}</strong></td>
+                        <td>{{ r.tier_label }}</td>
+                        <td>${{ "{:,.0f}".format(r.current_capital) }}</td>
+                        <td>
+                            {% if r.current_avg_position is not none %}
+                            ${{ "{:,.0f}".format(r.current_avg_position) }}
+                            {% else %}
+                            <span class="muted">—</span>
+                            {% endif %}
                         </td>
-                        <td class="{{ 'pnl-pos' if row.return_market_pct >= 0 else 'pnl-neg' }}">
-                            {{ "{:+.2f}".format(row.return_market_pct) }}%
+                        <td>
+                            {% if r.headroom_status == 'ok' %}
+                            <span class="pnl-pos">{{ "%.2f"|format(r.current_headroom_pct) }}% (OK)</span>
+                            {% elif r.headroom_status == 'tight' %}
+                            <span style="color:#cc8a00;">{{ "%.2f"|format(r.current_headroom_pct) }}% (tight)</span>
+                            {% elif r.headroom_status == 'wall' %}
+                            <span class="pnl-neg">{{ "%.2f"|format(r.current_headroom_pct) }}% (at wall)</span>
+                            {% else %}
+                            <span class="muted">—</span>
+                            {% endif %}
                         </td>
-                        <td class="{{ 'pnl-neg' if row.slippage_limit_pct > 1.0 else 'pnl-pos' }}" style="background:#f0fff4;">
-                            {{ "%.3f"|format(row.slippage_limit_pct) }}%
-                            <small class="muted">
-                                ({{ "%.3f"|format(row.slippage_limit_pct_low) }}–{{ "%.3f"|format(row.slippage_limit_pct_high) }}%)
-                            </small>
+                        <td>
+                            {% if r.capacity_wall_capital is not none %}
+                            ${{ "{:,.0f}".format(r.capacity_wall_capital) }}
+                            {% else %}
+                            <span class="muted">—</span>
+                            {% endif %}
                         </td>
-                        <td class="{{ 'pnl-pos' if row.return_limit_pct >= 0 else 'pnl-neg' }}" style="background:#f0fff4;">
-                            {{ "{:+.2f}".format(row.return_limit_pct) }}%
+                        <td>
+                            {% if r.scale_to_wall_multiple is not none %}
+                            {{ "%.0f"|format(r.scale_to_wall_multiple) }}×
+                            {% else %}
+                            <span class="muted">—</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if r.slippage_at_wall_pct is not none %}
+                            {{ "%.3f"|format(r.slippage_at_wall_pct) }}%
+                            {% else %}
+                            <span class="muted">—</span>
+                            {% endif %}
                         </td>
                     </tr>
+                    {% if r.notes %}
+                    <tr>
+                        <td colspan="8" style="background:#f0f7ff; padding:0.5rem 0.75rem; font-size:0.85rem;">
+                            <small>{{ r.notes|join(' ') }}</small>
+                        </td>
+                    </tr>
+                    {% endif %}
                     {% endfor %}
                 </tbody>
             </table>
         </div>
         <small class="muted">
             <strong>How this is calculated:</strong>
-            Two real-world effects scale your slippage.
-            (1) <strong>Larger orders cost more</strong> — slippage grows with the square root
-            of position size, so 4× the capital is ~2× the slippage, not 4×.
-            (2) <strong>Larger-cap stocks have ~10× more liquidity per name</strong> — running
-            in a larger-cap universe lets each new dollar find a more patient market.
+            For each profile we read its real measured avg position size, then assume that
+            position size scales linearly with capital (constant pos_pct = avg_position
+            ÷ current_capital). The capacity wall hits when avg_position would reach
+            5% of typical daily volume in the profile's universe — beyond that, your own
+            order size starts pushing the price. Tier ADV constants used: Small Cap ~$20M,
+            Mid Cap ~$200M, Large Cap ~$2B. These are stylized averages, not the exact
+            ADV of the names this profile trades, so treat the wall as a rough breakpoint
+            (within 2-3×) not a hard number. Slippage at the wall is sqrt(growth) × your
+            current measured slippage — just the existing market-impact math at the
+            higher capital level.
             <br><br>
-            The two right-most columns show what happens with limit orders instead of market
-            orders. Limit orders cut slippage by ~{{ scaling_theoretical.limit_order_reduction_pct }}%
-            because they wait for the price you want — but they may not fill at all if the
-            price runs away, so they're a tradeoff for momentum-reactive strategies. Toggle
-            "Use Limit Orders" in your profile settings to switch.
+            <strong>What this does NOT tell you:</strong>
+            Whether the strategy's <em>edge</em> still exists at higher capital. We only
+            have one data point (your current size). If small-cap edges depend on names
+            big money can't touch, the edge could erode well before the capacity wall
+            says you can.
         </small>
+        {% else %}
+        <p class="muted">No profile data yet — capacity analysis populates as profiles record their first fills.</p>
         {% endif %}
     </article>
 

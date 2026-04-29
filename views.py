@@ -1735,10 +1735,10 @@ def performance_dashboard():
     #   2. Theoretical scale-up: projection rows at $5M/$10M/$25M/$50M/$100M
     #      using square-root market impact + tier liquidity.
     scaling_real = []
-    scaling_theoretical = None
+    scaling_capacity = []
     try:
         from scaling_projection import (
-            per_profile_breakdown, theoretical_scaling, _recommended_tier,
+            per_profile_breakdown, capacity_analysis, _recommended_tier,
         )
         import sqlite3 as _sqlite3
 
@@ -1789,24 +1789,7 @@ def performance_dashboard():
                     agg_slips.append(abs(slip))
 
         scaling_real = per_profile_breakdown(profile_data)
-
-        # Theoretical scale-up: aggregate baseline across the visible profiles.
-        baseline_cap = float(total_initial_capital)
-        baseline_slip = (sum(agg_slips) / len(agg_slips)) if agg_slips else 0.0
-        baseline_mt = _recommended_tier(baseline_cap, "small")
-        # Use limit-orders-now if it's the dominant execution mode in the
-        # selection. For multi-profile aggregate, default to False.
-        uses_limit_now = False
-        if selected_profile_int and target_profiles:
-            uses_limit_now = bool(target_profiles[0].get("use_limit_orders", 0))
-        scaling_theoretical = theoretical_scaling(
-            baseline_slip_pct=baseline_slip,
-            baseline_capital=baseline_cap,
-            baseline_market_type=baseline_mt,
-            base_return_pct=metrics.get("net_return_pct", 0.0),
-            n_trades_with_fills=len(agg_slips),
-            use_limit_orders_now=uses_limit_now,
-        )
+        scaling_capacity = capacity_analysis(profile_data)
     except Exception as exc:
         logger.warning("Scalability data build failed: %s", exc)
 
@@ -2355,7 +2338,7 @@ def performance_dashboard():
                            ai_perf=ai_perf,
                            slippage=slippage,
                            scaling_real=scaling_real,
-                           scaling_theoretical=scaling_theoretical,
+                           scaling_capacity=scaling_capacity,
                            tuning_history=[],
                            tuning_status=[],
                            learned_patterns=[],
