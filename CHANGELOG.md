@@ -17,6 +17,58 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — INTRADAY_STOPS Stage 1: broker-managed stop-loss orders (Severity: critical, P&L)
+
+**The bug.** Polling-based exit detection runs `check_exits` every 5 minutes. Between cycles, prices move continuously. By the time we detect a stop-loss should fire, the price has moved past the level. We then submit a market sell at the *current* price — typically far worse than the intended stop.
+
+Real prod data:
+- AMD: stop_loss_pct = 5%, actual exit = -7.91% (60% overshoot)
+- INTC: -5% threshold, exit at -5.36%
+- COHR: -5% threshold, exit at -6.03%
+- CRM: -5% threshold, exit at -6.25%
+
+Each of these gave back hundreds of dollars per trade beyond the intended loss.
+
+**Fix.** Place broker-managed `type='stop'` orders on Alpaca for every open position. The broker fires AT the stop price the moment it's touched, regardless of our cycle timing. Fills land at the stop level (or near it on gap-downs) instead of at next-cycle current price.
+
+**Implementation.**
+
+- New module `bracket_orders.py`:
+  - `submit_protective_stop(api, symbol, qty, side, stop_price)` — submits a `type='stop'` order with `time_in_force='gtc'`. Returns the broker order_id, or None on failure (caller falls back to existing polling).
+  - `cancel_protective_stop(api, order_id)` — cancels by id; treats already-filled / already-cancelled / not-found as success.
+  - `stop_price_for_entry(entry_price, stop_loss_pct, is_short)` — computes the right side of entry: long stops below, short stops above.
+  - `ensure_protective_stops(api, positions, ctx, db_path)` — sweep that places stops on positions lacking active ones. Idempotent — verifies the stored order_id is still working before deciding to submit a new one. Survives restarts and races with the entry path.
+  - `cancel_for_symbol(api, db_path, symbol)` — pre-exit cleanup that cancels the broker stop AND clears `protective_stop_order_id` in the trades table.
+
+- Schema: new `protective_stop_order_id TEXT` column on the trades table. Populated when a stop is placed; cleared when cancelled.
+
+- `trader.check_exits` invokes `ensure_protective_stops` after the MFE update each cycle. Existing polling stop-loss / take-profit / trailing detection stays as a fallback. When polling fires an exit, `cancel_for_symbol` runs before the market exit so the broker stop doesn't orphan.
+
+- `trade_pipeline.py` SELL path (AI-driven exits) also calls `cancel_for_symbol` before the market sell.
+
+**Failure modes (handled).**
+- Submit fails → returns None, polling fallback still detects threshold breach.
+- Cancel of already-filled order → treated as success (the goal is reached).
+- Broker stop fires between our cycles → reconciliation picks up the closed position; polling on a flat position is a no-op.
+- Restart → next sweep restores stops on positions created before restart.
+
+**API budget.** ~30 new entries per day × 1 stop submit each = ~30 calls/day vs the 200/min Alpaca rate limit. Trivial impact.
+
+**Tests.** 17 new in `test_bracket_orders.py`:
+- `submit_protective_stop` calls Alpaca with `type='stop'`, `time_in_force='gtc'`, correct stop_price
+- Invalid inputs return None without making API calls
+- `cancel_protective_stop` treats already-filled / not-found as success
+- Sweep places stop on unprotected position; skips when active stop exists; resubmits when stale
+- Short positions get BUY stops above entry
+- `cancel_for_symbol` clears the DB column
+- Source-level pins on `trader.check_exits` to prevent regression
+
+**What this does NOT fix yet.** Trailing stops (the IBM tiny-win pattern). Those are still polled. Stage 3 of `INTRADAY_STOPS_PLAN.md` replaces polling trailing stops with broker `type='trailing_stop'` orders.
+
+Full suite: 1338 passing.
+
+---
+
 ## 2026-04-29 — Slippage cost: signed (real economic impact) instead of absolute (Severity: high, data correctness)
 
 **The misleading number.** Dashboard showed `Total Slippage Cost: $9,593` against ~$14.6K realized P&L — implied slippage was eating most of our edge. Actual net cost is **$2,437** (~17% of P&L, not ~66%).

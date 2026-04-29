@@ -327,6 +327,13 @@ def _migrate_all_columns(conn):
             # tuner to compute "give-back" (MFE - exit_price) per
             # bucket of trailing_atr_multiplier.
             ("max_favorable_excursion", "REAL"),
+            # INTRADAY_STOPS_PLAN Stage 1 — Alpaca order id for the
+            # broker-managed stop-loss attached to this entry. Stored
+            # so we can cancel it when the AI does an early exit
+            # (otherwise the broker would double-fire after our market
+            # sell). NULL when no protective stop has been placed yet
+            # or the order has already filled.
+            ("protective_stop_order_id", "TEXT"),
         ],
         "ai_predictions": [
             ("regime_at_prediction", "TEXT"),

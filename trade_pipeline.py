@@ -739,6 +739,15 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         else:
             sell_qty = max(1, int(qty * 0.75))
 
+        # INTRADAY_STOPS_PLAN Stage 1 — cancel any broker stop attached
+        # to this position so it doesn't fire after our market sell on
+        # what's now a flat position.
+        try:
+            from bracket_orders import cancel_for_symbol
+            cancel_for_symbol(api, db_path, symbol)
+        except Exception:
+            pass
+
         order = api.submit_order(
             symbol=symbol,
             qty=sell_qty,

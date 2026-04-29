@@ -341,6 +341,19 @@ def check_exits(ctx=None):
         except Exception as _exc:
             logging.debug("MFE update skipped (non-fatal): %s", _exc)
 
+    # INTRADAY_STOPS_PLAN Stage 1 — sweep open positions and ensure each
+    # has an active broker-managed stop order. Idempotent: positions
+    # already protected are skipped. Survives restarts and races with
+    # the entry path. Without this, polling stop-loss detection runs on
+    # a 5-min cycle while real prices move continuously — fills at
+    # next-cycle current price, typically far past the intended stop.
+    if db_path and ctx is not None and getattr(ctx, "stop_loss_pct", None):
+        try:
+            from bracket_orders import ensure_protective_stops
+            ensure_protective_stops(api, positions, ctx, db_path)
+        except Exception as _exc:
+            logging.debug("Protective stop sweep skipped: %s", _exc)
+
     # Conviction-based take-profit override: build the skip predicate if
     # the profile has it enabled. Runaway winners (IONQ-style) keep running
     # while the trailing stop manages the exit, instead of being capped.
@@ -451,6 +464,16 @@ def check_exits(ctx=None):
                     pass
         except Exception:
             pass
+
+        # INTRADAY_STOPS_PLAN Stage 1 — explicitly clear our protective
+        # stop bookkeeping so the next sweep doesn't think a stale
+        # order_id is still working. The broker-side cancel above already
+        # killed the order; this just resets the DB column.
+        try:
+            from bracket_orders import cancel_for_symbol
+            cancel_for_symbol(api, db_path, symbol)
+        except Exception as _exc:
+            logging.debug("Protective stop cleanup skipped: %s", _exc)
 
         if is_short:
             order = api.submit_order(
