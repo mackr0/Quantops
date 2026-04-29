@@ -191,6 +191,45 @@ def test_compute_factor_exposure_includes_real_factors():
     assert out["momentum"]["loser"] == 10.0
 
 
+def test_render_for_prompt_surfaces_real_factor_lines():
+    """P3.6 — factor lines appear in the prompt rendering when
+    book_to_market / beta / momentum buckets have real weight.
+    Regresses a bug where the render path read exposure[<factor>]
+    at top-level instead of exposure['factors'][<factor>]."""
+    from portfolio_exposure import compute_exposure, render_for_prompt
+
+    positions = [
+        {"symbol": "AAPL", "qty": 100, "market_value": 20_000},
+        {"symbol": "TSLA", "qty": 50, "market_value": 10_000},
+    ]
+    fake_factors = {
+        "AAPL": {"btm": "growth", "beta": "market", "momentum": "winner"},
+        "TSLA": {"btm": "growth", "beta": "levered", "momentum": "winner"},
+    }
+    exp = compute_exposure(
+        positions, equity=100_000,
+        sector_lookup=lambda s: "Technology",
+        # compute_exposure forwards factor_lookup via the helper —
+        # but currently it always reads from factor_data; we patch
+        # via a wrapper to skip the yfinance hop.
+    )
+    # Manually populate the factor buckets to mimic real lookup output
+    exp["factors"]["book_to_market"] = {"value": 0.0, "mid": 0.0,
+                                          "growth": 30.0, "unknown": 0.0}
+    exp["factors"]["beta"] = {"defensive": 0.0, "market": 20.0,
+                                "levered": 10.0, "unknown": 0.0}
+    exp["factors"]["momentum"] = {"winner": 30.0, "neutral": 0.0,
+                                    "loser": 0.0, "unknown": 0.0}
+    rendered = render_for_prompt(exp)
+    assert "By value/growth" in rendered, (
+        f"factor render path broken — book_to_market line missing. "
+        f"Output: {rendered}"
+    )
+    assert "By beta vs SPY" in rendered
+    assert "By 12-1m momentum" in rendered
+    assert "growth 30.0%" in rendered
+
+
 def test_factor_exposure_handles_missing_lookup_gracefully():
     """When factor_lookup raises for some symbols, those positions
     fall into 'unknown' buckets — they don't crash the run."""

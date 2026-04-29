@@ -533,12 +533,15 @@ def render_for_prompt(exposure: Dict[str, Any]) -> str:
 
     # P3.6 — real factor buckets. Show only when at least one bucket
     # has non-trivial weight (avoids noise on empty/all-unknown books).
+    # The factor breakdowns live at exposure["factors"][<name>], not
+    # at the top level — the keys were nested under compute_factor_exposure().
+    factors_dict = exposure.get("factors") or {}
     for factor_name, label in [
         ("book_to_market", "By value/growth (book-to-market)"),
         ("beta", "By beta vs SPY"),
         ("momentum", "By 12-1m momentum"),
     ]:
-        buckets = exposure.get(factor_name)
+        buckets = factors_dict.get(factor_name)
         if not buckets:
             continue
         # Skip rendering if everything is "unknown" — pure noise
