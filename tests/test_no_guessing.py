@@ -579,6 +579,8 @@ class TestRenderTemplateKwargs:
                                 "caller", "range", "true", "false", "none",
                                 "h", "s", "e", "r", "d", "v", "p", "f",
                                 "b",  # P2.1 sector loop: {% for sector, b in ... %}
+                                "f_btm", "f_beta", "f_mom",  # P3.6 factor locals
+                                "1",  # numeric literal in {% set ... 1.0 %}
                                 "mp", "prof", "prof_decay", "hr", "row",
                                 "actions", "spec_name", "trades_tpl",
                                 "base", "block", "mo", "w", "c", "a",

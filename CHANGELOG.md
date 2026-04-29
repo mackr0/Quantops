@@ -17,6 +17,46 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — Phase 3.6 of LONG_SHORT_PLAN: real factor exposures (book/value, beta, momentum 12-1m) (Severity: high, capability)
+
+**The thesis.** Phase 2 P2.5 used a stylized price-band size proxy because we didn't have fundamentals data cached. Real factor exposures require yfinance fundamentals. Adding the three classic equity factors with decades of academic evidence:
+
+- **Book-to-Market** (Fama & French 1992): high B/M = value stocks that historically outperform low B/M = growth.
+- **Beta vs SPY**: market sensitivity. <0.7 = defensive; 0.7-1.3 = market; >1.3 = levered.
+- **Momentum 12-1m** (Jegadeesh & Titman 1993): 12-month return excluding the most recent month (avoids short-term reversal). Long winners + short losers is the momentum factor.
+
+**Implementation.** New module `factor_data.py`:
+- `get_book_to_market(symbol)` — yfinance `bookValue × sharesOutstanding / marketCap`
+- `get_beta(symbol)` — yfinance `info.beta`
+- `get_momentum_12_1(symbol)` — `(price[-21] - price[-252]) / price[-252]` from market_data bars
+- All cached 7 days in dedicated `factor_cache` table (separate from alt_data_cache to keep concerns clean)
+- All return `None` on errors / missing data — graceful degrade
+- Crypto symbols skipped at the top of each fetcher
+
+Bucketing helpers: `classify_book_to_market`, `classify_beta`, `classify_momentum`. Each returns one of {value/mid/growth, defensive/market/levered, winner/neutral/loser, unknown}.
+
+**Wired into compute_factor_exposure.** Now produces gross-weighted breakdowns by all three factors alongside the existing size_bands and direction. Surfaces in:
+- Performance Dashboard's Current Exposure → "By Equity Factor" cards (B/M, Beta, Momentum, each showing % gross per bucket).
+- AI prompt's EXPOSURE BREAKDOWN block — adds 3 new lines when ≥1% of book classified.
+- "Unknown" bucket absorbs symbols whose fundamentals aren't reachable; rendered when ≥5% of book.
+
+**Tests added.** `tests/test_factor_data.py` (13 tests):
+  - All three classifiers' boundary cases
+  - Cache hit avoids re-fetching
+  - None on missing fundamentals
+  - Beta from `info.beta`
+  - Momentum 12-1m correctly skips the recent month (verified by a fixture where the recent month crashes -50% but the formula returns positive)
+  - Insufficient history returns None
+  - `get_factor_classification` round-trip
+  - yfinance exception → None (graceful)
+  - Crypto skipped
+  - `compute_factor_exposure` includes the new buckets
+  - Per-symbol lookup exception falls into "unknown" without crashing
+
+Test count: 1208 passing locally. Test infrastructure also updated: `test_no_guessing` template-var allowlist now includes `f_btm`, `f_beta`, `f_mom` (P3.6 template locals) and `1` (numeric literal artifact).
+
+---
+
 ## 2026-04-29 — Phase 3.5 of LONG_SHORT_PLAN: insider signal score promotion (Severity: high, alpha)
 
 **The thesis.** Insider trading clusters have decades of academic evidence — Seyhun (1986), Cohen et al. (2012), and many others — showing that stocks where 3+ insiders buy in concert outperform by ~6% over the following six months, and the reverse for selling clusters. The signal is among the strongest in finance.

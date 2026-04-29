@@ -41,6 +41,8 @@ Phase 3 — Real alpha sources: ✓ DONE 2026-04-29
   P3.3 ✓ done — sector rotation overlay (short bottom-3 sectors)
   P3.4 ✓ done — IV regime trades (iv_regime_short continuation)
   P3.5 ✓ done — insider signal promoted to primary weight (score 2→3)
+  P3.6 ✓ done — real factor exposures (book/value, beta, momentum
+                12-1m) — replaces P2.5's stylized size proxy
 
 ## Why this matters
 

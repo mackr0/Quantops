@@ -240,14 +240,25 @@ def find_pair_opportunities(
 def compute_factor_exposure(
     positions: List[Dict[str, Any]],
     equity: float,
+    factor_lookup=None,
 ) -> Dict[str, Any]:
-    """Compute simple factor-style breakdowns from position data we
-    already have. Doesn't need fundamentals — uses price as a size
-    proxy and direction as a structural factor.
+    """Compute factor-style breakdowns from position data.
 
-    P2.5 of LONG_SHORT_PLAN.md (minimum viable). Real quant funds
-    track size / value / momentum / beta factors with proper market
-    data. We start with the two we can compute cheaply:
+    P2.5 (minimum viable) + P3.6 (real factors).
+
+    Always includes:
+      - size_bands (cheap/mid/expensive — price-based, free to compute)
+      - direction (long_share / short_share + concentration flag)
+
+    If `factor_lookup` is provided (or the default `factor_data` module
+    is importable), ALSO includes:
+      - book_to_market: {value, mid, growth, unknown} buckets
+      - beta:           {defensive, market, levered, unknown}
+      - momentum:       {winner, neutral, loser, unknown}
+
+    factor_lookup signature: callable(symbol) -> dict with keys
+    ('btm', 'beta', 'momentum'), each mapping to a bucket string.
+    Pass a stub for tests; live code uses factor_data.get_factor_classification.
 
       - size_band: cheap (price < $20) / mid ($20-$100) / expensive (>$100).
         Stylized proxy — not a true small/mid/large cap classification,
@@ -284,14 +295,33 @@ def compute_factor_exposure(
             "short_share": 0.0,
             "single_direction_concentrated": False,
         },
+        # P3.6 — populated below when factor_lookup is available.
+        "book_to_market": {"value": 0.0, "mid": 0.0,
+                            "growth": 0.0, "unknown": 0.0},
+        "beta": {"defensive": 0.0, "market": 0.0,
+                  "levered": 0.0, "unknown": 0.0},
+        "momentum": {"winner": 0.0, "neutral": 0.0,
+                      "loser": 0.0, "unknown": 0.0},
     }
     if equity is None or equity <= 0 or not positions:
         return out
+
+    # Wire up the default factor lookup if the caller didn't pass one.
+    # Importable failures are non-fatal — fall back to "unknown" buckets.
+    if factor_lookup is None:
+        try:
+            from factor_data import get_factor_classification
+            factor_lookup = get_factor_classification
+        except Exception:
+            factor_lookup = lambda sym: {
+                "btm": "unknown", "beta": "unknown", "momentum": "unknown"
+            }
 
     long_gross = 0.0
     short_gross = 0.0
 
     for p in positions:
+        sym = p.get("symbol") or ""
         qty = float(p.get("qty", 0) or 0)
         mv = float(p.get("market_value", 0) or 0)
         if qty == 0 or mv == 0:
@@ -317,10 +347,34 @@ def compute_factor_exposure(
             bucket["n_short"] += 1
             short_gross += abs(mv)
 
+        # P3.6 — gross-weighted factor allocation. Each position adds
+        # its gross weight to the matching bucket per factor. "unknown"
+        # absorbs symbols whose fundamentals we can't fetch — better
+        # than dropping silently.
+        try:
+            factors = factor_lookup(sym) or {}
+        except Exception:
+            factors = {}
+        gross_pct = abs(mv) / equity * 100
+        btm_band = factors.get("btm", "unknown")
+        beta_band = factors.get("beta", "unknown")
+        mom_band = factors.get("momentum", "unknown")
+        if btm_band in out["book_to_market"]:
+            out["book_to_market"][btm_band] += gross_pct
+        if beta_band in out["beta"]:
+            out["beta"][beta_band] += gross_pct
+        if mom_band in out["momentum"]:
+            out["momentum"][mom_band] += gross_pct
+
     # Round size band pcts
     for band in out["size_bands"].values():
         band["long_pct"] = round(band["long_pct"], 1)
         band["short_pct"] = round(band["short_pct"], 1)
+
+    # Round factor-bucket pcts (P3.6)
+    for factor_name in ("book_to_market", "beta", "momentum"):
+        for k, v in out[factor_name].items():
+            out[factor_name][k] = round(v, 1)
 
     total_gross = long_gross + short_gross
     if total_gross > 0:
@@ -476,4 +530,25 @@ def render_for_prompt(exposure: Dict[str, Any]) -> str:
             f"  DIRECTIONAL CONCENTRATION: book is >80% {side} — "
             f"diversifying across direction would hedge market beta."
         )
+
+    # P3.6 — real factor buckets. Show only when at least one bucket
+    # has non-trivial weight (avoids noise on empty/all-unknown books).
+    for factor_name, label in [
+        ("book_to_market", "By value/growth (book-to-market)"),
+        ("beta", "By beta vs SPY"),
+        ("momentum", "By 12-1m momentum"),
+    ]:
+        buckets = exposure.get(factor_name)
+        if not buckets:
+            continue
+        # Skip rendering if everything is "unknown" — pure noise
+        non_unknown = sum(v for k, v in buckets.items() if k != "unknown")
+        if non_unknown < 1.0:
+            continue
+        parts = []
+        for bucket_name, pct in buckets.items():
+            if pct >= 1.0:
+                parts.append(f"{bucket_name} {pct:.1f}%")
+        if parts:
+            lines.append(f"  {label}: {' | '.join(parts)}")
     return "\n".join(lines)

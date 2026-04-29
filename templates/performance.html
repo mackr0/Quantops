@@ -600,6 +600,52 @@
         </div>
 
         {% if exposure.factors and exposure.factors.size_bands %}
+        {# P3.6 of LONG_SHORT_PLAN.md — render real factor buckets when present #}
+        {% set f_btm = exposure.factors.book_to_market or {} %}
+        {% set f_beta = exposure.factors.beta or {} %}
+        {% set f_mom = exposure.factors.momentum or {} %}
+        {% set btm_known = (f_btm.value|default(0) + f_btm.mid|default(0) + f_btm.growth|default(0)) %}
+        {% set beta_known = (f_beta.defensive|default(0) + f_beta.market|default(0) + f_beta.levered|default(0)) %}
+        {% set mom_known = (f_mom.winner|default(0) + f_mom.neutral|default(0) + f_mom.loser|default(0)) %}
+        {% if btm_known >= 1.0 or beta_known >= 1.0 or mom_known >= 1.0 %}
+        <h4 style="margin-top:1rem;"><span class="tip" data-tip="Classic equity factors: book-to-market (value vs growth), beta (market sensitivity), 12-1m momentum (winners vs losers, excluding the last month to avoid short-term reversal). Real long/short funds aim for factor-neutral construction.">By Equity Factor</span></h4>
+        <div class="grid" style="font-size:0.85rem;">
+            {% if btm_known >= 1.0 %}
+            <div class="stat-card">
+                <small class="muted">Book-to-market</small>
+                <div>
+                    {% if f_btm.value >= 1.0 %}<strong>value</strong>: {{ "%.1f"|format(f_btm.value) }}% &nbsp;{% endif %}
+                    {% if f_btm.mid >= 1.0 %}<strong>mid</strong>: {{ "%.1f"|format(f_btm.mid) }}% &nbsp;{% endif %}
+                    {% if f_btm.growth >= 1.0 %}<strong>growth</strong>: {{ "%.1f"|format(f_btm.growth) }}%{% endif %}
+                </div>
+                {% if f_btm.unknown >= 5.0 %}<small class="muted">{{ "%.1f"|format(f_btm.unknown) }}% unclassified</small>{% endif %}
+            </div>
+            {% endif %}
+            {% if beta_known >= 1.0 %}
+            <div class="stat-card">
+                <small class="muted">Beta vs SPY</small>
+                <div>
+                    {% if f_beta.defensive >= 1.0 %}<strong>defensive</strong>: {{ "%.1f"|format(f_beta.defensive) }}% &nbsp;{% endif %}
+                    {% if f_beta.market >= 1.0 %}<strong>market</strong>: {{ "%.1f"|format(f_beta.market) }}% &nbsp;{% endif %}
+                    {% if f_beta.levered >= 1.0 %}<strong>levered</strong>: {{ "%.1f"|format(f_beta.levered) }}%{% endif %}
+                </div>
+                {% if f_beta.unknown >= 5.0 %}<small class="muted">{{ "%.1f"|format(f_beta.unknown) }}% unclassified</small>{% endif %}
+            </div>
+            {% endif %}
+            {% if mom_known >= 1.0 %}
+            <div class="stat-card">
+                <small class="muted">12-1m momentum</small>
+                <div>
+                    {% if f_mom.winner >= 1.0 %}<strong>winner</strong>: {{ "%.1f"|format(f_mom.winner) }}% &nbsp;{% endif %}
+                    {% if f_mom.neutral >= 1.0 %}<strong>neutral</strong>: {{ "%.1f"|format(f_mom.neutral) }}% &nbsp;{% endif %}
+                    {% if f_mom.loser >= 1.0 %}<strong>loser</strong>: {{ "%.1f"|format(f_mom.loser) }}%{% endif %}
+                </div>
+                {% if f_mom.unknown >= 5.0 %}<small class="muted">{{ "%.1f"|format(f_mom.unknown) }}% unclassified</small>{% endif %}
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+
         <h4 style="margin-top:1rem;"><span class="tip" data-tip="Price-band size proxy. Cheap (under $20) tends to be small-cap; expensive (over $100) tends to be large-cap. Stylized — for cap-tier classification this is approximate.">By Price-Band Size Proxy</span></h4>
         <div class="grid">
             {% for band, b in exposure.factors.size_bands.items() %}
