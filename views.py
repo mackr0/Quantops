@@ -2441,6 +2441,11 @@ def _build_long_short_awareness(profiles):
         "kelly_short": dict | None,
         "drawdown_pct": float | None,
         "drawdown_scale": float | None,
+        # Full prompt-context coverage:
+        "risk_budget": dict | None,        # analyze_position_risk output
+        "exposure": dict | None,            # compute_exposure output (top sectors/factors)
+        "concentration_warnings": list,     # sectors >=30% gross
+        "num_positions": int,
       }
     """
     import os
@@ -2465,6 +2470,10 @@ def _build_long_short_awareness(profiles):
             "kelly_short": None,
             "drawdown_pct": None,
             "drawdown_scale": None,
+            "risk_budget": None,
+            "exposure": None,
+            "concentration_warnings": [],
+            "num_positions": 0,
         }
         try:
             from models import build_user_context_from_profile
@@ -2502,11 +2511,14 @@ def _build_long_short_awareness(profiles):
             except Exception:
                 pass
 
-            # Current short share + balance gate state
+            # Exposure (sector + factor) — full output, plus derived
+            # current short share and balance gate state.
             try:
                 from portfolio_exposure import compute_exposure, balance_gate
                 if equity > 0 and positions:
                     exp = compute_exposure(positions, equity)
+                    row["exposure"] = exp
+                    row["num_positions"] = exp.get("num_positions", 0)
                     gross = float(exp.get("gross_pct") or 0)
                     if gross > 0:
                         cur_short = sum(
@@ -2519,6 +2531,21 @@ def _build_long_short_awareness(profiles):
                                 target_short_pct=row["target_short_pct"],
                                 current_exposure=exp,
                             )
+                        # Concentration warnings — sectors over 30% gross
+                        for sec, b in (exp.get("by_sector") or {}).items():
+                            sec_gross = (b.get("long_pct") or 0) + (b.get("short_pct") or 0)
+                            if sec_gross >= 30.0:
+                                row["concentration_warnings"].append({
+                                    "sector": sec,
+                                    "gross_pct": sec_gross,
+                                })
+            except Exception:
+                pass
+
+            # Risk-budget breakdown (P4.4) — per-position weight × vol
+            try:
+                from risk_parity import analyze_position_risk
+                row["risk_budget"] = analyze_position_risk(positions, equity)
             except Exception:
                 pass
 

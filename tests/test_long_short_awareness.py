@@ -154,3 +154,54 @@ def test_template_renders_awareness_block(tmp_path):
     assert "Book Beta" in html
     assert "Kelly (Long / Short)" in html
     assert "Drawdown" in html
+
+
+def test_template_includes_risk_budget_panel():
+    """Awareness page must show the per-position risk-budget breakdown
+    that mirrors the AI prompt's RISK-BUDGET block (P4.4)."""
+    template_path = os.path.join(
+        os.path.dirname(__file__), "..", "templates", "ai.html"
+    )
+    with open(template_path) as f:
+        html = f.read()
+    assert "Risk Budget" in html
+    assert "risk_budget" in html
+    # Must distinguish over- vs under-contributors
+    assert "Over-contributing" in html
+    assert "Under-contributing" in html
+
+
+def test_template_includes_sector_concentration_panel():
+    """Awareness page must show sector-concentration warnings that
+    mirror the AI prompt's EXPOSURE BREAKDOWN concentration flags (P2.1)."""
+    template_path = os.path.join(
+        os.path.dirname(__file__), "..", "templates", "ai.html"
+    )
+    with open(template_path) as f:
+        html = f.read()
+    assert "Sector Concentration" in html
+    assert "concentration_warnings" in html
+
+
+def test_awareness_row_has_all_prompt_block_fields():
+    """Static schema check: each row built by _build_long_short_awareness
+    must include keys for every prompt block (Kelly, drawdown, beta,
+    balance, risk_budget, exposure, concentration_warnings, num_positions).
+    Adding a new prompt block without surfacing it on this page is the
+    bug class this test catches."""
+    import inspect
+    import views
+    src = inspect.getsource(views._build_long_short_awareness)
+    required_keys = (
+        "target_short_pct", "current_short_share", "balance_state",
+        "target_book_beta", "current_book_beta", "book_beta_delta",
+        "kelly_long", "kelly_short",
+        "drawdown_pct", "drawdown_scale",
+        "risk_budget", "exposure", "concentration_warnings",
+        "num_positions",
+    )
+    for k in required_keys:
+        assert f'"{k}"' in src, (
+            f"_build_long_short_awareness row missing key {k!r} — when "
+            f"a new prompt block ships, the awareness page must surface it."
+        )

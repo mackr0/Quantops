@@ -591,7 +591,7 @@
 <!-- Long/Short Construction — what the AI sees per profile -->
 {% if long_short_awareness %}
 <article>
-    <header><h3>Long/Short Construction</h3></header>
+    <header><h3>Long/Short Construction — top-line numbers the AI sees</h3></header>
     <p class="muted" style="margin-top:-0.5rem;">For every shorts-enabled profile, the actual numbers the AI sees in its prompt every cycle: target vs current long/short balance, target vs current book beta, per-direction Kelly recommendation, drawdown capital scale. If a number is empty, the AI sees no block (e.g., Kelly needs ≥30 resolved entries per direction).</p>
     <table>
         <thead>
@@ -606,7 +606,9 @@
         <tbody>
             {% for r in long_short_awareness %}
             <tr>
-                <td><strong>{{ r.profile_name }}</strong></td>
+                <td><strong>{{ r.profile_name }}</strong>
+                    {% if r.num_positions %}<br><small class="muted">{{ r.num_positions }} positions</small>{% endif %}
+                </td>
                 <td>
                     {% if r.target_short_pct is not none and r.target_short_pct > 0 %}
                         target {{ "%.0f"|format(r.target_short_pct * 100) }}%
@@ -662,6 +664,66 @@
                 </td>
             </tr>
             {% endfor %}
+        </tbody>
+    </table>
+</article>
+
+{# Risk Budget — per-position vol contributions; mirrors the AI prompt's RISK-BUDGET block (P4.4) #}
+{% set has_risk_budget = false %}
+{% for r in long_short_awareness %}{% if r.risk_budget %}{% set has_risk_budget = true %}{% endif %}{% endfor %}
+{% if has_risk_budget %}
+<article>
+    <header><h3>Risk Budget — per-position variance contribution</h3></header>
+    <p class="muted" style="margin-top:-0.5rem;">Each position contributes <code>weight × annualized_vol</code> to the book's variance. Equal-dollar weights are <em>not</em> equal-risk weights — a 5% slug of a 60%-vol biotech contributes ~3× the variance of a 5% slug of a 20%-vol utility. Names ≥ 2× or ≤ 0.5× the per-position average are flagged. Sizing rule the AI is told: <code>size ∝ 25% / annualized_vol</code>, clamped [0.4×, 1.6×].</p>
+    {% for r in long_short_awareness %}{% if r.risk_budget %}
+    <article style="margin:0.75rem 0;">
+        <header style="padding:0.5rem 0.75rem;"><h4 style="margin:0;">{{ r.profile_name }}</h4>
+            <small class="muted">avg per-name contribution {{ "%.2f"|format((r.risk_budget.avg_contribution or 0) * 100) }}%</small>
+        </header>
+        <div style="padding:0 0.75rem 0.5rem;">
+            {% if r.risk_budget.high_contributors %}
+            <p style="margin:0.5rem 0;"><strong style="color:#b00;">Over-contributing (≥2× avg):</strong>
+                {% for c in r.risk_budget.contributions %}{% if c.tag == 'high' %}
+                    <code>{{ c.symbol }}</code> ({{ "%.1f"|format(c.ratio) }}× avg, vol {{ "%.0f"|format(c.vol * 100) }}%){% if not loop.last %},{% endif %}
+                {% endif %}{% endfor %}
+            </p>
+            {% endif %}
+            {% if r.risk_budget.low_contributors %}
+            <p style="margin:0.5rem 0;"><strong style="color:#2d7a3d;">Under-contributing (≤0.5× avg):</strong>
+                {% for c in r.risk_budget.contributions %}{% if c.tag == 'low' %}
+                    <code>{{ c.symbol }}</code> ({{ "%.1f"|format(c.ratio) }}× avg, vol {{ "%.0f"|format(c.vol * 100) }}%){% if not loop.last %},{% endif %}
+                {% endif %}{% endfor %}
+            </p>
+            {% endif %}
+            {% if not r.risk_budget.high_contributors and not r.risk_budget.low_contributors %}
+            <p class="muted" style="margin:0.5rem 0;">All positions within ±2× of the average — book is well risk-balanced.</p>
+            {% endif %}
+        </div>
+    </article>
+    {% endif %}{% endfor %}
+</article>
+{% endif %}
+
+{# Sector concentration — mirrors the EXPOSURE BREAKDOWN block (P2.1) #}
+{% set has_concentration = false %}
+{% for r in long_short_awareness %}{% if r.concentration_warnings %}{% set has_concentration = true %}{% endif %}{% endfor %}
+{% if has_concentration %}
+<article>
+    <header><h3>Sector Concentration — what the AI is warned about</h3></header>
+    <p class="muted" style="margin-top:-0.5rem;">Real long/short funds typically target &lt;20% gross per sector. Sectors ≥30% gross are flagged in the AI prompt as concentration risk so the AI can avoid stacking another long-tech on top of long-tech.</p>
+    <table>
+        <thead><tr><th>Profile</th><th>Concentrated Sectors</th></tr></thead>
+        <tbody>
+            {% for r in long_short_awareness %}{% if r.concentration_warnings %}
+            <tr>
+                <td><strong>{{ r.profile_name }}</strong></td>
+                <td>
+                    {% for w in r.concentration_warnings %}
+                        <span style="color:#b87333;">{{ w.sector }} {{ "%.1f"|format(w.gross_pct) }}%</span>{% if not loop.last %},{% endif %}
+                    {% endfor %}
+                </td>
+            </tr>
+            {% endif %}{% endfor %}
         </tbody>
     </table>
 </article>

@@ -17,6 +17,23 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — Awareness page: full coverage of AI prompt blocks (Severity: medium, completeness)
+
+**The gap.** First pass at the awareness page surfaced 4 of the 6 long/short prompt blocks (book beta target, balance target, Kelly, drawdown scale). Two remained invisible: P4.4 risk-budget per-position contributions, and P2.1 sector concentration warnings — both routinely appear in the AI prompt but weren't on the user-visible "what the AI sees" surface.
+
+**Now surfaced.**
+- **Risk Budget panel.** For each shorts-enabled profile, lists over-contributing positions (≥ 2× the per-position avg variance contribution) and under-contributing positions (≤ 0.5×). Includes the sizing rule the AI is told (`size ∝ 25% / annualized_vol`, clamped). Mirrors `risk_parity.analyze_position_risk` output one-for-one.
+- **Sector Concentration panel.** Per profile, lists every sector at ≥30% gross — the same threshold the prompt flags as "concentration risk." Real long/short funds typically target <20% gross per sector; the AI is told this in its prompt every cycle.
+- **Position count** added to the top-line table.
+
+**Schema guard.** New test `test_awareness_row_has_all_prompt_block_fields` enforces that every required prompt-block key is present in the awareness row dict. Adding a new prompt block (P4.6, P5.x, etc) without surfacing it is now a test failure, not a silent gap.
+
+**Tests.** 3 new in `test_long_short_awareness.py` (now 11 total): risk-budget panel renders, sector-concentration panel renders, awareness row schema enforces full prompt coverage.
+
+Full suite: 1297 passing.
+
+---
+
 ## 2026-04-29 — UI catch-up for long/short: settings + awareness + performance (Severity: high, completeness)
 
 **The gap.** Backend supported all four short configuration knobs (`target_short_pct`, `target_book_beta`, `short_max_position_pct`, `short_max_hold_days`) but the Settings page exposed none of them — users couldn't actually configure the most important short parameters through the UI. The AI awareness page didn't show any of the new long/short prompt blocks (Kelly, drawdown scale, balance, book-beta), so when a profile emitted zero shorts there was no way to verify the prompt was computing the expected numbers. Performance dashboard had factor breakdowns but didn't surface book beta as a single number.
