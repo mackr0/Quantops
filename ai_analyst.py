@@ -949,7 +949,35 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
 
         cand_lines.append(line)
 
-    candidates_section = "CANDIDATES (ranked by technical score):\n" + "\n".join(cand_lines)
+    # P1.8 of LONG_SHORT_PLAN.md — when shorts are enabled, surface
+    # the long/short split explicitly so the AI considers each side
+    # on its own merits instead of defaulting to BUY against a
+    # bullish-dominated combined list. The candidate's ranking already
+    # comes pre-split from _rank_candidates, but we relabel sections
+    # here to make the choice unambiguous.
+    if enable_shorts:
+        long_lines = []
+        short_lines = []
+        for i, c in enumerate(candidates_data):
+            sig = (c.get("signal") or "").upper()
+            line = cand_lines[i]
+            if sig in ("SELL", "STRONG_SELL", "SHORT", "STRONG_SHORT"):
+                short_lines.append(line)
+            else:
+                long_lines.append(line)
+        sections = []
+        if long_lines:
+            sections.append("LONG CANDIDATES (ranked by technical score):\n"
+                            + "\n".join(long_lines))
+        if short_lines:
+            sections.append("SHORT CANDIDATES (ranked by technical score):\n"
+                            + "\n".join(short_lines))
+        else:
+            sections.append("SHORT CANDIDATES: (none triggered this scan)")
+        candidates_section = "\n\n".join(sections)
+    else:
+        candidates_section = ("CANDIDATES (ranked by technical score):\n"
+                              + "\n".join(cand_lines))
 
     # --- Actions allowed ---
     actions = "BUY"
@@ -957,6 +985,18 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         actions += " | SHORT"
 
     # --- Assemble prompt ---
+    long_short_note = ""
+    if enable_shorts:
+        long_short_note = (
+            "\n- BOTH sides are real options. Don't force a long pick when the "
+            "short setups are stronger, or vice versa. A high-conviction short "
+            "beats a mediocre long.\n"
+            "- Shorts: prefer breakdowns, distribution patterns, failed "
+            "breakouts, and relative weakness in strong sectors. Avoid "
+            "shorting names with high short interest unless the breakdown "
+            "is well-confirmed (squeeze risk).\n"
+        )
+
     prompt = (
         f"You are a portfolio manager for an automated {market_type} trading system. "
         f"You see a batch of candidates our technical screener flagged. "
@@ -967,11 +1007,13 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"{candidates_section}\n\n"
         f"RULES:\n"
         f"- Select 0-3 trades. Actions allowed: {actions}\n"
-        f"- Max position size: {max_pos_pct * 100:.0f}% of equity\n"
+        f"- Max position size: {max_pos_pct * 100:.0f}% of equity for longs"
+        f"{', halved for shorts (asymmetric risk)' if enable_shorts else ''}\n"
         f"- Consider: portfolio concentration, market regime, drawdown state, "
         f"your track record on each symbol\n"
         f"- If drawdown is elevated ({dd_action}), be conservative\n"
-        f"- If at max positions, only recommend exits\n\n"
+        f"- If at max positions, only recommend exits"
+        f"{long_short_note}\n\n"
         f"Respond ONLY with valid JSON (no markdown, no commentary):\n"
         f'{{"trades": [{{"symbol": "TICKER", "action": "BUY", '
         f'"size_pct": 7.5, "confidence": 75, '

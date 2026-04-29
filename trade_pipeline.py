@@ -1831,39 +1831,69 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
                       deprecated_strategies=None):
     """Rank strategy results into a shortlist for AI batch review.
 
-    Returns top ~15 candidates sorted by abs(score) desc.
-    Filters out HOLD, SELLs with no position + no shorts, BUYs on held symbols,
-    and signals whose primary strategy_type is in deprecated_strategies (Phase 3).
+    When shorts are disabled: returns top ~15 long candidates by abs(score),
+    and SELL/SHORT signals from non-held symbols are filtered out (existing
+    behavior).
+
+    When shorts are enabled: reserves dedicated slots for shorts
+    (P1.7 of LONG_SHORT_PLAN.md). Top 10 longs + top 5 shorts. This
+    prevents bearish candidates from being crowded out of the top-15
+    when most strategies emit bullish signals — the previous
+    abs(score)-only ranking sent ~0-1 short candidates to the AI even
+    on shorts-enabled profiles, which is the whole reason
+    profile_10 'Small Cap Shorts' has emitted only 2 SHORT predictions
+    in 1,491 cycles.
+
+    Filters HOLD, BUYs on held symbols, and primary-strategy
+    deprecation in either path.
     """
     deprecated_strategies = deprecated_strategies or set()
-    eligible = []
+
+    def _is_long_action(a):
+        return a in ("BUY", "STRONG_BUY")
+
+    def _is_short_action(a):
+        return a in ("SELL", "STRONG_SELL", "SHORT", "STRONG_SHORT")
+
+    long_eligible = []
+    short_eligible = []
     for signal in strategy_results:
         symbol = signal.get("symbol", "")
         action = signal.get("signal", "HOLD")
-        score = signal.get("score", 0)
 
         if action == "HOLD":
             continue
-        if action in ("SELL", "STRONG_SELL") and symbol not in held_symbols and not enable_shorts:
+        if _is_short_action(action) and symbol not in held_symbols and not enable_shorts:
             continue
-        if action in ("BUY", "STRONG_BUY") and symbol in held_symbols:
+        if _is_long_action(action) and symbol in held_symbols:
             continue
 
         # Phase 3: skip candidates whose primary voting strategy is deprecated.
-        # Primary = the first strategy that cast a non-HOLD vote (matches the
-        # strategy_type stored in ai_predictions).
         if deprecated_strategies:
             votes = signal.get("votes", {})
             primary = next((k for k, v in votes.items() if v != "HOLD"), None)
             if primary and primary in deprecated_strategies:
                 continue
 
-        eligible.append(signal)
+        if _is_short_action(action):
+            short_eligible.append(signal)
+        else:
+            long_eligible.append(signal)
 
-    eligible.sort(key=lambda s: (abs(s.get("score", 0)),
-                                  abs(s.get("rsi", 50) - 50)),
-                  reverse=True)
-    return eligible[:15]
+    sort_key = lambda s: (abs(s.get("score", 0)),
+                          abs(s.get("rsi", 50) - 50))
+    long_eligible.sort(key=sort_key, reverse=True)
+    short_eligible.sort(key=sort_key, reverse=True)
+
+    if enable_shorts:
+        # Reserve slots: top 10 longs + top 5 shorts. If short bench is
+        # short, fill remaining slots with more longs (don't waste capacity).
+        shorts = short_eligible[:5]
+        long_slots = max(10, 15 - len(shorts))
+        longs = long_eligible[:long_slots]
+        return longs + shorts
+    else:
+        return long_eligible[:15]
 
 
 def _extract_indicator(signal, key, default=0):
