@@ -9,7 +9,7 @@ actually do (Citadel, Millennium, Point72) — not just
 
 ## Status (live)
 
-Phase 1 — Short capability (parity with longs):
+Phase 1 — Short capability (parity with longs): ✓ DONE 2026-04-29
   P1.0  ✓ done — SELL semantic fix + prediction_type column
   P1.1  ✓ done — 5 dedicated bearish strategies
   P1.2  ✓ done — borrow / shortable filter
@@ -20,12 +20,20 @@ Phase 1 — Short capability (parity with longs):
   P1.7  ✓ done — two shortlists (long/short with reserved slots)
   P1.8  ✓ done — AI prompt with explicit long/short sections
   P1.9  ✓ done (MVP) — per-direction win rate surfaced to AI prompt
-  P1.9b ⏳ pending — per-direction self-tuning of short params
-  P1.10 ⏳ pending — MFE tracking on shorts (LFE, technically)
-  P1.11 ⏳ pending — specialist calibrators for bearish strategies
-  P1.12 ⏳ pending — meta-model retrained with prediction_type feature
-  P1.13 ⏳ pending — strategy generator extended for bearish patterns
-  P1.14 ⏳ pending — borrow rate as feature + sizing input
+  P1.9b ✓ done — per-direction self-tuning (_optimize_short_*
+                  in self_tuning.py: take_profit, stop_loss,
+                  max_position_pct, max_hold_days)
+  P1.10 ✓ done — MFE tracking on shorts (entry_side='sell_short'
+                  fix in trader.py:225 + view query update)
+  P1.11 ✓ done — direction-aware specialist calibrators (Platt
+                  scaling per direction in specialist_calibration.py)
+  P1.12 ✓ done — meta-model with prediction_type as categorical
+                  feature (meta_model.py:64)
+  P1.13 ✓ done — strategy generator extended via direction_mix
+                  parameter in strategy_proposer.py
+  P1.14 ✓ done — borrow info as filter/feature (Alpaca
+                  shortable + easy_to_borrow flags) + HTB sizing
+                  penalty in _validate_ai_trades
 
 Phase 2 — Pair / sector / factor neutrality: ✓ DONE 2026-04-28
   P2.1 ✓ done — sector exposure tracking + concentration warnings
