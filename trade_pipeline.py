@@ -1854,6 +1854,7 @@ _CATALYST_SHORT_STRATEGIES = {
     "earnings_drift",            # post-earnings disappointment
     "analyst_upgrade_drift",     # downgrade-after-upgrade thesis
     "earnings_disaster_short",   # P3.1 — gap-down + non-recovery pattern
+    "catalyst_filing_short",     # P3.2 — adverse SEC filing + price weakness
 }
 
 

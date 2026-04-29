@@ -59,6 +59,7 @@ STRATEGY_MODULES = [
     "strategies.relative_weakness_in_strong_sector",
     # Phase 3 of LONG_SHORT_PLAN.md — real alpha sources.
     "strategies.earnings_disaster_short",
+    "strategies.catalyst_filing_short",
 ]
 
 

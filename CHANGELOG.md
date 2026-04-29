@@ -17,6 +17,21 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — Phase 3.2 of LONG_SHORT_PLAN: catalyst_filing_short strategy (Severity: high, alpha)
+
+**The thesis.** Material adverse SEC filings (going-concern warnings, material-weakness disclosures, high-severity concerning 8-K language) predict 6-12 month underperformance with statistical significance (Beneish 1999; Dechow et al. 2011). The signal is in the filing AND in the market's reaction — if the stock has already dropped post-filing, the catalyst is real and continuation is likely.
+
+**Implementation.** `strategies/catalyst_filing_short.py`. Reads from existing `sec_filings_history` table populated by the daily SEC analysis task — no API calls in the hot path. Triggers when ALL hold:
+1. Filing in last 30 days with `going_concern_flag=1` OR `material_weakness_flag=1` OR (`alert_severity='high'` AND `alert_signal='concerning'`).
+2. Price has dropped ≥3% since the filing (market is reacting, not ignoring).
+3. Reference close found via timestamp matching to the filing date (falls back to 5 bars ago if timestamps unavailable).
+
+Tagged in `_CATALYST_SHORT_STRATEGIES` so it survives the strong-bull regime gate. Score: 3 (high-conviction). Graceful degrade — if the filings table is empty or missing, returns empty list.
+
+**Tests added.** `tests/test_catalyst_filing_short.py` — 10 tests covering the required interface, registry/catalyst-set membership, no-filings rejection, too-old rejection, going-concern + price-drop trigger, post-filing rally rejection, universe filtering, missing db_path, high-severity-concerning trigger.
+
+---
+
 ## 2026-04-28 — Phase 3.1 of LONG_SHORT_PLAN: earnings_disaster_short strategy (Severity: high, alpha)
 
 **The thesis.** Post-Earnings Announcement Drift (PEAD, Bernard & Thomas 1990) shows stocks that miss earnings significantly continue underperforming for 60-90 days. Inverse PEAD on the short side: detect a recent significant gap-down on volume + non-recovery, emit SHORT.

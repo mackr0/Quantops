@@ -36,7 +36,8 @@ Phase 2 — Pair / sector / factor neutrality: ✓ DONE 2026-04-28
 
 Phase 3 — Real alpha sources:
   P3.1 ✓ done — earnings-disaster shorts (PEAD inverse)
-  P3.2 — catalyst-driven shorts framework (downgrades, fraud filings)
+  P3.2 ✓ done — catalyst-driven shorts framework (going-concern,
+                material-weakness, high-severity 8-K)
   P3.3 — sector rotation overlay
   P3.4 — IV regime trades
   P3.5 — insider signal promoted to primary weight
