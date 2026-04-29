@@ -17,6 +17,23 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — Phase 3.4 of LONG_SHORT_PLAN: iv_regime_short strategy (Severity: medium, alpha)
+
+**The thesis.** Different from the existing `high_iv_rank_fade` (mean-reversion). This is a CONTINUATION pattern: when implied volatility is elevated AND a stock is in an established downtrend with active selling, the combination of priced-in fear + technical breakdown predicts multi-day continuation lower. Elevated IV signals material uncertainty about the name; that uncertainty rarely resolves to the upside on a stock already breaking down.
+
+**Implementation.** `strategies/iv_regime_short.py`. Triggers when ALL hold:
+1. IV rank ≥ 70 (elevated but not extreme; extremes mean-revert)
+2. Stock below 20-day SMA (downtrend)
+3. Stock down ≥3% over trailing 10 days (active selling, not just sideways)
+4. RSI between 35-65 (avoid mean-reversion territory either side)
+5. Most-recent-day volume ≥ 1.2× 20-day avg (distribution confirmation)
+
+NOT tagged as catalyst — IV regime is a market condition, not a company-specific event. Score: 2.
+
+**Tests added.** `tests/test_iv_regime_short.py` — 9 tests covering interface, registry, NOT-in-catalyst-set, low-IV rejection, uptrend rejection, real trigger, oversold rejection, thin-volume rejection, sideways-below-SMA rejection.
+
+---
+
 ## 2026-04-29 — Phase 3.3 of LONG_SHORT_PLAN: sector_rotation_short strategy (Severity: medium, alpha)
 
 **The thesis.** Sector rotation has documented asymmetry: when capital flows OUT of a sector (bottom-3 by trailing 5d return), individual names in that sector continue underperforming for 5-15 days as the rotation completes. Standard practice in stat-arb funds.

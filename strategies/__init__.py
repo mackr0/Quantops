@@ -61,6 +61,7 @@ STRATEGY_MODULES = [
     "strategies.earnings_disaster_short",
     "strategies.catalyst_filing_short",
     "strategies.sector_rotation_short",
+    "strategies.iv_regime_short",
 ]
 
 

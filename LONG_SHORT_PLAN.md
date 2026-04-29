@@ -39,7 +39,7 @@ Phase 3 — Real alpha sources:
   P3.2 ✓ done — catalyst-driven shorts framework (going-concern,
                 material-weakness, high-severity 8-K)
   P3.3 ✓ done — sector rotation overlay (short bottom-3 sectors)
-  P3.4 — IV regime trades
+  P3.4 ✓ done — IV regime trades (iv_regime_short continuation)
   P3.5 — insider signal promoted to primary weight
 
 ## Why this matters
