@@ -27,8 +27,19 @@ Phase 1 — Short capability (parity with longs):
   P1.13 ⏳ pending — strategy generator extended for bearish patterns
   P1.14 ⏳ pending — borrow rate as feature + sizing input
 
-Phase 2 — Pair / sector / factor neutrality: not started
-Phase 3 — Real alpha sources: not started
+Phase 2 — Pair / sector / factor neutrality: ✓ DONE 2026-04-28
+  P2.1 ✓ done — sector exposure tracking + concentration warnings
+  P2.2 ✓ done — long/short ratio targets per profile
+  P2.3 ✓ done — pair trades primitive (same-sector long+short)
+  P2.4 ✓ done — balance gate (block over-weighted side >25pp off)
+  P2.5 ✓ done — factor exposure (size bands + direction balance)
+
+Phase 3 — Real alpha sources:
+  P3.1 ✓ done — earnings-disaster shorts (PEAD inverse)
+  P3.2 — catalyst-driven shorts framework (downgrades, fraud filings)
+  P3.3 — sector rotation overlay
+  P3.4 — IV regime trades
+  P3.5 — insider signal promoted to primary weight
 
 ## Why this matters
 
