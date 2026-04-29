@@ -1776,7 +1776,7 @@ def performance_dashboard():
         n_profiles_with_data = 0
         for profile in target_profiles:
             try:
-                ctx = build_user_context_from_profile(profile)
+                ctx = build_user_context_from_profile(profile["id"])
                 positions = _safe_positions(ctx)
                 account = _safe_account_info(ctx)
                 if account:
