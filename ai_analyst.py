@@ -601,6 +601,21 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         except Exception:
             pass
 
+    # P4.3 of LONG_SHORT_PLAN.md — drawdown-aware capital scaling.
+    # Continuous size modifier (vs the discrete normal/reduce/pause
+    # action). Tells the AI: "we're below peak — multiply your sizes
+    # by this factor so we shrink, not stretch, while recovering."
+    drawdown_block = ""
+    try:
+        from drawdown_scaling import render_for_prompt as dd_render
+        drawdown_block = dd_render({
+            "drawdown_pct": dd_pct,
+            "peak_equity": portfolio_state.get("peak_equity"),
+            "current_equity": portfolio_state.get("equity"),
+        })
+    except Exception:
+        pass
+
     # P4.2 of LONG_SHORT_PLAN.md — Kelly position sizing block.
     # Reads per-direction edge stats from ai_predictions and surfaces
     # the fractional-Kelly recommendation. Soft guidance — doesn't
@@ -697,6 +712,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"{beta_target_block}"
         f"{target_block}"
         f"{kelly_block}"
+        f"{drawdown_block}"
     )
 
     # --- Market context section ---

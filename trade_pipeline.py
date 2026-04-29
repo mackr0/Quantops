@@ -2298,6 +2298,7 @@ def _build_portfolio_state(account, positions_list, dd, ctx):
         "num_positions": len(positions_list),
         "drawdown_pct": dd.get("drawdown_pct", 0),
         "drawdown_action": dd.get("action", "normal"),
+        "peak_equity": dd.get("peak_equity", 0),
         "exposure": exposure,
     }
 

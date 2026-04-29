@@ -49,8 +49,9 @@ Phase 4 — Active factor construction:
                 beta + AI prompt directive)
   P4.2 ✓ done — fractional Kelly position sizing (per-direction
                  quarter-Kelly recommendation surfaced to AI prompt)
-  P4.3 — drawdown-aware capital scaling (shrink positions when
-         book is in drawdown)
+  P4.3 ✓ done — drawdown-aware capital scaling (continuous size
+                 modifier 1.0× → 0.25× as drawdown deepens; surfaced
+                 to AI prompt alongside Kelly)
   P4.4 — risk-budget sizing (each position contributes equal
          portfolio variance — risk parity)
   P4.5 — market-neutrality enforcement (block entries that push

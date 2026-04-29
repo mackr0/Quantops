@@ -17,6 +17,31 @@ Rules going forward:
 
 ---
 
+## 2026-04-28 — Phase 4.3 of LONG_SHORT_PLAN: drawdown-aware capital scaling (Severity: high, capability)
+
+**The thesis.** Kelly says how big a bet *should* be at full conviction. But when the book is below peak, "full conviction" is the wrong baseline — the edge estimate may be wrong, and variance compounds against us harder when we're already down. Drawdown scaling is the safety net: shrink positions while recovering, restore them when peak returns. This is independent of the existing pause threshold (which stops new entries entirely); scaling is for the entries that *do* happen below peak.
+
+**Implementation.** New module `drawdown_scaling.py`:
+
+- `compute_capital_scale(drawdown_pct)` — continuous scale in [0.25, 1.0]. Linear interpolation between breakpoints (0%→1.00, 5%→0.85, 10%→0.65, 15%→0.45, 20%+→0.25 floor). Monotonically non-increasing.
+- `render_for_prompt(dd)` — formats the scale + drawdown context as a `DRAWDOWN CAPITAL SCALE` AI prompt block. Suppresses the block when scale rounds to 1.00× (no point telling the AI "multiply by 1.00").
+
+Wired into `ai_analyst._build_batch_prompt` as `drawdown_block`, appended after `kelly_block`. Reads `drawdown_pct`, `peak_equity`, `current_equity` from `portfolio_state`. `trade_pipeline._build_portfolio_state` now passes `peak_equity` through.
+
+**Why continuous, not discrete.** The pre-existing `check_drawdown` already returns a discrete `action` (normal/reduce/pause), but that's a control-flow signal — pause = no entries. The AI needs a *sizing* signal: keep entering, just size smaller. Smooth scaling avoids cliffs at threshold boundaries (a position at 9.9% drawdown shouldn't suddenly halve when we cross to 10.1%).
+
+**Tests.** 9 new in `test_drawdown_scaling.py`:
+- Breakpoints match schedule
+- Floor at 0.25× below 20% drawdown
+- Linear interpolation between breakpoints (7.5% → 0.75, 12.5% → 0.55, 17.5% → 0.35)
+- Monotonically decreasing as drawdown grows
+- `render_for_prompt` suppresses empty blocks (no drawdown, full scale)
+- `render_for_prompt` includes scale, drawdown %, peak/current equity
+
+Full suite: 1247 passing.
+
+---
+
 ## 2026-04-28 — P4.2b Kelly: exclude HOLD predictions from edge stats (Severity: high, correctness)
 
 **The bug.** `compute_kelly_recommendation` read every row tagged `prediction_type='directional_long'`, including HOLD predictions. HOLDs aren't entries — their "actual_return_pct" reflects existing-position drift, not new-bet P&L. On profile_3 this meant 920 HOLD rows (601 losses, 314 wins-with-negative-avg-return) drowned out the 49 actual BUY rows. On profile_11, real positive edge (21W/9L = 70%, +2.95% / -2.23% — full Kelly ~47%) returned `None` in the recommendation because HOLDs flipped the aggregate edge negative.
