@@ -899,8 +899,22 @@ def get_equity_curve(days=30, db_path=None):
 def get_slippage_stats(db_path=None):
     """Return slippage statistics from trades that have fill_price data.
 
-    Returns a dict with avg_slippage_pct, total_slippage_cost, worst_slippage,
-    trades_with_fills, or None if no fill data is available.
+    The total_slippage_cost is the SIGNED net economic cost — favorable
+    slippage (buying cheaper than decision price, selling higher than
+    decision) reduces it; adverse slippage adds to it. The previous
+    formulation summed ABS(fill - decision) * qty which double-counted
+    favorable executions as cost and inflated the dashboard numbers
+    by ~4× vs the real impact on P&L.
+
+    For BUY / sell_short (entries that consume capital): cost is positive
+    when fill_price > decision_price (we paid more / received less).
+
+    For SELL / cover (exits that return capital): cost is positive when
+    fill_price < decision_price (we received less than expected).
+
+    `total_slippage_magnitude` (also returned) is the absolute version —
+    sum of |fill - decision| * qty — useful as a measure of execution
+    variance independent of direction.
     """
     conn = _get_conn(db_path)
     try:
@@ -909,7 +923,17 @@ def get_slippage_stats(db_path=None):
                 COUNT(*) AS trades_with_fills,
                 AVG(slippage_pct) AS avg_slippage_pct,
                 MAX(ABS(slippage_pct)) AS worst_slippage_pct,
-                SUM(ABS(fill_price - decision_price) * qty) AS total_slippage_cost
+                SUM(ABS(fill_price - decision_price) * qty)
+                    AS total_slippage_magnitude,
+                SUM(
+                    CASE
+                        WHEN side IN ('buy', 'sell_short')
+                            THEN (fill_price - decision_price) * qty
+                        WHEN side IN ('sell', 'cover', 'short')
+                            THEN (decision_price - fill_price) * qty
+                        ELSE 0
+                    END
+                ) AS total_slippage_cost
             FROM trades
             WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL
               AND decision_price > 0
@@ -935,6 +959,7 @@ def get_slippage_stats(db_path=None):
             "avg_slippage_pct": round(row["avg_slippage_pct"] or 0, 4),
             "worst_slippage_pct": round(row["worst_slippage_pct"] or 0, 4),
             "total_slippage_cost": round(row["total_slippage_cost"] or 0, 2),
+            "total_slippage_magnitude": round(row["total_slippage_magnitude"] or 0, 2),
             "worst_trade": dict(worst) if worst else None,
         }
     except Exception:

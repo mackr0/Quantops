@@ -1990,11 +1990,11 @@ def performance_dashboard():
         ai_perf["profit_factor"] = round(total_gains / total_losses_abs, 2)
 
     # Slippage stats — aggregate per-profile get_slippage_stats output.
-    # The function returns keys `trades_with_fills`, `avg_slippage_pct`,
-    # `total_slippage_cost`. Earlier versions read `count` and
-    # `total_cost` which silently never populated, leaving the UI
-    # showing "No fill data yet" even when data existed.
-    slippage = {"avg_pct": 0.0, "total_cost": 0.0, "count": 0}
+    # `total_slippage_cost` is signed (favorable slippage reduces it);
+    # `magnitude` is the absolute version (sum of |fill-decision|*qty).
+    # Both surface so the user can distinguish "execution variance"
+    # from "net economic cost."
+    slippage = {"avg_pct": 0.0, "total_cost": 0.0, "magnitude": 0.0, "count": 0}
     weighted_pct_sum = 0.0
     for db_path in db_paths:
         try:
@@ -2004,6 +2004,7 @@ def performance_dashboard():
                 n = s.get("trades_with_fills", 0) or 0
                 slippage["count"] += n
                 slippage["total_cost"] += s.get("total_slippage_cost", 0) or 0
+                slippage["magnitude"] += s.get("total_slippage_magnitude", 0) or 0
                 weighted_pct_sum += (s.get("avg_slippage_pct", 0) or 0) * n
         except Exception:
             pass
@@ -2744,8 +2745,9 @@ def ai_dashboard():
     if total_gains > 0 and total_losses_abs > 0:
         ai_perf["profit_factor"] = round(total_gains / total_losses_abs, 2)
 
-    # Slippage stats — same key-mapping fix as performance_dashboard.
-    slippage = {"avg_pct": 0.0, "total_cost": 0.0, "count": 0}
+    # Slippage stats — signed total_cost + absolute magnitude both
+    # surfaced. See performance_dashboard for the rationale.
+    slippage = {"avg_pct": 0.0, "total_cost": 0.0, "magnitude": 0.0, "count": 0}
     weighted_pct_sum = 0.0
     for db_path in db_paths:
         try:
@@ -2755,6 +2757,7 @@ def ai_dashboard():
                 n = s.get("trades_with_fills", 0) or 0
                 slippage["count"] += n
                 slippage["total_cost"] += s.get("total_slippage_cost", 0) or 0
+                slippage["magnitude"] += s.get("total_slippage_magnitude", 0) or 0
                 weighted_pct_sum += (s.get("avg_slippage_pct", 0) or 0) * n
         except Exception:
             pass

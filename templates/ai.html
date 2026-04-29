@@ -213,12 +213,16 @@
         {% if slippage and slippage.count > 0 %}
         <div class="grid">
             <div class="stat-card">
-                <small class="muted"><span class="tip" data-tip="The difference between the price you expected and the price you actually got">Avg Slippage</span></small>
+                <small class="muted"><span class="tip" data-tip="Average price difference between decision and fill, as a percent. Positive = adverse (we paid more or received less).">Avg Slippage</span></small>
                 <strong>{{ "%.3f"|format(slippage.avg_pct) }}%</strong>
             </div>
             <div class="stat-card">
-                <small class="muted">Total Slippage Cost</small>
-                <strong class="pnl-neg">${{ "{:,.2f}".format(slippage.total_cost) }}</strong>
+                <small class="muted"><span class="tip" data-tip="Net dollar cost — favorable executions (BUYs that filled cheaper than expected, SELLs that filled higher) REDUCE this. Negative = slippage was net in our favor.">Net Slippage Cost</span></small>
+                <strong class="{{ 'pnl-neg' if slippage.total_cost > 0 else 'pnl-pos' }}">${{ "{:,.2f}".format(slippage.total_cost) }}</strong>
+            </div>
+            <div class="stat-card">
+                <small class="muted"><span class="tip" data-tip="Sum of absolute |fill - decision| × qty across all fills. Treats favorable AND adverse slippage as 'execution variance'. Always ≥ Net Slippage Cost.">Execution Variance</span></small>
+                <strong>${{ "{:,.2f}".format(slippage.magnitude) }}</strong>
             </div>
             <div class="stat-card">
                 <small class="muted">Trades with Fill Data</small>

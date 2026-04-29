@@ -17,6 +17,42 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — Slippage cost: signed (real economic impact) instead of absolute (Severity: high, data correctness)
+
+**The misleading number.** Dashboard showed `Total Slippage Cost: $9,593` against ~$14.6K realized P&L — implied slippage was eating most of our edge. Actual net cost is **$2,437** (~17% of P&L, not ~66%).
+
+**Root cause.** `journal.get_slippage_stats` was summing `ABS(fill_price - decision_price) * qty` — counting ALL execution variance as cost, including favorable executions where:
+- a BUY filled BELOW decision price (we paid less = SAVINGS)
+- a SELL filled ABOVE decision price (we got more = SAVINGS)
+
+The economic-correct measure is signed: adverse fills add to cost, favorable fills subtract. Auditing prod data:
+
+| Profile | Trades | Absolute (was) | Signed (is) |
+|---|---|---|---|
+| profile_1 | 83 | $476 | $77 |
+| profile_3 | 65 | $1,111 | -$274 (favorable!) |
+| profile_8 | 95 | $3,881 | $1,527 |
+| **Total** | 832 | $9,593 | **$2,437** |
+
+Two profiles even had net favorable slippage.
+
+**Fix.**
+- `journal.get_slippage_stats` now computes signed `total_slippage_cost` and a separate `total_slippage_magnitude` (the old absolute number — kept as "execution variance" since it's still useful as a measure of fill quality).
+  - For BUY / sell_short entries: cost = `(fill - decision) * qty` (positive when adverse)
+  - For SELL / cover / short exits: cost = `(decision - fill) * qty` (positive when adverse)
+- `metrics.calculate_all_metrics` aggregates both. `slippage_vs_gross` switched from absolute closed-trade slippage to signed closed-trade slippage — so a profile with favorable execution shows negative slippage_vs_gross (slippage helped P&L).
+- AI page Slippage Impact panel now shows BOTH: "Net Slippage Cost" (signed, headline) and "Execution Variance" (absolute magnitude). Performance page same treatment.
+
+**Tests.** 2 new in `test_slippage_aggregation.py` (now 7 total):
+- `test_total_slippage_cost_is_signed_not_absolute`: two trades that should cancel ($10 adverse + $10 favorable) produce signed cost ≈ $0 and magnitude ≈ $20
+- `test_signed_slippage_cost_is_negative_when_executions_are_favorable`: all-favorable book produces negative total_slippage_cost (regression-pin against accidentally re-introducing ABS)
+
+**What it means for the user.** Slippage isn't eating the edge. Of $9.6K of execution variance, $7.2K cancels out across the book. Net cost of $2.4K is 17% of $14.6K realized P&L — within normal range for a system this size and within the <20% target on `slippage_vs_gross`.
+
+Full suite: 1321 passing.
+
+---
+
 ## 2026-04-29 — Slippage scope alignment between /ai and /performance (Severity: medium, data correctness)
 
 **The discrepancy.** After the previous slippage-key-mismatch fix, the AI page reported 832 trades / $9,593 total slippage, but the Performance page Slippage Analysis panel showed 356 trades / $4,346 — same data, different numbers.

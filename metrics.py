@@ -1255,31 +1255,42 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
     position_sizes = []
     gross_profit = total_gains
 
-    closed_slippage_costs = []  # for slippage_vs_gross — closed trades only
+    closed_slippage_signed_costs = []  # signed slippage on closed trades —
+                                         # feeds slippage_vs_gross. Favorable
+                                         # executions reduce; adverse adds.
 
     for t in trades:
         price = t.get("price", 0) or 0
         qty = t.get("qty", 0) or 0
+        side = (t.get("side") or "").lower()
         if price > 0 and qty > 0:
             position_sizes.append(price * qty)
 
-        # Closed-trade slippage cost — feeds slippage_vs_gross which
-        # only makes sense when there's a realized P&L to compare to.
+        # Closed-trade signed slippage cost. Positive = adverse, negative
+        # = favorable. Sign convention matches journal.get_slippage_stats:
+        #   BUY / sell_short: cost is (fill - decision) * qty
+        #   SELL / cover / short: cost is (decision - fill) * qty
         slip = t.get("slippage_pct", None)
         dp = t.get("decision_price", 0) or 0
         fp = t.get("fill_price", 0) or 0
         if slip is not None and dp > 0 and fp > 0 and qty > 0:
-            closed_slippage_costs.append(abs(fp - dp) * qty)
+            if side in ("buy", "sell_short"):
+                signed = (fp - dp) * qty
+            elif side in ("sell", "cover", "short"):
+                signed = (dp - fp) * qty
+            else:
+                signed = abs(fp - dp) * qty  # unknown side — fall back
+            closed_slippage_signed_costs.append(signed)
 
     result["avg_position_size"] = round(_mean(position_sizes), 2) if position_sizes else 0.0
 
     # Slippage stats: aggregate ALL fills (entries + exits, open + closed)
     # via get_slippage_stats — so the Performance page reports the same
-    # numbers as the AI page. Previously this scope was closed-trade only
-    # (filtered by `pnl IS NOT NULL`), which made the two pages disagree
-    # on the same metric.
+    # numbers as the AI page. total_slippage_cost is SIGNED (favorable
+    # slippage reduces it); magnitude is the absolute gross variance.
     all_fills_count = 0
     all_fills_total_cost = 0.0
+    all_fills_magnitude = 0.0
     weighted_pct_sum = 0.0
     for db_path in db_paths:
         try:
@@ -1289,6 +1300,7 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
                 n = s.get("trades_with_fills", 0) or 0
                 all_fills_count += n
                 all_fills_total_cost += s.get("total_slippage_cost", 0) or 0
+                all_fills_magnitude += s.get("total_slippage_magnitude", 0) or 0
                 weighted_pct_sum += (s.get("avg_slippage_pct", 0) or 0) * n
         except Exception:
             pass
@@ -1297,15 +1309,17 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
         round(weighted_pct_sum / all_fills_count, 4) if all_fills_count > 0 else 0.0
     )
     result["slippage_total_cost"] = round(all_fills_total_cost, 2)
+    result["slippage_magnitude"] = round(all_fills_magnitude, 2)
     result["trades_with_slippage"] = all_fills_count
 
-    # Slippage vs gross — uses CLOSED-trade slippage costs only (the
-    # only ones that have a realized P&L to ratio against). Otherwise
-    # we'd be dividing all-fills slippage by closed-trade gross profit,
-    # mixing scopes.
-    if gross_profit > 0 and closed_slippage_costs:
+    # Slippage vs gross — uses signed CLOSED-trade slippage costs (the
+    # only ones that have a realized P&L to ratio against). Signed so
+    # the ratio reflects the real economic impact: a profile with
+    # favorable execution can show a negative slippage_vs_gross
+    # (slippage helped P&L), while one with bad fills shows a positive.
+    if gross_profit > 0 and closed_slippage_signed_costs:
         result["slippage_vs_gross"] = round(
-            sum(closed_slippage_costs) / gross_profit * 100, 2
+            sum(closed_slippage_signed_costs) / gross_profit * 100, 2
         )
         result["slippage_vs_gross_computable"] = True
     else:

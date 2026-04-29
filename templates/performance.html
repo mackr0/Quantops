@@ -762,10 +762,13 @@
                 </strong>
             </div>
             <div class="stat-card" style="text-align:center;">
-                <small class="muted">Total Slippage Cost</small>
-                <strong style="font-size:2rem;" class="pnl-neg">
+                <small class="muted"><span class="tip" data-tip="Net dollar cost — favorable executions (BUYs that filled cheaper than expected, SELLs that filled higher) REDUCE this number. Negative = slippage was net in our favor.">Net Slippage Cost</span></small>
+                <strong style="font-size:2rem;" class="{{ 'pnl-neg' if m.slippage_total_cost > 0 else 'pnl-pos' }}">
                     ${{ "{:,.2f}".format(m.slippage_total_cost) }}
                 </strong>
+                {% if m.slippage_magnitude is defined and m.slippage_magnitude > 0 %}
+                <small class="muted">execution variance: ${{ "{:,.0f}".format(m.slippage_magnitude) }}</small>
+                {% endif %}
             </div>
             <div class="stat-card" style="text-align:center;">
                 <small class="muted">Slippage vs Gross Profit</small>

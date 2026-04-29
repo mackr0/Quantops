@@ -23,8 +23,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 def test_get_slippage_stats_contract():
     """The return shape must include trades_with_fills,
-    avg_slippage_pct, total_slippage_cost. The views code expects
-    these exact keys; renaming would break the dashboard silently."""
+    avg_slippage_pct, total_slippage_cost, total_slippage_magnitude.
+    The views code expects these exact keys; renaming would break
+    the dashboard silently."""
     import inspect
     import journal
     src = inspect.getsource(journal.get_slippage_stats)
@@ -32,6 +33,97 @@ def test_get_slippage_stats_contract():
     assert "trades_with_fills" in src
     assert "avg_slippage_pct" in src
     assert "total_slippage_cost" in src
+    assert "total_slippage_magnitude" in src
+
+
+def test_total_slippage_cost_is_signed_not_absolute(tmp_path):
+    """total_slippage_cost is the SIGNED net economic cost. Favorable
+    executions REDUCE the total; adverse executions INCREASE it.
+    Was ABS(fill - decision) * qty before — that double-counted
+    favorable slippage as cost and inflated the dashboard ~4x."""
+    import sqlite3
+    db = str(tmp_path / "trades.db")
+    conn = sqlite3.connect(db)
+    conn.execute("""
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY,
+            timestamp TEXT, symbol TEXT, side TEXT, qty REAL, price REAL,
+            decision_price REAL, fill_price REAL, slippage_pct REAL,
+            status TEXT, pnl REAL, strategy TEXT
+        )
+    """)
+    # Two trades that should cancel out:
+    # 1. BUY 100 AAPL: decision $100, fill $100.10 → adverse $10
+    # 2. BUY 100 MSFT: decision $200, fill $199.90 → favorable -$10
+    # Absolute magnitude: $20. Signed cost: $0.
+    rows = [
+        ("AAPL", 100, 100.0, 100.10, "buy"),
+        ("MSFT", 100, 200.0, 199.90, "buy"),
+    ]
+    for i, (sym, qty, dp, fp, side) in enumerate(rows):
+        slip_pct = (fp - dp) / dp * 100
+        conn.execute(
+            "INSERT INTO trades (timestamp, symbol, side, qty, price, "
+            "decision_price, fill_price, slippage_pct, pnl, status) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (f"2026-04-{i+1:02d}", sym, side, qty, fp, dp, fp, slip_pct,
+             None, "filled"),
+        )
+    conn.commit()
+    conn.close()
+
+    from journal import get_slippage_stats
+    s = get_slippage_stats(db_path=db)
+    # Magnitude includes both: $10 + $10 = $20
+    assert abs(s["total_slippage_magnitude"] - 20.0) < 0.01, (
+        f"magnitude must be |dp-fp|*qty summed unsigned; "
+        f"got {s['total_slippage_magnitude']}"
+    )
+    # Signed cost cancels: $10 (adverse) + (-$10) (favorable) = $0
+    assert abs(s["total_slippage_cost"]) < 0.01, (
+        f"total_slippage_cost must be signed — favorable executions "
+        f"should cancel adverse ones. Got {s['total_slippage_cost']}; "
+        f"if this is ~$20 you're still using ABS()."
+    )
+
+
+def test_signed_slippage_cost_is_negative_when_executions_are_favorable(tmp_path):
+    """When BUYs fill below decision and SELLs fill above, the user's
+    book got better fills than expected — total_slippage_cost should
+    be NEGATIVE."""
+    import sqlite3
+    db = str(tmp_path / "trades.db")
+    conn = sqlite3.connect(db)
+    conn.execute("""
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY,
+            timestamp TEXT, symbol TEXT, side TEXT, qty REAL, price REAL,
+            decision_price REAL, fill_price REAL, slippage_pct REAL,
+            status TEXT, pnl REAL, strategy TEXT
+        )
+    """)
+    rows = [
+        ("AAPL", 100, 100.0, 99.90, "buy"),    # filled $0.10 below = good
+        ("MSFT",  50, 200.0, 200.50, "sell"),  # sold $0.50 above = good
+    ]
+    for i, (sym, qty, dp, fp, side) in enumerate(rows):
+        slip_pct = (fp - dp) / dp * 100
+        conn.execute(
+            "INSERT INTO trades (timestamp, symbol, side, qty, price, "
+            "decision_price, fill_price, slippage_pct, pnl, status) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (f"2026-04-{i+1:02d}", sym, side, qty, fp, dp, fp, slip_pct,
+             None, "filled"),
+        )
+    conn.commit()
+    conn.close()
+    from journal import get_slippage_stats
+    s = get_slippage_stats(db_path=db)
+    assert s["total_slippage_cost"] < 0, (
+        f"All-favorable executions must produce negative signed cost; "
+        f"got {s['total_slippage_cost']}. If this is positive you're "
+        f"still summing absolute values."
+    )
 
 
 def test_views_uses_correct_slippage_keys():
