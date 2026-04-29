@@ -17,6 +17,36 @@ Rules going forward:
 
 ---
 
+## 2026-04-28 — Phase 4.4 of LONG_SHORT_PLAN: risk-budget (risk-parity) sizing (Severity: high, capability)
+
+**The thesis.** Equal-dollar weights are NOT equal-risk weights. A 5% slug of a 60%-vol biotech contributes ~3× the variance of a 5% slug of a 20%-vol utility. Real risk-parity funds size INVERSELY to vol so each position contributes equal variance. We don't run a fully-rebalanced risk-parity book, but the sizing principle still applies on every new entry: high-vol names get smaller, low-vol names can stretch.
+
+**Implementation.** Two pieces:
+
+1. `factor_data.get_realized_vol(symbol, days=30)` — annualized realized vol from log returns of recent daily closes. Cached (factor_cache, 7d TTL — vol moves daily but staleness is acceptable for sizing guidance).
+
+2. New module `risk_parity.py`:
+   - `compute_vol_scale(realized_vol, target_vol=0.25)` — returns `target_vol / realized_vol`, clamped to [0.40×, 1.60×]. Defaults to 1.0× when vol unknown (degrade gracefully).
+   - `analyze_position_risk(positions, equity)` — per-position weight × annualized_vol, flags names whose risk contribution is ≥ 2× or ≤ 0.5× the per-position average.
+   - `render_for_prompt(analysis)` — `RISK-BUDGET` block with sizing rule + over-/under-contributing call-outs. Suppressed when nothing actionable.
+
+**Wiring.** `ai_analyst._build_batch_prompt` now appends `risk_budget_block` after `drawdown_block`. The block is read alongside Kelly + drawdown scale; the AI multiplies its base size by all three:
+
+    final_size = base × kelly × drawdown_scale × vol_scale
+
+**Why now.** With Kelly (P4.2) and drawdown scaling (P4.3) in place, equal-dollar bets across a mixed-vol portfolio meant a single high-vol name dominated portfolio variance regardless of edge or drawdown state. Risk-parity sizing closes the last sizing-related gap before the neutrality enforcement in P4.5.
+
+**Tests.** 13 new in `test_risk_parity.py`:
+- `compute_vol_scale` returns 1.0 at target vol, inverse-proportional otherwise, clamped at [0.4, 1.6]
+- Returns 1.0 (graceful) on unknown/zero/negative vol
+- `analyze_position_risk` flags 4×-vol outliers, skips unknown-vol names, handles short positions (uses abs(market_value))
+- Returns None on empty positions / zero equity / fewer than 2 known vols
+- `render_for_prompt` suppresses noise-only output, includes sizing rule and outliers when present
+
+Full suite: 1260 passing.
+
+---
+
 ## 2026-04-28 — Phase 4.3 of LONG_SHORT_PLAN: drawdown-aware capital scaling (Severity: high, capability)
 
 **The thesis.** Kelly says how big a bet *should* be at full conviction. But when the book is below peak, "full conviction" is the wrong baseline — the edge estimate may be wrong, and variance compounds against us harder when we're already down. Drawdown scaling is the safety net: shrink positions while recovering, restore them when peak returns. This is independent of the existing pause threshold (which stops new entries entirely); scaling is for the entries that *do* happen below peak.

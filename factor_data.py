@@ -198,6 +198,50 @@ def get_momentum_12_1(symbol: str) -> Optional[float]:
     return None
 
 
+def get_realized_vol(symbol: str, days: int = 30) -> Optional[float]:
+    """Return annualized realized volatility from `days` of daily log
+    returns. Returned as a fraction (0.25 = 25% annualized vol — typical
+    mid-vol large cap; 0.50+ = high-vol; 0.15 = utility-like).
+
+    Cached 1 week — vol moves daily but 7-day staleness is acceptable
+    for sizing-guidance purposes (and matches the rest of factor_data's
+    refresh cadence).
+    """
+    if not symbol or "/" in symbol:
+        return None
+    cache_key = f"vol_{days}d"
+    cached = _get_cached(symbol, cache_key)
+    if cached is not None:
+        return cached
+    try:
+        from market_data import get_bars
+        # Need `days+1` closes to produce `days` returns. Buffer a bit
+        # in case of holidays.
+        bars = get_bars(symbol, limit=days + 10)
+        if bars is None or len(bars) < days + 1:
+            _set_cached(symbol, cache_key, None)
+            return None
+        import math
+        closes = bars["close"].iloc[-(days + 1):].tolist()
+        rets = []
+        for i in range(1, len(closes)):
+            if closes[i - 1] > 0 and closes[i] > 0:
+                rets.append(math.log(closes[i] / closes[i - 1]))
+        if len(rets) < 5:
+            _set_cached(symbol, cache_key, None)
+            return None
+        mean = sum(rets) / len(rets)
+        var = sum((r - mean) ** 2 for r in rets) / max(1, len(rets) - 1)
+        daily_std = math.sqrt(var)
+        annualized = daily_std * math.sqrt(252)
+        _set_cached(symbol, cache_key, annualized)
+        return annualized
+    except Exception as exc:
+        logger.debug("get_realized_vol(%s) failed: %s", symbol, exc)
+    _set_cached(symbol, cache_key, None)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Bucketing
 # ---------------------------------------------------------------------------

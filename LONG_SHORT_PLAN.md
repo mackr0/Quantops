@@ -52,8 +52,9 @@ Phase 4 — Active factor construction:
   P4.3 ✓ done — drawdown-aware capital scaling (continuous size
                  modifier 1.0× → 0.25× as drawdown deepens; surfaced
                  to AI prompt alongside Kelly)
-  P4.4 — risk-budget sizing (each position contributes equal
-         portfolio variance — risk parity)
+  P4.4 ✓ done — risk-budget (risk-parity) sizing: per-position
+                 weight × realized_vol contribution, flag outliers,
+                 sizing rule = target_vol / realized_vol
   P4.5 — market-neutrality enforcement (block entries that push
          book beta further from target by > 0.5)
 

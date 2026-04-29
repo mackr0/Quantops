@@ -601,6 +601,24 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         except Exception:
             pass
 
+    # P4.4 of LONG_SHORT_PLAN.md — risk-budget (risk-parity) sizing.
+    # For the existing book, flags positions whose risk contribution
+    # (weight × annualized vol) is way out of band. Surfaces the
+    # sizing rule (size ∝ target_vol / realized_vol) so new entries
+    # are sized for equal variance, not equal dollar weight.
+    risk_budget_block = ""
+    try:
+        from risk_parity import (
+            analyze_position_risk,
+            render_for_prompt as risk_render,
+        )
+        positions_for_risk = portfolio_state.get("positions") or []
+        equity_for_risk = float(portfolio_state.get("equity") or 0)
+        analysis = analyze_position_risk(positions_for_risk, equity_for_risk)
+        risk_budget_block = risk_render(analysis)
+    except Exception:
+        pass
+
     # P4.3 of LONG_SHORT_PLAN.md — drawdown-aware capital scaling.
     # Continuous size modifier (vs the discrete normal/reduce/pause
     # action). Tells the AI: "we're below peak — multiply your sizes
@@ -713,6 +731,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"{target_block}"
         f"{kelly_block}"
         f"{drawdown_block}"
+        f"{risk_budget_block}"
     )
 
     # --- Market context section ---
