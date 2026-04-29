@@ -1037,15 +1037,22 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
         result["monthly_win_rate"] = 0.0
         result["monthly_win_rate_computable"] = False
 
-    # Best / worst month
-    if monthly_list:
+    # Best / worst month — require 2+ distinct months. With one month
+    # of data, best_month == worst_month, and the template would
+    # render the same value once in green and once in red, which
+    # misleads users into thinking they're separate facts.
+    if len(monthly_list) >= 2:
         best_m = max(monthly_list, key=lambda m: m["pnl"])
         worst_m = min(monthly_list, key=lambda m: m["pnl"])
-        result["best_month"] = {"month_label": best_m["month"], "pnl": best_m["pnl"], "return_pct": best_m["return_pct"]}
-        result["worst_month"] = {"month_label": worst_m["month"], "pnl": worst_m["pnl"], "return_pct": worst_m["return_pct"]}
+        result["best_month"] = {"month_label": best_m["month"], "pnl": best_m["pnl"],
+                                "return_pct": best_m["return_pct"], "computable": True}
+        result["worst_month"] = {"month_label": worst_m["month"], "pnl": worst_m["pnl"],
+                                 "return_pct": worst_m["return_pct"], "computable": True}
     else:
-        result["best_month"] = {"month_label": "N/A", "pnl": 0, "return_pct": 0}
-        result["worst_month"] = {"month_label": "N/A", "pnl": 0, "return_pct": 0}
+        result["best_month"] = {"month_label": "N/A", "pnl": 0,
+                                "return_pct": 0, "computable": False}
+        result["worst_month"] = {"month_label": "N/A", "pnl": 0,
+                                 "return_pct": 0, "computable": False}
 
     # -----------------------------------------------------------------------
     # Streaks

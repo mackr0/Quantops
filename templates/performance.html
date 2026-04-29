@@ -455,13 +455,23 @@
     <div class="grid">
         <article>
             <header><h4>Best Month</h4></header>
+            {% if m.best_month.computable %}
             <strong class="pnl-pos" style="font-size:1.2rem;">${{ "{:,.2f}".format(m.best_month.pnl) }}</strong>
             <small class="muted">{{ m.best_month.month_label }} ({{ "{:+.1f}".format(m.best_month.return_pct) }}%)</small>
+            {% else %}
+            <strong class="muted" style="font-size:1.2rem;">N/A</strong>
+            <small class="muted">need 2+ months of data</small>
+            {% endif %}
         </article>
         <article>
             <header><h4>Worst Month</h4></header>
+            {% if m.worst_month.computable %}
             <strong class="pnl-neg" style="font-size:1.2rem;">${{ "{:,.2f}".format(m.worst_month.pnl) }}</strong>
             <small class="muted">{{ m.worst_month.month_label }} ({{ "{:+.1f}".format(m.worst_month.return_pct) }}%)</small>
+            {% else %}
+            <strong class="muted" style="font-size:1.2rem;">N/A</strong>
+            <small class="muted">need 2+ months of data</small>
+            {% endif %}
         </article>
     </div>
 
