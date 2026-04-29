@@ -17,6 +17,22 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — P3.6 follow-up: factor render path fix (Severity: medium, display bug)
+
+The first P3.6 commit (`3e04e56`) populated the new factor buckets
+correctly in the data layer but the AI prompt's `render_for_prompt`
+read them at `exposure[<factor>]` (top level) instead of
+`exposure["factors"][<factor>]` (where `compute_exposure` actually
+nests them). Result: factor data was correct in the dashboard but
+the AI never saw it in its prompt context.
+
+Caught by real-data prod validation — running the validator showed
+correct bucket numbers in the dashboard render but missing lines in
+the prompt block. Fixed render path + added a regression test that
+pins it (`test_render_for_prompt_surfaces_real_factor_lines`).
+
+---
+
 ## 2026-04-29 — Phase 3.6 of LONG_SHORT_PLAN: real factor exposures (book/value, beta, momentum 12-1m) (Severity: high, capability)
 
 **The thesis.** Phase 2 P2.5 used a stylized price-band size proxy because we didn't have fundamentals data cached. Real factor exposures require yfinance fundamentals. Adding the three classic equity factors with decades of academic evidence:
