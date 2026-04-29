@@ -8,6 +8,7 @@ instead of Alpaca. Orders still go through Alpaca normally.
 
 import threading
 import time
+from typing import Dict, Tuple
 
 import alpaca_trade_api as tradeapi
 import config
@@ -156,6 +157,38 @@ def _held_symbols_from_journal(db_path):
         return [r[0] for r in rows if r and r[0]]
     except Exception:
         return []
+
+
+# P1.2 of LONG_SHORT_PLAN.md — borrow / shortable check.
+# Cached in-memory because Alpaca's asset endpoint doesn't change
+# often within a session and we hit it for every SHORT candidate.
+_BORROW_CACHE: Dict[str, Tuple[float, Dict[str, bool]]] = {}
+_BORROW_CACHE_TTL = 86400  # 24h
+
+
+def get_borrow_info(symbol: str, api=None, ctx=None) -> Dict[str, bool]:
+    """Return {'shortable': bool, 'easy_to_borrow': bool} for a symbol.
+
+    Best-effort: Alpaca paper may report shortable=True for names that
+    a real broker would refuse. Treat as a coarse filter, not ground
+    truth. On any error returns shortable=True / easy_to_borrow=False
+    so we don't accidentally block all shorts when the API hiccups.
+    """
+    import time
+    cached = _BORROW_CACHE.get(symbol.upper())
+    if cached and (time.time() - cached[0]) < _BORROW_CACHE_TTL:
+        return cached[1]
+    try:
+        api = api or get_api(ctx)
+        asset = api.get_asset(symbol)
+        info = {
+            "shortable": bool(getattr(asset, "shortable", True)),
+            "easy_to_borrow": bool(getattr(asset, "easy_to_borrow", False)),
+        }
+    except Exception:
+        info = {"shortable": True, "easy_to_borrow": False}
+    _BORROW_CACHE[symbol.upper()] = (time.time(), info)
+    return info
 
 
 def get_account_info(api=None, ctx=None):

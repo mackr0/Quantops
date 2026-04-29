@@ -17,7 +17,7 @@ See ROADMAP.md for the broader quant fund evolution context.
 
 import json
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 from client import get_api, get_account_info, get_positions
 from portfolio_manager import check_portfolio_constraints, check_drawdown, calculate_atr_stops
 from journal import init_db, log_trade, log_signal
@@ -1827,6 +1827,85 @@ def _save_cycle_data(ctx, candidates_data, shortlist, ai_trades,
 # Helpers for AI-first batch pipeline
 # ---------------------------------------------------------------------------
 
+# P1.4 of LONG_SHORT_PLAN.md — market-regime classifier for short gating.
+# When the market is in a strong-bull regime (SPY above 200d MA AND 20d
+# MA above 50d MA), routine technical shorts get filtered out — the
+# secular drift overpowers most short setups. Only catalyst / fundamental
+# shorts continue. In neutral or bear regimes, the full short slate flows.
+_REGIME_CACHE: Dict[str, Tuple[float, str]] = {}
+_REGIME_CACHE_TTL = 1800  # 30 minutes; regime doesn't flip intra-cycle
+
+# Strategies whose short signal carries an explicit fundamental thesis,
+# allowed to flow through even in strong-bull regimes.
+_CATALYST_SHORT_STRATEGIES = {
+    "insider_selling_cluster",
+    "distribution_at_highs",
+    "earnings_drift",       # post-earnings disappointment
+    "analyst_upgrade_drift",  # downgrade-after-upgrade thesis
+}
+
+
+def _classify_market_regime() -> str:
+    """Return 'strong_bull' | 'neutral' | 'bear' from SPY trend.
+
+    Best-effort: any data failure returns 'neutral' which keeps the
+    short slate flowing. Cached 30 minutes.
+    """
+    import time
+    cached = _REGIME_CACHE.get("market")
+    if cached and (time.time() - cached[0]) < _REGIME_CACHE_TTL:
+        return cached[1]
+    regime = "neutral"
+    try:
+        from market_data import get_bars as _get_bars_for_regime
+        spy = _get_bars_for_regime("SPY", limit=210)
+        if spy is not None and len(spy) >= 200:
+            close_now = float(spy["close"].iloc[-1])
+            sma_20 = float(spy["close"].iloc[-20:].mean())
+            sma_50 = float(spy["close"].iloc[-50:].mean())
+            sma_200 = float(spy["close"].iloc[-200:].mean())
+            if close_now > sma_200 and sma_20 > sma_50:
+                regime = "strong_bull"
+            elif close_now < sma_200 and sma_20 < sma_50:
+                regime = "bear"
+    except Exception:
+        pass
+    _REGIME_CACHE["market"] = (time.time(), regime)
+    return regime
+
+
+# P1.3 of LONG_SHORT_PLAN.md — squeeze risk filter.
+# High short interest + low float = squeeze risk. One squeeze can
+# wipe out months of short gains. We filter HIGH risk completely
+# and pass MED through (with the understanding that AI sees the
+# context and can still skip).
+_SQUEEZE_CACHE: Dict[str, Tuple[float, str]] = {}
+_SQUEEZE_CACHE_TTL = 86400  # 24h
+
+
+def _squeeze_risk(symbol: str) -> str:
+    """Return 'HIGH' | 'MED' | 'LOW'. Wraps alternative_data.get_short_interest
+    which already classifies risk based on short_pct_float + short_ratio.
+    Conservative on errors (returns 'LOW' so we don't accidentally block
+    legitimate setups when data is missing).
+    """
+    import time
+    cached = _SQUEEZE_CACHE.get(symbol.upper())
+    if cached and (time.time() - cached[0]) < _SQUEEZE_CACHE_TTL:
+        return cached[1]
+    risk = "LOW"
+    try:
+        from alternative_data import get_short_interest
+        info = get_short_interest(symbol) or {}
+        risk = (info.get("squeeze_risk") or "low").upper()
+        if risk == "MEDIUM":
+            risk = "MED"
+    except Exception:
+        pass
+    _SQUEEZE_CACHE[symbol.upper()] = (time.time(), risk)
+    return risk
+
+
 def _rank_candidates(strategy_results, held_symbols, enable_shorts,
                       deprecated_strategies=None):
     """Rank strategy results into a shortlist for AI batch review.
@@ -1857,6 +1936,9 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
 
     long_eligible = []
     short_eligible = []
+    short_skips = {"borrow": 0, "squeeze": 0, "regime": 0}
+    market_regime = _classify_market_regime() if enable_shorts else "neutral"
+
     for signal in strategy_results:
         symbol = signal.get("symbol", "")
         action = signal.get("signal", "HOLD")
@@ -1875,10 +1957,43 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
             if primary and primary in deprecated_strategies:
                 continue
 
+        # P1.2 / P1.3 / P1.4 — quality filters on SHORT candidates only.
+        # Long candidates pass through unchanged.
+        if _is_short_action(action) and symbol not in held_symbols:
+            # 1.2 Borrow availability — Alpaca asset endpoint
+            from client import get_borrow_info
+            borrow = get_borrow_info(symbol)
+            if not borrow.get("shortable", True):
+                short_skips["borrow"] += 1
+                continue
+            # 1.3 Squeeze risk — high short interest + low float
+            risk = _squeeze_risk(symbol)
+            if risk == "HIGH":
+                short_skips["squeeze"] += 1
+                continue
+            # 1.4 Regime gate — strong-bull market suppresses routine
+            # technical shorts; catalyst shorts pass through.
+            if market_regime == "strong_bull":
+                primary = next(
+                    (k for k, v in (signal.get("votes") or {}).items()
+                     if v != "HOLD"), None
+                )
+                if primary not in _CATALYST_SHORT_STRATEGIES:
+                    short_skips["regime"] += 1
+                    continue
+
         if _is_short_action(action):
             short_eligible.append(signal)
         else:
             long_eligible.append(signal)
+
+    if enable_shorts and any(short_skips.values()):
+        logging.info(
+            "Short candidate filters (regime=%s): %d filtered for borrow, "
+            "%d for squeeze risk, %d for regime gate",
+            market_regime, short_skips["borrow"],
+            short_skips["squeeze"], short_skips["regime"],
+        )
 
     sort_key = lambda s: (abs(s.get("score", 0)),
                           abs(s.get("rsi", 50) - 50))
