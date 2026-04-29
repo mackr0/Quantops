@@ -195,6 +195,144 @@ def _ci_factor(n_trades: int) -> float:
 _LIMIT_ORDER_SLIPPAGE_MULT = 0.40
 
 
+# Default theoretical scaling tiers — round numbers, not formula-derived.
+# Always shown ABOVE the user's current capital.
+DEFAULT_THEORETICAL_LADDER = [
+    (5_000_000,    "$5M"),
+    (10_000_000,   "$10M"),
+    (25_000_000,   "$25M"),
+    (50_000_000,   "$50M"),
+    (100_000_000,  "$100M"),
+]
+
+
+def per_profile_breakdown(profile_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build one row per actual profile with REAL measured slippage / return.
+
+    profile_data: list of dicts, one per profile, with these keys:
+        - name (str)
+        - capital (float, initial capital)
+        - market_type (str)
+        - trades (list of trade dicts from that profile's journal)
+        - latest_equity (float, most recent snapshot equity)
+
+    Returns one row per profile with measured-only fields. No projection
+    math. Profiles with no fills yet show measured_slippage_pct=None.
+    """
+    rows = []
+    for p in profile_data:
+        trades = p.get("trades", []) or []
+        slips = [abs(t.get("slippage_pct") or 0) for t in trades
+                 if t.get("slippage_pct") is not None
+                 and (t.get("slippage_pct") or 0) != 0]
+        sizes = [(t.get("price") or 0) * (t.get("qty") or 0) for t in trades
+                 if (t.get("price") or 0) > 0 and (t.get("qty") or 0) > 0]
+        avg_slip = (sum(slips) / len(slips)) if slips else None
+        avg_size = (sum(sizes) / len(sizes)) if sizes else 0.0
+        cap = p.get("capital") or 0
+        last_eq = p.get("latest_equity") or cap
+        ret_pct = ((last_eq - cap) / cap * 100) if cap > 0 else 0.0
+        rows.append({
+            "name": p.get("name", ""),
+            "capital": cap,
+            "tier_label": _TIER_LABEL.get(
+                _normalize_market_type(p.get("market_type") or "small"),
+                p.get("market_type") or "—"
+            ),
+            "avg_position_size": round(avg_size, 2),
+            "measured_slippage_pct": round(avg_slip, 4) if avg_slip is not None else None,
+            "measured_return_pct": round(ret_pct, 2),
+            "n_trades": len(trades),
+            "n_trades_with_fills": len(slips),
+        })
+    return rows
+
+
+def theoretical_scaling(
+    baseline_slip_pct: float,
+    baseline_capital: float,
+    baseline_market_type: str,
+    base_return_pct: float,
+    n_trades_with_fills: int,
+    use_limit_orders_now: bool = False,
+    ladder: Optional[List[Tuple[int, str]]] = None,
+) -> Dict[str, Any]:
+    """Project slippage at hypothetical capital tiers above current.
+
+    Only includes ladder rows STRICTLY above baseline_capital — there's
+    no point projecting downward from your real position. Each row carries
+    a `tier_label` (the universe of names that capital level would
+    typically run in: Mid / Large) but no 'migrated' flag, since that
+    word doesn't apply to a hypothetical scale-up.
+    """
+    if ladder is None:
+        ladder = DEFAULT_THEORETICAL_LADDER
+
+    if n_trades_with_fills == 0 or baseline_slip_pct <= 0 or baseline_capital <= 0:
+        return {
+            "rows": [],
+            "data_quality": "insufficient",
+            "message": (
+                "Slippage projections need trades with both the price we expected and "
+                "the price we actually got. Run more trades to populate this section."
+            ),
+            "baseline_capital": baseline_capital,
+            "baseline_slippage_pct": round(baseline_slip_pct, 4),
+            "limit_order_reduction_pct": round((1 - _LIMIT_ORDER_SLIPPAGE_MULT) * 100),
+        }
+
+    # Translate the observed baseline into both execution styles. If
+    # the user is currently on limits, baseline reflects that — back
+    # it out to estimate market-equivalent. Else multiply.
+    if use_limit_orders_now:
+        base_slip_limit = baseline_slip_pct
+        base_slip_market = baseline_slip_pct / _LIMIT_ORDER_SLIPPAGE_MULT
+    else:
+        base_slip_market = baseline_slip_pct
+        base_slip_limit = baseline_slip_pct * _LIMIT_ORDER_SLIPPAGE_MULT
+
+    canonical_mt = _normalize_market_type(baseline_market_type)
+    current_adv = _ADV_BY_TIER.get(canonical_mt, _ADV_BY_TIER["small"])
+    ci_mult = _ci_factor(n_trades_with_fills)
+
+    rows = []
+    for cap, label in ladder:
+        if cap <= baseline_capital:
+            continue
+        target_tier = _recommended_tier(cap, canonical_mt)
+        target_adv = _ADV_BY_TIER.get(target_tier, current_adv)
+        scale_factor = max((cap / baseline_capital) * (current_adv / target_adv), 0.0)
+        scale_root = math.sqrt(scale_factor)
+        slip_market = base_slip_market * scale_root
+        slip_limit = base_slip_limit * scale_root
+        return_market = base_return_pct - (slip_market - baseline_slip_pct)
+        return_limit = base_return_pct - (slip_limit - baseline_slip_pct)
+        rows.append({
+            "capital": cap,
+            "label": label,
+            "tier_label": _TIER_LABEL.get(target_tier, target_tier),
+            "slippage_market_pct": round(slip_market, 4),
+            "slippage_market_pct_low": round(slip_market * (1 - ci_mult), 4),
+            "slippage_market_pct_high": round(slip_market * (1 + ci_mult), 4),
+            "slippage_limit_pct": round(slip_limit, 4),
+            "slippage_limit_pct_low": round(slip_limit * (1 - ci_mult), 4),
+            "slippage_limit_pct_high": round(slip_limit * (1 + ci_mult), 4),
+            "return_market_pct": round(return_market, 2),
+            "return_limit_pct": round(return_limit, 2),
+        })
+
+    return {
+        "rows": rows,
+        "data_quality": "calibrated" if n_trades_with_fills >= 30 else "modeled",
+        "n_trades_with_fills": n_trades_with_fills,
+        "baseline_capital": baseline_capital,
+        "baseline_slippage_pct": round(baseline_slip_pct, 4),
+        "baseline_tier_label": _TIER_LABEL.get(canonical_mt, canonical_mt),
+        "use_limit_orders_now": use_limit_orders_now,
+        "limit_order_reduction_pct": round((1 - _LIMIT_ORDER_SLIPPAGE_MULT) * 100),
+    }
+
+
 def project_scaling(
     trades: List[Dict[str, Any]],
     current_capital: float,

@@ -1729,48 +1729,86 @@ def performance_dashboard():
     metrics = calculate_all_metrics(db_paths, initial_capital=total_initial_capital,
                                      capital_by_db=capital_by_db)
 
-    # Scaling projection — square-root market impact + migration ladder
-    # + execution-style adjustment. See `scaling_projection.py`.
-    scaling = None
+    # Scalability tab data — TWO sections:
+    #   1. Per-profile breakdown: real measured slippage / return for
+    #      each profile we actually run. No projection math.
+    #   2. Theoretical scale-up: projection rows at $5M/$10M/$25M/$50M/$100M
+    #      using square-root market impact + tier liquidity.
+    scaling_real = []
+    scaling_theoretical = None
     try:
-        from scaling_projection import project_scaling
-        from metrics import _gather_trades
-        all_trades = _gather_trades(db_paths)
+        from scaling_projection import (
+            per_profile_breakdown, theoretical_scaling, _recommended_tier,
+        )
+        import sqlite3 as _sqlite3
 
-        # Default to the user's actual deployed capital. For All Profiles
-        # this is the sum across enabled profiles ($X total). Single-profile
-        # view falls through and uses that profile's initial_capital below.
-        current_cap = float(total_initial_capital)
-        mtype = "small"
-        uses_limit = False
+        # Filter to profiles we're actually showing (matches db_paths).
         if selected_profile_int:
+            target_profiles = [p for p in profiles if p["id"] == selected_profile_int]
+        else:
+            target_profiles = list(profiles)
+
+        # Build per-profile data: name, capital, market_type, trades, latest_equity.
+        profile_data = []
+        agg_slips = []
+        for p in target_profiles:
+            db_path = f"quantopsai_profile_{p['id']}.db"
+            if not os.path.exists(db_path):
+                continue
+            trades = []
+            latest_eq = p.get("initial_capital") or 0
             try:
-                _p = get_trading_profile(selected_profile_int)
-                if _p:
-                    mtype = _p.get("market_type", "small")
-                    uses_limit = bool(_p.get("use_limit_orders", 0))
-                    current_cap = float(_p.get("initial_capital") or current_cap)
+                conn = _sqlite3.connect(db_path)
+                conn.row_factory = _sqlite3.Row
+                trade_rows = conn.execute(
+                    "SELECT timestamp, symbol, side, qty, price, pnl, "
+                    "decision_price, fill_price, slippage_pct "
+                    "FROM trades WHERE pnl IS NOT NULL ORDER BY timestamp ASC"
+                ).fetchall()
+                trades = [dict(r) for r in trade_rows]
+                snap = conn.execute(
+                    "SELECT equity FROM daily_snapshots "
+                    "WHERE equity IS NOT NULL "
+                    "ORDER BY date DESC, rowid DESC LIMIT 1"
+                ).fetchone()
+                if snap and snap["equity"] is not None:
+                    latest_eq = float(snap["equity"])
+                conn.close()
             except Exception:
                 pass
-        else:
-            # All Profiles view: there's no single "current" market_type
-            # because the user's portfolio spans multiple tiers. Use the
-            # tier that the migration ladder recommends for the total
-            # capital — this way the (current) row never reads as
-            # migrated, and projections above/below correctly mark
-            # upgrade/downgrade migrations.
-            from scaling_projection import _recommended_tier
-            mtype = _recommended_tier(current_cap, "small")
+            profile_data.append({
+                "name": p.get("name", f"profile {p['id']}"),
+                "capital": p.get("initial_capital") or 0,
+                "market_type": p.get("market_type") or "small",
+                "trades": trades,
+                "latest_equity": latest_eq,
+            })
+            for t in trades:
+                slip = t.get("slippage_pct")
+                if slip is not None and slip != 0:
+                    agg_slips.append(abs(slip))
 
-        scaling = project_scaling(
-            all_trades,
-            current_capital=current_cap,
-            base_net_return_pct=metrics.get("net_return_pct", 0.0),
-            market_type=mtype,
-            use_limit_orders_now=uses_limit,
+        scaling_real = per_profile_breakdown(profile_data)
+
+        # Theoretical scale-up: aggregate baseline across the visible profiles.
+        baseline_cap = float(total_initial_capital)
+        baseline_slip = (sum(agg_slips) / len(agg_slips)) if agg_slips else 0.0
+        baseline_mt = _recommended_tier(baseline_cap, "small")
+        # Use limit-orders-now if it's the dominant execution mode in the
+        # selection. For multi-profile aggregate, default to False.
+        uses_limit_now = False
+        if selected_profile_int and target_profiles:
+            uses_limit_now = bool(target_profiles[0].get("use_limit_orders", 0))
+        scaling_theoretical = theoretical_scaling(
+            baseline_slip_pct=baseline_slip,
+            baseline_capital=baseline_cap,
+            baseline_market_type=baseline_mt,
+            base_return_pct=metrics.get("net_return_pct", 0.0),
+            n_trades_with_fills=len(agg_slips),
+            use_limit_orders_now=uses_limit_now,
         )
     except Exception as exc:
-        logger.warning("Scaling projection failed: %s", exc)
+        logger.warning("Scalability data build failed: %s", exc)
 
     # Current exposure across the selected profile(s). Virtual profiles
     # source positions/equity from the journal DB; real Alpaca-linked
@@ -2316,7 +2354,8 @@ def performance_dashboard():
                            exposure=exposure,
                            ai_perf=ai_perf,
                            slippage=slippage,
-                           scaling=scaling,
+                           scaling_real=scaling_real,
+                           scaling_theoretical=scaling_theoretical,
                            tuning_history=[],
                            tuning_status=[],
                            learned_patterns=[],
