@@ -38,7 +38,7 @@ $ADV ratios.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # Empirical typical $ADV by tier (rough averages across each cap tier).
@@ -80,15 +80,73 @@ _MIGRATION_LADDER_MICRO_BASE = [
     (float("inf"),   "large"),
 ]
 
-# Default capital ladder shown on the Scalability tab.
+# Default capital ladder shown on the Scalability tab when nothing
+# more specific is requested — only used as a fallback. Real callers
+# should hand in their actual capital so build_ladder() can generate
+# tiers centered on it (the "(current)" label is dynamic).
 DEFAULT_LADDER = [
-    (10_000,    "$10K (current)"),
+    (10_000,    "$10K"),
     (50_000,    "$50K"),
     (100_000,   "$100K"),
     (500_000,   "$500K"),
     (1_000_000, "$1M"),
     (10_000_000,"$10M"),
 ]
+
+
+def _format_capital(amount: float) -> str:
+    """Render a capital amount as a short label like '$2.15M' or '$25K'."""
+    if amount >= 1_000_000_000:
+        return f"${amount / 1_000_000_000:.1f}B"
+    if amount >= 1_000_000:
+        # 2.15M, 5M, 25M etc. — drop the .0 on round numbers.
+        m = amount / 1_000_000
+        return f"${m:.1f}M" if m % 1 else f"${m:.0f}M"
+    if amount >= 1_000:
+        k = amount / 1_000
+        return f"${k:.0f}K"
+    return f"${amount:.0f}"
+
+
+def build_ladder(current_capital: float) -> List[Tuple[int, str]]:
+    """Generate a capital ladder anchored on the user's actual capital.
+
+    Includes ~2 rows below current and ~3 above so the user sees both
+    'where I am' and 'how does this scale.' The current row carries
+    the '(current)' label so the table never lies about which level
+    they're actually running at.
+    """
+    if current_capital <= 0:
+        return DEFAULT_LADDER
+
+    # Round current to a nice number for the label, but use the actual
+    # value internally so the projection math is precise.
+    cur = float(current_capital)
+    cur_label = _format_capital(cur) + " (current)"
+
+    # Build a logarithmic spread: 0.1×, 0.25×, current, 2×, 5×, 25×.
+    # Caps:
+    #   - lower bound at $10K so we never project below tradeable
+    #   - upper bound at $100M so the high-end stays interpretable.
+    candidates = [
+        (max(int(cur * 0.1), 10_000), None),
+        (max(int(cur * 0.25), 10_000), None),
+        (int(cur), cur_label),
+        (min(int(cur * 2), 100_000_000), None),
+        (min(int(cur * 5), 100_000_000), None),
+        (min(int(cur * 25), 100_000_000), None),
+    ]
+
+    # Drop duplicates (e.g. when cur is small enough that 0.1×=0.25×=$10K)
+    # and label rows that aren't already labeled.
+    seen = set()
+    out = []
+    for cap, label in candidates:
+        if cap in seen:
+            continue
+        seen.add(cap)
+        out.append((cap, label or _format_capital(cap)))
+    return out
 
 
 def _normalize_market_type(market_type: str) -> str:
@@ -162,7 +220,7 @@ def project_scaling(
         ladder: optional override of (capital, label) pairs
     """
     if ladder is None:
-        ladder = DEFAULT_LADDER
+        ladder = build_ladder(current_capital)
 
     fill_slips = [abs(t.get("slippage_pct", 0) or 0) for t in trades
                   if t.get("slippage_pct") is not None

@@ -1736,6 +1736,11 @@ def performance_dashboard():
         from scaling_projection import project_scaling
         from metrics import _gather_trades
         all_trades = _gather_trades(db_paths)
+
+        # Default to the user's actual deployed capital. For All Profiles
+        # this is the sum across enabled profiles ($X total). Single-profile
+        # view falls through and uses that profile's initial_capital below.
+        current_cap = float(total_initial_capital)
         mtype = "small"
         uses_limit = False
         if selected_profile_int:
@@ -1744,11 +1749,24 @@ def performance_dashboard():
                 if _p:
                     mtype = _p.get("market_type", "small")
                     uses_limit = bool(_p.get("use_limit_orders", 0))
+                    current_cap = float(_p.get("initial_capital") or current_cap)
             except Exception:
                 pass
+        else:
+            # All Profiles view: pick the dominant tier by capital weight
+            # so the projection ladder's migration recommendations make
+            # sense at the aggregate scale (e.g. $2.15M aggregate is in
+            # the Mid Cap range, even if individual profiles are Small Cap).
+            tier_weights = {}
+            for p in profiles:
+                t = (p.get("market_type") or "small").lower()
+                tier_weights[t] = tier_weights.get(t, 0) + (p.get("initial_capital") or 0)
+            if tier_weights:
+                mtype = max(tier_weights.items(), key=lambda kv: kv[1])[0]
+
         scaling = project_scaling(
             all_trades,
-            current_capital=10000,
+            current_capital=current_cap,
             base_net_return_pct=metrics.get("net_return_pct", 0.0),
             market_type=mtype,
             use_limit_orders_now=uses_limit,
