@@ -46,6 +46,11 @@ PARAM_BOUNDS: Dict[str, Tuple[Number, Number]] = {
     "take_profit_pct":               (0.02, 0.50),
     "short_stop_loss_pct":           (0.01, 0.20),
     "short_take_profit_pct":         (0.03, 0.20),
+    # P1.9b of LONG_SHORT_PLAN.md — short-side sizing and time stop.
+    # Floor at 1% so the tuner can never zero out shorts via clamp;
+    # ceiling at 30% to mirror the long max_position_pct ceiling.
+    "short_max_position_pct":        (0.01, 0.30),
+    "short_max_hold_days":           (1, 30),
     "atr_multiplier_sl":             (1.0, 4.0),
     "atr_multiplier_tp":             (1.0, 5.0),
     "trailing_atr_multiplier":       (0.5, 3.0),

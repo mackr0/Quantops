@@ -1816,6 +1816,12 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_rsi_oversold,
         # Wave 3 — Group B (exits — booleans roll into Layer 2 weights)
         _optimize_short_take_profit,
+        # P1.9b of LONG_SHORT_PLAN.md — full per-direction tuning.
+        # Each reads short-side trades only; adjusts the matching
+        # short_* parameter independently of long-side performance.
+        _optimize_short_stop_loss,
+        _optimize_short_max_position_pct,
+        _optimize_short_max_hold_days,
         _optimize_atr_multiplier_sl,
         _optimize_atr_multiplier_tp,
         _optimize_trailing_atr_multiplier,
@@ -3123,6 +3129,169 @@ def _optimize_rsi_oversold(conn, ctx, profile_id, user_id,
 # from the trades table to analyze actual exit behavior and tune the
 # parameters that control where stops and take-profits are placed.
 # ---------------------------------------------------------------------------
+
+def _optimize_short_stop_loss(conn, ctx, profile_id, user_id,
+                                 overall_wr, resolved):
+    """Tune short_stop_loss_pct from observed short-side losses.
+
+    P1.9b of LONG_SHORT_PLAN.md. Reads only short-direction trade
+    outcomes so the long book doesn't drown the signal. Tightens
+    stops when shorts get repeatedly stopped out at the current
+    threshold (suggesting noise stops); loosens when shorts that
+    eventually win first dip past the stop (whipsaw).
+    """
+    if not _safe_change_guarded(profile_id, "short_stop_loss_pct"):
+        return None
+    if not getattr(ctx, "enable_short_selling", False):
+        return None
+    rows = conn.execute(
+        "SELECT pnl FROM trades "
+        "WHERE pnl IS NOT NULL AND side IN ('short', 'cover')"
+    ).fetchall()
+    if len(rows) < 10:
+        return None
+    losses = [r["pnl"] for r in rows if r["pnl"] < 0]
+    wins = [r["pnl"] for r in rows if r["pnl"] > 0]
+    if not losses:
+        return None
+    loss_rate = len(losses) / len(rows)
+    current = float(getattr(ctx, "short_stop_loss_pct", 0.08) or 0.08)
+
+    # Loss rate >55% (most shorts losing): widen stop — current
+    # threshold is acting as a noise stop, getting hit before the
+    # thesis plays out.
+    if loss_rate > 0.55 and len(rows) >= 20:
+        new_val = _bound("short_stop_loss_pct", round(current * 1.15, 4))
+        if new_val <= current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, short_stop_loss_pct=new_val)
+        reason = (f"Short loss rate {loss_rate*100:.0f}% over {len(rows)} "
+                  f"trades — widen stop from noise threshold")
+        log_tuning_change(
+            profile_id, user_id, "short_stop_loss_widen",
+            "short_stop_loss_pct", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (f"Widened {_label('short_stop_loss_pct')} from "
+                f"{current:.0%} to {new_val:.0%} ({reason})")
+
+    # Loss rate <30% AND avg winner significantly bigger than avg
+    # loser: shorts have edge — can tighten stop slightly to free
+    # up capital faster on losers.
+    if loss_rate < 0.30 and wins and abs(sum(wins) / len(wins)) > abs(sum(losses) / len(losses)) * 1.5:
+        new_val = _bound("short_stop_loss_pct", round(current * 0.9, 4))
+        if new_val >= current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, short_stop_loss_pct=new_val)
+        reason = (f"Short loss rate {loss_rate*100:.0f}% with strong winners — "
+                  f"tighten stop to recycle losers faster")
+        log_tuning_change(
+            profile_id, user_id, "short_stop_loss_tighten",
+            "short_stop_loss_pct", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (f"Tightened {_label('short_stop_loss_pct')} from "
+                f"{current:.0%} to {new_val:.0%} ({reason})")
+    return None
+
+
+def _optimize_short_max_position_pct(conn, ctx, profile_id, user_id,
+                                       overall_wr, resolved):
+    """Tune short_max_position_pct from observed short-side P&L.
+
+    P1.9b of LONG_SHORT_PLAN.md. If shorts have positive profit
+    factor we can size them up modestly. If shorts have negative
+    profit factor (or PF < 1.0), shrink size. Independent of
+    long-side performance.
+    """
+    if not _safe_change_guarded(profile_id, "short_max_position_pct"):
+        return None
+    if not getattr(ctx, "enable_short_selling", False):
+        return None
+    rows = conn.execute(
+        "SELECT pnl FROM trades "
+        "WHERE pnl IS NOT NULL AND side IN ('short', 'cover')"
+    ).fetchall()
+    if len(rows) < 15:
+        return None
+    wins_pnl = sum(r["pnl"] for r in rows if r["pnl"] > 0)
+    losses_pnl = abs(sum(r["pnl"] for r in rows if r["pnl"] < 0))
+    if losses_pnl <= 0:
+        return None
+    profit_factor = wins_pnl / losses_pnl
+    long_max = float(getattr(ctx, "max_position_pct", 0.10) or 0.10)
+    current = getattr(ctx, "short_max_position_pct", None)
+    if current is None:
+        current = long_max / 2  # default derivation
+    current = float(current)
+
+    # PF > 1.5 with >=20 trades: shrinks the gap to long-side cap by 10%
+    if profit_factor > 1.5 and len(rows) >= 20:
+        new_val = _bound("short_max_position_pct",
+                          round(min(long_max, current + (long_max - current) * 0.1), 4))
+        if new_val <= current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, short_max_position_pct=new_val)
+        reason = (f"Short PF {profit_factor:.2f} > 1.5 over {len(rows)} trades "
+                  f"— increase short cap toward long cap")
+        log_tuning_change(
+            profile_id, user_id, "short_max_position_pct_up",
+            "short_max_position_pct", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (f"Raised {_label('short_max_position_pct')} from "
+                f"{current:.0%} to {new_val:.0%} ({reason})")
+
+    # PF < 0.8 with >=15 trades: shrink short cap, the edge isn't there
+    if profit_factor < 0.8 and len(rows) >= 15:
+        new_val = _bound("short_max_position_pct",
+                          round(max(0.01, current * 0.7), 4))
+        if new_val >= current:
+            return None
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, short_max_position_pct=new_val)
+        reason = (f"Short PF {profit_factor:.2f} < 0.8 over {len(rows)} trades "
+                  f"— shrink position size while edge is unproven")
+        log_tuning_change(
+            profile_id, user_id, "short_max_position_pct_down",
+            "short_max_position_pct", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (f"Reduced {_label('short_max_position_pct')} from "
+                f"{current:.0%} to {new_val:.0%} ({reason})")
+    return None
+
+
+def _optimize_short_max_hold_days(conn, ctx, profile_id, user_id,
+                                    overall_wr, resolved):
+    """Tune short_max_hold_days from observed short hold-time distribution.
+
+    P1.9b of LONG_SHORT_PLAN.md. If most winning shorts close in
+    <5 days, tighten the time stop (recycle losers faster). If
+    many were force-covered by the time stop with positive pnl,
+    loosen (we were giving up on winners too early).
+    """
+    if not _safe_change_guarded(profile_id, "short_max_hold_days"):
+        return None
+    if not getattr(ctx, "enable_short_selling", False):
+        return None
+    # Look at short-cover rows (status=closed, side=cover) — these
+    # are the actual completed shorts.
+    rows = conn.execute(
+        "SELECT pnl, timestamp FROM trades "
+        "WHERE pnl IS NOT NULL AND side = 'cover' "
+        "ORDER BY timestamp DESC LIMIT 100"
+    ).fetchall()
+    if len(rows) < 15:
+        return None
+    # Without entry timestamps we can't compute hold days here
+    # without joining. Skip the tuning rule for now and let
+    # P1.10's MFE data + a future days_held column support it.
+    return None
+
 
 def _optimize_short_take_profit(conn, ctx, profile_id, user_id,
                                   overall_wr, resolved):

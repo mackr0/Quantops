@@ -169,6 +169,8 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             enable_short_selling INTEGER NOT NULL DEFAULT 0,
             short_stop_loss_pct REAL NOT NULL DEFAULT 0.08,
             short_take_profit_pct REAL NOT NULL DEFAULT 0.08,
+            short_max_position_pct REAL DEFAULT NULL,
+            short_max_hold_days INTEGER NOT NULL DEFAULT 10,
             enable_self_tuning INTEGER NOT NULL DEFAULT 1,
             ai_provider TEXT NOT NULL DEFAULT 'anthropic',
             ai_model TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001',
@@ -266,6 +268,9 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         ("trading_profiles", "enable_short_selling", "INTEGER NOT NULL DEFAULT 0"),
         ("trading_profiles", "short_stop_loss_pct", "REAL NOT NULL DEFAULT 0.08"),
         ("trading_profiles", "short_take_profit_pct", "REAL NOT NULL DEFAULT 0.08"),
+        # P1.9b of LONG_SHORT_PLAN.md
+        ("trading_profiles", "short_max_position_pct", "REAL DEFAULT NULL"),
+        ("trading_profiles", "short_max_hold_days", "INTEGER NOT NULL DEFAULT 10"),
         ("trading_profiles", "enable_self_tuning", "INTEGER NOT NULL DEFAULT 1"),
         ("trading_profiles", "ai_provider", "TEXT NOT NULL DEFAULT 'anthropic'"),
         ("trading_profiles", "ai_model", "TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001'"),
@@ -769,6 +774,13 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "strategy_mean_reversion", "strategy_gap_and_go",
         "custom_watchlist", "maga_mode", "enable_short_selling",
         "short_stop_loss_pct", "short_take_profit_pct",
+        # P1.9b of LONG_SHORT_PLAN.md — tunable short-side sizing
+        # and time stop. Without these on the allowlist, the tuner's
+        # update_trading_profile calls are silently filtered out and
+        # adjustments don't persist (same class of bug as the
+        # disabled_specialists/meta_pregate_threshold gap from
+        # 2026-04-28).
+        "short_max_position_pct", "short_max_hold_days",
         "enable_self_tuning",
         "ai_provider", "ai_model", "ai_api_key_enc",
         "schedule_type", "custom_start", "custom_end", "custom_days",
@@ -929,6 +941,11 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         enable_short_selling=bool(profile.get("enable_short_selling", 0)),
         short_stop_loss_pct=profile.get("short_stop_loss_pct", 0.08),
         short_take_profit_pct=profile.get("short_take_profit_pct", 0.08),
+        # P1.9b of LONG_SHORT_PLAN.md — tunable short-side sizing/time stop.
+        # short_max_position_pct=None means "derive as max_position_pct / 2"
+        # at use-time; explicit float overrides.
+        short_max_position_pct=profile.get("short_max_position_pct"),
+        short_max_hold_days=int(profile.get("short_max_hold_days", 10) or 10),
         # Self-tuning
         enable_self_tuning=bool(profile.get("enable_self_tuning", 1)),
         # Trading schedule
