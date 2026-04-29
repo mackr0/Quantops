@@ -1086,9 +1086,27 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
     sorted_days = sorted(daily_pnl_map.keys())
 
     def _worst_period(n_days: int) -> Dict:
-        """Find worst N-day window by PnL."""
+        """Find worst N-day window by PnL.
+
+        `computable` is False when the trade-day span is shorter than
+        `n_days` — in that case the rolling window degenerates to "all
+        available data", so the worst week/month/quarter all collapse
+        to the same single worst window. Better to report N/A than
+        repeat the same value across rows and mislead the user.
+        """
+        not_computable = {"period": "N/A", "pnl": 0, "return_pct": 0,
+                          "computable": False, "min_days": n_days}
         if len(sorted_days) < 2:
-            return {"period": "N/A", "pnl": 0, "return_pct": 0}
+            return not_computable
+        try:
+            first_d = datetime.strptime(sorted_days[0], "%Y-%m-%d")
+            last_d = datetime.strptime(sorted_days[-1], "%Y-%m-%d")
+            span = (last_d - first_d).days
+        except Exception:
+            return not_computable
+        if span < n_days:
+            return not_computable
+
         worst_pnl = 0
         worst_start = ""
         worst_end = ""
@@ -1116,6 +1134,8 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
             "period": f"{worst_start} to {worst_end}" if worst_start else "N/A",
             "pnl": round(worst_pnl, 2),
             "return_pct": round(worst_pnl / first_eq * 100, 2) if first_eq > 0 else 0,
+            "computable": True,
+            "min_days": n_days,
         }
 
     result["worst_week"] = _worst_period(7)

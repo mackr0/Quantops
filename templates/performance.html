@@ -277,21 +277,33 @@
                 <tbody>
                     <tr>
                         <td><strong>Worst Week</strong></td>
+                        {% if m.worst_week.computable %}
                         <td>{{ m.worst_week.period }}</td>
                         <td class="pnl-neg">${{ "{:,.2f}".format(m.worst_week.pnl) }}</td>
                         <td class="pnl-neg">{{ "{:+.1f}".format(m.worst_week.return_pct) }}%</td>
+                        {% else %}
+                        <td colspan="3" class="muted">Need {{ m.worst_week.min_days }}+ days of data</td>
+                        {% endif %}
                     </tr>
                     <tr>
                         <td><strong>Worst Month</strong></td>
+                        {% if m.worst_month_period.computable %}
                         <td>{{ m.worst_month_period.period }}</td>
                         <td class="pnl-neg">${{ "{:,.2f}".format(m.worst_month_period.pnl) }}</td>
                         <td class="pnl-neg">{{ "{:+.1f}".format(m.worst_month_period.return_pct) }}%</td>
+                        {% else %}
+                        <td colspan="3" class="muted">Need {{ m.worst_month_period.min_days }}+ days of data</td>
+                        {% endif %}
                     </tr>
                     <tr>
                         <td><strong>Worst Quarter</strong></td>
+                        {% if m.worst_quarter.computable %}
                         <td>{{ m.worst_quarter.period }}</td>
                         <td class="pnl-neg">${{ "{:,.2f}".format(m.worst_quarter.pnl) }}</td>
                         <td class="pnl-neg">{{ "{:+.1f}".format(m.worst_quarter.return_pct) }}%</td>
+                        {% else %}
+                        <td colspan="3" class="muted">Need {{ m.worst_quarter.min_days }}+ days of data</td>
+                        {% endif %}
                     </tr>
                 </tbody>
             </table>
