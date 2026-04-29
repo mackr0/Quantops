@@ -2,7 +2,10 @@
 
 **Purpose:** This document is the source of truth for the system's evolution from "excellent retail platform" to "world-class quant fund in miniature." It persists across development sessions so context is never lost.
 
-**Last updated:** 2026-04-26
+**Last updated:** 2026-04-28
+
+**Phase 11 (Long/Short Parity)** added 2026-04-28 — see
+`LONG_SHORT_PLAN.md` for the detailed sub-phase plan and progress.
 
 ---
 
@@ -57,6 +60,16 @@ React to events, not timers. Earnings announcements, SEC filings, Fed decisions,
 ### Phase 10 — Cross-Asset Crisis Detection
 
 Detect regime breaks (VIX > 40, cross-asset correlation spike, credit spread widening) and automatically shift to capital preservation mode. Prevents catastrophic losses during events like March 2020 or 2008.
+
+### Phase 11 — Long/Short System Parity (LONG_SHORT_PLAN.md)
+
+Turn "long pipeline with shorts as a side door" into a real long/short system that can compete with Citadel, Millennium, Point72. Modeled on what real long/short equity hedge funds actually do — the highest-Sharpe quant funds (Renaissance Medallion ~6, Citadel ~3) are all long/short, not long-only.
+
+**Phase 1 — Short capability with parity to longs (DONE 2026-04-28).** See `LONG_SHORT_PLAN.md` for detailed sub-phase docs. 14 sub-phases delivered: SELL semantic fix + prediction_type column, 5 dedicated bearish strategies, asymmetric sizing/stops/time-stops, two shortlists with reserved slots, AI prompt with explicit long/short sections, borrow/squeeze/regime filters, per-direction self-tuning, direction-aware specialist calibrators, meta-model with prediction_type feature, strategy generator alternates direction, borrow-cost penalty.
+
+**Phase 2 — Pair / sector-neutral / factor-aware construction.** Sector exposure tracking, long/short ratio targets per profile, pair-trade primitive (long winner + short loser in same sector), net-exposure rebalancing, factor-neutral construction.
+
+**Phase 3 — Real alpha sources beyond technicals.** Earnings-disaster shorts (PEAD inverse), catalyst-driven shorts (fraud / downgrades / guidance cuts), sector rotation overlay, volatility regime trades, insider signal weighting promoted to primary.
 
 ---
 

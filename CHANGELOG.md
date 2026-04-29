@@ -17,6 +17,32 @@ Rules going forward:
 
 ---
 
+## 2026-04-28 — Phase 1 of LONG_SHORT_PLAN: real short capability (Severity: critical, capability)
+
+**The problem.** Even on profile_10 ("Small Cap Shorts" with `enable_short_selling=1`), the system emitted 2 SHORT predictions in 1,491 cycles. The long pipeline had been built thoughtfully; the short side was "shorts allowed if flag is set" bolted onto the long pipeline. No dedicated bearish strategies, no separate AI prompt slots, no asymmetric sizing, no time stops, no borrow / squeeze / regime filters, no per-direction self-tuning, no per-direction calibrators, no meta-model awareness. Result: a strategy that can't compete with real long/short funds.
+
+**The fix.** 14 commits across `LONG_SHORT_PLAN.md` Phase 1, deployed today:
+
+- **P1.0 SELL semantic fix.** Added `prediction_type` column (`directional_long | directional_short | exit_long | exit_short`). Resolver applies per-type win/loss criteria. Backfilled the 12K existing rows — exit_long/short outcomes no longer get conflated with directional shorts.
+- **P1.1 Five dedicated bearish strategies.** `breakdown_support`, `distribution_at_highs`, `failed_breakout`, `parabolic_exhaustion`, `relative_weakness_in_strong_sector`. Built specifically for short setups, not bullish strategies with sign flips.
+- **P1.2/1.3/1.4 Quality filters on shorts.** Borrow (Alpaca shortable flag), squeeze (short_pct_float + short_ratio classification), regime (strong-bull market suppresses routine technical shorts; catalyst shorts pass through).
+- **P1.5/1.6 Time stops + asymmetric sizing.** Cover any short older than `short_max_hold_days` (default 10); cap shorts at `short_max_position_pct` (defaults to half of long max_position_pct).
+- **P1.7/1.8 Two shortlists + AI prompt.** `_rank_candidates` reserves slots for shorts (top 10 long + top 5 short). AI prompt splits "LONG CANDIDATES" / "SHORT CANDIDATES" sections with explicit "high-conviction short beats mediocre long" directive.
+- **P1.9 + P1.9b Per-direction self-tuning.** Short-side optimizers for `short_stop_loss_pct`, `short_max_position_pct`, `short_max_hold_days`, `short_take_profit_pct`. Schema migrated. Read short-side trades only — long performance can't drown short signal.
+- **P1.10 MFE / side mismatch.** `log_trade` writes `side='short'` but the MFE updater queried `side='sell_short'` — every short MFE was None. Fixed.
+- **P1.11 Direction-aware specialist calibrators.** Each specialist now has separate (long, short) Platt-scaling models. Ensemble picks the right calibrator based on each verdict's direction.
+- **P1.12 Meta-model with prediction_type feature.** Categorical one-hot for direction + signal extended with SHORT/STRONG_SHORT. Pregate at inference time infers direction from candidate's strategy signal.
+- **P1.13 Strategy generator alternates direction.** `propose_strategies` accepts `direction_mix`; shorts-enabled profiles alternate BUY/SELL proposals so the strategy library actually grows in both directions.
+- **P1.14 Borrow cost as feature + sizing.** Surfaces `_borrow_cost: low|high` in AI prompt; HTB shorts get position cap halved AGAIN on top of the asymmetric short cap.
+
+**Verification.** Tomorrow's first scan will exercise all of this. Targets: profile_10 SHORT/SELL on 20-30% of trades (vs <1% today). Tracking via the per-direction columns + `BY DIRECTION:` line in the AI prompt context.
+
+**What this is NOT.** Phase 2 (sector-neutral / pair trades / factor-aware) and Phase 3 (real alpha sources — earnings disasters, catalyst shorts) are still ahead. The system now has parity on the foundational infrastructure; competing with the highest-Sharpe quant funds requires the Phase 2/3 work.
+
+**Regression coverage.** `tests/test_database.py` exercises schema migration. `tests/test_pipeline.py` covers the rank-candidates path. The MFE side-mismatch was historic data (no test would have caught it without short trades to test against) — once shorts execute and resolve, the verify script will detect MFE-on-shorts populating correctly.
+
+---
+
 ## 2026-04-28 — daily_snapshots: dedupe + UNIQUE(date) + INSERT OR REPLACE (Severity: medium, data hygiene)
 
 **What broke.** While walking the Performance Dashboard with the user

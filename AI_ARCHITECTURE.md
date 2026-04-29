@@ -399,7 +399,69 @@ code paths.
 
 ---
 
-## Part 4 — Safety
+## Part 4 — Long/Short Architecture (Phase 1 of LONG_SHORT_PLAN.md)
+
+The decision pipeline runs in long-only mode by default. When a
+profile sets `enable_short_selling=1` the pipeline switches to
+long/short with parity infrastructure:
+
+### Strategy supply
+- 16 bullish strategies + 5 dedicated bearish strategies
+  (`breakdown_support`, `distribution_at_highs`, `failed_breakout`,
+  `parabolic_exhaustion`, `relative_weakness_in_strong_sector`).
+  Bearish strategies built for breakdown / distribution / exhaustion
+  patterns, not bullish patterns with sign flips.
+
+### Candidate ranking (`trade_pipeline._rank_candidates`)
+- Reserved slots: top 10 longs + top 5 shorts when shorts enabled.
+- Filters applied to SHORT candidates only:
+  - **Borrow availability** (Alpaca `shortable` flag)
+  - **Squeeze risk** (`squeeze_risk` from `alternative_data.get_short_interest`; HIGH skipped, MED/LOW pass through)
+  - **Regime gate** (`_classify_market_regime` reads SPY 200d/50d/20d MAs; in `strong_bull`, only catalyst shorts pass — `insider_selling_cluster`, `distribution_at_highs`, `earnings_drift`, `analyst_upgrade_drift`)
+- Candidates carry `_borrow_cost` and `_squeeze_risk` annotations into the AI prompt.
+
+### AI prompt
+- Two sections: "LONG CANDIDATES" / "SHORT CANDIDATES" with directive: "BOTH sides are real options. A high-conviction short beats a mediocre long."
+- Per-candidate annotations on shorts: borrow cost ("low" ~1%/yr; "high" 5-50%+/yr) and squeeze risk.
+
+### Sizing
+- `max_position_pct` for longs.
+- `short_max_position_pct` (defaults to half) for shorts. Asymmetric-risk convention.
+- Borrow penalty: HTB shorts halved again on top of the asymmetric cap.
+
+### Exits
+- Standard stop-loss / take-profit per direction (`stop_loss_pct` / `short_stop_loss_pct`, etc).
+- Trailing stops via `trailing_atr_multiplier`.
+- Time stop on shorts: cover any short older than `short_max_hold_days` (default 10) regardless of P&L.
+
+### Resolution semantics
+- `prediction_type` column distinguishes:
+  - `directional_long` (BUY/HOLD predictions — predict price up or range-bound)
+  - `directional_short` (SHORT, or SELL on a non-held — predict price down)
+  - `exit_long` (SELL on a held long — lock in / exit)
+  - `exit_short` (cover on a held short)
+- Resolver applies per-type win/loss criteria. Exit quality (did the price stay flat or move favorably after the exit?) is judged separately from directional accuracy (did the price drop after the SHORT?).
+
+### Self-tuning per direction
+- Long-side optimizers tune `stop_loss_pct`, `take_profit_pct`, `max_position_pct`, etc. — read aggregate or BUY-side data.
+- Short-side optimizers (`_optimize_short_stop_loss`, `_optimize_short_max_position_pct`, `_optimize_short_take_profit`, `_optimize_short_max_hold_days`) read ONLY short-side trades. Adjust short-side parameters independently.
+- AI prompt context exposes per-direction win rates: `BY DIRECTION: Longs X%W (n=...) | Shorts Y%W (n=...) | Exits Z%W (n=...)`.
+
+### ML layers
+- **Specialist calibrators**: each specialist has separate (long, short) Platt-scaling models. Ensemble loads both per run; per verdict picks calibrator by direction. Falls back to legacy unified calibrator until each direction accumulates ≥30 samples.
+- **Meta-model**: `prediction_type` is a categorical one-hot feature. Pregate at inference infers direction from candidate's strategy signal. Once shorts accumulate the model learns short-specific feature weights.
+
+### Strategy evolution
+- `strategy_proposer.propose_strategies` accepts `direction_mix` for forced long/short balance. Shorts-enabled profiles alternate BUY/SELL proposals on each commission so the Evolving Strategy Library actually grows in both directions, not 90% bullish.
+
+### What's NOT in Phase 1 (deferred to Phases 2/3)
+- Pair trades / sector-neutral / factor-neutral construction (Phase 2).
+- Catalyst-driven shorts framework (earnings disasters, fraud, downgrades) — Phase 3.
+- Sector rotation overlay, IV regime trades, insider signal weighting — Phase 3.
+
+---
+
+## Part 5 — Safety
 
 ### What Stays Manual (and Why)
 
@@ -472,7 +534,7 @@ All weekly/daily-once tasks (snapshot bundle, summary emails, weekly digest, cap
 
 ---
 
-## Part 5 — User Surfaces
+## Part 6 — User Surfaces
 
 ### AI Intelligence Page (`/ai`)
 
@@ -496,7 +558,7 @@ File-based idempotency marker prevents re-fire on scheduler restart. Per-profile
 
 ---
 
-## Part 6 — Where Each File Fits
+## Part 7 — Where Each File Fits
 
 | File | Purpose |
 |---|---|
