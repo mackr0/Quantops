@@ -30,6 +30,20 @@ _DISPLAY_NAMES = {
     "volume_dryup_breakout":    "Volume Dry-up Breakout",
     "macd_cross_confirmation":  "MACD Cross with Confirmation",
 
+    # Phase 1 of LONG_SHORT_PLAN — dedicated bearish strategies
+    "breakdown_support":                   "Breakdown of Support",
+    "distribution_at_highs":               "Distribution at Highs",
+    "failed_breakout":                     "Failed Breakout",
+    "parabolic_exhaustion":                "Parabolic Exhaustion",
+    "relative_weakness_in_strong_sector":  "Relative Weakness in Strong Sector",
+    # Phase 3 of LONG_SHORT_PLAN — real alpha sources
+    "earnings_disaster_short":  "Earnings Disaster (PEAD Inverse)",
+    "catalyst_filing_short":    "Adverse SEC Filing Catalyst",
+    "sector_rotation_short":    "Sector Rotation Short",
+    "iv_regime_short":          "IV Regime Continuation Short",
+    # Anti-momentum quant short — universe-ranked relative weakness
+    "relative_weakness_universe":  "Relative Weakness vs Market",
+
     # Specialist AIs (ensemble)
     "earnings_analyst":     "Earnings Analyst",
     "pattern_recognizer":   "Pattern Recognizer",

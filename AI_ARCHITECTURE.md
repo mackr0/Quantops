@@ -399,25 +399,24 @@ code paths.
 
 ---
 
-## Part 4 — Long/Short Architecture (Phase 1 of LONG_SHORT_PLAN.md)
+## Part 4 — Long/Short Architecture (Phases 1-4 of LONG_SHORT_PLAN.md)
 
 The decision pipeline runs in long-only mode by default. When a
 profile sets `enable_short_selling=1` the pipeline switches to
 long/short with parity infrastructure:
 
 ### Strategy supply
-- 16 bullish strategies + 5 dedicated bearish strategies
-  (`breakdown_support`, `distribution_at_highs`, `failed_breakout`,
-  `parabolic_exhaustion`, `relative_weakness_in_strong_sector`).
-  Bearish strategies built for breakdown / distribution / exhaustion
-  patterns, not bullish patterns with sign flips.
+- 16 bullish strategies + 10 dedicated bearish strategies:
+  - **Phase 1 technicals (5):** `breakdown_support`, `distribution_at_highs`, `failed_breakout`, `parabolic_exhaustion`, `relative_weakness_in_strong_sector`
+  - **Phase 3 alpha sources (4):** `earnings_disaster_short` (PEAD inverse), `catalyst_filing_short` (going-concern / material-weakness / 8-K), `sector_rotation_short` (bottom-3 sector overlay), `iv_regime_short`
+  - **Anti-momentum quant (1):** `relative_weakness_universe` — universe-ranked by 20d return vs SPY; emits bottom 5% (cap 5) with 5%+ RS gap and 20d MA confirmation. Always-on regardless of regime; fills short books in bull markets where textbook bearish technical patterns are rare.
 
 ### Candidate ranking (`trade_pipeline._rank_candidates`)
 - Reserved slots: top 10 longs + top 5 shorts when shorts enabled.
 - Filters applied to SHORT candidates only:
   - **Borrow availability** (Alpaca `shortable` flag)
   - **Squeeze risk** (`squeeze_risk` from `alternative_data.get_short_interest`; HIGH skipped, MED/LOW pass through)
-  - **Regime gate** (`_classify_market_regime` reads SPY 200d/50d/20d MAs; in `strong_bull`, only catalyst shorts pass — `insider_selling_cluster`, `distribution_at_highs`, `earnings_drift`, `analyst_upgrade_drift`)
+  - **Regime gate** (`_classify_market_regime` reads SPY 200d/50d/20d MAs). In `strong_bull`, only catalyst shorts pass through — UNLESS the profile mandates a substantial short book (`target_short_pct ≥ 0.4`), in which case the gate is bypassed entirely. The user has explicitly accepted regime-side risk by configuring the mandate.
 - Candidates carry `_borrow_cost` and `_squeeze_risk` annotations into the AI prompt.
 
 ### AI prompt
@@ -454,10 +453,27 @@ long/short with parity infrastructure:
 ### Strategy evolution
 - `strategy_proposer.propose_strategies` accepts `direction_mix` for forced long/short balance. Shorts-enabled profiles alternate BUY/SELL proposals on each commission so the Evolving Strategy Library actually grows in both directions, not 90% bullish.
 
-### What's NOT in Phase 1 (deferred to Phases 2/3)
-- Pair trades / sector-neutral / factor-neutral construction (Phase 2).
-- Catalyst-driven shorts framework (earnings disasters, fraud, downgrades) — Phase 3.
-- Sector rotation overlay, IV regime trades, insider signal weighting — Phase 3.
+### Portfolio construction context the AI sees (Phases 2-4)
+
+The batch prompt accumulates these blocks in `_build_batch_prompt` after the candidate list. Each is best-effort: if the data isn't available the block is suppressed rather than rendered with a "n/a".
+
+- **EXPOSURE BREAKDOWN (P2.1, P2.5, P3.6).** Sector breakdown with concentration warnings (≥30% gross flagged). Direction balance (long_pct / short_pct of gross). Factor breakdown — size bands, book/value buckets, beta classes, momentum 12-1m winners/losers. Built from `portfolio_exposure.compute_exposure` over current positions.
+- **BOOK-BETA TARGET (P4.1).** When `ctx.target_book_beta` is set: shows target, current gross-weighted book beta, and the delta with directive ("BETA TOO HIGH → DEFENSIVE picks long or LEVERED shorts"). ±0.30 tolerance band before the directive switches from "on target" to a corrective bias.
+- **LONG/SHORT BALANCE TARGET (P2.2).** When `target_short_pct > 0`: target vs current short share of gross + directive ("UNDERSHORTED by X% — pick a SHORT this cycle"). Threshold ±10pp before the directive engages.
+- **KELLY SIZING (P4.2).** Per-direction recommendation: `LONG: Kelly 11.8% (WR 70%, avg win 2.95%, avg loss 2.23%, n=30)`. Reads only entry signals from `ai_predictions` (HOLD predictions tagged `directional_long` are filtered — they reflect existing-position drift, not new bets, so polluting Kelly with them flips edge negative). Quarter Kelly is the default fractional. Empty when neither direction has ≥30 resolved entry trades with positive edge.
+- **DRAWDOWN CAPITAL SCALE (P4.3).** Continuous size modifier 1.0× → 0.25× from `drawdown_scaling.compute_capital_scale`. Linear interpolation between breakpoints (0%→1.00, 5%→0.85, 10%→0.65, 15%→0.45, 20%+→0.25). Suppressed when scale rounds to 1.00. The AI is told to multiply suggested sizes by this factor.
+- **RISK-BUDGET (P4.4).** Per-name `weight × annualized_vol` contributions; flags names ≥ 2× or ≤ 0.5× the per-position average. Sizing rule: `size_i ∝ target_vol / realized_vol_i` clamped to [0.40×, 1.60×]. Vols cached 7d via `factor_data.get_realized_vol`. Suppressed when nothing actionable.
+
+Layered together the AI is told: `final_size = base × kelly × drawdown_scale × vol_scale` (each clamped, each defaulting to 1.0× when unknown).
+
+### Validation-time gates (in `_validate_ai_trades`)
+
+After the AI returns trades, these hard gates filter them. Each one logs why a trade was dropped (visible to the user via the AI dashboard's vetoed-trades panel):
+
+- **Balance gate (P2.4).** When the book has drifted >25pp off `target_short_pct`, block new entries on the over-weighted side. Lets natural turnover rebalance vs forcing trims (which would burn transaction costs and cut winners).
+- **Asymmetric short cap (P1.6).** Longs sized against `max_position_pct`; shorts capped at `short_max_position_pct` (defaults to half of long).
+- **HTB borrow penalty (P1.14).** Hard-to-borrow shorts have their cap halved again on top of the asymmetric one (since multi-day holds eat real money in borrow costs).
+- **Market-neutrality enforcement (P4.5).** When `ctx.target_book_beta` is set, the gate computes the projected book beta if the trade went through (`portfolio_exposure.simulate_book_beta_with_entry`) and blocks the trade if `|projected - target| - |current - target| > 0.5`. Symmetric: trades that improve neutrality always pass; trades that worsen it by >0.5 in distance are blocked. Skipped for SELL exits.
 
 ---
 

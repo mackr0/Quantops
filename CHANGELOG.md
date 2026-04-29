@@ -17,6 +17,22 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — Doc + display catch-up for the long/short build (Severity: medium, hygiene)
+
+**The gap.** Phases 1-4 of LONG_SHORT_PLAN shipped in code with full test coverage and CHANGELOG entries, but the canonical reference docs (ROADMAP, TECHNICAL_DOCUMENTATION, AI_ARCHITECTURE) and display-name registry were stale. ROADMAP's Phase 11 entry described only Phase 1; AI_ARCHITECTURE's Part 4 named only Phase 1's strategies and didn't document the Phase 2-4 prompt blocks the AI now sees on every cycle. `display_names.py` had no explicit entries for any of the 10 dedicated short strategies — they fell back to title-case from snake_case which works but leaves the system documentation visibly incomplete.
+
+**What's now documented.**
+- `ROADMAP.md`: Phase 11 entry expanded to cover Phases 2 (sector/factor neutrality), 3 (real alpha sources), 4 (active factor construction — Kelly, drawdown scaling, risk-parity, neutrality enforcement), plus tonight's structural fixes (regime-gate respects mandate, relative_weakness_universe).
+- `TECHNICAL_DOCUMENTATION.md`: new "Long/short capability modules" subsection lists every module added (kelly_sizing, drawdown_scaling, risk_parity, factor_data + get_realized_vol, portfolio_exposure additions, the 10 bearish strategies, validation-time gates).
+- `AI_ARCHITECTURE.md`: Part 4 retitled to cover Phases 1-4. New subsections for the prompt blocks (EXPOSURE BREAKDOWN, BOOK-BETA TARGET, BALANCE TARGET, KELLY SIZING, DRAWDOWN CAPITAL SCALE, RISK-BUDGET) plus validation-time gates (balance gate, asymmetric short cap, HTB borrow penalty, P4.5 neutrality enforcement).
+- `display_names.py`: explicit human labels for `breakdown_support`, `distribution_at_highs`, `failed_breakout`, `parabolic_exhaustion`, `relative_weakness_in_strong_sector`, `earnings_disaster_short`, `catalyst_filing_short`, `sector_rotation_short`, `iv_regime_short`, `relative_weakness_universe`.
+
+**What's still pending.** UI gaps — Settings page lacks controls for `target_short_pct`, `target_book_beta`, `short_max_position_pct`, `short_max_hold_days`. AI awareness page doesn't show the new prompt blocks. Performance dashboard doesn't surface book_beta as a single number. Tracked separately and being worked through.
+
+Full suite: 1282 passing.
+
+---
+
 ## 2026-04-28 — Anti-momentum short strategy: relative_weakness_universe (Severity: high, capability)
 
 **The thesis.** The regime-gate fix unblocked the few short candidates that existing strategies were producing. But in extended strong-bull regimes, textbook bearish technical patterns (breakdown_support, distribution_at_highs, parabolic_exhaustion, failed_breakout) are rare BY CONSTRUCTION — most names aren't breaking support when SPY climbs daily. A dedicated short profile (target_short_pct=0.5) needs a strategy that fires regardless of whether textbook setups are forming.

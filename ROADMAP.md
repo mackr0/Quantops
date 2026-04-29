@@ -67,9 +67,15 @@ Turn "long pipeline with shorts as a side door" into a real long/short system th
 
 **Phase 1 — Short capability with parity to longs (DONE 2026-04-28).** See `LONG_SHORT_PLAN.md` for detailed sub-phase docs. 14 sub-phases delivered: SELL semantic fix + prediction_type column, 5 dedicated bearish strategies, asymmetric sizing/stops/time-stops, two shortlists with reserved slots, AI prompt with explicit long/short sections, borrow/squeeze/regime filters, per-direction self-tuning, direction-aware specialist calibrators, meta-model with prediction_type feature, strategy generator alternates direction, borrow-cost penalty.
 
-**Phase 2 — Pair / sector-neutral / factor-aware construction.** Sector exposure tracking, long/short ratio targets per profile, pair-trade primitive (long winner + short loser in same sector), net-exposure rebalancing, factor-neutral construction.
+**Phase 2 — Pair / sector-neutral / factor-aware construction (DONE 2026-04-28).** Sector exposure tracking with concentration warnings, long/short ratio targets per profile (`target_short_pct`), pair-trade primitive (long winner + short loser in same sector via `find_pair_opportunities`), balance gate (block over-weighted side once book drifts >25pp off target), factor-aware construction (size bands + direction balance).
 
-**Phase 3 — Real alpha sources beyond technicals.** Earnings-disaster shorts (PEAD inverse), catalyst-driven shorts (fraud / downgrades / guidance cuts), sector rotation overlay, volatility regime trades, insider signal weighting promoted to primary.
+**Phase 3 — Real alpha sources beyond technicals (DONE 2026-04-29).** 4 catalyst-driven short strategies (`earnings_disaster_short`, `catalyst_filing_short`, `sector_rotation_short`, `iv_regime_short`), insider signal promoted to primary weight, real factor exposures from yfinance fundamentals (book-to-market, beta, 12-1m momentum) with 7-day cache via `factor_data.py`.
+
+**Phase 4 — Active factor construction (DONE 2026-04-28).** Five sub-phases: beta-targeted construction with `target_book_beta` per profile and AI prompt directive (P4.1); fractional Kelly position sizing per direction surfaced to AI (P4.2); drawdown-aware capital scaling (continuous 1.0× → 0.25× modifier, P4.3); risk-budget (risk-parity) sizing — flag positions whose `weight × annualized_vol` is way out of band, sizing rule `size ∝ target_vol / realized_vol` (P4.4); market-neutrality enforcement — hard gate that blocks entries pushing book beta further from target by >0.5 (P4.5).
+
+**Structural fixes (2026-04-29).** Audit of last 30 days showed profile_10 (Small Cap Shorts, target_short_pct=0.5) emitted only 3 SHORT predictions out of 1497. Two root causes shipped:
+- Regime gate now respects `target_short_pct` mandate. When a profile is configured for substantial shorts (≥0.4), the strong-bull gate bypasses for that profile — the user has accepted regime risk by setting the mandate.
+- New `relative_weakness_universe` strategy (anti-momentum / academic short factor). Universe-ranked by 20d return vs SPY; emits bottom 5% (cap 5) with 5%+ RS gap and 20d MA confirmation. Critical for filling short books in extended bull regimes where textbook bearish technical patterns are rare.
 
 ---
 

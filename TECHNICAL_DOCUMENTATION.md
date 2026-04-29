@@ -25,10 +25,63 @@ are in dedicated documents:
   deployed to `/opt/quantopsai-altdata/` with daily cron at 06:00 UTC.
 - **`AI_ARCHITECTURE.md`** — end-to-end map of every AI agent +
   every feedback loop including the 12 autonomy layers.
+- **`LONG_SHORT_PLAN.md`** — Phases 1-4 of the long/short build
+  (April 28-29). Real long/short equity capability — bearish
+  strategies, sector/factor neutrality, real alpha sources, active
+  factor construction (Kelly, drawdown scaling, risk-parity,
+  market-neutrality enforcement).
 
 The sections below have been refreshed where needed (Self-Tuning
 summary, schema, scheduler, config, codebase). For the deep dive,
 follow the canonical docs above.
+
+### Long/short capability modules (April 28-29 expansion)
+
+Beyond the architecture above, the long/short build added these
+modules. Each is single-purpose and tested in isolation:
+
+- **`portfolio_exposure.py`** — `compute_exposure` (sector + factor
+  + direction breakdown), `compute_book_beta` (gross-weighted),
+  `compute_factor_exposure` (size bands, book/value, beta, momentum
+  buckets), `find_pair_opportunities` (same-sector long+short),
+  `balance_gate` (target_short_pct enforcement), `simulate_book_beta_with_entry`
+  (P4.5 neutrality projection), `render_for_prompt` /
+  `render_pairs_for_prompt` (AI prompt blocks).
+- **`factor_data.py`** — yfinance fundamentals with 7-day cache:
+  `get_book_to_market`, `get_beta`, `get_momentum_12_1`, plus
+  `get_realized_vol(symbol, days=30)` for risk-parity sizing.
+- **`kelly_sizing.py`** — `compute_kelly_fraction(win_rate, avg_win,
+  avg_loss, fractional=0.25)` implements `f* = (bp - q) / b × fractional`.
+  `compute_kelly_recommendation(db_path, direction)` reads per-direction
+  edge stats from `ai_predictions` (filtering HOLD predictions —
+  only entry signals BUY/STRONG_BUY for long, SHORT/SELL/STRONG_*
+  for short — pollute the win rate otherwise). Surfaces to AI as
+  `KELLY SIZING` block.
+- **`drawdown_scaling.py`** — continuous capital-scale modifier in
+  [0.25, 1.0]. Linear interp between breakpoints (0%→1.00, 5%→0.85,
+  10%→0.65, 15%→0.45, 20%+→0.25). Independent of the discrete
+  pause/reduce action — scaling shrinks the entries that DO happen.
+- **`risk_parity.py`** — risk-budget sizing. `compute_vol_scale(vol,
+  target_vol=0.25)` returns `target_vol / vol` clamped to [0.4, 1.6].
+  `analyze_position_risk(positions, equity)` flags names whose
+  `weight × annualized_vol` is ≥ 2× or ≤ 0.5× the per-position avg.
+- **Bearish strategies (10 total).** P1.1's 5 (`breakdown_support`,
+  `distribution_at_highs`, `failed_breakout`, `parabolic_exhaustion`,
+  `relative_weakness_in_strong_sector`); P3.1-P3.4's 4
+  (`earnings_disaster_short`, `catalyst_filing_short`,
+  `sector_rotation_short`, `iv_regime_short`); plus
+  `relative_weakness_universe` — universe-wide anti-momentum ranker
+  added to fill short books in regimes where textbook bearish
+  technical patterns are rare.
+- **`trade_pipeline._rank_candidates`** — accepts `target_short_pct`.
+  When ≥ 0.4, the strong-bull regime gate is bypassed for shorts on
+  that profile (mandate = explicit acceptance of regime risk).
+- **`ai_analyst._validate_ai_trades` gates** — balance gate (P2.4),
+  asymmetric short cap (P1.6), HTB borrow penalty (P1.14), market-
+  neutrality gate (P4.5: blocks entries that push `|book_beta - target|`
+  by >0.5).
+- **`client.get_borrow_info`** — Alpaca shortable + easy_to_borrow
+  flags with 24h cache, used as quality filter and HTB sizing input.
 
 ---
 
