@@ -55,8 +55,10 @@ Phase 4 — Active factor construction:
   P4.4 ✓ done — risk-budget (risk-parity) sizing: per-position
                  weight × realized_vol contribution, flag outliers,
                  sizing rule = target_vol / realized_vol
-  P4.5 — market-neutrality enforcement (block entries that push
-         book beta further from target by > 0.5)
+  P4.5 ✓ done — market-neutrality enforcement (hard block on
+                 entries that push book beta further from
+                 target_book_beta by > 0.5; symmetric — entries
+                 that improve neutrality always allowed)
 
 ## Why this matters
 

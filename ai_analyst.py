@@ -1240,6 +1240,38 @@ def _validate_ai_trades(result, candidates_data, ctx=None,
         for c in (candidates_data or [])
     }
 
+    # P4.5 of LONG_SHORT_PLAN.md — market-neutrality enforcement.
+    # Block any entry that would push book beta further from
+    # target_book_beta by > 0.5. Active when:
+    #   - ctx.target_book_beta is set, AND
+    #   - we can read current positions + equity from portfolio_state.
+    # Symmetric: a long high-beta when book is already over-target
+    # blocks; same long when book is under-target passes (it improves
+    # neutrality).
+    target_book_beta = (getattr(ctx, "target_book_beta", None)
+                         if ctx else None)
+    neutrality_enforce = False
+    cur_positions_for_beta: list = []
+    cur_equity_for_beta = 0.0
+    cur_book_beta_for_beta: Optional[float] = None
+    if (target_book_beta is not None and portfolio_state is not None):
+        try:
+            cur_positions_for_beta = portfolio_state.get("positions") or []
+            cur_equity_for_beta = float(portfolio_state.get("equity") or 0)
+            # Recompute current book beta with the same lookup used by
+            # simulate_book_beta_with_entry — keeps current/projected
+            # consistent even when the cached exposure was built with
+            # a different beta source.
+            from portfolio_exposure import compute_book_beta
+            cur_book_beta_for_beta = compute_book_beta(
+                cur_positions_for_beta, cur_equity_for_beta,
+            )
+            if (cur_book_beta_for_beta is not None
+                    and cur_equity_for_beta > 0):
+                neutrality_enforce = True
+        except Exception:
+            neutrality_enforce = False
+
     # Ensure structure
     if not isinstance(result, dict):
         return {"trades": [], "portfolio_reasoning": "Invalid response format",
@@ -1298,6 +1330,35 @@ def _validate_ai_trades(result, candidates_data, ctx=None,
             cap_pct = cap_pct / 2
         size_pct = min(float(t.get("size_pct", 5.0)), cap_pct)
         size_pct = max(size_pct, 1.0)
+
+        # P4.5 — market-neutrality enforcement: block entries that
+        # push book beta further from target by > 0.5. Skipped for
+        # SELL (exiting a long can't worsen neutrality further than
+        # the entry already did) and when the gate isn't active.
+        if neutrality_enforce and action in ("BUY", "SHORT"):
+            try:
+                from portfolio_exposure import simulate_book_beta_with_entry
+                projected = simulate_book_beta_with_entry(
+                    cur_positions_for_beta,
+                    cur_equity_for_beta,
+                    sym,
+                    size_pct,
+                    action,
+                )
+                if projected is not None:
+                    cur_dist = abs(cur_book_beta_for_beta - target_book_beta)
+                    new_dist = abs(projected - target_book_beta)
+                    if new_dist - cur_dist > 0.5:
+                        logger.info(
+                            "P4.5 neutrality gate blocked %s %s: "
+                            "book_beta %.2f → %.2f (target %.2f, "
+                            "distance %.2f → %.2f)",
+                            action, sym, cur_book_beta_for_beta,
+                            projected, target_book_beta, cur_dist, new_dist,
+                        )
+                        continue
+            except Exception as exc:
+                logger.debug("neutrality gate eval failed for %s: %s", sym, exc)
 
         validated.append({
             "symbol": sym,

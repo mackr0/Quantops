@@ -17,6 +17,39 @@ Rules going forward:
 
 ---
 
+## 2026-04-28 — Phase 4.5 of LONG_SHORT_PLAN: market-neutrality enforcement (Severity: high, capability)
+
+**The thesis.** P4.1 added a beta target as a soft directive in the AI prompt; P4.5 makes it a HARD gate in `_validate_ai_trades`. Soft guidance and exposure visibility aren't enough when an AI proposes a high-beta long after we're already over-target — the trade can clear all other gates yet drift the book further from neutrality. Real long/short funds enforce this at the trade level, not via prompts.
+
+**Rule.** Block any entry where:
+
+    |projected_book_beta - target| - |current_book_beta - target| > 0.5
+
+Symmetric:
+- Block trades that worsen neutrality by more than 0.5 in distance
+- ALWAYS allow trades that improve neutrality (no upper limit on the *good* direction)
+- Skip when target_book_beta is unset or current beta isn't computable
+- Apply only to BUY/SHORT entries — SELL exits can't worsen neutrality further than the entry already did
+
+**Implementation.**
+
+`portfolio_exposure.simulate_book_beta_with_entry(positions, equity, candidate_symbol, candidate_size_pct, candidate_action, beta_lookup=None)` — projects book beta if the candidate were added at the proposed size. Reuses the same gross-weighted formula as `compute_book_beta`.
+
+`ai_analyst._validate_ai_trades` — initialises `neutrality_enforce` once per call (when ctx.target_book_beta is set and current book beta is computable) and recomputes the current book beta from positions to keep current/projected consistent under the same beta lookup. Each candidate trade evaluated with simulate; failures logged and dropped from `validated`.
+
+**Why hard, not soft.** Soft guidance (P4.1) is honored by the AI most of the time but is the first thing dropped under conviction pressure ("this AAPL setup is gold, even if we're already over-target"). The hard gate enforces neutrality independently of the AI's discretion — the same way `balance_gate` (P2.4) enforces target_short_pct.
+
+**Tests.** 10 new in `test_neutrality_enforcement.py`:
+- `simulate_book_beta_with_entry`: returns None on unknown beta; long entry adds positive signed beta; short entry adds negative; combines correctly with existing book; respects sign of existing positions
+- Gate inactive when no target set
+- Gate blocks long that pushes >0.5 further from target
+- Gate ALLOWS trade that improves neutrality (e.g., 30% short of β=2 brings 0.6 → 0.0)
+- Gate skips when no book beta computable
+
+Full suite: 1270 passing.
+
+---
+
 ## 2026-04-28 — Phase 4.4 of LONG_SHORT_PLAN: risk-budget (risk-parity) sizing (Severity: high, capability)
 
 **The thesis.** Equal-dollar weights are NOT equal-risk weights. A 5% slug of a 60%-vol biotech contributes ~3× the variance of a 5% slug of a 20%-vol utility. Real risk-parity funds size INVERSELY to vol so each position contributes equal variance. We don't run a fully-rebalanced risk-parity book, but the sizing principle still applies on every new entry: high-vol names get smaller, low-vol names can stretch.

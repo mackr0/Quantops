@@ -303,6 +303,73 @@ def compute_book_beta(
     return weighted_sum  # already sums to book-level — gross_weight is fraction
 
 
+def simulate_book_beta_with_entry(
+    positions: List[Dict[str, Any]],
+    equity: float,
+    candidate_symbol: str,
+    candidate_size_pct: float,
+    candidate_action: str,
+    beta_lookup=None,
+) -> Optional[float]:
+    """Project book beta if `candidate` were added at `size_pct` of equity.
+
+    P4.5 of LONG_SHORT_PLAN.md — used by neutrality enforcement to
+    decide whether to block entries that push book beta further from
+    target.
+
+    Args:
+      positions: existing positions list (same shape as compute_book_beta).
+      equity: total account equity.
+      candidate_symbol: ticker being considered.
+      candidate_size_pct: position size as percent (e.g., 5.0 = 5% of
+        equity).
+      candidate_action: "BUY"|"SHORT"|"SELL". Long entries add positive
+        signed beta; SHORT/SELL add negative signed beta.
+      beta_lookup: optional callable(symbol) → Optional[float]. Defaults
+        to factor_data.get_beta.
+
+    Returns:
+      Projected book beta after the new entry, OR None when:
+        - candidate beta unknown
+        - equity ≤ 0
+    """
+    if equity is None or equity <= 0 or not candidate_symbol:
+        return None
+    if beta_lookup is None:
+        try:
+            from factor_data import get_beta as beta_lookup
+        except Exception:
+            return None
+    cand_beta = None
+    try:
+        cand_beta = beta_lookup(candidate_symbol)
+    except Exception:
+        cand_beta = None
+    if cand_beta is None:
+        return None
+
+    weighted_sum = 0.0
+    for p in positions or []:
+        sym = p.get("symbol")
+        qty = float(p.get("qty", 0) or 0)
+        mv = float(p.get("market_value", 0) or 0)
+        if not sym or qty == 0 or mv == 0:
+            continue
+        try:
+            beta = beta_lookup(sym)
+        except Exception:
+            beta = None
+        if beta is None:
+            continue
+        gross_weight = abs(mv) / equity
+        signed_beta = beta if qty > 0 else -beta
+        weighted_sum += signed_beta * gross_weight
+
+    cand_weight = max(0.0, float(candidate_size_pct) / 100.0)
+    cand_signed = cand_beta if candidate_action.upper() == "BUY" else -cand_beta
+    return weighted_sum + cand_signed * cand_weight
+
+
 def compute_factor_exposure(
     positions: List[Dict[str, Any]],
     equity: float,
