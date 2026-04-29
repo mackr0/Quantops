@@ -109,15 +109,17 @@
     </div>
 
     <!-- Rolling Win-Rate Trend -->
-    {% if ai_win_rate_chart_svg %}
     <article>
         <header>
             <h4 style="margin:0;">Win Rate Trend</h4>
             <small class="muted">7-day rolling win rate over the last 60 days. The dashed line is the 50% coin-flip baseline; gaps mean no resolved predictions in that window.</small>
         </header>
+        {% if ai_win_rate_chart_svg %}
         {{ ai_win_rate_chart_svg|safe }}
+        {% else %}
+        <p class="muted">No resolved predictions in the rolling window yet — chart populates once enough predictions resolve to compute a 7-day rolling rate.</p>
+        {% endif %}
     </article>
-    {% endif %}
 
     <!-- Confidence Calibration -->
     <div class="grid">
@@ -181,9 +183,9 @@
     </div>
 
     <!-- Slippage Impact -->
-    {% if slippage and slippage.count > 0 %}
     <article>
         <header><h4>Slippage Impact</h4></header>
+        {% if slippage and slippage.count > 0 %}
         <div class="grid">
             <div class="stat-card">
                 <small class="muted"><span class="tip" data-tip="The difference between the price you expected and the price you actually got">Avg Slippage</span></small>
@@ -198,8 +200,10 @@
                 <strong>{{ slippage.count }}</strong>
             </div>
         </div>
+        {% else %}
+        <p class="muted">No fill data yet — slippage impact populates once trades record both decision and fill prices.</p>
+        {% endif %}
     </article>
-    {% endif %}
 
     <!-- Learned Patterns — loaded via API -->
     <article>
@@ -320,11 +324,11 @@
      TAB 2: STRATEGY — What strategies is it running?
      =================================================================== -->
 <div id="tab-strategy" class="perf-tab-content">
-<!-- Phase 2: Strategy Validations (only show when data exists) -->
-    {% if validations %}
+<!-- Phase 2: Strategy Validations -->
     <article>
         <header><h3>Strategy Validations</h3></header>
         <p class="muted" style="margin-top:-0.5rem;">Rigorous backtest validation results — walk-forward, Monte Carlo, statistical significance gates.</p>
+        {% if validations %}
         <div class="overflow-auto">
             <table class="striped">
                 <thead>
@@ -359,8 +363,10 @@
                 </tbody>
             </table>
         </div>
+        {% else %}
+        <p class="muted">No validations recorded yet. Validations run on backtests via the validation worker — check the Strategy Library for proposed strategies awaiting review.</p>
+        {% endif %}
     </article>
-    {% endif %}
 
     <!-- Phase 6: Multi-Strategy Capital Allocation -->
     <article>
@@ -410,11 +416,13 @@
         {% endif %}
     </article>
 
-    <!-- Phase 7: Auto-Generated Strategies (only show when data exists) -->
-    {% if auto_strategy_info.per_profile %}
+    <!-- Phase 7: Auto-Generated Strategies -->
     <article>
         <header><h3>Evolving Strategy Library</h3></header>
         <p class="muted" style="margin-top:-0.5rem;">AI-proposed strategy variants — validated via backtesting, run in shadow mode, promoted when edge is proven.</p>
+        {% if not auto_strategy_info.per_profile %}
+        <p class="muted">No proposed strategies yet. The weekly generation task runs every Sunday — proposals will appear here as they're created.</p>
+        {% else %}
         {% for prof in auto_strategy_info.per_profile %}
         <article style="margin:1rem 0;">
             <header style="padding:0.5rem 0.75rem;">
@@ -480,8 +488,8 @@
             </div>
         </article>
         {% endfor %}
+        {% endif %}
     </article>
-    {% endif %}
 
     <!-- Phase 3: Alpha Decay Monitoring -->
     <article>
