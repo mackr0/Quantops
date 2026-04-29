@@ -31,6 +31,8 @@ Rules going forward:
 
 - **P2.4 Balance gate.** When the book has drifted >25 percentage points off target_short_pct, BLOCK new entries on the over-weighted side at the validator. Lets natural turnover (TPs, time stops) bring the book back into balance instead of forcing trims (which would cut winners short and burn transaction costs — what real funds explicitly avoid).
 
+- **P2.5 Factor-aware exposure (minimum viable).** `compute_factor_exposure()` adds two factor slices to the exposure bundle: **size bands** (cheap < $20, mid $20-$100, expensive > $100 — stylized price-based size proxy) and **direction balance** (long_share vs short_share of gross, with `single_direction_concentrated` flag when one side > 80%). Bundled into `compute_exposure()` so dashboards and AI prompt see all three slices (sector + size + direction) from one source. Real factor exposures (book-to-market, momentum 12-1m, beta to SPY) need a fundamentals data layer we don't currently cache — deferred to Phase 3.
+
 **Tests added.** 70+ new tests across `tests/test_portfolio_exposure.py` (sector math, pair detection, balance gate logic) and `tests/test_long_short_balance_target.py` (AI prompt rendering for each balance state).
 
 **Test infrastructure failures fixed in this batch.** Running the FULL test suite (not cherry-picked subsets) surfaced 14 failures from earlier work that were silently ignored. Fixed:
