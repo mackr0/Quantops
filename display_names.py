@@ -204,6 +204,12 @@ _DISPLAY_NAMES = {
     "enable_consensus":         "Multi-Model Consensus",
     "maga_mode":                "MAGA Mode",
 
+    # LONG_SHORT_PLAN.md Phase 1+2 columns and meta-model features.
+    "short_max_position_pct":   "Short Max Position",
+    "short_max_hold_days":      "Short Max Hold Days",
+    "target_short_pct":         "Target Short Share",
+    "prediction_type":          "Prediction Type",
+
     # Strategy-toggle parameter names (self-tuner can disable a strategy
     # via these). Without explicit entries the fallback yields
     # "Strategy Gap And Go" — almost right but the conjunction "And"

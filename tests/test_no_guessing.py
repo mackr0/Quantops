@@ -578,6 +578,7 @@ class TestRenderTemplateKwargs:
                                 "get_flashed_messages", "url_for", "self",
                                 "caller", "range", "true", "false", "none",
                                 "h", "s", "e", "r", "d", "v", "p", "f",
+                                "b",  # P2.1 sector loop: {% for sector, b in ... %}
                                 "mp", "prof", "prof_decay", "hr", "row",
                                 "actions", "spec_name", "trades_tpl",
                                 "base", "block", "mo", "w", "c", "a",

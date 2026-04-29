@@ -153,21 +153,35 @@ def build_training_set(db_path: str,
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
+        # P1.12 of LONG_SHORT_PLAN.md — pull prediction_type when
+        # available. Legacy DBs may not have the column yet (fresh test
+        # fixtures, pre-migration prod). Probe schema first; fall back
+        # to query without prediction_type when missing — _resolve_one's
+        # legacy fallback in extract_features still works on those rows.
+        cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(ai_predictions)"
+        )}
+        has_ptype = "prediction_type" in cols
         # ORDER BY id ASC is REQUIRED for time-ordered train/test split.
-        # Without it SQLite's row order is not guaranteed, and the
-        # downstream split would be effectively random — leaking future
-        # data into the training set and inflating AUC. See CHANGELOG
-        # 2026-04-27 for the data-leak bug this guards against.
-        # P1.12 of LONG_SHORT_PLAN.md — also pulls prediction_type so
-        # the model can learn direction-specific feature interactions.
-        rows = conn.execute(
-            "SELECT features_json, actual_outcome, prediction_type "
-            "FROM ai_predictions "
-            "WHERE status = 'resolved' "
-            "AND actual_outcome IN ('win', 'loss') "
-            "AND features_json IS NOT NULL "
-            "ORDER BY id ASC"
-        ).fetchall()
+        if has_ptype:
+            rows = conn.execute(
+                "SELECT features_json, actual_outcome, prediction_type "
+                "FROM ai_predictions "
+                "WHERE status = 'resolved' "
+                "AND actual_outcome IN ('win', 'loss') "
+                "AND features_json IS NOT NULL "
+                "ORDER BY id ASC"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT features_json, actual_outcome, "
+                "NULL AS prediction_type "
+                "FROM ai_predictions "
+                "WHERE status = 'resolved' "
+                "AND actual_outcome IN ('win', 'loss') "
+                "AND features_json IS NOT NULL "
+                "ORDER BY id ASC"
+            ).fetchall()
         conn.close()
     except Exception as exc:
         logger.warning("Failed to load training data from %s: %s", db_path, exc)

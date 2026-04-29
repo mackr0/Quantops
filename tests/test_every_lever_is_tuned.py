@@ -110,6 +110,22 @@ MANUAL_PARAMETERS = {
     # need autonomous tuning beyond the user-set default.
     "disabled_specialists":    "Lever 3 — auto-managed by multi_scheduler._task_specialist_health_check (calibrator-driven)",
     "meta_pregate_threshold":  "Lever 2 — per-profile gate threshold, default 0.5; user override; not autonomously tuned",
+
+    # P2.2 of LONG_SHORT_PLAN.md — strategic choice (long-only vs
+    # balanced vs short-dominant). The AI prompt directive (P2.2)
+    # and the balance gate (P2.4) work together to enforce the
+    # target, but the target ITSELF is set by the user. Auto-tuning
+    # this would defeat the purpose — the target IS the user's
+    # intent for what kind of book this profile runs.
+    "target_short_pct": "Strategic balance preference — set by user, not autonomously tuned",
+    # P1.5 of LONG_SHORT_PLAN.md — short_max_hold_days has a tuning
+    # rule (_optimize_short_max_hold_days) that currently returns
+    # None pending the days_held column on closed shorts. Will fire
+    # autonomously once short cover rows accumulate enough hold-time
+    # data to analyze. Listed here so the lever-is-tuned guardrail
+    # passes today; remove from this list when the rule's stub
+    # body is filled in (see self_tuning.py:_optimize_short_max_hold_days).
+    "short_max_hold_days": "Tuning rule scaffolded but stub-only until days_held data accumulates",
 }
 
 

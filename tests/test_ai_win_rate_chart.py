@@ -2,6 +2,13 @@
 
 import sqlite3
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
+
+
+def _today_et():
+    """Match compute_rolling_win_rate's ET-localized today (P1.0 of
+    LONG_SHORT_PLAN.md timezone fix)."""
+    return datetime.now(ZoneInfo("America/New_York")).date()
 
 from ai_tracker import compute_rolling_win_rate, init_tracker_db
 from metrics import render_win_rate_svg
@@ -32,7 +39,7 @@ class TestComputeRollingWinRate:
         assert all(p["n"] == 0 for p in series)
 
     def test_pure_winning_streak_in_window(self, tmp_db):
-        today = date.today()
+        today = _today_et()
         rows = [((today - timedelta(days=i)).isoformat() + "T12:00:00", "win")
                 for i in range(5)]
         _seed(tmp_db, rows)
@@ -44,7 +51,7 @@ class TestComputeRollingWinRate:
         assert last["win_rate"] == 100.0
 
     def test_mixed_outcomes_compute_correct_pct(self, tmp_db):
-        today = date.today()
+        today = _today_et()
         rows = (
             [((today - timedelta(days=i)).isoformat() + "T12:00:00", "win")
              for i in range(3)]
@@ -57,7 +64,7 @@ class TestComputeRollingWinRate:
         assert series[-1]["win_rate"] == 50.0
 
     def test_neutral_outcomes_excluded(self, tmp_db):
-        today = date.today()
+        today = _today_et()
         rows = [
             (today.isoformat() + "T12:00:00", "win"),
             (today.isoformat() + "T12:00:00", "neutral"),
@@ -70,7 +77,7 @@ class TestComputeRollingWinRate:
         assert series[-1]["win_rate"] == 100.0
 
     def test_window_excludes_predictions_outside_range(self, tmp_db):
-        today = date.today()
+        today = _today_et()
         old = today - timedelta(days=20)
         rows = [(old.isoformat() + "T12:00:00", "loss")]
         _seed(tmp_db, rows)
@@ -79,7 +86,7 @@ class TestComputeRollingWinRate:
         assert all(p["n"] == 0 for p in series)
 
     def test_aggregates_across_multiple_dbs(self, tmp_path):
-        today = date.today()
+        today = _today_et()
         db_a = str(tmp_path / "a.db")
         db_b = str(tmp_path / "b.db")
         _seed(db_a, [(today.isoformat() + "T12:00:00", "win")])

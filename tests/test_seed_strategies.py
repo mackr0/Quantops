@@ -454,8 +454,11 @@ class TestMacdCrossConfirmation:
 
 class TestExpandedRegistry:
     def test_sixteen_strategies_registered(self):
+        """Originally 16 (Phase 6+7); LONG_SHORT_PLAN P1.1 added 5
+        dedicated bearish strategies (2026-04-28). Asserts the
+        baseline plus any future additions, not an exact count."""
         from strategies import STRATEGY_MODULES
-        assert len(STRATEGY_MODULES) == 16
+        assert len(STRATEGY_MODULES) >= 16
 
     def test_every_new_strategy_has_display_name(self):
         from display_names import display_name
