@@ -47,7 +47,8 @@ Phase 3 — Real alpha sources: ✓ DONE 2026-04-29
 Phase 4 — Active factor construction:
   P4.1 ✓ done — beta-targeted construction (gross-weighted book
                 beta + AI prompt directive)
-  P4.2 — fractional Kelly position sizing (size by win rate × edge)
+  P4.2 ✓ done — fractional Kelly position sizing (per-direction
+                 quarter-Kelly recommendation surfaced to AI prompt)
   P4.3 — drawdown-aware capital scaling (shrink positions when
          book is in drawdown)
   P4.4 — risk-budget sizing (each position contributes equal

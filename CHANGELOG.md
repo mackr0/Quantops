@@ -17,6 +17,44 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — Phase 4.2 of LONG_SHORT_PLAN: fractional Kelly position sizing (Severity: high, capability)
+
+**The thesis.** Position sizing is the silent killer of trading systems — the wrong size compounds wins poorly and amplifies losses faster than the edge is supposed to support. The Kelly criterion gives the position fraction that maximizes long-run logarithmic growth given a known edge. Fractional Kelly (typically quarter Kelly) cuts variance ~50% while keeping ~75% of the growth rate — the standard pro-fund variance/growth tradeoff.
+
+**Implementation.** New module `kelly_sizing.py`:
+
+- `compute_kelly_fraction(win_rate, avg_win, avg_loss, fractional=0.25)` — implements `f* = (bp - q) / b` × fractional. Returns None on no-edge, negative-edge, zero/invalid inputs, or extreme positive recommendations (>50% of capital after fractional). Report mode (`fractional=1.0`) skips the cap so callers can get the full Kelly value for display.
+
+- `compute_kelly_recommendation(db_path, direction, fractional=0.25)` — reads per-direction edge stats from `ai_predictions` (`prediction_type` column with backwards-compat fallback for legacy rows). Computes win_rate / avg_win / avg_loss / sample_size and returns the recommendation dict. Returns None below `MIN_SAMPLES_FOR_KELLY` = 30.
+
+- `render_for_prompt(rec_long, rec_short)` — formats both directions as a compact AI-prompt block.
+
+**AI prompt block** in `_build_batch_prompt`:
+```
+KELLY SIZING (fractional=0.25):
+  Suggested size per trade based on observed edge.
+  LONG: Kelly 9.2% (WR 65%, avg win 4.0%, avg loss 2.5%, n=128)
+  SHORT: Kelly 5.0% (WR 55%, avg win 5.0%, avg loss 4.0%, n=80)
+```
+
+Soft guidance — does NOT override `max_position_pct`. The AI sees the recommendation and decides whether to size at Kelly, lower, or pass entirely on weak setups.
+
+**Tests added.** `tests/test_kelly_sizing.py` (14 tests):
+- Classic Kelly formula (55% WR, 2:1 odds → 0.325 full)
+- Quarter Kelly default
+- None on no-edge / negative-edge / zero inputs / 100% win-rate
+- Cap at 50% in fractional mode but full value returned in report mode
+- Below-min-samples → None
+- Real recommendation math on seeded predictions
+- Long and short directions read separately
+- Legacy-row fallback (rows without prediction_type)
+- Negative edge → None
+- Render: empty, long-only, both directions
+
+Total full-suite count: 1237 passing.
+
+---
+
 ## 2026-04-29 — Phase 4.1 of LONG_SHORT_PLAN: beta-targeted construction (Severity: high, capability)
 
 **The thesis.** Phase 3 surfaced book-level factor exposures to the AI. Phase 4.1 is the first piece of *active* factor management: the AI gets a directive on every cycle to bias picks toward a configured book-level beta target. The gold-standard construction technique for long/short funds — pro shops typically target book beta of 0.0 (market-neutral) to 0.5 (low-net).

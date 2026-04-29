@@ -601,6 +601,25 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         except Exception:
             pass
 
+    # P4.2 of LONG_SHORT_PLAN.md — Kelly position sizing block.
+    # Reads per-direction edge stats from ai_predictions and surfaces
+    # the fractional-Kelly recommendation. Soft guidance — doesn't
+    # override max_position_pct but tells the AI the size that
+    # matches observed edge.
+    kelly_block = ""
+    db_path_for_kelly = getattr(ctx, "db_path", None) if ctx else None
+    if db_path_for_kelly:
+        try:
+            from kelly_sizing import (
+                compute_kelly_recommendation, render_for_prompt as kelly_render,
+            )
+            rec_long = compute_kelly_recommendation(db_path_for_kelly, "long")
+            rec_short = (compute_kelly_recommendation(db_path_for_kelly, "short")
+                          if enable_shorts else None)
+            kelly_block = kelly_render(rec_long, rec_short)
+        except Exception:
+            pass
+
     # P4.1 of LONG_SHORT_PLAN.md — book-beta target directive.
     # When ctx.target_book_beta is set and the book has measurable
     # current beta, surface the gap so the AI can pick low-beta
@@ -677,6 +696,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"{exposure_block}"
         f"{beta_target_block}"
         f"{target_block}"
+        f"{kelly_block}"
     )
 
     # --- Market context section ---
