@@ -223,6 +223,51 @@ def find_pair_opportunities(
     return pairs[:max_pairs]
 
 
+def balance_gate(
+    target_short_pct: float,
+    current_exposure: Optional[Dict[str, Any]],
+    hard_threshold: float = 0.25,
+) -> str:
+    """Decide whether new entries on either side should be blocked
+    based on current vs target long/short balance.
+
+    P2.4 of LONG_SHORT_PLAN.md. Avoids the "auto-trim positions"
+    trap that real funds explicitly avoid (transaction costs,
+    cutting winners short). Instead: when the book is materially
+    off-target on one side, BLOCK new entries on that side and
+    let the book rebalance through natural turnover (winners
+    closing on TP, time stops covering shorts, etc.).
+
+    Returns one of:
+      "pass"          — balance is fine, accept either direction
+      "block_longs"   — already too long; only allow SHORT entries
+      "block_shorts"  — already too short; only allow BUY entries
+
+    hard_threshold = 0.25 means "block when current_short_share
+    deviates from target by more than 25 percentage points."
+    Soft drift (target ±25%) is fine and handled by the prompt
+    directive (P2.2).
+    """
+    if target_short_pct is None or target_short_pct <= 0:
+        return "pass"  # long-only profile — gate is not relevant
+    if not current_exposure:
+        return "pass"
+    gross = float(current_exposure.get("gross_pct") or 0)
+    if gross <= 0:
+        return "pass"
+    by_sector = current_exposure.get("by_sector") or {}
+    short_pct_sum = sum((b.get("short_pct") or 0) for b in by_sector.values())
+    cur_short_frac = short_pct_sum / gross if gross > 0 else 0.0
+    delta = target_short_pct - cur_short_frac
+    if delta > hard_threshold:
+        # Way undershorted — block new longs to force balance recovery
+        return "block_longs"
+    if delta < -hard_threshold:
+        # Way overshorted — block new shorts
+        return "block_shorts"
+    return "pass"
+
+
 def render_pairs_for_prompt(pairs: List[Dict[str, Any]]) -> str:
     """Format pair-trade opportunities as a compact AI prompt block.
     Returns empty string when no pairs found.

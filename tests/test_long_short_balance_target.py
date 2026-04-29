@@ -162,6 +162,113 @@ def test_target_block_skipped_when_shorts_disabled():
     assert "LONG/SHORT BALANCE TARGET" not in prompt
 
 
+def test_balance_gate_pass_when_no_target():
+    from portfolio_exposure import balance_gate
+    assert balance_gate(target_short_pct=0.0,
+                         current_exposure={"gross_pct": 50, "by_sector": {}}) == "pass"
+
+
+def test_balance_gate_pass_when_no_exposure():
+    from portfolio_exposure import balance_gate
+    assert balance_gate(target_short_pct=0.5, current_exposure=None) == "pass"
+
+
+def test_balance_gate_blocks_longs_when_undershorted():
+    """target=50% short, currently 0% short → undershorted by 50% → block longs."""
+    from portfolio_exposure import balance_gate
+    exposure = {
+        "gross_pct": 30,
+        "by_sector": {"Tech": {"long_pct": 30, "short_pct": 0}},
+    }
+    assert balance_gate(target_short_pct=0.5, current_exposure=exposure) == "block_longs"
+
+
+def test_balance_gate_blocks_shorts_when_overshorted():
+    """target=20% short, currently ~67% short → overshorted by 47% → block shorts."""
+    from portfolio_exposure import balance_gate
+    exposure = {
+        "gross_pct": 30,
+        "by_sector": {"Tech": {"long_pct": 10, "short_pct": 20}},
+    }
+    assert balance_gate(target_short_pct=0.2, current_exposure=exposure) == "block_shorts"
+
+
+def test_balance_gate_pass_within_tolerance():
+    """target=50%, current=40% (10% delta < 25% threshold) → pass."""
+    from portfolio_exposure import balance_gate
+    exposure = {
+        "gross_pct": 100,
+        "by_sector": {
+            "Tech": {"long_pct": 60, "short_pct": 0},
+            "Energy": {"long_pct": 0, "short_pct": 40},
+        },
+    }
+    assert balance_gate(target_short_pct=0.5, current_exposure=exposure) == "pass"
+
+
+def test_validator_drops_short_trades_when_book_overshorted():
+    """Integration: AI proposes a SHORT, but balance gate says block_shorts."""
+    from ai_analyst import _validate_ai_trades
+
+    class Ctx:
+        max_position_pct = 0.10
+        short_max_position_pct = 0.05
+        enable_short_selling = True
+        target_short_pct = 0.2  # mostly long
+
+    portfolio_state = {
+        "exposure": {
+            "gross_pct": 30,
+            "by_sector": {
+                "Tech": {"long_pct": 5, "short_pct": 25},
+            },
+        },
+    }
+    candidates = [
+        {"symbol": "AAPL", "signal": "BUY"},
+        {"symbol": "TSLA", "signal": "SHORT"},
+    ]
+    ai_response = {"trades": [
+        {"symbol": "TSLA", "action": "SHORT", "size_pct": 5, "confidence": 80},
+        {"symbol": "AAPL", "action": "BUY", "size_pct": 5, "confidence": 80},
+    ]}
+    out = _validate_ai_trades(ai_response, candidates, ctx=Ctx(),
+                                portfolio_state=portfolio_state)
+    actions = [t["action"] for t in out["trades"]]
+    assert "SHORT" not in actions  # blocked
+    assert "BUY" in actions  # passes
+
+
+def test_validator_drops_long_trades_when_book_undershorted():
+    from ai_analyst import _validate_ai_trades
+
+    class Ctx:
+        max_position_pct = 0.10
+        short_max_position_pct = 0.05
+        enable_short_selling = True
+        target_short_pct = 0.5
+
+    portfolio_state = {
+        "exposure": {
+            "gross_pct": 30,
+            "by_sector": {"Tech": {"long_pct": 30, "short_pct": 0}},
+        },
+    }
+    candidates = [
+        {"symbol": "AAPL", "signal": "BUY"},
+        {"symbol": "TSLA", "signal": "SHORT"},
+    ]
+    ai_response = {"trades": [
+        {"symbol": "AAPL", "action": "BUY", "size_pct": 5, "confidence": 80},
+        {"symbol": "TSLA", "action": "SHORT", "size_pct": 5, "confidence": 80},
+    ]}
+    out = _validate_ai_trades(ai_response, candidates, ctx=Ctx(),
+                                portfolio_state=portfolio_state)
+    actions = [t["action"] for t in out["trades"]]
+    assert "BUY" not in actions  # blocked
+    assert "SHORT" in actions  # passes
+
+
 def test_user_context_default_target_short_pct_is_zero():
     """Existing profiles without target_short_pct set should default
     to long-only (0.0) — no behavior change for long-only users."""

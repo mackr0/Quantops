@@ -523,7 +523,8 @@ def ai_select_trades(candidates_data, portfolio_state, market_context, ctx=None)
             "pass_this_cycle": True,
         }
 
-    return _validate_ai_trades(result, candidates_data, ctx)
+    return _validate_ai_trades(result, candidates_data, ctx,
+                                 portfolio_state=portfolio_state)
 
 
 def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=None):
@@ -1111,7 +1112,8 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     return prompt
 
 
-def _validate_ai_trades(result, candidates_data, ctx=None):
+def _validate_ai_trades(result, candidates_data, ctx=None,
+                          portfolio_state=None):
     """Validate and sanitize the AI batch response."""
 
     max_pos_pct = getattr(ctx, "max_position_pct", 0.10) if ctx else 0.10
@@ -1124,6 +1126,22 @@ def _validate_ai_trades(result, candidates_data, ctx=None):
     if short_max_pos_pct is None:
         short_max_pos_pct = max_pos_pct / 2
     enable_shorts = getattr(ctx, "enable_short_selling", False) if ctx else False
+
+    # P2.4 of LONG_SHORT_PLAN.md — balance gate. When target_short_pct
+    # is set and the book has drifted >25pp off target, block new
+    # entries on the over-weighted side. Lets the book rebalance via
+    # natural turnover instead of forcing trims (which would cut
+    # winners short and burn transaction costs).
+    balance_gate_state = "pass"
+    if enable_shorts and portfolio_state is not None and ctx is not None:
+        try:
+            from portfolio_exposure import balance_gate
+            balance_gate_state = balance_gate(
+                target_short_pct=getattr(ctx, "target_short_pct", 0.0) or 0.0,
+                current_exposure=portfolio_state.get("exposure"),
+            )
+        except Exception:
+            pass
 
     # P1.14 — borrow-cost sizing penalty: HTB names eat real money
     # over the typical hold. Halve again on top of the asymmetric cap.
@@ -1167,6 +1185,19 @@ def _validate_ai_trades(result, candidates_data, ctx=None):
             logger.warning("AI suggested SHORT on %s but shorts disabled — skipped", sym)
             continue
         if action not in ("BUY", "SELL", "SHORT"):
+            continue
+        # P2.4 balance gate — block over-weighted side
+        if balance_gate_state == "block_shorts" and action in ("SHORT", "SELL"):
+            logger.info(
+                "Balance gate blocked SHORT %s (book overshorted vs target_short_pct)",
+                sym,
+            )
+            continue
+        if balance_gate_state == "block_longs" and action == "BUY":
+            logger.info(
+                "Balance gate blocked BUY %s (book undershorted vs target_short_pct)",
+                sym,
+            )
             continue
 
         # Cap by direction: longs against max_pos_pct, shorts against
