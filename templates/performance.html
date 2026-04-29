@@ -132,9 +132,9 @@
     </div>
 
     <!-- Monthly Returns Table -->
-    {% if m.monthly_returns %}
     <article>
         <header><h3>Monthly Returns</h3></header>
+        {% if m.monthly_returns %}
         <p class="muted" style="margin-top:-0.5rem;"><span class="tip" data-tip="Percentage of months that were profitable overall">Monthly win rate</span>: <strong>{{ "%.1f"|format(m.monthly_win_rate) }}%</strong></p>
         {{ m.monthly_returns_svg|safe }}
         <div class="overflow-auto" style="margin-top:1rem;">
@@ -163,8 +163,10 @@
                 </tbody>
             </table>
         </div>
+        {% else %}
+        <p class="muted">No monthly data yet — populates after the first calendar month with closed trades.</p>
+        {% endif %}
     </article>
-    {% endif %}
 
 </div>
 
@@ -266,9 +268,11 @@
     </article>
 
     <!-- Worst Periods -->
-    {% if m.num_daily_returns >= 7 %}
     <article>
         <header><h3>Worst Periods</h3></header>
+        {% if m.num_daily_returns < 7 %}
+        <p class="muted">Need 7+ daily returns. Currently have {{ m.num_daily_returns }}.</p>
+        {% else %}
         <div class="overflow-auto">
             <table>
                 <thead>
@@ -308,8 +312,8 @@
                 </tbody>
             </table>
         </div>
+        {% endif %}
     </article>
-    {% endif %}
 
 </div>
 
@@ -418,12 +422,14 @@
     </div>
 
     <!-- Trade distribution chart -->
-    {% if m.pnl_distribution_svg %}
     <article>
         <header><h3><span class="tip" data-tip="Shows how your trade profits and losses are spread out">PnL Distribution</span></h3></header>
+        {% if m.pnl_distribution_svg %}
         {{ m.pnl_distribution_svg|safe }}
+        {% else %}
+        <p class="muted">No closed trades with P&L yet — chart populates after trades complete.</p>
+        {% endif %}
     </article>
-    {% endif %}
 
     <!-- Streaks -->
     <article>
@@ -575,9 +581,9 @@
     </article>
 
     <!-- Exposure (from live positions if available) -->
-    {% if exposure %}
     <article>
         <header><h3>Current Exposure</h3></header>
+        {% if exposure %}
         <div class="grid">
             <div class="stat-card" style="text-align:center;">
                 <small class="muted"><span class="tip" data-tip="Long positions minus short positions. Shows your directional bet">Net Exposure</span></small>
@@ -592,8 +598,12 @@
                 <strong style="font-size:2rem;">{{ exposure.num_positions }}</strong>
             </div>
         </div>
+        {% elif not selected_profile %}
+        <p class="muted">Pick a single profile (top-left dropdown) to see live position exposure — All Profiles aggregates across multiple Alpaca accounts so a single Net/Gross number isn't well-defined.</p>
+        {% else %}
+        <p class="muted">No live position data available — Alpaca account may not be reachable, or this profile has no open positions.</p>
+        {% endif %}
     </article>
-    {% endif %}
 
 </div>
 
