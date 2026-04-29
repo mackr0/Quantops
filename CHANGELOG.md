@@ -17,6 +17,29 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — /ai page 500 + page-render smoke tests (Severity: critical, outage)
+
+**The outage.** User reported "/ai is no longer loading: Internal Server Error" after the last deploy. Root cause: my Awareness page expansion added a new `{% if has_risk_budget %}` panel but inadvertently removed the closing `{% endif %}` for the surrounding `{% if long_short_awareness %}` block. Jinja error: `Encountered unknown tag 'endblock'. The innermost block that needs to be closed is 'if'.`
+
+The pattern is the same one I made earlier this session — claiming "302 in curl = page works" when 302 was just the login redirect. A real authenticated render was never tested in CI. Templates broke silently between commit and prod.
+
+**Fix.** Re-added the missing `{% endif %}` after the long-short-awareness table block. Verified with the new smoke test below.
+
+**Why it slipped through.** `tests/test_web.py::TestAuthenticatedRoutes` had smoke tests for `/dashboard`, `/performance`, `/settings`, `/trades`, `/ai-performance` — but NOT `/ai`. The dedicated AI dashboard never had a render check. Template syntax errors there ran free.
+
+**Now caught.** Six new authenticated render tests added to `test_web.py`:
+- `/ai` (full status=200 check with body preview in failure message)
+- `/ai/brain`, `/ai/strategy`, `/ai/awareness`, `/ai/operations` (the redirect routes)
+- `/admin`
+
+Verified the new test catches the bug class — temporarily reintroduced the missing `{% endif %}` and confirmed the test fails with the exact Jinja error message. Then restored the fix; suite green at 1311.
+
+**Pattern note.** From now on, every visible page route must have a smoke test that hits it authenticated. If there's no smoke test, template syntax errors hide between commit and prod 500s.
+
+Full suite: 1311 passing (was 1305 + 6 new smoke tests).
+
+---
+
 ## 2026-04-29 — Meta-pregate: bypass shorts when training data is insufficient (Severity: critical, structural blocker)
 
 **The hidden blocker.** Audit of meta-model training data on prod:

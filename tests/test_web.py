@@ -79,6 +79,40 @@ class TestAuthenticatedRoutes:
         # May redirect to /performance (302) or render directly (200)
         assert resp.status_code in (200, 302)
 
+    # Smoke tests — every visible page must render. 500s here catch
+    # template syntax errors before they hit prod (see 2026-04-29
+    # incident where ai.html had an unclosed {% if %} block that only
+    # surfaced on prod because tests checked /performance but not /ai).
+    def test_ai_dashboard(self, logged_in_client):
+        resp = logged_in_client.get("/ai")
+        assert resp.status_code == 200, (
+            f"AI dashboard /ai returned {resp.status_code} — "
+            f"likely template syntax error or view exception. "
+            f"Body preview: {resp.data[:300]!r}"
+        )
+
+    def test_ai_brain_redirect(self, logged_in_client):
+        resp = logged_in_client.get("/ai/brain", follow_redirects=True)
+        assert resp.status_code == 200
+
+    def test_ai_strategy_redirect(self, logged_in_client):
+        resp = logged_in_client.get("/ai/strategy", follow_redirects=True)
+        assert resp.status_code == 200
+
+    def test_ai_awareness_redirect(self, logged_in_client):
+        resp = logged_in_client.get("/ai/awareness", follow_redirects=True)
+        assert resp.status_code == 200
+
+    def test_ai_operations_redirect(self, logged_in_client):
+        resp = logged_in_client.get("/ai/operations", follow_redirects=True)
+        assert resp.status_code == 200
+
+    def test_admin(self, logged_in_client):
+        resp = logged_in_client.get("/admin")
+        assert resp.status_code == 200, (
+            f"Admin page returned {resp.status_code}"
+        )
+
 
 class TestAPIRoutes:
     """API endpoints should return JSON."""
