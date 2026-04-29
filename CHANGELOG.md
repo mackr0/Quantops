@@ -17,6 +17,42 @@ Rules going forward:
 
 ---
 
+## 2026-04-28 — Anti-momentum short strategy: relative_weakness_universe (Severity: high, capability)
+
+**The thesis.** The regime-gate fix unblocked the few short candidates that existing strategies were producing. But in extended strong-bull regimes, textbook bearish technical patterns (breakdown_support, distribution_at_highs, parabolic_exhaustion, failed_breakout) are rare BY CONSTRUCTION — most names aren't breaking support when SPY climbs daily. A dedicated short profile (target_short_pct=0.5) needs a strategy that fires regardless of whether textbook setups are forming.
+
+**The strategy.** Anti-momentum / relative-weakness ranking. Universe-wide:
+
+1. Compute 20-day return for SPY
+2. For each name in the universe, compute 20-day return
+3. RS gap = SPY_return - stock_return (positive = lagging market)
+4. Filter: RS gap ≥ 5% (cumulative underperformance)
+5. Filter: stock below its 20-day MA (trend confirmation)
+6. Rank ascending by stock return; emit bottom 5% (cap 5) as SHORT
+
+This is a real fund pattern: Jegadeesh & Titman 1993's momentum literature is symmetric — top-decile winners outperform, bottom-decile losers underperform. We were already running the long side via momentum-style strategies; this completes the symmetry.
+
+**Score is intentionally 1** (vs 2 for focused setups like breakdown_support). There's no specific bearish catalyst — purely relative weakness. The AI sees this context and weights accordingly. If a name shows up here AND on a focused short strategy, the meta-model and ensemble will compound the conviction.
+
+**Markets.** Equities only (small/midcap/largecap). Crypto's universe is too small for ranking.
+
+**Tests.** 9 in `test_relative_weakness_universe.py`:
+- Module interface (NAME, APPLICABLE_MARKETS, find_candidates)
+- Emits when stock underperforms SPY by threshold
+- Skips stocks above 20-day MA (trend filter)
+- Caps output at 5 candidates regardless of universe size
+- Emit format (signal=SHORT, score=1, votes, price, reason)
+- Returns empty when SPY data missing
+- Skips stocks with insufficient history
+- Empty universe / universe < 5 names returns empty
+- Strategy registered in STRATEGY_MODULES
+
+**What this fixes.** Profile_10 (Small Cap Shorts, target_short_pct=0.5) had only 3/1497 SHORTs over 30 days because (a) regime gate was blocking technical shorts (fixed), AND (b) technical shorts emit ~0 candidates per cycle in strong-bull. With this strategy, the universe is ranked every cycle and the worst-RS names emit regardless of whether they fit a textbook bearish setup.
+
+Full suite: 1282 passing.
+
+---
+
 ## 2026-04-28 — Regime gate respects target_short_pct mandate (Severity: critical, root cause)
 
 **The bug.** Profile_10 (Small Cap Shorts, target_short_pct=0.5) emitted only 3 SHORT predictions out of 1,497 in the last 30 days — essentially the same 0.2% rate as before Phases 1-4 shipped. The whole long/short build was blocked from producing visible results because of one upstream gate.

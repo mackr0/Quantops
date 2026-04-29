@@ -57,6 +57,7 @@ STRATEGY_MODULES = [
     "strategies.failed_breakout",
     "strategies.parabolic_exhaustion",
     "strategies.relative_weakness_in_strong_sector",
+    "strategies.relative_weakness_universe",
     # Phase 3 of LONG_SHORT_PLAN.md — real alpha sources.
     "strategies.earnings_disaster_short",
     "strategies.catalyst_filing_short",
