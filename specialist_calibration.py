@@ -169,7 +169,8 @@ def update_outcomes_on_resolve(
 # Fitting
 # ---------------------------------------------------------------------------
 
-def fit_calibrator(db_path: str, specialist_name: str) -> Optional[Any]:
+def fit_calibrator(db_path: str, specialist_name: str,
+                    direction: Optional[str] = None) -> Optional[Any]:
     """Fit a logistic regression on (raw_confidence, was_correct)
     pairs for one specialist. Returns None if fewer than
     MIN_SAMPLES_TO_FIT resolved samples exist.
@@ -177,21 +178,49 @@ def fit_calibrator(db_path: str, specialist_name: str) -> Optional[Any]:
     The fit uses Platt scaling: a 1-feature logistic regression
     where the feature is `raw_confidence / 100.0`. Output of the
     fitted model on a new raw confidence is the empirical P(correct).
+
+    P1.11 of LONG_SHORT_PLAN.md — direction-aware calibration:
+      direction = 'long'  → fit on directional_long predictions only
+      direction = 'short' → fit on directional_short predictions only
+      direction = None    → fit on all predictions (legacy behavior)
+    Direction-specific calibrators let the ensemble apply the right
+    calibration based on which way a specialist voted, instead of
+    one-size-fits-all that mixes long-edge and short-edge stats.
     """
     if not db_path or not specialist_name:
         return None
     init_calibration_db(db_path)
     try:
         conn = sqlite3.connect(db_path)
-        rows = conn.execute(
-            "SELECT raw_confidence, was_correct "
-            "FROM specialist_outcomes "
-            "WHERE specialist_name = ? "
-            "AND was_correct IS NOT NULL "
-            "AND resolved_at >= datetime('now', ? || ' days') "
-            "ORDER BY resolved_at ASC",
-            (specialist_name, f"-{RESOLUTION_LOOKBACK_DAYS}"),
-        ).fetchall()
+        if direction in ("long", "short"):
+            ptype = "directional_long" if direction == "long" else "directional_short"
+            # JOIN to ai_predictions to filter by prediction_type. Legacy
+            # rows without prediction_type fall back to inferred-from-
+            # signal classification (matches the resolver's logic).
+            rows = conn.execute(
+                "SELECT so.raw_confidence, so.was_correct "
+                "FROM specialist_outcomes so "
+                "JOIN ai_predictions ap ON ap.id = so.prediction_id "
+                "WHERE so.specialist_name = ? "
+                "AND so.was_correct IS NOT NULL "
+                "AND so.resolved_at >= datetime('now', ? || ' days') "
+                "AND COALESCE(ap.prediction_type, "
+                "  CASE WHEN ap.predicted_signal IN ('BUY','HOLD','STRONG_BUY') "
+                "       THEN 'directional_long' ELSE 'directional_short' END"
+                ") = ? "
+                "ORDER BY so.resolved_at ASC",
+                (specialist_name, f"-{RESOLUTION_LOOKBACK_DAYS}", ptype),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT raw_confidence, was_correct "
+                "FROM specialist_outcomes "
+                "WHERE specialist_name = ? "
+                "AND was_correct IS NOT NULL "
+                "AND resolved_at >= datetime('now', ? || ' days') "
+                "ORDER BY resolved_at ASC",
+                (specialist_name, f"-{RESOLUTION_LOOKBACK_DAYS}"),
+            ).fetchall()
         conn.close()
     except Exception as exc:
         logger.warning("fit_calibrator query failed for %s: %s",
@@ -225,42 +254,69 @@ def fit_calibrator(db_path: str, specialist_name: str) -> Optional[Any]:
 # Persistence + cache
 # ---------------------------------------------------------------------------
 
-def _calibrator_path(db_path: str, specialist_name: str) -> str:
-    """Per-specialist pkl alongside the journal db."""
+def _calibrator_path(db_path: str, specialist_name: str,
+                       direction: Optional[str] = None) -> str:
+    """Per-specialist pkl alongside the journal db.
+    P1.11 — direction-specific filename when direction is given,
+    otherwise the legacy unified filename.
+    """
     base_dir = os.path.dirname(os.path.abspath(db_path))
     db_stem = os.path.splitext(os.path.basename(db_path))[0]
     safe_name = specialist_name.replace("/", "_").replace(" ", "_")
+    if direction in ("long", "short"):
+        return os.path.join(base_dir,
+                            f"calibrator_{db_stem}_{safe_name}_{direction}.pkl")
     return os.path.join(base_dir,
                         f"calibrator_{db_stem}_{safe_name}.pkl")
 
 
-def save_calibrator(db_path: str, specialist_name: str, calibrator: Any) -> None:
+def save_calibrator(db_path: str, specialist_name: str, calibrator: Any,
+                     direction: Optional[str] = None) -> None:
     if calibrator is None:
         return
     try:
-        path = _calibrator_path(db_path, specialist_name)
+        path = _calibrator_path(db_path, specialist_name, direction)
         with open(path, "wb") as fh:
             pickle.dump(calibrator, fh)
         with _calibrator_cache_lock:
-            _calibrator_cache[(db_path, specialist_name)] = calibrator
+            _calibrator_cache[(db_path, specialist_name, direction)] = calibrator
     except Exception as exc:
-        logger.warning("Failed to save calibrator for %s: %s",
-                       specialist_name, exc)
+        logger.warning("Failed to save calibrator for %s (dir=%s): %s",
+                       specialist_name, direction, exc)
 
 
-def get_calibrator(db_path: str, specialist_name: str) -> Optional[Any]:
-    """Load (with cache) the persisted calibrator for one specialist."""
+def get_calibrator(db_path: str, specialist_name: str,
+                    direction: Optional[str] = None) -> Optional[Any]:
+    """Load (with cache) the persisted calibrator for one specialist.
+    P1.11 — pass direction='long' or 'short' to get the direction-
+    specific calibrator. Falls back to the legacy unified calibrator
+    if a direction-specific one hasn't been fit yet (graceful upgrade).
+    """
     if not db_path or not specialist_name:
         return None
-    key = (db_path, specialist_name)
+    key = (db_path, specialist_name, direction)
     with _calibrator_cache_lock:
         if key in _calibrator_cache:
             return _calibrator_cache[key]
-    path = _calibrator_path(db_path, specialist_name)
+    path = _calibrator_path(db_path, specialist_name, direction)
     if not os.path.exists(path):
-        with _calibrator_cache_lock:
-            _calibrator_cache[key] = None
-        return None
+        # Fallback: if a direction-specific calibrator doesn't exist
+        # yet, try the legacy unified calibrator. This means a fresh
+        # short specialist still gets *some* calibration based on the
+        # broader specialist track record, until enough short outcomes
+        # accumulate to fit a dedicated short calibrator.
+        if direction in ("long", "short"):
+            legacy_path = _calibrator_path(db_path, specialist_name, None)
+            if os.path.exists(legacy_path):
+                path = legacy_path
+            else:
+                with _calibrator_cache_lock:
+                    _calibrator_cache[key] = None
+                return None
+        else:
+            with _calibrator_cache_lock:
+                _calibrator_cache[key] = None
+            return None
     try:
         with open(path, "rb") as fh:
             cal = pickle.load(fh)
@@ -268,8 +324,8 @@ def get_calibrator(db_path: str, specialist_name: str) -> Optional[Any]:
             _calibrator_cache[key] = cal
         return cal
     except Exception as exc:
-        logger.warning("Failed to load calibrator for %s: %s",
-                       specialist_name, exc)
+        logger.warning("Failed to load calibrator for %s (dir=%s): %s",
+                       specialist_name, direction, exc)
         return None
 
 
@@ -393,16 +449,35 @@ def backfill_from_resolved_predictions(db_path: str) -> int:
 def refit_all(db_path: str, specialist_names: List[str]) -> Dict[str, bool]:
     """Refit and persist calibrators for every named specialist.
 
-    Returns a dict mapping specialist_name -> True/False (fitted/skipped).
+    P1.11 of LONG_SHORT_PLAN.md — fits THREE calibrators per specialist:
+    a 'long' direction calibrator, a 'short' direction calibrator, and
+    the legacy unified calibrator. The unified one stays as a fallback
+    for the cold-start case where a specialist has plenty of long
+    samples but not yet enough short samples (or vice versa) — the
+    direction-specific calibrators take over once each accumulates
+    >= MIN_SAMPLES_TO_FIT.
+
+    Returns a dict mapping `<specialist>` (legacy key) and
+    `<specialist>:<direction>` -> True/False (fitted/skipped).
     Called from the daily scheduler task.
     """
     results: Dict[str, bool] = {}
     for name in specialist_names:
+        # Legacy unified
         cal = fit_calibrator(db_path, name)
-        if cal is None:
+        if cal is not None:
+            save_calibrator(db_path, name, cal)
+            results[name] = True
+        else:
             results[name] = False
-            continue
-        save_calibrator(db_path, name, cal)
-        results[name] = True
+        # Direction-specific
+        for direction in ("long", "short"):
+            dcal = fit_calibrator(db_path, name, direction=direction)
+            key = f"{name}:{direction}"
+            if dcal is not None:
+                save_calibrator(db_path, name, dcal, direction=direction)
+                results[key] = True
+            else:
+                results[key] = False
     clear_calibrator_cache()
     return results

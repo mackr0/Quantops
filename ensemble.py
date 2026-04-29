@@ -338,12 +338,18 @@ def _synthesize(candidates: List[Dict[str, Any]],
             by_symbol_and_spec[(v["symbol"], name)] = v
 
     # Pre-load calibrators once per ensemble run.
-    calibrators: Dict[str, Any] = {}
+    # P1.11 of LONG_SHORT_PLAN.md — direction-specific calibrators per
+    # specialist. We load both (long, short) per specialist and pick
+    # the right one based on each verdict's direction at apply time.
+    # Legacy unified calibrators are used as a fallback when a
+    # direction-specific one hasn't been fit yet.
+    calibrators: Dict[Tuple[str, str], Any] = {}
     if db_path:
         try:
             from specialist_calibration import get_calibrator
             for name in raw_by_specialist:
-                calibrators[name] = get_calibrator(db_path, name)
+                calibrators[(name, "long")] = get_calibrator(db_path, name, "long")
+                calibrators[(name, "short")] = get_calibrator(db_path, name, "short")
         except Exception:
             calibrators = {}
 
@@ -371,7 +377,16 @@ def _synthesize(candidates: List[Dict[str, Any]],
                 continue
 
             raw_conf = int(v["confidence"])
-            cal = calibrators.get(name)
+            verdict = (v.get("verdict") or "").upper()
+            # P1.11 — pick direction-specific calibrator based on the
+            # specialist's verdict on this candidate. BUY → long
+            # calibrator; SELL/SHORT → short. HOLD/VETO/ABSTAIN don't
+            # affect ensemble scoring and don't need calibration.
+            if "SHORT" in verdict or verdict == "SELL":
+                cal_direction = "short"
+            else:
+                cal_direction = "long"
+            cal = calibrators.get((name, cal_direction))
             if cal is not None:
                 try:
                     from specialist_calibration import apply_calibration
