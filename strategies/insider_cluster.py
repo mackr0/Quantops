@@ -33,7 +33,13 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
                 out.append({
                     "symbol": symbol,
                     "signal": "BUY",
-                    "score": 2,
+                    # P3.5 of LONG_SHORT_PLAN.md — promoted from 2 to 3.
+                    # Insider clusters have documented edge (Seyhun 1986,
+                    # Cohen et al. 2012). The higher score lifts these
+                    # signals into the AI's top-15 shortlist reliably,
+                    # which they were previously losing to noisier
+                    # technical signals at score 2.
+                    "score": 3,
                     "votes": {"insider_cluster": "BUY"},
                     "reason": (
                         f"Insider cluster: {buys} buys totaling "

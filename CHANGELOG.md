@@ -17,6 +17,18 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — Phase 3.5 of LONG_SHORT_PLAN: insider signal score promotion (Severity: high, alpha)
+
+**The thesis.** Insider trading clusters have decades of academic evidence — Seyhun (1986), Cohen et al. (2012), and many others — showing that stocks where 3+ insiders buy in concert outperform by ~6% over the following six months, and the reverse for selling clusters. The signal is among the strongest in finance.
+
+**The bug.** Both `insider_cluster` (BUY) and `insider_selling_cluster` (SELL) emitted with score 2. Many less-rigorous technical strategies also emit at score 2. Result: insider signals were getting CROWDED OUT of the AI's top-15 shortlist by noisier momentum-based signals.
+
+**The fix.** Promoted both to score 3 with a documented comment referencing the academic work. Higher score lifts insider signals into the top-15 reliably, restoring their primary-weight status. Particularly impactful for shorts-enabled profiles where `insider_selling_cluster` is one of only four catalyst-tagged short strategies that survive strong-bull regimes.
+
+**Tests added.** `tests/test_insider_score_promotion.py` — 3 tests pinning score=3 in both modules + a source-level test that the P3.5 comment is present (so future refactors can't silently regress to 2). Updated `test_seed_strategies::test_triggers_on_cluster` from 2 → 3 to match new score.
+
+---
+
 ## 2026-04-29 — Phase 3.4 of LONG_SHORT_PLAN: iv_regime_short strategy (Severity: medium, alpha)
 
 **The thesis.** Different from the existing `high_iv_rank_fade` (mean-reversion). This is a CONTINUATION pattern: when implied volatility is elevated AND a stock is in an established downtrend with active selling, the combination of priced-in fear + technical breakdown predicts multi-day continuation lower. Elevated IV signals material uncertainty about the name; that uncertainty rarely resolves to the upside on a stock already breaking down.

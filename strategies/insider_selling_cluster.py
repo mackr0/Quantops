@@ -41,7 +41,13 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
             out.append({
                 "symbol": symbol,
                 "signal": "SELL",
-                "score": 2,
+                # P3.5 of LONG_SHORT_PLAN.md — promoted from 2 to 3.
+                # Insider selling clusters predict 6-12 month
+                # underperformance with statistical significance
+                # (Seyhun 1986). At score 2 they were losing top-15
+                # slots to noisier technical signals; bumping to 3
+                # ensures they reach the AI on shorts-enabled profiles.
+                "score": 3,
                 "votes": {NAME: "SELL"},
                 "price": price,
                 "reason": (

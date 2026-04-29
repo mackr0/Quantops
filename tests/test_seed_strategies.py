@@ -321,7 +321,9 @@ class TestInsiderSellingCluster:
                             lambda s, limit=5: _bars([50.0] * 3))
         out = mod.find_candidates(_Ctx(), ["AAPL"])
         _assert_shape(out, expected_signal="SELL")
-        assert out[0]["score"] == 2
+        # P3.5 of LONG_SHORT_PLAN.md promoted insider signals from
+        # score 2 to 3 so they reliably reach the AI's top-15 shortlist.
+        assert out[0]["score"] == 3
 
     def test_no_trigger_when_buys_dominate(self, monkeypatch):
         from strategies import insider_selling_cluster as mod
