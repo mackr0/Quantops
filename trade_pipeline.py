@@ -204,9 +204,20 @@ def _meta_pregate_candidates(candidates: List[Dict[str, Any]],
             # but the meta-model's main inputs (signal, score, RSI,
             # technicals) are already on the candidate by the time
             # the shortlist is ranked.
+            sig = c.get("signal", "HOLD")
+            # P1.12 — derive likely prediction_type from the candidate's
+            # strategy signal so the meta-model can apply direction-
+            # specific feature weights even at pregate time (before the
+            # AI has actually picked a direction).
+            sig_upper = sig.upper()
+            if sig_upper in ("SHORT", "STRONG_SHORT", "SELL", "STRONG_SELL"):
+                inferred_ptype = "directional_short"
+            else:
+                inferred_ptype = "directional_long"
             features = {
                 "symbol": c.get("symbol", ""),
-                "signal": c.get("signal", "HOLD"),
+                "signal": sig,
+                "prediction_type": inferred_ptype,
                 "score": c.get("score", 0),
                 "rsi": c.get("rsi", 0),
                 "volume_ratio": c.get("volume_ratio", 0),

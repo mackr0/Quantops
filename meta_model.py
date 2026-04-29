@@ -60,7 +60,15 @@ NUMERIC_FEATURES = [
 
 # Categorical features — one-hot encoded
 CATEGORICAL_FEATURES = {
-    "signal": ["STRONG_BUY", "BUY", "HOLD", "SELL", "STRONG_SELL"],
+    "signal": ["STRONG_BUY", "BUY", "HOLD", "SELL", "STRONG_SELL", "SHORT", "STRONG_SHORT"],
+    # P1.12 of LONG_SHORT_PLAN.md — prediction_type as a feature so
+    # the meta-model can learn that some technical patterns predict
+    # well for longs but not shorts (or vice versa). Backfilled rows
+    # have prediction_type populated; new rows store it at write
+    # time. At inference time the caller derives a candidate's
+    # likely prediction_type from its strategy signal.
+    "prediction_type": ["directional_long", "directional_short",
+                          "exit_long", "exit_short"],
     "insider_direction": ["buying", "selling", "neutral"],
     "options_signal": ["bullish_flow", "bearish_flow", "neutral"],
     "vwap_position": ["above", "at", "below"],
@@ -150,8 +158,10 @@ def build_training_set(db_path: str,
         # downstream split would be effectively random — leaking future
         # data into the training set and inflating AUC. See CHANGELOG
         # 2026-04-27 for the data-leak bug this guards against.
+        # P1.12 of LONG_SHORT_PLAN.md — also pulls prediction_type so
+        # the model can learn direction-specific feature interactions.
         rows = conn.execute(
-            "SELECT features_json, actual_outcome "
+            "SELECT features_json, actual_outcome, prediction_type "
             "FROM ai_predictions "
             "WHERE status = 'resolved' "
             "AND actual_outcome IN ('win', 'loss') "
@@ -176,6 +186,12 @@ def build_training_set(db_path: str,
         features = _parse_features_json(row["features_json"])
         if not features:
             continue
+        # P1.12 — inject prediction_type from the column into the
+        # feature payload so extract_features one-hots it.
+        ptype = row["prediction_type"]
+        if ptype:
+            features = dict(features)
+            features["prediction_type"] = ptype
         extracted = extract_features(features)
         if not extracted:
             continue
