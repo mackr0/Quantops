@@ -39,8 +39,17 @@ def _build_prompt(
     recent_performance: List[Dict[str, Any]],
     n_proposals: int,
     market_types: List[str],
+    direction_mix: Optional[Dict[str, int]] = None,
 ) -> str:
-    """Construct the strict JSON-only prompt for the AI proposer."""
+    """Construct the strict JSON-only prompt for the AI proposer.
+
+    P1.13 of LONG_SHORT_PLAN.md — direction_mix is a dict like
+    {'BUY': 5, 'SELL': 5} that asks the AI for a specific count of
+    each direction. Without it the AI defaults to whatever
+    distribution it thinks is best, which historically skews 90%+
+    bullish. Shorts-enabled profiles pass an explicit mix to ensure
+    bearish proposals get fair representation.
+    """
     perf_lines = []
     for p in recent_performance[:10]:
         perf_lines.append(
@@ -75,6 +84,8 @@ Allowed condition fields (for condition "field" and "field_ref"):
 Each condition compares one field against either a numeric "value" or
 another field referenced by "field_ref". ALL conditions must hold for a
 candidate to trigger. Keep conditions tight — 2 to 4 conditions is ideal.
+
+{("Direction mix required: " + ", ".join(f"{n} {d}" for d, n in direction_mix.items()) + ".") if direction_mix else ""}
 
 Output strictly valid JSON — a top-level array of exactly {n_proposals}
 proposal objects. Each object must have these fields:
@@ -141,12 +152,17 @@ def propose_strategies(
     ai_api_key: str,
     market_types: Optional[List[str]] = None,
     db_path: Optional[str] = None,
+    direction_mix: Optional[Dict[str, int]] = None,
 ) -> List[Dict[str, Any]]:
     """Ask the AI for N new strategy specs. Returns only specs that validate.
 
     Silently drops any proposal that fails schema validation — we never
     trust the AI to follow instructions perfectly. The caller can retry
     or accept a partial batch.
+
+    P1.13 of LONG_SHORT_PLAN.md — direction_mix forces a specific
+    long/short proposal balance. Without it the AI's free-form
+    output skews ~90% bullish.
     """
     from ai_providers import call_ai
 
@@ -154,7 +170,8 @@ def propose_strategies(
         return []
 
     market_types = market_types or sorted(ALLOWED_MARKETS)
-    prompt = _build_prompt(ctx_summary, recent_performance, n_proposals, market_types)
+    prompt = _build_prompt(ctx_summary, recent_performance, n_proposals,
+                            market_types, direction_mix=direction_mix)
 
     try:
         raw = call_ai(

@@ -4139,6 +4139,26 @@ def _optimize_commission_strategy(conn, ctx, profile_id, user_id,
         market_type = getattr(ctx, "segment", None)
         market_types = [market_type] if market_type else None
 
+        # P1.13 of LONG_SHORT_PLAN.md — direction mix on shorts-enabled
+        # profiles. When shorts are enabled but recent commissions have
+        # all been bullish, alternate to a SELL-direction proposal so
+        # the strategy library actually grows in both directions.
+        direction_mix = None
+        if getattr(ctx, "enable_short_selling", False):
+            # Check the most-recent commissioned strategy's direction
+            # to alternate; absent prior, request SELL first since
+            # that's the under-built direction.
+            try:
+                last_dir = conn.execute(
+                    "SELECT direction FROM auto_generated_strategies "
+                    "ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                next_dir = ("BUY" if (last_dir and last_dir["direction"] == "SELL")
+                            else "SELL")
+            except Exception:
+                next_dir = "SELL"
+            direction_mix = {next_dir: 1}
+
         proposals = propose_strategies(
             ctx_summary=ctx_summary,
             recent_performance=[],  # no per-strategy stats needed
@@ -4148,6 +4168,7 @@ def _optimize_commission_strategy(conn, ctx, profile_id, user_id,
             ai_api_key=ai_api_key,
             market_types=market_types,
             db_path=ctx.db_path,
+            direction_mix=direction_mix,
         )
         if not proposals:
             return None
