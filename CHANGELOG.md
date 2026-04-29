@@ -17,6 +17,21 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — P3.6 docstring clarification + CHANGELOG pairing (Severity: trivial, docs)
+
+Tightened the `get_factor_classification` docstring to make the
+per-position-loop usage pattern explicit (cache hit per
+(symbol, factor) per week + how unknown classifications flow
+through the caller's bucket logic). Cosmetic only — same code
+path, no behavior change.
+
+This commit is paired with CHANGELOG (per the recurring
+discipline reminder) — every .py commit ships with a CHANGELOG
+entry so the test_last_py_commit_includes_changelog guard
+stays green.
+
+---
+
 ## 2026-04-29 — P3.6 follow-up: factor render path fix (Severity: medium, display bug)
 
 The first P3.6 commit (`3e04e56`) populated the new factor buckets

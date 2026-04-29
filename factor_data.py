@@ -245,6 +245,11 @@ def get_factor_classification(symbol: str) -> Dict[str, str]:
     Each value is one of the bucket strings (or 'unknown').
 
     Single round-trip — calls each fetcher (which independently caches).
+    Designed to be safe to call inside a per-position loop:
+    the cache layer ensures we hit yfinance once per (symbol, factor)
+    per week. Crypto symbols and any symbol whose fundamentals
+    aren't reachable end up with all-'unknown' classifications,
+    which the caller's bucket logic absorbs into the unknown column.
     """
     return {
         "btm": classify_book_to_market(get_book_to_market(symbol)),
