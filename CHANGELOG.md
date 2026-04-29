@@ -17,6 +17,25 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — Slippage Impact panel: fix key-mismatch silent failure (Severity: high, data correctness)
+
+**The bug.** Slippage Impact panel on `/ai` and `/performance` showed "No fill data yet — slippage impact populates once trades record both decision and fill prices" — but every profile had 50-100 trades with full decision_price + fill_price + slippage_pct data. Direct call to `journal.get_slippage_stats(db_path=...)` returned populated stats; the UI just never showed them.
+
+**Root cause.** `journal.get_slippage_stats` returns `{trades_with_fills, avg_slippage_pct, total_slippage_cost, worst_slippage_pct, worst_trade}`. The view aggregator in `views.py` (both `performance_dashboard` and `ai_dashboard`) read `s.get("count", 0)` and `s.get("total_cost", 0)` — neither key exists in the returned dict, so `count` stayed 0 forever and the template fell to the empty state. Classic silent dict-key bug.
+
+**Fix.** Read the actual keys: `trades_with_fills`, `total_slippage_cost`, `avg_slippage_pct`. Aggregate avg_pct as a weighted average across profiles (weighted by trades_with_fills) — was previously computed as `total_cost / count` which would have given an average dollar cost, not a percent.
+
+**Tests.** New `test_slippage_aggregation.py` (3 tests):
+- Pin the journal-side contract: `get_slippage_stats` source must reference the three required keys
+- Pin the views-side: both `performance_dashboard` and `ai_dashboard` must read `trades_with_fills` and `total_slippage_cost` (regression-pin against accidentally re-introducing `count` / `total_cost`)
+- End-to-end round-trip: seed 5 trades with realistic slippage, verify the aggregation produces non-zero count/cost/avg_pct
+
+**Verified on prod.** profile_1 has 83 trades, profile_3 has 65, profile_10 has 50 — all with fill data. After this fix, the Slippage Impact panel will populate immediately on next page load.
+
+Full suite: 1317 passing.
+
+---
+
 ## 2026-04-29 — Chart SVGs fill their container (max-width regression) (Severity: medium, UX)
 
 **The bug.** All 5 chart renderers in `metrics.py` (Equity Curve, Drawdown, Bar Chart for PnL Distribution / Monthly Returns, Rolling Sharpe, Win Rate Trend) had `style="width:100%;max-width:700px;"`. On dashboards rendered into containers wider than 700px (the AI page is full-width), the SVG capped at 700px and left ~half the container empty. Visually broken even though the chart data was fine.

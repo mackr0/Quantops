@@ -1989,19 +1989,26 @@ def performance_dashboard():
     if total_gains > 0 and total_losses_abs > 0:
         ai_perf["profit_factor"] = round(total_gains / total_losses_abs, 2)
 
-    # Slippage stats
-    slippage = {"avg_pct": 0, "total_cost": 0, "count": 0}
+    # Slippage stats — aggregate per-profile get_slippage_stats output.
+    # The function returns keys `trades_with_fills`, `avg_slippage_pct`,
+    # `total_slippage_cost`. Earlier versions read `count` and
+    # `total_cost` which silently never populated, leaving the UI
+    # showing "No fill data yet" even when data existed.
+    slippage = {"avg_pct": 0.0, "total_cost": 0.0, "count": 0}
+    weighted_pct_sum = 0.0
     for db_path in db_paths:
         try:
             from journal import get_slippage_stats
             s = get_slippage_stats(db_path=db_path)
             if s:
-                slippage["count"] += s.get("count", 0)
-                slippage["total_cost"] += s.get("total_cost", 0)
+                n = s.get("trades_with_fills", 0) or 0
+                slippage["count"] += n
+                slippage["total_cost"] += s.get("total_slippage_cost", 0) or 0
+                weighted_pct_sum += (s.get("avg_slippage_pct", 0) or 0) * n
         except Exception:
             pass
-    if slippage["count"] > 0 and slippage["total_cost"] != 0:
-        slippage["avg_pct"] = slippage["total_cost"] / slippage["count"]
+    if slippage["count"] > 0:
+        slippage["avg_pct"] = weighted_pct_sum / slippage["count"]
 
     # Tuning history — filter to selected profile, or show all
     tuning_history = []
@@ -2737,18 +2744,22 @@ def ai_dashboard():
     if total_gains > 0 and total_losses_abs > 0:
         ai_perf["profit_factor"] = round(total_gains / total_losses_abs, 2)
 
-    slippage = {"avg_pct": 0, "total_cost": 0, "count": 0}
+    # Slippage stats — same key-mapping fix as performance_dashboard.
+    slippage = {"avg_pct": 0.0, "total_cost": 0.0, "count": 0}
+    weighted_pct_sum = 0.0
     for db_path in db_paths:
         try:
             from journal import get_slippage_stats
             s = get_slippage_stats(db_path=db_path)
             if s:
-                slippage["count"] += s.get("count", 0)
-                slippage["total_cost"] += s.get("total_cost", 0)
+                n = s.get("trades_with_fills", 0) or 0
+                slippage["count"] += n
+                slippage["total_cost"] += s.get("total_slippage_cost", 0) or 0
+                weighted_pct_sum += (s.get("avg_slippage_pct", 0) or 0) * n
         except Exception:
             pass
-    if slippage["count"] > 0 and slippage["total_cost"] != 0:
-        slippage["avg_pct"] = slippage["total_cost"] / slippage["count"]
+    if slippage["count"] > 0:
+        slippage["avg_pct"] = weighted_pct_sum / slippage["count"]
 
     meta_info = {"loaded": False, "profiles": []}
     try:
