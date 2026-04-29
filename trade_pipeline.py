@@ -1851,8 +1851,9 @@ _REGIME_CACHE_TTL = 1800  # 30 minutes; regime doesn't flip intra-cycle
 _CATALYST_SHORT_STRATEGIES = {
     "insider_selling_cluster",
     "distribution_at_highs",
-    "earnings_drift",       # post-earnings disappointment
-    "analyst_upgrade_drift",  # downgrade-after-upgrade thesis
+    "earnings_drift",            # post-earnings disappointment
+    "analyst_upgrade_drift",     # downgrade-after-upgrade thesis
+    "earnings_disaster_short",   # P3.1 — gap-down + non-recovery pattern
 }
 
 

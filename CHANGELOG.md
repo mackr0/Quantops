@@ -17,6 +17,25 @@ Rules going forward:
 
 ---
 
+## 2026-04-28 — Phase 3.1 of LONG_SHORT_PLAN: earnings_disaster_short strategy (Severity: high, alpha)
+
+**The thesis.** Post-Earnings Announcement Drift (PEAD, Bernard & Thomas 1990) shows stocks that miss earnings significantly continue underperforming for 60-90 days. Inverse PEAD on the short side: detect a recent significant gap-down on volume + non-recovery, emit SHORT.
+
+**Implementation.** `strategies/earnings_disaster_short.py`. Detection requires ALL:
+1. Within last 10 trading days, a single bar with gap-down ≥5% OR decline ≥8%
+2. Volume on that bar ≥ 2× the 20-day avg (institutional distribution, not noise)
+3. Latest close still below catalyst-bar close (no recovery yet)
+4. Latest close below 20-day SMA (broader trend confirmation)
+5. Distance from 52-week high ≥ 15% (false alarms near highs filtered out)
+
+Tagged in `_CATALYST_SHORT_STRATEGIES` so it survives the strong-bull regime gate. The disaster is company-specific damage that overrides market drift.
+
+Works for earnings misses AND any catalyst-driven gap (downgrade, fraud allegation, FDA rejection, guidance cut) — they all share the price-action signature.
+
+**Tests added.** `tests/test_earnings_disaster_short.py` — 7 tests covering: required interface, no-catalyst rejection, near-highs rejection, real disaster trigger, recovered-stock rejection, catalyst-tag membership, registry membership.
+
+---
+
 ## 2026-04-28 — Phase 2 of LONG_SHORT_PLAN: pair trades, sector exposure, balance gates (Severity: high, capability)
 
 **The problem.** Phase 1 gave us proper short execution. Phase 2 is what real long/short equity hedge funds use to actually compete: pair trades (long winner / short loser in same sector), sector-aware portfolio construction, target long/short balance per profile.
