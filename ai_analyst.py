@@ -747,6 +747,27 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
 
         line += f"\n     {reason}"
 
+        # P1.14 — short-side annotations from the candidate filter pass.
+        # Borrow cost: 'low' (~1% annual) vs 'high' (5-50%+ annual on
+        # HTB names — eats real money over multi-day holds).
+        # Squeeze risk: HIGH/MED/LOW based on short interest + float.
+        borrow_cost = c.get("_borrow_cost")
+        squeeze_risk = c.get("_squeeze_risk")
+        short_flags = []
+        if borrow_cost:
+            short_flags.append(
+                f"BORROW: {borrow_cost} cost"
+                + (" (eats ~5-15% over a 3-week hold)" if borrow_cost == "high" else "")
+            )
+        if squeeze_risk and squeeze_risk != "LOW":
+            short_flags.append(
+                f"SQUEEZE: {squeeze_risk}"
+                + (" (high short interest — confirm breakdown before shorting)"
+                   if squeeze_risk == "MED" else "")
+            )
+        if short_flags:
+            line += f"\n     SHORT-SIDE: {' | '.join(short_flags)}"
+
         # Relative strength vs sector
         rs = c.get("rel_strength")
         if rs:
@@ -1040,6 +1061,15 @@ def _validate_ai_trades(result, candidates_data, ctx=None):
         short_max_pos_pct = max_pos_pct / 2
     enable_shorts = getattr(ctx, "enable_short_selling", False) if ctx else False
 
+    # P1.14 — borrow-cost sizing penalty: HTB names eat real money
+    # over the typical hold. Halve again on top of the asymmetric cap.
+    # Lookup table by symbol from the candidates_data flags set in
+    # _rank_candidates.
+    borrow_cost_by_sym = {
+        c.get("symbol"): c.get("_borrow_cost")
+        for c in (candidates_data or [])
+    }
+
     # Ensure structure
     if not isinstance(result, dict):
         return {"trades": [], "portfolio_reasoning": "Invalid response format",
@@ -1079,6 +1109,10 @@ def _validate_ai_trades(result, candidates_data, ctx=None):
         # the smaller short_max_pos_pct (asymmetric-risk sizing).
         cap_pct = (short_max_pos_pct if action in ("SHORT", "SELL")
                    else max_pos_pct) * 100
+        # P1.14 — extra penalty for HTB shorts: the borrow cost eats
+        # the upside on a typical 2-3 week hold. Halve again.
+        if action in ("SHORT", "SELL") and borrow_cost_by_sym.get(sym) == "high":
+            cap_pct = cap_pct / 2
         size_pct = min(float(t.get("size_pct", 5.0)), cap_pct)
         size_pct = max(size_pct, 1.0)
 

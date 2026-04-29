@@ -1957,7 +1957,7 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
             if primary and primary in deprecated_strategies:
                 continue
 
-        # P1.2 / P1.3 / P1.4 — quality filters on SHORT candidates only.
+        # P1.2 / P1.3 / P1.4 / P1.14 — quality filters on SHORT candidates.
         # Long candidates pass through unchanged.
         if _is_short_action(action) and symbol not in held_symbols:
             # 1.2 Borrow availability — Alpaca asset endpoint
@@ -1966,11 +1966,21 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
             if not borrow.get("shortable", True):
                 short_skips["borrow"] += 1
                 continue
+            # P1.14 — annotate the candidate with borrow cost so the AI
+            # can see it and the sizer can adjust. Alpaca's asset
+            # endpoint doesn't return a numeric borrow rate (that's
+            # paid 3rd-party data), but the easy_to_borrow flag is a
+            # reliable proxy: True ≈ ~1% annual; False ≈ 5-50%+ annual
+            # (HTB names cost real money to short over multi-day holds).
+            signal["_borrow_cost"] = (
+                "low" if borrow.get("easy_to_borrow") else "high"
+            )
             # 1.3 Squeeze risk — high short interest + low float
             risk = _squeeze_risk(symbol)
             if risk == "HIGH":
                 short_skips["squeeze"] += 1
                 continue
+            signal["_squeeze_risk"] = risk
             # 1.4 Regime gate — strong-bull market suppresses routine
             # technical shorts; catalyst shorts pass through.
             if market_regime == "strong_bull":
