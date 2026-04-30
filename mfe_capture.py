@@ -40,62 +40,74 @@ def compute_capture_ratio(db_path: str, lookback: int = 50) -> Optional[Dict[str
     """Compute the average capture ratio across the most-recent closed
     trades that have an MFE recording.
 
+    Schema reality: MFE lives on the BUY entry row (updated each cycle
+    while the position is open). Realized P&L lives on the SELL exit
+    row that's inserted when the position closes. To compute capture
+    we self-join on symbol — for each SELL with pnl, find the most
+    recent prior BUY for that symbol with an MFE, use its entry price
+    and high-water mark.
+
     Args:
       db_path: profile journal DB
-      lookback: how many recent trades to average over (caps so older
-        trades don't dilute the signal)
+      lookback: how many recent SELL rows to average over
 
     Returns:
-      Dict with `avg_capture_ratio`, `n_trades`, `n_negative_capture`
-      (trades that lost despite an MFE > 0 — the most damaging pattern),
-      `median_capture_ratio`, or None if insufficient data.
+      Dict with avg_capture_ratio, median_capture_ratio, n_trades,
+      n_negative_capture (trades that lost despite an MFE > entry —
+      the most damaging pattern). None on insufficient data.
     """
     if not db_path:
         return None
     try:
         conn = sqlite3.connect(db_path)
-        rows = conn.execute(
-            "SELECT pnl, qty, price, max_favorable_excursion "
+        # Pull recent SELL rows (the exits, where pnl lives).
+        sells = conn.execute(
+            "SELECT id, timestamp, symbol, qty, price, pnl "
             "FROM trades "
             "WHERE pnl IS NOT NULL "
-            "AND max_favorable_excursion IS NOT NULL "
-            "AND max_favorable_excursion > 0 "
+            "AND side IN ('sell', 'cover') "
             "AND qty > 0 AND price > 0 "
             "ORDER BY id DESC LIMIT ?",
             (lookback,),
         ).fetchall()
+        if not sells:
+            conn.close()
+            return None
+        # For each SELL, find the most recent prior BUY for that symbol
+        # with an MFE recorded. The BUY's price is the entry; its MFE
+        # is the highest favorable price during the position's life.
+        captures = []
+        n_negative = 0
+        for sid, ts, sym, sell_qty, sell_px, pnl in sells:
+            buy = conn.execute(
+                "SELECT price, max_favorable_excursion FROM trades "
+                "WHERE symbol = ? AND side = 'buy' "
+                "AND timestamp < ? "
+                "AND max_favorable_excursion IS NOT NULL "
+                "AND max_favorable_excursion > 0 "
+                "ORDER BY id DESC LIMIT 1",
+                (sym, ts),
+            ).fetchone()
+            if not buy:
+                continue
+            entry_price, mfe = buy
+            if not entry_price or entry_price <= 0 or not mfe or mfe <= entry_price:
+                # No favorable excursion (price never went above entry).
+                # Capture is undefined — exclude.
+                continue
+            notional = abs(sell_qty * entry_price)
+            if notional <= 0:
+                continue
+            realized_pct = (pnl / notional) * 100.0
+            mfe_pct = ((float(mfe) - entry_price) / entry_price) * 100.0
+            capture = realized_pct / mfe_pct
+            captures.append(capture)
+            if capture < 0:
+                n_negative += 1
         conn.close()
     except Exception as exc:
         logger.debug("compute_capture_ratio query failed: %s", exc)
         return None
-
-    if len(rows) < MIN_TRADES_FOR_CAPTURE:
-        return None
-
-    captures = []
-    n_negative = 0
-    for pnl, qty, price, mfe in rows:
-        # mfe is the highest-favorable price during the trade's life,
-        # in absolute dollars (per-share). Convert to %: mfe / entry.
-        # We don't have entry price separately on exit rows — qty×price
-        # is the exit notional. Use price as a stand-in (close enough
-        # for short holds where entry≈exit). For long-held positions
-        # this slightly underestimates capture — acceptable.
-        if not pnl or not qty or not price or not mfe or mfe <= 0:
-            continue
-        notional = abs(qty * price)
-        if notional <= 0:
-            continue
-        realized_pct = (pnl / notional) * 100.0
-        # mfe is stored as a price level — convert to a return % vs
-        # the trade's reference price.
-        mfe_pct = ((float(mfe) - price) / price) * 100.0
-        if mfe_pct <= 0:
-            continue
-        capture = realized_pct / mfe_pct
-        captures.append(capture)
-        if capture < 0:
-            n_negative += 1
 
     if len(captures) < MIN_TRADES_FOR_CAPTURE:
         return None
