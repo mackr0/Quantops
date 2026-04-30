@@ -17,6 +17,26 @@ Rules going forward:
 
 ---
 
+## 2026-04-30 — Pending orders panel: filter to this profile only (Severity: high, UX correctness)
+
+**The bug.** Dashboard's per-profile Pending Orders panel showed orders for symbols the profile didn't hold. e.g., Mid Cap displayed trailing-stop orders for SOFI even though Mid Cap doesn't trade small caps. Confusing pattern caught by the user.
+
+**Root cause.** `_safe_pending_orders(ctx)` called `api.list_orders(status="open")` and returned everything Alpaca had open. With 10 profiles sharing 3 Alpaca accounts (verified architecture), every profile's panel showed orders placed by ALL sibling profiles on its account. profile_3 saw orders from profiles 4, 5, 9, 10, 11 (all Account 3); profile_8 stayed clean only because it's the sole inhabitant of Account 1.
+
+**Fix.** Cross-reference each Alpaca order's `id` against this profile's trades table. Owned IDs = union of `order_id`, `protective_stop_order_id`, `protective_tp_order_id`, `protective_trailing_order_id` across all rows. Orders whose id isn't in our DB are sibling-profile orders and get filtered out.
+
+Fail-open if the trades DB can't be read — better to show extras than to hide everything and leave the user wondering. Older trade DBs without protective_*_order_id columns degrade gracefully (per-column try/except).
+
+**Tests.** 4 new in `test_pending_orders_filter.py`:
+- Hides sibling-profile orders (3 returned by Alpaca, only 1 belongs to us, 1 visible)
+- Unions all four ID columns
+- Falls open when ctx has no db_path
+- Handles missing protective_* columns on legacy schemas
+
+Full suite: 1384 passing.
+
+---
+
 ## 2026-04-30 — Three production hardenings: protective-order conflict, wash-trade cooldown, bar cache (Severity: high, multi-issue)
 
 Cleanup pass triggered by reviewing 18h of prod logs. Three independent issues, all addressed.

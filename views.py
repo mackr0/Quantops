@@ -155,7 +155,16 @@ def _enriched_positions(ctx, profile_id):
 
 
 def _safe_pending_orders(ctx):
-    """Fetch open/accepted Alpaca orders that have not filled yet.
+    """Fetch open/accepted Alpaca orders for THIS profile only.
+
+    Multiple profiles share each Alpaca account (10 profiles → 3
+    accounts). `api.list_orders()` returns every open order on the
+    shared account, including ones placed by other profiles. To show
+    only orders this profile owns, we cross-reference each order's id
+    against the profile's trades table (entry order_id +
+    protective_stop_order_id + protective_tp_order_id +
+    protective_trailing_order_id). Orders whose id isn't in our
+    tables belong to a sibling profile and are hidden from this view.
 
     After-hours submissions queue as `accepted` until the next market
     session. Without surfacing them, the dashboard looks deceptively
@@ -163,9 +172,43 @@ def _safe_pending_orders(ctx):
     """
     try:
         api = ctx.get_alpaca_api()
-        orders = api.list_orders(status="open", limit=50)
+        orders = api.list_orders(status="open", limit=200)
+
+        # Build the set of order IDs this profile owns. Pulled fresh
+        # each call rather than cached because protective IDs churn
+        # cycle-to-cycle as positions open/close. When ctx has no
+        # db_path attribute (older test fixtures, ad-hoc invocations),
+        # owned_ids stays None → fail-open.
+        owned_ids = None
+        db_path = getattr(ctx, "db_path", None)
+        if db_path:
+            try:
+                import sqlite3 as _sqlite
+                conn = _sqlite.connect(db_path)
+                ids: set = set()
+                for col in ("order_id", "protective_stop_order_id",
+                             "protective_tp_order_id",
+                             "protective_trailing_order_id"):
+                    try:
+                        rows = conn.execute(
+                            f"SELECT {col} FROM trades WHERE {col} IS NOT NULL"
+                        ).fetchall()
+                        ids.update(r[0] for r in rows if r[0])
+                    except Exception:
+                        pass  # column may not exist yet on a fresh DB
+                conn.close()
+                owned_ids = ids
+            except Exception as exc:
+                logger.debug("Could not load owned order IDs from %s: %s",
+                              db_path, exc)
+                # Fail open — better to show extra orders than none at all
+                owned_ids = None
+
         out = []
         for o in orders:
+            # Filter: only show orders this profile placed
+            if owned_ids is not None and o.id not in owned_ids:
+                continue
             try:
                 qty = float(o.qty) if o.qty else 0.0
             except (TypeError, ValueError):
