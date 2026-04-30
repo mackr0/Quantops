@@ -553,6 +553,62 @@ def test_cancel_for_symbol_clears_all_three_protective_orders(tmp_db):
     assert row[2] is None
 
 
+def test_has_active_broker_trailing_returns_true_when_id_active(tmp_db):
+    """When the trades row has a protective_trailing_order_id and the
+    broker confirms it's still working, has_active_broker_trailing
+    returns True so polling can defer."""
+    from bracket_orders import has_active_broker_trailing
+    conn = sqlite3.connect(tmp_db)
+    conn.execute(
+        "INSERT INTO trades (timestamp, symbol, side, qty, price, "
+        "status, protective_trailing_order_id) "
+        "VALUES (?, 'AAPL', 'buy', 100, 150.0, 'open', 'trail-active')",
+        ("2026-04-30",),
+    )
+    conn.commit()
+    conn.close()
+    api = MagicMock()
+    api.get_order.return_value = MagicMock(status="held")
+    assert has_active_broker_trailing(api, tmp_db, "AAPL") is True
+
+
+def test_has_active_broker_trailing_returns_false_when_no_id(tmp_db):
+    from bracket_orders import has_active_broker_trailing
+    api = MagicMock()
+    assert has_active_broker_trailing(api, tmp_db, "AAPL") is False
+
+
+def test_has_active_broker_trailing_returns_false_when_order_filled(tmp_db):
+    """Filled / cancelled orders aren't 'active' — don't defer to them."""
+    from bracket_orders import has_active_broker_trailing
+    conn = sqlite3.connect(tmp_db)
+    conn.execute(
+        "INSERT INTO trades (timestamp, symbol, side, qty, price, "
+        "status, protective_trailing_order_id) "
+        "VALUES (?, 'AAPL', 'buy', 100, 150.0, 'open', 'trail-stale')",
+        ("2026-04-30",),
+    )
+    conn.commit()
+    conn.close()
+    api = MagicMock()
+    api.get_order.return_value = MagicMock(status="filled")
+    assert has_active_broker_trailing(api, tmp_db, "AAPL") is False
+
+
+def test_check_exits_defers_polling_trail_to_broker():
+    """Source-level pin: trader.check_exits must filter trailing
+    triggers when the broker has an active trailing order. Without
+    this, polling cancels the broker order before it can fire."""
+    import inspect
+    import trader
+    src = inspect.getsource(trader.check_exits)
+    assert "has_active_broker_trailing" in src, (
+        "REGRESSION: trader.check_exits doesn't defer to the broker "
+        "trailing stop. Polling will keep beating the broker to "
+        "worse fills."
+    )
+
+
 def test_check_exits_invokes_protective_sweep():
     """Source-level pin: trader.check_exits must call
     ensure_protective_stops. Without it, polling-based stop detection

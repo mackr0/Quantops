@@ -418,6 +418,36 @@ def _cancel_stale_other_orders(api, conn, row, kinds):
             logger.debug("Couldn't clear stale order columns: %s", exc)
 
 
+def has_active_broker_trailing(api, db_path: str, symbol: str) -> bool:
+    """Return True iff this profile has a tracked broker trailing-stop
+    order for `symbol` that's still working at Alpaca.
+
+    Used by trader.check_exits to defer the polling-based trailing
+    detection — if the broker is going to fire at the trail level on
+    a tick basis, polling on a 5-minute snapshot would only beat it
+    to a worse price. Polling stays as the fallback when there's no
+    active broker trailing.
+    """
+    import sqlite3
+    if not db_path or not symbol:
+        return False
+    try:
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT protective_trailing_order_id FROM trades "
+            "WHERE symbol = ? AND side = 'buy' AND status = 'open' "
+            "AND protective_trailing_order_id IS NOT NULL "
+            "ORDER BY id DESC LIMIT 1",
+            (symbol,),
+        ).fetchone()
+        conn.close()
+        if not row or not row[0]:
+            return False
+        return _is_order_active(api, row[0])
+    except Exception:
+        return False
+
+
 def cancel_for_symbol(api, db_path: str, symbol: str) -> None:
     """Cancel any active protective stop / take-profit / trailing-stop
     orders for the given symbol.

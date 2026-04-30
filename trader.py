@@ -427,6 +427,34 @@ def check_exits(ctx=None):
         already_triggered = {t["symbol"] for t in triggered}
         trailing_candidates = [p for p in positions if p["symbol"] not in already_triggered]
         trailing_triggered = check_trailing_stops(trailing_candidates, ctx)
+
+        # Defer to the broker trailing stop when it's actively placed.
+        # Polling on a 5-min snapshot would beat the broker to a worse
+        # fill price (current_price is past the trail, broker would
+        # have fired AT the trail). Without this filter, the existing
+        # cancel_for_symbol logic kills the broker order before it can
+        # fire — observed pattern 2026-04-30: 0 broker trailing fires,
+        # 11 polling trailing exits.
+        if db_path and trailing_triggered:
+            try:
+                from bracket_orders import has_active_broker_trailing
+                deferred = []
+                kept = []
+                for t in trailing_triggered:
+                    if has_active_broker_trailing(api, db_path, t["symbol"]):
+                        deferred.append(t["symbol"])
+                    else:
+                        kept.append(t)
+                if deferred:
+                    logging.info(
+                        "Trailing detection deferred to broker for %d "
+                        "symbols (broker will fire at trail level): %s",
+                        len(deferred), ", ".join(deferred),
+                    )
+                trailing_triggered = kept
+            except Exception as _exc:
+                logging.debug("Broker-trailing defer check failed: %s", _exc)
+
         triggered.extend(trailing_triggered)
 
     results = []

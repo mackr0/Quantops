@@ -17,6 +17,28 @@ Rules going forward:
 
 ---
 
+## 2026-04-30 — Polling defers to broker trailing stop (the trio finally works as designed) (Severity: high, P&L)
+
+**The bug.** Audited today's exits: 0 of 11 trailing-stop fires came from the broker. All 11 fired via the polling fallback in `check_trailing_stops`. With ~150 broker trailing orders actively placed across all profiles, the broker should have been firing them — instead the polling was beating it to a worse fill on every single trade.
+
+**Root cause.** Polling check_trailing_stops detects "current_price < trail_level" on the 5-minute cycle. Once it does, the exit loop calls `cancel_for_symbol` which cancels the broker trailing — then submits a market sell at the current (post-breach) price. So the broker never gets to fire AT the trail level. The system was designed to have the broker fire on tick data (faster than polling) but the polling was killing the broker's chance every cycle.
+
+**Fix.** Polling now defers to the broker when there's an active broker trailing order for the symbol. New helper `has_active_broker_trailing(api, db_path, symbol)` checks two things: the trades table has a tracked `protective_trailing_order_id`, AND the broker confirms the order is still working. If both true, polling drops the trigger from its list. The broker fires AT the trail level on the next adverse tick.
+
+If broker trailing isn't actively placed (qty conflict, restart race, etc.), polling stays as the fallback.
+
+Logs now include `"Trailing detection deferred to broker for N symbols"` so you can see this at work. After this deploy, the ratio of broker-fired vs polling-fired trailing exits should flip from 0/11 to majority broker.
+
+**Why this is the right structural fix.** The whole point of placing broker stops was to fire AT the threshold price, not at next-cycle current price. Today's data showed every single trailing exit was still going through polling — broker placement was infrastructure overhead with no realized benefit. After this defer, the broker actually does the job it was placed to do.
+
+**Tests.** 4 new in `test_bracket_orders.py` (39 total):
+- `has_active_broker_trailing` returns True with an active id, False without an id, False when broker says order is filled/cancelled
+- Source-pin on `trader.check_exits` calling `has_active_broker_trailing`
+
+Full suite: 1389 passing.
+
+---
+
 ## 2026-04-30 — Pending orders panel: filter to this profile only (Severity: high, UX correctness)
 
 **The bug.** Dashboard's per-profile Pending Orders panel showed orders for symbols the profile didn't hold. e.g., Mid Cap displayed trailing-stop orders for SOFI even though Mid Cap doesn't trade small caps. Confusing pattern caught by the user.
