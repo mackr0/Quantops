@@ -341,6 +341,15 @@ def _migrate_all_columns(conn):
             # most of the gain). Skipped on positions covered by the
             # conviction-tp override.
             ("protective_tp_order_id", "TEXT"),
+            # INTRADAY_STOPS_PLAN Stage 3 — Alpaca order id for the
+            # broker-managed trailing stop. Replaces the polling-based
+            # trailing logic that fired on daily close after intraday
+            # reversal (e.g. IBM rallied to $258 then collapsed to $231
+            # in one day; polling caught the EOD close at $231 = $2 win
+            # on what was an $1500 unrealized winner). Broker trailing
+            # tracks high water continuously and fires at trail_percent
+            # below it the moment the level is broken.
+            ("protective_trailing_order_id", "TEXT"),
         ],
         "ai_predictions": [
             ("regime_at_prediction", "TEXT"),

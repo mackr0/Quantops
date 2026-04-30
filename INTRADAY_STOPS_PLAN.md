@@ -107,5 +107,10 @@ Negligible impact on API budget.
 ## Status
 
 - [x] Stage 1: Static stop-loss (commit 3d84543)
-- [x] Stage 2: Take-profit (commit pending)
-- [ ] Stage 3: Trailing-stop replacement
+- [x] Stage 2: Take-profit (commit b024ab8)
+- [x] Stage 3: Trailing-stop replacement (commit pending)
+
+All three stages shipped. Polling trailing-stop logic stays in
+trader.check_exits as a safety net — if broker trailing fails to
+fire for any reason, the polling check is the fallback. Polling
+on a flat position (broker stop already fired) is a safe no-op.

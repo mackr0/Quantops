@@ -17,6 +17,47 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — INTRADAY_STOPS Stage 3: broker-managed trailing stops (Severity: critical, P&L)
+
+**The biggest single P&L bug yet.** This is the IBM tiny-win pattern:
+
+- Entry: $231.86
+- High water during day: $258.50 (+11.5% MFE)
+- Trail level (high - 1.5×ATR): $248.54
+- EOD close: $231.90
+- Polling at EOD detects close < trail → exit at close = $231.90
+- Recorded as **$2.70 win** on what was a $1500+ unrealized winner.
+
+The broker trailing stop solves this by tracking the high water continuously and firing the moment the trail level is broken — not on the next 5-min cycle, not at EOD close.
+
+**Implementation.**
+- `submit_protective_trailing(api, symbol, qty, side, trail_percent)` — submits Alpaca `type='trailing_stop'` with `trail_percent` (clamped [2%, 10%] for sanity).
+- `trail_percent_for_entry(stop_loss_pct)` — converts the profile's stop_loss_pct to trail_percent. If the user accepts a 5% drawdown for the static stop, the trail follows the high water at 5% below.
+- `ensure_protective_stops` extended to also place trailing stops when `ctx.use_trailing_stops` is enabled.
+- `cancel_for_symbol` extended to cancel all three protective orders (stop / TP / trailing).
+- New `protective_trailing_order_id TEXT` column on the trades table.
+
+**Safety net retained.** The polling-based `check_trailing_stops` stays in `trader.check_exits` as a fallback. If broker trailing fails to fire for any reason, the polling check still runs. Polling on a flat position (broker stop already fired) is a safe no-op — nothing to sell, the existing `_entry_order_filled_at_broker` guard handles it.
+
+**Why the broker trailing differs from the polling logic.** Polling computed `high_water - 1.5×ATR` from the last 5 daily bars. Broker trailing tracks the high water from order-submit time onward, with a fixed `trail_percent`. Slight semantic difference — broker trail uses the full position lifetime, polling used a 5-day window. In practice, broker trailing is tighter early in a position's life (less room for noise) and comparable later. The trail_percent clamp [2%, 10%] keeps the broker trail in the same ballpark as the polling 1.5×ATR.
+
+**Tests.** 6 new in `test_bracket_orders.py` (now 29 total):
+- `trail_percent_for_entry` clamps to [2%, 10%]
+- `submit_protective_trailing` uses `type='trailing_stop'` with trail_percent string
+- Sweep places trailing alongside stop + TP when `use_trailing_stops=True`
+- Sweep skips trailing when disabled
+- `cancel_for_symbol` clears all three columns
+
+**INTRADAY_STOPS_PLAN.md is now complete (Stages 1, 2, 3).** Combined with Fix 3 (scratch classification), the system is now:
+- Loss execution: real broker stops, no overshoot
+- Win execution: real broker take-profit + trailing, no give-back
+- Win classification: honest threshold (no $2 "wins")
+- Per-trade fills: real Alpaca paper, near identical to real-money execution at this scale
+
+Full suite: 1356 passing.
+
+---
+
 ## 2026-04-29 — INTRADAY_STOPS Stage 2: broker-managed take-profit orders (Severity: high, P&L)
 
 **The problem.** Polling take-profit detection runs every 5 minutes. By the time we detect a position has hit its TP threshold, price has typically reverted some — we exit at a worse price than the target. Combined with trailing stops that fire after intraday reversals, profitable trades give back gains before the polling cycle catches them.

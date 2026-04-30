@@ -171,6 +171,71 @@ def submit_protective_take_profit(
         return None
 
 
+# Bounds on trail percent to avoid stops that are too tight (whipsaw
+# on normal volatility) or too loose (defeats the purpose).
+TRAIL_PERCENT_MIN = 2.0
+TRAIL_PERCENT_MAX = 10.0
+
+
+def trail_percent_for_entry(stop_loss_pct: float) -> Optional[float]:
+    """Convert the profile's stop_loss_pct to an Alpaca trail_percent.
+
+    Uses the same percent the user accepts for the static stop. If
+    stop_loss_pct=0.05, the trail follows the high water at 5% below.
+    Clamped to [2%, 10%] so we don't get tight-stop whipsaws on
+    high-vol names or worthless 20% trails on low-vol names.
+
+    Returns None on invalid inputs.
+    """
+    if stop_loss_pct is None or stop_loss_pct <= 0:
+        return None
+    pct = stop_loss_pct * 100.0
+    return max(TRAIL_PERCENT_MIN, min(TRAIL_PERCENT_MAX, pct))
+
+
+def submit_protective_trailing(
+    api,
+    symbol: str,
+    qty: int,
+    side: str,
+    trail_percent: float,
+) -> Optional[str]:
+    """Submit a broker trailing-stop order.
+
+    Alpaca tracks the high water continuously and adjusts the stop level
+    to (high - trail_percent% × high). When price falls through the
+    level, fires a market order. This eliminates the polling lag that
+    caused IBM-style "intraday spike then EOD collapse" giveback.
+
+    side='sell' for long position close, 'buy' for short cover.
+    """
+    if not symbol or qty <= 0 or trail_percent <= 0 or side not in ("sell", "buy"):
+        return None
+    try:
+        order = api.submit_order(
+            symbol=symbol,
+            qty=int(qty),
+            side=side,
+            type="trailing_stop",
+            trail_percent=str(round(float(trail_percent), 2)),
+            time_in_force="gtc",
+        )
+        order_id = getattr(order, "id", None)
+        if order_id:
+            logger.info(
+                "Protective trailing stop placed: %s %s qty=%d trail=%.2f%% order_id=%s",
+                side, symbol, qty, trail_percent, order_id,
+            )
+        return order_id
+    except Exception as exc:
+        logger.warning(
+            "Could not place protective trailing stop for %s "
+            "(qty=%d, trail=%.2f%%): %s",
+            symbol, qty, trail_percent, exc,
+        )
+        return None
+
+
 def _is_order_active(api, order_id: str) -> bool:
     """Return True iff the order is still working at the broker. Fail-open
     on lookup errors — we'd rather submit a duplicate than leave a position
@@ -231,7 +296,8 @@ def ensure_protective_stops(api, positions, ctx, db_path,
             is_short = qty < 0
             entry_side_in_db = "short" if is_short else "buy"
             row = conn.execute(
-                "SELECT id, protective_stop_order_id, protective_tp_order_id "
+                "SELECT id, protective_stop_order_id, protective_tp_order_id, "
+                "protective_trailing_order_id "
                 "FROM trades "
                 "WHERE symbol = ? AND side = ? AND status = 'open' "
                 "ORDER BY id DESC LIMIT 1",
@@ -305,6 +371,41 @@ def ensure_protective_stops(api, positions, ctx, db_path,
                         "Take-profit placed but couldn't store order_id: %s "
                         "(symbol=%s)", exc, symbol,
                     )
+
+            # ---- Trailing stop ----
+            # Only place when the profile uses trailing stops. Skipped
+            # if conviction-override fires (let runners run, no trail
+            # cap either — same logic as TP).
+            use_trailing = (getattr(ctx, "use_trailing_stops", False)
+                             if ctx else False)
+            if not use_trailing:
+                continue
+
+            existing_trail_id = row["protective_trailing_order_id"]
+            if existing_trail_id and _is_order_active(api, existing_trail_id):
+                continue
+
+            sl_pct_for_trail = sl_pct_short if is_short else sl_pct_long
+            trail_pct = trail_percent_for_entry(sl_pct_for_trail)
+            if trail_pct is None:
+                continue
+
+            order_id = submit_protective_trailing(
+                api, symbol, abs_qty, close_side, trail_pct,
+            )
+            if order_id:
+                try:
+                    conn.execute(
+                        "UPDATE trades SET protective_trailing_order_id = ? "
+                        "WHERE id = ?",
+                        (order_id, row["id"]),
+                    )
+                    conn.commit()
+                except Exception as exc:
+                    logger.warning(
+                        "Trailing stop placed but couldn't store order_id: %s "
+                        "(symbol=%s)", exc, symbol,
+                    )
     finally:
         try:
             conn.close()
@@ -313,8 +414,8 @@ def ensure_protective_stops(api, positions, ctx, db_path,
 
 
 def cancel_for_symbol(api, db_path: str, symbol: str) -> None:
-    """Cancel any active protective stop OR take-profit orders for the
-    given symbol.
+    """Cancel any active protective stop / take-profit / trailing-stop
+    orders for the given symbol.
 
     Called before a manual exit (AI SELL, polling-triggered exit, etc.)
     so the broker orders don't fire AFTER our market sell on a now-flat
@@ -328,11 +429,13 @@ def cancel_for_symbol(api, db_path: str, symbol: str) -> None:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT id, protective_stop_order_id, protective_tp_order_id "
+            "SELECT id, protective_stop_order_id, protective_tp_order_id, "
+            "protective_trailing_order_id "
             "FROM trades "
             "WHERE symbol = ? AND status = 'open' "
             "AND (protective_stop_order_id IS NOT NULL "
-            "     OR protective_tp_order_id IS NOT NULL)",
+            "     OR protective_tp_order_id IS NOT NULL "
+            "     OR protective_trailing_order_id IS NOT NULL)",
             (symbol,),
         ).fetchall()
         for r in rows:
@@ -340,9 +443,12 @@ def cancel_for_symbol(api, db_path: str, symbol: str) -> None:
                 cancel_protective_stop(api, r["protective_stop_order_id"])
             if r["protective_tp_order_id"]:
                 cancel_protective_stop(api, r["protective_tp_order_id"])
+            if r["protective_trailing_order_id"]:
+                cancel_protective_stop(api, r["protective_trailing_order_id"])
             conn.execute(
                 "UPDATE trades SET protective_stop_order_id = NULL, "
-                "protective_tp_order_id = NULL "
+                "protective_tp_order_id = NULL, "
+                "protective_trailing_order_id = NULL "
                 "WHERE id = ?",
                 (r["id"],),
             )
