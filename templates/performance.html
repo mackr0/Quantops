@@ -805,6 +805,15 @@
                 <strong style="font-size:2rem;">{{ m.all_trades }}</strong>
                 <small class="muted">{{ m.closed_trades }} closed · {{ m.open_trades }} open</small>
             </div>
+            {% if mfe_capture %}
+            <div class="stat-card" style="text-align:center;">
+                <small class="muted"><span class="tip" data-tip="Realized P&L as a fraction of the available favorable excursion (max-favorable-price reached during the trade's life). 1.0 = exited at the peak. 0.3 = gave back 70% of unrealized gains. Negative = lost money despite the trade running favorably during its life. Pre-INTRADAY_STOPS Stage 3 this was very low because polling-based trailing stops fired at next-day close after intraday reversal.">MFE Capture</span></small>
+                <strong style="font-size:2rem;" class="{{ 'pnl-pos' if mfe_capture.avg_capture_ratio >= 0.5 else 'pnl-neg' }}">
+                    {{ "%.0f"|format(mfe_capture.avg_capture_ratio * 100) }}%
+                </strong>
+                <small class="muted">{{ mfe_capture.n_trades }} trades{% if mfe_capture.n_negative_capture %} · {{ mfe_capture.n_negative_capture }} lost despite favorable run{% endif %}</small>
+            </div>
+            {% endif %}
         </div>
     </article>
 

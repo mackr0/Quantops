@@ -1870,6 +1870,19 @@ def performance_dashboard():
         except Exception:
             pass
 
+    # Fix 1 — MFE capture ratio. Only meaningful per-profile (capture
+    # logic differs by profile risk parameters). Aggregated capture
+    # across profiles would mix incompatible exit regimes.
+    mfe_capture = None
+    if selected_profile_int:
+        try:
+            from mfe_capture import compute_capture_ratio
+            prof_db = f"quantopsai_profile_{selected_profile_int}.db"
+            if os.path.exists(prof_db):
+                mfe_capture = compute_capture_ratio(prof_db)
+        except Exception:
+            pass
+
     # AI prediction accuracy (for AI Intelligence tab)
     from ai_tracker import get_ai_performance
     from journal import get_performance_summary
@@ -2405,6 +2418,7 @@ def performance_dashboard():
                            profile_target_book_beta=profile_target_book_beta,
                            perf_kelly_long=perf_kelly_long,
                            perf_kelly_short=perf_kelly_short,
+                           mfe_capture=mfe_capture,
                            ai_perf=ai_perf,
                            slippage=slippage,
                            scaling_real=scaling_real,

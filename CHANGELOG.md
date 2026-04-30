@@ -17,6 +17,43 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — Fix 1: MFE capture ratio surfaced to AI prompt + dashboard (Severity: medium, observability)
+
+**The metric.** Realized P&L as a fraction of the available favorable excursion (max-favorable-price reached during the trade's life):
+
+  - 1.0 = exited at the peak — full capture
+  - 0.30 = gave back 70% of unrealized gains
+  - 0.0 = exited at break-even despite favorable run
+  - <0 = lost money despite the trade running favorably (worst pattern — IBM-style intraday spike then collapse)
+
+**Why surface it.** Pre-INTRADAY_STOPS Stage 3, this was very low because polling-based trailing stops fired at next-day close after intraday reversal. The asymmetry (low capture × full loss-side exposure) made high win rates statistically meaningless. Now the metric is visible to the user and the AI on every cycle.
+
+**Implementation.**
+- New module `mfe_capture.py`:
+  - `compute_capture_ratio(db_path, lookback=50)` — averages realized_pct / mfe_pct across recent closed trades. Returns avg_capture_ratio, median_capture_ratio, n_trades, n_negative_capture (trades that LOST despite favorable excursion).
+  - `render_for_prompt(capture)` — formats as a `MFE CAPTURE` AI prompt block. Suppresses when capture ≥ 0.50 (no signal worth flagging) or when n_trades < 10 (too noisy).
+- Performance dashboard: new "MFE Capture" stat-card alongside Avg Position Size and Total Trades. Shows the percent + count of negative-capture trades (the most damaging pattern). Only rendered when a single profile is selected.
+- AI prompt: appended to the portfolio-state section. The AI sees "MFE CAPTURE: 12% over last 50 trades — exit logic leaving money on the table" when capture is low. After Stage 3 takes effect, this number should rise materially.
+
+**Why it's primarily for the user, not the AI.** The AI controls *which trades to enter*, not exit timing. The capture ratio is a *signal* the AI can weight (lower capture → maybe size more conservatively, prefer setups with cleaner exit profiles), but the actual exit logic improvements come from the broker-managed orders (Stages 1-3). The dashboard view is the more valuable surface — it tells the operator whether the recent improvements are translating to higher realized capture.
+
+**Tests.** 8 new in `test_mfe_capture.py`:
+- Returns None below the 10-trade minimum
+- High capture (>0.5) when exits near peak
+- Low capture (<0.30) on the "gave back gains" pattern
+- Negative captures counted on the "lost despite favorable run" pattern
+- Render suppressed at high capture, warns on low, flags negatives
+- Handles None / empty input
+
+**The asymmetric-edge trio is now complete (Fix 1 + Fix 3 + INTRADAY_STOPS_PLAN Stages 1-3):**
+- Fix 3: scratch-trade classification → win rate is honest
+- Stages 1-3: broker stops + TP + trailing → exit timing is real
+- Fix 1: MFE capture → operator + AI sees the asymmetry
+
+Full suite: 1364 passing.
+
+---
+
 ## 2026-04-29 — INTRADAY_STOPS Stage 3: broker-managed trailing stops (Severity: critical, P&L)
 
 **The biggest single P&L bug yet.** This is the IBM tiny-win pattern:

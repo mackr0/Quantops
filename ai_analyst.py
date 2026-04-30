@@ -601,6 +601,21 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         except Exception:
             pass
 
+    # Fix 1 — MFE capture ratio. Tells the AI how much of available
+    # favorable excursion the exit logic actually realizes. When low
+    # (<30%), the AI sees that current trades are leaving money on
+    # the table — relevant context when proposing new entries with
+    # similar risk profiles.
+    mfe_capture_block = ""
+    db_path_for_capture = getattr(ctx, "db_path", None) if ctx else None
+    if db_path_for_capture:
+        try:
+            from mfe_capture import compute_capture_ratio, render_for_prompt as _cap_render
+            cap = compute_capture_ratio(db_path_for_capture)
+            mfe_capture_block = _cap_render(cap)
+        except Exception:
+            pass
+
     # P4.4 of LONG_SHORT_PLAN.md — risk-budget (risk-parity) sizing.
     # For the existing book, flags positions whose risk contribution
     # (weight × annualized vol) is way out of band. Surfaces the
@@ -732,6 +747,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"{kelly_block}"
         f"{drawdown_block}"
         f"{risk_budget_block}"
+        f"{mfe_capture_block}"
     )
 
     # --- Market context section ---
