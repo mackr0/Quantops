@@ -1083,9 +1083,12 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     recently_exited: set = set()
     if ctx is not None:
         try:
-            from journal import get_recently_exited
+            from journal import get_recently_exited, get_wash_cooldown_symbols
             cooldown_min = int(getattr(ctx, "reentry_cooldown_minutes", 60))
             recently_exited = get_recently_exited(ctx.db_path, cooldown_min)
+            # Union with the longer (30-day) wash-trade cooldown so we
+            # don't re-attempt buys Alpaca already rejected as wash.
+            recently_exited |= get_wash_cooldown_symbols(ctx.db_path, 30)
         except Exception:
             recently_exited = set()
 
@@ -1737,17 +1740,47 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     (trade_result or {}).get("reason", "no reason given"),
                 )
         except Exception as exc:
-            errors.append({"symbol": symbol, "error": str(exc)})
-            details.append({"symbol": symbol, "action": "ERROR", "reason": str(exc)})
-            # Loud log: previously this exception was silently
-            # swallowed, leaving no trace of why an order failed.
-            # `exc_info=True` captures the full traceback into the
-            # journal so we can diagnose Alpaca rejections,
-            # not-shortable errors, etc.
-            logging.error(
-                "Trade execution raised for %s (%s): %s",
-                symbol, action, exc, exc_info=True,
-            )
+            # Classify known Alpaca rejections that aren't really errors
+            # (the system did the right thing; the broker just won't
+            # let us). These get logged as WARNING + SKIP, no traceback,
+            # and a per-symbol cooldown so we don't re-attempt every
+            # cycle.
+            msg_lower = str(exc).lower()
+            if "wash trade" in msg_lower:
+                try:
+                    from journal import record_wash_cooldown
+                    record_wash_cooldown(ctx.db_path if ctx else None, symbol)
+                except Exception:
+                    pass
+                details.append({
+                    "symbol": symbol, "action": "SKIP",
+                    "reason": "Alpaca rejected: potential wash trade — "
+                              "deferring re-attempt for 30 days",
+                })
+                logging.warning(
+                    "Wash-trade detected on %s — recording cooldown, "
+                    "will retry after 30 days. (%s)",
+                    symbol, exc,
+                )
+            elif "insufficient qty" in msg_lower or "insufficient buying power" in msg_lower:
+                # Recoverable broker rejection — not a code bug.
+                details.append({
+                    "symbol": symbol, "action": "SKIP",
+                    "reason": f"Alpaca rejected: {exc}",
+                })
+                logging.warning(
+                    "Broker rejected order for %s (%s): %s",
+                    symbol, action, exc,
+                )
+            else:
+                # Genuine error — keep the noisy traceback for
+                # diagnosis.
+                errors.append({"symbol": symbol, "error": str(exc)})
+                details.append({"symbol": symbol, "action": "ERROR", "reason": str(exc)})
+                logging.error(
+                    "Trade execution raised for %s (%s): %s",
+                    symbol, action, exc, exc_info=True,
+                )
 
     # Build summary
     buys = [d for d in details if d.get("action") == "BUY"]

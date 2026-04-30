@@ -253,19 +253,34 @@ def _is_order_active(api, order_id: str) -> bool:
 
 def ensure_protective_stops(api, positions, ctx, db_path,
                               conviction_tp_skip=None):
-    """Sweep all open positions and place broker protective orders on
-    any position lacking active ones.
+    """Sweep all open positions and place ONE broker protective order
+    per position.
 
     Called from trader.check_exits each cycle. Idempotent — verifies
-    the stored protective_stop_order_id / protective_tp_order_id is
-    still working before deciding to submit a new one. Survives
-    restarts (positions created before restart get protected on the
-    next sweep) and races (entry path's own placement is best-effort).
+    the stored protective order id is still working before deciding
+    to submit a new one. Survives restarts and races with the entry
+    path.
 
-    conviction_tp_skip: optional callable(symbol, pct_change) -> bool.
-    When truthy for a position, skip placing the take-profit order so
-    runaway winners aren't capped (matches the existing polling
-    semantics for take_profit_pct override).
+    Why one order per position (not three): Alpaca treats every open
+    sell-side order as a qty reservation against the position. If we
+    submit a stop, take-profit AND trailing on a 19-share SBUX
+    position, the first one reserves all 19 shares — the next two
+    fail with 'insufficient qty available, requested: 19, available: 0'.
+    Verified pattern on prod 2026-04-30.
+
+    Order priority:
+      1. If `use_trailing_stops`: place trailing_stop ONLY. Functionally
+         a superset — it covers downside (initial level = entry × (1 - trail))
+         AND locks in gains as the high-water rises.
+      2. Else: place static stop ONLY.
+
+    Take-profit is dropped from the broker side; the polling TP check
+    in `check_stop_loss_take_profit` still fires at threshold breach.
+    TP isn't time-critical the way stops are.
+
+    conviction_tp_skip: when this returns True for a position (the
+    runaway-winner override), skip the trailing stop entirely (let the
+    winner run; the polling stop-loss is the only guard).
     """
     import sqlite3
     if not db_path or not positions:
@@ -273,11 +288,11 @@ def ensure_protective_stops(api, positions, ctx, db_path,
     sl_pct_long = getattr(ctx, "stop_loss_pct", None) if ctx else None
     sl_pct_short = (getattr(ctx, "short_stop_loss_pct", None) or sl_pct_long
                      if ctx else None)
-    tp_pct_long = getattr(ctx, "take_profit_pct", None) if ctx else None
-    tp_pct_short = (getattr(ctx, "short_take_profit_pct", None) or tp_pct_long
-                     if ctx else None)
-    if not sl_pct_long and not sl_pct_short and not tp_pct_long and not tp_pct_short:
+    if not sl_pct_long and not sl_pct_short:
         return
+
+    use_trailing = (getattr(ctx, "use_trailing_stops", False)
+                     if ctx else False)
 
     try:
         conn = sqlite3.connect(db_path)
@@ -309,33 +324,8 @@ def ensure_protective_stops(api, positions, ctx, db_path,
             close_side = "buy" if is_short else "sell"
             abs_qty = abs(int(qty))
 
-            # ---- Stop-loss ----
-            existing_stop_id = row["protective_stop_order_id"]
-            if not (existing_stop_id and _is_order_active(api, existing_stop_id)):
-                sl_pct = sl_pct_short if is_short else sl_pct_long
-                stop_price = stop_price_for_entry(entry_price, sl_pct, is_short)
-                if stop_price is not None:
-                    order_id = submit_protective_stop(
-                        api, symbol, abs_qty, close_side, stop_price,
-                    )
-                    if order_id:
-                        try:
-                            conn.execute(
-                                "UPDATE trades SET protective_stop_order_id = ? "
-                                "WHERE id = ?",
-                                (order_id, row["id"]),
-                            )
-                            conn.commit()
-                        except Exception as exc:
-                            logger.warning(
-                                "Stop placed but couldn't store order_id: %s "
-                                "(symbol=%s)", exc, symbol,
-                            )
-
-            # ---- Take-profit ----
-            # Skip TP placement when conviction-override would skip the
-            # exit anyway. Without this, runaway winners would still be
-            # capped at +take_profit_pct, defeating the override.
+            # Conviction-override: runaway winner — let it run, no
+            # trail cap. Polling stop-loss is the only guard.
             if conviction_tp_skip is not None:
                 try:
                     cur_price = float(pos.get("current_price") or 0)
@@ -346,65 +336,45 @@ def ensure_protective_stops(api, positions, ctx, db_path,
                 except Exception:
                     pass
 
-            existing_tp_id = row["protective_tp_order_id"]
-            if existing_tp_id and _is_order_active(api, existing_tp_id):
-                continue  # TP already in place
+            sl_pct = sl_pct_short if is_short else sl_pct_long
 
-            tp_pct = tp_pct_short if is_short else tp_pct_long
-            limit_price = tp_price_for_entry(entry_price, tp_pct, is_short)
-            if limit_price is None:
-                continue
+            if use_trailing:
+                # Trailing-stop: covers BOTH downside AND profit-lock.
+                # Skip if already in place.
+                existing_trail_id = row["protective_trailing_order_id"]
+                if existing_trail_id and _is_order_active(api, existing_trail_id):
+                    continue
+                trail_pct = trail_percent_for_entry(sl_pct)
+                if trail_pct is None:
+                    continue
+                order_id = submit_protective_trailing(
+                    api, symbol, abs_qty, close_side, trail_pct,
+                )
+                column = "protective_trailing_order_id"
+            else:
+                # Static stop only. No TP — that goes through polling.
+                existing_stop_id = row["protective_stop_order_id"]
+                if existing_stop_id and _is_order_active(api, existing_stop_id):
+                    continue
+                stop_price = stop_price_for_entry(entry_price, sl_pct, is_short)
+                if stop_price is None:
+                    continue
+                order_id = submit_protective_stop(
+                    api, symbol, abs_qty, close_side, stop_price,
+                )
+                column = "protective_stop_order_id"
 
-            order_id = submit_protective_take_profit(
-                api, symbol, abs_qty, close_side, limit_price,
-            )
             if order_id:
                 try:
                     conn.execute(
-                        "UPDATE trades SET protective_tp_order_id = ? "
-                        "WHERE id = ?",
+                        f"UPDATE trades SET {column} = ? WHERE id = ?",
                         (order_id, row["id"]),
                     )
                     conn.commit()
                 except Exception as exc:
                     logger.warning(
-                        "Take-profit placed but couldn't store order_id: %s "
-                        "(symbol=%s)", exc, symbol,
-                    )
-
-            # ---- Trailing stop ----
-            # Only place when the profile uses trailing stops. Skipped
-            # if conviction-override fires (let runners run, no trail
-            # cap either — same logic as TP).
-            use_trailing = (getattr(ctx, "use_trailing_stops", False)
-                             if ctx else False)
-            if not use_trailing:
-                continue
-
-            existing_trail_id = row["protective_trailing_order_id"]
-            if existing_trail_id and _is_order_active(api, existing_trail_id):
-                continue
-
-            sl_pct_for_trail = sl_pct_short if is_short else sl_pct_long
-            trail_pct = trail_percent_for_entry(sl_pct_for_trail)
-            if trail_pct is None:
-                continue
-
-            order_id = submit_protective_trailing(
-                api, symbol, abs_qty, close_side, trail_pct,
-            )
-            if order_id:
-                try:
-                    conn.execute(
-                        "UPDATE trades SET protective_trailing_order_id = ? "
-                        "WHERE id = ?",
-                        (order_id, row["id"]),
-                    )
-                    conn.commit()
-                except Exception as exc:
-                    logger.warning(
-                        "Trailing stop placed but couldn't store order_id: %s "
-                        "(symbol=%s)", exc, symbol,
+                        "Protective order placed but couldn't store id: %s "
+                        "(symbol=%s, column=%s)", exc, symbol, column,
                     )
     finally:
         try:

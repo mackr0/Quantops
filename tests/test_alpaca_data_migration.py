@@ -503,9 +503,13 @@ class TestMigrationContract:
         The whole point of the migration is Alpaca first, yfinance second,
         for equity symbols. Crypto is allowed to skip Alpaca directly.
         If the equity ordering flips back, we're one market-open yfinance
-        hang away from the 30-minute incident."""
+        hang away from the 30-minute incident.
+
+        The fetch logic lives in _get_bars_uncached after the
+        2026-04-30 cache wrapper refactor — get_bars is now just a
+        TTL cache around that function."""
         import inspect, market_data
-        src = inspect.getsource(market_data.get_bars)
+        src = inspect.getsource(market_data._get_bars_uncached)
         # The crypto (slash) branch returns yfinance directly — skip past
         # that chunk and inspect the equity path only.
         slash_branch_end = src.find('return _fetch_via_yfinance(symbol, limit)')

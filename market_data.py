@@ -12,6 +12,8 @@ Previously this module was 100% yfinance, which hung the screener for
 
 import logging
 import os
+import threading
+import time as _time
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -24,6 +26,17 @@ logger = logging.getLogger(__name__)
 # .env creds for market data — the subscription is shared across all
 # paper accounts under the same Alpaca login.
 _alpaca_data_client = None
+
+# Process-wide TTL cache for daily bars. Without this, scans that
+# iterate large universes (relative_weakness_universe touches every
+# symbol) make 200-300 network calls per scan cycle. Result: prod scans
+# averaged 4 minutes (max 7.5 min) over the last 18h. Cache hits make
+# the same calls free for 5 minutes — long enough that within-cycle
+# strategies share fetches, short enough that the next cycle gets fresh
+# data. Daily bars don't change intraday, so cache staleness is fine.
+_BARS_CACHE_TTL = 300  # 5 minutes
+_bars_cache: dict = {}  # (symbol, limit) → (epoch_seconds, DataFrame)
+_bars_cache_lock = threading.Lock()
 
 
 def _get_alpaca_data_client():
@@ -138,19 +151,40 @@ def get_bars(symbol, timeframe="1Day", limit=200, api=None):
 
     The ``timeframe`` and ``api`` parameters are kept for backward
     compatibility; we only support daily bars at the moment.
+
+    Cached at process scope for 5 minutes — daily bars don't change
+    intraday, and many strategies fetch the same symbol within a scan
+    cycle. Without this, scans averaged 4 min on prod with the
+    universe-iterating strategies (relative_weakness_universe).
     """
-    # Crypto → straight to yfinance (the equity data endpoint doesn't
-    # serve crypto; Alpaca has a separate crypto endpoint we could wire
-    # up later if needed)
+    cache_key = (symbol.upper(), int(limit))
+    now = _time.time()
+    with _bars_cache_lock:
+        cached = _bars_cache.get(cache_key)
+        if cached and (now - cached[0]) < _BARS_CACHE_TTL:
+            return cached[1]
+
+    bars = _get_bars_uncached(symbol, limit)
+
+    # Only cache non-None, non-empty results — caching None would
+    # poison the cache for symbols that briefly miss.
+    if bars is not None and hasattr(bars, "empty") and not bars.empty:
+        with _bars_cache_lock:
+            _bars_cache[cache_key] = (now, bars)
+    return bars
+
+
+def _get_bars_uncached(symbol, limit):
+    """Underlying fetch — Alpaca first, yfinance fallback. Caller
+    handles caching."""
+    # Crypto → straight to yfinance
     if "/" in symbol:
         return _fetch_via_yfinance(symbol, limit)
 
-    # Primary: Alpaca
     bars = _fetch_via_alpaca(symbol, limit)
     if bars is not None and not bars.empty:
         return bars
 
-    # Fallback: yfinance
     return _fetch_via_yfinance(symbol, limit)
 
 

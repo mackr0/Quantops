@@ -35,8 +35,11 @@ def _exec_block_source():
     src = inspect.getsource(tp)
     start = src.find('print(f"  Executing: ')
     assert start > 0, "Could not locate the Executing: print site"
-    # Take the next ~40 lines after the print
-    return src[start:start + 2500]
+    # Take the next ~80 lines after the print. Window grew from 2500
+    # to 4000 when wash-trade + insufficient-qty classifiers were added
+    # to the except handler, pushing the genuine-error logging.error
+    # call further down.
+    return src[start:start + 4000]
 
 
 def test_exception_path_logs_full_traceback():

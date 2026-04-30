@@ -17,6 +17,54 @@ Rules going forward:
 
 ---
 
+## 2026-04-30 — Three production hardenings: protective-order conflict, wash-trade cooldown, bar cache (Severity: high, multi-issue)
+
+Cleanup pass triggered by reviewing 18h of prod logs. Three independent issues, all addressed.
+
+### 1. Protective-order qty conflict (within-profile)
+
+The biggest noisy pattern: every cycle saw warnings like:
+
+> `Could not place protective trailing stop for SBUX (qty=19, ...): insufficient qty available for order (requested: 19, available: 0)`
+> `Could not place protective take-profit for SBUX (qty=19, ...): insufficient qty available for order (requested: 19, available: 0)`
+
+Root cause: `ensure_protective_stops` was placing **three** broker orders per position (stop + TP + trailing). Alpaca treats every open sell-side order as a qty reservation against the position. The first order reserved all 19 shares; the next two saw `available: 0`.
+
+**Fix.** Place ONE protective order per position:
+- If `use_trailing_stops`: trailing_stop ONLY. Trailing is functionally a superset — it covers downside (initial level = entry × (1 - trail)) AND locks in gains as high-water rises.
+- Else: static stop ONLY.
+
+Take-profit dropped from the broker side. The polling TP check in `check_stop_loss_take_profit` still fires at threshold breach. TP isn't time-critical the way stops are.
+
+### 2. Wash-trade cooldown
+
+Single occurrence today: `Trade execution raised for BP (BUY): potential wash trade detected. use complex orders`. The exception didn't crash (already wrapped) but was logged as ERROR with full traceback, and the system would re-attempt every cycle.
+
+**Fix.** Classify the wash error in `trade_pipeline`'s except handler:
+- Log as WARNING (not ERROR), no traceback
+- Call `record_wash_cooldown` to mark the symbol with a 30-day skip in the `recently_exited_symbols` table (trigger='wash_cooldown')
+- Pre-filter loop unions wash-cooldown symbols into the existing `recently_exited` set
+
+Same treatment for `insufficient buying power` and bare `insufficient qty available` — both are recoverable broker rejections, not code bugs.
+
+### 3. Bar fetch caching
+
+`get_bars` had no cache. Every call hit Alpaca/yfinance. With `relative_weakness_universe` iterating 200+ symbols × `get_bars(symbol, limit=257)` per scan, each cycle made hundreds of redundant network calls. Verified prod stat: 59 scans / 18h, avg **4 minutes**, max 7.5 min.
+
+**Fix.** 5-minute TTL cache around `get_bars`. Daily bars don't change intraday, so staleness within a cycle is fine. Multiple strategies fetching the same symbol within 5 minutes share the result. Empty/None results NOT cached (would poison transient failures).
+
+Implementation: `get_bars` now wraps `_get_bars_uncached` with TTL cache. All test source-pins on the underlying ordering (Alpaca-first) updated to look at `_get_bars_uncached`.
+
+**Tests.**
+- `test_bracket_orders.py` (30 total, 4 updated): one-order-per-position behavior, prefers trailing when enabled
+- `test_wash_cooldown.py` (5 new): record + read + 30-day window + filter by trigger + pre-filter source pin
+- `test_bars_cache.py` (6 new): TTL behavior, separate keys per (symbol, limit), no caching of empty/None, expiry, universe-iteration efficiency
+- Updated source-pins in `test_alpaca_data_migration.py` and `test_trade_execution_logging.py` to reflect refactored locations
+
+Full suite: 1380 passing.
+
+---
+
 ## 2026-04-30 — check_exits per-position resilience: one bad submit no longer halts the cycle (Severity: critical, outage)
 
 **The outage.** verify_first_cycle reported 11 TASK FAILs on Check Exits in one hour. Pattern: `Cancelled conflicting order ... before exit` followed immediately by `[TASK FAIL] Check Exits` with traceback ending in `alpaca_trade_api.rest.APIError: insufficient qty available for order (requested: 9, available: 8)`. Every subsequent position in that cycle lost protection — no stop refresh, no trailing detection, no exit processing.

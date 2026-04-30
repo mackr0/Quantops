@@ -308,62 +308,68 @@ def test_submit_take_profit_uses_limit_order_type():
     assert args.kwargs["time_in_force"] == "gtc"
 
 
-def test_sweep_places_take_profit_alongside_stop_loss(tmp_db):
-    """A position with neither stop nor TP gets both placed."""
+def test_sweep_places_one_order_per_position_static_stop(tmp_db):
+    """When use_trailing_stops=False, sweep places a SINGLE static
+    stop per position. Take-profit is dropped from the broker side
+    (polling TP handles it). Without this, multi-order placement on
+    a single position triggers Alpaca 'insufficient qty available'
+    because the first order reserves all shares."""
     from bracket_orders import ensure_protective_stops
     _seed_open_buy(tmp_db, "AAPL", 100, 150.0)
     api = MagicMock()
-    # Two distinct order_ids returned — first call is the stop, second the TP.
-    api.submit_order.side_effect = [
-        MagicMock(id="stop-id"),
-        MagicMock(id="tp-id"),
-    ]
-    ctx = _make_ctx(stop_loss_pct=0.05)
-    ctx.take_profit_pct = 0.10
+    api.submit_order.return_value = MagicMock(id="stop-id")
+    ctx = _make_ctx(stop_loss_pct=0.05, take_profit_pct=0.10,
+                       use_trailing_stops=False)
     positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
 
     ensure_protective_stops(api, positions, ctx, tmp_db)
 
-    assert api.submit_order.call_count == 2
-    # Verify order types — stop first, limit second
-    calls = api.submit_order.call_args_list
-    assert calls[0].kwargs["type"] == "stop"
-    assert calls[1].kwargs["type"] == "limit"
-    # Stop at 142.50, TP at 165.00
-    assert calls[0].kwargs["stop_price"] == pytest.approx(142.50, abs=0.01)
-    assert calls[1].kwargs["limit_price"] == pytest.approx(165.00, abs=0.01)
-    # DB columns both updated
-    conn = sqlite3.connect(tmp_db)
-    row = conn.execute(
-        "SELECT protective_stop_order_id, protective_tp_order_id "
-        "FROM trades WHERE symbol='AAPL'"
-    ).fetchone()
-    conn.close()
-    assert row[0] == "stop-id"
-    assert row[1] == "tp-id"
+    # Exactly ONE submit — the static stop. No TP, no trailing.
+    assert api.submit_order.call_count == 1
+    args = api.submit_order.call_args
+    assert args.kwargs["type"] == "stop"
+    assert args.kwargs["stop_price"] == pytest.approx(142.50, abs=0.01)
 
 
-def test_sweep_skips_tp_when_conviction_override_is_active(tmp_db):
-    """conviction_tp_skip(symbol, pct) → True means 'don't cap this
-    runaway winner'. Sweep must NOT place a TP order in that case."""
+def test_sweep_prefers_trailing_when_enabled(tmp_db):
+    """When use_trailing_stops=True, sweep places trailing_stop ONLY
+    (no static stop, no TP) — trailing is functionally a superset and
+    avoids the qty-conflict that triple-order placement caused."""
+    from bracket_orders import ensure_protective_stops
+    _seed_open_buy(tmp_db, "AAPL", 100, 150.0)
+    api = MagicMock()
+    api.submit_order.return_value = MagicMock(id="trail-id")
+    ctx = _make_ctx(stop_loss_pct=0.05, take_profit_pct=0.10,
+                       use_trailing_stops=True)
+    positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
+
+    ensure_protective_stops(api, positions, ctx, tmp_db)
+
+    assert api.submit_order.call_count == 1
+    args = api.submit_order.call_args
+    assert args.kwargs["type"] == "trailing_stop"
+
+
+def test_sweep_skips_when_conviction_override_is_active(tmp_db):
+    """conviction_tp_skip(symbol, pct) → True means 'runaway winner —
+    no protective order, polling stop-loss is the only guard.'"""
     from bracket_orders import ensure_protective_stops
     _seed_open_buy(tmp_db, "TSLA", 100, 100.0)
     api = MagicMock()
-    api.submit_order.return_value = MagicMock(id="stop-only")
-    ctx = _make_ctx(stop_loss_pct=0.05)
-    ctx.take_profit_pct = 0.10
+    api.submit_order.return_value = MagicMock(id="should-not-fire")
+    ctx = _make_ctx(stop_loss_pct=0.05, take_profit_pct=0.10,
+                       use_trailing_stops=True)
     positions = [{
         "symbol": "TSLA", "qty": 100, "avg_entry_price": 100.0,
         "current_price": 130.0,  # +30%, conviction override likely fires
     }]
 
-    skip = lambda sym, pct: True  # always skip — runaway winner
+    skip = lambda sym, pct: True
     ensure_protective_stops(api, positions, ctx, tmp_db,
                               conviction_tp_skip=skip)
 
-    # Only one submit (the stop). TP suppressed.
-    assert api.submit_order.call_count == 1
-    assert api.submit_order.call_args.kwargs["type"] == "stop"
+    # No protective order placed at all
+    api.submit_order.assert_not_called()
 
 
 def test_cancel_for_symbol_clears_both_stop_and_tp(tmp_db):
@@ -439,58 +445,33 @@ def test_submit_trailing_uses_trailing_stop_order_type():
     assert args.kwargs["time_in_force"] == "gtc"
 
 
-def test_sweep_places_trailing_stop_when_use_trailing_enabled(tmp_db):
+def test_sweep_picks_trailing_over_static_stop(tmp_db):
+    """When use_trailing_stops is enabled, trailing wins — no
+    static stop placement (would conflict on qty)."""
     from bracket_orders import ensure_protective_stops
     _seed_open_buy(tmp_db, "AAPL", 100, 150.0)
     api = MagicMock()
-    api.submit_order.side_effect = [
-        MagicMock(id="stop-id"),
-        MagicMock(id="tp-id"),
-        MagicMock(id="trail-id"),
-    ]
-    ctx = _make_ctx(stop_loss_pct=0.05, take_profit_pct=0.10)
-    ctx.take_profit_pct = 0.10
-    ctx.use_trailing_stops = True
+    api.submit_order.return_value = MagicMock(id="trail-id")
+    ctx = _make_ctx(stop_loss_pct=0.05, use_trailing_stops=True)
     positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
 
     ensure_protective_stops(api, positions, ctx, tmp_db)
-
-    # 3 orders placed: stop, TP, trailing
-    assert api.submit_order.call_count == 3
-    types = [c.kwargs["type"] for c in api.submit_order.call_args_list]
-    assert "stop" in types
-    assert "limit" in types
-    assert "trailing_stop" in types
-    # DB has all three IDs
-    conn = sqlite3.connect(tmp_db)
-    row = conn.execute(
-        "SELECT protective_stop_order_id, protective_tp_order_id, "
-        "protective_trailing_order_id FROM trades WHERE symbol='AAPL'"
-    ).fetchone()
-    conn.close()
-    assert row[0] == "stop-id"
-    assert row[1] == "tp-id"
-    assert row[2] == "trail-id"
+    assert api.submit_order.call_count == 1
+    assert api.submit_order.call_args.kwargs["type"] == "trailing_stop"
 
 
-def test_sweep_skips_trailing_when_use_trailing_disabled(tmp_db):
+def test_sweep_falls_back_to_static_stop_when_trailing_disabled(tmp_db):
+    """No trailing → place static stop (single order)."""
     from bracket_orders import ensure_protective_stops
     _seed_open_buy(tmp_db, "AAPL", 100, 150.0)
     api = MagicMock()
-    api.submit_order.side_effect = [
-        MagicMock(id="stop-id"),
-        MagicMock(id="tp-id"),
-    ]
-    ctx = _make_ctx(stop_loss_pct=0.05)
-    ctx.take_profit_pct = 0.10
-    ctx.use_trailing_stops = False  # explicit
+    api.submit_order.return_value = MagicMock(id="stop-id")
+    ctx = _make_ctx(stop_loss_pct=0.05, use_trailing_stops=False)
     positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
 
     ensure_protective_stops(api, positions, ctx, tmp_db)
-    # Only 2 calls — stop and TP. No trailing.
-    assert api.submit_order.call_count == 2
-    types = [c.kwargs["type"] for c in api.submit_order.call_args_list]
-    assert "trailing_stop" not in types
+    assert api.submit_order.call_count == 1
+    assert api.submit_order.call_args.kwargs["type"] == "stop"
 
 
 def test_cancel_for_symbol_clears_all_three_protective_orders(tmp_db):

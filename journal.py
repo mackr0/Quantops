@@ -287,6 +287,48 @@ def record_exit(db_path: str, symbol: str, trigger: str,
         conn.close()
 
 
+def record_wash_cooldown(db_path: str, symbol: str) -> None:
+    """Mark a symbol as in wash-trade cooldown.
+
+    Reuses the recently_exited_symbols table with trigger='wash_cooldown'
+    so the pre-filter pipeline can lump it in with normal cooldowns.
+    A 30-day cooldown is the standard wash-sale window — Alpaca's
+    detection is on a shorter horizon but 30 days covers it cleanly.
+    """
+    if not db_path or not symbol:
+        return
+    try:
+        conn = _get_conn(db_path)
+        conn.execute(
+            "INSERT OR REPLACE INTO recently_exited_symbols "
+            "(symbol, exited_at, trigger, exit_price) "
+            "VALUES (?, datetime('now'), 'wash_cooldown', NULL)",
+            (symbol,),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def get_wash_cooldown_symbols(db_path: str, days: int = 30) -> set:
+    """Return symbols currently in wash-trade cooldown (30-day window)."""
+    if not db_path:
+        return set()
+    try:
+        conn = _get_conn(db_path)
+        rows = conn.execute(
+            "SELECT symbol FROM recently_exited_symbols "
+            "WHERE trigger = 'wash_cooldown' "
+            "AND exited_at >= datetime('now', ?)",
+            (f"-{int(days)} days",),
+        ).fetchall()
+        conn.close()
+        return {r[0] for r in rows}
+    except Exception:
+        return set()
+
+
 def get_recently_exited(db_path: str, cooldown_minutes: int = 60) -> set:
     """Return the set of symbols currently in the post-exit cooldown window."""
     try:
