@@ -115,3 +115,20 @@ def test_pre_filter_unions_wash_cooldown_with_recent_exit():
         "trade_pipeline doesn't query the wash-cooldown set in the "
         "pre-filter — wash-flagged symbols will keep getting submitted."
     )
+
+
+def test_classifies_long_buy_while_short_sell_open_as_skip():
+    """Alpaca rejects 'cannot open a long buy while a short sell order
+    is open' when there's a pending opposite-direction order on the
+    same symbol. This is recoverable (other order will resolve), not
+    a code bug. Must classify as SKIP not ERROR."""
+    import inspect
+    import trade_pipeline
+    src = inspect.getsource(trade_pipeline)
+    assert "cannot open a long buy while a short sell order" in src.lower(), (
+        "trade_pipeline doesn't recognize the cross-direction guard "
+        "rejection — it'll keep logging as ERROR with traceback."
+    )
+    assert "cannot open a short sell while a long buy order" in src.lower(), (
+        "trade_pipeline doesn't handle the symmetric short-side case."
+    )

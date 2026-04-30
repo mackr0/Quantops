@@ -1762,8 +1762,15 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     "will retry after 30 days. (%s)",
                     symbol, exc,
                 )
-            elif "insufficient qty" in msg_lower or "insufficient buying power" in msg_lower:
-                # Recoverable broker rejection — not a code bug.
+            elif ("insufficient qty" in msg_lower
+                   or "insufficient buying power" in msg_lower
+                   or "cannot open a long buy while a short sell order" in msg_lower
+                   or "cannot open a short sell while a long buy order" in msg_lower):
+                # Recoverable broker rejection — not a code bug. The
+                # last two patterns are Alpaca's cross-direction guard
+                # (can't open opposite-direction orders on the same
+                # symbol simultaneously); usually fixes itself within
+                # a cycle once the conflicting order fills or cancels.
                 details.append({
                     "symbol": symbol, "action": "SKIP",
                     "reason": f"Alpaca rejected: {exc}",

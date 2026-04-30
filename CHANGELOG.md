@@ -17,6 +17,22 @@ Rules going forward:
 
 ---
 
+## 2026-04-30 — verify_first_cycle: deploy-window awareness + cross-direction error classification (Severity: medium, observability)
+
+**Two cleanups from running verify and seeing inflated warnings.**
+
+1. **verify_first_cycle.sh used a fixed window from market open**, so historic pre-deploy failures (e.g., 12 Check Exits TASK FAILs from 13:41-15:38 UTC, before the 17:09 resilience deploy) showed up as if they were current bugs. Added `RESILIENCE_DEPLOY_UTC`, `WASH_CLASSIFY_DEPLOY_UTC`, `DEFER_TO_BROKER_DEPLOY_UTC` constants + `J_SINCE` helper. Each fix's verification now checks failures only AFTER its deploy. Pre-deploy historic failures are reported separately with the count. From 5 alerts down to 2 truly-current issues.
+
+2. **The track_record verification was checking the wrong place.** It looked for `track_record` in `features_json`, but track_record is intentionally excluded from features_json (it's a narrative string, not a numeric ML feature — see trade_pipeline.py:1408-1413). The right check is whether `get_symbol_reputation` is producing data, which is what feeds the track_record string into the AI prompt. Replaced.
+
+3. **Cross-direction broker rejection now classified as SKIP not ERROR.** Alpaca rejects with `cannot open a long buy while a short sell order is open` (and the symmetric short-side case) when there's a pending opposite-direction order on the same symbol. Recoverable — the other order will resolve and we can retry next cycle. Added to the existing classifier alongside wash-trade and insufficient-qty. Was the last source of un-classified ERROR-with-traceback noise.
+
+**Tests.** 1 new in `test_wash_cooldown.py`: source-pin on the cross-direction pattern.
+
+Full suite: 1390 passing.
+
+---
+
 ## 2026-04-30 — Polling defers to broker trailing stop (the trio finally works as designed) (Severity: high, P&L)
 
 **The bug.** Audited today's exits: 0 of 11 trailing-stop fires came from the broker. All 11 fired via the polling fallback in `check_trailing_stops`. With ~150 broker trailing orders actively placed across all profiles, the broker should have been firing them — instead the polling was beating it to a worse fill on every single trade.
