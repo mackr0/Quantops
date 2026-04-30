@@ -83,6 +83,89 @@ modules. Each is single-purpose and tested in isolation:
 - **`client.get_borrow_info`** — Alpaca shortable + easy_to_borrow
   flags with 24h cache, used as quality filter and HTB sizing input.
 
+### Exit execution & resilience modules (April 30 expansion)
+
+Following the long/short build, the exit-side infrastructure was
+hardened with broker-managed orders and per-position resilience.
+Canonical doc: `INTRADAY_STOPS_PLAN.md`.
+
+- **`bracket_orders.py`** — broker-managed protective orders.
+  - `submit_protective_stop`, `submit_protective_take_profit`,
+    `submit_protective_trailing` — submit Alpaca `type='stop'`,
+    `'limit'`, `'trailing_stop'` orders with `time_in_force='gtc'`.
+  - `stop_price_for_entry`, `tp_price_for_entry`,
+    `trail_percent_for_entry` — compute the right side of entry
+    given `stop_loss_pct` / `take_profit_pct`. Trail percent
+    clamped [2%, 10%].
+  - `ensure_protective_stops(api, positions, ctx, db_path,
+    conviction_tp_skip)` — sweep that places ONE protective order
+    per position (trailing if enabled, else static stop). Cancels
+    stale stop+TP orders from earlier deploys before placing the
+    new one. Skips when `conviction_tp_skip` flags a runaway winner.
+  - `cancel_for_symbol(api, db_path, symbol)` — pre-exit cleanup
+    that cancels all three protective orders and clears the DB
+    columns.
+  - `has_active_broker_trailing(api, db_path, symbol)` — used by
+    `trader.check_exits` to defer polling-trail to broker when the
+    broker has an active trailing order. Without this defer,
+    polling beat the broker to a worse fill on every cycle.
+
+- **`mfe_capture.py`** — realized P&L as a fraction of available
+  favorable excursion. Fix 1 of the asymmetric-edge trio. Joins the
+  SELL row's pnl with the matching BUY row's `max_favorable_excursion`
+  to compute capture ratio. `compute_capture_ratio(db_path)` returns
+  avg + median + n_negative_capture (trades that lost despite
+  favorable run — the worst pattern). `render_for_prompt` surfaces
+  to AI when capture < 50%.
+
+- **`trader._process_exit_trigger`** — extracted per-position exit
+  body. Wrapped in try/except in `check_exits` so one Alpaca rejection
+  (`insufficient qty available` etc.) doesn't crash the whole cycle.
+  Pre-fix, one bad submit took out the whole sweep — every subsequent
+  position lost protective-stop refresh and exit detection.
+
+- **`journal.record_wash_cooldown` / `get_wash_cooldown_symbols`** —
+  30-day cooldown for symbols Alpaca rejected with "wash trade
+  detected". Stored in `recently_exited_symbols` with
+  `trigger='wash_cooldown'`. Pre-filter unions with the standard
+  60-min recent-exit cooldown so wash-flagged symbols don't
+  re-attempt every cycle.
+
+### Trade-quality classification (Fix 3)
+
+`metrics.calculate_all_metrics` reclassifies closed trades:
+- `|pnl_pct| < 0.5%` → **scratch** (effectively break-even after
+  slippage + commission). Excluded from win-rate denominator;
+  excluded from total_gains.
+- `pnl_pct ≥ 0.5%` → **win**.
+- `pnl_pct ≤ -0.5%` → **loss**.
+
+`win_rate = winning / (winning + losing) × 100`. Without this,
+hundreds of trail-stop firings at break-even inflated win rate to
+70%+ on profiles producing essentially zero P&L. The trade-pnl
+distribution previously showed median wins of $1-$43 (~0.0-0.1% on
+typical $50K notional).
+
+### Slippage classification
+
+`journal.get_slippage_stats` returns BOTH `total_slippage_cost`
+(signed — favorable executions reduce it) AND
+`total_slippage_magnitude` (absolute — sum of `|fill - decision| ×
+qty`). Was previously only the absolute version, which double-counted
+favorable executions as cost and inflated the dashboard ~4× vs
+reality. Sign convention: BUY/sell_short adverse when fill > decision;
+SELL/cover/short adverse when fill < decision.
+
+### Bar fetch caching
+
+`market_data.get_bars` is now a 5-min TTL cache around
+`_get_bars_uncached`. Daily bars don't change intraday, so within-cycle
+duplicates (multiple strategies fetching the same symbol) are free
+on cache hits. Pre-cache, scans averaged 4 minutes (max 7.5 min)
+because `relative_weakness_universe` iterates 200+ symbols ×
+`get_bars(symbol, limit=257)` per cycle = hundreds of redundant
+network calls.
+
 ---
 
 ## Table of Contents

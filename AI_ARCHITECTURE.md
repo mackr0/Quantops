@@ -463,6 +463,7 @@ The batch prompt accumulates these blocks in `_build_batch_prompt` after the can
 - **KELLY SIZING (P4.2).** Per-direction recommendation: `LONG: Kelly 11.8% (WR 70%, avg win 2.95%, avg loss 2.23%, n=30)`. Reads only entry signals from `ai_predictions` (HOLD predictions tagged `directional_long` are filtered — they reflect existing-position drift, not new bets, so polluting Kelly with them flips edge negative). Quarter Kelly is the default fractional. Empty when neither direction has ≥30 resolved entry trades with positive edge.
 - **DRAWDOWN CAPITAL SCALE (P4.3).** Continuous size modifier 1.0× → 0.25× from `drawdown_scaling.compute_capital_scale`. Linear interpolation between breakpoints (0%→1.00, 5%→0.85, 10%→0.65, 15%→0.45, 20%+→0.25). Suppressed when scale rounds to 1.00. The AI is told to multiply suggested sizes by this factor.
 - **RISK-BUDGET (P4.4).** Per-name `weight × annualized_vol` contributions; flags names ≥ 2× or ≤ 0.5× the per-position average. Sizing rule: `size_i ∝ target_vol / realized_vol_i` clamped to [0.40×, 1.60×]. Vols cached 7d via `factor_data.get_realized_vol`. Suppressed when nothing actionable.
+- **MFE CAPTURE (Fix 1, 2026-04-29).** Realized P&L as a fraction of available favorable excursion across recent closed trades. Surfaced when avg < 50% (system is leaving money on the table). Tells the AI when exit logic is asymmetric vs entry edge — context for whether to size more conservatively. `mfe_capture.compute_capture_ratio` joins SELL pnl with the matching BUY's MFE. Negative-capture count flagged separately (trades that LOST despite favorable run — the worst pattern).
 
 Layered together the AI is told: `final_size = base × kelly × drawdown_scale × vol_scale` (each clamped, each defaulting to 1.0× when unknown).
 
@@ -474,6 +475,27 @@ After the AI returns trades, these hard gates filter them. Each one logs why a t
 - **Asymmetric short cap (P1.6).** Longs sized against `max_position_pct`; shorts capped at `short_max_position_pct` (defaults to half of long).
 - **HTB borrow penalty (P1.14).** Hard-to-borrow shorts have their cap halved again on top of the asymmetric one (since multi-day holds eat real money in borrow costs).
 - **Market-neutrality enforcement (P4.5).** When `ctx.target_book_beta` is set, the gate computes the projected book beta if the trade went through (`portfolio_exposure.simulate_book_beta_with_entry`) and blocks the trade if `|projected - target| - |current - target| > 0.5`. Symmetric: trades that improve neutrality always pass; trades that worsen it by >0.5 in distance are blocked. Skipped for SELL exits.
+
+### Trade resilience + classification
+
+Pre-2026-04-30, `check_exits` ran the per-position exit code inline in a `for` loop. One Alpaca rejection (`insufficient qty available`) propagated up and crashed the whole task — every subsequent position lost its protective-stop refresh and exit detection. Fixed by extracting `_process_exit_trigger()` and wrapping each call in try/except. Failures log a `WARNING` and the loop continues.
+
+Three Alpaca rejection patterns are now classified as recoverable `SKIP` rather than `ERROR` with traceback (in `trade_pipeline` and `bracket_orders`):
+- `wash trade detected` — records a 30-day cooldown in `recently_exited_symbols(trigger='wash_cooldown')`. Pre-filter loop unions wash-cooldown into the existing recent-exit set so wash-flagged symbols don't re-attempt every cycle.
+- `insufficient qty available` / `insufficient buying power` — recoverable broker rejection (typically resolves on the next cycle as other orders fill or cancel).
+- `cannot open a long buy while a short sell order is open` (and the symmetric short-side case) — Alpaca's cross-direction guard. Wait for the conflicting order to resolve.
+
+### Exit execution: broker stops vs polling fallback
+
+INTRADAY_STOPS_PLAN added broker-managed protective orders (Alpaca `stop`, `limit`, `trailing_stop`) so exits fire AT the threshold price on tick data, not at next-cycle current price. Three stages, all live:
+
+- **Stage 1 (static stop-loss):** every open position sweep places one Alpaca `type='stop'` order. Polling stop-loss check stays as fallback.
+- **Stage 2 (take-profit):** dropped from broker side after empirical pattern showed it conflicts with the trailing on the same shares (Alpaca treats each as a qty reservation; the first eats all shares, the rest fail). Polling TP detection covers the case.
+- **Stage 3 (trailing stop):** broker `type='trailing_stop'` with `trail_percent` derived from the profile's `stop_loss_pct`, clamped [2%, 10%]. **Polling defers to the broker** when there's an active broker trailing — verified via `bracket_orders.has_active_broker_trailing(api, db_path, symbol)` which checks both the tracked order_id AND broker-side liveness. Without the defer, polling would beat the broker to a worse fill on every cycle.
+
+When use_trailing_stops is enabled, ensure_protective_stops places exactly one order per position: trailing only. (Stop+TP+trailing on the same shares triggers the qty conflict above.) When use_trailing_stops is disabled, places static stop only. Migration sweep cancels stale stop+TP orders from earlier deploys before placing the new single order.
+
+Pending-orders dashboard panel (`_safe_pending_orders`) cross-references each Alpaca open order against the profile's trades table — only orders this profile placed appear, so panels for profiles sharing an Alpaca account don't show sibling orders.
 
 ---
 

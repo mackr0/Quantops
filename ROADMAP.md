@@ -77,6 +77,23 @@ Turn "long pipeline with shorts as a side door" into a real long/short system th
 - Regime gate now respects `target_short_pct` mandate. When a profile is configured for substantial shorts (≥0.4), the strong-bull gate bypasses for that profile — the user has accepted regime risk by setting the mandate.
 - New `relative_weakness_universe` strategy (anti-momentum / academic short factor). Universe-ranked by 20d return vs SPY; emits bottom 5% (cap 5) with 5%+ RS gap and 20d MA confirmation. Critical for filling short books in extended bull regimes where textbook bearish technical patterns are rare.
 
+### Phase 12 — Exit Execution Hardening (`INTRADAY_STOPS_PLAN.md`)
+
+Polling-based exit detection ran on a 5-min cycle. Stop fills overshot threshold by 2-3pp on average (AMD: -7.91% on -5% threshold) because by the time we detected the breach, price had moved past it. On reversals, trailing stops fired at next-day close after intraday spikes — recorded as $2.70 wins on what were $1500+ unrealized winners (the IBM pattern).
+
+**Stages 1-3 (DONE 2026-04-30).** Replaced polling with broker-managed orders. After every entry the sweep places either a `type='trailing_stop'` (when `use_trailing_stops=True`) or `type='stop'` Alpaca order with `time_in_force='gtc'`. Polling defers to the broker when an active broker trailing exists for the symbol — verified per-cycle. Polling stays as fallback only when broker is unavailable.
+
+**Trade-quality fixes (DONE 2026-04-29):**
+- **Fix 1:** MFE capture ratio (realized P&L / available favorable excursion) surfaced to dashboard + AI prompt. Tells when exit logic is asymmetric vs entry edge.
+- **Fix 3:** Scratch-trade classification. `|pnl_pct| < 0.5%` is scratch, not win. Win rate now `winning / (winning + losing)` excluding scratches. Without this, profiles closing at break-even all day showed inflated 70%+ win rates.
+
+**Resilience fixes (DONE 2026-04-30):**
+- `check_exits` per-position try/except — one Alpaca rejection no longer takes out the whole cycle.
+- Wash-trade / insufficient-qty / cross-direction broker rejections classified as recoverable SKIP, not ERROR.
+- 30-day wash-trade cooldown table.
+- `get_bars` 5-min TTL cache — scan times ~4× faster on universe-iterating strategies.
+- Pending-orders dashboard panel filtered to per-profile owned IDs (was leaking sibling-profile orders since 6 profiles share one Alpaca account).
+
 ---
 
 ## Phase Order & Dependencies
