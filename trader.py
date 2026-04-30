@@ -435,134 +435,160 @@ def check_exits(ctx=None):
     pnl_by_symbol = {p["symbol"]: float(p.get("unrealized_pl", 0)) for p in positions}
 
     for trigger_signal in triggered:
-        symbol = trigger_signal["symbol"]
-        qty = int(trigger_signal["qty"])
-        is_short = trigger_signal.get("is_short", False)
-
-        # Schedule guard: don't submit exit orders outside the profile's
-        # trading window. Stop-loss/take-profit triggers will re-fire on
-        # the next check cycle within schedule.
-        from order_guard import check_can_submit
-        exit_side = "buy" if is_short else "sell"
-        if not check_can_submit(ctx, symbol, exit_side):
-            continue
-
-        # Broker-state guard: skip the exit if the underlying entry
-        # order is still pending at Alpaca (e.g. an unfilled limit
-        # buy). Submitting a SELL against zero real shares makes Alpaca
-        # treat it as a short attempt and reject with "cannot open a
-        # short sell while a long buy order is open."
-        if not _entry_order_filled_at_broker(api, db_path, symbol, is_short):
-            logging.info(
-                "Deferring exit for %s: entry order has not filled at "
-                "the broker yet. Will retry on next exit cycle.",
-                symbol,
-            )
-            continue
-
-        # Cancel any open orders for this symbol before submitting the exit.
-        # Alpaca rejects sells when a buy limit order is still open.
+        # Per-position try/except — Alpaca rejections (most commonly
+        # "insufficient qty available" when multiple profiles share an
+        # Alpaca account and the cumulative reserved qty exceeds what's
+        # actually held) must NOT halt the rest of the exit loop.
+        # Without this guard, one bad submit took out the entire
+        # check_exits cycle on prod 2026-04-30, so subsequent positions
+        # never got checked and protective stops never refreshed.
         try:
-            open_orders = api.list_orders(status="open", symbols=[symbol])
-            for oo in open_orders:
-                try:
-                    api.cancel_order(oo.id)
-                    logging.info(f"Cancelled conflicting order {oo.id} for {symbol} before exit")
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # INTRADAY_STOPS_PLAN Stage 1 — explicitly clear our protective
-        # stop bookkeeping so the next sweep doesn't think a stale
-        # order_id is still working. The broker-side cancel above already
-        # killed the order; this just resets the DB column.
-        try:
-            from bracket_orders import cancel_for_symbol
-            cancel_for_symbol(api, db_path, symbol)
-        except Exception as _exc:
-            logging.debug("Protective stop cleanup skipped: %s", _exc)
-
-        if is_short:
-            order = api.submit_order(
-                symbol=symbol,
-                qty=qty,
-                side="buy",
-                type="market",
-                time_in_force="day",
+            _process_exit_trigger(
+                trigger_signal, api, ctx, db_path, positions,
+                pnl_by_symbol, results,
             )
-            side_label = "cover"
-            action_label = "COVER"
-        else:
-            order = api.submit_order(
-                symbol=symbol,
-                qty=qty,
-                side="sell",
-                type="market",
-                time_in_force="day",
+        except Exception as exc:
+            logging.warning(
+                "Exit submission failed for %s (%s) — continuing with "
+                "remaining positions. Error: %s",
+                trigger_signal.get("symbol"), trigger_signal.get("trigger"),
+                exc,
             )
-            side_label = "sell"
-            action_label = "SELL"
-
-        pnl = pnl_by_symbol.get(symbol)
-        # Subtract accrued short-borrow cost on covers (overnight
-        # shorts pay a daily borrow fee that Alpaca's unrealized_pl
-        # doesn't reflect). Sub-1-day shorts get 0.0 — same-day cover
-        # has no overnight borrow charge.
-        if is_short and pnl is not None:
-            try:
-                from short_borrow import accrue_for_cover
-                borrow_cost = accrue_for_cover(db_path, symbol, qty)
-                if borrow_cost > 0:
-                    pnl = pnl - borrow_cost
-                    logging.info(
-                        "Short borrow cost on %s: $%.4f (subtracted from "
-                        "cover pnl)", symbol, borrow_cost,
-                    )
-            except Exception as _exc:
-                logging.debug("Borrow accrual failed for %s: %s", symbol, _exc)
-
-        log_trade(
-            symbol=symbol,
-            side=side_label,
-            qty=qty,
-            price=trigger_signal["price"],
-            order_id=order.id,
-            signal_type="SELL",
-            strategy=trigger_signal["trigger"],
-            reason=trigger_signal["reason"],
-            pnl=pnl,
-            # Exit-fired orders realize P&L → the row is closed, not open.
-            # Matching BUY rows get reconciled below.
-            status="closed" if pnl is not None else "open",
-            decision_price=trigger_signal["price"],
-            db_path=db_path,
-        )
-
-        # Mark any still-open BUY rows for this symbol as closed — the
-        # exit has flattened the position. Without this the trades page
-        # shows the old entry as "open" forever.
-        try:
-            import sqlite3 as _sqlite3
-            _c = _sqlite3.connect(db_path) if db_path else _sqlite3.connect("journal.db")
-            _c.execute(
-                "UPDATE trades SET status='closed' "
-                "WHERE symbol=? AND side='buy' AND status='open'",
-                (symbol,),
-            )
-            _c.commit()
-            _c.close()
-        except Exception as _exc:
-            # Reconciliation is best-effort — never block the exit path.
-            pass
-
-        results.append({
-            "symbol": symbol,
-            "action": action_label,
-            "qty": qty,
-            "trigger": trigger_signal["trigger"],
-            "reason": trigger_signal["reason"],
-            "order_id": order.id,
-        })
 
     return results
+
+
+def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
+                            pnl_by_symbol, results):
+    """Per-position exit work — extracted into its own function so the
+    outer loop can wrap each call in a try/except without losing
+    readability of the loop body."""
+    symbol = trigger_signal["symbol"]
+    qty = int(trigger_signal["qty"])
+    is_short = trigger_signal.get("is_short", False)
+
+    # Schedule guard: don't submit exit orders outside the profile's
+    # trading window. Stop-loss/take-profit triggers will re-fire on
+    # the next check cycle within schedule.
+    from order_guard import check_can_submit
+    exit_side = "buy" if is_short else "sell"
+    if not check_can_submit(ctx, symbol, exit_side):
+        return
+
+    # Broker-state guard: skip the exit if the underlying entry
+    # order is still pending at Alpaca (e.g. an unfilled limit
+    # buy). Submitting a SELL against zero real shares makes Alpaca
+    # treat it as a short attempt and reject with "cannot open a
+    # short sell while a long buy order is open."
+    if not _entry_order_filled_at_broker(api, db_path, symbol, is_short):
+        logging.info(
+            "Deferring exit for %s: entry order has not filled at "
+            "the broker yet. Will retry on next exit cycle.",
+            symbol,
+        )
+        return
+
+    # Cancel any open orders for this symbol before submitting the exit.
+    # Alpaca rejects sells when a buy limit order is still open.
+    try:
+        open_orders = api.list_orders(status="open", symbols=[symbol])
+        for oo in open_orders:
+            try:
+                api.cancel_order(oo.id)
+                logging.info(f"Cancelled conflicting order {oo.id} for {symbol} before exit")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # INTRADAY_STOPS_PLAN Stage 1 — explicitly clear our protective
+    # stop bookkeeping so the next sweep doesn't think a stale
+    # order_id is still working. The broker-side cancel above already
+    # killed the order; this just resets the DB column.
+    try:
+        from bracket_orders import cancel_for_symbol
+        cancel_for_symbol(api, db_path, symbol)
+    except Exception as _exc:
+        logging.debug("Protective stop cleanup skipped: %s", _exc)
+
+    if is_short:
+        order = api.submit_order(
+            symbol=symbol,
+            qty=qty,
+            side="buy",
+            type="market",
+            time_in_force="day",
+        )
+        side_label = "cover"
+        action_label = "COVER"
+    else:
+        order = api.submit_order(
+            symbol=symbol,
+            qty=qty,
+            side="sell",
+            type="market",
+            time_in_force="day",
+        )
+        side_label = "sell"
+        action_label = "SELL"
+
+    pnl = pnl_by_symbol.get(symbol)
+    # Subtract accrued short-borrow cost on covers (overnight
+    # shorts pay a daily borrow fee that Alpaca's unrealized_pl
+    # doesn't reflect). Sub-1-day shorts get 0.0 — same-day cover
+    # has no overnight borrow charge.
+    if is_short and pnl is not None:
+        try:
+            from short_borrow import accrue_for_cover
+            borrow_cost = accrue_for_cover(db_path, symbol, qty)
+            if borrow_cost > 0:
+                pnl = pnl - borrow_cost
+                logging.info(
+                    "Short borrow cost on %s: $%.4f (subtracted from "
+                    "cover pnl)", symbol, borrow_cost,
+                )
+        except Exception as _exc:
+            logging.debug("Borrow accrual failed for %s: %s", symbol, _exc)
+
+    log_trade(
+        symbol=symbol,
+        side=side_label,
+        qty=qty,
+        price=trigger_signal["price"],
+        order_id=order.id,
+        signal_type="SELL",
+        strategy=trigger_signal["trigger"],
+        reason=trigger_signal["reason"],
+        pnl=pnl,
+        # Exit-fired orders realize P&L → the row is closed, not open.
+        # Matching BUY rows get reconciled below.
+        status="closed" if pnl is not None else "open",
+        decision_price=trigger_signal["price"],
+        db_path=db_path,
+    )
+
+    # Mark any still-open BUY rows for this symbol as closed — the
+    # exit has flattened the position. Without this the trades page
+    # shows the old entry as "open" forever.
+    try:
+        import sqlite3 as _sqlite3
+        _c = _sqlite3.connect(db_path) if db_path else _sqlite3.connect("journal.db")
+        _c.execute(
+            "UPDATE trades SET status='closed' "
+            "WHERE symbol=? AND side='buy' AND status='open'",
+            (symbol,),
+        )
+        _c.commit()
+        _c.close()
+    except Exception as _exc:
+        # Reconciliation is best-effort — never block the exit path.
+        pass
+
+    results.append({
+        "symbol": symbol,
+        "action": action_label,
+        "qty": qty,
+        "trigger": trigger_signal["trigger"],
+        "reason": trigger_signal["reason"],
+        "order_id": order.id,
+    })

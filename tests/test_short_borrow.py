@@ -154,15 +154,17 @@ def test_accrue_returns_zero_with_no_db_path():
 # ---------------------------------------------------------------------------
 
 def test_check_exits_subtracts_borrow_cost_on_cover():
-    """The cover path in trader.check_exits MUST call accrue_for_cover
-    and subtract the result from pnl. Otherwise overnight-short P&L
-    is over-reported and meta-model labels are biased."""
+    """The cover path MUST call accrue_for_cover and subtract the
+    result from pnl. Otherwise overnight-short P&L is over-reported
+    and meta-model labels are biased. Body lives in
+    _process_exit_trigger after the 2026-04-30 resilience refactor."""
     import trader
-    src = inspect.getsource(trader.check_exits)
+    src = (inspect.getsource(trader.check_exits)
+           + inspect.getsource(trader._process_exit_trigger))
     assert "accrue_for_cover" in src, (
-        "REGRESSION: trader.check_exits no longer references "
-        "accrue_for_cover. Overnight-short P&L will over-report by "
-        "the full borrow accrual. See TECHNICAL_DOCUMENTATION.md §15."
+        "REGRESSION: cover path no longer references accrue_for_cover. "
+        "Overnight-short P&L will over-report by the full borrow "
+        "accrual. See TECHNICAL_DOCUMENTATION.md §15."
     )
     assert "borrow_cost" in src, (
         "REGRESSION: cover path no longer subtracts borrow cost. "

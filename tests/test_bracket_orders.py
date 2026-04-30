@@ -542,15 +542,17 @@ def test_check_exits_invokes_protective_sweep():
 
 
 def test_check_exits_clears_protective_stop_on_polling_exit():
-    """Source-level pin: trader.check_exits must call cancel_for_symbol
-    in the exit loop. Without it, the broker stop sits orphaned at
-    Alpaca after a polling-driven exit and can fire on a flat
-    position next cycle."""
+    """Source-level pin: the polling-exit code path must call
+    cancel_for_symbol so broker stops don't orphan after a market
+    sell. The body lives in _process_exit_trigger (extracted from
+    check_exits during the 2026-04-30 resilience refactor) so we
+    look there."""
     import inspect
     import trader
-    src = inspect.getsource(trader.check_exits)
+    # Check both functions for safety — code may move again.
+    src = (inspect.getsource(trader.check_exits)
+           + inspect.getsource(trader._process_exit_trigger))
     assert "cancel_for_symbol" in src, (
-        "REGRESSION: trader.check_exits no longer cancels protective "
-        "stops on polling-driven exits. Broker stops will orphan "
-        "after market sells."
+        "REGRESSION: polling-exit code no longer cancels protective "
+        "stops. Broker stops will orphan after market sells."
     )

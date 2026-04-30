@@ -193,12 +193,14 @@ def test_journal_query_error_allows_exit(journal_db):
 def test_check_exits_calls_the_filled_gate():
     """Source-level guard: if someone removes the call from
     check_exits, this test fails — preventing a silent regression to
-    the original bug."""
-    from trader import check_exits
+    the original bug. The body lives in _process_exit_trigger
+    (extracted during the 2026-04-30 resilience refactor)."""
+    import trader
 
-    src = inspect.getsource(check_exits)
+    src = (inspect.getsource(trader.check_exits)
+           + inspect.getsource(trader._process_exit_trigger))
     assert "_entry_order_filled_at_broker" in src, (
-        "REGRESSION: check_exits no longer calls "
+        "REGRESSION: polling-exit code no longer calls "
         "_entry_order_filled_at_broker. This was the gate added on "
         "2026-04-27 to prevent submitting SELLs against zero real "
         "shares for virtual profiles using limit-order entries. "

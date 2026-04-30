@@ -17,6 +17,24 @@ Rules going forward:
 
 ---
 
+## 2026-04-30 — check_exits per-position resilience: one bad submit no longer halts the cycle (Severity: critical, outage)
+
+**The outage.** verify_first_cycle reported 11 TASK FAILs on Check Exits in one hour. Pattern: `Cancelled conflicting order ... before exit` followed immediately by `[TASK FAIL] Check Exits` with traceback ending in `alpaca_trade_api.rest.APIError: insufficient qty available for order (requested: 9, available: 8)`. Every subsequent position in that cycle lost protection — no stop refresh, no trailing detection, no exit processing.
+
+**Root cause.** With 10 profiles sharing 3 Alpaca accounts (per the architecture verified yesterday), cumulative reserved share counts across protective stops + take-profits + trailing stops + polling exits can exceed actual qty held at the broker. Alpaca rejects with the "insufficient qty" APIError. The exception propagated up out of `trader.check_exits` (the per-position submit at the bottom of the loop wasn't wrapped) and the whole task crashed. So one over-committed AAPL exit took out MSFT, GOOG, etc., for that whole cycle.
+
+**Fix.** Extract the per-position exit work into `_process_exit_trigger()` and wrap each call in a try/except in the loop. Failures log a `WARNING` with the symbol and trigger reason, then the loop continues to the next position. Subsequent stops/trails get refreshed, subsequent exits get processed.
+
+The deeper qty-overcommit issue (multiple profiles each reserving the same shared shares) remains — the right long-term fix is qty-clamping per submit, but that requires fetching Alpaca-side positions separately from virtual positions. For now, the resilience patch ensures the failures don't cascade.
+
+**Tests.**
+- `test_check_exits_resilience.py` (3 new): per-position try/except actually catches and continues; source-pin on `_process_exit_trigger`; source-pin on the wrapping try/except in the loop.
+- Updated existing source-pins in `test_bracket_orders.py`, `test_exit_gates_unfilled_entry.py`, `test_short_borrow.py` to look at both `check_exits` AND `_process_exit_trigger` source (since the body moved during this refactor).
+
+Full suite: 1367 passing.
+
+---
+
 ## 2026-04-29 — Fix 1: MFE capture ratio surfaced to AI prompt + dashboard (Severity: medium, observability)
 
 **The metric.** Realized P&L as a fraction of the available favorable excursion (max-favorable-price reached during the trade's life):
