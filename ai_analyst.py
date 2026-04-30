@@ -634,6 +634,32 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     except Exception:
         pass
 
+    # Item 1a of COMPETITIVE_GAP_PLAN.md — options strategy advisor.
+    # Surfaces covered-call / protective-put opportunities on existing
+    # positions to the AI prompt. Read-side only — execution requires
+    # the AI to propose with action='OPTIONS' (deferred to follow-up).
+    options_strategy_block = ""
+    try:
+        from options_strategy_advisor import render_for_prompt as opt_render
+        from options_oracle import get_options_oracle
+        positions_for_opts = portfolio_state.get("positions") or []
+        # IV-rank lookup: get_options_oracle is cached, so per-symbol
+        # cost is one chain fetch per cache TTL. Best-effort: any
+        # failure → None (advisor skips IV-conditional strategies).
+        def _iv_rank_lookup(sym):
+            try:
+                oracle = get_options_oracle(sym)
+                if oracle and oracle.get("has_options"):
+                    return oracle.get("iv_rank", {}).get("rank_pct")
+            except Exception:
+                return None
+            return None
+        options_strategy_block = opt_render(
+            positions_for_opts, iv_rank_lookup=_iv_rank_lookup,
+        )
+    except Exception:
+        pass
+
     # P4.3 of LONG_SHORT_PLAN.md — drawdown-aware capital scaling.
     # Continuous size modifier (vs the discrete normal/reduce/pause
     # action). Tells the AI: "we're below peak — multiply your sizes
@@ -748,6 +774,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"{drawdown_block}"
         f"{risk_budget_block}"
         f"{mfe_capture_block}"
+        f"{options_strategy_block}"
     )
 
     # --- Market context section ---

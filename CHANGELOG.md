@@ -17,6 +17,37 @@ Rules going forward:
 
 ---
 
+## 2026-04-30 — Options strategy advisor wired to AI prompt (Item 1a continued) (Severity: high, capability)
+
+**What this adds.** New module `options_strategy_advisor.py` that evaluates each held position against rules for covered-call / protective-put recommendations. Read-side only — surfaces opportunities to the AI prompt without auto-executing. The AI sees the recommendation, decides whether to take it.
+
+**Strategy rules (Phase 1 — single-leg only):**
+
+- **Covered call** when: position ≥ 100 shares, ≥ +5% unrealized gain, IV rank > 70 (premium is rich). Strike ~7% above current, expiry ~35 days out.
+- **Protective put** when: position ≥ 100 shares, ≥ +10% unrealized gain (worth protecting). Strike ~5% below current, expiry ~45 days out. IV-rank-independent.
+
+Both compute the right contract count (1 per 100 shares) and an OCC-format symbol via `format_occ_symbol`. The recommendation includes the rationale string the AI sees.
+
+**Wired into `ai_analyst._build_batch_prompt`** alongside the other prompt blocks. IV rank fetched via `get_options_oracle(symbol)` (cache-backed, 1 chain fetch per symbol per TTL). Best-effort: any failure → None → advisor skips IV-conditional strategies for that symbol.
+
+**Tests.** 14 new in `test_options_strategy_advisor.py`:
+- Below 100 shares → no recs
+- Covered call fires at +10% gain + IV rank 80 (sweet spot)
+- Skipped at IV rank < 70 (premium not rich enough)
+- Skipped at gain < 5% (no upside to cap)
+- Protective put fires at +20% gain (worth protecting)
+- Skipped at gain < 10% (not enough at risk)
+- Both fire when both conditions met
+- Short positions skip both (no covered-call on a short)
+- IV rank None: covered call skipped, protective put still fires
+- Render: empty when no positions/recs, caps at 5 bullets, robust to lookup failures
+
+**What's still NOT wired:** the AI prompt block exists but the AI's proposed `action="OPTIONS"` doesn't yet route through trade_pipeline to actual order submission. That's the next commit. After that, executions become live.
+
+Full suite: 1427 passing.
+
+---
+
 ## 2026-04-30 — Options trading layer foundation (COMPETITIVE_GAP_PLAN Item 1a) (Severity: high, capability)
 
 **Why now.** First item in `COMPETITIVE_GAP_PLAN.md`. Equity-only strategies leave 30-40% of obvious P&L on the table — protective puts on big positions (downside hedge), covered calls on existing longs (income), and IV mean-reversion (sell rich vol, buy cheap). All buildable on free Alpaca paper options API + Black-Scholes math.
