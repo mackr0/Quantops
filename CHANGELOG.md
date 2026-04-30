@@ -17,6 +17,40 @@ Rules going forward:
 
 ---
 
+## 2026-04-30 — Options trading layer foundation (COMPETITIVE_GAP_PLAN Item 1a) (Severity: high, capability)
+
+**Why now.** First item in `COMPETITIVE_GAP_PLAN.md`. Equity-only strategies leave 30-40% of obvious P&L on the table — protective puts on big positions (downside hedge), covered calls on existing longs (income), and IV mean-reversion (sell rich vol, buy cheap). All buildable on free Alpaca paper options API + Black-Scholes math.
+
+**This commit ships the foundation.** Pure-math + strategy-spec layer. Live submission integration deferred to a follow-up so the foundation can be validated by tests before touching the trade pipeline.
+
+**`options_trader.py`:**
+- `compute_greeks(spot, strike, days, iv, is_call, risk_free_rate)` — Black-Scholes price + delta/gamma/theta/vega/rho. Pure math, no scipy dependency (uses `math.erf` for normal CDF).
+- `format_occ_symbol(underlying, expiry, strike, right)` — produces canonical 21-char OCC symbol (`AAPL  250516C00150000`). Round-trip `parse_occ_symbol` for the inverse.
+- Strategy spec builders (return position dicts, caller submits):
+  - `build_long_put` — outright bearish or downside hedge
+  - `build_long_call` — outright bullish, defined max loss
+  - `build_covered_call` — income on existing 100-share lots; auto-derives qty from shares_held
+  - `build_cash_secured_put` — willing-buyer at lower price; computes cash requirement
+- `submit_option_order(api, occ_symbol, side, qty, order_type, limit_price)` — Alpaca submit_order with OCC symbol path; failure logged not raised.
+
+**Multi-leg strategies (verticals, iron condors, calendars) deferred to Phase 2** — those need Alpaca's `mleg` order class which differs from single-leg.
+
+**Tests.** 23 in `test_options_trader.py`:
+- Greeks: ATM call/put parity, OTM call low delta, ITM put delta near -1, invalid inputs return None
+- OCC: round-trip, decimal strikes, short root padding, lowercase right normalization, invalid right raises
+- Strategy specs: qty derivation for covered_call (250 shares → 2 contracts), cash requirement for CSP, moneyness percent
+- Submission: market vs limit kwargs, missing limit_price returns None, broker failure returns None not raises
+
+**Next steps (separate commits):**
+- AI prompt block exposing IV rank + recommended option strategies
+- Position-sizing layer (defined-risk math vs equity %)
+- Lifecycle management (expiration tracking, roll vs let-expire decisions)
+- Integration with the existing options_oracle (IV regime classifier)
+
+Full suite: 1413 passing.
+
+---
+
 ## 2026-04-30 — verify_first_cycle: deploy-window awareness + cross-direction error classification (Severity: medium, observability)
 
 **Two cleanups from running verify and seeing inflated warnings.**
