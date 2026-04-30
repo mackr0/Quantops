@@ -344,6 +344,10 @@ def ensure_protective_stops(api, positions, ctx, db_path,
                 existing_trail_id = row["protective_trailing_order_id"]
                 if existing_trail_id and _is_order_active(api, existing_trail_id):
                     continue
+                # Free up qty by cancelling any stale stop/TP this row
+                # may have from a previous deploy that placed all three.
+                # Without this, the old reservations block the new trail.
+                _cancel_stale_other_orders(api, conn, row, ("stop", "tp"))
                 trail_pct = trail_percent_for_entry(sl_pct)
                 if trail_pct is None:
                     continue
@@ -356,6 +360,7 @@ def ensure_protective_stops(api, positions, ctx, db_path,
                 existing_stop_id = row["protective_stop_order_id"]
                 if existing_stop_id and _is_order_active(api, existing_stop_id):
                     continue
+                _cancel_stale_other_orders(api, conn, row, ("tp", "trailing"))
                 stop_price = stop_price_for_entry(entry_price, sl_pct, is_short)
                 if stop_price is None:
                     continue
@@ -381,6 +386,36 @@ def ensure_protective_stops(api, positions, ctx, db_path,
             conn.close()
         except Exception:
             pass
+
+
+def _cancel_stale_other_orders(api, conn, row, kinds):
+    """Cancel protective orders of the given kinds (stop/tp/trailing)
+    on this trade row and clear the columns. Used during the
+    one-order-per-position migration so legacy stop+TP+trailing
+    triplets get reduced to whichever single order the new sweep
+    decided to place."""
+    column_map = {
+        "stop": "protective_stop_order_id",
+        "tp": "protective_tp_order_id",
+        "trailing": "protective_trailing_order_id",
+    }
+    cleared_cols = []
+    for kind in kinds:
+        col = column_map.get(kind)
+        if not col:
+            continue
+        order_id = row[col] if col in row.keys() else None
+        if order_id:
+            cancel_protective_stop(api, order_id)
+            cleared_cols.append(col)
+    if cleared_cols:
+        try:
+            sets = ", ".join(f"{c} = NULL" for c in cleared_cols)
+            conn.execute(f"UPDATE trades SET {sets} WHERE id = ?",
+                         (row["id"],))
+            conn.commit()
+        except Exception as exc:
+            logger.debug("Couldn't clear stale order columns: %s", exc)
 
 
 def cancel_for_symbol(api, db_path: str, symbol: str) -> None:

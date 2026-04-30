@@ -474,6 +474,51 @@ def test_sweep_falls_back_to_static_stop_when_trailing_disabled(tmp_db):
     assert api.submit_order.call_args.kwargs["type"] == "stop"
 
 
+def test_sweep_cancels_legacy_stop_and_tp_when_placing_trailing(tmp_db):
+    """Migration path: yesterday's deploy placed all three (stop + TP +
+    trailing). Today's sweep wants only trailing. The legacy stop and
+    TP must be cancelled FIRST so they free up qty reservations at the
+    broker — otherwise the new trailing fails with 'available: 0'."""
+    from bracket_orders import ensure_protective_stops
+    import sqlite3
+    # Seed an open BUY with EXISTING stop and TP order_ids (legacy)
+    conn = sqlite3.connect(tmp_db)
+    conn.execute(
+        "INSERT INTO trades (timestamp, symbol, side, qty, price, status, "
+        "protective_stop_order_id, protective_tp_order_id, "
+        "protective_trailing_order_id) "
+        "VALUES (?, 'AAPL', 'buy', 100, 150.0, 'open', ?, ?, ?)",
+        ("2026-04-29", "old-stop", "old-tp", None),
+    )
+    conn.commit()
+    conn.close()
+
+    api = MagicMock()
+    api.submit_order.return_value = MagicMock(id="new-trail")
+    ctx = _make_ctx(stop_loss_pct=0.05, use_trailing_stops=True)
+    positions = [{"symbol": "AAPL", "qty": 100, "avg_entry_price": 150.0}]
+
+    ensure_protective_stops(api, positions, ctx, tmp_db)
+
+    # Both legacy orders cancelled before the new trailing was placed
+    cancelled = [c.args[0] for c in api.cancel_order.call_args_list]
+    assert "old-stop" in cancelled
+    assert "old-tp" in cancelled
+    # New trailing placed
+    assert api.submit_order.call_count == 1
+    assert api.submit_order.call_args.kwargs["type"] == "trailing_stop"
+    # DB reflects: stop_id and tp_id cleared, trailing_id set
+    conn = sqlite3.connect(tmp_db)
+    row = conn.execute(
+        "SELECT protective_stop_order_id, protective_tp_order_id, "
+        "protective_trailing_order_id FROM trades WHERE symbol='AAPL'"
+    ).fetchone()
+    conn.close()
+    assert row[0] is None
+    assert row[1] is None
+    assert row[2] == "new-trail"
+
+
 def test_cancel_for_symbol_clears_all_three_protective_orders(tmp_db):
     """When AI does an early exit, all three broker orders must be
     cancelled so they don't orphan-fire on a flat position."""
