@@ -17,6 +17,42 @@ Rules going forward:
 
 ---
 
+## 2026-04-30 — Item 1b foundation: stat-arb pair book (math + tests) (Severity: high, capability)
+
+**What this lays down.** First commit toward COMPETITIVE_GAP_PLAN Item 1b — a real cointegrated-pair book to replace the one-shot pair-trade primitive (P2.3). This lands the math foundation; wiring into the trade pipeline is multi-session.
+
+**New module: `stat_arb_pair_book.py`**
+
+- `engle_granger(price_a, price_b)` — Engle-Granger two-step: OLS hedge ratio + ADF on residuals. Returns `{p_value, hedge_ratio, half_life_days, correlation, n_obs}`. Insufficient data / NaN inputs / degenerate spreads return `p_value=1.0` (rejected).
+- `_half_life(spread)` — AR(1) on differences of the residual series. `half_life = -ln(2) / ln(1+γ)`. Random walks → infinity.
+- `compute_spread_zscore(price_a, price_b, hedge_ratio, lookback=60)` — current spread standardized against trailing window. The signal generator that the next session will key off.
+- `is_pair_tradeable(eg_result)` — applies the standard filters (p < 0.05, |corr| > 0.6, 1d ≤ half-life ≤ 30d).
+- `find_cointegrated_pairs(symbols, price_history, max_pairs=50)` — pairwise universe scan. Caller provides a `price_history` callable so cache + fetch logic stays out of this module. Cost: N·(N-1)/2 EG tests; ~25s for 100 symbols, run daily not per-cycle.
+- `Pair` dataclass — frozen description (symbols, hedge_ratio, p_value, half_life, correlation).
+
+**Out of scope this commit (separate sessions):**
+- Persistent pair-book table in journal
+- Daily rebalance task that re-tests cointegration of active pairs (auto-eject when p > 0.10)
+- Trade entry/exit signal generator (z > +2 → SHORT A / LONG B; |z| < 0.5 → exit; |z| > 3 → regime break)
+- Wiring into trade_pipeline so the AI sees pair-trade actions in its candidate list
+
+**New dep:** `statsmodels>=0.14.0` for `tsa.stattools.adfuller`. Standard quant lib; well-tested. ~10MB install.
+
+**Tests.** 17 in `test_stat_arb_pair_book.py` using deterministic synthetic data:
+- Planted cointegrated pair (A = β·B + small noise) is detected (p < 0.05, β recovered ±5%)
+- Two independent random walks NOT cointegrated (p > 0.10)
+- Short series, mismatched lengths, NaN inputs → safe defaults
+- Strongly mean-reverting AR(1) recovers known half-life (~1.36)
+- Pure random walk → infinite half-life
+- Z-score sign + magnitude on planted-spread inputs
+- Tradeability filters (p, correlation, half-life range) reject correctly
+- Universe scan recovers planted pair from a noise universe; respects max_pairs cap; handles missing data
+- Pair.label format
+
+**Why it matters.** Stat-arb is one of the most scalable, market-neutral edge sources. Real funds run hundreds-to-thousands of pairs simultaneously. We have the architecture (long/short, asymmetric sizing, beta-neutrality) to support a pair book; this commit is the math the pair book is built on.
+
+---
+
 ## 2026-04-30 — Veto-rate panel on /ai dashboard (Severity: medium, observability)
 
 **What this surfaces.** New table in the Specialist Ensemble section showing per-specialist verdict + veto counts over the last 7 days, across all profiles. Distinguishes:
