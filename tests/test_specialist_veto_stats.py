@@ -22,9 +22,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 @pytest.fixture
 def tmp_db():
     from journal import init_db
+    from specialist_calibration import init_calibration_db
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     init_db(path)
+    init_calibration_db(path)  # creates specialist_outcomes table
     yield path
     try:
         os.unlink(path)
@@ -108,9 +110,11 @@ class TestVetoStats:
         specialist across the full multi-profile set."""
         # Spin up a 2nd DB for this test
         from journal import init_db, get_specialist_veto_stats
+        from specialist_calibration import init_calibration_db
         fd, path2 = tempfile.mkstemp(suffix=".db")
         os.close(fd)
         init_db(path2)
+        init_calibration_db(path2)
         try:
             for i in range(2):
                 _seed(tmp_db, "risk_assessor", "VETO", prediction_id=i + 1)
