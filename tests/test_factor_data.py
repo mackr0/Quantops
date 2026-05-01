@@ -88,14 +88,49 @@ def test_get_book_to_market_returns_none_on_missing_data(tmp_factor_db):
         assert get_book_to_market("UNKNOWN") is None
 
 
-def test_get_beta_uses_yfinance_info_beta(tmp_factor_db):
+def test_get_beta_computes_from_alpaca_bars(tmp_factor_db):
+    """Migrated 2026-05-01: beta now computed from Alpaca bars via
+    OLS regression of symbol returns vs SPY returns, not from
+    yfinance.Ticker.info.beta. Build synthetic bars where the
+    symbol moves exactly 1.5x SPY each day; expect β ≈ 1.5."""
+    import pandas as pd
+    import numpy as np
     from factor_data import get_beta
-    fake_ticker = MagicMock()
-    fake_ticker.info = {"beta": 1.42}
-    fake_yf = MagicMock()
-    fake_yf.Ticker.return_value = fake_ticker
-    with patch.dict("sys.modules", {"yfinance": fake_yf}):
-        assert get_beta("TSLA") == pytest.approx(1.42)
+
+    n = 252
+    rng = np.random.default_rng(seed=42)
+    spy_returns = rng.normal(0, 0.01, size=n)
+    sym_returns = 1.5 * spy_returns  # exact 1.5x — no idiosyncratic noise
+
+    # Convert returns to price series (start at 100 for both)
+    spy_prices = 100 * np.cumprod(1 + spy_returns)
+    sym_prices = 100 * np.cumprod(1 + sym_returns)
+    # Daily date index
+    idx = pd.date_range(end="2026-05-01", periods=n, freq="B")
+
+    spy_df = pd.DataFrame({"close": spy_prices}, index=idx)
+    sym_df = pd.DataFrame({"close": sym_prices}, index=idx)
+
+    def _fake_get_bars(sym, limit=500):
+        if sym == "SPY":
+            return spy_df
+        return sym_df
+
+    with patch("market_data.get_bars", _fake_get_bars):
+        beta = get_beta("TSLA")
+    assert beta is not None
+    assert beta == pytest.approx(1.5, abs=0.05)
+
+
+def test_get_beta_returns_none_on_short_history(tmp_factor_db):
+    """When we don't have enough bars (< 60), return None rather
+    than fitting a degenerate beta from too little data."""
+    import pandas as pd
+    from factor_data import get_beta
+
+    short_df = pd.DataFrame({"close": [100.0] * 30})
+    with patch("market_data.get_bars", return_value=short_df):
+        assert get_beta("TSLA") is None
 
 
 def test_get_momentum_12_1_skips_recent_month(tmp_factor_db):

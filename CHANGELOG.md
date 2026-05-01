@@ -17,6 +17,37 @@ Rules going forward:
 
 ---
 
+## 2026-05-01 — Alpaca-first migration: 9 modules off yfinance (Severity: high, correctness + cost)
+
+ALPACA-FIRST DATA RULE applied across the codebase. We pay for Alpaca; using yfinance for fields Alpaca exposes was wasting the subscription, shipping decisions on 15-min-delayed quotes, and leaving real money on the table on real-money plays. Recurring failure pattern documented in `feedback_alpaca_first_data.md`.
+
+**Migrated to Alpaca:**
+
+- `options_oracle._fetch_chain` — real-time NBBO chains via `/v1beta1/options/snapshots/<sym>`. Black-Scholes inversion (Newton + bisection fallback in `options_chain_alpaca._implied_vol_from_price`) computes IV ourselves since Alpaca returns prices but not IV. (commit a59747b)
+- `options_oracle.compute_iv_rank` — realized-vol fetch via `market_data.get_bars` instead of `yfinance.Ticker.history`. (commit a59747b)
+- `news_sentiment.fetch_news` — `/v1beta1/news` Benzinga feed (verified 200 with paper keys). The earlier "Alpaca news requires paid subscription" comment was wrong. (commit bc0a8c0)
+- `market_regime.detect_regime` VIX — computed locally as 30-day ATM IV of SPY options via `fetch_chain_alpaca`. By definition VIX = 30d ATM IV of SPX/SPY, so this is the same number from real-time chain. (commit bc0a8c0)
+- `political_sentiment` market-ETF news — SPY/QQQ/DIA headlines now via `fetch_news_alpaca`. (commit bc0a8c0)
+- `factor_data.get_beta` — 2-year OLS regression on Alpaca bars (`cov(sym_returns, spy_returns) / var(spy_returns)`) instead of `yfinance.Ticker.info.beta`. (commit bc0a8c0)
+- `models.fetch_and_cache_names` — Alpaca `/v2/assets/<sym>` for company names. (commit bc0a8c0)
+- `screener.run_crypto_screen` — Alpaca `/v1beta3/crypto/us/bars` (no more BTC-USD ↔ BTC/USD shuffle). (commit 5c168f0)
+- `alternative_data.get_intraday_patterns` — Alpaca `/v2/stocks/<sym>/bars?timeframe=5Min` for intraday VWAP/ORB analysis. (commit 5c168f0)
+
+**Stays on yfinance — Alpaca genuinely doesn't have these** (documented inline + in feedback memory):
+
+- `sector_classifier` — Alpaca asset endpoint has no sector field
+- `earnings_calendar` — Alpaca corporate-actions has no `earnings_announcement` type
+- `factor_data.get_book_to_market` — fundamentals (book value, market cap, shares outstanding) — Alpaca is a broker, not a fundamentals provider
+- `alternative_data` insider transactions / short interest / fundamentals — same reason
+
+**Acceptable yfinance fallback** (Alpaca-first, yfinance only on explicit Alpaca failure with wall-clock budget):
+
+- `screener` dynamic-screener fallback path
+
+**New tests:** 13 in `test_options_chain_alpaca.py` (IV inversion + DataFrame builder + integration). `test_factor_data.test_get_beta_computes_from_alpaca_bars` updated to verify the new OLS approach.
+
+---
+
 ## 2026-05-01 — OPTIONS_PROGRAM_PLAN Phases A-F COMPLETE (Severity: high, capability)
 
 End-to-end real options program shipped. The single-leg toy that
