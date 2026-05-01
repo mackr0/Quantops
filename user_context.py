@@ -108,6 +108,24 @@ class UserContext:
     # or levered (high-beta) picks to close the gap.
     target_book_beta: Optional[float] = None
 
+    # OPTIONS_PROGRAM_PLAN Phase A2 — Greeks exposure gates. Defaults
+    # are conservative; tunable per profile. None = no gate (the
+    # behavior pre-Phase-A2).
+    # max_net_options_delta_pct: |options-only delta| / equity cap.
+    #   0.05 = 5%. Stops the AI from accumulating directional exposure
+    #   via options (e.g. stacking long calls until the book is +50%
+    #   delta levered).
+    max_net_options_delta_pct: Optional[float] = 0.05
+    # max_theta_burn_dollars_per_day: positive number = max $/day of
+    #   premium decay we're willing to pay (long-vol books). When net
+    #   theta is BELOW -limit, block new long-premium trades.
+    #   None = no gate; 0 = forbid net long-vol; +X = allow up to $X/day.
+    max_theta_burn_dollars_per_day: Optional[float] = 50.0
+    # max_short_vega_dollars: cap on short vega exposure. When net
+    #   vega is BELOW -limit, block new short-premium trades. Protects
+    #   against vol spikes wiping a short-vol book.
+    max_short_vega_dollars: Optional[float] = 500.0
+
     # Self-tuning — AI learns from past wins/losses and adjusts approach
     enable_self_tuning: bool = True
 

@@ -451,6 +451,60 @@ def execute_option_strategy(
 
     # Build OCC + submit
     occ = format_occ_symbol(underlying, expiry, strike, right)
+
+    # Phase A2 — Greeks exposure gate. Compute the leg's contribution
+    # to portfolio Greeks and check it doesn't push the book past
+    # any active gate. Skips silently when no chain data available
+    # (gate is best-effort; equity-sizing gates upstream still apply).
+    try:
+        from options_greeks_aggregator import (
+            compute_book_greeks, _greek_contribution, _parse_option_position,
+            check_greeks_gates, FALLBACK_IV,
+        )
+        from datetime import date as _date_now
+        # Estimate IV: use limit_price if provided to back out an IV;
+        # otherwise fall back to FALLBACK_IV. Production callers should
+        # plumb a real IV from the options oracle.
+        spot_for_gate = None
+        try:
+            from market_data import get_bars as _gb
+            bars_for_gate = _gb(underlying, limit=2)
+            if bars_for_gate is not None and len(bars_for_gate) > 0:
+                spot_for_gate = float(bars_for_gate["close"].iloc[-1])
+        except Exception:
+            spot_for_gate = None
+        if spot_for_gate is not None and spot_for_gate > 0:
+            mock_pos = {"symbol": occ, "occ_symbol": occ, "qty": contracts
+                        if side == "buy" else -contracts}
+            parsed = _parse_option_position(mock_pos)
+            if parsed:
+                contribution = _greek_contribution(
+                    parsed, spot_for_gate, FALLBACK_IV,
+                    today=_date_now.today(),
+                )
+                # Read current book
+                try:
+                    from client import get_positions
+                    positions_for_gate = get_positions(ctx=ctx) or []
+                except Exception:
+                    positions_for_gate = []
+                book_summary = compute_book_greeks(
+                    positions_for_gate,
+                    price_lookup=lambda s: spot_for_gate if s == underlying else None,
+                    iv_lookup=lambda s: FALLBACK_IV,
+                )
+                gate_result = check_greeks_gates(
+                    book_summary, contribution, ctx=ctx,
+                )
+                if not gate_result["allowed"]:
+                    result["reason"] = (
+                        f"Greeks gate(s) blocked: "
+                        f"{'; '.join(gate_result['reasons'])}"
+                    )
+                    return result
+    except Exception as exc:
+        logger.debug("Greeks gate eval failed (non-blocking): %s", exc)
+
     order_type = "limit" if limit_price is not None else "market"
     order_id = submit_option_order(
         api, occ, side=side, qty=contracts,

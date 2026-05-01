@@ -236,6 +236,134 @@ def compute_book_greeks(
     return summary
 
 
+def check_greeks_gates(
+    book_summary: Dict[str, Any],
+    proposed_contribution: Optional[Dict[str, Any]],
+    ctx: Any,
+) -> Dict[str, Any]:
+    """Phase A2 — Greeks exposure gates. Decide whether a proposed
+    options trade is allowed by the book's Greeks-based risk caps.
+
+    Args:
+        book_summary: result of `compute_book_greeks` for the current
+            book (BEFORE the proposed trade).
+        proposed_contribution: dict shaped like one entry from
+            book_summary["by_leg"] — the Greeks contribution the
+            proposed trade WOULD add. Pass None to evaluate the
+            current book's compliance without a proposal.
+        ctx: UserContext supplying equity + the gate limits
+            (max_net_options_delta_pct, max_theta_burn_dollars_per_day,
+            max_short_vega_dollars).
+
+    Returns:
+        {
+            "allowed": bool,
+            "reasons": List[str],   # one per failing gate
+            "post_trade_options_delta": float,
+            "post_trade_theta": float,
+            "post_trade_vega": float,
+            "limits": { ... limits actually applied ... },
+        }
+
+    Gate semantics:
+      delta_pct: post-trade |options_delta| / equity > limit → block
+      theta:    post-trade net_theta < -limit → block (paying too much
+                  decay). Only checks when limit is set AND proposed
+                  trade adds long premium (negative theta).
+      short_vega: post-trade net_vega < -limit → block (too much short
+                  vol). Only checks when limit is set AND proposed
+                  trade adds short premium (negative vega).
+
+    Note: the AI's existing equity-sizing gates still apply; these are
+    ADDITIONAL gates on top, specific to options Greeks exposure.
+    """
+    reasons: List[str] = []
+
+    # Read the limits — None means "no gate"
+    delta_pct_limit = getattr(ctx, "max_net_options_delta_pct", None)
+    theta_limit = getattr(ctx, "max_theta_burn_dollars_per_day", None)
+    short_vega_limit = getattr(ctx, "max_short_vega_dollars", None)
+
+    # Read equity for normalization
+    equity = 0.0
+    try:
+        from client import get_account_info
+        account = get_account_info(ctx=ctx) or {}
+        equity = float(account.get("equity") or 0)
+    except Exception:
+        equity = 0.0
+    if equity <= 0:
+        # Best-effort: try the ctx initial_capital fallback
+        equity = float(getattr(ctx, "initial_capital", 0) or 0)
+
+    # Compute post-trade Greeks
+    pre_options_delta = float(book_summary.get("options_delta", 0))
+    pre_theta = float(book_summary.get("net_theta", 0))
+    pre_vega = float(book_summary.get("net_vega", 0))
+    add_delta = float((proposed_contribution or {}).get("delta", 0))
+    add_theta = float((proposed_contribution or {}).get("theta", 0))
+    add_vega = float((proposed_contribution or {}).get("vega", 0))
+
+    post_options_delta = pre_options_delta + add_delta
+    post_theta = pre_theta + add_theta
+    post_vega = pre_vega + add_vega
+
+    # Gate 1: directional delta cap (options-only delta as % of equity).
+    # We use options_delta NOT net_delta because stock delta is
+    # explicitly authorized via equity-sizing gates upstream — we
+    # don't want options gates double-counting that.
+    if delta_pct_limit is not None and equity > 0:
+        # |post_delta * spot| isn't directly available; use share-equiv
+        # delta vs equity approximation. Each unit of options_delta is
+        # one share-equivalent — its $-value depends on the underlying.
+        # For the cap, we compare delta-shares against an
+        # equity-equivalent share count: equity / typical_price (~$100).
+        # Simplification: cap absolute options_delta against
+        # delta_pct_limit * equity / 100. This is an APPROXIMATION
+        # that assumes ~$100 average underlying; conservative for
+        # high-priced stocks (overcounts), permissive for low-priced.
+        # Refinement to per-leg dollar-delta is a follow-up.
+        delta_dollar_proxy = abs(post_options_delta) * 100  # approx $-exposure
+        delta_dollar_limit = delta_pct_limit * equity
+        if delta_dollar_proxy > delta_dollar_limit:
+            reasons.append(
+                f"options delta ${delta_dollar_proxy:,.0f} > limit "
+                f"${delta_dollar_limit:,.0f} ({delta_pct_limit*100:.0f}% equity)"
+            )
+
+    # Gate 2: theta-burn cap (long-vol budget)
+    if theta_limit is not None:
+        # post_theta is signed: negative = paying decay. Compare
+        # against -limit (i.e. allow up to $theta_limit/day in decay).
+        if post_theta < -theta_limit:
+            reasons.append(
+                f"theta burn {post_theta:+.0f}/day < -${theta_limit:,.0f} "
+                f"(long-vol budget exceeded)"
+            )
+
+    # Gate 3: short-vega cap (short-vol exposure cap)
+    if short_vega_limit is not None:
+        if post_vega < -short_vega_limit:
+            reasons.append(
+                f"vega {post_vega:+.0f} < -${short_vega_limit:,.0f} "
+                f"(short-vega exposure cap)"
+            )
+
+    return {
+        "allowed": len(reasons) == 0,
+        "reasons": reasons,
+        "post_trade_options_delta": round(post_options_delta, 4),
+        "post_trade_theta": round(post_theta, 4),
+        "post_trade_vega": round(post_vega, 4),
+        "limits": {
+            "max_net_options_delta_pct": delta_pct_limit,
+            "max_theta_burn_dollars_per_day": theta_limit,
+            "max_short_vega_dollars": short_vega_limit,
+            "equity": equity,
+        },
+    }
+
+
 def render_greeks_for_prompt(summary: Dict[str, Any]) -> str:
     """Compact one-block summary for inclusion in the AI batch prompt.
 

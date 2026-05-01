@@ -254,3 +254,164 @@ class TestRender:
         )
         out = render_greeks_for_prompt(result)
         assert "fallback IV" in out
+
+
+# ---------------------------------------------------------------------------
+# Phase A2 — Greeks exposure gates
+# ---------------------------------------------------------------------------
+
+from unittest.mock import MagicMock, patch  # noqa: E402
+
+
+class TestGreeksGates:
+    def _ctx(self, **overrides):
+        ctx = MagicMock()
+        ctx.max_net_options_delta_pct = overrides.get(
+            "max_net_options_delta_pct", 0.05)
+        ctx.max_theta_burn_dollars_per_day = overrides.get(
+            "max_theta_burn_dollars_per_day", 50.0)
+        ctx.max_short_vega_dollars = overrides.get(
+            "max_short_vega_dollars", 500.0)
+        ctx.initial_capital = overrides.get("initial_capital", 100000)
+        return ctx
+
+    def _empty_book(self):
+        from options_greeks_aggregator import compute_book_greeks
+        return compute_book_greeks([])
+
+    def test_no_proposal_empty_book_passes(self):
+        from options_greeks_aggregator import check_greeks_gates
+        with patch("client.get_account_info",
+                   return_value={"equity": 100000}):
+            result = check_greeks_gates(self._empty_book(), None,
+                                          self._ctx())
+        assert result["allowed"] is True
+        assert result["reasons"] == []
+
+    def test_delta_cap_blocks_excessive_directional(self):
+        """Proposed contribution adds 200 share-eq delta. With equity
+        $100k and limit 5% (=$5000), the dollar proxy is 200*100=$20k
+        > $5k. Block."""
+        from options_greeks_aggregator import check_greeks_gates
+        proposed = {"delta": 200.0, "gamma": 1.0, "vega": 100.0,
+                    "theta": -10.0}
+        with patch("client.get_account_info",
+                   return_value={"equity": 100000}):
+            result = check_greeks_gates(
+                self._empty_book(), proposed,
+                self._ctx(max_net_options_delta_pct=0.05),
+            )
+        assert result["allowed"] is False
+        assert any("delta" in r.lower() for r in result["reasons"])
+
+    def test_delta_cap_passes_within_limit(self):
+        from options_greeks_aggregator import check_greeks_gates
+        proposed = {"delta": 25.0, "theta": -5.0, "vega": 50.0}
+        with patch("client.get_account_info",
+                   return_value={"equity": 100000}):
+            result = check_greeks_gates(
+                self._empty_book(), proposed,
+                self._ctx(max_net_options_delta_pct=0.05),
+            )
+        # 25 * 100 = $2500 < 5% × $100k = $5000 → pass
+        assert result["allowed"] is True
+
+    def test_theta_burn_blocks_long_premium_above_cap(self):
+        """Proposed contribution adds -100 theta/day. With cap of $50/day
+        block."""
+        from options_greeks_aggregator import check_greeks_gates
+        proposed = {"delta": 10.0, "theta": -100.0, "vega": 200.0}
+        with patch("client.get_account_info",
+                   return_value={"equity": 100000}):
+            result = check_greeks_gates(
+                self._empty_book(), proposed,
+                self._ctx(max_theta_burn_dollars_per_day=50.0),
+            )
+        assert result["allowed"] is False
+        assert any("theta" in r.lower() for r in result["reasons"])
+
+    def test_theta_burn_passes_short_premium(self):
+        """Short premium contributes positive theta; should always pass
+        the theta gate regardless of cap."""
+        from options_greeks_aggregator import check_greeks_gates
+        proposed = {"delta": -5.0, "theta": +30.0, "vega": -100.0}
+        with patch("client.get_account_info",
+                   return_value={"equity": 100000}):
+            result = check_greeks_gates(
+                self._empty_book(), proposed,
+                self._ctx(max_theta_burn_dollars_per_day=50.0,
+                            max_short_vega_dollars=10000),
+            )
+        assert "theta" not in str(result["reasons"]).lower()
+
+    def test_short_vega_cap_blocks_excessive_short_premium(self):
+        """Proposed adds -800 vega. With cap of $500 block."""
+        from options_greeks_aggregator import check_greeks_gates
+        proposed = {"delta": -2.0, "theta": +50.0, "vega": -800.0}
+        with patch("client.get_account_info",
+                   return_value={"equity": 100000}):
+            result = check_greeks_gates(
+                self._empty_book(), proposed,
+                self._ctx(max_short_vega_dollars=500.0),
+            )
+        assert result["allowed"] is False
+        assert any("vega" in r.lower() for r in result["reasons"])
+
+    def test_short_vega_cap_passes_long_premium(self):
+        from options_greeks_aggregator import check_greeks_gates
+        proposed = {"delta": 5.0, "theta": -10.0, "vega": +200.0}
+        with patch("client.get_account_info",
+                   return_value={"equity": 100000}):
+            result = check_greeks_gates(
+                self._empty_book(), proposed,
+                self._ctx(max_short_vega_dollars=500.0),
+            )
+        assert "vega" not in str(result["reasons"]).lower()
+
+    def test_none_limit_disables_gate(self):
+        """Setting a gate to None should disable it (no-op)."""
+        from options_greeks_aggregator import check_greeks_gates
+        # Massively over limit — but with all gates disabled, should pass
+        proposed = {"delta": 1000.0, "theta": -500.0, "vega": -5000.0}
+        with patch("client.get_account_info",
+                   return_value={"equity": 100000}):
+            result = check_greeks_gates(
+                self._empty_book(), proposed,
+                self._ctx(
+                    max_net_options_delta_pct=None,
+                    max_theta_burn_dollars_per_day=None,
+                    max_short_vega_dollars=None,
+                ),
+            )
+        assert result["allowed"] is True
+        assert result["reasons"] == []
+
+    def test_gate_uses_pre_book_plus_proposal(self):
+        """Gate logic adds proposed contribution to existing book.
+        Empty proposal but existing book over-limit should still block."""
+        from options_greeks_aggregator import check_greeks_gates
+        # Synthesize a book summary that's already over the delta cap
+        book = {
+            "options_delta": 200.0, "net_theta": -10.0, "net_vega": 50.0,
+        }
+        with patch("client.get_account_info",
+                   return_value={"equity": 100000}):
+            result = check_greeks_gates(
+                book, None,  # no proposal
+                self._ctx(max_net_options_delta_pct=0.05),
+            )
+        # Already over: 200*100=$20k > 5%*$100k=$5k
+        assert result["allowed"] is False
+
+    def test_returns_post_trade_metrics(self):
+        from options_greeks_aggregator import check_greeks_gates
+        book = {"options_delta": 50.0, "net_theta": -20.0, "net_vega": 100.0}
+        proposed = {"delta": 30.0, "theta": -10.0, "vega": 50.0}
+        with patch("client.get_account_info",
+                   return_value={"equity": 100000}):
+            result = check_greeks_gates(
+                book, proposed, self._ctx(),
+            )
+        assert result["post_trade_options_delta"] == 80.0
+        assert result["post_trade_theta"] == -30.0
+        assert result["post_trade_vega"] == 150.0
