@@ -173,9 +173,12 @@ class TestSweepExpiredOptions:
     def test_multiple_contracts_scales_pnl(self, tmp_db):
         """3 contracts of $2.00 long put → -$600 worthless when OTM."""
         from options_lifecycle import sweep_expired_options
+        # OCC must reflect put (P at byte 12) for ITM/OTM logic to
+        # match the option_strategy
         _seed_open_option(tmp_db, side="buy", qty=3, decision_price=2.00,
-                          option_strategy="long_put", expiry="2020-01-15",
-                          strike=150.0)
+                          option_strategy="long_put",
+                          occ_symbol="AAPL  200115P00150000",
+                          expiry="2020-01-15", strike=150.0)
         api = MagicMock()
         api.list_positions.return_value = []
         # Underlying close ABOVE 150 strike → put OTM
