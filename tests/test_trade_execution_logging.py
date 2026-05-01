@@ -37,14 +37,16 @@ def _exec_block_source():
       - 4000 when wash-trade + insufficient-qty classifiers landed
       - 5500 when the OPTIONS dispatch branch landed in front (Item 1a)
       - 7500 when MULTILEG_OPEN dispatch + helper landed (Phase B4)
-        — each new action branch pushes the genuine logging.error call
+      - 9000 confirmed empirically — the genuine-error branch with
+        logging.error now sits past 7500 chars from the first
+        Executing print. Each new action branch pushes the call
         further down. Future branches will need similar bumps.
     """
     import trade_pipeline as tp
     src = inspect.getsource(tp)
     start = src.find('print(f"  Executing: ')
     assert start > 0, "Could not locate the Executing: print site"
-    return src[start:start + 7500]
+    return src[start:start + 9000]
 
 
 def test_exception_path_logs_full_traceback():
