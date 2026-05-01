@@ -442,17 +442,17 @@
                     <span class="tip" data-tip="If your account drops by this much, position sizes are cut in half">Drawdown Reduce</span> %
                     <input type="range" name="drawdown_reduce_pct" class="slider"
                            min="0.05" max="0.25" step="0.01"
-                           value="{{ prof.get('drawdown_reduce_pct', 0.10) }}"
+                           value="{{ prof.get('drawdown_reduce_pct') or 0.10 }}"
                            data-display="dd_reduce_val_{{ prof.id }}">
-                    <output id="dd_reduce_val_{{ prof.id }}">{{ "%.0f"|format(prof.get('drawdown_reduce_pct', 0.10) * 100) }}%</output>
+                    <output id="dd_reduce_val_{{ prof.id }}">{{ "%.0f"|format((prof.get('drawdown_reduce_pct') or 0.10) * 100) }}%</output>
                 </label>
                 <label>
                     <span class="tip" data-tip="If your account drops by this much from its peak, all trading stops automatically">Drawdown Pause</span> %
                     <input type="range" name="drawdown_pause_pct" class="slider"
                            min="0.10" max="0.40" step="0.01"
-                           value="{{ prof.get('drawdown_pause_pct', 0.20) }}"
+                           value="{{ prof.get('drawdown_pause_pct') or 0.20 }}"
                            data-display="dd_pause_val_{{ prof.id }}">
-                    <output id="dd_pause_val_{{ prof.id }}">{{ "%.0f"|format(prof.get('drawdown_pause_pct', 0.20) * 100) }}%</output>
+                    <output id="dd_pause_val_{{ prof.id }}">{{ "%.0f"|format((prof.get('drawdown_pause_pct') or 0.20) * 100) }}%</output>
                 </label>
             </div>
 
@@ -468,30 +468,30 @@
                     Short Stop Loss %
                     <input type="range" name="short_stop_loss_pct" class="slider"
                            min="0.03" max="0.20" step="0.01"
-                           value="{{ prof.get('short_stop_loss_pct', 0.08) }}"
+                           value="{{ prof.get('short_stop_loss_pct') or 0.08 }}"
                            data-display="short_sl_val_{{ prof.id }}">
-                    <output id="short_sl_val_{{ prof.id }}">{{ "%.0f"|format(prof.get('short_stop_loss_pct', 0.08) * 100) }}%</output>
+                    <output id="short_sl_val_{{ prof.id }}">{{ "%.0f"|format((prof.get('short_stop_loss_pct') or 0.08) * 100) }}%</output>
                 </label>
                 <label>
                     Short Take Profit %
                     <input type="range" name="short_take_profit_pct" class="slider"
                            min="0.03" max="0.20" step="0.01"
-                           value="{{ prof.get('short_take_profit_pct', 0.08) }}"
+                           value="{{ prof.get('short_take_profit_pct') or 0.08 }}"
                            data-display="short_tp_val_{{ prof.id }}">
-                    <output id="short_tp_val_{{ prof.id }}">{{ "%.0f"|format(prof.get('short_take_profit_pct', 0.08) * 100) }}%</output>
+                    <output id="short_tp_val_{{ prof.id }}">{{ "%.0f"|format((prof.get('short_take_profit_pct') or 0.08) * 100) }}%</output>
                 </label>
                 <label>
                     <span class="tip" data-tip="Cap on each individual short position as a percent of equity. Defaults to half of the long cap (asymmetric-risk convention — shorts have unlimited upside loss).">Short Max Position %</span>
                     <input type="range" name="short_max_position_pct" class="slider"
                            min="0.01" max="0.30" step="0.01"
-                           value="{{ prof.get('short_max_position_pct', 0.05) }}"
+                           value="{{ prof.get('short_max_position_pct') or 0.05 }}"
                            data-display="short_maxp_val_{{ prof.id }}">
-                    <output id="short_maxp_val_{{ prof.id }}">{{ "%.0f"|format(prof.get('short_max_position_pct', 0.05) * 100) }}%</output>
+                    <output id="short_maxp_val_{{ prof.id }}">{{ "%.0f"|format((prof.get('short_max_position_pct') or 0.05) * 100) }}%</output>
                 </label>
                 <label>
                     <span class="tip" data-tip="Force-cover any short held longer than this. Shorts that haven't worked in N days are usually wrong; tighter time stops on shorts than longs is standard pro-fund practice.">Short Max Hold Days</span>
                     <input type="number" name="short_max_hold_days" min="1" max="60"
-                           value="{{ prof.get('short_max_hold_days', 10) }}">
+                           value="{{ prof.get('short_max_hold_days') or 10 }}">
                     <small class="muted">Default 10 — shorts are time-sensitive</small>
                 </label>
             </div>
@@ -502,9 +502,9 @@
                     <span class="tip" data-tip="Target share of gross book that should be SHORT. 0.0 = long-only. 0.5 = market-neutral mandate. When ≥ 0.4, the strong-bull regime gate bypasses for this profile (the user has explicitly accepted regime risk by setting the mandate).">Target Short %</span>
                     <input type="range" name="target_short_pct" class="slider"
                            min="0.0" max="1.0" step="0.05"
-                           value="{{ prof.get('target_short_pct', 0.0) }}"
+                           value="{{ prof.get('target_short_pct') or 0.0 }}"
                            data-display="tgt_short_val_{{ prof.id }}">
-                    <output id="tgt_short_val_{{ prof.id }}">{{ "%.0f"|format(prof.get('target_short_pct', 0.0) * 100) }}%</output>
+                    <output id="tgt_short_val_{{ prof.id }}">{{ "%.0f"|format((prof.get('target_short_pct') or 0.0) * 100) }}%</output>
                     <small class="muted">0% = long-only, 50% = market-neutral, 100% = short-only</small>
                 </label>
                 <label>
