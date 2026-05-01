@@ -509,11 +509,15 @@
                 </label>
                 <label>
                     <span class="tip" data-tip="Target gross-weighted book beta. 0 = market-neutral. The AI is told to pick defensive (low-beta) longs or levered shorts to close the gap. Hard gate blocks entries that worsen the gap by >0.5.">Target Book Beta</span>
+                    {# 0 is a valid distinct value (market-neutral) — use
+                       'is not none' check, NOT `or`, so explicit 0 stays 0. #}
+                    {% set tbb = prof.get('target_book_beta') %}
+                    {% set tbb_val = tbb if tbb is not none else 1.0 %}
                     <input type="range" name="target_book_beta" class="slider"
                            min="-0.5" max="2.0" step="0.05"
-                           value="{{ prof.get('target_book_beta', 1.0) }}"
+                           value="{{ tbb_val }}"
                            data-display="tgt_beta_val_{{ prof.id }}" data-format="2f">
-                    <output id="tgt_beta_val_{{ prof.id }}">{{ "%.2f"|format(prof.get('target_book_beta', 1.0)) }}</output>
+                    <output id="tgt_beta_val_{{ prof.id }}">{{ "%.2f"|format(tbb_val) }}</output>
                     <small class="muted">0 = neutral, 1 = market-correlated, &gt;1 = levered</small>
                 </label>
             </div>
@@ -523,15 +527,15 @@
                 <label>
                     <span class="tip" data-tip="Limits how similar your positions can be — prevents having too many eggs in one basket">Max Correlation</span>
                     <input type="range" name="max_correlation" class="slider" min="0.3" max="0.95" step="0.05"
-                           value="{{ prof.get('max_correlation', 0.7) }}"
+                           value="{{ prof.get('max_correlation') or 0.7 }}"
                            data-display="corr_val_{{ prof.id }}" data-format="1f">
-                    <output id="corr_val_{{ prof.id }}">{{ "%.2f"|format(prof.get('max_correlation', 0.7)) }}</output>
+                    <output id="corr_val_{{ prof.id }}">{{ "%.2f"|format(prof.get('max_correlation') or 0.7) }}</output>
                     <small class="muted">Reduce position size when new trade is highly correlated with existing positions</small>
                 </label>
                 <label>
                     Max Positions per Group
                     <input type="number" name="max_sector_positions" min="1" max="10"
-                           value="{{ prof.get('max_sector_positions', 5) }}">
+                           value="{{ prof.get('max_sector_positions') or 5 }}">
                     <small class="muted">Limit positions in correlated groups</small>
                 </label>
             </div>
@@ -550,16 +554,16 @@
                 <label>
                     Stop-Loss <span class="tip" data-tip="How many times the stock's average daily range to set the stop. Higher = wider stop, more room to breathe">ATR Multiplier</span>
                     <input type="range" name="atr_multiplier_sl" class="slider" min="1.0" max="4.0" step="0.5"
-                           value="{{ prof.get('atr_multiplier_sl', 2.0) }}"
+                           value="{{ prof.get('atr_multiplier_sl') or 2.0 }}"
                            data-display="atr_sl_val_{{ prof.id }}" data-format="1f" data-suffix="x">
-                    <output id="atr_sl_val_{{ prof.id }}">{{ "%.1f"|format(prof.get('atr_multiplier_sl', 2.0)) }}x</output>
+                    <output id="atr_sl_val_{{ prof.id }}">{{ "%.1f"|format(prof.get('atr_multiplier_sl') or 2.0) }}x</output>
                 </label>
                 <label>
                     Take-Profit <span class="tip" data-tip="How many times the stock's average daily range to set the stop. Higher = wider stop, more room to breathe">ATR Multiplier</span>
                     <input type="range" name="atr_multiplier_tp" class="slider" min="1.0" max="5.0" step="0.5"
-                           value="{{ prof.get('atr_multiplier_tp', 3.0) }}"
+                           value="{{ prof.get('atr_multiplier_tp') or 3.0 }}"
                            data-display="atr_tp_val_{{ prof.id }}" data-format="1f" data-suffix="x">
-                    <output id="atr_tp_val_{{ prof.id }}">{{ "%.1f"|format(prof.get('atr_multiplier_tp', 3.0)) }}x</output>
+                    <output id="atr_tp_val_{{ prof.id }}">{{ "%.1f"|format(prof.get('atr_multiplier_tp') or 3.0) }}x</output>
                 </label>
             </div>
 
@@ -573,9 +577,9 @@
             <label>
                 Trailing Stop ATR Multiplier
                 <input type="range" name="trailing_atr_multiplier" class="slider" min="0.5" max="3.0" step="0.5"
-                       value="{{ prof.get('trailing_atr_multiplier', 1.5) }}"
+                       value="{{ prof.get('trailing_atr_multiplier') or 1.5 }}"
                        data-display="trail_val_{{ prof.id }}" data-format="1f" data-suffix="x">
-                <output id="trail_val_{{ prof.id }}">{{ "%.1f"|format(prof.get('trailing_atr_multiplier', 1.5)) }}x</output>
+                <output id="trail_val_{{ prof.id }}">{{ "%.1f"|format(prof.get('trailing_atr_multiplier') or 1.5) }}x</output>
             </label>
 
             <fieldset>
@@ -590,17 +594,17 @@
                     <span class="tip" data-tip="Minimum AI confidence required to skip the fixed take-profit">Min AI Confidence</span>
                     <input type="range" name="conviction_tp_min_confidence" class="slider"
                            min="50" max="95" step="5"
-                           value="{{ prof.get('conviction_tp_min_confidence', 70) }}"
+                           value="{{ prof.get('conviction_tp_min_confidence') or 70 }}"
                            data-display="conv_conf_val_{{ prof.id }}" data-format="int" data-suffix="%">
-                    <output id="conv_conf_val_{{ prof.id }}">{{ prof.get('conviction_tp_min_confidence', 70)|int }}%</output>
+                    <output id="conv_conf_val_{{ prof.id }}">{{ (prof.get('conviction_tp_min_confidence') or 70)|int }}%</output>
                 </label>
                 <label>
                     <span class="tip" data-tip="Minimum ADX (trend strength) required to skip TP. 25+ is a moderate-to-strong trend.">Min ADX (Trend Strength)</span>
                     <input type="range" name="conviction_tp_min_adx" class="slider"
                            min="15" max="50" step="5"
-                           value="{{ prof.get('conviction_tp_min_adx', 25) }}"
+                           value="{{ prof.get('conviction_tp_min_adx') or 25 }}"
                            data-display="conv_adx_val_{{ prof.id }}" data-format="int">
-                    <output id="conv_adx_val_{{ prof.id }}">{{ prof.get('conviction_tp_min_adx', 25)|int }}</output>
+                    <output id="conv_adx_val_{{ prof.id }}">{{ (prof.get('conviction_tp_min_adx') or 25)|int }}</output>
                 </label>
             </div>
 
