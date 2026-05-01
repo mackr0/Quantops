@@ -32,6 +32,7 @@ SPECIALIST_MODULES = [
     "specialists.pattern_recognizer",
     "specialists.sentiment_narrative",
     "specialists.risk_assessor",
+    "specialists.adversarial_reviewer",
 ]
 
 

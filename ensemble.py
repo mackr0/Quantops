@@ -25,7 +25,17 @@ SPECIALIST_WEIGHTS = {
     "pattern_recognizer": 1.2,
     "sentiment_narrative": 0.9,
     "risk_assessor": 1.0,
+    # Item 5b — adversarial reviewer. Same weight as risk_assessor;
+    # the value is its VETO, not its consensus contribution.
+    "adversarial_reviewer": 1.0,
 }
+
+# Specialists with VETO authority. A VETO from any of these blocks
+# the trade regardless of consensus from the others. Two redundant
+# voices intentionally — risk_assessor frames as "what risks exist?"
+# while adversarial_reviewer frames as "what's the failure mode?".
+# Different framings catch different misses.
+VETO_AUTHORIZED = {"risk_assessor", "adversarial_reviewer"}
 
 # Confidence floor below which a verdict is ignored (specialist was
 # genuinely unsure and shouldn't tilt the consensus).
@@ -408,10 +418,13 @@ def _synthesize(candidates: List[Dict[str, Any]],
                 "reasoning": v["reasoning"],
             })
 
-            # Apply VETO authority (from risk_assessor specifically)
-            if v["verdict"] == "VETO" and name == "risk_assessor":
+            # Apply VETO authority — any specialist in VETO_AUTHORIZED
+            # can block. First veto wins for the reason string; both
+            # are still recorded in symbol_verdicts.
+            if v["verdict"] == "VETO" and name in VETO_AUTHORIZED:
+                if not vetoed:
+                    veto_reason = v["reasoning"] or f"{name} veto"
                 vetoed = True
-                veto_reason = v["reasoning"] or "risk veto"
                 continue
 
             if eff_conf < CONFIDENCE_FLOOR:
@@ -462,7 +475,7 @@ def format_for_final_prompt(per_symbol: Dict[str, Any], symbol: str) -> str:
         return ""
     tag = entry["verdict"]
     if entry["vetoed"]:
-        tag = f"VETOED by risk ({entry.get('veto_reason', '')[:60]})"
+        tag = f"VETOED ({entry.get('veto_reason', '')[:80]})"
     specs = entry.get("specialists", [])
     breakdown = ", ".join(
         f"{s['specialist'][:4]}={s['verdict']}({int(s['confidence'])})"
