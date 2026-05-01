@@ -354,3 +354,193 @@ class TestExecuteMultilegStrategy:
         result = execute_multileg_strategy(api, spec, self._ctx())
         assert result["action"] == "ERROR"
         api.submit_order.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Phase B (rest) — iron condor, iron butterfly, straddles, strangles,
+# calendar, diagonal builders
+# ---------------------------------------------------------------------------
+
+class TestIronCondor:
+    def test_basic_structure_4_legs(self):
+        from options_multileg import build_iron_condor
+        spec = build_iron_condor(
+            "AAPL", EXPIRY,
+            put_long_strike=140, put_short_strike=145,
+            call_short_strike=155, call_long_strike=160, qty=1,
+        )
+        assert spec.name == "iron_condor"
+        assert spec.is_credit is True
+        assert len(spec.legs) == 4
+        # Convention: shorts first
+        assert spec.legs[0].side == "sell" and spec.legs[0].right == "P"
+        assert spec.legs[1].side == "sell" and spec.legs[1].right == "C"
+        assert spec.legs[2].side == "buy" and spec.legs[2].right == "P"
+        assert spec.legs[3].side == "buy" and spec.legs[3].right == "C"
+        # Strikes correctly placed
+        assert spec.legs[0].strike == 145
+        assert spec.legs[2].strike == 140
+
+    def test_invalid_strike_ordering_raises(self):
+        from options_multileg import build_iron_condor
+        with pytest.raises(ValueError, match="ordered low"):
+            build_iron_condor("AAPL", EXPIRY, 145, 140, 155, 160)
+        with pytest.raises(ValueError):
+            build_iron_condor("AAPL", EXPIRY, 140, 145, 155, 150)
+
+    def test_pl_bounds_with_premiums(self):
+        """Equal-width $5 wings. Put short=$3, put long=$1 → put credit $2.
+        Call short=$3, call long=$1 → call credit $2. Total credit $4.
+        Max gain = $400, max loss = (5 - 4) * 100 = $100."""
+        from options_multileg import build_iron_condor
+        spec = build_iron_condor(
+            "AAPL", EXPIRY, 140, 145, 155, 160, qty=1,
+            put_short_premium=3.00, put_long_premium=1.00,
+            call_short_premium=3.00, call_long_premium=1.00,
+        )
+        assert spec.net_premium_per_contract == -4.0
+        assert spec.max_gain_per_contract == 400.0
+        assert spec.max_loss_per_contract == 100.0
+        # Lower breakeven = put_short - net_credit = 145 - 4 = 141
+        assert spec.breakeven_at_expiry == 141.0
+
+
+class TestIronButterfly:
+    def test_basic_structure_4_legs(self):
+        from options_multileg import build_iron_butterfly
+        spec = build_iron_butterfly("AAPL", EXPIRY, body_strike=150,
+                                       wing_width=10, qty=1)
+        assert spec.name == "iron_butterfly"
+        assert spec.is_credit is True
+        assert len(spec.legs) == 4
+        # body shorts at strike 150
+        assert spec.legs[0].strike == 150 and spec.legs[0].right == "P"
+        assert spec.legs[1].strike == 150 and spec.legs[1].right == "C"
+        # wings at 140 / 160
+        assert spec.legs[2].strike == 140
+        assert spec.legs[3].strike == 160
+
+    def test_pl_bounds(self):
+        """Body short put $5, wing long put $1 → put $4 credit.
+        Body short call $5, wing long call $1 → call $4 credit.
+        Total $8 credit. Max gain $800. Max loss = (10 - 8) * 100 = $200."""
+        from options_multileg import build_iron_butterfly
+        spec = build_iron_butterfly(
+            "AAPL", EXPIRY, body_strike=150, wing_width=10, qty=1,
+            put_short_premium=5.00, put_long_premium=1.00,
+            call_short_premium=5.00, call_long_premium=1.00,
+        )
+        assert spec.max_gain_per_contract == 800.0
+        assert spec.max_loss_per_contract == 200.0
+
+
+class TestLongStraddle:
+    def test_basic_structure(self):
+        from options_multileg import build_long_straddle
+        spec = build_long_straddle("AAPL", EXPIRY, 150, qty=1)
+        assert spec.name == "long_straddle"
+        assert spec.is_credit is False
+        assert len(spec.legs) == 2
+        assert spec.legs[0].right == "C" and spec.legs[0].side == "buy"
+        assert spec.legs[1].right == "P" and spec.legs[1].side == "buy"
+        assert spec.legs[0].strike == 150 and spec.legs[1].strike == 150
+
+    def test_max_loss_is_total_debit(self):
+        """Long $5 call + long $5 put → $10 total debit.
+        Max loss = $1000 per straddle."""
+        from options_multileg import build_long_straddle
+        spec = build_long_straddle("AAPL", EXPIRY, 150, qty=1,
+                                      call_premium=5.00, put_premium=5.00)
+        assert spec.max_loss_per_contract == 1000.0
+        # Max gain unlimited → None
+        assert spec.max_gain_per_contract is None
+        # Lower breakeven = 150 - 10 = 140
+        assert spec.breakeven_at_expiry == 140.0
+
+
+class TestShortStraddle:
+    def test_max_gain_is_total_credit(self):
+        from options_multileg import build_short_straddle
+        spec = build_short_straddle("AAPL", EXPIRY, 150, qty=1,
+                                       call_premium=5.00, put_premium=5.00)
+        assert spec.max_gain_per_contract == 1000.0
+        # Max loss UNLIMITED — left None to flag this
+        assert spec.max_loss_per_contract is None
+        assert spec.is_credit is True
+
+
+class TestLongStrangle:
+    def test_basic_structure(self):
+        from options_multileg import build_long_strangle
+        spec = build_long_strangle("AAPL", EXPIRY, 140, 160, qty=1)
+        assert spec.name == "long_strangle"
+        # Long call at 160
+        assert spec.legs[0].right == "C" and spec.legs[0].strike == 160
+        # Long put at 140
+        assert spec.legs[1].right == "P" and spec.legs[1].strike == 140
+        assert spec.spread_width_points == 20
+
+    def test_invalid_strikes_raises(self):
+        from options_multileg import build_long_strangle
+        with pytest.raises(ValueError, match="put_strike"):
+            build_long_strangle("AAPL", EXPIRY, 160, 140)
+
+
+class TestCalendarSpread:
+    def test_basic_structure(self):
+        from options_multileg import build_calendar_spread
+        from datetime import date as _date
+        short_exp = _date(2099, 1, 16)
+        long_exp = _date(2099, 2, 20)
+        spec = build_calendar_spread("AAPL", short_exp, long_exp, 150,
+                                        right="C", qty=1)
+        assert spec.name == "calendar_spread"
+        assert len(spec.legs) == 2
+        assert spec.legs[0].side == "sell"
+        assert spec.legs[1].side == "buy"
+        # Same strike both legs
+        assert spec.legs[0].strike == 150 and spec.legs[1].strike == 150
+        # Different expiries
+        assert spec.legs[0].expiry == "2099-01-16"
+        assert spec.legs[1].expiry == "2099-02-20"
+
+    def test_short_after_long_raises(self):
+        from options_multileg import build_calendar_spread
+        from datetime import date as _date
+        with pytest.raises(ValueError, match="before"):
+            build_calendar_spread(
+                "AAPL", _date(2099, 2, 20), _date(2099, 1, 16),
+                150, right="C",
+            )
+
+
+class TestDiagonalSpread:
+    def test_basic_structure(self):
+        from options_multileg import build_diagonal_spread
+        from datetime import date as _date
+        spec = build_diagonal_spread(
+            "AAPL", _date(2099, 1, 16), _date(2099, 2, 20),
+            short_strike=155, long_strike=150, right="C", qty=1,
+        )
+        assert spec.name == "diagonal_spread"
+        # Different strikes AND different expiries
+        assert spec.legs[0].strike == 155
+        assert spec.legs[1].strike == 150
+        assert spec.legs[0].expiry != spec.legs[1].expiry
+
+
+class TestExtendedRegistry:
+    def test_all_multileg_builders_present(self):
+        from options_multileg import ALL_MULTILEG_BUILDERS
+        names = set(ALL_MULTILEG_BUILDERS.keys())
+        assert "bull_call_spread" in names
+        assert "bear_put_spread" in names
+        assert "bull_put_spread" in names
+        assert "bear_call_spread" in names
+        assert "iron_condor" in names
+        assert "iron_butterfly" in names
+        assert "long_straddle" in names
+        assert "short_straddle" in names
+        assert "long_strangle" in names
+        assert "calendar_spread" in names
+        assert "diagonal_spread" in names

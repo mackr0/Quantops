@@ -609,6 +609,532 @@ def execute_multileg_strategy(
     return result
 
 
+def build_iron_condor(
+    underlying: str,
+    expiry: date,
+    put_long_strike: float,    # lowest
+    put_short_strike: float,   # below the money
+    call_short_strike: float,  # above the money
+    call_long_strike: float,   # highest
+    qty: int = 1,
+    put_short_premium: Optional[float] = None,
+    put_long_premium: Optional[float] = None,
+    call_short_premium: Optional[float] = None,
+    call_long_premium: Optional[float] = None,
+) -> OptionStrategy:
+    """Iron condor: short OTM put spread + short OTM call spread.
+
+    Range-bound thesis: profit if price stays between the two short
+    strikes at expiry. Net credit; defined-risk neutral strategy.
+
+    Strikes ordered low → high:
+      put_long < put_short < call_short < call_long
+    Width must be equal on both wings (typical iron condor).
+
+    Max gain  = total_credit * 100
+    Max loss  = (wing_width - total_credit) * 100  (per spread, on
+                  whichever wing breaches first; symmetric when wings
+                  are equal width)
+    Breakevens (at expiry, two of them):
+      lower = put_short - total_credit
+      upper = call_short + total_credit
+    """
+    # Validate strike ordering
+    strikes = [put_long_strike, put_short_strike,
+               call_short_strike, call_long_strike]
+    if any(s <= 0 for s in strikes):
+        raise ValueError("strikes must be positive")
+    if not (put_long_strike < put_short_strike <
+            call_short_strike < call_long_strike):
+        raise ValueError(
+            f"strikes must be ordered low→high: "
+            f"{put_long_strike} < {put_short_strike} < "
+            f"{call_short_strike} < {call_long_strike}"
+        )
+    if qty <= 0:
+        raise ValueError("qty must be positive")
+
+    put_wing_width = put_short_strike - put_long_strike
+    call_wing_width = call_long_strike - call_short_strike
+    # We use max of the two for max-loss math (the worse-case wing).
+    spread_width = max(put_wing_width, call_wing_width)
+
+    # Build the 4 legs in convention order (shorts first, then longs)
+    legs = [
+        OptionLeg(
+            occ_symbol=format_occ_symbol(underlying, expiry,
+                                            put_short_strike, "P"),
+            underlying=underlying.upper(), expiry=expiry.isoformat(),
+            strike=put_short_strike, right="P", side="sell", qty=qty,
+        ),
+        OptionLeg(
+            occ_symbol=format_occ_symbol(underlying, expiry,
+                                            call_short_strike, "C"),
+            underlying=underlying.upper(), expiry=expiry.isoformat(),
+            strike=call_short_strike, right="C", side="sell", qty=qty,
+        ),
+        OptionLeg(
+            occ_symbol=format_occ_symbol(underlying, expiry,
+                                            put_long_strike, "P"),
+            underlying=underlying.upper(), expiry=expiry.isoformat(),
+            strike=put_long_strike, right="P", side="buy", qty=qty,
+        ),
+        OptionLeg(
+            occ_symbol=format_occ_symbol(underlying, expiry,
+                                            call_long_strike, "C"),
+            underlying=underlying.upper(), expiry=expiry.isoformat(),
+            strike=call_long_strike, right="C", side="buy", qty=qty,
+        ),
+    ]
+
+    spec = OptionStrategy(
+        name="iron_condor",
+        underlying=underlying.upper(), expiry=expiry.isoformat(),
+        legs=legs, qty=qty,
+        spread_width_points=spread_width,
+        is_credit=True,
+        thesis=(
+            f"Range-bound on {underlying.upper()} between "
+            f"{put_short_strike:.2f} and {call_short_strike:.2f}. "
+            f"Collect premium; defined-risk wings at "
+            f"{put_long_strike:.2f}/{call_long_strike:.2f}. Profits "
+            f"as time passes if price stays in the range."
+        ),
+    )
+
+    if all(p is not None for p in (put_short_premium, put_long_premium,
+                                     call_short_premium, call_long_premium)):
+        # Net credit = sum of shorts - sum of longs
+        net_credit = (
+            (put_short_premium - put_long_premium)
+            + (call_short_premium - call_long_premium)
+        )
+        spec.net_premium_per_contract = -net_credit
+        spec.max_gain_per_contract = net_credit * 100
+        spec.max_loss_per_contract = (spread_width - net_credit) * 100
+        # Two breakevens — store as a list in a custom field via thesis,
+        # OR record the lower one (the more relevant for downside risk).
+        spec.breakeven_at_expiry = put_short_strike - net_credit
+
+    return spec
+
+
+def build_iron_butterfly(
+    underlying: str,
+    expiry: date,
+    body_strike: float,        # ATM (short straddle body)
+    wing_width: float,         # equal width on both sides
+    qty: int = 1,
+    put_short_premium: Optional[float] = None,
+    put_long_premium: Optional[float] = None,
+    call_short_premium: Optional[float] = None,
+    call_long_premium: Optional[float] = None,
+) -> OptionStrategy:
+    """Iron butterfly: short ATM straddle + long OTM wings.
+
+    Pin-risk thesis (price expected to stay AT the body strike).
+    Higher max gain than iron condor (collect on both ATM legs) but
+    much narrower profit zone. Net credit, defined risk.
+
+    Max gain  = net_credit * 100  (only at exactly body_strike at expiry)
+    Max loss  = (wing_width - net_credit) * 100
+    Breakevens: body_strike ± net_credit
+    """
+    if body_strike <= 0 or wing_width <= 0:
+        raise ValueError("body_strike and wing_width must be positive")
+    if qty <= 0:
+        raise ValueError("qty must be positive")
+
+    put_long_strike = body_strike - wing_width
+    call_long_strike = body_strike + wing_width
+
+    legs = [
+        OptionLeg(
+            occ_symbol=format_occ_symbol(underlying, expiry, body_strike, "P"),
+            underlying=underlying.upper(), expiry=expiry.isoformat(),
+            strike=body_strike, right="P", side="sell", qty=qty,
+        ),
+        OptionLeg(
+            occ_symbol=format_occ_symbol(underlying, expiry, body_strike, "C"),
+            underlying=underlying.upper(), expiry=expiry.isoformat(),
+            strike=body_strike, right="C", side="sell", qty=qty,
+        ),
+        OptionLeg(
+            occ_symbol=format_occ_symbol(underlying, expiry,
+                                            put_long_strike, "P"),
+            underlying=underlying.upper(), expiry=expiry.isoformat(),
+            strike=put_long_strike, right="P", side="buy", qty=qty,
+        ),
+        OptionLeg(
+            occ_symbol=format_occ_symbol(underlying, expiry,
+                                            call_long_strike, "C"),
+            underlying=underlying.upper(), expiry=expiry.isoformat(),
+            strike=call_long_strike, right="C", side="buy", qty=qty,
+        ),
+    ]
+
+    spec = OptionStrategy(
+        name="iron_butterfly",
+        underlying=underlying.upper(), expiry=expiry.isoformat(),
+        legs=legs, qty=qty,
+        spread_width_points=wing_width,
+        is_credit=True,
+        thesis=(
+            f"Pin-risk on {underlying.upper()} at {body_strike:.2f}. "
+            f"Collect rich premium; max gain at the pin. Max loss "
+            f"capped at wings ${wing_width:.2f} away."
+        ),
+    )
+
+    if all(p is not None for p in (put_short_premium, put_long_premium,
+                                     call_short_premium, call_long_premium)):
+        net_credit = (
+            (put_short_premium - put_long_premium)
+            + (call_short_premium - call_long_premium)
+        )
+        spec.net_premium_per_contract = -net_credit
+        spec.max_gain_per_contract = net_credit * 100
+        spec.max_loss_per_contract = (wing_width - net_credit) * 100
+        spec.breakeven_at_expiry = body_strike - net_credit  # lower
+
+    return spec
+
+
+def build_long_straddle(
+    underlying: str,
+    expiry: date,
+    strike: float,
+    qty: int = 1,
+    call_premium: Optional[float] = None,
+    put_premium: Optional[float] = None,
+) -> OptionStrategy:
+    """Long straddle: long ATM call + long ATM put.
+
+    Long-vol thesis: profit if price moves significantly in EITHER
+    direction (or IV expands). Unlimited max gain. Max loss = total
+    premium paid.
+
+    Max loss   = (call_premium + put_premium) * 100
+    Max gain   = unlimited (technically)
+    Breakevens = strike ± (total_premium)
+    """
+    if strike <= 0:
+        raise ValueError("strike must be positive")
+    if qty <= 0:
+        raise ValueError("qty must be positive")
+
+    legs = [
+        OptionLeg(
+            occ_symbol=format_occ_symbol(underlying, expiry, strike, "C"),
+            underlying=underlying.upper(), expiry=expiry.isoformat(),
+            strike=strike, right="C", side="buy", qty=qty,
+        ),
+        OptionLeg(
+            occ_symbol=format_occ_symbol(underlying, expiry, strike, "P"),
+            underlying=underlying.upper(), expiry=expiry.isoformat(),
+            strike=strike, right="P", side="buy", qty=qty,
+        ),
+    ]
+
+    spec = OptionStrategy(
+        name="long_straddle",
+        underlying=underlying.upper(), expiry=expiry.isoformat(),
+        legs=legs, qty=qty,
+        spread_width_points=0,  # not a spread
+        is_credit=False,
+        thesis=(
+            f"Long-vol bet on {underlying.upper()} at {strike:.2f}. "
+            f"Profits on a big move in either direction or on IV "
+            f"expansion. Time decay works against you."
+        ),
+    )
+
+    if call_premium is not None and put_premium is not None:
+        total_debit = call_premium + put_premium
+        spec.net_premium_per_contract = total_debit
+        spec.max_loss_per_contract = total_debit * 100
+        # Max gain unlimited — leave None to signal that
+        spec.breakeven_at_expiry = strike - total_debit  # lower BE
+
+    return spec
+
+
+def build_short_straddle(
+    underlying: str,
+    expiry: date,
+    strike: float,
+    qty: int = 1,
+    call_premium: Optional[float] = None,
+    put_premium: Optional[float] = None,
+) -> OptionStrategy:
+    """Short straddle: short ATM call + short ATM put.
+
+    Range-bound thesis with UNCAPPED downside. Real funds use this
+    only with a careful risk budget and ideally with a 2nd-tier
+    hedge (which makes it an iron butterfly). Included here for
+    completeness; expect the advisor to almost never recommend it
+    over an iron butterfly.
+
+    Max gain   = (call_premium + put_premium) * 100  (at exactly strike)
+    Max loss   = unlimited
+    Breakevens = strike ± total_premium
+    """
+    if strike <= 0:
+        raise ValueError("strike must be positive")
+    if qty <= 0:
+        raise ValueError("qty must be positive")
+
+    legs = [
+        OptionLeg(
+            occ_symbol=format_occ_symbol(underlying, expiry, strike, "C"),
+            underlying=underlying.upper(), expiry=expiry.isoformat(),
+            strike=strike, right="C", side="sell", qty=qty,
+        ),
+        OptionLeg(
+            occ_symbol=format_occ_symbol(underlying, expiry, strike, "P"),
+            underlying=underlying.upper(), expiry=expiry.isoformat(),
+            strike=strike, right="P", side="sell", qty=qty,
+        ),
+    ]
+
+    spec = OptionStrategy(
+        name="short_straddle",
+        underlying=underlying.upper(), expiry=expiry.isoformat(),
+        legs=legs, qty=qty,
+        spread_width_points=0,
+        is_credit=True,
+        thesis=(
+            f"Pin-risk + short-vol bet on {underlying.upper()} at "
+            f"{strike:.2f}. UNCAPPED downside on big moves. Prefer "
+            f"iron_butterfly (defined risk equivalent)."
+        ),
+    )
+
+    if call_premium is not None and put_premium is not None:
+        total_credit = call_premium + put_premium
+        spec.net_premium_per_contract = -total_credit
+        spec.max_gain_per_contract = total_credit * 100
+        # Max loss unlimited — leave None
+        spec.breakeven_at_expiry = strike + total_credit  # upper BE
+
+    return spec
+
+
+def build_long_strangle(
+    underlying: str,
+    expiry: date,
+    put_strike: float,    # below ATM
+    call_strike: float,   # above ATM
+    qty: int = 1,
+    call_premium: Optional[float] = None,
+    put_premium: Optional[float] = None,
+) -> OptionStrategy:
+    """Long strangle: long OTM put + long OTM call.
+
+    Long-vol bet, cheaper than a straddle but needs a bigger move
+    to profit. Defined-risk on the debit, unlimited gain potential.
+
+    Max loss   = (call_premium + put_premium) * 100
+    Max gain   = unlimited
+    Breakevens = call_strike + total_debit  (upper)
+                 put_strike  - total_debit  (lower)
+    """
+    if put_strike >= call_strike:
+        raise ValueError(
+            f"put_strike ({put_strike}) must be < call_strike ({call_strike})"
+        )
+    if put_strike <= 0 or qty <= 0:
+        raise ValueError("strikes and qty must be positive")
+
+    legs = [
+        OptionLeg(
+            occ_symbol=format_occ_symbol(underlying, expiry, call_strike, "C"),
+            underlying=underlying.upper(), expiry=expiry.isoformat(),
+            strike=call_strike, right="C", side="buy", qty=qty,
+        ),
+        OptionLeg(
+            occ_symbol=format_occ_symbol(underlying, expiry, put_strike, "P"),
+            underlying=underlying.upper(), expiry=expiry.isoformat(),
+            strike=put_strike, right="P", side="buy", qty=qty,
+        ),
+    ]
+
+    spec = OptionStrategy(
+        name="long_strangle",
+        underlying=underlying.upper(), expiry=expiry.isoformat(),
+        legs=legs, qty=qty,
+        spread_width_points=call_strike - put_strike,
+        is_credit=False,
+        thesis=(
+            f"Long-vol bet on {underlying.upper()} (cheaper than "
+            f"straddle). Profits on a big move past "
+            f"{put_strike:.2f} or {call_strike:.2f}. IV expansion "
+            f"helps; time decay hurts."
+        ),
+    )
+
+    if call_premium is not None and put_premium is not None:
+        total_debit = call_premium + put_premium
+        spec.net_premium_per_contract = total_debit
+        spec.max_loss_per_contract = total_debit * 100
+        spec.breakeven_at_expiry = put_strike - total_debit
+
+    return spec
+
+
+def build_calendar_spread(
+    underlying: str,
+    short_expiry: date,    # near expiry (sell)
+    long_expiry: date,     # far expiry (buy)
+    strike: float,
+    right: str = "C",
+    qty: int = 1,
+    short_premium: Optional[float] = None,
+    long_premium: Optional[float] = None,
+) -> OptionStrategy:
+    """Calendar spread: short near-expiry option + long far-expiry option
+    at the SAME strike.
+
+    Term-structure bet: profits as the front-month decays faster than
+    the back-month. Net debit. Best when:
+      - IV is reasonably stable (not collapsing on the back)
+      - Front-expiry has near-pin behavior likely
+
+    Max loss   = net_debit * 100  (when stock moves far either way)
+    Max gain   = roughly difference in time value at front expiry,
+                  hard to compute closed-form (depends on path).
+    Breakevens: implicit; depends on how vol-surface evolves.
+    """
+    if strike <= 0 or qty <= 0:
+        raise ValueError("strike and qty must be positive")
+    if short_expiry >= long_expiry:
+        raise ValueError(
+            f"short_expiry ({short_expiry}) must be before "
+            f"long_expiry ({long_expiry})"
+        )
+    if right not in ("C", "P"):
+        raise ValueError(f"right must be 'C' or 'P', got {right!r}")
+
+    legs = [
+        OptionLeg(
+            occ_symbol=format_occ_symbol(underlying, short_expiry, strike, right),
+            underlying=underlying.upper(), expiry=short_expiry.isoformat(),
+            strike=strike, right=right, side="sell", qty=qty,
+        ),
+        OptionLeg(
+            occ_symbol=format_occ_symbol(underlying, long_expiry, strike, right),
+            underlying=underlying.upper(), expiry=long_expiry.isoformat(),
+            strike=strike, right=right, side="buy", qty=qty,
+        ),
+    ]
+
+    days_to_short = (short_expiry - date.today()).days
+    days_to_long = (long_expiry - date.today()).days
+
+    spec = OptionStrategy(
+        name="calendar_spread",
+        underlying=underlying.upper(),
+        expiry=long_expiry.isoformat(),  # use long expiry for tracking
+        legs=legs, qty=qty,
+        spread_width_points=0,
+        is_credit=False,
+        thesis=(
+            f"Term-structure bet on {underlying.upper()} at "
+            f"{strike:.2f}. Sell {days_to_short}d, buy {days_to_long}d. "
+            f"Profits as front-month decays faster than back-month."
+        ),
+    )
+
+    if short_premium is not None and long_premium is not None:
+        net_debit = long_premium - short_premium
+        spec.net_premium_per_contract = net_debit
+        spec.max_loss_per_contract = net_debit * 100
+
+    return spec
+
+
+def build_diagonal_spread(
+    underlying: str,
+    short_expiry: date,
+    long_expiry: date,
+    short_strike: float,    # OTM (typically)
+    long_strike: float,     # different strike from short
+    right: str = "C",
+    qty: int = 1,
+    short_premium: Optional[float] = None,
+    long_premium: Optional[float] = None,
+) -> OptionStrategy:
+    """Diagonal spread: short near-expiry + long far-expiry at
+    DIFFERENT strikes. Hybrid between vertical and calendar.
+
+    Combines directional view (different strikes = directional bias)
+    with term-structure (different expiries = front-decay capture).
+    Most flexible primitive; max_loss/max_gain depend on both
+    components.
+    """
+    if short_strike <= 0 or long_strike <= 0 or qty <= 0:
+        raise ValueError("strikes and qty must be positive")
+    if short_expiry >= long_expiry:
+        raise ValueError("short_expiry must be before long_expiry")
+    if right not in ("C", "P"):
+        raise ValueError(f"right must be 'C' or 'P', got {right!r}")
+
+    legs = [
+        OptionLeg(
+            occ_symbol=format_occ_symbol(underlying, short_expiry,
+                                            short_strike, right),
+            underlying=underlying.upper(), expiry=short_expiry.isoformat(),
+            strike=short_strike, right=right, side="sell", qty=qty,
+        ),
+        OptionLeg(
+            occ_symbol=format_occ_symbol(underlying, long_expiry,
+                                            long_strike, right),
+            underlying=underlying.upper(), expiry=long_expiry.isoformat(),
+            strike=long_strike, right=right, side="buy", qty=qty,
+        ),
+    ]
+
+    spec = OptionStrategy(
+        name="diagonal_spread",
+        underlying=underlying.upper(),
+        expiry=long_expiry.isoformat(),
+        legs=legs, qty=qty,
+        spread_width_points=abs(long_strike - short_strike),
+        is_credit=False,
+        thesis=(
+            f"Diagonal {right}-spread on {underlying.upper()}: "
+            f"directional bias + term structure. "
+            f"Sell {short_strike:.2f}/{short_expiry.isoformat()}, "
+            f"buy {long_strike:.2f}/{long_expiry.isoformat()}."
+        ),
+    )
+
+    if short_premium is not None and long_premium is not None:
+        net_debit = long_premium - short_premium
+        spec.net_premium_per_contract = net_debit
+        if net_debit >= 0:
+            spec.max_loss_per_contract = net_debit * 100
+        else:
+            # Net credit: max gain is the credit
+            spec.max_gain_per_contract = abs(net_debit) * 100
+            spec.is_credit = True
+
+    return spec
+
+
+# Extended registry with all multi-leg builders
+ALL_MULTILEG_BUILDERS = {
+    **VERTICAL_SPREAD_BUILDERS,
+    "iron_condor": build_iron_condor,
+    "iron_butterfly": build_iron_butterfly,
+    "long_straddle": build_long_straddle,
+    "short_straddle": build_short_straddle,
+    "long_strangle": build_long_strangle,
+    "calendar_spread": build_calendar_spread,
+    "diagonal_spread": build_diagonal_spread,
+}
+
+
 def _log_strategy_legs(strategy: OptionStrategy,
                           combo_order_id: Optional[str],
                           ctx,
