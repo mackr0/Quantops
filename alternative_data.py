@@ -366,15 +366,54 @@ def get_intraday_patterns(symbol):
     }
 
     try:
-        yf_sym = symbol.replace("/", "-") if "/" in symbol else symbol
-        with _yf_lock:
-            df = yf.Ticker(yf_sym).history(period="1d", interval="5m")
+        # Migrated 2026-05-01 from yfinance 5-min bars to Alpaca's
+        # /v2/stocks/<sym>/bars endpoint with timeframe=5Min. Real-time,
+        # free with our paper-account keys.
+        import requests
+        import config
+        from datetime import datetime, timedelta, timezone
+        import pandas as pd
 
-        if df.empty or len(df) < 6:
+        if "/" in symbol:
+            # Crypto path uses a different endpoint and 24/7 schedule;
+            # caller doesn't currently invoke this for crypto, but bail
+            # safely if it does.
             _set_cached(cache_key, result)
             return result
 
-        df.columns = [c.lower() for c in df.columns]
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=1)
+        r = requests.get(
+            f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/bars",
+            headers={
+                "APCA-API-KEY-ID": config.ALPACA_API_KEY,
+                "APCA-API-SECRET-KEY": config.ALPACA_SECRET_KEY,
+            },
+            params={
+                "timeframe": "5Min",
+                "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "limit": 100,
+                "adjustment": "raw",
+            },
+            timeout=10,
+        )
+        if r.status_code != 200:
+            _set_cached(cache_key, result)
+            return result
+        bars = (r.json() or {}).get("bars") or []
+        if not bars or len(bars) < 6:
+            _set_cached(cache_key, result)
+            return result
+
+        # Convert to DataFrame matching the old shape (columns:
+        # open, high, low, close, volume; lowercase)
+        df = pd.DataFrame([
+            {"open": float(b["o"]), "high": float(b["h"]),
+             "low": float(b["l"]), "close": float(b["c"]),
+             "volume": float(b["v"])}
+            for b in bars
+        ])
 
         # Intraday VWAP
         typical = (df["high"] + df["low"] + df["close"]) / 3

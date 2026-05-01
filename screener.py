@@ -356,11 +356,68 @@ def run_full_screen(universe=None, min_price=None, max_price=None, min_volume=No
     }
 
 
-def run_crypto_screen(universe=None):
-    """Screen crypto assets using yfinance data.
+def _fetch_crypto_bars_alpaca(symbols, days=30):
+    """Fetch daily crypto bars from Alpaca's crypto data API.
 
-    Crypto symbols are stored as 'BTC/USD' (Alpaca format) but fetched
-    as 'BTC-USD' (yfinance format). Results use Alpaca format.
+    Migrated 2026-05-01 from yfinance. Alpaca's
+    /v1beta3/crypto/us/bars endpoint returns OHLCV bars in the
+    Alpaca-native 'BTC/USD' symbol format. Real-time, free with our
+    paper-account keys.
+
+    Returns dict {alpaca_symbol: list-of-bar-dicts} for symbols that
+    succeeded. Each bar has: t (timestamp), o, h, l, c, v.
+    """
+    import requests
+    import config
+    from datetime import timedelta
+
+    if not symbols:
+        return {}
+    headers = {
+        "APCA-API-KEY-ID": config.ALPACA_API_KEY,
+        "APCA-API-SECRET-KEY": config.ALPACA_SECRET_KEY,
+    }
+    end = datetime.now()
+    start = end - timedelta(days=days)
+    out: dict = {}
+    next_page = None
+    # Alpaca crypto bars API takes comma-separated symbols
+    base_params = {
+        "symbols": ",".join(symbols),
+        "timeframe": "1Day",
+        "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "limit": 10000,
+    }
+    for _ in range(20):
+        params = dict(base_params)
+        if next_page:
+            params["page_token"] = next_page
+        try:
+            r = requests.get(
+                "https://data.alpaca.markets/v1beta3/crypto/us/bars",
+                headers=headers, params=params, timeout=15,
+            )
+            if r.status_code != 200:
+                break
+            data = r.json()
+            for sym, bars in (data.get("bars") or {}).items():
+                out.setdefault(sym, []).extend(bars)
+            next_page = data.get("next_page_token")
+            if not next_page:
+                break
+        except Exception:
+            break
+    return out
+
+
+def run_crypto_screen(universe=None):
+    """Screen crypto assets using Alpaca crypto bars (real-time).
+
+    Migrated 2026-05-01 from yfinance to Alpaca's
+    /v1beta3/crypto/us/bars endpoint. Same Alpaca-format symbols
+    throughout (BTC/USD, ETH/USD, etc.) — no more yfinance symbol
+    conversion shuffle.
     """
     from segments import CRYPTO_UNIVERSE
 
@@ -372,96 +429,75 @@ def run_crypto_screen(universe=None):
     print(f"Run time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
 
-    # Convert to yfinance format for download
-    yf_symbols = [to_yfinance_symbol(s) for s in universe]
+    print(f"\n[1/3] Downloading bars for {len(universe)} crypto pairs via Alpaca...")
+    bars_by_sym = _fetch_crypto_bars_alpaca(universe, days=30)
 
-    print(f"\n[1/3] Downloading data for {len(yf_symbols)} crypto pairs...")
-    data = yf_lock.download(yf_symbols, period="1mo", progress=False,
-                       group_by="ticker", threads=True)
-
-    # Screen all crypto — no price/volume filter (they're all candidates)
+    # Screen all crypto with at least 2 bars
     candidates = []
-    for yf_sym in yf_symbols:
+    for sym, bars in bars_by_sym.items():
+        if not bars or len(bars) < 2:
+            continue
         try:
-            if len(yf_symbols) == 1:
-                sym_df = data
-            else:
-                sym_df = data[yf_sym]
-
-            sym_df = sym_df.dropna(subset=["Close"])
-            if sym_df.empty or len(sym_df) < 2:
-                continue
-
-            price = float(sym_df["Close"].iloc[-1])
-            volume = int(sym_df["Volume"].iloc[-1])
-            prev_close = float(sym_df["Close"].iloc[-2])
+            price = float(bars[-1]["c"])
+            volume = float(bars[-1]["v"])
+            prev_close = float(bars[-2]["c"])
             change_pct = ((price - prev_close) / prev_close * 100) if prev_close > 0 else 0
-
-            alpaca_sym = from_yfinance_symbol(yf_sym)
             candidates.append({
-                "symbol": alpaca_sym,
+                "symbol": sym,
                 "price": round(price, 6),
-                "volume": volume,
+                "volume": int(volume),
                 "price_change_pct": round(change_pct, 2),
                 "reason": f"${price:,.2f} | chg: {change_pct:+.1f}%",
             })
-        except Exception:
-            pass
-
+        except (KeyError, ValueError, TypeError):
+            continue
     print(f"  Found {len(candidates)} active crypto pairs")
-
-    # Volume surges and momentum on crypto
-    alpaca_symbols = [c["symbol"] for c in candidates]
-    yf_syms = [to_yfinance_symbol(s) for s in alpaca_symbols]
 
     print(f"\n[2/3] Momentum Screen")
     momentum = []
-    if len(candidates) >= 2:
-        for yf_sym in yf_syms:
-            try:
-                sym_df = data[yf_sym].dropna(subset=["Close"])
-                if len(sym_df) < 8:
-                    continue
-                price = float(sym_df["Close"].iloc[-1])
-                price_5d = float(sym_df["Close"].iloc[-6]) if len(sym_df) >= 6 else None
-                if price_5d and price_5d > 0:
-                    gain_5d = ((price - price_5d) / price_5d) * 100
-                    if gain_5d >= 3.0:
-                        alpaca_sym = from_yfinance_symbol(yf_sym)
-                        momentum.append({
-                            "symbol": alpaca_sym,
-                            "price": round(price, 6),
-                            "gain_5d": round(gain_5d, 1),
-                            "reason": f"5d: +{gain_5d:.1f}%",
-                        })
-            except Exception:
-                pass
+    for cand in candidates:
+        sym = cand["symbol"]
+        bars = bars_by_sym.get(sym, [])
+        if len(bars) < 8:
+            continue
+        try:
+            price = float(bars[-1]["c"])
+            price_5d = float(bars[-6]["c"]) if len(bars) >= 6 else None
+            if price_5d and price_5d > 0:
+                gain_5d = ((price - price_5d) / price_5d) * 100
+                if gain_5d >= 3.0:
+                    momentum.append({
+                        "symbol": sym, "price": round(price, 6),
+                        "gain_5d": round(gain_5d, 1),
+                        "reason": f"5d: +{gain_5d:.1f}%",
+                    })
+        except (KeyError, ValueError, TypeError):
+            continue
     momentum.sort(key=lambda x: x.get("gain_5d", 0), reverse=True)
     print(f"  Found {len(momentum)} momentum cryptos")
 
     print(f"\n[3/3] Volume Surge Detection")
     surges = []
-    if len(candidates) >= 2:
-        for yf_sym in yf_syms:
-            try:
-                sym_df = data[yf_sym].dropna(subset=["Close"])
-                if len(sym_df) < 20:
-                    continue
-                avg_vol = float(sym_df["Volume"].iloc[-21:-1].mean())
-                today_vol = float(sym_df["Volume"].iloc[-1])
-                price = float(sym_df["Close"].iloc[-1])
-                if avg_vol > 0:
-                    ratio = today_vol / avg_vol
-                    if ratio >= 1.5:
-                        alpaca_sym = from_yfinance_symbol(yf_sym)
-                        surges.append({
-                            "symbol": alpaca_sym,
-                            "price": round(price, 6),
-                            "volume_ratio": round(ratio, 1),
-                            "reason": f"Volume {ratio:.1f}x average",
-                        })
-            except Exception:
-                pass
+    for cand in candidates:
+        sym = cand["symbol"]
+        bars = bars_by_sym.get(sym, [])
+        if len(bars) < 20:
+            continue
+        try:
+            recent_vols = [float(b["v"]) for b in bars[-21:-1]]
+            avg_vol = sum(recent_vols) / len(recent_vols) if recent_vols else 0
+            today_vol = float(bars[-1]["v"])
+            price = float(bars[-1]["c"])
+            if avg_vol > 0:
+                ratio = today_vol / avg_vol
+                if ratio >= 1.5:
+                    surges.append({
+                        "symbol": sym, "price": round(price, 6),
+                        "volume_ratio": round(ratio, 1),
+                        "reason": f"Volume {ratio:.1f}x average",
+                    })
+        except (KeyError, ValueError, TypeError):
+            continue
     surges.sort(key=lambda x: x.get("volume_ratio", 0), reverse=True)
     print(f"  Found {len(surges)} volume surges")
 
