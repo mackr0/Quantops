@@ -189,6 +189,13 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_reconcile_trade_statuses(ctx),
             db_path=ctx.db_path,
         )
+        # Options lifecycle — sweep expired contracts. No-op when the
+        # journal has no open option rows. Cheap query.
+        run_task(
+            f"[{seg_label}] Options Lifecycle",
+            lambda: _task_options_lifecycle(ctx),
+            db_path=ctx.db_path,
+        )
         if getattr(ctx, "is_virtual", False):
             run_task(
                 f"[{seg_label}] Virtual Audit",
@@ -928,6 +935,31 @@ def _task_cost_check(ctx):
                 )
     except Exception:
         pass
+
+
+def _task_options_lifecycle(ctx):
+    """Sweep expired option contracts. Closes worthless rows with
+    realized P&L, flags assignment cases for manual review.
+
+    Cheap when there are no open option trades — query is bounded by
+    `signal_type='OPTIONS' AND status='open' AND expiry < today`.
+    """
+    seg_label = ctx.display_name or ctx.segment
+    try:
+        from options_lifecycle import sweep_expired_options
+        from client import get_api
+        api = get_api(ctx)
+        result = sweep_expired_options(api, db_path=ctx.db_path)
+        if result["expired_found"]:
+            logging.info(
+                f"[{seg_label}] Options lifecycle: "
+                f"found={result['expired_found']}, "
+                f"closed_worthless={result['closed_worthless']}, "
+                f"assignment_flagged={result['assignment_flagged']}, "
+                f"errors={result['errors']}"
+            )
+    except Exception:
+        logging.exception(f"[{seg_label}] Options lifecycle sweep failed")
 
 
 def _task_reconcile_trade_statuses(ctx):
