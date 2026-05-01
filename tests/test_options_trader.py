@@ -253,3 +253,179 @@ class TestOrderSubmission:
         order_id = submit_option_order(api, "AAPL  250516C00150000",
                                           side="buy", qty=1)
         assert order_id is None
+
+
+# ---------------------------------------------------------------------------
+# execute_option_strategy — AI proposal → broker submission
+# ---------------------------------------------------------------------------
+
+class TestExecuteOptionStrategy:
+    """Item 1a executor — wires AI proposals into broker calls.
+
+    Constraints under test:
+      - covered_call/protective_put need ≥100 shares
+      - cash_secured_put needs buying power ≥ strike × 100 × contracts
+      - long_call/long_put premium ≤ 1% of equity
+      - Invalid strategy / missing fields / past expiry → SKIP
+    """
+
+    def _ctx(self, db_path=None):
+        ctx = MagicMock()
+        ctx.db_path = db_path
+        return ctx
+
+    def _patch_account_state(self, monkeypatch, positions, account):
+        # client.get_positions / get_account_info are imported inside
+        # the function — patch them on the client module.
+        import client
+        monkeypatch.setattr(client, "get_positions",
+                            lambda ctx=None: positions)
+        monkeypatch.setattr(client, "get_account_info",
+                            lambda ctx=None: account)
+
+    def test_invalid_strategy_returns_skip(self, monkeypatch):
+        from options_trader import execute_option_strategy
+        self._patch_account_state(monkeypatch, [], {"equity": 100000})
+        api = MagicMock()
+        result = execute_option_strategy(api, {
+            "option_strategy": "iron_condor",  # not supported
+            "symbol": "AAPL", "strike": 150, "expiry": "2099-01-01",
+            "contracts": 1,
+        }, ctx=self._ctx(), log=False)
+        assert result["action"] == "SKIP"
+        assert "Unsupported" in result["reason"]
+        api.submit_order.assert_not_called()
+
+    def test_missing_fields_returns_skip(self, monkeypatch):
+        from options_trader import execute_option_strategy
+        self._patch_account_state(monkeypatch, [], {"equity": 100000})
+        api = MagicMock()
+        result = execute_option_strategy(api, {
+            "option_strategy": "long_call",
+            "symbol": "AAPL",
+            # missing strike / expiry / contracts
+        }, ctx=self._ctx(), log=False)
+        assert result["action"] == "SKIP"
+        api.submit_order.assert_not_called()
+
+    def test_past_expiry_returns_skip(self, monkeypatch):
+        from options_trader import execute_option_strategy
+        self._patch_account_state(monkeypatch, [], {"equity": 100000})
+        api = MagicMock()
+        result = execute_option_strategy(api, {
+            "option_strategy": "long_call", "symbol": "AAPL",
+            "strike": 150, "expiry": "2020-01-01", "contracts": 1,
+            "limit_price": 1.00,
+        }, ctx=self._ctx(), log=False)
+        assert result["action"] == "SKIP"
+        assert "future" in result["reason"]
+
+    def test_covered_call_without_100_shares_skips(self, monkeypatch):
+        from options_trader import execute_option_strategy
+        self._patch_account_state(monkeypatch,
+            [{"symbol": "AAPL", "qty": "50"}],  # only 50 shares
+            {"equity": 100000})
+        api = MagicMock()
+        result = execute_option_strategy(api, {
+            "option_strategy": "covered_call", "symbol": "AAPL",
+            "strike": 175, "expiry": "2099-01-01", "contracts": 1,
+        }, ctx=self._ctx(), log=False)
+        assert result["action"] == "SKIP"
+        assert "100 shares" in result["reason"]
+
+    def test_csp_exceeding_buying_power_skips(self, monkeypatch):
+        from options_trader import execute_option_strategy
+        self._patch_account_state(monkeypatch, [],
+            {"equity": 5000, "buying_power": 5000})
+        api = MagicMock()
+        # 10 contracts × $200 strike × 100 = $200,000 — way over
+        result = execute_option_strategy(api, {
+            "option_strategy": "cash_secured_put", "symbol": "AAPL",
+            "strike": 200, "expiry": "2099-01-01", "contracts": 10,
+        }, ctx=self._ctx(), log=False)
+        assert result["action"] == "SKIP"
+        assert "buying power" in result["reason"]
+
+    def test_long_call_premium_over_1pct_skips(self, monkeypatch):
+        from options_trader import execute_option_strategy
+        self._patch_account_state(monkeypatch, [],
+            {"equity": 10000, "buying_power": 10000})
+        api = MagicMock()
+        # 5 contracts × $5 premium × 100 = $2,500 = 25% of equity
+        result = execute_option_strategy(api, {
+            "option_strategy": "long_call", "symbol": "AAPL",
+            "strike": 150, "expiry": "2099-01-01", "contracts": 5,
+            "limit_price": 5.00,
+        }, ctx=self._ctx(), log=False)
+        assert result["action"] == "SKIP"
+        assert "1%" in result["reason"]
+
+    def test_successful_long_call_returns_options_open(self, monkeypatch):
+        from options_trader import execute_option_strategy
+        self._patch_account_state(monkeypatch, [],
+            {"equity": 100000, "buying_power": 100000})
+        api = MagicMock()
+        api.submit_order.return_value = MagicMock(id="opt-1234")
+        result = execute_option_strategy(api, {
+            "option_strategy": "long_call", "symbol": "AAPL",
+            "strike": 150, "expiry": "2099-01-01", "contracts": 1,
+            "limit_price": 2.55, "confidence": 65,
+            "reasoning": "test setup",
+        }, ctx=self._ctx(), log=False)
+        assert result["action"] == "OPTIONS_OPEN"
+        assert result["order_id"] == "opt-1234"
+        assert result["option_strategy"] == "long_call"
+        assert result["expiry"] == "2099-01-01"
+        assert result["strike"] == 150.0
+        # Submitted with correct OCC + side
+        kwargs = api.submit_order.call_args.kwargs
+        assert kwargs["side"] == "buy"
+        assert kwargs["qty"] == 1
+        assert kwargs["symbol"].startswith("AAPL")
+        assert kwargs["symbol"].endswith("00150000")  # strike * 1000
+
+    def test_successful_covered_call_caps_contracts(self, monkeypatch):
+        """Holding 250 shares + asking for 5 contracts → capped to 2."""
+        from options_trader import execute_option_strategy
+        self._patch_account_state(monkeypatch,
+            [{"symbol": "AAPL", "qty": "250"}],
+            {"equity": 100000, "buying_power": 100000})
+        api = MagicMock()
+        api.submit_order.return_value = MagicMock(id="opt-cc")
+        result = execute_option_strategy(api, {
+            "option_strategy": "covered_call", "symbol": "AAPL",
+            "strike": 200, "expiry": "2099-01-01",
+            "contracts": 5,  # asks for 5
+        }, ctx=self._ctx(), log=False)
+        assert result["action"] == "OPTIONS_OPEN"
+        assert result["qty"] == 2  # capped at 250 // 100
+        kwargs = api.submit_order.call_args.kwargs
+        assert kwargs["side"] == "sell"  # short the call
+        assert kwargs["qty"] == 2
+
+
+# ---------------------------------------------------------------------------
+# _validate_ai_trades — OPTIONS pass-through
+# ---------------------------------------------------------------------------
+
+class TestValidateOptionsAction:
+    def test_options_action_passes_through_with_fields(self):
+        """OPTIONS bypass equity gates and carry through option fields."""
+        from ai_analyst import _validate_ai_trades
+        result = {"trades": [{
+            "symbol": "AAPL", "action": "OPTIONS",
+            "option_strategy": "covered_call", "strike": 175.0,
+            "expiry": "2026-05-16", "contracts": 1,
+            "limit_price": 2.50, "confidence": 70,
+            "reasoning": "IV high",
+        }]}
+        candidates = [{"symbol": "AAPL", "indicators": {}}]
+        validated = _validate_ai_trades(result, candidates)
+        assert len(validated["trades"]) == 1
+        v = validated["trades"][0]
+        assert v["action"] == "OPTIONS"
+        assert v["option_strategy"] == "covered_call"
+        assert v["strike"] == 175.0
+        assert v["expiry"] == "2026-05-16"
+        assert v["contracts"] == 1
+        assert v["confidence"] == 70

@@ -317,6 +317,191 @@ def build_cash_secured_put(
 # Order submission via Alpaca's REST endpoint
 # ---------------------------------------------------------------------------
 
+def execute_option_strategy(
+    api,
+    proposal: Dict[str, Any],
+    ctx,
+    log: bool = True,
+) -> Dict[str, Any]:
+    """Execute an AI-proposed option strategy end-to-end.
+
+    `proposal` is a dict from the AI's trades list with shape:
+      {
+        "action": "OPTIONS",
+        "option_strategy": "covered_call" | "protective_put" |
+                              "long_call" | "long_put" | "cash_secured_put",
+        "symbol": "AAPL",            # underlying
+        "strike": 165.00,
+        "expiry": "2026-05-16",      # ISO date
+        "contracts": 1,
+        "limit_price": 2.55,         # optional; market order if absent
+        "reasoning": "..."
+      }
+
+    Returns a result dict shaped like the equity execute_trade result:
+      {action, symbol, qty, order_id, reason}
+    Action will be "OPTIONS_OPEN" on success or "SKIP" / "ERROR" on failure.
+
+    Sizing constraints (per strategy):
+      - covered_call: contracts must be ≤ shares_held // 100
+      - protective_put: same — only hedge what we hold
+      - cash_secured_put: cash required ≤ ctx buying power
+      - long_call/long_put: total premium ≤ 1% of equity (defined-risk
+        hard cap so we don't blow up the account on a wild AI proposal)
+    """
+    from datetime import date as _date
+    result = {"symbol": proposal.get("symbol"), "action": "SKIP", "reason": ""}
+
+    strategy = proposal.get("option_strategy", "").lower()
+    underlying = (proposal.get("symbol") or "").upper()
+    strike = proposal.get("strike")
+    expiry_str = proposal.get("expiry")
+    contracts = int(proposal.get("contracts") or 0)
+    limit_price = proposal.get("limit_price")
+
+    # Validate the basics
+    if strategy not in ("covered_call", "protective_put", "long_call",
+                          "long_put", "cash_secured_put"):
+        result["reason"] = f"Unsupported option_strategy: {strategy!r}"
+        return result
+    if not underlying or not strike or not expiry_str or contracts <= 0:
+        result["reason"] = (
+            f"Missing required option proposal fields "
+            f"(symbol/strike/expiry/contracts)"
+        )
+        return result
+    try:
+        expiry = _date.fromisoformat(expiry_str)
+    except Exception:
+        result["reason"] = f"Invalid expiry date: {expiry_str!r}"
+        return result
+    if expiry <= _date.today():
+        result["reason"] = f"Expiry {expiry_str} is not in the future"
+        return result
+
+    # Strategy → option right + side
+    if strategy == "covered_call":
+        right, side = "C", "sell"
+    elif strategy == "protective_put":
+        right, side = "P", "buy"
+    elif strategy == "long_call":
+        right, side = "C", "buy"
+    elif strategy == "long_put":
+        right, side = "P", "buy"
+    elif strategy == "cash_secured_put":
+        right, side = "P", "sell"
+
+    # Sizing constraints — abort cleanly if the proposal exceeds them.
+    # Re-read positions / account from ctx; we need accurate state.
+    try:
+        from client import get_positions, get_account_info
+        positions = get_positions(ctx=ctx) or []
+        account = get_account_info(ctx=ctx) or {}
+    except Exception as exc:
+        result["reason"] = f"Could not read account state: {exc}"
+        return result
+
+    pos_for_underlying = next(
+        (p for p in positions if p.get("symbol") == underlying), None,
+    )
+
+    if strategy in ("covered_call", "protective_put"):
+        # Must already hold the underlying; contracts ≤ shares // 100.
+        held_qty = int(float(pos_for_underlying.get("qty", 0))
+                        if pos_for_underlying else 0)
+        if held_qty < 100:
+            result["reason"] = (
+                f"Need ≥100 shares of {underlying} for {strategy}; "
+                f"hold {held_qty}"
+            )
+            return result
+        max_contracts = held_qty // 100
+        if contracts > max_contracts:
+            logger.info(
+                "Capping %s contracts for %s from %d to %d (held=%d)",
+                strategy, underlying, contracts, max_contracts, held_qty,
+            )
+            contracts = max_contracts
+
+    elif strategy == "cash_secured_put":
+        cash_required = strike * 100 * contracts
+        buying_power = float(account.get("buying_power", 0))
+        if cash_required > buying_power:
+            result["reason"] = (
+                f"CSP needs ${cash_required:,.0f} buying power; "
+                f"have ${buying_power:,.0f}"
+            )
+            return result
+
+    elif strategy in ("long_call", "long_put"):
+        # Defined-risk hard cap: total premium ≤ 1% of equity. We don't
+        # know the actual fill price yet; use limit_price as estimate
+        # if provided, else assume premium = 5% of strike (rough cap).
+        equity = float(account.get("equity", 0))
+        est_premium = (limit_price if limit_price is not None
+                       else 0.05 * strike)
+        max_premium_dollars = 0.01 * equity
+        total_premium_dollars = est_premium * 100 * contracts
+        if total_premium_dollars > max_premium_dollars:
+            result["reason"] = (
+                f"{strategy} premium ${total_premium_dollars:,.0f} > 1% "
+                f"of equity ${max_premium_dollars:,.0f} (hard cap)"
+            )
+            return result
+
+    # Build OCC + submit
+    occ = format_occ_symbol(underlying, expiry, strike, right)
+    order_type = "limit" if limit_price is not None else "market"
+    order_id = submit_option_order(
+        api, occ, side=side, qty=contracts,
+        order_type=order_type, limit_price=limit_price,
+    )
+
+    if not order_id:
+        result["action"] = "ERROR"
+        result["reason"] = f"Broker did not return order_id for {occ}"
+        return result
+
+    if log:
+        try:
+            from journal import log_trade
+            log_trade(
+                symbol=underlying,
+                side=side,
+                qty=contracts,
+                price=limit_price,
+                order_id=order_id,
+                signal_type="OPTIONS",
+                strategy=strategy,
+                reason=proposal.get("reasoning", "")[:500],
+                ai_reasoning=proposal.get("reasoning", ""),
+                ai_confidence=int(proposal.get("confidence", 0) or 0),
+                decision_price=limit_price,
+                occ_symbol=occ,
+                option_strategy=strategy,
+                expiry=expiry.isoformat(),
+                strike=float(strike),
+                db_path=ctx.db_path if ctx else None,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Option order placed (id=%s) but log_trade failed: %s",
+                order_id, exc,
+            )
+
+    result.update({
+        "action": "OPTIONS_OPEN",
+        "qty": contracts,
+        "order_id": order_id,
+        "occ_symbol": occ,
+        "option_strategy": strategy,
+        "expiry": expiry.isoformat(),
+        "strike": float(strike),
+        "reason": (proposal.get("reasoning", "") or "")[:200],
+    })
+    return result
+
+
 def submit_option_order(
     api,
     occ_symbol: str,

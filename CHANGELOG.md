@@ -17,6 +17,41 @@ Rules going forward:
 
 ---
 
+## 2026-04-29 — Options execution routing — AI proposal → broker submission (Item 1a complete) (Severity: high, capability)
+
+**What this adds.** End-to-end execution path for options trades. The AI can now propose `action: "OPTIONS"` in its batch response and the trade pipeline routes it to a dedicated executor that handles sizing, OCC formatting, broker submission, and journal logging.
+
+**Files changed:**
+
+- `journal.py` — `trades` table now has `occ_symbol`, `option_strategy`, `expiry`, `strike` columns (auto-migrated). `log_trade()` accepts these as optional kwargs; existing equity callers unaffected.
+- `options_trader.py` — new `execute_option_strategy(api, proposal, ctx, log)` validates the AI proposal, enforces sizing constraints per strategy, formats the OCC symbol, calls `submit_option_order`, and logs the trade. Sizing constraints:
+  - `covered_call` / `protective_put`: `contracts ≤ shares_held // 100` (cap, don't reject)
+  - `cash_secured_put`: `strike × 100 × contracts ≤ buying_power` (reject if over)
+  - `long_call` / `long_put`: `total_premium ≤ 1% of equity` (defined-risk hard cap)
+- `trade_pipeline.py` — `run_trade_cycle` dispatches `action == "OPTIONS"` to `execute_option_strategy` instead of `execute_trade`. Equity flow unchanged.
+- `ai_analyst.py` — `_validate_ai_trades` accepts `OPTIONS` action and bypasses the equity-position gates (balance / asymmetric-cap / neutrality) — options sizing is defined-risk and doesn't touch book beta the same way. Carries through option-specific fields (`option_strategy`, `strike`, `expiry`, `contracts`, `limit_price`).
+- `ai_analyst._build_batch_prompt` — when the options advisor surfaces at least one opportunity, the prompt's allowed-actions list adds `OPTIONS` and the JSON example shows the expected option fields. Otherwise the prompt stays exactly as it was (no token bloat when there's nothing to do).
+
+**Why now.** Item 1a of `COMPETITIVE_GAP_PLAN.md` — closing the "we trade only equities" gap with the multi-asset prop shops we benchmark against. Foundation (Greeks, OCC, primitives) and advisor were already shipped; this commit wires the execution path so the loop closes.
+
+**Tests.** 9 new in `test_options_trader.py::TestExecuteOptionStrategy` + `TestValidateOptionsAction`:
+- Invalid strategy → SKIP, no broker call
+- Missing required fields → SKIP, no broker call
+- Past expiry → SKIP
+- Covered call without 100 shares → SKIP
+- CSP exceeding buying power → SKIP
+- Long call premium > 1% of equity → SKIP
+- Successful long call returns OPTIONS_OPEN with order_id, expiry, strike
+- Successful covered call caps contracts to `shares // 100` (asks for 5 with 250 shares → emits 2)
+- `_validate_ai_trades` passes through OPTIONS action with all option fields intact
+
+**Known follow-ups.**
+
+- Lifecycle: expired contracts aren't yet auto-marked closed. Cron-style sweep TBD.
+- Real broker behavior on Alpaca paper isn't yet smoke-tested in prod (waiting for the AI to propose its first OPTIONS trade now that the prompt invites it).
+
+---
+
 ## 2026-04-30 — Options strategy advisor wired to AI prompt (Item 1a continued) (Severity: high, capability)
 
 **What this adds.** New module `options_strategy_advisor.py` that evaluates each held position against rules for covered-call / protective-put recommendations. Read-side only — surfaces opportunities to the AI prompt without auto-executing. The AI sees the recommendation, decides whether to take it.

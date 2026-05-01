@@ -392,6 +392,17 @@ def _migrate_all_columns(conn):
             # tracks high water continuously and fires at trail_percent
             # below it the moment the level is broken.
             ("protective_trailing_order_id", "TEXT"),
+            # Item 1a of COMPETITIVE_GAP_PLAN.md — options trading.
+            # When the row represents an option position, occ_symbol
+            # holds the 21-char OCC contract symbol (e.g. AAPL  250516C00150000),
+            # symbol holds the underlying ticker, option_strategy
+            # tags the strategy (covered_call / protective_put / etc),
+            # and expiry / strike are denormalized from the OCC symbol
+            # for cheap querying.
+            ("occ_symbol", "TEXT"),
+            ("option_strategy", "TEXT"),
+            ("expiry", "TEXT"),
+            ("strike", "REAL"),
         ],
         "ai_predictions": [
             ("regime_at_prediction", "TEXT"),
@@ -485,6 +496,7 @@ def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
               strategy=None, reason=None, ai_reasoning=None, ai_confidence=None,
               stop_loss=None, take_profit=None, status="open", pnl=None,
               decision_price=None, fill_price=None, slippage_pct=None,
+              occ_symbol=None, option_strategy=None, expiry=None, strike=None,
               db_path=None):
     """Log a trade execution to the journal.
 
@@ -496,6 +508,16 @@ def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
         The actual fill price from Alpaca (updated later by fill updater).
     slippage_pct : float, optional
         (fill_price - decision_price) / decision_price * 100.
+    occ_symbol : str, optional
+        OCC option contract symbol when this row represents an option
+        position. None for stock trades.
+    option_strategy : str, optional
+        'covered_call' / 'protective_put' / 'long_call' / 'long_put' /
+        'cash_secured_put'. None for stock trades.
+    expiry : str, optional
+        ISO date string of the option expiry. Denormalized from OCC.
+    strike : float, optional
+        Option strike price. Denormalized from OCC.
 
     Returns the row id of the inserted trade.
     """
@@ -504,13 +526,15 @@ def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
         """INSERT INTO trades
            (timestamp, symbol, side, qty, price, order_id, signal_type, strategy,
             reason, ai_reasoning, ai_confidence, stop_loss, take_profit, status, pnl,
-            decision_price, fill_price, slippage_pct)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            decision_price, fill_price, slippage_pct,
+            occ_symbol, option_strategy, expiry, strike)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             datetime.utcnow().isoformat(),
             symbol, side, qty, price, order_id, signal_type, strategy,
             reason, ai_reasoning, ai_confidence, stop_loss, take_profit,
             status, pnl, decision_price, fill_price, slippage_pct,
+            occ_symbol, option_strategy, expiry, strike,
         ),
     )
     conn.commit()

@@ -1200,6 +1200,12 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     actions = "BUY"
     if enable_shorts:
         actions += " | SHORT"
+    # Item 1a — OPTIONS action only offered when the advisor has surfaced
+    # at least one opportunity. Keeps the prompt tight when there's
+    # nothing actionable on the options side.
+    options_action_enabled = bool(options_strategy_block.strip())
+    if options_action_enabled:
+        actions += " | OPTIONS"
 
     # --- Assemble prompt ---
     long_short_note = ""
@@ -1212,6 +1218,23 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             "breakouts, and relative weakness in strong sectors. Avoid "
             "shorting names with high short interest unless the breakdown "
             "is well-confirmed (squeeze risk).\n"
+        )
+
+    options_note = ""
+    options_example = ""
+    if options_action_enabled:
+        options_note = (
+            "\n- OPTIONS: only propose when an OPTIONS STRATEGIES line above "
+            "lists the underlying. Required fields: option_strategy "
+            "(covered_call|protective_put|long_call|long_put|cash_secured_put), "
+            "strike (number), expiry (YYYY-MM-DD), contracts (int). "
+            "size_pct/stop_loss_pct/take_profit_pct are NOT required for OPTIONS.\n"
+        )
+        options_example = (
+            ', {"symbol": "TICKER", "action": "OPTIONS", '
+            '"option_strategy": "covered_call", "strike": 175.0, '
+            '"expiry": "2026-05-16", "contracts": 1, "confidence": 65, '
+            '"reasoning": "1-2 sentences"}'
         )
 
     prompt = (
@@ -1230,12 +1253,14 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"your track record on each symbol\n"
         f"- If drawdown is elevated ({dd_action}), be conservative\n"
         f"- If at max positions, only recommend exits"
-        f"{long_short_note}\n\n"
+        f"{long_short_note}"
+        f"{options_note}\n\n"
         f"Respond ONLY with valid JSON (no markdown, no commentary):\n"
         f'{{"trades": [{{"symbol": "TICKER", "action": "BUY", '
         f'"size_pct": 7.5, "confidence": 75, '
         f'"stop_loss_pct": 3.0, "take_profit_pct": 10.0, '
-        f'"reasoning": "1-2 sentences"}}], '
+        f'"reasoning": "1-2 sentences"}}'
+        f'{options_example}], '
         f'"portfolio_reasoning": "Why this combination or why pass", '
         f'"pass_this_cycle": false}}'
     )
@@ -1346,6 +1371,25 @@ def _validate_ai_trades(result, candidates_data, ctx=None,
         action = t.get("action", "").upper()
         if action == "SHORT" and not enable_shorts:
             logger.warning("AI suggested SHORT on %s but shorts disabled — skipped", sym)
+            continue
+        # OPTIONS proposals follow a different path — they bypass the
+        # equity-position gates (balance, asymmetric-cap, neutrality)
+        # because options sizing is defined-risk and doesn't affect
+        # book beta the same way. Validation happens in
+        # options_trader.execute_option_strategy.
+        if action == "OPTIONS":
+            # Carry through option-specific fields the executor needs.
+            validated.append({
+                "symbol": sym,
+                "action": "OPTIONS",
+                "option_strategy": (t.get("option_strategy") or "").lower(),
+                "strike": t.get("strike"),
+                "expiry": t.get("expiry"),
+                "contracts": int(t.get("contracts") or 0),
+                "limit_price": t.get("limit_price"),
+                "confidence": int(t.get("confidence", 50)),
+                "reasoning": t.get("reasoning", ""),
+            })
             continue
         if action not in ("BUY", "SELL", "SHORT"):
             continue

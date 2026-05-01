@@ -1717,14 +1717,29 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
         }
 
         try:
-            print(f"  Executing: {action} {symbol} ({size_pct*100:.1f}% equity, "
-                  f"confidence {ai_trade.get('confidence', '?')})")
-            trade_result = execute_trade(
-                symbol, signal, ctx=ctx, ai_result=ai_result,
-                max_position_pct=size_pct, log=log,
-                _account=account, _positions_list=positions_list,
-                _dd=dd,
-            )
+            # Item 1a — route OPTIONS proposals through the dedicated
+            # options executor. Sizing constraints / OCC formatting /
+            # broker call all live in options_trader.execute_option_strategy.
+            if action == "OPTIONS":
+                from options_trader import execute_option_strategy
+                from client import get_api as _get_api
+                api_for_opt = _get_api(ctx)
+                print(f"  Executing: OPTIONS {ai_trade.get('option_strategy', '?')} "
+                      f"{symbol} ({ai_trade.get('contracts', '?')}× "
+                      f"@ ${ai_trade.get('strike', '?')}/{ai_trade.get('expiry', '?')})")
+                trade_result = execute_option_strategy(
+                    api_for_opt, ai_trade, ctx=ctx, log=log,
+                )
+                trade_result.setdefault("symbol", symbol)
+            else:
+                print(f"  Executing: {action} {symbol} ({size_pct*100:.1f}% equity, "
+                      f"confidence {ai_trade.get('confidence', '?')})")
+                trade_result = execute_trade(
+                    symbol, signal, ctx=ctx, ai_result=ai_result,
+                    max_position_pct=size_pct, log=log,
+                    _account=account, _positions_list=positions_list,
+                    _dd=dd,
+                )
             details.append(trade_result)
             # Visibility: when the trade dict says SKIP / EXCLUDED /
             # ERROR / etc., surface it. The previous behavior was
