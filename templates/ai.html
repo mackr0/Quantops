@@ -1003,21 +1003,20 @@
                 <tbody>
                     {% for prof in greeks_info.per_profile %}
                     {% set s = prof.summary %}
-                    {% set lim = prof.limits %}
                     <tr>
                         <td>{{ prof.name }}</td>
                         <td style="text-align:right;">{{ "%+.0f"|format(s.net_delta) }}</td>
                         <td style="text-align:right;">{{ "%+.2f"|format(s.net_gamma) }}</td>
                         <td style="text-align:right;">
-                            {% if lim.max_short_vega_dollars and s.net_vega < -lim.max_short_vega_dollars * 0.8 %}
-                            <strong style="color:{% if s.net_vega < -lim.max_short_vega_dollars %}#b00{% else %}#b87333{% endif %};">{{ "%+.0f"|format(s.net_vega) }}</strong>
+                            {% if prof.limits.max_short_vega_dollars and s.net_vega < -prof.limits.max_short_vega_dollars * 0.8 %}
+                            <strong style="color:{% if s.net_vega < -prof.limits.max_short_vega_dollars %}#b00{% else %}#b87333{% endif %};">{{ "%+.0f"|format(s.net_vega) }}</strong>
                             {% else %}
                             {{ "%+.0f"|format(s.net_vega) }}
                             {% endif %}
                         </td>
                         <td style="text-align:right;">
-                            {% if lim.max_theta_burn_dollars_per_day and s.net_theta < -lim.max_theta_burn_dollars_per_day * 0.8 %}
-                            <strong style="color:{% if s.net_theta < -lim.max_theta_burn_dollars_per_day %}#b00{% else %}#b87333{% endif %};">{{ "%+.0f"|format(s.net_theta) }}</strong>
+                            {% if prof.limits.max_theta_burn_dollars_per_day and s.net_theta < -prof.limits.max_theta_burn_dollars_per_day * 0.8 %}
+                            <strong style="color:{% if s.net_theta < -prof.limits.max_theta_burn_dollars_per_day %}#b00{% else %}#b87333{% endif %};">{{ "%+.0f"|format(s.net_theta) }}</strong>
                             {% else %}
                             {{ "%+.0f"|format(s.net_theta) }}
                             {% endif %}

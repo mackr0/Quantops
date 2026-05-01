@@ -36,14 +36,15 @@ def _exec_block_source():
       - 2500 originally
       - 4000 when wash-trade + insufficient-qty classifiers landed
       - 5500 when the OPTIONS dispatch branch landed in front (Item 1a)
-        — the OPTIONS print arrives FIRST in the source and pushed the
-        original print site further down inside the slice.
+      - 7500 when MULTILEG_OPEN dispatch + helper landed (Phase B4)
+        — each new action branch pushes the genuine logging.error call
+        further down. Future branches will need similar bumps.
     """
     import trade_pipeline as tp
     src = inspect.getsource(tp)
     start = src.find('print(f"  Executing: ')
     assert start > 0, "Could not locate the Executing: print site"
-    return src[start:start + 5500]
+    return src[start:start + 7500]
 
 
 def test_exception_path_logs_full_traceback():
