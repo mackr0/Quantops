@@ -736,3 +736,293 @@ def render_pair_book_for_prompt(
         "or |z|>=3 (regime break)."
     )
     return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
+# PAIR_TRADE execution — two-leg atomic order with dollar-neutral sizing
+# ---------------------------------------------------------------------------
+
+# Per-leg dollar size cap as fraction of equity. Both legs together
+# consume 2× this (e.g., 0.05 = 5% per leg = 10% gross exposure on
+# the pair). Conservative starting point.
+PAIR_LEG_MAX_PCT_OF_EQUITY = 0.05
+
+
+def _lookup_active_pair(db_path: str, symbol_a: str,
+                            symbol_b: str) -> Optional[Pair]:
+    """Find an active pair by either ordering of the symbols. Returns
+    None if no active row matches."""
+    a, b = _canonical_order(symbol_a, symbol_b)
+    from journal import _get_conn
+    conn = _get_conn(db_path)
+    row = conn.execute(
+        """SELECT symbol_a, symbol_b, hedge_ratio, p_value,
+                  half_life_days, correlation
+           FROM stat_arb_pairs
+           WHERE symbol_a=? AND symbol_b=? AND status='active'""",
+        (a, b),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return Pair(
+        symbol_a=row["symbol_a"], symbol_b=row["symbol_b"],
+        hedge_ratio=float(row["hedge_ratio"]),
+        p_value=float(row["p_value"]),
+        half_life_days=float(row["half_life_days"]),
+        correlation=float(row["correlation"]),
+    )
+
+
+def execute_pair_trade(api, proposal: Dict[str, Any], ctx,
+                          log: bool = True) -> Dict[str, Any]:
+    """Execute an AI-proposed PAIR_TRADE end-to-end.
+
+    `proposal` shape (validated upstream in ai_analyst._validate_ai_trades):
+      {
+        "action": "PAIR_TRADE",
+        "pair_action": "ENTER_LONG_A_SHORT_B" | "ENTER_SHORT_A_LONG_B"
+                         | "EXIT",
+        "symbol_a": "AAPL",
+        "symbol_b": "MSFT",
+        "dollars_per_leg": 5000,      # required for ENTER
+        "reasoning": "...",
+        "confidence": 70,
+      }
+
+    Returns a result dict shaped like execute_trade's output:
+      {action, symbol, qty, order_ids, reason}
+    Action will be "PAIR_OPEN" / "PAIR_CLOSE" / "SKIP" / "ERROR".
+
+    Sizing: dollar-neutral. Each leg gets `dollars_per_leg`; shares =
+    floor(dollars_per_leg / current_price). Hedge ratio influences
+    *cointegration* but not sizing — dollar-neutral keeps risk
+    symmetric, which is the standard pro convention.
+
+    Atomicity: best-effort. If leg 2 fails after leg 1 submitted, leg 1
+    is left as-is with a warning logged. Caller must reconcile via
+    the cross-account audit. We don't auto-cancel because Alpaca
+    cancellation isn't synchronous and can race.
+    """
+    pair_action = (proposal.get("pair_action") or "").upper()
+    sym_a_raw = (proposal.get("symbol_a") or "").upper()
+    sym_b_raw = (proposal.get("symbol_b") or "").upper()
+    dollars_per_leg = float(proposal.get("dollars_per_leg") or 0)
+    reasoning = (proposal.get("reasoning") or "")[:500]
+
+    result: Dict[str, Any] = {
+        "action": "SKIP", "symbol": f"{sym_a_raw}/{sym_b_raw}",
+        "reason": "",
+    }
+
+    # Validate
+    if pair_action not in ("ENTER_LONG_A_SHORT_B",
+                              "ENTER_SHORT_A_LONG_B", "EXIT"):
+        result["reason"] = f"Unsupported pair_action: {pair_action!r}"
+        return result
+    if not sym_a_raw or not sym_b_raw:
+        result["reason"] = "Missing symbol_a / symbol_b"
+        return result
+
+    # Look up the active pair — confirms it's in our book (the AI can't
+    # spontaneously invent pairs we haven't validated)
+    db_path = getattr(ctx, "db_path", None) if ctx else None
+    if not db_path:
+        result["reason"] = "No db_path on ctx — cannot look up pair book"
+        return result
+    pair = _lookup_active_pair(db_path, sym_a_raw, sym_b_raw)
+    if pair is None:
+        result["reason"] = (
+            f"{sym_a_raw}/{sym_b_raw} not in active pair book — "
+            "AI proposed an unverified pair"
+        )
+        return result
+
+    # Use the pair's stored canonical symbols (the book may have them
+    # in (b, a) order if the AI named them swapped)
+    sym_a = pair.symbol_a
+    sym_b = pair.symbol_b
+
+    # ENTER paths need positive sizing
+    if pair_action.startswith("ENTER"):
+        if dollars_per_leg <= 0:
+            result["reason"] = "dollars_per_leg must be > 0 for ENTER"
+            return result
+
+        # Cap leg size at PAIR_LEG_MAX_PCT_OF_EQUITY of equity
+        try:
+            from client import get_account_info
+            account = get_account_info(ctx=ctx) or {}
+            equity = float(account.get("equity") or 0)
+        except Exception as exc:
+            result["reason"] = f"Could not read equity: {exc}"
+            return result
+
+        max_dollars = equity * PAIR_LEG_MAX_PCT_OF_EQUITY
+        if dollars_per_leg > max_dollars:
+            logger.info(
+                "Capping pair leg size from $%.0f to $%.0f (%.0f%% equity)",
+                dollars_per_leg, max_dollars,
+                PAIR_LEG_MAX_PCT_OF_EQUITY * 100,
+            )
+            dollars_per_leg = max_dollars
+
+        # Decide leg sides
+        if pair_action == "ENTER_LONG_A_SHORT_B":
+            side_a, side_b = "buy", "sell"
+        else:
+            side_a, side_b = "sell", "buy"
+
+        # Quote both legs to compute shares
+        try:
+            from market_data import get_bars
+            bars_a = get_bars(sym_a, limit=5)
+            bars_b = get_bars(sym_b, limit=5)
+        except Exception as exc:
+            result["reason"] = f"Could not fetch bars: {exc}"
+            return result
+        try:
+            price_a = float(bars_a["close"].iloc[-1])
+            price_b = float(bars_b["close"].iloc[-1])
+        except Exception as exc:
+            result["reason"] = f"Could not read prices: {exc}"
+            return result
+        if price_a <= 0 or price_b <= 0:
+            result["reason"] = "Non-positive price on one leg"
+            return result
+
+        qty_a = int(dollars_per_leg / price_a)
+        qty_b = int(dollars_per_leg / price_b)
+        if qty_a <= 0 or qty_b <= 0:
+            result["reason"] = (
+                f"Sizing produced zero shares (dollars_per_leg=${dollars_per_leg:.0f}, "
+                f"prices a={price_a:.2f}, b={price_b:.2f})"
+            )
+            return result
+
+        # Submit leg A
+        try:
+            order_a = api.submit_order(
+                symbol=sym_a, qty=qty_a, side=side_a,
+                type="market", time_in_force="day",
+            )
+            order_id_a = getattr(order_a, "id", None)
+        except Exception as exc:
+            result["action"] = "ERROR"
+            result["reason"] = f"Leg A submit failed: {exc}"
+            return result
+
+        # Submit leg B — if this fails, log loud so operator knows
+        # they have a half-pair open
+        try:
+            order_b = api.submit_order(
+                symbol=sym_b, qty=qty_b, side=side_b,
+                type="market", time_in_force="day",
+            )
+            order_id_b = getattr(order_b, "id", None)
+        except Exception as exc:
+            logger.error(
+                "Pair leg A submitted (%s) but leg B failed: %s. "
+                "Half-pair open — operator must reconcile.",
+                order_id_a, exc,
+            )
+            result["action"] = "ERROR"
+            result["reason"] = (
+                f"Leg A submitted ({order_id_a}) but leg B failed: {exc}"
+            )
+            result["order_id_a"] = order_id_a
+            return result
+
+        # Log both legs
+        if log:
+            try:
+                from journal import log_trade
+                pair_tag = pair.label
+                log_trade(
+                    symbol=sym_a, side=side_a, qty=qty_a,
+                    price=price_a, order_id=order_id_a,
+                    signal_type="PAIR_TRADE", strategy="stat_arb_pair",
+                    reason=f"Pair {pair_tag} leg A: {reasoning}",
+                    ai_reasoning=reasoning,
+                    ai_confidence=int(proposal.get("confidence", 0) or 0),
+                    decision_price=price_a,
+                    db_path=db_path,
+                )
+                log_trade(
+                    symbol=sym_b, side=side_b, qty=qty_b,
+                    price=price_b, order_id=order_id_b,
+                    signal_type="PAIR_TRADE", strategy="stat_arb_pair",
+                    reason=f"Pair {pair_tag} leg B: {reasoning}",
+                    ai_reasoning=reasoning,
+                    ai_confidence=int(proposal.get("confidence", 0) or 0),
+                    decision_price=price_b,
+                    db_path=db_path,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Pair %s submitted (%s, %s) but log_trade failed: %s",
+                    pair.label, order_id_a, order_id_b, exc,
+                )
+
+        result.update({
+            "action": "PAIR_OPEN",
+            "qty_a": qty_a, "qty_b": qty_b,
+            "order_id_a": order_id_a, "order_id_b": order_id_b,
+            "pair": pair.label,
+            "reason": (f"Opened {pair.label}: {pair_action} "
+                       f"({qty_a}@${price_a:.2f}, {qty_b}@${price_b:.2f})"),
+        })
+        return result
+
+    # EXIT path — close whatever we hold on both legs
+    try:
+        from client import get_positions
+        positions = get_positions(ctx=ctx) or []
+    except Exception as exc:
+        result["reason"] = f"Could not read positions: {exc}"
+        return result
+
+    pos_by_sym = {p.get("symbol", "").upper(): p for p in positions}
+    pos_a = pos_by_sym.get(sym_a)
+    pos_b = pos_by_sym.get(sym_b)
+
+    if not pos_a and not pos_b:
+        result["action"] = "SKIP"
+        result["reason"] = f"No legs of {pair.label} currently held"
+        return result
+
+    closed = []
+    for sym, pos in (("A", pos_a), ("B", pos_b)):
+        actual_sym = sym_a if sym == "A" else sym_b
+        if not pos:
+            continue
+        qty = abs(int(float(pos.get("qty") or 0)))
+        if qty == 0:
+            continue
+        # Closing side is opposite of position side
+        is_short = float(pos.get("qty") or 0) < 0
+        close_side = "buy" if is_short else "sell"
+        try:
+            order = api.submit_order(
+                symbol=actual_sym, qty=qty, side=close_side,
+                type="market", time_in_force="day",
+            )
+            closed.append({
+                "leg": sym, "symbol": actual_sym,
+                "qty": qty, "order_id": getattr(order, "id", None),
+            })
+        except Exception as exc:
+            logger.warning("EXIT leg %s (%s) failed: %s",
+                            sym, actual_sym, exc)
+            closed.append({
+                "leg": sym, "symbol": actual_sym,
+                "error": str(exc),
+            })
+
+    result.update({
+        "action": "PAIR_CLOSE",
+        "pair": pair.label,
+        "closed": closed,
+        "reason": f"Closed {pair.label}: {len(closed)} legs",
+    })
+    return result

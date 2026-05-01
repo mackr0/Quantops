@@ -1198,6 +1198,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         # opportunities; these are statistically-cointegrated pairs
         # with measured mean-reversion. Both can run; they catch
         # different setups.
+        pair_book_rendered = False
         try:
             db_path_for_book = getattr(ctx, "db_path", None) if ctx else None
             if db_path_for_book:
@@ -1229,6 +1230,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                 )
                 if book_block:
                     sections.append(book_block)
+                    pair_book_rendered = True
         except Exception:
             pass
 
@@ -1247,6 +1249,12 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     options_action_enabled = bool(options_strategy_block.strip())
     if options_action_enabled:
         actions += " | OPTIONS"
+    # Item 1b — PAIR_TRADE action only offered when the stat-arb pair
+    # book had at least one rendered line above. Without that block,
+    # the AI has no reference for what to propose.
+    pair_action_enabled = bool(locals().get("pair_book_rendered", False))
+    if pair_action_enabled:
+        actions += " | PAIR_TRADE"
 
     # --- Assemble prompt ---
     long_short_note = ""
@@ -1278,6 +1286,25 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             '"reasoning": "1-2 sentences"}'
         )
 
+    pair_note = ""
+    pair_example = ""
+    if pair_action_enabled:
+        pair_note = (
+            "\n- PAIR_TRADE: only propose when a STAT-ARB PAIR BOOK line "
+            "above lists the pair as Actionable. Required fields: "
+            "symbol_a, symbol_b (must match the book entry), "
+            "pair_action (ENTER_LONG_A_SHORT_B|ENTER_SHORT_A_LONG_B|EXIT), "
+            "dollars_per_leg (number, capped at 5% equity per leg). "
+            "size_pct is NOT used for PAIR_TRADE.\n"
+        )
+        pair_example = (
+            ', {"symbol": "AAPL/MSFT", "action": "PAIR_TRADE", '
+            '"symbol_a": "AAPL", "symbol_b": "MSFT", '
+            '"pair_action": "ENTER_SHORT_A_LONG_B", '
+            '"dollars_per_leg": 5000, "confidence": 70, '
+            '"reasoning": "z=+2.5; spread reverts toward 0"}'
+        )
+
     prompt = (
         f"You are a portfolio manager for an automated {market_type} trading system. "
         f"You see a batch of candidates our technical screener flagged. "
@@ -1295,13 +1322,15 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"- If drawdown is elevated ({dd_action}), be conservative\n"
         f"- If at max positions, only recommend exits"
         f"{long_short_note}"
-        f"{options_note}\n\n"
+        f"{options_note}"
+        f"{pair_note}\n\n"
         f"Respond ONLY with valid JSON (no markdown, no commentary):\n"
         f'{{"trades": [{{"symbol": "TICKER", "action": "BUY", '
         f'"size_pct": 7.5, "confidence": 75, '
         f'"stop_loss_pct": 3.0, "take_profit_pct": 10.0, '
         f'"reasoning": "1-2 sentences"}}'
-        f'{options_example}], '
+        f'{options_example}'
+        f'{pair_example}], '
         f'"portfolio_reasoning": "Why this combination or why pass", '
         f'"pass_this_cycle": false}}'
     )
@@ -1404,12 +1433,63 @@ def _validate_ai_trades(result, candidates_data, ctx=None,
     for t in trades[:3]:  # Max 3
         if not isinstance(t, dict):
             continue
+
+        action = t.get("action", "").upper()
+
+        # PAIR_TRADE proposals are validated before the candidate-symbol
+        # check because their "symbol" is a pair label and the legs are
+        # in symbol_a / symbol_b. The pair must be in this profile's
+        # active stat-arb book; otherwise the AI is inventing pairs we
+        # haven't validated.
+        if action == "PAIR_TRADE":
+            sym_a = (t.get("symbol_a") or "").upper()
+            sym_b = (t.get("symbol_b") or "").upper()
+            pair_action = (t.get("pair_action") or "").upper()
+            if not sym_a or not sym_b:
+                logger.warning(
+                    "PAIR_TRADE missing symbol_a/symbol_b — skipped"
+                )
+                continue
+            if pair_action not in ("ENTER_LONG_A_SHORT_B",
+                                       "ENTER_SHORT_A_LONG_B", "EXIT"):
+                logger.warning(
+                    "PAIR_TRADE unsupported pair_action=%r — skipped",
+                    pair_action,
+                )
+                continue
+            db_path = getattr(ctx, "db_path", None) if ctx else None
+            if not db_path:
+                logger.warning("PAIR_TRADE: no ctx.db_path — skipped")
+                continue
+            # Pair must exist in active book
+            try:
+                from stat_arb_pair_book import _lookup_active_pair
+                pair = _lookup_active_pair(db_path, sym_a, sym_b)
+            except Exception:
+                pair = None
+            if pair is None:
+                logger.warning(
+                    "PAIR_TRADE %s/%s not in active pair book — skipped",
+                    sym_a, sym_b,
+                )
+                continue
+
+            validated.append({
+                "symbol": pair.label,  # for logging visibility
+                "action": "PAIR_TRADE",
+                "pair_action": pair_action,
+                "symbol_a": sym_a, "symbol_b": sym_b,
+                "dollars_per_leg": float(t.get("dollars_per_leg") or 0),
+                "confidence": int(t.get("confidence", 50)),
+                "reasoning": t.get("reasoning", ""),
+            })
+            continue
+
         sym = t.get("symbol", "")
         if sym not in valid_symbols:
             logger.warning("AI suggested symbol %s not in candidates — skipped", sym)
             continue
 
-        action = t.get("action", "").upper()
         if action == "SHORT" and not enable_shorts:
             logger.warning("AI suggested SHORT on %s but shorts disabled — skipped", sym)
             continue

@@ -665,3 +665,281 @@ class TestScanAndPersistPairs:
                                 price_history=lambda s: prices.get(s))
         active = get_active_pairs(tmp_db)
         assert len(active) == 1  # not 2
+
+
+# ---------------------------------------------------------------------------
+# execute_pair_trade — two-leg dollar-neutral execution
+# ---------------------------------------------------------------------------
+
+import pandas as pd  # noqa: E402
+from unittest.mock import MagicMock, patch  # noqa: E402
+
+
+class TestExecutePairTrade:
+    def _ctx(self, db_path):
+        ctx = MagicMock()
+        ctx.db_path = db_path
+        return ctx
+
+    def _seed_active_pair(self, tmp_db, hedge_ratio=1.0):
+        from stat_arb_pair_book import Pair, upsert_pair
+        upsert_pair(tmp_db, Pair(
+            symbol_a="A", symbol_b="B",
+            hedge_ratio=hedge_ratio, p_value=0.01,
+            half_life_days=5.0, correlation=0.92,
+        ))
+
+    def _bars_df(self, last_close):
+        return pd.DataFrame({
+            "open": [last_close] * 5, "high": [last_close] * 5,
+            "low": [last_close] * 5, "close": [last_close] * 5,
+            "volume": [1000] * 5,
+        })
+
+    def test_pair_not_in_book_returns_skip(self, tmp_db):
+        from stat_arb_pair_book import execute_pair_trade
+        api = MagicMock()
+        result = execute_pair_trade(api, {
+            "pair_action": "ENTER_LONG_A_SHORT_B",
+            "symbol_a": "X", "symbol_b": "Y",
+            "dollars_per_leg": 1000,
+        }, ctx=self._ctx(tmp_db))
+        assert result["action"] == "SKIP"
+        assert "not in active pair book" in result["reason"]
+        api.submit_order.assert_not_called()
+
+    def test_unsupported_pair_action_returns_skip(self, tmp_db):
+        from stat_arb_pair_book import execute_pair_trade
+        self._seed_active_pair(tmp_db)
+        api = MagicMock()
+        result = execute_pair_trade(api, {
+            "pair_action": "ROLL_FORWARD",  # not supported
+            "symbol_a": "A", "symbol_b": "B",
+            "dollars_per_leg": 1000,
+        }, ctx=self._ctx(tmp_db))
+        assert result["action"] == "SKIP"
+        api.submit_order.assert_not_called()
+
+    def test_zero_dollars_per_leg_returns_skip(self, tmp_db):
+        from stat_arb_pair_book import execute_pair_trade
+        self._seed_active_pair(tmp_db)
+        api = MagicMock()
+        result = execute_pair_trade(api, {
+            "pair_action": "ENTER_LONG_A_SHORT_B",
+            "symbol_a": "A", "symbol_b": "B",
+            "dollars_per_leg": 0,
+        }, ctx=self._ctx(tmp_db))
+        assert result["action"] == "SKIP"
+
+    def test_successful_enter_submits_both_legs(self, tmp_db):
+        from stat_arb_pair_book import execute_pair_trade
+        self._seed_active_pair(tmp_db)
+        api = MagicMock()
+        # Two distinct order ids returned
+        api.submit_order.side_effect = [
+            MagicMock(id="ord-a"), MagicMock(id="ord-b"),
+        ]
+        with patch("market_data.get_bars",
+                   side_effect=[self._bars_df(100.0), self._bars_df(50.0)]), \
+             patch("client.get_account_info",
+                   return_value={"equity": 100000}):
+            result = execute_pair_trade(api, {
+                "pair_action": "ENTER_LONG_A_SHORT_B",
+                "symbol_a": "A", "symbol_b": "B",
+                "dollars_per_leg": 1000,
+                "confidence": 70, "reasoning": "test",
+            }, ctx=self._ctx(tmp_db), log=False)
+        assert result["action"] == "PAIR_OPEN"
+        assert result["order_id_a"] == "ord-a"
+        assert result["order_id_b"] == "ord-b"
+        # 1000/100 = 10 shares of A; 1000/50 = 20 shares of B
+        assert result["qty_a"] == 10
+        assert result["qty_b"] == 20
+        # Two submit_order calls, A then B
+        assert api.submit_order.call_count == 2
+        kw_a = api.submit_order.call_args_list[0].kwargs
+        kw_b = api.submit_order.call_args_list[1].kwargs
+        assert kw_a["symbol"] == "A" and kw_a["side"] == "buy"
+        assert kw_b["symbol"] == "B" and kw_b["side"] == "sell"
+
+    def test_short_a_long_b_swaps_sides(self, tmp_db):
+        from stat_arb_pair_book import execute_pair_trade
+        self._seed_active_pair(tmp_db)
+        api = MagicMock()
+        api.submit_order.side_effect = [
+            MagicMock(id="ord-a"), MagicMock(id="ord-b"),
+        ]
+        with patch("market_data.get_bars",
+                   side_effect=[self._bars_df(100.0), self._bars_df(50.0)]), \
+             patch("client.get_account_info",
+                   return_value={"equity": 100000}):
+            result = execute_pair_trade(api, {
+                "pair_action": "ENTER_SHORT_A_LONG_B",
+                "symbol_a": "A", "symbol_b": "B",
+                "dollars_per_leg": 1000,
+            }, ctx=self._ctx(tmp_db), log=False)
+        assert result["action"] == "PAIR_OPEN"
+        kw_a = api.submit_order.call_args_list[0].kwargs
+        kw_b = api.submit_order.call_args_list[1].kwargs
+        assert kw_a["side"] == "sell"
+        assert kw_b["side"] == "buy"
+
+    def test_caps_at_5pct_equity_per_leg(self, tmp_db):
+        from stat_arb_pair_book import execute_pair_trade
+        self._seed_active_pair(tmp_db)
+        api = MagicMock()
+        api.submit_order.side_effect = [
+            MagicMock(id="ord-a"), MagicMock(id="ord-b"),
+        ]
+        # equity=10k → 5% cap per leg = $500. AI requests $5000.
+        with patch("market_data.get_bars",
+                   side_effect=[self._bars_df(100.0), self._bars_df(100.0)]), \
+             patch("client.get_account_info",
+                   return_value={"equity": 10000}):
+            result = execute_pair_trade(api, {
+                "pair_action": "ENTER_LONG_A_SHORT_B",
+                "symbol_a": "A", "symbol_b": "B",
+                "dollars_per_leg": 5000,  # over cap
+            }, ctx=self._ctx(tmp_db), log=False)
+        assert result["action"] == "PAIR_OPEN"
+        # $500 / $100 = 5 shares per leg (capped)
+        assert result["qty_a"] == 5
+        assert result["qty_b"] == 5
+
+    def test_leg_b_failure_after_leg_a_returns_error(self, tmp_db):
+        """If leg B fails after A submitted, we get ERROR with order_id_a
+        so the operator can manually flatten."""
+        from stat_arb_pair_book import execute_pair_trade
+        self._seed_active_pair(tmp_db)
+        api = MagicMock()
+        api.submit_order.side_effect = [
+            MagicMock(id="ord-a"),
+            Exception("alpaca rejected leg B"),
+        ]
+        with patch("market_data.get_bars",
+                   side_effect=[self._bars_df(100.0), self._bars_df(50.0)]), \
+             patch("client.get_account_info",
+                   return_value={"equity": 100000}):
+            result = execute_pair_trade(api, {
+                "pair_action": "ENTER_LONG_A_SHORT_B",
+                "symbol_a": "A", "symbol_b": "B",
+                "dollars_per_leg": 1000,
+            }, ctx=self._ctx(tmp_db), log=False)
+        assert result["action"] == "ERROR"
+        assert result["order_id_a"] == "ord-a"
+        assert "leg B" in result["reason"]
+
+    def test_exit_closes_held_legs(self, tmp_db):
+        """EXIT submits closing orders for any held leg of the pair."""
+        from stat_arb_pair_book import execute_pair_trade
+        self._seed_active_pair(tmp_db)
+        api = MagicMock()
+        # One open order per leg succeeds
+        api.submit_order.side_effect = [
+            MagicMock(id="close-a"), MagicMock(id="close-b"),
+        ]
+        # Mock positions: long A 10 shares, short B 20 shares
+        positions = [
+            {"symbol": "A", "qty": "10"},
+            {"symbol": "B", "qty": "-20"},
+        ]
+        with patch("client.get_positions", return_value=positions):
+            result = execute_pair_trade(api, {
+                "pair_action": "EXIT",
+                "symbol_a": "A", "symbol_b": "B",
+            }, ctx=self._ctx(tmp_db), log=False)
+        assert result["action"] == "PAIR_CLOSE"
+        assert len(result["closed"]) == 2
+        # Both legs closed with opposite side
+        kw_a = api.submit_order.call_args_list[0].kwargs
+        kw_b = api.submit_order.call_args_list[1].kwargs
+        assert kw_a["symbol"] == "A" and kw_a["side"] == "sell"  # was long
+        assert kw_b["symbol"] == "B" and kw_b["side"] == "buy"   # was short
+
+    def test_exit_with_no_positions_returns_skip(self, tmp_db):
+        from stat_arb_pair_book import execute_pair_trade
+        self._seed_active_pair(tmp_db)
+        api = MagicMock()
+        with patch("client.get_positions", return_value=[]):
+            result = execute_pair_trade(api, {
+                "pair_action": "EXIT",
+                "symbol_a": "A", "symbol_b": "B",
+            }, ctx=self._ctx(tmp_db), log=False)
+        assert result["action"] == "SKIP"
+        api.submit_order.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _validate_ai_trades — PAIR_TRADE pass-through
+# ---------------------------------------------------------------------------
+
+class TestValidatePairTradeAction:
+    def _ctx(self, db_path):
+        ctx = MagicMock()
+        ctx.db_path = db_path
+        ctx.max_position_pct = 0.10
+        ctx.short_max_position_pct = 0.05
+        ctx.enable_short_selling = False
+        ctx.target_short_pct = 0.0
+        ctx.target_book_beta = None
+        return ctx
+
+    def _seed(self, tmp_db):
+        from stat_arb_pair_book import Pair, upsert_pair
+        upsert_pair(tmp_db, Pair(
+            symbol_a="A", symbol_b="B",
+            hedge_ratio=1.0, p_value=0.01,
+            half_life_days=5.0, correlation=0.92,
+        ))
+
+    def test_pair_trade_passes_through_with_fields(self, tmp_db):
+        from ai_analyst import _validate_ai_trades
+        self._seed(tmp_db)
+        result = {"trades": [{
+            "action": "PAIR_TRADE",
+            "symbol": "A/B",
+            "symbol_a": "A", "symbol_b": "B",
+            "pair_action": "ENTER_SHORT_A_LONG_B",
+            "dollars_per_leg": 1000, "confidence": 70,
+            "reasoning": "z=+2.5",
+        }]}
+        validated = _validate_ai_trades(
+            result, candidates_data=[], ctx=self._ctx(tmp_db),
+        )
+        assert len(validated["trades"]) == 1
+        v = validated["trades"][0]
+        assert v["action"] == "PAIR_TRADE"
+        assert v["symbol_a"] == "A"
+        assert v["symbol_b"] == "B"
+        assert v["pair_action"] == "ENTER_SHORT_A_LONG_B"
+        assert v["dollars_per_leg"] == 1000.0
+
+    def test_pair_trade_unknown_pair_skipped(self, tmp_db):
+        """If the AI invents a pair we never validated, drop it."""
+        from ai_analyst import _validate_ai_trades
+        # No seeded pair → book is empty
+        result = {"trades": [{
+            "action": "PAIR_TRADE",
+            "symbol": "X/Y",
+            "symbol_a": "X", "symbol_b": "Y",
+            "pair_action": "ENTER_LONG_A_SHORT_B",
+            "dollars_per_leg": 1000,
+        }]}
+        validated = _validate_ai_trades(
+            result, candidates_data=[], ctx=self._ctx(tmp_db),
+        )
+        assert validated["trades"] == []
+
+    def test_pair_trade_missing_pair_action_skipped(self, tmp_db):
+        from ai_analyst import _validate_ai_trades
+        self._seed(tmp_db)
+        result = {"trades": [{
+            "action": "PAIR_TRADE",
+            "symbol_a": "A", "symbol_b": "B",
+            # missing pair_action
+            "dollars_per_leg": 1000,
+        }]}
+        validated = _validate_ai_trades(
+            result, candidates_data=[], ctx=self._ctx(tmp_db),
+        )
+        assert validated["trades"] == []

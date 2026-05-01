@@ -1691,8 +1691,8 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     for ai_trade in ai_trades:
         symbol = ai_trade["symbol"]
         action = ai_trade["action"]
-        # OPTIONS proposals don't carry size_pct (sizing is contract-based
-        # and validated in execute_option_strategy). Default safely.
+        # OPTIONS / PAIR_TRADE proposals don't carry size_pct (their
+        # sizing is contract-based / dollar-neutral). Default safely.
         size_pct = float(ai_trade.get("size_pct") or 0) / 100.0
 
         # Build a signal dict that execute_trade expects
@@ -1731,6 +1731,20 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                       f"@ ${ai_trade.get('strike', '?')}/{ai_trade.get('expiry', '?')})")
                 trade_result = execute_option_strategy(
                     api_for_opt, ai_trade, ctx=ctx, log=log,
+                )
+                trade_result.setdefault("symbol", symbol)
+            # Item 1b — route PAIR_TRADE through the stat-arb executor.
+            # Two-leg dollar-neutral execution; sizing + atomicity live
+            # in stat_arb_pair_book.execute_pair_trade.
+            elif action == "PAIR_TRADE":
+                from stat_arb_pair_book import execute_pair_trade
+                from client import get_api as _get_api
+                api_for_pair = _get_api(ctx)
+                print(f"  Executing: PAIR_TRADE {ai_trade.get('pair_action', '?')} "
+                      f"{ai_trade.get('symbol_a', '?')}/{ai_trade.get('symbol_b', '?')} "
+                      f"(${ai_trade.get('dollars_per_leg', 0):.0f}/leg)")
+                trade_result = execute_pair_trade(
+                    api_for_pair, ai_trade, ctx=ctx, log=log,
                 )
                 trade_result.setdefault("symbol", symbol)
             else:
