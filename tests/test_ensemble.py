@@ -63,7 +63,7 @@ class TestSpecialistMarketApplicability:
             f"crypto should only call pattern_recognizer; got {calls}"
         )
 
-    def test_equity_markets_run_all_four(self, sample_ctx, monkeypatch):
+    def test_equity_markets_run_all_specialists(self, sample_ctx, monkeypatch):
         """Equity profiles keep the full ensemble — the other specialists
         have genuine data (SEC, earnings, options)."""
         sample_ctx.segment = "midcap"
@@ -93,6 +93,7 @@ class TestSpecialistMarketApplicability:
         assert specs_called == {
             "earnings_analyst", "pattern_recognizer",
             "sentiment_narrative", "risk_assessor",
+            "adversarial_reviewer",
         }
 
 
@@ -128,9 +129,10 @@ class TestEarningsAnalystCostGate:
             f"gate failed — earnings_analyst should be skipped when no "
             f"candidate has earnings in window; got {specs_called}"
         )
-        # Other three specialists still run
+        # Other specialists still run
         assert specs_called == {
             "pattern_recognizer", "sentiment_narrative", "risk_assessor",
+            "adversarial_reviewer",
         }
 
     def test_runs_when_one_candidate_has_upcoming_earnings(self, sample_ctx,
@@ -298,7 +300,7 @@ class TestEarningsAnalystCostGate:
 
 
 class TestSpecialistRegistry:
-    def test_discover_all_four_specialists(self):
+    def test_discover_all_specialists(self):
         from specialists import discover_specialists
         names = {s.NAME for s in discover_specialists()}
         assert names == {
@@ -306,6 +308,7 @@ class TestSpecialistRegistry:
             "pattern_recognizer",
             "sentiment_narrative",
             "risk_assessor",
+            "adversarial_reviewer",
         }
 
     def test_every_specialist_exposes_required_interface(self):
@@ -561,8 +564,8 @@ class TestCostCharacteristics:
 
         from ensemble import run_ensemble, CHUNK_SIZE
         # Pass 50 candidates — ensemble caps at max_candidates=15, then
-        # chunks into groups of CHUNK_SIZE (= 5) → 3 chunks per specialist.
-        # 4 specialists × 3 chunks = 12 calls.
+        # chunks into groups of CHUNK_SIZE → N chunks per specialist.
+        # 5 specialists × N chunks = total calls.
         candidates = [_candidate(f"T{i}") for i in range(50)]
         result = run_ensemble(
             candidates, sample_ctx,
@@ -570,13 +573,13 @@ class TestCostCharacteristics:
             ai_model="claude-haiku-4-5-20251001",
             ai_api_key="k",
         )
-        expected = 4 * ((15 + CHUNK_SIZE - 1) // CHUNK_SIZE)
+        expected = 5 * ((15 + CHUNK_SIZE - 1) // CHUNK_SIZE)
         assert result["cost_calls"] == expected
         assert calls["n"] == expected
 
     def test_single_chunk_when_few_candidates(self, sample_ctx, monkeypatch):
-        """3 candidates fit in one chunk — cost should be 4 calls (one
-        per specialist), not 12."""
+        """3 candidates fit in one chunk — cost should be 5 calls (one
+        per specialist), not 15."""
         calls = {"n": 0}
         def fake_structured(prompt, schema, tool_name="emit", **kwargs):
             calls["n"] += 1
@@ -596,7 +599,7 @@ class TestCostCharacteristics:
             ai_model="claude-haiku-4-5-20251001",
             ai_api_key="k",
         )
-        assert result["cost_calls"] == 4
+        assert result["cost_calls"] == 5
 
     def test_empty_candidates_no_calls(self, sample_ctx, monkeypatch):
         calls = {"n": 0}
