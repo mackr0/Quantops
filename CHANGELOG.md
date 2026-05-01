@@ -17,6 +17,31 @@ Rules going forward:
 
 ---
 
+## 2026-04-30 — Item 1b: pair book lifecycle + AI surfacing (Severity: high, capability)
+
+**What this adds.** Layers 2-4 of Item 1b stacked in one session, building on the math foundation (9d6755f). The pair book now lives, refreshes itself, and is visible to the AI.
+
+**Persistence (`97dbfb7`)**: new `stat_arb_pairs` table. `upsert_pair` / `get_active_pairs` / `retire_pair` with canonical-order enforcement (UNIQUE(symbol_a, symbol_b) where a < b alphabetically; hedge ratio inverted on swap). Reviving a retired pair flips status back to active.
+
+**Signal generator (`97dbfb7`)**: `pair_signal(pair, prices_a, prices_b, currently_open, ...)` returns `ENTER_LONG_A_SHORT_B` / `ENTER_SHORT_A_LONG_B` / `EXIT` / `REGIME_BREAK_EXIT` / `HOLD` based on z-score thresholds (entry ±2σ, exit ±0.5σ, regime-break ±3σ).
+
+**Daily retest task (`20598a0`)**: `retest_active_pairs` re-runs Engle-Granger on each active pair. Refreshes hedge_ratio / p_value / half_life when still cointegrated; retires when `p >= 0.10` (looser than the 0.05 entry threshold to avoid ejecting on borderline noise) or when half-life moves out of [1, 30] days. Wired as new "Stat-Arb Pair Retest" daily task in `multi_scheduler.py` right after Alpha Decay Monitor.
+
+**Universe scan (`804ded2`)**: `scan_and_persist_pairs(db, symbols, price_history)` — quadratic universe scan that discovers new pairs and persists them. Cost ~25s for 100 symbols → run weekly. Uses `find_cointegrated_pairs` from the foundation, then upserts.
+
+**AI prompt surfacing (`e82e714`)**: `render_pair_book_for_prompt(db, price_history, open_pair_legs)` emits a "STAT-ARB PAIR BOOK" section with current z-scores per active pair. Splits output into "Actionable now" (entry/exit signals) vs "Currently quiet" (informational, only when nothing actionable, to keep prompts tight). Wired into `ai_analyst._build_batch_prompt` after the existing P2.3 pair-opportunities block.
+
+**Tests.** 21 new across 4 commits in `test_stat_arb_pair_book.py`:
+- Persistence: upsert+retrieve, canonical-order swap, refresh existing row, retire (+ swapped + nonexistent), revive after retire.
+- Signal generator: 6 transitions covered (entry both directions, hold, exit at mean, hold-in-window while open, regime-break exit, insufficient history).
+- Retest: empty book, refreshed when still cointegrated (deterministic seed + γ=-0.30), retired when broken, missing data → error not retire.
+- Universe scan: planted pair discovered + persisted, empty universe → no rows, re-scan refreshes (no duplicates).
+- Render: actionable z-line, empty when book empty, "Currently quiet" labeled when no actionable signals.
+
+**Deferred to next session:** `PAIR_TRADE` action vocabulary in `_validate_ai_trades`, two-leg atomic execution with hedge-ratio'd dollar-neutral sizing. The AI can today see pair signals and propose individual long/short trades on each leg, but it lacks the explicit pair semantics.
+
+---
+
 ## 2026-04-30 — Item 1b foundation: stat-arb pair book (math + tests) (Severity: high, capability)
 
 **What this lays down.** First commit toward COMPETITIVE_GAP_PLAN Item 1b — a real cointegrated-pair book to replace the one-shot pair-trade primitive (P2.3). This lands the math foundation; wiring into the trade pipeline is multi-session.
