@@ -1191,6 +1191,47 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         except Exception:
             pass
 
+        # Item 1b of COMPETITIVE_GAP_PLAN.md — stat-arb pair book.
+        # Surfaces cointegrated pairs with current z-scores, so the AI
+        # can propose entries on |z|>=2 and exits on |z|<=0.5.
+        # Different from P2.3 above: those are sector-relative-strength
+        # opportunities; these are statistically-cointegrated pairs
+        # with measured mean-reversion. Both can run; they catch
+        # different setups.
+        try:
+            db_path_for_book = getattr(ctx, "db_path", None) if ctx else None
+            if db_path_for_book:
+                from stat_arb_pair_book import render_pair_book_for_prompt
+                # Build symbol → side lookup so we know which pairs we
+                # already hold. Read positions from portfolio_state
+                # (already populated by the caller).
+                positions_for_book = portfolio_state.get("positions") or []
+                open_pair_legs = {}
+                for p in positions_for_book:
+                    sym = p.get("symbol", "").upper()
+                    qty = float(p.get("qty") or 0)
+                    if sym and qty:
+                        open_pair_legs[sym] = "long" if qty > 0 else "short"
+
+                def _ph(symbol):
+                    try:
+                        from market_data import get_bars
+                        bars = get_bars(symbol, limit=200)
+                        if bars is None or len(bars) < 30:
+                            return None
+                        return bars["close"].tolist()
+                    except Exception:
+                        return None
+
+                book_block = render_pair_book_for_prompt(
+                    db_path_for_book, price_history=_ph,
+                    open_pair_legs=open_pair_legs,
+                )
+                if book_block:
+                    sections.append(book_block)
+        except Exception:
+            pass
+
         candidates_section = "\n\n".join(sections)
     else:
         candidates_section = ("CANDIDATES (ranked by technical score):\n"

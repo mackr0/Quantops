@@ -641,3 +641,98 @@ def scan_and_persist_pairs(db_path: str,
             logger.warning("upsert_pair failed for %s: %s",
                            pair.label, exc)
     return summary
+
+
+# ---------------------------------------------------------------------------
+# AI prompt rendering — surface the active pair book to the batch prompt
+# ---------------------------------------------------------------------------
+
+def render_pair_book_for_prompt(
+    db_path: str,
+    price_history: Callable[[str], Optional[Sequence[float]]],
+    open_pair_legs: Optional[Dict[str, str]] = None,
+    max_lines: int = 10,
+) -> str:
+    """Render the active stat-arb pair book as a prompt section.
+
+    For each active pair, computes the current z-score and emits one
+    line summarizing the actionable state. Surfaces only pairs where
+    |z| >= ZSCORE_ENTRY (entry signal) OR currently_open (so the AI
+    can see when to exit), plus a trailing few quietest pairs for
+    context.
+
+    Args:
+        db_path: profile journal DB.
+        price_history: callable(symbol) → close-price series.
+        open_pair_legs: optional map of {symbol: "long"|"short"} so we
+            can flag pairs we're already in. The caller (ai_analyst)
+            builds this from the current positions list.
+        max_lines: cap on actionable lines rendered.
+
+    Returns prompt section (multi-line string), or "" when the book is
+    empty / no actionable signals are visible.
+    """
+    open_pair_legs = open_pair_legs or {}
+    try:
+        active = get_active_pairs(db_path)
+    except Exception:
+        return ""
+    if not active:
+        return ""
+
+    actionable_lines: List[str] = []
+    informational_lines: List[str] = []
+
+    for pair in active:
+        try:
+            ph_a = price_history(pair.symbol_a)
+            ph_b = price_history(pair.symbol_b)
+        except Exception:
+            continue
+        if ph_a is None or ph_b is None:
+            continue
+
+        # Detect "currently in this pair" — both legs held in opposite
+        # directions count as an open pair trade.
+        side_a = open_pair_legs.get(pair.symbol_a)
+        side_b = open_pair_legs.get(pair.symbol_b)
+        currently_open = (
+            (side_a == "long" and side_b == "short")
+            or (side_a == "short" and side_b == "long")
+        )
+
+        sig = pair_signal(pair, ph_a, ph_b,
+                            currently_open=currently_open)
+        if sig["z_score"] is None:
+            continue
+
+        line = (
+            f"  - {pair.label}  z={sig['z_score']:+.2f}  "
+            f"hedge={pair.hedge_ratio:.3f}  "
+            f"hl={pair.half_life_days:.1f}d → "
+            f"{sig['action']}"
+        )
+        if sig["action"] in ("ENTER_SHORT_A_LONG_B",
+                                "ENTER_LONG_A_SHORT_B",
+                                "EXIT", "REGIME_BREAK_EXIT"):
+            actionable_lines.append(line)
+        else:
+            informational_lines.append(line)
+
+    if not actionable_lines and not informational_lines:
+        return ""
+
+    out = ["STAT-ARB PAIR BOOK (cointegrated pairs — z-score trading):"]
+    if actionable_lines:
+        out.append("Actionable now:")
+        out.extend(actionable_lines[:max_lines])
+    if informational_lines and not actionable_lines:
+        # Only show quiet pairs when there's nothing actionable —
+        # otherwise the prompt gets noisy.
+        out.append("Currently quiet (no entry signal):")
+        out.extend(informational_lines[:3])
+    out.append(
+        "  → Entry at |z|>=2 (mean-reversion bet); exit at |z|<=0.5 "
+        "or |z|>=3 (regime break)."
+    )
+    return "\n".join(out)

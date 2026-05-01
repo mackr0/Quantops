@@ -588,6 +588,66 @@ class TestScanAndPersistPairs:
         assert summary["persisted"] == 0
         assert get_active_pairs(tmp_db) == []
 
+    def test_renders_actionable_section_when_z_in_entry_range(self, tmp_db):
+        """When a book pair has |z|>=2, the prompt renders an
+        'Actionable now' line for it."""
+        from stat_arb_pair_book import (Pair, upsert_pair,
+                                          render_pair_book_for_prompt)
+        upsert_pair(tmp_db, Pair(
+            symbol_a="A", symbol_b="B",
+            hedge_ratio=1.0, p_value=0.01,
+            half_life_days=5.0, correlation=0.92,
+        ))
+        # Build prices so the spread (A − 1.0·B) ends at z = +2.5
+        rng = np.random.default_rng(seed=7)
+        spread_history = rng.normal(0, 1, size=60)
+        mean = float(np.mean(spread_history))
+        std = float(np.std(spread_history))
+        last = mean + 2.5 * std
+        spread = np.append(spread_history, [last])
+        B = np.linspace(100, 110, 61)
+        A = B + spread
+        prices = {"A": A.tolist(), "B": B.tolist()}
+        out = render_pair_book_for_prompt(
+            tmp_db, price_history=lambda s: prices.get(s),
+        )
+        assert "STAT-ARB PAIR BOOK" in out
+        assert "Actionable now" in out
+        assert "ENTER_SHORT_A_LONG_B" in out
+        assert "z=+2." in out
+
+    def test_renders_empty_when_book_empty(self, tmp_db):
+        from stat_arb_pair_book import render_pair_book_for_prompt
+        out = render_pair_book_for_prompt(
+            tmp_db, price_history=lambda s: None,
+        )
+        assert out == ""
+
+    def test_renders_informational_when_no_actionable(self, tmp_db):
+        """A book pair with z=0.3 (no signal) renders only when there
+        are no actionable pairs, and labeled 'Currently quiet'."""
+        from stat_arb_pair_book import (Pair, upsert_pair,
+                                          render_pair_book_for_prompt)
+        upsert_pair(tmp_db, Pair(
+            symbol_a="A", symbol_b="B",
+            hedge_ratio=1.0, p_value=0.01,
+            half_life_days=5.0, correlation=0.92,
+        ))
+        rng = np.random.default_rng(seed=11)
+        spread_history = rng.normal(0, 1, size=60)
+        mean = float(np.mean(spread_history))
+        std = float(np.std(spread_history))
+        last = mean + 0.3 * std  # quiet
+        spread = np.append(spread_history, [last])
+        B = np.linspace(100, 110, 61)
+        A = B + spread
+        prices = {"A": A.tolist(), "B": B.tolist()}
+        out = render_pair_book_for_prompt(
+            tmp_db, price_history=lambda s: prices.get(s),
+        )
+        assert "Currently quiet" in out
+        assert "ENTER" not in out
+
     def test_re_scan_refreshes_existing_pair(self, tmp_db):
         """Running the scanner twice on the same data should NOT create
         duplicate rows — it should refresh the existing pair."""
