@@ -3006,6 +3006,50 @@ def ai_dashboard():
     except Exception:
         ensemble_info["veto_stats"] = None
 
+    # Phase A3 of OPTIONS_PROGRAM_PLAN.md — per-profile Greeks panel.
+    # Aggregates net delta/gamma/vega/theta across each profile's open
+    # positions (stock + options). Empty when a profile has no positions.
+    greeks_info = {"per_profile": []}
+    try:
+        from options_greeks_aggregator import compute_book_greeks
+        from client import get_positions, get_api
+        for p in profiles:
+            if selected_profile_int and p["id"] != selected_profile_int:
+                continue
+            try:
+                from models import build_user_context_from_profile
+                pctx = build_user_context_from_profile(p["id"])
+                positions = get_positions(ctx=pctx) or []
+                if not positions:
+                    continue
+                # Lightweight: pass position's own current_price as
+                # the "lookup" — no extra fetches.
+                price_by = {pp.get("symbol"): float(pp.get("current_price") or 0)
+                            for pp in positions}
+                summary = compute_book_greeks(
+                    positions,
+                    price_lookup=lambda s: price_by.get(s),
+                    iv_lookup=lambda s: None,  # falls back to FALLBACK_IV
+                )
+                if summary["n_options_legs"] == 0 and summary["n_stock_positions"] == 0:
+                    continue
+                greeks_info["per_profile"].append({
+                    "profile_id": p["id"], "name": p["name"],
+                    "summary": summary,
+                    "limits": {
+                        "max_net_options_delta_pct": getattr(
+                            pctx, "max_net_options_delta_pct", None),
+                        "max_theta_burn_dollars_per_day": getattr(
+                            pctx, "max_theta_burn_dollars_per_day", None),
+                        "max_short_vega_dollars": getattr(
+                            pctx, "max_short_vega_dollars", None),
+                    },
+                })
+            except Exception:
+                continue
+    except Exception:
+        pass
+
     # Item 1b — stat-arb pair book per profile. Surfaces the active
     # cointegrated pairs so the operator can see the universe scan
     # is working AND eyeball whether retest is auto-ejecting noisy
@@ -3158,6 +3202,7 @@ def ai_dashboard():
                            crisis_info=crisis_info, event_info=event_info,
                            ensemble_info=ensemble_info,
                            pair_book_info=pair_book_info,
+                           greeks_info=greeks_info,
                            ai_cost_info=ai_cost_info,
                            ai_win_rate_chart_svg=ai_win_rate_chart_svg,
                            long_short_awareness=long_short_awareness,

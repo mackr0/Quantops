@@ -979,6 +979,61 @@
         </article>
         {% endif %}
 
+        {# Phase A3 of OPTIONS_PROGRAM_PLAN — per-profile Greeks panel.
+           Highlights any leg within 80% of an active gate (amber) or
+           over the gate (red). Empty when no profile has positions. #}
+        {% if greeks_info and greeks_info.per_profile %}
+        <article style="margin:1rem 0; background:#f8f8f6; padding:0.75rem 1rem;">
+            <header style="padding:0;">
+                <h4 style="margin:0;">Book Greeks</h4>
+                <small class="muted">Net portfolio exposure across stock + options. Theta is $/day; Vega is $/vol-pt.</small>
+            </header>
+            <table style="width:100%; font-size:0.85rem; margin-top:0.5rem;">
+                <thead>
+                    <tr>
+                        <th style="text-align:left;">Profile</th>
+                        <th style="text-align:right;">Net Δ</th>
+                        <th style="text-align:right;">Γ</th>
+                        <th style="text-align:right;">Vega</th>
+                        <th style="text-align:right;">Theta/day</th>
+                        <th style="text-align:right;">Legs</th>
+                        <th style="text-align:left;">Notes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for prof in greeks_info.per_profile %}
+                    {% set s = prof.summary %}
+                    {% set lim = prof.limits %}
+                    <tr>
+                        <td>{{ prof.name }}</td>
+                        <td style="text-align:right;">{{ "%+.0f"|format(s.net_delta) }}</td>
+                        <td style="text-align:right;">{{ "%+.2f"|format(s.net_gamma) }}</td>
+                        <td style="text-align:right;">
+                            {% if lim.max_short_vega_dollars and s.net_vega < -lim.max_short_vega_dollars * 0.8 %}
+                            <strong style="color:{% if s.net_vega < -lim.max_short_vega_dollars %}#b00{% else %}#b87333{% endif %};">{{ "%+.0f"|format(s.net_vega) }}</strong>
+                            {% else %}
+                            {{ "%+.0f"|format(s.net_vega) }}
+                            {% endif %}
+                        </td>
+                        <td style="text-align:right;">
+                            {% if lim.max_theta_burn_dollars_per_day and s.net_theta < -lim.max_theta_burn_dollars_per_day * 0.8 %}
+                            <strong style="color:{% if s.net_theta < -lim.max_theta_burn_dollars_per_day %}#b00{% else %}#b87333{% endif %};">{{ "%+.0f"|format(s.net_theta) }}</strong>
+                            {% else %}
+                            {{ "%+.0f"|format(s.net_theta) }}
+                            {% endif %}
+                        </td>
+                        <td style="text-align:right;">{{ s.n_options_legs }}o + {{ s.n_stock_positions }}s</td>
+                        <td class="muted" style="font-size:0.75rem;">
+                            {% if s.fallback_iv_count > 0 %}{{ s.fallback_iv_count }} fallback IV · {% endif %}
+                            {% if s.expired_skipped > 0 %}{{ s.expired_skipped }} expired · {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </article>
+        {% endif %}
+
         {# Item 1b — stat-arb pair book per profile. Only renders for
            profiles where the universe scan has populated the book. #}
         {% if pair_book_info and pair_book_info.per_profile %}
