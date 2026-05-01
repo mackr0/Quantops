@@ -78,6 +78,27 @@ PROTECTIVE_PUT_MAX_IV_RANK = 50.0
 PROTECTIVE_PUT_STRIKE_PCT_BELOW = 5.0
 PROTECTIVE_PUT_TARGET_DAYS_TO_EXPIRY = 45
 
+# Phase B3 — multi-leg advisor. Strategy selection rules differ from
+# the single-leg advisor (which targets HELD positions); multi-leg
+# advisor targets CANDIDATES the screener has surfaced. Distinct
+# constants so they can be tuned independently.
+#
+# IV regime thresholds — same definition (above 60 = rich, below 50 =
+# cheap) as the single-leg advisor. The "neutral" 50-60 band falls
+# through with no recommendation (not enough edge in either direction).
+MULTILEG_IV_RICH_THRESHOLD = 60.0
+MULTILEG_IV_CHEAP_THRESHOLD = 50.0
+MULTILEG_VERTICAL_STRIKE_PCT_OTM = 5.0  # short leg sits this far OTM
+MULTILEG_VERTICAL_WIDTH_PCT = 5.0       # long leg this far past short
+MULTILEG_TARGET_DAYS_TO_EXPIRY = 35     # sweet spot: theta capture + liquid
+
+# Iron condor (range-bound) — short legs sit ±this OTM
+MULTILEG_CONDOR_INNER_PCT = 5.0
+MULTILEG_CONDOR_OUTER_PCT = 10.0  # wing legs further out
+
+# Long strangle (vol-expansion) — symmetric distance from spot
+MULTILEG_STRANGLE_OTM_PCT = 7.0
+
 
 def _next_friday(min_days: int) -> date:
     """Return the Friday at least `min_days` from today (most options
@@ -184,6 +205,244 @@ def evaluate_position_for_strategies(
             })
 
     return recs
+
+
+def evaluate_candidate_for_multileg(
+    candidate: Dict[str, Any],
+    iv_rank_pct: Optional[float] = None,
+    regime: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """For a screener candidate (NOT a held position), return list of
+    multi-leg strategy recommendations. AI takes it from there.
+
+    Args:
+        candidate: dict with at least symbol, signal (BUY/SELL/HOLD),
+            price (current/last close), and optionally a 'volatility_view'
+            ("expansion" / "contraction" / None) hint.
+        iv_rank_pct: 0-100 IV rank. None → most multi-leg strategies
+            skipped (we don't price-blind on premium).
+        regime: market regime hint. "ranging" pushes toward iron
+            condors; "trending" pushes toward verticals.
+
+    Strategy selection logic:
+      Bullish (signal in BUY/STRONG_BUY) + IV rich      → bull_put_spread (credit)
+      Bullish + IV cheap                                  → bull_call_spread (debit)
+      Bearish (signal in SELL/STRONG_SELL/SHORT) + IV rich → bear_call_spread (credit)
+      Bearish + IV cheap                                  → bear_put_spread (debit)
+      HOLD/neutral + IV rich + ranging regime             → iron_condor (credit)
+      HOLD/neutral + IV cheap + expansion expected        → long_strangle (debit)
+
+    Returns list of recs (may be empty). Each rec includes strategy
+    name, suggested strikes/expiry/qty, max_loss/max_gain estimates,
+    and a rationale string the AI sees.
+    """
+    recs: List[Dict[str, Any]] = []
+    symbol = candidate.get("symbol")
+    signal = (candidate.get("signal") or "").upper()
+    price = float(candidate.get("price") or 0)
+    if not symbol or price <= 0:
+        return recs
+    if iv_rank_pct is None:
+        # Don't recommend any IV-conditional strategy without IV data
+        return recs
+
+    is_iv_rich = iv_rank_pct >= MULTILEG_IV_RICH_THRESHOLD
+    is_iv_cheap = iv_rank_pct <= MULTILEG_IV_CHEAP_THRESHOLD
+    is_bullish = signal in ("BUY", "STRONG_BUY")
+    is_bearish = signal in ("SELL", "STRONG_SELL", "SHORT", "STRONG_SHORT")
+    expiry = _next_friday(MULTILEG_TARGET_DAYS_TO_EXPIRY)
+
+    # Bullish credit: bull put spread — sell premium below the money
+    if is_bullish and is_iv_rich:
+        short_strike = _round_strike(
+            price * (1 - MULTILEG_VERTICAL_STRIKE_PCT_OTM / 100))
+        long_strike = _round_strike(
+            short_strike - price * MULTILEG_VERTICAL_WIDTH_PCT / 100)
+        if long_strike < short_strike:  # avoid degenerate strikes
+            recs.append({
+                "strategy": "bull_put_spread",
+                "symbol": symbol,
+                "expiry": expiry.isoformat(),
+                "strikes": {"short": short_strike, "long": long_strike},
+                "rationale": (
+                    f"Bullish on {symbol} (signal={signal}); IV rank "
+                    f"{iv_rank_pct:.0f} → premium rich. Short ${short_strike:.2f}P / "
+                    f"long ${long_strike:.2f}P (5% OTM, $5-wide). "
+                    f"Defined-risk credit; profits if {symbol} stays "
+                    f"above ${short_strike:.2f}."
+                ),
+            })
+
+    # Bullish debit: bull call spread — buy upside on cheap IV
+    if is_bullish and is_iv_cheap:
+        long_strike = _round_strike(
+            price * (1 + MULTILEG_VERTICAL_STRIKE_PCT_OTM / 100))
+        short_strike = _round_strike(
+            long_strike + price * MULTILEG_VERTICAL_WIDTH_PCT / 100)
+        if short_strike > long_strike:
+            recs.append({
+                "strategy": "bull_call_spread",
+                "symbol": symbol,
+                "expiry": expiry.isoformat(),
+                "strikes": {"long": long_strike, "short": short_strike},
+                "rationale": (
+                    f"Bullish on {symbol} (signal={signal}); IV rank "
+                    f"{iv_rank_pct:.0f} → premium cheap. Long ${long_strike:.2f}C / "
+                    f"short ${short_strike:.2f}C (5% OTM, $5-wide). "
+                    f"Defined-risk debit; max gain if {symbol} runs to "
+                    f"${short_strike:.2f}+."
+                ),
+            })
+
+    # Bearish credit: bear call spread
+    if is_bearish and is_iv_rich:
+        short_strike = _round_strike(
+            price * (1 + MULTILEG_VERTICAL_STRIKE_PCT_OTM / 100))
+        long_strike = _round_strike(
+            short_strike + price * MULTILEG_VERTICAL_WIDTH_PCT / 100)
+        if long_strike > short_strike:
+            recs.append({
+                "strategy": "bear_call_spread",
+                "symbol": symbol,
+                "expiry": expiry.isoformat(),
+                "strikes": {"short": short_strike, "long": long_strike},
+                "rationale": (
+                    f"Bearish on {symbol} (signal={signal}); IV rank "
+                    f"{iv_rank_pct:.0f} → premium rich. Short ${short_strike:.2f}C / "
+                    f"long ${long_strike:.2f}C (5% OTM, $5-wide). "
+                    f"Defined-risk credit; profits if {symbol} stays "
+                    f"below ${short_strike:.2f}."
+                ),
+            })
+
+    # Bearish debit: bear put spread
+    if is_bearish and is_iv_cheap:
+        long_strike = _round_strike(
+            price * (1 - MULTILEG_VERTICAL_STRIKE_PCT_OTM / 100))
+        short_strike = _round_strike(
+            long_strike - price * MULTILEG_VERTICAL_WIDTH_PCT / 100)
+        if long_strike > short_strike:
+            recs.append({
+                "strategy": "bear_put_spread",
+                "symbol": symbol,
+                "expiry": expiry.isoformat(),
+                "strikes": {"long": long_strike, "short": short_strike},
+                "rationale": (
+                    f"Bearish on {symbol} (signal={signal}); IV rank "
+                    f"{iv_rank_pct:.0f} → premium cheap. Long ${long_strike:.2f}P / "
+                    f"short ${short_strike:.2f}P (5% OTM, $5-wide). "
+                    f"Defined-risk debit; max gain if {symbol} drops to "
+                    f"${short_strike:.2f} or lower."
+                ),
+            })
+
+    # Neutral credit: iron condor — only fires when explicitly ranging
+    if (signal in ("HOLD", "")
+            and is_iv_rich
+            and (regime or "").lower() in ("ranging", "neutral", "range_bound")):
+        put_short = _round_strike(
+            price * (1 - MULTILEG_CONDOR_INNER_PCT / 100))
+        put_long = _round_strike(
+            price * (1 - MULTILEG_CONDOR_OUTER_PCT / 100))
+        call_short = _round_strike(
+            price * (1 + MULTILEG_CONDOR_INNER_PCT / 100))
+        call_long = _round_strike(
+            price * (1 + MULTILEG_CONDOR_OUTER_PCT / 100))
+        if put_long < put_short < call_short < call_long:
+            recs.append({
+                "strategy": "iron_condor",
+                "symbol": symbol,
+                "expiry": expiry.isoformat(),
+                "strikes": {
+                    "put_long": put_long, "put_short": put_short,
+                    "call_short": call_short, "call_long": call_long,
+                },
+                "rationale": (
+                    f"Range-bound on {symbol}; IV rank {iv_rank_pct:.0f} "
+                    f"→ premium rich. Sell ${put_short:.2f}P/${call_short:.2f}C, "
+                    f"protect at ${put_long:.2f}P/${call_long:.2f}C. "
+                    f"Profits if {symbol} stays between ${put_short:.2f} "
+                    f"and ${call_short:.2f}."
+                ),
+            })
+
+    # Long-vol: long strangle when expansion expected and IV cheap
+    if (signal in ("HOLD", "")
+            and is_iv_cheap
+            and candidate.get("volatility_view") == "expansion"):
+        put_strike = _round_strike(
+            price * (1 - MULTILEG_STRANGLE_OTM_PCT / 100))
+        call_strike = _round_strike(
+            price * (1 + MULTILEG_STRANGLE_OTM_PCT / 100))
+        if put_strike < call_strike:
+            recs.append({
+                "strategy": "long_strangle",
+                "symbol": symbol,
+                "expiry": expiry.isoformat(),
+                "strikes": {"put": put_strike, "call": call_strike},
+                "rationale": (
+                    f"Vol expansion expected on {symbol}; IV rank "
+                    f"{iv_rank_pct:.0f} → premium cheap. Long "
+                    f"${put_strike:.2f}P / ${call_strike:.2f}C. "
+                    f"Profits on a big move in either direction."
+                ),
+            })
+
+    return recs
+
+
+def render_multileg_recs_for_prompt(
+    candidates: List[Dict[str, Any]],
+    iv_rank_lookup=None,
+    regime: Optional[str] = None,
+) -> str:
+    """Build the MULTI-LEG STRATEGIES prompt block.
+
+    iv_rank_lookup: callable(symbol) → IV rank 0-100 or None.
+    regime: market regime ("ranging", "trending", etc.) — gates
+        iron_condor recommendations.
+
+    Output looks like:
+      MULTI-LEG STRATEGIES (defined-risk options the AI may propose
+      via PAIR_TRADE-style action — the AI decides whether to take
+      any of these or stick with simple long/short):
+        - AAPL: bull_put_spread expiring 2026-05-30 (sell $145P / buy $140P)
+              — Rationale: ...
+        - ...
+
+    Returns empty string when there are no actionable recs.
+    """
+    if not candidates:
+        return ""
+    all_recs: List[Dict[str, Any]] = []
+    for c in candidates:
+        sym = c.get("symbol")
+        iv_rank = None
+        if iv_rank_lookup is not None and sym:
+            try:
+                iv_rank = iv_rank_lookup(sym)
+            except Exception:
+                iv_rank = None
+        recs = evaluate_candidate_for_multileg(
+            c, iv_rank_pct=iv_rank, regime=regime,
+        )
+        all_recs.extend(recs)
+
+    if not all_recs:
+        return ""
+
+    lines = [
+        "MULTI-LEG OPTIONS STRATEGIES (defined-risk; AI may propose "
+        "via MULTILEG_OPEN action):"
+    ]
+    for r in all_recs[:8]:  # cap so prompt doesn't bloat
+        lines.append(
+            f"  - {r['symbol']} {r['strategy']} ({r['expiry']})"
+        )
+        lines.append(f"      Rationale: {r['rationale']}")
+    if len(all_recs) > 8:
+        lines.append(f"  ... and {len(all_recs) - 8} more")
+    return "\n".join(lines)
 
 
 def render_for_prompt(

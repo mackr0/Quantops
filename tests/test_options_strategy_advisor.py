@@ -186,3 +186,141 @@ class TestRender:
         block = render_for_prompt(positions, iv_rank_lookup=broken_lookup)
         # Empty block is the correct response — we don't fake IV data
         assert block == ""
+
+
+# ---------------------------------------------------------------------------
+# Phase B3 — multi-leg advisor (per-candidate)
+# ---------------------------------------------------------------------------
+
+def _candidate(symbol="AAPL", signal="BUY", price=150.0, **extras):
+    return {"symbol": symbol, "signal": signal, "price": price, **extras}
+
+
+class TestEvaluateCandidateForMultileg:
+    def test_bullish_with_rich_iv_recommends_bull_put_spread(self):
+        from options_strategy_advisor import evaluate_candidate_for_multileg
+        recs = evaluate_candidate_for_multileg(
+            _candidate(signal="BUY"), iv_rank_pct=80,
+        )
+        names = [r["strategy"] for r in recs]
+        assert "bull_put_spread" in names
+        rec = next(r for r in recs if r["strategy"] == "bull_put_spread")
+        # Strikes: short ~5% OTM = ~142.5, long ~5% below short = ~135
+        assert rec["strikes"]["short"] < 150
+        assert rec["strikes"]["long"] < rec["strikes"]["short"]
+
+    def test_bullish_with_cheap_iv_recommends_bull_call_spread(self):
+        from options_strategy_advisor import evaluate_candidate_for_multileg
+        recs = evaluate_candidate_for_multileg(
+            _candidate(signal="BUY"), iv_rank_pct=30,
+        )
+        names = [r["strategy"] for r in recs]
+        assert "bull_call_spread" in names
+        rec = next(r for r in recs if r["strategy"] == "bull_call_spread")
+        # Long lower strike, short upper strike, both above current
+        assert rec["strikes"]["long"] > 150
+        assert rec["strikes"]["short"] > rec["strikes"]["long"]
+
+    def test_bearish_with_rich_iv_recommends_bear_call_spread(self):
+        from options_strategy_advisor import evaluate_candidate_for_multileg
+        recs = evaluate_candidate_for_multileg(
+            _candidate(signal="SHORT"), iv_rank_pct=80,
+        )
+        names = [r["strategy"] for r in recs]
+        assert "bear_call_spread" in names
+
+    def test_bearish_with_cheap_iv_recommends_bear_put_spread(self):
+        from options_strategy_advisor import evaluate_candidate_for_multileg
+        recs = evaluate_candidate_for_multileg(
+            _candidate(signal="SHORT"), iv_rank_pct=30,
+        )
+        names = [r["strategy"] for r in recs]
+        assert "bear_put_spread" in names
+
+    def test_neutral_iv_no_recs(self):
+        """IV in the 50-60 neutral band → no recs (no edge either way)."""
+        from options_strategy_advisor import evaluate_candidate_for_multileg
+        recs = evaluate_candidate_for_multileg(
+            _candidate(signal="BUY"), iv_rank_pct=55,
+        )
+        assert recs == []
+
+    def test_iv_unknown_no_recs(self):
+        """No IV data → don't recommend (we don't price-blind on premium)."""
+        from options_strategy_advisor import evaluate_candidate_for_multileg
+        recs = evaluate_candidate_for_multileg(
+            _candidate(signal="BUY"), iv_rank_pct=None,
+        )
+        assert recs == []
+
+    def test_ranging_regime_rich_iv_recommends_iron_condor(self):
+        from options_strategy_advisor import evaluate_candidate_for_multileg
+        recs = evaluate_candidate_for_multileg(
+            _candidate(signal="HOLD"), iv_rank_pct=80, regime="ranging",
+        )
+        names = [r["strategy"] for r in recs]
+        assert "iron_condor" in names
+        rec = next(r for r in recs if r["strategy"] == "iron_condor")
+        # 4 strikes, ordered low→high
+        s = rec["strikes"]
+        assert s["put_long"] < s["put_short"] < s["call_short"] < s["call_long"]
+
+    def test_trending_regime_no_iron_condor(self):
+        """Iron condor only fires when regime is explicitly ranging."""
+        from options_strategy_advisor import evaluate_candidate_for_multileg
+        recs = evaluate_candidate_for_multileg(
+            _candidate(signal="HOLD"), iv_rank_pct=80, regime="trending",
+        )
+        assert "iron_condor" not in [r["strategy"] for r in recs]
+
+    def test_long_strangle_when_expansion_expected_and_iv_cheap(self):
+        from options_strategy_advisor import evaluate_candidate_for_multileg
+        recs = evaluate_candidate_for_multileg(
+            _candidate(signal="HOLD", volatility_view="expansion"),
+            iv_rank_pct=30,
+        )
+        names = [r["strategy"] for r in recs]
+        assert "long_strangle" in names
+
+    def test_no_recs_for_unknown_symbol_or_zero_price(self):
+        from options_strategy_advisor import evaluate_candidate_for_multileg
+        # Missing symbol
+        assert evaluate_candidate_for_multileg(
+            {"signal": "BUY", "price": 150}, iv_rank_pct=80,
+        ) == []
+        # Zero price
+        assert evaluate_candidate_for_multileg(
+            _candidate(price=0), iv_rank_pct=80,
+        ) == []
+
+
+class TestRenderMultilegRecs:
+    def test_empty_candidates_returns_empty(self):
+        from options_strategy_advisor import render_multileg_recs_for_prompt
+        assert render_multileg_recs_for_prompt([]) == ""
+
+    def test_no_iv_returns_empty(self):
+        from options_strategy_advisor import render_multileg_recs_for_prompt
+        cands = [_candidate(signal="BUY")]
+        assert render_multileg_recs_for_prompt(
+            cands, iv_rank_lookup=lambda s: None,
+        ) == ""
+
+    def test_rendered_block_includes_strategy_and_rationale(self):
+        from options_strategy_advisor import render_multileg_recs_for_prompt
+        cands = [_candidate(signal="BUY")]
+        block = render_multileg_recs_for_prompt(
+            cands, iv_rank_lookup=lambda s: 70,
+        )
+        assert "MULTI-LEG OPTIONS STRATEGIES" in block
+        assert "bull_put_spread" in block
+        assert "Rationale" in block
+
+    def test_caps_at_8_recommendations(self):
+        from options_strategy_advisor import render_multileg_recs_for_prompt
+        # 12 candidates × bull_put_spread = 12 recs, capped at 8
+        cands = [_candidate(symbol=f"S{i}", signal="BUY") for i in range(12)]
+        block = render_multileg_recs_for_prompt(
+            cands, iv_rank_lookup=lambda s: 80,
+        )
+        assert "and 4 more" in block
