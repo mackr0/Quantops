@@ -2124,6 +2124,12 @@ def main_loop(active_segments=None, legacy_mode=False):
         ],
     )
 
+    # yfinance logs HTTP 404s at ERROR for symbols missing fundamentals
+    # (most ETFs: JEPI / QLD / IJH / etc). These aren't actionable —
+    # we already fall back gracefully when fundamentals are missing.
+    # Suppress to keep journalctl signal-to-noise sane.
+    logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+
     logging.info("=" * 60)
     logging.info("QuantOpsAI MULTI-ACCOUNT scheduler starting")
     if legacy_mode:
