@@ -135,7 +135,7 @@ class TestAuthenticatedRoutes:
         # Set NULLs on the user's first profile in the slider fields
         # this regression covers
         conn.execute(
-            """UPDATE profiles
+            """UPDATE trading_profiles
                SET short_stop_loss_pct=NULL, short_take_profit_pct=NULL,
                    short_max_position_pct=NULL, short_max_hold_days=NULL,
                    target_short_pct=NULL,
