@@ -1691,7 +1691,9 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     for ai_trade in ai_trades:
         symbol = ai_trade["symbol"]
         action = ai_trade["action"]
-        size_pct = ai_trade["size_pct"] / 100.0  # Convert 7.5 -> 0.075
+        # OPTIONS proposals don't carry size_pct (sizing is contract-based
+        # and validated in execute_option_strategy). Default safely.
+        size_pct = float(ai_trade.get("size_pct") or 0) / 100.0
 
         # Build a signal dict that execute_trade expects
         # Find the original strategy signal for this symbol
