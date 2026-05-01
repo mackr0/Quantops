@@ -48,12 +48,33 @@ logger = logging.getLogger(__name__)
 
 # Tunable thresholds. Documented inline so a future reader sees the
 # rationale; tunable via ctx.* later when self-tuner is wired.
-COVERED_CALL_MIN_GAIN_PCT = 5.0
-COVERED_CALL_MIN_IV_RANK = 70.0
+#
+# COVERED CALL — sell premium against an existing winner. Two gates:
+#   gain  ≥ 15%  : the position is a real winner. Capping further upside
+#                  via the strike is acceptable because we've already
+#                  captured material P&L. (Lower gates risk capping a
+#                  momentum runner too early — typical pro programs use
+#                  +15-20% as the floor.)
+#   IVrank ≥ 60  : the option premium is "rich" relative to recent
+#                  history (above-median). Selling rich is the whole
+#                  thesis. 70 is "extreme" and rarely fires; 60 is the
+#                  industry-standard "above median, write now" threshold.
+COVERED_CALL_MIN_GAIN_PCT = 15.0
+COVERED_CALL_MIN_IV_RANK = 60.0
 COVERED_CALL_STRIKE_PCT_ABOVE = 7.0
 COVERED_CALL_TARGET_DAYS_TO_EXPIRY = 35
 
+# PROTECTIVE PUT — buy downside insurance on a winner. Three gates:
+#   gain ≥ 10%   : enough at risk to make insurance worthwhile.
+#   IVrank ≤ 50  : premium is "cheap" (below-median). Buying expensive
+#                  insurance defeats the purpose — if IV is rich, defer
+#                  and let it normalize. This gate was MISSING before
+#                  the 2026-05-01 calibration; recommendations could
+#                  fire at IV rank 95 (peak fear → puts overpriced).
+#   IVrank None  : when we can't read IV, skip the strategy. Don't
+#                  guess on insurance.
 PROTECTIVE_PUT_MIN_GAIN_PCT = 10.0
+PROTECTIVE_PUT_MAX_IV_RANK = 50.0
 PROTECTIVE_PUT_STRIKE_PCT_BELOW = 5.0
 PROTECTIVE_PUT_TARGET_DAYS_TO_EXPIRY = 45
 
@@ -132,8 +153,12 @@ def evaluate_position_for_strategies(
                 ),
             })
 
-    # PROTECTIVE PUT — substantial gain at risk, buy downside insurance
-    if gain_pct >= PROTECTIVE_PUT_MIN_GAIN_PCT:
+    # PROTECTIVE PUT — substantial gain at risk + cheap insurance.
+    # Need both: enough gain that the insurance is worth buying AND
+    # IV cheap enough that we're not overpaying. Skip when IV unknown.
+    if (gain_pct >= PROTECTIVE_PUT_MIN_GAIN_PCT
+            and iv_rank_pct is not None
+            and iv_rank_pct <= PROTECTIVE_PUT_MAX_IV_RANK):
         strike = _round_strike(
             current_price * (1 - PROTECTIVE_PUT_STRIKE_PCT_BELOW / 100)
         )
@@ -150,6 +175,7 @@ def evaluate_position_for_strategies(
                 "rationale": (
                     f"Long {int(qty)} shares of {symbol} at +{gain_pct:.1f}% "
                     f"gain — substantial unrealized P&L worth protecting. "
+                    f"IV rank {iv_rank_pct:.0f} — premium is cheap. "
                     f"Buying {contracts}× {expiry.isoformat()} ${strike:.2f} "
                     f"put caps downside at ~{PROTECTIVE_PUT_STRIKE_PCT_BELOW}% "
                     f"below current ({current_price:.2f}) for the cost of "
