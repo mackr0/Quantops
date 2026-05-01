@@ -461,6 +461,16 @@ class TestEnsembleAggregation:
         # Also stub plain call_ai so any fallback path doesn't hit network
         monkeypatch.setattr("ai_providers.call_ai",
                             lambda *a, **kw: "[]")
+        # Force-enable the earnings_analyst specialist by faking upcoming
+        # earnings inside the gate window. Without this, the gate skips
+        # earnings_analyst and its canned verdicts in `verdicts_by_spec`
+        # are never consumed — silently dropping its contribution from
+        # the consensus math.
+        monkeypatch.setattr(
+            "earnings_calendar.check_earnings",
+            lambda sym: {"symbol": sym, "earnings_date": "2030-01-01",
+                         "days_until": 7},
+        )
 
         from ensemble import run_ensemble
         return run_ensemble(
