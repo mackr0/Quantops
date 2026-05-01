@@ -420,3 +420,238 @@ VERTICAL_SPREAD_BUILDERS = {
     "bull_put_spread": build_bull_put_spread,
     "bear_call_spread": build_bear_call_spread,
 }
+
+
+# ---------------------------------------------------------------------------
+# Phase B2 — atomic multi-leg execution
+# ---------------------------------------------------------------------------
+
+import logging  # noqa: E402
+
+logger = logging.getLogger(__name__)
+
+
+def _alpaca_leg_dict(leg: OptionLeg, ratio: int = 1) -> Dict[str, Any]:
+    """Convert an OptionLeg to Alpaca's `option_legs` array shape.
+
+    Alpaca combo orders take legs as:
+      {"symbol": OCC, "side": "buy"|"sell", "ratio_qty": int,
+       "position_intent": "buy_to_open" / "sell_to_open" / etc.}
+
+    `ratio` is the leg count multiplier. For verticals every leg has
+    ratio 1 (1 long + 1 short = 1 spread). For ratio spreads the
+    builder would set ratio differently.
+    """
+    intent_map = {
+        "buy": "buy_to_open",
+        "sell": "sell_to_open",
+    }
+    return {
+        "symbol": leg.occ_symbol,
+        "side": leg.side,
+        "ratio_qty": int(ratio),
+        "position_intent": intent_map.get(leg.side, "buy_to_open"),
+    }
+
+
+def execute_multileg_strategy(
+    api,
+    strategy: OptionStrategy,
+    ctx,
+    log: bool = True,
+    use_combo: bool = True,
+    limit_price: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Execute a multi-leg option strategy atomically.
+
+    Two paths:
+      1. Combo order (default): submit all legs as a single MLEG order
+         via Alpaca's `option_legs` parameter. Atomic — the whole
+         spread fills together at the net price or not at all.
+      2. Sequential fallback (use_combo=False, or combo unsupported):
+         submit each leg in sequence. If leg N fails after legs 1..N-1
+         have submitted, attempt rollback by closing the filled legs.
+         Logs loud on partial-fill so the operator can reconcile.
+
+    Args:
+        api: Alpaca REST client.
+        strategy: built OptionStrategy (from a vertical builder).
+        ctx: UserContext (db_path used for journal logging).
+        log: write trade rows to journal.
+        use_combo: prefer combo-order path. False forces sequential.
+        limit_price: optional NET limit price (signed: + debit, - credit).
+
+    Returns:
+        {
+            "action": "MULTILEG_OPEN" | "ERROR" | "PARTIAL",
+            "strategy_name": str,
+            "underlying": str,
+            "qty": int,
+            "leg_order_ids": List[str],
+            "reason": str,
+        }
+    """
+    db_path = getattr(ctx, "db_path", None) if ctx else None
+    result: Dict[str, Any] = {
+        "action": "ERROR",
+        "strategy_name": strategy.name,
+        "underlying": strategy.underlying,
+        "qty": strategy.qty,
+        "leg_order_ids": [],
+        "reason": "",
+    }
+
+    if not strategy.legs:
+        result["reason"] = "Strategy has no legs"
+        return result
+
+    if use_combo:
+        try:
+            combo_kwargs = {
+                "qty": strategy.qty,
+                "side": "buy",  # required field; combo order side
+                "type": "limit" if limit_price is not None else "market",
+                "time_in_force": "day",
+                "order_class": "mleg",
+                "legs": [_alpaca_leg_dict(leg) for leg in strategy.legs],
+            }
+            if limit_price is not None:
+                combo_kwargs["limit_price"] = abs(limit_price)
+            combo_order = api.submit_order(**combo_kwargs)
+            combo_id = getattr(combo_order, "id", None)
+            # Combo orders return one parent id; child fills come via
+            # api.list_orders(parent=combo_id) once filled.
+            result.update({
+                "action": "MULTILEG_OPEN",
+                "leg_order_ids": [combo_id],
+                "combo_order_id": combo_id,
+                "reason": (
+                    f"Submitted {strategy.name} on {strategy.underlying} "
+                    f"as MLEG combo (parent={combo_id})"
+                ),
+            })
+            if log and db_path:
+                _log_strategy_legs(strategy, combo_id, ctx)
+            return result
+        except Exception as exc:
+            logger.warning(
+                "Combo-order path failed for %s on %s: %s. "
+                "Falling back to sequential submission.",
+                strategy.name, strategy.underlying, exc,
+            )
+            # Fall through to sequential path
+
+    # Sequential fallback — submit each leg, rollback on failure
+    submitted: List[Dict[str, Any]] = []
+    for i, leg in enumerate(strategy.legs):
+        try:
+            order = api.submit_order(
+                symbol=leg.occ_symbol,
+                qty=leg.qty,
+                side=leg.side,
+                type="market",
+                time_in_force="day",
+            )
+            submitted.append({
+                "leg_index": i, "leg": leg,
+                "order_id": getattr(order, "id", None),
+            })
+        except Exception as exc:
+            logger.error(
+                "Leg %d (%s %s) of %s failed: %s. Attempting rollback.",
+                i, leg.side, leg.occ_symbol, strategy.name, exc,
+            )
+            # Rollback: try to close each successfully-submitted leg
+            rollback_results = []
+            for sub in submitted:
+                try:
+                    rev_side = "sell" if sub["leg"].side == "buy" else "buy"
+                    rev = api.submit_order(
+                        symbol=sub["leg"].occ_symbol,
+                        qty=sub["leg"].qty,
+                        side=rev_side,
+                        type="market",
+                        time_in_force="day",
+                    )
+                    rollback_results.append({
+                        "leg_index": sub["leg_index"],
+                        "rollback_order_id": getattr(rev, "id", None),
+                    })
+                except Exception as rb_exc:
+                    rollback_results.append({
+                        "leg_index": sub["leg_index"],
+                        "rollback_error": str(rb_exc),
+                    })
+            result.update({
+                "action": "ERROR",
+                "leg_order_ids": [s["order_id"] for s in submitted],
+                "rollback": rollback_results,
+                "reason": (
+                    f"Leg {i} failed: {exc}. Submitted {len(submitted)} "
+                    f"leg(s); rollback attempted."
+                ),
+            })
+            return result
+
+    # All legs submitted successfully via sequential path
+    leg_order_ids = [s["order_id"] for s in submitted]
+    result.update({
+        "action": "MULTILEG_OPEN",
+        "leg_order_ids": leg_order_ids,
+        "reason": (
+            f"Submitted {len(submitted)} legs of {strategy.name} on "
+            f"{strategy.underlying} sequentially (combo unavailable)"
+        ),
+    })
+    if log and db_path:
+        _log_strategy_legs(strategy, None, ctx,
+                              leg_order_ids=leg_order_ids)
+    return result
+
+
+def _log_strategy_legs(strategy: OptionStrategy,
+                          combo_order_id: Optional[str],
+                          ctx,
+                          leg_order_ids: Optional[List[str]] = None) -> None:
+    """Write one journal row per leg, tagging them with the strategy
+    name so the lifecycle sweep + dashboard can group them together.
+
+    `signal_type=MULTILEG` and `option_strategy=<strategy.name>` make
+    the legs queryable as a unit. `reason` includes the combo order id
+    when available.
+    """
+    db_path = getattr(ctx, "db_path", None) if ctx else None
+    if not db_path:
+        return
+    try:
+        from journal import log_trade
+    except Exception:
+        return
+    leg_order_ids = leg_order_ids or [combo_order_id] * len(strategy.legs)
+    for i, leg in enumerate(strategy.legs):
+        order_id = (leg_order_ids[i]
+                    if i < len(leg_order_ids) else combo_order_id)
+        try:
+            log_trade(
+                symbol=leg.underlying,
+                side=leg.side,
+                qty=leg.qty,
+                order_id=order_id,
+                signal_type="MULTILEG",
+                strategy=strategy.name,
+                reason=(
+                    f"{strategy.name} leg {i+1}/{len(strategy.legs)} "
+                    f"(combo={combo_order_id or 'sequential'})"
+                ),
+                ai_reasoning=strategy.thesis,
+                occ_symbol=leg.occ_symbol,
+                option_strategy=strategy.name,
+                expiry=leg.expiry,
+                strike=float(leg.strike),
+                db_path=db_path,
+            )
+        except Exception as exc:
+            logger.warning(
+                "log_trade failed for leg %d of %s: %s",
+                i, strategy.name, exc,
+            )

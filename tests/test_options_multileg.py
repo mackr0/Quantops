@@ -225,3 +225,132 @@ class TestRegistry:
         builder = VERTICAL_SPREAD_BUILDERS["bull_call_spread"]
         spec = builder("AAPL", EXPIRY, 150, 160, qty=1)
         assert spec.name == "bull_call_spread"
+
+
+# ---------------------------------------------------------------------------
+# Phase B2 — atomic execution
+# ---------------------------------------------------------------------------
+
+from unittest.mock import MagicMock  # noqa: E402
+
+
+class TestExecuteMultilegStrategy:
+    def _ctx(self):
+        ctx = MagicMock()
+        ctx.db_path = None  # skip journal logging in unit tests
+        return ctx
+
+    def test_combo_path_submits_single_order_with_legs(self):
+        """Default path: one combo order with all legs in option_legs."""
+        from options_multileg import (
+            build_bull_call_spread, execute_multileg_strategy,
+        )
+        spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=2)
+        api = MagicMock()
+        api.submit_order.return_value = MagicMock(id="combo-123")
+        result = execute_multileg_strategy(api, spec, self._ctx())
+        assert result["action"] == "MULTILEG_OPEN"
+        assert result["leg_order_ids"] == ["combo-123"]
+        assert result["combo_order_id"] == "combo-123"
+        # Single submit_order call with order_class=mleg
+        assert api.submit_order.call_count == 1
+        kwargs = api.submit_order.call_args.kwargs
+        assert kwargs["order_class"] == "mleg"
+        assert kwargs["qty"] == 2
+        assert len(kwargs["legs"]) == 2
+        assert kwargs["legs"][0]["side"] == "buy"
+        assert kwargs["legs"][1]["side"] == "sell"
+
+    def test_combo_with_limit_price_includes_limit(self):
+        from options_multileg import (
+            build_bull_call_spread, execute_multileg_strategy,
+        )
+        spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1)
+        api = MagicMock()
+        api.submit_order.return_value = MagicMock(id="combo-456")
+        result = execute_multileg_strategy(
+            api, spec, self._ctx(), limit_price=3.00,
+        )
+        assert result["action"] == "MULTILEG_OPEN"
+        kwargs = api.submit_order.call_args.kwargs
+        assert kwargs["type"] == "limit"
+        assert kwargs["limit_price"] == 3.00
+
+    def test_combo_failure_falls_back_to_sequential(self):
+        """When the combo path raises, we should fall through to
+        sequential submission and successfully submit each leg."""
+        from options_multileg import (
+            build_bull_call_spread, execute_multileg_strategy,
+        )
+        spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1)
+        api = MagicMock()
+        # First call (combo) raises; subsequent calls (sequential legs) succeed
+        api.submit_order.side_effect = [
+            Exception("MLEG not supported on this account"),
+            MagicMock(id="leg-1"),
+            MagicMock(id="leg-2"),
+        ]
+        result = execute_multileg_strategy(api, spec, self._ctx())
+        assert result["action"] == "MULTILEG_OPEN"
+        assert result["leg_order_ids"] == ["leg-1", "leg-2"]
+        # 1 combo attempt + 2 sequential = 3 total
+        assert api.submit_order.call_count == 3
+
+    def test_sequential_leg_2_failure_triggers_rollback(self):
+        """When leg 1 succeeds but leg 2 fails, we should attempt to
+        close leg 1 (rollback) and return ERROR with detail."""
+        from options_multileg import (
+            build_bull_call_spread, execute_multileg_strategy,
+        )
+        spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1)
+        api = MagicMock()
+        # Force sequential path; 4 calls expected:
+        # 1. combo attempt — fails
+        # 2. leg 1 — succeeds (id=leg-1)
+        # 3. leg 2 — fails
+        # 4. rollback of leg 1 — succeeds (id=rb-1)
+        api.submit_order.side_effect = [
+            Exception("combo not supported"),
+            MagicMock(id="leg-1"),
+            Exception("alpaca rejected leg 2"),
+            MagicMock(id="rb-1"),
+        ]
+        result = execute_multileg_strategy(api, spec, self._ctx())
+        assert result["action"] == "ERROR"
+        assert result["leg_order_ids"] == ["leg-1"]
+        assert "Leg 1 failed" in result["reason"]
+        assert "rollback" in result
+        # Rollback details: 1 entry, with rollback_order_id present
+        assert len(result["rollback"]) == 1
+        assert result["rollback"][0]["leg_index"] == 0
+        assert result["rollback"][0]["rollback_order_id"] == "rb-1"
+
+    def test_force_sequential_via_use_combo_false(self):
+        """Setting use_combo=False bypasses the combo attempt."""
+        from options_multileg import (
+            build_bear_call_spread, execute_multileg_strategy,
+        )
+        spec = build_bear_call_spread("AAPL", EXPIRY, 150, 160, qty=1)
+        api = MagicMock()
+        api.submit_order.side_effect = [
+            MagicMock(id="leg-A"), MagicMock(id="leg-B"),
+        ]
+        result = execute_multileg_strategy(
+            api, spec, self._ctx(), use_combo=False,
+        )
+        assert result["action"] == "MULTILEG_OPEN"
+        assert result["leg_order_ids"] == ["leg-A", "leg-B"]
+        # Exactly 2 calls (no combo attempt)
+        assert api.submit_order.call_count == 2
+
+    def test_empty_strategy_returns_error(self):
+        from options_multileg import OptionStrategy, execute_multileg_strategy
+        spec = OptionStrategy(
+            name="empty", underlying="X", expiry="2099-01-01",
+            legs=[], qty=1, spread_width_points=0, is_credit=False,
+            thesis="empty",
+        )
+        api = MagicMock()
+        result = execute_multileg_strategy(api, spec, self._ctx())
+        assert result["action"] == "ERROR"
+        api.submit_order.assert_not_called()
