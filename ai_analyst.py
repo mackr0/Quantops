@@ -660,6 +660,29 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     except Exception:
         pass
 
+    # Phase C1 — roll-recommendations on near-expiry option positions.
+    # Surfaces ROLL_RECOMMEND lines (auto-closes happen via the
+    # scheduler task; this is the AI-decision layer).
+    roll_block = ""
+    try:
+        from options_roll_manager import render_roll_recommendations_for_prompt
+        db_path_for_roll = getattr(ctx, "db_path", None) if ctx else None
+        if db_path_for_roll:
+            # Quote lookup uses the broker — best-effort
+            def _option_quote(occ):
+                try:
+                    from client import get_api as _ga
+                    api = _ga(ctx)
+                    pos = api.get_position(occ)
+                    return float(getattr(pos, "current_price", 0) or 0) or None
+                except Exception:
+                    return None
+            roll_block = render_roll_recommendations_for_prompt(
+                db_path_for_roll, quote_lookup=_option_quote,
+            )
+    except Exception:
+        pass
+
     # Phase B4 of OPTIONS_PROGRAM_PLAN — multi-leg recommendations on
     # CANDIDATES (the screener's shortlist), distinct from the per-
     # position covered_call/protective_put advisor above.
@@ -791,6 +814,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"{mfe_capture_block}"
         f"{options_strategy_block}"
         f"{multileg_block}"
+        f"{roll_block}"
     )
 
     # --- Market context section ---

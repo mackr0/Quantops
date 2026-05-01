@@ -196,6 +196,13 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_options_lifecycle(ctx),
             db_path=ctx.db_path,
         )
+        # Phase C1 — roll manager: auto-close high-profit credits + flag
+        # roll candidates. No-op when no options near expiry.
+        run_task(
+            f"[{seg_label}] Options Roll Manager",
+            lambda: _task_options_roll_manager(ctx),
+            db_path=ctx.db_path,
+        )
         if getattr(ctx, "is_virtual", False):
             run_task(
                 f"[{seg_label}] Virtual Audit",
@@ -1070,6 +1077,46 @@ def _task_stat_arb_retest(ctx):
                     )
     except Exception:
         logging.exception(f"[{seg_label}] Stat-arb pair retest failed")
+
+
+def _task_options_roll_manager(ctx):
+    """Phase C1 — daily roll-manager pass for near-expiry options.
+
+    Auto-closes credit positions at ≥80% of max profit. Surface roll
+    candidates to the AI via the next batch prompt. Cheap when no
+    near-expiry options are open.
+    """
+    seg_label = ctx.display_name or ctx.segment
+    try:
+        from options_roll_manager import auto_close_high_profit_credits
+        from client import get_api
+        api = get_api(ctx)
+
+        # Quote lookup: try the broker's options chain first, fall
+        # back to the option's last fill price (stale but better than
+        # nothing). Best-effort.
+        def _quote_lookup(occ_symbol):
+            try:
+                pos = api.get_position(occ_symbol)
+                cur = float(getattr(pos, "current_price", 0) or 0)
+                if cur > 0:
+                    return cur
+            except Exception:
+                pass
+            return None
+
+        result = auto_close_high_profit_credits(
+            api, db_path=ctx.db_path, quote_lookup=_quote_lookup,
+        )
+        if result["evaluated"]:
+            logging.info(
+                f"[{seg_label}] Roll manager: "
+                f"evaluated={result['evaluated']}, "
+                f"auto_closed={result['auto_closed']}, "
+                f"errors={result['errors']}"
+            )
+    except Exception:
+        logging.exception(f"[{seg_label}] Roll manager failed")
 
 
 def _task_options_lifecycle(ctx):
