@@ -126,6 +126,14 @@ class UserContext:
     #   against vol spikes wiping a short-vol book.
     max_short_vega_dollars: Optional[float] = 500.0
 
+    # OPTIONS_PROGRAM_PLAN Phase C3 — wheel automation. Empty list =
+    # wheel disabled (default). Comma- or list-form symbols opt the
+    # profile into the wheel cycle on those underlyings: cash → CSP →
+    # (assigned) → shares → CC → (called away) → cash. Recommendations
+    # surfaced via the AI prompt so the user / AI confirms each
+    # cycle step rather than auto-fire.
+    wheel_symbols: List[str] = field(default_factory=list)
+
     # Self-tuning — AI learns from past wins/losses and adjusts approach
     enable_self_tuning: bool = True
 

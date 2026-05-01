@@ -660,6 +660,32 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     except Exception:
         pass
 
+    # Phase C3 — wheel state + next-step recommendations per opted-in
+    # symbol. Empty when ctx.wheel_symbols is empty or no price avail.
+    wheel_block = ""
+    try:
+        from options_wheel import render_wheel_block_for_prompt
+        db_path_for_wheel = getattr(ctx, "db_path", None) if ctx else None
+        wheel_syms = list(getattr(ctx, "wheel_symbols", []) or [])
+        if db_path_for_wheel and wheel_syms:
+            positions_for_wheel = portfolio_state.get("positions") or []
+            def _wheel_price(sym):
+                try:
+                    from market_data import get_bars
+                    bars = get_bars(sym, limit=2)
+                    if bars is not None and len(bars) > 0:
+                        return float(bars["close"].iloc[-1])
+                except Exception:
+                    pass
+                return None
+            wheel_block = render_wheel_block_for_prompt(
+                db_path_for_wheel, positions_for_wheel,
+                wheel_symbols=wheel_syms,
+                price_lookup=_wheel_price,
+            )
+    except Exception:
+        pass
+
     # Phase C1 — roll-recommendations on near-expiry option positions.
     # Surfaces ROLL_RECOMMEND lines (auto-closes happen via the
     # scheduler task; this is the AI-decision layer).
@@ -814,6 +840,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"{mfe_capture_block}"
         f"{options_strategy_block}"
         f"{multileg_block}"
+        f"{wheel_block}"
         f"{roll_block}"
     )
 
