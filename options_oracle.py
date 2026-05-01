@@ -55,12 +55,25 @@ def _set_cached(key: str, value: Any) -> None:
 # ---------------------------------------------------------------------------
 
 def _fetch_chain(symbol: str) -> Optional[Dict[str, Any]]:
-    """Download the options expirations + full chain for the nearest expiration.
+    """Download the options expirations + full chain for the nearest expirations.
 
-    Returns dict with:
-        current_price: float
-        expirations: list[str]
-        near_term: dict with 'calls' DataFrame, 'puts' DataFrame, 'expiration' str
+    Migrated 2026-05-01 from yfinance (15-min delayed) to Alpaca
+    real-time options data (`options_chain_alpaca.fetch_chain_alpaca`).
+    The user pays for Alpaca; using yfinance for options data was
+    wasting that subscription.
+
+    Output shape unchanged so downstream consumers (compute_iv_skew,
+    compute_term_structure, etc.) work without modification:
+      {
+        current_price: float,
+        expirations: list[str],
+        near_term: {expiration, calls (DataFrame), puts (DataFrame)},
+        chains: [near 3 expirations],
+      }
+
+    See `options_chain_alpaca.py` for the IV inversion (Black-Scholes
+    Newton's method) — Alpaca returns prices but not implied
+    volatility, so we compute it ourselves from the mid price.
     """
     cache_key = f"chain_{symbol}"
     cached = _get_cached(cache_key)
@@ -68,53 +81,14 @@ def _fetch_chain(symbol: str) -> Optional[Dict[str, Any]]:
         return cached
 
     try:
-        import yfinance as yf
-        import yf_lock as _yfl
-        yf_sym = symbol.replace("/", "-") if "/" in symbol else symbol
-        with _yfl._lock:
-            ticker = yf.Ticker(yf_sym)
-            expirations = ticker.options
-        if not expirations:
-            _set_cached(cache_key, None)
-            return None
-
-        # Current price
-        info = ticker.fast_info
-        current_price = float(info.last_price) if hasattr(info, "last_price") else 0.0
-        if current_price <= 0:
-            hist = ticker.history(period="2d")
-            if not hist.empty:
-                current_price = float(hist["Close"].iloc[-1])
-
-        # Pull the nearest 1-3 expirations for term structure work
-        near_chains = []
-        for exp in expirations[:3]:
-            try:
-                chain = ticker.option_chain(exp)
-                near_chains.append({
-                    "expiration": exp,
-                    "calls": chain.calls,
-                    "puts": chain.puts,
-                })
-            except Exception:
-                continue
-
-        if not near_chains:
-            _set_cached(cache_key, None)
-            return None
-
-        result = {
-            "current_price": current_price,
-            "expirations": list(expirations),
-            "near_term": near_chains[0],
-            "chains": near_chains,
-        }
-        _set_cached(cache_key, result)
-        return result
+        from options_chain_alpaca import fetch_chain_alpaca
+        result = fetch_chain_alpaca(symbol)
     except Exception as exc:
-        logger.debug("Options chain fetch failed for %s: %s", symbol, exc)
-        _set_cached(cache_key, None)
-        return None
+        logger.debug("Alpaca chain fetch failed for %s: %s", symbol, exc)
+        result = None
+
+    _set_cached(cache_key, result)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -466,22 +440,22 @@ def compute_max_pain(chain_data: Dict[str, Any]) -> Dict[str, Any]:
 def compute_iv_rank(symbol: str, current_iv: float) -> Dict[str, Any]:
     """Estimate where current IV sits vs recent history using realized vol.
 
-    Pure yfinance doesn't expose historical IV directly, so we compare
-    current ATM IV to 52-week realized volatility as a proxy. A precise
-    IV rank would require an options data vendor; this is a good-enough
-    approximation for qualitative signal.
+    Migrated 2026-05-01 from yfinance to Alpaca via market_data.get_bars.
+    Compares current ATM IV (from the live chain) to 52-week realized
+    volatility (annualized stdev of daily log returns). A precise IV
+    rank would require options vendor historical IV — this is a
+    good-enough qualitative proxy.
 
-    Returns: rank_pct (0-100), signal ('iv_high'|'iv_low'|'neutral')
+    Returns: rank_pct (0-100), signal ('iv_high'|'iv_low'|'neutral'),
+        realized_vol (annualized, decimal).
     """
     try:
-        import yfinance as yf
-        yf_sym = symbol.replace("/", "-") if "/" in symbol else symbol
-        ticker = yf.Ticker(yf_sym)
-        hist = ticker.history(period="1y")
-        if hist.empty or len(hist) < 30:
+        from market_data import get_bars
+        bars = get_bars(symbol, limit=252)
+        if bars is None or len(bars) < 30:
             return {"rank_pct": 50.0, "signal": "neutral", "realized_vol": 0.0}
 
-        returns = hist["Close"].pct_change().dropna()
+        returns = bars["close"].pct_change().dropna()
         if returns.std() <= 0:
             return {"rank_pct": 50.0, "signal": "neutral", "realized_vol": 0.0}
         # Annualized realized vol
