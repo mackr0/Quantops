@@ -709,6 +709,36 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     except Exception:
         pass
 
+    # Phase F — earnings/event opportunism. Surfaces IV-crush capture
+    # plays around upcoming earnings. Replaces the blanket avoid-
+    # earnings filter for OPTIONS-side opportunities.
+    earnings_plays_block = ""
+    try:
+        from options_earnings_plays import render_earnings_plays_for_prompt
+        from earnings_calendar import check_earnings as _check_earn
+        def _earn_lookup(sym):
+            try:
+                return _check_earn(sym)
+            except Exception:
+                return None
+        # iv lookup defined below — define early for both blocks.
+        def _iv_rank_lookup_2(sym):
+            try:
+                from options_oracle import get_options_oracle
+                oracle = get_options_oracle(sym)
+                if oracle and oracle.get("has_options"):
+                    return oracle.get("iv_rank", {}).get("rank_pct")
+            except Exception:
+                return None
+            return None
+        earnings_plays_block = render_earnings_plays_for_prompt(
+            candidates_data or [],
+            earnings_lookup=_earn_lookup,
+            iv_rank_lookup=_iv_rank_lookup_2,
+        )
+    except Exception:
+        pass
+
     # Phase E — vol regime gate. Translates per-symbol oracle signals
     # (IV rank, skew, term structure) into actionable strategy
     # direction guidance. Lives alongside the multi-leg advisor;
@@ -859,6 +889,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"{mfe_capture_block}"
         f"{options_strategy_block}"
         f"{vol_regime_block}"
+        f"{earnings_plays_block}"
         f"{multileg_block}"
         f"{wheel_block}"
         f"{roll_block}"
