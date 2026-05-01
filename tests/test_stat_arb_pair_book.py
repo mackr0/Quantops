@@ -469,7 +469,12 @@ class TestRetestActivePairs:
 
     def test_still_cointegrated_pair_refreshed(self, tmp_db):
         """A pair that's still cointegrated when retested should stay
-        active and have its hedge ratio/p-value/half-life refreshed."""
+        active and have its hedge ratio/p-value/half-life refreshed.
+
+        Uses ar_gamma=-0.30 (half-life ≈ 1.94d) for unambiguously
+        strong mean reversion so ADF reliably rejects the unit-root
+        null even on adversarial seeds.
+        """
         from stat_arb_pair_book import (Pair, upsert_pair,
                                           retest_active_pairs,
                                           get_active_pairs)
@@ -479,11 +484,12 @@ class TestRetestActivePairs:
             hedge_ratio=2.0, p_value=0.04,  # stale, generic
             half_life_days=10.0, correlation=0.7,
         ))
-        # Now provide fresh data that's strongly cointegrated
-        rng = np.random.default_rng(seed=21)
+        # Strong mean reversion → ADF rejects unit root reliably
+        rng = np.random.default_rng(seed=42)
         A_data, B_data = _cointegrated_pair(n=200, hedge_ratio=1.5,
                                               noise_sigma=0.3,
-                                              rng=rng)
+                                              rng=rng,
+                                              ar_gamma=-0.30)
         prices = {"A": A_data, "B": B_data}
         summary = retest_active_pairs(
             tmp_db, price_history=lambda s: prices.get(s),
