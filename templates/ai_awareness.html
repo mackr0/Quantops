@@ -236,6 +236,7 @@
                             <th>Pattern</th>
                             <th>Sentiment</th>
                             <th>Risk</th>
+                            <th>Adversarial</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -253,7 +254,7 @@
                                 <span class="muted">{{ r.verdict | title }}</span>
                                 {% endif %}
                             </td>
-                            {% for spec_name in ['earnings_analyst', 'pattern_recognizer', 'sentiment_narrative', 'risk_assessor'] %}
+                            {% for spec_name in ['earnings_analyst', 'pattern_recognizer', 'sentiment_narrative', 'risk_assessor', 'adversarial_reviewer'] %}
                             <td class="muted" style="font-size:0.75rem;">
                                 {% for s in r.specialists if s.name == spec_name %}
                                     {% if s.verdict == 'BUY' %}<span style="color:#2d7a3d;">↑{{ s.confidence }}</span>

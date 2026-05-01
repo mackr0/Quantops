@@ -17,6 +17,47 @@ Rules going forward:
 
 ---
 
+## 2026-04-30 — Item 5b: adversarial reviewer specialist (Severity: high, capability)
+
+**What this adds.** 5th specialist in the ensemble (`specialists/adversarial_reviewer.py`) with VETO authority. Different framing from `risk_assessor`: hunts for failure modes ("what would have to be true for this to lose money fast?") rather than risk factors ("what risks exist?"). Two redundant voices intentionally — different framings catch different misses.
+
+**Checklist baked into the prompt:** correlation overlap with current book, single-name concentration, regime mismatch with mandate, earnings/event risk, crowded-trade indicators, factor-direction violations against `target_book_beta` / `target_short_pct`. Standard VETO discipline ("uncertainty is HOLD, not VETO") to avoid over-vetoing.
+
+**Wiring.**
+
+- `specialists/__init__.py` — added to `SPECIALIST_MODULES`. Picked up automatically by `discover_specialists()` and the daily specialist health check, which uses calibrators + sample counts to auto-(dis)enable.
+- `ensemble.py` — new `VETO_AUTHORIZED = {"risk_assessor", "adversarial_reviewer"}` set. The veto loop now checks set membership instead of hardcoding the name. `SPECIALIST_WEIGHTS["adversarial_reviewer"] = 1.0`. `format_for_final_prompt` drops "by risk" since either can veto.
+- `templates/ai.html`, `templates/ai_awareness.html` — table column added so the new specialist's verdicts render.
+
+**Tests.**
+
+- `test_adversarial_reviewer.py` — 15 tests covering module contract, HAS_VETO_AUTHORITY, prompt-includes-regime/portfolio/failure-mode-framing/checklist, exact-N-entries demand, VETO discipline language, parse handles all 4 verdicts, `_portfolio_summary` handles empty/populated/failure, ensemble registration (discover, VETO_AUTHORIZED, weights).
+- `test_ensemble.py` — bumped 4-specialist assumptions to 5 in the count-based tests.
+- `test_integration.py` — `test_all_phase_entry_points_importable` updated to expect 5 specialists.
+- `test_ensemble.py::TestEnsembleAggregation` — fixture now mocks `earnings_calendar.check_earnings`. Without this, the cost gate silently dropped earnings_analyst and the canned BUY 80 vote vanished from the consensus math. Pre-existed my change but exposed by it. Fixed.
+- `test_no_missing_logging_import.py` — bumped to 120s timeout (AST-walks 50KLOC; flakes at default 30s on a loaded prod box).
+- `test_trade_execution_logging.py` — slice window grew 4000 → 5500 chars to span the new OPTIONS dispatch branch in `run_trade_cycle`.
+
+**Known follow-ups.** Calibrator for `adversarial_reviewer` will train naturally as it accumulates outcomes. Veto-rate health check fires automatically via the existing `_task_specialist_health_check`. No manual baby-sitting needed.
+
+---
+
+## 2026-04-30 — Options lifecycle sweep — close expired contracts (Item 1a follow-up) (Severity: medium, capability)
+
+**What this adds.** New `options_lifecycle.py` module + scheduler task to sweep expired option contracts from the journal. Without it, expired option rows would dangle with `status='open'` forever once the AI starts proposing options.
+
+**Behavior.**
+
+- `find_expired_open_options(db_path)` — returns rows where `signal_type='OPTIONS' AND status='open' AND expiry < today`. Cheap; bounded by the open-option count.
+- `_option_position_at_broker(api, occ)` — looks up the OCC contract in `api.list_positions()` (Alpaca lists option positions by their OCC string).
+- `_compute_pnl_for_expired(row, broker_position)` — two paths. Broker has zero qty (expired worthless): recognize `-premium` for longs, `+premium` for shorts (×100 contract multiplier). Broker still holds: mark `needs_review` and flag assignment likely.
+- `sweep_expired_options(api, db_path)` — iterates expired rows, updates `status` / `pnl` / `reason`, returns summary dict.
+- `multi_scheduler.py` — new "Options Lifecycle" task right after Reconcile Trade Statuses. No-op when the journal has no open option rows.
+
+**Tests.** 10 in `test_options_lifecycle.py`: find filters by expiry+status+signal_type, long/short worthless P&L math, multi-contract scaling, broker-still-holds → needs_review, empty journal, broker failure resilience.
+
+---
+
 ## 2026-04-29 — Options execution routing — AI proposal → broker submission (Item 1a complete) (Severity: high, capability)
 
 **What this adds.** End-to-end execution path for options trades. The AI can now propose `action: "OPTIONS"` in its batch response and the trade pipeline routes it to a dedicated executor that handles sizing, OCC formatting, broker submission, and journal logging.

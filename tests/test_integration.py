@@ -335,4 +335,4 @@ class TestCrossPhaseSmoke:
         assert len(ALL_EVENT_TYPES) == 6
         assert len(LEVELS) == 4
         assert SIZE_MULTIPLIERS["crisis"] == 0.0
-        assert len(discover_specialists()) == 4
+        assert len(discover_specialists()) == 5

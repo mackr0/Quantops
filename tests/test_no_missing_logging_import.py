@@ -77,9 +77,15 @@ def _uses_logging_attr(tree: ast.AST) -> bool:
     return False
 
 
+@pytest.mark.timeout(120)
 def test_every_logging_user_imports_logging():
     """For each repo .py file, if it uses `logging.X` at any depth,
-    it must also import logging at any scope."""
+    it must also import logging at any scope.
+
+    Walks the AST of ~50KLOC of Python; slow under prod load
+    (~45s when the live scheduler is busy on the same box).
+    Default 30s timeout is too tight; explicit 120s gives headroom.
+    """
     offenders = []
     for path in _python_files():
         try:

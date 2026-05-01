@@ -30,16 +30,20 @@ import pytest
 def _exec_block_source():
     """Pull the source of the for-loop block that calls execute_trade
     inside run_trade_cycle. We don't have a clean function boundary
-    so we slice on the print/Executing marker."""
+    so we slice on the print/Executing marker.
+
+    Window history:
+      - 2500 originally
+      - 4000 when wash-trade + insufficient-qty classifiers landed
+      - 5500 when the OPTIONS dispatch branch landed in front (Item 1a)
+        — the OPTIONS print arrives FIRST in the source and pushed the
+        original print site further down inside the slice.
+    """
     import trade_pipeline as tp
     src = inspect.getsource(tp)
     start = src.find('print(f"  Executing: ')
     assert start > 0, "Could not locate the Executing: print site"
-    # Take the next ~80 lines after the print. Window grew from 2500
-    # to 4000 when wash-trade + insufficient-qty classifiers were added
-    # to the except handler, pushing the genuine-error logging.error
-    # call further down.
-    return src[start:start + 4000]
+    return src[start:start + 5500]
 
 
 def test_exception_path_logs_full_traceback():
