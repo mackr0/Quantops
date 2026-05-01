@@ -594,3 +594,50 @@ def retest_active_pairs(db_path: str,
             summary["refreshed"] += 1
 
     return summary
+
+
+# ---------------------------------------------------------------------------
+# Universe scan — discover new cointegrated pairs
+# ---------------------------------------------------------------------------
+
+def scan_and_persist_pairs(db_path: str,
+                              symbols: List[str],
+                              price_history: Callable[[str], Optional[Sequence[float]]],
+                              max_pairs: int = 50) -> Dict[str, Any]:
+    """Run a fresh universe scan and persist any new tradeable pairs.
+
+    Cost is O(N²) — for 100 symbols ~5000 EG tests, ~25s wall time.
+    Designed to run on a long cadence (weekly is reasonable). Daily
+    retesting of already-discovered pairs is the cheaper, more frequent
+    cousin (`retest_active_pairs`).
+
+    Args:
+        db_path: profile journal DB.
+        symbols: candidate ticker universe to scan.
+        price_history: callable(symbol) → close-price series.
+        max_pairs: cap on top-N pairs to keep from this scan.
+
+    Returns: {
+      "scanned_symbols": int,    # candidates supplied
+      "found": int,              # tradeable pairs discovered
+      "persisted": int,          # rows upserted (subset of found)
+      "details": [pair labels],
+    }
+    """
+    summary = {"scanned_symbols": len(symbols), "found": 0,
+               "persisted": 0, "details": []}
+
+    pairs = find_cointegrated_pairs(
+        symbols, price_history, max_pairs=max_pairs,
+    )
+    summary["found"] = len(pairs)
+
+    for pair in pairs:
+        try:
+            upsert_pair(db_path, pair)
+            summary["persisted"] += 1
+            summary["details"].append(pair.label)
+        except Exception as exc:
+            logger.warning("upsert_pair failed for %s: %s",
+                           pair.label, exc)
+    return summary

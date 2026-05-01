@@ -544,3 +544,64 @@ class TestRetestActivePairs:
         assert summary["retired"] == 0
         # Pair stays active
         assert len(get_active_pairs(tmp_db)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Universe scan + persist
+# ---------------------------------------------------------------------------
+
+class TestScanAndPersistPairs:
+    def test_planted_pair_discovered_and_persisted(self, tmp_db):
+        """Plant a strongly cointegrated pair; the scanner should find
+        it and a row should appear in stat_arb_pairs."""
+        from stat_arb_pair_book import (scan_and_persist_pairs,
+                                          get_active_pairs)
+        rng = np.random.default_rng(seed=42)
+        A_data, B_data = _cointegrated_pair(n=200, hedge_ratio=1.5,
+                                              noise_sigma=0.3,
+                                              rng=rng,
+                                              ar_gamma=-0.30)
+        # Add 3 noise symbols so the universe isn't trivially small
+        noise = {f"NOISE{i}": _random_walk(200, sigma=1.0,
+                                              rng=np.random.default_rng(seed=100+i))
+                 for i in range(3)}
+        all_series = {"X": A_data, "Y": B_data, **noise}
+
+        summary = scan_and_persist_pairs(
+            tmp_db, list(all_series.keys()),
+            price_history=lambda s: all_series.get(s),
+        )
+        assert summary["found"] >= 1
+        assert summary["persisted"] >= 1
+        active = get_active_pairs(tmp_db)
+        # The planted pair (X, Y) should appear in canonical order
+        labels = {p.label for p in active}
+        assert "X/Y" in labels
+
+    def test_empty_universe_persists_nothing(self, tmp_db):
+        from stat_arb_pair_book import (scan_and_persist_pairs,
+                                          get_active_pairs)
+        summary = scan_and_persist_pairs(
+            tmp_db, [], price_history=lambda s: None,
+        )
+        assert summary["found"] == 0
+        assert summary["persisted"] == 0
+        assert get_active_pairs(tmp_db) == []
+
+    def test_re_scan_refreshes_existing_pair(self, tmp_db):
+        """Running the scanner twice on the same data should NOT create
+        duplicate rows — it should refresh the existing pair."""
+        from stat_arb_pair_book import (scan_and_persist_pairs,
+                                          get_active_pairs)
+        rng = np.random.default_rng(seed=42)
+        A_data, B_data = _cointegrated_pair(n=200, hedge_ratio=1.5,
+                                              noise_sigma=0.3,
+                                              rng=rng,
+                                              ar_gamma=-0.30)
+        prices = {"X": A_data, "Y": B_data}
+        scan_and_persist_pairs(tmp_db, ["X", "Y"],
+                                price_history=lambda s: prices.get(s))
+        scan_and_persist_pairs(tmp_db, ["X", "Y"],
+                                price_history=lambda s: prices.get(s))
+        active = get_active_pairs(tmp_db)
+        assert len(active) == 1  # not 2
