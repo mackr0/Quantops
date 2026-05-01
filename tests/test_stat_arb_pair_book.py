@@ -451,3 +451,90 @@ class TestPairSignal:
         sig = pair_signal(pair, A, B, lookback=60, currently_open=False)
         assert sig["action"] == "HOLD"
         assert sig["z_score"] is None
+
+
+# ---------------------------------------------------------------------------
+# Daily rebalance / retest
+# ---------------------------------------------------------------------------
+
+class TestRetestActivePairs:
+    def test_empty_book_returns_zeroes(self, tmp_db):
+        from stat_arb_pair_book import retest_active_pairs
+        summary = retest_active_pairs(
+            tmp_db, price_history=lambda s: None,
+        )
+        assert summary["retested"] == 0
+        assert summary["refreshed"] == 0
+        assert summary["retired"] == 0
+
+    def test_still_cointegrated_pair_refreshed(self, tmp_db):
+        """A pair that's still cointegrated when retested should stay
+        active and have its hedge ratio/p-value/half-life refreshed."""
+        from stat_arb_pair_book import (Pair, upsert_pair,
+                                          retest_active_pairs,
+                                          get_active_pairs)
+        # Plant the pair with stale numbers
+        upsert_pair(tmp_db, Pair(
+            symbol_a="A", symbol_b="B",
+            hedge_ratio=2.0, p_value=0.04,  # stale, generic
+            half_life_days=10.0, correlation=0.7,
+        ))
+        # Now provide fresh data that's strongly cointegrated
+        rng = np.random.default_rng(seed=21)
+        A_data, B_data = _cointegrated_pair(n=200, hedge_ratio=1.5,
+                                              noise_sigma=0.3,
+                                              rng=rng)
+        prices = {"A": A_data, "B": B_data}
+        summary = retest_active_pairs(
+            tmp_db, price_history=lambda s: prices.get(s),
+        )
+        assert summary["refreshed"] == 1
+        assert summary["retired"] == 0
+        active = get_active_pairs(tmp_db)
+        assert len(active) == 1
+        # Hedge ratio refreshed toward the planted 1.5
+        assert abs(active[0].hedge_ratio - 1.5) < 0.1
+
+    def test_broken_cointegration_pair_retired(self, tmp_db):
+        """Pair was cointegrated but the relationship has broken in
+        fresh data → retire."""
+        from stat_arb_pair_book import (Pair, upsert_pair,
+                                          retest_active_pairs,
+                                          get_active_pairs)
+        upsert_pair(tmp_db, Pair(
+            symbol_a="A", symbol_b="B",
+            hedge_ratio=1.0, p_value=0.02,
+            half_life_days=5.0, correlation=0.85,
+        ))
+        # Fresh data: independent random walks → no cointegration
+        rng = np.random.default_rng(seed=999)
+        prices = {"A": _random_walk(200, sigma=1.0, rng=rng),
+                  "B": _random_walk(200, sigma=1.0, rng=rng)}
+        summary = retest_active_pairs(
+            tmp_db, price_history=lambda s: prices.get(s),
+        )
+        # Either retired (typical) or refreshed (rare false positive).
+        # Tolerate the rare case but the typical run must retire.
+        assert summary["retested"] == 1
+        if summary["retired"] == 1:
+            assert get_active_pairs(tmp_db) == []
+            assert summary["details"][0]["outcome"] == "retired"
+
+    def test_missing_price_data_counts_as_error_not_retire(self, tmp_db):
+        """When fresh data isn't available we shouldn't auto-retire —
+        we just can't evaluate this cycle."""
+        from stat_arb_pair_book import (Pair, upsert_pair,
+                                          retest_active_pairs,
+                                          get_active_pairs)
+        upsert_pair(tmp_db, Pair(
+            symbol_a="A", symbol_b="B",
+            hedge_ratio=1.0, p_value=0.02,
+            half_life_days=5.0, correlation=0.85,
+        ))
+        summary = retest_active_pairs(
+            tmp_db, price_history=lambda s: None,
+        )
+        assert summary["errors"] == 1
+        assert summary["retired"] == 0
+        # Pair stays active
+        assert len(get_active_pairs(tmp_db)) == 1

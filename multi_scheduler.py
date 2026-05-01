@@ -301,6 +301,16 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_alpha_decay(ctx),
             db_path=ctx.db_path,
         )
+        # Item 1b — daily retest of active stat-arb pairs. Re-runs the
+        # Engle-Granger test on each pair; ejects pairs whose p-value
+        # has drifted above 0.10 (cointegration broken). Cheap when the
+        # book is small; quadratic search isn't done here (that's the
+        # universe scan, run separately and less frequently).
+        run_task(
+            f"[{seg_label}] Stat-Arb Pair Retest",
+            lambda: _task_stat_arb_retest(ctx),
+            db_path=ctx.db_path,
+        )
         # SEC filing analysis (Phase 4) — runs once per market_type per
         # cycle, not per profile. The same symbols get the same filings.
         _sec_key = ctx.segment
@@ -935,6 +945,52 @@ def _task_cost_check(ctx):
                 )
     except Exception:
         pass
+
+
+def _task_stat_arb_retest(ctx):
+    """Item 1b — daily retest of stat-arb pair book.
+
+    For each active pair in this profile's book, re-run the EG
+    cointegration test on fresh price data. Refresh hedge_ratio /
+    p_value / half_life when still cointegrated; retire pair when
+    p_value >= 0.10 (relationship broke) or other tradeability filters
+    fail.
+
+    No-op when the pair book is empty.
+    """
+    seg_label = ctx.display_name or ctx.segment
+    try:
+        from stat_arb_pair_book import retest_active_pairs, get_active_pairs
+        active = get_active_pairs(ctx.db_path)
+        if not active:
+            return  # nothing to retest
+
+        from market_data import get_bars
+
+        def _price_history(symbol):
+            try:
+                bars = get_bars(symbol, limit=200)
+                if bars is None or len(bars) < 30:
+                    return None
+                return bars["close"].tolist()
+            except Exception:
+                return None
+
+        result = retest_active_pairs(ctx.db_path, _price_history)
+        logging.info(
+            f"[{seg_label}] Stat-arb pair retest: "
+            f"retested={result['retested']}, refreshed={result['refreshed']}, "
+            f"retired={result['retired']}, errors={result['errors']}"
+        )
+        if result["retired"] > 0:
+            for d in result["details"]:
+                if d.get("outcome") == "retired":
+                    logging.info(
+                        f"[{seg_label}] Retired pair {d['pair']}: "
+                        f"p={d['p_value']:.3f}, hl={d['half_life_days']:.1f}d"
+                    )
+    except Exception:
+        logging.exception(f"[{seg_label}] Stat-arb pair retest failed")
 
 
 def _task_options_lifecycle(ctx):

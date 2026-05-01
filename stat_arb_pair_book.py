@@ -498,3 +498,99 @@ def pair_signal(pair: Pair,
         "z_score": z,
         "reason": f"No edge (z={z:.2f}, |z|<{ZSCORE_ENTRY})",
     }
+
+
+# ---------------------------------------------------------------------------
+# Daily rebalance — retest cointegration of active pairs, eject breakers
+# ---------------------------------------------------------------------------
+
+# When a pair's p_value drifts above this in the daily retest, we
+# retire it. Note this is LOOSER than COINT_PVALUE_THRESHOLD (0.05) —
+# we don't want to eject on borderline noise; we wait for clear
+# evidence the relationship has broken.
+RETIRE_PVALUE_THRESHOLD = 0.10
+
+
+def retest_active_pairs(db_path: str,
+                          price_history: Callable[[str], Optional[Sequence[float]]]
+                          ) -> Dict[str, Any]:
+    """Daily rebalance: retest each active pair's cointegration.
+
+    For each active pair, fetch fresh price history and re-run the
+    Engle-Granger test. Three outcomes:
+      - p stays low and tradeability filter passes → upsert (refresh)
+      - p > RETIRE_PVALUE_THRESHOLD → retire pair (cointegration broke)
+      - tradeability filter fails for other reasons (e.g., half-life
+        moved out of [1, 30] days) → retire pair
+
+    Args:
+        db_path: profile journal DB.
+        price_history: callable(symbol) → close-price series.
+
+    Returns: {"retested": int, "refreshed": int, "retired": int,
+              "errors": int, "details": [...]}
+    """
+    summary = {"retested": 0, "refreshed": 0, "retired": 0,
+               "errors": 0, "details": []}
+
+    active = get_active_pairs(db_path)
+    summary["retested"] = len(active)
+
+    if not active:
+        return summary
+
+    for pair in active:
+        try:
+            ph_a = price_history(pair.symbol_a)
+            ph_b = price_history(pair.symbol_b)
+        except Exception as exc:
+            logger.debug("price_history failed for %s: %s",
+                         pair.label, exc)
+            summary["errors"] += 1
+            continue
+        if ph_a is None or ph_b is None:
+            # Can't evaluate; leave as-is, count as error
+            summary["errors"] += 1
+            continue
+
+        try:
+            arr_a = np.asarray(ph_a, dtype=float)
+            arr_b = np.asarray(ph_b, dtype=float)
+            n = min(len(arr_a), len(arr_b))
+            if n < 30:
+                summary["errors"] += 1
+                continue
+            result = engle_granger(arr_a[-n:], arr_b[-n:])
+        except Exception as exc:
+            logger.warning("EG retest failed for %s: %s", pair.label, exc)
+            summary["errors"] += 1
+            continue
+
+        # Decide
+        broke_pvalue = result["p_value"] >= RETIRE_PVALUE_THRESHOLD
+        broke_filter = not is_pair_tradeable(result)
+        if broke_pvalue or broke_filter:
+            reason = (
+                f"p={result['p_value']:.3f}, "
+                f"hl={result['half_life_days']:.1f}d, "
+                f"corr={result['correlation']:.2f}"
+            )
+            retire_pair(db_path, pair.symbol_a, pair.symbol_b, reason)
+            summary["retired"] += 1
+            summary["details"].append({
+                "pair": pair.label, "outcome": "retired",
+                "p_value": result["p_value"],
+                "half_life_days": result["half_life_days"],
+            })
+        else:
+            refreshed = Pair(
+                symbol_a=pair.symbol_a, symbol_b=pair.symbol_b,
+                hedge_ratio=result["hedge_ratio"],
+                p_value=result["p_value"],
+                half_life_days=result["half_life_days"],
+                correlation=result["correlation"],
+            )
+            upsert_pair(db_path, refreshed)
+            summary["refreshed"] += 1
+
+    return summary
