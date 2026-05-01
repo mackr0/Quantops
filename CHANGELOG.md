@@ -17,6 +17,43 @@ Rules going forward:
 
 ---
 
+## 2026-05-01 — OPTIONS_PROGRAM_PLAN Phase A + Phase B complete (Severity: high, capability)
+
+**Phase A — Greeks foundation** (commits 2feba8e, 5ce9fab, af43d80)
+
+- A1 — `options_greeks_aggregator.compute_book_greeks(positions)` walks every position (stock + options), computes per-leg Greeks via `compute_greeks`, multiplies by signed qty × 100, returns net delta/gamma/vega/theta/rho. Stock contributes qty × 1 to delta only. Expired options skipped without crash. Missing IV → fallback 25% with counter; missing spot → leg skipped.
+- A2 — `check_greeks_gates(book, proposed, ctx)` enforces three caps: `max_net_options_delta_pct` (5% default), `max_theta_burn_dollars_per_day` ($50 default), `max_short_vega_dollars` ($500 default). Each gate is None-disable-able. Wired into `options_trader.execute_option_strategy` so OPTIONS proposals run the Greeks gate before broker submission. SKIP with reason on gate failure.
+- A3 — `/ai` "Book Greeks" panel: per-profile table of net delta/gamma/vega/theta with amber/red color-coding when within 20% of any active gate. Surfaces fallback-IV usage in the Notes column.
+
+**Phase B — Multi-leg primitives + atomic execution + advisor + AI vocabulary** (commits de8350d, 422d6be, 0b28c76, 71e33ac, 465b80f)
+
+- B1 — `OptionLeg`/`OptionStrategy` dataclasses + 4 vertical-spread builders: `bull_call_spread`, `bear_put_spread`, `bull_put_spread`, `bear_call_spread`. Each computes max_loss/max_gain in DOLLARS and breakeven from per-share quotes (or leaves None for the executor to finalize post-fill). `VERTICAL_SPREAD_BUILDERS` registry.
+- B2 — `execute_multileg_strategy(api, strategy, ctx)`: Alpaca MLEG combo order by default (atomic, all-or-nothing fill); sequential fallback on combo failure with rollback (reverse-side closing orders for each filled leg if leg N fails). Single combo order id returned, OR per-leg ids on sequential path. Logs all legs with `signal_type=MULTILEG`.
+- B (rest) — 7 more builders: `iron_condor`, `iron_butterfly`, `long_straddle`, `short_straddle`, `long_strangle`, `calendar_spread`, `diagonal_spread`. `ALL_MULTILEG_BUILDERS` extended registry. Short straddle leaves `max_loss_per_contract=None` to flag UNLIMITED downside (advisor should almost always recommend iron_butterfly instead).
+- B3 — `evaluate_candidate_for_multileg(candidate, iv_rank_pct, regime)`: regime/IV-aware strategy selection on screener candidates. Bullish + IV rich → bull_put_spread; bullish + IV cheap → bull_call_spread; bearish symmetric; range-bound + IV rich → iron_condor; expansion + IV cheap → long_strangle. IV in 50-60 neutral → no recs.
+- B4 — `MULTILEG_OPEN` action wired end-to-end. Validator accepts strategy_name + strikes + expiry + contracts, drops bad. Trade pipeline dispatcher resolves builder via registry, calls `execute_multileg_strategy`. AI prompt surfaces multi-leg recs and adds MULTILEG_OPEN to allowed-actions vocabulary when block non-empty.
+
+**Tests across A+B:** 91 new tests (16 aggregator + 10 gates + 17 vertical builders + 6 atomic execution + 17 condor/butterfly/straddle/strangle/calendar/diagonal + 13 multi-leg advisor + 4 validator + 8 misc). All green on prod.
+
+**What's done vs. what's left:**
+
+Done:
+- Greeks aggregated, gated, dashboarded
+- All single-leg + multi-leg primitives ship with builders + tests
+- Multi-leg atomic execution with combo orders
+- Multi-leg advisor recommends regime-appropriate strategies
+- AI can propose any of the strategies and they execute end-to-end
+
+Remaining (per OPTIONS_PROGRAM_PLAN.md):
+- Phase C — lifecycle: assignment detection + reconciliation, roll mechanics, wheel automation
+- Phase D — dynamic delta hedging
+- Phase E — vol surface (term structure, skew, realized vs implied)
+- Phase F — earnings/event opportunism (replace blanket avoid-earnings)
+
+This commit closes the foundational + structural layers. Lifecycle + hedging next.
+
+---
+
 ## 2026-04-30 — Item 1b complete: PAIR_TRADE action + two-leg execution (Severity: high, capability)
 
 **What this closes.** The final layer of Item 1b. AI can now propose `action: "PAIR_TRADE"` and the pipeline routes it to a dedicated two-leg executor. The stat-arb pair book is now a fully-functional capability end-to-end.
