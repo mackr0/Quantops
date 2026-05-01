@@ -35,17 +35,28 @@ def _random_walk(n: int, start: float = 100.0, sigma: float = 1.0,
 
 def _cointegrated_pair(n: int = 200, hedge_ratio: float = 1.5,
                         noise_sigma: float = 0.5,
-                        rng: Optional[np.random.Generator] = None) -> tuple:
-    """Build a planted-cointegrated pair.
+                        rng: Optional[np.random.Generator] = None,
+                        ar_gamma: float = -0.13) -> tuple:
+    """Build a planted-cointegrated pair with realistic mean-reverting spread.
 
-    Construction: B is a random walk. A = hedge_ratio × B + stationary noise.
-    By construction (A − hedge_ratio × B) is stationary, so the pair is
-    cointegrated and the EG test should reject the null with low p-value.
+    Construction:
+      B = random walk
+      spread = mean-reverting AR(1) process: Δs_t = γ·s_{t-1} + ε
+      A = hedge_ratio × B + spread
+
+    Pure white-noise residuals (γ ≈ -1) have ~0 half-life and would
+    fail the tradeability filter. Real cointegrated equity pairs have
+    half-lives of 5-15 days; γ=-0.13 → half-life ≈ 5 days, which is
+    realistic and passes the filter.
     """
     rng = rng or np.random.default_rng(seed=123)
     B = _random_walk(n, start=100.0, sigma=1.0, rng=rng)
-    noise = rng.normal(0, noise_sigma, size=n)
-    A = hedge_ratio * B + noise
+    # Mean-reverting AR(1) spread. γ < 0 = reverting toward 0.
+    spread = np.zeros(n)
+    eps = rng.normal(0, noise_sigma, size=n)
+    for t in range(1, n):
+        spread[t] = spread[t-1] + ar_gamma * spread[t-1] + eps[t]
+    A = hedge_ratio * B + spread
     return A, B
 
 
@@ -137,10 +148,10 @@ class TestSpreadZScore:
         """A current spread above the lookback mean yields z > 0."""
         from stat_arb_pair_book import compute_spread_zscore
         rng = np.random.default_rng(seed=3)
-        # Random spread for first 60 bars, then jump up for the last bar
-        spread_history = rng.normal(0, 1, size=59)
+        # Need lookback+1 bars (61): 60 of normal spread, then a wide one.
+        spread_history = rng.normal(0, 1, size=60)
         # spread = A − 1.0·B; build A = B + spread so the spread is what we want
-        B = np.linspace(100, 110, 60)
+        B = np.linspace(100, 110, 61)
         A = B + np.append(spread_history, [5.0])  # last spread = 5σ
         z = compute_spread_zscore(A, B, hedge_ratio=1.0, lookback=60)
         assert z is not None
@@ -149,8 +160,8 @@ class TestSpreadZScore:
     def test_spread_below_mean_returns_negative(self):
         from stat_arb_pair_book import compute_spread_zscore
         rng = np.random.default_rng(seed=4)
-        spread_history = rng.normal(0, 1, size=59)
-        B = np.linspace(100, 110, 60)
+        spread_history = rng.normal(0, 1, size=60)
+        B = np.linspace(100, 110, 61)
         A = B + np.append(spread_history, [-5.0])
         z = compute_spread_zscore(A, B, hedge_ratio=1.0, lookback=60)
         assert z is not None
