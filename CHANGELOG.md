@@ -17,6 +17,31 @@ Rules going forward:
 
 ---
 
+## 2026-04-30 — Item 1b complete: PAIR_TRADE action + two-leg execution (Severity: high, capability)
+
+**What this closes.** The final layer of Item 1b. AI can now propose `action: "PAIR_TRADE"` and the pipeline routes it to a dedicated two-leg executor. The stat-arb pair book is now a fully-functional capability end-to-end.
+
+**Files changed:**
+
+- `stat_arb_pair_book.execute_pair_trade(api, proposal, ctx, log)` — validates, sizes (5% equity per leg cap), submits both legs sequentially, logs both with `signal_type=PAIR_TRADE` / `strategy=stat_arb_pair`. Atomicity is best-effort: leg-B failure after leg-A success returns ERROR with `order_id_a` so the operator can manually flatten. We don't auto-cancel because Alpaca cancellation isn't synchronous.
+- `stat_arb_pair_book._lookup_active_pair(db, sym_a, sym_b)` — finds an active pair by either symbol ordering. Used by both the executor and the validator to gate the AI from inventing pairs we haven't validated.
+- `ai_analyst._validate_ai_trades` — new PAIR_TRADE branch handled BEFORE the candidate-symbol check (the pair "symbol" is a label like "AAPL/MSFT", not a candidate). Validates pair_action enum, looks up the pair via `_lookup_active_pair`, drops if not in active book.
+- `ai_analyst._build_batch_prompt` — `pair_book_rendered` flag tracks whether the prompt actually includes pair-book content. When set, adds "PAIR_TRADE" to allowed-actions vocabulary, adds a pair_note explaining required fields, adds a pair_example to the JSON example.
+- `trade_pipeline.run_trade_cycle` — new `action == "PAIR_TRADE"` dispatch branch right after OPTIONS. Calls `execute_pair_trade(api, ai_trade, ctx, log)`.
+
+**Sizing model.** Dollar-neutral, not hedge-ratio'd. Each leg gets `dollars_per_leg`; shares = `floor(dollars_per_leg / current_price)`. Hedge ratio influences cointegration but not sizing — dollar-neutral keeps risk symmetric, the standard professional convention. Trade-off documented in the executor's docstring: this gives close-to-spread P&L on small moves but isn't perfectly spread-neutral.
+
+**13 new tests** covering: pair-not-in-book → SKIP, unsupported pair_action → SKIP, zero dollars → SKIP, successful ENTER submits both legs (correct sides + correct quantities), ENTER_SHORT_A_LONG_B swaps sides correctly, 5% equity cap enforced, leg-B failure returns ERROR with order_id_a, EXIT closes held legs (long → sell, short → buy), EXIT with nothing held → SKIP, validator passes through PAIR_TRADE with all fields, validator drops unknown pair, validator drops missing pair_action.
+
+**Item 1b status: COMPLETE.** Math foundation, persistence, signal generator, daily retest task, universe scan + persist, AI prompt surfacing, PAIR_TRADE action, two-leg execution — all shipped. The pair book is empty by default (universe scan task not yet wired into a cron); once the user populates it, the AI sees pairs and can trade them.
+
+**Known follow-ups for next sessions:**
+- Wire `scan_and_persist_pairs` as a weekly task (not daily — quadratic scan is expensive). Need to decide which symbol universe to scan per profile.
+- Pair-book observability panel on /ai dashboard (parallel to the veto-rate panel) showing active pairs + current z-scores + hit rate.
+- Adversarial reviewer's prompt should learn about pair trades (currently only sees single-symbol candidates).
+
+---
+
 ## 2026-04-30 — Item 1b: pair book lifecycle + AI surfacing (Severity: high, capability)
 
 **What this adds.** Layers 2-4 of Item 1b stacked in one session, building on the math foundation (9d6755f). The pair book now lives, refreshes itself, and is visible to the AI.
