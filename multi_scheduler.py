@@ -203,6 +203,13 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_options_roll_manager(ctx),
             db_path=ctx.db_path,
         )
+        # Phase D1 — dynamic delta hedging. No-op when no hedgeable
+        # long single-leg options are open.
+        run_task(
+            f"[{seg_label}] Delta Hedger",
+            lambda: _task_options_delta_hedger(ctx),
+            db_path=ctx.db_path,
+        )
         if getattr(ctx, "is_virtual", False):
             run_task(
                 f"[{seg_label}] Virtual Audit",
@@ -1077,6 +1084,49 @@ def _task_stat_arb_retest(ctx):
                     )
     except Exception:
         logging.exception(f"[{seg_label}] Stat-arb pair retest failed")
+
+
+def _task_options_delta_hedger(ctx):
+    """Phase D1 — dynamic delta hedging for long-vol option positions.
+
+    Runs every check_exits cycle. Cheap: no-op when no hedgeable
+    options are open. Submits stock-side rebalance orders only when
+    delta drift exceeds the threshold to avoid churning.
+    """
+    seg_label = ctx.display_name or ctx.segment
+    try:
+        from options_delta_hedger import rebalance_hedges
+        from client import get_api, get_positions
+        api = get_api(ctx)
+        positions = get_positions(ctx=ctx) or []
+
+        from market_data import get_bars
+        def _price(sym):
+            try:
+                bars = get_bars(sym, limit=2)
+                if bars is not None and len(bars) > 0:
+                    return float(bars["close"].iloc[-1])
+            except Exception:
+                pass
+            return None
+
+        result = rebalance_hedges(
+            api, db_path=ctx.db_path, positions=positions,
+            price_lookup=_price,
+            # IV lookup intentionally None → falls back to FALLBACK_IV
+            # (25%). For higher accuracy we'd plumb the options oracle;
+            # the hedger's role is direction not magnitude perfection.
+            iv_lookup=lambda s: None,
+        )
+        if result["rebalanced"] > 0 or result["errors"] > 0:
+            logging.info(
+                f"[{seg_label}] Delta hedger: "
+                f"evaluated={result['evaluated']}, "
+                f"rebalanced={result['rebalanced']}, "
+                f"errors={result['errors']}"
+            )
+    except Exception:
+        logging.exception(f"[{seg_label}] Delta hedger failed")
 
 
 def _task_options_roll_manager(ctx):
