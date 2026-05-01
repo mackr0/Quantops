@@ -529,6 +529,85 @@ class TestDiagonalSpread:
         assert spec.legs[0].expiry != spec.legs[1].expiry
 
 
+class TestValidateMultilegOpenAction:
+    """Phase B4 — AI's MULTILEG_OPEN proposals must validate via the
+    same _validate_ai_trades path as OPTIONS / PAIR_TRADE."""
+
+    def _ctx(self):
+        ctx = MagicMock()
+        ctx.max_position_pct = 0.10
+        ctx.short_max_position_pct = 0.05
+        ctx.enable_short_selling = False
+        ctx.target_short_pct = 0.0
+        ctx.target_book_beta = None
+        ctx.db_path = None
+        return ctx
+
+    def test_multileg_open_passes_through_with_fields(self):
+        from ai_analyst import _validate_ai_trades
+        result = {"trades": [{
+            "action": "MULTILEG_OPEN",
+            "strategy_name": "bull_put_spread",
+            "symbol": "AAPL",
+            "strikes": {"short": 145, "long": 140},
+            "expiry": "2026-06-19",
+            "contracts": 1, "confidence": 65,
+            "reasoning": "Bullish + IV rich",
+        }]}
+        validated = _validate_ai_trades(
+            result, candidates_data=[], ctx=self._ctx(),
+        )
+        assert len(validated["trades"]) == 1
+        v = validated["trades"][0]
+        assert v["action"] == "MULTILEG_OPEN"
+        assert v["strategy_name"] == "bull_put_spread"
+        assert v["symbol"] == "AAPL"
+        assert v["strikes"] == {"short": 145, "long": 140}
+        assert v["contracts"] == 1
+
+    def test_unknown_strategy_name_dropped(self):
+        from ai_analyst import _validate_ai_trades
+        result = {"trades": [{
+            "action": "MULTILEG_OPEN",
+            "strategy_name": "iron_unicorn",  # not in registry
+            "symbol": "AAPL",
+            "strikes": {"short": 145, "long": 140},
+            "expiry": "2026-06-19", "contracts": 1,
+        }]}
+        validated = _validate_ai_trades(
+            result, candidates_data=[], ctx=self._ctx(),
+        )
+        assert validated["trades"] == []
+
+    def test_missing_strikes_dropped(self):
+        from ai_analyst import _validate_ai_trades
+        result = {"trades": [{
+            "action": "MULTILEG_OPEN",
+            "strategy_name": "bull_put_spread",
+            "symbol": "AAPL",
+            # no strikes
+            "expiry": "2026-06-19", "contracts": 1,
+        }]}
+        validated = _validate_ai_trades(
+            result, candidates_data=[], ctx=self._ctx(),
+        )
+        assert validated["trades"] == []
+
+    def test_zero_contracts_dropped(self):
+        from ai_analyst import _validate_ai_trades
+        result = {"trades": [{
+            "action": "MULTILEG_OPEN",
+            "strategy_name": "bull_put_spread",
+            "symbol": "AAPL",
+            "strikes": {"short": 145, "long": 140},
+            "expiry": "2026-06-19", "contracts": 0,
+        }]}
+        validated = _validate_ai_trades(
+            result, candidates_data=[], ctx=self._ctx(),
+        )
+        assert validated["trades"] == []
+
+
 class TestExtendedRegistry:
     def test_all_multileg_builders_present(self):
         from options_multileg import ALL_MULTILEG_BUILDERS

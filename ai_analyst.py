@@ -660,6 +660,21 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     except Exception:
         pass
 
+    # Phase B4 of OPTIONS_PROGRAM_PLAN — multi-leg recommendations on
+    # CANDIDATES (the screener's shortlist), distinct from the per-
+    # position covered_call/protective_put advisor above.
+    multileg_block = ""
+    try:
+        from options_strategy_advisor import render_multileg_recs_for_prompt
+        regime = (market_context or {}).get("regime") if market_context else None
+        multileg_block = render_multileg_recs_for_prompt(
+            candidates_data or [],
+            iv_rank_lookup=_iv_rank_lookup,
+            regime=regime,
+        )
+    except Exception:
+        pass
+
     # P4.3 of LONG_SHORT_PLAN.md — drawdown-aware capital scaling.
     # Continuous size modifier (vs the discrete normal/reduce/pause
     # action). Tells the AI: "we're below peak — multiply your sizes
@@ -775,6 +790,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"{risk_budget_block}"
         f"{mfe_capture_block}"
         f"{options_strategy_block}"
+        f"{multileg_block}"
     )
 
     # --- Market context section ---
@@ -1255,6 +1271,11 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     pair_action_enabled = bool(locals().get("pair_book_rendered", False))
     if pair_action_enabled:
         actions += " | PAIR_TRADE"
+    # Phase B4 — MULTILEG_OPEN action only offered when the multi-leg
+    # advisor has surfaced at least one regime-appropriate strategy.
+    multileg_action_enabled = bool(multileg_block.strip())
+    if multileg_action_enabled:
+        actions += " | MULTILEG_OPEN"
 
     # --- Assemble prompt ---
     long_short_note = ""
@@ -1305,6 +1326,28 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             '"reasoning": "z=+2.5; spread reverts toward 0"}'
         )
 
+    multileg_note = ""
+    multileg_example = ""
+    if multileg_action_enabled:
+        multileg_note = (
+            "\n- MULTILEG_OPEN: only propose when a MULTI-LEG OPTIONS "
+            "STRATEGIES line above lists the symbol + strategy. "
+            "Required fields: strategy_name (one of bull_call_spread / "
+            "bear_put_spread / bull_put_spread / bear_call_spread / "
+            "iron_condor / iron_butterfly / long_straddle / "
+            "short_straddle / long_strangle), symbol (underlying), "
+            "strikes (dict matching the strategy — see examples in "
+            "the rationale), expiry (YYYY-MM-DD), contracts (int). "
+            "size_pct is NOT used.\n"
+        )
+        multileg_example = (
+            ', {"symbol": "AAPL", "action": "MULTILEG_OPEN", '
+            '"strategy_name": "bull_put_spread", '
+            '"strikes": {"short": 145, "long": 140}, '
+            '"expiry": "2026-06-19", "contracts": 1, '
+            '"confidence": 65, "reasoning": "Bullish + IV rich"}'
+        )
+
     prompt = (
         f"You are a portfolio manager for an automated {market_type} trading system. "
         f"You see a batch of candidates our technical screener flagged. "
@@ -1323,14 +1366,16 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"- If at max positions, only recommend exits"
         f"{long_short_note}"
         f"{options_note}"
-        f"{pair_note}\n\n"
+        f"{pair_note}"
+        f"{multileg_note}\n\n"
         f"Respond ONLY with valid JSON (no markdown, no commentary):\n"
         f'{{"trades": [{{"symbol": "TICKER", "action": "BUY", '
         f'"size_pct": 7.5, "confidence": 75, '
         f'"stop_loss_pct": 3.0, "take_profit_pct": 10.0, '
         f'"reasoning": "1-2 sentences"}}'
         f'{options_example}'
-        f'{pair_example}], '
+        f'{pair_example}'
+        f'{multileg_example}], '
         f'"portfolio_reasoning": "Why this combination or why pass", '
         f'"pass_this_cycle": false}}'
     )
@@ -1441,6 +1486,49 @@ def _validate_ai_trades(result, candidates_data, ctx=None,
         # in symbol_a / symbol_b. The pair must be in this profile's
         # active stat-arb book; otherwise the AI is inventing pairs we
         # haven't validated.
+        # MULTILEG_OPEN — Phase B4. Multi-leg strategies (verticals,
+        # condors, butterflies, straddles, strangles, calendars,
+        # diagonals) routed via options_multileg.execute_multileg_strategy.
+        # The proposal must specify strategy_name + strikes + expiry.
+        # Strategy must be in ALL_MULTILEG_BUILDERS or it's rejected.
+        if action == "MULTILEG_OPEN":
+            try:
+                from options_multileg import ALL_MULTILEG_BUILDERS
+            except Exception:
+                logger.warning("MULTILEG_OPEN module unavailable — skipped")
+                continue
+            strategy_name = (t.get("strategy_name") or "").lower()
+            if strategy_name not in ALL_MULTILEG_BUILDERS:
+                logger.warning(
+                    "MULTILEG_OPEN unknown strategy_name=%r — skipped",
+                    strategy_name,
+                )
+                continue
+            ml_underlying = (t.get("symbol") or "").upper()
+            if not ml_underlying:
+                logger.warning("MULTILEG_OPEN missing symbol — skipped")
+                continue
+            strikes = t.get("strikes") or {}
+            expiry = t.get("expiry")
+            contracts = int(t.get("contracts") or 0)
+            if not strikes or not expiry or contracts <= 0:
+                logger.warning(
+                    "MULTILEG_OPEN missing strikes/expiry/contracts — skipped"
+                )
+                continue
+            validated.append({
+                "symbol": ml_underlying,
+                "action": "MULTILEG_OPEN",
+                "strategy_name": strategy_name,
+                "strikes": strikes,
+                "expiry": expiry,
+                "contracts": contracts,
+                "limit_price": t.get("limit_price"),
+                "confidence": int(t.get("confidence", 50)),
+                "reasoning": t.get("reasoning", ""),
+            })
+            continue
+
         if action == "PAIR_TRADE":
             sym_a = (t.get("symbol_a") or "").upper()
             sym_b = (t.get("symbol_b") or "").upper()

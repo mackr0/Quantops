@@ -40,6 +40,47 @@ _political_cache_cycle = 0
 _political_lock = __import__("threading").Lock()
 
 
+def _build_multileg_strategy(builder, strategy_name, underlying,
+                                  expiry_date, strikes, contracts):
+    """Map AI's `strikes` dict to the builder's positional kwargs.
+
+    Each multi-leg builder has its own signature; this dispatcher knows
+    which fields to pull for each. Reduces dispatch boilerplate in
+    run_trade_cycle.
+    """
+    if strategy_name == "bull_call_spread":
+        return builder(underlying, expiry_date,
+                       strikes["long"], strikes["short"], qty=contracts)
+    if strategy_name == "bear_put_spread":
+        return builder(underlying, expiry_date,
+                       strikes["short"], strikes["long"], qty=contracts)
+    if strategy_name == "bull_put_spread":
+        return builder(underlying, expiry_date,
+                       strikes["long"], strikes["short"], qty=contracts)
+    if strategy_name == "bear_call_spread":
+        return builder(underlying, expiry_date,
+                       strikes["short"], strikes["long"], qty=contracts)
+    if strategy_name == "iron_condor":
+        return builder(underlying, expiry_date,
+                       put_long_strike=strikes["put_long"],
+                       put_short_strike=strikes["put_short"],
+                       call_short_strike=strikes["call_short"],
+                       call_long_strike=strikes["call_long"],
+                       qty=contracts)
+    if strategy_name == "iron_butterfly":
+        return builder(underlying, expiry_date,
+                       body_strike=strikes["body"],
+                       wing_width=strikes["wing_width"], qty=contracts)
+    if strategy_name == "long_straddle" or strategy_name == "short_straddle":
+        return builder(underlying, expiry_date,
+                       strikes["strike"], qty=contracts)
+    if strategy_name == "long_strangle":
+        return builder(underlying, expiry_date,
+                       put_strike=strikes["put"],
+                       call_strike=strikes["call"], qty=contracts)
+    raise ValueError(f"No build dispatch for strategy {strategy_name!r}")
+
+
 def _get_shared_political_context(ctx):
     """Return MAGA political context, cached for 30 minutes.
 
@@ -1733,6 +1774,59 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     api_for_opt, ai_trade, ctx=ctx, log=log,
                 )
                 trade_result.setdefault("symbol", symbol)
+            # Phase B4 — route MULTILEG_OPEN through the multi-leg
+            # executor. Builds the strategy via the registry then submits
+            # via Alpaca combo order (sequential fallback with rollback).
+            elif action == "MULTILEG_OPEN":
+                from options_multileg import (
+                    ALL_MULTILEG_BUILDERS, execute_multileg_strategy,
+                )
+                from client import get_api as _get_api
+                from datetime import date as _ml_date
+                api_for_ml = _get_api(ctx)
+                strategy_name = ai_trade.get("strategy_name")
+                strikes = ai_trade.get("strikes") or {}
+                expiry_str = ai_trade.get("expiry")
+                contracts = int(ai_trade.get("contracts") or 0)
+
+                trade_result = {
+                    "action": "ERROR", "symbol": symbol,
+                    "reason": "",
+                }
+                builder = ALL_MULTILEG_BUILDERS.get(strategy_name)
+                if not builder:
+                    trade_result["reason"] = (
+                        f"Unknown strategy {strategy_name!r}")
+                else:
+                    try:
+                        # Parse expiry
+                        y, m, d = expiry_str.split("-")
+                        expiry_date = _ml_date(int(y), int(m), int(d))
+                    except Exception as exc:
+                        trade_result["reason"] = (
+                            f"Invalid expiry {expiry_str!r}: {exc}")
+                        expiry_date = None
+
+                    if expiry_date is not None:
+                        # Build kwargs from the strikes dict shape that
+                        # matches the chosen builder's signature.
+                        try:
+                            print(f"  Executing: MULTILEG_OPEN {strategy_name} "
+                                  f"{symbol} ({contracts}× exp {expiry_str})")
+                            spec = _build_multileg_strategy(
+                                builder, strategy_name, symbol,
+                                expiry_date, strikes, contracts,
+                            )
+                            trade_result = execute_multileg_strategy(
+                                api_for_ml, spec, ctx=ctx, log=log,
+                                limit_price=ai_trade.get("limit_price"),
+                            )
+                            trade_result.setdefault("symbol", symbol)
+                        except Exception as exc:
+                            trade_result["action"] = "ERROR"
+                            trade_result["reason"] = (
+                                f"Multi-leg build/submit failed: {exc}"
+                            )
             # Item 1b — route PAIR_TRADE through the stat-arb executor.
             # Two-leg dollar-neutral execution; sizing + atomicity live
             # in stat_arb_pair_book.execute_pair_trade.
