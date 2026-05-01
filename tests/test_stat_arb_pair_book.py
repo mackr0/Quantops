@@ -270,3 +270,184 @@ class TestPairDataclass:
                  hedge_ratio=1.5, p_value=0.01,
                  half_life_days=5.0, correlation=0.92)
         assert p.label == "KO/PEP"
+
+
+# ---------------------------------------------------------------------------
+# Persistence layer
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def tmp_db():
+    import tempfile
+    from journal import init_db
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    init_db(path)
+    yield path
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+class TestPersistence:
+    def _pair(self, a="AAPL", b="MSFT", **overrides):
+        from stat_arb_pair_book import Pair
+        defaults = dict(symbol_a=a, symbol_b=b, hedge_ratio=1.5,
+                         p_value=0.01, half_life_days=5.0,
+                         correlation=0.92)
+        defaults.update(overrides)
+        return Pair(**defaults)
+
+    def test_upsert_then_retrieve(self, tmp_db):
+        from stat_arb_pair_book import upsert_pair, get_active_pairs
+        pair = self._pair()
+        pid = upsert_pair(tmp_db, pair)
+        assert pid > 0
+        pairs = get_active_pairs(tmp_db)
+        assert len(pairs) == 1
+        assert pairs[0].symbol_a == "AAPL"
+        assert pairs[0].symbol_b == "MSFT"
+
+    def test_canonical_order_enforced(self, tmp_db):
+        """Inserting (B, A) should map to the same row as (A, B)."""
+        from stat_arb_pair_book import upsert_pair, get_active_pairs
+        upsert_pair(tmp_db, self._pair(a="AAPL", b="MSFT", hedge_ratio=1.5))
+        upsert_pair(tmp_db, self._pair(a="MSFT", b="AAPL", hedge_ratio=2.0))
+        pairs = get_active_pairs(tmp_db)
+        # Still one row (UNIQUE on canonical order)
+        assert len(pairs) == 1
+        # Hedge ratio inverted: 1/2.0 = 0.5 (the second insert refreshed)
+        assert pairs[0].hedge_ratio == pytest.approx(0.5, abs=0.01)
+        assert pairs[0].symbol_a == "AAPL"
+        assert pairs[0].symbol_b == "MSFT"
+
+    def test_upsert_refreshes_existing_row(self, tmp_db):
+        from stat_arb_pair_book import upsert_pair, get_active_pairs
+        upsert_pair(tmp_db, self._pair(p_value=0.05))
+        upsert_pair(tmp_db, self._pair(p_value=0.01))  # better p-value
+        pairs = get_active_pairs(tmp_db)
+        assert len(pairs) == 1
+        assert pairs[0].p_value == 0.01
+
+    def test_retire_pair(self, tmp_db):
+        from stat_arb_pair_book import (upsert_pair, retire_pair,
+                                          get_active_pairs)
+        upsert_pair(tmp_db, self._pair())
+        ok = retire_pair(tmp_db, "AAPL", "MSFT",
+                          reason="cointegration broke (p=0.18)")
+        assert ok is True
+        # Active pairs no longer includes it
+        assert get_active_pairs(tmp_db) == []
+
+    def test_retire_with_swapped_symbols_still_works(self, tmp_db):
+        from stat_arb_pair_book import (upsert_pair, retire_pair,
+                                          get_active_pairs)
+        upsert_pair(tmp_db, self._pair(a="AAPL", b="MSFT"))
+        ok = retire_pair(tmp_db, "MSFT", "AAPL", reason="test")
+        assert ok is True
+        assert get_active_pairs(tmp_db) == []
+
+    def test_retire_nonexistent_returns_false(self, tmp_db):
+        from stat_arb_pair_book import retire_pair
+        assert retire_pair(tmp_db, "X", "Y", reason="test") is False
+
+    def test_upsert_revives_retired_pair(self, tmp_db):
+        """If a pair regains cointegration after being retired, upsert
+        should reset status to active so the daily rebalance can put
+        it back in the book."""
+        from stat_arb_pair_book import (upsert_pair, retire_pair,
+                                          get_active_pairs)
+        upsert_pair(tmp_db, self._pair())
+        retire_pair(tmp_db, "AAPL", "MSFT", reason="broke")
+        assert get_active_pairs(tmp_db) == []
+        upsert_pair(tmp_db, self._pair(p_value=0.005))
+        active = get_active_pairs(tmp_db)
+        assert len(active) == 1
+
+
+# ---------------------------------------------------------------------------
+# Trade-signal generator
+# ---------------------------------------------------------------------------
+
+class TestPairSignal:
+    def _make_pair(self):
+        from stat_arb_pair_book import Pair
+        return Pair(symbol_a="AAPL", symbol_b="MSFT",
+                    hedge_ratio=1.0, p_value=0.01,
+                    half_life_days=5.0, correlation=0.92)
+
+    def _series_with_terminal_z(self, target_z: float, n: int = 70):
+        """Build A, B such that the spread (A − 1.0·B) has the requested
+        z-score on the last bar relative to the lookback=60 window."""
+        rng = np.random.default_rng(seed=7)
+        # 60 normal-ish spread observations + 1 with the target z
+        base_spread = rng.normal(0, 1, size=n - 1)
+        # Add the last bar at exactly target_z standard deviations
+        # Recompute mean/std on the first n-1 to get the target right
+        mean = float(np.mean(base_spread))
+        std = float(np.std(base_spread))
+        last = mean + target_z * std
+        spread = np.append(base_spread, [last])
+        B = np.linspace(100.0, 110.0, n)
+        A = B + spread
+        return A, B
+
+    def test_wide_positive_z_triggers_short_a_long_b(self):
+        from stat_arb_pair_book import pair_signal
+        pair = self._make_pair()
+        A, B = self._series_with_terminal_z(target_z=2.5)
+        sig = pair_signal(pair, A, B, lookback=60, currently_open=False)
+        assert sig["action"] == "ENTER_SHORT_A_LONG_B"
+        assert sig["z_score"] >= 2.0
+
+    def test_wide_negative_z_triggers_long_a_short_b(self):
+        from stat_arb_pair_book import pair_signal
+        pair = self._make_pair()
+        A, B = self._series_with_terminal_z(target_z=-2.5)
+        sig = pair_signal(pair, A, B, lookback=60, currently_open=False)
+        assert sig["action"] == "ENTER_LONG_A_SHORT_B"
+        assert sig["z_score"] <= -2.0
+
+    def test_small_z_holds(self):
+        from stat_arb_pair_book import pair_signal
+        pair = self._make_pair()
+        A, B = self._series_with_terminal_z(target_z=0.5)
+        sig = pair_signal(pair, A, B, lookback=60, currently_open=False)
+        assert sig["action"] == "HOLD"
+
+    def test_open_position_exits_at_mean(self):
+        """If we're already in the trade, |z| <= 0.5 → take profit."""
+        from stat_arb_pair_book import pair_signal
+        pair = self._make_pair()
+        A, B = self._series_with_terminal_z(target_z=0.2)
+        sig = pair_signal(pair, A, B, lookback=60, currently_open=True,
+                           entry_direction="short_a_long_b")
+        assert sig["action"] == "EXIT"
+
+    def test_open_position_holds_in_window(self):
+        """In-trade with z=1.5 is still in the window — don't exit yet."""
+        from stat_arb_pair_book import pair_signal
+        pair = self._make_pair()
+        A, B = self._series_with_terminal_z(target_z=1.5)
+        sig = pair_signal(pair, A, B, lookback=60, currently_open=True,
+                           entry_direction="short_a_long_b")
+        assert sig["action"] == "HOLD"
+
+    def test_open_position_regime_break_exit(self):
+        """|z| >= 3 → defensive exit; cointegration may have broken."""
+        from stat_arb_pair_book import pair_signal
+        pair = self._make_pair()
+        A, B = self._series_with_terminal_z(target_z=3.5)
+        sig = pair_signal(pair, A, B, lookback=60, currently_open=True,
+                           entry_direction="short_a_long_b")
+        assert sig["action"] == "REGIME_BREAK_EXIT"
+
+    def test_insufficient_history_holds(self):
+        from stat_arb_pair_book import pair_signal
+        pair = self._make_pair()
+        A = [100.0] * 10
+        B = [100.0] * 10
+        sig = pair_signal(pair, A, B, lookback=60, currently_open=False)
+        assert sig["action"] == "HOLD"
+        assert sig["z_score"] is None

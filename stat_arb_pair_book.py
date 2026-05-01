@@ -292,3 +292,209 @@ def find_cointegrated_pairs(
 
     pairs.sort(key=lambda x: x[0])
     return [p for _, p in pairs[:max_pairs]]
+
+
+# ---------------------------------------------------------------------------
+# Persistence — store / retrieve the active pair book in the journal DB
+# ---------------------------------------------------------------------------
+
+def _canonical_order(sym_a: str, sym_b: str) -> Tuple[str, str]:
+    """Return (a, b) sorted so each unordered pair maps to exactly one row.
+    The DB has UNIQUE(symbol_a, symbol_b); we enforce a < b alphabetically
+    so there's no ambiguity."""
+    a, b = sym_a.upper(), sym_b.upper()
+    return (a, b) if a < b else (b, a)
+
+
+def upsert_pair(db_path: str, pair: Pair) -> int:
+    """Insert or refresh a pair in the book. Returns the row id.
+
+    Refreshes hedge_ratio / p_value / half_life / correlation /
+    retested_at when the (a, b) row already exists. The pair's hedge
+    ratio is converted to canonical-order space if a/b were swapped.
+    """
+    from journal import _get_conn
+    a, b = _canonical_order(pair.symbol_a, pair.symbol_b)
+    # Hedge ratio convention: A = β·B + spread. If we swapped, the
+    # equivalent B = (1/β)·A + spread' — invert the ratio.
+    hedge_ratio = pair.hedge_ratio
+    if (pair.symbol_a.upper(), pair.symbol_b.upper()) != (a, b):
+        hedge_ratio = 1.0 / hedge_ratio if abs(hedge_ratio) > 1e-9 else 0.0
+
+    conn = _get_conn(db_path)
+    cur = conn.execute(
+        "SELECT id FROM stat_arb_pairs WHERE symbol_a=? AND symbol_b=?",
+        (a, b),
+    )
+    row = cur.fetchone()
+    if row:
+        conn.execute(
+            """UPDATE stat_arb_pairs
+               SET hedge_ratio=?, p_value=?, half_life_days=?,
+                   correlation=?, retested_at=datetime('now'),
+                   status=CASE WHEN status='retired' THEN 'active' ELSE status END,
+                   retired_at=NULL, retirement_reason=NULL
+               WHERE id=?""",
+            (hedge_ratio, pair.p_value, pair.half_life_days,
+             pair.correlation, row["id"]),
+        )
+        pair_id = row["id"]
+    else:
+        cur = conn.execute(
+            """INSERT INTO stat_arb_pairs
+               (symbol_a, symbol_b, hedge_ratio, p_value,
+                half_life_days, correlation, status)
+               VALUES (?, ?, ?, ?, ?, ?, 'active')""",
+            (a, b, hedge_ratio, pair.p_value, pair.half_life_days,
+             pair.correlation),
+        )
+        pair_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return pair_id
+
+
+def get_active_pairs(db_path: str) -> List[Pair]:
+    """Return all active pairs from the book."""
+    from journal import _get_conn
+    conn = _get_conn(db_path)
+    rows = conn.execute(
+        """SELECT symbol_a, symbol_b, hedge_ratio, p_value,
+                  half_life_days, correlation
+           FROM stat_arb_pairs WHERE status='active'
+           ORDER BY p_value ASC""",
+    ).fetchall()
+    conn.close()
+    return [
+        Pair(symbol_a=r["symbol_a"], symbol_b=r["symbol_b"],
+             hedge_ratio=float(r["hedge_ratio"]),
+             p_value=float(r["p_value"]),
+             half_life_days=float(r["half_life_days"]),
+             correlation=float(r["correlation"]))
+        for r in rows
+    ]
+
+
+def retire_pair(db_path: str, sym_a: str, sym_b: str,
+                  reason: str) -> bool:
+    """Mark a pair retired with a reason. Returns True if a row updated."""
+    from journal import _get_conn
+    a, b = _canonical_order(sym_a, sym_b)
+    conn = _get_conn(db_path)
+    cur = conn.execute(
+        """UPDATE stat_arb_pairs
+           SET status='retired', retired_at=datetime('now'),
+               retirement_reason=?
+           WHERE symbol_a=? AND symbol_b=? AND status='active'""",
+        (reason, a, b),
+    )
+    conn.commit()
+    affected = cur.rowcount
+    conn.close()
+    return affected > 0
+
+
+# ---------------------------------------------------------------------------
+# Trade signal generator — given current prices, what action does the
+# pair recommend?
+# ---------------------------------------------------------------------------
+
+# Z-score thresholds for entry / exit. Entry at ±2σ is the standard
+# stat-arb convention; tighter (e.g. ±1.5σ) trades more often but with
+# weaker mean-reversion signal. Exit at 0σ captures full mean
+# reversion. ±3σ is the regime-break threshold — past this, we suspect
+# the cointegration relationship has broken and we exit defensively.
+ZSCORE_ENTRY = 2.0
+ZSCORE_EXIT = 0.5
+ZSCORE_REGIME_BREAK = 3.0
+
+
+def pair_signal(pair: Pair,
+                 price_a: Sequence[float],
+                 price_b: Sequence[float],
+                 lookback: int = 60,
+                 currently_open: bool = False,
+                 entry_direction: Optional[str] = None) -> Dict[str, Any]:
+    """Generate a trade signal for one pair given current price history.
+
+    Args:
+        pair: the cointegrated pair (with hedge_ratio).
+        price_a, price_b: trailing close-price series. Need ≥ lookback+1.
+        lookback: bars used for spread mean+std.
+        currently_open: True if we already hold this pair.
+        entry_direction: when currently_open, what side we're holding.
+            "long_a_short_b" (entered when z was very negative) or
+            "short_a_long_b" (entered when z was very positive).
+
+    Returns: {
+      "action": "ENTER_LONG_A_SHORT_B" | "ENTER_SHORT_A_LONG_B" |
+                "EXIT" | "REGIME_BREAK_EXIT" | "HOLD",
+      "z_score": float,
+      "reason": str,
+    }
+
+    Logic (when not currently open):
+      z >= +entry         → ENTER_SHORT_A_LONG_B (spread will fall)
+      z <= -entry         → ENTER_LONG_A_SHORT_B (spread will rise)
+      otherwise           → HOLD
+
+    Logic (when currently open):
+      |z| >= regime_break → REGIME_BREAK_EXIT (cointegration may have broken)
+      |z| <= exit         → EXIT (mean reverted; take profit)
+      otherwise           → HOLD (still in the trade)
+    """
+    z = compute_spread_zscore(price_a, price_b,
+                                pair.hedge_ratio, lookback=lookback)
+    if z is None:
+        return {
+            "action": "HOLD",
+            "z_score": None,
+            "reason": "Insufficient history for spread z-score",
+        }
+
+    if currently_open:
+        if abs(z) >= ZSCORE_REGIME_BREAK:
+            return {
+                "action": "REGIME_BREAK_EXIT",
+                "z_score": z,
+                "reason": (
+                    f"Spread |z|={abs(z):.2f} > {ZSCORE_REGIME_BREAK} — "
+                    "regime break, exit defensively"
+                ),
+            }
+        if abs(z) <= ZSCORE_EXIT:
+            return {
+                "action": "EXIT",
+                "z_score": z,
+                "reason": f"Spread mean-reverted to z={z:.2f}",
+            }
+        return {
+            "action": "HOLD",
+            "z_score": z,
+            "reason": f"Trade still in window (z={z:.2f})",
+        }
+
+    # Not currently open — look for an entry
+    if z >= ZSCORE_ENTRY:
+        return {
+            "action": "ENTER_SHORT_A_LONG_B",
+            "z_score": z,
+            "reason": (
+                f"Spread wide (z={z:.2f}); short {pair.symbol_a}, "
+                f"long {pair.symbol_b} (ratio {pair.hedge_ratio:.3f})"
+            ),
+        }
+    if z <= -ZSCORE_ENTRY:
+        return {
+            "action": "ENTER_LONG_A_SHORT_B",
+            "z_score": z,
+            "reason": (
+                f"Spread tight (z={z:.2f}); long {pair.symbol_a}, "
+                f"short {pair.symbol_b} (ratio {pair.hedge_ratio:.3f})"
+            ),
+        }
+    return {
+        "action": "HOLD",
+        "z_score": z,
+        "reason": f"No edge (z={z:.2f}, |z|<{ZSCORE_ENTRY})",
+    }

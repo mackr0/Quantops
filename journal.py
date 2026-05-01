@@ -252,6 +252,31 @@ def init_db(db_path=None):
         );
         CREATE INDEX IF NOT EXISTS idx_auto_strategies_status
             ON auto_generated_strategies(status);
+        -- Item 1b — stat-arb pair book. Each row is one cointegrated
+        -- pair the daily scanner has flagged as tradeable. The (a,b)
+        -- pair is canonical: symbol_a < symbol_b alphabetically so
+        -- there's exactly one row per unordered pair. last_*_at fields
+        -- track lifecycle: created_at when first detected, retested_at
+        -- when the daily rebalance last verified cointegration,
+        -- retired_at when the pair broke (p > 0.10) or was manually
+        -- closed.
+        CREATE TABLE IF NOT EXISTS stat_arb_pairs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol_a TEXT NOT NULL,
+            symbol_b TEXT NOT NULL,
+            hedge_ratio REAL NOT NULL,
+            p_value REAL NOT NULL,
+            half_life_days REAL NOT NULL,
+            correlation REAL NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            retested_at TEXT,
+            retired_at TEXT,
+            retirement_reason TEXT,
+            UNIQUE(symbol_a, symbol_b)
+        );
+        CREATE INDEX IF NOT EXISTS idx_stat_arb_pairs_status
+            ON stat_arb_pairs(status);
     """)
 
     # Universal schema migration: ensures every column defined in the
