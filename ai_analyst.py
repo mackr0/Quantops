@@ -709,6 +709,25 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     except Exception:
         pass
 
+    # Phase E — vol regime gate. Translates per-symbol oracle signals
+    # (IV rank, skew, term structure) into actionable strategy
+    # direction guidance. Lives alongside the multi-leg advisor;
+    # provides the WHY for the strategy ranking.
+    vol_regime_block = ""
+    try:
+        from options_vol_regime import render_vol_regime_for_prompt
+        from options_oracle import get_options_oracle
+        def _oracle_lookup(sym):
+            try:
+                return get_options_oracle(sym)
+            except Exception:
+                return None
+        vol_regime_block = render_vol_regime_for_prompt(
+            candidates_data or [], oracle_lookup=_oracle_lookup,
+        )
+    except Exception:
+        pass
+
     # Phase B4 of OPTIONS_PROGRAM_PLAN — multi-leg recommendations on
     # CANDIDATES (the screener's shortlist), distinct from the per-
     # position covered_call/protective_put advisor above.
@@ -839,6 +858,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"{risk_budget_block}"
         f"{mfe_capture_block}"
         f"{options_strategy_block}"
+        f"{vol_regime_block}"
         f"{multileg_block}"
         f"{wheel_block}"
         f"{roll_block}"
