@@ -158,6 +158,115 @@ class TestPortfolioSummary:
         assert "empty" in summary.lower()
 
 
+class TestPairBookSummary:
+    """The reviewer needs visibility into the active stat-arb pair
+    book so it can red-team pair-specific failure modes BEFORE the AI
+    proposes a PAIR_TRADE downstream."""
+
+    def _ctx_with_db(self, db_path):
+        ctx = MagicMock()
+        ctx.db_path = db_path
+        return ctx
+
+    @pytest.fixture
+    def tmp_db(self):
+        import tempfile
+        from journal import init_db
+        fd, path = tempfile.mkstemp(suffix=".db")
+        import os as _os
+        _os.close(fd)
+        init_db(path)
+        yield path
+        try:
+            _os.unlink(path)
+        except OSError:
+            pass
+
+    def test_empty_book_returns_empty_string(self, tmp_db):
+        from specialists.adversarial_reviewer import _pair_book_summary
+        out = _pair_book_summary(self._ctx_with_db(tmp_db))
+        assert out == ""
+
+    def test_no_db_path_returns_empty(self):
+        from specialists.adversarial_reviewer import _pair_book_summary
+        ctx = MagicMock()
+        ctx.db_path = None
+        assert _pair_book_summary(ctx) == ""
+
+    def test_active_pairs_listed(self, tmp_db):
+        from specialists.adversarial_reviewer import _pair_book_summary
+        from stat_arb_pair_book import Pair, upsert_pair
+        upsert_pair(tmp_db, Pair(
+            symbol_a="AAPL", symbol_b="MSFT",
+            hedge_ratio=1.0, p_value=0.01,
+            half_life_days=5.0, correlation=0.92,
+        ))
+        out = _pair_book_summary(self._ctx_with_db(tmp_db))
+        assert "AAPL/MSFT" in out
+        assert "Active stat-arb pairs" in out
+
+    def test_slow_half_life_flagged(self, tmp_db):
+        """Reviewer should see a [SLOW] flag on pairs with HL > 20d so
+        it can veto PAIR_TRADE proposals that would tie up capital."""
+        from specialists.adversarial_reviewer import _pair_book_summary
+        from stat_arb_pair_book import Pair, upsert_pair
+        upsert_pair(tmp_db, Pair(
+            symbol_a="A", symbol_b="B",
+            hedge_ratio=1.0, p_value=0.01,
+            half_life_days=25.0, correlation=0.92,  # slow
+        ))
+        out = _pair_book_summary(self._ctx_with_db(tmp_db))
+        assert "SLOW" in out
+
+    def test_extreme_hedge_ratio_flagged(self, tmp_db):
+        """When hedge ratio is far from 1.0, dollar-neutral sizing
+        leaves residual beta — flag it."""
+        from specialists.adversarial_reviewer import _pair_book_summary
+        from stat_arb_pair_book import Pair, upsert_pair
+        upsert_pair(tmp_db, Pair(
+            symbol_a="A", symbol_b="B",
+            hedge_ratio=2.5, p_value=0.01,
+            half_life_days=5.0, correlation=0.92,
+        ))
+        out = _pair_book_summary(self._ctx_with_db(tmp_db))
+        assert "HEDGE FAR FROM 1.0" in out
+
+    def test_prompt_includes_pair_book_when_present(self, tmp_db):
+        from specialists.adversarial_reviewer import build_prompt
+        from stat_arb_pair_book import Pair, upsert_pair
+        upsert_pair(tmp_db, Pair(
+            symbol_a="A", symbol_b="B",
+            hedge_ratio=1.0, p_value=0.01,
+            half_life_days=5.0, correlation=0.92,
+        ))
+        ctx = self._ctx_with_db(tmp_db)
+        ctx.market_regime = "neutral"
+        with patch("specialists.adversarial_reviewer._portfolio_summary",
+                   return_value="(no positions)"):
+            prompt = build_prompt(
+                [{"symbol": "X", "signal": "BUY", "price": 100,
+                  "reason": "test"}], ctx,
+            )
+        assert "Active stat-arb pairs" in prompt
+        assert "PAIR-BOOK INTERACTION" in prompt
+
+    def test_prompt_omits_pair_book_when_empty(self, tmp_db):
+        """No active pairs → no pair-book section in prompt (avoids
+        token bloat when there's nothing to red-team)."""
+        from specialists.adversarial_reviewer import build_prompt
+        ctx = self._ctx_with_db(tmp_db)
+        ctx.market_regime = "neutral"
+        with patch("specialists.adversarial_reviewer._portfolio_summary",
+                   return_value="(no positions)"):
+            prompt = build_prompt(
+                [{"symbol": "X", "signal": "BUY", "price": 100,
+                  "reason": "test"}], ctx,
+            )
+        assert "Active stat-arb pairs" not in prompt
+        # The PAIR-BOOK INTERACTION checklist item still appears (it's
+        # static prompt text); only the dynamic pair list is gated.
+
+
 class TestEnsembleIntegration:
     def test_registered_in_specialist_modules(self):
         from specialists import SPECIALIST_MODULES

@@ -979,6 +979,47 @@
         </article>
         {% endif %}
 
+        {# Item 1b — stat-arb pair book per profile. Only renders for
+           profiles where the universe scan has populated the book. #}
+        {% if pair_book_info and pair_book_info.per_profile %}
+        <article style="margin:1rem 0; background:#f8f8f6; padding:0.75rem 1rem;">
+            <header style="padding:0;">
+                <h4 style="margin:0;">Stat-Arb Pair Book</h4>
+                <small class="muted">Cointegrated pairs the weekly universe scan has discovered. The AI sees these in its prompt with current z-scores and can propose PAIR_TRADE actions.</small>
+            </header>
+            {% for prof in pair_book_info.per_profile %}
+            <details style="margin-top:0.5rem;">
+                <summary>
+                    <strong>{{ prof.name }}</strong>
+                    <span class="muted">— {{ prof.active_count }} active pair{{ '' if prof.active_count == 1 else 's' }}</span>
+                </summary>
+                <table style="width:100%; font-size:0.85rem; margin-top:0.5rem;">
+                    <thead>
+                        <tr>
+                            <th style="text-align:left;">Pair</th>
+                            <th style="text-align:right;">Hedge</th>
+                            <th style="text-align:right;">p-value</th>
+                            <th style="text-align:right;">Half-life (d)</th>
+                            <th style="text-align:right;">Correlation</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in prof.rows %}
+                        <tr>
+                            <td style="font-family:monospace;">{{ r.label }}</td>
+                            <td style="text-align:right;">{{ r.hedge_ratio }}</td>
+                            <td style="text-align:right;">{{ r.p_value }}</td>
+                            <td style="text-align:right;">{{ r.half_life_days }}</td>
+                            <td style="text-align:right;">{{ r.correlation }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </details>
+            {% endfor %}
+        </article>
+        {% endif %}
+
         {% if not ensemble_info.per_profile %}
         <p class="muted">No ensemble decisions yet. The specialist ensemble runs during each scan cycle once the shortlist is built.</p>
         {% else %}

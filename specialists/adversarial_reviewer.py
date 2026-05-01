@@ -78,9 +78,48 @@ def _regime_summary(ctx: Any) -> str:
     return "Mandate: " + ", ".join(bits)
 
 
+def _pair_book_summary(ctx: Any) -> str:
+    """Render the active stat-arb pair book — surfaces pair-specific
+    failure modes the reviewer should hunt for if the AI proposes
+    PAIR_TRADE this cycle. Empty when book is empty.
+
+    The reviewer needs this even though pairs aren't in the candidate
+    list: when the AI proposes PAIR_TRADE downstream, the reviewer's
+    veto framework needs to have already considered pair-specific
+    risks (slow half-life ties up capital, sector overlap with current
+    book, hedge ratio far from 1.0 leaving residual beta).
+    """
+    db_path = getattr(ctx, "db_path", None) if ctx else None
+    if not db_path:
+        return ""
+    try:
+        from stat_arb_pair_book import get_active_pairs
+        pairs = get_active_pairs(db_path)
+    except Exception:
+        return ""
+    if not pairs:
+        return ""
+    lines = ["Active stat-arb pairs (potential PAIR_TRADE proposals downstream):"]
+    for p in pairs[:8]:  # cap so prompt stays tight
+        flag = ""
+        if p.half_life_days > 20:
+            flag = "  [SLOW: half-life > 20d, capital tied up]"
+        elif abs(p.hedge_ratio - 1.0) > 0.5:
+            flag = (f"  [HEDGE FAR FROM 1.0: residual beta likely "
+                    f"under dollar-neutral sizing]")
+        lines.append(
+            f"  - {p.label}  hedge={p.hedge_ratio:.2f}  "
+            f"hl={p.half_life_days:.1f}d{flag}"
+        )
+    return "\n".join(lines)
+
+
 def build_prompt(candidates: List[Dict[str, Any]], ctx: Any) -> str:
     portfolio = _portfolio_summary(ctx)
     regime = _regime_summary(ctx)
+    pair_book = _pair_book_summary(ctx)
+
+    pair_book_section = f"\n\n{pair_book}\n" if pair_book else ""
 
     return f"""You are an ADVERSARIAL trade reviewer. Your job is NOT to
 evaluate "is this a good trade?" — other specialists do that. Your job
@@ -94,7 +133,7 @@ specialists are likely to miss.
 
 {regime}
 
-{portfolio}
+{portfolio}{pair_book_section}
 
 Candidates to review:
 {candidates_block(candidates)}
@@ -104,7 +143,10 @@ For each candidate, work through this checklist mentally:
      factor / sector / theme? Adding more is doubling down, not
      diversifying.
   2. CONCENTRATION: is this name already in the book? A 2nd entry on
-     the same name compounds single-name risk.
+     the same name compounds single-name risk. Note: if a stat-arb
+     pair above shares one of its legs with this candidate, the AI
+     proposing both this trade AND the pair would double-stack that
+     name — flag it.
   3. REGIME MISMATCH: does this trade work AGAINST the mandate?
      (e.g., a long-beta tech name when the regime is defensive and
      the mandate is market-neutral.)
@@ -114,6 +156,11 @@ For each candidate, work through this checklist mentally:
      positioning on a short? Squeeze risk cuts both ways.
   6. FACTOR DIRECTION: would this push the book's beta or sector tilt
      past the mandate?
+  7. PAIR-BOOK INTERACTION: if pairs are listed above, do any flagged
+     pairs (slow half-life, hedge ratio far from 1.0) suggest the
+     AI shouldn't propose PAIR_TRADE this cycle? Slow pairs lock up
+     capital; far-from-1 hedges leave residual beta exposure that
+     defeats the dollar-neutral premise.
 
 Return a STRICT JSON ARRAY — starts with `[` and ends with `]`. Every
 candidate must appear EXACTLY ONCE. Each entry:
