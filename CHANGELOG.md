@@ -17,6 +17,25 @@ Rules going forward:
 
 ---
 
+## 2026-04-30 — Veto-rate panel on /ai dashboard (Severity: medium, observability)
+
+**What this surfaces.** New table in the Specialist Ensemble section showing per-specialist verdict + veto counts over the last 7 days, across all profiles. Distinguishes:
+
+- **Effective vetoes** — verdict='VETO' from a specialist in `ensemble.VETO_AUTHORIZED` (currently `risk_assessor`, `adversarial_reviewer`). Actually blocked a trade.
+- **Claimed vetoes** — verdict='VETO' from any specialist. Includes silent no-ops where an unauthorized specialist (pattern_recognizer, sentiment_narrative) wrote VETO into `specialist_outcomes` but couldn't actually block because the ensemble doesn't grant them authority.
+
+**Why this exists.** First check after deploy showed: across all 10 prod profiles, the only specialists actually emitting VETO are `pattern_recognizer` and `sentiment_narrative` — neither has authority. `risk_assessor` (which DOES have authority) emits 0 vetoes in the window. Without surfacing this, the system looks like it has healthy disagreement when actually all the disagreement is silently ignored. The new `adversarial_reviewer` (Item 5b) needs the same visibility once it accumulates verdicts.
+
+**Files.**
+
+- `journal.py` — new `get_specialist_veto_stats(db_paths, days=7)`. Aggregates `specialist_outcomes` rows per specialist; tags each row with `has_authority` based on the live `VETO_AUTHORIZED` set (so it stays in sync if the set ever changes).
+- `views.py` — `ai_dashboard()` calls the helper and passes `ensemble_info["veto_stats"]` to the template.
+- `templates/ai.html` — new "Veto Activity" sub-panel inside the Specialist Ensemble article. Color-coded: green "Effective" for authority-bearing specialists, amber "No authority — silent no-op" for the rest.
+
+**Tests.** 7 in `test_specialist_veto_stats.py`: empty DB, authorized specialist VETO counted as effective, unauthorized specialist VETO is silent no-op (the prod bug it surfaces), `adversarial_reviewer` recognized as authorized, multi-DB aggregation, sorted by veto count descending, missing DB handled gracefully. The /ai smoke test in test_web.py catches any Jinja errors in the new panel markup.
+
+---
+
 ## 2026-04-30 — Item 5b: adversarial reviewer specialist (Severity: high, capability)
 
 **What this adds.** 5th specialist in the ensemble (`specialists/adversarial_reviewer.py`) with VETO authority. Different framing from `risk_assessor`: hunts for failure modes ("what would have to be true for this to lose money fast?") rather than risk factors ("what risks exist?"). Two redundant voices intentionally — different framings catch different misses.

@@ -2994,6 +2994,18 @@ def ai_dashboard():
     except Exception:
         pass
 
+    # Per-specialist veto activity across all profiles, last 7 days.
+    # Surfaces silent-no-op vetoes (specialists w/o VETO authority that
+    # nonetheless wrote VETO into specialist_outcomes — happens when a
+    # bullish-side specialist disagrees but lacks blocking power).
+    try:
+        from journal import get_specialist_veto_stats
+        ensemble_info["veto_stats"] = get_specialist_veto_stats(
+            db_paths, days=7,
+        )
+    except Exception:
+        ensemble_info["veto_stats"] = None
+
     auto_strategy_info = {"per_profile": []}
     try:
         from strategy_generator import list_strategies as _list_auto

@@ -1054,3 +1054,81 @@ def get_slippage_stats(db_path=None):
     except Exception:
         conn.close()
         return None
+
+
+def get_specialist_veto_stats(db_paths, days=7):
+    """Aggregate per-specialist verdict counts across profiles.
+
+    Distinguishes "claimed" vetoes (any specialist that wrote VETO into
+    specialist_outcomes) from "effective" vetoes (those that actually
+    blocked a trade — only specialists in ensemble.VETO_AUTHORIZED have
+    that authority). Surfaces a real and easy-to-miss bug: an unauthorized
+    specialist emitting VETO is silently a no-op, which looks like
+    healthy disagreement on the dashboard but contributes nothing.
+
+    Args:
+        db_paths: list of profile journal DB paths.
+        days: lookback window in days.
+
+    Returns dict shaped:
+      {
+        "window_days": int,
+        "by_specialist": [
+          {"name", "total", "vetoes", "veto_rate_pct", "has_authority",
+           "effective_vetoes"},
+          ...
+        ],
+        "total_vetoes_claimed": int,
+        "total_vetoes_effective": int,
+      }
+    Sorted by veto count descending.
+    """
+    try:
+        from ensemble import VETO_AUTHORIZED
+    except Exception:
+        VETO_AUTHORIZED = {"risk_assessor", "adversarial_reviewer"}
+
+    counts = {}  # name -> {"total": int, "vetoes": int}
+    for db_path in db_paths:
+        try:
+            conn = _get_conn(db_path)
+            rows = conn.execute(
+                """SELECT specialist_name, verdict, COUNT(*) as n
+                   FROM specialist_outcomes
+                   WHERE recorded_at > datetime('now', '-' || ? || ' days')
+                   GROUP BY specialist_name, verdict""",
+                (days,),
+            ).fetchall()
+            conn.close()
+        except Exception:
+            continue
+        for row in rows:
+            name = row[0]
+            verdict = row[1]
+            n = int(row[2] or 0)
+            entry = counts.setdefault(name, {"total": 0, "vetoes": 0})
+            entry["total"] += n
+            if verdict == "VETO":
+                entry["vetoes"] += n
+
+    by_specialist = []
+    for name, c in counts.items():
+        has_authority = name in VETO_AUTHORIZED
+        rate = (c["vetoes"] / c["total"] * 100) if c["total"] else 0.0
+        by_specialist.append({
+            "name": name,
+            "total": c["total"],
+            "vetoes": c["vetoes"],
+            "veto_rate_pct": round(rate, 1),
+            "has_authority": has_authority,
+            "effective_vetoes": c["vetoes"] if has_authority else 0,
+        })
+    by_specialist.sort(key=lambda x: (-x["vetoes"], x["name"]))
+
+    return {
+        "window_days": days,
+        "by_specialist": by_specialist,
+        "total_vetoes_claimed": sum(s["vetoes"] for s in by_specialist),
+        "total_vetoes_effective": sum(
+            s["effective_vetoes"] for s in by_specialist),
+    }

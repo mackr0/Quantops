@@ -935,7 +935,49 @@
     <!-- Phase 8: Specialist Ensemble Breakdown -->
     <article>
         <header><h3>Specialist Ensemble</h3></header>
-        <p class="muted" style="margin-top:-0.5rem;">Four specialist AIs — earnings analyst, pattern recognizer, sentiment/narrative, and risk assessor — each review every shortlisted candidate. Their verdicts are combined via confidence-weighted voting. The risk specialist holds VETO authority and can block a trade regardless of the others.</p>
+        <p class="muted" style="margin-top:-0.5rem;">Five specialist AIs — earnings analyst, pattern recognizer, sentiment/narrative, risk assessor, and adversarial reviewer — each review every shortlisted candidate. Their verdicts are combined via confidence-weighted voting. The risk and adversarial specialists hold VETO authority and can block a trade regardless of the others.</p>
+
+        {# Veto activity rollup — last 7 days across all profiles. #}
+        {% if ensemble_info.veto_stats and ensemble_info.veto_stats.by_specialist %}
+        <article style="margin:1rem 0; background:#f8f8f6; padding:0.75rem 1rem;">
+            <header style="padding:0;">
+                <h4 style="margin:0;">Veto Activity (last {{ ensemble_info.veto_stats.window_days }} days)</h4>
+                <small class="muted">
+                    {{ ensemble_info.veto_stats.total_vetoes_effective }} effective veto(s) ·
+                    {{ ensemble_info.veto_stats.total_vetoes_claimed }} total claimed.
+                    Only specialists with VETO authority can actually block a trade.
+                </small>
+            </header>
+            <table style="width:100%; font-size:0.85rem; margin-top:0.5rem;">
+                <thead>
+                    <tr>
+                        <th style="text-align:left;">Specialist</th>
+                        <th style="text-align:right;">Verdicts</th>
+                        <th style="text-align:right;">Vetoes</th>
+                        <th style="text-align:right;">Veto Rate</th>
+                        <th style="text-align:left;">Authority</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for s in ensemble_info.veto_stats.by_specialist %}
+                    <tr>
+                        <td style="font-family:monospace;">{{ s.name }}</td>
+                        <td style="text-align:right;">{{ s.total }}</td>
+                        <td style="text-align:right;">{{ s.vetoes }}</td>
+                        <td style="text-align:right;">{{ s.veto_rate_pct }}%</td>
+                        <td>
+                            {% if s.has_authority %}
+                            <span style="color:#2d7a3d;">Effective</span>
+                            {% else %}
+                            <span style="color:#b87333;">No authority — silent no-op</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </article>
+        {% endif %}
 
         {% if not ensemble_info.per_profile %}
         <p class="muted">No ensemble decisions yet. The specialist ensemble runs during each scan cycle once the shortlist is built.</p>
