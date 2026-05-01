@@ -311,6 +311,13 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_stat_arb_retest(ctx),
             db_path=ctx.db_path,
         )
+        # Item 1b — weekly universe scan to discover new pairs.
+        # Sunday-only with marker idempotency. No-op on other days.
+        run_task(
+            f"[{seg_label}] Stat-Arb Universe Scan",
+            lambda: _task_stat_arb_universe_scan(ctx),
+            db_path=ctx.db_path,
+        )
         # SEC filing analysis (Phase 4) — runs once per market_type per
         # cycle, not per profile. The same symbols get the same filings.
         _sec_key = ctx.segment
@@ -945,6 +952,78 @@ def _task_cost_check(ctx):
                 )
     except Exception:
         pass
+
+
+def _task_stat_arb_universe_scan(ctx):
+    """Weekly universe scan to discover new cointegrated pairs.
+
+    Sunday only, file-based idempotency marker per-profile. Quadratic
+    scan is expensive (~25s for 100 symbols); the daily retest task
+    handles the cheap incremental work in between.
+
+    Symbol universe: this profile's segment universe (capped at
+    `STAT_ARB_SCAN_SYMBOL_LIMIT` to keep wall time bounded). Pairs are
+    persisted via `upsert_pair` so reruns don't duplicate.
+    """
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    now_et = _dt.datetime.now(ZoneInfo("America/New_York"))
+    if now_et.weekday() != 6:  # Sunday only
+        return
+
+    profile_id = getattr(ctx, "profile_id", None)
+    seg_label = ctx.display_name or ctx.segment
+    today = now_et.strftime("%Y-%m-%d")
+    marker = f".stat_arb_scan_done_p{profile_id or 'X'}.marker"
+
+    try:
+        with open(marker) as f:
+            if f.read().strip() == today:
+                logging.info(
+                    f"[{seg_label}] Stat-arb universe scan already "
+                    f"ran today — skipping.")
+                return
+    except FileNotFoundError:
+        pass
+
+    try:
+        from segments import get_live_universe
+        from market_data import get_bars
+        from stat_arb_pair_book import scan_and_persist_pairs
+
+        symbols = get_live_universe(ctx.segment, ctx=ctx) or []
+        # Bound wall time: 60 symbols → 60·59/2 = 1770 EG tests, ~9s
+        STAT_ARB_SCAN_SYMBOL_LIMIT = 60
+        symbols = symbols[:STAT_ARB_SCAN_SYMBOL_LIMIT]
+
+        def _ph(symbol):
+            try:
+                bars = get_bars(symbol, limit=200)
+                if bars is None or len(bars) < 60:
+                    return None
+                return bars["close"].tolist()
+            except Exception:
+                return None
+
+        result = scan_and_persist_pairs(
+            ctx.db_path, symbols, price_history=_ph,
+        )
+        logging.info(
+            f"[{seg_label}] Stat-arb universe scan: "
+            f"scanned={result['scanned_symbols']}, "
+            f"found={result['found']}, persisted={result['persisted']}"
+        )
+        # Idempotency marker
+        try:
+            with open(marker, "w") as f:
+                f.write(today)
+        except OSError as exc:
+            logging.warning(
+                f"[{seg_label}] Could not write stat-arb scan marker: {exc}")
+    except Exception:
+        logging.exception(
+            f"[{seg_label}] Stat-arb universe scan failed")
 
 
 def _task_stat_arb_retest(ctx):

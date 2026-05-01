@@ -3006,6 +3006,40 @@ def ai_dashboard():
     except Exception:
         ensemble_info["veto_stats"] = None
 
+    # Item 1b — stat-arb pair book per profile. Surfaces the active
+    # cointegrated pairs so the operator can see the universe scan
+    # is working AND eyeball whether retest is auto-ejecting noisy
+    # pairs. Empty for profiles where the universe scan hasn't run yet.
+    pair_book_info = {"per_profile": []}
+    try:
+        from stat_arb_pair_book import get_active_pairs
+        for p in profiles:
+            if selected_profile_int and p["id"] != selected_profile_int:
+                continue
+            db = f"quantopsai_profile_{p['id']}.db"
+            if not os.path.exists(db):
+                continue
+            try:
+                active = get_active_pairs(db)
+            except Exception:
+                active = []
+            if not active:
+                continue
+            rows = [{
+                "label": ap.label,
+                "hedge_ratio": round(ap.hedge_ratio, 3),
+                "p_value": round(ap.p_value, 3),
+                "half_life_days": round(ap.half_life_days, 1),
+                "correlation": round(ap.correlation, 2),
+            } for ap in active[:20]]
+            pair_book_info["per_profile"].append({
+                "profile_id": p["id"], "name": p["name"],
+                "active_count": len(active),
+                "rows": rows,
+            })
+    except Exception:
+        pass
+
     auto_strategy_info = {"per_profile": []}
     try:
         from strategy_generator import list_strategies as _list_auto
@@ -3123,6 +3157,7 @@ def ai_dashboard():
                            auto_strategy_info=auto_strategy_info,
                            crisis_info=crisis_info, event_info=event_info,
                            ensemble_info=ensemble_info,
+                           pair_book_info=pair_book_info,
                            ai_cost_info=ai_cost_info,
                            ai_win_rate_chart_svg=ai_win_rate_chart_svg,
                            long_short_awareness=long_short_awareness,

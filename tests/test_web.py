@@ -113,6 +113,45 @@ class TestAuthenticatedRoutes:
             f"Admin page returned {resp.status_code}"
         )
 
+    def test_settings_with_null_short_fields(self, logged_in_client,
+                                                tmp_main_db):
+        """Regression: prod profiles created before the long/short
+        columns existed had NULL in short_*_pct. The settings template
+        was doing prof.get('field', default) * 100, but .get returns
+        None when the key exists with a NULL value — None * 100 raises.
+        Fix: use (.get(field) or default).
+
+        This test seeds a profile with explicit NULL in those columns
+        and asserts /settings still renders 200."""
+        import sqlite3
+        # Find the test user's id and seed a profile row with NULLs
+        conn = sqlite3.connect(tmp_main_db)
+        user_row = conn.execute(
+            "SELECT id FROM users WHERE email='test@test.com'"
+        ).fetchone()
+        assert user_row, "test user not created"
+        user_id = user_row[0]
+
+        # Set NULLs on the user's first profile in the slider fields
+        # this regression covers
+        conn.execute(
+            """UPDATE profiles
+               SET short_stop_loss_pct=NULL, short_take_profit_pct=NULL,
+                   short_max_position_pct=NULL, short_max_hold_days=NULL,
+                   target_short_pct=NULL,
+                   drawdown_reduce_pct=NULL, drawdown_pause_pct=NULL
+               WHERE user_id=?""",
+            (user_id,),
+        )
+        conn.commit()
+        conn.close()
+
+        resp = logged_in_client.get("/settings")
+        assert resp.status_code == 200, (
+            f"/settings returned {resp.status_code} when profile has NULL "
+            f"short_*_pct fields — regression of the 2026-05-01 incident"
+        )
+
 
 class TestAPIRoutes:
     """API endpoints should return JSON."""
