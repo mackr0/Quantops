@@ -34,16 +34,20 @@ def tmp_db():
 
 def _seed_long_call(db_path, sym="AAPL", qty=1, strike=150,
                       expiry_days_out=30):
+    """Build OCC encoding the actual future expiry so the aggregator's
+    parse_occ_symbol → days_to_expiry math doesn't treat the leg as
+    already expired."""
     from journal import log_trade
+    from options_trader import format_occ_symbol
     from datetime import date as _d, timedelta as _td
-    expiry = (_d.today() + _td(days=expiry_days_out)).isoformat()
-    occ = f"{sym:<6}"[:6] + "990115C" + f"{int(strike*1000):08d}"
-    occ = occ[:21]
+    expiry_date = _d.today() + _td(days=expiry_days_out)
+    occ = format_occ_symbol(sym, expiry_date, strike, "C")
     log_trade(
         symbol=sym, side="buy", qty=qty, price=2.50,
         signal_type="OPTIONS", strategy="long_call",
         decision_price=2.50, occ_symbol=occ,
-        option_strategy="long_call", expiry=expiry, strike=strike,
+        option_strategy="long_call",
+        expiry=expiry_date.isoformat(), strike=strike,
         db_path=db_path,
     )
 
@@ -51,15 +55,16 @@ def _seed_long_call(db_path, sym="AAPL", qty=1, strike=150,
 def _seed_covered_call(db_path, sym="AAPL", qty=1, strike=160,
                           expiry_days_out=30):
     from journal import log_trade
+    from options_trader import format_occ_symbol
     from datetime import date as _d, timedelta as _td
-    expiry = (_d.today() + _td(days=expiry_days_out)).isoformat()
-    occ = f"{sym:<6}"[:6] + "990115C" + f"{int(strike*1000):08d}"
-    occ = occ[:21]
+    expiry_date = _d.today() + _td(days=expiry_days_out)
+    occ = format_occ_symbol(sym, expiry_date, strike, "C")
     log_trade(
         symbol=sym, side="sell", qty=qty, price=1.50,
         signal_type="OPTIONS", strategy="covered_call",
         decision_price=1.50, occ_symbol=occ,
-        option_strategy="covered_call", expiry=expiry, strike=strike,
+        option_strategy="covered_call",
+        expiry=expiry_date.isoformat(), strike=strike,
         db_path=db_path,
     )
 
