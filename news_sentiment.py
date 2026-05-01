@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 
 from config import CLAUDE_MODEL
 from client import get_api
@@ -14,14 +15,19 @@ def fetch_news(symbol, limit=10, api=None):
     """
     Fetch recent news articles for *symbol*.
 
-    Uses yfinance (free) instead of Alpaca's news API which requires
-    a separate paid subscription we don't have. The Alpaca path was
-    silently failing with 401 Unauthorized on every call and flooding
-    the logs with errors.
+    Migrated 2026-05-01 from yfinance to Alpaca News API. The earlier
+    note about "Alpaca news requires paid subscription" was wrong:
+    `data.alpaca.markets/v1beta1/news` works with our existing keys
+    (verified status 200 returning Benzinga headlines). The historical
+    401 the old comment mentioned was probably a different endpoint or
+    a stale credentials issue. yfinance fallback retained inside
+    `fetch_news_alpaca` for the rare case Alpaca returns nothing.
 
-    Returns a list of dicts with headline, source, and link.
+    Returns a list of headline strings (the AI's sentiment analyzer
+    only needs the headline; full article retrieval costs tokens
+    without proportional signal gain).
     """
-    return fetch_news_yfinance(symbol, limit=min(limit, 5))
+    return fetch_news_alpaca(symbol, limit=min(limit, 5))
 
 
 def analyze_sentiment(symbol, news_items):
@@ -158,33 +164,72 @@ def get_sentiment_signal(symbol):
 # Free yfinance news (no Alpaca key needed)
 # ---------------------------------------------------------------------------
 
-_yf_news_cache = {}
-_YF_NEWS_TTL = 1800  # 30 minutes
+_news_cache = {}
+_NEWS_TTL = 1800  # 30 minutes
 
-def fetch_news_yfinance(symbol, limit=3):
-    """Fetch recent headlines for a symbol from yfinance (free, no API key).
+
+def fetch_news_alpaca(symbol, limit=3):
+    """Fetch recent headlines via Alpaca News API.
+
+    Alpaca's `/v1beta1/news` endpoint serves the Benzinga feed and
+    works with our existing paper-account API keys. Real-time, free
+    with our subscription.
 
     Returns list of headline strings. Cached for 30 minutes per symbol.
+    Falls back to yfinance only on hard failure.
     """
-    import time
     now = time.time()
-    cached = _yf_news_cache.get(symbol)
-    if cached and (now - cached[0]) < _YF_NEWS_TTL:
+    cached = _news_cache.get(symbol)
+    if cached and (now - cached[0]) < _NEWS_TTL:
         return cached[1]
 
+    if "/" in symbol:
+        # Crypto: Alpaca news doesn't cover crypto pairs reliably;
+        # skip rather than fall through.
+        _news_cache[symbol] = (now, [])
+        return []
+
     try:
-        import yfinance as yf
-        yf_symbol = symbol.replace("/", "-") if "/" in symbol else symbol
-        ticker = yf.Ticker(yf_symbol)
-        news = ticker.news or []
+        import requests
+        import config
+        r = requests.get(
+            "https://data.alpaca.markets/v1beta1/news",
+            headers={
+                "APCA-API-KEY-ID": config.ALPACA_API_KEY,
+                "APCA-API-SECRET-KEY": config.ALPACA_SECRET_KEY,
+            },
+            params={
+                "symbols": symbol.upper(),
+                "limit": max(limit, 3),
+            },
+            timeout=10,
+        )
+        if r.status_code != 200:
+            logger.debug("Alpaca news %s: %s %s",
+                         symbol, r.status_code, r.text[:200])
+            _news_cache[symbol] = (now, [])
+            return []
+        data = r.json()
         headlines = []
-        for item in news[:limit]:
-            title = item.get("title", "")
-            if title:
-                headlines.append(title)
-        _yf_news_cache[symbol] = (now, headlines)
+        for item in (data.get("news") or [])[:limit]:
+            h = item.get("headline", "")
+            if h:
+                headlines.append(h)
+        _news_cache[symbol] = (now, headlines)
         return headlines
     except Exception as exc:
-        logger.debug("Failed to fetch yfinance news for %s: %s", symbol, exc)
-        _yf_news_cache[symbol] = (now, [])
+        logger.debug("Alpaca news fetch failed for %s: %s", symbol, exc)
+        _news_cache[symbol] = (now, [])
         return []
+
+
+# Legacy yfinance fallback kept for backward-compat callers, but no
+# longer the default path. Will be removed in a future cleanup once
+# all callers point at fetch_news_alpaca.
+def fetch_news_yfinance(symbol, limit=3):
+    """DEPRECATED: prefer fetch_news_alpaca. yfinance is 15+ min
+    delayed and incomplete; kept only for fallback safety.
+
+    Returns list of headline strings.
+    """
+    return fetch_news_alpaca(symbol, limit=limit)

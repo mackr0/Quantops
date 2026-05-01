@@ -73,7 +73,12 @@ _BENCHMARK_CACHE_TTL = 1800  # 30 minutes
 
 
 def _fetch_benchmark_returns(ticker: str, start_date: str, end_date: str) -> Dict[str, float]:
-    """Fetch daily returns for a benchmark ticker from yfinance.
+    """Fetch daily returns for a benchmark ticker via Alpaca.
+
+    Migrated 2026-05-01 — implementation already used
+    market_data.get_bars_daterange (Alpaca-first); the docstring still
+    referenced yfinance from the original implementation. Now matches
+    actual behavior.
 
     Returns {date_str: daily_return_pct, ...}.  Cached at module level for
     30 minutes.

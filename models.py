@@ -1560,31 +1560,40 @@ def cache_symbol_names(names: Dict[str, str]) -> None:
 
 
 def fetch_and_cache_names(symbols: List[str]) -> Dict[str, str]:
-    """Fetch names from yfinance for symbols not already cached, cache them, return all."""
+    """Fetch company names for symbols not already cached, cache them, return all.
+
+    Migrated 2026-05-01 from yfinance.Tickers.info.shortName to
+    Alpaca's `/v2/assets/<symbol>` endpoint which exposes a `name`
+    field (e.g., "Apple Inc. Common Stock"). Real-time, free with
+    our paper-account keys.
+    """
     cached = get_cached_names(symbols)
     missing = [s for s in symbols if s not in cached]
 
     if not missing:
         return cached
 
-    # Fetch from yfinance in batches of 20
-    import yfinance as yf
-    new_names = {}
-    for i in range(0, len(missing), 20):
-        batch = missing[i:i + 20]
-        yf_syms = [s.replace("/", "-") for s in batch]
+    import requests
+    import config
+
+    headers = {
+        "APCA-API-KEY-ID": config.ALPACA_API_KEY,
+        "APCA-API-SECRET-KEY": config.ALPACA_SECRET_KEY,
+    }
+    new_names: Dict[str, str] = {}
+    base_url = config.ALPACA_BASE_URL.rstrip("/")
+    for sym in missing:
         try:
-            tickers = yf.Tickers(" ".join(yf_syms))
-            for orig, yf_sym in zip(batch, yf_syms):
-                try:
-                    info = tickers.tickers[yf_sym].info
-                    name = info.get("shortName") or info.get("longName") or orig
-                    new_names[orig] = name
-                except Exception:
-                    new_names[orig] = orig
+            r = requests.get(f"{base_url}/v2/assets/{sym}",
+                             headers=headers, timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                name = data.get("name") or sym
+                new_names[sym] = name
+            else:
+                new_names[sym] = sym
         except Exception:
-            for s in batch:
-                new_names[s] = s
+            new_names[sym] = sym
 
     if new_names:
         cache_symbol_names(new_names)

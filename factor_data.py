@@ -104,8 +104,13 @@ def get_book_to_market(symbol: str) -> Optional[float]:
     0.3-1  = mid (typical mature company)
     < 0.3  = growth stock (intangibles + future earnings priced in)
 
-    Returns None when fundamentals aren't available (yfinance miss).
-    Cached 1 week.
+    Stays on yfinance: Alpaca is a broker — they expose price data
+    but NOT fundamentals (book value, shares outstanding). Replacing
+    this would require a fundamentals vendor (Polygon Stocks Plus,
+    Financial Modeling Prep, etc., all paid). Documented as an
+    accepted yfinance use in feedback_alpaca_first_data.md.
+
+    Returns None when fundamentals aren't available. Cached 1 week.
     """
     if not symbol or "/" in symbol:
         return None
@@ -133,7 +138,16 @@ def get_book_to_market(symbol: str) -> Optional[float]:
 
 
 def get_beta(symbol: str) -> Optional[float]:
-    """Return 5-year beta vs S&P 500 from yfinance.info.beta.
+    """Return 2-year beta vs SPY computed from daily returns.
+
+    Migrated 2026-05-01 from yfinance.Ticker.info.beta (which used
+    Yahoo's 5-year computation) to a local OLS regression on Alpaca
+    bars. We pay for Alpaca; computing beta from real bars beats
+    leaning on Yahoo's stale field.
+
+    Math: β = cov(symbol_returns, spy_returns) / var(spy_returns)
+    over the trailing ~500 trading days (~2 years). Daily log returns,
+    aligned by date.
 
     < 0.7  = defensive (utilities, staples)
     0.7-1.3 = market-correlated
@@ -147,18 +161,39 @@ def get_beta(symbol: str) -> Optional[float]:
     if cached is not None:
         return cached
     try:
-        import yfinance as yf
-        ticker = yf.Ticker(symbol)
-        info = ticker.info or {}
-        beta = info.get("beta")
-        if beta is not None:
-            beta_val = float(beta)
-            _set_cached(symbol, "beta", beta_val)
-            return beta_val
+        from market_data import get_bars
+        import numpy as np
+        sym_bars = get_bars(symbol, limit=500)
+        spy_bars = get_bars("SPY", limit=500)
+        if (sym_bars is None or spy_bars is None
+                or len(sym_bars) < 60 or len(spy_bars) < 60):
+            _set_cached(symbol, "beta", None)
+            return None
+
+        sym_returns = sym_bars["close"].pct_change().dropna()
+        spy_returns = spy_bars["close"].pct_change().dropna()
+
+        # Align by date — both are tz-aware DateTimeIndex
+        common = sym_returns.index.intersection(spy_returns.index)
+        if len(common) < 60:
+            _set_cached(symbol, "beta", None)
+            return None
+
+        s = sym_returns.loc[common].values
+        m = spy_returns.loc[common].values
+
+        var_m = float(np.var(m, ddof=1))
+        if var_m <= 0:
+            _set_cached(symbol, "beta", None)
+            return None
+        cov_sm = float(np.cov(s, m, ddof=1)[0, 1])
+        beta_val = cov_sm / var_m
+        _set_cached(symbol, "beta", beta_val)
+        return beta_val
     except Exception as exc:
         logger.debug("get_beta(%s) failed: %s", symbol, exc)
-    _set_cached(symbol, "beta", None)
-    return None
+        _set_cached(symbol, "beta", None)
+        return None
 
 
 def get_momentum_12_1(symbol: str) -> Optional[float]:

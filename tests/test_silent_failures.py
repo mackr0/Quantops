@@ -54,15 +54,24 @@ class TestAlpacaVsYfinanceColumnConsistency:
 
 
 class TestNoSilentEmptyReturns:
-    def test_news_fetch_does_not_call_alpaca_news_api(self):
-        """We don't have an Alpaca news subscription. The old code
-        silently returned [] on every call (401 Unauthorized)."""
+    def test_news_fetch_does_not_use_sdk_get_news(self):
+        """The old alpaca-trade-api `api.get_news()` SDK method failed
+        with 401 in our environment. Migrated 2026-05-01 to direct
+        REST calls via `data.alpaca.markets/v1beta1/news` (verified
+        200 with our existing keys, returns Benzinga feed).
+
+        This test enforces: no caller of fetch_news regresses back
+        to the SDK method. Direct REST is the path forward.
+        """
         import inspect
-        from news_sentiment import fetch_news
-        src = inspect.getsource(fetch_news)
-        assert "api.get_news" not in src, (
-            "fetch_news still calls Alpaca news API which returns 401. "
-            "Should use fetch_news_yfinance instead."
+        from news_sentiment import fetch_news, fetch_news_alpaca
+        src_main = inspect.getsource(fetch_news)
+        src_alpaca = inspect.getsource(fetch_news_alpaca)
+        assert "api.get_news" not in src_main, (
+            "fetch_news regressed to SDK api.get_news method"
+        )
+        assert "api.get_news" not in src_alpaca, (
+            "fetch_news_alpaca regressed to SDK api.get_news method"
         )
 
     def test_earnings_calendar_uses_db_cache(self):

@@ -352,7 +352,13 @@ def _calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
 
 
 def _fetch_yf_history(symbol: str, days: int) -> Optional[pd.DataFrame]:
-    """Fetch historical daily bars from yfinance, with per-symbol caching.
+    """Fetch historical daily bars via Alpaca (Alpaca-first, despite the
+    function name). Per-symbol cached for 24h.
+
+    Function name is legacy — original implementation used yfinance,
+    migrated to Alpaca-first via market_data.get_bars_daterange.
+    Renaming the function would touch many callers; the name stays
+    but the BEHAVIOR is Alpaca.
 
     We always download the maximum window (_SYMBOL_CACHE_MAX_DAYS) and slice
     down to the caller's requested `days`. This means a single validation run
@@ -361,9 +367,6 @@ def _fetch_yf_history(symbol: str, days: int) -> Optional[pd.DataFrame]:
 
     Returns DataFrame with columns: open, high, low, close, volume,
     indexed by datetime. Returns None on failure.
-
-    Today-relative slicer. Used by legacy callers passing `days=`. New
-    callers should use `_fetch_yf_history_range` with explicit dates.
     """
     now = time.time()
     cached = _symbol_cache.get(symbol)
@@ -450,7 +453,9 @@ def _fetch_yf_history_range(
 
 
 def _download_symbol(symbol: str, days: int) -> Optional[pd.DataFrame]:
-    """Download historical bars via Alpaca (primary) or yfinance (crypto fallback)."""
+    """Download historical bars via Alpaca. Returns None on failure
+    (no yfinance fallback — crypto bars are also Alpaca via the
+    /v1beta3/crypto/us/bars endpoint, exposed through market_data)."""
     try:
         from market_data import get_bars_daterange
         end = datetime.now()

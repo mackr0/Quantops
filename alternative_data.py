@@ -1,10 +1,16 @@
 """Alternative data sources — insider trades, short interest, institutional
 holdings, fundamentals, and options flow.
 
-All data is FREE from yfinance. No API keys or subscriptions needed.
+Data source policy (per ALPACA-FIRST DATA RULE, feedback memory):
+  - Insider transactions: yfinance ONLY. Alpaca is a broker; no
+    insider-trades endpoint. Same for short_interest, fundamentals
+    (heldPercentInsiders, heldPercentInstitutions, etc.).
+  - Intraday 5-min bars (used in get_intraday_microstructure): SHOULD
+    migrate to Alpaca `/v2/stocks/{sym}/bars?timeframe=5Min`. Tracked
+    as a known follow-up; not yet migrated.
+
 Cached in SQLite (survives restarts) with per-type TTLs to avoid
-hammering Yahoo Finance. Previous in-memory cache was lost on every
-deploy, causing 200+ yfinance calls that triggered rate limiting.
+hammering Yahoo Finance.
 """
 
 import json

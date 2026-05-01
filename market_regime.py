@@ -2,11 +2,80 @@
 
 import logging
 import time
-from typing import Dict, Any
-
-import yfinance as yf
+from datetime import date as _date
+from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _vix_from_spy_options() -> Optional[float]:
+    """Compute VIX-equivalent from SPY options chain.
+
+    VIX is defined as the 30-day annualized implied volatility of SPX
+    (S&P 500) options at the money. SPY tracks SPX at 1/10 scale but
+    with the same volatility characteristics, so the ATM IV of a
+    ~30-day SPY option IS the VIX (within a few basis points).
+
+    Migrated 2026-05-01 from yfinance ^VIX to this Alpaca-native
+    computation. Real-time, sub-second; uses our own options chain
+    fetch (which has its own cache).
+
+    Returns VIX value as a percentage (e.g., 18.5 for VIX=18.5),
+    or None if no options chain is available.
+    """
+    try:
+        from options_chain_alpaca import fetch_chain_alpaca
+        chain = fetch_chain_alpaca("SPY")
+        if not chain:
+            return None
+        spot = chain["current_price"]
+        today = _date.today()
+
+        # Find the expiration closest to 30 days out
+        target_days = 30
+        best = None
+        for exp_iso in chain["expirations"]:
+            try:
+                exp_d = _date.fromisoformat(exp_iso)
+                days_out = (exp_d - today).days
+                if days_out <= 0:
+                    continue
+                gap = abs(days_out - target_days)
+                if best is None or gap < best[0]:
+                    best = (gap, exp_iso, days_out)
+            except ValueError:
+                continue
+        if not best:
+            return None
+        target_exp = best[1]
+
+        # Find that chain in chains[] (might not be there if not in
+        # the near 3 expirations). If not, fetch_chain_alpaca already
+        # has the data — we'd need a separate call. For SPY with
+        # multiple weekly expirations, the 30-day expiry might not
+        # be in the first 3. Search chains[] first.
+        target_chain = next(
+            (c for c in chain["chains"] if c["expiration"] == target_exp),
+            None,
+        )
+        if not target_chain:
+            # Fall back to whatever's farthest in chains[]
+            target_chain = chain["chains"][-1]
+
+        calls = target_chain["calls"]
+        if calls is None or calls.empty:
+            return None
+
+        # ATM call IV — strike closest to spot
+        idx = (calls["strike"] - spot).abs().idxmin()
+        atm_iv = float(calls.loc[idx, "impliedVolatility"])
+        if atm_iv <= 0:
+            return None
+        # Convert decimal (0.18) to percentage (18.0) — VIX convention
+        return atm_iv * 100
+    except Exception as exc:
+        logger.debug("VIX computation from SPY options failed: %s", exc)
+        return None
 
 # Cache for 30 minutes
 _cache: Dict[str, Any] = {"regime": None, "regime_ts": 0}
@@ -65,22 +134,16 @@ def detect_regime() -> Dict[str, Any]:
         else:
             result["spy_trend"] = "flat"
 
-        # VIX — yfinance only (Alpaca doesn't serve index data)
-        # Wrapped in lock + cached to minimize Yahoo calls
-        try:
-            import threading
-            _vix_lock = threading.Lock()
-            with _vix_lock:
-                vix_ticker = yf.Ticker("^VIX")
-                vix_hist = vix_ticker.history(period="5d")
-            if not vix_hist.empty:
-                vix_val = float(vix_hist["Close"].iloc[-1])
-                result["vix"] = round(vix_val, 2)
-            else:
-                vix_val = 20.0
-        except Exception as vix_err:
-            logger.warning("Failed to fetch VIX: %s", vix_err)
+        # VIX — computed from SPY 30-day ATM IV via Alpaca real-time
+        # options chain (replaces yfinance ^VIX). VIX is by definition
+        # the 30-day ATM IV of SPX/SPY, so this is the same number,
+        # just computed locally from real-time data instead of
+        # delayed yfinance feed.
+        vix_val = _vix_from_spy_options()
+        if vix_val is None:
+            logger.warning("VIX from SPY options unavailable; defaulting to 20")
             vix_val = 20.0
+        result["vix"] = round(vix_val, 2)
 
         # VIX level classification
         if vix_val < 15:

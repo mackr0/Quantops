@@ -4,7 +4,11 @@ Sources (all free, no API keys):
 - Google News RSS (political + market search)
 - CNBC Economy RSS
 - Reuters Business RSS
-- Yahoo Finance (via yfinance) for SPY/QQQ/DIA news
+- Alpaca News API for SPY/QQQ/DIA news (real-time Benzinga feed)
+
+Migrated 2026-05-01 from yfinance.Ticker.news to Alpaca's news API.
+We pay for Alpaca; using yfinance was 15+ minute delayed and burning
+the subscription.
 """
 
 import json
@@ -13,8 +17,6 @@ import time
 import urllib.request
 import xml.etree.ElementTree as ET
 from typing import Optional, Dict, Any, List
-
-import yfinance as yf
 
 import config
 from ai_providers import call_ai
@@ -124,17 +126,14 @@ def fetch_political_news(limit: int = 30) -> List[Dict[str, str]]:
         for item in _fetch_rss(feed_url, feed_name):
             _add(item["title"], item["source"])
 
-    # 2. Yahoo Finance via yfinance (market ETFs)
-    import yf_lock as _yfl
-    for sym in ["SPY", "QQQ", "DIA"]:
-        try:
-            with _yfl._lock:
-                ticker = yf.Ticker(sym)
-                news_items = ticker.news or []
-            for item in news_items:
-                _add(item.get("title", ""), item.get("publisher", "Yahoo Finance"))
-        except Exception as exc:
-            logger.warning("yfinance news failed for %s: %s", sym, exc)
+    # 2. Alpaca News API for market ETFs (real-time Benzinga feed)
+    try:
+        from news_sentiment import fetch_news_alpaca
+        for sym in ["SPY", "QQQ", "DIA"]:
+            for headline in fetch_news_alpaca(sym, limit=5):
+                _add(headline, "Alpaca/Benzinga")
+    except Exception as exc:
+        logger.warning("Alpaca news fetch failed for market ETFs: %s", exc)
 
     result = all_headlines[:limit]
     _set_cache("political_news", result)
