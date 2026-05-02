@@ -17,6 +17,30 @@ Rules going forward:
 
 ---
 
+## 2026-05-01 — OPTIONS_PROGRAM_PLAN Phase H complete: synthetic options backtester (Severity: high, capability)
+
+The last unbuilt phase of the options program. Lets us validate any options strategy historically before going live with real money.
+
+**Approach:** synthetic backtester since paid historical options data ($99/mo Polygon historical, $thousands OptionMetrics) is out of scope. Uses Alpaca historical bars (free, real) + Black-Scholes pricing with realized-vol IV approximation. Documented limits: captures direction + approximate magnitude; doesn't capture bid-ask spread, real IV term structure / skew, or catalyst vol expansion. Sufficient for STRATEGY VALIDATION (does this class earn its keep?), not PRECISE P&L FORECASTING.
+
+**4 of 5 layers shipped** (commits b7581c2, dcdc04d, 93b15e8, 5737377):
+
+- **L1** — `historical_iv_approximation`, `historical_spot`, `price_option_at_date`. Black-Scholes pricing of arbitrary options at any historical date using trailing 30-day realized vol as IV proxy. Filters to dates ≤ as_of (no look-ahead bias).
+
+- **L2** — `simulate_single_leg`. Walks one option position day-by-day from entry through close. Closes on whichever fires first: profit_target, stop_loss, time_stop, or expiry. Returns `BacktestTrade` with full lifecycle.
+
+- **L3** — `simulate_multileg_strategy`. Same shape for any `OptionStrategy` from `options_multileg`. Per-leg accounting (`buy: pnl = exit - entry; sell: pnl = entry - exit`) sums correctly across all 11 multi-leg primitives. Profit/stop targets keyed off PERCENTAGE OF MAX (max_gain / max_loss) — defined-risk natural anchors.
+
+- **L4** — `backtest_strategy_over_period(strategy_factory, symbol, period, entry_rule, cycle_days)`. Replays entry rules across a historical period at configurable cadence. Aggregates: n_trades, win_rate, total/avg/best/worst P&L, avg days held, sharpe proxy.
+
+**31 tests** covering: IV recovery on synthetic vol, look-ahead-bias prevention, expired/intrinsic handling, profit-target/stop-loss/time-stop early exits, P&L sign correctness across long/short/credit/debit, win/loss behavior on directional setups (bull spread up, bear spread down, condor in-range vs blown-wing), aggregate stats correctness.
+
+**L5 (dashboard integration) deferred** — API is callable directly; UI surfacing isn't strictly necessary to use the backtester.
+
+**OPTIONS_PROGRAM_PLAN status: Phases A–F + H complete.** Phase G (real-time data feed) was implicitly accomplished by the Alpaca-first migration. The full options program — Greeks aggregation, multi-leg primitives + atomic execution, lifecycle (assignment + roll + wheel), dynamic delta hedging, vol regime classifier, earnings/event opportunism, and now historical backtesting — is built end-to-end.
+
+---
+
 ## 2026-05-01 — Alpaca-first migration: 9 modules off yfinance (Severity: high, correctness + cost)
 
 ALPACA-FIRST DATA RULE applied across the codebase. We pay for Alpaca; using yfinance for fields Alpaca exposes was wasting the subscription, shipping decisions on 15-min-delayed quotes, and leaving real money on the table on real-money plays. Recurring failure pattern documented in `feedback_alpaca_first_data.md`.
