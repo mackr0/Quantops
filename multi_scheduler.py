@@ -220,6 +220,16 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
                 lambda: _task_intraday_risk_check(ctx),
                 db_path=ctx.db_path,
             )
+        # Item 1c — long-vol portfolio tail hedge. OFF by default
+        # (opt-in: pays real put premium for active downside cover).
+        # When on, opens / rolls / closes SPY puts based on
+        # drawdown / crisis / VaR triggers.
+        if getattr(ctx, "enable_long_vol_hedge", False):
+            run_task(
+                f"[{seg_label}] Long-Vol Hedge",
+                lambda: _task_manage_long_vol_hedge(ctx),
+                db_path=ctx.db_path,
+            )
         if getattr(ctx, "is_virtual", False):
             run_task(
                 f"[{seg_label}] Virtual Audit",
@@ -1241,6 +1251,242 @@ def _task_options_delta_hedger(ctx):
             )
     except Exception:
         logging.exception(f"[{seg_label}] Delta hedger failed")
+
+
+def _task_manage_long_vol_hedge(ctx):
+    """Item 1c — open / roll / close the long-vol portfolio hedge.
+
+    Each cycle:
+      1. Read drawdown / crisis level / latest 95% VaR.
+      2. evaluate_triggers → list of HedgeTrigger.
+      3. If no active hedge AND any trigger fired → open one.
+      4. If active hedge AND should_close → close.
+      5. If active hedge AND should_roll → close + open at new strike.
+    """
+    seg_label = ctx.display_name or ctx.segment
+    try:
+        from datetime import date, datetime
+        import json as _json
+        import long_vol_hedge as lvh
+        from client import get_api, get_account_info
+        from crisis_state import get_current_level
+        from options_chain_alpaca import fetch_chain_alpaca
+        from options_trader import (
+            build_long_put, format_occ_symbol, submit_option_order,
+        )
+
+        account = get_account_info(ctx=ctx) or {}
+        equity = float(account.get("equity") or 0)
+        if equity <= 0:
+            return
+
+        # ── Triggers ──────────────────────────────────────────────
+        drawdown_pct = lvh.compute_drawdown_from_30d_peak(
+            ctx.db_path, equity,
+        )
+        try:
+            crisis_info = get_current_level(ctx.db_path) or {}
+            crisis_level = crisis_info.get("level", "normal")
+        except Exception:
+            crisis_level = "normal"
+
+        # Latest VaR snapshot (Item 2a) if available
+        var_pct = None
+        try:
+            from journal import _get_conn as _gc
+            _conn = _gc(ctx.db_path)
+            row = _conn.execute(
+                "SELECT var_95_dollars, equity FROM portfolio_risk_snapshots "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            _conn.close()
+            if row and row["equity"] and row["equity"] > 0:
+                var_pct = float(row["var_95_dollars"] or 0) / float(row["equity"])
+        except Exception:
+            var_pct = None
+
+        triggers = lvh.evaluate_triggers(
+            drawdown_pct=drawdown_pct,
+            crisis_level=crisis_level,
+            var_95_pct_of_equity=var_pct,
+            drawdown_trigger=getattr(
+                ctx, "long_vol_hedge_drawdown_pct",
+                lvh.DEFAULT_DRAWDOWN_TRIGGER),
+            var_trigger=getattr(
+                ctx, "long_vol_hedge_var_pct",
+                lvh.DEFAULT_VAR_TRIGGER),
+        )
+
+        # ── Decide ───────────────────────────────────────────────
+        active = lvh.get_active_hedge(ctx.db_path)
+        api = get_api(ctx)
+
+        def _close_hedge(active_row, reason):
+            """Submit a sell-to-close on the option, mark closed."""
+            order_id = submit_option_order(
+                api, active_row["occ_symbol"], side="sell",
+                qty=int(active_row["contracts"]),
+            )
+            # Best-effort fill price for P&L (broker price may not be
+            # available immediately; settle for None and let the next
+            # cycle resolve)
+            close_premium = None
+            close_pnl = None
+            try:
+                pos = api.get_position(active_row["occ_symbol"])
+                close_premium = float(getattr(pos, "current_price", 0) or 0)
+                if close_premium and active_row.get("entry_premium"):
+                    close_pnl = (
+                        (close_premium - float(active_row["entry_premium"]))
+                        * 100 * int(active_row["contracts"])
+                    )
+            except Exception:
+                pass
+            lvh.record_hedge_closed(
+                ctx.db_path, int(active_row["id"]), reason,
+                close_premium=close_premium,
+                close_pnl_dollars=close_pnl,
+                close_order_id=order_id,
+            )
+            logging.info(
+                f"[{seg_label}] Long-vol hedge CLOSED: "
+                f"{active_row['occ_symbol']} ({reason})"
+            )
+
+        def _open_hedge():
+            """Pick strike + expiry, fetch SPY chain, submit BTO order."""
+            chain = fetch_chain_alpaca(lvh.HEDGE_UNDERLYING)
+            if not chain:
+                logging.warning(
+                    f"[{seg_label}] Long-vol hedge: SPY chain unavailable"
+                )
+                return
+            spot = float(chain.get("current_price") or 0)
+            if spot <= 0:
+                return
+            target_strike = lvh.select_hedge_strike(spot)
+            target_expiry = lvh.select_hedge_expiry()
+
+            # Snap to closest available expiry
+            available_exps = chain.get("expirations") or []
+            if not available_exps:
+                return
+            picked_exp_iso = min(
+                available_exps,
+                key=lambda d: abs(
+                    (date.fromisoformat(d) - target_expiry).days
+                ),
+            )
+            picked_exp = date.fromisoformat(picked_exp_iso)
+
+            # Find the matching puts DataFrame and snap to closest strike
+            puts_df = None
+            for c in chain.get("chains") or []:
+                if c.get("expiration") == picked_exp_iso:
+                    puts_df = c.get("puts")
+                    break
+            if puts_df is None or puts_df.empty:
+                logging.warning(
+                    f"[{seg_label}] Long-vol hedge: no puts for "
+                    f"{picked_exp_iso}"
+                )
+                return
+            puts_df = puts_df.copy()
+            puts_df["strike_dist"] = (puts_df["strike"] - target_strike).abs()
+            best = puts_df.sort_values("strike_dist").iloc[0]
+            strike = float(best["strike"])
+            entry_premium = float(best.get("ask", 0) or best.get("last", 0) or 0)
+            if entry_premium <= 0:
+                logging.warning(
+                    f"[{seg_label}] Long-vol hedge: no premium quote on "
+                    f"target strike — skipping this cycle"
+                )
+                return
+            entry_delta = float(best.get("delta", 0) or 0) or None
+
+            contracts = lvh.size_hedge_contracts(
+                equity, entry_premium,
+                premium_budget_pct=getattr(
+                    ctx, "long_vol_hedge_premium_pct",
+                    lvh.DEFAULT_PREMIUM_PCT),
+            )
+            if contracts <= 0:
+                logging.info(
+                    f"[{seg_label}] Long-vol hedge: budget too small for "
+                    f"any contracts at premium ${entry_premium:.2f} "
+                    f"(equity ${equity:,.0f})"
+                )
+                return
+
+            occ = format_occ_symbol(
+                lvh.HEDGE_UNDERLYING, picked_exp, strike, "P",
+            )
+            order_id = submit_option_order(
+                api, occ, side="buy", qty=contracts,
+            )
+            if order_id is None:
+                logging.warning(
+                    f"[{seg_label}] Long-vol hedge: order submission failed"
+                )
+                return
+
+            spec = {
+                "occ_symbol": occ,
+                "underlying": lvh.HEDGE_UNDERLYING,
+                "strike": strike,
+                "expiry": picked_exp_iso,
+                "contracts": contracts,
+                "entry_premium": entry_premium,
+                "entry_spot": spot,
+                "entry_delta": entry_delta,
+            }
+            row_id = lvh.record_hedge_opened(
+                ctx.db_path, spec, triggers, order_id=order_id,
+            )
+            fired = [t.name for t in triggers if t.fired]
+            logging.info(
+                f"[{seg_label}] Long-vol hedge OPENED #{row_id}: "
+                f"{contracts}x SPY {strike}P {picked_exp_iso} @ "
+                f"${entry_premium:.2f} (triggers: {','.join(fired)})"
+            )
+            _safe_log_activity(
+                getattr(ctx, "profile_id", 0), ctx.user_id,
+                "long_vol_hedge",
+                f"Long-Vol Hedge Opened: {contracts}x SPY {strike}P "
+                f"{picked_exp_iso}",
+                f"Premium ${entry_premium:.2f}/contract, total cost "
+                f"${entry_premium * 100 * contracts:,.0f}. "
+                f"Triggers fired: {', '.join(fired)}.",
+            )
+
+        # ── Apply decision ───────────────────────────────────────
+        if active:
+            # Check roll first, then close. Roll = close-then-open.
+            try:
+                expiry = date.fromisoformat(active["expiry"])
+            except Exception:
+                expiry = date.today() + timedelta(days=30)
+            # Best-effort current delta (broker doesn't expose option
+            # delta directly; we'd need the snapshot. Fall back to None.)
+            current_delta = None
+            roll_reason = lvh.should_roll(expiry, current_delta)
+            close_reason = lvh.should_close(triggers)
+            if roll_reason:
+                _close_hedge(active, f"roll: {roll_reason}")
+                if lvh.any_trigger_fired(triggers):
+                    _open_hedge()
+            elif close_reason:
+                _close_hedge(active, close_reason)
+            else:
+                logging.debug(
+                    f"[{seg_label}] Long-vol hedge: holding active "
+                    f"hedge {active['occ_symbol']}"
+                )
+        else:
+            if lvh.any_trigger_fired(triggers):
+                _open_hedge()
+    except Exception:
+        logging.exception(f"[{seg_label}] Long-vol hedge task failed")
 
 
 def _task_options_roll_manager(ctx):

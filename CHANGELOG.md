@@ -17,6 +17,40 @@ Rules going forward:
 
 ---
 
+## 2026-05-02 — Item 1c: long-vol portfolio tail-risk hedge (Severity: high, capability)
+
+Active tail-risk insurance. Existing layers (`crisis_state`, `intraday_risk_monitor`, per-trade stops) all reduce exposure when stress fires — pull the book in. This adds explicit DOWNSIDE COVER: when triggers fire, the system buys SPY puts so further SPY weakness pays us. Pays for protection that mostly expires worthless in calm markets — meaningful drag, but caps tail outcomes.
+
+**`long_vol_hedge.py`:**
+- `evaluate_triggers(drawdown_pct, crisis_level, var_95_pct_of_equity, ...)` — three triggers (drawdown ≥ 5%, crisis ≥ elevated, 95% VaR ≥ 3% of book). Each returns a `HedgeTrigger` with `fired`, metric, threshold, human-readable detail.
+- `select_hedge_strike(spot, otm_pct=0.05)` — 5% OTM by default, rounded to whole-dollar (SPY strike granularity).
+- `select_hedge_expiry(target_dte=45)` — 30-60 day band; chain-fetch path snaps to the nearest available real expiry.
+- `size_hedge_contracts(equity, premium_per_contract, premium_budget_pct=0.01)` — 1% of book in premium per active hedge.
+- `should_roll(expiry, delta)` — DTE < 14 OR delta decayed past −0.10. `should_close(triggers)` — only when ALL triggers clear simultaneously.
+- Persisted in `long_vol_hedges` table (open/close/roll history). `hedge_cost_summary(days=90)` rolls up insurance bill.
+- `compute_drawdown_from_30d_peak(db_path, equity)` — drawdown from 30-day rolling equity peak via `daily_snapshots`.
+- `render_hedge_for_prompt(...)` — multi-line block surfaced to AI under MARKET CONTEXT.
+
+**`_task_manage_long_vol_hedge`** (gated on `enable_long_vol_hedge`): each cycle reads triggers, decides open/roll/close, submits the option order via existing `submit_option_order`. Picks the closest available SPY put expiry + strike; sizes contracts to the premium budget; refuses to open if budget can't afford even one contract.
+
+**AI prompt:** `_build_market_context` reads active hedge + triggers + 90-day cost summary and adds a `LONG-VOL TAIL HEDGE:` block under MARKET CONTEXT showing entry strike/expiry, which triggers fired, and running insurance cost. The AI sees what the hedge is doing AND why, so it can factor it into sizing reasoning.
+
+**Per-profile config (settings page):**
+- `enable_long_vol_hedge` — default OFF (opt-in: costs real premium)
+- `long_vol_hedge_drawdown_pct` — drawdown trigger (default 5%)
+- `long_vol_hedge_var_pct` — VaR trigger (default 3%)
+- `long_vol_hedge_premium_pct` — budget per hedge (default 1%)
+
+End-to-end wired: schema migration, `UserContext` fields, `update_trading_profile` allowlist, `save_profile` form parser, `settings.html` controls with tooltips. The new scheduler task auto-passes the scheduler-gate guardrail because it's wrapped in `if getattr(ctx, "enable_long_vol_hedge", False)`.
+
+**Tests** (`tests/test_long_vol_hedge.py`, 31 cases): all three triggers individually, strike/expiry/sizing math, roll/close decisions, schema round-trip, cost summary aggregation, drawdown helper, prompt rendering. **MANUAL_PARAMETERS** allowlist updated for the four new columns.
+
+**Limits documented in module:** parametric VaR understates tail; SPY puts hedge BETA, not idio risk; insurance bleeds in calm markets. Default OFF means it does nothing until the user flips the switch.
+
+Suite: 1841 passed, 0 skipped.
+
+---
+
 ## 2026-05-02 — Per-profile toggles for new scheduled features; settings UI + scheduler-gate guardrail (Severity: high, UX)
 
 I'd shipped Items 1b / 2a / 2b with new scheduler tasks (`_task_intraday_risk_check`, `_task_portfolio_risk_snapshot`, `_task_stat_arb_retest`, `_task_stat_arb_universe_scan`) that ran unconditionally for every profile. Users had no way to see they existed, no way to toggle them, no settings control. New "lever" buried in the system — exactly the pattern called out as a recurring failure mode.

@@ -366,6 +366,20 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         # snapshot task and removes the prompt section.
         ("trading_profiles", "enable_portfolio_risk_snapshot",
             "INTEGER NOT NULL DEFAULT 1"),
+        # Item 1c — long-vol portfolio tail-risk hedge. OFF by
+        # default: opt-in because it costs real money in put premium
+        # and only makes sense when the user has decided they want
+        # active tail protection (vs the existing passive layers like
+        # crisis_state). Auto-opens SPY puts when drawdown / crisis /
+        # VaR triggers fire; auto-closes when all clear.
+        ("trading_profiles", "enable_long_vol_hedge",
+            "INTEGER NOT NULL DEFAULT 0"),
+        ("trading_profiles", "long_vol_hedge_drawdown_pct",
+            "REAL NOT NULL DEFAULT 0.05"),
+        ("trading_profiles", "long_vol_hedge_var_pct",
+            "REAL NOT NULL DEFAULT 0.03"),
+        ("trading_profiles", "long_vol_hedge_premium_pct",
+            "REAL NOT NULL DEFAULT 0.01"),
     ]
     for table, col, col_def in _migrations:
         try:
@@ -836,6 +850,11 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "enable_intraday_risk_halt",
         "enable_stat_arb_pairs",
         "enable_portfolio_risk_snapshot",
+        # Item 1c — long-vol hedge toggle + thresholds.
+        "enable_long_vol_hedge",
+        "long_vol_hedge_drawdown_pct",
+        "long_vol_hedge_var_pct",
+        "long_vol_hedge_premium_pct",
     }
     updates = {}
     rejected = []
@@ -1061,6 +1080,21 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         # Item 2a — Barra portfolio risk daily snapshot (default ON)
         enable_portfolio_risk_snapshot=bool(
             profile.get("enable_portfolio_risk_snapshot", 1)),
+        # Item 1c — long-vol portfolio tail-risk hedge (default OFF)
+        enable_long_vol_hedge=bool(
+            profile.get("enable_long_vol_hedge", 0)),
+        long_vol_hedge_drawdown_pct=(
+            profile.get("long_vol_hedge_drawdown_pct", 0.05)
+            if profile.get("long_vol_hedge_drawdown_pct") is not None
+            else 0.05),
+        long_vol_hedge_var_pct=(
+            profile.get("long_vol_hedge_var_pct", 0.03)
+            if profile.get("long_vol_hedge_var_pct") is not None
+            else 0.03),
+        long_vol_hedge_premium_pct=(
+            profile.get("long_vol_hedge_premium_pct", 0.01)
+            if profile.get("long_vol_hedge_premium_pct") is not None
+            else 0.01),
     )
 
 

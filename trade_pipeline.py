@@ -2689,6 +2689,56 @@ def _build_market_context(regime_info, political_context, ctx):
     except Exception:
         pass
 
+    # Item 1c — long-vol portfolio hedge state. Surfaces:
+    #   - active hedge (if any) + entry strike/expiry/contracts
+    #   - which triggers fired (drawdown / crisis / VaR)
+    #   - cost summary over the last 90 days
+    # so the AI can reason about it (e.g. "we already pay for tail
+    # cover — don't double up via cash hoarding").
+    long_vol_hedge_block = None
+    if ctx is not None and getattr(ctx, "enable_long_vol_hedge", False):
+        try:
+            import long_vol_hedge as _lvh
+            from crisis_state import get_current_level as _gcl
+            from client import get_account_info as _gai
+            account = _gai(ctx=ctx) or {}
+            equity = float(account.get("equity") or 0)
+            crisis = (_gcl(ctx.db_path) or {}).get("level", "normal")
+            drawdown_pct = _lvh.compute_drawdown_from_30d_peak(
+                ctx.db_path, equity,
+            ) if equity > 0 else 0.0
+            var_pct = None
+            try:
+                from journal import _get_conn as _gc
+                _conn = _gc(ctx.db_path)
+                _row = _conn.execute(
+                    "SELECT var_95_dollars, equity FROM "
+                    "portfolio_risk_snapshots ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                _conn.close()
+                if _row and _row["equity"] and _row["equity"] > 0:
+                    var_pct = (float(_row["var_95_dollars"] or 0)
+                                 / float(_row["equity"]))
+            except Exception:
+                var_pct = None
+            triggers = _lvh.evaluate_triggers(
+                drawdown_pct=drawdown_pct, crisis_level=crisis,
+                var_95_pct_of_equity=var_pct,
+                drawdown_trigger=getattr(
+                    ctx, "long_vol_hedge_drawdown_pct",
+                    _lvh.DEFAULT_DRAWDOWN_TRIGGER),
+                var_trigger=getattr(
+                    ctx, "long_vol_hedge_var_pct",
+                    _lvh.DEFAULT_VAR_TRIGGER),
+            )
+            active = _lvh.get_active_hedge(ctx.db_path)
+            cost = _lvh.hedge_cost_summary(ctx.db_path, days=90)
+            long_vol_hedge_block = _lvh.render_hedge_for_prompt(
+                active, triggers, cost,
+            ) or None
+        except Exception:
+            long_vol_hedge_block = None
+
     # Item 2a — Barra-style portfolio risk snapshot (latest persisted)
     portfolio_risk_summary = None
     portfolio_risk_scenarios = None
@@ -2745,4 +2795,5 @@ def _build_market_context(regime_info, political_context, ctx):
         "macro_context": macro_context,
         "portfolio_risk_summary": portfolio_risk_summary,
         "portfolio_risk_scenarios": portfolio_risk_scenarios,
+        "long_vol_hedge_block": long_vol_hedge_block,
     }

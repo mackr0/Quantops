@@ -661,6 +661,32 @@
                 <span><span class="tip" data-tip="Engle-Granger cointegration scanner: weekly universe scan + daily pair retest + Z-score-based pair signals (long winner / short loser when spread is at ±2σ, exit at 0σ). Pair trades require both legs so this only makes sense for long/short profiles.">Statistical Arbitrage Pair Book</span><br><small style="color:#888;font-weight:normal;">OFF by default. Requires Short Selling enabled — pair trades use one long + one short leg. Weekly universe scan for cointegrated pairs + daily retest + per-pair Z-score signals surfaced to the AI prompt.</small></span>
             </label>
 
+            <label style="display:flex;align-items:flex-start;gap:0.5rem;">
+                <input type="checkbox" name="enable_long_vol_hedge" value="1" style="flex-shrink:0;margin-top:0.2rem;"
+                       {{ 'checked' if prof.get('enable_long_vol_hedge', 0) else '' }}>
+                <span><span class="tip" data-tip="Active tail-risk insurance. When triggers fire (drawdown ≥5%, crisis state ≥elevated, or projected 95% VaR ≥3% of book), the system buys ~5% out-of-the-money SPY puts with ~45 days to expiry, sized at 1% of book in premium. Auto-rolls near expiry; auto-closes when ALL triggers clear. Costs real money — most premium expires worthless in calm markets, so this only makes sense if you want active downside protection on top of the existing passive layers (crisis state, intraday halts, per-trade stops).">Long-Vol Portfolio Hedge</span><br><small style="color:#888;font-weight:normal;">OFF by default. When on, automatically opens SPY puts during drawdowns / crisis state / high projected VaR; closes them when all triggers clear. Insurance — costs real premium most of the time. Requires options trading on the account.</small></span>
+            </label>
+            <div class="grid" style="margin-left:1.5rem;">
+                <label>
+                    <span class="tip" data-tip="Drawdown from 30-day equity peak that triggers a hedge. Default 5%.">Hedge: Drawdown Trigger (%)</span>
+                    <input type="number" name="long_vol_hedge_drawdown_pct" step="0.005" min="0" max="0.50"
+                           value="{{ '%.3f'|format(prof.get('long_vol_hedge_drawdown_pct', 0.05)) }}">
+                    <small class="muted">e.g. 0.05 = 5% drawdown</small>
+                </label>
+                <label>
+                    <span class="tip" data-tip="Projected 95% Value-at-Risk as a fraction of book that triggers a hedge. Read from the daily portfolio risk snapshot. Default 3%.">Hedge: VaR Trigger (%)</span>
+                    <input type="number" name="long_vol_hedge_var_pct" step="0.005" min="0" max="0.20"
+                           value="{{ '%.3f'|format(prof.get('long_vol_hedge_var_pct', 0.03)) }}">
+                    <small class="muted">e.g. 0.03 = 3% of book in 95% VaR</small>
+                </label>
+                <label>
+                    <span class="tip" data-tip="How much of the book to spend on put premium per active hedge. Default 1%.">Hedge: Premium Budget (%)</span>
+                    <input type="number" name="long_vol_hedge_premium_pct" step="0.005" min="0" max="0.05"
+                           value="{{ '%.3f'|format(prof.get('long_vol_hedge_premium_pct', 0.01)) }}">
+                    <small class="muted">e.g. 0.01 = 1% of book per hedge</small>
+                </label>
+            </div>
+
             <!-- Screener Parameters -->
             <h4>Screener Parameters</h4>
             <div class="grid">

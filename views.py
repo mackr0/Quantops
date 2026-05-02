@@ -277,6 +277,10 @@ PARAMETER_LABELS = {
     "enable_intraday_risk_halt": "Intraday Risk Auto-Halt",
     "enable_stat_arb_pairs": "Statistical Arbitrage Pair Book",
     "enable_portfolio_risk_snapshot": "Portfolio Risk Daily Snapshot",
+    "enable_long_vol_hedge": "Long-Vol Portfolio Hedge",
+    "long_vol_hedge_drawdown_pct": "Hedge Drawdown Trigger",
+    "long_vol_hedge_var_pct": "Hedge VaR Trigger",
+    "long_vol_hedge_premium_pct": "Hedge Premium Budget",
     "use_atr_stops": "ATR-Based Stops",
     "use_trailing_stops": "Trailing Stops",
     "use_limit_orders": "Limit Orders",
@@ -860,6 +864,19 @@ def save_profile(profile_id):
     )
     config_updates["enable_portfolio_risk_snapshot"] = (
         1 if form.get("enable_portfolio_risk_snapshot") else 0
+    )
+    # Item 1c — long-vol hedge toggle + thresholds
+    config_updates["enable_long_vol_hedge"] = (
+        1 if form.get("enable_long_vol_hedge") else 0
+    )
+    config_updates["long_vol_hedge_drawdown_pct"] = float(
+        form.get("long_vol_hedge_drawdown_pct", 0.05)
+    )
+    config_updates["long_vol_hedge_var_pct"] = float(
+        form.get("long_vol_hedge_var_pct", 0.03)
+    )
+    config_updates["long_vol_hedge_premium_pct"] = float(
+        form.get("long_vol_hedge_premium_pct", 0.01)
     )
 
     # Multi-model consensus

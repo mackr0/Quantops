@@ -118,6 +118,16 @@ MANUAL_PARAMETERS = {
     "enable_intraday_risk_halt":     "User-controlled safety toggle (Item 2b auto-halt)",
     "enable_stat_arb_pairs":         "User-controlled feature toggle (Item 1b stat-arb book; requires shorts enabled)",
     "enable_portfolio_risk_snapshot": "User-controlled feature toggle (Item 2a daily Barra snapshot)",
+    # Item 1c — long-vol hedge toggle + thresholds. Architectural
+    # choice (do you want active tail-risk insurance?) + user-set
+    # threshold preferences. Not autonomously tuned — the AI prompt
+    # surfaces the hedge state so the model can reason about it,
+    # but the trigger thresholds themselves are deliberate cost /
+    # coverage trade-offs the user owns.
+    "enable_long_vol_hedge":          "User-controlled feature toggle (Item 1c long-vol hedge)",
+    "long_vol_hedge_drawdown_pct":    "User-set hedge trigger preference (drawdown threshold)",
+    "long_vol_hedge_var_pct":         "User-set hedge trigger preference (VaR threshold)",
+    "long_vol_hedge_premium_pct":     "User-set hedge sizing (% of book per hedge)",
 
     # P2.2 of LONG_SHORT_PLAN.md — strategic choice (long-only vs
     # balanced vs short-dominant). The AI prompt directive (P2.2)

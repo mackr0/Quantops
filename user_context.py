@@ -219,6 +219,15 @@ class UserContext:
     # the AI prompt). Disable to skip the snapshot task.
     enable_portfolio_risk_snapshot: bool = True
 
+    # Item 1c — long-vol portfolio tail-risk hedge. OFF by default
+    # (opt-in: costs real put premium). When on, scheduler manages
+    # SPY puts: open on drawdown / crisis / VaR trigger, roll near
+    # expiry, close when all triggers clear.
+    enable_long_vol_hedge: bool = False
+    long_vol_hedge_drawdown_pct: float = 0.05  # 5% drawdown trigger
+    long_vol_hedge_var_pct: float = 0.03       # 3% portfolio VaR trigger
+    long_vol_hedge_premium_pct: float = 0.01   # 1% of book per hedge
+
     # Limit orders
     use_limit_orders: bool = False
 

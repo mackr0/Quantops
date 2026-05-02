@@ -941,6 +941,15 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         market_section += "\n  Stress scenarios (worst 3 projected):"
         for line in pr_scenarios:
             market_section += f"\n    - {line}"
+
+    # Item 1c — long-vol tail-risk hedge state (only present when
+    # the profile has the hedge feature enabled). Multi-line block
+    # already includes "LONG-VOL TAIL HEDGE:" header from the
+    # hedge module's renderer.
+    lv_block = market_context.get("long_vol_hedge_block")
+    if lv_block:
+        for line in lv_block.splitlines():
+            market_section += f"\n  {line}"
     if political:
         political_w = _signal_weight("political_context")
         if political_w > 0.0:
