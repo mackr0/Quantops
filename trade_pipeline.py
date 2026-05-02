@@ -2689,6 +2689,50 @@ def _build_market_context(regime_info, political_context, ctx):
     except Exception:
         pass
 
+    # Item 2a — Barra-style portfolio risk snapshot (latest persisted)
+    portfolio_risk_summary = None
+    portfolio_risk_scenarios = None
+    if ctx is not None:
+        try:
+            import json as _json
+            from journal import _get_conn as _gc
+            _conn = _gc(ctx.db_path)
+            row = _conn.execute(
+                "SELECT sigma, var_95_dollars, var_99_dollars, "
+                "es_95_dollars, factor_exposures_json, "
+                "grouped_decomposition_json, scenarios_json, "
+                "n_symbols, equity, created_at "
+                "FROM portfolio_risk_snapshots "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            _conn.close()
+            if row:
+                fx = _json.loads(row["factor_exposures_json"] or "{}")
+                ranked = sorted(
+                    fx.items(), key=lambda kv: abs(kv[1]), reverse=True,
+                )
+                top = ", ".join(
+                    f"{f.replace('sector_','').replace('style_','')}={b:+.2f}"
+                    for f, b in ranked[:4]
+                )
+                portfolio_risk_summary = (
+                    f"Daily σ {row['sigma']*100:.2f}%, 95% VaR "
+                    f"${row['var_95_dollars']:,.0f}, 95% ES "
+                    f"${row['es_95_dollars']:,.0f} on "
+                    f"{row['n_symbols']} positions. Top exposures: {top}."
+                )
+                scenarios = _json.loads(row["scenarios_json"] or "[]")
+                if scenarios:
+                    # Worst-3 only — keep prompt compact
+                    worst = scenarios[:3]
+                    portfolio_risk_scenarios = [
+                        f"{s['scenario']}: {s['total_pnl_pct']*100:+.2f}% "
+                        f"(worst day {s['worst_day_pct']*100:+.2f}%)"
+                        for s in worst
+                    ]
+        except Exception:
+            pass
+
     return {
         "regime": regime.get("regime", "unknown"),
         "vix": regime.get("vix", 0),
@@ -2699,4 +2743,6 @@ def _build_market_context(regime_info, political_context, ctx):
         "sector_rotation": sector_rotation,
         "crisis_context": crisis_ctx,
         "macro_context": macro_context,
+        "portfolio_risk_summary": portfolio_risk_summary,
+        "portfolio_risk_scenarios": portfolio_risk_scenarios,
     }

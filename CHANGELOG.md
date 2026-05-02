@@ -17,6 +17,49 @@ Rules going forward:
 
 ---
 
+## 2026-05-01 — COMPETITIVE_GAP_PLAN Item 2a: full Barra-style portfolio risk model (Severity: high, capability)
+
+We had crisis_state, intraday_risk_monitor, and per-trade stops. We did NOT have portfolio-level factor risk decomposition, parametric or Monte Carlo VaR, expected shortfall, or historical scenario stress tests. Real fund risk teams have all of these. This ships them — full implementation, not MVP.
+
+**Factor universe (~21 factors):**
+
+- Ken French daily 5-factor + Momentum (Mkt-RF, SMB, HML, RMW, CMA, Mom) — fetched from his official ZIP CSVs, parsed, cached on disk for 7 days. Goes back to 1926 for stress scenarios.
+- 11 SPDR sector ETFs (XLK, XLF, XLE, XLV, XLI, XLP, XLY, XLU, XLB, XLRE, XLC) — captures industry concentration risk that style alone misses.
+- 4 MSCI USA style ETFs (IWM small-cap, MTUM momentum, QUAL quality, USMV low-vol).
+
+**`portfolio_risk_model.py`:**
+- `compute_factor_returns(lookback_days)` — joint daily return matrix.
+- `estimate_exposures(symbol_rets, factor_returns)` — ridge-regularized regression (sector ETFs and Mkt-RF are collinear; ridge α=1.0 keeps βs stable). Returns β + idiosyncratic variance + R².
+- `estimate_factor_cov(factor_returns)` — Ledoit-Wolf shrunk covariance, manual fallback if sklearn LedoitWolf unavailable.
+- `compute_portfolio_risk(weights, exposures, factor_cov, equity)` — factor + idio variance, parametric 95/99% VaR + ES, per-factor variance contribution, grouped decomposition (sectors / styles / french / idio).
+- `monte_carlo_var(...)` — 10k Cholesky-decomposed factor draws + independent idio draws → empirical VaR + ES from the simulated portfolio P&L distribution.
+- `compute_portfolio_risk_from_positions(positions, equity)` — end-to-end convenience.
+
+**`risk_stress_scenarios.py`:**
+7 named historical windows with full description + severity:
+- `1987_blackmonday` (Oct 19 1987, -20.5% one-day)
+- `2000_dotcom` (Q2 2000 Nasdaq -40%)
+- `2008_lehman` (Sep-Oct 2008 GFC peak)
+- `2018_q4_selloff` (rate-fear -19%)
+- `2020_covid` (Feb-Mar 2020 -34% in 33 days)
+- `2022_rates` (Fed hiking cycle)
+- `2023_svb` (regional bank contagion)
+
+`replay_scenario` fetches the actual historical factor returns from the window, projects them onto current portfolio exposures, returns total P&L %, worst day, max drawdown, and an idio band approximation. `run_all_scenarios` returns them sorted worst-first.
+
+**Honest limitations documented in code:**
+- Older scenarios (1987, dot-com) only have French factors; sector exposures projected against what overlap exists; quality flagged as "low" or "medium".
+- Parametric assumes normal returns — under-reports tail. Monte Carlo helps but inherits the normality of the factor distribution.
+- Cross-asset risk (rates, FX, commodities) not in factor set yet, so 2022-style rate shocks under-report.
+
+**Wired in:**
+- `_task_portfolio_risk_snapshot` runs daily at snapshot time per profile. Persists to `portfolio_risk_snapshots` table (90-day retention).
+- `_build_market_context` in trade_pipeline reads the latest snapshot and surfaces `portfolio_risk_summary` + worst-3 stress scenarios into the AI prompt under `MARKET CONTEXT > PORTFOLIO RISK`.
+
+**Tests:** 21 in `tests/test_portfolio_risk_model.py` (recovers planted βs, R² thresholds, factor decomposition sums to factor variance, long/short hedge produces near-zero factor variance, Monte Carlo VaR ordering, French CSV parser robustness). 9 in `tests/test_risk_stress_scenarios.py` (long book in crash projects loss, short book projects gain, missing factors flagged, idio band present, sorted worst-first). All 30 green.
+
+---
+
 ## 2026-05-01 — COMPETITIVE_GAP_PLAN Item 5a: online learning meta-model (Severity: medium, capability)
 
 GBM meta-model retrains weekly on the full history. Slow to adapt to regime shifts (today's outcomes don't enter the prediction stack until the next retrain). Adds an SGDClassifier "freshness layer" that updates incrementally per resolved prediction.

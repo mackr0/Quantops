@@ -931,6 +931,16 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     crisis_ctx = market_context.get("crisis_context")
     if crisis_ctx:
         market_section += f"\n  *** {crisis_ctx} ***"
+
+    # Item 2a — Barra-style portfolio risk readout (latest snapshot)
+    pr_summary = market_context.get("portfolio_risk_summary")
+    pr_scenarios = market_context.get("portfolio_risk_scenarios")
+    if pr_summary:
+        market_section += f"\n  PORTFOLIO RISK: {pr_summary}"
+    if pr_scenarios:
+        market_section += "\n  Stress scenarios (worst 3 projected):"
+        for line in pr_scenarios:
+            market_section += f"\n    - {line}"
     if political:
         political_w = _signal_weight("political_context")
         if political_w > 0.0:

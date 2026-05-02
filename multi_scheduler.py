@@ -291,6 +291,16 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_retrain_meta_model(ctx),
             db_path=ctx.db_path,
         )
+        # Portfolio risk model snapshot (Item 2a of COMPETITIVE_GAP_PLAN)
+        # — daily Barra-style factor exposures, parametric + Monte Carlo
+        # VaR, and historical scenario stress tests. Persisted to
+        # portfolio_risk_snapshots so dashboards and the AI prompt can
+        # read the latest reading without recomputing.
+        run_task(
+            f"[{seg_label}] Portfolio Risk Snapshot",
+            lambda: _task_portfolio_risk_snapshot(ctx),
+            db_path=ctx.db_path,
+        )
         # Specialist calibrators (Wave 3 / Fix #9 of
         # METHODOLOGY_FIX_PLAN.md) — refit each specialist's
         # Platt-scaling layer on accumulated outcomes
@@ -1591,6 +1601,144 @@ def _task_retrain_meta_model(ctx):
             logging.debug(f"Online meta-model init skipped: {_exc}")
     except Exception as exc:
         logging.warning(f"Meta-model retrain failed: {exc}")
+
+
+def _task_portfolio_risk_snapshot(ctx):
+    """Item 2a — daily Barra-style portfolio risk snapshot.
+
+    Pulls live positions from the broker, computes factor exposures via
+    OLS regression vs ~21-factor universe (Ken French + sector ETFs +
+    style ETFs), then runs parametric VaR + Monte Carlo VaR + 7
+    historical stress scenarios.
+
+    Persisted to `portfolio_risk_snapshots` table for dashboard reads
+    and AI prompt context. Skips silently when there are no positions
+    or factor data is unavailable.
+    """
+    seg_label = ctx.display_name or ctx.segment
+    try:
+        from client import get_api
+        from portfolio_risk_model import (
+            compute_portfolio_risk_from_positions, render_risk_summary_for_prompt,
+        )
+        from risk_stress_scenarios import run_all_scenarios
+
+        api = get_api(ctx)
+        positions = []
+        try:
+            for p in api.list_positions():
+                positions.append({
+                    "symbol": p.symbol,
+                    "market_value": float(p.market_value),
+                })
+        except Exception as exc:
+            logging.debug(f"[{seg_label}] Risk snapshot — list_positions failed: {exc}")
+            return
+        if not positions:
+            logging.info(f"[{seg_label}] Risk snapshot — no positions")
+            return
+
+        try:
+            account = api.get_account()
+            equity = float(account.portfolio_value)
+        except Exception:
+            equity = sum(abs(p["market_value"]) for p in positions)
+
+        risk = compute_portfolio_risk_from_positions(
+            positions, portfolio_value=equity,
+        )
+        if risk is None:
+            logging.info(f"[{seg_label}] Risk snapshot — insufficient factor data")
+            return
+
+        scenarios = run_all_scenarios(
+            risk["weights"], risk["exposures"], portfolio_value=equity,
+        )
+
+        _persist_risk_snapshot(ctx.db_path, risk, scenarios, equity)
+
+        summary = render_risk_summary_for_prompt(risk)
+        worst = scenarios[0] if scenarios else None
+        worst_str = (
+            f" — worst scenario {worst['scenario']}: "
+            f"{worst['total_pnl_pct'] * 100:+.2f}%"
+        ) if worst else ""
+        logging.info(f"[{seg_label}] Risk snapshot: {summary}{worst_str}")
+
+        _safe_log_activity(
+            getattr(ctx, "profile_id", 0), ctx.user_id,
+            "portfolio_risk",
+            f"Portfolio Risk Snapshot: 95% VaR ${risk['var_95_dollars']:,.0f}",
+            (f"Daily σ {risk['sigma'] * 100:.2f}%, "
+             f"95% VaR ${risk['var_95_dollars']:,.0f} "
+             f"({risk['var_95_pct'] * 100:.2f}%), "
+             f"95% ES ${risk['es_95_dollars']:,.0f}, "
+             f"{risk['n_symbols']} positions, {len(scenarios)} scenarios projected"),
+        )
+    except Exception as exc:
+        logging.warning(f"[{seg_label}] Portfolio risk snapshot failed: {exc}")
+
+
+def _persist_risk_snapshot(db_path, risk, scenarios, equity):
+    """Write the snapshot to portfolio_risk_snapshots; keep last 90 days."""
+    import json
+    from journal import _get_conn
+    conn = _get_conn(db_path)
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS portfolio_risk_snapshots (
+              id INTEGER PRIMARY KEY,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              equity REAL,
+              sigma REAL,
+              var_95_dollars REAL,
+              var_99_dollars REAL,
+              es_95_dollars REAL,
+              es_99_dollars REAL,
+              mc_var_95_dollars REAL,
+              factor_exposures_json TEXT,
+              grouped_decomposition_json TEXT,
+              scenarios_json TEXT,
+              n_symbols INTEGER
+        )"""
+    )
+    mc = risk.get("monte_carlo") or {}
+    conn.execute(
+        """INSERT INTO portfolio_risk_snapshots (
+              equity, sigma,
+              var_95_dollars, var_99_dollars,
+              es_95_dollars, es_99_dollars,
+              mc_var_95_dollars,
+              factor_exposures_json, grouped_decomposition_json,
+              scenarios_json, n_symbols
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            equity, risk["sigma"],
+            risk["var_95_dollars"], risk["var_99_dollars"],
+            risk["es_95_dollars"], risk["es_99_dollars"],
+            mc.get("var_95_dollars"),
+            json.dumps(risk["factor_exposures"]),
+            json.dumps(risk["grouped_decomposition"]),
+            json.dumps([{
+                "scenario": s["scenario"],
+                "description": s["description"],
+                "severity": s["severity"],
+                "total_pnl_pct": s["total_pnl_pct"],
+                "total_pnl_dollars": s["total_pnl_dollars"],
+                "worst_day_pct": s["worst_day_pct"],
+                "worst_day_date": s["worst_day_date"],
+                "max_drawdown_pct": s["max_drawdown_pct"],
+                "approximation_quality": s["approximation_quality"],
+            } for s in scenarios]),
+            risk["n_symbols"],
+        ),
+    )
+    # Trim history (keep 90 days)
+    conn.execute(
+        "DELETE FROM portfolio_risk_snapshots "
+        "WHERE created_at < datetime('now', '-90 days')"
+    )
+    conn.commit()
+    conn.close()
 
 
 def _task_universe_audit(ctx):
