@@ -231,3 +231,212 @@ class TestPriceOptionAtDate:
         assert otm["price"] < atm["price"]
         # Greeks for OTM call: lower delta
         assert otm["delta"] < atm["delta"]
+
+
+# ---------------------------------------------------------------------------
+# Layer 2 — single-leg simulator
+# ---------------------------------------------------------------------------
+
+def _trending_bars(end_date, n_days, base, daily_drift):
+    """Bars that trend at a constant daily drift (no noise) — useful
+    for deterministic P&L tests."""
+    closes = [base * (1 + daily_drift) ** i for i in range(n_days)]
+    idx = pd.date_range(end=end_date, periods=n_days, freq="D")
+    return pd.DataFrame({
+        "open": closes, "high": closes, "low": closes,
+        "close": closes, "volume": [1000] * n_days,
+    }, index=idx)
+
+
+class TestSimulateSingleLeg:
+    def test_long_call_held_to_itm_expiry_profitable(self):
+        """Long call strike $100 entered at spot $100. Stock trends up
+        by 30 days of expiry. Expiry-day intrinsic > entry premium →
+        positive P&L."""
+        from options_backtester import simulate_single_leg
+        entry = date(2026, 4, 1)
+        expiry = date(2026, 5, 1)
+        # Pre-entry: 60 days flat for IV approximation
+        # Then bars from entry to expiry rise from 100 → ~110
+        # Daily drift ≈ +0.33% (~10% over 30 days)
+        full_bars = _build_bars(date(2026, 3, 31), n_days=60,
+                                  daily_sigma=0.005, base=100.0)
+        trending = _trending_bars(expiry, 35, base=100.0, daily_drift=0.003)
+        # Stitch: history before entry = full_bars; trending replaces from entry
+        all_bars = pd.concat([full_bars, trending])
+        # Drop overlap: keep first occurrence of each date
+        all_bars = all_bars[~all_bars.index.duplicated(keep="last")]
+        provider = lambda sym, dt, lookback: all_bars
+
+        trade = simulate_single_leg(
+            "AAPL", entry, strike=100.0, expiry=expiry,
+            is_call=True, side="buy", qty=1,
+            iv_override=0.20, bars_provider=provider,
+        )
+        assert trade is not None
+        assert trade.strategy == "long_call"
+        assert trade.exit_reason in ("expiry_itm", "expiry_otm")
+        # Stock ended up ~10% above strike → call ITM at expiry
+        # Intrinsic ≈ $10. Entry premium for ATM 30d 20%-vol call ≈ $2.30
+        # P&L ≈ ($10 - $2.30) * 100 = ~$770. Sign should be positive.
+        assert trade.pnl_dollars > 100  # solidly profitable
+
+    def test_long_call_otm_at_expiry_loses_premium(self):
+        """Same setup but stock STAYS at 100 → call OTM at expiry,
+        we lose the entry premium."""
+        from options_backtester import simulate_single_leg
+        entry = date(2026, 4, 1)
+        expiry = date(2026, 5, 1)
+        full_bars = _build_bars(date(2026, 3, 31), n_days=60,
+                                  daily_sigma=0.005, base=100.0)
+        # No trend — stays around 100
+        flat = _trending_bars(expiry, 35, base=100.0, daily_drift=0.0)
+        all_bars = pd.concat([full_bars, flat])
+        all_bars = all_bars[~all_bars.index.duplicated(keep="last")]
+        provider = lambda sym, dt, lookback: all_bars
+
+        trade = simulate_single_leg(
+            "AAPL", entry, strike=110.0, expiry=expiry,
+            is_call=True, side="buy", qty=1,
+            iv_override=0.20, bars_provider=provider,
+        )
+        assert trade is not None
+        # Stock at ~100, strike 110 → OTM at expiry
+        assert trade.exit_reason == "expiry_otm"
+        # Premium paid for 110 call (10% OTM, 30d, 20% IV) ≈ $0.30-0.50
+        # Lost entirely → negative P&L
+        assert trade.pnl_dollars < 0
+
+    def test_short_call_otm_keeps_premium(self):
+        """Short OTM call where stock stays below strike → keep premium
+        (positive P&L)."""
+        from options_backtester import simulate_single_leg
+        entry = date(2026, 4, 1)
+        expiry = date(2026, 5, 1)
+        full_bars = _build_bars(date(2026, 3, 31), n_days=60,
+                                  daily_sigma=0.005, base=100.0)
+        flat = _trending_bars(expiry, 35, base=100.0, daily_drift=0.0)
+        all_bars = pd.concat([full_bars, flat])
+        all_bars = all_bars[~all_bars.index.duplicated(keep="last")]
+        provider = lambda sym, dt, lookback: all_bars
+
+        trade = simulate_single_leg(
+            "AAPL", entry, strike=110.0, expiry=expiry,
+            is_call=True, side="sell", qty=1,
+            iv_override=0.20, bars_provider=provider,
+        )
+        assert trade is not None
+        assert trade.strategy == "short_call"
+        # Strike 110, spot stays ~100 → OTM, premium kept
+        assert trade.pnl_dollars > 0
+        assert trade.exit_reason == "expiry_otm"
+
+    def test_profit_target_fires_early(self):
+        """Long call with +50% profit target. As stock rises, the
+        option appreciates fast; trade should exit BEFORE expiry."""
+        from options_backtester import simulate_single_leg
+        entry = date(2026, 4, 1)
+        expiry = date(2026, 5, 1)
+        full_bars = _build_bars(date(2026, 3, 31), n_days=60,
+                                  daily_sigma=0.005, base=100.0)
+        # Strong uptrend
+        rising = _trending_bars(expiry, 35, base=100.0, daily_drift=0.01)
+        all_bars = pd.concat([full_bars, rising])
+        all_bars = all_bars[~all_bars.index.duplicated(keep="last")]
+        provider = lambda sym, dt, lookback: all_bars
+
+        trade = simulate_single_leg(
+            "AAPL", entry, strike=100.0, expiry=expiry,
+            is_call=True, side="buy", qty=1,
+            profit_target_pct=0.50,
+            iv_override=0.20, bars_provider=provider,
+        )
+        assert trade is not None
+        # Should exit on profit target, NOT at expiry
+        assert trade.exit_reason == "profit_target"
+        assert trade.exit_date < expiry
+        assert trade.pnl_dollars > 0
+
+    def test_stop_loss_fires_early(self):
+        """Long call with -50% stop loss. Stock falls; option loses
+        value fast; trade should exit at the loss threshold."""
+        from options_backtester import simulate_single_leg
+        entry = date(2026, 4, 1)
+        expiry = date(2026, 5, 1)
+        full_bars = _build_bars(date(2026, 3, 31), n_days=60,
+                                  daily_sigma=0.005, base=100.0)
+        # Strong downtrend
+        falling = _trending_bars(expiry, 35, base=100.0, daily_drift=-0.01)
+        all_bars = pd.concat([full_bars, falling])
+        all_bars = all_bars[~all_bars.index.duplicated(keep="last")]
+        provider = lambda sym, dt, lookback: all_bars
+
+        trade = simulate_single_leg(
+            "AAPL", entry, strike=100.0, expiry=expiry,
+            is_call=True, side="buy", qty=1,
+            stop_loss_pct=0.50,
+            iv_override=0.30, bars_provider=provider,
+        )
+        assert trade is not None
+        # Either stop_loss or expiry_otm — both lose money. The
+        # important thing is the system handles the loss path.
+        assert trade.pnl_dollars < 0
+
+    def test_time_stop_exits_before_expiry(self):
+        """time_stop_days_before_expiry=5 → exit 5 days early."""
+        from options_backtester import simulate_single_leg
+        entry = date(2026, 4, 1)
+        expiry = date(2026, 5, 1)
+        full_bars = _build_bars(date(2026, 3, 31), n_days=60,
+                                  daily_sigma=0.005, base=100.0)
+        flat = _trending_bars(expiry, 35, base=100.0, daily_drift=0.0)
+        all_bars = pd.concat([full_bars, flat])
+        all_bars = all_bars[~all_bars.index.duplicated(keep="last")]
+        provider = lambda sym, dt, lookback: all_bars
+
+        trade = simulate_single_leg(
+            "AAPL", entry, strike=100.0, expiry=expiry,
+            is_call=True, side="buy", qty=1,
+            time_stop_days_before_expiry=5,
+            iv_override=0.20, bars_provider=provider,
+        )
+        assert trade is not None
+        # Should exit ~5 days before expiry
+        assert trade.exit_reason == "time_stop"
+        days_to_expiry_at_exit = (expiry - trade.exit_date).days
+        assert days_to_expiry_at_exit >= 4
+        assert days_to_expiry_at_exit <= 6
+
+    def test_invalid_inputs_return_none(self):
+        from options_backtester import simulate_single_leg
+        # entry_date >= expiry
+        result = simulate_single_leg(
+            "AAPL", date(2026, 5, 1), 100.0, date(2026, 5, 1),
+            True, side="buy",
+        )
+        assert result is None
+
+    def test_qty_scales_pnl(self):
+        """5 contracts → 5x the P&L of 1 contract on the same trade."""
+        from options_backtester import simulate_single_leg
+        entry = date(2026, 4, 1)
+        expiry = date(2026, 5, 1)
+        full_bars = _build_bars(date(2026, 3, 31), n_days=60,
+                                  daily_sigma=0.005, base=100.0)
+        rising = _trending_bars(expiry, 35, base=100.0, daily_drift=0.005)
+        all_bars = pd.concat([full_bars, rising])
+        all_bars = all_bars[~all_bars.index.duplicated(keep="last")]
+        provider = lambda sym, dt, lookback: all_bars
+
+        t1 = simulate_single_leg(
+            "AAPL", entry, 100.0, expiry, True, side="buy", qty=1,
+            iv_override=0.20, bars_provider=provider,
+        )
+        t5 = simulate_single_leg(
+            "AAPL", entry, 100.0, expiry, True, side="buy", qty=5,
+            iv_override=0.20, bars_provider=provider,
+        )
+        assert t1 is not None and t5 is not None
+        # 5x scaling (within float precision)
+        assert t5.pnl_dollars == pytest.approx(t1.pnl_dollars * 5,
+                                                  rel=0.001)

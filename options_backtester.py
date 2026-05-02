@@ -200,3 +200,193 @@ def _default_bars_provider(symbol: str, as_of: _date,
     today = _date.today()
     days_back = max((today - as_of).days, 0) + lookback_days + 10
     return get_bars(symbol, limit=days_back)
+
+
+# ---------------------------------------------------------------------------
+# Layer 2 — single-leg strategy simulator
+# ---------------------------------------------------------------------------
+
+@dataclass
+class BacktestTrade:
+    """Result of simulating one option position open → close."""
+    symbol: str
+    strategy: str           # 'long_call' | 'long_put' | 'covered_call' | etc.
+    entry_date: _date
+    exit_date: _date
+    strike: float
+    expiry: _date
+    is_call: bool
+    qty: int                # contracts (positive)
+    side: str               # 'buy' or 'sell'
+    entry_premium: float    # per-share
+    exit_value: float       # per-share at exit
+    pnl_dollars: float      # signed P&L on the position
+    exit_reason: str        # 'expiry_otm' | 'expiry_itm' | 'time_stop' | 'profit_target' | 'stop_loss'
+    days_held: int
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.symbol, "strategy": self.strategy,
+            "entry_date": self.entry_date.isoformat(),
+            "exit_date": self.exit_date.isoformat(),
+            "strike": self.strike, "expiry": self.expiry.isoformat(),
+            "is_call": self.is_call, "qty": self.qty, "side": self.side,
+            "entry_premium": self.entry_premium,
+            "exit_value": self.exit_value,
+            "pnl_dollars": self.pnl_dollars,
+            "exit_reason": self.exit_reason,
+            "days_held": self.days_held,
+        }
+
+
+def simulate_single_leg(
+    symbol: str,
+    entry_date: _date,
+    strike: float,
+    expiry: _date,
+    is_call: bool,
+    side: str = "buy",
+    qty: int = 1,
+    profit_target_pct: Optional[float] = None,
+    stop_loss_pct: Optional[float] = None,
+    time_stop_days_before_expiry: int = 0,
+    bars_provider=None,
+    iv_override: Optional[float] = None,
+) -> Optional[BacktestTrade]:
+    """Simulate one option position from entry through close.
+
+    Walks the historical period day by day. Closes on whichever fires
+    first:
+      - profit_target_pct hit (e.g., +50% on a long = exit early)
+      - stop_loss_pct hit (e.g., -50% on a long)
+      - time_stop_days_before_expiry days from expiry
+      - expiry day reached (settle at intrinsic)
+
+    Args:
+        side: 'buy' (long premium — pay entry, receive exit) or 'sell'
+            (short premium — receive entry, pay exit).
+        profit_target_pct / stop_loss_pct: as fraction. For LONG (buy),
+            +0.50 means "exit at 50% profit"; -0.50 means "exit at 50%
+            loss." For SHORT (sell), the math inverts — long_call
+            +50% means we want the option to APPRECIATE; short_call
+            +50% means we want the option to LOSE 50% of value (we
+            sold high, buy back lower).
+        time_stop_days_before_expiry: 0 = hold to expiry; 5 = exit
+            5 days before expiry to avoid gamma risk.
+        iv_override: pin IV across the whole simulation (testing).
+
+    Returns BacktestTrade with full trade lifecycle, or None if entry
+    pricing fails (no historical data for entry_date).
+    """
+    if entry_date >= expiry:
+        return None
+
+    # 1. Price entry
+    entry_pricing = price_option_at_date(
+        symbol, entry_date, strike, expiry, is_call,
+        iv_override=iv_override, bars_provider=bars_provider,
+    )
+    if entry_pricing is None or entry_pricing.get("price", 0) <= 0:
+        return None
+    entry_premium = float(entry_pricing["price"])
+
+    multiplier = qty * 100  # 100 shares per contract
+    # P&L sign convention:
+    #   long (buy): pnl = (exit - entry) * multiplier
+    #   short (sell): pnl = (entry - exit) * multiplier
+    is_long = (side == "buy")
+
+    # 2. Walk forward day-by-day
+    cursor = entry_date + timedelta(days=1)
+    final_exit_date = expiry
+    final_exit_value = 0.0
+    exit_reason = "expiry"
+
+    while cursor <= expiry:
+        # Compute current option value
+        days_to_expiry = (expiry - cursor).days
+
+        if days_to_expiry <= 0:
+            # Expiry day — settle at intrinsic
+            spot = historical_spot(symbol, cursor, bars_provider)
+            if spot is None:
+                cursor += timedelta(days=1)
+                continue
+            intrinsic = (max(0.0, spot - strike) if is_call
+                         else max(0.0, strike - spot))
+            final_exit_date = cursor
+            final_exit_value = intrinsic
+            exit_reason = ("expiry_itm" if intrinsic > 0
+                           else "expiry_otm")
+            break
+
+        # Time-stop check
+        if (time_stop_days_before_expiry > 0
+                and days_to_expiry <= time_stop_days_before_expiry):
+            current_pricing = price_option_at_date(
+                symbol, cursor, strike, expiry, is_call,
+                iv_override=iv_override, bars_provider=bars_provider,
+            )
+            if current_pricing:
+                final_exit_date = cursor
+                final_exit_value = float(current_pricing["price"])
+                exit_reason = "time_stop"
+                break
+
+        # Profit/stop targets
+        if profit_target_pct is not None or stop_loss_pct is not None:
+            current_pricing = price_option_at_date(
+                symbol, cursor, strike, expiry, is_call,
+                iv_override=iv_override, bars_provider=bars_provider,
+            )
+            if current_pricing:
+                cur_price = float(current_pricing["price"])
+                if is_long:
+                    pnl_pct = ((cur_price - entry_premium) /
+                               entry_premium) if entry_premium > 0 else 0
+                else:
+                    pnl_pct = ((entry_premium - cur_price) /
+                               entry_premium) if entry_premium > 0 else 0
+                if (profit_target_pct is not None
+                        and pnl_pct >= profit_target_pct):
+                    final_exit_date = cursor
+                    final_exit_value = cur_price
+                    exit_reason = "profit_target"
+                    break
+                if (stop_loss_pct is not None
+                        and pnl_pct <= -abs(stop_loss_pct)):
+                    final_exit_date = cursor
+                    final_exit_value = cur_price
+                    exit_reason = "stop_loss"
+                    break
+
+        cursor += timedelta(days=1)
+    else:
+        # Loop completed without break — should be rare since expiry
+        # check fires. Set conservative defaults.
+        final_exit_date = expiry
+        final_exit_value = 0.0
+        exit_reason = "expiry"
+
+    # P&L calculation
+    if is_long:
+        pnl = (final_exit_value - entry_premium) * multiplier
+    else:
+        pnl = (entry_premium - final_exit_value) * multiplier
+
+    days_held = max((final_exit_date - entry_date).days, 0)
+
+    strategy_name = ("long_call" if is_long and is_call
+                      else "long_put" if is_long
+                      else "short_call" if is_call
+                      else "short_put")
+
+    return BacktestTrade(
+        symbol=symbol, strategy=strategy_name,
+        entry_date=entry_date, exit_date=final_exit_date,
+        strike=strike, expiry=expiry, is_call=is_call,
+        qty=qty, side=side,
+        entry_premium=entry_premium, exit_value=final_exit_value,
+        pnl_dollars=round(pnl, 2),
+        exit_reason=exit_reason, days_held=days_held,
+    )
