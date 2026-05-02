@@ -468,9 +468,17 @@ def simulate_multileg_strategy(
     if entry_date >= final_expiry:
         return None
 
-    # 1. Price each leg at entry, compute net premium per spread
+    # 1. Price each leg at entry. Cleaner per-leg accounting:
+    #   - For each leg, store entry_premium (per share, unsigned).
+    #   - At exit, store exit_value (per share, unsigned).
+    #   - Per-leg P&L:
+    #       buy:  (exit - entry) * 100 * qty
+    #       sell: (entry - exit) * 100 * qty
+    #   - Sum across legs = total spread P&L.
+    # net_entry_premium_per_spread is kept for reporting only (signed
+    # convention: + debit, - credit) but NOT used for P&L math.
     leg_entries: List[Dict[str, Any]] = []
-    net_entry_premium_per_spread = 0.0  # signed per share (not multiplied)
+    net_entry_premium_per_spread = 0.0
 
     for leg in strategy.legs:
         leg_expiry = _date.fromisoformat(leg.expiry)
@@ -482,7 +490,6 @@ def simulate_multileg_strategy(
         if leg_pricing is None or leg_pricing.get("price", 0) <= 0:
             return None
         leg_premium = float(leg_pricing["price"])
-        # Sign: buy → debit (positive contribution); sell → credit (negative)
         signed_contribution = (leg_premium if leg.side == "buy"
                                 else -leg_premium)
         net_entry_premium_per_spread += signed_contribution
@@ -516,17 +523,21 @@ def simulate_multileg_strategy(
     final_net_exit_value_per_spread = 0.0
     exit_reason = "expiry"
 
+    leg_currents: List[float] = []  # latest per-leg exit values
+
+    def _per_leg_pnl_per_share(leg, entry_p, exit_v):
+        """Per-leg P&L per share. 'buy': exit - entry; 'sell': entry - exit."""
+        return (exit_v - entry_p) if leg.side == "buy" else (entry_p - exit_v)
+
     while cursor <= final_expiry:
         days_to_expiry = (final_expiry - cursor).days
 
-        # Compute current net spread value
-        current_net = 0.0
+        # Price each leg at this cursor
         all_legs_priceable = True
-        leg_currents: List[float] = []
+        cur_leg_values: List[float] = []
         for leg in strategy.legs:
             leg_expiry = _date.fromisoformat(leg.expiry)
             if cursor >= leg_expiry:
-                # This leg expired — settle at intrinsic
                 spot = historical_spot(underlying, cursor, bars_provider)
                 if spot is None:
                     all_legs_priceable = False
@@ -544,34 +555,34 @@ def simulate_multileg_strategy(
                     all_legs_priceable = False
                     break
                 leg_value = float(leg_pricing["price"])
-            leg_currents.append(leg_value)
-            signed = leg_value if leg.side == "buy" else -leg_value
-            current_net += signed
+            cur_leg_values.append(leg_value)
 
         if not all_legs_priceable:
             cursor += timedelta(days=1)
             continue
 
+        # Per-leg P&L sum (per share, then *100 for dollars per spread)
+        pnl_per_share = sum(
+            _per_leg_pnl_per_share(strategy.legs[i],
+                                       leg_entries[i]["entry_premium"],
+                                       cur_leg_values[i])
+            for i in range(len(strategy.legs))
+        )
+        pnl_per_spread = pnl_per_share * 100
+
         # Time-stop check
         if (time_stop_days_before_expiry > 0
                 and days_to_expiry <= time_stop_days_before_expiry):
             final_exit_date = cursor
-            final_net_exit_value_per_spread = current_net
+            leg_currents = cur_leg_values
             exit_reason = "time_stop"
             break
-
-        # Profit/stop targets: P&L per spread = entry - exit (signed
-        # for credits, debits — net debit positive means we PAID,
-        # we want exit to be HIGHER than entry; net credit negative
-        # means we COLLECTED, we want exit value to be LOWER (closer
-        # to zero) than entry).
-        pnl_per_spread = (net_entry_premium_per_spread - current_net) * 100
 
         if (profit_target_pct_of_max is not None
                 and max_gain is not None and max_gain > 0):
             if pnl_per_spread >= profit_target_pct_of_max * max_gain:
                 final_exit_date = cursor
-                final_net_exit_value_per_spread = current_net
+                leg_currents = cur_leg_values
                 exit_reason = "profit_target"
                 break
 
@@ -579,26 +590,41 @@ def simulate_multileg_strategy(
                 and max_loss is not None and max_loss > 0):
             if pnl_per_spread <= -stop_loss_pct_of_max * max_loss:
                 final_exit_date = cursor
-                final_net_exit_value_per_spread = current_net
+                leg_currents = cur_leg_values
                 exit_reason = "stop_loss"
                 break
 
-        # If we reached expiry day, close at intrinsic
         if days_to_expiry <= 0:
             final_exit_date = cursor
-            final_net_exit_value_per_spread = current_net
+            leg_currents = cur_leg_values
             exit_reason = ("expiry_profit" if pnl_per_spread > 0
                             else "expiry_loss")
             break
 
         cursor += timedelta(days=1)
 
-    # P&L: per-spread signed difference times qty (note multiplier
-    # already absorbed in *100 above, but currently we kept per-share
-    # accounting — multiply now)
-    pnl_per_spread = (net_entry_premium_per_spread
-                      - final_net_exit_value_per_spread) * 100
+    # If loop never broke (shouldn't happen since expiry check fires),
+    # use the last priceable values.
+    if not leg_currents:
+        leg_currents = cur_leg_values if 'cur_leg_values' in locals() else \
+            [le["entry_premium"] for le in leg_entries]
+        final_exit_date = final_expiry
+
+    # Final P&L
+    pnl_per_share_final = sum(
+        _per_leg_pnl_per_share(strategy.legs[i],
+                                   leg_entries[i]["entry_premium"],
+                                   leg_currents[i])
+        for i in range(len(strategy.legs))
+    )
+    pnl_per_spread = pnl_per_share_final * 100
     total_pnl = pnl_per_spread * strategy.qty
+    # net_exit_value: signed per-spread net (for reporting; matches the
+    # sign convention of net_entry_premium_per_spread)
+    final_net_exit_value_per_spread = sum(
+        v if leg.side == "buy" else -v
+        for leg, v in zip(strategy.legs, leg_currents)
+    )
 
     days_held = max((final_exit_date - entry_date).days, 0)
 
