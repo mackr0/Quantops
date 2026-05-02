@@ -1739,6 +1739,37 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
         # Build a signal dict that execute_trade expects
         # Find the original strategy signal for this symbol
         orig_signal = next((s for s in strategy_results if s["symbol"] == symbol), {})
+
+        # Item 6b — strategy-level capital scaling. Multiply size_pct
+        # by the strategy's capital weight (1.0 = baseline; 1.5 = 50%
+        # larger; 0.5 = 50% smaller). Only applies to equity actions
+        # (BUY / SHORT / SELL) — OPTIONS / PAIR_TRADE / MULTILEG_OPEN
+        # already have their own sizing logic.
+        if action in ("BUY", "SHORT", "SELL"):
+            try:
+                from strategy_capital_allocator import compute_strategy_weights
+                # Use the candidate's primary strategy (first vote winner)
+                votes = orig_signal.get("votes", {}) or {}
+                primary_strategy = None
+                if votes:
+                    primary_strategy = max(votes.items(), key=lambda kv: kv[1])[0]
+                strategies_used = list(votes.keys()) if votes else []
+                if primary_strategy and strategies_used and ctx is not None:
+                    weights = compute_strategy_weights(
+                        ctx.db_path, strategies_used,
+                    )
+                    weight = weights.get(primary_strategy, 1.0)
+                    if weight != 1.0:
+                        old_size = size_pct
+                        size_pct = size_pct * weight
+                        logger.debug(
+                            "Strategy weight applied to %s (%s): "
+                            "%.3f × %.3fx = %.3f",
+                            symbol, primary_strategy, old_size, weight, size_pct,
+                        )
+            except Exception as exc:
+                logger.debug("Strategy weight lookup failed: %s", exc)
+
         signal = {
             "symbol": symbol,
             "signal": action if action != "SHORT" else "STRONG_SELL",

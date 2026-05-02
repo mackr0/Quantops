@@ -660,6 +660,30 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     except Exception:
         pass
 
+    # Item 6b — strategy-level capital weights surfaced to the AI so
+    # it can see which strategies are currently scaled UP/DOWN. The
+    # actual sizing happens in trade_pipeline; this is for transparency.
+    strategy_weights_block = ""
+    try:
+        from strategy_capital_allocator import (
+            compute_strategy_weights, render_weights_for_prompt,
+        )
+        db_path_for_weights = getattr(ctx, "db_path", None) if ctx else None
+        if db_path_for_weights and candidates_data:
+            # Collect strategies referenced in the candidate set
+            strategies_in_play = set()
+            for c in candidates_data:
+                votes = c.get("votes") or {}
+                for s in votes:
+                    strategies_in_play.add(s)
+            if strategies_in_play:
+                weights = compute_strategy_weights(
+                    db_path_for_weights, sorted(strategies_in_play),
+                )
+                strategy_weights_block = render_weights_for_prompt(weights)
+    except Exception:
+        pass
+
     # Phase C3 — wheel state + next-step recommendations per opted-in
     # symbol. Empty when ctx.wheel_symbols is empty or no price avail.
     wheel_block = ""
@@ -893,6 +917,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"{multileg_block}"
         f"{wheel_block}"
         f"{roll_block}"
+        f"{strategy_weights_block}"
     )
 
     # --- Market context section ---
