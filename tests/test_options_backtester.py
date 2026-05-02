@@ -26,11 +26,17 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 def _build_bars(end_date, n_days, base=100.0, daily_sigma=0.01,
                   seed=42):
     """Build a synthetic OHLCV DataFrame with daily-frequency
-    DatetimeIndex ending at end_date."""
+    DatetimeIndex ending at end_date.
+
+    Uses freq='D' (calendar days) rather than 'B' (business days) so
+    n_days reliably matches index length regardless of the end_date's
+    day of week. Filters in production code key off `index.date <=
+    as_of` so the calendar-day index works fine for tests.
+    """
     rng = np.random.default_rng(seed=seed)
     returns = rng.normal(0, daily_sigma, size=n_days)
     closes = base * np.cumprod(1 + returns)
-    idx = pd.date_range(end=end_date, periods=n_days, freq="B")
+    idx = pd.date_range(end=end_date, periods=n_days, freq="D")
     return pd.DataFrame({
         "open": closes, "high": closes, "low": closes,
         "close": closes, "volume": [1000] * n_days,
@@ -96,7 +102,7 @@ class TestHistoricalIvApproximation:
         # Append a high-vol jump AFTER as_of
         rng = np.random.default_rng(seed=999)
         future_idx = pd.date_range(start=as_of + timedelta(days=1),
-                                       periods=10, freq="B")
+                                       periods=10, freq="D")
         future_bars = pd.DataFrame({
             "open": 100.0, "high": 100.0, "low": 100.0,
             "close": 100.0 + rng.normal(0, 5, size=10),  # huge moves
