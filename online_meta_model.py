@@ -98,6 +98,7 @@ def initialize_from_history(
     Returns the trained bundle dict, or None if not enough data.
     """
     from sklearn.linear_model import SGDClassifier
+    from sklearn.preprocessing import StandardScaler
     from meta_model import build_training_set
 
     # Use a small min_samples (10) — online models can bootstrap from
@@ -110,17 +111,26 @@ def initialize_from_history(
         )
         return None
 
-    model = SGDClassifier(**SGD_PARAMS)
-    # First fit must specify all classes for partial_fit to work later.
     classes = sorted(set(y))
     if len(classes) < 2:
         # Only one class in training — can't fit binary classifier yet
         return None
-    # Single fit on the full historical set
-    model.fit(X, y)
+
+    # SGD is sensitive to feature scale (raw scores are 0-100 while
+    # ATR is ~0.02 and reddit_mentions can be ~1000). Without scaling
+    # the dot product saturates the sigmoid and predict_proba flatlines
+    # at 0/1. Use a StandardScaler with partial_fit support so we can
+    # update both the scaler and the model on each new row.
+    scaler = StandardScaler()
+    scaler.fit(X)
+    X_scaled = scaler.transform(X)
+
+    model = SGDClassifier(**SGD_PARAMS)
+    model.fit(X_scaled, y)
 
     bundle = {
         "model": model,
+        "scaler": scaler,
         "feature_names": feature_names,
         "classes": classes,
         "n_updates": len(X),
@@ -160,12 +170,16 @@ def update_online_model(
 
     try:
         # Project feature dict into the model's expected feature_names
-        # order. Missing features → 0.0.
-        feat_names = bundle["feature_names"]
-        x_row = [float(features_dict.get(name, 0.0))
-                 for name in feat_names]
+        # order. Missing features → 0.0. Then expand categorical/one-hot
+        # features the same way build_training_set does, then scale.
+        x_row = _features_to_vector(features_dict, bundle)
+        scaler = bundle.get("scaler")
+        if scaler is not None:
+            x_scaled = scaler.transform([x_row])
+        else:
+            x_scaled = [x_row]
         bundle["model"].partial_fit(
-            [x_row], [outcome_label], classes=bundle.get("classes", [0, 1]),
+            x_scaled, [outcome_label], classes=bundle.get("classes", [0, 1]),
         )
         bundle["n_updates"] = bundle.get("n_updates", 0) + 1
         bundle["last_update_at"] = _now_iso()
@@ -188,10 +202,10 @@ def online_predict_probability(
     if bundle is None:
         return None
     try:
-        feat_names = bundle["feature_names"]
-        x_row = [float(features_dict.get(name, 0.0))
-                 for name in feat_names]
-        proba = bundle["model"].predict_proba([x_row])
+        x_row = _features_to_vector(features_dict, bundle)
+        scaler = bundle.get("scaler")
+        x_scaled = scaler.transform([x_row]) if scaler is not None else [x_row]
+        proba = bundle["model"].predict_proba(x_scaled)
         # Find index of class=1 (win)
         classes = list(bundle["model"].classes_)
         if 1 in classes:
@@ -216,6 +230,20 @@ def get_online_model_info(profile_id: int,
         "created_at": bundle.get("created_at"),
         "last_update_at": bundle.get("last_update_at"),
     }
+
+
+def _features_to_vector(features_dict: Dict[str, Any],
+                          bundle: Dict[str, Any]) -> List[float]:
+    """Project a raw features payload into the model's vector space.
+
+    Uses meta_model.extract_features to expand categorical/one-hot
+    fields the same way the training set was built, then maps onto the
+    bundle's frozen feature_names order. Missing features → 0.0.
+    """
+    from meta_model import extract_features
+    feat_names: List[str] = bundle["feature_names"]
+    extracted = extract_features(features_dict) or {}
+    return [float(extracted.get(name, 0.0)) for name in feat_names]
 
 
 def _now_iso() -> str:
