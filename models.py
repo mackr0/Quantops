@@ -345,6 +345,27 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         # falls open). 0.5 default = drop candidates the meta-model
         # is more confident the AI is wrong about than right.
         ("trading_profiles", "meta_pregate_threshold", "REAL NOT NULL DEFAULT 0.5"),
+
+        # Item 2b of COMPETITIVE_GAP_PLAN.md — intraday risk monitor
+        # auto-halt. When alerts fire (drawdown acceleration, vol
+        # spike, sector swing, halted positions), the trade pipeline
+        # blocks new entries until the halt auto-clears. Default ON
+        # for capital preservation; user can disable per profile if
+        # they want to override the safety layer.
+        ("trading_profiles", "enable_intraday_risk_halt",
+            "INTEGER NOT NULL DEFAULT 1"),
+        # Item 1b — stat-arb cointegrated pair book. Off by default
+        # because pair trades require both legs (one long + one short)
+        # so a long-only profile can't act on the surfaced pairs.
+        # Long/short profiles can opt in.
+        ("trading_profiles", "enable_stat_arb_pairs",
+            "INTEGER NOT NULL DEFAULT 0"),
+        # Item 2a — Barra-style portfolio risk daily snapshot. On by
+        # default; the snapshot is informational (surfaces VaR + ES +
+        # stress scenarios in the AI prompt). Disabling stops the
+        # snapshot task and removes the prompt section.
+        ("trading_profiles", "enable_portfolio_risk_snapshot",
+            "INTEGER NOT NULL DEFAULT 1"),
     ]
     for table, col, col_def in _migrations:
         try:
@@ -810,6 +831,11 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         # call was silently filtered out — health check logged
         # "DISABLE pattern_recognizer" but the column stayed [].
         "disabled_specialists", "meta_pregate_threshold",
+        # COMPETITIVE_GAP_PLAN feature toggles. Without these on
+        # the allowlist the settings POST silently drops them.
+        "enable_intraday_risk_halt",
+        "enable_stat_arb_pairs",
+        "enable_portfolio_risk_snapshot",
     }
     updates = {}
     rejected = []
@@ -1026,6 +1052,15 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         alpaca_account_id=profile.get("alpaca_account_id"),
         # AI-model auto-tune toggle
         ai_model_auto_tune=bool(profile.get("ai_model_auto_tune", 0)),
+        # Item 2b — intraday risk monitor auto-halt (default ON)
+        enable_intraday_risk_halt=bool(
+            profile.get("enable_intraday_risk_halt", 1)),
+        # Item 1b — stat-arb pair book opt-in (default OFF)
+        enable_stat_arb_pairs=bool(
+            profile.get("enable_stat_arb_pairs", 0)),
+        # Item 2a — Barra portfolio risk daily snapshot (default ON)
+        enable_portfolio_risk_snapshot=bool(
+            profile.get("enable_portfolio_risk_snapshot", 1)),
     )
 
 

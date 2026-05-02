@@ -210,14 +210,16 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_options_delta_hedger(ctx),
             db_path=ctx.db_path,
         )
-        # Item 2b — intraday risk monitoring. Runs every cycle. Writes
-        # a risk-halt state when drawdown / vol spike alerts fire;
-        # trade pipeline reads it to block new entries.
-        run_task(
-            f"[{seg_label}] Intraday Risk Check",
-            lambda: _task_intraday_risk_check(ctx),
-            db_path=ctx.db_path,
-        )
+        # Item 2b — intraday risk monitoring. Writes a risk-halt
+        # state when drawdown / vol spike alerts fire; trade pipeline
+        # reads it to block new entries. Per-profile toggle so users
+        # can opt out of the auto-halt safety layer.
+        if getattr(ctx, "enable_intraday_risk_halt", True):
+            run_task(
+                f"[{seg_label}] Intraday Risk Check",
+                lambda: _task_intraday_risk_check(ctx),
+                db_path=ctx.db_path,
+            )
         if getattr(ctx, "is_virtual", False):
             run_task(
                 f"[{seg_label}] Virtual Audit",
@@ -295,12 +297,15 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
         # — daily Barra-style factor exposures, parametric + Monte Carlo
         # VaR, and historical scenario stress tests. Persisted to
         # portfolio_risk_snapshots so dashboards and the AI prompt can
-        # read the latest reading without recomputing.
-        run_task(
-            f"[{seg_label}] Portfolio Risk Snapshot",
-            lambda: _task_portfolio_risk_snapshot(ctx),
-            db_path=ctx.db_path,
-        )
+        # read the latest reading without recomputing. Per-profile
+        # toggle so users can opt out (the snapshot is informational
+        # but not free — pulls bars + Ken French CSV).
+        if getattr(ctx, "enable_portfolio_risk_snapshot", True):
+            run_task(
+                f"[{seg_label}] Portfolio Risk Snapshot",
+                lambda: _task_portfolio_risk_snapshot(ctx),
+                db_path=ctx.db_path,
+            )
         # Specialist calibrators (Wave 3 / Fix #9 of
         # METHODOLOGY_FIX_PLAN.md) — refit each specialist's
         # Platt-scaling layer on accumulated outcomes
@@ -333,23 +338,26 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_alpha_decay(ctx),
             db_path=ctx.db_path,
         )
-        # Item 1b — daily retest of active stat-arb pairs. Re-runs the
-        # Engle-Granger test on each pair; ejects pairs whose p-value
-        # has drifted above 0.10 (cointegration broken). Cheap when the
-        # book is small; quadratic search isn't done here (that's the
-        # universe scan, run separately and less frequently).
-        run_task(
-            f"[{seg_label}] Stat-Arb Pair Retest",
-            lambda: _task_stat_arb_retest(ctx),
-            db_path=ctx.db_path,
-        )
-        # Item 1b — weekly universe scan to discover new pairs.
-        # Sunday-only with marker idempotency. No-op on other days.
-        run_task(
-            f"[{seg_label}] Stat-Arb Universe Scan",
-            lambda: _task_stat_arb_universe_scan(ctx),
-            db_path=ctx.db_path,
-        )
+        # Item 1b — stat-arb cointegrated pair book. Off by default
+        # because pair trades require both legs (long + short) so
+        # long-only profiles can't act on the surfaced pairs. Per-
+        # profile opt-in.
+        if getattr(ctx, "enable_stat_arb_pairs", False):
+            # Daily retest of active pairs — re-runs the Engle-Granger
+            # test; ejects pairs whose p-value has drifted above 0.10
+            # (cointegration broken).
+            run_task(
+                f"[{seg_label}] Stat-Arb Pair Retest",
+                lambda: _task_stat_arb_retest(ctx),
+                db_path=ctx.db_path,
+            )
+            # Weekly universe scan to discover new pairs. Sunday-only
+            # with marker idempotency; no-op on other days.
+            run_task(
+                f"[{seg_label}] Stat-Arb Universe Scan",
+                lambda: _task_stat_arb_universe_scan(ctx),
+                db_path=ctx.db_path,
+            )
         # SEC filing analysis (Phase 4) — runs once per market_type per
         # cycle, not per profile. The same symbols get the same filings.
         _sec_key = ctx.segment

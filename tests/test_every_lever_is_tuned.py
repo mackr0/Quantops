@@ -111,6 +111,14 @@ MANUAL_PARAMETERS = {
     "disabled_specialists":    "Lever 3 — auto-managed by multi_scheduler._task_specialist_health_check (calibrator-driven)",
     "meta_pregate_threshold":  "Lever 2 — per-profile gate threshold, default 0.5; user override; not autonomously tuned",
 
+    # COMPETITIVE_GAP_PLAN feature toggles. Each gates a per-profile
+    # scheduled task. User-controlled architectural choice (do you
+    # want this safety / research feature running?), not a parameter
+    # the tuner should A/B test on its own.
+    "enable_intraday_risk_halt":     "User-controlled safety toggle (Item 2b auto-halt)",
+    "enable_stat_arb_pairs":         "User-controlled feature toggle (Item 1b stat-arb book; requires shorts enabled)",
+    "enable_portfolio_risk_snapshot": "User-controlled feature toggle (Item 2a daily Barra snapshot)",
+
     # P2.2 of LONG_SHORT_PLAN.md — strategic choice (long-only vs
     # balanced vs short-dominant). The AI prompt directive (P2.2)
     # and the balance gate (P2.4) work together to enforce the

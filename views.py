@@ -274,6 +274,9 @@ PARAMETER_LABELS = {
     "enable_short_selling": "Short Selling",
     "enable_self_tuning": "Self-Tuning",
     "enable_consensus": "Multi-Model Consensus",
+    "enable_intraday_risk_halt": "Intraday Risk Auto-Halt",
+    "enable_stat_arb_pairs": "Statistical Arbitrage Pair Book",
+    "enable_portfolio_risk_snapshot": "Portfolio Risk Daily Snapshot",
     "use_atr_stops": "ATR-Based Stops",
     "use_trailing_stops": "Trailing Stops",
     "use_limit_orders": "Limit Orders",
@@ -845,6 +848,19 @@ def save_profile(profile_id):
     config_updates["conviction_tp_min_adx"] = float(form.get("conviction_tp_min_adx", 25.0))
     # Limit orders
     config_updates["use_limit_orders"] = 1 if form.get("use_limit_orders") else 0
+
+    # COMPETITIVE_GAP_PLAN feature toggles. Each gates a scheduled
+    # task that runs per-profile per-cycle. Without these on the
+    # save handler the form values get silently dropped.
+    config_updates["enable_intraday_risk_halt"] = (
+        1 if form.get("enable_intraday_risk_halt") else 0
+    )
+    config_updates["enable_stat_arb_pairs"] = (
+        1 if form.get("enable_stat_arb_pairs") else 0
+    )
+    config_updates["enable_portfolio_risk_snapshot"] = (
+        1 if form.get("enable_portfolio_risk_snapshot") else 0
+    )
 
     # Multi-model consensus
     config_updates["enable_consensus"] = 1 if form.get("enable_consensus") else 0

@@ -17,6 +17,30 @@ Rules going forward:
 
 ---
 
+## 2026-05-02 — Per-profile toggles for new scheduled features; settings UI + scheduler-gate guardrail (Severity: high, UX)
+
+I'd shipped Items 1b / 2a / 2b with new scheduler tasks (`_task_intraday_risk_check`, `_task_portfolio_risk_snapshot`, `_task_stat_arb_retest`, `_task_stat_arb_universe_scan`) that ran unconditionally for every profile. Users had no way to see they existed, no way to toggle them, no settings control. New "lever" buried in the system — exactly the pattern called out as a recurring failure mode.
+
+**Toggles added:**
+- `enable_intraday_risk_halt` (default ON) — gates the intraday risk monitor + auto-halt on drawdown / vol / sector / position halts.
+- `enable_portfolio_risk_snapshot` (default ON) — gates the daily Barra factor risk snapshot + stress scenario projection.
+- `enable_stat_arb_pairs` (default OFF — requires shorts enabled, since pair trades use both legs).
+
+Wired all three end-to-end: schema migration, `UserContext` field, `update_trading_profile` allowlist, `save_profile` form parser, settings.html control with tooltip + plain-English explanation. Each scheduled task now checks `getattr(ctx, "enable_*", default)` before running.
+
+**New guardrail (`tests/test_scheduled_features_have_settings.py`):**
+Static-analyzes `multi_scheduler.py` for every `lambda: _task_X(ctx)` registered via `run_task(...)`. For each one, requires either:
+1. Membership in an explicit `INFRASTRUCTURE_TASKS` allowlist (with rationale per entry — load-bearing tasks like `_task_resolve_predictions`, `_task_scan_and_trade`, `_task_crisis_monitor`), OR
+2. An enclosing `if getattr(ctx, "enable_*", ...)` block, where the `enable_*` column exists in `trading_profiles` AND has a `<input name="enable_*">` control in `templates/settings.html`.
+
+This would have caught the original Item 1b/2a/2b ship as a regression. The `INFRASTRUCTURE_TASKS` allowlist deliberately requires a written rationale per entry, so future tasks can't be silently classified as "infra" without thought.
+
+`test_every_lever_is_tuned.py` MANUAL_PARAMETERS allowlist updated for the three new columns (user-controlled toggles, not autonomously tunable).
+
+Suite: 1810 passed, 0 skipped.
+
+---
+
 ## 2026-05-01 — Documentation + UI surfaces for Items 2a / 5a; snake_case guardrail extended; remove all test skips (Severity: medium, hygiene)
 
 **UI:**

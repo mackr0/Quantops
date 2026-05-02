@@ -639,6 +639,28 @@
                 <span><span class="tip" data-tip="Allow the tuner to A/B test AI models within the cost guard. OFF by default — flipping this on can increase API spend.">AI Model Auto-Tune (cost-sensitive)</span><br><small style="color:#888;font-weight:normal;">Off by default. When on, the tuner is allowed to A/B test alternative models for this profile within the daily cost ceiling. Recommend leaving off until comfortable with current spend.</small></span>
             </label>
 
+            <!-- Advanced risk + research features -->
+            <h4>Advanced Risk &amp; Research Features</h4>
+            <p style="color:#888;font-size:0.85rem;margin-top:-0.5rem;">Each toggle enables an additional scheduled job for this profile. Toggling off stops the job entirely (saves cycle time and removes the corresponding section from the AI prompt).</p>
+
+            <label style="display:flex;align-items:flex-start;gap:0.5rem;">
+                <input type="checkbox" name="enable_intraday_risk_halt" value="1" style="flex-shrink:0;margin-top:0.2rem;"
+                       {{ 'checked' if prof.get('enable_intraday_risk_halt', 1) else '' }}>
+                <span><span class="tip" data-tip="Watches today's intraday drawdown vs the 7-day average, SPY hourly vol vs the 20-day average, sector concentration swings, and held-position trading halts. When alerts fire, the trade pipeline blocks new entries until the halt auto-clears (60 minutes).">Intraday Risk Auto-Halt</span><br><small style="color:#888;font-weight:normal;">ON by default. Watches drawdown acceleration, vol spikes, sector swings, and halted positions; auto-blocks new entries when alerts fire. Disable only if you want to override the safety layer.</small></span>
+            </label>
+
+            <label style="display:flex;align-items:flex-start;gap:0.5rem;">
+                <input type="checkbox" name="enable_portfolio_risk_snapshot" value="1" style="flex-shrink:0;margin-top:0.2rem;"
+                       {{ 'checked' if prof.get('enable_portfolio_risk_snapshot', 1) else '' }}>
+                <span><span class="tip" data-tip="Daily Barra-style factor risk model: 21-factor exposures (Ken French + sector ETFs + style ETFs), parametric and Monte Carlo VaR + Expected Shortfall, and seven historical stress scenarios projected onto the current book.">Portfolio Risk Daily Snapshot</span><br><small style="color:#888;font-weight:normal;">ON by default. Computes daily portfolio volatility, 95/99% VaR + Expected Shortfall, factor exposures, and historical stress scenarios. Surfaced to the AI prompt and on the AI Awareness panel. Disable to skip the snapshot task.</small></span>
+            </label>
+
+            <label style="display:flex;align-items:flex-start;gap:0.5rem;">
+                <input type="checkbox" name="enable_stat_arb_pairs" value="1" style="flex-shrink:0;margin-top:0.2rem;"
+                       {{ 'checked' if prof.get('enable_stat_arb_pairs', 0) else '' }}>
+                <span><span class="tip" data-tip="Engle-Granger cointegration scanner: weekly universe scan + daily pair retest + Z-score-based pair signals (long winner / short loser when spread is at ±2σ, exit at 0σ). Pair trades require both legs so this only makes sense for long/short profiles.">Statistical Arbitrage Pair Book</span><br><small style="color:#888;font-weight:normal;">OFF by default. Requires Short Selling enabled — pair trades use one long + one short leg. Weekly universe scan for cointegrated pairs + daily retest + per-pair Z-score signals surfaced to the AI prompt.</small></span>
+            </label>
+
             <!-- Screener Parameters -->
             <h4>Screener Parameters</h4>
             <div class="grid">

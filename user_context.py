@@ -205,6 +205,20 @@ class UserContext:
     # prevent surprise Sonnet/Opus calls under cost guard).
     ai_model_auto_tune: bool = False
 
+    # Item 2b — intraday risk monitor auto-halt. When alerts fire
+    # (drawdown acceleration, vol spike, sector swing, halted held
+    # positions), trade pipeline blocks new entries until the halt
+    # auto-clears. ON by default for capital preservation.
+    enable_intraday_risk_halt: bool = True
+    # Item 1b — stat-arb pair book. OFF by default since pair trades
+    # need both legs (long + short); long-only profiles can't use the
+    # surfaced pairs.
+    enable_stat_arb_pairs: bool = False
+    # Item 2a — Barra-style portfolio risk daily snapshot. ON by
+    # default; informational (surfaces VaR + ES + stress scenarios in
+    # the AI prompt). Disable to skip the snapshot task.
+    enable_portfolio_risk_snapshot: bool = True
+
     # Limit orders
     use_limit_orders: bool = False
 
