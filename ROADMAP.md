@@ -94,6 +94,21 @@ Polling-based exit detection ran on a 5-min cycle. Stop fills overshot threshold
 - `get_bars` 5-min TTL cache — scan times ~4× faster on universe-iterating strategies.
 - Pending-orders dashboard panel filtered to per-profile owned IDs (was leaking sibling-profile orders since 6 profiles share one Alpaca account).
 
+### Phase 13 — Competitive-Gap Closure (`COMPETITIVE_GAP_PLAN.md`)
+
+Roadmap of capabilities real funds have that we didn't. Items shipped 2026-04-29 → 2026-05-01:
+
+- **1a. Options trading layer** — full 8-phase build (`OPTIONS_PROGRAM_PLAN.md`): Greeks aggregator + gates, multi-leg combo orders, roll/lifecycle/wheel state machine, delta hedger, vol regime classifier, pre-earnings IV crush capture, Alpaca options chain (replacing yfinance), synthetic backtester.
+- **1b. Statistical arbitrage** — `stat_arb_pair_book.py` with Engle-Granger cointegration scanning, Z-score entry/exit, half-life tracking, regime-break ejection.
+- **2a. Barra-style portfolio risk model** — `portfolio_risk_model.py` + `risk_stress_scenarios.py` with ~21-factor universe (Ken French 5F+Mom + 11 SPDR sectors + 4 MSCI style ETFs), parametric + Monte Carlo VaR + ES, ridge-regularized exposure regression, Ledoit-Wolf factor covariance, and 7 historical stress scenarios (1987 Black Monday → 2023 SVB). Daily snapshots persisted; surfaced in AI prompt under `MARKET CONTEXT > PORTFOLIO RISK`.
+- **2b. Intraday risk monitoring** — `intraday_risk_monitor.py` with 4 checks (drawdown acceleration, vol spike, sector concentration swing, held-position halts), aggregate action levels (pause_all > block_new_entries > monitor), trade pipeline gates new entries during halts.
+- **3b. Earnings-call sentiment NLP** — `sec_filings.get_earnings_call_sentiment` parses 8-K exhibits, runs Haiku for tone classification, surfaces `transcript_sentiment` in candidates.
+- **5a. Online learning meta-model** — `online_meta_model.py` (`SGDClassifier.partial_fit`) "freshness layer" alongside the GBM. Updates per-resolved-prediction; large divergence between SGD and GBM flags regime drift.
+- **5b. Adversarial reviewer** — 5th specialist with VETO authority.
+- **6b. Strategy-level capital allocation** — `strategy_capital_allocator.py` weights per strategy on `sharpe × (1 + win_rate)`, clamped [0.25×, 2.0×].
+
+Tracking only — no Phase 14 sub-roadmap. Items 4a (IBKR multi-asset), 6a (real money), 1c long-vol portfolio hedge, and the rest of 3a (Google Trends / Wikipedia / GitHub / job postings) are still open in `COMPETITIVE_GAP_PLAN.md`.
+
 ---
 
 ## Phase Order & Dependencies

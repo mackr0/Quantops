@@ -704,7 +704,7 @@
         {% if exposure.by_sector %}
         <h4 style="margin-top:1rem;"><span class="tip" data-tip="Sector breakdown of your book. Real long/short funds typically target <20% gross per sector to avoid factor concentration. Sectors >=30% gross are flagged.">By Sector</span></h4>
         {% if exposure.concentration_flags %}
-        <p class="muted pnl-neg">CONCENTRATION WARNING: {{ exposure.concentration_flags|join(', ') }} sector(s) >= 30% of gross book.</p>
+        <p class="muted pnl-neg">CONCENTRATION WARNING: {{ exposure.concentration_flags | map('display_name') | join(', ') }} sector(s) >= 30% of gross book.</p>
         {% endif %}
         <div class="overflow-auto">
             <table style="font-size:0.9rem;">
@@ -721,7 +721,7 @@
                 <tbody>
                 {% for sector, b in exposure.by_sector.items() | sort(attribute='1.gross_pct', reverse=True) %}
                     <tr {% if sector in exposure.concentration_flags %}style="background:#ffe5e5;"{% endif %}>
-                        <td><strong>{{ sector }}</strong>{% if sector in exposure.concentration_flags %} ⚠{% endif %}</td>
+                        <td><strong>{{ sector | display_name }}</strong>{% if sector in exposure.concentration_flags %} ⚠{% endif %}</td>
                         <td style="text-align:right;">{{ "%.1f"|format(b.long_pct) }}%</td>
                         <td style="text-align:right;">{{ "%.1f"|format(b.short_pct) }}%</td>
                         <td style="text-align:right;" class="{{ 'pnl-pos' if b.net_pct > 0 else 'pnl-neg' if b.net_pct < 0 else '' }}">{{ "{:+.1f}".format(b.net_pct) }}%</td>

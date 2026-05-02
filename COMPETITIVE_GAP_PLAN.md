@@ -30,13 +30,12 @@ Not competitive with a real fund because of everything below.
 
 ## Gap 1 — Strategy diversity (HIGHEST LEVERAGE)
 
-### 1a. Options trading layer
+### 1a. Options trading layer ✅ SHIPPED 2026-04-29 → 2026-05-01
 **Real funds:** trade options for hedging, IV/vega plays, defined-risk
 income (covered calls), defined-risk tail-protection (long puts), and
 volatility arbitrage.
 
-**Us:** read-only IV regime data on equity strategies. We don't trade
-options.
+**Status:** Full options program shipped — see `OPTIONS_PROGRAM_PLAN.md` for the 8-phase build (A: Greeks aggregator + gates, B: multi-leg combo orders, C: roll manager + lifecycle + wheel state machine, D: delta hedger, E: vol regime classifier, F: pre-earnings IV crush capture, G: Alpaca options chain (replaced yfinance), H: synthetic backtester). Started as read-only IV regime data on equities; finished as a full options trading layer.
 
 **Build path:** Alpaca paper supports options trading via API. We
 need:
@@ -59,14 +58,12 @@ IV mean-reversion (sell rich vol on overhyped names), and defined-
 risk income (covered calls on existing longs in low-vol regimes).
 Probably 20-40% additional risk-adjusted return potential.
 
-### 1b. Statistical arbitrage at scale
+### 1b. Statistical arbitrage at scale ✅ SHIPPED 2026-04-30
 **Real funds:** trade hundreds to thousands of cointegrated pairs
 simultaneously. Pair regime detection (when cointegration breaks).
 Multi-leg basket trades.
 
-**Us:** one pair-trade primitive (P2.3) that surfaces 1-3 candidate
-pairs to the AI per cycle. The AI has to pick — there's no portfolio
-of pairs.
+**Status:** Shipped — `stat_arb_pair_book.py` does Engle-Granger cointegration scanning, Z-score-based entry/exit (±2σ entry, 0σ exit, ±3σ stop), pair persistence + half-life tracking, regime-break ejection, and renders an active pair book to the AI prompt. `execute_pair_trade` opens both legs as a dollar-neutral pair.
 
 **Build path:** all in `statsmodels` (free):
 - Universe scanner: pairwise Engle-Granger cointegration test on the
@@ -87,35 +84,22 @@ either DIY or ultra-expensive (Bloomberg PRMS, BarraPM).
 neutral edge sources. Real-money funds run this in size; the math is
 public.
 
-### 1c. Volatility strategies
+### 1c. Volatility strategies ✅ SUBSTANTIALLY SHIPPED via Options Phases E/F
 **Real funds:** sell premium when IV rich, buy when IV cheap, term
 structure arbitrage (trade contango/backwardation in VIX futures).
 
-**Us:** read IV; don't trade vol.
-
-**Build path:**
-- Build atop the options layer (1a)
-- IV rank + IV percentile per name
-- Strategy: short strangles when IV rank > 80, long strangles when < 20
-- Long-vol portfolio hedge (long VIX exposure during drawdowns)
-
-**Buy alternative:** Cheddar Flow ($50-100/mo) for unusual-flow
-signals. Useful but not strictly necessary.
-
-**Effort:** 1 week (after 1a is in).
-**Edge gain:** moderate-large in volatile regimes; modest in calm.
+**Status:** Phase E of the options program shipped a vol-regime classifier (`options_vol_regime.py`) that translates raw IV signals (rank, skew, term) into strategy-direction guidance (premium_rich → iron condors / credit spreads, premium_cheap → debit spreads / long straddles). Phase F shipped pre-earnings IV-crush capture (`options_earnings_plays.py`). What is NOT yet built: a long-vol PORTFOLIO HEDGE (e.g., systematic SPY-put protection during drawdowns). Tracked as a follow-up.
 
 ---
 
 ## Gap 2 — Risk modeling (MEDIUM-HIGH LEVERAGE)
 
-### 2a. Barra-style multi-factor model
+### 2a. Barra-style multi-factor model ✅ SHIPPED 2026-05-01
 **Real funds:** Barra/Axioma 50-100 factor risk models with
 covariance matrices, portfolio-level VaR, stress testing against
 historical scenarios.
 
-**Us:** 3 factors (book/market, beta, momentum). No covariance
-matrix, no portfolio VaR.
+**Status:** Shipped — full implementation, not MVP. ~21 factor universe (Ken French daily 5-factor + Momentum, free CSV cached 7d, history back to 1926; plus 11 SPDR sector ETFs; plus 4 MSCI USA style ETFs). `portfolio_risk_model.py` does ridge-regularized exposure regression, Ledoit-Wolf shrunk factor covariance, parametric 95/99% VaR + Expected Shortfall, Monte Carlo VaR (10k Cholesky-decomposed simulations), per-factor variance decomposition, grouped (sectors/styles/french/idio) breakdown. `risk_stress_scenarios.py` replays 7 historical windows (1987 Black Monday, 2000 dot-com, 2008 Lehman, 2018 Q4 selloff, 2020 COVID, 2022 rate hikes, 2023 SVB) by projecting current portfolio exposures onto the actual historical factor returns. ETF inception dates respected (no spurious projections for ETFs that didn't exist yet). Daily snapshot persisted to `portfolio_risk_snapshots`; surfaced in AI prompt and on AI Awareness UI tab. 30 tests green.
 
 **Build path:** Use Ken French's free factor library (Mom, Size,
 Value, Investment, Profitability all free at
@@ -134,7 +118,7 @@ $10K-100K+/yr. Way more than we need at our scale.
 **Edge gain:** moderate (better risk awareness; not direct alpha).
 But essential for credibility.
 
-### 2b. Intraday risk monitoring
+### 2b. Intraday risk monitoring ✅ SHIPPED
 **Real funds:** real-time book P&L, exposure, factor drift; auto-
 flatten / reduce on threshold breaches.
 
@@ -153,39 +137,31 @@ on configured thresholds; auto-flatten path for "panic" thresholds.
 
 ## Gap 3 — Data depth (MIXED LEVERAGE)
 
-### 3a. Web-scraped alt data (BUILD)
+### 3a. Web-scraped alt data (PARTIALLY SHIPPED, ongoing)
 Things we don't have but can scrape FREE:
-- Reddit subreddit activity per ticker (r/wallstreetbets, r/stocks)
-- StockTwits message volume + sentiment (we have basic, could go
-  deeper with NLP)
-- Google Trends search interest per ticker
-- Wikipedia page-view spikes (proxy for retention/buzz)
-- GitHub commit activity for tech companies
-- Job-posting volume (Indeed/LinkedIn API or scrape) as company-
-  growth proxy
-- App store rankings (basic Apple/Google APIs free; deeper data paid)
-- News headline sentiment from RSS feeds (we have basic — could
-  expand to broader source set + better NLP)
-- Earnings call transcript NLP (free via SEC filings; sentiment via
-  open models)
-- 10b5-1 insider planned-sale tracking (SEC EDGAR — we have basic
-  insider, this is more granular)
+- Reddit subreddit activity per ticker (r/wallstreetbets, r/stocks) ✅ via `social_sentiment.get_ticker_mentions`
+- StockTwits message volume + sentiment ✅ via `alternative_data.get_stocktwits_sentiment`
+- Earnings call transcript NLP ✅ via `sec_filings.get_earnings_call_sentiment` (Item 3b)
+- Congressional trade tracking ✅ via `alternative_data.get_congressional_recent`
+- Institutional 13F holdings ✅ via `alternative_data.get_13f_institutional`
+- Biotech FDA / PDUFA milestones ✅ via `alternative_data.get_biotech_milestones`
 
-**Effort:** 1 source per few days. Add 5-10 sources over 2-3 weeks.
+Still to build:
+- Google Trends search interest per ticker
+- Wikipedia page-view spikes
+- GitHub commit activity for tech companies
+- Job-posting volume (Indeed/LinkedIn) as growth proxy
+- App-store rankings
+- 10b5-1 insider planned-sale tracking (more granular than current insider data)
+
 **Edge gain:** small per source, real in aggregate. Best added
 incrementally as the meta-model trains on each.
 
-### 3b. Earnings-call sentiment via NLP (BUILD)
+### 3b. Earnings-call sentiment via NLP ✅ SHIPPED
 **Real funds:** use real-time earnings call transcript analysis with
 custom-tuned NLP (or LLMs).
 
-**Build path:** SEC 8-Ks include earnings press releases (free).
-Earnings call audio is harder — could buy or transcribe via Whisper.
-Sentiment analysis via the existing AI (we already use Claude for
-specialist analysis — point it at recent earnings text).
-
-**Effort:** 1 week.
-**Edge gain:** moderate. Earnings drift is a known anomaly.
+**Status:** Shipped — `sec_filings.get_earnings_call_sentiment` pulls the latest 8-K (which contains the earnings press release / transcript exhibit), runs it through Haiku for tone classification (positive / neutral / cautious / negative) + key-phrase extraction, caches 30 days (earnings are quarterly). Wired into `_build_candidates_data` so each candidate carries `transcript_sentiment` into the AI prompt.
 
 ### 3c. Things we have to BUY (cheap)
 - **Quiver Quant Premium ($30-100/mo):** government contracts,
@@ -227,44 +203,21 @@ unused. Defer until we have a real strategy thesis.
 
 ## Gap 5 — Model sophistication (MEDIUM LEVERAGE)
 
-### 5a. Online / continuous learning
+### 5a. Online / continuous learning ✅ SHIPPED 2026-05-01
 **Real funds:** continuous model updates as outcomes resolve.
 
-**Us:** daily retrain.
+**Status:** Shipped — `online_meta_model.py` (`SGDClassifier` with `partial_fit`) added as a "freshness layer" alongside the GBM batch model. Bootstrapped from the same training set as the GBM (min 10 rows). StandardScaler in front so raw mixed-scale features don't saturate the sigmoid. Updates fire from `ai_tracker.resolve_predictions` on every resolved row; rebootstraps after each weekly GBM retrain. Trade pipeline computes BOTH probabilities post-AI and attaches `online_meta_prob` + `meta_divergence` (= online − gbm) to each trade — large divergence flags recent regime drift the batch model hasn't seen yet. Visible on AI Brain tab next to GBM AUC.
 
-**Build path:** scikit-learn `partial_fit` or `river` library (free).
-Re-weight feature importance on each resolved prediction. Per-trade
-update of meta-model probabilities.
-
-**Effort:** 1-2 weeks.
-**Edge gain:** moderate, especially in regime breaks.
-
-### 5b. Adversarial / red-team specialist
+### 5b. Adversarial / red-team specialist ✅ SHIPPED
 **Real funds:** independent risk teams critique trades pre-execution.
 
-**Us:** none.
+**Status:** Shipped — `adversarial_reviewer` is the 5th specialist in the ensemble. VETO authority alongside `risk_assessor`. Looks for correlation risk, concentration, regime mismatch, recent earnings, and factor-exposure violations. Visible on the AI Awareness ensemble panel and gets its veto rate tracked on the dashboard.
 
-**Build path:** 5th specialist in the ensemble whose role is "find
-the failure mode in this trade." Looks for: correlation risk, single-
-name concentration, regime mismatch, recent earnings, factor
-exposure violations. VETO authority like risk_assessor.
-
-**Effort:** 1 week.
-**Edge gain:** moderate (defensive — catches obvious bad trades).
-
-### 5c. Better backtesting infrastructure
+### 5c. Better backtesting infrastructure ⚠ PARTIALLY SHIPPED
 **Real funds:** walk-forward, regime-conditional, transaction-cost-
 aware, Monte Carlo with realistic slippage.
 
-**Us:** rigorous_backtest with 10 gates. Decent but limited.
-
-**Build path:** add walk-forward windowing, regime-conditional
-performance reporting, slippage modeling tied to ADV, Monte Carlo
-with bootstrap from actual fill distributions.
-
-**Effort:** 2 weeks.
-**Edge gain:** moderate — better strategy selection / parameter
-choice means better forward P&L.
+**Status:** `rigorous_backtest` has 10 gates including walk-forward + OOS-disjoint splits. Phase H of the options program shipped a synthetic options backtester (`options_backtester.py`) with multi-leg lifecycle accounting. Still missing: ADV-tied slippage modeling and bootstrap from actual fill distributions for equity strategies.
 
 ---
 
@@ -279,18 +232,11 @@ Wire IBKR adapter from 4a.
 **Effort:** account opening (days) + adapter (within 4a).
 **Edge gain:** N/A directly. But required for credibility.
 
-### 6b. Capital allocation across strategies
+### 6b. Capital allocation across strategies ✅ SHIPPED
 **Real funds:** strategy-level Kelly + dynamic capital reallocation
 based on rolling Sharpe.
 
-**Us:** per-trade Kelly. Per-strategy capital allocation is basic.
-
-**Build path:** track Sharpe per strategy_type over rolling 30/60/90
-day windows; allocate capital inverse to volatility × inverse to
-Sharpe. Already partially in `compute_capital_allocations`; expand.
-
-**Effort:** 1 week.
-**Edge gain:** moderate.
+**Status:** Shipped — `strategy_capital_allocator.py` computes per-strategy weights as `score = sharpe × (1 + win_rate)` normalized to mean=1.0, clamped to [0.25×, 2.0×]. Median imputation for new strategies (n < 10 samples). Trade pipeline applies the weight to `size_pct` for BUY/SHORT/SELL actions. Visible in dashboard.
 
 ---
 

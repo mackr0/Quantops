@@ -2642,6 +2642,103 @@ def _build_long_short_awareness(profiles):
     return out
 
 
+def _build_portfolio_risk_awareness(profiles):
+    """Per-profile snapshot of the Barra-style portfolio risk model
+    that the AI now sees on every cycle (Item 2a). Reads the most
+    recent row from `portfolio_risk_snapshots` per profile.
+
+    Returns list of dicts shaped like:
+      {
+        "profile_id": int,
+        "profile_name": str,
+        "snapshot_at": str | None,
+        "equity": float,
+        "sigma_pct": float,                 # daily portfolio σ in %
+        "var_95_dollars": float,
+        "var_99_dollars": float,
+        "es_95_dollars": float,
+        "mc_var_95_dollars": float | None,
+        "n_symbols": int,
+        "factor_exposures": list[(name,β)],  # top-6 by |β|
+        "grouped_share": dict,               # sectors/styles/french/idio %
+        "scenarios": list[dict],             # worst-3 stress scenarios
+      }
+    """
+    import os
+    import json as _json
+    out = []
+    for p in profiles or []:
+        prof_db = f"quantopsai_profile_{p['id']}.db"
+        if not os.path.exists(prof_db):
+            continue
+        row_dict = {
+            "profile_id": p["id"],
+            "profile_name": p.get("name", f"Profile {p['id']}"),
+            "snapshot_at": None,
+            "equity": None,
+            "sigma_pct": None,
+            "var_95_dollars": None,
+            "var_99_dollars": None,
+            "es_95_dollars": None,
+            "mc_var_95_dollars": None,
+            "n_symbols": 0,
+            "factor_exposures": [],
+            "grouped_share": {},
+            "scenarios": [],
+        }
+        try:
+            import sqlite3 as _sq
+            _conn = _sq.connect(prof_db)
+            _conn.row_factory = _sq.Row
+            row = _conn.execute(
+                "SELECT created_at, equity, sigma, "
+                "var_95_dollars, var_99_dollars, es_95_dollars, "
+                "mc_var_95_dollars, n_symbols, "
+                "factor_exposures_json, grouped_decomposition_json, "
+                "scenarios_json "
+                "FROM portfolio_risk_snapshots ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            _conn.close()
+        except Exception:
+            row = None
+        if not row:
+            continue
+        row_dict["snapshot_at"] = row["created_at"]
+        row_dict["equity"] = row["equity"]
+        row_dict["sigma_pct"] = (row["sigma"] or 0) * 100
+        row_dict["var_95_dollars"] = row["var_95_dollars"]
+        row_dict["var_99_dollars"] = row["var_99_dollars"]
+        row_dict["es_95_dollars"] = row["es_95_dollars"]
+        row_dict["mc_var_95_dollars"] = row["mc_var_95_dollars"]
+        row_dict["n_symbols"] = row["n_symbols"] or 0
+        try:
+            fx = _json.loads(row["factor_exposures_json"] or "{}")
+            ranked = sorted(
+                fx.items(), key=lambda kv: abs(kv[1] or 0), reverse=True,
+            )
+            row_dict["factor_exposures"] = [
+                (name, float(beta)) for name, beta in ranked[:6]
+            ]
+        except Exception:
+            pass
+        try:
+            grouped = _json.loads(row["grouped_decomposition_json"] or "{}")
+            total = sum(abs(v or 0) for v in grouped.values()) or 1.0
+            row_dict["grouped_share"] = {
+                k: round((v or 0) / total * 100, 1)
+                for k, v in grouped.items()
+            }
+        except Exception:
+            pass
+        try:
+            scenarios = _json.loads(row["scenarios_json"] or "[]")
+            row_dict["scenarios"] = scenarios[:5]    # worst 5
+        except Exception:
+            pass
+        out.append(row_dict)
+    return out
+
+
 def _ai_common(page_name):
     """Common setup for all AI pages: profiles, profile filter, db_paths."""
     profiles = [p for p in get_user_profiles(current_user.effective_user_id) if p.get("enabled")]
@@ -2831,6 +2928,13 @@ def ai_dashboard():
             bundle = meta_model.load_model(path)
             if bundle:
                 meta_info["loaded"] = True
+                # Item 5a — pull online (SGD freshness layer) info
+                online_info = None
+                try:
+                    from online_meta_model import get_online_model_info
+                    online_info = get_online_model_info(p["id"])
+                except Exception:
+                    online_info = None
                 meta_info["profiles"].append({
                     "name": p["name"],
                     "id": p["id"],
@@ -2839,6 +2943,7 @@ def ai_dashboard():
                     "n_samples": bundle["metrics"]["n_samples"],
                     "positive_rate": bundle["metrics"]["positive_rate"],
                     "top_features": bundle["feature_importance"][:10],
+                    "online": online_info,
                 })
     except Exception:
         pass
@@ -3193,6 +3298,7 @@ def ai_dashboard():
         ai_win_rate_chart_svg = ""
 
     long_short_awareness = _build_long_short_awareness(profiles)
+    portfolio_risk_awareness = _build_portfolio_risk_awareness(profiles)
 
     return render_template("ai.html",
                            ai_perf=ai_perf, slippage=slippage, meta_info=meta_info,
@@ -3206,6 +3312,7 @@ def ai_dashboard():
                            ai_cost_info=ai_cost_info,
                            ai_win_rate_chart_svg=ai_win_rate_chart_svg,
                            long_short_awareness=long_short_awareness,
+                           portfolio_risk_awareness=portfolio_risk_awareness,
                            **ctx)
 
 

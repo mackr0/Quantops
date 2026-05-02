@@ -490,8 +490,11 @@ class TestTemplateJSMatchesAPI:
         # Extract the JS block that processes macro data
         macro_js_start = template.find("function loadMacroData")
         macro_js_end = template.find("loadMacroData();", macro_js_start)
-        if macro_js_start < 0 or macro_js_end < 0:
-            pytest.skip("loadMacroData not found in ai.html")
+        assert macro_js_start >= 0 and macro_js_end > macro_js_start, (
+            "loadMacroData function not found in ai.html — either it "
+            "was renamed (update this test) or removed (the Market "
+            "Intelligence widget regressed)."
+        )
         macro_js = template[macro_js_start:macro_js_end]
 
         # These are the ACTUAL field names from macro_data.py
@@ -561,8 +564,11 @@ class TestTemplateJSMatchesAPI:
 
         js_start = template.find("function loadTuningHistory")
         js_end = template.find("loadTuningHistory(1)", js_start)
-        if js_start < 0 or js_end < 0:
-            pytest.skip("loadTuningHistory not found")
+        assert js_start >= 0 and js_end > js_start, (
+            "loadTuningHistory function not found in ai.html — either "
+            "it was renamed (update this test) or removed (the Tuning "
+            "History widget regressed)."
+        )
         js = template[js_start:js_end]
 
         for field in ["profile_name", "timestamp", "adjustment_type",

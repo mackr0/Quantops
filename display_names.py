@@ -261,6 +261,64 @@ _DISPLAY_NAMES = {
     # Macro Context") and overriding it breaks AI cost rendering.
     # The `layout:alt_data` fallback renders as "Prompt Section —
     # Alt Data" which is perfectly readable.
+
+    # Sector codes (used in by_sector tables, sector rotation, etc).
+    # Without explicit entries the fallback gives "Comm Services" /
+    # "Consumer Disc" / "Real Estate" which read awkwardly.
+    "tech":             "Technology",
+    "finance":          "Financials",
+    "energy":           "Energy",
+    "healthcare":       "Healthcare",
+    "industrial":       "Industrials",
+    "industrials":      "Industrials",
+    "consumer_disc":    "Consumer Discretionary",
+    "consumer_staples": "Consumer Staples",
+    "utilities":        "Utilities",
+    "materials":        "Materials",
+    "real_estate":      "Real Estate",
+    "comm_services":    "Communication Services",
+    "communication":    "Communication Services",
+
+    # Portfolio risk model factor names (Item 2a). Internal IDs use
+    # snake_case prefixes (sector_*, style_*) and Ken French academic
+    # codes; these map to the user-facing labels surfaced on the AI
+    # Awareness "Portfolio Risk" panel.
+    "sector_tech":         "Technology Sector",
+    "sector_financials":   "Financials Sector",
+    "sector_energy":       "Energy Sector",
+    "sector_healthcare":   "Healthcare Sector",
+    "sector_industrials":  "Industrials Sector",
+    "sector_staples":      "Consumer Staples Sector",
+    "sector_discretionary": "Consumer Discretionary Sector",
+    "sector_utilities":    "Utilities Sector",
+    "sector_materials":    "Materials Sector",
+    "sector_realestate":   "Real Estate Sector",
+    "sector_communication": "Communication Services Sector",
+    "style_smallcap":  "Small Cap Style",
+    "style_momentum":  "Momentum Style",
+    "style_quality":   "Quality Style",
+    "style_lowvol":    "Low-Volatility Style",
+    "Mkt-RF":          "Market Excess Return",
+    "SMB":             "Size (Small minus Big)",
+    "HML":             "Value (High minus Low)",
+    "RMW":             "Profitability (Robust minus Weak)",
+    "CMA":             "Investment (Conservative minus Aggressive)",
+    "Mom":             "Academic Momentum",
+
+    # Risk decomposition group labels.
+    "sectors":  "Sectors",
+    "styles":   "Styles",
+    "french":   "Academic Factors",
+    "idio":     "Idiosyncratic",
+
+    # Historical stress scenario IDs (`risk_stress_scenarios.py`).
+    "1987_blackmonday":  "1987 Black Monday",
+    "2000_dotcom":       "2000 Dot-com Crash",
+    "2008_lehman":       "2008 Lehman / GFC Peak",
+    "2018_q4_selloff":   "2018 Q4 Selloff",
+    "2020_covid":        "2020 COVID Crash",
+    "2022_rates":        "2022 Fed Hiking Cycle",
+    "2023_svb":          "2023 SVB / Regional Banks",
 }
 
 

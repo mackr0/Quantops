@@ -17,6 +17,33 @@ Rules going forward:
 
 ---
 
+## 2026-05-01 — Documentation + UI surfaces for Items 2a / 5a; snake_case guardrail extended; remove all test skips (Severity: medium, hygiene)
+
+**UI:**
+- AI Awareness tab gets a new "Portfolio Risk — Barra-style factor model the AI sees" article: daily σ, parametric/Monte Carlo VaR + ES, top factor exposures, risk decomposition (sectors/styles/french/idio), and the worst-3 historical stress scenarios — same data the AI sees under MARKET CONTEXT > PORTFOLIO RISK.
+- AI Brain tab's Meta-Model panel now shows the SGD online freshness layer (n_updates, n_features, last_update_at) next to GBM AUC.
+- New `_build_portfolio_risk_awareness` builder reads the latest `portfolio_risk_snapshots` row per profile.
+
+**Docs:**
+- AI_ARCHITECTURE.md: 3a meta-model section rewritten to document the GBM + SGD two-layer setup; new "PORTFOLIO RISK" entry under "what the AI sees" block.
+- COMPETITIVE_GAP_PLAN.md: items 1a, 1b, 2a, 2b, 3b, 5a, 5b, 6b, plus partial 1c / 3a / 5c, marked SHIPPED with what was actually built.
+- ROADMAP.md: Phase 13 Competitive-Gap Closure section listing every shipped item.
+- TECHNICAL_DOCUMENTATION.md: new "Competitive-gap closure modules" section with module-by-module reference.
+
+**Snake_case guardrail extended (`tests/test_no_snake_case_in_user_facing_ids.py`):**
+- Existing `test_no_snake_case_in_api_responses.py` only flagged `PARAM_BOUNDS` keys. Sector codes (`tech`, `comm_services`), factor IDs (`sector_tech`, `Mkt-RF`, `SMB`), and stress scenario IDs (`2008_lehman`, `2020_covid`) were unguarded.
+- New test enforces (a) every identifier in those families has an explicit `display_name` entry — no fallback drift — and (b) the rendered visible text of `/ai`, `/performance`, `/dashboard` contains no raw IDs. Uses a temp seeded SQLite DB so all three routes execute their actual code paths in test.
+- Caught and fixed real leaks I'd shipped: factor names (`sector_tech` etc) and scenario IDs (`2008_lehman` etc) on the new Portfolio Risk panel; sector codes (`comm_services`, `consumer_disc`) in the existing performance.html "By Sector" table.
+
+**Test skips removed:** every skip in the test suite is gone.
+- `test_no_guessing.py:494/565`: two `pytest.skip` calls that silently passed when JS functions weren't found in `ai.html` → converted to hard assertions (functions verified to exist).
+- `test_no_snake_case_in_user_facing_ids.py`: one `pytest.skip` for `/dashboard` returning non-200 → replaced with a real seeded temp DB so the route actually renders.
+- Suite is now 1809 passed, 0 skipped.
+
+`statsmodels` was missing from the venv (used by `stat_arb_pair_book`) — installed and 5 stat_arb tests now pass.
+
+---
+
 ## 2026-05-01 — COMPETITIVE_GAP_PLAN Item 2a: full Barra-style portfolio risk model (Severity: high, capability)
 
 We had crisis_state, intraday_risk_monitor, and per-trade stops. We did NOT have portfolio-level factor risk decomposition, parametric or Monte Carlo VaR, expected shortfall, or historical scenario stress tests. Real fund risk teams have all of these. This ships them — full implementation, not MVP.

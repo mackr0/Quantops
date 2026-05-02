@@ -243,8 +243,8 @@
 
     <!-- Phase 1: Meta-Model Panel -->
     <article>
-        <header><h3>Meta-Model</h3></header>
-        <p class="muted" style="margin-top:-0.5rem;">A learned model of when the AI is likely to be wrong, trained on our own prediction history. It re-weights confidence and suppresses low-probability trades before execution.</p>
+        <header><h3>Meta-Model (GBM batch + SGD freshness layer)</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">A learned model of when the AI is likely to be wrong, trained on our own prediction history. It re-weights confidence and suppresses low-probability trades before execution. Two complementary layers: a <strong>gradient-boosted batch model</strong> retrained daily on the full history (more accurate on stable distributions), and a <strong>SGD online freshness layer</strong> that updates incrementally on every resolved prediction (adapts to regime shifts in real time). The AI prompt sees both probabilities; large divergence between the two flags recent regime drift.</p>
 
         {% if not meta_info.loaded %}
         <div style="padding:0.75rem;background:#fafafa;border-left:3px solid #888;border-radius:0 4px 4px 0;">
@@ -276,6 +276,29 @@
                         <strong>{{ "%.1f"|format(mp.positive_rate * 100) }}%</strong>
                     </div>
                 </div>
+                {% if mp.online %}
+                <h5 style="margin-top:1rem;">Online Freshness Layer (SGD)</h5>
+                <p class="muted" style="margin-top:-0.5rem;font-size:0.85rem;">Updates incrementally per resolved prediction. The AI prompt receives <code>online_meta_prob</code> and <code>meta_divergence</code> (online minus GBM) on each trade post-AI re-weighting; large divergence flags recent regime drift the batch model hasn't seen yet.</p>
+                <div class="grid">
+                    <div class="stat-card">
+                        <small class="muted">Updates so far</small>
+                        <strong>{{ mp.online.n_updates }}</strong>
+                    </div>
+                    <div class="stat-card">
+                        <small class="muted">Features tracked</small>
+                        <strong>{{ mp.online.n_features }}</strong>
+                    </div>
+                    <div class="stat-card">
+                        <small class="muted">Last updated</small>
+                        <strong style="font-size:0.85rem;">{{ mp.online.last_update_at[:16] if mp.online.last_update_at else '—' }}</strong>
+                    </div>
+                    <div class="stat-card">
+                        <small class="muted">Bootstrapped</small>
+                        <strong style="font-size:0.85rem;">{{ mp.online.created_at[:16] if mp.online.created_at else '—' }}</strong>
+                    </div>
+                </div>
+                {% endif %}
+
                 <h5 style="margin-top:1rem;">Top Predictive Features</h5>
                 <p class="muted" style="margin-top:-0.5rem;font-size:0.85rem;">Which data points most strongly predict whether the AI is correct. Sensible patterns here confirm the model is learning real signals (not noise).</p>
                 <table style="font-size:0.85rem;">
@@ -709,6 +732,120 @@
 </article>
 {% endif %}
 
+{# Portfolio risk model — mirrors the PORTFOLIO RISK block in the AI prompt (Item 2a) #}
+{% if portfolio_risk_awareness %}
+<article>
+    <header><h3>Portfolio Risk — Barra-style factor model the AI sees</h3></header>
+    <p class="muted" style="margin-top:-0.5rem;">For every profile with positions, a daily snapshot of factor-decomposed risk: portfolio daily volatility, parametric and Monte Carlo 95/99% Value-at-Risk, Expected Shortfall, top factor exposures (long/short β), and projected P&amp;L under historical stress windows. The same numbers are surfaced in the AI prompt under <code>MARKET CONTEXT &gt; PORTFOLIO RISK</code> so the AI can cite tail-risk readings when sizing or skipping new entries. Factor universe: Ken French 5-factor + Momentum, 11 SPDR sector ETFs, 4 MSCI USA style ETFs (size, momentum, quality, low-vol). Updated daily at the snapshot block.</p>
+    {% for r in portfolio_risk_awareness %}
+    <article style="margin:0.75rem 0;">
+        <header style="padding:0.5rem 0.75rem;">
+            <h4 style="margin:0;">{{ r.profile_name }}</h4>
+            <small class="muted">
+                snapshot: {{ r.snapshot_at[:16] if r.snapshot_at else '—' }} ·
+                {{ r.n_symbols }} positions · book ${{ "{:,.0f}".format(r.equity or 0) }}
+            </small>
+        </header>
+        <div style="padding:0 0.75rem 0.5rem;">
+            <div class="grid" style="margin-top:0.5rem;">
+                <article style="text-align:center;">
+                    <small class="muted">Daily σ</small>
+                    <br><strong style="font-size:1.4rem;">{{ "%.2f"|format(r.sigma_pct or 0) }}%</strong>
+                </article>
+                <article style="text-align:center;">
+                    <small class="muted">95% VaR (parametric)</small>
+                    <br><strong style="font-size:1.4rem;color:#b87333;">${{ "{:,.0f}".format(r.var_95_dollars or 0) }}</strong>
+                    {% if r.equity %}<br><small class="muted">{{ "%.2f"|format((r.var_95_dollars or 0) / r.equity * 100) }}% of book</small>{% endif %}
+                </article>
+                <article style="text-align:center;">
+                    <small class="muted">95% ES (parametric)</small>
+                    <br><strong style="font-size:1.4rem;color:#b00;">${{ "{:,.0f}".format(r.es_95_dollars or 0) }}</strong>
+                    <br><small class="muted">avg loss given exceedance</small>
+                </article>
+                <article style="text-align:center;">
+                    <small class="muted">99% VaR (Monte Carlo)</small>
+                    {% if r.mc_var_95_dollars %}
+                    <br><strong style="font-size:1.4rem;">${{ "{:,.0f}".format(r.mc_var_95_dollars) }}</strong>
+                    <br><small class="muted">10k simulations</small>
+                    {% else %}
+                    <br><span class="muted">—</span>
+                    {% endif %}
+                </article>
+            </div>
+
+            {% if r.factor_exposures %}
+            <p style="font-size:0.85rem;margin:0.75rem 0 0.25rem 0;"><strong>Top factor exposures:</strong></p>
+            <table style="font-size:0.85rem;margin:0;">
+                <tbody>
+                {% for name, beta in r.factor_exposures %}
+                    <tr>
+                        <td>{{ name | display_name }}</td>
+                        <td style="font-family:monospace;text-align:right;">
+                            {% if beta >= 0 %}
+                            <span style="color:#2d7a3d;">+{{ "%.2f"|format(beta) }}</span>
+                            {% else %}
+                            <span style="color:#b87333;">{{ "%.2f"|format(beta) }}</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+
+            {% if r.grouped_share %}
+            <p style="font-size:0.85rem;margin:0.75rem 0 0.25rem 0;"><strong>Risk decomposition:</strong>
+                {% for k, v in r.grouped_share.items() %}
+                    <span class="muted">{{ k | display_name }} {{ "%.0f"|format(v) }}%</span>{% if not loop.last %} · {% endif %}
+                {% endfor %}
+            </p>
+            {% endif %}
+
+            {% if r.scenarios %}
+            <p style="font-size:0.85rem;margin:0.75rem 0 0.25rem 0;"><strong>Historical stress scenarios (worst {{ r.scenarios|length }} projected):</strong></p>
+            <table style="font-size:0.85rem;margin:0;">
+                <thead>
+                    <tr>
+                        <th>Scenario</th>
+                        <th style="text-align:right;">Total P&amp;L</th>
+                        <th style="text-align:right;">Worst day</th>
+                        <th>Date</th>
+                        <th>Quality</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for s in r.scenarios %}
+                    <tr>
+                        <td><strong>{{ s.scenario | display_name }}</strong>
+                            <br><small class="muted">{{ s.description }}</small></td>
+                        <td style="font-family:monospace;text-align:right;color:#b00;">
+                            {{ "%+.2f"|format(s.total_pnl_pct * 100) }}%
+                            <br><small class="muted">${{ "{:,.0f}".format(s.total_pnl_dollars) }}</small>
+                        </td>
+                        <td style="font-family:monospace;text-align:right;color:#b00;">
+                            {{ "%+.2f"|format(s.worst_day_pct * 100) }}%
+                        </td>
+                        <td class="muted">{{ s.worst_day_date }}</td>
+                        <td>
+                            {% if s.approximation_quality == 'high' %}
+                                <span style="color:#2d7a3d;font-size:0.75rem;">full</span>
+                            {% elif s.approximation_quality == 'medium' %}
+                                <span style="color:#b87333;font-size:0.75rem;">approx</span>
+                            {% else %}
+                                <span class="muted" style="font-size:0.75rem;">low (factors missing)</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+        </div>
+    </article>
+    {% endfor %}
+</article>
+{% endif %}
+
 {# Sector concentration — mirrors the EXPOSURE BREAKDOWN block (P2.1) #}
 {% set has_concentration = false %}
 {% for r in long_short_awareness %}{% if r.concentration_warnings %}{% set has_concentration = true %}{% endif %}{% endfor %}
@@ -724,7 +861,7 @@
                 <td><strong>{{ r.profile_name }}</strong></td>
                 <td>
                     {% for w in r.concentration_warnings %}
-                        <span style="color:#b87333;">{{ w.sector }} {{ "%.1f"|format(w.gross_pct) }}%</span>{% if not loop.last %},{% endif %}
+                        <span style="color:#b87333;">{{ w.sector | display_name }} {{ "%.1f"|format(w.gross_pct) }}%</span>{% if not loop.last %},{% endif %}
                     {% endfor %}
                 </td>
             </tr>

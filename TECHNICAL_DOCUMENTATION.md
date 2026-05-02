@@ -166,6 +166,73 @@ because `relative_weakness_universe` iterates 200+ symbols ×
 `get_bars(symbol, limit=257)` per cycle = hundreds of redundant
 network calls.
 
+### Competitive-gap closure modules (May 1 expansion)
+
+Items shipped from `COMPETITIVE_GAP_PLAN.md`:
+
+- **`portfolio_risk_model.py`** (Item 2a) — Barra-style multi-factor
+  portfolio risk. ~21-factor universe: Ken French daily 5-factor + Mom
+  (free CSV cached 7 days, history back to 1926), 11 SPDR sector ETFs,
+  4 MSCI USA style ETFs (size, momentum, quality, low-vol).
+  - `compute_factor_returns(lookback_days)` — joint daily return matrix.
+  - `estimate_exposures(symbol_rets, factor_returns)` — ridge-regularized
+    OLS (`α=1.0`) to handle ETF / Mkt-RF collinearity. Returns β +
+    idiosyncratic variance + R².
+  - `estimate_factor_cov` — Ledoit-Wolf shrunk covariance, manual fallback.
+  - `compute_portfolio_risk` — factor + idio variance, parametric 95/99%
+    VaR + Expected Shortfall, per-factor decomposition, grouped
+    breakdown (sectors / styles / french / idio).
+  - `monte_carlo_var` — 10k Cholesky-decomposed factor draws + idio
+    draws, empirical VaR + ES.
+  - `compute_portfolio_risk_from_positions` — end-to-end convenience.
+
+- **`risk_stress_scenarios.py`** (Item 2a continued) — historical
+  scenario stress tests. 7 named windows: 1987 Black Monday, 2000
+  dot-com, 2008 Lehman, 2018 Q4 selloff, 2020 COVID, 2022 rates, 2023
+  SVB. ETF inception dates respected (no spurious projections for
+  ETFs that didn't exist yet). `replay_scenario` projects current
+  exposures onto historical factor returns; `run_all_scenarios`
+  returns sorted worst-first.
+
+- **`online_meta_model.py`** (Item 5a) — SGD freshness layer alongside
+  the GBM batch model. Bootstrapped from same training set (min 10
+  rows) with StandardScaler + ridge-friendly hyperparams (`alpha=0.01`,
+  `max_iter=1000` for the bootstrap fit). `partial_fit` per resolved
+  prediction. Persisted as `online_meta_model_p{profile_id}.pkl`.
+
+- **`intraday_risk_monitor.py`** (Item 2b) — 4 risk checks (drawdown
+  acceleration > 2× 7d avg, vol spike > 3× 20d avg, sector swing > 3%,
+  held-position halts). Aggregate action: `pause_all > block_new_entries
+  > monitor`. Trade pipeline reads `intraday_risk_halt` table and
+  blocks new entries during halts. 60-min auto-clear.
+
+- **`stat_arb_pair_book.py`** (Item 1b) — Engle-Granger cointegration
+  scanning, Z-score-based entry (±2σ) / exit (0σ) / stop (±3σ), pair
+  persistence + half-life tracking, regime-break ejection,
+  `execute_pair_trade` for dollar-neutral pair execution.
+
+- **`strategy_capital_allocator.py`** (Item 6b) — per-strategy weight
+  computed as `score = sharpe × (1 + win_rate)` normalized to mean=1.0,
+  clamped [0.25×, 2.0×]. Median imputation for new strategies (n < 10).
+  Trade pipeline applies the weight to `size_pct`.
+
+- **Scheduler hookups (`multi_scheduler.py`):** new `_task_portfolio_risk_snapshot`
+  fires daily, persists to `portfolio_risk_snapshots` (90-day retention).
+  `_task_resolve_predictions` plumbs `profile_id` so the online meta-model
+  updates after each resolution. `_task_retrain_meta_model` rebootstraps
+  the SGD model after the GBM retrains.
+
+- **AI prompt surfacing (`ai_analyst.py` + `trade_pipeline._build_market_context`):**
+  the latest `portfolio_risk_snapshots` row + worst-3 stress scenarios
+  flow into the AI prompt under `MARKET CONTEXT > PORTFOLIO RISK`.
+
+- **Options trading layer modules** (Item 1a, see `OPTIONS_PROGRAM_PLAN.md`
+  for the 8-phase build): `options_greeks_aggregator.py`,
+  `options_multileg.py`, `options_roll_manager.py`, `options_lifecycle.py`,
+  `options_wheel.py`, `options_delta_hedger.py`, `options_vol_regime.py`,
+  `options_earnings_plays.py`, `options_chain_alpaca.py`,
+  `options_backtester.py`.
+
 ---
 
 ## Table of Contents

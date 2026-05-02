@@ -333,9 +333,15 @@ User flips `auto_capital_allocation` ON; weekly Sunday task rebalances per-profi
 
 Beyond the parameter-tuning loop, three other feedback systems operate:
 
-### 3a. Meta-Model
+### 3a. Meta-Model (two-layer: GBM batch + SGD freshness)
 
-Gradient-boosted classifier (`meta_model.py`) trained daily per profile on accumulated resolved predictions. Learns "given everything the main AI saw, was it right?" Outputs a probability used to re-weight the AI's confidence at decision time. Needs ≥100 resolved predictions to train. Reports AUC + accuracy + feature importance (visible in the AI page Brain tab).
+Two complementary classifiers learn "given everything the main AI saw, was it right?" Both vote on every trade post-AI re-weighting; large divergence between them flags recent regime drift.
+
+- **GBM batch model** (`meta_model.py`) — gradient-boosted classifier trained daily per profile on accumulated resolved predictions. More accurate on stable distributions. Needs ≥100 resolved predictions to train. Reports AUC + accuracy + feature importance (visible in AI page Brain tab).
+
+- **SGD online freshness layer** (`online_meta_model.py`, Item 5a of COMPETITIVE_GAP_PLAN, shipped 2026-05-01) — `SGDClassifier` with `partial_fit` that updates incrementally on every resolved prediction. Bootstrapped from the same training set as the GBM (min 10 rows). StandardScaler in front so the dot product doesn't saturate the sigmoid on raw mixed-scale features. Persisted as `online_meta_model_p{profile_id}.pkl`. Updates fire from `ai_tracker.resolve_predictions` (with `profile_id` plumbed through `multi_scheduler._task_resolve_predictions`); rebootstraps during `_task_retrain_meta_model` after the GBM retrains.
+
+Trade pipeline post-AI re-weighting computes both probabilities on each accepted trade, attaches `meta_prob`, `online_meta_prob`, `meta_divergence` (= `online − gbm`) to the trade dict, and logs the divergence. Brain tab shows online updates count + last-update timestamp next to GBM AUC.
 
 The meta-model and the self-tuner are complementary:
 - Meta-model: per-prediction probability adjustment (micro)
@@ -464,6 +470,7 @@ The batch prompt accumulates these blocks in `_build_batch_prompt` after the can
 - **DRAWDOWN CAPITAL SCALE (P4.3).** Continuous size modifier 1.0× → 0.25× from `drawdown_scaling.compute_capital_scale`. Linear interpolation between breakpoints (0%→1.00, 5%→0.85, 10%→0.65, 15%→0.45, 20%+→0.25). Suppressed when scale rounds to 1.00. The AI is told to multiply suggested sizes by this factor.
 - **RISK-BUDGET (P4.4).** Per-name `weight × annualized_vol` contributions; flags names ≥ 2× or ≤ 0.5× the per-position average. Sizing rule: `size_i ∝ target_vol / realized_vol_i` clamped to [0.40×, 1.60×]. Vols cached 7d via `factor_data.get_realized_vol`. Suppressed when nothing actionable.
 - **MFE CAPTURE (Fix 1, 2026-04-29).** Realized P&L as a fraction of available favorable excursion across recent closed trades. Surfaced when avg < 50% (system is leaving money on the table). Tells the AI when exit logic is asymmetric vs entry edge — context for whether to size more conservatively. `mfe_capture.compute_capture_ratio` joins SELL pnl with the matching BUY's MFE. Negative-capture count flagged separately (trades that LOST despite favorable run — the worst pattern).
+- **PORTFOLIO RISK (Item 2a of COMPETITIVE_GAP_PLAN, shipped 2026-05-01).** Daily Barra-style readout the AI sees under `MARKET CONTEXT > PORTFOLIO RISK`: portfolio daily σ, parametric 95/99% VaR + Expected Shortfall, Monte Carlo 95% VaR (10k simulations), top factor exposures (long/short β across the 21-factor universe of Ken French 5F+Mom + 11 SPDR sector ETFs + 4 MSCI USA style ETFs), and the worst-3 historical stress scenario projections (e.g. `2008_lehman: -48.6% (worst day -19.8%)`). Built daily by `_task_portfolio_risk_snapshot`; persisted to `portfolio_risk_snapshots` (90d retention) and read back into the AI prompt via `_build_market_context`. Lets the AI cite tail-risk readings when sizing or skipping new entries instead of carrying only per-trade stops.
 
 Layered together the AI is told: `final_size = base × kelly × drawdown_scale × vol_scale` (each clamped, each defaulting to 1.0× when unknown).
 
