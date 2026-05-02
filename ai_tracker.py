@@ -371,7 +371,7 @@ def _resolve_one(prediction, current_price):
     return None
 
 
-def resolve_predictions(api=None, db_path=None):
+def resolve_predictions(api=None, db_path=None, profile_id=None):
     """Check all pending predictions and resolve those that meet criteria.
 
     Parameters
@@ -380,6 +380,9 @@ def resolve_predictions(api=None, db_path=None):
         Pre-built API client.  Falls back to get_api() when not provided.
     db_path : str, optional
         Override database path.
+    profile_id : int, optional
+        Profile id used to locate the per-profile online meta-model
+        (Item 5a). If None, the online-model update is skipped.
 
     Returns the number of predictions resolved.
     """
@@ -447,6 +450,23 @@ def resolve_predictions(api=None, db_path=None):
                     "Specialist calibration update failed for "
                     "prediction %d: %s", row["id"], _exc,
                 )
+            # Item 5a — incremental update to the online (SGD) meta-model
+            # so it adapts in real time to each new resolution.
+            if profile_id is not None:
+                try:
+                    import json as _json
+                    from online_meta_model import update_online_model
+                    feats = _json.loads(row["features_json"]) if row["features_json"] else None
+                    if feats:
+                        update_online_model(
+                            profile_id, feats,
+                            outcome_label=(1 if outcome == "win" else 0),
+                        )
+                except Exception as _exc:
+                    logger.debug(
+                        "Online model update failed for prediction "
+                        "%d: %s", row["id"], _exc,
+                    )
         logger.info(
             "Resolved prediction #%d (%s %s): %s (%.2f%%, %d days)",
             row["id"], row["predicted_signal"], sym, outcome, return_pct,

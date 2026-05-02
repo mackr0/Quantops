@@ -1381,7 +1381,10 @@ def _task_resolve_predictions(ctx):
     from client import get_api
 
     api = get_api(ctx)
-    resolve_predictions(api=api, db_path=ctx.db_path)
+    resolve_predictions(
+        api=api, db_path=ctx.db_path,
+        profile_id=getattr(ctx, "profile_id", None),
+    )
     logging.info("AI predictions resolved.")
 
 
@@ -1571,6 +1574,21 @@ def _task_retrain_meta_model(ctx):
             f"Accuracy {metrics['accuracy']:.1%}. "
             f"Top features: {top_str}",
         )
+
+        # Item 5a — also (re)bootstrap the SGD online meta-model so it
+        # starts from the same training set as the GBM. Subsequent
+        # resolved predictions update it incrementally via
+        # ai_tracker.resolve_predictions.
+        try:
+            from online_meta_model import initialize_from_history
+            online = initialize_from_history(profile_id, ctx.db_path)
+            if online is not None:
+                logging.info(
+                    f"[{seg_label}] Online meta-model initialized "
+                    f"(n_updates={online['n_updates']})"
+                )
+        except Exception as _exc:
+            logging.debug(f"Online meta-model init skipped: {_exc}")
     except Exception as exc:
         logging.warning(f"Meta-model retrain failed: {exc}")
 

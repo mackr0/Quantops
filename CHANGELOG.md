@@ -17,6 +17,26 @@ Rules going forward:
 
 ---
 
+## 2026-05-01 — COMPETITIVE_GAP_PLAN Item 5a: online learning meta-model (Severity: medium, capability)
+
+GBM meta-model retrains weekly on the full history. Slow to adapt to regime shifts (today's outcomes don't enter the prediction stack until the next retrain). Adds an SGDClassifier "freshness layer" that updates incrementally per resolved prediction.
+
+**What ships:**
+
+- `online_meta_model.py` — `initialize_from_history` bootstraps an SGDClassifier from the same training set the GBM uses (min 10 rows, vs GBM's 100). `update_online_model` does a single-row `partial_fit` on each resolved prediction. `online_predict_probability` returns P(win). Persisted as `online_meta_model_p{profile_id}.pkl` next to the profile DB.
+
+- Wired into `ai_tracker.resolve_predictions`: every resolution now also updates the SGD model with that row's features + outcome. `resolve_predictions` gained an optional `profile_id` arg; `_task_resolve_predictions` in `multi_scheduler` plumbs it through.
+
+- Wired into `_task_retrain_meta_model`: after the GBM retrain, also (re)bootstraps the online model from the latest resolved set.
+
+- Wired into `trade_pipeline` post-AI re-weighting: each accepted trade gets `online_meta_prob` and `meta_divergence` (`online − gbm`) attached, and divergence is logged. Large divergence = recent regime drift.
+
+**Why SGD vs GBM:** complementary, not substitute. GBM is more accurate on stable distributions; SGD adapts in real time. Agreement = stable signal; divergence = something changed since the last weekly retrain.
+
+**Tests** (`tests/test_online_meta_model.py`, 12 cases): bootstrap requires both classes; bootstrap fails gracefully on insufficient data; `update_online_model` rejects non-binary outcomes and missing models; `online_predict_probability` returns ordered probabilities for high-vs-low score features; `get_online_model_info` exposes metadata. **Deliberately NOT testing exact model accuracy** — SGD weights drift across runs and the test would be flaky.
+
+---
+
 ## 2026-05-01 — OPTIONS_PROGRAM_PLAN Phase H complete: synthetic options backtester (Severity: high, capability)
 
 The last unbuilt phase of the options program. Lets us validate any options strategy historically before going live with real money.

@@ -1608,6 +1608,20 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     meta_prob = meta_model.predict_probability(meta_bundle, fp)
                     t["meta_prob"] = round(meta_prob, 4)
 
+                    # Item 5a — also score with the SGD online model.
+                    # If divergence between GBM and SGD is large, that's
+                    # itself a signal of recent regime drift (see
+                    # online_meta_model.py docstring).
+                    online_prob = None
+                    try:
+                        from online_meta_model import online_predict_probability
+                        online_prob = online_predict_probability(profile_id, fp)
+                    except Exception:
+                        online_prob = None
+                    if online_prob is not None:
+                        t["online_meta_prob"] = round(online_prob, 4)
+                        t["meta_divergence"] = round(online_prob - meta_prob, 4)
+
                     if meta_prob < meta_model.SUPPRESSION_THRESHOLD:
                         meta_stats["suppressed"] += 1
                         logging.info(f"  Meta-model SUPPRESS {sym}: meta_prob={meta_prob:.3f} < "
@@ -1619,7 +1633,12 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     t["original_confidence"] = original_conf
                     t["confidence"] = new_conf
                     meta_stats["adjusted"] += 1
-                    logging.info(f"  Meta-model {sym}: meta_prob={meta_prob:.3f}, "
+                    extra_log = ""
+                    if online_prob is not None:
+                        div = online_prob - meta_prob
+                        extra_log = (f", online={online_prob:.3f}, "
+                                      f"div={div:+.3f}")
+                    logging.info(f"  Meta-model {sym}: meta_prob={meta_prob:.3f}{extra_log}, "
                                  f"confidence {original_conf}->{new_conf}")
                     filtered_trades.append(t)
                 ai_trades = filtered_trades
