@@ -390,3 +390,234 @@ def simulate_single_leg(
         pnl_dollars=round(pnl, 2),
         exit_reason=exit_reason, days_held=days_held,
     )
+
+
+# ---------------------------------------------------------------------------
+# Layer 3 — multi-leg strategy simulator
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MultiLegBacktestTrade:
+    """Result of simulating a multi-leg strategy open → close."""
+    symbol: str
+    strategy_name: str       # 'bull_call_spread' / 'iron_condor' / etc.
+    entry_date: _date
+    exit_date: _date
+    expiry: _date
+    qty: int                 # number of spreads
+    legs: List[Dict[str, Any]]   # per-leg entry + exit details
+    net_entry_premium: float     # signed: +debit / -credit (per spread)
+    net_exit_value: float        # signed (per spread)
+    pnl_dollars: float           # total signed P&L
+    exit_reason: str
+    days_held: int
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "strategy_name": self.strategy_name,
+            "entry_date": self.entry_date.isoformat(),
+            "exit_date": self.exit_date.isoformat(),
+            "expiry": self.expiry.isoformat(),
+            "qty": self.qty,
+            "net_entry_premium": self.net_entry_premium,
+            "net_exit_value": self.net_exit_value,
+            "pnl_dollars": self.pnl_dollars,
+            "exit_reason": self.exit_reason,
+            "days_held": self.days_held,
+            "legs": self.legs,
+        }
+
+
+def simulate_multileg_strategy(
+    strategy,                    # OptionStrategy from options_multileg
+    entry_date: _date,
+    profit_target_pct_of_max: Optional[float] = None,
+    stop_loss_pct_of_max: Optional[float] = None,
+    time_stop_days_before_expiry: int = 0,
+    bars_provider=None,
+    iv_override: Optional[float] = None,
+) -> Optional[MultiLegBacktestTrade]:
+    """Simulate a multi-leg strategy from entry through close.
+
+    Args:
+        strategy: an OptionStrategy from options_multileg (built by
+            one of the BUILDERS — vertical, condor, butterfly,
+            straddle, strangle, calendar, diagonal).
+        entry_date: when to open the position.
+        profit_target_pct_of_max: exit at this fraction of max profit.
+            For credit spreads with max_gain=$X, 0.50 means "exit when
+            we've captured 50% of $X."
+        stop_loss_pct_of_max: exit at this fraction of max LOSS.
+            For credit spreads with max_loss=$Y, 0.50 means "exit
+            when we're down 50% of $Y."
+        time_stop_days_before_expiry: 0 = hold to expiry; >0 = exit
+            this many days before expiry.
+
+    Returns MultiLegBacktestTrade or None on entry-pricing failure.
+    """
+    if not strategy.legs:
+        return None
+    # Assumes all legs share the same expiry (vertical / condor /
+    # butterfly / straddle / strangle do; calendar / diagonal don't —
+    # we use the LATEST expiry in the strategy as the simulation end).
+    leg_expiries = [_date.fromisoformat(leg.expiry) for leg in strategy.legs]
+    final_expiry = max(leg_expiries)
+    underlying = strategy.underlying
+
+    if entry_date >= final_expiry:
+        return None
+
+    # 1. Price each leg at entry, compute net premium per spread
+    leg_entries: List[Dict[str, Any]] = []
+    net_entry_premium_per_spread = 0.0  # signed per share (not multiplied)
+
+    for leg in strategy.legs:
+        leg_expiry = _date.fromisoformat(leg.expiry)
+        leg_pricing = price_option_at_date(
+            underlying, entry_date, leg.strike, leg_expiry,
+            is_call=(leg.right == "C"),
+            iv_override=iv_override, bars_provider=bars_provider,
+        )
+        if leg_pricing is None or leg_pricing.get("price", 0) <= 0:
+            return None
+        leg_premium = float(leg_pricing["price"])
+        # Sign: buy → debit (positive contribution); sell → credit (negative)
+        signed_contribution = (leg_premium if leg.side == "buy"
+                                else -leg_premium)
+        net_entry_premium_per_spread += signed_contribution
+        leg_entries.append({
+            "leg_index": len(leg_entries),
+            "occ_symbol": leg.occ_symbol,
+            "strike": leg.strike, "right": leg.right,
+            "side": leg.side, "qty": leg.qty,
+            "entry_premium": leg_premium,
+        })
+
+    # max_gain / max_loss baselines: use the strategy's own values
+    # when present, else compute roughly from net premium and width.
+    max_gain = strategy.max_gain_per_contract
+    max_loss = strategy.max_loss_per_contract
+    if max_gain is None or max_loss is None:
+        # Defined-risk fallback: approximate from spread width
+        if strategy.spread_width_points > 0:
+            net_dollars = abs(net_entry_premium_per_spread) * 100
+            width_dollars = strategy.spread_width_points * 100
+            if strategy.is_credit:
+                max_gain = max_gain or net_dollars
+                max_loss = max_loss or (width_dollars - net_dollars)
+            else:
+                max_loss = max_loss or net_dollars
+                max_gain = max_gain or (width_dollars - net_dollars)
+
+    # 2. Walk forward day-by-day, valuing the position
+    cursor = entry_date + timedelta(days=1)
+    final_exit_date = final_expiry
+    final_net_exit_value_per_spread = 0.0
+    exit_reason = "expiry"
+
+    while cursor <= final_expiry:
+        days_to_expiry = (final_expiry - cursor).days
+
+        # Compute current net spread value
+        current_net = 0.0
+        all_legs_priceable = True
+        leg_currents: List[float] = []
+        for leg in strategy.legs:
+            leg_expiry = _date.fromisoformat(leg.expiry)
+            if cursor >= leg_expiry:
+                # This leg expired — settle at intrinsic
+                spot = historical_spot(underlying, cursor, bars_provider)
+                if spot is None:
+                    all_legs_priceable = False
+                    break
+                intrinsic = (max(0.0, spot - leg.strike) if leg.right == "C"
+                             else max(0.0, leg.strike - spot))
+                leg_value = intrinsic
+            else:
+                leg_pricing = price_option_at_date(
+                    underlying, cursor, leg.strike, leg_expiry,
+                    is_call=(leg.right == "C"),
+                    iv_override=iv_override, bars_provider=bars_provider,
+                )
+                if leg_pricing is None:
+                    all_legs_priceable = False
+                    break
+                leg_value = float(leg_pricing["price"])
+            leg_currents.append(leg_value)
+            signed = leg_value if leg.side == "buy" else -leg_value
+            current_net += signed
+
+        if not all_legs_priceable:
+            cursor += timedelta(days=1)
+            continue
+
+        # Time-stop check
+        if (time_stop_days_before_expiry > 0
+                and days_to_expiry <= time_stop_days_before_expiry):
+            final_exit_date = cursor
+            final_net_exit_value_per_spread = current_net
+            exit_reason = "time_stop"
+            break
+
+        # Profit/stop targets: P&L per spread = entry - exit (signed
+        # for credits, debits — net debit positive means we PAID,
+        # we want exit to be HIGHER than entry; net credit negative
+        # means we COLLECTED, we want exit value to be LOWER (closer
+        # to zero) than entry).
+        pnl_per_spread = (net_entry_premium_per_spread - current_net) * 100
+
+        if (profit_target_pct_of_max is not None
+                and max_gain is not None and max_gain > 0):
+            if pnl_per_spread >= profit_target_pct_of_max * max_gain:
+                final_exit_date = cursor
+                final_net_exit_value_per_spread = current_net
+                exit_reason = "profit_target"
+                break
+
+        if (stop_loss_pct_of_max is not None
+                and max_loss is not None and max_loss > 0):
+            if pnl_per_spread <= -stop_loss_pct_of_max * max_loss:
+                final_exit_date = cursor
+                final_net_exit_value_per_spread = current_net
+                exit_reason = "stop_loss"
+                break
+
+        # If we reached expiry day, close at intrinsic
+        if days_to_expiry <= 0:
+            final_exit_date = cursor
+            final_net_exit_value_per_spread = current_net
+            exit_reason = ("expiry_profit" if pnl_per_spread > 0
+                            else "expiry_loss")
+            break
+
+        cursor += timedelta(days=1)
+
+    # P&L: per-spread signed difference times qty (note multiplier
+    # already absorbed in *100 above, but currently we kept per-share
+    # accounting — multiply now)
+    pnl_per_spread = (net_entry_premium_per_spread
+                      - final_net_exit_value_per_spread) * 100
+    total_pnl = pnl_per_spread * strategy.qty
+
+    days_held = max((final_exit_date - entry_date).days, 0)
+
+    # Augment legs with exit details
+    for i, leg in enumerate(strategy.legs):
+        leg_currents_i = leg_currents[i] if i < len(leg_currents) else 0.0
+        leg_entries[i]["exit_value"] = leg_currents_i
+
+    return MultiLegBacktestTrade(
+        symbol=underlying,
+        strategy_name=strategy.name,
+        entry_date=entry_date,
+        exit_date=final_exit_date,
+        expiry=final_expiry,
+        qty=strategy.qty,
+        legs=leg_entries,
+        net_entry_premium=round(net_entry_premium_per_spread, 4),
+        net_exit_value=round(final_net_exit_value_per_spread, 4),
+        pnl_dollars=round(total_pnl, 2),
+        exit_reason=exit_reason,
+        days_held=days_held,
+    )
