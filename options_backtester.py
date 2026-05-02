@@ -647,3 +647,165 @@ def simulate_multileg_strategy(
         exit_reason=exit_reason,
         days_held=days_held,
     )
+
+
+# ---------------------------------------------------------------------------
+# Layer 4 — strategy orchestrator (replay entry rules across a period)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class BacktestSummary:
+    """Summary stats for a strategy backtest over a historical period."""
+    strategy_name: str
+    symbol: str
+    period_start: _date
+    period_end: _date
+    n_trades: int
+    n_wins: int
+    n_losses: int
+    win_rate_pct: float
+    total_pnl_dollars: float
+    avg_pnl_dollars: float
+    best_trade_pnl: float
+    worst_trade_pnl: float
+    avg_days_held: float
+    sharpe_proxy: float       # mean / stdev of trade returns
+    trades: List[Dict[str, Any]]
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "strategy_name": self.strategy_name,
+            "symbol": self.symbol,
+            "period_start": self.period_start.isoformat(),
+            "period_end": self.period_end.isoformat(),
+            "n_trades": self.n_trades,
+            "n_wins": self.n_wins,
+            "n_losses": self.n_losses,
+            "win_rate_pct": self.win_rate_pct,
+            "total_pnl_dollars": self.total_pnl_dollars,
+            "avg_pnl_dollars": self.avg_pnl_dollars,
+            "best_trade_pnl": self.best_trade_pnl,
+            "worst_trade_pnl": self.worst_trade_pnl,
+            "avg_days_held": self.avg_days_held,
+            "sharpe_proxy": self.sharpe_proxy,
+            "trades": self.trades,
+        }
+
+
+def backtest_strategy_over_period(
+    strategy_factory,
+    symbol: str,
+    period_start: _date,
+    period_end: _date,
+    entry_rule,
+    cycle_days: int = 7,
+    profit_target_pct_of_max: Optional[float] = None,
+    stop_loss_pct_of_max: Optional[float] = None,
+    time_stop_days_before_expiry: int = 0,
+    bars_provider=None,
+    iv_override: Optional[float] = None,
+) -> BacktestSummary:
+    """Replay entry rules across a historical period.
+
+    Walks the period day by day at `cycle_days` cadence. At each
+    decision point, calls `entry_rule(symbol, as_of)` → True/False to
+    decide whether to open a trade. When True, calls
+    `strategy_factory(as_of)` → an OptionStrategy, then simulates
+    via simulate_multileg_strategy.
+
+    Args:
+        strategy_factory: callable(as_of) → OptionStrategy. Lets the
+            caller decide strikes/expiry based on date (e.g. always
+            ~5% OTM, ~30 days out).
+        entry_rule: callable(symbol, as_of) → bool. Examples:
+            "fire every cycle" — lambda s, d: True
+            "only when IV rich" — uses historical_iv_approximation
+            "only when stock above SMA50" — etc.
+        cycle_days: how often to re-evaluate the entry rule. Daily =
+            1; weekly = 7. Real options programs evaluate
+            weekly/monthly, not daily.
+        profit_target_pct_of_max / stop_loss_pct_of_max /
+        time_stop_days_before_expiry: pass-through to
+            simulate_multileg_strategy.
+        bars_provider, iv_override: pass-through.
+
+    Returns BacktestSummary with per-trade detail + aggregate stats.
+    """
+    import math as _math
+
+    trades: List[Dict[str, Any]] = []
+    cursor = period_start
+    while cursor <= period_end:
+        try:
+            should_enter = entry_rule(symbol, cursor)
+        except Exception as exc:
+            logger.debug("entry_rule failed on %s: %s", cursor, exc)
+            should_enter = False
+
+        if should_enter:
+            try:
+                spec = strategy_factory(cursor)
+            except Exception as exc:
+                logger.debug("strategy_factory failed on %s: %s",
+                             cursor, exc)
+                spec = None
+            if spec is not None:
+                trade = simulate_multileg_strategy(
+                    spec, cursor,
+                    profit_target_pct_of_max=profit_target_pct_of_max,
+                    stop_loss_pct_of_max=stop_loss_pct_of_max,
+                    time_stop_days_before_expiry=time_stop_days_before_expiry,
+                    bars_provider=bars_provider,
+                    iv_override=iv_override,
+                )
+                if trade is not None:
+                    trades.append(trade.as_dict())
+        cursor += timedelta(days=cycle_days)
+
+    # Aggregate stats
+    n_trades = len(trades)
+    if n_trades == 0:
+        return BacktestSummary(
+            strategy_name="(no trades)", symbol=symbol,
+            period_start=period_start, period_end=period_end,
+            n_trades=0, n_wins=0, n_losses=0, win_rate_pct=0.0,
+            total_pnl_dollars=0.0, avg_pnl_dollars=0.0,
+            best_trade_pnl=0.0, worst_trade_pnl=0.0,
+            avg_days_held=0.0, sharpe_proxy=0.0, trades=[],
+        )
+
+    pnls = [t["pnl_dollars"] for t in trades]
+    n_wins = sum(1 for p in pnls if p > 0)
+    n_losses = sum(1 for p in pnls if p < 0)
+    win_rate = (n_wins / n_trades * 100) if n_trades else 0.0
+    total_pnl = sum(pnls)
+    avg_pnl = total_pnl / n_trades
+
+    days_held_list = [t.get("days_held", 0) for t in trades]
+    avg_days = sum(days_held_list) / n_trades if days_held_list else 0.0
+
+    # Sharpe proxy: mean / stdev of per-trade $ P&L (trades-as-units,
+    # not annualized)
+    if n_trades >= 2:
+        mean_pnl = avg_pnl
+        var_pnl = sum((p - mean_pnl) ** 2 for p in pnls) / (n_trades - 1)
+        stdev = _math.sqrt(var_pnl)
+        sharpe = (mean_pnl / stdev) if stdev > 0 else 0.0
+    else:
+        sharpe = 0.0
+
+    strategy_name = trades[0].get("strategy_name") or trades[0].get("strategy", "?")
+
+    return BacktestSummary(
+        strategy_name=strategy_name, symbol=symbol,
+        period_start=period_start, period_end=period_end,
+        n_trades=n_trades, n_wins=n_wins, n_losses=n_losses,
+        win_rate_pct=round(win_rate, 1),
+        total_pnl_dollars=round(total_pnl, 2),
+        avg_pnl_dollars=round(avg_pnl, 2),
+        best_trade_pnl=round(max(pnls), 2),
+        worst_trade_pnl=round(min(pnls), 2),
+        avg_days_held=round(avg_days, 1),
+        sharpe_proxy=round(sharpe, 3),
+        trades=trades,
+    )

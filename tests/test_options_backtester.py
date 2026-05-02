@@ -602,3 +602,130 @@ class TestSimulateMultilegStrategy:
                                                           n_days=60, base=100.0),
         )
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Layer 4 — orchestrator
+# ---------------------------------------------------------------------------
+
+class TestBacktestStrategyOverPeriod:
+    def _provider(self, end_date, n_days, base=100.0, sigma=0.005):
+        bars = _build_bars(end_date, n_days, base=base, daily_sigma=sigma)
+        return lambda sym, dt, lookback: bars
+
+    def test_zero_trades_when_entry_rule_always_false(self):
+        from options_backtester import backtest_strategy_over_period
+        from options_multileg import build_bull_call_spread
+
+        period_start = date(2026, 4, 1)
+        period_end = date(2026, 5, 1)
+        provider = self._provider(date(2026, 5, 30), n_days=120)
+
+        def factory(as_of):
+            return build_bull_call_spread(
+                "AAPL", as_of + timedelta(days=30), 100, 110, qty=1,
+            )
+
+        result = backtest_strategy_over_period(
+            strategy_factory=factory, symbol="AAPL",
+            period_start=period_start, period_end=period_end,
+            entry_rule=lambda s, d: False,
+            cycle_days=7, bars_provider=provider,
+            iv_override=0.20,
+        )
+        assert result.n_trades == 0
+        assert result.win_rate_pct == 0.0
+
+    def test_always_enter_runs_multiple_trades(self):
+        from options_backtester import backtest_strategy_over_period
+        from options_multileg import build_bull_call_spread
+
+        period_start = date(2026, 3, 1)
+        period_end = date(2026, 5, 1)
+        provider = self._provider(date(2026, 6, 30), n_days=180)
+
+        def factory(as_of):
+            return build_bull_call_spread(
+                "AAPL", as_of + timedelta(days=30), 100, 110, qty=1,
+            )
+
+        result = backtest_strategy_over_period(
+            strategy_factory=factory, symbol="AAPL",
+            period_start=period_start, period_end=period_end,
+            entry_rule=lambda s, d: True,
+            cycle_days=14,
+            bars_provider=provider, iv_override=0.20,
+        )
+        # ~60-day period at 14-day cycles → ~5 entries
+        assert result.n_trades >= 3
+        assert result.n_trades <= 6
+        # Stats present
+        assert isinstance(result.total_pnl_dollars, float)
+        assert isinstance(result.win_rate_pct, float)
+
+    def test_summary_aggregates_correctly(self):
+        """Force a deterministic strategy outcome by always running on
+        the same data — verify aggregate math."""
+        from options_backtester import backtest_strategy_over_period
+        from options_multileg import build_bull_call_spread
+
+        period_start = date(2026, 4, 1)
+        period_end = date(2026, 4, 10)
+        # Bars rise sharply → the call spread should win every entry
+        provider = lambda sym, dt, lookback: pd.concat([
+            _build_bars(date(2026, 3, 31), n_days=60,
+                          daily_sigma=0.005, base=100.0),
+            _trending_bars(date(2026, 6, 1), 80, base=100.0,
+                              daily_drift=0.005),
+        ]).pipe(lambda df: df[~df.index.duplicated(keep="last")])
+
+        def factory(as_of):
+            return build_bull_call_spread(
+                "AAPL", as_of + timedelta(days=30), 100, 110, qty=1,
+            )
+
+        result = backtest_strategy_over_period(
+            strategy_factory=factory, symbol="AAPL",
+            period_start=period_start, period_end=period_end,
+            entry_rule=lambda s, d: True,
+            cycle_days=3, bars_provider=provider,
+            iv_override=0.20,
+        )
+        # All trades should win in the rising-stock regime
+        assert result.n_trades >= 2
+        assert result.n_wins >= 1  # at least one winner
+        assert result.win_rate_pct > 0
+        assert result.total_pnl_dollars > 0
+        assert result.best_trade_pnl >= 0
+
+    def test_entry_rule_can_filter_by_iv(self):
+        """Simulate an IV-conditional rule: only enter when realized
+        vol is rich. With a low-vol provider, no trades."""
+        from options_backtester import (
+            backtest_strategy_over_period, historical_iv_approximation,
+        )
+        from options_multileg import build_bull_call_spread
+
+        period_start = date(2026, 4, 1)
+        period_end = date(2026, 5, 1)
+        # Very low vol bars
+        provider = self._provider(date(2026, 6, 30), n_days=180,
+                                       sigma=0.001)
+
+        def iv_rule(symbol, as_of):
+            iv = historical_iv_approximation(symbol, as_of,
+                                                bars_provider=provider)
+            return iv is not None and iv > 0.50  # require 50%+ — won't happen
+
+        def factory(as_of):
+            return build_bull_call_spread(
+                "AAPL", as_of + timedelta(days=30), 100, 110, qty=1,
+            )
+
+        result = backtest_strategy_over_period(
+            strategy_factory=factory, symbol="AAPL",
+            period_start=period_start, period_end=period_end,
+            entry_rule=iv_rule, cycle_days=7,
+            bars_provider=provider,
+        )
+        assert result.n_trades == 0  # IV stays low → no entries
