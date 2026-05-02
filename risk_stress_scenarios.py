@@ -44,6 +44,21 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+# ETF inception dates — used to skip fetches for windows that predate
+# an ETF's launch (avoids noisy yfinance fallback errors).
+ETF_INCEPTION_DATES = {
+    "XLK": "1998-12-22", "XLF": "1998-12-22", "XLE": "1998-12-22",
+    "XLV": "1998-12-22", "XLI": "1998-12-22", "XLP": "1998-12-22",
+    "XLY": "1998-12-22", "XLU": "1998-12-22", "XLB": "1998-12-22",
+    "XLRE": "2015-10-08",   # real estate sector spinoff
+    "XLC":  "2018-06-19",   # comm services sector launch
+    "IWM":  "2000-05-22",
+    "MTUM": "2013-04-16",
+    "QUAL": "2013-07-16",
+    "USMV": "2011-10-18",
+}
+
+
 @dataclass
 class StressScenario:
     """Definition of one historical stress window."""
@@ -156,7 +171,11 @@ def _fetch_scenario_factor_returns(scenario: StressScenario):
 
     # Sector + style ETFs (when they existed)
     if scenario.has_sector_etfs:
+        scenario_start = pd.Timestamp(scenario.start_date)
         for label, etf in {**SECTOR_ETFS, **STYLE_ETFS}.items():
+            inception = ETF_INCEPTION_DATES.get(etf)
+            if inception and pd.Timestamp(inception) > scenario_start:
+                continue   # ETF didn't exist yet — skip
             try:
                 bars = get_bars_daterange(
                     etf, scenario.start_date, scenario.end_date,
@@ -164,9 +183,16 @@ def _fetch_scenario_factor_returns(scenario: StressScenario):
                 if bars is None or bars.empty:
                     continue
                 rets = bars["close"].pct_change().dropna()
-                if not rets.empty:
-                    rets.name = label
-                    cols[label] = rets
+                if rets.empty:
+                    continue
+                # Normalize to tz-naive date-only so we can join with
+                # Ken French (which is tz-naive). Alpaca returns tz-aware
+                # US/Eastern indices.
+                if rets.index.tz is not None:
+                    rets.index = rets.index.tz_localize(None)
+                rets.index = rets.index.normalize()
+                rets.name = label
+                cols[label] = rets
             except Exception as exc:
                 logger.debug(
                     "scenario %s: ETF %s fetch failed: %s",
