@@ -210,6 +210,14 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_options_delta_hedger(ctx),
             db_path=ctx.db_path,
         )
+        # Item 2b — intraday risk monitoring. Runs every cycle. Writes
+        # a risk-halt state when drawdown / vol spike alerts fire;
+        # trade pipeline reads it to block new entries.
+        run_task(
+            f"[{seg_label}] Intraday Risk Check",
+            lambda: _task_intraday_risk_check(ctx),
+            db_path=ctx.db_path,
+        )
         if getattr(ctx, "is_virtual", False):
             run_task(
                 f"[{seg_label}] Virtual Audit",
@@ -1084,6 +1092,94 @@ def _task_stat_arb_retest(ctx):
                     )
     except Exception:
         logging.exception(f"[{seg_label}] Stat-arb pair retest failed")
+
+
+def _task_intraday_risk_check(ctx):
+    """Item 2b — intraday risk monitoring. Runs every cycle. Computes
+    drawdown acceleration + vol spike checks from SPY bars and writes
+    a risk-halt state when alerts fire. The trade pipeline reads this
+    state to block new entries.
+
+    v1 covers drawdown + vol spike. Sector-swing and held-halt checks
+    are computed in `intraday_risk_monitor.collect_intraday_alerts`
+    but require extra data plumbing (sector ETF prices + Alpaca asset
+    halt status) that's a follow-up. The check functions return None
+    when called with empty inputs, so the v1 task just doesn't pass
+    those args.
+    """
+    import math as _math
+    seg_label = ctx.display_name or ctx.segment
+    try:
+        from intraday_risk_monitor import (
+            collect_intraday_alerts, aggregate_action,
+            write_risk_halt_state, clear_risk_halt,
+        )
+        from market_data import get_bars
+
+        # SPY for market-wide vol + drawdown signals
+        spy_daily = get_bars("SPY", limit=10)
+        if spy_daily is None or len(spy_daily) < 8:
+            return
+
+        # Today's intraday drawdown: today's high vs today's last
+        # close. Falls back to 0 if today's bar isn't yet present.
+        today_close = float(spy_daily["close"].iloc[-1])
+        today_high = float(spy_daily["high"].iloc[-1])
+        today_intraday_dd = ((today_high - today_close) / today_high
+                              if today_high > 0 else 0)
+
+        # 7-day avg of daily intraday drawdowns
+        last_7 = spy_daily.tail(8).iloc[:-1]  # exclude today
+        if len(last_7) >= 5:
+            dds = []
+            for _, row in last_7.iterrows():
+                h, c = float(row["high"]), float(row["close"])
+                if h > 0:
+                    dds.append((h - c) / h)
+            avg_7d_dd = sum(dds) / len(dds) if dds else 0
+        else:
+            avg_7d_dd = 0
+
+        # Vol spike: SPY 1-hour realized vol vs 20-day average
+        # Approximation: use last bar's intraday range / close as
+        # "current hourly vol", and 20-day average of same metric.
+        current_hourly_vol = 0.0
+        avg_20d_hourly_vol = 0.0
+        try:
+            spy_20 = get_bars("SPY", limit=22)
+            if spy_20 is not None and len(spy_20) >= 20:
+                # Per-day vol approximation: (high - low) / close
+                ranges = []
+                for _, row in spy_20.tail(20).iterrows():
+                    c = float(row["close"])
+                    if c > 0:
+                        ranges.append((float(row["high"]) - float(row["low"])) / c)
+                if ranges:
+                    avg_20d_hourly_vol = sum(ranges) / len(ranges)
+                    current_hourly_vol = ranges[-1] if ranges else 0
+        except Exception:
+            pass
+
+        alerts = collect_intraday_alerts(
+            today_intraday_pct=today_intraday_dd,
+            avg_7d_intraday_pct=avg_7d_dd,
+            current_hourly_vol=current_hourly_vol,
+            avg_20d_hourly_vol=avg_20d_hourly_vol,
+            # sector_moves + halted_held_symbols deferred
+        )
+        action = aggregate_action(alerts)
+
+        if alerts:
+            logging.info(
+                f"[{seg_label}] Intraday risk: action={action}, "
+                f"alerts={[a.check_name for a in alerts]}"
+            )
+            write_risk_halt_state(ctx.db_path, action, alerts)
+        else:
+            # No active alerts — clear any stale halt state
+            clear_risk_halt(ctx.db_path)
+    except Exception:
+        logging.exception(f"[{seg_label}] Intraday risk check failed")
 
 
 def _task_options_delta_hedger(ctx):

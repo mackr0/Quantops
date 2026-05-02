@@ -1727,6 +1727,51 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 })
         ai_trades = filtered
 
+    # Item 2b — intraday risk gate. Read the active risk-halt state;
+    # if action is "pause_all" or "block_new_entries", prevent NEW
+    # entries (BUY / SHORT / OPEN actions). Exits / closes still go
+    # through (we don't lock the operator out of risk-reducing trades
+    # during a halt).
+    intraday_halt_action = None
+    intraday_halt_alerts: List[Dict[str, Any]] = []
+    if ctx is not None:
+        try:
+            from intraday_risk_monitor import get_active_risk_halt
+            halt = get_active_risk_halt(ctx.db_path)
+            if halt:
+                intraday_halt_action = halt.get("action")
+                intraday_halt_alerts = halt.get("alerts", [])
+        except Exception:
+            pass
+    if intraday_halt_action and ai_trades:
+        new_entry_actions = {"BUY", "SHORT", "OPTIONS",
+                              "MULTILEG_OPEN", "PAIR_TRADE"}
+        before_count = len(ai_trades)
+        if intraday_halt_action == "pause_all":
+            blocked_for_halt = list(ai_trades)
+            ai_trades = []
+        elif intraday_halt_action == "block_new_entries":
+            blocked_for_halt = [t for t in ai_trades
+                                if t.get("action", "").upper() in new_entry_actions]
+            ai_trades = [t for t in ai_trades
+                         if t.get("action", "").upper() not in new_entry_actions]
+        else:
+            blocked_for_halt = []
+        if blocked_for_halt:
+            print(
+                f"  Intraday risk halt ({intraday_halt_action}): blocked "
+                f"{len(blocked_for_halt)} of {before_count} trade(s)"
+            )
+            for t in blocked_for_halt:
+                details.append({
+                    "symbol": t.get("symbol", "?"),
+                    "action": "INTRADAY_RISK_HALT",
+                    "reason": (
+                        f"Halt active ({intraday_halt_action}) — alerts: "
+                        f"{', '.join(a.get('check_name', '?') for a in intraday_halt_alerts)}"
+                    ),
+                })
+
     update_status(_pid, "Executing trades", "%d selected" % len(ai_trades))
     # ── STEP 5: Execute AI-selected trades ───────────────────────────
     for ai_trade in ai_trades:
