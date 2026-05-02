@@ -278,13 +278,44 @@ data is honest about its limitations.
 
 ## Phase H — Backtest infrastructure
 
-### H1. Options backtester
-**What.** Historical options chain replay + multi-leg P&L simulation.
-Required to validate any new strategy before going live.
-**Effort.** Major build (~2 weeks). Requires historical IV surfaces,
-either bought (Polygon historical $99/mo, OptionMetrics expensive)
-or scraped from CBOE settlement files.
-**When.** Last; everything above is more important.
+### H1. Options backtester ✓ DONE 2026-05-01
+
+**Approach taken.** SYNTHETIC backtester since paid historical
+options data ($99/mo Polygon, $thousands OptionMetrics) is out of
+scope. Uses:
+- Historical underlying bars (Alpaca, free, real)
+- IV approximated as trailing 30-day realized volatility
+- Black-Scholes pricing via existing compute_greeks
+
+**Captured correctly:** direction of P&L, approximate magnitude,
+time decay, gamma, regime-dependent behavior.
+
+**Not captured:** bid-ask spread, real IV term structure / skew,
+catalyst vol expansion (earnings IV pop), liquidity / multi-leg
+fill slippage.
+
+**Sufficient for STRATEGY VALIDATION** (does iron condor on SPY
+beat random in neutral regime?). **NOT sufficient for PRECISE
+P&L FORECASTING** (will this exact iron condor make $X?).
+
+**Layered build (4 of 5 layers shipped):**
+- L1 ✓ historical IV approximation + Black-Scholes pricing of
+  arbitrary options at any historical date
+- L2 ✓ single-leg strategy simulator (open → hold → close, with
+  profit_target / stop_loss / time_stop)
+- L3 ✓ multi-leg simulator (verticals, condors, butterflies,
+  straddles, strangles, calendars, diagonals — any OptionStrategy)
+- L4 ✓ orchestrator (replay entry rules across a historical
+  period, aggregate summary stats: win rate, avg P&L, sharpe proxy)
+- L5 ⏳ dashboard integration (not strictly needed; API callable
+  directly)
+
+**31 tests** across the 4 shipped layers covering: IV recovery on
+synthetic vol, look-ahead-bias prevention, expired/intrinsic
+handling, profit-target/stop-loss/time-stop early exits, strategy
+P&L sign correctness across long/short/credit/debit, win/loss
+behavior on directional setups (bull spread up, bear spread down,
+condor in-range vs blown-wing), aggregate stats correctness.
 
 ---
 
