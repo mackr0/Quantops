@@ -47,17 +47,20 @@ logger = logging.getLogger(__name__)
 ONLINE_MODEL_FILENAME_TEMPLATE = "online_meta_model_p{profile_id}.pkl"
 
 # SGDClassifier hyperparameters — chosen for stability over speed
-# of adaptation. eta0 (learning rate start) is small so single
-# noisy outcomes can't shift predictions wildly. learning_rate
-# 'optimal' decays automatically.
+# of adaptation. Bootstrap uses BOOTSTRAP_PARAMS (multi-pass fit so
+# weights converge before we start partial-fitting). After that,
+# partial_fit always runs exactly 1 epoch per call regardless of
+# max_iter.
 SGD_PARAMS = {
-    "loss": "log_loss",       # logistic regression
-    "alpha": 0.0001,           # L2 regularization
+    "loss": "log_loss",         # logistic regression
+    "alpha": 0.01,              # L2 regularization — higher than the
+                                  # sklearn default to keep weights from
+                                  # exploding on the bootstrap fit
     "learning_rate": "optimal",
     "random_state": 42,
-    "max_iter": 1,              # single-pass partial_fit calls
-    "tol": None,                # disable early stopping
-    "warm_start": True,
+    "max_iter": 1000,           # bootstrap convergence; ignored by partial_fit
+    "tol": 1e-3,                # let the optimizer stop early once converged
+    "warm_start": False,
 }
 
 
