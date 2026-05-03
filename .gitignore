@@ -25,3 +25,13 @@ __pycache__/
 
 # Per-task daily-idempotency marker files (post_mortem, universe_audit, ...)
 .*.marker
+
+# Runtime-generated model artifacts (per-profile, regenerated on resolution)
+meta_model_*.pkl
+online_meta_model_*.pkl
+calibrator_*.pkl
+
+# Runtime-generated state snapshots
+cycle_data_*.json
+dynamic_screener_cache.json
+scheduler_status.json
