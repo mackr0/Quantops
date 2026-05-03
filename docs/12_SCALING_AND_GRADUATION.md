@@ -107,9 +107,9 @@
 | **Tax-lot tracking** | Tax optimization becomes worth the complexity. |
 | **PDT rule monitoring** | Pattern Day Trader rules apply. |
 
-**What changes architecturally:**
+**What changes architecturally** (these are forward-looking — none of these modules exist yet, they would be built when graduating to Stage 4):
 
-- New `streaming.py` module using `alpaca_trade_api.Stream`.
+- New `streaming.py` module using `alpaca_trade_api.Stream` (does not exist today).
 - Trade pipeline becomes event-driven: AI re-evaluates on significant price/volume events, not on a fixed schedule.
 - The 5-15 minute cycle becomes the FALLBACK; primary signal flow is real-time streaming.
 

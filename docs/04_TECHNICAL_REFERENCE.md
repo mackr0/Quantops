@@ -89,9 +89,13 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 ### 3c. Strategy engines
 | Module | Purpose |
 |---|---|
-| `strategies/*.py` | One file per strategy. Pure functions. |
+| `strategies/*.py` | 25 plugin-style strategies, each a pure function. |
+| `strategy_micro.py`, `strategy_small.py`, `strategy_mid.py`, `strategy_large.py`, `strategy_crypto.py` | Legacy market-type-specific strategy modules. |
+| `fallback_strategy.py` | Hosts the "core four" (momentum_breakout, volume_spike, mean_reversion, gap_and_go) referenced by the `strategy_*` profile-toggle columns. |
+| `strategy_router.py` | Dispatches to the right per-market strategy module. |
+| `strategy_generator.py` | Synthesizes new strategy variants. |
 | `multi_strategy.py` | Strategy orchestration: run all strategies on a symbol, aggregate votes. |
-| `strategy_proposer.py` | Auto-generates new strategy variants. |
+| `strategy_proposer.py` | Commissions auto-generated strategy variants. |
 | `strategy_lifecycle.py` | Per-strategy enable/disable + probationary period. |
 | `strategy_capital_allocator.py` | Per-strategy weight: `sharpe × (1 + win_rate)`. |
 | `alpha_decay.py` | Rolling-Sharpe alpha decay tracker. |
@@ -123,12 +127,14 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | `risk_stress_scenarios.py` | 7 historical scenario projections. |
 | `long_vol_hedge.py` | Active SPY put tail hedge. |
 | `portfolio_exposure.py` | Sector + factor + direction exposure tracking. |
+| `portfolio_manager.py` | Drawdown checks; portfolio-level state aggregation. |
 | `risk_parity.py` | Per-position vol-budget sizing. |
 | `kelly_sizing.py` | Per-direction fractional Kelly. |
 | `drawdown_scaling.py` | Continuous size modifier on drawdown. |
 | `mfe_capture.py` | MFE-vs-realized P&L analysis. |
 | `correlation.py` | Rolling correlation between positions. |
 | `cost_guard.py` | Daily AI-spend ceiling enforcement. |
+| `short_borrow.py` | Short-borrow rate lookup + accrual on cover. |
 
 ### 3f. Data sources
 | Module | Purpose |
@@ -198,6 +204,15 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | `param_bounds.py` | Min/max bounds for every tunable parameter. |
 | `notifications.py` | Alert dispatching. |
 | `metrics.py` | Performance metric computation. |
+| `scan_status.py` | Per-profile scan-cycle health/timeliness. |
+
+### 3m. Reporting & monitoring
+| Module | Purpose |
+|---|---|
+| `ai_weekly_summary.py` | Sunday weekly digest (HTML + email payload). |
+| `task_watchdog.py` | Per-task run tracker + stuck-task self-heal helper used by `_task_run_watchdog`. |
+| `scaling_projection.py` | Capacity / capital-graduation modeling helper used by the scaling section of the dashboard. |
+| `run_backtest_validation.py`, `run_phase2_validations.py` | One-off validation scripts; not part of the running services. |
 
 ### 3l. UserContext
 | Module | Purpose |
@@ -350,7 +365,7 @@ Multiple TTL-based caches across the system. Source of TTLs: `alternative_data._
 
 ## 10. Test suite
 
-Source: `tests/`. 153 test files covering:
+Source: `tests/`. 151 test files covering:
 
 - **Per-module unit tests** (~120 files): one per major module.
 - **Integration tests**: `test_today_integration.py` (scheduler wiring), `test_pipeline.py` (end-to-end cycle).

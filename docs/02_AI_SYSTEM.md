@@ -38,10 +38,17 @@ The dynamic-universe layer is described in detail in `docs/04_TECHNICAL_REFERENC
 
 ## 2. Strategy engines
 
-20+ deterministic per-symbol strategies live in `strategies/*.py`. Each is a pure function `run(symbol, market_type, df, params) → {signal, score, ...}` returning a vote. They are organized as:
+The platform ships ~30 deterministic per-symbol strategies. Each is a pure function returning a vote (signal + score). Strategies live in two locations:
 
-- **Bullish strategies (16):** momentum_breakout, volume_spike, mean_reversion, gap_and_go, gap_reversal, news_sentiment_spike, short_squeeze_setup (long side), earnings_drift, insider_cluster, fifty_two_week_breakout, macd_cross_confirmation, sector_momentum_rotation, analyst_upgrade_drift, short_term_reversal, volume_dryup_breakout, max_pain_pinning.
-- **Bearish strategies (10):** breakdown_support, distribution_at_highs, failed_breakout, parabolic_exhaustion, relative_weakness_in_strong_sector, earnings_disaster_short, catalyst_filing_short, sector_rotation_short, iv_regime_short, relative_weakness_universe, insider_selling_cluster, high_iv_rank_fade, vol_regime.
+- **`strategies/*.py`** — 25 plugin-style strategies. The convention going forward.
+- **`strategy_micro.py`, `strategy_small.py`, `strategy_mid.py`, `strategy_large.py`, `strategy_crypto.py`, `fallback_strategy.py`** — the legacy market-type-specific engines. Includes the original four (`momentum_breakout`, `volume_spike`, `mean_reversion`, `gap_and_go`) defined as `*_strategy` functions in `fallback_strategy.py` and `strategy_small.py`. These are the strategies the `strategy_*` profile-toggle columns control directly.
+
+Plugin-style strategies in `strategies/`:
+
+- **Bullish (12):** gap_reversal, news_sentiment_spike, short_squeeze_setup (long side), earnings_drift, insider_cluster, fifty_two_week_breakout, macd_cross_confirmation, sector_momentum_rotation, analyst_upgrade_drift, short_term_reversal, volume_dryup_breakout, max_pain_pinning.
+- **Bearish (13):** breakdown_support, distribution_at_highs, failed_breakout, parabolic_exhaustion, relative_weakness_in_strong_sector, earnings_disaster_short, catalyst_filing_short, sector_rotation_short, iv_regime_short, relative_weakness_universe, insider_selling_cluster, high_iv_rank_fade, vol_regime.
+
+Plus the four legacy bullish strategies (`momentum_breakout`, `volume_spike`, `mean_reversion`, `gap_and_go`) for a total of approximately 29 distinct strategies in active production use.
 
 Strategy votes are deterministic; they're cheap (no LLM cost) and run on every cycle. Each strategy emits one of: STRONG_BUY, BUY, HOLD, SELL, STRONG_SELL, SHORT, STRONG_SHORT.
 

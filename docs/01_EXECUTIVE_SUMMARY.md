@@ -34,7 +34,7 @@ Concretely:
 
 - **20+ equity strategies**, both bullish (momentum breakout, volume spike, mean reversion, gap and go, insider cluster, news sentiment spike, earnings drift, short squeeze setup, fifty-two-week breakout, MACD cross confirmation, sector momentum rotation, analyst upgrade drift, short-term reversal, volume dryup breakout, fifty-two-week breakout) and bearish (breakdown of support, distribution at highs, failed breakout, parabolic exhaustion, relative weakness in strong sector, earnings disaster short, catalyst filing short, sector rotation short, IV regime short, relative weakness universe-wide).
 
-- **Eleven options strategy primitives**: long call, long put, covered call, cash-secured put, protective put, four vertical spreads (bull call, bear put, bull put, bear call), iron condor, iron butterfly, long and short straddle, long strangle, calendar spread, diagonal spread.
+- **Five single-leg options primitives** (long call, long put, covered call, cash-secured put, protective put) plus **eleven multi-leg primitives** (four vertical spreads — bull call, bear put, bull put, bear call — plus iron condor, iron butterfly, long straddle, short straddle, long strangle, calendar spread, diagonal spread).
 
 - **Cointegration-driven pair book** with weekly Engle-Granger universe scan, daily pair retest, and Z-score-based entry/exit/stop signals.
 

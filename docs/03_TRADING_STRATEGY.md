@@ -29,6 +29,8 @@ The platform ships with 20+ deterministic strategies, organized by direction and
 
 ### 2a. Bullish strategies (16)
 
+The first four are the legacy "core" strategies in `fallback_strategy.py` / `strategy_small.py` — controlled by the per-profile `strategy_momentum_breakout` / `strategy_volume_spike` / `strategy_mean_reversion` / `strategy_gap_and_go` toggle columns. The rest live as plugin modules in `strategies/`.
+
 | Strategy | Edge claim | Confirmation signals |
 |---|---|---|
 | `momentum_breakout` | Stocks breaking above prior resistance with volume continuation | 20d high break + 1.5× avg volume + ADX > 25 |
@@ -84,20 +86,20 @@ The AI's job is to **pick zero to three** trades from the enriched candidate lis
 
 ## 3. Options program
 
-Eleven options strategy primitives, in `options_multileg.py`:
+The options layer ships **5 single-leg primitives** (in `options_trader.py`) and **11 multi-leg primitives** (in `options_multileg.py`). Single-leg builders are: `build_long_call`, `build_long_put`, `build_covered_call`, `build_cash_secured_put` (4 dedicated builders); `protective_put` is a recognized strategy type executed via `execute_option_strategy` without a dedicated builder, since it's structurally a long stock leg + a long put leg.
 
 | Primitive | Direction / structure | When the system uses it |
 |---|---|---|
 | `long_call`, `long_put` | Single-leg directional | Bullish/bearish thesis with cheap IV; defined risk |
-| `bull_call_spread`, `bear_put_spread` | Vertical debit | Directional thesis with capped premium |
-| `bull_put_spread`, `bear_call_spread` | Vertical credit | Directional thesis with premium-collection bias |
-| `iron_condor` | Range-bound short premium | High IV rank + low realized vol expectation |
-| `iron_butterfly` | Pinned-to-strike short premium | Tight expected range + max-pain pinning thesis |
-| `long_straddle`, `short_straddle`, `long_strangle` | Pure vol play | Pre-event when IV cheap (long) or rich (short) |
 | `covered_call` | Income on long stock | Existing long position + low IV rank + sideways thesis |
 | `cash_secured_put` | Get-paid-to-buy | Want to enter a long position; collect premium for downside risk |
 | `protective_put` | Long stock + put hedge | High-conviction long with elevated tail risk |
-| `calendar_spread`, `diagonal_spread` | Term-structure plays | Backwardation (front rich) or contango (back rich) opportunities |
+| `bull_call_spread`, `bear_put_spread` | Vertical debit (multi-leg) | Directional thesis with capped premium |
+| `bull_put_spread`, `bear_call_spread` | Vertical credit (multi-leg) | Directional thesis with premium-collection bias |
+| `iron_condor` | Range-bound short premium (multi-leg) | High IV rank + low realized vol expectation |
+| `iron_butterfly` | Pinned-to-strike short premium (multi-leg) | Tight expected range + max-pain pinning thesis |
+| `long_straddle`, `short_straddle`, `long_strangle` | Pure vol play (multi-leg) | Pre-event when IV cheap (long) or rich (short) |
+| `calendar_spread`, `diagonal_spread` | Term-structure plays (multi-leg) | Backwardation (front rich) or contango (back rich) opportunities |
 
 The options program is governed by:
 
