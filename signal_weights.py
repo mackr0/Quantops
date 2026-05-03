@@ -104,6 +104,12 @@ WEIGHTABLE_SIGNALS: Tuple[Tuple[str, str, "callable"], ...] = (
                   or int(f.get("biotech_phase3_count", 0) or 0) > 0),
     ("stocktwits_sentiment",     "StockTwits Sentiment",
         lambda f: int(f.get("stocktwits_message_count_7d", 0) or 0) > 0),
+    # Item 3a — Google Trends attention. Materially present when |z| >= 1.
+    ("google_trends",             "Google Trends Attention",
+        lambda f: abs(float(f.get("google_trends_z", 0) or 0)) >= 1.0),
+    # Item 3a — Wikipedia page-view spike. Materially present on >=2σ surge.
+    ("wikipedia_pageviews",       "Wikipedia Page-Views",
+        lambda f: abs(float(f.get("wikipedia_pageviews_z", 0) or 0)) >= 1.0),
     ("rel_strength_vs_sector",   "Relative Strength vs Sector",
         lambda f: abs(float(f.get("rel_strength_vs_sector", 0) or 0)) >= 5),
     ("vwap_position",            "VWAP Position (away from VWAP)",

@@ -21,6 +21,8 @@ import time
 import threading
 from typing import Any, Dict
 from urllib.request import urlopen, Request
+import urllib.parse
+import urllib.request
 
 import yfinance as yf
 
@@ -1497,6 +1499,281 @@ def get_stocktwits_sentiment(symbol: str) -> Dict[str, Any]:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Item 3a — Google Trends signal
+# ---------------------------------------------------------------------------
+
+# 24h cache (Google rate-limits; daily granularity is plenty)
+_CACHE_TTL["google_trends"] = 86400
+
+
+def get_google_trends_signal(symbol: str):
+    """Web-scraped Google Trends interest for a ticker.
+
+    Output:
+      {
+        "trend_z_score": float | None,    # σ above/below trailing-year mean
+        "trend_direction": "rising"|"flat"|"falling"|None,
+        "current_index": int | None,      # last week, 0-100
+        "yr_avg_index": float | None,
+        "has_data": bool,
+      }
+
+    Best-effort: pytrends rate-limits hard (~5 req/min). On any HTTP
+    error or rate-limit, returns has_data=False and the prompt
+    suppresses the signal. Cached 24h.
+    """
+    if "/" in symbol:
+        return {"has_data": False, "is_crypto": True}
+    cache_key = f"google_trends_{symbol.upper()}"
+    cached = _get_cached(cache_key, "google_trends")
+    if cached is not None:
+        return cached
+
+    result = {
+        "trend_z_score": None,
+        "trend_direction": None,
+        "current_index": None,
+        "yr_avg_index": None,
+        "has_data": False,
+    }
+    try:
+        from pytrends.request import TrendReq
+    except ImportError:
+        logging.debug("pytrends not installed; Google Trends signal disabled")
+        _set_cached(cache_key, result)
+        return result
+
+    try:
+        py = TrendReq(hl="en-US", tz=0, timeout=(5, 10))
+        # Use bracketed query so Google scopes to the ticker (not the
+        # English word). 'today 12-m' = trailing year, weekly buckets.
+        kw = f'"{symbol.upper()}"'
+        py.build_payload([kw], timeframe="today 12-m", geo="US")
+        df = py.interest_over_time()
+        if df is None or df.empty or kw not in df.columns:
+            _set_cached(cache_key, result)
+            return result
+        series = df[kw].astype(float)
+        if len(series) < 8:
+            _set_cached(cache_key, result)
+            return result
+        cur = float(series.iloc[-1])
+        avg = float(series.mean())
+        std = float(series.std(ddof=1))
+        z = (cur - avg) / std if std > 0 else 0.0
+        # Direction: linear slope over last 8 weeks
+        last8 = series.tail(8).values
+        if len(last8) >= 8:
+            mid = len(last8) // 2
+            recent_avg = sum(last8[mid:]) / max(len(last8[mid:]), 1)
+            old_avg = sum(last8[:mid]) / max(len(last8[:mid]), 1)
+            delta_pct = (recent_avg - old_avg) / max(old_avg, 1)
+            if delta_pct > 0.20:
+                direction = "rising"
+            elif delta_pct < -0.20:
+                direction = "falling"
+            else:
+                direction = "flat"
+        else:
+            direction = "flat"
+        result.update({
+            "trend_z_score": round(z, 2),
+            "trend_direction": direction,
+            "current_index": int(round(cur)),
+            "yr_avg_index": round(avg, 1),
+            "has_data": True,
+        })
+    except Exception as exc:
+        logging.debug("Google Trends fetch failed for %s: %s", symbol, exc)
+
+    _set_cached(cache_key, result)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Item 3a — Wikipedia page-views signal
+# ---------------------------------------------------------------------------
+
+_CACHE_TTL["wikipedia_pageviews"] = 86400
+
+# Hand-curated ticker → Wikipedia article slug for symbols where the
+# ticker isn't a meaningful Wikipedia title. Most large-caps are
+# either the ticker itself or "Company Name". Falls back to
+# `{ticker}_(company)` then to a Wikidata search.
+WIKIPEDIA_TICKER_OVERRIDES = {
+    "AAPL": "Apple_Inc.",
+    "MSFT": "Microsoft",
+    "GOOGL": "Alphabet_Inc.",
+    "GOOG": "Alphabet_Inc.",
+    "AMZN": "Amazon_(company)",
+    "META": "Meta_Platforms",
+    "TSLA": "Tesla,_Inc.",
+    "NVDA": "Nvidia",
+    "BRK.B": "Berkshire_Hathaway",
+    "JPM": "JPMorgan_Chase",
+    "V": "Visa_Inc.",
+    "JNJ": "Johnson_%26_Johnson",
+    "WMT": "Walmart",
+    "MA": "Mastercard",
+    "PG": "Procter_%26_Gamble",
+    "UNH": "UnitedHealth_Group",
+    "HD": "The_Home_Depot",
+    "BAC": "Bank_of_America",
+    "XOM": "ExxonMobil",
+    "CVX": "Chevron_Corporation",
+    "DIS": "The_Walt_Disney_Company",
+    "NFLX": "Netflix",
+    "PFE": "Pfizer",
+    "KO": "The_Coca-Cola_Company",
+    "PEP": "PepsiCo",
+    "CSCO": "Cisco",
+    "ORCL": "Oracle_Corporation",
+    "INTC": "Intel",
+    "AMD": "AMD",
+    "ADBE": "Adobe_Inc.",
+    "CRM": "Salesforce",
+    "NKE": "Nike,_Inc.",
+    "MCD": "McDonald%27s",
+    "T": "AT%26T",
+    "VZ": "Verizon",
+    "IBM": "IBM",
+    "GE": "General_Electric",
+    "F": "Ford_Motor_Company",
+    "GM": "General_Motors",
+    "BA": "Boeing",
+    "CAT": "Caterpillar_Inc.",
+    "UBER": "Uber",
+    "LYFT": "Lyft",
+    "SHOP": "Shopify",
+    "SQ": "Block,_Inc.",
+    "PYPL": "PayPal",
+    "PLTR": "Palantir_Technologies",
+    "SNOW": "Snowflake_Inc.",
+    "COIN": "Coinbase",
+    "RIVN": "Rivian",
+    "LCID": "Lucid_Group",
+    "BABA": "Alibaba_Group",
+    "TSM": "TSMC",
+    "ASML": "ASML_Holding",
+    "AVGO": "Broadcom",
+    "QCOM": "Qualcomm",
+    "TXN": "Texas_Instruments",
+    "MU": "Micron_Technology",
+}
+
+
+def _resolve_wikipedia_article(symbol: str):
+    """Map ticker → Wikipedia article title. Try override map, then
+    a Wikipedia search API call. Returns the article title (with
+    underscores) or None."""
+    sym = symbol.upper()
+    if sym in WIKIPEDIA_TICKER_OVERRIDES:
+        return WIKIPEDIA_TICKER_OVERRIDES[sym]
+    # Wikipedia OpenSearch — best-match for "<TICKER> stock"
+    try:
+        url = (
+            "https://en.wikipedia.org/w/api.php"
+            "?action=opensearch&format=json&limit=1&search="
+            + urllib.parse.quote(f"{sym} stock")
+        )
+        with urllib.request.urlopen(url, timeout=8) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        # Response shape: [query, [titles], [descs], [urls]]
+        if isinstance(data, list) and len(data) >= 2 and data[1]:
+            return data[1][0].replace(" ", "_")
+    except Exception:
+        pass
+    return None
+
+
+def get_wikipedia_pageviews_signal(symbol: str):
+    """Wikipedia daily article views as an attention proxy.
+
+    Output:
+      {
+        "pageview_z_score": float | None,
+        "pageview_spike_flag": bool,       # True when z >= 2.0
+        "current_7d_avg": int | None,
+        "trailing_90d_avg": int | None,
+        "article": str | None,
+        "has_data": bool,
+      }
+
+    Free official API at wikimedia.org/api/rest_v1. 24h cache.
+    """
+    if "/" in symbol:
+        return {"has_data": False, "is_crypto": True}
+    cache_key = f"wikipedia_pageviews_{symbol.upper()}"
+    cached = _get_cached(cache_key, "wikipedia_pageviews")
+    if cached is not None:
+        return cached
+
+    result = {
+        "pageview_z_score": None,
+        "pageview_spike_flag": False,
+        "current_7d_avg": None,
+        "trailing_90d_avg": None,
+        "article": None,
+        "has_data": False,
+    }
+    article = _resolve_wikipedia_article(symbol)
+    if not article:
+        _set_cached(cache_key, result)
+        return result
+    result["article"] = article
+
+    # Date range — last 90 days (UTC).
+    from datetime import datetime as _dt, timedelta as _td
+    today = _dt.utcnow().date()
+    start = today - _td(days=90)
+    url = (
+        "https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/"
+        f"en.wikipedia/all-access/all-agents/{article}/daily/"
+        f"{start.strftime('%Y%m%d')}/{today.strftime('%Y%m%d')}"
+    )
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "QuantOpsAI/1.0 (mack@mackenziesmith.com)"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        items = data.get("items") or []
+        if len(items) < 14:
+            _set_cached(cache_key, result)
+            return result
+        views = [int(i.get("views", 0)) for i in items]
+        last7 = views[-7:]
+        avg_7 = sum(last7) / len(last7)
+        avg_90 = sum(views) / len(views)
+        # σ across the full 90-day window (daily-level)
+        if len(views) >= 2:
+            mean = avg_90
+            var = sum((v - mean) ** 2 for v in views) / (len(views) - 1)
+            std = var ** 0.5
+        else:
+            std = 0.0
+        if std > 0:
+            z = (avg_7 - avg_90) / std
+        else:
+            z = 0.0
+        result.update({
+            "pageview_z_score": round(z, 2),
+            "pageview_spike_flag": z >= 2.0,
+            "current_7d_avg": int(round(avg_7)),
+            "trailing_90d_avg": int(round(avg_90)),
+            "has_data": True,
+        })
+    except Exception as exc:
+        logging.debug(
+            "Wikipedia pageviews fetch failed for %s: %s", symbol, exc,
+        )
+
+    _set_cached(cache_key, result)
+    return result
+
+
 def get_all_alternative_data(symbol):
     """Fetch all alternative data for a symbol in one call.
 
@@ -1529,5 +1806,8 @@ def get_all_alternative_data(symbol):
         "institutional_13f": get_13f_institutional(symbol),
         "biotech_milestones": get_biotech_milestones(symbol),
         "stocktwits_sentiment": get_stocktwits_sentiment(symbol),
+        # Item 3a — web-scraped attention signals.
+        "google_trends": get_google_trends_signal(symbol),
+        "wikipedia_pageviews": get_wikipedia_pageviews_signal(symbol),
         # patent_activity: DISABLED — PatentsView v1 API deprecated
     }

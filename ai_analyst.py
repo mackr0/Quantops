@@ -1267,6 +1267,37 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                     f"({ns_label}){trending}")
                 if txt: alt_parts.append(txt)
 
+            # Item 3a — Google Trends attention proxy
+            gt = alt.get("google_trends") or {}
+            if gt.get("has_data"):
+                z = gt.get("trend_z_score")
+                direction = gt.get("trend_direction", "flat")
+                cur = gt.get("current_index")
+                if z is not None:
+                    txt = _weighted_signal_text(
+                        "google_trends",
+                        f"Search interest: index {cur} "
+                        f"(z={z:+.1f}σ, {direction})",
+                    )
+                    if txt:
+                        alt_parts.append(txt)
+
+            # Item 3a — Wikipedia page-views attention proxy
+            wp = alt.get("wikipedia_pageviews") or {}
+            if wp.get("has_data"):
+                z = wp.get("pageview_z_score")
+                spike = wp.get("pageview_spike_flag")
+                cur = wp.get("current_7d_avg")
+                if z is not None:
+                    spike_tag = " — SPIKE" if spike else ""
+                    txt = _weighted_signal_text(
+                        "wikipedia_pageviews",
+                        f"Wiki views: {cur:,}/day 7d avg "
+                        f"(z={z:+.1f}σ){spike_tag}",
+                    )
+                    if txt:
+                        alt_parts.append(txt)
+
             if alt_parts:
                 # Layer 6 verbosity: brief = show only top 3 signals;
                 # normal = show all; detailed = show all + a "(X more)"

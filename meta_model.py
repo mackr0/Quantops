@@ -56,6 +56,8 @@ NUMERIC_FEATURES = [
     "_yield_spread_10y2y", "_cboe_skew", "_unemployment_rate", "_cpi_yoy",
     # Wave 2
     "dark_pool_pct", "earnings_surprise_streak",
+    # Item 3a — web-scraped attention signals
+    "google_trends_z", "wikipedia_pageviews_z",
 ]
 
 # Categorical features — one-hot encoded
@@ -83,6 +85,8 @@ CATEGORICAL_FEATURES = {
     "_rotation_phase": ["risk_on", "risk_off", "mixed"],
     "earnings_surprise_direction": ["beats", "misses", "mixed"],
     "_market_gex_regime": ["pinning", "expansion", "balanced"],
+    # Item 3a — Google Trends direction
+    "google_trends_direction": ["rising", "flat", "falling"],
 }
 
 

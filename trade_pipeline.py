@@ -1509,6 +1509,13 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 features_payload["stocktwits_message_count_7d"] = twits.get("message_count_7d", 0)
                 features_payload["stocktwits_net_sentiment_7d"] = twits.get("net_sentiment_7d")
                 features_payload["stocktwits_is_trending"] = 1 if twits.get("is_trending") else 0
+                # Item 3a — Google Trends + Wikipedia attention signals
+                gt = alt.get("google_trends") or {}
+                features_payload["google_trends_z"] = gt.get("trend_z_score") or 0
+                features_payload["google_trends_direction"] = gt.get("trend_direction", "flat")
+                wp = alt.get("wikipedia_pageviews") or {}
+                features_payload["wikipedia_pageviews_z"] = wp.get("pageview_z_score") or 0
+                features_payload["wikipedia_pageviews_spike"] = 1 if wp.get("pageview_spike_flag") else 0
             social = c.get("social") or {}
             if social:
                 features_payload["reddit_mentions"] = social.get("mentions", 0)

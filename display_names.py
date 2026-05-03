@@ -311,6 +311,16 @@ _DISPLAY_NAMES = {
     "french":   "Academic Factors",
     "idio":     "Idiosyncratic",
 
+    # Item 3a — web-scraped attention signals.
+    "google_trends":             "Google Trends Attention",
+    "google_trends_z":           "Google Trends z-score",
+    "google_trends_direction":   "Google Trends Direction",
+    "wikipedia_pageviews":       "Wikipedia Page-Views",
+    "wikipedia_pageviews_z":     "Wikipedia Page-Views z-score",
+    "wikipedia_pageviews_spike": "Wikipedia Page-Views Spike",
+    "rising":                    "Rising",
+    "falling":                   "Falling",
+
     # Historical stress scenario IDs (`risk_stress_scenarios.py`).
     "1987_blackmonday":  "1987 Black Monday",
     "2000_dotcom":       "2000 Dot-com Crash",

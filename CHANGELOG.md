@@ -17,6 +17,31 @@ Rules going forward:
 
 ---
 
+## 2026-05-03 — Item 3a: Google Trends + Wikipedia attention signals (Severity: medium, capability)
+
+Two new free web-scraped attention proxies. Both are best-effort: HTTP/rate-limit failures return `has_data: False` and the prompt suppresses the line. 24h cache. No per-profile config — they're zero-cost analytical signals always-on, like the existing congressional / 13F / StockTwits feeds.
+
+**`alternative_data.get_google_trends_signal(symbol)`:** trailing-12-month weekly interest from Google Trends via `pytrends`. Output: `trend_z_score` (σ above/below trailing-year mean), `trend_direction` (rising / flat / falling — last-4-weeks vs prior-4-weeks slope), `current_index` (0-100). Bracketed query (`"AAPL"`) so Google scopes to the ticker, not the English word.
+
+**`alternative_data.get_wikipedia_pageviews_signal(symbol)`:** daily article views from the Wikimedia REST API. Output: `pageview_z_score`, `pageview_spike_flag` (z ≥ 2σ), `current_7d_avg`, `trailing_90d_avg`, `article` slug. Ticker → article resolution via hand-curated `WIKIPEDIA_TICKER_OVERRIDES` map (~60 large-caps), falling back to Wikipedia's OpenSearch API for unknowns.
+
+**Wired:**
+- `get_all_alternative_data` returns both as `alt["google_trends"]` and `alt["wikipedia_pageviews"]`.
+- `_build_features_payload` flattens `google_trends_z`, `google_trends_direction`, `wikipedia_pageviews_z`, `wikipedia_pageviews_spike` into the meta-model feature payload.
+- `meta_model.NUMERIC_FEATURES` + `CATEGORICAL_FEATURES` include the new fields so the meta-model trains on them.
+- `signal_weights.WEIGHTABLE_SIGNALS` registers `google_trends` + `wikipedia_pageviews` so the Layer-2 weight tuner can up- or down-weight per profile based on differential win-rate.
+- `ai_analyst._build_alt_data_section` renders both lines under ALT DATA when present (e.g. `Search interest: index 80 (z=+1.2σ, rising)` and `Wiki views: 45,000/day 7d avg (z=+2.4σ — SPIKE)`).
+
+**Tests** (`tests/test_attention_signals.py`, 13 cases): rising/falling/flat detection on Google Trends, OpenSearch fallback for unknown tickers, z-score math + spike threshold for Wikipedia, crypto skipped, graceful failure on HTTP errors, cache hit on second call.
+
+**Display names** added for new feature keys to satisfy the existing display-name guardrails.
+
+`pytrends>=4.9.0` added to `requirements.txt`.
+
+GitHub commit-activity signal deferred — most of the S&P doesn't have meaningful public repos, and large engineering work moves to private repos. Net signal weakness called out in plan; revisited later if a focused use case arrives.
+
+---
+
 ## 2026-05-02 — Item 5c: realistic slippage model (Severity: medium, capability)
 
 Backtests previously used a flat 0.2% on entry + 0.2% on exit. This inflated apparent edge — strategies that worked great on big-cap names but would die on micro-caps couldn't be told apart. Live trading had no per-candidate execution-cost signal, so the AI couldn't pass over names where friction would eat the edge.

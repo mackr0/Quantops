@@ -19,6 +19,8 @@ scikit-learn>=1.3.0
 # cointegration test and ADF stationarity test. Used by
 # stat_arb_pair_book.py to find / monitor cointegrated equity pairs.
 statsmodels>=0.14.0
+# Item 3a — Google Trends attention signal (alternative_data.get_google_trends_signal).
+pytrends>=4.9.0
 # pytest-randomly is dev-only but we keep it in requirements so CI
 # and local dev both default to randomized test ordering. This
 # catches order-dependent test pollution at the moment it's
