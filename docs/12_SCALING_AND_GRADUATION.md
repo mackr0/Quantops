@@ -107,11 +107,16 @@
 | **Tax-lot tracking** | Tax optimization becomes worth the complexity. |
 | **PDT rule monitoring** | Pattern Day Trader rules apply. |
 
-**What changes architecturally** (these are forward-looking — none of these modules exist yet, they would be built when graduating to Stage 4):
+**What changes architecturally** (forward-looking — these modules don't exist today; they'd be built when graduating to Stage 4):
 
-- New `streaming.py` module using `alpaca_trade_api.Stream` (does not exist today).
-- Trade pipeline becomes event-driven: AI re-evaluates on significant price/volume events, not on a fixed schedule.
-- The 5-15 minute cycle becomes the FALLBACK; primary signal flow is real-time streaming.
+The platform consumes Alpaca's REST API every cycle for prices, positions, orders, news, and option chains (`market_data.get_bars`, `client.list_positions`, `client.list_orders`, `news_sentiment.fetch_news_alpaca`, `options_chain_alpaca.fetch_chain_alpaca`). The current Alpaca subscription tier covers REST data and paper trading execution but does **not** grant the WebSocket streaming entitlement (verified empirically — auth against `wss://stream.data.alpaca.markets` returns `code:402` on IEX, SIP, and Crypto endpoints). Stage 4 therefore requires changing both the subscription tier and the consumption mode:
+
+- Upgrade Alpaca to **Algo Trader Plus** (~$99/mo) to unlock WebSocket Stream entitlement and the SIP feed.
+- Build a new `streaming.py` module (does not exist today) using Alpaca's WebSocket `Stream` API. Instead of polling REST every cycle, subscribe once and receive push events on every trade / quote / minute-bar.
+- Trade pipeline becomes event-driven: AI re-evaluates on significant price/volume events, not on a fixed timer.
+- The 5-15 minute REST poll cycle becomes the FALLBACK; primary signal flow is real-time WebSocket push.
+
+Latency improvement: minutes → milliseconds. Justified at $100K+ capital where missing intraday moves becomes material.
 
 ### Stage 5 — $1M+
 
