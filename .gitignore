@@ -19,3 +19,6 @@ __pycache__/
 
 # Tooling
 .claude/
+
+# Local caches written by modules at runtime
+.cache/
