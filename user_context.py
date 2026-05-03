@@ -233,6 +233,13 @@ class UserContext:
     # from historical fills).
     market_type: Optional[str] = None
 
+    # OPEN_ITEMS #10 — per-profile options roll-window thresholds.
+    # Defaults match the module-constant values they replaced in
+    # options_roll_manager.py.
+    options_roll_window_days: int = 7
+    options_auto_close_profit_pct: float = 0.80
+    options_roll_recommend_profit_pct: float = 0.50
+
     # Limit orders
     use_limit_orders: bool = False
 

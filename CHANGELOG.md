@@ -17,6 +17,36 @@ Rules going forward:
 
 ---
 
+## 2026-05-03 — OPEN_ITEMS #1-10: ten free-tier items shipped end-to-end (Severity: high, capability)
+
+Working through the master open-items list. All ten free-tier items now built, tested, deployed.
+
+**#1 ADV-at-trade-time storage.** `trades.adv_at_decision` REAL column. Captured in `_execute_buy`/`_execute_sell` from `get_bars(symbol, limit=20).volume.mean()`. `slippage_model.calibrate_from_history` prefers the row's stored ADV → real participation_rate; falls back to coarse `$50M` proxy for legacy rows. Adds `n_samples_real_adv` to fit metadata so users can see how much of the calibration is anchored on real ADV.
+
+**#2 App Store WoW snapshot.** New `app_store_history` table snapshotted by `_task_app_store_snapshot` (daily-idempotent across all profiles via master-DB marker). `get_app_store_ranking` returns `wow_change_grossing` / `wow_change_free` deltas vs ~7 days ago. AI prompt renders signed delta inline: "App Store: Uber — #15 free (+3 WoW)".
+
+**#3 MC bootstrap by-day.** `mc_backtest.run_monte_carlo` gains `bootstrap_mode` ('per_trade' | 'by_day', default 'by_day'). by_day pre-draws ONE slippage realization per (date, side) at sim start; trades sharing a day reuse the draw — captures correlated-regime variance the per-trade IID mode misses. New `_replay_with_slips` helper for the cached path. 3 new tests including invalid-mode error path.
+
+**#4 wheel_symbols settings UI.** Schema column `TEXT NOT NULL DEFAULT '[]'` (JSON list). Settings textarea with tooltip + plain-English helper. `_parse_wheel_symbols` helper for ctx build. Save_profile parser. update_trading_profile allowlist. MANUAL_PARAMETERS entry. The wheel state machine in `options_wheel.py` finally has user input.
+
+**#5 Synthetic options backtester dashboard panel.** New `/api/options-backtest` POST endpoint. Wraps `backtest_strategy_over_period` with a 5-strategy preset map (long_put / long_call / bull_call_spread / bear_put_spread / iron_condor). UI on AI Brain tab: symbol + strategy + lookback + OTM% + DTE + cycle-days inputs, Run button, equity-curve table.
+
+**#6 PDUFA scraper.** New `pdufa_scraper.py`: scrapes BiopharmCatalyst FDA calendar, parses iso/long-form/US dates, dedupes, syncs to `~/quantopsai-altdata/biotechevents/biotechevents.db` (creates table if missing). `_task_pdufa_scrape` daily-idempotent. 15 tests including parse robustness, date format coverage, sync upsert, fallback path. `alternative_data.get_biotech_milestones` already queries `pdufa_events` — now it'll have data.
+
+**#7 Short borrow rate tracking.** `short_borrow.py` extended: 3-tier rate lookup (HTB-overridden → 12-30%/yr; non-GC `easy_to_borrow=False` → 8%/yr; GC default → 1.8%/yr). `render_borrow_rate_for_prompt(symbol, easy_to_borrow)` returns "borrow ~8.0%/yr (non-GC)". Trade pipeline annotates each short candidate with `_borrow_rate_str` + `_borrow_bps_per_day`; AI prompt renders concrete rate instead of binary "low/high".
+
+**#8 AI vocabulary for proposing options trades.** OPTIONS action was previously gated on the read-side advisor surfacing held-position covered_call/protective_put opportunities. Opened up: AI can now propose `long_call` / `long_put` directly on any candidate with options. Updated prompt with explicit per-strategy validator notes (1% premium cap on longs, share-coverage rule on covered_call) and a directional-play example.
+
+**#9 Macro event tracker (FOMC/CPI/NFP).** New `macro_event_tracker.py` with hand-curated MACRO_EVENT_CALENDAR through end of 2026. `get_upcoming_macro_event` / `days_until_next_event` / `evaluate_macro_play` (pre-window IV-rich → SPY iron condor; pre-window IV-cheap → long straddle; post-window → time-stop). One-line block surfaces next event in AI prompt MARKET CONTEXT. Closes Phase F2 of OPTIONS_PROGRAM_PLAN.
+
+**#10 Per-profile options roll-window knobs.** Three new schema columns: `options_roll_window_days` (default 7), `options_auto_close_profit_pct` (default 0.80), `options_roll_recommend_profit_pct` (default 0.50). UserContext fields with matching defaults. `evaluate_for_roll` and `auto_close_high_profit_credits` parameterized; scheduler task passes ctx values. Settings UI with three numeric inputs + tooltips explaining the trade-offs.
+
+All 10 wired through schema → UserContext → allowlist → save_profile → settings UI → AI prompt or scheduler → tests. Existing guardrails extended where needed (test_today_integration adds new task stubs; MANUAL_PARAMETERS adds 8 new entries).
+
+Suite: 1914 passed, 0 skipped.
+
+---
+
 ## 2026-05-03 — Hidden-lever sweep: extended UI guardrail + 4 new panels (Severity: medium, UX)
 
 Three follow-ups in priority order:

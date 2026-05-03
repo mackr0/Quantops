@@ -132,6 +132,12 @@ MANUAL_PARAMETERS = {
     # choice (which names is this profile willing to be assigned in
     # exchange for premium income), not a tunable parameter.
     "wheel_symbols":                   "User-curated symbol opt-in list for the wheel cycle",
+    # OPEN_ITEMS #10 — options roll-window thresholds. User
+    # preference (tighter management vs more premium captured), not
+    # autonomously tunable.
+    "options_roll_window_days":         "User-set roll-window threshold preference",
+    "options_auto_close_profit_pct":    "User-set credit-position auto-close threshold",
+    "options_roll_recommend_profit_pct": "User-set roll-recommend threshold",
 
     # P2.2 of LONG_SHORT_PLAN.md — strategic choice (long-only vs
     # balanced vs short-dominant). The AI prompt directive (P2.2)

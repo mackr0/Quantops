@@ -942,6 +942,11 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         for line in pr_scenarios:
             market_section += f"\n    - {line}"
 
+    # OPEN_ITEMS #9 — next scheduled macro event (FOMC/CPI/NFP).
+    macro_event_block = market_context.get("macro_event_block")
+    if macro_event_block:
+        market_section += f"\n  {macro_event_block}"
+
     # Item 1c — long-vol tail-risk hedge state (only present when
     # the profile has the hedge feature enabled). Multi-line block
     # already includes "LONG-VOL TAIL HEDGE:" header from the
@@ -1096,8 +1101,12 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         # Squeeze risk: HIGH/MED/LOW based on short interest + float.
         borrow_cost = c.get("_borrow_cost")
         squeeze_risk = c.get("_squeeze_risk")
+        # OPEN_ITEMS #7 — concrete bps/day rate when available
+        borrow_rate_str = c.get("_borrow_rate_str")
         short_flags = []
-        if borrow_cost:
+        if borrow_rate_str:
+            short_flags.append(f"BORROW: {borrow_rate_str}")
+        elif borrow_cost:
             short_flags.append(
                 f"BORROW: {borrow_cost} cost"
                 + (" (eats ~5-15% over a 3-week hold)" if borrow_cost == "high" else "")
@@ -1470,10 +1479,16 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     actions = "BUY"
     if enable_shorts:
         actions += " | SHORT"
-    # Item 1a — OPTIONS action only offered when the advisor has surfaced
-    # at least one opportunity. Keeps the prompt tight when there's
-    # nothing actionable on the options side.
-    options_action_enabled = bool(options_strategy_block.strip())
+    # Item 1a / OPEN_ITEMS #8 — OPTIONS action available whenever any
+    # candidate has options OR the advisor surfaced an opportunity.
+    # Previously this was gated on the advisor-only path which meant
+    # the AI couldn't propose directional plays (long_call/long_put)
+    # on shortlist names — only covered_call / protective_put on
+    # held positions. Opening it up; the executor still validates
+    # strikes/expiries/sizing per options_trader.execute_option_strategy.
+    options_action_enabled = bool(options_strategy_block.strip()) or any(
+        c.get("options_oracle_summary") for c in candidates_data
+    )
     if options_action_enabled:
         actions += " | OPTIONS"
     # Item 1b — PAIR_TRADE action only offered when the stat-arb pair
@@ -1505,17 +1520,23 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     options_example = ""
     if options_action_enabled:
         options_note = (
-            "\n- OPTIONS: only propose when an OPTIONS STRATEGIES line above "
-            "lists the underlying. Required fields: option_strategy "
+            "\n- OPTIONS: propose for any candidate whose ALT DATA / "
+            "OPTIONS line shows IV / Greeks (i.e. has tradeable options "
+            "on Alpaca), or for held positions surfaced in OPTIONS "
+            "STRATEGIES. Required fields: option_strategy "
             "(covered_call|protective_put|long_call|long_put|cash_secured_put), "
             "strike (number), expiry (YYYY-MM-DD), contracts (int). "
+            "Premium budget capped at 1% of equity for long_call/long_put "
+            "regardless of contracts requested. covered_call requires the "
+            "underlying held in long quantity ≥ contracts × 100. "
             "size_pct/stop_loss_pct/take_profit_pct are NOT required for OPTIONS.\n"
         )
         options_example = (
             ', {"symbol": "TICKER", "action": "OPTIONS", '
-            '"option_strategy": "covered_call", "strike": 175.0, '
-            '"expiry": "2026-05-16", "contracts": 1, "confidence": 65, '
-            '"reasoning": "1-2 sentences"}'
+            '"option_strategy": "long_call", "strike": 180.0, '
+            '"expiry": "2026-06-19", "contracts": 1, "confidence": 65, '
+            '"reasoning": "Bullish on TICKER, IV rank 22 (cheap premium), '
+            'directional bet via 30-DTE OTM call"}'
         )
 
     pair_note = ""

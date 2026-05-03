@@ -23,13 +23,20 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-# Default annualized borrow rate for general-collateral liquid stocks.
-# 1.8% / 365 ≈ 0.49 bps/day. Round to 0.5 for clean math.
+# Default annualized borrow rate for general-collateral liquid stocks
+# Alpaca flags as `easy_to_borrow=True`. ~1.8% / 365 ≈ 0.49 bps/day.
 DEFAULT_BPS_PER_DAY = 0.5
+
+# Tier for `easy_to_borrow=False` names that aren't in the HTB map —
+# typical IBKR borrow fee is ~5-15% annualized for non-GC names. Use
+# 8% / 365 ≈ 22 bps/day. Conservative — real rates can be lower for
+# moderately liquid names but we'd rather over-charge than under.
+MEDIUM_BORROW_BPS_PER_DAY = 22.0
 
 # Per-symbol overrides for known hard-to-borrow names. Update as
 # needed; rates here are illustrative typical IBKR ranges. Symbols
-# missing from this map use DEFAULT_BPS_PER_DAY.
+# missing from this map fall through to MEDIUM_BORROW_BPS_PER_DAY
+# when `easy_to_borrow=False`, else DEFAULT_BPS_PER_DAY.
 HARD_TO_BORROW_BPS_PER_DAY: dict = {
     # Meme / squeeze names historically expensive to short
     "GME": 12.0,    # ~25% annualized typical (variable, sometimes 100%+)
@@ -41,14 +48,56 @@ HARD_TO_BORROW_BPS_PER_DAY: dict = {
 }
 
 
-def get_borrow_rate_bps_per_day(symbol: str) -> float:
+def get_borrow_rate_bps_per_day(
+    symbol: str,
+    easy_to_borrow: Optional[bool] = None,
+) -> float:
     """Look up the per-day borrow rate (in basis points) for `symbol`.
-    Returns DEFAULT_BPS_PER_DAY for general-collateral names."""
+
+    Three-tier lookup:
+      1. Symbol in HARD_TO_BORROW_BPS_PER_DAY → use that rate.
+      2. easy_to_borrow=False (Alpaca flag) → MEDIUM_BORROW_BPS_PER_DAY.
+      3. Otherwise → DEFAULT_BPS_PER_DAY (general-collateral).
+
+    `easy_to_borrow` should be the Alpaca asset.easy_to_borrow flag.
+    Pass None when unknown (legacy callers); falls back to default.
+    """
+    if symbol:
+        sym = symbol.upper()
+        if sym in HARD_TO_BORROW_BPS_PER_DAY:
+            return HARD_TO_BORROW_BPS_PER_DAY[sym]
+    if easy_to_borrow is False:
+        return MEDIUM_BORROW_BPS_PER_DAY
+    return DEFAULT_BPS_PER_DAY
+
+
+def annual_pct_for_symbol(
+    symbol: str,
+    easy_to_borrow: Optional[bool] = None,
+) -> float:
+    """Convenience: bps/day → annualized percent. For prompt rendering."""
+    bps = get_borrow_rate_bps_per_day(symbol, easy_to_borrow=easy_to_borrow)
+    return round(bps * 365 / 100, 2)
+
+
+def render_borrow_rate_for_prompt(
+    symbol: str,
+    easy_to_borrow: Optional[bool] = None,
+) -> str:
+    """One-line annotation: 'borrow ~1.8%/yr (GC)' / '~8%/yr (non-GC)'
+    / '~110%/yr (HTB)'. Used per-candidate on shorts so the AI sees
+    real cost-of-carry.
+    """
+    annual_pct = annual_pct_for_symbol(symbol, easy_to_borrow)
     if not symbol:
-        return DEFAULT_BPS_PER_DAY
-    return HARD_TO_BORROW_BPS_PER_DAY.get(
-        symbol.upper(), DEFAULT_BPS_PER_DAY,
-    )
+        tier = "GC"
+    elif symbol.upper() in HARD_TO_BORROW_BPS_PER_DAY:
+        tier = "HTB"
+    elif easy_to_borrow is False:
+        tier = "non-GC"
+    else:
+        tier = "GC"
+    return f"borrow ~{annual_pct:.1f}%/yr ({tier})"
 
 
 def compute_borrow_cost(
@@ -75,6 +124,11 @@ def compute_borrow_cost(
     if shares <= 0 or entry_price <= 0 or days_held <= 0:
         return 0.0
     if bps_per_day is None:
+        # Without easy_to_borrow context we can't tier; fall back to
+        # the default. Live callers in the trade pipeline pass
+        # bps_per_day explicitly (computed via get_borrow_rate_bps_per_day
+        # with the Alpaca flag) so this branch is for post-cover
+        # accrual where we don't have the live flag handy.
         bps_per_day = get_borrow_rate_bps_per_day(symbol or "")
     notional = shares * entry_price
     cost = notional * (bps_per_day / 10000.0) * days_held

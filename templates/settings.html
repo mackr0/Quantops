@@ -832,6 +832,29 @@
                           placeholder="MSFT, AAPL, KO">{{ prof.wheel_symbols|join(', ') if prof.wheel_symbols is iterable and prof.wheel_symbols is not string else (prof.get('wheel_symbols', '') or '') }}</textarea>
                 <small class="muted">Empty = wheel disabled for this profile. Recommend stable, dividend-paying names where assignment is OK.</small>
             </label>
+
+            <!-- Options roll-window knobs -->
+            <h4>Options Roll-Window Thresholds</h4>
+            <p style="color:#888;font-size:0.85rem;margin-top:-0.5rem;">When a credit position (covered call, cash-secured put, iron condor short legs, etc.) is within the roll window, the auto-close manager evaluates it. Auto-close happens at the auto-close threshold; profits above the recommend threshold get surfaced to the AI as a roll candidate.</p>
+            <div class="grid">
+                <label>
+                    <span class="tip" data-tip="How many days before expiry the auto-close manager evaluates each open credit position. Default 7d.">Roll window (days)</span>
+                    <input type="number" name="options_roll_window_days" min="1" max="30" step="1"
+                           value="{{ prof.get('options_roll_window_days', 7) }}">
+                </label>
+                <label>
+                    <span class="tip" data-tip="Auto-close credit positions when profit reaches this fraction of max profit. 0.80 = close at 80% of max. Tighter (0.60) reduces late-cycle assignment risk; looser (0.90) squeezes more premium out.">Auto-close at % of max profit</span>
+                    <input type="number" name="options_auto_close_profit_pct" min="0.10" max="0.99" step="0.05"
+                           value="{{ '%.2f'|format(prof.get('options_auto_close_profit_pct', 0.80)) }}">
+                    <small class="muted">e.g. 0.80 = close at 80% max profit</small>
+                </label>
+                <label>
+                    <span class="tip" data-tip="Recommend (don't auto-close) credit positions to the AI for a roll proposal once profit reaches this fraction. 0.50 = mention rolls when 50%+ in the money.">Roll-recommend at % of max profit</span>
+                    <input type="number" name="options_roll_recommend_profit_pct" min="0.10" max="0.99" step="0.05"
+                           value="{{ '%.2f'|format(prof.get('options_roll_recommend_profit_pct', 0.50)) }}">
+                    <small class="muted">e.g. 0.50 = surface roll candidates above 50% max profit</small>
+                </label>
+            </div>
             <a href="javascript:void(0)" class="view-universe-btn"
                data-profile-id="{{ prof.id }}"
                data-profile-name="{{ prof.name }}"

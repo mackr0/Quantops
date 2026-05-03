@@ -903,6 +903,19 @@ def save_profile(profile_id):
     else:
         config_updates["wheel_symbols"] = "[]"
 
+    # OPEN_ITEMS #10 — options roll-window knobs
+    config_updates["options_roll_window_days"] = max(1, min(
+        int(form.get("options_roll_window_days", 7) or 7), 30,
+    ))
+    config_updates["options_auto_close_profit_pct"] = max(0.10, min(
+        float(form.get("options_auto_close_profit_pct", 0.80) or 0.80),
+        0.99,
+    ))
+    config_updates["options_roll_recommend_profit_pct"] = max(0.10, min(
+        float(form.get("options_roll_recommend_profit_pct", 0.50) or 0.50),
+        0.99,
+    ))
+
     # AI provider/model configuration
     ai_provider = form.get("ai_provider", "").strip()
     ai_model = form.get("ai_model", "").strip()
@@ -3679,6 +3692,112 @@ def api_mc_backtest(profile_id):
         n_sims=n_sims,
     )
     return jsonify({"available": True, **result})
+
+
+@views_bp.route("/api/options-backtest", methods=["POST"])
+@login_required
+def api_options_backtest():
+    """OPEN_ITEMS #5 — synthetic options backtester run from dashboard.
+
+    Body: {symbol, strategy, lookback_days?, otm_pct?, target_dte?,
+           cycle_days?, profit_target_pct_of_max?, stop_loss_pct_of_max?}
+
+    strategy: 'long_put' | 'long_call' | 'bull_call_spread' |
+              'bear_put_spread' | 'iron_condor'
+    """
+    payload = request.get_json(silent=True) or {}
+    symbol = (payload.get("symbol") or "").upper().strip()
+    strategy = (payload.get("strategy") or "").lower().strip()
+    if not symbol or not strategy:
+        return jsonify({"error": "symbol and strategy required"}), 400
+
+    lookback_days = max(30, min(int(payload.get("lookback_days") or 365), 1825))
+    otm_pct = max(0.005, min(float(payload.get("otm_pct") or 0.05), 0.30))
+    target_dte = max(7, min(int(payload.get("target_dte") or 30), 120))
+    cycle_days = max(1, min(int(payload.get("cycle_days") or 7), 30))
+    profit_target = payload.get("profit_target_pct_of_max")
+    stop_loss = payload.get("stop_loss_pct_of_max")
+
+    from datetime import date as _d, timedelta as _td
+    end = _d.today() - _td(days=2)    # avoid end-of-day-data races
+    start = end - _td(days=lookback_days)
+
+    try:
+        from options_backtester import (
+            backtest_strategy_over_period, historical_spot,
+        )
+        from options_multileg import (
+            long_put as _lp, long_call as _lc,
+            bull_call_spread as _bcs, bear_put_spread as _bps,
+            iron_condor as _ic,
+        )
+    except Exception as exc:
+        return jsonify({"error": f"options modules not available: {exc}"}), 500
+
+    # Strategy factory — given as_of date, return an OptionStrategy
+    def _factory(as_of):
+        spot = historical_spot(symbol, as_of)
+        if spot is None:
+            return None
+        expiry = as_of + _td(days=target_dte)
+        if strategy == "long_put":
+            strike = round(spot * (1 - otm_pct), 0)
+            return _lp(symbol, expiry, strike, qty=1, spot_price=spot)
+        if strategy == "long_call":
+            strike = round(spot * (1 + otm_pct), 0)
+            return _lc(symbol, expiry, strike, qty=1, spot_price=spot)
+        if strategy == "bull_call_spread":
+            long_k = round(spot, 0)
+            short_k = round(spot * (1 + otm_pct), 0)
+            return _bcs(symbol, expiry, long_k, short_k, qty=1, spot_price=spot)
+        if strategy == "bear_put_spread":
+            long_k = round(spot, 0)
+            short_k = round(spot * (1 - otm_pct), 0)
+            return _bps(symbol, expiry, long_k, short_k, qty=1, spot_price=spot)
+        if strategy == "iron_condor":
+            put_long = round(spot * (1 - otm_pct - 0.025), 0)
+            put_short = round(spot * (1 - otm_pct), 0)
+            call_short = round(spot * (1 + otm_pct), 0)
+            call_long = round(spot * (1 + otm_pct + 0.025), 0)
+            return _ic(symbol, expiry, put_long, put_short,
+                        call_short, call_long, qty=1, spot_price=spot)
+        return None
+
+    try:
+        summary = backtest_strategy_over_period(
+            strategy_factory=_factory,
+            symbol=symbol,
+            period_start=start,
+            period_end=end,
+            entry_rule=lambda s, d: True,
+            cycle_days=cycle_days,
+            profit_target_pct_of_max=profit_target,
+            stop_loss_pct_of_max=stop_loss,
+            time_stop_days_before_expiry=2,
+        )
+    except Exception as exc:
+        logger.warning("Options backtest failed: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+    out = summary.as_dict()
+    # Add an equity curve for charting (cumulative P&L over time)
+    cum = 0.0
+    curve = []
+    for t in out.get("trades", []):
+        cum += float(t.get("total_pnl_dollars") or 0)
+        curve.append({
+            "date": t.get("entry_date"),
+            "cum_pnl": round(cum, 2),
+            "trade_pnl": round(float(t.get("total_pnl_dollars") or 0), 2),
+        })
+    out["equity_curve"] = curve
+    out["params"] = {
+        "symbol": symbol, "strategy": strategy,
+        "lookback_days": lookback_days, "otm_pct": otm_pct,
+        "target_dte": target_dte, "cycle_days": cycle_days,
+    }
+    out["available"] = out["n_trades"] > 0
+    return jsonify(out)
 
 
 @views_bp.route("/api/mc-backtest-by-strategy/<int:profile_id>", methods=["POST"])

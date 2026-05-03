@@ -351,6 +351,14 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_app_store_snapshot(ctx),
             db_path=ctx.db_path,
         )
+        # Item 6 of OPEN_ITEMS — PDUFA event scrape. Idempotent across
+        # the day; populates pdufa_events table so
+        # get_biotech_milestones can return upcoming PDUFA dates.
+        run_task(
+            f"[{seg_label}] PDUFA Scrape",
+            lambda: _task_pdufa_scrape(ctx),
+            db_path=ctx.db_path,
+        )
         # Alpha decay monitoring (Phase 3) — snapshot + detect + deprecate
         run_task(
             f"[{seg_label}] Alpha Decay Monitor",
@@ -1526,6 +1534,11 @@ def _task_options_roll_manager(ctx):
 
         result = auto_close_high_profit_credits(
             api, db_path=ctx.db_path, quote_lookup=_quote_lookup,
+            window_days=getattr(ctx, "options_roll_window_days", 7),
+            auto_close_profit_pct=getattr(
+                ctx, "options_auto_close_profit_pct", 0.80),
+            roll_recommend_profit_pct=getattr(
+                ctx, "options_roll_recommend_profit_pct", 0.50),
         )
         if result["evaluated"]:
             logging.info(
@@ -2041,6 +2054,47 @@ def _task_app_store_snapshot(ctx):
         logging.info(f"[{seg_label}] App Store snapshot wrote {n} rows")
     except Exception:
         logging.exception(f"[{seg_label}] App Store snapshot failed")
+
+
+def _task_pdufa_scrape(ctx):
+    """OPEN_ITEMS #6 — daily PDUFA event scrape. Once-per-UTC-day
+    idempotent; populates the pdufa_events table read by
+    alternative_data.get_biotech_milestones."""
+    seg_label = ctx.display_name or ctx.segment
+    try:
+        from datetime import datetime as _dt
+        import sqlite3 as _sq
+        today = _dt.utcnow().date().isoformat()
+        marker = "quantopsai.db"
+        conn = _sq.connect(marker)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pdufa_scrape_runs (
+                run_date TEXT PRIMARY KEY,
+                ran_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        if conn.execute(
+            "SELECT 1 FROM pdufa_scrape_runs WHERE run_date = ?",
+            (today,),
+        ).fetchone():
+            conn.close()
+            return
+        conn.close()
+        from pdufa_scraper import run_full_sync
+        n_fetched, n_written = run_full_sync()
+        conn = _sq.connect(marker)
+        conn.execute(
+            "INSERT INTO pdufa_scrape_runs (run_date) VALUES (?)",
+            (today,),
+        )
+        conn.commit()
+        conn.close()
+        logging.info(
+            f"[{seg_label}] PDUFA scrape: {n_fetched} fetched, "
+            f"{n_written} written"
+        )
+    except Exception:
+        logging.exception(f"[{seg_label}] PDUFA scrape failed")
 
 
 def _task_universe_audit(ctx):

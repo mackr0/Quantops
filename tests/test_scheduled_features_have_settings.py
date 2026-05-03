@@ -82,6 +82,8 @@ INFRASTRUCTURE_TASKS = {
     "_task_weekly_digest",             # Sunday-only weekly summary
     "_task_app_store_snapshot",        # daily idempotent — once per UTC
                                          # day across all profiles
+    "_task_pdufa_scrape",              # OPEN_ITEMS #6 — daily idempotent
+                                         # PDUFA event scrape
 }
 
 

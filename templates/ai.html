@@ -342,6 +342,30 @@
         <button id="mc-run-btn" class="outline" style="margin-top:0.5rem;font-size:0.9rem;">▶ Run Monte Carlo</button>
     </article>
 
+    <!-- OPEN_ITEMS #5 — Synthetic options backtester -->
+    <article>
+        <header><h3>Synthetic Options Backtester</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Replay a parameterized options strategy against historical Alpaca bars + Black-Scholes pricing (IV from trailing 30-day realized vol). Fires a new trade every <em>cycle</em> days; closes at expiry, profit-target, stop-loss, or time-stop. Captures direction + approximate magnitude; does NOT capture bid-ask spread, IV term structure, or catalyst vol expansion. Sufficient for STRATEGY VALIDATION (does this iron condor on SPY beat random in neutral regime?), NOT for precise P&amp;L forecasting.</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:0.5rem;margin-bottom:0.5rem;">
+            <label>Symbol<input type="text" id="ob-symbol" value="SPY" style="text-transform:uppercase;"></label>
+            <label>Strategy
+                <select id="ob-strategy">
+                    <option value="long_put">long_put</option>
+                    <option value="long_call">long_call</option>
+                    <option value="bull_call_spread">bull_call_spread</option>
+                    <option value="bear_put_spread">bear_put_spread</option>
+                    <option value="iron_condor" selected>iron_condor</option>
+                </select>
+            </label>
+            <label>Lookback days<input type="number" id="ob-lookback" value="365" min="30" max="1825"></label>
+            <label>OTM %<input type="number" id="ob-otm" value="0.05" step="0.005" min="0.005" max="0.30"></label>
+            <label>Target DTE<input type="number" id="ob-dte" value="30" min="7" max="120"></label>
+            <label>Cycle days<input type="number" id="ob-cycle" value="7" min="1" max="30"></label>
+        </div>
+        <button id="ob-run-btn" class="outline" style="margin-bottom:0.5rem;font-size:0.9rem;">▶ Run Options Backtest</button>
+        <div id="options-backtest-widget"><p class="muted">Pick params and click Run. Backtests typically take 5-30s depending on lookback × cycle frequency.</p></div>
+    </article>
+
     <!-- Item 5c — Per-strategy MC tiles -->
     <article>
         <header><h3>Per-Strategy Monte Carlo</h3></header>
@@ -1682,6 +1706,73 @@
                 })
                 .catch(function(e) {
                     mcBtn.disabled = false;
+                    w.innerHTML = '<p class="muted">Run failed: ' + esc(e.message || '') + '</p>';
+                });
+        });
+    }
+
+    // --- OPEN_ITEMS #5: synthetic options backtester ---
+    var obBtn = document.getElementById('ob-run-btn');
+    if (obBtn) {
+        obBtn.addEventListener('click', function() {
+            var w = document.getElementById('options-backtest-widget');
+            var body = {
+                symbol: document.getElementById('ob-symbol').value.trim().toUpperCase(),
+                strategy: document.getElementById('ob-strategy').value,
+                lookback_days: parseInt(document.getElementById('ob-lookback').value, 10),
+                otm_pct: parseFloat(document.getElementById('ob-otm').value),
+                target_dte: parseInt(document.getElementById('ob-dte').value, 10),
+                cycle_days: parseInt(document.getElementById('ob-cycle').value, 10),
+            };
+            w.innerHTML = '<p class="muted">Running backtest…</p>';
+            obBtn.disabled = true;
+            fetch('/api/options-backtest', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body),
+            })
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                    obBtn.disabled = false;
+                    if (d.error) {
+                        w.innerHTML = '<p class="muted">Error: ' + esc(d.error) + '</p>';
+                        return;
+                    }
+                    if (!d.available || !d.n_trades) {
+                        w.innerHTML = '<p class="muted">No trades simulated — symbol may have no historical bars or expiry/strike fell outside available data.</p>';
+                        return;
+                    }
+                    var pnlCls = d.total_pnl_dollars >= 0 ? 'pnl-pos' : 'pnl-neg';
+                    var h = '<div class="grid">';
+                    h += '<div class="stat-card"><small class="muted">Trades</small><strong>' + d.n_trades + '</strong></div>';
+                    h += '<div class="stat-card"><small class="muted">Win rate</small><strong>' + d.win_rate_pct.toFixed(1) + '%</strong></div>';
+                    h += '<div class="stat-card"><small class="muted">Total P&amp;L</small><strong class="' + pnlCls + '">' + (d.total_pnl_dollars >= 0 ? '+$' : '-$') + Math.abs(d.total_pnl_dollars).toLocaleString(undefined, {maximumFractionDigits: 0}) + '</strong></div>';
+                    h += '<div class="stat-card"><small class="muted">Avg P&amp;L / trade</small><strong>$' + d.avg_pnl_dollars.toFixed(0) + '</strong></div>';
+                    h += '<div class="stat-card"><small class="muted">Best / worst</small><strong>$' + d.best_trade_pnl.toFixed(0) + ' / $' + d.worst_trade_pnl.toFixed(0) + '</strong></div>';
+                    h += '<div class="stat-card"><small class="muted">Sharpe proxy</small><strong>' + d.sharpe_proxy.toFixed(2) + '</strong></div>';
+                    h += '</div>';
+                    h += '<p style="font-size:0.8rem;color:#888;margin-top:0.5rem;">' + esc(d.params.symbol) + ' / ' + esc(d.params.strategy) + ' over ' + d.params.lookback_days + 'd, ' + d.params.target_dte + 'd to expiry, every ' + d.params.cycle_days + 'd, ' + (d.params.otm_pct * 100).toFixed(1) + '% OTM</p>';
+                    if (d.equity_curve && d.equity_curve.length) {
+                        h += '<h5 style="margin-top:1rem;">Cumulative P&amp;L (per-trade)</h5>';
+                        h += '<div class="overflow-auto"><table style="font-size:0.8rem;"><thead><tr><th>Date</th><th style="text-align:right;">Trade P&amp;L</th><th style="text-align:right;">Cumulative</th></tr></thead><tbody>';
+                        d.equity_curve.slice(-30).reverse().forEach(function(p) {
+                            var tCls = p.trade_pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+                            var cCls = p.cum_pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+                            h += '<tr>';
+                            h += '<td class="muted">' + esc(p.date || '') + '</td>';
+                            h += '<td style="text-align:right;font-family:monospace;" class="' + tCls + '">' + (p.trade_pnl >= 0 ? '+' : '') + '$' + p.trade_pnl.toFixed(0) + '</td>';
+                            h += '<td style="text-align:right;font-family:monospace;" class="' + cCls + '">' + (p.cum_pnl >= 0 ? '+' : '') + '$' + p.cum_pnl.toFixed(0) + '</td>';
+                            h += '</tr>';
+                        });
+                        h += '</tbody></table></div>';
+                        if (d.equity_curve.length > 30) {
+                            h += '<p class="muted" style="font-size:0.8rem;">Showing last 30 of ' + d.equity_curve.length + ' trades.</p>';
+                        }
+                    }
+                    w.innerHTML = h;
+                })
+                .catch(function(e) {
+                    obBtn.disabled = false;
                     w.innerHTML = '<p class="muted">Run failed: ' + esc(e.message || '') + '</p>';
                 });
         });

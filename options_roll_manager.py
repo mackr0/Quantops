@@ -29,10 +29,12 @@ from typing import Any, Callable, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-# Roll-window thresholds. Tunable per-profile in a future commit.
+# Roll-window threshold defaults. OPEN_ITEMS #10 — these are now
+# per-profile tunable knobs (UserContext fields, settings UI). Module
+# constants stay as fallbacks when a function is called without ctx.
 ROLL_WINDOW_DAYS = 7
-AUTO_CLOSE_PROFIT_PCT = 0.80   # close credit positions at 80% of max profit
-ROLL_RECOMMEND_PROFIT_PCT = 0.50  # recommend roll above this
+AUTO_CLOSE_PROFIT_PCT = 0.80
+ROLL_RECOMMEND_PROFIT_PCT = 0.50
 
 
 def find_near_expiry_options(db_path: str,
@@ -95,7 +97,9 @@ def _profit_pct_of_max(option_row: Dict[str, Any],
 
 
 def evaluate_for_roll(option_row: Dict[str, Any],
-                          current_market_value_per_contract: Optional[float]
+                          current_market_value_per_contract: Optional[float],
+                          auto_close_profit_pct: float = AUTO_CLOSE_PROFIT_PCT,
+                          roll_recommend_profit_pct: float = ROLL_RECOMMEND_PROFIT_PCT,
                           ) -> Dict[str, Any]:
     """Decide what to do with one near-expiry option position.
 
@@ -136,18 +140,18 @@ def evaluate_for_roll(option_row: Dict[str, Any],
             "profit_pct": None,
         }
 
-    if profit_pct >= AUTO_CLOSE_PROFIT_PCT:
+    if profit_pct >= auto_close_profit_pct:
         return {
             "action": "AUTO_CLOSE",
             "reason": (
                 f"Credit position at {profit_pct*100:.0f}% of max profit "
-                f"(≥{AUTO_CLOSE_PROFIT_PCT*100:.0f}% threshold). Close "
+                f"(≥{auto_close_profit_pct*100:.0f}% threshold). Close "
                 f"early to avoid late-cycle assignment risk."
             ),
             "profit_pct": profit_pct,
         }
 
-    if profit_pct >= ROLL_RECOMMEND_PROFIT_PCT:
+    if profit_pct >= roll_recommend_profit_pct:
         return {
             "action": "ROLL_RECOMMEND",
             "reason": (
@@ -230,16 +234,23 @@ def auto_close_high_profit_credits(
     db_path: str,
     quote_lookup: Optional[Callable[[str], Optional[float]]] = None,
     today: Optional[_date] = None,
+    window_days: int = ROLL_WINDOW_DAYS,
+    auto_close_profit_pct: float = AUTO_CLOSE_PROFIT_PCT,
+    roll_recommend_profit_pct: float = ROLL_RECOMMEND_PROFIT_PCT,
 ) -> Dict[str, Any]:
-    """For each near-expiry credit position at ≥AUTO_CLOSE_PROFIT_PCT
+    """For each near-expiry credit position at ≥auto_close_profit_pct
     of max profit, submit a closing order and update the journal.
+
+    OPEN_ITEMS #10 — window + thresholds parameterizable per profile.
+    Defaults match the legacy module-constant values.
 
     Returns: {evaluated, auto_closed, errors, details}
     """
     summary = {
         "evaluated": 0, "auto_closed": 0, "errors": 0, "details": [],
     }
-    rows = find_near_expiry_options(db_path, today=today)
+    rows = find_near_expiry_options(db_path, today=today,
+                                       window_days=window_days)
     summary["evaluated"] = len(rows)
     if not rows:
         return summary
@@ -258,7 +269,11 @@ def auto_close_high_profit_credits(
             if cur_price is None:
                 continue
 
-            outcome = evaluate_for_roll(row, cur_price)
+            outcome = evaluate_for_roll(
+                row, cur_price,
+                auto_close_profit_pct=auto_close_profit_pct,
+                roll_recommend_profit_pct=roll_recommend_profit_pct,
+            )
             if outcome["action"] != "AUTO_CLOSE":
                 continue
 

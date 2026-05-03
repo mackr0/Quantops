@@ -386,6 +386,16 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         # Empty list = wheel inactive for this profile (default).
         ("trading_profiles", "wheel_symbols",
             "TEXT NOT NULL DEFAULT '[]'"),
+        # OPEN_ITEMS #10 — options roll-window thresholds, was module
+        # constants in options_roll_manager.py. Per-profile lets users
+        # who want tighter management (close at 60% max profit) or
+        # looser (90%) tune without code changes.
+        ("trading_profiles", "options_roll_window_days",
+            "INTEGER NOT NULL DEFAULT 7"),
+        ("trading_profiles", "options_auto_close_profit_pct",
+            "REAL NOT NULL DEFAULT 0.80"),
+        ("trading_profiles", "options_roll_recommend_profit_pct",
+            "REAL NOT NULL DEFAULT 0.50"),
     ]
     for table, col, col_def in _migrations:
         try:
@@ -863,6 +873,10 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "long_vol_hedge_premium_pct",
         # OPEN_ITEMS #4 — wheel automation symbol opt-in list.
         "wheel_symbols",
+        # OPEN_ITEMS #10 — options roll-window knobs.
+        "options_roll_window_days",
+        "options_auto_close_profit_pct",
+        "options_roll_recommend_profit_pct",
     }
     updates = {}
     rejected = []
@@ -1123,6 +1137,13 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
             else 0.01),
         # OPEN_ITEMS #4 — wheel symbols (JSON list)
         wheel_symbols=_parse_wheel_symbols(profile.get("wheel_symbols")),
+        # OPEN_ITEMS #10 — options roll-window knobs
+        options_roll_window_days=int(
+            profile.get("options_roll_window_days", 7) or 7),
+        options_auto_close_profit_pct=float(
+            profile.get("options_auto_close_profit_pct", 0.80) or 0.80),
+        options_roll_recommend_profit_pct=float(
+            profile.get("options_roll_recommend_profit_pct", 0.50) or 0.50),
     )
 
 

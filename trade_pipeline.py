@@ -2378,6 +2378,23 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
             signal["_borrow_cost"] = (
                 "low" if borrow.get("easy_to_borrow") else "high"
             )
+            # OPEN_ITEMS #7 — annotate with concrete bps/day rate so
+            # the AI sees actual cost-of-carry. Three-tier lookup:
+            # HTB-overridden symbols → 12-30%/yr, non-GC (easy=False)
+            # → ~8%/yr, GC (easy=True) → ~1.8%/yr.
+            try:
+                from short_borrow import (
+                    get_borrow_rate_bps_per_day,
+                    render_borrow_rate_for_prompt,
+                )
+                signal["_borrow_bps_per_day"] = get_borrow_rate_bps_per_day(
+                    symbol, easy_to_borrow=borrow.get("easy_to_borrow"),
+                )
+                signal["_borrow_rate_str"] = render_borrow_rate_for_prompt(
+                    symbol, easy_to_borrow=borrow.get("easy_to_borrow"),
+                )
+            except Exception:
+                pass
             # 1.3 Squeeze risk — high short interest + low float
             risk = _squeeze_risk(symbol)
             if risk == "HIGH":
@@ -2802,6 +2819,16 @@ def _build_market_context(regime_info, political_context, ctx):
     except Exception:
         pass
 
+    # OPEN_ITEMS #9 — next scheduled macro event (FOMC/CPI/NFP).
+    # Cheap one-line annotation; populated unconditionally because
+    # the calendar is hand-curated (no live fetch).
+    macro_event_block = None
+    try:
+        from macro_event_tracker import render_macro_event_for_prompt
+        macro_event_block = render_macro_event_for_prompt() or None
+    except Exception:
+        macro_event_block = None
+
     # Item 1c — long-vol portfolio hedge state. Surfaces:
     #   - active hedge (if any) + entry strike/expiry/contracts
     #   - which triggers fired (drawdown / crisis / VaR)
@@ -2909,4 +2936,5 @@ def _build_market_context(regime_info, political_context, ctx):
         "portfolio_risk_summary": portfolio_risk_summary,
         "portfolio_risk_scenarios": portfolio_risk_scenarios,
         "long_vol_hedge_block": long_vol_hedge_block,
+        "macro_event_block": macro_event_block,
     }

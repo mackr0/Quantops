@@ -284,7 +284,8 @@ class TestSchedulerWiring:
                      "_task_auto_strategy_lifecycle",
                      "_task_auto_strategy_generation",
                      "_task_daily_summary_email",
-                     "_task_app_store_snapshot"):
+                     "_task_app_store_snapshot",
+                     "_task_pdufa_scrape"):
             monkeypatch.setattr(multi_scheduler, stub, lambda ctx: None)
 
         # Make init_db a no-op since we're not actually persisting anything
