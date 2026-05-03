@@ -22,3 +22,6 @@ __pycache__/
 
 # Local caches written by modules at runtime
 .cache/
+
+# Per-task daily-idempotency marker files (post_mortem, universe_audit, ...)
+.*.marker
