@@ -17,6 +17,35 @@ Rules going forward:
 
 ---
 
+## 2026-05-02 — Item 5c: realistic slippage model (Severity: medium, capability)
+
+Backtests previously used a flat 0.2% on entry + 0.2% on exit. This inflated apparent edge — strategies that worked great on big-cap names but would die on micro-caps couldn't be told apart. Live trading had no per-candidate execution-cost signal, so the AI couldn't pass over names where friction would eat the edge.
+
+**`slippage_model.py`** — four-component model:
+
+1. **Half-spread** — deterministic, from current snapshot bid-ask.
+2. **Market impact** — `K × sqrt(participation_rate)` where `participation = order_qty / 20d_ADV`. Almgren-Chriss square-root, with `K` calibrated empirically.
+3. **Volatility scalar** — `vol_factor × daily_vol_bps`. Higher-vol names experience more decision-to-fill drift even on tiny orders.
+4. **Bootstrap residual** — empirical distribution of `actual − model_predicted` slippage from past trades, conditioned on size bucket. The piece an analytical formula can't capture.
+
+**Lazy calibration:** `calibrate_from_history(db_path, market_type)` reads `trades` rows with both `decision_price` and `fill_price` set, fits `K` via least-squares closed form, caches per market_type on disk for 7 days. Refresh-on-call when stale; no scheduler task = no new toggle (auto-passes the scheduler-gate guardrail).
+
+**Wired in two places:**
+- `backtester.py` entry + exit fills now call `estimate_slippage` and use `fill_price` instead of the flat 0.2% assumption. Backtests get realistic friction.
+- `_build_candidates_data` attaches `slippage_estimate` + `slippage_str` to each candidate. AI prompt shows `Execution: exec cost ~8.4 bps ($42 on this order)` per candidate so the model factors friction into sizing.
+
+**Per-profile config:** none. Slippage is analytical math empirically calibrated from live fills — users shouldn't tune it. `market_type` added to `UserContext` so the slippage model can scope per-segment calibration.
+
+**Honest limits documented in module:**
+- K is calibrated from paper fills today; real-money fills will deviate. The calibrator should be re-run after going live for 30+ days.
+- ADV-at-trade-time isn't stored yet, so a coarse `$50M default ADV` is used for the calibration regression. Better fits arrive when this gets backfilled.
+- Sqrt impact assumes typical liquidity; squeeze events / regime breaks aren't captured.
+- Bootstrap requires ≥ 20 trades per size bucket per market_type; below that, residual = 0 (no noise).
+
+**Tests** (`tests/test_slippage_model.py`, 20 cases): half-spread math, sqrt-impact monotonicity (doubling participation → ~1.41× impact), vol scalar, side semantics (buy fills above decision, sell below), planted-K recovery from synthetic trades, default fallback on insufficient history, deterministic bootstrap with seed, prompt rendering. All green.
+
+---
+
 ## 2026-05-02 — Item 1c: long-vol portfolio tail-risk hedge (Severity: high, capability)
 
 Active tail-risk insurance. Existing layers (`crisis_state`, `intraday_risk_monitor`, per-trade stops) all reduce exposure when stress fires — pull the book in. This adds explicit DOWNSIDE COVER: when triggers fire, the system buys SPY puts so further SPY weakness pays us. Pays for protection that mostly expires worthless in calm markets — meaningful drag, but caps tail outcomes.

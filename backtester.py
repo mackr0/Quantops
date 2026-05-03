@@ -1077,8 +1077,24 @@ def backtest_with_params(market_type: str, params: dict, days: int = 90,
                             exit_price = take_profit
                             exit_reason = "take_profit"
 
-                    # Apply slippage on exit (realistic fill)
-                    exit_price = exit_price * (1 - 0.002)  # 0.2% slippage on sell
+                    # Apply slippage on exit (Item 5c — size-aware estimate
+                    # replaces the legacy flat 0.2% assumption).
+                    try:
+                        from slippage_model import estimate_slippage
+                        # Size: position is initial_capital * 0.10 / entry_price.
+                        # ADV unknown in this offline path → use a coarse
+                        # 1M-share default so impact is small for typical
+                        # backtest sizing. The half-spread + vol terms are
+                        # the dominant components in that regime.
+                        _qty = (initial_capital * 0.10 / entry_price)
+                        _est = estimate_slippage(
+                            symbol=symbol, qty=int(max(_qty, 1)),
+                            side="sell", decision_price=exit_price,
+                            adv_shares=1_000_000,
+                        )
+                        exit_price = _est.get("fill_price", exit_price * (1 - 0.002))
+                    except Exception:
+                        exit_price = exit_price * (1 - 0.002)  # fallback
 
                     pnl = exit_price - entry_price
                     pnl_pct = (pnl / entry_price) * 100
@@ -1108,9 +1124,21 @@ def backtest_with_params(market_type: str, params: dict, days: int = 90,
                     action = signal.get("signal", "HOLD")
 
                     if action in ("BUY", "STRONG_BUY"):
-                        # Apply slippage on entry (realistic fill price)
-                        slippage_pct = 0.002  # 0.2% slippage
-                        entry_price = current_price * (1 + slippage_pct)
+                        # Apply slippage on entry (Item 5c — size-aware
+                        # estimate replaces the flat 0.2% assumption).
+                        try:
+                            from slippage_model import estimate_slippage
+                            _qty = (initial_capital * 0.10 / current_price)
+                            _est = estimate_slippage(
+                                symbol=symbol, qty=int(max(_qty, 1)),
+                                side="buy", decision_price=current_price,
+                                adv_shares=1_000_000,
+                            )
+                            entry_price = _est.get(
+                                "fill_price", current_price * 1.002,
+                            )
+                        except Exception:
+                            entry_price = current_price * 1.002  # fallback
                         entry_date = current_date
                         position_open = True
                         trailing_high = current_high

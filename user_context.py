@@ -228,6 +228,11 @@ class UserContext:
     long_vol_hedge_var_pct: float = 0.03       # 3% portfolio VaR trigger
     long_vol_hedge_premium_pct: float = 0.01   # 1% of book per hedge
 
+    # Item 5c — used by the slippage model to look up the right
+    # calibration cache (K coefficient is fitted per market_type
+    # from historical fills).
+    market_type: Optional[str] = None
+
     # Limit orders
     use_limit_orders: bool = False
 

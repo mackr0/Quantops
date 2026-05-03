@@ -1294,6 +1294,12 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         earnings = c.get("earnings_warning")
         if earnings:
             line += f"\n     {earnings}"
+        # Item 5c — expected execution cost (size-aware slippage).
+        # Lets the AI factor in friction when deciding whether the
+        # edge survives the bid-ask + market-impact toll.
+        slip = c.get("slippage_str")
+        if slip:
+            line += f"\n     Execution: {slip}"
         # Phase 4: SEC filing alert (material language changes in 10-K/10-Q/8-K)
         sec = c.get("sec_alert")
         if sec:

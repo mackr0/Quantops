@@ -2534,6 +2534,50 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
         except Exception:
             pass
 
+        # Item 5c — expected slippage estimate. Sized to a typical
+        # max_position_pct order so the AI sees what a real entry
+        # would actually cost in execution friction. Pass through to
+        # the prompt as a compact bps + dollar string. The model
+        # itself is symbol-agnostic; only ADV + spread / vol matter.
+        try:
+            from slippage_model import (
+                estimate_slippage, render_slippage_for_prompt,
+            )
+            _price = float(entry.get("price") or 0)
+            if _price > 0 and ctx is not None:
+                # Compute the order qty the way the trade pipeline would:
+                # max_position_pct of equity → shares.
+                _equity = 100_000  # default fallback if no broker call
+                try:
+                    from client import get_account_info as _gai
+                    _acct = _gai(ctx=ctx) or {}
+                    _equity = float(_acct.get("equity") or _equity)
+                except Exception:
+                    pass
+                _max_pct = float(getattr(ctx, "max_position_pct", 0.10))
+                _qty = max(1, int((_equity * _max_pct) / _price))
+                # ADV proxy from indicator volume_ratio × current bar
+                # volume in the candidate. Many candidates carry
+                # `volume` from screening; fall back to a coarse default.
+                _vol = signal.get("volume") or 0
+                _adv = max(1, int(_vol * 20)) if _vol else 1_000_000
+                _atr_pct = (
+                    float(entry.get("atr") or 0) / _price * 10000
+                    if _price > 0 else 200.0
+                )
+                _est = estimate_slippage(
+                    symbol=symbol, qty=_qty, side="buy",
+                    decision_price=_price,
+                    adv_shares=_adv,
+                    daily_vol_bps=_atr_pct or 200.0,
+                    db_path=ctx.db_path,
+                    market_type=getattr(ctx, "market_type", None),
+                )
+                entry["slippage_estimate"] = _est
+                entry["slippage_str"] = render_slippage_for_prompt(_est)
+        except Exception as _exc:
+            logging.debug(f"slippage estimate failed for {symbol}: {_exc}")
+
         # Phase 4: SEC filing alerts for this symbol (if any active alerts exist)
         if symbol in sec_alerts_by_symbol:
             entry["sec_alert"] = sec_alerts_by_symbol[symbol]

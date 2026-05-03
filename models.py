@@ -1080,6 +1080,9 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         # Item 2a — Barra portfolio risk daily snapshot (default ON)
         enable_portfolio_risk_snapshot=bool(
             profile.get("enable_portfolio_risk_snapshot", 1)),
+        # Item 5c — slippage model uses market_type to scope the K
+        # calibration cache.
+        market_type=profile.get("market_type"),
         # Item 1c — long-vol portfolio tail-risk hedge (default OFF)
         enable_long_vol_hedge=bool(
             profile.get("enable_long_vol_hedge", 0)),
