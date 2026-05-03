@@ -320,6 +320,21 @@
         {% endif %}
     </article>
 
+    <!-- Item 5c — Slippage model panel -->
+    <article>
+        <header><h3>Slippage Model (Item 5c)</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Realistic per-order execution-cost estimate. Four components: half-spread (deterministic from snapshot bid-ask), market impact (K × √participation, Almgren-Chriss square-root), volatility scalar (5% of daily vol bleeds into the decision-to-fill window), bootstrap residual (empirical noise from past fills, conditioned on order-size bucket). The K coefficient is calibrated weekly per market-type from realized trades; lazy refresh on call. The slippage estimate is shown to the AI per candidate as "Execution: ~X bps ($Y on this order)" so the model can pass over names where friction would eat the edge.</p>
+        <div id="slippage-model-widget"><p class="muted">Loading...</p></div>
+    </article>
+
+    <!-- Item 5c — Monte Carlo backtest -->
+    <article>
+        <header><h3>Monte Carlo Backtest (Item 5c)</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Replay this profile's recent closed trades N times with slippage drawn from the bootstrap distribution. Distinguishes "strategy edge &gt; execution variance" from "deterministic P&amp;L was a lucky slippage realization". Output is the P&amp;L distribution: median, 5/95th percentile, σ, and probability of loss across all simulations. Click Run to execute (1000 sims default; takes a few seconds for 100+ trades).</p>
+        <div id="mc-backtest-widget"><p class="muted">Pick a profile and click Run.</p></div>
+        <button id="mc-run-btn" class="outline" style="margin-top:0.5rem;font-size:0.9rem;">▶ Run Monte Carlo</button>
+    </article>
+
 <script>
 (function() {
     var profileFilter = '{{ selected_profile or "" }}';
@@ -878,6 +893,13 @@
         <div id="macro-data-widget"><p class="muted">Loading...</p></div>
     </article>
 
+    <!-- Item 3a — Attention signals on held positions -->
+    <article>
+        <header><h3>Attention Signals (held positions)</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">For each currently held position: Google Trends search-interest z-score (vs trailing year), Wikipedia 7-day vs 90-day page-view z-score (with SPIKE flag at ≥2σ), and App Store grossing/free chart positions for tickers with consumer apps. Used as features by the meta-model and surfaced per-candidate in the AI prompt.</p>
+        <div id="attention-signals-widget"><p class="muted">Loading...</p></div>
+    </article>
+
     <!-- Phase 4: SEC Filing Alerts — loaded via API -->
     <article>
         <header><h3>SEC Filing Alerts</h3></header>
@@ -1434,6 +1456,169 @@
             });
     }
     loadMacroData();
+
+    // --- Item 3a: Attention signals (held positions) ---
+    function loadAttentionSignals() {
+        var w = document.getElementById('attention-signals-widget');
+        if (!w) return;
+        var pid = profileFilter || '1';
+        fetch('/api/attention-signals/' + pid)
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d.available || !d.rows || !d.rows.length) {
+                    w.innerHTML = '<p class="muted">No held positions on the selected profile, or attention signals not yet fetched.</p>';
+                    return;
+                }
+                var h = '<div class="overflow-auto"><table class="striped" style="font-size:0.85rem;"><thead><tr>';
+                h += '<th>Symbol</th><th>Google Trends z</th><th>Direction</th><th>Wiki views z</th><th>Spike</th><th>App Store (free / grossing)</th>';
+                h += '</tr></thead><tbody>';
+                d.rows.forEach(function(r) {
+                    h += '<tr><td><strong>' + esc(r.symbol) + '</strong></td>';
+                    var gt = r.google_trends || {};
+                    var wp = r.wikipedia || {};
+                    var ap = r.app_store || {};
+                    h += '<td>';
+                    if (gt.has_data && gt.z != null) {
+                        var zCls = gt.z >= 1 ? 'pnl-pos' : (gt.z <= -1 ? 'pnl-neg' : 'muted');
+                        h += '<span class="' + zCls + '">' + (gt.z >= 0 ? '+' : '') + gt.z.toFixed(2) + 'σ</span>';
+                        if (gt.current_index != null) h += ' <small class="muted">(idx ' + gt.current_index + ')</small>';
+                    } else { h += '<span class="muted">—</span>'; }
+                    h += '</td><td class="muted" style="font-size:0.8rem;">' + esc(gt.direction || '—') + '</td>';
+                    h += '<td>';
+                    if (wp.has_data && wp.z != null) {
+                        var wpCls = wp.z >= 1 ? 'pnl-pos' : (wp.z <= -1 ? 'pnl-neg' : 'muted');
+                        h += '<span class="' + wpCls + '">' + (wp.z >= 0 ? '+' : '') + wp.z.toFixed(2) + 'σ</span>';
+                        if (wp.current_7d_avg != null) h += ' <small class="muted">(' + Number(wp.current_7d_avg).toLocaleString() + '/d)</small>';
+                    } else { h += '<span class="muted">—</span>'; }
+                    h += '</td><td>';
+                    if (wp.spike) h += '<strong style="color:#b00;">SPIKE</strong>';
+                    else h += '<span class="muted">—</span>';
+                    h += '</td><td>';
+                    if (ap.has_data) {
+                        var bits = [];
+                        if (ap.best_free_rank) bits.push('#' + ap.best_free_rank + ' free');
+                        if (ap.best_grossing_rank) bits.push('#' + ap.best_grossing_rank + ' grossing');
+                        h += esc(ap.primary_app || '') + ' — ' + bits.join(', ');
+                    } else { h += '<span class="muted">no app</span>'; }
+                    h += '</td></tr>';
+                });
+                h += '</tbody></table></div>';
+                w.innerHTML = h;
+            })
+            .catch(function(e) {
+                w.innerHTML = '<p class="muted">Failed to load attention signals: ' + esc(e.message || '') + '</p>';
+            });
+    }
+    loadAttentionSignals();
+
+    // --- Item 5c: Slippage model panel ---
+    function loadSlippageModel() {
+        var w = document.getElementById('slippage-model-widget');
+        if (!w) return;
+        var pid = profileFilter || '1';
+        fetch('/api/slippage-model/' + pid)
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (d.error || !d.available) {
+                    w.innerHTML = '<p class="muted">' + esc(d.error || 'No data yet for this profile.') + '</p>';
+                    return;
+                }
+                var h = '<div class="grid">';
+                h += '<div class="stat-card"><small class="muted">Calibrated K (impact bps per √participation)</small>';
+                h += '<strong>' + (d.K_bps != null ? d.K_bps.toFixed(2) : '—') + '</strong></div>';
+                h += '<div class="stat-card"><small class="muted">Calibration Samples</small>';
+                h += '<strong>' + (d.n_samples || 0) + '</strong></div>';
+                h += '<div class="stat-card"><small class="muted">Mean Residual</small>';
+                h += '<strong>' + (d.mean_residual_bps != null ? d.mean_residual_bps.toFixed(2) + ' bps' : '—') + '</strong></div>';
+                h += '<div class="stat-card"><small class="muted">Source</small>';
+                h += '<strong style="font-size:0.9rem;">' + esc(d.source || 'unknown') + '</strong></div>';
+                h += '</div>';
+                if (d.sample_estimate) {
+                    var c = d.sample_estimate.components || {};
+                    h += '<h5 style="margin-top:1rem;">Sample estimate (1000 shares × $50 buy, 0.1% of ADV)</h5>';
+                    h += '<table style="font-size:0.85rem;"><thead><tr><th>Component</th><th style="text-align:right;">bps</th></tr></thead><tbody>';
+                    h += '<tr><td>Half-spread</td><td style="text-align:right;font-family:monospace;">' + (c.half_spread != null ? c.half_spread.toFixed(2) : '—') + '</td></tr>';
+                    h += '<tr><td>Market impact (K × √p)</td><td style="text-align:right;font-family:monospace;">' + (c.market_impact != null ? c.market_impact.toFixed(2) : '—') + '</td></tr>';
+                    h += '<tr><td>Volatility scalar</td><td style="text-align:right;font-family:monospace;">' + (c.volatility != null ? c.volatility.toFixed(2) : '—') + '</td></tr>';
+                    h += '<tr><td>Bootstrap residual</td><td style="text-align:right;font-family:monospace;">' + (c.bootstrap != null ? c.bootstrap.toFixed(2) : '—') + '</td></tr>';
+                    h += '<tr><td><strong>Total</strong></td><td style="text-align:right;font-family:monospace;"><strong>' + (d.sample_estimate.total_bps != null ? d.sample_estimate.total_bps.toFixed(2) : '—') + '</strong></td></tr>';
+                    h += '</tbody></table>';
+                }
+                if (d.buckets && Object.keys(d.buckets).length > 0) {
+                    h += '<h5 style="margin-top:1rem;">Bootstrap buckets (residual sample counts by participation rate)</h5>';
+                    h += '<table style="font-size:0.85rem;"><thead><tr><th>Participation Range</th><th style="text-align:right;">Samples</th></tr></thead><tbody>';
+                    Object.keys(d.buckets).forEach(function(k) {
+                        h += '<tr><td>' + esc(k) + '</td><td style="text-align:right;font-family:monospace;">' + d.buckets[k] + '</td></tr>';
+                    });
+                    h += '</tbody></table>';
+                } else {
+                    h += '<p class="muted" style="margin-top:0.5rem;font-size:0.85rem;">No bootstrap buckets fitted yet — accumulate ≥20 fills per size bucket per market-type for empirical residuals.</p>';
+                }
+                w.innerHTML = h;
+            })
+            .catch(function(e) {
+                w.innerHTML = '<p class="muted">Failed to load slippage model: ' + esc(e.message || '') + '</p>';
+            });
+    }
+    loadSlippageModel();
+
+    // --- Item 5c: Monte Carlo backtest panel ---
+    var mcBtn = document.getElementById('mc-run-btn');
+    if (mcBtn) {
+        mcBtn.addEventListener('click', function() {
+            var w = document.getElementById('mc-backtest-widget');
+            var pid = profileFilter || '1';
+            w.innerHTML = '<p class="muted">Running 1000 simulations…</p>';
+            mcBtn.disabled = true;
+            fetch('/api/mc-backtest/' + pid, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({n_sims: 1000, lookback_days: 90}),
+            })
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                    mcBtn.disabled = false;
+                    if (d.error) {
+                        w.innerHTML = '<p class="muted">Error: ' + esc(d.error) + '</p>';
+                        return;
+                    }
+                    if (!d.available) {
+                        w.innerHTML = '<p class="muted">' + esc(d.message || 'Not enough trades.') + '</p>';
+                        return;
+                    }
+                    var h = '<div class="grid">';
+                    h += '<div class="stat-card"><small class="muted">Simulations</small><strong>' + d.n_sims + '</strong></div>';
+                    h += '<div class="stat-card"><small class="muted">Trades replayed</small><strong>' + d.n_trades + '</strong></div>';
+                    h += '<div class="stat-card"><small class="muted">P(loss)</small><strong>' + (d.prob_loss * 100).toFixed(0) + '%</strong></div>';
+                    h += '<div class="stat-card"><small class="muted">σ (return)</small><strong>' + (d.std_return * 100).toFixed(2) + '%</strong></div>';
+                    h += '</div>';
+                    h += '<h5 style="margin-top:1rem;">Return distribution (compounded over the trade list)</h5>';
+                    h += '<table style="font-size:0.85rem;"><thead><tr><th>Percentile</th><th style="text-align:right;">Return</th><th style="text-align:right;">$ on $' + Number(d.initial_capital).toLocaleString() + '</th></tr></thead><tbody>';
+                    var fmtRow = function(label, ret, dol) {
+                        var cls = ret >= 0 ? 'pnl-pos' : 'pnl-neg';
+                        h += '<tr><td>' + label + '</td>';
+                        h += '<td style="text-align:right;font-family:monospace;" class="' + cls + '">' + (ret >= 0 ? '+' : '') + (ret * 100).toFixed(2) + '%</td>';
+                        if (dol != null) h += '<td style="text-align:right;font-family:monospace;" class="' + cls + '">' + (dol >= 0 ? '+$' : '-$') + Math.abs(dol).toLocaleString(undefined, {maximumFractionDigits: 0}) + '</td>';
+                        else h += '<td>—</td>';
+                        h += '</tr>';
+                    };
+                    fmtRow('Worst case',     d.worst_return, null);
+                    fmtRow('5th percentile', d.p5_return, d.p5_dollars);
+                    fmtRow('25th percentile', d.p25_return, null);
+                    fmtRow('<strong>Median (50th)</strong>', d.p50_return, d.p50_dollars);
+                    fmtRow('75th percentile', d.p75_return, null);
+                    fmtRow('95th percentile', d.p95_return, d.p95_dollars);
+                    fmtRow('Best case',      d.best_return, null);
+                    h += '</tbody></table>';
+                    h += '<p class="muted" style="font-size:0.8rem;margin-top:0.5rem;">Each simulation: each trade\'s entry + exit perturbed by an independent slippage draw from the bootstrap residual distribution. Wide [5%, 95%] band = strategy P&amp;L is execution-variance-sensitive. Narrow band = robust edge.</p>';
+                    w.innerHTML = h;
+                })
+                .catch(function(e) {
+                    mcBtn.disabled = false;
+                    w.innerHTML = '<p class="muted">Run failed: ' + esc(e.message || '') + '</p>';
+                });
+        });
+    }
 })();
 </script>
 </div>

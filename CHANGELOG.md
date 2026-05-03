@@ -17,6 +17,29 @@ Rules going forward:
 
 ---
 
+## 2026-05-03 — UI panels for slippage / MC backtest / attention signals + meta-feature UI guardrail (Severity: medium, UX)
+
+The user called out that I keep shipping signals without a way to see them. Three new panels + a guardrail test that fails any future ship that adds a meta-model feature without a corresponding UI surface.
+
+**New API endpoints:**
+- `GET /api/slippage-model/<profile_id>` — current K, n_samples, mean residual, bucket sample counts, sample estimate.
+- `POST /api/mc-backtest/<profile_id>` — runs Monte Carlo backtest on the profile's last 90 days of closed trades. Body: `{n_sims: 1000}`. Returns full P&L distribution.
+- `GET /api/attention-signals/<profile_id>` — Google Trends + Wikipedia + App Store snapshot for held positions. Capped at 25 symbols / call.
+
+**New panels on AI page:**
+- **Brain tab → Slippage Model:** shows K calibration, sample size, mean residual, bucket histogram, sample-estimate breakdown (half-spread + impact + vol + bootstrap = total bps).
+- **Brain tab → Monte Carlo Backtest:** Run button kicks off 1000 simulations; result panel shows σ, P(loss), distribution table (worst / 5th / 25th / median / 75th / 95th / best). Plain-English explainer: wide [5%, 95%] band = strategy P&L is execution-variance-sensitive; narrow = robust edge.
+- **Awareness tab → Attention Signals:** per-position table of Google Trends z-score + direction, Wikipedia 7d/90d z-score + SPIKE flag, App Store rank + primary-app name. Color-coded: ≥+1σ green, ≤−1σ red.
+
+**Guardrail (`tests/test_meta_features_have_ui.py`):**
+For every key in `meta_model.NUMERIC_FEATURES`, asserts the key is referenced by at least one Jinja template, view, or AI-prompt assembler — OR is on the explicit `INTERNAL_FEATURES` allowlist with a written rationale (currently 5 entries: `_market_signal_count`, `_yield_spread_10y2y`, `_cboe_skew`, `_unemployment_rate`, `_cpi_yoy` — all surfaced via macro_context blocks under different names).
+
+A second test fails on stale `INTERNAL_FEATURES` entries (allowlist drift). Verified the guardrail catches a regression by temporarily adding `fake_feature_no_ui_surface` to `NUMERIC_FEATURES` — test failed with the right error, then reverted.
+
+Suite: 1894 passed, 0 skipped.
+
+---
+
 ## 2026-05-03 — Item 3a (cont.): App Store ranking + 5c Monte Carlo backtest (Severity: medium, capability)
 
 **App Store ranking signal:** `alternative_data.get_app_store_ranking(symbol)` queries Apple's free iTunes RSS (no auth) for top-grossing + top-free chart positions. Hand-curated `APP_STORE_TICKER_OVERRIDES` covers ~36 consumer-app tickers (UBER, LYFT, ABNB, DASH, SNAP, SPOT, NFLX, META, RBLX, COIN, HOOD, RDDT, ...). Returns best grossing + free rank across the ticker's tracked apps; supports multi-app companies (META has Instagram + Facebook + Threads). 24h cache. Tickers without a known app return `has_data=False` cleanly.

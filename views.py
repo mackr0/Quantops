@@ -3535,6 +3535,199 @@ def api_slippage_stats(profile_id):
     return jsonify({"available": True, **stats})
 
 
+@views_bp.route("/api/slippage-model/<int:profile_id>")
+@login_required
+def api_slippage_model(profile_id):
+    """Item 5c — slippage model calibration + components.
+
+    Returns the fitted K, sample count, bootstrap-bucket sizes, and
+    a sample estimate so the user can SEE what the model thinks.
+    """
+    import os
+    profile = get_trading_profile(profile_id)
+    if not profile or profile["user_id"] != current_user.effective_user_id:
+        return jsonify({"error": "Profile not found"}), 404
+
+    db_path = f"quantopsai_profile_{profile_id}.db"
+    if not os.path.exists(db_path):
+        return jsonify({"error": "No data yet"}), 404
+
+    try:
+        from slippage_model import (
+            calibrate_from_history, estimate_slippage,
+        )
+        market_type = profile.get("market_type")
+        fit = calibrate_from_history(db_path, market_type=market_type)
+        # Build a sample estimate for a representative order size so
+        # the user can see what the model produces without running a
+        # backtest.
+        sample = estimate_slippage(
+            symbol="SAMPLE", qty=1000, side="buy", decision_price=50.0,
+            spread_bps=4.0, adv_shares=1_000_000,
+            daily_vol_bps=200.0, db_path=db_path, market_type=market_type,
+        )
+        # Bucket size summary
+        bucket_summary = {}
+        for k, samples in (fit.get("bootstrap_residuals") or {}).items():
+            bucket_summary[k] = len(samples)
+        return jsonify({
+            "available": True,
+            "K_bps": fit.get("K_bps"),
+            "n_samples": fit.get("n_samples"),
+            "mean_residual_bps": fit.get("mean_residual_bps"),
+            "fitted_at": fit.get("fitted_at"),
+            "source": fit.get("source"),
+            "market_type": market_type,
+            "buckets": bucket_summary,
+            "sample_estimate": {
+                "components": sample.get("components"),
+                "total_bps": sample.get("total_bps"),
+                "fill_price": sample.get("fill_price"),
+                "K_source": sample.get("K_source"),
+            },
+        })
+    except Exception as exc:
+        logger.warning("slippage-model API failed: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+@views_bp.route("/api/mc-backtest/<int:profile_id>", methods=["POST"])
+@login_required
+def api_mc_backtest(profile_id):
+    """Item 5c — Monte Carlo backtest. Runs N MC trajectories on the
+    profile's recent closed trades, returns the P&L distribution.
+
+    POST body (optional JSON): {n_sims: int, lookback_days: int}
+    """
+    import os
+    import sqlite3
+    profile = get_trading_profile(profile_id)
+    if not profile or profile["user_id"] != current_user.effective_user_id:
+        return jsonify({"error": "Profile not found"}), 404
+
+    db_path = f"quantopsai_profile_{profile_id}.db"
+    if not os.path.exists(db_path):
+        return jsonify({"error": "No data yet"}), 404
+
+    payload = request.get_json(silent=True) or {}
+    n_sims = max(100, min(int(payload.get("n_sims") or 1000), 5000))
+    lookback_days = max(7, min(int(payload.get("lookback_days") or 90), 365))
+
+    # Pull recent closed trades from the journal
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            f"""SELECT entry_price, exit_price, side, pnl, pnl_pct,
+                       symbol, exit_date
+            FROM (
+                SELECT t1.fill_price AS entry_price,
+                       t2.fill_price AS exit_price,
+                       'long' AS side,
+                       t2.pnl AS pnl,
+                       NULL AS pnl_pct,
+                       t1.symbol AS symbol,
+                       t2.timestamp AS exit_date
+                FROM trades t1
+                JOIN trades t2 ON t2.symbol = t1.symbol
+                  AND t2.id > t1.id
+                WHERE t1.side='buy' AND t2.side='sell'
+                  AND t1.fill_price IS NOT NULL
+                  AND t2.fill_price IS NOT NULL
+                  AND t1.status='filled' AND t2.status='filled'
+                  AND t2.timestamp >= datetime('now', '-{lookback_days} days')
+                ORDER BY t2.timestamp DESC
+                LIMIT 200
+            )"""
+        ).fetchall()
+        conn.close()
+    except Exception as exc:
+        return jsonify({"error": f"DB query failed: {exc}"}), 500
+
+    trades = [
+        {"entry_price": float(r["entry_price"]),
+         "exit_price": float(r["exit_price"]),
+         "side": r["side"]}
+        for r in rows
+    ]
+    if len(trades) < 5:
+        return jsonify({
+            "available": False,
+            "n_trades_found": len(trades),
+            "message": (f"Need ≥5 closed trades in the last "
+                        f"{lookback_days} days for a meaningful "
+                        f"distribution; found {len(trades)}."),
+        })
+
+    from mc_backtest import run_monte_carlo
+    result = run_monte_carlo(
+        trades, db_path=db_path,
+        market_type=profile.get("market_type"),
+        n_sims=n_sims,
+    )
+    return jsonify({"available": True, **result})
+
+
+@views_bp.route("/api/attention-signals/<int:profile_id>")
+@login_required
+def api_attention_signals(profile_id):
+    """Item 3a — recent attention-signal snapshot for held + watched
+    symbols on this profile (Google Trends + Wikipedia + App Store)."""
+    import os
+    profile = get_trading_profile(profile_id)
+    if not profile or profile["user_id"] != current_user.effective_user_id:
+        return jsonify({"error": "Profile not found"}), 404
+
+    # Get current positions for this profile
+    try:
+        from models import build_user_context_from_profile
+        from client import get_positions
+        ctx = build_user_context_from_profile(profile_id)
+        positions = get_positions(ctx=ctx) or []
+        symbols = sorted({p.get("symbol", "") for p in positions
+                            if p.get("symbol")})
+    except Exception:
+        symbols = []
+
+    if not symbols:
+        return jsonify({"available": False, "symbols": [],
+                          "rows": []})
+
+    from alternative_data import (
+        get_google_trends_signal, get_wikipedia_pageviews_signal,
+        get_app_store_ranking,
+    )
+    rows = []
+    for sym in symbols[:25]:   # cap at 25 to keep API call cost bounded
+        gt = get_google_trends_signal(sym) or {}
+        wp = get_wikipedia_pageviews_signal(sym) or {}
+        ap = get_app_store_ranking(sym) or {}
+        rows.append({
+            "symbol": sym,
+            "google_trends": {
+                "z": gt.get("trend_z_score"),
+                "direction": gt.get("trend_direction"),
+                "current_index": gt.get("current_index"),
+                "has_data": gt.get("has_data", False),
+            },
+            "wikipedia": {
+                "z": wp.get("pageview_z_score"),
+                "spike": wp.get("pageview_spike_flag"),
+                "current_7d_avg": wp.get("current_7d_avg"),
+                "article": wp.get("article"),
+                "has_data": wp.get("has_data", False),
+            },
+            "app_store": {
+                "best_grossing_rank": ap.get("best_grossing_rank"),
+                "best_free_rank": ap.get("best_free_rank"),
+                "primary_app": (ap.get("apps") or [{}])[0].get("name"),
+                "has_data": ap.get("has_data", False),
+            },
+        })
+
+    return jsonify({"available": True, "symbols": symbols, "rows": rows})
+
+
 @views_bp.route("/admin")
 @login_required
 @admin_required
