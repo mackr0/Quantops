@@ -327,12 +327,27 @@
         <div id="slippage-model-widget"><p class="muted">Loading...</p></div>
     </article>
 
+    <!-- Item 5c — Slippage history (predicted vs realized) -->
+    <article>
+        <header><h3>Slippage Calibration Drift</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Predicted vs realized slippage on each filled trade. Mean delta near zero = model is well-calibrated. Persistent positive delta = model under-predicts cost (your fills are worse than expected; need to bump K). Persistent negative delta = over-predicting (the model is too pessimistic — strategies are passing on names they could profitably trade). Correlation tells you if the model captures the SHAPE of slippage variance, not just the average level.</p>
+        <div id="slippage-history-widget"><p class="muted">Loading...</p></div>
+    </article>
+
     <!-- Item 5c — Monte Carlo backtest -->
     <article>
         <header><h3>Monte Carlo Backtest (Item 5c)</h3></header>
         <p class="muted" style="margin-top:-0.5rem;">Replay this profile's recent closed trades N times with slippage drawn from the bootstrap distribution. Distinguishes "strategy edge &gt; execution variance" from "deterministic P&amp;L was a lucky slippage realization". Output is the P&amp;L distribution: median, 5/95th percentile, σ, and probability of loss across all simulations. Click Run to execute (1000 sims default; takes a few seconds for 100+ trades).</p>
         <div id="mc-backtest-widget"><p class="muted">Pick a profile and click Run.</p></div>
         <button id="mc-run-btn" class="outline" style="margin-top:0.5rem;font-size:0.9rem;">▶ Run Monte Carlo</button>
+    </article>
+
+    <!-- Item 5c — Per-strategy MC tiles -->
+    <article>
+        <header><h3>Per-Strategy Monte Carlo</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Same MC engine, grouped by strategy. Each tile shows median return, 5/95 band, σ, and P(loss) for trades attributed to that strategy. Lets you see which strategies have ROBUST edge (narrow band around positive median) vs which have apparent edge that vanishes under realistic slippage variance (wide band, high P-loss).</p>
+        <div id="mc-by-strategy-widget"><p class="muted">Click Run to compute per-strategy distributions.</p></div>
+        <button id="mc-by-strategy-btn" class="outline" style="margin-top:0.5rem;font-size:0.9rem;">▶ Run Per-Strategy MC</button>
     </article>
 
 <script>
@@ -1562,6 +1577,58 @@
     }
     loadSlippageModel();
 
+    // --- Item 5c: Slippage history (predicted vs realized) ---
+    function loadSlippageHistory() {
+        var w = document.getElementById('slippage-history-widget');
+        if (!w) return;
+        var pid = profileFilter || '1';
+        fetch('/api/slippage-history/' + pid)
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (d.error || !d.available) {
+                    w.innerHTML = '<p class="muted">' + esc(d.error || 'No predicted-vs-realized samples yet. Predicted slippage is captured at order-submit time; this populates as trades fill.') + '</p>';
+                    return;
+                }
+                var meanCls = Math.abs(d.mean_delta_bps) < 2 ? 'pnl-pos' :
+                              (Math.abs(d.mean_delta_bps) < 5 ? 'muted' : 'pnl-neg');
+                var corrCls = (d.correlation || 0) >= 0.5 ? 'pnl-pos' :
+                              ((d.correlation || 0) >= 0.2 ? 'muted' : 'pnl-neg');
+                var h = '<div class="grid">';
+                h += '<div class="stat-card"><small class="muted">Samples</small><strong>' + d.n_samples + '</strong></div>';
+                h += '<div class="stat-card"><small class="muted">Mean Δ (realized − predicted)</small><strong class="' + meanCls + '">';
+                h += (d.mean_delta_bps >= 0 ? '+' : '') + d.mean_delta_bps.toFixed(2) + ' bps</strong></div>';
+                h += '<div class="stat-card"><small class="muted">σ Δ</small><strong>' + d.std_delta_bps.toFixed(2) + ' bps</strong></div>';
+                h += '<div class="stat-card"><small class="muted">Corr (pred ↔ real)</small>';
+                h += '<strong class="' + corrCls + '">' + (d.correlation != null ? d.correlation.toFixed(2) : '—') + '</strong></div>';
+                h += '</div>';
+                if (d.rows && d.rows.length) {
+                    // Mini scatter as a horizontal bar list — cheap, no chart lib
+                    h += '<h5 style="margin-top:1rem;">Last ' + d.rows.length + ' fills (newest first)</h5>';
+                    h += '<div class="overflow-auto"><table style="font-size:0.8rem;"><thead><tr>';
+                    h += '<th>When</th><th>Symbol</th><th>Side</th><th style="text-align:right;">Predicted</th><th style="text-align:right;">Realized</th><th style="text-align:right;">Δ</th>';
+                    h += '</tr></thead><tbody>';
+                    var ordered = d.rows.slice().reverse();
+                    ordered.slice(0, 50).forEach(function(r) {
+                        var dCls = r.delta_bps > 5 ? 'pnl-neg' : (r.delta_bps < -5 ? 'pnl-pos' : 'muted');
+                        h += '<tr>';
+                        h += '<td class="muted">' + esc((r.timestamp || '').slice(0, 16)) + '</td>';
+                        h += '<td>' + esc(r.symbol) + '</td>';
+                        h += '<td class="muted">' + esc(r.side) + '</td>';
+                        h += '<td style="text-align:right;font-family:monospace;">' + r.predicted_bps.toFixed(1) + '</td>';
+                        h += '<td style="text-align:right;font-family:monospace;">' + r.realized_bps.toFixed(1) + '</td>';
+                        h += '<td style="text-align:right;font-family:monospace;" class="' + dCls + '">' + (r.delta_bps >= 0 ? '+' : '') + r.delta_bps.toFixed(1) + '</td>';
+                        h += '</tr>';
+                    });
+                    h += '</tbody></table></div>';
+                }
+                w.innerHTML = h;
+            })
+            .catch(function(e) {
+                w.innerHTML = '<p class="muted">Failed to load slippage history: ' + esc(e.message || '') + '</p>';
+            });
+    }
+    loadSlippageHistory();
+
     // --- Item 5c: Monte Carlo backtest panel ---
     var mcBtn = document.getElementById('mc-run-btn');
     if (mcBtn) {
@@ -1619,6 +1686,62 @@
                 });
         });
     }
+
+    // --- Item 5c: Per-strategy MC tiles ---
+    var mcByStratBtn = document.getElementById('mc-by-strategy-btn');
+    if (mcByStratBtn) {
+        mcByStratBtn.addEventListener('click', function() {
+            var w = document.getElementById('mc-by-strategy-widget');
+            var pid = profileFilter || '1';
+            w.innerHTML = '<p class="muted">Running per-strategy simulations…</p>';
+            mcByStratBtn.disabled = true;
+            fetch('/api/mc-backtest-by-strategy/' + pid, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({n_sims: 500, lookback_days: 90, min_trades_per_strategy: 5}),
+            })
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                    mcByStratBtn.disabled = false;
+                    if (d.error) {
+                        w.innerHTML = '<p class="muted">Error: ' + esc(d.error) + '</p>';
+                        return;
+                    }
+                    if (!d.available || !d.rows.length) {
+                        w.innerHTML = '<p class="muted">No strategies with ≥5 closed trades in the last ' + d.lookback_days + ' days.</p>';
+                        return;
+                    }
+                    var h = '<p style="font-size:0.85rem;margin:0 0 0.5rem 0;">';
+                    h += '<strong>' + d.n_strategies + '</strong> strategies · ' + d.n_sims + ' sims each · last ' + d.lookback_days + ' days';
+                    h += '</p>';
+                    h += '<div class="grid">';
+                    d.rows.forEach(function(r) {
+                        var medianCls = r.p50_return >= 0 ? 'pnl-pos' : 'pnl-neg';
+                        var probLossCls = r.prob_loss >= 0.5 ? 'pnl-neg' :
+                                          (r.prob_loss >= 0.3 ? 'muted' : 'pnl-pos');
+                        h += '<article style="margin:0.25rem;">';
+                        h += '<header style="padding:0.4rem 0.6rem;background:#fafafa;"><h4 style="margin:0;font-size:0.95rem;">' + esc(r.strategy) + '</h4>';
+                        h += '<small class="muted">' + r.n_trades + ' trades replayed</small></header>';
+                        h += '<div style="padding:0.4rem 0.6rem;font-size:0.85rem;">';
+                        h += '<div style="display:flex;justify-content:space-between;"><span class="muted">Median return</span>';
+                        h += '<strong class="' + medianCls + '">' + (r.p50_return >= 0 ? '+' : '') + (r.p50_return * 100).toFixed(2) + '%</strong></div>';
+                        h += '<div style="display:flex;justify-content:space-between;"><span class="muted">5–95% band</span>';
+                        h += '<span style="font-family:monospace;">' + (r.p5_return * 100).toFixed(1) + '% / ' + (r.p95_return * 100).toFixed(1) + '%</span></div>';
+                        h += '<div style="display:flex;justify-content:space-between;"><span class="muted">σ (return)</span>';
+                        h += '<span style="font-family:monospace;">' + (r.std_return * 100).toFixed(2) + '%</span></div>';
+                        h += '<div style="display:flex;justify-content:space-between;"><span class="muted">P(loss)</span>';
+                        h += '<strong class="' + probLossCls + '">' + (r.prob_loss * 100).toFixed(0) + '%</strong></div>';
+                        h += '</div></article>';
+                    });
+                    h += '</div>';
+                    w.innerHTML = h;
+                })
+                .catch(function(e) {
+                    mcByStratBtn.disabled = false;
+                    w.innerHTML = '<p class="muted">Run failed: ' + esc(e.message || '') + '</p>';
+                });
+        });
+    }
 })();
 </script>
 </div>
@@ -1647,6 +1770,13 @@
         <header><h3>Active Lessons</h3></header>
         <p class="muted" style="margin-top:-0.5rem;">Post-mortem patterns + tuner-detected failure patterns currently being injected into the AI's prompt. These are the "be cautious" notes the AI sees at every decision.</p>
         <div id="active-lessons-widget"><p class="muted">Loading...</p></div>
+    </article>
+
+    <!-- Tunable signal weights — every Layer-2 lever in one place -->
+    <article>
+        <header><h3>Tunable Signal Weights (Layer 2)</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Every signal the AI looks at can be down-weighted (0.0 = disabled, 0.4 = brief mention with discount hint, 0.7 = mention without flag, 1.0 = full strength). The self-tuner adjusts these based on which signals correlate with this profile's wins / losses; the user can also override directly. Default is 1.0 (full strength) for every signal — only non-default entries are stored. This panel makes the full list of tunable levers visible so it's clear what CAN be adjusted.</p>
+        <div id="weightable-signals-widget"><p class="muted">Loading...</p></div>
     </article>
 
     <!-- Active Autonomy State — overrides the tuner has set per profile -->
@@ -2051,6 +2181,47 @@
             });
     }
     loadLearnedPatterns();
+
+    // --- Tunable signal weights (Layer 2) ---
+    function loadWeightableSignals() {
+        var w = document.getElementById('weightable-signals-widget');
+        if (!w) return;
+        var pid = profileFilter || '1';
+        fetch('/api/weightable-signals/' + pid)
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (d.error || !d.rows) {
+                    w.innerHTML = '<p class="muted">' + esc(d.error || 'No data.') + '</p>';
+                    return;
+                }
+                var h = '<p style="font-size:0.85rem;margin:0 0 0.5rem 0;">';
+                h += '<strong>' + d.n_signals + '</strong> tunable signals · ';
+                h += '<strong>' + d.n_overridden + '</strong> currently overridden from default 1.0';
+                h += '</p>';
+                h += '<div class="overflow-auto"><table class="striped" style="font-size:0.85rem;"><thead><tr>';
+                h += '<th>Signal</th><th style="text-align:right;">Weight</th><th>Status</th>';
+                h += '</tr></thead><tbody>';
+                d.rows.forEach(function(row) {
+                    var weight = row.weight;
+                    var weightCls = weight >= 1.0 ? 'pnl-pos' : (weight <= 0.0 ? 'pnl-neg' : 'muted');
+                    var status;
+                    if (row.is_disabled) status = '<strong style="color:#b00;">DISABLED</strong>';
+                    else if (row.is_overridden) status = '<span style="color:#b87333;">overridden</span>';
+                    else status = '<span class="muted">default</span>';
+                    h += '<tr>';
+                    h += '<td>' + esc(row.label || row.name) + ' <small class="muted">(' + esc(row.name) + ')</small></td>';
+                    h += '<td style="text-align:right;font-family:monospace;" class="' + weightCls + '">' + weight.toFixed(2) + '</td>';
+                    h += '<td>' + status + '</td>';
+                    h += '</tr>';
+                });
+                h += '</tbody></table></div>';
+                w.innerHTML = h;
+            })
+            .catch(function(e) {
+                w.innerHTML = '<p class="muted">Failed to load tunable signals: ' + esc(e.message || '') + '</p>';
+            });
+    }
+    loadWeightableSignals();
 
     // --- Autonomy Timeline ---
     var timelineForm = document.getElementById('timeline-form');

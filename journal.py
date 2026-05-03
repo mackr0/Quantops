@@ -428,6 +428,13 @@ def _migrate_all_columns(conn):
             ("option_strategy", "TEXT"),
             ("expiry", "TEXT"),
             ("strike", "REAL"),
+            # Item 5c — slippage model predicted vs realized.
+            # Captured at order-submit time from
+            # slippage_model.estimate_slippage. Realized slippage is
+            # already in slippage_pct; comparing the two over time
+            # tells us if the model's K coefficient is calibrated
+            # well or drifting.
+            ("predicted_slippage_bps", "REAL"),
         ],
         "ai_predictions": [
             ("regime_at_prediction", "TEXT"),
@@ -522,7 +529,7 @@ def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
               stop_loss=None, take_profit=None, status="open", pnl=None,
               decision_price=None, fill_price=None, slippage_pct=None,
               occ_symbol=None, option_strategy=None, expiry=None, strike=None,
-              db_path=None):
+              predicted_slippage_bps=None, db_path=None):
     """Log a trade execution to the journal.
 
     Parameters
@@ -552,14 +559,16 @@ def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
            (timestamp, symbol, side, qty, price, order_id, signal_type, strategy,
             reason, ai_reasoning, ai_confidence, stop_loss, take_profit, status, pnl,
             decision_price, fill_price, slippage_pct,
-            occ_symbol, option_strategy, expiry, strike)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            occ_symbol, option_strategy, expiry, strike,
+            predicted_slippage_bps)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             datetime.utcnow().isoformat(),
             symbol, side, qty, price, order_id, signal_type, strategy,
             reason, ai_reasoning, ai_confidence, stop_loss, take_profit,
             status, pnl, decision_price, fill_price, slippage_pct,
             occ_symbol, option_strategy, expiry, strike,
+            predicted_slippage_bps,
         ),
     )
     conn.commit()

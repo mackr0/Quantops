@@ -746,6 +746,21 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             # Convert percentages to actual dollar prices for storage
             stop_price = round(price * (1 - actual_sl_pct), 4)
             target_price = round(price * (1 + actual_tp_pct), 4)
+            # Item 5c — capture the slippage model's prediction at
+            # submit time so we can later compare to realized slippage
+            # (calibration drift tracking).
+            predicted_slip = None
+            try:
+                from slippage_model import estimate_slippage
+                _est = estimate_slippage(
+                    symbol=symbol, qty=qty, side="buy",
+                    decision_price=price,
+                    db_path=db_path,
+                    market_type=getattr(ctx, "market_type", None) if ctx else None,
+                )
+                predicted_slip = _est.get("total_bps")
+            except Exception:
+                pass
             log_trade(
                 symbol=symbol,
                 side="buy",
@@ -760,6 +775,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 stop_loss=stop_price,
                 take_profit=target_price,
                 decision_price=price,
+                predicted_slippage_bps=predicted_slip,
                 db_path=db_path,
             )
 
@@ -805,6 +821,19 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             pnl = position.get("unrealized_pl")
             if pnl is not None and qty > 0:
                 pnl = float(pnl) * (sell_qty / qty)
+            # Item 5c — also capture predicted slippage on the exit
+            predicted_slip_sell = None
+            try:
+                from slippage_model import estimate_slippage
+                _est = estimate_slippage(
+                    symbol=symbol, qty=int(sell_qty), side="sell",
+                    decision_price=price,
+                    db_path=db_path,
+                    market_type=getattr(ctx, "market_type", None) if ctx else None,
+                )
+                predicted_slip_sell = _est.get("total_bps")
+            except Exception:
+                pass
             # Closing a position produces realized P&L — the row must be
             # 'closed', not 'open'. Without this, downstream reporting
             # filters by status get wrong counts.
@@ -822,6 +851,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 pnl=pnl,
                 status="closed" if pnl is not None else "open",
                 decision_price=price,
+                predicted_slippage_bps=predicted_slip_sell,
                 db_path=db_path,
             )
             # Mark matching open BUY rows as closed so the trades page

@@ -3668,6 +3668,233 @@ def api_mc_backtest(profile_id):
     return jsonify({"available": True, **result})
 
 
+@views_bp.route("/api/mc-backtest-by-strategy/<int:profile_id>", methods=["POST"])
+@login_required
+def api_mc_backtest_by_strategy(profile_id):
+    """Item 5c — per-strategy Monte Carlo backtest.
+
+    Groups closed trades by `strategy` field; runs MC per group.
+    Returns one row per strategy with its distribution stats so
+    weak strategies stand out (high P(loss) under realistic
+    slippage variance) vs robust ones (narrow band, low P(loss)).
+    """
+    import os, sqlite3
+    profile = get_trading_profile(profile_id)
+    if not profile or profile["user_id"] != current_user.effective_user_id:
+        return jsonify({"error": "Profile not found"}), 404
+
+    db_path = f"quantopsai_profile_{profile_id}.db"
+    if not os.path.exists(db_path):
+        return jsonify({"error": "No data yet"}), 404
+
+    payload = request.get_json(silent=True) or {}
+    n_sims = max(100, min(int(payload.get("n_sims") or 500), 2000))
+    lookback_days = max(7, min(int(payload.get("lookback_days") or 90), 365))
+    min_trades_per_strategy = int(payload.get("min_trades_per_strategy") or 5)
+
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            f"""SELECT t1.fill_price AS entry_price,
+                       t2.fill_price AS exit_price,
+                       'long' AS side,
+                       COALESCE(t1.strategy, 'unknown') AS strategy,
+                       t1.symbol AS symbol
+            FROM trades t1
+            JOIN trades t2 ON t2.symbol = t1.symbol AND t2.id > t1.id
+            WHERE t1.side='buy' AND t2.side='sell'
+              AND t1.fill_price IS NOT NULL AND t2.fill_price IS NOT NULL
+              AND t1.status='filled' AND t2.status='filled'
+              AND t2.timestamp >= datetime('now', '-{lookback_days} days')
+            ORDER BY t2.timestamp DESC
+            LIMIT 500"""
+        ).fetchall()
+        conn.close()
+    except Exception as exc:
+        return jsonify({"error": f"DB query failed: {exc}"}), 500
+
+    # Bucket by strategy
+    buckets = {}
+    for r in rows:
+        strat = r["strategy"] or "unknown"
+        buckets.setdefault(strat, []).append({
+            "entry_price": float(r["entry_price"]),
+            "exit_price": float(r["exit_price"]),
+            "side": r["side"],
+        })
+
+    from mc_backtest import run_monte_carlo
+    market_type = profile.get("market_type")
+    results = []
+    for strat, trades in buckets.items():
+        if len(trades) < min_trades_per_strategy:
+            continue
+        mc = run_monte_carlo(
+            trades, db_path=db_path, market_type=market_type,
+            n_sims=n_sims,
+        )
+        if mc.get("error"):
+            continue
+        results.append({
+            "strategy": strat,
+            "n_trades": len(trades),
+            "p5_return": mc.get("p5_return"),
+            "p50_return": mc.get("p50_return"),
+            "p95_return": mc.get("p95_return"),
+            "mean_return": mc.get("mean_return"),
+            "std_return": mc.get("std_return"),
+            "prob_loss": mc.get("prob_loss"),
+        })
+    # Sort by median return descending — best strategies first
+    results.sort(key=lambda r: r.get("p50_return", 0) or 0, reverse=True)
+    return jsonify({
+        "available": len(results) > 0,
+        "n_strategies": len(results),
+        "n_sims": n_sims,
+        "lookback_days": lookback_days,
+        "rows": results,
+    })
+
+
+@views_bp.route("/api/slippage-history/<int:profile_id>")
+@login_required
+def api_slippage_history(profile_id):
+    """Item 5c — slippage predicted vs realized over time, for
+    calibration-drift tracking.
+
+    Returns list of (timestamp, symbol, side, predicted_bps, realized_bps)
+    for the last N filled trades, plus aggregate metrics: mean / std
+    of (realized - predicted), correlation, n_samples.
+    """
+    import os, sqlite3
+    profile = get_trading_profile(profile_id)
+    if not profile or profile["user_id"] != current_user.effective_user_id:
+        return jsonify({"error": "Profile not found"}), 404
+
+    db_path = f"quantopsai_profile_{profile_id}.db"
+    if not os.path.exists(db_path):
+        return jsonify({"error": "No data yet"}), 404
+
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT timestamp, symbol, side, qty,
+                      decision_price, fill_price, slippage_pct,
+                      predicted_slippage_bps
+            FROM trades
+            WHERE predicted_slippage_bps IS NOT NULL
+              AND fill_price IS NOT NULL
+              AND decision_price IS NOT NULL
+              AND status='filled'
+            ORDER BY timestamp DESC
+            LIMIT 200"""
+        ).fetchall()
+        conn.close()
+    except Exception as exc:
+        return jsonify({"error": f"DB query failed: {exc}"}), 500
+
+    series = []
+    deltas = []
+    for r in rows:
+        side = (r["side"] or "").lower()
+        dp = float(r["decision_price"])
+        fp = float(r["fill_price"])
+        if dp <= 0 or fp <= 0:
+            continue
+        # Realized in adverse direction (positive bps = bad)
+        if "buy" in side:
+            realized_bps = (fp - dp) / dp * 10000
+        else:
+            realized_bps = (dp - fp) / dp * 10000
+        predicted_bps = float(r["predicted_slippage_bps"] or 0)
+        delta = realized_bps - predicted_bps
+        deltas.append(delta)
+        series.append({
+            "timestamp": r["timestamp"],
+            "symbol": r["symbol"],
+            "side": side,
+            "predicted_bps": round(predicted_bps, 2),
+            "realized_bps": round(realized_bps, 2),
+            "delta_bps": round(delta, 2),
+        })
+
+    n = len(deltas)
+    mean_delta = sum(deltas) / n if n else 0.0
+    if n >= 2:
+        var = sum((d - mean_delta) ** 2 for d in deltas) / (n - 1)
+        std_delta = var ** 0.5
+    else:
+        std_delta = 0.0
+
+    # Pearson correlation predicted vs realized
+    correlation = None
+    if n >= 5:
+        preds = [s["predicted_bps"] for s in series]
+        reals = [s["realized_bps"] for s in series]
+        mp = sum(preds) / n
+        mr = sum(reals) / n
+        num = sum((p - mp) * (r - mr) for p, r in zip(preds, reals))
+        sp = (sum((p - mp) ** 2 for p in preds)) ** 0.5
+        sr = (sum((r - mr) ** 2 for r in reals)) ** 0.5
+        if sp > 0 and sr > 0:
+            correlation = num / (sp * sr)
+
+    return jsonify({
+        "available": n > 0,
+        "n_samples": n,
+        "mean_delta_bps": round(mean_delta, 2),
+        "std_delta_bps": round(std_delta, 2),
+        "correlation": round(correlation, 3) if correlation is not None else None,
+        "rows": list(reversed(series)),     # oldest first for chart
+    })
+
+
+@views_bp.route("/api/weightable-signals/<int:profile_id>")
+@login_required
+def api_weightable_signals(profile_id):
+    """List EVERY weightable signal + its current weight for this profile.
+
+    Solves the "hidden lever" problem for Layer-2 weights: get_all_weights()
+    only returns non-default (≠1.0) entries, so users couldn't see the
+    full list of tunable signals without reading the code.
+    """
+    import os
+    profile = get_trading_profile(profile_id)
+    if not profile or profile["user_id"] != current_user.effective_user_id:
+        return jsonify({"error": "Profile not found"}), 404
+
+    from signal_weights import (
+        WEIGHTABLE_SIGNALS, get_all_weights, display_label,
+    )
+    overrides = get_all_weights(profile)   # only non-default entries
+    rows = []
+    for entry in WEIGHTABLE_SIGNALS:
+        if isinstance(entry, tuple) and len(entry) >= 2:
+            name = entry[0]
+            label = entry[1]
+        else:
+            name = entry if isinstance(entry, str) else str(entry)
+            label = display_label(name)
+        weight = overrides.get(name, 1.0)
+        is_overridden = name in overrides
+        rows.append({
+            "name": name,
+            "label": label,
+            "weight": float(weight),
+            "is_overridden": is_overridden,
+            "is_disabled": float(weight) <= 0.0,
+        })
+    rows.sort(key=lambda r: (not r["is_overridden"], r["name"]))
+    return jsonify({
+        "profile_id": profile_id,
+        "n_signals": len(rows),
+        "n_overridden": sum(1 for r in rows if r["is_overridden"]),
+        "rows": rows,
+    })
+
+
 @views_bp.route("/api/attention-signals/<int:profile_id>")
 @login_required
 def api_attention_signals(profile_id):

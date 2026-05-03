@@ -17,6 +17,28 @@ Rules going forward:
 
 ---
 
+## 2026-05-03 — Hidden-lever sweep: extended UI guardrail + 4 new panels (Severity: medium, UX)
+
+Three follow-ups in priority order:
+
+**1. Extended UI-coverage guardrail.** `tests/test_meta_features_have_ui.py` now covers four classes of "hidden lever":
+
+- `meta_model.NUMERIC_FEATURES` (was)
+- `meta_model.CATEGORICAL_FEATURES` (NEW)
+- `signal_weights.WEIGHTABLE_SIGNALS` (NEW; with `vote_X` ↔ base-strategy aliasing)
+
+Plus a stale-allowlist test that fails when any `INTERNAL_*` entry no longer exists in its source — prevents drift. Removed `signal_weights.py`, `alternative_data.py`, `self_tuning.py` from the surface scan path because including the source files defining a feature would make the test tautological. Caught real gaps: 6 `vote_*` strategy weights had no static UI surface; surfaced via the new `/api/weightable-signals` panel + INTERNAL_WEIGHTABLE allowlist with rationale.
+
+**2. New panel: Tunable Signal Weights (Layer 2).** `/api/weightable-signals/<id>` lists EVERY weightable signal with current weight + override status. Solves "what CAN I tune?" — `get_all_weights()` only returned non-default entries, so users couldn't see the full lever set without reading the code.
+
+**3. Slippage calibration drift.** New schema column `predicted_slippage_bps` on the trades table; captured at submit time in `_execute_buy` and `_execute_sell` paths in `trade_pipeline.py`. New API `/api/slippage-history/<id>` returns predicted vs realized for the last 200 fills + aggregate stats: mean delta, σ delta, Pearson correlation. New panel on Brain tab shows live drift table + summary stat-cards. Plain-English explainer: persistent positive delta = K under-calibrated (bump it); persistent negative = over-pessimistic.
+
+**4. Per-strategy MC tiles.** `/api/mc-backtest-by-strategy/<id>` groups closed trades by `strategy` field, runs MC per group, returns each strategy's distribution. New panel on Brain tab renders one tile per strategy with median, 5–95 band, σ, P(loss). Lets you see which strategies have ROBUST edge vs which would die under realistic slippage variance. Min 5 trades per strategy to compute.
+
+Suite: 1896 passed, 0 skipped.
+
+---
+
 ## 2026-05-03 — UI panels for slippage / MC backtest / attention signals + meta-feature UI guardrail (Severity: medium, UX)
 
 The user called out that I keep shipping signals without a way to see them. Three new panels + a guardrail test that fails any future ship that adds a meta-model feature without a corresponding UI surface.
