@@ -1302,10 +1302,12 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             ap = alt.get("app_store_ranking") or {}
             if ap.get("has_data"):
                 bits = []
-                if ap.get("best_grossing_rank"):
-                    bits.append(f"#{ap['best_grossing_rank']} grossing")
-                if ap.get("best_free_rank"):
-                    bits.append(f"#{ap['best_free_rank']} free")
+                gr = ap.get("best_grossing_rank")
+                fr = ap.get("best_free_rank")
+                if gr:
+                    bits.append(f"#{gr} grossing")
+                if fr:
+                    bits.append(f"#{fr} free")
                 primary = (ap.get("apps") or [{}])[0].get("name", "app")
                 if bits:
                     txt = _weighted_signal_text(
