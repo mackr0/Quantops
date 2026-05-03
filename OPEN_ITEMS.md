@@ -216,29 +216,20 @@ These are NOT bugs; they're scope constraints surfaced in code comments. They sh
 
 ---
 
-## 12. Recommended next batch (free, high leverage, in priority order)
+## 12. Recommended next batch — STATUS
 
-These are the items that materially improve correctness or visibility WITHOUT requiring paid feeds, IBKR, or real money. Listed roughly in dependency order.
+All 10 items SHIPPED 2026-05-03. Commits: `91a6f9a` (#1-4), `81d4d95` (#5-10).
 
-1. **ADV-at-trade-time storage** (½ day). Add `adv_at_decision` column to `trades` table; capture `get_bars(symbol, limit=20)` 20-day average volume at submit time. Slippage `calibrate_from_history` uses real participation instead of `$50M default`. Calibration becomes useful instead of approximate.
-
-2. **App Store WoW snapshot task** (½ day). Daily scheduler task snapshots `get_app_store_ranking(symbol)` for tickers in `APP_STORE_TICKER_OVERRIDES` to a new `app_store_history` table. Enables `wow_change_grossing` / `wow_change_free` deltas — turns flat ranks into a trend signal.
-
-3. **MC bootstrap by-day** (1 day). Refactor `mc_backtest.run_monte_carlo` to bootstrap whole-day slippage realizations instead of per-trade IID. Captures correlated-regime variance that the current model misses.
-
-4. **`wheel_symbols` settings UI** (½ day). Add a multi-select / comma-list field on settings page; populate per-profile so the wheel state machine can fire on chosen names. Currently built but inert.
-
-5. **Phase H L5 — backtester dashboard panel** (1 day). Run-button + result curve for the synthetic options backtester. Currently API-callable only; closes the OPTIONS_PROGRAM_PLAN gap.
-
-6. **PDUFA scraper** (1-2 days). Closes ALTDATA_INTEGRATION_PLAN's last open item — biotech catalyst signal. Source: FDA's PDUFA calendar (free).
-
-7. **Short borrow rate tracking** (1 day). Replace Alpaca's binary `easy_to_borrow` with continuous borrow-rate data (FINRA RegSHO daily file, free). Material on HTB shorts where rate eats 5-50%/yr.
-
-8. **AI vocabulary for proposing options trades** (1-2 days). `ai_analyst.py:640` deferred follow-up — let AI propose `action='OPTIONS'` trades directly with strategy + strike + expiry. Currently options trades are surfaced via the multi-leg advisor; AI can't construct them itself.
-
-9. **Macro event tracker (Phase F2)** (1 day). FOMC / CPI / NFP date list + IV-crush capture on index ETFs. Same template as F1 earnings.
-
-10. **Per-profile options roll-window knobs** (½ day). Module constants in `options_roll_manager.py` → schema columns + settings UI.
+1. ✅ **ADV-at-trade-time storage** — `trades.adv_at_decision` captured at submit; slippage calibrator uses real participation_rate.
+2. ✅ **App Store WoW snapshot task** — `app_store_history` table, daily-idempotent snapshot, WoW deltas in prompt.
+3. ✅ **MC bootstrap by-day** — `bootstrap_mode='by_day'` default; whole-day slippage realizations shared across same-day trades.
+4. ✅ **`wheel_symbols` settings UI** — schema column + textarea + parser.
+5. ✅ **Options backtester dashboard panel** — `/api/options-backtest` + Run button on Brain tab.
+6. ✅ **PDUFA scraper** — `pdufa_scraper.py` BiopharmCatalyst scrape + daily-idempotent task.
+7. ✅ **Short borrow rate tracking** — 3-tier rate lookup (HTB / non-GC / GC) + per-candidate annotation.
+8. ✅ **AI vocabulary for proposing options trades** — OPTIONS action ungated for any candidate with `options_oracle_summary`.
+9. ✅ **Macro event tracker (Phase F2)** — `macro_event_tracker.py` with FOMC/CPI/NFP calendar + evaluate_macro_play.
+10. ✅ **Per-profile options roll-window knobs** — 3 schema columns; `evaluate_for_roll` parameterized; settings UI.
 
 ---
 
