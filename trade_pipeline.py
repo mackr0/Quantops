@@ -1516,6 +1516,10 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 wp = alt.get("wikipedia_pageviews") or {}
                 features_payload["wikipedia_pageviews_z"] = wp.get("pageview_z_score") or 0
                 features_payload["wikipedia_pageviews_spike"] = 1 if wp.get("pageview_spike_flag") else 0
+                # Item 3a — App Store ranking
+                ap = alt.get("app_store_ranking") or {}
+                features_payload["app_store_grossing_rank"] = ap.get("best_grossing_rank") or 0
+                features_payload["app_store_free_rank"] = ap.get("best_free_rank") or 0
             social = c.get("social") or {}
             if social:
                 features_payload["reddit_mentions"] = social.get("mentions", 0)

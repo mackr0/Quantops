@@ -318,6 +318,9 @@ _DISPLAY_NAMES = {
     "wikipedia_pageviews":       "Wikipedia Page-Views",
     "wikipedia_pageviews_z":     "Wikipedia Page-Views z-score",
     "wikipedia_pageviews_spike": "Wikipedia Page-Views Spike",
+    "app_store_ranking":         "App Store Ranking",
+    "app_store_grossing_rank":   "App Store Grossing Rank",
+    "app_store_free_rank":       "App Store Free Rank",
     "rising":                    "Rising",
     "falling":                   "Falling",
 

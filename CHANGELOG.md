@@ -17,6 +17,24 @@ Rules going forward:
 
 ---
 
+## 2026-05-03 — Item 3a (cont.): App Store ranking + 5c Monte Carlo backtest (Severity: medium, capability)
+
+**App Store ranking signal:** `alternative_data.get_app_store_ranking(symbol)` queries Apple's free iTunes RSS (no auth) for top-grossing + top-free chart positions. Hand-curated `APP_STORE_TICKER_OVERRIDES` covers ~36 consumer-app tickers (UBER, LYFT, ABNB, DASH, SNAP, SPOT, NFLX, META, RBLX, COIN, HOOD, RDDT, ...). Returns best grossing + free rank across the ticker's tracked apps; supports multi-app companies (META has Instagram + Facebook + Threads). 24h cache. Tickers without a known app return `has_data=False` cleanly.
+
+Wired through the same path as Google Trends / Wikipedia: alt_data aggregator → features_payload (`app_store_grossing_rank`, `app_store_free_rank`) → meta-model NUMERIC_FEATURES → signal_weights for Layer-2 tuning → AI prompt under ALT DATA (`App Store: Uber — #5 grossing, #12 free`).
+
+**Monte Carlo backtest** (`mc_backtest.py`): turns single-point backtest results into a distribution. `run_monte_carlo(trades, db_path, n_sims=1000)` replays each trade `n_sims` times with entry + exit slippage drawn from `slippage_model.calibrate_from_history`'s bootstrap residuals. Returns 5/25/50/75/95th percentile returns, mean ± σ, worst case, best case, P(loss). Surfaces the question deterministic backtests can't answer: "is this strategy's edge larger than realistic execution variance, or is the deterministic P&L just one lucky slippage realization?"
+
+Falls back to a Gaussian (5±8 bps) when bootstrap buckets are sparse. IID slippage assumption documented as a limit (correlated regimes — full day of wide spreads — aren't captured; future enhancement: bootstrap by day, not trade).
+
+**Tests:** `tests/test_app_store_signal.py` (6 cases — unknown ticker, crypto skip, multi-app best-of, top-200 cutoff, HTTP failure graceful) + `tests/test_mc_backtest.py` (12 cases — replay math, percentile ordering, deterministic with seed, P(loss) bounds, dollar/pct consistency, render).
+
+Job-postings volume signal **deferred**: no clean free source. LinkedIn API is paid, Indeed scraping is TOS-fragile. Revisit when paid alternative is acceptable, or when SEC 10-K headcount tracking gets built.
+
+Suite: 1892 passed, 0 skipped.
+
+---
+
 ## 2026-05-03 — Item 3a: Google Trends + Wikipedia attention signals (Severity: medium, capability)
 
 Two new free web-scraped attention proxies. Both are best-effort: HTTP/rate-limit failures return `has_data: False` and the prompt suppresses the line. 24h cache. No per-profile config — they're zero-cost analytical signals always-on, like the existing congressional / 13F / StockTwits feeds.

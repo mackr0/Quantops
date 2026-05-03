@@ -110,6 +110,11 @@ WEIGHTABLE_SIGNALS: Tuple[Tuple[str, str, "callable"], ...] = (
     # Item 3a — Wikipedia page-view spike. Materially present on >=2σ surge.
     ("wikipedia_pageviews",       "Wikipedia Page-Views",
         lambda f: abs(float(f.get("wikipedia_pageviews_z", 0) or 0)) >= 1.0),
+    # Item 3a — App Store ranking (consumer-app tickers only).
+    # Materially present when in top-100 grossing or top-50 free.
+    ("app_store_ranking",         "App Store Ranking",
+        lambda f: ((f.get("app_store_grossing_rank") or 999) <= 100
+                    or (f.get("app_store_free_rank") or 999) <= 50)),
     ("rel_strength_vs_sector",   "Relative Strength vs Sector",
         lambda f: abs(float(f.get("rel_strength_vs_sector", 0) or 0)) >= 5),
     ("vwap_position",            "VWAP Position (away from VWAP)",

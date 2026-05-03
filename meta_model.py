@@ -58,6 +58,7 @@ NUMERIC_FEATURES = [
     "dark_pool_pct", "earnings_surprise_streak",
     # Item 3a — web-scraped attention signals
     "google_trends_z", "wikipedia_pageviews_z",
+    "app_store_grossing_rank", "app_store_free_rank",
 ]
 
 # Categorical features — one-hot encoded

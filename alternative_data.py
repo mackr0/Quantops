@@ -1774,6 +1774,166 @@ def get_wikipedia_pageviews_signal(symbol: str):
     return result
 
 
+# ---------------------------------------------------------------------------
+# Item 3a — App Store rankings (Apple iTunes RSS, free + official)
+# ---------------------------------------------------------------------------
+
+# Hand-curated mapping of ticker → list of (app_name, app_id) tuples.
+# Apple app IDs come from the App Store URL: apps.apple.com/us/app/.../id<ID>.
+# Coverage is limited to consumer names where the app is a meaningful
+# revenue / engagement driver. Other tickers will return has_data=False.
+APP_STORE_TICKER_OVERRIDES = {
+    "UBER":  [("Uber",          368677368),  ("Uber Eats",  1058959277)],
+    "LYFT":  [("Lyft",           529379082)],
+    "ABNB":  [("Airbnb",         401626263)],
+    "DASH":  [("DoorDash",       719972451)],
+    "GRUB":  [("Grubhub",        302920553)],
+    "SHOP":  [("Shop",          1223471316)],
+    "SNAP":  [("Snapchat",       447188370)],
+    "PINS":  [("Pinterest",      429047995)],
+    "SPOT":  [("Spotify",        324684580)],
+    "NFLX":  [("Netflix",        363590051)],
+    "EA":    [("EA Sports FC",   563474357)],
+    "TTWO":  [("GTA",           1486724914),  ("NBA 2K",     1567470693)],
+    "ETSY":  [("Etsy",           477128284)],
+    "BMBL":  [("Bumble",        930441707)],
+    "MTCH":  [("Tinder",         547702041),  ("Hinge",     595287172)],
+    "META":  [("Instagram",      389801252),  ("Facebook",   284882215),
+              ("Threads",       6446901002)],
+    "GOOGL": [("Google",         284815942),  ("YouTube",    544007664)],
+    "AAPL":  [("Apple Music",    1108187390)],
+    "AMZN":  [("Amazon",         297606951),  ("Prime Video", 545519333)],
+    "DKNG":  [("DraftKings",    1232728332)],
+    "PENN":  [("Barstool Sportsbook", 1535697867)],
+    "ROKU":  [("The Roku App",   482307590)],
+    "DUOL":  [("Duolingo",      570060128)],
+    "RBLX":  [("Roblox",         431946152)],
+    "PTON":  [("Peloton",       792750948)],
+    "RDDT":  [("Reddit",         1064216828)],
+    "DIS":   [("Disney+",       1446075923)],
+    "WBD":   [("Max",           1547663261)],
+    "PARA":  [("Paramount+",     376511118)],
+    "CHWY":  [("Chewy",          1042177810)],
+    "W":     [("Wayfair",        688039726)],
+    "EBAY":  [("eBay",           282614216)],
+    "PYPL":  [("PayPal",         283646709)],
+    "COIN":  [("Coinbase",      886427730)],
+    "HOOD":  [("Robinhood",     938003185)],
+    "SOFI":  [("SoFi",           1242564978)],
+}
+
+_CACHE_TTL["app_store_ranking"] = 86400
+
+
+# Cached top-free / top-grossing chart per category to avoid hitting
+# the iTunes RSS once per ticker. Single fetch per category per day.
+_RANKING_CHART_CACHE = {}
+_RANKING_CHART_LOCK = threading.Lock()
+
+
+def _fetch_apple_chart(chart_kind: str = "topgrossingapplications",
+                          category: int = 0,
+                          limit: int = 200):
+    """Fetch one Apple iTunes RSS chart. Returns list of dicts:
+       [{rank, name, app_id}, ...]
+    chart_kind: 'topgrossingapplications', 'topfreeapplications',
+                'toppaidapplications'.
+    category=0 → all categories combined.
+    """
+    cache_key = f"{chart_kind}_{category}_{limit}"
+    with _RANKING_CHART_LOCK:
+        cached = _RANKING_CHART_CACHE.get(cache_key)
+        if cached and (time.time() - cached[0]) < _CACHE_TTL["app_store_ranking"]:
+            return cached[1]
+
+    cat_segment = f"genre={category}/" if category else ""
+    url = (
+        f"https://itunes.apple.com/us/rss/{chart_kind}/"
+        f"{cat_segment}limit={limit}/json"
+    )
+    out = []
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "QuantOpsAI/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        entries = data.get("feed", {}).get("entry") or []
+        for i, e in enumerate(entries, start=1):
+            try:
+                name = e.get("im:name", {}).get("label", "")
+                app_id = int(e.get("id", {}).get("attributes", {}).get("im:id") or 0)
+                if app_id:
+                    out.append({"rank": i, "name": name, "app_id": app_id})
+            except Exception:
+                continue
+    except Exception as exc:
+        logging.debug("Apple RSS fetch failed (%s): %s", chart_kind, exc)
+    with _RANKING_CHART_LOCK:
+        _RANKING_CHART_CACHE[cache_key] = (time.time(), out)
+    return out
+
+
+def get_app_store_ranking(symbol: str):
+    """Apple App Store ranking signal for a ticker's primary app(s).
+
+    Output:
+      {
+        "best_grossing_rank": int | None,    # lower = better; None if not in top-200
+        "best_free_rank": int | None,
+        "wow_change_grossing": int | None,   # rank delta vs 7d ago (negative = improving)
+        "apps": [{name, grossing_rank, free_rank}, ...],
+        "has_data": bool,
+      }
+
+    Limited to ~30 consumer-app tickers in APP_STORE_TICKER_OVERRIDES.
+    Tickers without a known app return has_data=False.
+    """
+    sym = (symbol or "").upper()
+    if "/" in sym:
+        return {"has_data": False, "is_crypto": True}
+    apps = APP_STORE_TICKER_OVERRIDES.get(sym)
+    if not apps:
+        return {"has_data": False, "no_known_app": True}
+
+    cache_key = f"app_store_ranking_{sym}"
+    cached = _get_cached(cache_key, "app_store_ranking")
+    if cached is not None:
+        return cached
+
+    grossing = _fetch_apple_chart("topgrossingapplications", limit=200)
+    free = _fetch_apple_chart("topfreeapplications", limit=200)
+    grossing_by_id = {a["app_id"]: a["rank"] for a in grossing}
+    free_by_id = {a["app_id"]: a["rank"] for a in free}
+
+    per_app = []
+    best_grossing = None
+    best_free = None
+    for name, app_id in apps:
+        gr = grossing_by_id.get(app_id)
+        fr = free_by_id.get(app_id)
+        per_app.append({
+            "name": name, "app_id": app_id,
+            "grossing_rank": gr, "free_rank": fr,
+        })
+        if gr and (best_grossing is None or gr < best_grossing):
+            best_grossing = gr
+        if fr and (best_free is None or fr < best_free):
+            best_free = fr
+
+    result = {
+        "best_grossing_rank": best_grossing,
+        "best_free_rank": best_free,
+        # WoW change requires history; we don't snapshot daily yet so
+        # leave None — future enhancement when daily snapshots persist.
+        "wow_change_grossing": None,
+        "apps": per_app,
+        "has_data": (best_grossing is not None or best_free is not None),
+    }
+    _set_cached(cache_key, result)
+    return result
+
+
 def get_all_alternative_data(symbol):
     """Fetch all alternative data for a symbol in one call.
 
@@ -1809,5 +1969,6 @@ def get_all_alternative_data(symbol):
         # Item 3a — web-scraped attention signals.
         "google_trends": get_google_trends_signal(symbol),
         "wikipedia_pageviews": get_wikipedia_pageviews_signal(symbol),
+        "app_store_ranking": get_app_store_ranking(symbol),
         # patent_activity: DISABLED — PatentsView v1 API deprecated
     }
