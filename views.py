@@ -895,6 +895,14 @@ def save_profile(profile_id):
     else:
         config_updates["custom_watchlist"] = []
 
+    # OPEN_ITEMS #4 — wheel symbols (comma-separated → JSON list)
+    wheel_raw = form.get("wheel_symbols", "").strip()
+    if wheel_raw:
+        wheel_syms = [s.strip().upper() for s in wheel_raw.split(",") if s.strip()]
+        config_updates["wheel_symbols"] = json.dumps(wheel_syms)
+    else:
+        config_updates["wheel_symbols"] = "[]"
+
     # AI provider/model configuration
     ai_provider = form.get("ai_provider", "").strip()
     ai_model = form.get("ai_model", "").strip()
@@ -3647,7 +3655,12 @@ def api_mc_backtest(profile_id):
     trades = [
         {"entry_price": float(r["entry_price"]),
          "exit_price": float(r["exit_price"]),
-         "side": r["side"]}
+         "side": r["side"],
+         # Use the exit date as the trade-day key; entry_date isn't on
+         # the joined query and exit-day correlation is what dominates
+         # slippage (every fill that hour shares the same liquidity).
+         "entry_date": (r["exit_date"] or "")[:10],
+         "exit_date": (r["exit_date"] or "")[:10]}
         for r in rows
     ]
     if len(trades) < 5:

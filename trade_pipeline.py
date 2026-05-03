@@ -748,13 +748,23 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             target_price = round(price * (1 + actual_tp_pct), 4)
             # Item 5c — capture the slippage model's prediction at
             # submit time so we can later compare to realized slippage
-            # (calibration drift tracking).
+            # (calibration drift tracking). Also capture 20-day ADV so
+            # the calibrator can use real participation_rate later.
             predicted_slip = None
+            adv_at_decision = None
+            try:
+                from market_data import get_bars
+                _bars = get_bars(symbol, limit=25)
+                if _bars is not None and len(_bars) >= 5:
+                    adv_at_decision = float(_bars["volume"].tail(20).mean())
+            except Exception:
+                pass
             try:
                 from slippage_model import estimate_slippage
                 _est = estimate_slippage(
                     symbol=symbol, qty=qty, side="buy",
                     decision_price=price,
+                    adv_shares=adv_at_decision,
                     db_path=db_path,
                     market_type=getattr(ctx, "market_type", None) if ctx else None,
                 )
@@ -776,6 +786,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 take_profit=target_price,
                 decision_price=price,
                 predicted_slippage_bps=predicted_slip,
+                adv_at_decision=adv_at_decision,
                 db_path=db_path,
             )
 
@@ -821,13 +832,22 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             pnl = position.get("unrealized_pl")
             if pnl is not None and qty > 0:
                 pnl = float(pnl) * (sell_qty / qty)
-            # Item 5c — also capture predicted slippage on the exit
+            # Item 5c — capture predicted slippage + ADV on the exit
             predicted_slip_sell = None
+            adv_at_sell = None
+            try:
+                from market_data import get_bars
+                _bars = get_bars(symbol, limit=25)
+                if _bars is not None and len(_bars) >= 5:
+                    adv_at_sell = float(_bars["volume"].tail(20).mean())
+            except Exception:
+                pass
             try:
                 from slippage_model import estimate_slippage
                 _est = estimate_slippage(
                     symbol=symbol, qty=int(sell_qty), side="sell",
                     decision_price=price,
+                    adv_shares=adv_at_sell,
                     db_path=db_path,
                     market_type=getattr(ctx, "market_type", None) if ctx else None,
                 )
@@ -852,6 +872,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 status="closed" if pnl is not None else "open",
                 decision_price=price,
                 predicted_slippage_bps=predicted_slip_sell,
+                adv_at_decision=adv_at_sell,
                 db_path=db_path,
             )
             # Mark matching open BUY rows as closed so the trades page

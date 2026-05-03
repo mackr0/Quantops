@@ -128,6 +128,10 @@ MANUAL_PARAMETERS = {
     "long_vol_hedge_drawdown_pct":    "User-set hedge trigger preference (drawdown threshold)",
     "long_vol_hedge_var_pct":         "User-set hedge trigger preference (VaR threshold)",
     "long_vol_hedge_premium_pct":     "User-set hedge sizing (% of book per hedge)",
+    # OPEN_ITEMS #4 — wheel automation symbol opt-in list. Strategic
+    # choice (which names is this profile willing to be assigned in
+    # exchange for premium income), not a tunable parameter.
+    "wheel_symbols":                   "User-curated symbol opt-in list for the wheel cycle",
 
     # P2.2 of LONG_SHORT_PLAN.md — strategic choice (long-only vs
     # balanced vs short-dominant). The AI prompt directive (P2.2)

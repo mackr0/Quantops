@@ -824,6 +824,14 @@
                 <textarea name="custom_watchlist" rows="2"
                           placeholder="AAPL, TSLA, NVDA">{{ prof.custom_watchlist|join(', ') if prof.custom_watchlist is iterable and prof.custom_watchlist is not string else prof.get('custom_watchlist', '') }}</textarea>
             </label>
+
+            <!-- Wheel Symbols -->
+            <label>
+                <span class="tip" data-tip="Tickers this profile is opted into for the options wheel cycle: cash → cash-secured put → (assigned) → shares → covered call → (called away) → cash. The wheel runs as a recommendation engine — each step is surfaced to the AI prompt for confirmation rather than auto-firing. Empty = wheel inactive for this profile.">Wheel Symbols (options wheel automation)</span>
+                <textarea name="wheel_symbols" rows="2"
+                          placeholder="MSFT, AAPL, KO">{{ prof.wheel_symbols|join(', ') if prof.wheel_symbols is iterable and prof.wheel_symbols is not string else (prof.get('wheel_symbols', '') or '') }}</textarea>
+                <small class="muted">Empty = wheel disabled for this profile. Recommend stable, dividend-paying names where assignment is OK.</small>
+            </label>
             <a href="javascript:void(0)" class="view-universe-btn"
                data-profile-id="{{ prof.id }}"
                data-profile-name="{{ prof.name }}"

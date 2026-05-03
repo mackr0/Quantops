@@ -342,6 +342,15 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_universe_audit(ctx),
             db_path=ctx.db_path,
         )
+        # Item 2 of OPEN_ITEMS — App Store rankings daily snapshot.
+        # Idempotent across the day; populates app_store_history so
+        # the WoW-change feature on get_app_store_ranking can compute
+        # rank deltas vs last week.
+        run_task(
+            f"[{seg_label}] App Store Rankings Snapshot",
+            lambda: _task_app_store_snapshot(ctx),
+            db_path=ctx.db_path,
+        )
         # Alpha decay monitoring (Phase 3) — snapshot + detect + deprecate
         run_task(
             f"[{seg_label}] Alpha Decay Monitor",
@@ -1993,6 +2002,45 @@ def _persist_risk_snapshot(db_path, risk, scenarios, equity):
     )
     conn.commit()
     conn.close()
+
+
+def _task_app_store_snapshot(ctx):
+    """Daily snapshot of App Store rankings into app_store_history.
+    Idempotent: only runs once per UTC day across the whole scheduler.
+    """
+    seg_label = ctx.display_name or ctx.segment
+    try:
+        from datetime import datetime as _dt
+        import sqlite3 as _sq
+        today = _dt.utcnow().date().isoformat()
+        marker = "quantopsai.db"
+        conn = _sq.connect(marker)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS app_store_snapshot_runs (
+                run_date TEXT PRIMARY KEY,
+                ran_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        if conn.execute(
+            "SELECT 1 FROM app_store_snapshot_runs WHERE run_date = ?",
+            (today,),
+        ).fetchone():
+            conn.close()
+            return
+        conn.close()
+        from alternative_data import snapshot_app_store_rankings_for_all_tickers
+        n = snapshot_app_store_rankings_for_all_tickers()
+        # Marker
+        conn = _sq.connect(marker)
+        conn.execute(
+            "INSERT INTO app_store_snapshot_runs (run_date) VALUES (?)",
+            (today,),
+        )
+        conn.commit()
+        conn.close()
+        logging.info(f"[{seg_label}] App Store snapshot wrote {n} rows")
+    except Exception:
+        logging.exception(f"[{seg_label}] App Store snapshot failed")
 
 
 def _task_universe_audit(ctx):

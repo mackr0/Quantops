@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 import math
 import random
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,28 @@ def _sample_slippage_bps(
             return float(rng.choice(samples))
     # Gaussian fallback. Always positive (adverse-direction).
     return abs(rng.gauss(fallback_mean, fallback_std))
+
+
+def _replay_with_slips(
+    trade: Dict[str, Any],
+    entry_slip_bps: float,
+    exit_slip_bps: float,
+) -> float:
+    """Replay one trade given pre-drawn entry+exit slippage values.
+    Used by by-day bootstrap mode; the caller draws once per (date,
+    side) and feeds the SAME draw to every trade on that key."""
+    entry = float(trade.get("entry_price") or 0)
+    exit_p = float(trade.get("exit_price") or 0)
+    if entry <= 0 or exit_p <= 0:
+        return 0.0
+    side = (trade.get("side") or "long").lower()
+    if side == "short":
+        entry_perturbed = entry * (1 - entry_slip_bps / 10000)
+        exit_perturbed = exit_p * (1 + exit_slip_bps / 10000)
+        return (entry_perturbed - exit_perturbed) / entry_perturbed
+    entry_perturbed = entry * (1 + entry_slip_bps / 10000)
+    exit_perturbed = exit_p * (1 - exit_slip_bps / 10000)
+    return (exit_perturbed - entry_perturbed) / entry_perturbed
 
 
 def replay_trade(
@@ -103,26 +125,37 @@ def run_monte_carlo(
     seed: Optional[int] = 42,
     initial_capital: float = 100_000.0,
     position_size_pct: float = 0.10,
+    bootstrap_mode: str = "by_day",
 ) -> Dict[str, Any]:
     """Run an MC backtest over a list of trades.
 
     For each of `n_sims` simulations:
-      For each trade: sample bootstrap slippage on entry + exit
-      Aggregate to total cumulative return (compounded)
+      bootstrap_mode='per_trade': sample slippage IID per entry/exit.
+        Captures per-fill variance; misses regime correlation.
+      bootstrap_mode='by_day' (default): sample ONE slippage realization
+        per (entry_date, side) pair; reuse across trades that share the
+        same fill day. Captures correlated-regime variance — full days
+        of wide spreads hit ALL trades that day, not each one IID.
+      Aggregate to total cumulative return (compounded).
     Returns the distribution stats.
 
     Args:
-        trades: list of trade dicts (entry_price, exit_price, side?).
+        trades: list of trade dicts (entry_price, exit_price, side,
+          entry_date?, exit_date?).
         db_path: source DB for slippage_model bootstrap calibration.
         market_type: scope the K cache.
         n_sims: number of MC trajectories.
-        seed: deterministic RNG (for tests / reproducibility).
+        seed: deterministic RNG.
         initial_capital, position_size_pct: convert pct returns to
-          dollar curve. Each trade is sized at `position_size_pct` of
+          dollar curve. Each trade sized at `position_size_pct` of
           current equity (compounding).
+        bootstrap_mode: 'per_trade' or 'by_day' (see above).
     """
     if not trades:
         return {"error": "empty trade list", "n_sims": 0}
+    if bootstrap_mode not in ("per_trade", "by_day"):
+        return {"error": f"invalid bootstrap_mode {bootstrap_mode!r}",
+                "n_sims": 0}
 
     bootstrap_residuals: Dict[str, List[float]] = {}
     if db_path:
@@ -133,20 +166,65 @@ def run_monte_carlo(
         except Exception as exc:
             logger.debug("MC: slippage calibration failed: %s", exc)
 
-    # Use one bucket for everything; finer-grained per-trade ADV
-    # estimation isn't available without bar-level data. The MC
-    # purpose is variance estimation, not precision per-trade.
     default_bucket = next(iter(bootstrap_residuals.keys()), None)
+
+    # For by-day mode, collect every (date, side) key referenced by
+    # any trade. Each sim draws one slippage residual per (date, side)
+    # at the start; trades sharing that key reuse the realization.
+    # Falls back to per-trade if entry_date/exit_date aren't set
+    # (graceful degradation for callers that don't supply them).
+    def _entry_key(tr):
+        d = tr.get("entry_date")
+        s = (tr.get("side") or "long").lower()
+        return (d, s) if d else None
+
+    def _exit_key(tr):
+        d = tr.get("exit_date") or tr.get("entry_date")
+        s = "long_exit" if (tr.get("side") or "long").lower() == "long" else "short_exit"
+        return (d, s) if d else None
 
     total_returns: List[float] = []
     final_equities: List[float] = []
     rng = random.Random(seed) if seed is not None else random.Random()
     for sim in range(n_sims):
         equity = initial_capital
+
+        # Pre-draw a per-day slippage map this sim will reuse
+        day_slip_cache: Dict[Tuple, float] = {}
+        if bootstrap_mode == "by_day":
+            keys = set()
+            for tr in trades:
+                ek = _entry_key(tr)
+                if ek:
+                    keys.add(ek)
+                xk = _exit_key(tr)
+                if xk:
+                    keys.add(xk)
+            for k in keys:
+                day_slip_cache[k] = _sample_slippage_bps(
+                    bootstrap_residuals, default_bucket, rng=rng,
+                )
+
         for tr in trades:
-            pnl_pct = replay_trade(
-                tr, bootstrap_residuals, bucket=default_bucket, rng=rng,
-            )
+            if bootstrap_mode == "by_day":
+                # Use the cached per-day draw when keys are available;
+                # fall back to fresh draw when dates are missing.
+                ek = _entry_key(tr)
+                xk = _exit_key(tr)
+                entry_slip_bps = day_slip_cache.get(ek) if ek else \
+                    _sample_slippage_bps(bootstrap_residuals,
+                                          default_bucket, rng=rng)
+                exit_slip_bps = day_slip_cache.get(xk) if xk else \
+                    _sample_slippage_bps(bootstrap_residuals,
+                                          default_bucket, rng=rng)
+                pnl_pct = _replay_with_slips(
+                    tr, entry_slip_bps, exit_slip_bps,
+                )
+            else:
+                pnl_pct = replay_trade(
+                    tr, bootstrap_residuals,
+                    bucket=default_bucket, rng=rng,
+                )
             position = equity * position_size_pct
             equity += position * pnl_pct
         total_returns.append((equity - initial_capital) / initial_capital)

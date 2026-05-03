@@ -80,6 +80,8 @@ INFRASTRUCTURE_TASKS = {
     "_task_sec_filings",               # daily SEC EDGAR scan; once per
                                          # market_type, not per profile
     "_task_weekly_digest",             # Sunday-only weekly summary
+    "_task_app_store_snapshot",        # daily idempotent — once per UTC
+                                         # day across all profiles
 }
 
 

@@ -380,6 +380,12 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             "REAL NOT NULL DEFAULT 0.03"),
         ("trading_profiles", "long_vol_hedge_premium_pct",
             "REAL NOT NULL DEFAULT 0.01"),
+        # Item 1a / Phase C3 — wheel automation. JSON list of
+        # symbols this profile is opted into for the wheel cycle
+        # (cash → CSP → assigned → shares → CC → called away → cash).
+        # Empty list = wheel inactive for this profile (default).
+        ("trading_profiles", "wheel_symbols",
+            "TEXT NOT NULL DEFAULT '[]'"),
     ]
     for table, col, col_def in _migrations:
         try:
@@ -855,6 +861,8 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "long_vol_hedge_drawdown_pct",
         "long_vol_hedge_var_pct",
         "long_vol_hedge_premium_pct",
+        # OPEN_ITEMS #4 — wheel automation symbol opt-in list.
+        "wheel_symbols",
     }
     updates = {}
     rejected = []
@@ -903,6 +911,21 @@ def delete_trading_profile(profile_id: int) -> None:
     conn.commit()
     conn.close()
     logger.info("Deleted trading profile #%d", profile_id)
+
+
+def _parse_wheel_symbols(raw):
+    """JSON list or empty when missing/invalid."""
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return [str(s).upper() for s in raw if s]
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [str(s).upper() for s in parsed if s]
+    except Exception:
+        pass
+    return []
 
 
 def build_user_context_from_profile(profile_id: int) -> UserContext:
@@ -1098,6 +1121,8 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
             profile.get("long_vol_hedge_premium_pct", 0.01)
             if profile.get("long_vol_hedge_premium_pct") is not None
             else 0.01),
+        # OPEN_ITEMS #4 — wheel symbols (JSON list)
+        wheel_symbols=_parse_wheel_symbols(profile.get("wheel_symbols")),
     )
 
 

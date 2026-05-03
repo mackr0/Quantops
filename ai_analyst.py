@@ -1304,10 +1304,19 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                 bits = []
                 gr = ap.get("best_grossing_rank")
                 fr = ap.get("best_free_rank")
+                wog = ap.get("wow_change_grossing")
+                wof = ap.get("wow_change_free")
                 if gr:
-                    bits.append(f"#{gr} grossing")
+                    if wog is not None:
+                        # Negative delta = improving (rank lower = better)
+                        bits.append(f"#{gr} grossing ({wog:+d} WoW)")
+                    else:
+                        bits.append(f"#{gr} grossing")
                 if fr:
-                    bits.append(f"#{fr} free")
+                    if wof is not None:
+                        bits.append(f"#{fr} free ({wof:+d} WoW)")
+                    else:
+                        bits.append(f"#{fr} free")
                 primary = (ap.get("apps") or [{}])[0].get("name", "app")
                 if bits:
                     txt = _weighted_signal_text(

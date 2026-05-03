@@ -168,7 +168,7 @@ def calibrate_from_history(
         # as traders data fills in.
         rows = conn.execute(
             "SELECT symbol, qty, decision_price, fill_price, "
-            "side FROM trades "
+            "side, adv_at_decision FROM trades "
             "WHERE decision_price IS NOT NULL AND fill_price IS NOT NULL "
             "AND decision_price > 0 AND status = 'filled'"
         ).fetchall()
@@ -179,6 +179,7 @@ def calibrate_from_history(
 
     samples: List[Tuple[float, float, float]] = []
     # Each: (participation_rate, realized_bps, qty_dollars)
+    real_adv_samples = 0
     for row in rows:
         try:
             qty = abs(float(row["qty"] or 0))
@@ -194,15 +195,16 @@ def calibrate_from_history(
                 bps = (fp - dp) / dp * 10000
             else:
                 bps = (dp - fp) / dp * 10000
-            # Without ADV-at-trade-time stored, approximate
-            # participation as a function of order notional vs typical
-            # 20d ADV (use universe-typical $50M ADV as the divisor).
-            # This is a coarse fit; better calibration will arrive when
-            # we start storing ADV alongside the fill. For now this
-            # gives K a stable baseline.
             notional = qty * dp
-            assumed_adv_dollars = 50_000_000
-            participation = notional / assumed_adv_dollars
+            # Prefer the row's stored 20d ADV (Item 5c continuation).
+            # Falls back to a coarse $50M ADV proxy for legacy rows
+            # that pre-date the column.
+            adv_shares = row["adv_at_decision"] if "adv_at_decision" in row.keys() else None
+            if adv_shares and adv_shares > 0:
+                participation = qty / float(adv_shares)
+                real_adv_samples += 1
+            else:
+                participation = notional / 50_000_000
             participation = max(participation, 1e-6)
             samples.append((participation, bps, notional))
         except Exception:
@@ -242,6 +244,7 @@ def calibrate_from_history(
     fit = {
         "K_bps": float(K_fit),
         "n_samples": len(samples),
+        "n_samples_real_adv": real_adv_samples,
         "mean_residual_bps": float(mean_residual),
         "fitted_at": time.time(),
         "market_type": market_type or "all",

@@ -1874,6 +1874,85 @@ def _fetch_apple_chart(chart_kind: str = "topgrossingapplications",
     return out
 
 
+def _ensure_app_store_history_table():
+    """One-time DDL — daily snapshots of best ranks per ticker.
+    Snapshots come from the daily scheduler task."""
+    try:
+        conn = sqlite3.connect(_DB_PATH)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS app_store_history (
+                snapshot_date TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                best_grossing_rank INTEGER,
+                best_free_rank INTEGER,
+                primary_app TEXT,
+                PRIMARY KEY (snapshot_date, ticker)
+            )
+        """)
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def snapshot_app_store_rankings_for_all_tickers() -> int:
+    """Daily scheduler entry: snapshot today's best ranks for every
+    ticker in APP_STORE_TICKER_OVERRIDES into app_store_history.
+    Returns the number of rows written."""
+    from datetime import datetime as _dt
+    _ensure_app_store_history_table()
+    today = _dt.utcnow().date().isoformat()
+    written = 0
+    try:
+        conn = sqlite3.connect(_DB_PATH)
+        for ticker in APP_STORE_TICKER_OVERRIDES.keys():
+            r = get_app_store_ranking(ticker)
+            if not r.get("has_data"):
+                continue
+            primary = (r.get("apps") or [{}])[0].get("name", "")
+            try:
+                conn.execute(
+                    """INSERT OR REPLACE INTO app_store_history
+                       (snapshot_date, ticker, best_grossing_rank,
+                        best_free_rank, primary_app)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (today, ticker.upper(),
+                     r.get("best_grossing_rank"),
+                     r.get("best_free_rank"),
+                     primary),
+                )
+                written += 1
+            except Exception:
+                continue
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        logging.warning("app_store snapshot failed: %s", exc)
+    return written
+
+
+def _get_wow_change(ticker: str):
+    """Look up the rank 6-8 days ago and compute current - prior.
+    Returns (wow_grossing, wow_free) with None where unavailable.
+    Negative delta = rank improved (lower number = better)."""
+    _ensure_app_store_history_table()
+    try:
+        conn = sqlite3.connect(_DB_PATH)
+        row = conn.execute(
+            """SELECT best_grossing_rank, best_free_rank
+            FROM app_store_history
+            WHERE ticker = ?
+              AND snapshot_date >= date('now', '-9 days')
+              AND snapshot_date <= date('now', '-6 days')
+            ORDER BY snapshot_date DESC LIMIT 1""",
+            (ticker.upper(),),
+        ).fetchone()
+        conn.close()
+    except Exception:
+        return None, None
+    return (row[0] if row else None, row[1] if row else None)
+
+
 def get_app_store_ranking(symbol: str):
     """Apple App Store ranking signal for a ticker's primary app(s).
 
@@ -1881,13 +1960,16 @@ def get_app_store_ranking(symbol: str):
       {
         "best_grossing_rank": int | None,    # lower = better; None if not in top-200
         "best_free_rank": int | None,
-        "wow_change_grossing": int | None,   # rank delta vs 7d ago (negative = improving)
+        "wow_change_grossing": int | None,   # rank delta vs ~7d ago
+        "wow_change_free": int | None,
         "apps": [{name, grossing_rank, free_rank}, ...],
         "has_data": bool,
       }
 
-    Limited to ~30 consumer-app tickers in APP_STORE_TICKER_OVERRIDES.
-    Tickers without a known app return has_data=False.
+    Limited to ~36 consumer-app tickers in APP_STORE_TICKER_OVERRIDES.
+    Tickers without a known app return has_data=False. WoW deltas
+    populate after the daily snapshot task has accumulated 7+ days
+    of history.
     """
     sym = (symbol or "").upper()
     if "/" in sym:
@@ -1921,12 +2003,21 @@ def get_app_store_ranking(symbol: str):
         if fr and (best_free is None or fr < best_free):
             best_free = fr
 
+    # Item 2 of OPEN_ITEMS — WoW change vs 7 days ago via the
+    # app_store_history table populated by the daily snapshot task.
+    prior_grossing, prior_free = _get_wow_change(sym)
+    wow_grossing = None
+    wow_free = None
+    if best_grossing is not None and prior_grossing is not None:
+        wow_grossing = best_grossing - prior_grossing
+    if best_free is not None and prior_free is not None:
+        wow_free = best_free - prior_free
+
     result = {
         "best_grossing_rank": best_grossing,
         "best_free_rank": best_free,
-        # WoW change requires history; we don't snapshot daily yet so
-        # leave None — future enhancement when daily snapshots persist.
-        "wow_change_grossing": None,
+        "wow_change_grossing": wow_grossing,
+        "wow_change_free": wow_free,
         "apps": per_app,
         "has_data": (best_grossing is not None or best_free is not None),
     }
