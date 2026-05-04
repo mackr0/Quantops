@@ -17,6 +17,22 @@ Rules going forward:
 
 ---
 
+## 2026-05-04 — Blanket guardrail: no snake_case + no internal-tracker refs in any template (Severity: high, regression)
+
+**What changed**: 5 dropdown options in the Synthetic Options Backtester (`long_put`, `long_call`, `bull_call_spread`, `bear_put_spread`, `iron_condor`) were displaying their raw API keys instead of human-readable labels; two `<h3>` panel headers were leaking internal tracker tags (`Slippage Model (Item 5c)`, `Monte Carlo Backtest (Item 5c)`); a slippage empty-state message named DB columns directly (`decision_price`, `fill_price`). All fixed.
+
+**Why**: Mack has called this exact class of leak out before (2026-04-25 incident with the Active Autonomy State card). The standing rule is **"NEVER ship a UI surface with snake_case visible text. NEVER ship a UI surface with internal-tracker references like (Item 5c)."** The 3 existing snake_case tests checked SPECIFIC known identifier families (PARAM_BOUNDS keys, sector / factor / scenario IDs, optimizer return values) — none scanned arbitrary `<option>` text or arbitrary heading text, so new dropdowns and panel headers slipped through.
+
+**Fix**:
+- Templates: `<option value="long_put">long_put</option>` → `<option value="long_put">Long Put</option>` (×5); `<h3>Slippage Model (Item 5c)</h3>` → `<h3>Slippage Model</h3>`; same for Monte Carlo Backtest header; the `decision_price and fill_price` empty-state copy was rewritten as plain English ("a recorded decision price and a recorded fill price").
+- New blanket guardrail `tests/test_no_internal_leakage_in_templates.py`: STATIC scan over every `templates/*.html` file. Strips `<script>`, `<style>`, `<code>`, `<pre>`, HTML comments, Jinja comments / expressions / tags, and structural attribute values, then asserts (a) no `[a-z]+_[a-z]+` token in remaining visible text, (b) no `(Item Nx)` / `(OPEN_ITEMS X)` / `(W3.)` tracker reference. Allowlist starts EMPTY — every leak must be fixed at the template level.
+
+**Tests**: 2,227 passing (added 2 new in the blanket guardrail — one for snake_case, one for tracker refs).
+
+**Why next time will be caught**: previous tests checked specific identifier families. This new test scans the entire template tree statically — any new `<option>foo_bar</option>` or `<h3>X (Item 7d)</h3>` shipped in a future commit will fail the static scan in CI / pre-deploy. The test starts with an empty allowlist by design — leaks must be fixed at the source, not whitelisted.
+
+---
+
 ## 2026-05-04 — AdComm meeting scraper (Severity: low, new capability)
 
 **What changed**: Added a side-channel to `pdufa_scraper.run_full_sync` that pulls upcoming FDA Advisory Committee meeting disclosures from SEC EDGAR 8-K full-text search and writes them to a new `adcomm_events` table. `alternative_data.get_biotech_milestones()` now returns `upcoming_adcomm_date`, `days_to_adcomm`, and `adcomm_committee` alongside the PDUFA fields.

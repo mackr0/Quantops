@@ -322,7 +322,7 @@
 
     <!-- Item 5c — Slippage model panel -->
     <article>
-        <header><h3>Slippage Model (Item 5c)</h3></header>
+        <header><h3>Slippage Model</h3></header>
         <p class="muted" style="margin-top:-0.5rem;">Realistic per-order execution-cost estimate. Four components: half-spread (deterministic from snapshot bid-ask), market impact (K × √participation, Almgren-Chriss square-root), volatility scalar (5% of daily vol bleeds into the decision-to-fill window), bootstrap residual (empirical noise from past fills, conditioned on order-size bucket). The K coefficient is calibrated weekly per market-type from realized trades; lazy refresh on call. The slippage estimate is shown to the AI per candidate as "Execution: ~X bps ($Y on this order)" so the model can pass over names where friction would eat the edge.</p>
         <div id="slippage-model-widget"><p class="muted">Loading...</p></div>
     </article>
@@ -336,7 +336,7 @@
 
     <!-- Item 5c — Monte Carlo backtest -->
     <article>
-        <header><h3>Monte Carlo Backtest (Item 5c)</h3></header>
+        <header><h3>Monte Carlo Backtest</h3></header>
         <p class="muted" style="margin-top:-0.5rem;">Replay this profile's recent closed trades N times with slippage drawn from the bootstrap distribution. Distinguishes "strategy edge &gt; execution variance" from "deterministic P&amp;L was a lucky slippage realization". Output is the P&amp;L distribution: median, 5/95th percentile, σ, and probability of loss across all simulations. Click Run to execute (1000 sims default; takes a few seconds for 100+ trades).</p>
         <div id="mc-backtest-widget"><p class="muted">Pick a profile and click Run.</p></div>
         <button id="mc-run-btn" class="outline" style="margin-top:0.5rem;font-size:0.9rem;">▶ Run Monte Carlo</button>
@@ -350,11 +350,11 @@
             <label>Symbol<input type="text" id="ob-symbol" value="SPY" style="text-transform:uppercase;"></label>
             <label>Strategy
                 <select id="ob-strategy">
-                    <option value="long_put">long_put</option>
-                    <option value="long_call">long_call</option>
-                    <option value="bull_call_spread">bull_call_spread</option>
-                    <option value="bear_put_spread">bear_put_spread</option>
-                    <option value="iron_condor" selected>iron_condor</option>
+                    <option value="long_put">Long Put</option>
+                    <option value="long_call">Long Call</option>
+                    <option value="bull_call_spread">Bull Call Spread</option>
+                    <option value="bear_put_spread">Bear Put Spread</option>
+                    <option value="iron_condor" selected>Iron Condor</option>
                 </select>
             </label>
             <label>Lookback days<input type="number" id="ob-lookback" value="365" min="30" max="1825"></label>
