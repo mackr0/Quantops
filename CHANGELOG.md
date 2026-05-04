@@ -17,6 +17,22 @@ Rules going forward:
 
 ---
 
+## 2026-05-04 — trade_pipeline NameError on strategy-weight branch (Severity: critical, scan crash)
+
+**What changed**: `trade_pipeline.run_trade_cycle` had two `logger.debug(...)` calls (lines 1898, 1904) using a `logger` name that was never bound in the file — every other line in the same module uses `logging.info(...)` directly. The path is gated behind `weight != 1.0` from `compute_strategy_weights` and stayed dormant for a long time. As soon as it executed in production today, the Small Cap Scan & Trade task crashed with `NameError: name 'logger' is not defined`.
+
+**Why**: Mixing two logging styles in the same file (some calls via the module-level `logging` namespace, some via a `logger` local that was never created) created a latent crash waiting for the conditional path to fire. There was no guardrail to detect a bare `logger.X(...)` reference that lacked a corresponding `logger = logging.getLogger(__name__)` definition.
+
+**Fix**:
+- `trade_pipeline.py:1898,1904` — replaced `logger.debug(...)` with `logging.debug(...)` to match every other call in the file.
+- New `tests/test_no_undefined_logger.py` — scans every production `.py` at the repo root and fails if any file uses `logger.X(...)` without defining `logger` (assignment OR explicit import). Runs in <0.1s, prevents the same trip wire from getting re-introduced.
+
+**Tests**: 2,236 passing.
+
+**Why next time will be caught**: the new guardrail is a static AST-equivalent regex check that runs in every test sweep. Any future code path that ships `logger.something(...)` in a file without `logger =` will fail CI before the scheduler ever invokes it.
+
+---
+
 ## 2026-05-04 — Synthetic Options Backtester endpoint never worked (Severity: critical, ships-broken-UI)
 
 **What changed**: Fixed `/api/options-backtest` (the Run button on the Synthetic Options Backtester panel). The endpoint had been broken since it shipped — clicking any of the 5 dropdown options (`long_put`, `long_call`, `bull_call_spread`, `bear_put_spread`, `iron_condor`) returned a 500 with `cannot import name 'long_put' from 'options_multileg'`.

@@ -1895,13 +1895,13 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     if weight != 1.0:
                         old_size = size_pct
                         size_pct = size_pct * weight
-                        logger.debug(
+                        logging.debug(
                             "Strategy weight applied to %s (%s): "
                             "%.3f × %.3fx = %.3f",
                             symbol, primary_strategy, old_size, weight, size_pct,
                         )
             except Exception as exc:
-                logger.debug("Strategy weight lookup failed: %s", exc)
+                logging.debug("Strategy weight lookup failed: %s", exc)
 
         signal = {
             "symbol": symbol,
