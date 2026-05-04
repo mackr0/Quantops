@@ -1386,10 +1386,28 @@ def get_biotech_milestones(symbol: str) -> Dict[str, Any]:
         (symbol,),
     )
 
+    # Nearest upcoming AdComm meeting (forward-looking; AdComms typically
+    # precede PDUFAs by 1-3 months and the meeting outcome materially
+    # moves the stock).
+    adcomm_rows = _altdata_query(
+        "biotechevents", "biotechevents.db",
+        """
+        SELECT drug_name, adcomm_date, committee_name
+        FROM adcomm_events
+        WHERE UPPER(ticker) = UPPER(?)
+          AND date(adcomm_date) >= date('now')
+        ORDER BY date(adcomm_date) ASC LIMIT 1
+        """,
+        (symbol,),
+    )
+
     result: Dict[str, Any] = {
         "upcoming_pdufa_date": None,
         "days_to_pdufa": None,
         "drug_name": None,
+        "upcoming_adcomm_date": None,
+        "days_to_adcomm": None,
+        "adcomm_committee": None,
         "active_phase3_count": (p3_rows[0]["p3_count"] or 0)
             if p3_rows else 0,
         "recent_phase_change": None,
@@ -1416,6 +1434,21 @@ def get_biotech_milestones(symbol: str) -> Dict[str, Any]:
             "to": rc["new_value"],
             "detected_at": rc["detected_at"],
         }
+
+    if adcomm_rows:
+        from datetime import datetime
+        adcomm_date = adcomm_rows[0]["adcomm_date"]
+        result["upcoming_adcomm_date"] = adcomm_date
+        result["adcomm_committee"] = adcomm_rows[0]["committee_name"]
+        if not result["drug_name"]:
+            result["drug_name"] = adcomm_rows[0]["drug_name"]
+        try:
+            from zoneinfo import ZoneInfo
+            d = datetime.strptime(adcomm_date, "%Y-%m-%d").date()
+            today_et = datetime.now(ZoneInfo("America/New_York")).date()
+            result["days_to_adcomm"] = (d - today_et).days
+        except Exception:
+            pass
 
     _set_cached(cache_key, result)
     return result

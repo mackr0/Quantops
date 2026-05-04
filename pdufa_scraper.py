@@ -539,10 +539,17 @@ _SEC_ARTIFACT_PREFIXES = {
 }
 
 
-def _parse_drug_and_action_near_pdufa(text: str) -> Tuple[str, str]:
+def _parse_drug_and_action_near_phrase(
+    text: str, anchor: str
+) -> Tuple[str, str]:
     """Extract a best-effort drug name and action_type (NDA/BLA/...) from
-    a window of text around the first "PDUFA" mention. Returns
-    ("(see filing)", "") if nothing parseable was found."""
+    a window of text around the first occurrence of `anchor` (typically
+    "PDUFA" or "Advisory"). Returns ("(see filing)", "") if nothing
+    parseable was found.
+
+    Used by both the PDUFA fetcher (anchor="PDUFA") and the AdComm
+    fetcher (anchor="Advisory"). The 3-pass extraction is identical
+    for both — only the anchor differs."""
     if not text:
         return "(see filing)", ""
 
@@ -550,13 +557,11 @@ def _parse_drug_and_action_near_pdufa(text: str) -> Tuple[str, str]:
     action_match = _ACTION_TYPE_RE.search(text)
     action_type = action_match.group(1).upper() if action_match else ""
 
-    # Drug name — restrict the search to a window around "PDUFA"
-    # because filings often mention multiple compounds in 8-Ks.
-    pdufa_idx = text.upper().find("PDUFA")
-    if pdufa_idx == -1:
+    anchor_idx = text.upper().find(anchor.upper())
+    if anchor_idx == -1:
         return "(see filing)", action_type
-    window_start = max(0, pdufa_idx - 500)
-    window_end = min(len(text), pdufa_idx + 300)
+    window_start = max(0, anchor_idx - 500)
+    window_end = min(len(text), anchor_idx + 300)
     window = text[window_start:window_end]
 
     drug = ""
@@ -572,7 +577,6 @@ def _parse_drug_and_action_near_pdufa(text: str) -> Tuple[str, str]:
             first_word = cl.split(" ", 1)[0]
             if first_word in _BANNED_PREFIX_TOKENS or cl in _DRUG_FP:
                 continue
-            # Reject FDA designation phrases (Priority Review, etc.)
             if cl in _FDA_DESIGNATION_PHRASES:
                 continue
             if any(phrase in cl for phrase in _FDA_DESIGNATION_PHRASES):
@@ -583,7 +587,7 @@ def _parse_drug_and_action_near_pdufa(text: str) -> Tuple[str, str]:
         if drug:
             break
 
-    # Pass 2: WHO INN drug suffixes (-mab, -nib, -ersen, etc.)
+    # Pass 2: WHO INN drug suffixes (-mab, -nib, -rsen, etc.)
     if not drug:
         for m in _DRUG_SUFFIX_RE.finditer(window):
             candidate = m.group(1)
@@ -605,6 +609,12 @@ def _parse_drug_and_action_near_pdufa(text: str) -> Tuple[str, str]:
                 break
 
     return (drug or "(see filing)"), action_type
+
+
+def _parse_drug_and_action_near_pdufa(text: str) -> Tuple[str, str]:
+    """Backward-compatible PDUFA-specific wrapper. New callers should
+    use _parse_drug_and_action_near_phrase directly."""
+    return _parse_drug_and_action_near_phrase(text, "PDUFA")
 
 
 def fetch_pdufa_events_from_edgar(
@@ -687,4 +697,207 @@ def run_full_sync() -> Tuple[int, int]:
     """Fetch then sync. Returns (n_fetched, n_written)."""
     events = fetch_pdufa_events()
     n = sync_pdufa_events_to_altdata_db(events) if events else 0
+    # AdComm side-channel: same EDGAR API, different query, parallel
+    # table. Failures are independent — a broken AdComm parse should
+    # not invalidate the PDUFA pull, and vice versa.
+    try:
+        adcomm_events = fetch_adcomm_events_from_edgar()
+        if adcomm_events:
+            sync_adcomm_events_to_altdata_db(adcomm_events)
+    except Exception as exc:
+        logger.warning("AdComm side-sync failed: %s", exc)
     return (len(events), n)
+
+
+# ---------------------------------------------------------------------------
+# AdComm (FDA Advisory Committee meeting) scraper
+# ---------------------------------------------------------------------------
+# Companies disclose upcoming Advisory Committee meeting dates in 8-K
+# filings (and sometimes the meeting outcome). These are leading
+# indicators for PDUFA decisions: an AdComm typically precedes a PDUFA
+# date by 1-3 months.
+#
+# Schema parallels pdufa_events for the same UNIQUE-key pattern.
+
+# Date phrasings observed in real AdComm 8-K filings:
+#   "Advisory Committee meeting on May 15, 2026"
+#   "AdComm scheduled for May 15"
+#   "FDA Advisory Committee meeting on 5/15/2026"
+_ADCOMM_DATE_PATTERNS = [
+    re.compile(
+        r"Advisory\s+Committee[\s\S]{0,80}?(?:meeting|scheduled)\s+(?:on|for)\s+"
+        r"((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"Advisory\s+Committee[\s\S]{0,80}?(?:meeting|scheduled)\s+(?:on|for)\s+"
+        r"(\d{1,2}/\d{1,2}/\d{4})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"AdComm[\s\S]{0,40}?(?:meeting|scheduled)\s+(?:on|for)\s+"
+        r"((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4})",
+        re.IGNORECASE,
+    ),
+]
+
+# Specific committee names (optional metadata).
+_COMMITTEE_NAME_RE = re.compile(
+    r"\b(ODAC|GIDAC|BPAC|EMDAC|VRBPAC|CRDAC|DSARM|"
+    r"Oncologic Drugs Advisory Committee|"
+    r"Cellular,?\s*Tissue,?\s*and\s*Gene\s*Therapies\s*Advisory\s*Committee|"
+    r"Antimicrobial Drugs Advisory Committee|"
+    r"Cardiovascular and Renal Drugs Advisory Committee|"
+    r"Neurological Drugs Advisory Committee|"
+    r"Endocrinologic and Metabolic Drugs Advisory Committee|"
+    r"Vaccines and Related Biological Products Advisory Committee)\b",
+)
+
+
+def _ensure_adcomm_table(db_path: str) -> None:
+    """Create adcomm_events table if it doesn't exist."""
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS adcomm_events (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker          TEXT    NOT NULL,
+            sponsor_company TEXT    NOT NULL,
+            drug_name       TEXT,
+            adcomm_date     TEXT    NOT NULL,
+            committee_name  TEXT,
+            outcome         TEXT    DEFAULT 'pending',
+            outcome_date    TEXT,
+            source_url      TEXT,
+            parser_version  TEXT,
+            fetched_at      TEXT    NOT NULL,
+            UNIQUE (ticker, adcomm_date)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_adcomm_ticker ON adcomm_events(ticker)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_adcomm_date ON adcomm_events(adcomm_date)"
+    )
+    conn.commit()
+    conn.close()
+
+
+def _parse_adcomm_dates_from_text(text: str) -> List[str]:
+    """Find AdComm meeting date strings. Returns ISO YYYY-MM-DD list."""
+    if not text:
+        return []
+    found = []
+    for pat in _ADCOMM_DATE_PATTERNS:
+        for m in pat.finditer(text):
+            iso = _parse_iso_date(m.group(1))
+            if iso:
+                found.append(iso)
+    return list(set(found))
+
+
+def _parse_committee_name(text: str) -> str:
+    """Extract a specific committee name (ODAC, BPAC, etc.) if mentioned."""
+    if not text:
+        return ""
+    m = _COMMITTEE_NAME_RE.search(text)
+    return m.group(1).strip() if m else ""
+
+
+def fetch_adcomm_events_from_edgar(
+    lookback_days: int = 60,
+    max_filings: int = 50,
+    polite_sleep_seconds: float = 0.2,
+) -> List[Dict[str, str]]:
+    """Pull AdComm meeting disclosures from 8-K filings via EDGAR
+    full-text search. Returns a list of {ticker, drug_name,
+    adcomm_date, committee_name, source_url} dicts."""
+    response = _fetch_edgar_search('"Advisory Committee meeting"', lookback_days)
+    hits = response.get("hits", {}).get("hits", [])
+    if not hits:
+        return []
+
+    events = []
+    for hit in hits[:max_filings]:
+        source = hit.get("_source", {})
+        display_names = source.get("display_names", [])
+        ciks = source.get("ciks", [])
+        adsh = source.get("adsh", "")
+        doc_id = hit.get("_id", "")
+        if not display_names or not ciks or not adsh or ":" not in doc_id:
+            continue
+        ticker = _extract_ticker_from_display(display_names[0])
+        if not ticker:
+            continue
+        filename = doc_id.split(":", 1)[1]
+        url = _build_filing_doc_url(adsh, ciks[0], filename)
+        text = _fetch_filing_text(url)
+        time.sleep(polite_sleep_seconds)
+        if not text:
+            continue
+        dates = _parse_adcomm_dates_from_text(text)
+        if not dates:
+            continue
+        sponsor = display_names[0].split("(")[0].strip()
+        # Reuse the PDUFA drug-name extractor since the surrounding
+        # filing text is similar — drug-name patterns work for AdComm
+        # 8-Ks too. Just point it at "Advisory" instead of "PDUFA".
+        drug_name, _ = _parse_drug_and_action_near_phrase(text, "Advisory")
+        committee = _parse_committee_name(text)
+        for adcomm_date in dates:
+            events.append({
+                "ticker": ticker,
+                "drug_name": drug_name,
+                "sponsor_company": sponsor,
+                "adcomm_date": adcomm_date,
+                "committee_name": committee,
+                "source_url": url,
+            })
+
+    seen = set()
+    unique = []
+    for e in events:
+        key = (e["ticker"], e["adcomm_date"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(e)
+    return unique
+
+
+def sync_adcomm_events_to_altdata_db(
+    events: List[Dict[str, str]],
+    db_path: Optional[str] = None,
+) -> int:
+    """Upsert AdComm events into adcomm_events. Returns rows written."""
+    db_path = db_path or _altdata_db_path()
+    if not os.path.exists(os.path.dirname(db_path)):
+        try:
+            os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        except OSError as exc:
+            logger.warning("AdComm sync: mkdir failed: %s", exc)
+            return 0
+    _ensure_adcomm_table(db_path)
+    written = 0
+    try:
+        conn = sqlite3.connect(db_path)
+        for e in events:
+            try:
+                conn.execute(
+                    """INSERT OR REPLACE INTO adcomm_events
+                       (ticker, sponsor_company, drug_name, adcomm_date,
+                        committee_name, source_url, parser_version,
+                        fetched_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                    (e["ticker"], e.get("sponsor_company") or e["ticker"],
+                     e.get("drug_name") or "(see filing)",
+                     e["adcomm_date"], e.get("committee_name") or None,
+                     e.get("source_url", ""), "edgar_8k_v1"),
+                )
+                written += 1
+            except Exception:
+                continue
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        logger.warning("AdComm sync write failed: %s", exc)
+    return written

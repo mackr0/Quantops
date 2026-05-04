@@ -474,6 +474,135 @@ class TestDrugAndActionExtraction:
         assert "phentolamine" in drug.lower()
 
 
+class TestAdcommDateParsing:
+    def test_long_form_date(self):
+        from pdufa_scraper import _parse_adcomm_dates_from_text
+        text = (
+            "FDA's Advisory Committee meeting on May 15, 2026 to "
+            "discuss the Company's BLA submission."
+        )
+        dates = _parse_adcomm_dates_from_text(text)
+        assert "2026-05-15" in dates
+
+    def test_us_format_date(self):
+        from pdufa_scraper import _parse_adcomm_dates_from_text
+        text = "Advisory Committee meeting on 5/15/2026."
+        dates = _parse_adcomm_dates_from_text(text)
+        assert "2026-05-15" in dates
+
+    def test_adcomm_short_form(self):
+        from pdufa_scraper import _parse_adcomm_dates_from_text
+        text = "AdComm scheduled for August 22, 2026."
+        dates = _parse_adcomm_dates_from_text(text)
+        assert "2026-08-22" in dates
+
+    def test_no_adcomm_no_match(self):
+        from pdufa_scraper import _parse_adcomm_dates_from_text
+        assert _parse_adcomm_dates_from_text(
+            "PDUFA target action date of June 5, 2026."
+        ) == []
+
+
+class TestCommitteeNameExtraction:
+    def test_acronym(self):
+        from pdufa_scraper import _parse_committee_name
+        assert _parse_committee_name(
+            "FDA's ODAC will review the Company's NDA"
+        ) == "ODAC"
+
+    def test_full_name(self):
+        from pdufa_scraper import _parse_committee_name
+        assert _parse_committee_name(
+            "the Oncologic Drugs Advisory Committee will convene"
+        ) == "Oncologic Drugs Advisory Committee"
+
+    def test_no_committee_name(self):
+        from pdufa_scraper import _parse_committee_name
+        assert _parse_committee_name(
+            "Advisory Committee meeting on May 15, 2026"
+        ) == ""
+
+
+class TestAdcommSync:
+    def test_writes_event_with_committee(self, tmp_path):
+        from pdufa_scraper import sync_adcomm_events_to_altdata_db
+        import sqlite3 as _sq
+        db = str(tmp_path / "biotechevents.db")
+        e = {
+            "ticker": "PRAX",
+            "sponsor_company": "Praxis Precision Medicines, Inc.",
+            "drug_name": "ulixacaltamide",
+            "adcomm_date": "2026-05-15",
+            "committee_name": "ODAC",
+            "source_url": "https://example.com/8-k.htm",
+        }
+        sync_adcomm_events_to_altdata_db([e], db_path=db)
+        conn = _sq.connect(db)
+        rows = conn.execute(
+            "SELECT ticker, drug_name, committee_name, adcomm_date "
+            "FROM adcomm_events"
+        ).fetchall()
+        conn.close()
+        assert len(rows) == 1
+        assert rows[0] == ("PRAX", "ulixacaltamide", "ODAC", "2026-05-15")
+
+    def test_unique_constraint_on_ticker_date(self, tmp_path):
+        from pdufa_scraper import sync_adcomm_events_to_altdata_db
+        import sqlite3 as _sq
+        db = str(tmp_path / "biotechevents.db")
+        e = {
+            "ticker": "PRAX",
+            "sponsor_company": "Praxis",
+            "adcomm_date": "2026-05-15",
+        }
+        sync_adcomm_events_to_altdata_db([e], db_path=db)
+        sync_adcomm_events_to_altdata_db([e], db_path=db)
+        conn = _sq.connect(db)
+        n = conn.execute("SELECT COUNT(*) FROM adcomm_events").fetchone()[0]
+        conn.close()
+        assert n == 1
+
+
+class TestAdcommFetchIntegration:
+    def test_fetches_and_parses_real_phrasing(self):
+        from pdufa_scraper import fetch_adcomm_events_from_edgar
+        fake_search = {
+            "hits": {
+                "hits": [
+                    {
+                        "_id": "0001-26-000001:exhibit99-1.htm",
+                        "_source": {
+                            "display_names": [
+                                "Praxis Precision Medicines, Inc.  (PRAX)  (CIK 0001689548)"
+                            ],
+                            "ciks": ["0001689548"],
+                            "adsh": "0001-26-000001",
+                        },
+                    }
+                ]
+            }
+        }
+        text = (
+            "Praxis announced that the FDA's Oncologic Drugs Advisory "
+            "Committee meeting on August 22, 2026 will review the "
+            "ulixacaltamide NDA."
+        )
+        with patch(
+            "pdufa_scraper._fetch_edgar_search", return_value=fake_search
+        ), patch(
+            "pdufa_scraper._fetch_filing_text", return_value=text
+        ), patch(
+            "pdufa_scraper.time.sleep", lambda _: None
+        ):
+            events = fetch_adcomm_events_from_edgar()
+        assert len(events) == 1
+        assert events[0]["ticker"] == "PRAX"
+        assert events[0]["adcomm_date"] == "2026-08-22"
+        assert "Oncologic" in events[0]["committee_name"]
+        # Drug-name extraction should reuse the same patterns
+        assert "ulixacaltamide" in events[0]["drug_name"].lower()
+
+
 class TestEdgarFetchIntegration:
     """Validates the end-to-end EDGAR path with mocked HTTP."""
 

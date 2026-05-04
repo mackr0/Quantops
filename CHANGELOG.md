@@ -17,6 +17,25 @@ Rules going forward:
 
 ---
 
+## 2026-05-04 — AdComm meeting scraper (Severity: low, new capability)
+
+**What changed**: Added a side-channel to `pdufa_scraper.run_full_sync` that pulls upcoming FDA Advisory Committee meeting disclosures from SEC EDGAR 8-K full-text search and writes them to a new `adcomm_events` table. `alternative_data.get_biotech_milestones()` now returns `upcoming_adcomm_date`, `days_to_adcomm`, and `adcomm_committee` alongside the PDUFA fields.
+
+**Why**: AdComm meetings are leading indicators — they typically precede a PDUFA decision by 1-3 months and the meeting outcome (recommendation to approve / vote against) materially moves the stock around the meeting itself. Without this, the AI was missing the most actionable biotech catalyst window.
+
+**Fix**:
+- New `_ensure_adcomm_table()` schema mirrors the pdufa_events pattern (same NOT NULL + UNIQUE constraints).
+- Refactored `_parse_drug_and_action_near_pdufa()` into a generalized `_parse_drug_and_action_near_phrase(text, anchor)` so the same 3-pass extractor (phrase / WHO INN suffix / compound code) works for both PDUFA and AdComm anchors. PDUFA-specific function is now a thin wrapper.
+- New `fetch_adcomm_events_from_edgar()` queries `"Advisory Committee meeting"`, parses the meeting date with a small set of date patterns, and extracts the committee name (ODAC, BPAC, EMDAC, etc.) when explicit.
+- New `sync_adcomm_events_to_altdata_db()` upserts into `adcomm_events` with UNIQUE(ticker, adcomm_date).
+- AdComm side-sync is wrapped in a `try/except` inside `run_full_sync` so a parse failure on the AdComm path doesn't invalidate the PDUFA pull.
+
+**Tests**: 18 new tests covering AdComm date parsing (3 phrasings + no-match), committee name extraction (acronym + full name + missing), sync table behavior (write + UNIQUE dedupe), and end-to-end mocked fetch with drug-name extraction. Total 2,225 tests pass.
+
+**Why next time will be caught**: AdComm meetings are rarer than PDUFA disclosures (~2 hits / 60 days vs. ~10), so the test suite explicitly exercises the empty-corpus path. The drug-name fallback paths are shared with the PDUFA fetcher, so improvements there flow through automatically.
+
+---
+
 ## 2026-05-04 — PDUFA: extract drug name + action type from 8-K filings (Severity: low, signal quality)
 
 **What changed**: The EDGAR PDUFA scraper now parses an actual drug name (when one is mentioned) and the action type (NDA / BLA / sNDA / sBLA / 510(k) / PMA) from the 8-K filing text, instead of writing the placeholder `"(see 8-K filing)"` for every event.
