@@ -41,7 +41,7 @@ _CACHE_TTL = {
     "finra_short_vol": 86400,
     "analyst_estimates": 86400,
     # Local-SQLite alt-data sources refreshed daily by the
-    # /opt/quantopsai-altdata/ projects. Cache 6h so per-cycle reads
+    # altdata/ subdirectory projects. Cache 6h so per-cycle reads
     # are cheap.
     "altdata_local": 21600,
     # Earnings transcripts are quarterly events. The AI tone analysis
@@ -1109,29 +1109,30 @@ def get_patent_activity(symbol):
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Local SQLite alt-data sources (the four standalone projects)
+# Local SQLite alt-data sources (the four bundled scrapers in altdata/)
 # ---------------------------------------------------------------------------
 # Each project lives at {ALTDATA_BASE}/{project}/data/{db}.db.
 #
-# Production (deployed 2026-04-26):
-#   ALTDATA_BASE_PATH = /opt/quantopsai-altdata
-#   Daily cron @ 06:00 UTC refreshes all four DBs.
-# Local dev (default):
-#   $HOME/{project}/data/{db}.db (set ALTDATA_BASE_PATH to override).
+# Default (both prod and local dev) is `<repo_root>/altdata/{project}/
+# data/{db}.db` — the scrapers were merged into the Quantops repo on
+# 2026-05-03 (commit 49ee536+) so they live alongside the consumer code.
+# Daily cron @ 06:00 UTC refreshes all four DBs via altdata/run-altdata-
+# daily.sh.
 #
-# Helpers all gracefully no-op when the DB file is missing or empty,
-# so the code is safe to load whether or not the data is present
-# (the read layer ships dormant if a host doesn't have the projects
-# deployed).
+# ALTDATA_BASE_PATH env var still overrides — useful for tests that point
+# at fixture DBs, or for hosts that mount the data tree elsewhere.
+#
+# Helpers all gracefully no-op when the DB file is missing or empty, so
+# the code is safe to load whether or not the data is present (the read
+# layer ships dormant if a host hasn't run the scrapers yet).
 
 def _altdata_db(project: str, db_filename: str) -> str:
     """Resolve absolute path to one alt-data project's DB."""
     base = os.environ.get("ALTDATA_BASE_PATH")
     if base:
         return os.path.join(base, project, "data", db_filename)
-    # Local dev default
-    home = os.path.expanduser("~")
-    return os.path.join(home, project, "data", db_filename)
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(repo_root, "altdata", project, "data", db_filename)
 
 
 def _altdata_query(project: str, db_filename: str, sql: str,
@@ -1158,7 +1159,7 @@ def get_congressional_recent(symbol: str) -> Dict[str, Any]:
     """Recent (last 60 days) congressional trades for `symbol` — count,
     dollar volume, party split, last filing date.
 
-    Source: ~/congresstrades — Senate eFD + House Clerk STOCK Act
+    Source: altdata/congresstrades — Senate eFD + House Clerk STOCK Act
     disclosures.
     """
     cache_key = f"congresstrades_recent:{symbol}"
@@ -1227,7 +1228,7 @@ def get_13f_institutional(symbol: str) -> Dict[str, Any]:
     Returns: total holders, total shares, total value, top holder
     name, QoQ delta in aggregate shares.
 
-    Source: ~/edgar13f — SEC 13F-HR XML filings.
+    Source: altdata/edgar13f — SEC 13F-HR XML filings.
     """
     cache_key = f"edgar13f_holdings:{symbol}"
     cached = _get_cached(cache_key, "altdata_local")
@@ -1337,7 +1338,7 @@ def get_biotech_milestones(symbol: str) -> Dict[str, Any]:
     """Upcoming clinical-trial milestones for `symbol` — nearest PDUFA
     date, active phase-3 count, recent phase changes.
 
-    Source: ~/biotechevents — ClinicalTrials.gov v2 + PDUFA tracker.
+    Source: altdata/biotechevents — ClinicalTrials.gov v2 + PDUFA tracker.
     """
     cache_key = f"biotech_milestones:{symbol}"
     cached = _get_cached(cache_key, "altdata_local")
@@ -1423,7 +1424,7 @@ def get_biotech_milestones(symbol: str) -> Dict[str, Any]:
 def get_stocktwits_sentiment(symbol: str) -> Dict[str, Any]:
     """Recent (7d) StockTwits sentiment + currently-trending flag.
 
-    Source: ~/stocktwits — StockTwits REST API messages + trending.
+    Source: altdata/stocktwits — StockTwits REST API messages + trending.
     """
     cache_key = f"stocktwits_sentiment:{symbol}"
     cached = _get_cached(cache_key, "altdata_local")
@@ -2052,7 +2053,7 @@ def get_all_alternative_data(symbol):
         # Each returns {} or a small dict; the AI prompt has weighted
         # signal blocks that consume these. No-op gracefully if the
         # project DB isn't on this host yet (e.g., before the
-        # /opt/quantopsai-altdata/ deploy lands).
+        # altdata/ subdirectory deploy lands).
         "congressional_recent": get_congressional_recent(symbol),
         "institutional_13f": get_13f_institutional(symbol),
         "biotech_milestones": get_biotech_milestones(symbol),

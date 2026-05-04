@@ -1,8 +1,8 @@
 """OPEN_ITEMS #6 — PDUFA event scraper.
 
 `alternative_data.get_biotech_milestones` queries a `pdufa_events`
-table living in `~/biotechevents/biotechevents.db`, but the original
-scraper that populated that table was deferred per
+table living in `altdata/biotechevents/data/biotechevents.db`, but the
+original scraper that populated that table was deferred per
 ALTDATA_INTEGRATION_PLAN.md ("0 PDUFA events").
 
 This module fills the gap. Sources (in fragility order, best first):
@@ -228,12 +228,12 @@ def parse_biopharmcatalyst(html: str) -> List[Dict[str, str]]:
 # ---------------------------------------------------------------------------
 
 def _altdata_db_path() -> str:
-    """Path to ~/biotechevents/biotechevents.db (or override)."""
-    base = os.environ.get(
-        "ALTDATA_BASE_PATH",
-        os.path.expanduser("~/quantopsai-altdata"),
-    )
-    return os.path.join(base, "biotechevents", "biotechevents.db")
+    """Path to altdata/biotechevents/data/biotechevents.db (or env override)."""
+    base = os.environ.get("ALTDATA_BASE_PATH")
+    if not base:
+        repo_root = os.path.dirname(os.path.abspath(__file__))
+        base = os.path.join(repo_root, "altdata")
+    return os.path.join(base, "biotechevents", "data", "biotechevents.db")
 
 
 def sync_pdufa_events_to_altdata_db(

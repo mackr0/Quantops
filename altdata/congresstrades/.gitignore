@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+*.pyo
+.Python
+venv/
+.venv/
+env/
+
+# Data outputs — all gitignored
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/cache/
+data/*.zip
+data/*.pdf
+
+# Editor noise
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Exports
+exports/
