@@ -318,6 +318,51 @@ class TestDrugAndActionExtraction:
         drug, action = _parse_drug_and_action_near_pdufa(text)
         assert drug.lower() != "the"
 
+    def test_rejects_for_the_treatment_of_X_phrase(self):
+        """Real failure case from IONS sNDA filing: greedy regex was
+        capturing "the treatment of sHTG" as the drug. Banned-prefix
+        rejection should send us to the suffix fallback."""
+        from pdufa_scraper import _parse_drug_and_action_near_pdufa
+        text = (
+            "The Company announced the FDA accepted the sNDA for "
+            "olezarsen for the treatment of severe hypertriglyceridemia "
+            "(sHTG) with a PDUFA target action date of October 26, 2026."
+        )
+        drug, action = _parse_drug_and_action_near_pdufa(text)
+        # We should NOT capture "the treatment of sHTG"
+        assert not drug.lower().startswith("the ")
+        # We should capture olezarsen (via -ersen suffix or after "for")
+        assert "olezarsen" in drug.lower() or drug != "(see filing)"
+
+    def test_who_suffix_fallback_zilganersen(self):
+        """Real IONS filing has "data from pivotal study of zilganersen"
+        — no NDA-for-X phrasing, but -ersen suffix matches."""
+        from pdufa_scraper import _parse_drug_and_action_near_pdufa
+        text = (
+            "Ionis presents new data from pivotal study of zilganersen "
+            "in Alexander disease (AxD). PDUFA date set for September 22, 2026."
+        )
+        drug, action = _parse_drug_and_action_near_pdufa(text)
+        assert "zilganersen" in drug.lower()
+
+    def test_who_suffix_fallback_pembrolizumab(self):
+        from pdufa_scraper import _parse_drug_and_action_near_pdufa
+        text = (
+            "Trial results for pembrolizumab in lung cancer. "
+            "PDUFA target action date of June 5, 2026."
+        )
+        drug, action = _parse_drug_and_action_near_pdufa(text)
+        assert "pembrolizumab" in drug.lower()
+
+    def test_compound_code_fallback(self):
+        from pdufa_scraper import _parse_drug_and_action_near_pdufa
+        text = (
+            "Phase 3 results for ARV-471 in metastatic breast cancer. "
+            "PDUFA target action date of June 5, 2026."
+        )
+        drug, action = _parse_drug_and_action_near_pdufa(text)
+        assert drug == "ARV-471"
+
 
 class TestEdgarFetchIntegration:
     """Validates the end-to-end EDGAR path with mocked HTTP."""

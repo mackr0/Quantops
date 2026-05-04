@@ -442,6 +442,28 @@ _DRUG_FP = {
     "approval", "indication", "candidate", "label",
 }
 
+# Reject candidates that START with these tokens — catches the
+# "the treatment of X" / "for the treatment of X" trap where the
+# greedy regex consumed a phrase rather than a drug name.
+_BANNED_PREFIX_TOKENS = {
+    "the", "an", "a", "this", "its", "our", "their", "for",
+    "with", "in", "of", "to", "and", "or", "review", "submission",
+}
+
+# WHO INN suffixes that uniquely identify a generic drug name.
+# Word-final pattern only — e.g. "...mab" but not "lambda" or "ambush".
+_DRUG_SUFFIX_RE = re.compile(
+    r"\b([A-Za-z][a-z]{3,30}(?:"
+    r"mab|nib|tinib|ciclib|tide|afil|ersen|prazole|avir|"
+    r"mycin|lukast|conazole|sartan|olol|statin|gene|sertib|farib"
+    r"))\b",
+    re.IGNORECASE,
+)
+# Compound-code patterns — XYZ-123 / ARV-471 / mRNA-1647 / BMS-986178.
+_COMPOUND_CODE_RE = re.compile(
+    r"\b([A-Za-z]{2,8}-\d{2,5}(?:-\d+)?)\b",
+)
+
 
 def _parse_drug_and_action_near_pdufa(text: str) -> Tuple[str, str]:
     """Extract a best-effort drug name and action_type (NDA/BLA/...) from
@@ -459,27 +481,46 @@ def _parse_drug_and_action_near_pdufa(text: str) -> Tuple[str, str]:
     pdufa_idx = text.upper().find("PDUFA")
     if pdufa_idx == -1:
         return "(see filing)", action_type
-    window_start = max(0, pdufa_idx - 400)
-    window_end = min(len(text), pdufa_idx + 200)
+    window_start = max(0, pdufa_idx - 500)
+    window_end = min(len(text), pdufa_idx + 300)
     window = text[window_start:window_end]
 
     drug = ""
+
+    # Pass 1: phrase-based regexes (NDA for X, PDUFA date for X, etc.)
     for pat in _DRUG_PATTERNS:
         for m in pat.finditer(window):
             candidate = m.group(1).strip()
-            # Strip trailing punctuation/commas
             candidate = re.sub(r"[\.,;:]+$", "", candidate).strip()
             if not candidate:
                 continue
-            # Skip common false-positives
-            if candidate.lower() in _DRUG_FP:
+            cl = candidate.lower()
+            first_word = cl.split(" ", 1)[0]
+            if first_word in _BANNED_PREFIX_TOKENS or cl in _DRUG_FP:
                 continue
-            # Reasonable length range for drug names
             if 2 <= len(candidate) <= 60:
                 drug = candidate
                 break
         if drug:
             break
+
+    # Pass 2: WHO INN drug suffixes (-mab, -nib, -ersen, etc.)
+    if not drug:
+        for m in _DRUG_SUFFIX_RE.finditer(window):
+            candidate = m.group(1)
+            if candidate.lower() in _DRUG_FP:
+                continue
+            if 4 <= len(candidate) <= 30:
+                drug = candidate
+                break
+
+    # Pass 3: compound codes (XYZ-123, ARV-471, mRNA-1647).
+    if not drug:
+        for m in _COMPOUND_CODE_RE.finditer(window):
+            candidate = m.group(1)
+            if 3 <= len(candidate) <= 30:
+                drug = candidate
+                break
 
     return (drug or "(see filing)"), action_type
 
