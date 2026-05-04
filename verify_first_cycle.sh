@@ -173,12 +173,39 @@ echo
 echo "[B3] Lever 3 — disable list reaching ensemble"
 SKIP_N=$(J "| grep -c 'ensemble: skipping'")
 LOW_CALL_N=$(J "| grep -E 'Specialist ensemble: [123] calls' | wc -l")
-if [ "${SKIP_N:-0}" -gt 0 ]; then
-    ok "$SKIP_N skip-log events + $LOW_CALL_N reduced-call cycles"
+TOTAL_CALLS=$(J "| grep -cE 'Specialist ensemble: [0-9]+ calls'")
+
+# Pre-check: any profile actually have specialists disabled? If every
+# profile has disabled_specialists='[]' there's nothing to verify.
+DISABLED_PROFILES=$(SQL quantopsai.db \
+    "SELECT COUNT(*) FROM trading_profiles WHERE enabled=1 AND disabled_specialists != '[]' AND disabled_specialists IS NOT NULL")
+DISABLED_PROFILES=${DISABLED_PROFILES:-0}
+
+if [ "$DISABLED_PROFILES" -eq 0 ]; then
+    ok "no profile has any specialist disabled — nothing to verify (lever inactive by config)"
+elif [ "${SKIP_N:-0}" -gt 0 ]; then
+    ok "$SKIP_N skip-log events + $LOW_CALL_N reduced-call cycles ($DISABLED_PROFILES profiles with disabled specialists)"
+elif [ "${TOTAL_CALLS:-0}" -eq 0 ]; then
+    # No ensemble activity in window — could be pre-market, market closed,
+    # or no candidates passed the funnel. Cross-check a wider window so
+    # we can tell the difference between "lever broken" and "no activity."
+    WIDER_SKIP=$(ssh root@$DROPLET "journalctl -u quantopsai \
+        --since '5 days ago' --no-pager 2>&1 \
+        | grep -c 'ensemble: skipping'")
+    WIDER_TOTAL=$(ssh root@$DROPLET "journalctl -u quantopsai \
+        --since '5 days ago' --no-pager 2>&1 \
+        | grep -cE 'Specialist ensemble: [0-9]+ calls'")
+    if [ "${WIDER_SKIP:-0}" -gt 0 ]; then
+        ok "no ensemble activity in window (market closed?) but disable list IS firing in 5-day backstop ($WIDER_SKIP skips / $WIDER_TOTAL calls)"
+    elif [ "${WIDER_TOTAL:-0}" -gt 0 ]; then
+        bad "5-day backstop: $WIDER_TOTAL ensemble calls but ZERO skip-logs — disable list ignored"
+    else
+        warn "no ensemble activity in 5-day window — can't verify (try after the first scan cycle)"
+    fi
 elif [ "${LOW_CALL_N:-0}" -gt 0 ]; then
     warn "no INFO skip-logs but $LOW_CALL_N reduced-call cycles — disable IS firing but log level may have regressed"
 else
-    bad "zero skip-logs AND every cycle shows 4 calls — disable list ignored"
+    bad "$TOTAL_CALLS ensemble calls in window, zero skip-logs, every cycle shows 4 calls — disable list ignored"
 fi
 
 # =============================================================================
