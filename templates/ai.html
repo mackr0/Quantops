@@ -176,33 +176,64 @@
         </article>
     </div>
 
-    <!-- Best / Worst Predictions -->
+    <!-- Best / Worst Trade — directional predictions only (BUY / STRONG_SELL / SHORT) -->
     <div class="grid">
-        {% if ai_perf and ai_perf.best_prediction %}
+        {% if ai_perf and ai_perf.best_trade %}
         <article>
-            <header><h4>Best Prediction</h4></header>
-            <strong>{{ ai_perf.best_prediction.symbol }}</strong>
-            <small class="muted">({{ ai_perf.best_prediction.confidence }}% confidence)</small>
-            <p class="pnl-pos" style="font-size:1.5rem;">{{ "{:+.2f}".format(ai_perf.best_prediction.return_pct) }}%</p>
+            <header><h4>Best Trade</h4></header>
+            <strong>{{ ai_perf.best_trade.symbol }}</strong>
+            <small class="muted">({{ ai_perf.best_trade.signal }}, {{ ai_perf.best_trade.confidence }}% confidence)</small>
+            <p class="pnl-pos" style="font-size:1.5rem;">{{ "{:+.2f}".format(ai_perf.best_trade.trade_pnl_pct) }}%</p>
         </article>
         {% else %}
         <article>
-            <header><h4>Best Prediction</h4></header>
-            <p class="muted">No resolved predictions yet</p>
+            <header><h4>Best Trade</h4></header>
+            <p class="muted">No resolved directional trades yet</p>
         </article>
         {% endif %}
 
-        {% if ai_perf and ai_perf.worst_prediction %}
+        {% if ai_perf and ai_perf.worst_trade %}
         <article>
-            <header><h4>Worst Prediction</h4></header>
-            <strong>{{ ai_perf.worst_prediction.symbol }}</strong>
-            <small class="muted">({{ ai_perf.worst_prediction.confidence }}% confidence)</small>
-            <p class="pnl-neg" style="font-size:1.5rem;">{{ "{:+.2f}".format(ai_perf.worst_prediction.return_pct) }}%</p>
+            <header><h4>Worst Trade</h4></header>
+            <strong>{{ ai_perf.worst_trade.symbol }}</strong>
+            <small class="muted">({{ ai_perf.worst_trade.signal }}, {{ ai_perf.worst_trade.confidence }}% confidence)</small>
+            <p class="pnl-neg" style="font-size:1.5rem;">{{ "{:+.2f}".format(ai_perf.worst_trade.trade_pnl_pct) }}%</p>
         </article>
         {% else %}
         <article>
-            <header><h4>Worst Prediction</h4></header>
-            <p class="muted">No resolved predictions yet</p>
+            <header><h4>Worst Trade</h4></header>
+            <p class="muted">No resolved directional trades yet</p>
+        </article>
+        {% endif %}
+    </div>
+
+    <!-- Biggest Missed Gain / Biggest Avoided Loss — HOLD predictions only -->
+    <div class="grid">
+        {% if ai_perf and ai_perf.biggest_missed_gain %}
+        <article>
+            <header><h4>Biggest Missed Gain</h4></header>
+            <strong>{{ ai_perf.biggest_missed_gain.symbol }}</strong>
+            <small class="muted">(AI passed; underlying ran)</small>
+            <p class="pnl-pos" style="font-size:1.5rem;">{{ "{:+.2f}".format(ai_perf.biggest_missed_gain.return_pct) }}%</p>
+        </article>
+        {% else %}
+        <article>
+            <header><h4>Biggest Missed Gain</h4></header>
+            <p class="muted">No resolved HOLD predictions yet</p>
+        </article>
+        {% endif %}
+
+        {% if ai_perf and ai_perf.biggest_avoided_loss %}
+        <article>
+            <header><h4>Biggest Avoided Loss</h4></header>
+            <strong>{{ ai_perf.biggest_avoided_loss.symbol }}</strong>
+            <small class="muted">(AI passed; underlying dropped)</small>
+            <p class="pnl-neg" style="font-size:1.5rem;">{{ "{:+.2f}".format(ai_perf.biggest_avoided_loss.return_pct) }}%</p>
+        </article>
+        {% else %}
+        <article>
+            <header><h4>Biggest Avoided Loss</h4></header>
+            <p class="muted">No resolved HOLD predictions yet</p>
         </article>
         {% endif %}
     </div>

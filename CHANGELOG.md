@@ -17,6 +17,25 @@ Rules going forward:
 
 ---
 
+## 2026-05-04 — Best/Worst dashboard panel: split directional trades from HOLDs (Severity: medium, signal quality)
+
+**What changed**: The "Best Prediction / Worst Prediction" pair on the AI dashboard was sorting ALL resolved predictions by `actual_return_pct` and showing the top + bottom — including HOLD predictions where the AI explicitly chose not to trade. That conflated three different situations (winning trade / losing trade / "stock moved a lot while we sat out") under one set of headers and showed "0% confidence" against 50%+ underlying moves, which Mack rightly found confusing.
+
+**Why**: HOLD predictions store `confidence=0` by construction (they're "no action" decisions, not trades with a conviction level). The reasoning text contains the AI's actual conviction-not-to-trade narrative. The dashboard's `actual_return_pct` for a resolved HOLD is the underlying's price move during the resolution window — useful information, but it answers a different question than "best/worst trade." Mack: "always more useful, always."
+
+**Fix**:
+- `ai_tracker.get_ai_performance` now returns four fields:
+  - `best_trade` / `worst_trade` — directional (BUY / STRONG_SELL / SHORT / SELL) only, with `trade_pnl_pct` sign-flipped for shorts so a -15% underlying move shows as a +15% trade win.
+  - `biggest_missed_gain` / `biggest_avoided_loss` — HOLD only, surfaced as separate panels.
+- `best_prediction` / `worst_prediction` kept for backwards compatibility, mirroring the new `best_trade` / `worst_trade` (no longer includes HOLDs).
+- Three templates updated (`ai.html`, `ai_brain.html`, `ai_performance.html`): the old single 2-panel row becomes two 2-panel rows, with explicit labels ("Best Trade" / "Worst Trade" / "Biggest Missed Gain" / "Biggest Avoided Loss") and helper text under HOLD entries: "AI passed; underlying ran" / "AI passed; underlying dropped".
+
+**Tests**: New `tests/test_best_worst_split.py` (7 tests) locks in: SHORT win is sign-flipped before comparison, HOLDs excluded from best/worst trade, HOLD-only fields pull from the right rows, legacy fields track the new trade fields, no-directional case returns None for trade fields.
+
+**Why next time will be caught**: the SQL queries are now explicit about which prediction types they include, and the test suite asserts on the SHORT sign-flip behavior — the failure mode "MXL HOLD shows up as Best Prediction with 0% confidence" is now structurally impossible.
+
+---
+
 ## 2026-05-04 — trade_pipeline NameError on strategy-weight branch (Severity: critical, scan crash)
 
 **What changed**: `trade_pipeline.run_trade_cycle` had two `logger.debug(...)` calls (lines 1898, 1904) using a `logger` name that was never bound in the file — every other line in the same module uses `logging.info(...)` directly. The path is gated behind `weight != 1.0` from `compute_strategy_weights` and stayed dormant for a long time. As soon as it executed in production today, the Small Cap Scan & Trade task crashed with `NameError: name 'logger' is not defined`.

@@ -630,29 +630,102 @@ def get_ai_performance(db_path=None):
             round((band_wins / band_total) * 100.0, 1) if band_total > 0 else 0.0
         )
 
-    # Best and worst predictions
-    best_row = conn.execute(
+    # ----- Best/worst predictions split by prediction nature -----
+    # The previous single best/worst pair conflated two very different
+    # things on the dashboard:
+    #   - A directional trade with a real entry (BUY / STRONG_SELL /
+    #     SHORT / SELL) — its `actual_return_pct` IS the trade outcome
+    #     (with sign flipped for shorts since return_pct is the
+    #     underlying's price move, not the position's P&L).
+    #   - A HOLD prediction — the AI explicitly chose NOT to trade.
+    #     `actual_return_pct` is what the underlying did afterwards.
+    #     Positive = a gain we passed on (missed opportunity), negative
+    #     = a loss we avoided (correct call).
+    # Surface both pairs so the dashboard isn't conflating "biggest
+    # avoided loss" with "worst prediction".
+
+    # `trade_pnl_pct` flips sign for shorts so the ordering is
+    # apples-to-apples in actual-P&L terms across BUY and SHORT.
+    # Legacy SELL was always "directional_short" semantically (see
+    # _resolve_one), so we treat SELL the same as SHORT here.
+    DIRECTIONAL = ("BUY", "STRONG_SELL", "SHORT", "SELL")
+    pnl_expr = (
+        "CASE WHEN UPPER(predicted_signal) IN ('BUY') "
+        "THEN actual_return_pct ELSE -actual_return_pct END"
+    )
+
+    best_trade_row = conn.execute(
+        f"SELECT symbol, confidence, actual_return_pct, "
+        f"predicted_signal, ({pnl_expr}) AS trade_pnl_pct "
+        f"FROM ai_predictions "
+        f"WHERE status='resolved' "
+        f"AND UPPER(predicted_signal) IN ('BUY','STRONG_SELL','SHORT','SELL') "
+        f"AND actual_return_pct IS NOT NULL "
+        f"ORDER BY trade_pnl_pct DESC LIMIT 1"
+    ).fetchone()
+    worst_trade_row = conn.execute(
+        f"SELECT symbol, confidence, actual_return_pct, "
+        f"predicted_signal, ({pnl_expr}) AS trade_pnl_pct "
+        f"FROM ai_predictions "
+        f"WHERE status='resolved' "
+        f"AND UPPER(predicted_signal) IN ('BUY','STRONG_SELL','SHORT','SELL') "
+        f"AND actual_return_pct IS NOT NULL "
+        f"ORDER BY trade_pnl_pct ASC LIMIT 1"
+    ).fetchone()
+    missed_gain_row = conn.execute(
         "SELECT symbol, confidence, actual_return_pct "
         "FROM ai_predictions WHERE status='resolved' "
+        "AND UPPER(predicted_signal) = 'HOLD' "
+        "AND actual_return_pct IS NOT NULL "
         "ORDER BY actual_return_pct DESC LIMIT 1"
     ).fetchone()
-    worst_row = conn.execute(
+    avoided_loss_row = conn.execute(
         "SELECT symbol, confidence, actual_return_pct "
         "FROM ai_predictions WHERE status='resolved' "
+        "AND UPPER(predicted_signal) = 'HOLD' "
+        "AND actual_return_pct IS NOT NULL "
         "ORDER BY actual_return_pct ASC LIMIT 1"
     ).fetchone()
 
-    best_prediction = {
-        "symbol": best_row["symbol"],
-        "return_pct": best_row["actual_return_pct"],
-        "confidence": best_row["confidence"],
-    } if best_row else None
+    def _trade(row):
+        if row is None:
+            return None
+        return {
+            "symbol": row["symbol"],
+            "return_pct": row["actual_return_pct"],
+            "trade_pnl_pct": row["trade_pnl_pct"],
+            "confidence": row["confidence"],
+            "signal": row["predicted_signal"],
+        }
 
-    worst_prediction = {
-        "symbol": worst_row["symbol"],
-        "return_pct": worst_row["actual_return_pct"],
-        "confidence": worst_row["confidence"],
-    } if worst_row else None
+    def _hold(row):
+        if row is None:
+            return None
+        return {
+            "symbol": row["symbol"],
+            "return_pct": row["actual_return_pct"],
+        }
+
+    best_trade = _trade(best_trade_row)
+    worst_trade = _trade(worst_trade_row)
+    biggest_missed_gain = _hold(missed_gain_row)
+    biggest_avoided_loss = _hold(avoided_loss_row)
+
+    # Backwards-compat: keep best_prediction/worst_prediction populated
+    # so any consumers that still query them don't break. Prefer the
+    # new split fields above for new UI surfaces.
+    best_prediction = (
+        {"symbol": best_trade["symbol"],
+          "return_pct": best_trade["trade_pnl_pct"],
+          "confidence": best_trade["confidence"]}
+        if best_trade else None
+    )
+    worst_prediction = (
+        {"symbol": worst_trade["symbol"],
+          "return_pct": worst_trade["trade_pnl_pct"],
+          "confidence": worst_trade["confidence"]}
+        if worst_trade else None
+    )
 
     # Profit factor: total_gains / abs(total_losses)
     total_gains = conn.execute(
@@ -681,6 +754,10 @@ def get_ai_performance(db_path=None):
         "accuracy_by_confidence": accuracy_by_confidence,
         "best_prediction": best_prediction,
         "worst_prediction": worst_prediction,
+        "best_trade": best_trade,
+        "worst_trade": worst_trade,
+        "biggest_missed_gain": biggest_missed_gain,
+        "biggest_avoided_loss": biggest_avoided_loss,
         "profit_factor": profit_factor,
     }
 
