@@ -694,16 +694,27 @@ def fetch_pdufa_events() -> List[Dict[str, str]]:
 
 
 def run_full_sync() -> Tuple[int, int]:
-    """Fetch then sync. Returns (n_fetched, n_written)."""
+    """Fetch then sync. Returns (n_fetched, n_written) for PDUFA only —
+    AdComm runs as a side-channel and reports its own counts via the log."""
     events = fetch_pdufa_events()
     n = sync_pdufa_events_to_altdata_db(events) if events else 0
     # AdComm side-channel: same EDGAR API, different query, parallel
     # table. Failures are independent — a broken AdComm parse should
-    # not invalidate the PDUFA pull, and vice versa.
+    # not invalidate the PDUFA pull, and vice versa. Table is created
+    # eagerly so the AI's read path (alternative_data.get_biotech_milestones)
+    # can issue SELECTs against it from day 1, even before any 8-K
+    # filing has surfaced an AdComm meeting.
     try:
+        _ensure_adcomm_table(_altdata_db_path())
         adcomm_events = fetch_adcomm_events_from_edgar()
         if adcomm_events:
-            sync_adcomm_events_to_altdata_db(adcomm_events)
+            adcomm_written = sync_adcomm_events_to_altdata_db(adcomm_events)
+            logger.info(
+                "AdComm: fetched %d, wrote %d",
+                len(adcomm_events), adcomm_written,
+            )
+        else:
+            logger.info("AdComm: 0 events in 60-day window")
     except Exception as exc:
         logger.warning("AdComm side-sync failed: %s", exc)
     return (len(events), n)
