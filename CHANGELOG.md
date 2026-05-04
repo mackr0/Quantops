@@ -17,6 +17,20 @@ Rules going forward:
 
 ---
 
+## 2026-05-04 — PDUFA: extract drug name + action type from 8-K filings (Severity: low, signal quality)
+
+**What changed**: The EDGAR PDUFA scraper now parses an actual drug name (when one is mentioned) and the action type (NDA / BLA / sNDA / sBLA / 510(k) / PMA) from the 8-K filing text, instead of writing the placeholder `"(see 8-K filing)"` for every event.
+
+**Why**: First-pass implementation wrote a static placeholder for `drug_name` and skipped `action_type`. After deploying and seeing 10 real PDUFA events land, the placeholder hurts the AI prompt — `get_biotech_milestones` returns useful date + ticker but a useless drug field, when filings reliably name the drug nearby.
+
+**Fix**: New `_parse_drug_and_action_near_pdufa(text)` function — scans a 600-char window centered on the first "PDUFA" mention; matches three common phrasings ("NDA for X with PDUFA…", "PDUFA date for X is…", "regarding X,…"); rejects a small set of generic-noun false positives ("the", "company", "review", etc.); pairs with a separate full-text regex for action type. The fetcher now calls this once per filing and includes both fields in the event dict; sync writes them to `pdufa_events.action_type` and `pdufa_events.drug_name`.
+
+**Tests**: 6 new cases in `TestDrugAndActionExtraction` — generic drug after "NDA for", brand name after "BLA for", sNDA action type, fallback to "(see filing)" when no match, no-PDUFA-in-text, and false-positive rejection.
+
+**Why next time will be caught**: the false-positive rejection set is the riskiest piece — a new filing phrasing could slip a noun like "treatment" or "candidate" through. The test asserts the rejection list works for known FPs; new FPs would show up as low-quality drug names in the live `pdufa_events` table and can be added to `_DRUG_FP` as they're noticed.
+
+---
+
 ## 2026-05-04 — Alt-data project merge + real PDUFA scraper (Severity: medium, hygiene + capability)
 
 **What changed**: (1) The four standalone alt-data scrapers (`congresstrades`, `stocktwits`, `biotechevents`, `edgar13f`) were merged into the Quantops repo as `altdata/<project>/` subdirectories. (2) Replaced the broken BioPharmCatalyst PDUFA scraper with a SEC EDGAR full-text-search implementation.

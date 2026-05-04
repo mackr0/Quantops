@@ -288,9 +288,10 @@ def sync_pdufa_events_to_altdata_db(
                 conn.execute(
                     """INSERT OR REPLACE INTO pdufa_events
                        (drug_name, sponsor_company, ticker, pdufa_date,
-                        source_url, parser_version, fetched_at)
-                       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
+                        action_type, source_url, parser_version, fetched_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
                     (drug, sponsor, e["ticker"], e["pdufa_date"],
+                     e.get("action_type") or None,
                      e.get("source_url", e.get("source", "")),
                      e.get("parser_version", "edgar_8k_v1")),
                 )
@@ -399,6 +400,90 @@ def _parse_pdufa_dates_from_text(text: str) -> List[str]:
     return list(set(found))
 
 
+# Heuristics to extract structured detail from 8-K filing text.
+# Action type — NDA / BLA / sNDA / sBLA / 510(k) / etc.
+_ACTION_TYPE_RE = re.compile(
+    r"\b(s?NDA|s?BLA|sNDA|sBLA|NDA|BLA|MAA|510\(k\)|PMA)\b",
+)
+
+# Drug-name patterns. 8-K filings tend to phrase the drug a few common ways:
+#   "the NDA for [DRUG] with a PDUFA target action date of..."
+#   "for the review of [DRUG] for the treatment of..."
+#   "regarding [DRUG], the Company..."
+#   "...accepted the BLA submission for [DRUG]..."
+# We match the drug as a 2-60 char run that doesn't include sentence
+# punctuation. Capitalized brand names and lowercase generics both pass.
+_DRUG_PATTERNS = [
+    re.compile(
+        r"(?:NDA|BLA|sNDA|sBLA|application|submission|review)\s+for\s+"
+        r"([A-Za-z][A-Za-z0-9\-\s]{1,58}?)\s+"
+        r"(?:with|for|in|to|under|that|after|having|and)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"PDUFA[\s\S]{0,30}?date\s+for\s+"
+        r"([A-Za-z][A-Za-z0-9\-\s]{1,58}?)\s+"
+        r"(?:is|of|on|in)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"regarding\s+(?:its|the|our)?\s*"
+        r"([A-Z][A-Za-z0-9\-]{2,30})"
+        r"\s*[\.,]"
+    ),
+]
+
+# Common false-positive tokens we should never accept as a drug name
+# (these come from sentence fragments matching the broad regex above).
+_DRUG_FP = {
+    "the", "this", "that", "these", "company", "review", "application",
+    "submission", "drug", "product", "therapy", "treatment", "fda",
+    "biological", "supplemental", "marketing", "investigational",
+    "approval", "indication", "candidate", "label",
+}
+
+
+def _parse_drug_and_action_near_pdufa(text: str) -> Tuple[str, str]:
+    """Extract a best-effort drug name and action_type (NDA/BLA/...) from
+    a window of text around the first "PDUFA" mention. Returns
+    ("(see filing)", "") if nothing parseable was found."""
+    if not text:
+        return "(see filing)", ""
+
+    # Action type — search the whole filing; we only need the first hit.
+    action_match = _ACTION_TYPE_RE.search(text)
+    action_type = action_match.group(1).upper() if action_match else ""
+
+    # Drug name — restrict the search to a window around "PDUFA"
+    # because filings often mention multiple compounds in 8-Ks.
+    pdufa_idx = text.upper().find("PDUFA")
+    if pdufa_idx == -1:
+        return "(see filing)", action_type
+    window_start = max(0, pdufa_idx - 400)
+    window_end = min(len(text), pdufa_idx + 200)
+    window = text[window_start:window_end]
+
+    drug = ""
+    for pat in _DRUG_PATTERNS:
+        for m in pat.finditer(window):
+            candidate = m.group(1).strip()
+            # Strip trailing punctuation/commas
+            candidate = re.sub(r"[\.,;:]+$", "", candidate).strip()
+            if not candidate:
+                continue
+            # Skip common false-positives
+            if candidate.lower() in _DRUG_FP:
+                continue
+            # Reasonable length range for drug names
+            if 2 <= len(candidate) <= 60:
+                drug = candidate
+                break
+        if drug:
+            break
+
+    return (drug or "(see filing)"), action_type
+
+
 def fetch_pdufa_events_from_edgar(
     lookback_days: int = 60,
     max_filings: int = 50,
@@ -435,12 +520,18 @@ def fetch_pdufa_events_from_edgar(
         time.sleep(polite_sleep_seconds)
         if not text:
             continue
-        for pdufa_date in _parse_pdufa_dates_from_text(text):
+        dates = _parse_pdufa_dates_from_text(text)
+        if not dates:
+            continue
+        drug_name, action_type = _parse_drug_and_action_near_pdufa(text)
+        sponsor = display_names[0].split("(")[0].strip()
+        for pdufa_date in dates:
             events.append({
                 "ticker": ticker,
-                "drug_name": "(see 8-K filing)",
-                "sponsor_company": display_names[0].split("(")[0].strip(),
+                "drug_name": drug_name,
+                "sponsor_company": sponsor,
                 "pdufa_date": pdufa_date,
+                "action_type": action_type,
                 "source": "edgar_8k",
                 "source_url": url,
             })

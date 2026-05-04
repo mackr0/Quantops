@@ -265,6 +265,60 @@ class TestPdufaTextParsing:
         assert dates.count("2027-03-15") == 1
 
 
+class TestDrugAndActionExtraction:
+    def test_drug_after_nda_for(self):
+        from pdufa_scraper import _parse_drug_and_action_near_pdufa
+        text = (
+            "The Company announced that the FDA accepted the NDA for "
+            "tebipenem HBr with a PDUFA target action date of October 30, 2026."
+        )
+        drug, action = _parse_drug_and_action_near_pdufa(text)
+        assert "tebipenem" in drug.lower()
+        assert action == "NDA"
+
+    def test_brand_name_drug(self):
+        from pdufa_scraper import _parse_drug_and_action_near_pdufa
+        text = (
+            "FDA accepted the BLA for Eliquis with a PDUFA goal date "
+            "of June 5, 2026."
+        )
+        drug, action = _parse_drug_and_action_near_pdufa(text)
+        assert "Eliquis" in drug
+        assert action == "BLA"
+
+    def test_snda_action_type(self):
+        from pdufa_scraper import _parse_drug_and_action_near_pdufa
+        text = (
+            "Acceptance of sNDA for label expansion for compound XYZ-123 "
+            "with PDUFA target action date of August 22, 2026."
+        )
+        drug, action = _parse_drug_and_action_near_pdufa(text)
+        assert action in ("SNDA", "NDA")
+
+    def test_falls_back_when_no_drug_match(self):
+        from pdufa_scraper import _parse_drug_and_action_near_pdufa
+        text = "Just some text mentioning PDUFA without any drug context."
+        drug, action = _parse_drug_and_action_near_pdufa(text)
+        assert drug == "(see filing)"
+
+    def test_no_pdufa_in_text(self):
+        from pdufa_scraper import _parse_drug_and_action_near_pdufa
+        drug, action = _parse_drug_and_action_near_pdufa(
+            "Company announces routine business update."
+        )
+        assert drug == "(see filing)"
+
+    def test_skips_false_positives(self):
+        from pdufa_scraper import _parse_drug_and_action_near_pdufa
+        # "the" is in _DRUG_FP set
+        text = (
+            "The application for the Company's product with a PDUFA "
+            "target action date of June 5, 2026..."
+        )
+        drug, action = _parse_drug_and_action_near_pdufa(text)
+        assert drug.lower() != "the"
+
+
 class TestEdgarFetchIntegration:
     """Validates the end-to-end EDGAR path with mocked HTTP."""
 
