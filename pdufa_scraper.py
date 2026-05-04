@@ -464,6 +464,15 @@ _COMPOUND_CODE_RE = re.compile(
     r"\b([A-Za-z]{2,8}-\d{2,5}(?:-\d+)?)\b",
 )
 
+# SEC filing artifacts that LOOK like compound codes but aren't drugs.
+# E.g. "EX-99.1" is Exhibit 99.1, "RULE-10b5", "FORM-8K", "ITEM-2.02".
+# These appear constantly in 8-K filings and would otherwise match
+# _COMPOUND_CODE_RE.
+_SEC_ARTIFACT_PREFIXES = {
+    "ex", "form", "rule", "item", "sec", "section", "reg", "regs",
+    "file", "def", "para", "appendix", "schedule", "annex",
+}
+
 
 def _parse_drug_and_action_near_pdufa(text: str) -> Tuple[str, str]:
     """Extract a best-effort drug name and action_type (NDA/BLA/...) from
@@ -518,6 +527,9 @@ def _parse_drug_and_action_near_pdufa(text: str) -> Tuple[str, str]:
     if not drug:
         for m in _COMPOUND_CODE_RE.finditer(window):
             candidate = m.group(1)
+            prefix = candidate.split("-", 1)[0].lower()
+            if prefix in _SEC_ARTIFACT_PREFIXES:
+                continue
             if 3 <= len(candidate) <= 30:
                 drug = candidate
                 break

@@ -363,6 +363,17 @@ class TestDrugAndActionExtraction:
         drug, action = _parse_drug_and_action_near_pdufa(text)
         assert drug == "ARV-471"
 
+    def test_rejects_sec_exhibit_marker(self):
+        """EX-99.1 etc are SEC filing artifacts — not drugs."""
+        from pdufa_scraper import _parse_drug_and_action_near_pdufa
+        text = (
+            "EX-99.1 Press Release. The Company announced PDUFA target "
+            "action date of June 5, 2026 for its lead candidate."
+        )
+        drug, action = _parse_drug_and_action_near_pdufa(text)
+        assert "EX-" not in drug
+        assert "ex-" not in drug.lower()
+
 
 class TestEdgarFetchIntegration:
     """Validates the end-to-end EDGAR path with mocked HTTP."""
