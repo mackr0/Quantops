@@ -269,6 +269,49 @@ def _get_current_price(symbol, api=None):
     return None
 
 
+def _get_current_prices_bulk(symbols, api=None):
+    """Bulk-fetch latest prices for many symbols in as few API calls as
+    possible. Returns dict[symbol] = float (only present when fetched).
+
+    Critical for resolve_predictions on a long-weekend backlog: scanning
+    800+ pending predictions one symbol at a time hits Alpaca with
+    ~200-300 sequential REST calls, taking 15-30s per profile. The
+    snapshot endpoint returns ALL prices for a symbol list in ONE call.
+
+    Fallback to per-symbol fetch if the bulk endpoint isn't available
+    or errors out.
+    """
+    if not symbols:
+        return {}
+    out = {}
+    if api is not None:
+        try:
+            # Alpaca's snapshot endpoint accepts a comma-separated
+            # symbol list; the SDK maps that to get_snapshots(symbols=).
+            # Returns dict[symbol] -> Snapshot with .latest_trade etc.
+            snapshots = api.get_snapshots(symbols)
+            if snapshots:
+                for sym, snap in snapshots.items():
+                    if snap is None:
+                        continue
+                    trade = getattr(snap, "latest_trade", None)
+                    if trade is not None and getattr(trade, "price", None):
+                        out[sym] = float(trade.price)
+                if out:
+                    return out
+        except Exception as exc:
+            logger.debug("Bulk snapshot failed (%s); falling back to per-symbol", exc)
+
+    # Fallback path — slow but correct when bulk path fails
+    for sym in symbols:
+        if sym in out:
+            continue
+        p = _get_current_price(sym, api=api)
+        if p is not None:
+            out[sym] = p
+    return out
+
+
 def _trading_days_since(timestamp_str):
     """Rough estimate of trading days elapsed since *timestamp_str*."""
     pred_dt = datetime.fromisoformat(timestamp_str)
@@ -402,13 +445,11 @@ def resolve_predictions(api=None, db_path=None, profile_id=None):
     resolved_count = 0
     now_iso = datetime.utcnow().isoformat()
 
-    # Collect unique symbols to minimize API calls
+    # Bulk-fetch all unique symbols in one (or few) Alpaca calls. With
+    # 800+ pending predictions over a long weekend this is the difference
+    # between ~30 seconds and 15-30 minutes per profile.
     symbols = list({row["symbol"] for row in pending})
-    price_cache = {}
-    for sym in symbols:
-        price = _get_current_price(sym, api=api)
-        if price is not None:
-            price_cache[sym] = price
+    price_cache = _get_current_prices_bulk(symbols, api=api)
 
     for row in pending:
         sym = row["symbol"]
@@ -433,6 +474,14 @@ def resolve_predictions(api=None, db_path=None, profile_id=None):
             (outcome, round(return_pct, 4), now_iso, current_price,
              days_held, row["id"]),
         )
+        # Commit *each row* immediately. Specialist-calibration and
+        # online-meta-model updates below open their own connections
+        # and need to write to the same DB. With a long-running outer
+        # transaction we hit "database is locked" on every iteration
+        # (250+ warnings / 10 min observed in prod 2026-05-04).
+        # Per-row commit gives those inner writes a window to land
+        # between iterations.
+        conn.commit()
         resolved_count += 1
         # Wave 3 / Fix #9 — backfill specialist outcomes for this
         # prediction so the calibrators can learn from each
@@ -473,7 +522,6 @@ def resolve_predictions(api=None, db_path=None, profile_id=None):
             days_held,
         )
 
-    conn.commit()
     conn.close()
     logger.info("Resolved %d / %d pending predictions.", resolved_count, len(pending))
     return resolved_count
