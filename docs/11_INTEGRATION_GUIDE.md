@@ -215,18 +215,19 @@ A tuning rule is a function that buckets resolved predictions and adjusts a para
 
 ## 8. Adding a new specialty data source (e.g. a 5th alt-data scraper)
 
-The platform already ships with 4 alt-data scrapers in `/opt/quantopsai-altdata/`. Adding a 5th follows the same pattern.
+The platform ships with 4 alt-data scrapers bundled under `altdata/` (`congresstrades`, `stocktwits`, `biotechevents`, `edgar13f`). They were merged into the Quantops repo on 2026-05-04 — previously they lived as 4 standalone GitHub repos rsync'd to prod, but that broke the "prod git must track deployed code" rule. Adding a 5th now lives inline.
 
 ### 8a. Steps
 
-1. **Build the scraper** as a standalone Python project under `/opt/quantopsai-altdata/<name>/`. It should:
-   - Have its own venv and dependencies (don't pollute QuantOpsAI's venv).
-   - Maintain a SQLite database `<name>.db`.
-   - Run on a daily cron (02:00 ET typical).
-   - Log to `/opt/quantopsai-altdata/logs/`.
-2. **Add a read helper** in `alternative_data.py` that queries the SQLite at decision time. Use `_altdata_query` for consistency.
-3. **Wire to the aggregator** + meta-model + signal weights + AI prompt as in §2.
-4. **Update `ALTDATA_BASE_PATH`** documentation if the layout changes.
+1. **Build the scraper** as a Python package under `altdata/<name>/`. It should:
+   - Use **Quantops's shared venv** — declare any new deps in the top-level `requirements.txt` (the per-project `requirements.txt` is now reference-only).
+   - Maintain a SQLite database at `altdata/<name>/data/<name>.db` (the data dir is gitignored — only code is tracked).
+   - Expose a `<name>.cli daily` entry point that's idempotent and safe to re-run.
+   - Add a `conftest.py` at `altdata/<name>/` that puts `<name>/` on `sys.path` so tests can `from <name>.X import Y` from the repo root.
+2. **Register in the orchestrator** by adding `<name>` to the `DEFAULT_PROJECTS` array in `altdata/run-altdata-daily.sh`.
+3. **Add a read helper** in `alternative_data.py` that queries the SQLite at decision time. Use `_altdata_query("<name>", "<name>.db", sql, params)` for consistency — path resolution happens automatically via `_altdata_db()` (defaults to `<repo_root>/altdata/<name>/data/<name>.db`; `ALTDATA_BASE_PATH` env var overrides for prod / tests).
+4. **Wire to the aggregator** + meta-model + signal weights + AI prompt as in §2.
+5. **Add the test directory** to `pytest.ini`'s `testpaths` so tests run as part of the combined Quantops sweep.
 
 ## 9. Adding a new dashboard panel
 

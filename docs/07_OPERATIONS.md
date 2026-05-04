@@ -24,11 +24,12 @@ Single droplet at `67.205.155.63`. Resources: ~$6-12/month standard tier (CPU + 
 ├── meta_model_<id>.pkl             # GBM batch model (per profile)
 └── logs/                           # systemd journals (via journalctl)
 
-/opt/quantopsai-altdata/
+/opt/quantopsai/altdata/             # merged into the Quantops repo 2026-05-04
 ├── biotechevents/                  # PDUFA + clinical trial scraper
 ├── congresstrades/                 # eFD + House Clerk scraper
 ├── edgar13f/                       # 13F-HR scraper
 ├── stocktwits/                     # StockTwits API ingest
+├── run-altdata-daily.sh            # nightly orchestrator (uses Quantops venv)
 └── logs/
 
 /etc/systemd/system/
@@ -179,12 +180,17 @@ Restoring a backup is a manual operation: stop the scheduler, copy the desired b
 
 The `quantopsai-scheduler` process IS the scheduler. There is no system cron. Per-cycle and once-per-day tasks are dispatched inside `multi_scheduler.run_scheduler()`.
 
-The 4 alt-data scraper projects in `/opt/quantopsai-altdata/` are scheduled by their own cron entries (independently — they refresh nightly via system cron at 02:00 ET).
+The 4 alt-data scrapers (now bundled in `altdata/` after the 2026-05-04 merge) are orchestrated by a single system cron entry that calls `altdata/run-altdata-daily.sh` (refreshes all 4 sequentially using the Quantops venv).
 
 ```bash
-# View their cron
+# Cron entry on prod (06:00 UTC daily)
+0 6 * * * cd /opt/quantopsai && ALTDATA_BASE_PATH=/opt/quantopsai/altdata bash altdata/run-altdata-daily.sh >> logs/altdata-$(date +%Y%m%d).log 2>&1
+
+# View it
 ssh root@67.205.155.63 'crontab -l'
 ```
+
+The PDUFA event scraper (`pdufa_scraper.py`, OPEN_ITEMS #6) is scheduled separately by `multi_scheduler._task_pdufa_scrape` (once per UTC day, idempotent). It pulls "PDUFA date" mentions from SEC EDGAR 8-K full-text search and writes to `altdata/biotechevents/data/biotechevents.db.pdufa_events`.
 
 ## 8. Common operational scenarios
 

@@ -328,8 +328,8 @@ Open / closed long-vol hedges with entry/exit/triggers/PnL.
 ### `app_store_history` (master DB, OPEN_ITEMS #2)
 Daily snapshots of best App Store ranks per ticker.
 
-### `pdufa_events` (in `~/quantopsai-altdata/biotechevents/biotechevents.db`)
-Scraped FDA PDUFA dates per ticker.
+### `pdufa_events` (in `altdata/biotechevents/data/biotechevents.db`)
+Scraped FDA PDUFA dates per ticker. Populated by `pdufa_scraper.py` via SEC EDGAR full-text search for "PDUFA date" mentions in 8-K filings (replaced BioPharmCatalyst, which is now Cloudflare-protected). Schema: `id, drug_name NOT NULL, sponsor_company NOT NULL, ticker, pdufa_date NOT NULL, action_type (NDA/BLA/sNDA/sBLA), indication, outcome (pending/approved/crl/withdrawn), outcome_date, source_url, parser_version, fetched_at`. UNIQUE on (drug_name, sponsor_company, pdufa_date). Read by `alternative_data.get_biotech_milestones()` to surface `upcoming_pdufa_date` and `days_to_pdufa` to the AI prompt.
 
 ### `users` (master DB)
 Operator accounts.

@@ -149,9 +149,9 @@ Nothing open in this plan.
 |---|---|
 | W1. Read layer (4 helpers) | ✅ DONE |
 | W2. AI integration | ✅ DONE |
-| W3. Production deployment (`/opt/quantopsai-altdata/`) | ✅ DONE |
+| W3. Production deployment (`altdata/` subdirectory after 2026-05-04 merge into main repo; was `/opt/quantopsai-altdata/`) | ✅ DONE |
 | W4. UI + docs | ✅ DONE |
-| **PDUFA scraper** | ⏳ OPEN | Plan acceptance criteria call out "0 PDUFA events"; scraper still deferred. Clinical trials part works. |
+| **PDUFA scraper** | ✅ DONE 2026-05-04 (commits `ffe8b9c..41c3b28`). EDGAR full-text search for "PDUFA date" in 8-K filings; populates 10/10 events with real drug names + action types after the regex iteration. |
 
 ---
 

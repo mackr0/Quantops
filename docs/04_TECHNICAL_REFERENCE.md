@@ -390,7 +390,7 @@ Single droplet at `67.205.155.63`. Layout:
 - `/opt/quantopsai/quantopsai.db` — master DB.
 - `/opt/quantopsai/quantopsai_profile_<id>.db` — per-profile DBs.
 - `/opt/quantopsai/.cache/` — disk caches (slippage K, Ken French CSVs).
-- `/opt/quantopsai-altdata/` — separate venv tree for the 4 alt-data scraper projects.
+- `/opt/quantopsai/altdata/` — bundled alt-data scrapers (`congresstrades`, `stocktwits`, `biotechevents`, `edgar13f`). Merged into the Quantops repo on 2026-05-04 (commit `086aed2`); previously lived in 4 separate private GitHub repos rsync'd to `/opt/quantopsai-altdata/`. Each scraper writes to `altdata/<project>/data/<project>.db`. Daily refresh via `altdata/run-altdata-daily.sh` (cron 06:00 UTC).
 
 `sync.sh`:
 
