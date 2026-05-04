@@ -952,16 +952,16 @@
         </div>
         <small class="muted">
             <strong>How this is calculated:</strong>
-            For each profile we read its real measured avg position size, then assume that
-            position size scales linearly with capital (constant pos_pct = avg_position
-            ÷ current_capital). The capacity wall hits when avg_position would reach
-            5% of typical daily volume in the profile's universe — beyond that, your own
-            order size starts pushing the price. Tier ADV constants used: Small Cap ~$20M,
-            Mid Cap ~$200M, Large Cap ~$2B. These are stylized averages, not the exact
-            ADV of the names this profile trades, so treat the wall as a rough breakpoint
-            (within 2-3×) not a hard number. Slippage at the wall is sqrt(growth) × your
-            current measured slippage — just the existing market-impact math at the
-            higher capital level.
+            For each profile we read its real measured average position size, then
+            assume the ratio of position size to capital holds steady as capital grows.
+            The capacity wall hits when that average position would reach 5% of typical
+            daily volume in the profile's universe — beyond that, your own order size
+            starts pushing the price. Tier ADV constants used: Small Cap ~$20M, Mid Cap
+            ~$200M, Large Cap ~$2B. These are stylized averages, not the exact ADV of
+            the names this profile trades, so treat the wall as a rough breakpoint
+            (within 2-3×) not a hard number. Slippage at the wall is the square root
+            of capital growth times your current measured slippage — just the existing
+            market-impact math at the higher capital level.
             <br><br>
             <strong>What this does NOT tell you:</strong>
             Whether the strategy's <em>edge</em> still exists at higher capital. We only

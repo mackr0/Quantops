@@ -114,17 +114,21 @@ _SNAKE_CASE_ALLOWLIST = {
 # ---------------------------------------------------------------------------
 
 def _visible_text_segments(html: str) -> List[Tuple[int, str]]:
-    """Return (line_num, text) tuples for visible text segments."""
+    """Return (line_num, text) tuples for visible text segments.
+
+    Visible text lives between `>` and `<`. The regex MUST run across
+    the whole document with DOTALL so multi-line paragraph text is
+    captured — earlier per-line scanning missed any visible text whose
+    `>...<` pair straddled a newline (e.g. block-paragraph copy in
+    `<small>` / `<p>` tags), which silently let `pos_pct = avg_position
+    ÷ current_capital` slip through the static guardrail."""
     stripped = _strip_to_visible_text(html)
     segments: List[Tuple[int, str]] = []
-    for line_num, line in enumerate(stripped.split("\n"), 1):
-        # Visible text lives between > and <. We also include text
-        # between Jinja-stripped lines (after replacement, residual
-        # text may not have angle brackets at all — capture it).
-        for m in re.finditer(r">([^<]+)<", line):
-            text = m.group(1).strip()
-            if text:
-                segments.append((line_num, text))
+    for m in re.finditer(r">([^<]+)<", stripped, flags=re.DOTALL):
+        text = m.group(1).strip()
+        if text:
+            line_num = stripped[:m.start()].count("\n") + 1
+            segments.append((line_num, text))
     return segments
 
 
