@@ -1,26 +1,23 @@
 """OPEN_ITEMS #6 — PDUFA event scraper.
 
 `alternative_data.get_biotech_milestones` queries a `pdufa_events`
-table living in `altdata/biotechevents/data/biotechevents.db`, but the
-original scraper that populated that table was deferred per
-ALTDATA_INTEGRATION_PLAN.md ("0 PDUFA events").
+table living in `altdata/biotechevents/data/biotechevents.db`. This
+module populates that table.
 
-This module fills the gap. Sources (in fragility order, best first):
+Primary source: **SEC EDGAR full-text search** for "PDUFA date" in 8-K
+filings. Public companies disclose PDUFA goal dates in 8-K filings
+within hours of receiving them from FDA, so this is the most reliable
+forward-looking source. Authoritative (the SEC), free, no anti-bot
+challenges, no rate limit beyond the polite SEC fair-use rate.
 
-  1. BiopharmCatalyst FDA Calendar (biopharmcatalyst.com/calendars/fda-calendar)
-     Free, public, aggregates PDUFA goal dates from press releases
-     and SEC filings. HTML scrape; layout has been stable for years
-     but breakage is the most likely failure mode.
+Fallback: hand-curated PDUFA_FALLBACK_SEED when EDGAR returns nothing.
 
-  2. (Future) Direct SEC 8-K text mining for PDUFA mentions —
-     authoritative, no third-party fragility, but heavy NLP work.
-
-  3. (Future) FDA AdComm meeting calendar — official, lists drug
-     review dates that bracket PDUFA decisions.
-
-Best-effort: any HTTP / parse failure returns 0 rows and the table
-stays empty. The biotech_milestones helper already handles "no
-upcoming PDUFA" cleanly.
+Previous source (now disabled): BiopharmCatalyst FDA Calendar — sits
+behind Cloudflare's "I'm Under Attack" challenge mode. Empirically
+verified 2026-05-04: returns 403 with `cf-mitigated: challenge`.
+The BiopharmCatalyst parser is kept for legacy reference but
+fetch_pdufa_events_from_biopharmcatalyst() is no longer called by
+the main path.
 
 Public surface:
   - fetch_pdufa_events() → list of dicts {ticker, drug_name, pdufa_date}
@@ -30,11 +27,14 @@ Public surface:
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import sqlite3
-from datetime import datetime
+import time
+import urllib.parse
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import urllib.error
 import urllib.request
@@ -42,6 +42,13 @@ import urllib.request
 logger = logging.getLogger(__name__)
 
 
+# SEC EDGAR full-text search — primary source for PDUFA disclosures.
+EDGAR_SEARCH_URL = "https://efts.sec.gov/LATEST/search-index"
+# SEC requires a UA with contact info per their fair-use policy.
+SEC_USER_AGENT = "QuantOpsAI mack@mackenziesmith.com"
+
+# BioPharmCatalyst — disabled (Cloudflare challenge as of 2026-05-04)
+# but kept for the legacy parser used by tests.
 BIOPHARMCATALYST_URL = "https://www.biopharmcatalyst.com/calendars/fda-calendar"
 
 # Hand-curated fallback: small set of well-known upcoming PDUFA dates
@@ -274,15 +281,164 @@ def sync_pdufa_events_to_altdata_db(
     return written
 
 
+# ---------------------------------------------------------------------------
+# Primary source: SEC EDGAR full-text search for 8-K filings
+# ---------------------------------------------------------------------------
+
+# Display names from EDGAR look like
+#   "Merck & Co., Inc.  (MRK)  (CIK 0000310158)"
+# We extract the ticker from the FIRST parenthesized 1-5 char alpha token.
+_EDGAR_DISPLAY_TICKER_RE = re.compile(r"\(([A-Z]{1,5})\)\s+\(CIK")
+
+# PDUFA date patterns in filing text. Tolerant: catches several
+# common phrasings, and date formats handled by _parse_iso_date.
+_PDUFA_DATE_PATTERNS = [
+    re.compile(
+        r"PDUFA[\s\S]{0,80}?(?:goal\s+)?(?:target\s+)?(?:action\s+)?date\s+of\s+"
+        r"((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"PDUFA[\s\S]{0,80}?(?:goal\s+)?(?:target\s+)?(?:action\s+)?date\s+of\s+"
+        r"(\d{1,2}/\d{1,2}/\d{4})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"PDUFA[\s\S]{0,80}?(?:goal\s+)?(?:target\s+)?(?:action\s+)?date\s+of\s+"
+        r"(\d{4}-\d{2}-\d{2})",
+        re.IGNORECASE,
+    ),
+]
+
+
+def _fetch_edgar_search(query: str, lookback_days: int = 60) -> Dict:
+    """Query EDGAR full-text search. Returns parsed JSON or {}."""
+    today = datetime.utcnow().date()
+    start = today - timedelta(days=lookback_days)
+    params = {
+        "q": query,
+        "forms": "8-K",
+        "dateRange": "custom",
+        "startdt": start.isoformat(),
+        "enddt": today.isoformat(),
+    }
+    url = f"{EDGAR_SEARCH_URL}?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url, headers={"User-Agent": SEC_USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read().decode("utf-8", "ignore"))
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError,
+            json.JSONDecodeError) as exc:
+        logger.warning("EDGAR search failed: %s", exc)
+        return {}
+
+
+def _extract_ticker_from_display(display_name: str) -> Optional[str]:
+    """Pull ticker from "Company Name  (TKR)  (CIK 0001234567)"."""
+    if not display_name:
+        return None
+    m = _EDGAR_DISPLAY_TICKER_RE.search(display_name)
+    return m.group(1) if m else None
+
+
+def _build_filing_doc_url(adsh: str, cik: str, filename: str) -> str:
+    """Construct the SEC archive URL for a specific filing document."""
+    cik_int = str(int(cik))
+    adsh_nodash = adsh.replace("-", "")
+    return (
+        f"https://www.sec.gov/Archives/edgar/data/"
+        f"{cik_int}/{adsh_nodash}/{filename}"
+    )
+
+
+def _fetch_filing_text(url: str, timeout: int = 15) -> Optional[str]:
+    """Fetch an 8-K document and strip HTML to plain text."""
+    req = urllib.request.Request(url, headers={"User-Agent": SEC_USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            html = r.read().decode("utf-8", "ignore")
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
+        logger.debug("Filing fetch failed for %s: %s", url, exc)
+        return None
+    return _strip_tags(html)
+
+
+def _parse_pdufa_dates_from_text(text: str) -> List[str]:
+    """Find PDUFA date strings in filing text. Returns ISO YYYY-MM-DD list."""
+    if not text:
+        return []
+    found = []
+    for pat in _PDUFA_DATE_PATTERNS:
+        for m in pat.finditer(text):
+            iso = _parse_iso_date(m.group(1))
+            if iso:
+                found.append(iso)
+    return list(set(found))
+
+
+def fetch_pdufa_events_from_edgar(
+    lookback_days: int = 60,
+    max_filings: int = 50,
+    polite_sleep_seconds: float = 0.2,
+) -> List[Dict[str, str]]:
+    """Find PDUFA disclosures in 8-K filings via EDGAR full-text search.
+
+    For each search hit, fetches the linked filing document and extracts
+    every PDUFA date phrase. Returns one event per (ticker, date) pair.
+
+    Polite: caps total filings fetched and sleeps between requests so we
+    stay well under SEC's 10 req/sec fair-use ceiling.
+    """
+    response = _fetch_edgar_search('"PDUFA date"', lookback_days)
+    hits = response.get("hits", {}).get("hits", [])
+    if not hits:
+        return []
+
+    events = []
+    for hit in hits[:max_filings]:
+        source = hit.get("_source", {})
+        display_names = source.get("display_names", [])
+        ciks = source.get("ciks", [])
+        adsh = source.get("adsh", "")
+        doc_id = hit.get("_id", "")
+        if not display_names or not ciks or not adsh or ":" not in doc_id:
+            continue
+        ticker = _extract_ticker_from_display(display_names[0])
+        if not ticker:
+            continue
+        filename = doc_id.split(":", 1)[1]
+        url = _build_filing_doc_url(adsh, ciks[0], filename)
+        text = _fetch_filing_text(url)
+        time.sleep(polite_sleep_seconds)
+        if not text:
+            continue
+        for pdufa_date in _parse_pdufa_dates_from_text(text):
+            events.append({
+                "ticker": ticker,
+                "drug_name": "(see 8-K filing)",
+                "pdufa_date": pdufa_date,
+                "source": "edgar_8k",
+            })
+
+    seen = set()
+    unique = []
+    for e in events:
+        key = (e["ticker"], e["pdufa_date"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(e)
+    return unique
+
+
 def fetch_pdufa_events() -> List[Dict[str, str]]:
-    """One-shot scrape. Best-effort; HTML failure → empty list +
-    fallback seed. Caller is the daily scheduler task."""
-    html = _fetch_html(BIOPHARMCATALYST_URL)
-    parsed = parse_biopharmcatalyst(html or "")
-    if parsed:
-        return parsed
+    """One-shot scrape. EDGAR is primary; falls back to hand-curated seed
+    on empty. Caller is the daily scheduler task."""
+    edgar_events = fetch_pdufa_events_from_edgar()
+    if edgar_events:
+        logger.info("PDUFA: EDGAR returned %d events", len(edgar_events))
+        return edgar_events
     logger.info(
-        "PDUFA: no rows parsed; using %d fallback-seed rows",
+        "PDUFA: EDGAR returned 0 events; using %d fallback-seed rows",
         len(PDUFA_FALLBACK_SEED),
     )
     return list(PDUFA_FALLBACK_SEED)

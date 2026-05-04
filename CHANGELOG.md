@@ -17,6 +17,32 @@ Rules going forward:
 
 ---
 
+## 2026-05-04 — Alt-data project merge + real PDUFA scraper (Severity: medium, hygiene + capability)
+
+**What changed**: (1) The four standalone alt-data scrapers (`congresstrades`, `stocktwits`, `biotechevents`, `edgar13f`) were merged into the Quantops repo as `altdata/<project>/` subdirectories. (2) Replaced the broken BioPharmCatalyst PDUFA scraper with a SEC EDGAR full-text-search implementation.
+
+**Why** (merge): Standalone repos were rsync'd to prod without `.git/`, so the standing rule "prod git must track deployed code" was unenforceable for those four projects. Plus four private repos × no prod credentials meant no clean fetch path. Single repo means single deploy, single venv, single git status to monitor.
+
+**Why** (PDUFA): `pdufa_events` table on prod had 0 rows for weeks. Diagnosis: BioPharmCatalyst returns HTTP 403 with `cf-mitigated: challenge` — Cloudflare browser-challenge mode. Programmatic bypasses (cloudscraper etc.) are an arms race. Switched primary source to SEC EDGAR full-text search for "PDUFA date" in 8-K filings — companies file an 8-K within hours of receiving a PDUFA date from FDA, so EDGAR is the authoritative forward-looking source. Free, no auth, no anti-bot challenges, durable.
+
+**Fix**:
+- Merge: `altdata/<project>/` for all four; deleted per-project `pytest.ini` (broken urllib3 filterwarning) and `test_changelog_enforcement.py` (per-repo hooks no longer apply); added `--import-mode=importlib` to root `pytest.ini` to avoid `test_store.py` name collisions across projects; added per-project `conftest.py` for sys.path setup; new `altdata/run-altdata-daily.sh` uses Quantops's shared venv; ALTDATA_BASE_PATH on prod moved from `/opt/quantopsai-altdata/` to `/opt/quantopsai/altdata/`.
+- PDUFA: new `pdufa_scraper.fetch_pdufa_events_from_edgar()` calls EDGAR's full-text search, fetches each matching 8-K, regex-extracts PDUFA dates and tickers, dedupes by (ticker, date). Polite (`SEC_USER_AGENT` includes contact email; 200ms sleep between filing fetches; capped at 50 filings per run). `fetch_pdufa_events()` now calls EDGAR first; BioPharmCatalyst stays as legacy parser only.
+
+**Tests**:
+- 269 sub-project tests now run as part of Quantops's combined sweep.
+- 6 new EDGAR-path test classes in `tests/test_pdufa_scraper.py` (14 tests): ticker extraction, filing URL construction, regex date parsing, end-to-end mocked fetch.
+- All 2,197 tests pass.
+
+**Why next time will be caught**: the EDGAR API is structured + stable (it's the SEC), so layout drift is much less likely than HTML scraping. If EDGAR returns 0 hits unexpectedly, `_task_pdufa_scrape` logs the empty result and the daily run still completes (graceful degradation). Repo merge eliminates the "no git on prod" failure mode for the four scrapers.
+
+**Follow-ups**:
+- 4 standalone GitHub repos (`mackr0/{congresstrades,stocktwits,biotechevents,edgar13f}`) were archived 2026-05-04 with a `MIGRATED.md` redirect commit.
+- Old `/opt/quantopsai-altdata/` directory on prod renamed to `.OLD-2026-05-04`; can be deleted after a few days of cron success at the new path.
+- Drug-name extraction in EDGAR PDUFA events currently writes "(see 8-K filing)" — could be improved with more parsing if signal quality demands.
+
+---
+
 ## 2026-05-03 — OPEN_ITEMS #1-10: ten free-tier items shipped end-to-end (Severity: high, capability)
 
 Working through the master open-items list. All ten free-tier items now built, tested, deployed.
