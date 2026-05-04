@@ -62,19 +62,33 @@ PDUFA_FALLBACK_SEED: List[Dict[str, str]] = [
 
 
 def _ensure_pdufa_table(db_path: str) -> None:
-    """Create the pdufa_events table if it doesn't exist. Schema
-    matches what alternative_data.get_biotech_milestones queries."""
+    """Create the pdufa_events table if it doesn't exist. Schema matches
+    biotechevents/biotechevents/store.py and what
+    alternative_data.get_biotech_milestones queries."""
     conn = sqlite3.connect(db_path)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS pdufa_events (
-            ticker TEXT NOT NULL,
-            drug_name TEXT,
-            pdufa_date TEXT NOT NULL,
-            source TEXT,
-            fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
-            PRIMARY KEY (ticker, drug_name, pdufa_date)
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            drug_name       TEXT    NOT NULL,
+            sponsor_company TEXT    NOT NULL,
+            ticker          TEXT,
+            pdufa_date      TEXT    NOT NULL,
+            action_type     TEXT,
+            indication      TEXT,
+            outcome         TEXT    DEFAULT 'pending',
+            outcome_date    TEXT,
+            source_url      TEXT,
+            parser_version  TEXT,
+            fetched_at      TEXT    NOT NULL,
+            UNIQUE (drug_name, sponsor_company, pdufa_date)
         )
     """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pdufa_ticker ON pdufa_events(ticker)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pdufa_date ON pdufa_events(pdufa_date)"
+    )
     conn.commit()
     conn.close()
 
@@ -264,12 +278,21 @@ def sync_pdufa_events_to_altdata_db(
         conn = sqlite3.connect(db_path)
         for e in events:
             try:
+                # Match the existing biotechevents schema:
+                # UNIQUE(drug_name, sponsor_company, pdufa_date), and
+                # both drug_name + sponsor_company are NOT NULL. EDGAR
+                # gives us the ticker reliably; sponsor_company defaults
+                # to the ticker when we don't have a company name.
+                drug = e.get("drug_name") or "(see filing)"
+                sponsor = e.get("sponsor_company") or e["ticker"]
                 conn.execute(
                     """INSERT OR REPLACE INTO pdufa_events
-                       (ticker, drug_name, pdufa_date, source, fetched_at)
-                       VALUES (?, ?, ?, ?, datetime('now'))""",
-                    (e["ticker"], e.get("drug_name", ""),
-                     e["pdufa_date"], e.get("source", "manual")),
+                       (drug_name, sponsor_company, ticker, pdufa_date,
+                        source_url, parser_version, fetched_at)
+                       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
+                    (drug, sponsor, e["ticker"], e["pdufa_date"],
+                     e.get("source_url", e.get("source", "")),
+                     e.get("parser_version", "edgar_8k_v1")),
                 )
                 written += 1
             except Exception:
@@ -416,8 +439,10 @@ def fetch_pdufa_events_from_edgar(
             events.append({
                 "ticker": ticker,
                 "drug_name": "(see 8-K filing)",
+                "sponsor_company": display_names[0].split("(")[0].strip(),
                 "pdufa_date": pdufa_date,
                 "source": "edgar_8k",
+                "source_url": url,
             })
 
     seen = set()

@@ -92,17 +92,22 @@ class TestSyncToAltdataDb:
         from pdufa_scraper import sync_pdufa_events_to_altdata_db
         db = str(tmp_path / "biotechevents.db")
         e = {"ticker": "BMY", "drug_name": "Eliquis",
-              "pdufa_date": "2026-08-15", "source": "v1"}
+              "pdufa_date": "2026-08-15",
+              "sponsor_company": "Bristol-Myers Squibb",
+              "source_url": "https://example.com/v1.htm"}
         sync_pdufa_events_to_altdata_db([e], db_path=db)
-        # Re-sync with updated source — should not duplicate
-        e["source"] = "v2"
+        # Re-sync with updated source URL — should not duplicate
+        # (UNIQUE on drug_name + sponsor_company + pdufa_date)
+        e["source_url"] = "https://example.com/v2.htm"
         sync_pdufa_events_to_altdata_db([e], db_path=db)
         conn = sqlite3.connect(db)
         n = conn.execute("SELECT COUNT(*) FROM pdufa_events").fetchone()[0]
-        sources = conn.execute("SELECT source FROM pdufa_events").fetchall()
+        urls = conn.execute(
+            "SELECT source_url FROM pdufa_events"
+        ).fetchall()
         conn.close()
         assert n == 1
-        assert sources[0][0] == "v2"
+        assert urls[0][0] == "https://example.com/v2.htm"
 
     def test_empty_events_writes_nothing(self, tmp_path):
         from pdufa_scraper import sync_pdufa_events_to_altdata_db
