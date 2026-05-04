@@ -41,4 +41,4 @@ Read in this order — each doc is written for a specific audience.
 
 ## License & ownership
 
-Personal project of Mack Smith (`mack@mackenziesmith.com`). Not currently licensed for redistribution.
+Personal project of MacKenzie Smith (`mack@mackenziesmith.com`). Not currently licensed for redistribution.
