@@ -60,6 +60,46 @@ echo "  Window: $SINCE_UTC → now"
 echo "====================================================="
 
 # =============================================================================
+# Section 0 — Service health (both services, not just scheduler)
+# =============================================================================
+hdr "0. Both prod services active"
+
+echo "[0.1] systemd: quantopsai (scheduler) + quantopsai-web (gunicorn)"
+SCHED_STATE=$(ssh root@$DROPLET "systemctl is-active quantopsai" 2>&1)
+WEB_STATE=$(ssh root@$DROPLET "systemctl is-active quantopsai-web" 2>&1)
+if [ "$SCHED_STATE" = "active" ] && [ "$WEB_STATE" = "active" ]; then
+    ok "scheduler=$SCHED_STATE  web=$WEB_STATE"
+else
+    bad "scheduler=$SCHED_STATE  web=$WEB_STATE — at least one service is not running"
+fi
+
+echo
+echo "[0.2] gunicorn workers: respawned recently (deploy actually took)"
+# After a sync.sh deploy, web workers should be hours old (or fresher),
+# not days. A worker uptime > 7 days strongly suggests sync.sh's
+# quantopsai-web restart was skipped — every UI fix in that window
+# was invisible to users.
+WORKER_DAYS=$(ssh root@$DROPLET \
+    "ps -eo etime,cmd | grep gunicorn | grep -v grep | head -1 | awk '{print \$1}'")
+echo "  oldest worker uptime: $WORKER_DAYS"
+case "$WORKER_DAYS" in
+    *-*)  bad "gunicorn worker has been running for days — sync.sh may have skipped quantopsai-web restart" ;;
+    *)    ok "gunicorn workers respawned within the last 24h" ;;
+esac
+
+echo
+echo "[0.3] git: prod HEAD == origin/main"
+PROD_HEAD=$(ssh root@$DROPLET "cd /opt/quantopsai && git rev-parse HEAD")
+ORIGIN_HEAD=$(git -C /Users/mackr0/Quantops rev-parse origin/main 2>/dev/null \
+    || git rev-parse origin/main 2>/dev/null \
+    || echo "?")
+if [ "$PROD_HEAD" = "$ORIGIN_HEAD" ] && [ "$PROD_HEAD" != "?" ]; then
+    ok "prod HEAD = $PROD_HEAD (matches origin/main)"
+else
+    warn "prod HEAD = $PROD_HEAD, origin/main = $ORIGIN_HEAD (mismatch — was sync.sh run?)"
+fi
+
+# =============================================================================
 # Section A — Core scheduler health
 # =============================================================================
 hdr "A. Core scheduler health"
@@ -402,6 +442,223 @@ for db in $ALL_DBS; do
     TOTAL=$(echo "$TOTAL + ${C:-0}" | bc -l 2>/dev/null || echo "$TOTAL")
 done
 echo "  Cumulative: \$$(printf '%.2f' $TOTAL)"
+
+# =============================================================================
+# Section H — Alt-data merge integrity (2026-05-04 merge)
+# =============================================================================
+hdr "H. Alt-data scrapers (merged into altdata/ subdirectory)"
+
+echo "[H1] All 4 alt-data DBs at the new bundled path"
+MISSING=""
+for proj in congresstrades stocktwits biotechevents edgar13f; do
+    case $proj in
+        congresstrades) db="congress.db" ;;
+        stocktwits)     db="stocktwits.db" ;;
+        biotechevents)  db="biotechevents.db" ;;
+        edgar13f)       db="edgar13f.db" ;;
+    esac
+    EXISTS=$(ssh root@$DROPLET \
+        "test -f /opt/quantopsai/altdata/$proj/data/$db && echo Y || echo N")
+    if [ "$EXISTS" = "N" ]; then
+        MISSING="$MISSING $proj"
+    fi
+done
+if [ -z "$MISSING" ]; then
+    ok "all 4 DBs present at /opt/quantopsai/altdata/<project>/data/"
+else
+    bad "missing DBs at new path:$MISSING"
+fi
+
+echo
+echo "[H2] Alt-data DBs refreshed within last 30h (cron 06:00 UTC daily)"
+NOW_EPOCH=$(date -u +%s)
+STALE=""
+for proj in congresstrades stocktwits biotechevents edgar13f; do
+    case $proj in
+        congresstrades) db="congress.db" ;;
+        stocktwits)     db="stocktwits.db" ;;
+        biotechevents)  db="biotechevents.db" ;;
+        edgar13f)       db="edgar13f.db" ;;
+    esac
+    MTIME=$(ssh root@$DROPLET \
+        "stat -c %Y /opt/quantopsai/altdata/$proj/data/$db 2>/dev/null" \
+        || echo 0)
+    AGE_HOURS=$(( (NOW_EPOCH - MTIME) / 3600 ))
+    if [ "$AGE_HOURS" -gt 30 ]; then
+        STALE="$STALE $proj(${AGE_HOURS}h)"
+    fi
+done
+if [ -z "$STALE" ]; then
+    ok "all 4 DBs refreshed in last 30h"
+else
+    bad "stale DBs:$STALE — daily cron may have failed"
+fi
+
+echo
+echo "[H3] Cron entry uses the new altdata/ path"
+CRON_OK=$(ssh root@$DROPLET "crontab -l 2>/dev/null | \
+    grep -c 'altdata/run-altdata-daily.sh'")
+CRON_STALE=$(ssh root@$DROPLET "crontab -l 2>/dev/null | \
+    grep -c 'quantopsai-altdata'")
+if [ "${CRON_OK:-0}" -gt 0 ] && [ "${CRON_STALE:-0}" -eq 0 ]; then
+    ok "cron points at altdata/run-altdata-daily.sh, no stale references"
+else
+    bad "cron has $CRON_OK new-path entries and $CRON_STALE old-path references"
+fi
+
+echo
+echo "[H4] alternative_data._altdata_db resolves to new path"
+RESOLVED=$(ssh root@$DROPLET "cd /opt/quantopsai && \
+    ALTDATA_BASE_PATH=/opt/quantopsai/altdata \
+    /opt/quantopsai/venv/bin/python -c \
+    'from alternative_data import _altdata_db; \
+print(_altdata_db(\"biotechevents\", \"biotechevents.db\"))' 2>&1")
+if echo "$RESOLVED" | grep -q "/opt/quantopsai/altdata/biotechevents/data/biotechevents.db"; then
+    ok "path resolution OK ($RESOLVED)"
+else
+    bad "path resolution wrong: $RESOLVED"
+fi
+
+# =============================================================================
+# Section I — PDUFA + AdComm signal landing in AI prompts
+# =============================================================================
+hdr "I. PDUFA + AdComm catalysts"
+
+echo "[I1] pdufa_events table populated"
+PDUFA_N=$(ssh root@$DROPLET \
+    "sqlite3 /opt/quantopsai/altdata/biotechevents/data/biotechevents.db \
+    'SELECT COUNT(*) FROM pdufa_events' 2>/dev/null")
+if [ "${PDUFA_N:-0}" -gt 0 ]; then
+    ok "$PDUFA_N PDUFA events stored"
+else
+    bad "pdufa_events empty — EDGAR scrape produced 0 rows"
+fi
+
+echo
+echo "[I2] Drug names extracted (not all '(see filing)')"
+PLACEHOLDER_N=$(ssh root@$DROPLET \
+    "sqlite3 /opt/quantopsai/altdata/biotechevents/data/biotechevents.db \
+    \"SELECT COUNT(*) FROM pdufa_events WHERE drug_name LIKE '(see%' OR drug_name LIKE '%placeholder%'\" 2>/dev/null")
+PLACEHOLDER_N=${PLACEHOLDER_N:-0}
+if [ "${PDUFA_N:-0}" -gt 0 ]; then
+    REAL_N=$((PDUFA_N - PLACEHOLDER_N))
+    PCT=$((REAL_N * 100 / PDUFA_N))
+    if [ "$PCT" -ge 60 ]; then
+        ok "$REAL_N / $PDUFA_N rows have parsed drug names ($PCT%)"
+    elif [ "$PCT" -ge 30 ]; then
+        warn "only $REAL_N / $PDUFA_N rows have real drug names ($PCT%) — patterns may need extending"
+    else
+        bad "$REAL_N / $PDUFA_N have real drug names ($PCT%) — drug-name extraction regressed"
+    fi
+fi
+
+echo
+echo "[I3] _task_pdufa_scrape ran today (idempotency table)"
+TODAY_RUN=$(ssh root@$DROPLET \
+    "sqlite3 /opt/quantopsai/quantopsai.db \
+    \"SELECT 1 FROM pdufa_scrape_runs WHERE run_date='$TODAY_UTC'\" 2>/dev/null")
+if [ "${TODAY_RUN:-}" = "1" ]; then
+    ok "pdufa_scrape_runs has entry for $TODAY_UTC"
+else
+    warn "no pdufa_scrape_runs row for today yet — may not have fired (runs once/day)"
+fi
+
+echo
+echo "[I4] adcomm_events table exists (zero rows is fine — AdComms are rare)"
+ADCOMM_TBL=$(ssh root@$DROPLET \
+    "sqlite3 /opt/quantopsai/altdata/biotechevents/data/biotechevents.db \
+    \"SELECT name FROM sqlite_master WHERE type='table' AND name='adcomm_events'\" 2>/dev/null")
+if [ "$ADCOMM_TBL" = "adcomm_events" ]; then
+    ADCOMM_N=$(ssh root@$DROPLET \
+        "sqlite3 /opt/quantopsai/altdata/biotechevents/data/biotechevents.db \
+        'SELECT COUNT(*) FROM adcomm_events' 2>/dev/null")
+    ok "adcomm_events table exists ($ADCOMM_N rows)"
+else
+    bad "adcomm_events table missing — eager-create in run_full_sync regressed"
+fi
+
+echo
+echo "[I5] get_biotech_milestones returns PDUFA + AdComm fields end-to-end"
+BIO_FIELDS=$(ssh root@$DROPLET "cd /opt/quantopsai && \
+    ALTDATA_BASE_PATH=/opt/quantopsai/altdata \
+    /opt/quantopsai/venv/bin/python -c \
+    'from alternative_data import get_biotech_milestones; \
+r = get_biotech_milestones(\"ARVN\"); \
+fields = [k for k in (\"upcoming_pdufa_date\",\"days_to_pdufa\",\"drug_name\",\"upcoming_adcomm_date\",\"days_to_adcomm\",\"adcomm_committee\") if k in r]; \
+print(len(fields))' 2>&1")
+if [ "${BIO_FIELDS:-0}" = "6" ]; then
+    ok "all 6 PDUFA+AdComm fields surfaced to AI"
+else
+    bad "biotech_milestones returns only $BIO_FIELDS / 6 expected fields"
+fi
+
+# =============================================================================
+# Section J — UI / deploy hygiene
+# =============================================================================
+hdr "J. UI guardrails + deploy hygiene"
+
+echo "[J1] No 'Item 5c' / 'Item Nx' refs in rendered /ai page"
+ITEM_HITS=$(ssh root@$DROPLET \
+    "curl -s http://localhost:8000/ai 2>/dev/null \
+    | grep -cE '\(Item [0-9]+[a-z]?\)|\(OPEN_ITEMS'")
+if [ "${ITEM_HITS:-0}" -eq 0 ]; then
+    ok "zero internal-tracker refs in rendered /ai HTML"
+else
+    bad "$ITEM_HITS '(Item Nx)' refs in rendered /ai — template fix didn't reach gunicorn workers"
+fi
+
+echo
+echo "[J2] No raw snake_case in dropdown <option> text on /ai"
+SC_HITS=$(ssh root@$DROPLET \
+    "curl -s http://localhost:8000/ai 2>/dev/null \
+    | grep -cE '<option[^>]*>(long_put|long_call|bull_call_spread|bear_put_spread|iron_condor|covered_call|protective_put|cash_secured_put|iron_butterfly|long_straddle|short_straddle|long_strangle|calendar_spread|diagonal_spread)<'")
+if [ "${SC_HITS:-0}" -eq 0 ]; then
+    ok "zero snake_case option text in rendered /ai"
+else
+    bad "$SC_HITS dropdown options still rendering raw snake_case"
+fi
+
+echo
+echo "[J3] Blanket template guardrail (test_no_internal_leakage) passes on prod"
+LEAK_TEST=$(ssh root@$DROPLET "cd /opt/quantopsai && \
+    /opt/quantopsai/venv/bin/python -m pytest \
+    tests/test_no_internal_leakage_in_templates.py \
+    -q --no-header --timeout=30 2>&1 | tail -1")
+if echo "$LEAK_TEST" | grep -qE '[0-9]+ passed' \
+        && ! echo "$LEAK_TEST" | grep -qE 'failed|error'; then
+    ok "static template guardrail green on prod ($LEAK_TEST)"
+else
+    bad "template guardrail FAILED on prod: $LEAK_TEST"
+fi
+
+echo
+echo "[J4] /api/options-backtest endpoint works for every dropdown option"
+OPT_TEST=$(ssh root@$DROPLET "cd /opt/quantopsai && \
+    /opt/quantopsai/venv/bin/python -m pytest \
+    tests/test_options_backtest_api.py \
+    -q --no-header --timeout=120 2>&1 | tail -1")
+if echo "$OPT_TEST" | grep -qE '[0-9]+ passed' \
+        && ! echo "$OPT_TEST" | grep -qE 'failed|error'; then
+    ok "all 5 dropdown strategies execute end-to-end ($OPT_TEST)"
+else
+    bad "options-backtest endpoint smoke test FAILED on prod: $OPT_TEST"
+fi
+
+echo
+echo "[J5] Display-name guardrails (existing tests) still passing on prod"
+DN_TEST=$(ssh root@$DROPLET "cd /opt/quantopsai && \
+    /opt/quantopsai/venv/bin/python -m pytest \
+    tests/test_display_names.py \
+    tests/test_no_snake_case_in_api_responses.py \
+    tests/test_no_snake_case_in_user_facing_ids.py \
+    tests/test_no_snake_case_in_optimizer_strings.py \
+    -q --no-header --timeout=60 2>&1 | tail -1")
+if echo "$DN_TEST" | grep -qE '[0-9]+ passed' \
+        && ! echo "$DN_TEST" | grep -qE 'failed|error'; then
+    ok "all snake_case + display-name guardrails green ($DN_TEST)"
+else
+    bad "snake_case guardrail regression: $DN_TEST"
+fi
 
 # =============================================================================
 # Summary
