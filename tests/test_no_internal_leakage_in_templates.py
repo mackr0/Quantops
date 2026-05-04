@@ -58,18 +58,16 @@ _ATTR_RE = re.compile(
     r'(?:"[^"]*"|\'[^\']*\')',
     re.IGNORECASE,
 )
-# `<code>...</code>` and `<pre>...</pre>` blocks legitimately render
-# code (with snake_case). Strip them so the test doesn't false-positive
-# on intentional code samples in docs.
-_CODE_RE = re.compile(r"<code[\s\S]*?</code>", re.IGNORECASE)
-_PRE_RE = re.compile(r"<pre[\s\S]*?</pre>", re.IGNORECASE)
+# NOTE: do NOT strip <code> or <pre> blocks. The rule is "never display
+# snake_case to users in any user-facing context" — and `<code>` is
+# rendered to the user just as much as `<p>`. Wrapping a raw identifier
+# in `<code>` does not make it user-readable; it just gives it monospace
+# styling. Treat <code>online_meta_prob</code> the same as plain text.
 
 
 def _strip_to_visible_text(html: str) -> str:
     html = _SCRIPT_RE.sub("", html)
     html = _STYLE_RE.sub("", html)
-    html = _CODE_RE.sub("", html)
-    html = _PRE_RE.sub("", html)
     html = _HTML_COMMENT_RE.sub("", html)
     html = _JINJA_COMMENT_RE.sub("", html)
     html = _JINJA_EXPR_RE.sub("", html)

@@ -278,7 +278,7 @@
                 </div>
                 {% if mp.online %}
                 <h5 style="margin-top:1rem;">Online Freshness Layer (SGD)</h5>
-                <p class="muted" style="margin-top:-0.5rem;font-size:0.85rem;">Updates incrementally per resolved prediction. The AI prompt receives <code>online_meta_prob</code> and <code>meta_divergence</code> (online minus GBM) on each trade post-AI re-weighting; large divergence flags recent regime drift the batch model hasn't seen yet.</p>
+                <p class="muted" style="margin-top:-0.5rem;font-size:0.85rem;">Updates incrementally per resolved prediction. The AI prompt receives an online (freshness-layer) probability plus the divergence between online and GBM on each trade — post-AI re-weighting. Large divergence flags recent regime drift the batch model hasn't seen yet.</p>
                 <div class="grid">
                     <div class="stat-card">
                         <small class="muted">Updates so far</small>
@@ -756,7 +756,7 @@
 {% if has_risk_budget %}
 <article>
     <header><h3>Risk Budget — per-position variance contribution</h3></header>
-    <p class="muted" style="margin-top:-0.5rem;">Each position contributes <code>weight × annualized_vol</code> to the book's variance. Equal-dollar weights are <em>not</em> equal-risk weights — a 5% slug of a 60%-vol biotech contributes ~3× the variance of a 5% slug of a 20%-vol utility. Names ≥ 2× or ≤ 0.5× the per-position average are flagged. Sizing rule the AI is told: <code>size ∝ 25% / annualized_vol</code>, clamped [0.4×, 1.6×].</p>
+    <p class="muted" style="margin-top:-0.5rem;">Each position contributes weight times its annualized volatility to the book's variance. Equal-dollar weights are <em>not</em> equal-risk weights — a 5% slug of a 60%-vol biotech contributes ~3× the variance of a 5% slug of a 20%-vol utility. Names ≥ 2× or ≤ 0.5× the per-position average are flagged. Sizing rule the AI is told: size scales with 25% divided by the name's annualized volatility, clamped [0.4×, 1.6×].</p>
     {% for r in long_short_awareness %}{% if r.risk_budget %}
     <article style="margin:0.75rem 0;">
         <header style="padding:0.5rem 0.75rem;"><h4 style="margin:0;">{{ r.profile_name }}</h4>
