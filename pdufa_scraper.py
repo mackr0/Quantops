@@ -406,26 +406,62 @@ _ACTION_TYPE_RE = re.compile(
     r"\b(s?NDA|s?BLA|sNDA|sBLA|NDA|BLA|MAA|510\(k\)|PMA)\b",
 )
 
-# Drug-name patterns. 8-K filings tend to phrase the drug a few common ways:
+# Drug-name patterns. 8-K filings phrase the drug in ~7 distinct ways
+# observed in real filings (samples collected 2026-05-04 from prod runs):
 #   "the NDA for [DRUG] with a PDUFA target action date of..."
-#   "for the review of [DRUG] for the treatment of..."
+#   "FDA Approval of [DRUG] for the Treatment of..."           (ARVN)
+#   "approval of [DRUG], an investigational..."                (CAPR)
+#   "the [DRUG] NDA" / "the [DRUG] BLA"                        (ALDX)
+#   "commercialization of [DRUG] as a treatment of..."         (ACHV)
+#   "for [DRUG] for the treatment of presbyopia"               (IRD)
 #   "regarding [DRUG], the Company..."
-#   "...accepted the BLA submission for [DRUG]..."
-# We match the drug as a 2-60 char run that doesn't include sentence
-# punctuation. Capitalized brand names and lowercase generics both pass.
+# Each pattern captures the drug as a 2-60 char run that doesn't include
+# sentence punctuation. Capitalized brand names and lowercase generics
+# both pass.
 _DRUG_PATTERNS = [
+    # 1. "NDA / BLA / application / submission / review FOR [DRUG] (terminator)"
     re.compile(
-        r"(?:NDA|BLA|sNDA|sBLA|application|submission|review)\s+for\s+"
+        r"(?:s?NDA|s?BLA|application|submission|review)\s+for\s+"
         r"([A-Za-z][A-Za-z0-9\-\s]{1,58}?)\s+"
-        r"(?:with|for|in|to|under|that|after|having|and)",
+        r"(?:with|for|in|to|under|that|after|having|and|seeking)",
         re.IGNORECASE,
     ),
+    # 2. "PDUFA date for/of [DRUG] (terminator)"
     re.compile(
-        r"PDUFA[\s\S]{0,30}?date\s+for\s+"
+        r"PDUFA[\s\S]{0,30}?(?:date|target action date)\s+(?:for|of)\s+"
         r"([A-Za-z][A-Za-z0-9\-\s]{1,58}?)\s+"
-        r"(?:is|of|on|in)",
+        r"(?:is|of|on|in|with|for|having|and)",
         re.IGNORECASE,
     ),
+    # 3. "Approval / Acceptance / Filing of [DRUG] (terminator)"
+    #    Captures both the brand and an optional parenthesized generic.
+    re.compile(
+        r"(?:Approval|Acceptance|Filing|Submission)\s+of\s+"
+        r"([A-Z][A-Za-z0-9\-]{2,40})"
+        r"(?:\s*\(([a-z][\w\-]{3,30})\))?",
+    ),
+    # 4. "the [DRUG] NDA" / "the [DRUG] BLA" / etc. — drug right before app type
+    re.compile(
+        r"\b(?:the|its|our)\s+([a-z][\w\-]{4,30})\s+"
+        r"(?:s?NDA|s?BLA)\b",
+        re.IGNORECASE,
+    ),
+    # 5. "commercialization / development / review / approval / use of [DRUG]"
+    #    Followed by "as|for|in|to" terminator (not "of" — that fragments).
+    re.compile(
+        r"(?:commercialization|development|review|approval|use|seeking[\s\w]+approval)\s+of\s+"
+        r"([A-Za-z][\w\-]{3,40}(?:\s+[\w\-]+){0,2}?)\s*"
+        r"(?:[\.,]|\s+(?:as|for|in|to)\s+)",
+        re.IGNORECASE,
+    ),
+    # 6. "for [DRUG] for the treatment / management / prevention of"
+    #    Two-"for" sentences — captures drug between them.
+    re.compile(
+        r"\bfor\s+"
+        r"((?!the\b|an\b|a\b)[A-Z][\w\-\s\.]{2,50}?)\s+"
+        r"for\s+the\s+(?:treatment|management|prevention)",
+    ),
+    # 7. "regarding [DRUG], the Company..."
     re.compile(
         r"regarding\s+(?:its|the|our)?\s*"
         r"([A-Z][A-Za-z0-9\-]{2,30})"

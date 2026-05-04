@@ -374,6 +374,65 @@ class TestDrugAndActionExtraction:
         assert "EX-" not in drug
         assert "ex-" not in drug.lower()
 
+    # The following tests use real 8-K filing snippets pulled from prod
+    # 2026-05-04. Each represents a distinct phrasing the AI's biotech
+    # signal would otherwise miss (drug = "(see filing)").
+
+    def test_real_aldx_the_drug_NDA_pattern(self):
+        """ALDX: 'Aldeyra resubmitted the reproxalap NDA, which...'"""
+        from pdufa_scraper import _parse_drug_and_action_near_pdufa
+        text = (
+            "Aldeyra resubmitted the reproxalap NDA, which, based on "
+            "written agreement with the FDA, primarily consisted of "
+            "results from the additional dry eye chamber trial. On July "
+            "17, 2025, Aldeyra announced that the FDA accepted the "
+            "reproxalap NDA for review and assigned a PDUFA date of "
+            "December 16, 2025."
+        )
+        drug, action = _parse_drug_and_action_near_pdufa(text)
+        assert "reproxalap" in drug.lower()
+
+    def test_real_capr_seeking_approval_of_pattern(self):
+        """CAPR: 'BLA seeking full approval of Deramiocel, an...'"""
+        from pdufa_scraper import _parse_drug_and_action_near_pdufa
+        text = (
+            "lifted the previously issued CRL and resumed review of the "
+            "Company's BLA seeking full approval of Deramiocel, an "
+            "investigational cell therapy, for the treatment of DMD "
+            "cardiomyopathy. The submission has been classified as a "
+            "Class 2 resubmission, with a Prescription Drug User Fee Act "
+            "(PDUFA) target action date of August 22, 2026."
+        )
+        drug, action = _parse_drug_and_action_near_pdufa(text)
+        assert "deramiocel" in drug.lower()
+
+    def test_real_achv_commercialization_of_pattern(self):
+        """ACHV: 'commercialization of cytisinicline as a treatment of'"""
+        from pdufa_scraper import _parse_drug_and_action_near_pdufa
+        text = (
+            "potential commercialization of cytisinicline as a treatment "
+            "of nicotine dependence. In September 2025, the company "
+            "announced that its New Drug Application, submitted to the "
+            "U.S. Food and Drug Administration (FDA) in June 2025, had "
+            "been accepted for review. The FDA has assigned a "
+            "Prescription Drug User Fee Act (PDUFA) date of June 20, 2026."
+        )
+        drug, action = _parse_drug_and_action_near_pdufa(text)
+        assert "cytisinicline" in drug.lower()
+
+    def test_real_arvn_approval_of_with_brand_paren_generic(self):
+        """ARVN: 'FDA Approval of VEPPANU (vepdegestrant) for the...'"""
+        from pdufa_scraper import _parse_drug_and_action_near_pdufa
+        text = (
+            "Arvinas Announces FDA Approval of VEPPANU (vepdegestrant) "
+            "for the Treatment of ESR1m, ER+/HER2- Advanced Breast Cancer. "
+            "VEPPANU is the first-and-only FDA-approved PROTAC. Approval "
+            "received in advance of FDA-assigned PDUFA date of June 5, 2026."
+        )
+        drug, action = _parse_drug_and_action_near_pdufa(text)
+        # Either VEPPANU or vepdegestrant is acceptable
+        assert ("veppanu" in drug.lower() or "vepdegestrant" in drug.lower())
+
 
 class TestEdgarFetchIntegration:
     """Validates the end-to-end EDGAR path with mocked HTTP."""
