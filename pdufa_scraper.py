@@ -455,10 +455,12 @@ _DRUG_PATTERNS = [
         re.IGNORECASE,
     ),
     # 6. "for [DRUG] for the treatment / management / prevention of"
-    #    Two-"for" sentences — captures drug between them.
+    #    Two-"for" sentences — captures drug between them. Char class
+    #    allows percent and slash for formulations like
+    #    "Phentolamine Ophthalmic Solution 0.75%".
     re.compile(
         r"\bfor\s+"
-        r"((?!the\b|an\b|a\b)[A-Z][\w\-\s\.]{2,50}?)\s+"
+        r"((?!the\b|an\b|a\b)[A-Z][\w\-\s\.\%/]{2,60}?)\s+"
         r"for\s+the\s+(?:treatment|management|prevention)",
     ),
     # 7. "regarding [DRUG], the Company..."
@@ -486,13 +488,40 @@ _BANNED_PREFIX_TOKENS = {
     "with", "in", "of", "to", "and", "or", "review", "submission",
 }
 
+# FDA program / designation phrases that look like proper nouns
+# (capitalized title case) but are NOT drug names. These appear in
+# 8-K filings constantly and the greedy phrase regex picks them up.
+_FDA_DESIGNATION_PHRASES = {
+    "priority review", "breakthrough therapy", "fast track",
+    "orphan drug", "rare pediatric", "regenerative medicine",
+    "advanced therapy", "complete response", "review designation",
+    "advisory committee", "user fee",
+}
+
 # WHO INN suffixes that uniquely identify a generic drug name.
 # Word-final pattern only — e.g. "...mab" but not "lambda" or "ambush".
+# Suffix list uses actual INN stems:
+#   -rsen      antisense oligonucleotide (olezarsen, zilganersen, mipomersen)
+#   -mab       monoclonal antibody (pembrolizumab)
+#   -tinib     kinase inhibitor (osimertinib)
+#   -ciclib    CDK inhibitor (palbociclib)
+#   -afil      PDE5 inhibitor (sildenafil)
+#   -prazole   proton pump inhibitor (omeprazole)
+#   -avir      antiviral (remdesivir)
+#   -mycin     antibiotic (azithromycin)
+#   -lukast    leukotriene antagonist (montelukast)
+#   -conazole  azole antifungal (itraconazole)
+#   -sartan    angiotensin antagonist (losartan)
+#   -statin    HMG-CoA reductase inhibitor (atorvastatin)
+#   -sertib    serine/threonine kinase inhibitor
+#   -farib     ribonucleotide reductase inhibitor
+#   -nib       generic kinase inhibitor (sotorasib)
+#   -olol      beta blocker (atenolol)
 _DRUG_SUFFIX_RE = re.compile(
-    r"\b([A-Za-z][a-z]{3,30}(?:"
-    r"mab|nib|tinib|ciclib|tide|afil|ersen|prazole|avir|"
-    r"mycin|lukast|conazole|sartan|olol|statin|gene|sertib|farib"
-    r"))\b",
+    r"\b([A-Za-z][a-z]{4,30}"
+    r"(?:mab|tinib|ciclib|afil|rsen|prazole|avir|mycin|lukast|"
+    r"conazole|sartan|statin|sertib|farib|nib|olol)"
+    r")\b",
     re.IGNORECASE,
 )
 # Compound-code patterns — XYZ-123 / ARV-471 / mRNA-1647 / BMS-986178.
@@ -542,6 +571,11 @@ def _parse_drug_and_action_near_pdufa(text: str) -> Tuple[str, str]:
             cl = candidate.lower()
             first_word = cl.split(" ", 1)[0]
             if first_word in _BANNED_PREFIX_TOKENS or cl in _DRUG_FP:
+                continue
+            # Reject FDA designation phrases (Priority Review, etc.)
+            if cl in _FDA_DESIGNATION_PHRASES:
+                continue
+            if any(phrase in cl for phrase in _FDA_DESIGNATION_PHRASES):
                 continue
             if 2 <= len(candidate) <= 60:
                 drug = candidate

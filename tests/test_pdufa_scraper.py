@@ -433,6 +433,46 @@ class TestDrugAndActionExtraction:
         # Either VEPPANU or vepdegestrant is acceptable
         assert ("veppanu" in drug.lower() or "vepdegestrant" in drug.lower())
 
+    def test_rejects_priority_review_designation(self):
+        """IONS: 'sNDA accepted by the FDA for Priority Review for the
+        treatment of sHTG' — pattern 6 was capturing 'Priority Review'
+        as the drug. The -ersen suffix on olezarsen should win instead."""
+        from pdufa_scraper import _parse_drug_and_action_near_pdufa
+        text = (
+            "Olezarsen on track to launch this year as a transformational "
+            "medicine for severe hypertriglyceridemia (sHTG), assuming "
+            "approval. sNDA accepted by the FDA for Priority Review for "
+            "the treatment of sHTG with a Prescription Drug User Fee Act "
+            "(PDUFA) target action date of June 30, 2026."
+        )
+        drug, action = _parse_drug_and_action_near_pdufa(text)
+        assert "priority" not in drug.lower()
+        assert "olezarsen" in drug.lower()
+
+    def test_rejects_breakthrough_therapy_designation(self):
+        from pdufa_scraper import _parse_drug_and_action_near_pdufa
+        text = (
+            "FDA accepted the sNDA for Breakthrough Therapy for the "
+            "treatment of myocarditis with PDUFA target action date "
+            "of August 22, 2026. Compound XYZ-123 is the lead candidate."
+        )
+        drug, action = _parse_drug_and_action_near_pdufa(text)
+        assert "breakthrough" not in drug.lower()
+
+    def test_real_ird_phentolamine_with_percent(self):
+        """IRD: 'PDUFA date in October 2026 for Phentolamine Ophthalmic
+        Solution 0.75% for the treatment of presbyopia' — drug name
+        contains percent which the char class needs to allow."""
+        from pdufa_scraper import _parse_drug_and_action_near_pdufa
+        text = (
+            "Reauthorization of FDA's Rare Pediatric Disease Priority "
+            "Review Voucher (PRV) program. FDA Prescription Drug User "
+            "Fee Act (PDUFA) date in October 2026 for Phentolamine "
+            "Ophthalmic Solution 0.75% for the treatment of presbyopia."
+        )
+        drug, action = _parse_drug_and_action_near_pdufa(text)
+        assert "phentolamine" in drug.lower()
+
 
 class TestEdgarFetchIntegration:
     """Validates the end-to-end EDGAR path with mocked HTTP."""
