@@ -17,6 +17,29 @@ Rules going forward:
 
 ---
 
+## 2026-05-04 — Synthetic Options Backtester endpoint never worked (Severity: critical, ships-broken-UI)
+
+**What changed**: Fixed `/api/options-backtest` (the Run button on the Synthetic Options Backtester panel). The endpoint had been broken since it shipped — clicking any of the 5 dropdown options (`long_put`, `long_call`, `bull_call_spread`, `bear_put_spread`, `iron_condor`) returned a 500 with `cannot import name 'long_put' from 'options_multileg'`.
+
+**Why**: Three independent bugs compounding:
+1. **Wrong import names + wrong module**: `long_put` and `long_call` are in `options_trader.py` as `build_long_put` / `build_long_call` (and they return single-leg position dicts, not OptionStrategy objects). The endpoint imported `long_put as _lp` from `options_multileg` — that module has no such symbol.
+2. **Wrong import names for multi-leg**: `bull_call_spread`, `bear_put_spread`, `iron_condor` are in `options_multileg.py` as `build_bull_call_spread` etc. — the endpoint imported the bare names, which don't exist.
+3. **Unsupported kwarg**: every multi-leg builder call passed `spot_price=spot`, but no multi-leg builder accepts that parameter.
+4. **Wrong field name in equity-curve aggregation**: read `t.get("total_pnl_dollars")` but the trade dict's actual field is `pnl_dollars`. So even if the endpoint worked, the cumulative-PnL chart would always be flat zero.
+
+**Fix**:
+- Single-leg dispatch (`long_put`, `long_call`): `simulate_single_leg` from `options_backtester` in a manual loop. `backtest_strategy_over_period` only handles multi-leg, so we reproduce its loop shape rather than abuse the multi-leg path.
+- Multi-leg dispatch (`bull_call_spread`, `bear_put_spread`, `iron_condor`): correct imports (`build_bull_call_spread` etc.), correct signatures (no `spot_price` kwarg).
+- Strategy whitelist returns 400 on unknown strategy instead of 500.
+- Equity curve uses `pnl_dollars` not `total_pnl_dollars`.
+- New `_summarize_options_trades()` builds a BacktestSummary-shaped response from the single-leg trade list so both paths return the same response shape.
+
+**Tests**: New `tests/test_options_backtest_api.py` — 8 tests including a parametrized smoke test that exercises EVERY dropdown option end-to-end through the Flask test client. Mocks only the historical-pricing layer (no Alpaca hit), asserts each strategy returns 200 with valid response shape. Plus a static check that the dropdown options in `templates/ai.html` exactly match the test's `DROPDOWN_STRATEGIES` list — so adding a new option without testing it fails CI.
+
+**Why next time will be caught**: This was a "ships-broken-UI" failure mode — code that compiled, the page rendered, but clicking the button always errored. The new smoke test covers each dropdown option via Flask's test client, so every dropdown change either gets exercised in CI or fails the dropdown-list-drift check. The lesson: every interactive UI element must have at least one happy-path API smoke test, or it WILL ship broken.
+
+---
+
 ## 2026-05-04 — Blanket guardrail: no snake_case + no internal-tracker refs in any template (Severity: high, regression)
 
 **What changed**: 5 dropdown options in the Synthetic Options Backtester (`long_put`, `long_call`, `bull_call_spread`, `bear_put_spread`, `iron_condor`) were displaying their raw API keys instead of human-readable labels; two `<h3>` panel headers were leaking internal tracker tags (`Slippage Model (Item 5c)`, `Monte Carlo Backtest (Item 5c)`); a slippage empty-state message named DB columns directly (`decision_price`, `fill_price`). All fixed.

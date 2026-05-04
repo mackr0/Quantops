@@ -3694,6 +3694,53 @@ def api_mc_backtest(profile_id):
     return jsonify({"available": True, **result})
 
 
+def _summarize_options_trades(strategy_name, symbol, period_start,
+                                period_end, trades):
+    """Aggregate a list of trade dicts into the same shape that
+    options_backtester.BacktestSummary.as_dict() returns. Used by the
+    single-leg path which calls simulate_single_leg in a manual loop
+    (backtest_strategy_over_period is multi-leg only)."""
+    if not trades:
+        return {
+            "strategy_name": strategy_name, "symbol": symbol,
+            "period_start": period_start.isoformat(),
+            "period_end": period_end.isoformat(),
+            "n_trades": 0, "n_wins": 0, "n_losses": 0,
+            "win_rate_pct": 0.0,
+            "total_pnl_dollars": 0.0, "avg_pnl_dollars": 0.0,
+            "best_trade_pnl": 0.0, "worst_trade_pnl": 0.0,
+            "avg_days_held": 0.0, "sharpe_proxy": 0.0,
+            "trades": [],
+        }
+    pnls = [float(t.get("pnl_dollars") or 0) for t in trades]
+    days = [int(t.get("days_held") or 0) for t in trades]
+    n_wins = sum(1 for p in pnls if p > 0)
+    n_losses = sum(1 for p in pnls if p < 0)
+    total = sum(pnls)
+    avg = total / len(pnls)
+    if len(pnls) > 1:
+        var = sum((p - avg) ** 2 for p in pnls) / (len(pnls) - 1)
+        std = var ** 0.5
+        sharpe = (avg / std) if std > 0 else 0.0
+    else:
+        sharpe = 0.0
+    return {
+        "strategy_name": strategy_name, "symbol": symbol,
+        "period_start": period_start.isoformat(),
+        "period_end": period_end.isoformat(),
+        "n_trades": len(trades),
+        "n_wins": n_wins, "n_losses": n_losses,
+        "win_rate_pct": round(100.0 * n_wins / len(trades), 1),
+        "total_pnl_dollars": round(total, 2),
+        "avg_pnl_dollars": round(avg, 2),
+        "best_trade_pnl": round(max(pnls), 2),
+        "worst_trade_pnl": round(min(pnls), 2),
+        "avg_days_held": round(sum(days) / len(days), 1),
+        "sharpe_proxy": round(sharpe, 3),
+        "trades": trades,
+    }
+
+
 @views_bp.route("/api/options-backtest", methods=["POST"])
 @login_required
 def api_options_backtest():
@@ -3725,70 +3772,110 @@ def api_options_backtest():
     try:
         from options_backtester import (
             backtest_strategy_over_period, historical_spot,
-        )
-        from options_multileg import (
-            long_put as _lp, long_call as _lc,
-            bull_call_spread as _bcs, bear_put_spread as _bps,
-            iron_condor as _ic,
+            simulate_single_leg,
         )
     except Exception as exc:
-        return jsonify({"error": f"options modules not available: {exc}"}), 500
+        return jsonify({"error": f"options backtester not available: {exc}"}), 500
 
-    # Strategy factory — given as_of date, return an OptionStrategy
-    def _factory(as_of):
-        spot = historical_spot(symbol, as_of)
-        if spot is None:
-            return None
-        expiry = as_of + _td(days=target_dte)
-        if strategy == "long_put":
-            strike = round(spot * (1 - otm_pct), 0)
-            return _lp(symbol, expiry, strike, qty=1, spot_price=spot)
-        if strategy == "long_call":
-            strike = round(spot * (1 + otm_pct), 0)
-            return _lc(symbol, expiry, strike, qty=1, spot_price=spot)
-        if strategy == "bull_call_spread":
-            long_k = round(spot, 0)
-            short_k = round(spot * (1 + otm_pct), 0)
-            return _bcs(symbol, expiry, long_k, short_k, qty=1, spot_price=spot)
-        if strategy == "bear_put_spread":
-            long_k = round(spot, 0)
-            short_k = round(spot * (1 - otm_pct), 0)
-            return _bps(symbol, expiry, long_k, short_k, qty=1, spot_price=spot)
-        if strategy == "iron_condor":
-            put_long = round(spot * (1 - otm_pct - 0.025), 0)
-            put_short = round(spot * (1 - otm_pct), 0)
-            call_short = round(spot * (1 + otm_pct), 0)
-            call_long = round(spot * (1 + otm_pct + 0.025), 0)
-            return _ic(symbol, expiry, put_long, put_short,
-                        call_short, call_long, qty=1, spot_price=spot)
-        return None
+    SINGLE_LEG = {"long_put", "long_call"}
+    MULTI_LEG = {"bull_call_spread", "bear_put_spread", "iron_condor"}
+    if strategy not in (SINGLE_LEG | MULTI_LEG):
+        return jsonify(
+            {"error": f"unknown strategy {strategy!r}. Supported: "
+                       f"{sorted(SINGLE_LEG | MULTI_LEG)}"}
+        ), 400
 
     try:
-        summary = backtest_strategy_over_period(
-            strategy_factory=_factory,
-            symbol=symbol,
-            period_start=start,
-            period_end=end,
-            entry_rule=lambda s, d: True,
-            cycle_days=cycle_days,
-            profit_target_pct_of_max=profit_target,
-            stop_loss_pct_of_max=stop_loss,
-            time_stop_days_before_expiry=2,
-        )
+        if strategy in SINGLE_LEG:
+            # Single-leg path: simulate_single_leg in a manual loop.
+            # backtest_strategy_over_period only handles multi-leg, so
+            # we reproduce its loop shape here.
+            is_call = (strategy == "long_call")
+            trades = []
+            cursor = start
+            while cursor <= end:
+                spot = historical_spot(symbol, cursor)
+                if spot is not None:
+                    direction = otm_pct if is_call else -otm_pct
+                    strike = round(spot * (1 + direction), 0)
+                    expiry = cursor + _td(days=target_dte)
+                    trade = simulate_single_leg(
+                        symbol=symbol, entry_date=cursor,
+                        strike=strike, expiry=expiry, is_call=is_call,
+                        side="buy", qty=1,
+                        profit_target_pct=profit_target,
+                        stop_loss_pct=stop_loss,
+                        time_stop_days_before_expiry=2,
+                    )
+                    if trade is not None:
+                        trades.append(trade.as_dict())
+                cursor += _td(days=cycle_days)
+            out = _summarize_options_trades(
+                strategy_name=strategy, symbol=symbol,
+                period_start=start, period_end=end, trades=trades,
+            )
+        else:
+            # Multi-leg path via the existing per-period backtester.
+            from options_multileg import (
+                build_bull_call_spread, build_bear_put_spread,
+                build_iron_condor,
+            )
+
+            def _factory(as_of):
+                spot = historical_spot(symbol, as_of)
+                if spot is None:
+                    return None
+                expiry = as_of + _td(days=target_dte)
+                if strategy == "bull_call_spread":
+                    long_k = round(spot, 0)
+                    short_k = round(spot * (1 + otm_pct), 0)
+                    return build_bull_call_spread(
+                        symbol, expiry, long_k, short_k, qty=1,
+                    )
+                if strategy == "bear_put_spread":
+                    long_k = round(spot, 0)
+                    short_k = round(spot * (1 - otm_pct), 0)
+                    return build_bear_put_spread(
+                        symbol, expiry, long_k, short_k, qty=1,
+                    )
+                if strategy == "iron_condor":
+                    put_long = round(spot * (1 - otm_pct - 0.025), 0)
+                    put_short = round(spot * (1 - otm_pct), 0)
+                    call_short = round(spot * (1 + otm_pct), 0)
+                    call_long = round(spot * (1 + otm_pct + 0.025), 0)
+                    return build_iron_condor(
+                        symbol, expiry, put_long, put_short,
+                        call_short, call_long, qty=1,
+                    )
+                return None
+
+            summary = backtest_strategy_over_period(
+                strategy_factory=_factory,
+                symbol=symbol,
+                period_start=start,
+                period_end=end,
+                entry_rule=lambda s, d: True,
+                cycle_days=cycle_days,
+                profit_target_pct_of_max=profit_target,
+                stop_loss_pct_of_max=stop_loss,
+                time_stop_days_before_expiry=2,
+            )
+            out = summary.as_dict()
     except Exception as exc:
         logger.warning("Options backtest failed: %s", exc)
         return jsonify({"error": str(exc)}), 500
 
-    out = summary.as_dict()
-    # Add an equity curve for charting (cumulative P&L over time)
+    # Equity curve (cumulative P&L over time). Both single-leg and
+    # multi-leg trade dicts use `pnl_dollars` as the per-trade P&L field.
     cum = 0.0
     curve = []
     for t in out.get("trades", []):
-        cum += float(t.get("total_pnl_dollars") or 0)
+        pnl = float(t.get("pnl_dollars") or 0)
+        cum += pnl
         curve.append({
             "date": t.get("entry_date"),
             "cum_pnl": round(cum, 2),
-            "trade_pnl": round(float(t.get("total_pnl_dollars") or 0), 2),
+            "trade_pnl": round(pnl, 2),
         })
     out["equity_curve"] = curve
     out["params"] = {
