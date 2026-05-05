@@ -366,6 +366,110 @@ def _build_chain_dataframes(underlying: str, contracts: List[Dict[str, Any]],
     return by_expiration
 
 
+def list_available_contracts(symbol: str) -> List[Dict[str, Any]]:
+    """Return raw list of currently-listed Alpaca option contracts for
+    `symbol`. Each item: {symbol, expiration_date, type, strike,
+    open_interest, close_price}.
+
+    Used by `snap_to_listed_contract` to round AI-proposed strikes /
+    expiries to actual contracts that exist. Returns [] on failure
+    so callers can fall back gracefully (e.g. submit anyway and let
+    Alpaca reject — same behavior as before this helper existed)."""
+    try:
+        return _fetch_contracts(symbol, max_expirations=20)
+    except Exception as exc:
+        logger.debug("list_available_contracts %s failed: %s", symbol, exc)
+        return []
+
+
+def snap_to_listed_contract(
+    symbol: str,
+    target_expiry: str,
+    target_strike: float,
+    option_type: str,           # 'C' or 'P' (or 'call'/'put')
+    contracts: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Find the listed contract closest to (target_expiry, target_strike,
+    option_type) for `symbol`.
+
+    Returns {symbol, expiration_date, type, strike} of the closest
+    listed contract, or None if no contracts at all.
+
+    Snapping rules:
+      1. Pick the listed expiration_date closest to target_expiry
+         (smallest abs date diff). If the closest is more than 30
+         days off, return None — the AI's pick is too far from any
+         listed expiry, better to fail than silently substitute.
+      2. Among contracts at that expiry of the requested type, pick
+         the listed strike closest to target_strike (smallest abs $
+         diff). If the closest is more than 5% off the target, return
+         None — same rationale.
+    """
+    from datetime import date as _date
+
+    contracts = contracts if contracts is not None else list_available_contracts(symbol)
+    if not contracts:
+        return None
+
+    # Normalize the type
+    t = (option_type or "").lower()
+    if t in ("c", "call"):
+        wanted_type = "call"
+    elif t in ("p", "put"):
+        wanted_type = "put"
+    else:
+        return None
+
+    # Filter to type
+    typed = [c for c in contracts if (c.get("type") or "").lower() == wanted_type]
+    if not typed:
+        return None
+
+    # Group by expiration; find closest expiry to target.
+    try:
+        target_dt = _date.fromisoformat(target_expiry)
+    except Exception:
+        return None
+    by_exp: Dict[str, List[Dict[str, Any]]] = {}
+    for c in typed:
+        exp = c.get("expiration_date")
+        if not exp:
+            continue
+        by_exp.setdefault(exp, []).append(c)
+    if not by_exp:
+        return None
+
+    def _exp_diff(exp_str: str) -> int:
+        try:
+            return abs((_date.fromisoformat(exp_str) - target_dt).days)
+        except Exception:
+            return 10**9
+
+    closest_exp = min(by_exp.keys(), key=_exp_diff)
+    if _exp_diff(closest_exp) > 30:
+        return None
+
+    # Within that expiry, find closest strike
+    candidates = by_exp[closest_exp]
+    def _strike_diff(c: Dict[str, Any]) -> float:
+        try:
+            return abs(float(c.get("strike", 0)) - float(target_strike))
+        except Exception:
+            return 10**9
+    closest_contract = min(candidates, key=_strike_diff)
+    closest_strike = float(closest_contract.get("strike", 0))
+    if target_strike > 0 and abs(closest_strike - target_strike) / target_strike > 0.05:
+        # >5% off target — refuse rather than silently substitute
+        return None
+
+    return {
+        "symbol": closest_contract.get("symbol"),
+        "expiration_date": closest_exp,
+        "type": wanted_type,
+        "strike": closest_strike,
+    }
+
+
 def fetch_chain_alpaca(symbol: str,
                           today: Optional[_date] = None) -> Optional[Dict[str, Any]]:
     """Drop-in replacement for the yfinance-based _fetch_chain.

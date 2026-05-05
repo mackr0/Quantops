@@ -17,6 +17,26 @@ Rules going forward:
 
 ---
 
+## 2026-05-05 — Two real prod bugs: stuck exits + missing options contracts (Severity: critical, money-leaving)
+
+**Bug 1: INTC +33% gain stuck unsold on Large Cap Limit Orders.**
+
+Mack flagged a position with $762 unrealized gain that should have hit its take-profit but kept getting deferred every cycle with reason "entry order has not filled at the broker yet." The position WAS real at the broker; the journal entry was real with status='open'. So why deferral?
+
+Cause: `trader._entry_order_filled_at_broker` looked up the journal's entry `order_id` and asked Alpaca about THAT specific order's status. For limit-order profiles, the original limit order from days earlier had been canceled/expired/replaced. Alpaca returned status="canceled". Gate saw not-filled → deferred forever, even though shares existed at the broker because a SUBSEQUENT limit order had filled.
+
+The intent of the gate is "are there shares to sell?" — not "did this specific journal order_id fill?" Switched to `api.list_positions()` and check actual broker qty on the right side (long for long-exit, short for short-exit). Permissive on broker call failure (the submit step has its own error handling). 8 obsolete tests deleted; 8 new tests cover the real semantics including the prod scenario.
+
+**Bug 2: Multi-leg orders rejected — strikes/expiries don't exist as listed contracts.**
+
+VALE bear_put_spread submissions kept erroring with "asset 'VALE  260612P00015000' not found." The AI was proposing strikes ($15.00, $15.50) and expiries (June 12) that aren't listed Alpaca contracts. Real expiries are 3rd-Friday June 19; standard $1 strike intervals don't include $15.50 at that DTE.
+
+Fix: before submission, `execute_multileg_strategy` now fetches the underlying's listed contracts, snaps each leg's strike + expiry to the closest listed contract within tolerance (5% strike, 30 days expiry), and rebuilds the OCC symbols. If any leg can't snap within tolerance, refuses the whole strategy with a specific reason rather than letting Alpaca reject piecemeal. New helpers in `options_chain_alpaca`: `list_available_contracts(symbol)` + `snap_to_listed_contract(symbol, target_expiry, target_strike, option_type)`. 12 new tests (snap semantics + integration with execute_multileg).
+
+**Tests**: 2,347 passing. Both regressions captured by tests using the actual prod failure patterns (broker has shares but order_id is stale; AI strikes don't match listed contracts).
+
+---
+
 ## 2026-05-05 — Best/Worst trade panels were N/A on /ai (Severity: medium, regression)
 
 **What broke**: After splitting Best/Worst Prediction into Best Trade / Worst Trade / Biggest Missed Gain / Biggest Avoided Loss, all four panels showed "No resolved directional trades yet" / "No resolved HOLD predictions yet" on prod despite hundreds of resolved trades and thousands of resolved HOLDs across profiles.

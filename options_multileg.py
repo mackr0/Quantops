@@ -505,6 +505,59 @@ def execute_multileg_strategy(
         result["reason"] = "Strategy has no legs"
         return result
 
+    # Snap each leg to a listed Alpaca contract before submission.
+    # AI proposes target strikes/expiries that may not exist as
+    # actual listed contracts (split-strike intervals, non-standard
+    # expirations). Without this, every leg with a mismatched OCC
+    # symbol fails Alpaca's "asset not found" check and the whole
+    # multi-leg rolls back. Snapping silently rounds to the closest
+    # listed contract within tight tolerance (5% strike, 30 days
+    # expiry). If any leg can't snap within tolerance, refuse the
+    # whole strategy with a specific reason.
+    try:
+        from options_chain_alpaca import (
+            list_available_contracts as _list_contracts,
+            snap_to_listed_contract as _snap,
+        )
+        contracts = _list_contracts(strategy.underlying)
+        if contracts:
+            snapped_legs = []
+            for leg in strategy.legs:
+                snapped = _snap(
+                    strategy.underlying, leg.expiry, float(leg.strike),
+                    leg.right, contracts=contracts,
+                )
+                if snapped is None:
+                    result["reason"] = (
+                        f"No listed Alpaca contract within tolerance for "
+                        f"{strategy.underlying} {leg.right} {leg.strike} "
+                        f"exp {leg.expiry} — refusing submission"
+                    )
+                    return result
+                # Rebuild the leg with snapped values
+                snapped_leg = OptionLeg(
+                    occ_symbol=snapped["symbol"],
+                    underlying=leg.underlying,
+                    expiry=snapped["expiration_date"],
+                    strike=snapped["strike"],
+                    right=leg.right,
+                    side=leg.side,
+                    qty=leg.qty,
+                )
+                snapped_legs.append(snapped_leg)
+            # Replace strategy.legs with snapped versions. OptionStrategy
+            # is a non-frozen dataclass so mutating .legs in place is
+            # safe and avoids needing to know every dataclass field.
+            strategy.legs = snapped_legs
+        # If contracts list empty (Alpaca contracts API failure), submit
+        # as-is and let Alpaca reject if any contract is missing —
+        # graceful degradation.
+    except Exception as exc:
+        logger.debug(
+            "Multi-leg contract snap failed (continuing with original "
+            "legs): %s", exc,
+        )
+
     if use_combo:
         try:
             combo_kwargs = {
