@@ -565,6 +565,41 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
     except Exception as _ks_exc:
         logging.debug("Kill-switch check failed: %s", _ks_exc)
 
+    # --- Cross-profile concentration cap ---
+    # Per-profile max_position_pct only constrains a single profile's
+    # equity. If 10 profiles independently long the same name, the
+    # aggregate book exposure can exceed the intended limit and a
+    # single-name blowup hits all of them. Rejects new entries that
+    # would push aggregate share past max_book_exposure_pct_per_symbol
+    # (default 25%, configurable per-profile via UserContext).
+    try:
+        from book_concentration import would_breach as _book_would_breach
+        cap_pct = float(getattr(ctx, "max_book_exposure_pct_per_symbol", 0.25))
+        # Estimate the proposed trade $ value from signal price + a
+        # rough share count. The exact qty is computed downstream;
+        # for the gate we use the upper bound that the per-profile
+        # max_position_pct would permit.
+        equity_for_estimate = (account.get("equity") or 0)
+        proposed_value = (
+            equity_for_estimate * float(getattr(ctx, "max_position_pct", 0.10))
+        )
+        breach, reason, detail = _book_would_breach(
+            symbol, proposed_trade_value=proposed_value,
+            max_book_pct=cap_pct,
+        )
+        if breach:
+            return {
+                "symbol": symbol,
+                "action": "BOOK_CONCENTRATION_CAP",
+                "signal": signal.get("signal", "HOLD"),
+                "price": signal.get("price", 0),
+                "reason": reason,
+                "concentration_detail": detail,
+                "strategy": ctx.segment if ctx else "unknown",
+            }
+    except Exception as _bc_exc:
+        logging.debug("Book-concentration check failed: %s", _bc_exc)
+
     # --- Drawdown protection ---
     dd = _dd if _dd is not None else {"action": "normal", "drawdown_pct": 0.0, "peak_equity": 0, "current_equity": 0}
     if ctx is not None and _dd is None:

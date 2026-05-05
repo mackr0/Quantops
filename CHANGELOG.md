@@ -17,6 +17,25 @@ Rules going forward:
 
 ---
 
+## 2026-05-05 — Doomsday gate part 3: cross-profile concentration cap (Severity: high, single-name blow-up protection)
+
+**What changed**: New `book_concentration.py` module + pre-trade gate. Per-profile `max_position_pct` was the only concentration limit; with 10 profiles independently long the same name, aggregate book exposure could exceed the intended single-name limit. Now blocked.
+
+**Why**: Single-name blow-ups (one stock down 50% on news) hit every profile holding it simultaneously. If 10 profiles each held AAPL at the per-profile 5% cap, the book was 50% AAPL — 25% drop on AAPL = 12.5% book hit, not the 2.5% the per-profile limit was meant to cap. We've already lived this category of risk indirectly through correlated profile losses; the explicit aggregate cap closes it.
+
+**Fix**:
+- `book_concentration.get_book_exposure_to_symbol(symbol)` — sums `qty × price` for OPEN longs+shorts of one symbol across every profile DB. Returns (exposure_dollars, total_book_equity).
+- `book_concentration.would_breach(symbol, proposed_value, max_book_pct)` — answers the pre-trade question "would adding $X push aggregate share past Y%?" Returns (bool, reason, diagnostic_dict).
+- `trade_pipeline.run_evaluate_buy/sell/short` — new gate after the kill-switch check, before drawdown. Returns `BOOK_CONCENTRATION_CAP` action with the diagnostic numbers in the activity log when it fires.
+- Default cap: 25% of book equity. Configurable per-profile via `max_book_exposure_pct_per_symbol` on UserContext (so very-conservative profiles can ratchet down independently).
+- Both longs and shorts contribute to the cap — a 25% book-share short blows up just as fast as a 25% book-share long.
+
+**Tests**: 9 new in `tests/test_book_concentration.py`: empty profile list, single-profile, multi-profile aggregation, case-insensitive symbol match, other symbols excluded, within-cap, at-cap-breach, zero-equity safe (no false positive), diagnostic detail dict carries all numbers.
+
+**Why next time will be caught**: the gate runs on every entry attempt, the diagnostic dict is logged in the activity feed (so you can see "AAPL would have been 30% of book, capped at 25%"), and the test suite covers both the within-cap and breach cases. The default 25% is a real cap — most profiles run well below it organically because positions are smaller than 5% per profile and there are typically <5 profiles holding any given name.
+
+---
+
 ## 2026-05-04 — Doomsday gate part 2: AI provider auto-failover (Severity: high, availability)
 
 **What changed**: Added a per-process circuit breaker around AI provider calls. When Anthropic returns three consecutive 5xx / 529 / timeout errors, the circuit OPENs for 5 minutes (exponential backoff up to 30 min on repeated half-open failures) and `call_ai` automatically routes to the next configured fallback (OpenAI → Google).
