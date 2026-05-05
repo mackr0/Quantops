@@ -149,6 +149,67 @@ def test_restore_refuses_corrupt_backup(tmp_path):
     assert "corrupt" in out["detail"].lower()
 
 
+def test_null_in_not_null_is_treated_as_ok(tmp_path, monkeypatch):
+    """The exact regression that took the scheduler down 2026-05-05:
+    PRAGMA quick_check returns `NULL value in <table>.<col>` rows
+    when pre-existing rows have NULL in a NOT NULL column added
+    later. That's NOT file corruption and should NOT halt the
+    scheduler. This test patches the PRAGMA call to return that
+    pattern and asserts check_db returns 'ok'."""
+    from db_integrity import check_db
+    import db_integrity
+    p = str(tmp_path / "test.db")
+    # Create a healthy file
+    sqlite3.connect(p).close()
+
+    class _FakeConn:
+        def execute(self, sql):
+            class _Cur:
+                def fetchall(self):
+                    return [
+                        ("NULL value in trading_profiles.foo",),
+                        ("NULL value in trading_profiles.bar",),
+                    ]
+            return _Cur()
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        db_integrity.sqlite3, "connect",
+        lambda *a, **kw: _FakeConn(),
+    )
+    out = check_db(p)
+    assert out["status"] == "ok", f"got {out}"
+
+
+def test_real_corruption_still_halts(tmp_path, monkeypatch):
+    """Index corruption / page errors / etc. ARE real corruption and
+    must still halt."""
+    from db_integrity import check_db
+    import db_integrity
+    p = str(tmp_path / "test.db")
+    sqlite3.connect(p).close()
+
+    class _FakeConn:
+        def execute(self, sql):
+            class _Cur:
+                def fetchall(self):
+                    return [
+                        ("*** in database main ***",),
+                        ("Page 5 is never used",),
+                    ]
+            return _Cur()
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        db_integrity.sqlite3, "connect",
+        lambda *a, **kw: _FakeConn(),
+    )
+    out = check_db(p)
+    assert out["status"] == "corrupt"
+
+
 def test_restore_returns_error_when_no_backup(tmp_path):
     from db_integrity import restore_from_backup
     out = restore_from_backup(

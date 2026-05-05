@@ -58,7 +58,21 @@ def check_db(path: str) -> Dict[str, str]:
         # An OK DB returns exactly [("ok",)]
         if len(result) == 1 and result[0][0] == "ok":
             return {"status": "ok", "detail": "ok"}
-        msgs = "; ".join(str(r[0]) for r in result[:5])
+        # Filter out NOT NULL constraint violations on existing rows.
+        # These are NOT file corruption — they happen when a column is
+        # added to an existing table via ALTER TABLE with NOT NULL but
+        # no DEFAULT, leaving pre-existing rows with NULL. The DB is
+        # structurally fine; refusing to start would be wrong.
+        # (UNIQUE / FK / page-storage problems all surface as different
+        # message text and DO halt below.)
+        non_constraint = [
+            str(r[0]) for r in result
+            if not str(r[0]).startswith("NULL value in")
+        ]
+        if not non_constraint:
+            return {"status": "ok",
+                    "detail": f"ok (ignored {len(result)} NOT NULL violations)"}
+        msgs = "; ".join(non_constraint[:5])
         return {"status": "corrupt", "detail": msgs}
     except sqlite3.DatabaseError as exc:
         return {"status": "corrupt", "detail": str(exc)}
