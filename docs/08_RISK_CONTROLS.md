@@ -88,6 +88,35 @@ When `use_conviction_tp_override=1` and a position hits its fixed take-profit, t
 
 The conviction override is OFF by default. Enabling it accepts more upside but requires more discretion.
 
+## 3.5 Doomsday gates (added 2026-05-04 / 2026-05-05)
+
+A defense-in-depth layer above the per-trade and validation gates. These exist for catastrophic-failure scenarios that the existing risk controls don't cover individually. **Each gate is independent and any one of them is sufficient to stop the bleed.**
+
+| Gate | Trigger | Action | Module |
+|---|---|---|---|
+| **Master kill switch** | Manual flip on dashboard banner OR auto-flip on book-wide day-P&L floor breach | Returns `KILL_SWITCH` for every new entry across every profile until manually deactivated | `kill_switch.py` |
+| **Book daily-loss floor** | Cumulative book day-of P&L < −8% of opening equity | Auto-flips master kill switch with reason `auto: book day P&L X% breached floor −8%` | `kill_switch.check_and_activate_on_loss_floor` |
+| **Cross-profile concentration cap** | Aggregate $ exposure to a single symbol > 25% of book | Returns `BOOK_CONCENTRATION_CAP` for the proposed entry | `book_concentration.py` |
+| **Catastrophic single-trade gate** | Proposed trade $ value > 5× profile's recent avg position size | Returns `CATASTROPHIC_SINGLE_TRADE` | `single_trade_gate.py` |
+| **Broker disconnect detection** | 3 consecutive Alpaca calls fail | Returns `BROKER_DISCONNECTED` for new entries until next success | `broker_health.py` |
+| **AI provider failover** | 3 consecutive 5xx/timeout from active AI provider | Auto-routes to OpenAI / Google fallback (when configured) | `provider_circuit.py` |
+| **Stop-order coverage alarm** | <80% of open longs have a broker protective stop | Logs warning + naked symbols; optional auto-kill via `auto_kill_on_stop_coverage` | `stop_coverage.py` |
+| **Position-runaway sentinel** | Duplicate open buys for same symbol OR fill qty > 5× profile median | Logs warning per occurrence (already-filled, alert only) | `position_runaway.py` |
+| **AI consistency floor** | Recent-100 directional win rate < 30% for 5 consecutive cycles | Logs error; optional auto-kill via `auto_kill_on_consistency_floor` | `ai_consistency_floor.py` |
+| **DB integrity check** | `PRAGMA quick_check` reports actual file-level corruption | Halts scheduler on startup; sends notification (deduped 1h); `restore_from_backup()` is one-command | `db_integrity.py` |
+
+**Pre-trade gate order in `trade_pipeline.run_evaluate_buy/sell/short`** (highest priority first):
+1. Broker disconnect → `BROKER_DISCONNECTED`
+2. Master kill switch → `KILL_SWITCH`
+3. Catastrophic single-trade → `CATASTROPHIC_SINGLE_TRADE`
+4. Cross-profile concentration → `BOOK_CONCENTRATION_CAP`
+5. Drawdown pause → `DRAWDOWN_PAUSE`
+6. Per-trade portfolio constraints → existing checks
+
+The existing crisis-state, intraday-risk, and validation gates run alongside / after these. The doomsday layer is fail-closed: when in doubt, refuse the entry.
+
+**Notification dedup**: the email service (`notifications.send_email`) deduplicates identical subjects within a 1-hour rolling window per process. Prevents crash-loop spam (incident 2026-05-04: 599 identical "DB corruption detected" errors over 24h hit Resend daily quota before the underlying bug was fixed).
+
 ## 4. Validation gates (in `_validate_ai_trades`)
 
 **Module:** `trade_pipeline._validate_ai_trades`

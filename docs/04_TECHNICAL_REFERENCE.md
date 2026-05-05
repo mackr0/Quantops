@@ -135,6 +135,15 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | `correlation.py` | Rolling correlation between positions. |
 | `cost_guard.py` | Daily AI-spend ceiling enforcement. |
 | `short_borrow.py` | Short-borrow rate lookup + accrual on cover. |
+| `kill_switch.py` | Master kill switch — single boolean blocks every new entry across every profile. Auto-activates on book day-P&L floor breach (default −8%). Manual via `/api/kill-switch` + dashboard banner. State persists in master DB. |
+| `book_concentration.py` | Cross-profile single-name concentration cap. Sums $ exposure to a symbol across every profile DB; rejects entries that would push aggregate share past `max_book_exposure_pct_per_symbol` (default 25%). |
+| `single_trade_gate.py` | Pre-trade gate that rejects trades whose $ value exceeds 5× the profile's recent average position. Catches qty-arithmetic bugs the dollar check misses when price input is wrong. |
+| `stop_coverage.py` | Per-cycle: alerts when fewer than 80% of open longs have a broker protective stop. Optional auto-kill via `auto_kill_on_stop_coverage`. |
+| `position_runaway.py` | Per-cycle sentinel for duplicate-submit bugs (>1 open buy / symbol) and excessive single-trade qty (>5× profile-recent median). |
+| `ai_consistency_floor.py` | Per-cycle: recent-100 directional win rate per profile. <30% for 5 consecutive cycles → alert / optional auto-kill. Captures "model is broken" before "book is bleeding". |
+| `broker_health.py` | Per-process broker health tracker. Three consecutive Alpaca failures → `BROKER_DISCONNECTED` state; pre-trade gate refuses new entries. Auto-clears on next success. |
+| `provider_circuit.py` | Per-provider circuit breaker for AI provider calls. 3 consecutive 5xx/timeout failures OPEN the circuit for 5min (exponential backoff to 30min). `ai_providers.call_ai` auto-routes to fallback (OpenAI / Google) when primary's circuit is open. |
+| `db_integrity.py` | Startup `PRAGMA quick_check` on every DB. Filters NULL-in-NOT-NULL constraint violations as non-fatal (those are pre-existing rows after ALTER TABLE, not file corruption). Halts scheduler on real corruption. `restore_from_backup()` helper for nightly-snapshot recovery. |
 
 ### 3f. Data sources
 | Module | Purpose |
