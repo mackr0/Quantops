@@ -126,17 +126,17 @@
             <tbody>
                 {% set ns = namespace(total_equity=0, total_cash=0, total_positions=0, total_cost=0) %}
                 {% for prof in profiles_data %}
-                <tr style="cursor:pointer;" onclick="showDashTab(event, 'p{{ prof.id }}'); document.querySelector('a[href=\'#p{{ prof.id }}\']').classList.add('active');">
+                <tr id="totals-row-{{ prof.id }}" style="cursor:pointer;" onclick="showDashTab(event, 'p{{ prof.id }}'); document.querySelector('a[href=\'#p{{ prof.id }}\']').classList.add('active');">
                     <td>
                         <strong>{{ prof.name }}</strong>
                         {% if prof.is_virtual %}<small class="muted">(Virtual)</small>{% endif %}
                     </td>
                     <td><small>{{ prof.market_type_name }}</small></td>
                     {% if prof.account %}
-                    <td><strong>${{ "{:,.0f}".format(prof.account.equity) }}</strong></td>
-                    <td class="muted">${{ "{:,.0f}".format(prof.account.cash) }}</td>
-                    <td>{{ prof.positions|length }}</td>
-                    <td class="muted">${{ "{:.2f}".format(prof.cost_today or 0) }}</td>
+                    <td><strong id="totals-equity-{{ prof.id }}">${{ "{:,.0f}".format(prof.account.equity) }}</strong></td>
+                    <td class="muted" id="totals-cash-{{ prof.id }}">${{ "{:,.0f}".format(prof.account.cash) }}</td>
+                    <td id="totals-positions-{{ prof.id }}">{{ prof.positions|length }}</td>
+                    <td class="muted" id="totals-cost-{{ prof.id }}">${{ "{:.2f}".format(prof.cost_today or 0) }}</td>
                     {% set ns.total_equity = ns.total_equity + prof.account.equity %}
                     {% set ns.total_cash = ns.total_cash + prof.account.cash %}
                     {% set ns.total_positions = ns.total_positions + prof.positions|length %}
@@ -149,15 +149,62 @@
             </tbody>
             <tfoot>
                 <tr style="font-weight:bold;">
-                    <td>Total ({{ profiles_data|length }} profiles)</td>
+                    <td>Total ({{ profiles_data|length }} profiles) <small id="totals-updated" class="muted" style="font-weight:normal;">— live</small></td>
                     <td></td>
-                    <td>${{ "{:,.0f}".format(ns.total_equity) }}</td>
-                    <td class="muted">${{ "{:,.0f}".format(ns.total_cash) }}</td>
-                    <td>{{ ns.total_positions }}</td>
-                    <td class="muted">${{ "{:.2f}".format(ns.total_cost) }}</td>
+                    <td id="totals-book-equity">${{ "{:,.0f}".format(ns.total_equity) }}</td>
+                    <td class="muted" id="totals-book-cash">${{ "{:,.0f}".format(ns.total_cash) }}</td>
+                    <td id="totals-book-positions">{{ ns.total_positions }}</td>
+                    <td class="muted" id="totals-book-cost">${{ "{:.2f}".format(ns.total_cost) }}</td>
                 </tr>
             </tfoot>
         </table>
+        <script>
+        (function() {
+            // Poll dashboard totals every 30s during market hours,
+            // every 5min outside (to save Alpaca API calls).
+            function refresh() {
+                fetch('/api/dashboard-totals').then(function(r){return r.json();}).then(function(d){
+                    if (d.error) return;
+                    var fmt0 = function(n){return '$' + Math.round(n).toLocaleString();};
+                    var fmt2 = function(n){return '$' + n.toFixed(2);};
+                    (d.profiles || []).forEach(function(p) {
+                        var eqEl = document.getElementById('totals-equity-' + p.id);
+                        var caEl = document.getElementById('totals-cash-' + p.id);
+                        var poEl = document.getElementById('totals-positions-' + p.id);
+                        var coEl = document.getElementById('totals-cost-' + p.id);
+                        if (eqEl) eqEl.innerHTML = '<strong>' + fmt0(p.equity) + '</strong>';
+                        if (caEl) caEl.textContent = fmt0(p.cash);
+                        if (poEl) poEl.textContent = p.num_positions;
+                        if (coEl) coEl.textContent = fmt2(p.cost_today || 0);
+                    });
+                    var be = document.getElementById('totals-book-equity');
+                    var bc = document.getElementById('totals-book-cash');
+                    var bp = document.getElementById('totals-book-positions');
+                    var bk = document.getElementById('totals-book-cost');
+                    var u = document.getElementById('totals-updated');
+                    if (be) be.textContent = fmt0(d.total_equity || 0);
+                    if (bc) bc.textContent = fmt0(d.total_cash || 0);
+                    if (bp) bp.textContent = (d.total_positions || 0);
+                    if (bk) bk.textContent = fmt2(d.total_cost || 0);
+                    if (u) u.textContent = '— live · updated ' + new Date().toLocaleTimeString();
+                }).catch(function(){});
+            }
+            // Refresh at a market-aware cadence: 30s during market hours
+            // (13:30–20:00 UTC weekdays = 09:30–16:00 ET), else 5min.
+            function isMarketHours() {
+                var d = new Date();
+                var day = d.getUTCDay();  // 0 Sun .. 6 Sat
+                if (day === 0 || day === 6) return false;
+                var min = d.getUTCHours() * 60 + d.getUTCMinutes();
+                return min >= 13 * 60 + 30 && min <= 20 * 60;
+            }
+            function loop() {
+                refresh();
+                setTimeout(loop, isMarketHours() ? 30000 : 300000);
+            }
+            setTimeout(loop, 5000);  // first refresh 5s after page load
+        })();
+        </script>
     </div>
     {% endif %}
 

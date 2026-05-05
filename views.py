@@ -2010,6 +2010,12 @@ def performance_dashboard():
         "n_directional_long": 0,
         "n_directional_short": 0,
         "n_exit_long": 0,
+        # Split metric — directional trades vs HOLDs (added 2026-05-05).
+        "directional_resolved": 0,
+        "directional_wins": 0,
+        "directional_win_rate": 0.0,
+        "hold_resolved": 0,
+        "hold_pass_rate": 0.0,
     }
     all_wins = 0
     all_losses = 0
@@ -2026,6 +2032,15 @@ def performance_dashboard():
             ai_perf["total_predictions"] += p.get("total_predictions", 0)
             ai_perf["resolved"] += p.get("resolved", 0)
             ai_perf["pending"] += p.get("pending", 0)
+            # Aggregate directional/HOLD split book-wide.
+            ai_perf["directional_resolved"] += p.get("directional_resolved", 0)
+            ai_perf["directional_wins"] += p.get("directional_wins", 0)
+            ai_perf["hold_resolved"] += p.get("hold_resolved", 0)
+            hr = p.get("hold_resolved", 0)
+            hpr = p.get("hold_pass_rate", 0.0) or 0.0
+            if hr > 0:
+                ai_perf.setdefault("_hold_wins_running", 0)
+                ai_perf["_hold_wins_running"] += round(hr * hpr / 100.0)
             if p.get("best_prediction"):
                 if ai_perf["best_prediction"] is None or p["best_prediction"].get("return_pct", 0) > ai_perf["best_prediction"].get("return_pct", 0):
                     ai_perf["best_prediction"] = p["best_prediction"]
@@ -2034,6 +2049,16 @@ def performance_dashboard():
                     ai_perf["worst_prediction"] = p["worst_prediction"]
         except Exception:
             pass
+
+    if ai_perf["directional_resolved"] > 0:
+        ai_perf["directional_win_rate"] = round(
+            100.0 * ai_perf["directional_wins"] / ai_perf["directional_resolved"], 1,
+        )
+    if ai_perf["hold_resolved"] > 0:
+        hw = ai_perf.get("_hold_wins_running", 0)
+        ai_perf["hold_pass_rate"] = round(
+            100.0 * hw / ai_perf["hold_resolved"], 1,
+        )
 
         try:
             conn = _sqlite3.connect(db_path)
@@ -2867,6 +2892,12 @@ def ai_dashboard():
         "n_directional_long": 0,
         "n_directional_short": 0,
         "n_exit_long": 0,
+        # Split metric — directional trades vs HOLDs (added 2026-05-05).
+        "directional_resolved": 0,
+        "directional_wins": 0,
+        "directional_win_rate": 0.0,
+        "hold_resolved": 0,
+        "hold_pass_rate": 0.0,
     }
     all_wins = 0
     all_losses = 0
@@ -2883,6 +2914,15 @@ def ai_dashboard():
             ai_perf["total_predictions"] += p.get("total_predictions", 0)
             ai_perf["resolved"] += p.get("resolved", 0)
             ai_perf["pending"] += p.get("pending", 0)
+            # Aggregate directional/HOLD split book-wide.
+            ai_perf["directional_resolved"] += p.get("directional_resolved", 0)
+            ai_perf["directional_wins"] += p.get("directional_wins", 0)
+            ai_perf["hold_resolved"] += p.get("hold_resolved", 0)
+            hr = p.get("hold_resolved", 0)
+            hpr = p.get("hold_pass_rate", 0.0) or 0.0
+            if hr > 0:
+                ai_perf.setdefault("_hold_wins_running", 0)
+                ai_perf["_hold_wins_running"] += round(hr * hpr / 100.0)
             if p.get("best_prediction"):
                 if ai_perf["best_prediction"] is None or p["best_prediction"].get("return_pct", 0) > ai_perf["best_prediction"].get("return_pct", 0):
                     ai_perf["best_prediction"] = p["best_prediction"]
@@ -2891,6 +2931,16 @@ def ai_dashboard():
                     ai_perf["worst_prediction"] = p["worst_prediction"]
         except Exception:
             pass
+
+    if ai_perf["directional_resolved"] > 0:
+        ai_perf["directional_win_rate"] = round(
+            100.0 * ai_perf["directional_wins"] / ai_perf["directional_resolved"], 1,
+        )
+    if ai_perf["hold_resolved"] > 0:
+        hw = ai_perf.get("_hold_wins_running", 0)
+        ai_perf["hold_pass_rate"] = round(
+            100.0 * hw / ai_perf["hold_resolved"], 1,
+        )
         try:
             conn = _sqlite3.connect(db_path)
             conn.row_factory = _sqlite3.Row
@@ -4515,6 +4565,61 @@ def api_positions_html(profile_id):
         )
     except Exception as exc:
         return f"<p class='muted'>Failed to refresh: {exc}</p>", 500
+
+
+@views_bp.route("/api/dashboard-totals")
+@login_required
+def api_dashboard_totals():
+    """Live equity / cash / positions / AI-cost-today snapshot for the
+    dashboard header. Polled by JS at 30s cadence during market hours
+    and 5min otherwise. Returns:
+      {profiles: [{id, name, equity, cash, num_positions, cost_today}],
+       total_equity, total_cash, total_positions, total_cost}
+    """
+    from models import get_active_profiles
+    from user_context import build_context
+    profiles = get_active_profiles(user_id=current_user.effective_user_id)
+    rows = []
+    total_equity = 0.0
+    total_cash = 0.0
+    total_positions = 0
+    total_cost = 0.0
+    for p in profiles:
+        try:
+            ctx = build_context(p)
+            account = get_account_info(ctx=ctx)
+            positions = get_positions(ctx=ctx)
+            cost_today = 0.0
+            try:
+                from ai_cost_ledger import get_today_total
+                cost_today = float(get_today_total(ctx.db_path) or 0)
+            except Exception:
+                pass
+            equity = float(account.get("equity") or 0)
+            cash = float(account.get("cash") or 0)
+            n_pos = len(positions)
+            rows.append({
+                "id": p["id"],
+                "name": p["name"],
+                "equity": equity,
+                "cash": cash,
+                "num_positions": n_pos,
+                "cost_today": cost_today,
+            })
+            total_equity += equity
+            total_cash += cash
+            total_positions += n_pos
+            total_cost += cost_today
+        except Exception as exc:
+            logger.debug("dashboard-totals: %s skipped (%s)", p.get("name"), exc)
+            continue
+    return jsonify({
+        "profiles": rows,
+        "total_equity": total_equity,
+        "total_cash": total_cash,
+        "total_positions": total_positions,
+        "total_cost": total_cost,
+    })
 
 
 @views_bp.route("/api/cycle-data/<int:profile_id>")
