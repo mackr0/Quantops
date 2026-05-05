@@ -86,15 +86,27 @@
 
     <div class="grid">
         <article style="text-align:center;">
-            <small class="muted"><span class="tip" data-tip="How often the AI correctly predicted price direction">Prediction Win Rate</span></small>
-            {% if ai_perf and ai_perf.resolved > 0 %}
-            <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if ai_perf.win_rate >= 50 else 'pnl-neg' }}">
-                {{ "%.1f"|format(ai_perf.win_rate) }}%
+            <small class="muted"><span class="tip" data-tip="Win rate on actual trade decisions (BUY / SHORT / STRONG_SELL / multi-leg). Excludes HOLDs because those measure 'did the underlying stay flat enough that we didn't miss anything', which is a different question. This is the number that says whether the AI's trading decisions beat a coin flip.">AI Trade Win Rate</span></small>
+            {% if ai_perf and ai_perf.get('directional_resolved', 0) > 0 %}
+            <strong style="font-size:2.5rem; display:block;" class="{{ 'pnl-pos' if ai_perf.directional_win_rate >= 50 else 'pnl-neg' }}">
+                {{ "%.1f"|format(ai_perf.directional_win_rate) }}%
             </strong>
-            <small class="muted">{{ ai_perf.resolved }} resolved predictions</small>
+            <small class="muted">{{ ai_perf.directional_wins }}/{{ ai_perf.directional_resolved }} directional trades</small>
             {% else %}
             <strong style="font-size:2.5rem; display:block;" class="muted">N/A</strong>
-            <small class="muted">no resolved predictions yet</small>
+            <small class="muted">no resolved trades yet</small>
+            {% endif %}
+        </article>
+        <article style="text-align:center;">
+            <small class="muted"><span class="tip" data-tip="Pass quality on HOLD decisions. A HOLD wins if the underlying stayed flat afterwards (correct pass) and loses if it moved significantly (missed opportunity OR avoided drawdown — the resolver doesn't distinguish). Mostly reflects how volatile the universe is, NOT how good the AI is at trading. Don't read this as a measure of AI accuracy.">HOLD Pass Quality</span></small>
+            {% if ai_perf and ai_perf.get('hold_resolved', 0) > 0 %}
+            <strong style="font-size:2.5rem; display:block;" class="muted">
+                {{ "%.1f"|format(ai_perf.hold_pass_rate) }}%
+            </strong>
+            <small class="muted">{{ ai_perf.hold_resolved }} HOLDs (passes on volatile stocks count as "loss")</small>
+            {% else %}
+            <strong style="font-size:2.5rem; display:block;" class="muted">N/A</strong>
+            <small class="muted">no HOLDs yet</small>
             {% endif %}
         </article>
         <article style="text-align:center;">

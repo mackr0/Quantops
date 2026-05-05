@@ -573,11 +573,56 @@ def get_ai_performance(db_path=None):
             "profit_factor": 0.0,
         }
 
-    # Win rate
+    # Win rate (everything blended — kept for backwards compat)
     wins = conn.execute(
         "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved' AND actual_outcome='win'"
     ).fetchone()[0]
     win_rate = (wins / resolved) * 100.0 if resolved else 0.0
+
+    # Directional-only win rate. The blended win rate above conflates
+    # actual trade decisions (BUY / SHORT / STRONG_SELL / SELL /
+    # MULTILEG) with HOLDs (which the resolver labels "win" when the
+    # underlying didn't move much, "loss" otherwise — that's mostly a
+    # measure of how volatile the universe is, not how good the AI is).
+    # The directional rate is the actually meaningful number for "is
+    # the AI's trading decision better than a coin flip?".
+    DIRECTIONAL_SQL = (
+        "UPPER(predicted_signal) IN "
+        "('BUY','SHORT','STRONG_SELL','SELL','MULTILEG_OPEN')"
+    )
+    dir_resolved = conn.execute(
+        f"SELECT COUNT(*) FROM ai_predictions "
+        f"WHERE status='resolved' AND {DIRECTIONAL_SQL} "
+        f"AND actual_outcome IN ('win','loss')"
+    ).fetchone()[0]
+    dir_wins = conn.execute(
+        f"SELECT COUNT(*) FROM ai_predictions "
+        f"WHERE status='resolved' AND {DIRECTIONAL_SQL} "
+        f"AND actual_outcome='win'"
+    ).fetchone()[0]
+    directional_win_rate = (
+        (dir_wins / dir_resolved) * 100.0 if dir_resolved else 0.0
+    )
+
+    # HOLD pass rate. Different semantics: a HOLD "wins" when the AI
+    # passed AND the underlying stayed flat enough that no opportunity
+    # was missed. Surfaced separately so users don't read it as "AI
+    # accuracy on trades".
+    hold_resolved = conn.execute(
+        "SELECT COUNT(*) FROM ai_predictions "
+        "WHERE status='resolved' "
+        "AND UPPER(predicted_signal) = 'HOLD' "
+        "AND actual_outcome IN ('win','loss')"
+    ).fetchone()[0]
+    hold_wins = conn.execute(
+        "SELECT COUNT(*) FROM ai_predictions "
+        "WHERE status='resolved' "
+        "AND UPPER(predicted_signal) = 'HOLD' "
+        "AND actual_outcome='win'"
+    ).fetchone()[0]
+    hold_pass_rate = (
+        (hold_wins / hold_resolved) * 100.0 if hold_resolved else 0.0
+    )
 
     # Average confidence on wins vs losses
     avg_conf_wins = conn.execute(
@@ -745,6 +790,11 @@ def get_ai_performance(db_path=None):
         "resolved": resolved,
         "pending": pending,
         "win_rate": round(win_rate, 1),
+        "directional_win_rate": round(directional_win_rate, 1),
+        "directional_resolved": dir_resolved,
+        "directional_wins": dir_wins,
+        "hold_pass_rate": round(hold_pass_rate, 1),
+        "hold_resolved": hold_resolved,
         "avg_confidence_on_wins": round(avg_conf_wins, 1),
         "avg_confidence_on_losses": round(avg_conf_losses, 1),
         "avg_return_on_buys": round(avg_ret_buys, 2),
