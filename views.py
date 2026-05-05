@@ -2016,6 +2016,11 @@ def performance_dashboard():
         "directional_win_rate": 0.0,
         "hold_resolved": 0,
         "hold_pass_rate": 0.0,
+        # Best/worst split — directional trades vs HOLD outcomes.
+        "best_trade": None,
+        "worst_trade": None,
+        "biggest_missed_gain": None,
+        "biggest_avoided_loss": None,
     }
     all_wins = 0
     all_losses = 0
@@ -2047,6 +2052,29 @@ def performance_dashboard():
             if p.get("worst_prediction"):
                 if ai_perf["worst_prediction"] is None or p["worst_prediction"].get("return_pct", 0) < ai_perf["worst_prediction"].get("return_pct", 0):
                     ai_perf["worst_prediction"] = p["worst_prediction"]
+            # New trade-vs-HOLD split (added 2026-05-04). Aggregate
+            # by trade_pnl_pct (directional, sign-flipped for shorts)
+            # and actual_return_pct (HOLDs).
+            bt = p.get("best_trade")
+            if bt:
+                cur = ai_perf.get("best_trade")
+                if cur is None or bt.get("trade_pnl_pct", 0) > cur.get("trade_pnl_pct", 0):
+                    ai_perf["best_trade"] = bt
+            wt = p.get("worst_trade")
+            if wt:
+                cur = ai_perf.get("worst_trade")
+                if cur is None or wt.get("trade_pnl_pct", 0) < cur.get("trade_pnl_pct", 0):
+                    ai_perf["worst_trade"] = wt
+            mg = p.get("biggest_missed_gain")
+            if mg:
+                cur = ai_perf.get("biggest_missed_gain")
+                if cur is None or mg.get("return_pct", 0) > cur.get("return_pct", 0):
+                    ai_perf["biggest_missed_gain"] = mg
+            al = p.get("biggest_avoided_loss")
+            if al:
+                cur = ai_perf.get("biggest_avoided_loss")
+                if cur is None or al.get("return_pct", 0) < cur.get("return_pct", 0):
+                    ai_perf["biggest_avoided_loss"] = al
         except Exception:
             pass
 
@@ -2898,6 +2926,11 @@ def ai_dashboard():
         "directional_win_rate": 0.0,
         "hold_resolved": 0,
         "hold_pass_rate": 0.0,
+        # Best/worst split — directional trades vs HOLD outcomes.
+        "best_trade": None,
+        "worst_trade": None,
+        "biggest_missed_gain": None,
+        "biggest_avoided_loss": None,
     }
     all_wins = 0
     all_losses = 0
@@ -2929,6 +2962,29 @@ def ai_dashboard():
             if p.get("worst_prediction"):
                 if ai_perf["worst_prediction"] is None or p["worst_prediction"].get("return_pct", 0) < ai_perf["worst_prediction"].get("return_pct", 0):
                     ai_perf["worst_prediction"] = p["worst_prediction"]
+            # New trade-vs-HOLD split (added 2026-05-04). Aggregate
+            # by trade_pnl_pct (directional, sign-flipped for shorts)
+            # and actual_return_pct (HOLDs).
+            bt = p.get("best_trade")
+            if bt:
+                cur = ai_perf.get("best_trade")
+                if cur is None or bt.get("trade_pnl_pct", 0) > cur.get("trade_pnl_pct", 0):
+                    ai_perf["best_trade"] = bt
+            wt = p.get("worst_trade")
+            if wt:
+                cur = ai_perf.get("worst_trade")
+                if cur is None or wt.get("trade_pnl_pct", 0) < cur.get("trade_pnl_pct", 0):
+                    ai_perf["worst_trade"] = wt
+            mg = p.get("biggest_missed_gain")
+            if mg:
+                cur = ai_perf.get("biggest_missed_gain")
+                if cur is None or mg.get("return_pct", 0) > cur.get("return_pct", 0):
+                    ai_perf["biggest_missed_gain"] = mg
+            al = p.get("biggest_avoided_loss")
+            if al:
+                cur = ai_perf.get("biggest_avoided_loss")
+                if cur is None or al.get("return_pct", 0) < cur.get("return_pct", 0):
+                    ai_perf["biggest_avoided_loss"] = al
         except Exception:
             pass
 

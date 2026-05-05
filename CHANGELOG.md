@@ -17,6 +17,18 @@ Rules going forward:
 
 ---
 
+## 2026-05-05 — Best/Worst trade panels were N/A on /ai (Severity: medium, regression)
+
+**What broke**: After splitting Best/Worst Prediction into Best Trade / Worst Trade / Biggest Missed Gain / Biggest Avoided Loss, all four panels showed "No resolved directional trades yet" / "No resolved HOLD predictions yet" on prod despite hundreds of resolved trades and thousands of resolved HOLDs across profiles.
+
+**Cause**: The /ai route at `views.py:1991` manually rebuilds `ai_perf` from per-profile aggregation. That loop carried over `best_prediction` / `worst_prediction` (legacy fields) but never carried over the new `best_trade` / `worst_trade` / `biggest_missed_gain` / `biggest_avoided_loss` keys that `get_ai_performance` returns per-profile. The book-wide `ai_perf` dict therefore had None for all four, and the template's "if not …" branch fired.
+
+**Fix**: extended the loop to compare each profile's `best_trade` / `worst_trade` / `biggest_missed_gain` / `biggest_avoided_loss` against the running aggregate and keep the actual best/worst across all profiles. Same pattern as the existing `best_prediction` / `worst_prediction` aggregation, just for the four new fields. Also seeded the ai_perf init dict with the four keys as None so a profile-less render path doesn't KeyError.
+
+**Why next time will be caught**: this is the second time today the /ai route's manual aggregation has missed new keys (earlier: directional_win_rate / hold_pass_rate also forgotten). The proper structural fix is to either (a) have `get_ai_performance` accept a list of db_paths and aggregate internally, OR (b) add a guardrail test that asserts every key in `get_ai_performance`'s return dict is also surfaced through the /ai route. Logging this as a follow-up — for now both classes of fields are correctly aggregated.
+
+---
+
 ## 2026-05-05 — CRITICAL FIX: DB integrity check was crash-looping the scheduler (Severity: critical, regression from yesterday)
 
 **What broke**: The DB integrity check shipped yesterday (`3aba7ad`) used `PRAGMA integrity_check`, which reports BOTH file-level corruption AND schema constraint violations. Pre-existing rows had `NULL` in columns that were later added with NOT NULL via ALTER TABLE — a normal pattern, NOT corruption — and `integrity_check` reported them. The scheduler treated ANY non-"ok" output as fatal and `sys.exit(1)`'d, then systemd restarted it, then it failed again. Restart counter hit 591. Market opened 14:30 UTC; scheduler was crash-looping for the entire window. Zero scans for ~17 hours.
