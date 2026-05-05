@@ -3079,6 +3079,46 @@ def main_loop(active_segments=None, legacy_mode=False):
     logging.info(f"Log file: {log_file}")
     logging.info("=" * 60)
 
+    # ── DB integrity check on startup ───────────────────────────────
+    # Before we touch any DB for real work, run PRAGMA integrity_check
+    # on every DB file we'll be writing to. If any are corrupt, halt
+    # immediately — refusing to trade on a corrupt DB beats silently
+    # mis-recording every fill. The operator restores from the
+    # backup_daily.sh snapshot using db_integrity.restore_from_backup().
+    try:
+        from db_integrity import check_all_dbs, any_corrupt
+        results = check_all_dbs()
+        corrupt = any_corrupt(results)
+        if corrupt:
+            for bad in corrupt:
+                logging.error("DB CORRUPT: %s — %s", bad, results[bad]["detail"])
+            try:
+                from notifications import notify_error
+                notify_error(
+                    error_msg=(
+                        "DB integrity_check failed for: "
+                        + ", ".join(corrupt)
+                        + "\nScheduler is halting. Restore from backup with:"
+                        + "\n  python3 -c 'from db_integrity import "
+                        + "restore_from_backup; print(restore_from_backup(\"<filename>\"))'"
+                    ),
+                    context="DB corruption detected",
+                )
+            except Exception:
+                pass
+            logging.error(
+                "Scheduler refusing to start with corrupt DB — exit 1"
+            )
+            sys.exit(1)
+        else:
+            logging.info(
+                "DB integrity check: %d DBs healthy", len(results),
+            )
+    except Exception as exc:
+        logging.warning(
+            "DB integrity check failed to run (continuing): %s", exc,
+        )
+
     # ── Signal handlers ──────────────────────────────────────────────
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)

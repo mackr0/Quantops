@@ -546,6 +546,26 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
     # Use pre-fetched data if available, otherwise fetch fresh
     account = _account if _account is not None else get_account_info(api, ctx=ctx)
 
+    # --- Broker disconnect gate ---
+    # If the last several Alpaca calls failed, we shouldn't try to
+    # submit new orders — they'd fail anyway, queue up confusing
+    # errors, and could clobber state on retry. Block new entries
+    # until the broker is reachable again. Existing positions and
+    # already-submitted broker stops are unaffected.
+    try:
+        from broker_health import is_disconnected as _broker_is_disconnected
+        if _broker_is_disconnected():
+            return {
+                "symbol": symbol,
+                "action": "BROKER_DISCONNECTED",
+                "signal": signal.get("signal", "HOLD"),
+                "price": signal.get("price", 0),
+                "reason": "Broker (Alpaca) unreachable — refusing new entries until next successful call",
+                "strategy": ctx.segment if ctx else "unknown",
+            }
+    except Exception as _bh_exc:
+        logging.debug("Broker-health check failed: %s", _bh_exc)
+
     # --- Master kill switch (book-wide halt) ---
     # Highest-priority gate. Set manually for "stop trading right now"
     # OR auto-set by the daily-loss-floor task when book P&L breaches

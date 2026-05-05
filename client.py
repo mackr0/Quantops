@@ -210,7 +210,8 @@ def get_account_info(api=None, ctx=None):
         )
 
     api = api or get_api(ctx)
-    account = api.get_account()
+    from broker_health import call_with_health_tracking
+    account = call_with_health_tracking(api.get_account)
     return {
         "equity": float(account.equity),
         "buying_power": float(account.buying_power),
@@ -236,7 +237,8 @@ def get_positions(api=None, ctx=None):
         )
 
     api = api or get_api(ctx)
-    positions = api.list_positions()
+    from broker_health import call_with_health_tracking
+    positions = call_with_health_tracking(api.list_positions)
     return [
         {
             "symbol": p.symbol,

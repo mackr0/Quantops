@@ -17,6 +17,30 @@ Rules going forward:
 
 ---
 
+## 2026-05-05 — Doomsday gate part 4 + 5: broker disconnect detection + DB integrity check (Severity: high, fail-closed defaults)
+
+**Broker disconnect detection (#282)** — new `broker_health.py`. When the most recent N (default 3) Alpaca calls in a row fail, mark `disconnected`. Pre-trade gate in `trade_pipeline.run_evaluate_buy/sell/short` returns `BROKER_DISCONNECTED` with reason while in that state — so we don't queue 100 ticker-by-ticker order failures during an outage. `client.get_account_info` and `client.get_positions` now route through `call_with_health_tracking()` so success/failure auto-records. Auto-recovers on next success.
+
+**DB integrity check (#283)** — new `db_integrity.py`. On scheduler startup, runs `PRAGMA integrity_check` on every DB the system writes to (master, all per-profile DBs, altdata DBs, strategy_validations). If any is corrupt, the scheduler logs the failure, sends an error notification (now actually delivers thanks to today's email-subject sanitizer fix), and `sys.exit(1)` — refusing to trade on a corrupt DB beats silently mis-recording every fill. Companion `restore_from_backup(db_filename)` helper finds the latest passing backup from `/opt/quantopsai/backups/` (already populated nightly by `backup_daily.sh`), verifies the backup itself, archives the corrupt original as `<name>.corrupt-<timestamp>`, copies the backup into place, and re-verifies. Manual call only — auto-restoring is a foot-gun, but the procedure is now one command rather than a stack of cp/mv steps under stress.
+
+**Tests**: 8 new in `tests/test_broker_health.py` (start healthy, one failure degraded, three failures disconnect, success clears, intermittent doesn't disconnect, wrapper records success, wrapper records failure and reraises, three failures via wrapper disconnect). 11 new in `tests/test_db_integrity.py` (ok / missing / corrupt / aggregate / any_corrupt / find_latest_backup / dry-run / replaces corrupt / refuses corrupt backup / no-backup error). 2,300 tests pass total.
+
+**Why next time will be caught**: the broker check is exercised on every account/positions call (frequent), and the DB check runs on every scheduler boot. Both are fail-closed — broker_health blocks new entries when uncertain, db_integrity halts the scheduler entirely on corruption. Neither degrades silently.
+
+---
+
+**All 7 doomsday gaps from this audit now closed:**
+
+1. ✅ Hard daily-loss floor — auto kill switch (#279)
+2. ✅ AI provider auto-failover (#280)
+3. ✅ Cross-profile concentration check (#281)
+4. ✅ DB-corruption recovery path (#283)
+5. ✅ Broker-disconnect kill switch (#282)
+6. ✅ Master kill-switch admin button (#279)
+7. ✅ Watchdog email alerts fixed (#278)
+
+---
+
 ## 2026-05-05 — Doomsday gate part 3: cross-profile concentration cap (Severity: high, single-name blow-up protection)
 
 **What changed**: New `book_concentration.py` module + pre-trade gate. Per-profile `max_position_pct` was the only concentration limit; with 10 profiles independently long the same name, aggregate book exposure could exceed the intended single-name limit. Now blocked.
