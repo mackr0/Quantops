@@ -7,6 +7,57 @@
     <p>Welcome back{% if current_user.display_name %}, {{ current_user.display_name }}{% endif %}</p>
 </hgroup>
 
+<!-- Master kill switch banner -->
+{% if kill_switch and kill_switch.enabled %}
+<article style="background:#fff5f5;border:2px solid #d32f2f;padding:0.85rem 1.1rem;margin-bottom:1rem;border-radius:6px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">
+        <div>
+            <strong style="color:#d32f2f;font-size:1.1rem;">⚠ KILL SWITCH ACTIVE — all new trade entries are blocked</strong>
+            <div style="margin-top:0.25rem;color:#555;font-size:0.9rem;">
+                Reason: <em>{{ kill_switch.reason }}</em>
+            </div>
+        </div>
+        <button id="kill-switch-deactivate" class="outline" style="font-size:0.9rem;padding:0.4rem 0.9rem;border-color:#d32f2f;color:#d32f2f;">Deactivate</button>
+    </div>
+</article>
+{% else %}
+<details style="margin-bottom:1rem;">
+    <summary style="cursor:pointer;color:#888;font-size:0.85rem;">Master kill switch (currently inactive — click to activate manually)</summary>
+    <div style="margin-top:0.5rem;padding:0.5rem 0.75rem;background:#fafafa;border-radius:4px;font-size:0.9rem;">
+        Activating the kill switch blocks all new trade entries across every profile until explicitly deactivated. Existing positions and broker stops are untouched.
+        <div style="margin-top:0.5rem;display:flex;gap:0.5rem;align-items:center;">
+            <input id="kill-switch-reason" type="text" placeholder="Reason (required)" style="flex:1;padding:0.3rem;font-size:0.9rem;">
+            <button id="kill-switch-activate" class="outline secondary" style="font-size:0.85rem;padding:0.3rem 0.7rem;">Activate kill switch</button>
+        </div>
+    </div>
+</details>
+{% endif %}
+<script>
+(function() {
+    var act = document.getElementById('kill-switch-activate');
+    var deact = document.getElementById('kill-switch-deactivate');
+    function post(action, reason) {
+        return fetch('/api/kill-switch', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({action: action, reason: reason || ''}),
+        }).then(function(r) { return r.json(); }).then(function(d) {
+            if (d.error) { alert(d.error); return; }
+            window.location.reload();
+        });
+    }
+    if (act) act.onclick = function() {
+        var r = (document.getElementById('kill-switch-reason').value || '').trim();
+        if (!r) { alert('Reason required.'); return; }
+        if (!confirm('Activate the kill switch? All new trade entries will be blocked.')) return;
+        post('activate', r);
+    };
+    if (deact) deact.onclick = function() {
+        if (!confirm('Deactivate the kill switch and resume normal trading?')) return;
+        post('deactivate');
+    };
+})();
+</script>
+
 <!-- Per-Profile Schedule Status (compact bar) -->
 <div style="display:flex; flex-wrap:wrap; gap:0.25rem; margin-bottom:0.75rem;">
 {% for ps in profile_schedules %}

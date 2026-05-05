@@ -546,6 +546,25 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
     # Use pre-fetched data if available, otherwise fetch fresh
     account = _account if _account is not None else get_account_info(api, ctx=ctx)
 
+    # --- Master kill switch (book-wide halt) ---
+    # Highest-priority gate. Set manually for "stop trading right now"
+    # OR auto-set by the daily-loss-floor task when book P&L breaches
+    # the configured floor (default -8% of opening equity).
+    try:
+        from kill_switch import is_active as _ks_is_active
+        ks_on, ks_reason = _ks_is_active()
+        if ks_on:
+            return {
+                "symbol": symbol,
+                "action": "KILL_SWITCH",
+                "signal": signal.get("signal", "HOLD"),
+                "price": signal.get("price", 0),
+                "reason": f"Kill switch ACTIVE: {ks_reason}",
+                "strategy": ctx.segment if ctx else "unknown",
+            }
+    except Exception as _ks_exc:
+        logging.debug("Kill-switch check failed: %s", _ks_exc)
+
     # --- Drawdown protection ---
     dd = _dd if _dd is not None else {"action": "normal", "drawdown_pct": 0.0, "peak_equity": 0, "current_equity": 0}
     if ctx is not None and _dd is None:

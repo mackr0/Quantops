@@ -17,6 +17,39 @@ Rules going forward:
 
 ---
 
+## 2026-05-04 — Doomsday gate part 1: master kill switch + auto daily-loss floor + watchdog email fix (Severity: critical, capital preservation)
+
+**What changed**: Two doomsday gaps closed.
+
+1. **Master kill switch** (new `kill_switch.py` module). Single boolean flag in master DB blocks every new trade entry across every profile. Two ways to flip:
+   - Manually via the dashboard banner (top of `/dashboard` — auto-shown when active, expandable details panel when inactive).
+   - Automatically by the new per-cycle `_task_check_book_loss_floor` task: sums book-wide day-of P&L across all profile DBs vs opening-day equity. If it breaches the floor (default -8%), flips the switch ON with reason `auto: book day P&L X.XX% breached floor -8.00%`.
+   - Existing positions and broker stops are NOT touched — only NEW entries are blocked.
+   - State persists across restarts. Auto-activation does NOT auto-clear at midnight (a -8% day deserves human review).
+   - REST endpoint: `GET/POST /api/kill-switch` (admin only).
+
+2. **Watchdog email subject sanitizer** (`notifications._sanitize_subject`). Resend rejects subjects with `\n` (HTTP 422). The watchdog had been silently failing to send stalled-task alerts for 66+ hours because the caller passed a multi-line context block as the subject. Defense-in-depth: every subject is now scrubbed of newlines/tabs/control chars and truncated to 200 chars before send. Watchdog caller also updated to pass a short single-line context.
+
+**Why**: Until today, the system had per-trade stops, per-profile drawdown pause, intraday halt, and a long-vol hedge — but NO single book-wide kill switch and NO auto-stop on cumulative book loss. If correlated losses landed on multiple profiles within a single cycle, nothing would stop the bleed until per-profile drawdown thresholds individually triggered. Watchdog email failure meant silent stalls.
+
+**Fix**:
+- `kill_switch.py`: `is_active()`, `activate()`, `deactivate()`, `get_history()`, `compute_book_day_pnl_pct()`, `check_and_activate_on_loss_floor()`. Idempotent — re-activating with same reason does not spam history.
+- `trade_pipeline.run_evaluate_buy/sell/short`: top-of-function gate returns `KILL_SWITCH` action when active. Highest priority — runs before drawdown / correlation / sizing checks.
+- `multi_scheduler._task_check_book_loss_floor`: per-cycle, runs across all profile DBs.
+- `views.py`: `/api/kill-switch` GET/POST endpoints. Dashboard banner with confirm dialogs for manual flip.
+- Default floor `-8%` configurable via `book_loss_floor_pct` on UserContext.
+
+**Tests**:
+- `tests/test_kill_switch.py` — 10 tests covering: default-inactive, activate/deactivate, history dedup on idempotent activate, history row on reason change, multi-profile P&L aggregation, floor breach activates, near-floor doesn't activate, no-baseline returns None.
+- `tests/test_email_subject_sanitizer.py` — 8 tests covering: newline/CR/tab stripping, whitespace collapse, truncation with ellipsis, empty fallback, real-world watchdog block, normal subject unchanged, unicode preserved.
+- 2,261 tests pass total.
+
+**Why next time will be caught**: the floor task runs every cycle, per profile, idempotently. Once the floor is breached, the switch is flipped and the next cycle's first prediction returns `KILL_SWITCH`. The dashboard banner makes the state inescapable from the UI. The sanitizer is defense-in-depth — even a future caller passing a bad subject would be cleaned up before send.
+
+**Follow-ups (other doomsday gaps still open)**: AI provider auto-failover (#280), cross-profile concentration check (#281), broker-disconnect detection (#282), DB integrity check (#283).
+
+---
+
 ## 2026-05-04 — Best/Worst dashboard panel: split directional trades from HOLDs (Severity: medium, signal quality)
 
 **What changed**: The "Best Prediction / Worst Prediction" pair on the AI dashboard was sorting ALL resolved predictions by `actual_return_pct` and showing the top + bottom — including HOLD predictions where the AI explicitly chose not to trade. That conflated three different situations (winning trade / losing trade / "stock moved a lot while we sat out") under one set of headers and showed "0% confidence" against 50%+ underlying moves, which Mack rightly found confusing.

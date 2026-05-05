@@ -210,6 +210,18 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_options_delta_hedger(ctx),
             db_path=ctx.db_path,
         )
+        # Doomsday gate: book-wide daily-loss floor. Runs every cycle
+        # before the per-profile checks. Computes total book P&L
+        # across all profile DBs vs opening-day equity; if breaches
+        # floor (default -8%), flips the master kill switch ON. The
+        # pre-trade gate in trade_pipeline reads the switch and refuses
+        # all new entries while it's active.
+        run_task(
+            f"[{seg_label}] Book Loss Floor",
+            lambda: _task_check_book_loss_floor(ctx),
+            db_path=ctx.db_path,
+        )
+
         # Item 2b — intraday risk monitoring. Writes a risk-halt
         # state when drawdown / vol spike alerts fire; trade pipeline
         # reads it to block new entries. Per-profile toggle so users
@@ -1661,6 +1673,48 @@ def _task_check_exits(ctx):
         logging.info(f"[{seg_label}] No exit triggers fired.")
 
 
+def _task_check_book_loss_floor(ctx):
+    """Doomsday gate: if cumulative book-wide day-of P&L drops below
+    the configured floor, auto-activate the master kill switch.
+
+    Runs once per profile per cycle (cheap — a few SELECTs per profile
+    DB), but is fully idempotent: every profile that runs computes the
+    same answer, and `kill_switch.activate()` only writes a history
+    row on transitions or reason changes."""
+    try:
+        import os as _os
+        import glob as _glob
+        from kill_switch import (
+            check_and_activate_on_loss_floor, is_active,
+        )
+        # Floor — default -8.0%; per-user override via ctx if ever
+        # exposed in settings.
+        floor = float(getattr(ctx, "book_loss_floor_pct", -8.0))
+        # All per-profile DBs in /opt/quantopsai (or local equivalent).
+        repo_root = _os.path.dirname(_os.path.abspath(__file__))
+        candidates = (
+            _glob.glob(_os.path.join(repo_root, "quantopsai_profile_*.db"))
+        )
+        # Skip if switch is already on — nothing to compute, just
+        # log periodically that the auto-gate is still in effect.
+        already_on, reason = is_active()
+        if already_on:
+            logging.info(
+                "Kill switch is ACTIVE — reason: %s", reason,
+            )
+            return
+        pnl_pct = check_and_activate_on_loss_floor(candidates, floor_pct=floor)
+        if pnl_pct is None:
+            logging.debug("Book loss floor: not enough snapshot data yet")
+        else:
+            logging.info(
+                "Book day P&L: %.2f%% (floor %.2f%%)",
+                pnl_pct, floor,
+            )
+    except Exception as exc:
+        logging.warning("Book loss floor check failed: %s", exc)
+
+
 def _task_resolve_predictions(ctx):
     """Resolve outstanding AI predictions against actual prices."""
     from ai_tracker import resolve_predictions
@@ -2513,12 +2567,15 @@ def _task_run_watchdog(ctx):
                 pass
             try:
                 from notifications import notify_error
+                # `context` is used for the email subject — keep it short
+                # and single-line. All multi-line detail (started_at,
+                # elapsed, suggested action) belongs in `error_msg`.
+                short_ctx = (
+                    f"{seg_label} stalled: {row['task_name']}"
+                )
                 notify_error(
                     error_msg=(
-                        f"Stalled task: {row['task_name']} "
-                        f"(elapsed {elapsed:.0f} min)"
-                    ),
-                    context=(
+                        f"Stalled task: {row['task_name']}\n"
                         f"Profile: {seg_label}\n"
                         f"Task started at: {row['started_at']}\n"
                         f"Elapsed: {elapsed:.0f} minutes without completion.\n\n"
@@ -2526,6 +2583,7 @@ def _task_run_watchdog(ctx):
                         f"Check journalctl -u quantopsai for the underlying "
                         f"failure mode."
                     ),
+                    context=short_ctx,
                     ctx=ctx,
                 )
             except Exception as exc:

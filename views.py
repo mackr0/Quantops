@@ -496,12 +496,21 @@ def dashboard():
         except Exception:
             pass
 
+    # Master kill-switch state for the banner
+    try:
+        from kill_switch import is_active as _ks_is_active
+        _ks_on, _ks_reason = _ks_is_active()
+        kill_switch_state = {"enabled": _ks_on, "reason": _ks_reason}
+    except Exception:
+        kill_switch_state = {"enabled": False, "reason": ""}
+
     return render_template("dashboard.html",
                            profiles_data=profiles_data,
                            decisions=decisions,
                            any_profile_active=any_profile_active,
                            profile_schedules=profile_schedules,
-                           scan_failures=scan_failures)
+                           scan_failures=scan_failures,
+                           kill_switch=kill_switch_state)
 
 
 @views_bp.route("/settings")
@@ -3391,6 +3400,56 @@ def ai_awareness_redirect():
 def ai_operations_redirect():
     return redirect(url_for("views.ai_dashboard") + "#operations")
 
+
+
+@views_bp.route("/api/kill-switch", methods=["GET"])
+@login_required
+def api_kill_switch_status():
+    """Return current kill-switch state + recent history."""
+    from kill_switch import is_active, get_history
+    enabled, reason = is_active()
+    return jsonify({
+        "enabled": enabled,
+        "reason": reason,
+        "history": [
+            {
+                "action": r["action"],
+                "reason": r["reason"],
+                "set_by": r["set_by"],
+                "set_at": r["set_at"],
+            }
+            for r in get_history(limit=20)
+        ],
+    })
+
+
+@views_bp.route("/api/kill-switch", methods=["POST"])
+@login_required
+def api_kill_switch_set():
+    """Manually toggle the master kill switch.
+
+    Body: {"action": "activate" | "deactivate", "reason": "..."}
+
+    Activating blocks all new trade entries across every profile until
+    explicitly deactivated. Existing positions and broker stops are
+    untouched.
+    """
+    payload = request.get_json(silent=True) or {}
+    action = (payload.get("action") or "").lower().strip()
+    reason = (payload.get("reason") or "").strip()
+    set_by = f"user:{current_user.email}" if hasattr(current_user, "email") else "user"
+
+    from kill_switch import activate, deactivate, is_active
+    if action == "activate":
+        if not reason:
+            return jsonify({"error": "reason required"}), 400
+        activate(reason, set_by=set_by)
+    elif action == "deactivate":
+        deactivate(set_by=set_by)
+    else:
+        return jsonify({"error": "action must be 'activate' or 'deactivate'"}), 400
+    enabled, current_reason = is_active()
+    return jsonify({"enabled": enabled, "reason": current_reason})
 
 
 @views_bp.route("/api/macro-data")

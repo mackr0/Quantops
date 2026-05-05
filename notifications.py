@@ -120,6 +120,32 @@ def _table(headers, rows):
 # 1. Low-level email sender
 # ---------------------------------------------------------------------------
 
+def _sanitize_subject(subject: str, max_len: int = 200) -> str:
+    """Resend rejects subjects with newline characters (HTTP 422).
+    Convert every whitespace control char to a space, strip other
+    control chars, collapse runs of whitespace, and truncate.
+    Defense-in-depth — any caller that accidentally includes a
+    multi-line block (e.g. the watchdog passing a context paragraph)
+    used to silently fail. Now the email lands with a single-line
+    subject regardless."""
+    if not subject:
+        return "QuantOpsAI"
+    # Convert newlines / carriage returns / tabs to spaces first so
+    # split-and-rejoin can collapse them (rather than concatenating
+    # the surrounding words together).
+    out = []
+    for ch in subject:
+        if ch in ("\n", "\r", "\t"):
+            out.append(" ")
+        elif ch == " " or ch.isprintable():
+            out.append(ch)
+        # else: drop other control chars
+    cleaned = " ".join("".join(out).split())  # collapse runs of whitespace
+    if len(cleaned) > max_len:
+        cleaned = cleaned[:max_len - 1] + "…"
+    return cleaned or "QuantOpsAI"
+
+
 def send_email(subject, html_body, ctx=None):
     """Send an HTML email via Resend API.
 
@@ -131,6 +157,7 @@ def send_email(subject, html_body, ctx=None):
 
     Returns True on success, False on failure.  Never raises.
     """
+    subject = _sanitize_subject(subject)
     if ctx is not None:
         api_key = ctx.resend_api_key
         recipient = ctx.notification_email

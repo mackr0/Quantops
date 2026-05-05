@@ -65,6 +65,7 @@ INFRASTRUCTURE_TASKS = {
     "_task_crisis_monitor",            # cross-asset capital preservation
     "_task_event_tick",                # event bus dispatcher
     "_task_run_watchdog",              # self-healing for stuck tasks
+    "_task_check_book_loss_floor",     # doomsday gate: book-wide -8% halt
 
     # ── Strategy + capital lifecycle — system invariants ────────────
     "_task_auto_strategy_lifecycle",   # auto-disable bad strategies
