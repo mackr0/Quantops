@@ -4520,13 +4520,26 @@ def api_positions_html(profile_id):
 @views_bp.route("/api/cycle-data/<int:profile_id>")
 @login_required
 def api_cycle_data(profile_id):
-    """Return the last AI cycle data for a profile (decisions, shortlist, reasoning)."""
+    """Return the last AI cycle data for a profile (decisions, shortlist, reasoning).
+
+    LLM-generated reasoning text is humanized server-side so dashboard
+    rendering doesn't leak `STRONG_BUY` / `bull_put_spread` / etc.
+    """
     try:
         with open(f"cycle_data_{profile_id}.json") as f:
             data = json.load(f)
-        return jsonify(data)
     except FileNotFoundError:
         return jsonify({"error": "No cycle data yet", "shortlist": [], "trades_selected": []})
+
+    from display_names import humanize
+    if isinstance(data.get("ai_reasoning"), str):
+        data["ai_reasoning"] = humanize(data["ai_reasoning"])
+    for t in (data.get("trades_selected") or []):
+        if isinstance(t.get("reasoning"), str):
+            t["reasoning"] = humanize(t["reasoning"])
+        if isinstance(t.get("action"), str):
+            t["action"] = humanize(t["action"])
+    return jsonify(data)
 
 
 @views_bp.route("/api/sector-rotation")

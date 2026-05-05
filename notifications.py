@@ -2,9 +2,11 @@
 
 import json
 import logging
+import threading
 import urllib.request
 import urllib.error
 from datetime import date, datetime
+from typing import Dict
 
 import config
 from client import get_account_info, get_positions
@@ -146,6 +148,33 @@ def _sanitize_subject(subject: str, max_len: int = 200) -> str:
     return cleaned or "QuantOpsAI"
 
 
+_EMAIL_DEDUP_WINDOW_SECONDS = 3600   # 1 hour — same subject only once
+_EMAIL_DEDUP: Dict[str, float] = {}
+_EMAIL_DEDUP_LOCK = threading.Lock()
+
+
+def _is_duplicate_within_window(subject: str) -> bool:
+    """Return True when this subject was already sent within the
+    dedup window. Process-local cache only — survives within a
+    scheduler run but not across restarts. That's intentional: a
+    fresh process should be allowed to send its first error email.
+    The point is to stop tight-loop spam (599 identical errors in
+    24h, 2026-05-04 incident) — not to enforce any global ceiling."""
+    import time as _time
+    now = _time.time()
+    with _EMAIL_DEDUP_LOCK:
+        last = _EMAIL_DEDUP.get(subject)
+        if last is not None and (now - last) < _EMAIL_DEDUP_WINDOW_SECONDS:
+            return True
+        _EMAIL_DEDUP[subject] = now
+        # Periodic eviction — keep map small in long-running processes.
+        if len(_EMAIL_DEDUP) > 200:
+            cutoff = now - _EMAIL_DEDUP_WINDOW_SECONDS
+            for k in [k for k, v in _EMAIL_DEDUP.items() if v < cutoff]:
+                _EMAIL_DEDUP.pop(k, None)
+    return False
+
+
 def send_email(subject, html_body, ctx=None):
     """Send an HTML email via Resend API.
 
@@ -156,8 +185,14 @@ def send_email(subject, html_body, ctx=None):
         instead of config globals.
 
     Returns True on success, False on failure.  Never raises.
+
+    Deduplication: identical subjects are silently dropped within a
+    1-hour rolling window per process. Stops crash-loop email spam.
     """
     subject = _sanitize_subject(subject)
+    if _is_duplicate_within_window(subject):
+        logger.debug("Email deduped (subject sent within last hour): %s", subject)
+        return True
     if ctx is not None:
         api_key = ctx.resend_api_key
         recipient = ctx.notification_email

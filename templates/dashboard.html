@@ -304,7 +304,7 @@
                     <td><strong>{{ o.symbol }}</strong></td>
                     <td><span class="badge badge-{{ 'buy' if o.side == 'buy' else 'sell' }}">{{ o.side|upper }}</span></td>
                     <td>{{ o.qty|int }}</td>
-                    <td>{{ o.order_type|upper }}</td>
+                    <td>{{ o.order_type|humanize }}</td>
                     <td>{% if o.limit_price %}${{ "{:,.2f}".format(o.limit_price) }}{% else %}—{% endif %}</td>
                     <td><span class="muted">{{ o.status|title }}</span></td>
                     <td class="muted">{{ o.submitted_at or '—' }}</td>
@@ -575,7 +575,8 @@ function showDashTab(event, tabName) {
             var ptbody = document.getElementById('pending-orders-' + pid);
             if (ptbody && data.pending_orders) {
                 var phtml = '';
-                data.pending_orders.forEach(function(o) { phtml += '<tr><td><strong>' + o.symbol + '</strong></td><td><span class="badge badge-' + (o.side==='buy'?'buy':'sell') + '">' + o.side.toUpperCase() + '</span></td><td>' + Math.floor(o.qty) + '</td><td>' + (o.order_type||'').toUpperCase() + '</td><td>' + (o.limit_price!=null?fmt(o.limit_price):'—') + '</td><td><span class="muted">' + (o.status||'').replace(/\b\w/g,function(c){return c.toUpperCase();}) + '</span></td><td class="muted">' + (o.submitted_at||'—') + '</td><td>' + (o.time_in_force||'').toUpperCase() + '</td></tr>'; });
+                function humanizeJs(s){if(!s)return '';return String(s).split('_').map(function(p){return p.charAt(0).toUpperCase()+p.slice(1).toLowerCase();}).join(' ');}
+                data.pending_orders.forEach(function(o) { phtml += '<tr><td><strong>' + o.symbol + '</strong></td><td><span class="badge badge-' + (o.side==='buy'?'buy':'sell') + '">' + o.side.toUpperCase() + '</span></td><td>' + Math.floor(o.qty) + '</td><td>' + humanizeJs(o.order_type) + '</td><td>' + (o.limit_price!=null?fmt(o.limit_price):'—') + '</td><td><span class="muted">' + (o.status||'').replace(/\b\w/g,function(c){return c.toUpperCase();}) + '</span></td><td class="muted">' + (o.submitted_at||'—') + '</td><td>' + (o.time_in_force||'').toUpperCase() + '</td></tr>'; });
                 ptbody.innerHTML = phtml;
             }
         }).catch(function(){});

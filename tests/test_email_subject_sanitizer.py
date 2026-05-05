@@ -79,3 +79,65 @@ def test_subject_preserves_unicode():
     from notifications import _sanitize_subject
     s = "QuantOpsAI Daily Summary — 2026-05-04"
     assert _sanitize_subject(s) == s
+
+
+# ---------------------------------------------------------------------------
+# Email dedup — stops tight-loop spam (2026-05-04 incident: 599 identical
+# DB-corruption error emails sent over 24h before Resend hit daily quota)
+# ---------------------------------------------------------------------------
+
+def test_dedup_first_call_passes():
+    from notifications import _is_duplicate_within_window, _EMAIL_DEDUP
+    _EMAIL_DEDUP.clear()
+    assert _is_duplicate_within_window("test subject") is False
+
+
+def test_dedup_second_call_blocks():
+    from notifications import _is_duplicate_within_window, _EMAIL_DEDUP
+    _EMAIL_DEDUP.clear()
+    _is_duplicate_within_window("test subject")
+    assert _is_duplicate_within_window("test subject") is True
+
+
+def test_dedup_different_subjects_independent():
+    from notifications import _is_duplicate_within_window, _EMAIL_DEDUP
+    _EMAIL_DEDUP.clear()
+    assert _is_duplicate_within_window("subject A") is False
+    assert _is_duplicate_within_window("subject B") is False
+    # Both A and B are now seen — same subjects should dedup
+    assert _is_duplicate_within_window("subject A") is True
+    assert _is_duplicate_within_window("subject B") is True
+
+
+def test_dedup_unblocks_after_window():
+    """Simulate window expiry by manipulating the cache timestamp."""
+    import notifications
+    notifications._EMAIL_DEDUP.clear()
+    notifications._is_duplicate_within_window("expiring subject")
+    # Force the timestamp to be 2h ago (window is 1h)
+    import time as _time
+    notifications._EMAIL_DEDUP["expiring subject"] = _time.time() - 7200
+    assert notifications._is_duplicate_within_window("expiring subject") is False
+
+
+def test_send_email_deduped_returns_true_silently():
+    """A deduped call returns True (caller treats it as success)
+    and does NOT make an HTTP request."""
+    from unittest.mock import patch
+    import notifications
+    notifications._EMAIL_DEDUP.clear()
+    with patch.object(notifications, "config") as cfg, \
+         patch("notifications.urllib.request.urlopen") as mock_urlopen:
+        cfg.RESEND_API_KEY = "test-key"
+        cfg.NOTIFICATION_EMAIL = "test@test.com"
+        # Mock the response context manager
+        mock_response = mock_urlopen.return_value.__enter__.return_value
+        mock_response.read.return_value = b"{}"
+        # First call — sends
+        ok1 = notifications.send_email("dedup test", "<p>body</p>")
+        # Second call within window — deduped, should NOT call urlopen
+        ok2 = notifications.send_email("dedup test", "<p>body</p>")
+    assert ok1 is True
+    assert ok2 is True
+    # urlopen called exactly once (first email only)
+    assert mock_urlopen.call_count == 1

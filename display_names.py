@@ -539,10 +539,54 @@ def friendly_date(iso_str: str) -> str:
         return iso_str[:10] if len(iso_str) >= 10 else iso_str
 
 
+_SNAKE_RE = __import__("re").compile(r"\b([a-z]+)(?:_([a-z]+))+\b")
+_TOKEN_RE = __import__("re").compile(r"\b[a-z]+(?:_[a-z]+)+\b")
+_UPPER_TOKEN_RE = __import__("re").compile(r"\b[A-Z]+(?:_[A-Z]+)+\b")
+
+
+def humanize(value):
+    """Return `value` with any snake_case token replaced by a
+    human-readable form. Order of preference per token:
+      1. Explicit `_DISPLAY_NAMES[token]` mapping (canonical names)
+      2. Title-cased space-separated form (e.g. `bull_put_spread`
+         → "Bull Put Spread")
+
+    Designed for dynamic strings flowing in from the LLM (its
+    reasoning text often contains `STRONG_BUY`, `bull_put_spread`,
+    etc.) AND for API response strings (Alpaca's `TRAILING_STOP`,
+    `STRONG_SELL`, etc.). Apply via `| humanize` in templates.
+
+    Idempotent: humanize(humanize(x)) == humanize(x)."""
+    if value is None:
+        return ""
+    text = str(value)
+
+    def _replace_lower(m):
+        tok = m.group(0)
+        if tok in _DISPLAY_NAMES:
+            return _DISPLAY_NAMES[tok]
+        return " ".join(p.capitalize() for p in tok.split("_"))
+
+    def _replace_upper(m):
+        tok = m.group(0)
+        # Common LLM-spit upper-snake (STRONG_BUY, BULL_PUT_SPREAD)
+        # — surface as Title Case unless we have an explicit mapping
+        # for the lowercase form.
+        low = tok.lower()
+        if low in _DISPLAY_NAMES:
+            return _DISPLAY_NAMES[low]
+        return " ".join(p.capitalize() for p in tok.split("_"))
+
+    text = _UPPER_TOKEN_RE.sub(_replace_upper, text)
+    text = _TOKEN_RE.sub(_replace_lower, text)
+    return text
+
+
 def register(app) -> None:
-    """Wire up the `display_name`, `reading_value`, `friendly_time`,
-    and `friendly_date` Jinja filters."""
+    """Wire up the `display_name`, `humanize`, `reading_value`,
+    `friendly_time`, and `friendly_date` Jinja filters."""
     app.jinja_env.filters["display_name"] = display_name
+    app.jinja_env.filters["humanize"] = humanize
     app.jinja_env.filters["reading_value"] = format_reading_value
     app.jinja_env.filters["friendly_time"] = friendly_time
     app.jinja_env.filters["friendly_date"] = friendly_date
