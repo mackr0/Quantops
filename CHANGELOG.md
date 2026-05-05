@@ -17,6 +17,26 @@ Rules going forward:
 
 ---
 
+## 2026-05-04 — Doomsday gate part 2: AI provider auto-failover (Severity: high, availability)
+
+**What changed**: Added a per-process circuit breaker around AI provider calls. When Anthropic returns three consecutive 5xx / 529 / timeout errors, the circuit OPENs for 5 minutes (exponential backoff up to 30 min on repeated half-open failures) and `call_ai` automatically routes to the next configured fallback (OpenAI → Google).
+
+**Why**: Today's 529 storm reminded us that Anthropic's API can be transiently overloaded. The SDK retries, but if the outage lasts beyond retry budget every profile's scan stalls. With 3 enabled profiles per wave × 10 enabled profiles, a 30-minute Anthropic outage = entire trading day lost. Other providers exist; the system just didn't know how to use them.
+
+**Fix**:
+- New `provider_circuit.py` module — per-process state per provider (closed / open / half_open) with thread-safe transitions, exponential cooldown on repeated half-open failures.
+- `ai_providers.call_ai` now wraps the dispatch in a try-each-attempt loop: primary first (skipped if circuit open), then fallback chain from `config.OPENAI_API_KEY` and `config.GEMINI_API_KEY`. Transient failures (529, 503/502/504, overloaded, timeout, rate-limit signatures) trip the circuit AND immediately try fallback. Non-transient errors (401 auth, bad input) propagate as-is — those wouldn't fix themselves with a retry.
+- New env vars in `config.py`: `OPENAI_API_KEY`, `OPENAI_MODEL` (default `gpt-4o-mini`), `GEMINI_API_KEY` (or `GOOGLE_API_KEY`), `GEMINI_MODEL` (default `gemini-2.0-flash`). Fallback is only attempted when at least one of these is set; otherwise the call raises `RuntimeError("AI provider chain exhausted...")` and the caller's existing error path takes over.
+- Cost ledger logs the actual provider that served the call, so failover spend is visible in the dashboard.
+
+**Tests**: New `tests/test_provider_circuit_failover.py` (11 tests): circuit starts closed, single failure doesn't open, three failures open, success resets, providers independent, status snapshot reports state. Plus integrated failover tests: anthropic-open routes to openai, inline transient failure auto-tries fallback, 401s do NOT trip circuit, no fallback configured raises, healthy primary doesn't invoke fallback.
+
+**Why next time will be caught**: 11 tests pin the semantics; the standalone circuit module is exercised independently of the provider helpers (mocked in failover tests) so a future change to either layer can't silently break the other.
+
+**Operator action required**: to USE failover, add `OPENAI_API_KEY=...` (and optionally `GEMINI_API_KEY=...`) to `/opt/quantopsai/.env` on prod and restart the web service. Without those keys, failover degrades gracefully — the circuit still trips on consecutive failures (visible in logs / `/api/circuit-status` if surfaced) but there's nowhere to fall back to.
+
+---
+
 ## 2026-05-04 — Doomsday gate part 1: master kill switch + auto daily-loss floor + watchdog email fix (Severity: critical, capital preservation)
 
 **What changed**: Two doomsday gaps closed.

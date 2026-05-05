@@ -98,6 +98,55 @@ def _strip_markdown_fences(text):
     return text
 
 
+# ---------------------------------------------------------------------------
+# Circuit-breaker / failover
+# ---------------------------------------------------------------------------
+
+def _is_transient_failure(exc: BaseException) -> bool:
+    """True when the exception looks like a provider-overload / 5xx /
+    network-timeout — the kind that should TRIP the circuit. Auth
+    errors and bad-input errors do NOT trip (we'd just fail forever)."""
+    msg = str(exc).lower()
+    transient_markers = (
+        "529", "503", "502", "504", "overloaded", "overload_error",
+        "timeout", "timed out", "connection", "service unavailable",
+        "internal server error", "rate limit", "too many requests",
+    )
+    return any(m in msg for m in transient_markers)
+
+
+def _build_fallback_chain(primary_provider: str):
+    """Return list of (provider, api_key, model) tuples to try after
+    primary fails. Sources keys from config — only providers with a
+    configured key are eligible. Order: openai → google (by default;
+    skipping the primary)."""
+    import config as _config
+    chain = []
+    candidates = [
+        ("openai", _config.OPENAI_API_KEY, _config.OPENAI_MODEL),
+        ("google", _config.GEMINI_API_KEY, _config.GEMINI_MODEL),
+        ("anthropic", _config.ANTHROPIC_API_KEY, _config.CLAUDE_MODEL),
+    ]
+    for prov, key, model in candidates:
+        if prov == primary_provider:
+            continue
+        if not key:
+            continue
+        chain.append((prov, key, model))
+    return chain
+
+
+def _call_provider(provider, prompt, model, api_key, max_tokens):
+    """Dispatch to provider-specific helper. Returns (text, in_tok, out_tok)."""
+    if provider == "anthropic":
+        return _call_anthropic(prompt, model, api_key, max_tokens)
+    if provider == "openai":
+        return _call_openai(prompt, model, api_key, max_tokens)
+    if provider == "google":
+        return _call_google(prompt, model, api_key, max_tokens)
+    raise ValueError(f"Unknown AI provider: {provider!r}")
+
+
 def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1024,
             db_path=None, purpose=None):
     """Send a prompt to the specified AI provider and return the response text.
@@ -114,11 +163,28 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
             "batch_select", "sec_diff") for the ledger — lets the dashboard
             break spend down by what the call was for.
 
+    Failover behavior:
+        - Each provider has a per-process circuit (provider_circuit).
+          Three consecutive 5xx/timeout failures OPEN the circuit for
+          5 minutes (exponential backoff up to 30 min on repeated
+          half-open failures).
+        - If the requested provider's circuit is OPEN, requests
+          automatically route to the first configured fallback
+          (config.OPENAI_API_KEY / config.GEMINI_API_KEY).
+        - If the active provider call raises a transient error, we
+          immediately try the next provider in the fallback chain
+          before giving up.
+        - When NO fallback is configured (only Anthropic key set), the
+          circuit still opens to surface the issue but we have nowhere
+          to fall back to — the call raises and the caller's existing
+          error handling takes over.
+
     Returns:
         str: The raw response text (with markdown fences stripped)
 
     Raises:
         ValueError: If provider is unknown or api_key is missing
+        RuntimeError: If primary + every fallback raise transient failures
     """
     if provider not in PROVIDERS:
         raise ValueError(f"Unknown AI provider: {provider!r}. "
@@ -130,31 +196,73 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
     if model is None:
         model = _DEFAULT_MODELS.get(provider)
 
-    logger.info("Calling AI: provider=%s, model=%s, max_tokens=%d",
-                provider, model, max_tokens)
+    # Build attempt order: primary first, then fallbacks. If primary
+    # circuit is currently OPEN, primary is skipped — but we still
+    # include it in the list at position 0 so callers see "tried
+    # primary" semantics in logs (and so HALF_OPEN fall-throughs work).
+    from provider_circuit import (
+        is_open as _circuit_is_open,
+        record_success as _circuit_record_success,
+        record_failure as _circuit_record_failure,
+    )
 
-    # Each provider-specific helper returns (text, input_tokens, output_tokens).
-    # Unknown token counts come back as 0 — cost ledger logs $0 for those.
-    if provider == "anthropic":
-        response_text, in_tok, out_tok = _call_anthropic(prompt, model, api_key, max_tokens)
-    elif provider == "openai":
-        response_text, in_tok, out_tok = _call_openai(prompt, model, api_key, max_tokens)
-    elif provider == "google":
-        response_text, in_tok, out_tok = _call_google(prompt, model, api_key, max_tokens)
-    else:
-        raise ValueError(f"Unknown AI provider: {provider!r}")
+    fallback_chain = _build_fallback_chain(provider)
+    attempts = [(provider, api_key, model)] + fallback_chain
+    last_exc: BaseException = None
 
-    # Fire-and-forget cost logging — never raise from here
-    if db_path:
+    for attempt_provider, attempt_key, attempt_model in attempts:
+        # Skip a provider whose circuit is currently OPEN (cool-down
+        # not elapsed). HALF_OPEN passes through.
+        if _circuit_is_open(attempt_provider):
+            logger.info(
+                "AI failover: skipping %s — circuit OPEN", attempt_provider,
+            )
+            continue
+        logger.info(
+            "Calling AI: provider=%s, model=%s, max_tokens=%d",
+            attempt_provider, attempt_model, max_tokens,
+        )
         try:
-            from ai_cost_ledger import log_ai_call
-            log_ai_call(db_path, provider, model or "?",
-                        in_tok, out_tok, purpose or "")
+            response_text, in_tok, out_tok = _call_provider(
+                attempt_provider, prompt, attempt_model, attempt_key,
+                max_tokens,
+            )
         except Exception as exc:
-            logger.debug("cost ledger skipped: %s", exc)
+            if _is_transient_failure(exc):
+                _circuit_record_failure(attempt_provider, exc)
+                last_exc = exc
+                if attempt_provider != provider:
+                    logger.warning(
+                        "AI fallback %s also failed (transient): %s",
+                        attempt_provider, exc,
+                    )
+                continue
+            # Non-transient failures (auth, bad input, etc.) — don't
+            # trip the circuit, just propagate.
+            raise
 
-    # Strip markdown code fences (the bug we had with Haiku, could happen with any provider)
-    return _strip_markdown_fences(response_text)
+        # Success path
+        _circuit_record_success(attempt_provider)
+        if attempt_provider != provider:
+            logger.warning(
+                "AI failover: primary %s circuit open, served by %s",
+                provider, attempt_provider,
+            )
+        # Fire-and-forget cost logging — never raise from here
+        if db_path:
+            try:
+                from ai_cost_ledger import log_ai_call
+                log_ai_call(db_path, attempt_provider, attempt_model or "?",
+                            in_tok, out_tok, purpose or "")
+            except Exception as exc:
+                logger.debug("cost ledger skipped: %s", exc)
+        return _strip_markdown_fences(response_text)
+
+    # Every attempt either had its circuit open or raised transient.
+    raise RuntimeError(
+        f"AI provider chain exhausted ({len(attempts)} attempts). "
+        f"Last error: {last_exc}"
+    )
 
 
 def call_ai_structured(prompt, schema, tool_name="emit",
