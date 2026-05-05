@@ -51,10 +51,17 @@ _JINJA_TAG_RE = re.compile(r"\{%[\s\S]*?%\}")
 # identifiers (class names, IDs, form field names, etc.) — those are
 # not visible text. ALSO strip the `value` attribute of <option>,
 # since the displayed text is the inner content, not the value.
+#
+# Notably NOT stripped: data-tip, title, placeholder, alt — those
+# render directly to users (tooltips, hover labels, input hints,
+# accessibility text) and a snake_case leak in any of them is
+# user-visible. (Bug discovered 2026-05-05: STRONG_SELL leaked into
+# a `data-tip` tooltip and the test stripped it before scanning.)
 _ATTR_RE = re.compile(
-    r'\s+(class|id|value|name|for|type|placeholder|data-[\w-]+|'
-    r'aria-[\w-]+|role|method|action|src|href|alt|title|target|'
-    r'rel|charset|lang|http-equiv|content|property|http|wire:)='
+    r'\s+(class|id|value|name|for|type|'
+    r'aria-[\w-]+|role|method|action|src|href|target|'
+    r'rel|charset|lang|http-equiv|content|property|http|wire:|'
+    r'data-(?!tip\b)[\w-]+)='
     r'(?:"[^"]*"|\'[^\']*\')',
     re.IGNORECASE,
 )
@@ -111,21 +118,43 @@ _SNAKE_CASE_ALLOWLIST = {
 # 4. The actual scan.
 # ---------------------------------------------------------------------------
 
+_USER_VISIBLE_ATTR_RE = re.compile(
+    r'\s(?:data-tip|title|placeholder|alt|aria-label)\s*=\s*'
+    r'(?:"([^"]*)"|\'([^\']*)\')',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
 def _visible_text_segments(html: str) -> List[Tuple[int, str]]:
     """Return (line_num, text) tuples for visible text segments.
 
-    Visible text lives between `>` and `<`. The regex MUST run across
-    the whole document with DOTALL so multi-line paragraph text is
-    captured — earlier per-line scanning missed any visible text whose
-    `>...<` pair straddled a newline (e.g. block-paragraph copy in
-    `<small>` / `<p>` tags), which silently let `pos_pct = avg_position
-    ÷ current_capital` slip through the static guardrail."""
+    TWO sources of visible text:
+
+    1. Text between `>` and `<` (paragraphs, headings, span content).
+       The regex runs with DOTALL so multi-line block paragraph copy
+       is captured. Earlier per-line scanning missed any visible text
+       whose `>...<` pair straddled a newline.
+
+    2. Values of attributes that render directly to users — `data-tip`
+       (tooltips), `title` (hover labels), `placeholder` (input hints),
+       `alt` (image text), `aria-label` (a11y text). The previous
+       version of this test stripped all attribute values via _ATTR_RE
+       before scanning, which silently let `STRONG_SELL` slip through
+       a tooltip on /ai (2026-05-05 incident). Now both sources are
+       scanned independently."""
     stripped = _strip_to_visible_text(html)
     segments: List[Tuple[int, str]] = []
     for m in re.finditer(r">([^<]+)<", stripped, flags=re.DOTALL):
         text = m.group(1).strip()
         if text:
             line_num = stripped[:m.start()].count("\n") + 1
+            segments.append((line_num, text))
+    # Also pull the values of user-visible attributes from the
+    # ORIGINAL html (before _strip_to_visible_text scrubs them).
+    for m in _USER_VISIBLE_ATTR_RE.finditer(html):
+        text = (m.group(1) or m.group(2) or "").strip()
+        if text:
+            line_num = html[:m.start()].count("\n") + 1
             segments.append((line_num, text))
     return segments
 
