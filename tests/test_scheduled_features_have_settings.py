@@ -66,6 +66,9 @@ INFRASTRUCTURE_TASKS = {
     "_task_event_tick",                # event bus dispatcher
     "_task_run_watchdog",              # self-healing for stuck tasks
     "_task_check_book_loss_floor",     # doomsday gate: book-wide -8% halt
+    "_task_check_stop_coverage",       # doomsday gate: <80% stops alerts
+    "_task_check_position_runaway",    # doomsday gate: dup-buy/qty drift
+    "_task_check_ai_consistency",      # doomsday gate: AI win-rate floor
 
     # ── Strategy + capital lifecycle — system invariants ────────────
     "_task_auto_strategy_lifecycle",   # auto-disable bad strategies

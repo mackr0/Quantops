@@ -585,6 +585,34 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
     except Exception as _ks_exc:
         logging.debug("Kill-switch check failed: %s", _ks_exc)
 
+    # --- Catastrophic single-trade gate ---
+    # max_position_pct catches absurd dollar SIZES. But if the input
+    # price is wrong (split day, stale quote) the dollar check passes
+    # while the qty is absurd. Compares proposed $ against profile's
+    # recent average position; rejects >5×.
+    try:
+        from single_trade_gate import is_catastrophic
+        equity_for_estimate = (account.get("equity") or 0)
+        proposed_dollars = (
+            equity_for_estimate * float(getattr(ctx, "max_position_pct", 0.10))
+        )
+        cat, cat_reason, cat_detail = is_catastrophic(
+            proposed_dollars, db_path=db_path,
+            mult=float(getattr(ctx, "catastrophic_trade_mult", 5.0)),
+        )
+        if cat:
+            return {
+                "symbol": symbol,
+                "action": "CATASTROPHIC_SINGLE_TRADE",
+                "signal": signal.get("signal", "HOLD"),
+                "price": signal.get("price", 0),
+                "reason": cat_reason,
+                "catastrophic_detail": cat_detail,
+                "strategy": ctx.segment if ctx else "unknown",
+            }
+    except Exception as _ct_exc:
+        logging.debug("Catastrophic-trade check failed: %s", _ct_exc)
+
     # --- Cross-profile concentration cap ---
     # Per-profile max_position_pct only constrains a single profile's
     # equity. If 10 profiles independently long the same name, the

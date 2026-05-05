@@ -33,19 +33,31 @@ logger = logging.getLogger(__name__)
 
 
 def check_db(path: str) -> Dict[str, str]:
-    """Run PRAGMA integrity_check on one DB. Returns:
-        {"status": "ok"|"corrupt"|"missing", "detail": <str>}
+    """Run PRAGMA quick_check on one DB — file-level integrity only.
+
+    Why quick_check, not integrity_check: integrity_check ALSO reports
+    NOT NULL / UNIQUE / FK constraint violations on existing rows.
+    Those are real schema-vs-data inconsistencies, but they're NOT
+    file corruption — adding a NOT NULL column via ALTER TABLE leaves
+    pre-existing rows NULL even though the schema declares them
+    NOT NULL. Treating that as "halt the scheduler" is wrong; the DB
+    is structurally fine and the rows can be migrated lazily.
+
+    quick_check skips constraint verification and reports only
+    storage-level damage (mangled pages, broken indexes, etc.) — the
+    actual class of failure that warrants refusing to start.
+
+    Returns {"status": "ok"|"corrupt"|"missing"|"error", "detail": <str>}.
     """
     if not os.path.exists(path):
         return {"status": "missing", "detail": "file does not exist"}
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
-        result = conn.execute("PRAGMA integrity_check").fetchall()
+        result = conn.execute("PRAGMA quick_check").fetchall()
         conn.close()
         # An OK DB returns exactly [("ok",)]
         if len(result) == 1 and result[0][0] == "ok":
             return {"status": "ok", "detail": "ok"}
-        # Any other output is corruption — stitch together the messages
         msgs = "; ".join(str(r[0]) for r in result[:5])
         return {"status": "corrupt", "detail": msgs}
     except sqlite3.DatabaseError as exc:

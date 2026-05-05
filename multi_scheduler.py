@@ -210,6 +210,30 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_options_delta_hedger(ctx),
             db_path=ctx.db_path,
         )
+        # Doomsday gate: stop-order coverage. Alerts when <80% of
+        # open longs have a broker protective stop.
+        run_task(
+            f"[{seg_label}] Stop Coverage",
+            lambda: _task_check_stop_coverage(ctx),
+            db_path=ctx.db_path,
+        )
+
+        # Doomsday gate: position-runaway sentinel. Detects duplicate-
+        # submit bugs and excessive single-trade qty.
+        run_task(
+            f"[{seg_label}] Position Runaway",
+            lambda: _task_check_position_runaway(ctx),
+            db_path=ctx.db_path,
+        )
+
+        # Doomsday gate: AI consistency floor. Alerts when recent
+        # win rate drops below floor for N consecutive cycles.
+        run_task(
+            f"[{seg_label}] AI Consistency",
+            lambda: _task_check_ai_consistency(ctx),
+            db_path=ctx.db_path,
+        )
+
         # Doomsday gate: book-wide daily-loss floor. Runs every cycle
         # before the per-profile checks. Computes total book P&L
         # across all profile DBs vs opening-day equity; if breaches
@@ -1671,6 +1695,107 @@ def _task_check_exits(ctx):
                 logging.debug(f"record_exit failed: {exc}")
     else:
         logging.info(f"[{seg_label}] No exit triggers fired.")
+
+
+def _task_check_stop_coverage(ctx):
+    """Doomsday: alert when fewer than 80% of open longs have a
+    broker protective stop. Logs naked symbols. Optional auto-kill
+    on extended breach via ctx.auto_kill_on_stop_coverage."""
+    try:
+        from stop_coverage import check_coverage_floor
+        floor = float(getattr(ctx, "stop_coverage_floor_pct", 80.0))
+        snap = check_coverage_floor(floor_pct=floor)
+        if snap["total_longs"] == 0:
+            return
+        msg = (
+            f"Stop coverage: {snap['covered']}/{snap['total_longs']} "
+            f"({snap['coverage_pct']}%) — floor {floor}%"
+        )
+        if snap["breached"]:
+            naked_preview = ", ".join(
+                f"profile_{p}:{s}"
+                for p, s in snap["naked_symbols"][:5]
+            )
+            logging.warning(
+                "STOP COVERAGE BREACH — %s. Naked: %s%s",
+                msg, naked_preview,
+                "..." if len(snap["naked_symbols"]) > 5 else "",
+            )
+            if getattr(ctx, "auto_kill_on_stop_coverage", False):
+                try:
+                    from kill_switch import activate
+                    activate(
+                        f"auto: stop coverage "
+                        f"{snap['coverage_pct']}% below floor {floor}%",
+                        set_by="auto_stop_coverage",
+                    )
+                except Exception as exc:
+                    logging.debug("auto-kill from stop coverage: %s", exc)
+        else:
+            logging.info(msg)
+    except Exception as exc:
+        logging.warning("Stop coverage check failed: %s", exc)
+
+
+def _task_check_position_runaway(ctx):
+    """Doomsday: per-profile sentinel for duplicate-submit bugs and
+    excessive single-trade qty. Alerts only — by the time we see
+    these, the trade has already filled."""
+    try:
+        from position_runaway import runaway_snapshot
+        snap = runaway_snapshot(ctx.db_path)
+        seg = ctx.display_name or ctx.segment or "?"
+        for d in snap.get("duplicate_buys", []):
+            logging.warning(
+                "[%s] DUPLICATE OPEN BUYS for %s: %d open rows, "
+                "total qty %.2f",
+                seg, d["symbol"], d["count"], d["total_qty"],
+            )
+        for e in snap.get("excessive_qty", []):
+            logging.warning(
+                "[%s] EXCESSIVE QTY trade #%d %s: qty=%.2f, "
+                "%.1fx median (median=%.2f)",
+                seg, e["trade_id"], e["symbol"], e["qty"],
+                e["multiple"], e["median"],
+            )
+    except Exception as exc:
+        logging.warning("Position runaway check failed: %s", exc)
+
+
+def _task_check_ai_consistency(ctx):
+    """Doomsday: alert when recent-100-resolved win rate drops below
+    floor for N consecutive cycles. Captures 'model is broken'
+    before the daily-loss floor catches 'book is bleeding'."""
+    try:
+        from ai_consistency_floor import check_floor
+        floor = float(getattr(ctx, "ai_consistency_floor_pct", 30.0))
+        consec = int(getattr(ctx, "ai_consistency_consec_cycles", 5))
+        seg = ctx.display_name or ctx.segment or "?"
+        info = check_floor(
+            ctx.db_path, profile_label=seg,
+            floor_pct=floor, consecutive_required=consec,
+        )
+        if info["alert_now"]:
+            logging.error(
+                "[%s] AI CONSISTENCY FLOOR BREACHED — win rate "
+                "%.1f%% (n=%d) below %.1f%% for %d consecutive checks",
+                seg, info["win_rate_pct"], info["n_resolved"],
+                floor, info["consecutive"],
+            )
+            if getattr(ctx, "auto_kill_on_consistency_floor", False):
+                try:
+                    from kill_switch import activate
+                    activate(
+                        f"auto: AI win rate {info['win_rate_pct']}% "
+                        f"below floor {floor}% for {info['consecutive']} cycles",
+                        set_by="auto_consistency_floor",
+                    )
+                except Exception as exc:
+                    logging.debug(
+                        "auto-kill from consistency floor: %s", exc,
+                    )
+    except Exception as exc:
+        logging.warning("AI consistency check failed: %s", exc)
 
 
 def _task_check_book_loss_floor(ctx):

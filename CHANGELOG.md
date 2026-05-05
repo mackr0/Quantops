@@ -17,6 +17,34 @@ Rules going forward:
 
 ---
 
+## 2026-05-05 — CRITICAL FIX: DB integrity check was crash-looping the scheduler (Severity: critical, regression from yesterday)
+
+**What broke**: The DB integrity check shipped yesterday (`3aba7ad`) used `PRAGMA integrity_check`, which reports BOTH file-level corruption AND schema constraint violations. Pre-existing rows had `NULL` in columns that were later added with NOT NULL via ALTER TABLE — a normal pattern, NOT corruption — and `integrity_check` reported them. The scheduler treated ANY non-"ok" output as fatal and `sys.exit(1)`'d, then systemd restarted it, then it failed again. Restart counter hit 591. Market opened 14:30 UTC; scheduler was crash-looping for the entire window. Zero scans for ~17 hours.
+
+**Fix**: switched to `PRAGMA quick_check`, which performs only file-level integrity checking (mangled pages, broken indexes) and skips constraint verification. NULL-in-NOT-NULL is a real schema/data inconsistency but it's not a reason to refuse to trade — the DB is structurally fine; the rows can be migrated lazily. quick_check is also faster.
+
+**Why this regression made it through tests**: my fixture uses `_make_corrupt_db` that truncates the file, which produces the same kind of failure under both `integrity_check` and `quick_check`. So the tests passed under both PRAGMA modes. The actual NULL-in-column pattern that bit prod was never represented in the test suite. **TODO: add a test that creates a DB with NULL-in-NOT-NULL rows and asserts quick_check returns "ok" while integrity_check would NOT.**
+
+**Operator impact**: scheduler back up immediately on deploy. Whatever scans the system would have run during 14:30-now are lost; the resolve task will catch up on stale predictions naturally.
+
+---
+
+## 2026-05-05 — Doomsday Phase 2: stop coverage + position runaway + single-trade gate + AI consistency floor (Severity: medium, defense-in-depth)
+
+**What changed**: 4 additional doomsday gates beyond the original 7.
+
+1. **Stop-order coverage alarm** (`stop_coverage.py`): per-cycle task surfaces when fewer than 80% of open longs have a broker protective stop. Logs naked symbols. Optional auto-kill on extended breach via `auto_kill_on_stop_coverage` profile flag.
+
+2. **Position runaway sentinel** (`position_runaway.py`): per-cycle detector for two failure modes — duplicate-submit (more than one OPEN buy for same symbol) and excessive single-trade qty (>5× profile-recent median). Alerts only — both fire after fill, but surface bugs before daily reconciliation does.
+
+3. **Catastrophic single-trade gate** (`single_trade_gate.py` + new pre-trade gate in `trade_pipeline.run_evaluate_buy/sell/short`): rejects any proposed trade whose $ value is >5× the profile's recent average position. Catches the "max_position_pct passes the dollar check but the qty is absurd because price input was wrong" failure mode (split day, stale quote).
+
+4. **AI consistency floor** (`ai_consistency_floor.py`): per-cycle task computes win rate over last 100 resolved directional predictions per profile. If <30% for 5 consecutive cycles, alerts (and optionally auto-flips kill switch via `auto_kill_on_consistency_floor`). Different signal than capital-loss floor — captures "model is broken" before "book is bleeding".
+
+**Tests**: 30 new (8 stop coverage + 8 position runaway + 5 single-trade gate + 8 AI consistency + 1 task allowlist update). 2,329 total passing.
+
+---
+
 ## 2026-05-05 — Doomsday gate part 4 + 5: broker disconnect detection + DB integrity check (Severity: high, fail-closed defaults)
 
 **Broker disconnect detection (#282)** — new `broker_health.py`. When the most recent N (default 3) Alpaca calls in a row fail, mark `disconnected`. Pre-trade gate in `trade_pipeline.run_evaluate_buy/sell/short` returns `BROKER_DISCONNECTED` with reason while in that state — so we don't queue 100 ticker-by-ticker order failures during an outage. `client.get_account_info` and `client.get_positions` now route through `call_with_health_tracking()` so success/failure auto-records. Auto-recovers on next success.
