@@ -64,6 +64,7 @@ CHANGED=$(rsync -az --delete --dry-run --itemize-changes \
     --exclude 'node_modules/' \
     --exclude '.DS_Store' \
     --exclude 'logs/' \
+    --exclude 'backups/' \
     --exclude 'exports/' \
     --exclude '*.pkl' \
     --exclude 'cycle_data_*.json' \
@@ -100,6 +101,7 @@ rsync -az --delete \
     --exclude 'node_modules/' \
     --exclude '.DS_Store' \
     --exclude 'logs/' \
+    --exclude 'backups/' \
     --exclude 'exports/' \
     --exclude '*.pkl' \
     --exclude 'cycle_data_*.json' \
