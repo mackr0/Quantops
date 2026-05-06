@@ -223,6 +223,16 @@ def test_long_candidate_bypassed_when_model_has_no_long_training_data():
     )
 
 
+# sklearn's gradient boosting emits "invalid value encountered in
+# divide" when computing normalized feature importances on a fixture
+# where each class has identical features (no splits possible →
+# importance sum == 0 → 0/0). The test only checks that
+# `n_train_short` / `n_train_long` are populated; we don't need a
+# usefully-trained model. Silence the noise so the suite output stays
+# clean.
+@pytest.mark.filterwarnings(
+    "ignore:invalid value encountered in divide:RuntimeWarning"
+)
 def test_train_meta_model_records_per_direction_sample_counts():
     """train_meta_model must populate n_train_short and n_train_long
     in the metrics dict so the pregate can decide whether to bypass."""
