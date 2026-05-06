@@ -17,6 +17,34 @@ Rules going forward:
 
 ---
 
+## 2026-05-06 — Journal-vs-broker reconcile: 5 gaps closed end-to-end (Severity: critical, accounting integrity)
+
+Following this morning's discovery that 40 of 126 (31%) "open" journal entries across 11 profiles were phantoms, I fixed all five gaps named after the initial cleanup so the same drift can't accumulate again — plus the FIFO bug that was hiding the canceled rows from the dashboard.
+
+**Gap 1 — Shorts coverage.** `reconcile_with_ctx` now processes `side='short'` journal opens against broker negative-qty positions. Phantom short → `cancel`. Broker covered via stop → backfill `side='cover'` row, mark short closed.
+
+**Gap 2 — Smart ambiguous handling.**
+- Partial entry fill (e.g. 28 ordered, 14 filled, then canceled): update journal qty + price to actual fill, leave `status='open'` for next pass.
+- API failures: `_retrying_call` wraps every broker call in 3 retries with exponential backoff before flagging ambiguous, so a transient hiccup doesn't leave drift open.
+
+**Gap 3 — Schedule independence.** Cron entry installed on prod (`*/15 13-21 * * 1-5`) so reconcile runs every 15 minutes during US market hours regardless of scheduler health. Output to `logs/reconcile-cron.log`. Archived profiles (no `alpaca_account_id`) get skipped silently so a clean run exits 0.
+
+**Gap 4 — Partial-sale drift.** When broker has SOME shares but fewer than the journal claims, look up the BUY's protective stop order. If it filled for the missing qty, backfill a partial SELL row. Original BUY stays open — FIFO consumes the SELL from the lot. No false attribution if no protective order matches the delta.
+
+**FIFO bug.** Even after `status='canceled'` was correctly written, the dashboard kept showing INTC +35.9% open. Cause: `get_virtual_positions` read every row without a status filter, so the canceled BUY had no matching SELL and stayed in the FIFO forever. Fix: `WHERE COALESCE(status, 'open') != 'canceled'`.
+
+**Short-side FIFO bug** (discovered while validating the reconcile output). The journal's FIFO only handled `buy/sell/cover` — `side='short'` rows fell through and were silently dropped. Restructured: separate `long_lots` and `short_lots` dicts; `'short'` opens a short lot, `'cover'` consumes from it. Reported `qty` is now signed (negative=short) matching Alpaca's convention. With this fix in place, future short journal entries render correctly on the dashboard.
+
+**Tests:** 26 cases in `test_virtual_positions.py` (incl. 7 short-handling, 4 canceled-row-exclusion) and 15 cases in `test_reconcile_journal_to_broker.py` (long/short phantom, real_held, partial-sale, partial-entry, dry-run, archived-skipped, no-order-id, multi-profile attribution, malformed order_id, API-retry-then-ambiguous). Full suite: 2,112 pass, 0 regressions.
+
+**Known follow-up (NOT fixed today):** the broker has 19 net short positions on Alpaca account #3 (BBWI -374, BOOM -440, MSFT -17, INTC -28 short, etc.) that have **never been recorded in any journal** — `side='short'` row count across all 11 profile DBs is zero. This is a multi-profile attribution problem: each profile's individual ledger thinks it's flat (round-trip closed), but cumulative cross-profile sharing on the same Alpaca account left the broker net-short. Reconcile can't backfill these because there's no journal entry to update — fixing requires either dedicated Alpaca subaccounts or a signal-based reconstruction pass.
+
+**Realized P&L correction from today's reconcile-applied changes:** approximately −$2,055 net across the 35 broker-closure backfills (mostly trailing-stop losses that weren't in the journal). Broker equity unchanged at $3,036,846 — that was always the truth.
+
+Commits: `31d9f86` (initial reconcile + 9 tests), `9096bbb` (FIFO canceled-row filter), `d2fcf4c` (shorts + partial-sale + partial-fill + retry, 14 tests), `02e33e2` (skip archived profiles + cron added on prod), `5ed2505` (FIFO short/cover handling + 7 short tests).
+
+---
+
 ## 2026-05-06 — Full disaster-recovery rehearsal end-to-end (Severity: validation milestone)
 
 Followup to the four-bug fixes earlier today: stopped both prod services during the after-hours window, deliberately corrupted `quantopsai_profile_11.db` (overwrote 256 bytes mid-page), and ran the runbook in `docs/07_OPERATIONS.md` §9 verbatim. End-to-end result: `check_all_dbs` correctly identified the corrupt DB; dry-run picked the right backup file; real restore swapped in the verified backup; both services started clean; scheduler's first log line was "DB integrity check: 16 DBs healthy" (the freshly-restored profile_11 alongside the 15 untouched DBs); identified market closed and went to sleep correctly. Row-count comparison against the pre-rehearsal safety-net copy: 88/88 trades, 817/817 ai_predictions — bit-identical recovery. ~5-minute trading pause, market was closed.
