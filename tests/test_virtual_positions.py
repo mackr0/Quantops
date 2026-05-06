@@ -205,6 +205,92 @@ class TestRoundTrips:
         assert pos[0]["avg_entry_price"] == 120.0
 
 
+def _short(db, symbol, qty, price, ts="2026-04-15T10:00:00"):
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO trades (timestamp, symbol, side, qty, price) VALUES (?,?,?,?,?)",
+        (ts, symbol, "short", qty, price),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _cover(db, symbol, qty, price, ts="2026-04-15T14:00:00"):
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO trades (timestamp, symbol, side, qty, price) VALUES (?,?,?,?,?)",
+        (ts, symbol, "cover", qty, price),
+    )
+    conn.commit()
+    conn.close()
+
+
+class TestShortPositions:
+    """Short positions were silently dropped before (side='short' didn't
+    match buy/sell/cover in the FIFO). After this fix, shorts open a
+    short_lot, covers consume them, and net is reported with negative qty
+    matching Alpaca's sign convention."""
+
+    def test_open_short_appears_with_negative_qty(self, vdb):
+        from journal import get_virtual_positions
+        _short(vdb, "MSFT", 17, 401.83)
+        pos = get_virtual_positions(db_path=vdb)
+        assert len(pos) == 1
+        assert pos[0]["qty"] == -17
+        assert pos[0]["avg_entry_price"] == 401.83
+
+    def test_short_then_full_cover_is_flat(self, vdb):
+        from journal import get_virtual_positions
+        _short(vdb, "MSFT", 17, 401.83, ts="2026-04-29T10:00:00")
+        _cover(vdb, "MSFT", 17, 395.00, ts="2026-04-30T10:00:00")
+        pos = get_virtual_positions(db_path=vdb)
+        assert pos == []
+
+    def test_short_then_partial_cover_keeps_short(self, vdb):
+        from journal import get_virtual_positions
+        _short(vdb, "MSFT", 20, 400.0, ts="2026-04-29T10:00:00")
+        _cover(vdb, "MSFT", 7, 395.00, ts="2026-04-30T10:00:00")
+        pos = get_virtual_positions(db_path=vdb)
+        assert len(pos) == 1
+        assert pos[0]["qty"] == -13
+
+    def test_short_unrealized_pl_correct_sign(self, vdb):
+        """Short profits when price falls below entry."""
+        from journal import get_virtual_positions
+        _short(vdb, "MSFT", 10, 400.0)
+        # Price dropped to 380 — short is up $200
+        pos = get_virtual_positions(db_path=vdb, price_fetcher=lambda s: 380.0)
+        assert pos[0]["unrealized_pl"] == 200.0
+
+    def test_short_unrealized_pl_when_price_rises(self, vdb):
+        """Short loses when price rises."""
+        from journal import get_virtual_positions
+        _short(vdb, "MSFT", 10, 400.0)
+        pos = get_virtual_positions(db_path=vdb, price_fetcher=lambda s: 420.0)
+        assert pos[0]["unrealized_pl"] == -200.0
+
+    def test_long_and_short_separate_lots_same_symbol(self, vdb):
+        """Pair-trade scenario or rotation: profile holds long AAPL,
+        opens short AAPL on a separate signal (rare but should track
+        both correctly via independent lot stacks)."""
+        from journal import get_virtual_positions
+        _buy(vdb, "AAPL", 10, 100.0, ts="2026-04-14T10:00:00")
+        _short(vdb, "AAPL", 4, 105.0, ts="2026-04-15T10:00:00")
+        pos = get_virtual_positions(db_path=vdb)
+        # Net long 6 if implementation nets them
+        assert len(pos) == 1
+        assert pos[0]["qty"] == 6  # 10 long - 4 short = 6 net long
+
+    def test_short_then_buy_does_not_close_short(self, vdb):
+        """A 'buy' on a held short should NOT close the short — that's
+        what 'cover' is for. buy opens a fresh long lot."""
+        from journal import get_virtual_positions
+        _short(vdb, "MSFT", 10, 400.0, ts="2026-04-14T10:00:00")
+        _buy(vdb, "MSFT", 10, 405.0, ts="2026-04-15T10:00:00")
+        pos = get_virtual_positions(db_path=vdb)
+        assert pos == []  # 10 short - 10 long net = 0
+
+
 class TestCanceledRowsExcluded:
     """Caught 2026-05-06: profile_11's INTC #49 was a limit BUY that
     never filled at the broker. Reconcile correctly marked

@@ -622,9 +622,11 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
         return []
     conn.close()
 
-    # FIFO lot tracking per symbol.
+    # FIFO lot tracking per symbol — separate stacks for long and short
+    # so a profile can run both directions on the same symbol over time.
     # Each lot: [qty_remaining, entry_price]
-    lots_by_symbol = {}
+    long_lots: Dict[str, list] = {}
+    short_lots: Dict[str, list] = {}
     for row in rows:
         symbol = row[0]
         side = row[1]
@@ -633,32 +635,57 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
         if qty <= 0 or price <= 0:
             continue
 
-        if symbol not in lots_by_symbol:
-            lots_by_symbol[symbol] = []
-        lots = lots_by_symbol[symbol]
-
         if side == "buy":
-            lots.append([qty, price])
-        elif side in ("sell", "cover"):
+            long_lots.setdefault(symbol, []).append([qty, price])
+        elif side == "short":
+            short_lots.setdefault(symbol, []).append([qty, price])
+        elif side == "sell":
+            # Closes a long. FIFO-consume from long_lots first.
             remaining = qty
-            while remaining > 0 and lots:
-                lot = lots[0]
-                consumed = min(lot[0], remaining)
-                lot[0] -= consumed
+            ll = long_lots.setdefault(symbol, [])
+            while remaining > 0 and ll:
+                consumed = min(ll[0][0], remaining)
+                ll[0][0] -= consumed
                 remaining -= consumed
-                if lot[0] <= 0.001:
-                    lots.pop(0)
+                if ll[0][0] <= 0.001:
+                    ll.pop(0)
+        elif side == "cover":
+            # Closes a short. FIFO-consume from short_lots.
+            remaining = qty
+            sl = short_lots.setdefault(symbol, [])
+            while remaining > 0 and sl:
+                consumed = min(sl[0][0], remaining)
+                sl[0][0] -= consumed
+                remaining -= consumed
+                if sl[0][0] <= 0.001:
+                    sl.pop(0)
 
-    # Build position dicts from remaining lots
+    # Build position dicts. A symbol can have BOTH a long and a short
+    # leg open (rare, but possible across signals or rotations); we net
+    # them and report a single position with the net signed qty.
     positions = []
-    for symbol, lots in lots_by_symbol.items():
-        total_qty = sum(lot[0] for lot in lots)
-        if total_qty < 0.001:
+    all_symbols = set(long_lots.keys()) | set(short_lots.keys())
+    for symbol in all_symbols:
+        long_remaining = sum(lot[0] for lot in long_lots.get(symbol, []))
+        short_remaining = sum(lot[0] for lot in short_lots.get(symbol, []))
+        net_qty = long_remaining - short_remaining
+        if abs(net_qty) < 0.001:
             continue
 
-        # Weighted average entry price
-        total_cost = sum(lot[0] * lot[1] for lot in lots)
-        avg_entry = total_cost / total_qty if total_qty > 0 else 0
+        # Cost basis comes from the dominant side. For displayed qty,
+        # use the net (so 10 long + 4 short = 6 net long).
+        if net_qty > 0:
+            lots = long_lots[symbol]
+        else:
+            lots = short_lots[symbol]
+        total_qty = abs(net_qty)
+        dominant_remaining = long_remaining if net_qty > 0 else short_remaining
+
+        # Weighted average entry price across the dominant side's lots
+        total_cost = sum(lot[0] * lot[1] for lot in lots if lot[0] > 0)
+        avg_entry = (
+            total_cost / dominant_remaining if dominant_remaining > 0 else 0
+        )
 
         # Current price: use price_fetcher if available, else last entry
         current_price = 0.0
@@ -670,15 +697,27 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
         if current_price <= 0:
             current_price = avg_entry  # fallback: no price change assumed
 
-        market_value = current_price * total_qty
-        unrealized_pl = (current_price - avg_entry) * total_qty
-        unrealized_plpc = (
-            (current_price - avg_entry) / avg_entry if avg_entry > 0 else 0
-        )
+        # Sign convention matches Alpaca: long qty>0, short qty<0. P&L
+        # for shorts is (entry - current) * qty (we profit when price
+        # falls). market_value for shorts is negative.
+        is_short = (net_qty < 0)
+        signed_qty = -total_qty if is_short else total_qty
+        if is_short:
+            unrealized_pl = (avg_entry - current_price) * total_qty
+            unrealized_plpc = (
+                (avg_entry - current_price) / avg_entry if avg_entry > 0 else 0
+            )
+            market_value = -current_price * total_qty
+        else:
+            unrealized_pl = (current_price - avg_entry) * total_qty
+            unrealized_plpc = (
+                (current_price - avg_entry) / avg_entry if avg_entry > 0 else 0
+            )
+            market_value = current_price * total_qty
 
         positions.append({
             "symbol": symbol,
-            "qty": round(total_qty, 4),
+            "qty": round(signed_qty, 4),
             "avg_entry_price": round(avg_entry, 4),
             "current_price": round(current_price, 4),
             "market_value": round(market_value, 2),
