@@ -17,6 +17,35 @@ Rules going forward:
 
 ---
 
+## 2026-05-06 — DB restore rehearsal exposed 4 latent disaster-recovery failures (Severity: critical, silent data loss)
+
+Task #293 (DB restore rehearsal + runbook). Decided to actually exercise the restore path against a sandbox copy of `quantopsai_profile_11.db` on prod before declaring it shipped. The rehearsal surfaced four real bugs that mock-based tests had missed.
+
+**Bug 1: `backup_daily.sh` referenced by cron didn't exist.** The crontab entry `0 5 * * * /opt/quantopsai/backup_daily.sh` had been firing every morning since the file was first referenced, silently failing with "command not found." Latest snapshot in `/opt/quantopsai/backups/` was 2 weeks stale (April 22). The `db_integrity` module's docstring confidently described what `backup_daily.sh` produces — but the script never made it into the repo.
+
+**Bug 2: `find_latest_backup` matched SQLite sidecar files.** Glob `<filename>.*` happily matched `quantopsai.db.20260506-0014-wal` (a 0-byte WAL sidecar) and selected it as "the latest backup." Sidecars get created when something opens the backup file in non-immutable mode — including, ironically, the integrity check inside `restore_from_backup` itself.
+
+**Bug 3: `check_db` returned `ok` on a 0-byte file.** SQLite treats empty files as a valid empty DB; `PRAGMA quick_check` returns `[("ok",)]`. Combined with bug 2, the rehearsal "successfully" replaced the live victim with a 0-byte WAL sidecar and reported `{"status": "ok", "detail": "restored"}`. In a real outage this would silently lose the entire DB and report success.
+
+**Bug 4: `find_latest_backup` would also match the corrupt-archive file.** When `restore_from_backup` archives the corrupt original aside as `<filename>.corrupt-<TS>`, that file has the freshest mtime in the directory. The next restore attempt would pick it as "the latest backup" and loop on its own bad data.
+
+**Fixes**:
+- New `backup_daily.sh` using `sqlite3 .backup` (online backup, safe under writes), produces files matching `<dbname>.<YYYYMMDD-HHMM>` format, prunes >14d, logs to syslog. Backed up all 16 prod DBs successfully on first run (~1.5GB total: master 147MB, 11 profiles, 4 altdata DBs).
+- `find_latest_backup` rewritten with strict regex on the timestamp suffix; rejects `-wal`/`-shm`/`corrupt-*` files; legacy underscore-naming pattern still supported for historical snapshots; selection by mtime.
+- `check_db` pre-checks file size + SQLite magic-header bytes before opening; opens with `immutable=1` so verifying a backup never creates sidecars in the backup dir.
+
+**End-to-end rehearsal with the fixed code**: backup script produces clean file with no sidecars; restore picks the real backup; restored DB has all 19 tables and passes quick_check; corrupt original archived correctly. Prod startup integrity check now reports "16 DBs healthy."
+
+**Tests**: 6 new cases in `tests/test_db_integrity.py` pinning each bug. 22/22 pass.
+
+**Doc**: `docs/07_OPERATIONS.md` §6 (Backups) rewritten to describe the actual mechanism (was referencing a non-existent `backup_db.py`); §9 "Restoring from backup" replaced with the verified runbook (6 steps + recovery-without-backup fallback); §5 health-check switched away from `PRAGMA integrity_check` (known false-positive on schema migrations) to `db_integrity.check_db`.
+
+**Why next time will be caught**: the latent bugs all came from "the code compiled, the unit tests pass with mocks, ship it." The new tests use real SQLite files with real WAL-mode headers — the same conditions production produces — so a future regression would surface in CI, not on the day we actually need to recover.
+
+Commit: `f130e29`.
+
+---
+
 ## 2026-05-05 — Two real prod bugs: stuck exits + missing options contracts (Severity: critical, money-leaving)
 
 **Bug 1: INTC +33% gain stuck unsold on Large Cap Limit Orders.**
