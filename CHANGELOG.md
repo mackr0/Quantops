@@ -17,6 +17,18 @@ Rules going forward:
 
 ---
 
+## 2026-05-06 — Full disaster-recovery rehearsal end-to-end (Severity: validation milestone)
+
+Followup to the four-bug fixes earlier today: stopped both prod services during the after-hours window, deliberately corrupted `quantopsai_profile_11.db` (overwrote 256 bytes mid-page), and ran the runbook in `docs/07_OPERATIONS.md` §9 verbatim. End-to-end result: `check_all_dbs` correctly identified the corrupt DB; dry-run picked the right backup file; real restore swapped in the verified backup; both services started clean; scheduler's first log line was "DB integrity check: 16 DBs healthy" (the freshly-restored profile_11 alongside the 15 untouched DBs); identified market closed and went to sleep correctly. Row-count comparison against the pre-rehearsal safety-net copy: 88/88 trades, 817/817 ai_predictions — bit-identical recovery. ~5-minute trading pause, market was closed.
+
+The disaster-recovery path is no longer "we think it works." It works.
+
+**Bonus bug caught during the rehearsal**: `sync.sh` was silently deleting all new-format backup files on every deploy. The rsync `--exclude '*.db'` rule didn't match the new naming `<dbname>.db.<TS>` (timestamp trails, not `.db`), so `--delete` removed them. Caught when today's 16 fresh backups vanished after the second sync.sh run. Fixed by adding `--exclude 'backups/'` to both rsync calls (the dry-run preview and the actual transfer). The legacy `<basename>_<DATE>.db` files survived because their names actually end in `.db`.
+
+Commits: `f130e29` (4 bugs + script + runbook), `d0f34b4` (CHANGELOG entry), `edeca43` (sync.sh exclude fix).
+
+---
+
 ## 2026-05-06 — DB restore rehearsal exposed 4 latent disaster-recovery failures (Severity: critical, silent data loss)
 
 Task #293 (DB restore rehearsal + runbook). Decided to actually exercise the restore path against a sandbox copy of `quantopsai_profile_11.db` on prod before declaring it shipped. The rehearsal surfaced four real bugs that mock-based tests had missed.
