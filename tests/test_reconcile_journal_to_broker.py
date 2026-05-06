@@ -64,13 +64,14 @@ def _make_journal_db(tmp_path, rows):
     return str(p)
 
 
-def _ctx(api, db_path, name="Test", profile_id=99):
+def _ctx(api, db_path, name="Test", profile_id=99, alpaca_account_id=1):
     ctx = SimpleNamespace()
     ctx.api = api
     ctx.get_alpaca_api = lambda: api
     ctx.db_path = db_path
     ctx.display_name = name
     ctx.profile_id = profile_id
+    ctx.alpaca_account_id = alpaca_account_id
     return ctx
 
 
@@ -489,6 +490,24 @@ def test_api_error_retries_then_flags_ambiguous(tmp_path):
     assert "after retries" in res["ambiguous"][0]["reason"]
     # Verify it actually retried (called more than once)
     assert api.get_order.call_count >= 2
+
+
+def test_archived_profile_with_no_account_id_is_skipped(tmp_path):
+    """Disabled / archived profile (alpaca_account_id is None or 0)
+    should return a 'skipped' result instead of erroring out — so the
+    cron-based reconcile doesn't exit with status=1 on a clean run."""
+    from reconcile_journal_to_broker import reconcile_with_ctx
+    db = _make_journal_db(tmp_path, [
+        (1, "FOO", "buy", 10, "open", "foo", "2026-04-20T10:00:00", 50.0),
+    ])
+    api = MagicMock()
+    ctx = _ctx(api, db, name="Crypto (archived)")
+    ctx.alpaca_account_id = None  # archived
+    res = reconcile_with_ctx(ctx, apply_changes=True)
+    assert "skipped" in res
+    assert res["real_held"] == 0
+    # Broker was never asked
+    api.list_positions.assert_not_called()
 
 
 def test_corrupt_archive_filename_does_not_match(tmp_path):

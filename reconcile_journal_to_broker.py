@@ -340,6 +340,18 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False) -> Dict[str, list]:
     api = ctx.get_alpaca_api() if hasattr(ctx, "get_alpaca_api") else ctx.api
     db_path = ctx.db_path
 
+    # Disabled / archived profiles (no Alpaca account assigned) get
+    # skipped silently — they're not "errors" in any meaningful sense.
+    if not getattr(ctx, "alpaca_account_id", None):
+        return {
+            "skipped": "no alpaca_account_id (archived/disabled profile)",
+            "cancel": [], "backfill_sell": [], "backfill_cover": [],
+            "backfill_partial_sell": [], "fix_partial_entry": [],
+            "ambiguous": [], "real_held": 0,
+            "profile": name,
+            "profile_id": getattr(ctx, "profile_id", None),
+        }
+
     actions = {
         "cancel": [],
         "backfill_sell": [],   # long full close
@@ -606,6 +618,10 @@ def main():
         except Exception as e:
             print(f"profile_{p_id}: ERROR {e}")
             grand["errored"] += 1
+            continue
+        if "skipped" in res:
+            if not args.quiet:
+                print(f"p{p_id:>2} {res['profile'][:30]:<30s}  skipped: {res['skipped']}")
             continue
         if "error" in res:
             print(f"profile_{p_id} ({res.get('profile')}): ERROR {res['error']}")
