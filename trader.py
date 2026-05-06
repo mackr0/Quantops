@@ -546,6 +546,27 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
         side_label = "cover"
         action_label = "COVER"
     else:
+        # Pre-trade overshoot guard: query broker before any SELL.
+        # Multi-profile shared accounts can leave the broker with fewer
+        # longs than the journal expects (sibling profile already sold).
+        # Submitting our SELL would create a phantom short. (See
+        # 2026-05-06 incident: 31 phantom shorts on 3 accounts.)
+        from order_guard import allowable_sell_qty
+        allowed_qty, guard_reason = allowable_sell_qty(api, symbol, int(qty))
+        if allowed_qty == 0:
+            logging.warning(
+                "[%s] SELL blocked by overshoot guard: %s qty=%d — %s",
+                trigger_signal.get("trigger", "?"),
+                symbol, qty, guard_reason,
+            )
+            return
+        if allowed_qty != int(qty):
+            logging.warning(
+                "[%s] SELL %s downsized %d → %d (%s)",
+                trigger_signal.get("trigger", "?"),
+                symbol, qty, allowed_qty, guard_reason,
+            )
+            qty = int(allowed_qty)
         order = api.submit_order(
             symbol=symbol,
             qty=qty,

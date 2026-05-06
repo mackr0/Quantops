@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -114,3 +114,102 @@ class TestBothSidesGuarded:
         with patch("order_guard.datetime") as mock_dt:
             mock_dt.now.return_value = fake_now
             assert check_can_submit(_ctx(), "AAPL", "sell") is False
+
+
+class TestOvershootGuard:
+    """allowable_sell_qty pre-trade guard — caught 2026-05-06 when 31
+    phantom broker shorts had accumulated across 3 Alpaca accounts due
+    to multi-profile shared-account overshoot. Each profile correctly
+    closed its own virtual long; cumulative SELLs at the broker level
+    overshot the actual long position, creating shorts no profile
+    monitored."""
+
+    def _api(self, positions=None, raise_on_list=False):
+        api = MagicMock()
+        if raise_on_list:
+            api.list_positions.side_effect = RuntimeError("broker down")
+        else:
+            api.list_positions.return_value = positions or []
+        return api
+
+    def _pos(self, symbol, qty):
+        p = MagicMock()
+        p.symbol = symbol
+        p.qty = qty
+        return p
+
+    def test_broker_has_enough_returns_full_qty(self):
+        from order_guard import allowable_sell_qty
+        api = self._api([self._pos("AAPL", "100")])
+        qty, reason = allowable_sell_qty(api, "AAPL", 50)
+        assert qty == 50
+        assert reason == "ok"
+
+    def test_broker_has_zero_refuses_completely(self):
+        """Broker has no long shares — submitting would CREATE a short.
+        Refuse with allowed_qty=0."""
+        from order_guard import allowable_sell_qty
+        api = self._api([])
+        qty, reason = allowable_sell_qty(api, "BBWI", 187)
+        assert qty == 0
+        assert "would create short" in reason
+
+    def test_broker_has_some_downsizes(self):
+        """Broker has fewer longs than requested — downsize to broker's
+        actual qty so the SELL doesn't overshoot."""
+        from order_guard import allowable_sell_qty
+        api = self._api([self._pos("MSFT", "5")])
+        qty, reason = allowable_sell_qty(api, "MSFT", 17)
+        assert qty == 5
+        assert "downsized" in reason
+
+    def test_broker_short_position_refuses(self):
+        """Broker is already net-short the symbol. Submitting a SELL
+        would deepen the short — refuse."""
+        from order_guard import allowable_sell_qty
+        api = self._api([self._pos("BBWI", "-374")])
+        qty, reason = allowable_sell_qty(api, "BBWI", 100)
+        assert qty == 0
+        assert "would create short" in reason
+
+    def test_broker_api_failure_is_permissive(self):
+        """If the broker API is down, default permissive — let the
+        existing submit_order error handling surface real issues. We
+        should never block trading because the GUARD couldn't query."""
+        from order_guard import allowable_sell_qty
+        api = self._api(raise_on_list=True)
+        qty, reason = allowable_sell_qty(api, "AAPL", 10)
+        assert qty == 10
+        assert "permissive" in reason
+
+    def test_other_symbols_dont_satisfy_check(self):
+        """Broker has 100 AAPL but request is for MSFT — refuse for MSFT."""
+        from order_guard import allowable_sell_qty
+        api = self._api([self._pos("AAPL", "100")])
+        qty, reason = allowable_sell_qty(api, "MSFT", 10)
+        assert qty == 0
+
+    def test_zero_or_negative_qty_returns_zero(self):
+        from order_guard import allowable_sell_qty
+        api = self._api([self._pos("AAPL", "100")])
+        qty, _ = allowable_sell_qty(api, "AAPL", 0)
+        assert qty == 0
+        qty, _ = allowable_sell_qty(api, "AAPL", -5)
+        assert qty == 0
+
+    def test_options_contract_bypasses_guard(self):
+        """Option short legs (covered calls, bull put spreads, iron
+        condors) are intentional shorts. The guard would refuse them
+        because broker has 0 long of the contract symbol; that's wrong.
+        Bypass for OCC-formatted symbols."""
+        from order_guard import allowable_sell_qty
+        api = self._api([])
+        qty, reason = allowable_sell_qty(api, "MSFT260612P00375000", 1)
+        assert qty == 1
+        assert "option" in reason.lower()
+
+    def test_case_insensitive_symbol_match(self):
+        from order_guard import allowable_sell_qty
+        api = self._api([self._pos("aapl", "50")])
+        qty, _ = allowable_sell_qty(api, "AAPL", 30)
+        assert qty == 30

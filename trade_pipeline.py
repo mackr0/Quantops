@@ -909,6 +909,23 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         else:
             sell_qty = max(1, int(qty * 0.75))
 
+        # Pre-trade guard: query broker before submitting. Multiple
+        # profiles share each Alpaca account (architecture memory:
+        # virtual accounts on shared Alpaca subaccounts). If a sibling
+        # profile already sold shares of this symbol, the broker may
+        # have fewer (or zero) longs — submitting our SELL would
+        # overshoot and create an unintended SHORT position that no
+        # profile owns or monitors. (Caught 2026-05-06: 31 phantom
+        # shorts had accumulated across the 3 accounts this way.)
+        from order_guard import allowable_sell_qty
+        allowed_qty, guard_reason = allowable_sell_qty(api, symbol, int(sell_qty))
+        if allowed_qty == 0:
+            result["action"] = "SKIP"
+            result["reason"] = f"Pre-trade guard: {guard_reason}"
+            return result
+        if allowed_qty != int(sell_qty):
+            sell_qty = allowed_qty
+
         # INTRADAY_STOPS_PLAN Stage 1 — cancel any broker stop attached
         # to this position so it doesn't fire after our market sell on
         # what's now a flat position.
