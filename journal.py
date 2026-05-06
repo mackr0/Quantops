@@ -606,9 +606,16 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
     """
     conn = _get_conn(db_path)
     try:
+        # Exclude status='canceled' rows — those are entry orders that
+        # never filled at the broker (caught 2026-05-06: 5 phantoms in
+        # profile_11 had been showing as +35% INTC etc. for 12 days).
+        # The FIFO has no matching SELL for a canceled BUY, so without
+        # this filter the phantom stays "open" forever in the UI.
         rows = conn.execute(
             "SELECT symbol, side, qty, price, timestamp "
-            "FROM trades ORDER BY timestamp ASC, id ASC"
+            "FROM trades "
+            "WHERE COALESCE(status, 'open') != 'canceled' "
+            "ORDER BY timestamp ASC, id ASC"
         ).fetchall()
     except Exception:
         conn.close()

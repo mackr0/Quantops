@@ -203,3 +203,71 @@ class TestRoundTrips:
         assert len(pos) == 1
         assert pos[0]["qty"] == 5
         assert pos[0]["avg_entry_price"] == 120.0
+
+
+class TestCanceledRowsExcluded:
+    """Caught 2026-05-06: profile_11's INTC #49 was a limit BUY that
+    never filled at the broker. Reconcile correctly marked
+    status='canceled' but get_virtual_positions read every row
+    regardless of status, so the FIFO had a 28-share BUY with no
+    matching SELL — phantom kept showing as +35% open for 12 days.
+    The query must filter status='canceled'."""
+
+    def _set_status(self, db, status):
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE trades SET status=?", (status,))
+        conn.commit()
+        conn.close()
+
+    def test_canceled_buy_does_not_appear(self, vdb):
+        from journal import get_virtual_positions
+        _buy(vdb, "INTC", 28, 80.89)
+        self._set_status(vdb, "canceled")
+        pos = get_virtual_positions(db_path=vdb)
+        assert pos == [], f"phantom canceled BUY leaked through: {pos}"
+
+    def test_canceled_does_not_break_real_position(self, vdb):
+        """A real BUY plus a canceled BUY in the same symbol —
+        canceled is dropped, real one still shows correctly."""
+        from journal import get_virtual_positions
+        # Real BUY first
+        _buy(vdb, "AAPL", 10, 100.0, ts="2026-04-14T10:00:00")
+        # Canceled BUY second
+        conn = sqlite3.connect(vdb)
+        conn.execute(
+            "INSERT INTO trades (timestamp, symbol, side, qty, price, status) "
+            "VALUES (?, ?, ?, ?, ?, 'canceled')",
+            ("2026-04-15T10:00:00", "AAPL", "buy", 5, 110.0),
+        )
+        conn.commit()
+        conn.close()
+        pos = get_virtual_positions(db_path=vdb)
+        assert len(pos) == 1
+        assert pos[0]["qty"] == 10  # only the real BUY counts
+        assert pos[0]["avg_entry_price"] == 100.0  # real BUY's price
+
+    def test_status_open_default_still_works(self, vdb):
+        """Most rows have status='open' from the default. Make sure
+        the status filter doesn't accidentally exclude those."""
+        from journal import get_virtual_positions
+        _buy(vdb, "AAPL", 10, 100.0)
+        # Default status='open' is set by schema
+        pos = get_virtual_positions(db_path=vdb)
+        assert len(pos) == 1
+        assert pos[0]["qty"] == 10
+
+    def test_null_status_still_included(self, vdb):
+        """Older rows might have NULL status. Treat as 'open' (the
+        COALESCE default), not 'canceled'."""
+        from journal import get_virtual_positions
+        conn = sqlite3.connect(vdb)
+        conn.execute(
+            "INSERT INTO trades (timestamp, symbol, side, qty, price, status) "
+            "VALUES (?, ?, ?, ?, ?, NULL)",
+            ("2026-04-14T10:00:00", "AAPL", "buy", 10, 100.0),
+        )
+        conn.commit()
+        conn.close()
+        pos = get_virtual_positions(db_path=vdb)
+        assert len(pos) == 1
+        assert pos[0]["qty"] == 10

@@ -113,7 +113,10 @@ def _enriched_positions(ctx, profile_id):
             # log_trade writes side='short' for new short positions, not
             # 'sell_short' (P1.10 of LONG_SHORT_PLAN.md). Old query
             # missed every short.
-            "WHERE side='buy' OR side='short' "
+            # Exclude canceled rows so phantom limit orders that never
+            # filled at the broker don't poison the metadata lookup.
+            "WHERE (side='buy' OR side='short') "
+            "AND COALESCE(status, 'open') != 'canceled' "
             "ORDER BY timestamp DESC"
         ).fetchall()
         conn.close()
