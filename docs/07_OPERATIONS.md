@@ -130,15 +130,17 @@ These should be sampled every 5 minutes by an external uptime checker (UptimeRob
 ### Database health checks
 
 ```bash
-# Master DB integrity
-sqlite3 /opt/quantopsai/quantopsai.db 'PRAGMA integrity_check;'
-
-# Per-profile DB integrity (loop)
-for db in /opt/quantopsai/quantopsai_profile_*.db; do
-    echo "== $db =="
-    sqlite3 "$db" 'PRAGMA integrity_check;'
-done
+# All DBs in one shot — uses the same logic the scheduler runs at startup.
+ssh root@67.205.155.63 'cd /opt/quantopsai && venv/bin/python -c "
+from db_integrity import check_all_dbs, any_corrupt
+results = check_all_dbs()
+for path, info in results.items():
+    print(f\"{path}: {info[\\\"status\\\"]} — {info[\\\"detail\\\"]}\")
+print(\"corrupt:\", any_corrupt(results))
+"'
 ```
+
+The `db_integrity.check_db` function uses `PRAGMA quick_check` (storage-level only) and pre-screens for valid file size + SQLite magic-header. **Don't use `PRAGMA integrity_check` directly** — it also reports NOT NULL / UNIQUE / FK constraint violations on existing rows, which are NOT file corruption (and are a known false-positive after schema migrations that add NOT NULL columns).
 
 ### Free disk
 
@@ -161,20 +163,22 @@ sqlite3 /opt/quantopsai/quantopsai_profile_3.db \
 
 ## 6. Backups
 
-`_task_db_backup` runs once daily per profile. Snapshots both the master DB and each per-profile DB to a `backups/` directory with date-stamped filenames. Retention: 7 daily + 4 weekly + 3 monthly (rolling).
+`backup_daily.sh` runs from system cron at 05:00 UTC every day. Uses sqlite3's online `.backup` command (safe while the scheduler is writing). Snapshots the master DB, every per-profile DB, and the four alt-data DBs to `/opt/quantopsai/backups/` with filenames like `quantopsai.db.20260506-0500`. Prunes backups older than 14 days.
 
 ```bash
-# Manual backup (via Python)
-ssh root@67.205.155.63 'cd /opt/quantopsai && /opt/quantopsai/venv/bin/python -c "
-from backup_db import backup_all_dbs
-backup_all_dbs()
-"'
+# Cron entry on prod
+0 5 * * * /opt/quantopsai/backup_daily.sh
+
+# Run a backup manually
+ssh root@67.205.155.63 'bash /opt/quantopsai/backup_daily.sh'
 
 # View backup directory
 ssh root@67.205.155.63 'ls -lt /opt/quantopsai/backups/ | head'
 ```
 
-Restoring a backup is a manual operation: stop the scheduler, copy the desired backup file to the live DB path, restart.
+Filename format produced: `<dbname>.db.<YYYYMMDD-HHMM>`. The `find_latest_backup` helper recognizes both this format and the legacy ad-hoc snapshot pattern `<basename>_<YYYY-MM-DD>_<HHMM>.db`. It explicitly rejects sidecar files (`-wal`, `-shm`) and corrupt-archive files (`<name>.corrupt-<TS>`) — both of which can appear in the directory and would corrupt a restore if matched.
+
+Restoring a backup is a one-command operation — see §9 "Restoring from backup" for the verified runbook.
 
 ## 7. Cron / scheduled tasks
 
@@ -273,17 +277,90 @@ The web app stays up; users can still see dashboards but no new trades fire. Exi
 
 ### Restoring from backup
 
-Worst case (data corruption):
+This runbook was rehearsed end-to-end on 2026-05-05 against a sandbox copy of `quantopsai_profile_11.db`. The rehearsal surfaced three latent bugs (sidecar matching, 0-byte file accepted as valid, `corrupt-*` archive matching) — all are fixed and covered by `tests/test_db_integrity.py`. Use this runbook with confidence.
+
+Worst case: a DB has corrupted (orchestrator startup integrity check halted, `[scheduler] DB corrupt — refusing to start` in logs).
+
+#### Step 1 — Identify the corrupt DB
 
 ```bash
-ssh root@67.205.155.63
-systemctl stop quantopsai-scheduler quantopsai-web
-cp /opt/quantopsai/backups/quantopsai_profile_3_2026-05-02.db \
-   /opt/quantopsai/quantopsai_profile_3.db
-systemctl start quantopsai-web quantopsai-scheduler
+ssh root@67.205.155.63 'cd /opt/quantopsai && venv/bin/python -c "
+from db_integrity import check_all_dbs, any_corrupt
+results = check_all_dbs()
+for path, info in results.items():
+    print(path, info)
+print(\"corrupt:\", any_corrupt(results))
+"'
 ```
 
-The scheduler will pick up where the backup left off. Any trades that resolved between the backup and the restoration are lost from the journal but still reflected in the broker's actual book — `_task_reconcile_trade_statuses` will eventually surface the discrepancy.
+#### Step 2 — Stop both prod services
+
+```bash
+ssh root@67.205.155.63 'systemctl stop quantopsai quantopsai-web'
+```
+
+This protects the live file from being written while you restore. The web app stays down for the duration; trading pauses.
+
+#### Step 3 — Dry-run the restore (no files moved)
+
+```bash
+ssh root@67.205.155.63 'cd /opt/quantopsai && venv/bin/python -c "
+from db_integrity import restore_from_backup
+print(restore_from_backup(\"<corrupt_db_filename>\", dry_run=True))
+"'
+```
+
+Replace `<corrupt_db_filename>` with the basename only, e.g. `quantopsai.db` or `quantopsai_profile_3.db`. Confirm the printed `from_backup` path is what you expect (most-recent backup, real file, NOT a `-wal` / `-shm` / `corrupt-*` file). If `status: error` and `detail: no backup found`, stop here and investigate — see "Recovery without a usable backup" below.
+
+#### Step 4 — Real restore
+
+```bash
+ssh root@67.205.155.63 'cd /opt/quantopsai && venv/bin/python -c "
+from db_integrity import restore_from_backup
+print(restore_from_backup(\"<corrupt_db_filename>\"))
+"'
+```
+
+The function:
+1. Finds the latest backup (filtering out sidecars and corrupt-archive files).
+2. Verifies the backup itself passes `quick_check` AND has a valid SQLite header (size + magic-bytes pre-check). Refuses to proceed if the backup is bad.
+3. Moves the corrupt original aside as `<filename>.corrupt-<UTC-timestamp>`.
+4. Copies the verified backup into place.
+5. Re-runs `check_db` on the restored file. If verification fails, reports an error (the corrupt original is still archived alongside, so you can investigate manually).
+
+Expected output on success:
+
+```
+{"status": "ok", "detail": "restored", "from_backup": "/opt/quantopsai/backups/<filename>.<TS>"}
+DB restored: ... (corrupt original archived as .../<filename>.corrupt-<TS>)
+```
+
+#### Step 5 — Re-verify, then restart services
+
+```bash
+ssh root@67.205.155.63 'cd /opt/quantopsai && venv/bin/python -c "
+from db_integrity import check_all_dbs, any_corrupt
+print(\"corrupt after restore:\", any_corrupt(check_all_dbs()))
+"'
+ssh root@67.205.155.63 'systemctl start quantopsai-web quantopsai'
+```
+
+`any_corrupt` should print `[]`. The scheduler picks up where the backup left off. Any trades that resolved between the backup and the restoration are lost from the journal but still reflected in the broker's actual book — `_task_reconcile_trade_statuses` will surface the discrepancy on the next cycle.
+
+#### Step 6 — Don't delete the corrupt archive yet
+
+The function leaves the corrupt original at `<live_path>.corrupt-<TS>`. Keep it around for at least 7 days in case forensic analysis is needed (e.g. a malformed write surfaced from a code path that should be hardened). If disk space is tight, move it off-box rather than deleting it.
+
+#### Recovery without a usable backup
+
+If `restore_from_backup` reports no backup, your last resort is the `.dump` salvage path:
+
+```bash
+ssh root@67.205.155.63 'cd /opt/quantopsai && \
+  sqlite3 quantopsai.db ".recover" | sqlite3 quantopsai.db.recovered'
+```
+
+This skips corrupt pages and produces a new DB file with whatever it could read. **Some rows will be lost.** Compare row counts before promoting `quantopsai.db.recovered` over `quantopsai.db`. Trading should be halted until you've manually verified critical tables (`trading_profiles`, `trades`, `ai_predictions`).
 
 ### Killing a stuck task
 

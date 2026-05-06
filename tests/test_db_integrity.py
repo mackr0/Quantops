@@ -77,13 +77,24 @@ def test_any_corrupt_reports_bad_dbs(tmp_path):
 
 
 def test_find_latest_backup(tmp_path):
+    """Selection is by mtime — the most recently created backup wins,
+    regardless of the filename's encoded date. backup_daily.sh creates
+    one file per run so mtime tracks creation."""
+    import time
     from db_integrity import find_latest_backup
     bk = tmp_path / "backups"
     bk.mkdir()
-    # backup_daily.sh names files like quantopsai.db.20260503
-    (bk / "quantopsai.db.20260503").write_text("a")
-    (bk / "quantopsai.db.20260504").write_text("b")
-    (bk / "quantopsai.db.20260502").write_text("c")
+    f1 = bk / "quantopsai.db.20260503"
+    f2 = bk / "quantopsai.db.20260504"
+    f3 = bk / "quantopsai.db.20260502"
+    f1.write_text("a")
+    f2.write_text("b")
+    f3.write_text("c")
+    # Make .20260504 the most recently modified
+    now = time.time()
+    os.utime(str(f1), (now - 200, now - 200))
+    os.utime(str(f2), (now, now))
+    os.utime(str(f3), (now - 100, now - 100))
     latest = find_latest_backup("quantopsai.db", backup_dir=str(bk))
     assert latest is not None
     assert latest.endswith(".20260504")
@@ -94,6 +105,165 @@ def test_find_latest_backup_returns_none_when_missing(tmp_path):
     assert find_latest_backup(
         "quantopsai.db", backup_dir=str(tmp_path / "nope"),
     ) is None
+
+
+def test_find_latest_backup_legacy_underscore_naming(tmp_path):
+    """Hand-named ad-hoc snapshots use `<basename>_<YYYY-MM-DD>_<HHMM>.db`.
+    Discovered on prod 2026-05-05 — the original glob `<filename>.*`
+    didn't match these and restore would fail to find them."""
+    from db_integrity import find_latest_backup
+    bk = tmp_path / "backups"
+    bk.mkdir()
+    (bk / "quantopsai_2026-04-22_2054.db").write_text("a")
+    latest = find_latest_backup("quantopsai.db", backup_dir=str(bk))
+    assert latest is not None
+    assert latest.endswith("quantopsai_2026-04-22_2054.db")
+
+
+def test_find_latest_backup_master_does_not_match_profile(tmp_path):
+    """Lookup of `quantopsai.db` must NOT pick up a profile DB file
+    whose name happens to start with `quantopsai_`."""
+    from db_integrity import find_latest_backup
+    bk = tmp_path / "backups"
+    bk.mkdir()
+    # Only profile files exist
+    (bk / "quantopsai_profile_10_2026-04-22_2054.db").write_text("a")
+    (bk / "quantopsai_profile_11_2026-04-22_2054.db").write_text("b")
+    latest = find_latest_backup("quantopsai.db", backup_dir=str(bk))
+    assert latest is None
+
+
+def test_find_latest_backup_picks_by_mtime_across_naming(tmp_path):
+    """Mixed legacy + new naming: pick the most recent by mtime,
+    not lexical order."""
+    import time
+    from db_integrity import find_latest_backup
+    bk = tmp_path / "backups"
+    bk.mkdir()
+    older = bk / "quantopsai.db.20260101-0500"
+    older.write_text("old")
+    newer = bk / "quantopsai_2026-04-22_2054.db"
+    newer.write_text("newer")
+    # Make `newer` actually newer on disk
+    now = time.time()
+    os.utime(str(older), (now - 86400, now - 86400))
+    os.utime(str(newer), (now, now))
+    latest = find_latest_backup("quantopsai.db", backup_dir=str(bk))
+    assert latest is not None
+    assert latest.endswith("quantopsai_2026-04-22_2054.db")
+
+
+def test_find_latest_backup_for_profile_db(tmp_path):
+    """`quantopsai_profile_10.db` lookup finds its dated snapshots."""
+    from db_integrity import find_latest_backup
+    bk = tmp_path / "backups"
+    bk.mkdir()
+    (bk / "quantopsai_profile_10_2026-04-22_2054.db").write_text("a")
+    (bk / "quantopsai_profile_10.db.20260505-1200").write_text("b")
+    latest = find_latest_backup(
+        "quantopsai_profile_10.db", backup_dir=str(bk),
+    )
+    assert latest is not None
+
+
+def test_find_latest_backup_excludes_wal_and_shm_sidecars(tmp_path):
+    """Caught during 2026-05-05 prod rehearsal: SQLite creates `-wal`
+    and `-shm` sidecars next to a backup file when something opens it
+    without immutable=1. The previous glob `<filename>.*` matched
+    `quantopsai.db.20260506-0014-wal` (0 bytes!), restore copied that
+    over the live path, and check_db said 'ok' because empty files
+    pass quick_check. find_latest_backup must reject sidecars."""
+    import time
+    from db_integrity import find_latest_backup
+    bk = tmp_path / "backups"
+    bk.mkdir()
+    real = bk / "quantopsai.db.20260506-0014"
+    real.write_text("a" * 5000)
+    wal = bk / "quantopsai.db.20260506-0014-wal"
+    wal.write_text("")  # 0 bytes
+    shm = bk / "quantopsai.db.20260506-0014-shm"
+    shm.write_text("x" * 32768)
+    # Make sidecars NEWER than the real backup (worst case for mtime sort)
+    now = time.time()
+    os.utime(str(real), (now - 60, now - 60))
+    os.utime(str(wal), (now, now))
+    os.utime(str(shm), (now, now))
+    latest = find_latest_backup("quantopsai.db", backup_dir=str(bk))
+    assert latest is not None
+    assert latest.endswith(".20260506-0014"), (
+        f"picked sidecar instead of real backup: {latest}"
+    )
+
+
+def test_find_latest_backup_excludes_corrupt_archive(tmp_path):
+    """restore_from_backup archives the corrupt original as
+    `<filename>.corrupt-<TS>`. find_latest_backup must NOT pick that
+    up — it's the bad data we just rejected. Otherwise the next
+    restore loops on its own archive."""
+    import time
+    from db_integrity import find_latest_backup
+    bk = tmp_path / "backups"
+    bk.mkdir()
+    good = bk / "quantopsai.db.20260506-0014"
+    good.write_text("good")
+    corrupt = bk / "quantopsai.db.corrupt-20260506-001517"
+    corrupt.write_text("bad")
+    # corrupt archive newer (it would be — restore happens after backup)
+    now = time.time()
+    os.utime(str(good), (now - 60, now - 60))
+    os.utime(str(corrupt), (now, now))
+    latest = find_latest_backup("quantopsai.db", backup_dir=str(bk))
+    assert latest is not None
+    assert "corrupt" not in os.path.basename(latest)
+
+
+def test_check_db_zero_byte_file_is_corrupt(tmp_path):
+    """SQLite happily opens a 0-byte file as a valid empty DB and
+    quick_check returns ok. That's how a buggy restore could 'succeed'
+    by copying a 0-byte WAL sidecar over the live path. check_db must
+    catch it via the file-size / magic-header pre-check."""
+    from db_integrity import check_db
+    p = tmp_path / "empty.db"
+    p.write_text("")
+    out = check_db(str(p))
+    assert out["status"] == "corrupt"
+    assert "0 bytes" in out["detail"] or "header" in out["detail"]
+
+
+def test_check_db_non_sqlite_file_is_corrupt(tmp_path):
+    """File with content but no SQLite header magic — not a real DB."""
+    from db_integrity import check_db
+    p = tmp_path / "fake.db"
+    p.write_bytes(b"not a sqlite db, just text" * 100)
+    out = check_db(str(p))
+    assert out["status"] == "corrupt"
+    assert "header" in out["detail"]
+
+
+def test_check_db_does_not_create_sidecars(tmp_path):
+    """check_db must use immutable=1 so it does not create -wal or
+    -shm files next to the file being inspected. Otherwise the act of
+    verifying a backup pollutes the backup directory."""
+    from db_integrity import check_db
+    p = tmp_path / "real.db"
+    # Create a real WAL-mode SQLite DB
+    conn = sqlite3.connect(str(p))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE t (x INTEGER)")
+    conn.execute("INSERT INTO t VALUES (1)")
+    conn.commit()
+    conn.close()
+    # Clean any sidecars left from setup
+    for ext in ("-wal", "-shm"):
+        side = tmp_path / f"real.db{ext}"
+        if side.exists():
+            side.unlink()
+    # Run check_db
+    out = check_db(str(p))
+    assert out["status"] == "ok"
+    # No sidecars should have been created
+    assert not (tmp_path / "real.db-wal").exists(), "check_db created -wal sidecar"
+    assert not (tmp_path / "real.db-shm").exists(), "check_db created -shm sidecar"
 
 
 def test_restore_from_backup_dry_run(tmp_path):
@@ -159,8 +329,8 @@ def test_null_in_not_null_is_treated_as_ok(tmp_path, monkeypatch):
     from db_integrity import check_db
     import db_integrity
     p = str(tmp_path / "test.db")
-    # Create a healthy file
-    sqlite3.connect(p).close()
+    # Real DB with content — passes the file-size + magic-header pre-check.
+    _make_healthy_db(p)
 
     class _FakeConn:
         def execute(self, sql):
@@ -188,7 +358,7 @@ def test_real_corruption_still_halts(tmp_path, monkeypatch):
     from db_integrity import check_db
     import db_integrity
     p = str(tmp_path / "test.db")
-    sqlite3.connect(p).close()
+    _make_healthy_db(p)
 
     class _FakeConn:
         def execute(self, sql):

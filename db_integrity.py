@@ -25,11 +25,15 @@ from __future__ import annotations
 import glob
 import logging
 import os
+import re
 import shutil
 import sqlite3
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+_SQLITE_MAGIC = b"SQLite format 3\x00"
 
 
 def check_db(path: str) -> Dict[str, str]:
@@ -47,12 +51,33 @@ def check_db(path: str) -> Dict[str, str]:
     storage-level damage (mangled pages, broken indexes, etc.) — the
     actual class of failure that warrants refusing to start.
 
+    Pre-check: a 0-byte or missing-magic-header file is treated as
+    corrupt — SQLite happily opens an empty file as a valid empty DB,
+    and we caught a near-miss restore on 2026-05-05 that "succeeded"
+    by copying a 0-byte WAL sidecar over the live path.
+
+    Open mode: `immutable=1` prevents SQLite from creating `-wal` /
+    `-shm` sidecars next to the file we are inspecting. Without it,
+    inspecting a backup file leaves sidecar pollution in the backup
+    directory, which then gets picked up by find_latest_backup.
+
     Returns {"status": "ok"|"corrupt"|"missing"|"error", "detail": <str>}.
     """
     if not os.path.exists(path):
         return {"status": "missing", "detail": "file does not exist"}
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
+        size = os.path.getsize(path)
+        if size < len(_SQLITE_MAGIC):
+            return {"status": "corrupt",
+                    "detail": f"file is {size} bytes (too small for SQLite header)"}
+        with open(path, "rb") as f:
+            magic = f.read(len(_SQLITE_MAGIC))
+        if magic != _SQLITE_MAGIC:
+            return {"status": "corrupt",
+                    "detail": "missing SQLite file header magic"}
+        conn = sqlite3.connect(
+            f"file:{path}?mode=ro&immutable=1", uri=True, timeout=5.0,
+        )
         result = conn.execute("PRAGMA quick_check").fetchall()
         conn.close()
         # An OK DB returns exactly [("ok",)]
@@ -122,16 +147,56 @@ def any_corrupt(results: Dict[str, Dict[str, str]]) -> List[str]:
     ]
 
 
+# Strict timestamp suffix to keep sidecars (-wal/-shm) and corrupt-archive
+# files (corrupt-<TS>) from matching. Accepts either:
+#   YYYYMMDD       (date only — used by some hand-named snapshots)
+#   YYYYMMDD-HHMM  (produced by backup_daily.sh)
+_NEW_TS_RE = re.compile(r"^\d{8}(-\d{4})?$")
+_LEGACY_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{4}\.db$")  # 2026-04-22_2054.db
+
+
 def find_latest_backup(db_filename: str,
                        backup_dir: str = "/opt/quantopsai/backups") -> Optional[str]:
-    """Find the most recent backup of `db_filename`. backup_daily.sh
-    rotates files like quantopsai.db.20260504, quantopsai.db.20260503,
-    etc. Returns absolute path of latest, or None."""
+    """Find the most recent backup of `db_filename`. Returns absolute
+    path of file with the latest mtime, or None.
+
+    Two naming conventions supported:
+      - New (produced by backup_daily.sh):
+          <db_filename>.<YYYYMMDD-HHMM>
+          e.g. quantopsai.db.20260505-1200
+      - Legacy (hand-named ad-hoc snapshots):
+          <basename>_<YYYY-MM-DD>_<HHMM>.db
+          e.g. quantopsai_2026-04-22_2054.db
+        Restricted to dated suffix so a query for `quantopsai.db`
+        does NOT pick up `quantopsai_profile_10_*.db`.
+
+    Excludes by design:
+      - `<filename>.<TS>-wal` and `<filename>.<TS>-shm` SQLite sidecars
+        that appear when something opens the backup in non-immutable
+        mode. These are 0-byte / 32KB sidecars, not real backups.
+      - `<filename>.corrupt-<TS>` files written by restore_from_backup
+        when archiving the corrupt original aside. Picking one of
+        those as a "backup" would loop the restore on its own corrupt
+        archive (caught during 2026-05-05 rehearsal).
+    """
     if not os.path.isdir(backup_dir):
         return None
-    matches = sorted(glob.glob(os.path.join(backup_dir, f"{db_filename}.*")),
-                     reverse=True)
-    return matches[0] if matches else None
+    basename = db_filename[:-3] if db_filename.endswith(".db") else db_filename
+    candidates: List[str] = []
+    # New format: filename must end with a strict YYYYMMDD-HHMM suffix.
+    for path in glob.glob(os.path.join(backup_dir, f"{db_filename}.*")):
+        suffix = os.path.basename(path)[len(db_filename) + 1:]
+        if _NEW_TS_RE.match(suffix):
+            candidates.append(path)
+    # Legacy format: <basename>_<YYYY-MM-DD>_<HHMM>.db
+    for path in glob.glob(os.path.join(backup_dir, f"{basename}_*.db")):
+        suffix = os.path.basename(path)[len(basename) + 1:]
+        if _LEGACY_TS_RE.match(suffix):
+            candidates.append(path)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    return candidates[0]
 
 
 def restore_from_backup(db_filename: str,
