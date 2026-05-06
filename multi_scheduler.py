@@ -1613,36 +1613,42 @@ def _task_options_lifecycle(ctx):
 
 
 def _task_reconcile_trade_statuses(ctx):
-    """Periodically reconcile trades.status.
+    """Periodically reconcile trades.status against broker truth.
 
-    For virtual profiles: the internal ledger IS the source of truth,
-    so we derive open_symbols from get_virtual_positions() instead of
-    asking Alpaca (which holds a combined view of all profiles sharing
-    the same account).
+    Earlier implementation skipped the broker check for virtual
+    profiles and read open_symbols from the journal itself — making
+    the reconcile circular and unable to detect drift. Result observed
+    2026-05-06: 40/126 (31%) "open" journal entries across 11 profiles
+    were phantoms — entry orders that never filled, or BUYs whose
+    protective stops fired at the broker without a SELL row landing
+    in the journal.
 
-    For non-virtual profiles: Alpaca is the source of truth (original
-    behavior).
+    The broker-aware reconcile (`reconcile_journal_to_broker`) handles
+    both classes:
+      - cancel-without-fill: entry order_id is canceled/expired/
+        rejected with filled_qty=0 → mark journal status='canceled'.
+      - broker-sold-via-stop: entry filled but no current shares →
+        find matching broker SELL fill, INSERT a SELL row from the
+        broker fill, mark BUY status='closed', let the FIFO P&L pass
+        backfill realized P&L.
     """
-    from journal import reconcile_trade_statuses
     seg_label = ctx.display_name or ctx.segment
     try:
-        if getattr(ctx, "is_virtual", False):
-            from journal import get_virtual_positions
-            virtual_pos = get_virtual_positions(db_path=ctx.db_path)
-            open_symbols = {p["symbol"] for p in virtual_pos if p["qty"] > 0}
-        else:
-            from client import get_api
-            api = get_api(ctx)
-            positions = api.list_positions()
-            open_symbols = {p.symbol for p in positions}
-        result = reconcile_trade_statuses(
-            db_path=ctx.db_path, open_symbols=open_symbols,
-        )
-        total = result["sells_fixed"] + result["buys_fixed"]
-        if total > 0:
+        from reconcile_journal_to_broker import reconcile_with_ctx
+        result = reconcile_with_ctx(ctx, apply_changes=True)
+        n_cancel = len(result.get("cancel", []))
+        n_backfill = len(result.get("backfill_sell", []))
+        n_amb = len(result.get("ambiguous", []))
+        if n_cancel or n_backfill:
             logging.info(
-                f"[{seg_label}] Reconciled trade statuses: "
-                f"{result['sells_fixed']} sells, {result['buys_fixed']} buys"
+                f"[{seg_label}] Reconciled journal-to-broker: "
+                f"{n_cancel} canceled, {n_backfill} backfilled SELLs, "
+                f"{n_amb} ambiguous"
+            )
+        if n_amb:
+            logging.warning(
+                f"[{seg_label}] {n_amb} ambiguous journal entries: "
+                f"{[a.get('symbol') + '#' + str(a.get('trade_id')) for a in result['ambiguous'][:5]]}"
             )
     except Exception:
         logging.exception(f"[{seg_label}] Reconcile trade statuses failed")
