@@ -1653,6 +1653,34 @@ def _task_reconcile_trade_statuses(ctx):
     except Exception:
         logging.exception(f"[{seg_label}] Reconcile trade statuses failed")
 
+    # Aggregate audit — defense-in-depth alongside the per-profile
+    # reconcile. Compares sum(virtual_positions across profiles routing
+    # to the same Alpaca account) vs broker.list_positions for that
+    # account. Catches drift the per-profile reconcile or pre-trade
+    # guard might miss (manual broker actions, future code paths that
+    # forget the guard, race conditions). Run once per orchestrator
+    # cycle, not per-profile, so we don't duplicate work — gated to
+    # only run when ctx is the FIRST profile in the iteration order.
+    if getattr(ctx, "profile_id", None) == 1:
+        try:
+            from aggregate_audit import audit_aggregate_drift, format_drift_summary
+            audit = audit_aggregate_drift(profile_ids=range(1, 12))
+            if audit.get("drift"):
+                logging.error(
+                    "AGGREGATE AUDIT DRIFT DETECTED:\n%s",
+                    format_drift_summary(audit),
+                )
+                try:
+                    from notifications import notify_error
+                    notify_error(
+                        error_msg=format_drift_summary(audit),
+                        context="aggregate journal-vs-broker drift",
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            logging.exception("Aggregate audit failed")
+
 
 def _task_check_exits(ctx):
     """Check stop-loss and take-profit triggers on open positions."""
