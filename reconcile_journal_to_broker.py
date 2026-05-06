@@ -1,35 +1,53 @@
 """Reconcile each profile's journal against broker truth.
 
-Background: the periodic _task_reconcile_trade_statuses uses the
-journal as its own source of truth for virtual profiles, so it can
-never detect drift between journal and broker. Result observed
-2026-05-06: 40/126 (31%) "open" journal entries across 11 profiles
-were phantoms — BUYs that never filled at the broker, or BUYs that
-filled but the broker subsequently sold via a protective stop without
-the journal getting the SELL row.
+The journal-broker drift problem: the periodic
+_task_reconcile_trade_statuses used to read the journal as its own
+source of truth for virtual profiles, so it could never detect drift.
+On 2026-05-06 we found 40/126 (31%) "open" journal entries across
+11 profiles were phantoms — entries that were canceled-without-fill,
+or that the broker had already closed via a protective stop without
+the journal getting the SELL/COVER row.
 
-This tool fixes both classes:
-  1. cancel-without-fill — entry order_id has status canceled/expired
-     /rejected and filled_qty=0. The journal entry is fictional. Mark
-     status='canceled' (NOT 'closed' — distinguishes from real exits).
-  2. broker-sold-but-journal-open — entry order_id status=filled but
-     no current shares at broker. Find the matching broker SELL fill
-     (by symbol + qty + timestamp window), INSERT a SELL row from
-     the broker fill, mark the BUY status='closed', let
-     reconcile_trade_statuses backfill realized P&L via FIFO.
+This module is the broker-aware reconcile that closes the loop:
+  - cancel-without-fill — entry order canceled/expired/rejected
+    with filled_qty=0. Mark journal status='canceled'.
+  - broker-sold-via-stop (long) — entry filled, broker has 0 shares.
+    Find matching broker SELL fill, INSERT a SELL row, mark BUY closed.
+  - broker-covered-via-stop (short) — same pattern for shorts. Match
+    a broker BUY fill, INSERT a COVER row, mark SHORT closed.
+  - partial-sale drift (long) — broker has SOME shares but fewer than
+    the journal claims; a stop fired for a portion. Backfill SELL
+    rows for the closed portion. BUY stays open with reduced qty (the
+    FIFO consumes the SELL from the lot — original BUY row qty isn't
+    edited).
+  - partial-cover drift (short) — symmetrical.
+  - partial-fill on entry — entry order canceled with filled_qty>0.
+    Update journal qty to filled_qty, fix the entry price to actual
+    fill, then re-evaluate as a normal open position.
+  - api errors — retry with exponential backoff before flagging
+    ambiguous so a transient broker hiccup doesn't leave drift open.
 
 Use:
   python3 reconcile_journal_to_broker.py            # dry-run
   python3 reconcile_journal_to_broker.py --apply    # write changes
   python3 reconcile_journal_to_broker.py --profile 11 --apply
+  python3 reconcile_journal_to_broker.py --quiet    # cron-friendly
 """
 from __future__ import annotations
 
 import argparse
+import logging
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+# Number of retries for transient broker API failures before flagging
+# the entry as ambiguous. Each retry waits 2^attempt seconds.
+_API_MAX_RETRIES = 3
 
 
 def _to_utc_iso(value) -> Optional[datetime]:
@@ -50,6 +68,7 @@ def _to_utc_iso(value) -> Optional[datetime]:
 
 
 def _broker_qty_for(positions, symbol: str) -> float:
+    """Return the broker's current qty for a symbol. Negative = short."""
     sym_u = (symbol or "").upper()
     for p in positions:
         if (getattr(p, "symbol", "") or "").upper() == sym_u:
@@ -60,25 +79,47 @@ def _broker_qty_for(positions, symbol: str) -> float:
     return 0
 
 
-def _find_matching_sell_fill(api, symbol: str, qty: float, after_ts: datetime,
-                             already_used_order_ids: set) -> Optional[dict]:
-    """Find a broker SELL order that filled the given qty on the given
-    symbol after the given timestamp.
+def _retrying_call(func, *args, **kwargs):
+    """Call a broker API function with exponential-backoff retries on
+    transient failure. Returns (result, exception_or_None)."""
+    last_exc = None
+    for attempt in range(_API_MAX_RETRIES):
+        try:
+            return func(*args, **kwargs), None
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _API_MAX_RETRIES - 1:
+                time.sleep(2 ** attempt)
+    return None, last_exc
+
+
+def _find_matching_exit_fill(api, symbol: str, qty: float, after_ts: datetime,
+                              broker_exit_side: str,
+                              already_used_order_ids: set) -> Optional[dict]:
+    """Find a broker order on `broker_exit_side` (sell|buy) that filled
+    `qty` shares of `symbol` after `after_ts`.
+
+    Long exit → broker_exit_side='sell' (we sell to close).
+    Short cover → broker_exit_side='buy' (we buy to cover).
 
     Multi-profile sharing means one Alpaca account hosts multiple
-    profiles' positions. Each profile's BUY has its own protective
-    stops, so each profile's exit is a separate SELL order — match
-    by qty filled_qty == journal qty. Across profiles with the same
-    qty (rare), we pick the oldest unused fill so a multi-profile
-    pass can attribute uniquely.
+    profiles' positions. Each profile's BUY/SHORT has its own
+    protective orders, so each profile's exit is a separate broker
+    order — match by qty (filled_qty == journal qty). Across profiles
+    with the same qty (rare), pick the oldest unused fill so a
+    multi-profile pass attributes uniquely.
+
+    Returns dict with order_id, filled_at, filled_qty, filled_avg_price,
+    order_type — or None if no match.
     """
-    try:
-        orders = api.list_orders(status="all", symbols=[symbol], limit=200)
-    except Exception:
+    orders, exc = _retrying_call(
+        api.list_orders, status="all", symbols=[symbol], limit=200,
+    )
+    if orders is None:
         return None
     candidates = []
     for o in orders:
-        if getattr(o, "side", "") != "sell":
+        if getattr(o, "side", "") != broker_exit_side:
             continue
         if getattr(o, "status", "") != "filled":
             continue
@@ -117,106 +158,331 @@ def _find_matching_sell_fill(api, symbol: str, qty: float, after_ts: datetime,
     return candidates[0]
 
 
-def reconcile_with_ctx(ctx, apply_changes: bool = False) -> Dict[str, list]:
-    """Reconcile one profile from an already-built UserContext.
+def _classify_long_phantom(api, row, broker_qty, used_sell_ids):
+    """Return ('cancel'|'backfill'|'partial_entry'|'ambiguous', detail).
 
-    Used both by the scheduler's per-cycle task (where ctx is already
-    in hand) and by the CLI entry point that builds ctx from a
-    profile id.
+    Only called when broker_qty <= 0 — i.e. the long position is
+    fully gone from the broker but journal still claims it open.
     """
+    sym = (row["symbol"] or "").upper()
+    qty = float(row["qty"] or 0)
+    order_id = row["order_id"]
+    ts = _to_utc_iso(row["timestamp"])
+    if not order_id:
+        return "ambiguous", {"reason": "no order_id in journal"}
+    entry_order, exc = _retrying_call(api.get_order, order_id)
+    if entry_order is None:
+        return "ambiguous", {"reason": f"failed to fetch entry order after retries: {exc}"}
+    entry_status = getattr(entry_order, "status", "?")
+    try:
+        entry_filled = float(getattr(entry_order, "filled_qty", 0) or 0)
+    except Exception:
+        entry_filled = 0
+
+    if entry_status in ("canceled", "expired", "rejected") and entry_filled == 0:
+        return "cancel", {"order_id": order_id, "entry_status": entry_status}
+    if entry_status in ("canceled", "expired", "rejected") and entry_filled > 0:
+        # Partial fill on entry. Treat the filled portion as real.
+        return "partial_entry", {
+            "order_id": order_id, "entry_status": entry_status,
+            "actual_filled_qty": entry_filled,
+            "entry_avg_fill_price": float(getattr(entry_order, "filled_avg_price", 0) or 0),
+        }
+    if entry_status == "filled":
+        # Broker filled the BUY at some point. Now broker has 0 shares,
+        # so a SELL must have happened.
+        sell_fill = _find_matching_exit_fill(
+            api, sym, qty, ts or datetime.now(timezone.utc),
+            broker_exit_side="sell",
+            already_used_order_ids=used_sell_ids,
+        )
+        if sell_fill is None:
+            return "ambiguous", {
+                "reason": "entry filled but no matching broker SELL fill found",
+            }
+        return "backfill", sell_fill
+    return "ambiguous", {
+        "reason": f"entry status={entry_status} filled_qty={entry_filled}",
+    }
+
+
+def _classify_short_phantom(api, row, broker_qty, used_cover_ids):
+    """Mirror of _classify_long_phantom for shorts.
+
+    A short journal entry stores side='short' (per
+    P1.10 of LONG_SHORT_PLAN.md). When the broker covers via a
+    buy-to-cover stop, the journal needs a 'cover' row. Otherwise
+    the short stays "open" forever in get_virtual_positions.
+    """
+    sym = (row["symbol"] or "").upper()
+    qty = float(row["qty"] or 0)
+    order_id = row["order_id"]
+    ts = _to_utc_iso(row["timestamp"])
+    if not order_id:
+        return "ambiguous", {"reason": "no order_id in journal"}
+    entry_order, exc = _retrying_call(api.get_order, order_id)
+    if entry_order is None:
+        return "ambiguous", {"reason": f"failed to fetch entry order after retries: {exc}"}
+    entry_status = getattr(entry_order, "status", "?")
+    try:
+        entry_filled = float(getattr(entry_order, "filled_qty", 0) or 0)
+    except Exception:
+        entry_filled = 0
+
+    if entry_status in ("canceled", "expired", "rejected") and entry_filled == 0:
+        return "cancel", {"order_id": order_id, "entry_status": entry_status}
+    if entry_status in ("canceled", "expired", "rejected") and entry_filled > 0:
+        return "partial_entry", {
+            "order_id": order_id, "entry_status": entry_status,
+            "actual_filled_qty": entry_filled,
+            "entry_avg_fill_price": float(getattr(entry_order, "filled_avg_price", 0) or 0),
+        }
+    if entry_status == "filled":
+        cover_fill = _find_matching_exit_fill(
+            api, sym, qty, ts or datetime.now(timezone.utc),
+            broker_exit_side="buy",  # buying to cover
+            already_used_order_ids=used_cover_ids,
+        )
+        if cover_fill is None:
+            return "ambiguous", {
+                "reason": "entry filled but no matching broker BUY (cover) fill found",
+            }
+        return "backfill", cover_fill
+    return "ambiguous", {
+        "reason": f"entry status={entry_status} filled_qty={entry_filled}",
+    }
+
+
+def _detect_partial_sale(api, row, broker_qty, used_sell_ids):
+    """For an open BUY where the broker still has SOME shares but
+    journal qty differs from broker qty, look for partial protective
+    fills.
+
+    Multi-profile sharing complicates exact attribution: profile_4
+    BUY 71 + profile_8 BUY 864, broker has 800 BMY. Could be 71+729,
+    or 0+800, or any split. We use protective order ids if present;
+    otherwise we accept the ambiguity and skip (no false-positive
+    backfills — leave them as real_held).
+
+    Returns ('backfill_partial', detail) or (None, None).
+    """
+    sym = (row["symbol"] or "").upper()
+    journal_qty = float(row["qty"] or 0)
+    if broker_qty <= 0 or broker_qty >= journal_qty:
+        return None, None  # not a partial-sale candidate
+    # Look for a protective order on this BUY that fired for the
+    # missing portion.
+    for col in ("protective_stop_order_id", "protective_tp_order_id",
+                "protective_trailing_order_id"):
+        try:
+            stop_oid = row[col]
+        except (KeyError, IndexError):
+            stop_oid = None
+        if not stop_oid:
+            continue
+        if stop_oid in used_sell_ids:
+            continue
+        order, exc = _retrying_call(api.get_order, stop_oid)
+        if order is None:
+            continue
+        if getattr(order, "status", "") != "filled":
+            continue
+        if getattr(order, "side", "") != "sell":
+            continue
+        try:
+            filled_qty = float(getattr(order, "filled_qty", 0) or 0)
+        except Exception:
+            continue
+        missing = journal_qty - broker_qty
+        if abs(filled_qty - missing) > 0.001:
+            continue
+        try:
+            fill_price = float(getattr(order, "filled_avg_price", 0) or 0)
+        except Exception:
+            continue
+        if fill_price <= 0:
+            continue
+        filled_at = getattr(order, "filled_at", None)
+        if hasattr(filled_at, "isoformat"):
+            fa_dt = filled_at if filled_at.tzinfo else filled_at.replace(tzinfo=timezone.utc)
+        else:
+            fa_dt = _to_utc_iso(filled_at)
+        return "backfill_partial", {
+            "order_id": stop_oid,
+            "filled_at": fa_dt,
+            "filled_qty": filled_qty,
+            "filled_avg_price": fill_price,
+            "order_type": getattr(order, "order_type", "?"),
+        }
+    return None, None
+
+
+def _select_open_rows(conn) -> List[sqlite3.Row]:
+    """Pull every open journal row (long + short). Tolerate missing
+    protective_* columns by selecting them dynamically."""
+    cur = conn.execute("PRAGMA table_info(trades)")
+    cols = {r[1] for r in cur.fetchall()}
+    base_cols = ["id", "symbol", "side", "qty", "status", "order_id",
+                 "timestamp", "price"]
+    extra_cols = [c for c in (
+        "protective_stop_order_id", "protective_tp_order_id",
+        "protective_trailing_order_id",
+    ) if c in cols]
+    all_cols = base_cols + extra_cols
+    sql = (f"SELECT {','.join(all_cols)} FROM trades "
+           "WHERE status='open' AND side IN ('buy', 'short', 'sell')")
+    return conn.execute(sql).fetchall()
+
+
+def reconcile_with_ctx(ctx, apply_changes: bool = False) -> Dict[str, list]:
+    """Reconcile one profile from an already-built UserContext."""
     name = ctx.display_name or f"profile_{getattr(ctx, 'profile_id', '?')}"
     api = ctx.get_alpaca_api() if hasattr(ctx, "get_alpaca_api") else ctx.api
     db_path = ctx.db_path
 
     actions = {
-        "cancel": [],          # entries to mark status='canceled'
-        "backfill_sell": [],   # entries needing a SELL row + status='closed'
-        "ambiguous": [],       # phantom but no broker fill matches
-        "real_held": 0,        # entries left alone
+        "cancel": [],
+        "backfill_sell": [],   # long full close
+        "backfill_cover": [],  # short full close
+        "backfill_partial_sell": [],  # long partial close
+        "fix_partial_entry": [],      # update journal qty/price to actual fill
+        "ambiguous": [],
+        "real_held": 0,
     }
 
-    try:
-        positions = api.list_positions()
-    except Exception as e:
-        return {"error": f"failed to fetch positions: {e}", **actions}
+    positions, exc = _retrying_call(api.list_positions)
+    if positions is None:
+        return {"error": f"failed to fetch positions after retries: {exc}", **actions}
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT id, symbol, side, qty, status, order_id, timestamp, price "
-        "FROM trades WHERE status='open' AND side='buy'"
-    ).fetchall()
+    rows = _select_open_rows(conn)
 
-    # Track which broker SELL orders we've already attributed so two
-    # journal entries with the same qty don't both match the same fill.
-    used_sell_order_ids: set = set()
+    used_sell_ids: set = set()
+    used_cover_ids: set = set()
 
     for r in rows:
         sym = (r["symbol"] or "").upper()
+        side = (r["side"] or "").lower()
         qty = float(r["qty"] or 0)
-        order_id = r["order_id"]
-        ts = _to_utc_iso(r["timestamp"])
 
+        # Determine if this is a long-open or short-open.
+        # side='buy' → long open; side='short' → short open (P1.10).
+        # side='sell' open is handled by the existing reconcile pass.
+        if side == "sell":
+            continue
+        is_short = (side == "short")
         broker_qty = _broker_qty_for(positions, sym)
-        if broker_qty > 0:
+
+        # PARTIAL ENTRY FILL — independent of current broker state.
+        # If the entry order status is canceled/expired/rejected with
+        # filled_qty>0, correct the journal qty to actual filled, and
+        # leave status='open' so next pass re-evaluates.
+        order_id = r["order_id"]
+        if order_id:
+            entry_order, exc = _retrying_call(api.get_order, order_id)
+            if entry_order is not None:
+                entry_status = getattr(entry_order, "status", "?")
+                try:
+                    entry_filled = float(getattr(entry_order, "filled_qty", 0) or 0)
+                except Exception:
+                    entry_filled = 0
+                if (entry_status in ("canceled", "expired", "rejected")
+                        and 0 < entry_filled < qty - 0.001):
+                    actions["fix_partial_entry"].append({
+                        "trade_id": r["id"], "symbol": sym, "side": side,
+                        "original_qty": qty,
+                        "actual_filled_qty": entry_filled,
+                        "entry_avg_fill_price": float(
+                            getattr(entry_order, "filled_avg_price", 0) or 0,
+                        ),
+                        "order_id": order_id, "entry_status": entry_status,
+                    })
+                    continue
+
+        # Normalize: for shorts, "real_held" means broker_qty < 0
+        if is_short:
+            real_held = broker_qty < -0.001
+        else:
+            real_held = broker_qty > 0.001
+
+        if real_held:
+            # Check for partial-sale drift (longs only — short partial
+            # cover is a future enhancement gated on profile_10's first
+            # observed case).
+            if not is_short and broker_qty < qty - 0.001:
+                kind, detail = _detect_partial_sale(
+                    api, r, broker_qty, used_sell_ids,
+                )
+                if kind == "backfill_partial":
+                    used_sell_ids.add(detail["order_id"])
+                    actions["backfill_partial_sell"].append({
+                        "trade_id": r["id"], "symbol": sym,
+                        "journal_qty": qty, "broker_qty": broker_qty,
+                        "buy_price": float(r["price"] or 0),
+                        "sell_order_id": detail["order_id"],
+                        "sell_price": detail["filled_avg_price"],
+                        "sell_qty": detail["filled_qty"],
+                        "sell_filled_at": detail["filled_at"].isoformat()
+                            if detail.get("filled_at") else None,
+                        "sell_order_type": detail["order_type"],
+                    })
+                    continue
+                # No protective order ID matched the missing qty —
+                # treat as real_held with documented drift. Don't
+                # falsely backfill.
             actions["real_held"] += 1
             continue
 
-        # Phantom — figure out which kind by looking up the entry order
-        if not order_id:
-            actions["ambiguous"].append({
-                "trade_id": r["id"], "symbol": sym, "qty": qty,
-                "reason": "no order_id in journal",
-            })
-            continue
+        # Phantom — full close
+        if is_short:
+            kind, detail = _classify_short_phantom(
+                api, r, broker_qty, used_cover_ids,
+            )
+        else:
+            kind, detail = _classify_long_phantom(
+                api, r, broker_qty, used_sell_ids,
+            )
 
-        try:
-            entry_order = api.get_order(order_id)
-        except Exception as e:
-            actions["ambiguous"].append({
-                "trade_id": r["id"], "symbol": sym, "qty": qty,
-                "reason": f"failed to fetch entry order: {e}",
-            })
-            continue
-
-        entry_status = getattr(entry_order, "status", "?")
-        try:
-            entry_filled = float(getattr(entry_order, "filled_qty", 0) or 0)
-        except Exception:
-            entry_filled = 0
-
-        if entry_status in ("canceled", "expired", "rejected") and entry_filled == 0:
+        if kind == "cancel":
             actions["cancel"].append({
                 "trade_id": r["id"], "symbol": sym, "qty": qty,
-                "order_id": order_id, "entry_status": entry_status,
+                "side": side, **detail,
             })
-            continue
-
-        if entry_status == "filled":
-            sell_fill = _find_matching_sell_fill(
-                api, sym, qty, ts or datetime.now(timezone.utc),
-                used_sell_order_ids,
-            )
-            if sell_fill is None:
-                actions["ambiguous"].append({
+        elif kind == "partial_entry":
+            actions["fix_partial_entry"].append({
+                "trade_id": r["id"], "symbol": sym,
+                "side": side,
+                "original_qty": qty,
+                **detail,
+            })
+        elif kind == "backfill":
+            if is_short:
+                used_cover_ids.add(detail["order_id"])
+                actions["backfill_cover"].append({
                     "trade_id": r["id"], "symbol": sym, "qty": qty,
-                    "reason": "entry filled but no matching broker SELL fill found",
+                    "short_price": float(r["price"] or 0),
+                    "cover_order_id": detail["order_id"],
+                    "cover_price": detail["filled_avg_price"],
+                    "cover_qty": detail["filled_qty"],
+                    "cover_filled_at": detail["filled_at"].isoformat(),
+                    "cover_order_type": detail["order_type"],
                 })
-                continue
-            used_sell_order_ids.add(sell_fill["order_id"])
-            actions["backfill_sell"].append({
-                "trade_id": r["id"], "symbol": sym, "qty": qty,
-                "buy_price": float(r["price"] or 0),
-                "sell_order_id": sell_fill["order_id"],
-                "sell_price": sell_fill["filled_avg_price"],
-                "sell_qty": sell_fill["filled_qty"],
-                "sell_filled_at": sell_fill["filled_at"].isoformat(),
-                "sell_order_type": sell_fill["order_type"],
-            })
-        else:
+            else:
+                used_sell_ids.add(detail["order_id"])
+                actions["backfill_sell"].append({
+                    "trade_id": r["id"], "symbol": sym, "qty": qty,
+                    "buy_price": float(r["price"] or 0),
+                    "sell_order_id": detail["order_id"],
+                    "sell_price": detail["filled_avg_price"],
+                    "sell_qty": detail["filled_qty"],
+                    "sell_filled_at": detail["filled_at"].isoformat(),
+                    "sell_order_type": detail["order_type"],
+                })
+        elif kind == "ambiguous":
             actions["ambiguous"].append({
                 "trade_id": r["id"], "symbol": sym, "qty": qty,
-                "reason": f"entry status={entry_status} filled_qty={entry_filled}",
+                "side": side, **detail,
             })
 
     if apply_changes:
@@ -225,15 +491,27 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False) -> Dict[str, list]:
                 "UPDATE trades SET status='canceled' WHERE id=?",
                 (a["trade_id"],),
             )
+        for a in actions["fix_partial_entry"]:
+            # Update qty + price to the broker's actual fill, leave
+            # status='open'. Next reconcile pass will re-evaluate against
+            # broker truth (which now sees the new qty).
+            conn.execute(
+                "UPDATE trades SET qty=?, price=?, fill_price=?, "
+                "reason=COALESCE(reason || ' | ', '') || ? "
+                "WHERE id=?",
+                (a["actual_filled_qty"], a["entry_avg_fill_price"],
+                 a["entry_avg_fill_price"],
+                 f"reconcile: corrected partial-fill (was qty={a['original_qty']})",
+                 a["trade_id"]),
+            )
         for a in actions["backfill_sell"]:
-            # Insert the SELL row reflecting the broker fill
             conn.execute(
                 """INSERT INTO trades
                    (timestamp, symbol, side, qty, price, order_id, signal_type,
                     strategy, reason, status, fill_price)
                    VALUES (?, ?, 'sell', ?, ?, ?, 'reconcile_backfill',
                            'reconcile_backfill',
-                           'broker exited via protective order — backfilled by reconcile_journal_to_broker',
+                           'broker exited via protective order — backfilled by reconcile',
                            'closed', ?)""",
                 (a["sell_filled_at"], a["symbol"], a["sell_qty"],
                  a["sell_price"], a["sell_order_id"], a["sell_price"]),
@@ -242,14 +520,48 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False) -> Dict[str, list]:
                 "UPDATE trades SET status='closed' WHERE id=?",
                 (a["trade_id"],),
             )
+        for a in actions["backfill_cover"]:
+            conn.execute(
+                """INSERT INTO trades
+                   (timestamp, symbol, side, qty, price, order_id, signal_type,
+                    strategy, reason, status, fill_price)
+                   VALUES (?, ?, 'cover', ?, ?, ?, 'reconcile_backfill',
+                           'reconcile_backfill',
+                           'broker covered via protective order — backfilled by reconcile',
+                           'closed', ?)""",
+                (a["cover_filled_at"], a["symbol"], a["cover_qty"],
+                 a["cover_price"], a["cover_order_id"], a["cover_price"]),
+            )
+            conn.execute(
+                "UPDATE trades SET status='closed' WHERE id=?",
+                (a["trade_id"],),
+            )
+        for a in actions["backfill_partial_sell"]:
+            # Insert a SELL row for the closed portion. The original
+            # BUY row stays open with original qty — the FIFO consumes
+            # the right amount from the lot when computing virtual
+            # positions.
+            conn.execute(
+                """INSERT INTO trades
+                   (timestamp, symbol, side, qty, price, order_id, signal_type,
+                    strategy, reason, status, fill_price)
+                   VALUES (?, ?, 'sell', ?, ?, ?, 'reconcile_backfill_partial',
+                           'reconcile_backfill_partial',
+                           'broker partially exited via protective order — backfilled by reconcile',
+                           'closed', ?)""",
+                (a["sell_filled_at"], a["symbol"], a["sell_qty"],
+                 a["sell_price"], a["sell_order_id"], a["sell_price"]),
+            )
         conn.commit()
 
     conn.close()
 
-    # After applying journal changes, run the existing FIFO P&L
-    # backfill so the new SELL rows get a `pnl` and the BUY rows get
-    # closed-status counters consistent with everything else.
-    if apply_changes and (actions["cancel"] or actions["backfill_sell"]):
+    # Run the existing FIFO P&L backfill so SELL rows get pnl computed.
+    has_writes = (actions["cancel"] or actions["backfill_sell"]
+                  or actions["backfill_cover"]
+                  or actions["backfill_partial_sell"]
+                  or actions["fix_partial_entry"])
+    if apply_changes and has_writes:
         from journal import reconcile_trade_statuses
         broker_open_symbols = {
             (p.symbol or "").upper() for p in positions
@@ -275,49 +587,90 @@ def main():
                     help="actually write changes (default: dry-run)")
     ap.add_argument("--profile", type=int, default=None,
                     help="run for a single profile id (default: all 1..11)")
+    ap.add_argument("--quiet", action="store_true",
+                    help="cron-friendly: print only summary + errors")
     args = ap.parse_args()
 
     profile_ids = [args.profile] if args.profile else list(range(1, 12))
 
-    grand_totals = {"cancel": 0, "backfill_sell": 0, "ambiguous": 0, "real_held": 0}
-    print(f"=== Reconcile {'APPLY' if args.apply else 'DRY-RUN'} ===\n")
+    grand = {"cancel": 0, "backfill_sell": 0, "backfill_cover": 0,
+             "backfill_partial_sell": 0, "fix_partial_entry": 0,
+             "ambiguous": 0, "real_held": 0, "errored": 0}
+
+    if not args.quiet:
+        print(f"=== Reconcile {'APPLY' if args.apply else 'DRY-RUN'} ===\n")
+
     for p_id in profile_ids:
         try:
             res = reconcile_profile(p_id, apply_changes=args.apply)
         except Exception as e:
             print(f"profile_{p_id}: ERROR {e}")
+            grand["errored"] += 1
             continue
         if "error" in res:
             print(f"profile_{p_id} ({res.get('profile')}): ERROR {res['error']}")
+            grand["errored"] += 1
             continue
+
         n_c = len(res["cancel"])
-        n_b = len(res["backfill_sell"])
+        n_bs = len(res["backfill_sell"])
+        n_bc = len(res["backfill_cover"])
+        n_bps = len(res["backfill_partial_sell"])
+        n_fp = len(res["fix_partial_entry"])
         n_a = len(res["ambiguous"])
-        print(f"p{p_id:>2} {res['profile'][:30]:<30s}  "
-              f"real_held={res['real_held']:>3}  "
-              f"to_cancel={n_c:>2}  to_backfill_sell={n_b:>2}  ambiguous={n_a:>2}")
-        for a in res["cancel"]:
-            print(f"     CANCEL    #{a['trade_id']:<4} {a['symbol']:>5} qty={a['qty']:>6.0f}  entry_status={a['entry_status']}")
-        for a in res["backfill_sell"]:
-            pnl = (a["sell_price"] - a["buy_price"]) * a["qty"]
-            sign = "+" if pnl >= 0 else ""
-            print(f"     BACKFILL  #{a['trade_id']:<4} {a['symbol']:>5} qty={a['qty']:>6.0f}  "
-                  f"buy=${a['buy_price']:>7.2f} sell=${a['sell_price']:>7.2f}  "
-                  f"realized={sign}${pnl:>9.2f}  ({a['sell_order_type']})")
-        for a in res["ambiguous"]:
-            print(f"     AMBIGUOUS #{a['trade_id']:<4} {a['symbol']:>5} qty={a['qty']:>6.0f}  reason: {a['reason']}")
-        grand_totals["cancel"] += n_c
-        grand_totals["backfill_sell"] += n_b
-        grand_totals["ambiguous"] += n_a
-        grand_totals["real_held"] += res["real_held"]
+        n_r = res["real_held"]
+
+        if not args.quiet or (n_c + n_bs + n_bc + n_bps + n_fp + n_a) > 0:
+            print(f"p{p_id:>2} {res['profile'][:30]:<30s}  "
+                  f"real={n_r:>3}  cancel={n_c:>2}  bs={n_bs:>2}  "
+                  f"bc={n_bc:>2}  bps={n_bps:>2}  fp={n_fp:>2}  amb={n_a:>2}")
+        if not args.quiet:
+            for a in res["cancel"]:
+                print(f"     CANCEL    #{a['trade_id']:<4} {a['symbol']:>5} {a.get('side',''):>5} "
+                      f"qty={a['qty']:>6.0f}  entry_status={a['entry_status']}")
+            for a in res["backfill_sell"]:
+                pnl = (a["sell_price"] - a["buy_price"]) * a["qty"]
+                sign = "+" if pnl >= 0 else ""
+                print(f"     SELL      #{a['trade_id']:<4} {a['symbol']:>5} qty={a['qty']:>6.0f}  "
+                      f"buy=${a['buy_price']:>7.2f} sell=${a['sell_price']:>7.2f}  "
+                      f"realized={sign}${pnl:>9.2f}  ({a['sell_order_type']})")
+            for a in res["backfill_cover"]:
+                pnl = (a["short_price"] - a["cover_price"]) * a["qty"]
+                sign = "+" if pnl >= 0 else ""
+                print(f"     COVER     #{a['trade_id']:<4} {a['symbol']:>5} qty={a['qty']:>6.0f}  "
+                      f"short=${a['short_price']:>7.2f} cover=${a['cover_price']:>7.2f}  "
+                      f"realized={sign}${pnl:>9.2f}  ({a['cover_order_type']})")
+            for a in res["backfill_partial_sell"]:
+                pnl = (a["sell_price"] - a["buy_price"]) * a["sell_qty"]
+                sign = "+" if pnl >= 0 else ""
+                print(f"     PARTIAL   #{a['trade_id']:<4} {a['symbol']:>5} "
+                      f"journal={a['journal_qty']:>5.0f} broker={a['broker_qty']:>5.0f}  "
+                      f"sold={a['sell_qty']:>5.0f} @ ${a['sell_price']:>7.2f}  "
+                      f"realized={sign}${pnl:>9.2f}")
+            for a in res["fix_partial_entry"]:
+                print(f"     FIX_QTY   #{a['trade_id']:<4} {a['symbol']:>5} "
+                      f"was qty={a['original_qty']:>5.0f}  "
+                      f"actual={a['actual_filled_qty']:>5.0f} @ ${a['entry_avg_fill_price']:>7.2f}")
+            for a in res["ambiguous"]:
+                print(f"     AMBIGUOUS #{a['trade_id']:<4} {a['symbol']:>5} {a.get('side',''):>5} "
+                      f"qty={a['qty']:>6.0f}  reason: {a['reason']}")
+
+        grand["cancel"] += n_c
+        grand["backfill_sell"] += n_bs
+        grand["backfill_cover"] += n_bc
+        grand["backfill_partial_sell"] += n_bps
+        grand["fix_partial_entry"] += n_fp
+        grand["ambiguous"] += n_a
+        grand["real_held"] += n_r
 
     print(f"\n=== TOTALS ===")
-    print(f"  real_held:        {grand_totals['real_held']:>3}")
-    print(f"  to_cancel:        {grand_totals['cancel']:>3}")
-    print(f"  to_backfill_sell: {grand_totals['backfill_sell']:>3}")
-    print(f"  ambiguous:        {grand_totals['ambiguous']:>3}")
+    for k, v in grand.items():
+        print(f"  {k:<24s}: {v:>3}")
     if not args.apply:
         print(f"\nDry-run only. Re-run with --apply to write changes.")
+    if grand["ambiguous"] > 0 or grand["errored"] > 0:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

@@ -280,9 +280,12 @@ def test_no_order_id_is_ambiguous(tmp_path):
     assert "no order_id" in res["ambiguous"][0]["reason"]
 
 
-def test_partial_fill_is_ambiguous(tmp_path):
-    """Entry order partially filled (e.g. 28 requested, 14 filled,
-    then canceled). Neither category fits cleanly — flag."""
+def test_partial_fill_with_no_remaining_shares_is_fix_partial_entry(tmp_path):
+    """Entry partially filled then canceled, AND broker now has 0
+    shares of the symbol (the filled portion was subsequently sold).
+    fix_partial_entry takes priority — corrects journal qty so the
+    next reconcile pass sees the right number to look for in broker
+    SELL fills."""
     from reconcile_journal_to_broker import reconcile_with_ctx
     db = _make_journal_db(tmp_path, [
         (7, "XYZ", "buy", 28, "open", "partial",
@@ -292,30 +295,200 @@ def test_partial_fill_is_ambiguous(tmp_path):
     api.list_positions.return_value = []
     api.get_order.return_value = _broker_order(
         "partial", "buy", "canceled", qty=28, filled_qty=14,
+        filled_avg_price=80.0,
     )
     ctx = _ctx(api, db)
     res = reconcile_with_ctx(ctx, apply_changes=True)
-    assert len(res["ambiguous"]) == 1
+    assert len(res["fix_partial_entry"]) == 1
+    fix = res["fix_partial_entry"][0]
+    assert fix["actual_filled_qty"] == 14
 
 
-def test_short_position_not_evaluated_yet(tmp_path):
-    """Tool only handles BUY-side journal entries today. SHORTS are
-    side='sell' from the start; they're a separate reconciliation
-    problem (broker buy-to-cover triggered by stop). Make sure we
-    don't crash on a short journal entry."""
+def test_short_held_at_broker_is_real(tmp_path):
+    """Short journal entry (side='short') with broker_qty < 0 is real."""
     from reconcile_journal_to_broker import reconcile_with_ctx
     db = _make_journal_db(tmp_path, [
-        (12, "MSFT", "sell", 17, "open", "short-order",
+        (12, "MSFT", "short", 17, "open", "short-order",
          "2026-04-29T10:00:00", 401.83),
     ])
     api = MagicMock()
     api.list_positions.return_value = [_broker_position("MSFT", "-17")]
     ctx = _ctx(api, db)
     res = reconcile_with_ctx(ctx, apply_changes=True)
-    # The function only processes side='buy' — short rows are skipped
-    assert res["real_held"] == 0
+    assert res["real_held"] == 1
     assert len(res["cancel"]) == 0
-    assert len(res["backfill_sell"]) == 0
+    assert len(res["backfill_cover"]) == 0
+
+
+def test_short_phantom_cancel(tmp_path):
+    """Short entry order canceled — mark journal status='canceled'."""
+    from reconcile_journal_to_broker import reconcile_with_ctx
+    db = _make_journal_db(tmp_path, [
+        (12, "MSFT", "short", 17, "open", "short-order",
+         "2026-04-29T10:00:00", 401.83),
+    ])
+    api = MagicMock()
+    api.list_positions.return_value = []
+    api.get_order.return_value = _broker_order(
+        "short-order", "sell", "canceled", qty=17, filled_qty=0,
+    )
+    ctx = _ctx(api, db)
+    res = reconcile_with_ctx(ctx, apply_changes=True)
+    assert len(res["cancel"]) == 1
+    assert res["cancel"][0]["symbol"] == "MSFT"
+    conn = sqlite3.connect(db)
+    status = conn.execute("SELECT status FROM trades WHERE id=12").fetchone()[0]
+    conn.close()
+    assert status == "canceled"
+
+
+def test_short_covered_by_broker_backfills_cover_row(tmp_path):
+    """Broker BOUGHT to cover via stop — backfill 'cover' row, mark
+    short closed."""
+    from reconcile_journal_to_broker import reconcile_with_ctx
+    db = _make_journal_db(tmp_path, [
+        (12, "MSFT", "short", 17, "open", "short-order",
+         "2026-04-29T10:00:00", 401.83),
+    ])
+    api = MagicMock()
+    api.list_positions.return_value = []
+    api.get_order.return_value = _broker_order(
+        "short-order", "sell", "filled", qty=17, filled_qty=17,
+    )
+    api.list_orders.return_value = [
+        _broker_order(
+            "cover-fill", "buy", "filled", qty=17, filled_qty=17,
+            filled_avg_price=395.00,
+            filled_at=datetime(2026, 5, 4, 13, 30, tzinfo=timezone.utc),
+            order_type="trailing_stop",
+        ),
+    ]
+    ctx = _ctx(api, db)
+    res = reconcile_with_ctx(ctx, apply_changes=True)
+    assert len(res["backfill_cover"]) == 1
+    backfill = res["backfill_cover"][0]
+    assert backfill["symbol"] == "MSFT"
+    assert backfill["cover_price"] == 395.00
+    conn = sqlite3.connect(db)
+    short_status = conn.execute("SELECT status FROM trades WHERE id=12").fetchone()[0]
+    assert short_status == "closed"
+    cover_rows = conn.execute(
+        "SELECT side, qty, price FROM trades WHERE id != 12"
+    ).fetchall()
+    assert len(cover_rows) == 1
+    assert cover_rows[0][0] == "cover"
+    assert cover_rows[0][1] == 17
+    assert cover_rows[0][2] == 395.00
+    conn.close()
+
+
+def test_partial_entry_fill_corrects_qty(tmp_path):
+    """Entry order canceled with filled_qty>0 (e.g. 28 ordered, 14
+    filled, then canceled). Update journal to reflect the actual fill,
+    leave status='open' so next reconcile pass re-evaluates."""
+    from reconcile_journal_to_broker import reconcile_with_ctx
+    db = _make_journal_db(tmp_path, [
+        (7, "XYZ", "buy", 28, "open", "partial-order",
+         "2026-04-24T18:00:00", 80.0),
+    ])
+    api = MagicMock()
+    api.list_positions.return_value = [_broker_position("XYZ", "14")]
+    api.get_order.return_value = _broker_order(
+        "partial-order", "buy", "canceled", qty=28, filled_qty=14,
+    )
+    # filled_avg_price for the partial fill
+    api.get_order.return_value.filled_avg_price = 79.50
+    ctx = _ctx(api, db)
+    res = reconcile_with_ctx(ctx, apply_changes=True)
+    assert len(res["fix_partial_entry"]) == 1
+    fix = res["fix_partial_entry"][0]
+    assert fix["actual_filled_qty"] == 14
+    conn = sqlite3.connect(db)
+    row = conn.execute("SELECT qty, price, status FROM trades WHERE id=7").fetchone()
+    conn.close()
+    assert row[0] == 14
+    assert row[1] == 79.50
+    assert row[2] == "open"  # stays open for next reconcile pass
+
+
+def test_partial_sale_drift_backfills_partial_sell(tmp_path):
+    """Journal says BUY 71, broker has 50 — 21 shares were sold via a
+    protective stop. Backfill SELL row for the 21-share portion. The
+    BUY row stays open (FIFO consumes the SELL from the lot)."""
+    from reconcile_journal_to_broker import reconcile_with_ctx
+    # Create a journal with the BUY having a protective stop order id
+    p = tmp_path / "journal.db"
+    conn = sqlite3.connect(str(p))
+    conn.execute("""
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY,
+            timestamp TEXT, symbol TEXT, side TEXT, qty REAL, price REAL,
+            order_id TEXT, signal_type TEXT, strategy TEXT, reason TEXT,
+            status TEXT, pnl REAL, fill_price REAL,
+            protective_stop_order_id TEXT,
+            protective_tp_order_id TEXT,
+            protective_trailing_order_id TEXT
+        )
+    """)
+    conn.execute(
+        "INSERT INTO trades (id, symbol, side, qty, status, order_id, "
+        "timestamp, price, protective_trailing_order_id) "
+        "VALUES (88, 'BMY', 'buy', 71, 'open', 'bmy-buy', "
+        "'2026-04-27T15:00:00', 58.34, 'partial-stop-id')",
+    )
+    conn.commit()
+    conn.close()
+
+    api = MagicMock()
+    api.list_positions.return_value = [_broker_position("BMY", "50")]
+    # The protective trailing stop order partially filled
+    api.get_order.return_value = _broker_order(
+        "partial-stop-id", "sell", "filled", qty=21, filled_qty=21,
+        filled_avg_price=57.90,
+        filled_at=datetime(2026, 5, 4, 13, 30, tzinfo=timezone.utc),
+        order_type="trailing_stop",
+    )
+    ctx = _ctx(api, str(p))
+    res = reconcile_with_ctx(ctx, apply_changes=True)
+    assert len(res["backfill_partial_sell"]) == 1
+    bp = res["backfill_partial_sell"][0]
+    assert bp["sell_qty"] == 21
+    # Check DB: BUY still open, SELL row inserted
+    conn = sqlite3.connect(str(p))
+    buy_status = conn.execute("SELECT status FROM trades WHERE id=88").fetchone()[0]
+    assert buy_status == "open"  # FIFO consumes the SELL — BUY lot stays
+    sell_rows = conn.execute(
+        "SELECT side, qty, price FROM trades WHERE id != 88"
+    ).fetchall()
+    assert len(sell_rows) == 1
+    assert sell_rows[0][0] == "sell"
+    assert sell_rows[0][1] == 21
+    conn.close()
+
+
+def test_api_error_retries_then_flags_ambiguous(tmp_path):
+    """Transient broker API failure: retry per _API_MAX_RETRIES, then
+    mark ambiguous. Earlier behavior was to immediately flag and let
+    drift sit."""
+    import reconcile_journal_to_broker as rjtb
+    db = _make_journal_db(tmp_path, [
+        (1, "FOO", "buy", 10, "open", "foo-order",
+         "2026-04-20T10:00:00", 50.0),
+    ])
+    api = MagicMock()
+    api.list_positions.return_value = []
+    api.get_order.side_effect = RuntimeError("broker down")
+    ctx = _ctx(api, db)
+    # Speed up: 0-second backoff for the test
+    rjtb._API_MAX_RETRIES = 2  # cuts retry from 3 to 2
+    try:
+        res = rjtb.reconcile_with_ctx(ctx, apply_changes=True)
+    finally:
+        rjtb._API_MAX_RETRIES = 3
+    assert len(res["ambiguous"]) == 1
+    assert "after retries" in res["ambiguous"][0]["reason"]
+    # Verify it actually retried (called more than once)
+    assert api.get_order.call_count >= 2
 
 
 def test_corrupt_archive_filename_does_not_match(tmp_path):
