@@ -163,8 +163,10 @@ def _classify_long_phantom(api, row, broker_qty, used_sell_ids):
 
     Only called when broker_qty <= 0 — i.e. the long position is
     fully gone from the broker but journal still claims it open.
+    For options, broker-side lookups use the OCC symbol (the journal
+    row's `symbol` is the underlying).
     """
-    sym = (row["symbol"] or "").upper()
+    sym = _lookup_symbol_for_row(row)
     qty = float(row["qty"] or 0)
     order_id = row["order_id"]
     ts = _to_utc_iso(row["timestamp"])
@@ -214,7 +216,7 @@ def _classify_short_phantom(api, row, broker_qty, used_cover_ids):
     buy-to-cover stop, the journal needs a 'cover' row. Otherwise
     the short stays "open" forever in get_virtual_positions.
     """
-    sym = (row["symbol"] or "").upper()
+    sym = _lookup_symbol_for_row(row)
     qty = float(row["qty"] or 0)
     order_id = row["order_id"]
     ts = _to_utc_iso(row["timestamp"])
@@ -266,7 +268,7 @@ def _detect_partial_sale(api, row, broker_qty, used_sell_ids):
 
     Returns ('backfill_partial', detail) or (None, None).
     """
-    sym = (row["symbol"] or "").upper()
+    sym = _lookup_symbol_for_row(row)
     journal_qty = float(row["qty"] or 0)
     if broker_qty <= 0 or broker_qty >= journal_qty:
         return None, None  # not a partial-sale candidate
@@ -318,8 +320,14 @@ def _detect_partial_sale(api, row, broker_qty, used_sell_ids):
 
 
 def _select_open_rows(conn) -> List[sqlite3.Row]:
-    """Pull every open journal row (long + short). Tolerate missing
-    protective_* columns by selecting them dynamically."""
+    """Pull every open journal row (long + short, stocks AND options).
+
+    Options rows have occ_symbol set; we route the broker lookup by
+    that symbol instead of the underlying so the reconcile correctly
+    finds the option position.
+
+    Tolerate older schemas (missing protective_* / occ_symbol cols)
+    by selecting columns dynamically."""
     cur = conn.execute("PRAGMA table_info(trades)")
     cols = {r[1] for r in cur.fetchall()}
     base_cols = ["id", "symbol", "side", "qty", "status", "order_id",
@@ -327,11 +335,25 @@ def _select_open_rows(conn) -> List[sqlite3.Row]:
     extra_cols = [c for c in (
         "protective_stop_order_id", "protective_tp_order_id",
         "protective_trailing_order_id",
+        "occ_symbol", "option_strategy",
     ) if c in cols]
     all_cols = base_cols + extra_cols
     sql = (f"SELECT {','.join(all_cols)} FROM trades "
            "WHERE status='open' AND side IN ('buy', 'short', 'sell')")
     return conn.execute(sql).fetchall()
+
+
+def _lookup_symbol_for_row(row) -> str:
+    """Return the broker-side symbol for a journal row. Options use
+    the OCC symbol (e.g. 'MSFT260612P00375000'); stocks use the
+    underlying."""
+    try:
+        occ = row["occ_symbol"]
+    except (KeyError, IndexError):
+        occ = None
+    if occ:
+        return occ
+    return (row["symbol"] or "").upper()
 
 
 def reconcile_with_ctx(ctx, apply_changes: bool = False) -> Dict[str, list]:
@@ -374,6 +396,8 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False) -> Dict[str, list]:
     used_cover_ids: set = set()
 
     for r in rows:
+        # For options: look up by OCC symbol; for stocks: by underlying.
+        broker_lookup_sym = _lookup_symbol_for_row(r)
         sym = (r["symbol"] or "").upper()
         side = (r["side"] or "").lower()
         qty = float(r["qty"] or 0)
@@ -384,7 +408,7 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False) -> Dict[str, list]:
         if side == "sell":
             continue
         is_short = (side == "short")
-        broker_qty = _broker_qty_for(positions, sym)
+        broker_qty = _broker_qty_for(positions, broker_lookup_sym)
 
         # PARTIAL ENTRY FILL — independent of current broker state.
         # If the entry order status is canceled/expired/rejected with

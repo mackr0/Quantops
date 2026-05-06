@@ -492,6 +492,83 @@ def test_api_error_retries_then_flags_ambiguous(tmp_path):
     assert api.get_order.call_count >= 2
 
 
+def _make_journal_db_with_options(tmp_path, rows):
+    """Variant of _make_journal_db that includes occ_symbol +
+    option_strategy columns for options-aware tests.
+
+    rows: list of (id, symbol, side, qty, status, order_id, ts, price,
+                   occ_symbol, option_strategy)
+    """
+    p = tmp_path / "journal.db"
+    conn = sqlite3.connect(str(p))
+    conn.execute("""
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY,
+            timestamp TEXT, symbol TEXT, side TEXT, qty REAL, price REAL,
+            order_id TEXT, signal_type TEXT, strategy TEXT, reason TEXT,
+            status TEXT, pnl REAL, fill_price REAL,
+            occ_symbol TEXT, option_strategy TEXT
+        )
+    """)
+    for tid, sym, side, qty, status, order_id, ts, price, occ, strat in rows:
+        conn.execute(
+            "INSERT INTO trades (id, timestamp, symbol, side, qty, "
+            "price, order_id, status, occ_symbol, option_strategy) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (tid, ts, sym, side, qty, price, order_id, status, occ, strat),
+        )
+    conn.commit()
+    conn.close()
+    return str(p)
+
+
+def test_options_held_at_broker_is_real(tmp_path):
+    """Journal row for an option contract: broker lookup uses the OCC
+    symbol, NOT the underlying. The exact bug from prod 2026-05-06:
+    profile_4 #134 bull_put_spread BUY was flagged ambiguous because
+    reconcile asked the broker about MSFT stock instead of
+    MSFT260612P00375000 contract."""
+    from reconcile_journal_to_broker import reconcile_with_ctx
+    db = _make_journal_db_with_options(tmp_path, [
+        (134, "MSFT", "buy", 1, "open", "opt-order",
+         "2026-05-06T14:31:36", 5.50,
+         "MSFT260612P00375000", "bull_put_spread"),
+    ])
+    api = MagicMock()
+    # Broker has the OPTION contract, not the underlying stock
+    api.list_positions.return_value = [
+        _broker_position("MSFT260612P00375000", "1"),
+    ]
+    ctx = _ctx(api, db)
+    res = reconcile_with_ctx(ctx, apply_changes=True)
+    assert res["real_held"] == 1
+    assert len(res["ambiguous"]) == 0
+    assert len(res["cancel"]) == 0
+
+
+def test_options_phantom_canceled_entry(tmp_path):
+    """Options BUY whose entry order canceled — same cancel-handling
+    as stocks but lookup is by OCC symbol."""
+    from reconcile_journal_to_broker import reconcile_with_ctx
+    db = _make_journal_db_with_options(tmp_path, [
+        (134, "MSFT", "buy", 1, "open", "opt-order",
+         "2026-05-06T14:31:36", 5.50,
+         "MSFT260612P00375000", "bull_put_spread"),
+    ])
+    api = MagicMock()
+    api.list_positions.return_value = []  # nothing at broker
+    api.get_order.return_value = _broker_order(
+        "opt-order", "buy", "canceled", qty=1, filled_qty=0,
+    )
+    ctx = _ctx(api, db)
+    res = reconcile_with_ctx(ctx, apply_changes=True)
+    assert len(res["cancel"]) == 1
+    conn = sqlite3.connect(db)
+    status = conn.execute("SELECT status FROM trades WHERE id=134").fetchone()[0]
+    conn.close()
+    assert status == "canceled"
+
+
 def test_archived_profile_with_no_account_id_is_skipped(tmp_path):
     """Disabled / archived profile (alpaca_account_id is None or 0)
     should return a 'skipped' result instead of erroring out — so the
