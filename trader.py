@@ -520,10 +520,18 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
             try:
                 api.cancel_order(oo.id)
                 logging.info(f"Cancelled conflicting order {oo.id} for {symbol} before exit")
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as exc:
+                # Per-order cancel failure logged at debug — the
+                # subsequent submit will surface the real conflict.
+                logging.debug(
+                    "Failed to cancel conflicting order %s for %s: %s",
+                    oo.id, symbol, exc,
+                )
+    except Exception as exc:
+        logging.debug(
+            "Failed to list open orders for %s during exit: %s",
+            symbol, exc,
+        )
 
     # INTRADAY_STOPS_PLAN Stage 1 — explicitly clear our protective
     # stop bookkeeping so the next sweep doesn't think a stale

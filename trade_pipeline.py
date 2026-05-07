@@ -2740,8 +2740,13 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
                         f"outcome: {outcome}). "
                         f"Reasoning: {str(last_pred[2])[:100]}"
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                # Read-only AI-context lookup — not blocking a trade,
+                # but log so we know if the prompt is missing
+                # last-prediction context (degraded AI quality).
+                logging.debug(
+                    "last_prediction lookup failed for %s: %s", symbol, exc,
+                )
 
         # Earnings warning
         try:
@@ -3051,8 +3056,12 @@ def _build_market_context(regime_info, political_context, ctx):
                         f"(worst day {s['worst_day_pct']*100:+.2f}%)"
                         for s in worst
                     ]
-        except Exception:
-            pass
+        except Exception as exc:
+            # Read-only AI-context lookup — degraded prompt is OK,
+            # silent swallow is not.
+            logging.debug(
+                "portfolio_risk context lookup failed: %s", exc,
+            )
 
     return {
         "regime": regime.get("regime", "unknown"),

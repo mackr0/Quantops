@@ -17,6 +17,31 @@ Rules going forward:
 
 ---
 
+## 2026-05-07 — Cross-cutting guardrails for the broker-submit bug class + dashboard fixes (Severity: high, prevention + UX)
+
+The 2026-05-07 audit found 10 same-class bugs (position_intent, dup guards, silent swallows, unrealistic mocks) that the test suite missed. The user's question: "why didn't we catch this?" — because tests verified specific files, not invariants. Adding cross-cutting static guardrails:
+
+**`tests/test_broker_submit_invariants.py`** — 4 invariant checks:
+
+1. `test_every_option_submit_passes_position_intent` — every `api.submit_order(...)` in option modules must have `position_intent` either inline or built into a kwargs dict via `_alpaca_leg_dict` (catches the ARCC root cause if it returns).
+2. `test_every_entry_executor_has_dup_guard` — `execute_multileg_strategy`, `execute_option_strategy`, `execute_pair_trade` must each contain a dup-guard marker (catches runaway risk).
+3. `test_no_bare_except_pass_on_db_or_broker_calls` — AST scan over `trade_pipeline.py`, `trader.py`, `options_trader.py`, `options_multileg.py`, `stat_arb_pair_book.py`, `bracket_orders.py`. Any `try` block that contains `api.submit_order` / `cancel_order` / `UPDATE trades` / `conn.execute` / `cancel_for_symbol` and ends in bare `except: pass` fails (catches silent state drift).
+4. `test_filled_avg_price_mocks_include_none_case` — every test that mocks `filled_avg_price` must also exercise the None / pending case (catches the unrealistic-mock pattern that let the May 6 multileg bug ship).
+
+This third invariant caught FOUR more bare-pass sites I hadn't fixed:
+- `trade_pipeline.py:2743` (last_prediction lookup) — now `logging.debug`.
+- `trade_pipeline.py:3054` (portfolio_risk context) — now `logging.debug`.
+- `trader.py:523, 525` (cancel conflicting orders before exit) — now `logging.debug` per-order + outer.
+
+**Dashboard fixes** (`templates/_trades_table.html`):
+- Option contract qty/value display now applies the ×100 multiplier so a `bull_put_spread` leg at $0.15 × 3 contracts shows `$45` instead of `$0`. Caught 2026-05-07 (SCHD legs).
+- Cost-basis P&L percentage on SELL/cover rows for option legs now applies the multiplier too (denominator was wrong, inflating apparent percentages).
+- Quantity column adds " ct" suffix when `occ_symbol` is set so it's clear the qty is contracts not shares.
+
+Suite: 2,171 pass.
+
+---
+
 ## 2026-05-07 — Trade-execution silent swallows replaced with WARNING logs (Severity: high, observability)
 
 Three `except: pass` blocks in trade execution paths used to silently swallow failures that affect data integrity. Per the user's zero-tolerance memory: "Every except: pass is a potential silent failure — log at WARNING minimum."
