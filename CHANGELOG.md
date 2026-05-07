@@ -17,6 +17,35 @@ Rules going forward:
 
 ---
 
+## 2026-05-07 — Multileg legs still showing "$--" — fix the catch-up path (Severity: high, dashboard P&L attribution)
+
+The 2026-05-06 "multileg fill price capture" fix shipped with a test that mocked `api.get_order(...)` returning `filled_avg_price=0.45` immediately after submit. The mock didn't represent real Alpaca paper behavior: paper accounts return `filled_avg_price=None` for ~50–500 ms after `submit_order` returns, so the immediate-fetch in `_log_strategy_legs` always logs `price=NULL, fill_price=NULL`. **Result: every multileg leg since the May 6 deploy shipped to prod with NULL prices.** Surveyed across all 4 profiles holding multileg positions: 28/28 legs since 2026-05-04 had NULL fill_price.
+
+The catch-up path `_task_update_fills` exists for exactly this case — but it filtered on `decision_price IS NOT NULL`, which excluded every multileg leg (option leg `decision_price` isn't set because the option-chain quote isn't cheaply available at submit time). So legs with NULL decision_price were skipped forever.
+
+**Fix in `multi_scheduler._task_update_fills`:**
+- Drop the `decision_price IS NOT NULL` filter — multileg legs are eligible.
+- When `decision_price` is NULL, populate `fill_price` and leave `slippage_pct` NULL (no baseline to measure slippage against).
+- When `price` is NULL, populate it from the broker's `filled_avg_price` too — the dashboard reads `t.price`, not `t.fill_price`, so leaving `price` NULL is what produced the `$--` rendering.
+- Replace the silent `except: pass` with a debug-level log so transient `get_order` failures are observable (per the no-silent-failures rule).
+
+The immediate-fetch in `_log_strategy_legs` is left in place as a best-effort optimization (it occasionally works on combo orders where the parent reflects the aggregate) — the catch-up task is now the reliable path.
+
+**Backfill:** one-shot script populated the 28 NULL multileg legs on prod by replaying `api.get_order(order_id).filled_avg_price` for each.
+
+**Tests:** new `tests/test_update_fills_multileg.py` (5 cases). Pins:
+- Multileg leg with NULL decision_price IS picked up; both `price` and `fill_price` get populated; slippage stays NULL.
+- Stock entry with decision_price still gets slippage_pct (no regression on existing path).
+- Unfilled order (`filled_avg_price=None`) leaves the row alone.
+- Per-row `get_order` exception doesn't abort the batch — other rows still update.
+- Empty unfilled list is a quick noop.
+
+The May 6 mock pattern is the lesson: mocks must represent the BAD-state too, not just the eventual happy state. The new tests cover both.
+
+Full suite: 2,152 pass.
+
+---
+
 ## 2026-05-06 — Journal-vs-broker reconcile: 5 gaps closed end-to-end (Severity: critical, accounting integrity)
 
 Following this morning's discovery that 40 of 126 (31%) "open" journal entries across 11 profiles were phantoms, I fixed all five gaps named after the initial cleanup so the same drift can't accumulate again — plus the FIFO bug that was hiding the canceled rows from the dashboard.

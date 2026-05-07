@@ -924,7 +924,20 @@ def _task_cancel_stale_orders(ctx):
 
 
 def _task_update_fills(ctx):
-    """Update fill prices on recent trades from Alpaca order data."""
+    """Update fill prices on recent trades from Alpaca order data.
+
+    Catches three flavors of unfilled rows:
+    - Stock entries/exits where ``decision_price`` is set but the
+      broker fill hasn't been written back yet (slippage_pct gets
+      computed at the same time).
+    - Multileg option legs where ``decision_price`` is NULL — the
+      option-chain quote isn't available at submit time, so the leg
+      is logged with everything NULL and we backfill on the catch-up
+      pass. Slippage stays NULL on these rows (no decision baseline).
+    - Any row where ``price`` is also NULL gets ``price`` populated
+      alongside ``fill_price`` so the dashboard's ``t.price`` cell
+      isn't a dash.
+    """
     import sqlite3
     from client import get_api
 
@@ -936,11 +949,11 @@ def _task_update_fills(ctx):
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
 
-        # Find trades with no fill_price that have an order_id
+        # Pull every row missing a fill_price; multileg legs lack
+        # decision_price so we can't filter on it.
         unfilled = conn.execute(
-            "SELECT id, order_id, decision_price FROM trades "
-            "WHERE fill_price IS NULL AND order_id IS NOT NULL "
-            "AND decision_price IS NOT NULL"
+            "SELECT id, order_id, price, decision_price FROM trades "
+            "WHERE fill_price IS NULL AND order_id IS NOT NULL"
         ).fetchall()
 
         if not unfilled:
@@ -951,17 +964,37 @@ def _task_update_fills(ctx):
         for trade in unfilled:
             try:
                 order = api.get_order(trade["order_id"])
-                if order.filled_avg_price:
-                    fill = float(order.filled_avg_price)
-                    dec = trade["decision_price"] or 0
-                    slip = ((fill - dec) / dec * 100) if dec > 0 else 0
-                    conn.execute(
-                        "UPDATE trades SET fill_price = ?, slippage_pct = ? WHERE id = ?",
-                        (fill, round(slip, 4), trade["id"]),
-                    )
-                    updated += 1
-            except Exception:
-                pass  # Order may not exist yet or API error
+            except Exception as exc:
+                logging.debug(
+                    "[%s] update_fills: get_order(%s) failed: %s",
+                    seg_label, trade["order_id"], exc,
+                )
+                continue
+            if not order.filled_avg_price:
+                continue
+            fill = float(order.filled_avg_price)
+            dec = trade["decision_price"]
+            if dec is not None and dec > 0:
+                slip = round((fill - dec) / dec * 100, 4)
+            else:
+                slip = None
+            # Populate `price` when missing so dashboards reading
+            # `t.price` (e.g. trades ledger) stop showing "$--".
+            if trade["price"] is None:
+                conn.execute(
+                    "UPDATE trades "
+                    "SET price = ?, fill_price = ?, slippage_pct = ? "
+                    "WHERE id = ?",
+                    (fill, fill, slip, trade["id"]),
+                )
+            else:
+                conn.execute(
+                    "UPDATE trades "
+                    "SET fill_price = ?, slippage_pct = ? "
+                    "WHERE id = ?",
+                    (fill, slip, trade["id"]),
+                )
+            updated += 1
 
         conn.commit()
         conn.close()
