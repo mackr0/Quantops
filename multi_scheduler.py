@@ -1634,8 +1634,14 @@ def _task_reconcile_trade_statuses(ctx):
     """
     seg_label = ctx.display_name or ctx.segment
     try:
-        from reconcile_journal_to_broker import reconcile_with_ctx
-        result = reconcile_with_ctx(ctx, apply_changes=True)
+        from reconcile_journal_to_broker import (
+            reconcile_with_ctx, _all_journal_sell_order_ids,
+        )
+        # Cross-profile dedup so the fallback match path doesn't
+        # attribute one broker fill to multiple profiles.
+        cross_used = _all_journal_sell_order_ids(range(1, 12))
+        result = reconcile_with_ctx(ctx, apply_changes=True,
+                                    cross_profile_used_ids=cross_used)
         n_cancel = len(result.get("cancel", []))
         n_backfill = len(result.get("backfill_sell", []))
         n_amb = len(result.get("ambiguous", []))

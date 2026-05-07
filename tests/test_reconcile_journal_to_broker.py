@@ -569,6 +569,178 @@ def test_options_phantom_canceled_entry(tmp_path):
     assert status == "canceled"
 
 
+def test_cross_profile_dedup_prevents_double_attribution(tmp_path):
+    """The exact bug from prod 2026-05-06 second pass: profile_4 sold
+    AVGO 10 (broker order `1fd38138`). profile_11 also had a 10-share
+    AVGO BUY open. Without cross-profile dedup, the fallback match
+    path picks the broker SELL by qty=10 and attributes it to
+    profile_11 too — both journals reference the same broker fill,
+    double-counted realized P&L. The dedup set passed via
+    `cross_profile_used_ids` blocks the second attribution."""
+    p = tmp_path / "journal.db"
+    conn = sqlite3.connect(str(p))
+    conn.execute("""
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY,
+            timestamp TEXT, symbol TEXT, side TEXT, qty REAL, price REAL,
+            order_id TEXT, signal_type TEXT, strategy TEXT, reason TEXT,
+            status TEXT, pnl REAL, fill_price REAL,
+            protective_stop_order_id TEXT,
+            protective_tp_order_id TEXT,
+            protective_trailing_order_id TEXT
+        )
+    """)
+    conn.execute(
+        "INSERT INTO trades (id, symbol, side, qty, status, order_id, "
+        "timestamp, price) "
+        "VALUES (43, 'AVGO', 'buy', 10, 'open', 'avgo-buy-p11', "
+        "'2026-04-24T15:48:38', 414.61)",
+    )
+    conn.commit()
+    conn.close()
+    from reconcile_journal_to_broker import reconcile_with_ctx
+    api = MagicMock()
+    api.list_positions.return_value = [_broker_position("AVGO", "10")]
+    api.get_order.return_value = _broker_order(
+        "avgo-buy-p11", "buy", "filled", qty=10, filled_qty=10,
+    )
+    # Broker SELL of 10 exists, but it's already attributed to
+    # sibling profile (profile_4) — its order_id is in the dedup set
+    api.list_orders.return_value = [
+        _broker_order(
+            "1fd38138", "sell", "filled", qty=10, filled_qty=10,
+            filled_avg_price=415.63,
+            filled_at=datetime(2026, 4, 30, 19, 42, tzinfo=timezone.utc),
+            order_type="market",
+        ),
+    ]
+    ctx = _ctx(api, str(p))
+    cross_used = {"1fd38138"}  # profile_4 already has this SELL
+    res = reconcile_with_ctx(ctx, apply_changes=True,
+                              cross_profile_used_ids=cross_used)
+    # Fallback skipped the already-attributed SELL — profile_11
+    # AVGO #43 stays open (broker still has 10 from this profile)
+    assert len(res["backfill_sell"]) == 0
+    assert res["real_held"] == 1
+
+
+def test_protective_fill_fallback_finds_exit_without_stored_id(tmp_path):
+    """The MBLY case from prod 2026-05-06: profile_9's BUY had NO
+    protective_*_order_id stored (the BUY happened on a code path
+    that didn't record the id). But a 492-share sell DID fire at the
+    broker. The fallback path should find it via list_orders search
+    even when no protective ID is recorded.
+
+    Without the fallback: profile_9 MBLY 492 stayed phantom-claim
+    indefinitely while the broker had already closed it weeks ago."""
+    p = tmp_path / "journal.db"
+    conn = sqlite3.connect(str(p))
+    conn.execute("""
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY,
+            timestamp TEXT, symbol TEXT, side TEXT, qty REAL, price REAL,
+            order_id TEXT, signal_type TEXT, strategy TEXT, reason TEXT,
+            status TEXT, pnl REAL, fill_price REAL,
+            protective_stop_order_id TEXT,
+            protective_tp_order_id TEXT,
+            protective_trailing_order_id TEXT
+        )
+    """)
+    # No protective_*_order_id columns set — the bug case
+    conn.execute(
+        "INSERT INTO trades (id, symbol, side, qty, status, order_id, "
+        "timestamp, price) "
+        "VALUES (48, 'MBLY', 'buy', 492, 'open', 'mbly-buy', "
+        "'2026-04-24T13:43:57', 9.10)",
+    )
+    conn.commit()
+    conn.close()
+    from reconcile_journal_to_broker import reconcile_with_ctx
+    api = MagicMock()
+    # Sibling profile's MBLY 491 still at broker
+    api.list_positions.return_value = [_broker_position("MBLY", "491")]
+    # The BUY entry order is filled — passes the "real fill" check
+    api.get_order.return_value = _broker_order(
+        "mbly-buy", "buy", "filled", qty=492, filled_qty=492,
+    )
+    # Broker order history: the 492-share SELL fired but no journal
+    # column points to it
+    api.list_orders.return_value = [
+        _broker_order(
+            "mbly-stop-fill", "sell", "filled", qty=492, filled_qty=492,
+            filled_avg_price=8.95,
+            filled_at=datetime(2026, 4, 29, 19, 25, tzinfo=timezone.utc),
+            order_type="stop",
+        ),
+    ]
+    ctx = _ctx(api, str(p))
+    res = reconcile_with_ctx(ctx, apply_changes=True)
+    # Fallback path catches it
+    assert len(res["backfill_sell"]) == 1
+    assert res["backfill_sell"][0]["sell_qty"] == 492
+    conn = sqlite3.connect(str(p))
+    status = conn.execute("SELECT status FROM trades WHERE id=48").fetchone()[0]
+    conn.close()
+    assert status == "closed"
+
+
+def test_protective_fill_caught_when_siblings_still_hold_symbol(tmp_path):
+    """Multi-profile correctness gate. The exact 2026-05-06 GT bug:
+    profile_9's trailing stop fired for 573 GT, but the broker still
+    held 1399 GT total because sibling profiles 3, 5, 10 hadn't sold
+    theirs. The old reconcile gated partial-sale detection on
+    `broker_qty < journal_qty for the symbol` — but for THIS profile,
+    the symbol-level broker_qty (1399) was MORE than its journal_qty
+    (573), so the check never fired. Per-profile reconcile said
+    `real_held` and missed profile_9's exit entirely.
+
+    The fix: ALWAYS check this profile's protective_*_order_id
+    independent of the symbol's account-level broker_qty."""
+    p = tmp_path / "journal.db"
+    conn = sqlite3.connect(str(p))
+    conn.execute("""
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY,
+            timestamp TEXT, symbol TEXT, side TEXT, qty REAL, price REAL,
+            order_id TEXT, signal_type TEXT, strategy TEXT, reason TEXT,
+            status TEXT, pnl REAL, fill_price REAL,
+            protective_stop_order_id TEXT,
+            protective_tp_order_id TEXT,
+            protective_trailing_order_id TEXT
+        )
+    """)
+    conn.execute(
+        "INSERT INTO trades (id, symbol, side, qty, status, order_id, "
+        "timestamp, price, protective_trailing_order_id) "
+        "VALUES (17, 'GT', 'buy', 573, 'open', 'gt-buy', "
+        "'2026-04-20T14:13:07', 7.215, 'gt-trail-fill')",
+    )
+    conn.commit()
+    conn.close()
+    from reconcile_journal_to_broker import reconcile_with_ctx
+    api = MagicMock()
+    # Sibling profiles still hold GT: broker shows 1399 long
+    api.list_positions.return_value = [_broker_position("GT", "1399")]
+    # The protective trailing-stop fired for THIS profile's 573 shares
+    api.get_order.return_value = _broker_order(
+        "gt-trail-fill", "sell", "filled", qty=573, filled_qty=573,
+        filled_avg_price=8.50,
+        filled_at=datetime(2026, 5, 4, 16, 38, tzinfo=timezone.utc),
+        order_type="trailing_stop",
+    )
+    ctx = _ctx(api, str(p))
+    res = reconcile_with_ctx(ctx, apply_changes=True)
+    assert len(res["backfill_sell"]) == 1
+    assert res["backfill_sell"][0]["sell_qty"] == 573
+    # BUY now closed
+    conn = sqlite3.connect(str(p))
+    status = conn.execute("SELECT status FROM trades WHERE id=17").fetchone()[0]
+    sell_count = conn.execute("SELECT COUNT(*) FROM trades WHERE side='sell'").fetchone()[0]
+    conn.close()
+    assert status == "closed"
+    assert sell_count == 1  # one new SELL row inserted
+
+
 def test_archived_profile_with_no_account_id_is_skipped(tmp_path):
     """Disabled / archived profile (alpaca_account_id is None or 0)
     should return a 'skipped' result instead of erroring out — so the

@@ -255,25 +255,65 @@ def _classify_short_phantom(api, row, broker_qty, used_cover_ids):
     }
 
 
-def _detect_partial_sale(api, row, broker_qty, used_sell_ids):
-    """For an open BUY where the broker still has SOME shares but
-    journal qty differs from broker qty, look for partial protective
-    fills.
+def _all_journal_sell_order_ids(profile_ids: Iterable[int]) -> set:
+    """Collect every order_id referenced by a SELL or COVER row across
+    every profile's journal. Used to dedup the fallback match path so
+    we don't attribute one broker fill to two different profiles.
 
-    Multi-profile sharing complicates exact attribution: profile_4
-    BUY 71 + profile_8 BUY 864, broker has 800 BMY. Could be 71+729,
-    or 0+800, or any split. We use protective order ids if present;
-    otherwise we accept the ambiguity and skip (no false-positive
-    backfills — leave them as real_held).
-
-    Returns ('backfill_partial', detail) or (None, None).
+    The exact bug this prevents (caught 2026-05-06): profile_4 SOLD
+    AVGO 10 (order `1fd38138`). profile_11 also had a 10-share AVGO
+    BUY open. The fallback found a SELL with qty=10 (the broker's
+    `1fd38138`) and attributed it to profile_11 — so both journals
+    pointed to the same broker fill, double-counting.
     """
-    sym = _lookup_symbol_for_row(row)
+    import sqlite3 as _sqlite3
+    used = set()
+    for p_id in profile_ids:
+        db_path = f"/opt/quantopsai/quantopsai_profile_{p_id}.db"
+        try:
+            conn = _sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            for r in conn.execute(
+                "SELECT order_id FROM trades "
+                "WHERE side IN ('sell', 'cover') AND order_id IS NOT NULL"
+            ):
+                if r[0]:
+                    used.add(r[0])
+            conn.close()
+        except Exception:
+            continue
+    return used
+
+
+def _detect_protective_fill(api, row, used_sell_ids):
+    """For any open BUY/SHORT, check whether its OWN protective order
+    fired at the broker — independent of the symbol's broker_qty.
+
+    This is the key fix for the multi-profile aggregation bug found
+    2026-05-06: when profile_9's trailing stop fires for GT 573, the
+    broker still has 1399 GT from sibling profiles. Per-profile
+    reconcile that gates on `broker_qty > 0` would say "real_held"
+    and miss profile_9's exit entirely. By checking the BUY's OWN
+    protective orders directly, we catch each profile's exit
+    accurately regardless of sibling state.
+
+    Two-layer detection:
+      1. Look up the protective_*_order_id columns directly. Fast,
+         precise. But the columns may be empty (older trades, or paths
+         that submitted protective orders without recording the id).
+      2. Fallback: search broker order history for SELLs/BUYs that
+         match the journal qty, occurred after the BUY's timestamp,
+         and aren't already attributed to a sibling profile.
+         Catches the case where the protective_*_order_id is missing
+         but a matching exit DID fire.
+
+    Returns one of:
+      ("backfill_full", detail) — protective fully closed the position;
+        caller marks BUY status='closed' and inserts SELL row.
+      ("backfill_partial", detail) — protective partially closed;
+        caller inserts SELL row, BUY stays open (FIFO consumes lot).
+      (None, None) — no protective order filled.
+    """
     journal_qty = float(row["qty"] or 0)
-    if broker_qty <= 0 or broker_qty >= journal_qty:
-        return None, None  # not a partial-sale candidate
-    # Look for a protective order on this BUY that fired for the
-    # missing portion.
     for col in ("protective_stop_order_id", "protective_tp_order_id",
                 "protective_trailing_order_id"):
         try:
@@ -284,19 +324,21 @@ def _detect_partial_sale(api, row, broker_qty, used_sell_ids):
             continue
         if stop_oid in used_sell_ids:
             continue
-        order, exc = _retrying_call(api.get_order, stop_oid)
+        order, _exc = _retrying_call(api.get_order, stop_oid)
         if order is None:
             continue
         if getattr(order, "status", "") != "filled":
             continue
-        if getattr(order, "side", "") != "sell":
+        # Side check: longs exit via 'sell', shorts cover via 'buy'
+        side = (row["side"] or "").lower()
+        expected_exit_side = "buy" if side == "short" else "sell"
+        if getattr(order, "side", "") != expected_exit_side:
             continue
         try:
             filled_qty = float(getattr(order, "filled_qty", 0) or 0)
         except Exception:
             continue
-        missing = journal_qty - broker_qty
-        if abs(filled_qty - missing) > 0.001:
+        if filled_qty <= 0:
             continue
         try:
             fill_price = float(getattr(order, "filled_avg_price", 0) or 0)
@@ -309,14 +351,42 @@ def _detect_partial_sale(api, row, broker_qty, used_sell_ids):
             fa_dt = filled_at if filled_at.tzinfo else filled_at.replace(tzinfo=timezone.utc)
         else:
             fa_dt = _to_utc_iso(filled_at)
-        return "backfill_partial", {
+        detail = {
             "order_id": stop_oid,
             "filled_at": fa_dt,
             "filled_qty": filled_qty,
             "filled_avg_price": fill_price,
             "order_type": getattr(order, "order_type", "?"),
         }
+        # Full closure if filled_qty matches journal qty (within 0.5 tol)
+        if abs(filled_qty - journal_qty) < 0.5:
+            return "backfill_full", detail
+        if filled_qty < journal_qty:
+            return "backfill_partial", detail
+        # filled_qty > journal_qty shouldn't happen for a single
+        # profile's protective order — fall through and skip.
+    # FALLBACK: no protective_*_order_id matched. Older trades may
+    # not have recorded the protective ID, but the exit may still
+    # have fired. Search broker order history for an unused SELL/BUY
+    # that matches the journal qty after the BUY's timestamp.
+    side = (row["side"] or "").lower()
+    expected_exit_side = "buy" if side == "short" else "sell"
+    sym = _lookup_symbol_for_row(row)
+    ts = _to_utc_iso(row["timestamp"]) or datetime.now(timezone.utc)
+    fill = _find_matching_exit_fill(
+        api, sym, journal_qty, ts,
+        broker_exit_side=expected_exit_side,
+        already_used_order_ids=used_sell_ids,
+    )
+    if fill is not None:
+        # Treat as full closure — _find_matching_exit_fill required
+        # filled_qty == journal_qty, so this is a complete exit.
+        return "backfill_full", fill
     return None, None
+
+
+# Backwards-compat alias (older test path expected this name)
+_detect_partial_sale = _detect_protective_fill
 
 
 def _select_open_rows(conn) -> List[sqlite3.Row]:
@@ -356,8 +426,17 @@ def _lookup_symbol_for_row(row) -> str:
     return (row["symbol"] or "").upper()
 
 
-def reconcile_with_ctx(ctx, apply_changes: bool = False) -> Dict[str, list]:
-    """Reconcile one profile from an already-built UserContext."""
+def reconcile_with_ctx(ctx, apply_changes: bool = False,
+                       cross_profile_used_ids: Optional[set] = None) -> Dict[str, list]:
+    """Reconcile one profile from an already-built UserContext.
+
+    `cross_profile_used_ids` is an optional set of order_ids already
+    referenced by SELL/COVER rows in OTHER profiles' journals. The
+    fallback match path uses it to avoid double-attributing one broker
+    fill to multiple profiles. Callers running across all profiles
+    should compute this once via `_all_journal_sell_order_ids` and
+    pass it in.
+    """
     name = ctx.display_name or f"profile_{getattr(ctx, 'profile_id', '?')}"
     api = ctx.get_alpaca_api() if hasattr(ctx, "get_alpaca_api") else ctx.api
     db_path = ctx.db_path
@@ -392,8 +471,11 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False) -> Dict[str, list]:
     conn.row_factory = sqlite3.Row
     rows = _select_open_rows(conn)
 
-    used_sell_ids: set = set()
-    used_cover_ids: set = set()
+    # Seed the dedup set with order_ids already attributed by sibling
+    # profiles so the fallback match path doesn't double-attribute one
+    # broker fill to multiple profiles.
+    used_sell_ids: set = set(cross_profile_used_ids or set())
+    used_cover_ids: set = set(cross_profile_used_ids or set())
 
     for r in rows:
         # For options: look up by OCC symbol; for stocks: by underlying.
@@ -436,6 +518,55 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False) -> Dict[str, list]:
                     })
                     continue
 
+        # PROTECTIVE-ORDER FILL CHECK — the per-profile correctness gate.
+        # Always look up THIS profile's protective stop/TP/trailing
+        # orders, regardless of the symbol's account-level broker_qty.
+        # Sibling profiles holding shares of the same symbol previously
+        # masked this profile's protective fills. (Caught 2026-05-06:
+        # profile_9 trailing-stop fired GT 573, broker still showed
+        # 1399 GT from siblings → reconcile said "real_held" and missed
+        # the exit.) This is the multi-profile-correct backfill path.
+        prot_kind, prot_detail = _detect_protective_fill(
+            api, r, used_sell_ids,
+        )
+        if prot_kind == "backfill_full":
+            used_sell_ids.add(prot_detail["order_id"])
+            entry_price = float(r["price"] or 0)
+            if is_short:
+                actions["backfill_cover"].append({
+                    "trade_id": r["id"], "symbol": sym, "qty": qty,
+                    "short_price": entry_price,
+                    "cover_order_id": prot_detail["order_id"],
+                    "cover_price": prot_detail["filled_avg_price"],
+                    "cover_qty": prot_detail["filled_qty"],
+                    "cover_filled_at": prot_detail["filled_at"].isoformat(),
+                    "cover_order_type": prot_detail["order_type"],
+                })
+            else:
+                actions["backfill_sell"].append({
+                    "trade_id": r["id"], "symbol": sym, "qty": qty,
+                    "buy_price": entry_price,
+                    "sell_order_id": prot_detail["order_id"],
+                    "sell_price": prot_detail["filled_avg_price"],
+                    "sell_qty": prot_detail["filled_qty"],
+                    "sell_filled_at": prot_detail["filled_at"].isoformat(),
+                    "sell_order_type": prot_detail["order_type"],
+                })
+            continue
+        if prot_kind == "backfill_partial":
+            used_sell_ids.add(prot_detail["order_id"])
+            actions["backfill_partial_sell"].append({
+                "trade_id": r["id"], "symbol": sym,
+                "journal_qty": qty, "broker_qty": broker_qty,
+                "buy_price": float(r["price"] or 0),
+                "sell_order_id": prot_detail["order_id"],
+                "sell_price": prot_detail["filled_avg_price"],
+                "sell_qty": prot_detail["filled_qty"],
+                "sell_filled_at": prot_detail["filled_at"].isoformat(),
+                "sell_order_type": prot_detail["order_type"],
+            })
+            continue
+
         # Normalize: for shorts, "real_held" means broker_qty < 0
         if is_short:
             real_held = broker_qty < -0.001
@@ -443,30 +574,6 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False) -> Dict[str, list]:
             real_held = broker_qty > 0.001
 
         if real_held:
-            # Check for partial-sale drift (longs only — short partial
-            # cover is a future enhancement gated on profile_10's first
-            # observed case).
-            if not is_short and broker_qty < qty - 0.001:
-                kind, detail = _detect_partial_sale(
-                    api, r, broker_qty, used_sell_ids,
-                )
-                if kind == "backfill_partial":
-                    used_sell_ids.add(detail["order_id"])
-                    actions["backfill_partial_sell"].append({
-                        "trade_id": r["id"], "symbol": sym,
-                        "journal_qty": qty, "broker_qty": broker_qty,
-                        "buy_price": float(r["price"] or 0),
-                        "sell_order_id": detail["order_id"],
-                        "sell_price": detail["filled_avg_price"],
-                        "sell_qty": detail["filled_qty"],
-                        "sell_filled_at": detail["filled_at"].isoformat()
-                            if detail.get("filled_at") else None,
-                        "sell_order_type": detail["order_type"],
-                    })
-                    continue
-                # No protective order ID matched the missing qty —
-                # treat as real_held with documented drift. Don't
-                # falsely backfill.
             actions["real_held"] += 1
             continue
 
@@ -541,32 +648,37 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False) -> Dict[str, list]:
                  a["trade_id"]),
             )
         for a in actions["backfill_sell"]:
+            # Compute realized pnl directly so the trades page shows
+            # a real number on the row (not blank). pnl = (sell - buy) * qty.
+            pnl = round((a["sell_price"] - a["buy_price"]) * a["sell_qty"], 2)
             conn.execute(
                 """INSERT INTO trades
                    (timestamp, symbol, side, qty, price, order_id, signal_type,
-                    strategy, reason, status, fill_price)
+                    strategy, reason, status, fill_price, pnl)
                    VALUES (?, ?, 'sell', ?, ?, ?, 'reconcile_backfill',
                            'reconcile_backfill',
                            'broker exited via protective order — backfilled by reconcile',
-                           'closed', ?)""",
+                           'closed', ?, ?)""",
                 (a["sell_filled_at"], a["symbol"], a["sell_qty"],
-                 a["sell_price"], a["sell_order_id"], a["sell_price"]),
+                 a["sell_price"], a["sell_order_id"], a["sell_price"], pnl),
             )
             conn.execute(
                 "UPDATE trades SET status='closed' WHERE id=?",
                 (a["trade_id"],),
             )
         for a in actions["backfill_cover"]:
+            # Short pnl: profit when cover_price < short_price.
+            pnl = round((a["short_price"] - a["cover_price"]) * a["cover_qty"], 2)
             conn.execute(
                 """INSERT INTO trades
                    (timestamp, symbol, side, qty, price, order_id, signal_type,
-                    strategy, reason, status, fill_price)
+                    strategy, reason, status, fill_price, pnl)
                    VALUES (?, ?, 'cover', ?, ?, ?, 'reconcile_backfill',
                            'reconcile_backfill',
                            'broker covered via protective order — backfilled by reconcile',
-                           'closed', ?)""",
+                           'closed', ?, ?)""",
                 (a["cover_filled_at"], a["symbol"], a["cover_qty"],
-                 a["cover_price"], a["cover_order_id"], a["cover_price"]),
+                 a["cover_price"], a["cover_order_id"], a["cover_price"], pnl),
             )
             conn.execute(
                 "UPDATE trades SET status='closed' WHERE id=?",
@@ -577,16 +689,17 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False) -> Dict[str, list]:
             # BUY row stays open with original qty — the FIFO consumes
             # the right amount from the lot when computing virtual
             # positions.
+            pnl = round((a["sell_price"] - a["buy_price"]) * a["sell_qty"], 2)
             conn.execute(
                 """INSERT INTO trades
                    (timestamp, symbol, side, qty, price, order_id, signal_type,
-                    strategy, reason, status, fill_price)
+                    strategy, reason, status, fill_price, pnl)
                    VALUES (?, ?, 'sell', ?, ?, ?, 'reconcile_backfill_partial',
                            'reconcile_backfill_partial',
                            'broker partially exited via protective order — backfilled by reconcile',
-                           'closed', ?)""",
+                           'closed', ?, ?)""",
                 (a["sell_filled_at"], a["symbol"], a["sell_qty"],
-                 a["sell_price"], a["sell_order_id"], a["sell_price"]),
+                 a["sell_price"], a["sell_order_id"], a["sell_price"], pnl),
             )
         conn.commit()
 
@@ -610,11 +723,13 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False) -> Dict[str, list]:
     return actions
 
 
-def reconcile_profile(profile_id: int, apply_changes: bool = False) -> Dict[str, list]:
+def reconcile_profile(profile_id: int, apply_changes: bool = False,
+                      cross_profile_used_ids: Optional[set] = None) -> Dict[str, list]:
     """CLI-style: build the ctx from profile_id, then delegate."""
     from models import build_user_context_from_profile
     ctx = build_user_context_from_profile(profile_id)
-    return reconcile_with_ctx(ctx, apply_changes=apply_changes)
+    return reconcile_with_ctx(ctx, apply_changes=apply_changes,
+                              cross_profile_used_ids=cross_profile_used_ids)
 
 
 def main():
@@ -629,6 +744,10 @@ def main():
 
     profile_ids = [args.profile] if args.profile else list(range(1, 12))
 
+    # Pre-compute the cross-profile dedup set so the fallback match
+    # path can't double-attribute one broker fill to multiple profiles.
+    cross_used = _all_journal_sell_order_ids(range(1, 12))
+
     grand = {"cancel": 0, "backfill_sell": 0, "backfill_cover": 0,
              "backfill_partial_sell": 0, "fix_partial_entry": 0,
              "ambiguous": 0, "real_held": 0, "errored": 0}
@@ -638,7 +757,8 @@ def main():
 
     for p_id in profile_ids:
         try:
-            res = reconcile_profile(p_id, apply_changes=args.apply)
+            res = reconcile_profile(p_id, apply_changes=args.apply,
+                                    cross_profile_used_ids=cross_used)
         except Exception as e:
             print(f"profile_{p_id}: ERROR {e}")
             grand["errored"] += 1
