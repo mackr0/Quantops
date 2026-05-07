@@ -49,16 +49,79 @@ _QTY_TOLERANCE = 0.05
 
 def _journal_open_qty_per_symbol(db_path: str) -> Dict[str, float]:
     """Sum of open virtual qty per symbol for one profile's journal.
-    Long positions add positive qty; shorts subtract."""
-    from journal import get_virtual_positions
+
+    Aggregates by `occ_symbol` if set (option contracts use OCC at the
+    broker), else by underlying. This matches Alpaca's
+    list_positions output exactly so the audit doesn't false-flag
+    multi-leg option trades whose journal rows store
+    symbol="MSFT" + occ_symbol="MSFT260612P00375000".
+
+    Long positions (side=buy) add positive qty; shorts (side=short)
+    subtract; matching SELL/COVER consume their respective lots
+    via FIFO so closed round-trips net to zero.
+    """
+    import sqlite3 as _sqlite3
     out: Dict[str, float] = {}
+    # Long lots and short lots tracked per (effective) symbol so a
+    # profile can have both a long and a short on the same name without
+    # the FIFO consuming the wrong side.
+    long_lots: Dict[str, list] = {}
+    short_lots: Dict[str, list] = {}
     try:
-        positions = get_virtual_positions(db_path=db_path)
+        conn = _sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        cur = conn.execute("PRAGMA table_info(trades)")
+        cols = {r[1] for r in cur.fetchall()}
+        select_cols = "side, qty, price"
+        has_occ = "occ_symbol" in cols
+        if has_occ:
+            select_cols = "COALESCE(occ_symbol, symbol) as eff_symbol, " + select_cols
+        else:
+            select_cols = "symbol as eff_symbol, " + select_cols
+        rows = conn.execute(
+            f"SELECT {select_cols} FROM trades "
+            "WHERE COALESCE(status, 'open') != 'canceled' "
+            "ORDER BY timestamp ASC, id ASC"
+        ).fetchall()
+        conn.close()
     except Exception:
         return out
-    for p in positions:
-        sym = (p.get("symbol") or "").upper()
-        out[sym] = out.get(sym, 0.0) + float(p.get("qty") or 0)
+
+    for row in rows:
+        sym = (row[0] or "").upper()
+        side = (row[1] or "").lower()
+        qty = float(row[2] or 0)
+        price = float(row[3] or 0)
+        if qty <= 0 or price <= 0:
+            continue
+        if side == "buy":
+            long_lots.setdefault(sym, []).append([qty, price])
+        elif side == "short":
+            short_lots.setdefault(sym, []).append([qty, price])
+        elif side == "sell":
+            ll = long_lots.setdefault(sym, [])
+            remaining = qty
+            while remaining > 0 and ll:
+                consumed = min(ll[0][0], remaining)
+                ll[0][0] -= consumed
+                remaining -= consumed
+                if ll[0][0] <= 0.001:
+                    ll.pop(0)
+        elif side == "cover":
+            sl = short_lots.setdefault(sym, [])
+            remaining = qty
+            while remaining > 0 and sl:
+                consumed = min(sl[0][0], remaining)
+                sl[0][0] -= consumed
+                remaining -= consumed
+                if sl[0][0] <= 0.001:
+                    sl.pop(0)
+
+    for sym in set(long_lots.keys()) | set(short_lots.keys()):
+        long_remaining = sum(lot[0] for lot in long_lots.get(sym, []))
+        short_remaining = sum(lot[0] for lot in short_lots.get(sym, []))
+        net = long_remaining - short_remaining
+        if abs(net) > 0.001:
+            out[sym] = net
     return out
 
 
