@@ -684,6 +684,63 @@ def test_protective_fill_fallback_finds_exit_without_stored_id(tmp_path):
     assert status == "closed"
 
 
+def test_partial_fill_sell_corrects_journal_qty(tmp_path):
+    """Caught 2026-05-06 (profile_6 #131 VSH): journal logged SELL
+    qty=20 status='closed', broker order canceled with filled_qty=19.
+    The 1 leftover share stayed at the broker (orphan in audit).
+
+    Reconcile must: detect the partial fill (broker filled < journal
+    qty + canceled status), adjust journal qty to match broker, and
+    recompute pnl based on the corrected qty."""
+    p = tmp_path / "journal.db"
+    conn = sqlite3.connect(str(p))
+    conn.execute("""
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY,
+            timestamp TEXT, symbol TEXT, side TEXT, qty REAL, price REAL,
+            order_id TEXT, signal_type TEXT, strategy TEXT, reason TEXT,
+            status TEXT, pnl REAL, fill_price REAL,
+            protective_stop_order_id TEXT,
+            protective_tp_order_id TEXT,
+            protective_trailing_order_id TEXT
+        )
+    """)
+    conn.execute(
+        "INSERT INTO trades (id, symbol, side, qty, status, order_id, "
+        "timestamp, price) "
+        "VALUES (53, 'VSH', 'buy', 20, 'closed', 'vsh-buy', "
+        "'2026-04-22T17:45:17', 17.50)",
+    )
+    conn.execute(
+        "INSERT INTO trades (id, symbol, side, qty, status, order_id, "
+        "timestamp, price, pnl) "
+        "VALUES (131, 'VSH', 'sell', 20, 'closed', 'partial-sell', "
+        "'2026-05-04T15:10:45', 18.00, 10.00)",
+    )
+    conn.commit()
+    conn.close()
+
+    from reconcile_journal_to_broker import reconcile_with_ctx
+    api = MagicMock()
+    api.list_positions.return_value = [_broker_position("VSH", "1")]
+    def get_order(oid):
+        if oid == "partial-sell":
+            o = _broker_order(oid, "sell", "canceled", qty=20, filled_qty=19)
+            o.filled_avg_price = 18.00
+            return o
+        return _broker_order(oid, "buy", "filled", qty=20, filled_qty=20)
+    api.get_order.side_effect = get_order
+    ctx = _ctx(api, str(p))
+    res = reconcile_with_ctx(ctx, apply_changes=True)
+    assert len(res["fix_partial_sell"]) == 1
+    conn = sqlite3.connect(str(p))
+    row = conn.execute("SELECT qty, pnl FROM trades WHERE id=131").fetchone()
+    conn.close()
+    assert row[0] == 19  # qty corrected
+    # pnl = (18.00 - 17.50) * 19 = 9.50
+    assert abs(row[1] - 9.50) < 0.01
+
+
 def test_phantom_sell_detected_and_reverted(tmp_path):
     """Caught 2026-05-06: profile_6 #83 had side='sell' qty=27 B
     status='closed' in the journal, but the broker order was

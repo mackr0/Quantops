@@ -459,7 +459,8 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
         "backfill_cover": [],  # short full close
         "backfill_partial_sell": [],  # long partial close
         "fix_partial_entry": [],      # update journal qty/price to actual fill
-        "uncancel_sell": [],          # phantom SELL (broker canceled): undo
+        "uncancel_sell": [],          # phantom SELL (broker fully canceled): undo
+        "fix_partial_sell": [],       # partial-fill SELL: adjust journal qty
         "ambiguous": [],
         "real_held": 0,
     }
@@ -494,9 +495,25 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
         except Exception:
             continue
         broker_status = getattr(order, "status", "")
+        journal_qty = float(qty or 0)
         if broker_status in ("canceled", "expired", "rejected") and broker_filled == 0:
+            # Full phantom — undo
             actions["uncancel_sell"].append({
                 "trade_id": tid, "symbol": sym, "side": side, "qty": qty,
+                "order_id": oid, "broker_status": broker_status,
+            })
+        elif (broker_status in ("canceled", "expired", "rejected")
+              and 0 < broker_filled < journal_qty - 0.001):
+            # Partial fill — adjust journal qty to actual broker fill
+            try:
+                fap = float(getattr(order, "filled_avg_price", 0) or 0)
+            except Exception:
+                fap = 0
+            actions["fix_partial_sell"].append({
+                "trade_id": tid, "symbol": sym, "side": side,
+                "journal_qty": journal_qty,
+                "broker_filled_qty": broker_filled,
+                "broker_avg_fill_price": fap,
                 "order_id": oid, "broker_status": broker_status,
             })
 
@@ -670,6 +687,36 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
         # 'canceled' AND reopen the matching closed BUY/SHORT so the
         # position is correctly reflected as still held. Match by qty +
         # symbol + side, picking the most recent closed entry.
+        for a in actions["fix_partial_sell"]:
+            # Partial-fill SELL: journal claimed qty=N, broker only
+            # filled M (M < N). Adjust journal qty to M and recompute
+            # pnl. The (N - M) shares are still at the broker — the
+            # next reconcile pass will see the matching closed BUY
+            # has more open qty than journal SELL covers and flag the
+            # remainder for re-handling.
+            new_qty = a["broker_filled_qty"]
+            new_price = a["broker_avg_fill_price"]
+            # Look up the matching BUY/SHORT to recompute pnl
+            opener_side = "short" if a["side"] == "cover" else "buy"
+            opener = conn.execute(
+                "SELECT price FROM trades WHERE symbol=? AND side=? "
+                "ORDER BY timestamp DESC LIMIT 1",
+                (a["symbol"], opener_side),
+            ).fetchone()
+            buy_price = float(opener[0]) if opener and opener[0] else 0
+            if a["side"] == "cover":
+                new_pnl = round((buy_price - new_price) * new_qty, 2)
+            else:
+                new_pnl = round((new_price - buy_price) * new_qty, 2)
+            conn.execute(
+                "UPDATE trades SET qty=?, price=?, fill_price=?, pnl=?, "
+                "reason=COALESCE(reason || ' | ', '') || ? "
+                "WHERE id=?",
+                (new_qty, new_price, new_price, new_pnl,
+                 f"reconcile: broker only filled {new_qty:.0f} of "
+                 f"{a['journal_qty']:.0f} ({a['broker_status']}); "
+                 f"qty corrected", a["trade_id"]),
+            )
         for a in actions["uncancel_sell"]:
             conn.execute(
                 "UPDATE trades SET status='canceled', pnl=NULL, "
