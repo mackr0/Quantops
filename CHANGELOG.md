@@ -17,6 +17,22 @@ Rules going forward:
 
 ---
 
+## 2026-05-07 — Trade-execution silent swallows replaced with WARNING logs (Severity: high, observability)
+
+Three `except: pass` blocks in trade execution paths used to silently swallow failures that affect data integrity. Per the user's zero-tolerance memory: "Every except: pass is a potential silent failure — log at WARNING minimum."
+
+- **`trade_pipeline.py:935`** — `cancel_for_symbol` failure used to swallow silently. If broker stop cancellation fails, the stop fires on a now-flat position. Now logs WARNING with symbol + exception + consequence.
+- **`trade_pipeline.py:1009`** + **`trader.py:628`** — UPDATE-buys-closed failure (DB lock, etc.) used to swallow silently. If this fails, BUY rows stay forever-open even after the position exits, causing status drift on the trades page. Now both paths log WARNING.
+- **`options_multileg.py:1264`** — leg `get_order` swallow downgraded from `except: pass` to `logger.debug("no immediate fill: ...")`. The catch-up task `_task_update_fills` is the reliable backstop here (not a bug to log loud per leg, but not a bug to silence either).
+
+**Tests** in `tests/test_silent_failure_fixes_2026_05_07.py` (6 cases):
+- 2 behavioral tests verifying the warning patterns.
+- 4 static-guard tests that grep the relevant sources for the marker strings; if a future refactor strips the warning back to bare pass, these fail.
+
+Suite: 2,167 pass.
+
+---
+
 ## 2026-05-07 — Single-leg options + stat-arb: dup guards, position_intent, exit logging (Severity: critical, runaway prevention)
 
 The 2026-05-06 dup guard only covered multileg. Audit (general-purpose agent) found three same-class gaps:

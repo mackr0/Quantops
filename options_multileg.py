@@ -1274,8 +1274,17 @@ def _log_strategy_legs(strategy: OptionStrategy,
                 fap = getattr(o, "filled_avg_price", None)
                 if fap is not None:
                     leg_price = float(fap)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Best-effort: paper-account fills usually need
+                # 50-500ms after submit, so this often returns None
+                # immediately. _task_update_fills is the reliable
+                # catch-up path. Log at debug so an unusual failure
+                # mode (auth error, network) is still observable
+                # without spamming WARN on every leg log.
+                logger.debug(
+                    "leg get_order(%s) returned no immediate fill: %s",
+                    order_id, exc,
+                )
         try:
             log_trade(
                 symbol=leg.underlying,

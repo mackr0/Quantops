@@ -626,8 +626,13 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
         _c.commit()
         _c.close()
     except Exception as _exc:
-        # Reconciliation is best-effort — never block the exit path.
-        pass
+        # Reconciliation is best-effort — never block the exit path,
+        # but surface the failure so silent status drift is visible.
+        logging.warning(
+            "Failed to flip open BUY rows to closed for %s "
+            "in exit-fired path: %s. Trades page may show stale state.",
+            symbol, _exc,
+        )
 
     results.append({
         "symbol": symbol,

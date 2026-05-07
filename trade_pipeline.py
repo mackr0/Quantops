@@ -932,8 +932,14 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         try:
             from bracket_orders import cancel_for_symbol
             cancel_for_symbol(api, db_path, symbol)
-        except Exception:
-            pass
+        except Exception as exc:
+            # If cancel fails the broker stop will fire on a now-flat
+            # position — surface so we know to investigate, not silent.
+            logging.warning(
+                "Failed to cancel broker protective stop for %s "
+                "before SELL: %s. Stop may fire on flat position.",
+                symbol, exc,
+            )
 
         order = api.submit_order(
             symbol=symbol,
@@ -1006,8 +1012,14 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 )
                 _c.commit()
                 _c.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                # Failure here = silent status drift (BUY rows stay open
+                # forever even though the position is exited). Surface it.
+                logging.warning(
+                    "Failed to flip open BUY rows to closed for %s "
+                    "after SELL: %s. Trades page may show stale 'open' state.",
+                    symbol, exc,
+                )
 
     # ---- SHORT SELL logic (open new short position) -------------------------
     elif action in ("SELL", "STRONG_SELL") and symbol not in positions:
