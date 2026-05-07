@@ -254,3 +254,129 @@ def test_execute_multileg_falls_through_when_chain_unavailable():
     # Submitted — let Alpaca reject if needed
     assert result["action"] == "MULTILEG_OPEN"
     fake_api.submit_order.assert_called_once()
+
+
+def test_duplicate_position_guard_blocks_re_open():
+    """Caught 2026-05-06: profile_10 fired the same ARCC bull_call_spread
+    every cycle for 4 hours. Long leg filled, short leg didn't, strategy
+    never noticed it had an open position. Resulted in 13 phantom long
+    calls accumulating at the broker, no offsetting shorts.
+
+    Fix: before submitting, check journal for ANY open row referencing
+    the snapped OCC symbols. If found, refuse with action='SKIP'."""
+    import sqlite3
+    import tempfile
+    from unittest.mock import MagicMock, patch
+    from options_multileg import (
+        build_bull_call_spread, execute_multileg_strategy,
+    )
+    from datetime import date as _date
+
+    # Build a fake journal that already has an open ARCC long leg
+    f = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    f.close()
+    conn = sqlite3.connect(f.name)
+    conn.execute("""
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT, symbol TEXT, side TEXT, qty REAL, price REAL,
+            order_id TEXT, signal_type TEXT, strategy TEXT, reason TEXT,
+            status TEXT DEFAULT 'open', pnl REAL, fill_price REAL,
+            occ_symbol TEXT, option_strategy TEXT, expiry TEXT, strike REAL
+        )
+    """)
+    conn.execute(
+        "INSERT INTO trades (symbol, side, qty, occ_symbol, option_strategy, status) "
+        "VALUES ('ARCC', 'buy', 1, 'ARCC260618C00020000', 'bull_call_spread', 'open')",
+    )
+    conn.commit()
+    conn.close()
+
+    strategy = build_bull_call_spread(
+        underlying="ARCC",
+        expiry=_date(2026, 6, 18),
+        lower_strike=20.0,
+        upper_strike=21.0,
+        qty=1,
+    )
+
+    fake_api = MagicMock()
+    fake_ctx = MagicMock()
+    fake_ctx.db_path = f.name
+
+    contracts = [
+        {"symbol": "ARCC260618C00020000", "expiration_date": "2026-06-18",
+         "type": "call", "strike": 20.0},
+        {"symbol": "ARCC260618C00021000", "expiration_date": "2026-06-18",
+         "type": "call", "strike": 21.0},
+    ]
+    with patch(
+        "options_chain_alpaca.list_available_contracts",
+        return_value=contracts,
+    ):
+        result = execute_multileg_strategy(
+            fake_api, strategy, fake_ctx, log=False, use_combo=True,
+        )
+
+    assert result["action"] == "SKIP", result
+    assert "Duplicate-position guard" in result["reason"]
+    fake_api.submit_order.assert_not_called()
+
+
+def test_duplicate_guard_allows_when_no_open_position():
+    """Sanity: when journal has no open row for the OCC symbols, the
+    guard doesn't block — strategy submits normally."""
+    import sqlite3
+    import tempfile
+    from unittest.mock import MagicMock, patch
+    from options_multileg import (
+        build_bull_call_spread, execute_multileg_strategy,
+    )
+    from datetime import date as _date
+
+    f = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    f.close()
+    conn = sqlite3.connect(f.name)
+    conn.execute("""
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT, symbol TEXT, side TEXT, qty REAL, price REAL,
+            order_id TEXT, signal_type TEXT, strategy TEXT, reason TEXT,
+            status TEXT DEFAULT 'open', pnl REAL, fill_price REAL,
+            occ_symbol TEXT, option_strategy TEXT, expiry TEXT, strike REAL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+    strategy = build_bull_call_spread(
+        underlying="ARCC",
+        expiry=_date(2026, 6, 18),
+        lower_strike=20.0,
+        upper_strike=21.0,
+        qty=1,
+    )
+
+    fake_api = MagicMock()
+    fake_order = MagicMock()
+    fake_order.id = "test-order"
+    fake_api.submit_order.return_value = fake_order
+    fake_ctx = MagicMock()
+    fake_ctx.db_path = f.name
+
+    contracts = [
+        {"symbol": "ARCC260618C00020000", "expiration_date": "2026-06-18",
+         "type": "call", "strike": 20.0},
+        {"symbol": "ARCC260618C00021000", "expiration_date": "2026-06-18",
+         "type": "call", "strike": 21.0},
+    ]
+    with patch(
+        "options_chain_alpaca.list_available_contracts",
+        return_value=contracts,
+    ):
+        result = execute_multileg_strategy(
+            fake_api, strategy, fake_ctx, log=False, use_combo=True,
+        )
+
+    assert result["action"] == "MULTILEG_OPEN", result
+    fake_api.submit_order.assert_called_once()

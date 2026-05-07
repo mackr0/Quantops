@@ -558,6 +558,45 @@ def execute_multileg_strategy(
             "legs): %s", exc,
         )
 
+    # Duplicate-position guard: if this profile already has open journal
+    # rows for any of the snapped OCC symbols (any side), refuse — the
+    # spread is already on. Caught 2026-05-06: profile_10 fired the same
+    # ARCC bull_call_spread every cycle for 4 hours because the long leg
+    # filled but the short leg didn't, so the strategy never noticed it
+    # had an open position and kept re-firing. Result: 13 phantom long
+    # call contracts at the broker, no offsetting shorts.
+    if db_path and strategy.legs:
+        try:
+            import sqlite3 as _sqlite3
+            conn = _sqlite3.connect(db_path)
+            for leg in strategy.legs:
+                occ = getattr(leg, "occ_symbol", None)
+                if not occ:
+                    continue
+                existing = conn.execute(
+                    "SELECT id FROM trades WHERE occ_symbol=? "
+                    "AND status='open' LIMIT 1",
+                    (occ,),
+                ).fetchone()
+                if existing:
+                    conn.close()
+                    result["action"] = "SKIP"
+                    result["reason"] = (
+                        f"Duplicate-position guard: profile already has "
+                        f"open journal row for {occ} (id #{existing[0]}). "
+                        f"Refusing to duplicate the spread."
+                    )
+                    logger.warning(
+                        "[multileg] %s SKIPPED — %s",
+                        strategy.name, result["reason"],
+                    )
+                    return result
+            conn.close()
+        except Exception as exc:
+            logger.debug(
+                "Duplicate-position check failed (continuing): %s", exc,
+            )
+
     if use_combo:
         try:
             combo_kwargs = {
