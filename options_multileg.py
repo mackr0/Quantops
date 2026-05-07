@@ -431,6 +431,15 @@ import logging  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
+# position_intent map shared by combo legs, sequential submits, and
+# the rollback path. Alpaca async-cancels short option opens with no
+# intent (silently, sometimes labeled as "wash trade") — caught
+# 2026-05-06 when ARCC bull_call_spread short legs canceled every
+# cycle for 4 hours, accumulating 13 phantom long calls.
+_INTENT_OPEN = {"buy": "buy_to_open", "sell": "sell_to_open"}
+_INTENT_CLOSE = {"buy": "buy_to_close", "sell": "sell_to_close"}
+
+
 def _alpaca_leg_dict(leg: OptionLeg, ratio: int = 1) -> Dict[str, Any]:
     """Convert an OptionLeg to Alpaca's `option_legs` array shape.
 
@@ -442,15 +451,11 @@ def _alpaca_leg_dict(leg: OptionLeg, ratio: int = 1) -> Dict[str, Any]:
     ratio 1 (1 long + 1 short = 1 spread). For ratio spreads the
     builder would set ratio differently.
     """
-    intent_map = {
-        "buy": "buy_to_open",
-        "sell": "sell_to_open",
-    }
     return {
         "symbol": leg.occ_symbol,
         "side": leg.side,
         "ratio_qty": int(ratio),
-        "position_intent": intent_map.get(leg.side, "buy_to_open"),
+        "position_intent": _INTENT_OPEN.get(leg.side, "buy_to_open"),
     }
 
 
@@ -633,7 +638,11 @@ def execute_multileg_strategy(
             )
             # Fall through to sequential path
 
-    # Sequential fallback — submit each leg, rollback on failure
+    # Sequential fallback — submit each leg, rollback on failure.
+    # NOTE: position_intent is required on every option submit_order;
+    # without it Alpaca async-cancels short opens (the root cause of
+    # the 2026-05-06 ARCC runaway). _INTENT_OPEN maps buy→buy_to_open
+    # and sell→sell_to_open for opening legs.
     submitted: List[Dict[str, Any]] = []
     for i, leg in enumerate(strategy.legs):
         try:
@@ -643,6 +652,7 @@ def execute_multileg_strategy(
                 side=leg.side,
                 type="market",
                 time_in_force="day",
+                position_intent=_INTENT_OPEN.get(leg.side, "buy_to_open"),
             )
             submitted.append({
                 "leg_index": i, "leg": leg,
@@ -653,7 +663,9 @@ def execute_multileg_strategy(
                 "Leg %d (%s %s) of %s failed: %s. Attempting rollback.",
                 i, leg.side, leg.occ_symbol, strategy.name, exc,
             )
-            # Rollback: try to close each successfully-submitted leg
+            # Rollback: close each successfully-submitted leg with the
+            # OPPOSITE intent (_INTENT_CLOSE). A buy_to_open is closed
+            # by sell_to_close; a sell_to_open by buy_to_close.
             rollback_results = []
             for sub in submitted:
                 try:
@@ -664,6 +676,7 @@ def execute_multileg_strategy(
                         side=rev_side,
                         type="market",
                         time_in_force="day",
+                        position_intent=_INTENT_CLOSE.get(rev_side, "sell_to_close"),
                     )
                     rollback_results.append({
                         "leg_index": sub["leg_index"],

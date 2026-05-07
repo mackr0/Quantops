@@ -491,3 +491,156 @@ def test_friendly_time_still_handles_no_subsecond():
     from display_names import friendly_time
     result = friendly_time("2026-05-06T19:59:07")
     assert "May" in result and "ET" in result
+
+
+def test_sequential_legs_pass_position_intent_open():
+    """Caught 2026-05-07: ARCC short legs were async-canceled by
+    Alpaca because the sequential fallback omitted position_intent.
+    Combo path included it via _alpaca_leg_dict; sequential didn't.
+    Every short leg must submit with sell_to_open; every long with
+    buy_to_open. Without this Alpaca rejects naked-short option
+    opens (the ARCC root cause)."""
+    from unittest.mock import MagicMock, patch
+    from options_multileg import (
+        build_bull_call_spread, execute_multileg_strategy,
+    )
+    from datetime import date as _date
+
+    strategy = build_bull_call_spread(
+        underlying="ARCC",
+        expiry=_date(2026, 6, 18),
+        lower_strike=20.0,
+        upper_strike=21.0,
+        qty=1,
+    )
+
+    fake_api = MagicMock()
+    fake_order = MagicMock()
+    fake_order.id = "leg-id"
+    fake_api.submit_order.return_value = fake_order
+
+    fake_ctx = MagicMock()
+    fake_ctx.db_path = None
+
+    contracts = [
+        {"symbol": "ARCC260618C00020000", "expiration_date": "2026-06-18",
+         "type": "call", "strike": 20.0},
+        {"symbol": "ARCC260618C00021000", "expiration_date": "2026-06-18",
+         "type": "call", "strike": 21.0},
+    ]
+    with patch(
+        "options_chain_alpaca.list_available_contracts",
+        return_value=contracts,
+    ):
+        # Force sequential by passing use_combo=False
+        result = execute_multileg_strategy(
+            fake_api, strategy, fake_ctx, log=False, use_combo=False,
+        )
+
+    assert result["action"] == "MULTILEG_OPEN", result
+    # Two submit_order calls; each must have position_intent.
+    assert fake_api.submit_order.call_count == 2
+    for call in fake_api.submit_order.call_args_list:
+        kwargs = call.kwargs
+        side = kwargs["side"]
+        assert "position_intent" in kwargs, (
+            f"Sequential leg submit ({side}) missing position_intent — "
+            "this is the ARCC root cause."
+        )
+        # buy → buy_to_open, sell → sell_to_open
+        expected = "buy_to_open" if side == "buy" else "sell_to_open"
+        assert kwargs["position_intent"] == expected, (
+            f"Wrong intent for {side}: got {kwargs['position_intent']}, "
+            f"expected {expected}"
+        )
+
+
+def test_sequential_rollback_uses_close_intent():
+    """When leg N fails after legs 1..N-1 submitted, rollback must
+    submit reverse-side orders WITH close intent (not open). A
+    buy_to_open is unwound by sell_to_close; sell_to_open by
+    buy_to_close. Without correct intent the rollback would be
+    treated as a NEW position open, doubling exposure."""
+    from unittest.mock import MagicMock, patch
+    from options_multileg import (
+        build_bull_call_spread, execute_multileg_strategy,
+    )
+    from datetime import date as _date
+
+    strategy = build_bull_call_spread(
+        underlying="ARCC",
+        expiry=_date(2026, 6, 18),
+        lower_strike=20.0,
+        upper_strike=21.0,
+        qty=1,
+    )
+
+    fake_api = MagicMock()
+    # Leg 0 succeeds; leg 1 raises; both rollbacks succeed.
+    submitted_orders = []
+    rollback_calls = []
+
+    def submit_side_effect(**kwargs):
+        intent = kwargs.get("position_intent", "")
+        side = kwargs["side"]
+        if "to_open" in intent:
+            # opening leg
+            if len(submitted_orders) == 0:
+                m = MagicMock()
+                m.id = "leg-0"
+                submitted_orders.append(m)
+                return m
+            else:
+                raise RuntimeError("leg 1 simulated failure")
+        else:
+            # rollback (close intent)
+            rollback_calls.append({"side": side, "intent": intent})
+            m = MagicMock()
+            m.id = f"rollback-{len(rollback_calls)}"
+            return m
+
+    fake_api.submit_order.side_effect = submit_side_effect
+
+    fake_ctx = MagicMock()
+    fake_ctx.db_path = None
+
+    contracts = [
+        {"symbol": "ARCC260618C00020000", "expiration_date": "2026-06-18",
+         "type": "call", "strike": 20.0},
+        {"symbol": "ARCC260618C00021000", "expiration_date": "2026-06-18",
+         "type": "call", "strike": 21.0},
+    ]
+    with patch(
+        "options_chain_alpaca.list_available_contracts",
+        return_value=contracts,
+    ):
+        result = execute_multileg_strategy(
+            fake_api, strategy, fake_ctx, log=False, use_combo=False,
+        )
+
+    # Action errored, rollback fired for leg 0.
+    assert result["action"] == "ERROR", result
+    assert len(rollback_calls) == 1, rollback_calls
+    # Leg 0 was a buy_to_open → rollback should be sell_to_close.
+    assert rollback_calls[0]["side"] == "sell"
+    assert rollback_calls[0]["intent"] == "sell_to_close"
+
+
+def test_combo_legs_still_pass_open_intent():
+    """Regression guard: the combo (atomic) path was already passing
+    position_intent via _alpaca_leg_dict. Make sure refactoring the
+    intent map into module-level constants didn't break that."""
+    from options_multileg import _alpaca_leg_dict, OptionLeg
+
+    long_leg = OptionLeg(
+        occ_symbol="X260618C00020000", underlying="X",
+        expiry="2026-06-18", strike=20.0, right="C",
+        side="buy", qty=1,
+    )
+    short_leg = OptionLeg(
+        occ_symbol="X260618C00021000", underlying="X",
+        expiry="2026-06-18", strike=21.0, right="C",
+        side="sell", qty=1,
+    )
+    assert _alpaca_leg_dict(long_leg)["position_intent"] == "buy_to_open"
+    assert _alpaca_leg_dict(short_leg)["position_intent"] == "sell_to_open"

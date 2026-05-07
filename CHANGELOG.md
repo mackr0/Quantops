@@ -17,6 +17,28 @@ Rules going forward:
 
 ---
 
+## 2026-05-07 — Sequential multileg legs now pass position_intent (Severity: critical, ARCC root cause)
+
+The 2026-05-06 dup-guard for multileg runaways was a band-aid. The real reason ARCC bull_call_spread short legs kept async-canceling: `options_multileg.execute_multileg_strategy`'s sequential fallback called `api.submit_order(...)` with no `position_intent` kwarg. The combo path included it via `_alpaca_leg_dict` (line 444), but the sequential path at line 640 didn't. **Alpaca async-cancels naked-short option opens that arrive without intent declaration** — sometimes labeled "wash trade" in the rejection. That's why the short $21 leg of the ARCC spread vanished every cycle while the long $20 leg filled fine.
+
+**Fix:**
+- Hoisted the intent map to module-level constants (`_INTENT_OPEN`, `_INTENT_CLOSE`).
+- Sequential submit at line 640 now passes `position_intent=_INTENT_OPEN[side]`.
+- Sequential rollback (when leg N raises after legs 1..N-1 submitted) now passes `_INTENT_CLOSE` on the reversal leg — buy_to_open is unwound by sell_to_close, sell_to_open by buy_to_close. Without close intent the rollback would be treated as a NEW position open and double exposure.
+
+The dup guard from yesterday stays in place as defense-in-depth; the position_intent fix is the upstream root-cause fix.
+
+**Tests** in `tests/test_multileg_contract_snap.py`:
+- `test_sequential_legs_pass_position_intent_open` — every sequential submit must include intent (buy→buy_to_open, sell→sell_to_open).
+- `test_sequential_rollback_uses_close_intent` — leg-1 failure triggers rollback; rollback uses sell_to_close (or buy_to_close), NOT *_to_open.
+- `test_combo_legs_still_pass_open_intent` — regression guard for the combo path that was already correct.
+
+Plus profile_10 (Small Cap Shorts) was re-enabled today after manually covering the 13 phantom long ARCC calls at $0.10/contract (realized −$144 paper loss). Re-enabling required: (a) flat broker book on ARCC, (b) ARCC long-leg row closed in journal so dup-guard match clears for future ARCC entries.
+
+Full suite: 2,155 pass.
+
+---
+
 ## 2026-05-07 — Multileg legs still showing "$--" — fix the catch-up path (Severity: high, dashboard P&L attribution)
 
 The 2026-05-06 "multileg fill price capture" fix shipped with a test that mocked `api.get_order(...)` returning `filled_avg_price=0.45` immediately after submit. The mock didn't represent real Alpaca paper behavior: paper accounts return `filled_avg_price=None` for ~50–500 ms after `submit_order` returns, so the immediate-fetch in `_log_strategy_legs` always logs `price=NULL, fill_price=NULL`. **Result: every multileg leg since the May 6 deploy shipped to prod with NULL prices.** Surveyed across all 4 profiles holding multileg positions: 28/28 legs since 2026-05-04 had NULL fill_price.
