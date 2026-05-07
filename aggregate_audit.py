@@ -91,8 +91,11 @@ def _journal_open_qty_per_symbol(db_path: str) -> Dict[str, float]:
         side = (row[1] or "").lower()
         qty = float(row[2] or 0)
         price = float(row[3] or 0)
-        if qty <= 0 or price <= 0:
+        if qty <= 0:
             continue
+        # NOTE: price=0 is allowed for the audit (option log_trade
+        # calls store NULL price; the audit only needs qty for
+        # FIFO matching). Don't filter on price.
         if side == "buy":
             long_lots.setdefault(sym, []).append([qty, price])
         elif side == "short":

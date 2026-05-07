@@ -223,6 +223,47 @@ def test_tolerance_ignores_fractional_noise(mock_module_state):
     assert result["drift"] == []
 
 
+def test_null_price_rows_still_counted_in_fifo(mock_module_state):
+    """log_trade for option legs sometimes stores NULL price (the
+    multi-leg execution path doesn't always pass a per-leg price).
+    The audit's FIFO must still count the qty for those rows so
+    options drift is detectable. Caught 2026-05-06: option contracts
+    with NULL price disappeared from the audit, showing as
+    broker_orphan even though the journal had them."""
+    from aggregate_audit import audit_aggregate_drift
+    state = mock_module_state
+    api = MagicMock()
+    api.list_positions.return_value = [
+        _broker_position("WMT260612P00117000", 3),
+    ]
+    # Insert a row with NULL price directly
+    db = state["tmp_path"] / "profile_p.db"
+    import sqlite3
+    conn = sqlite3.connect(str(db))
+    conn.execute("""
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT, symbol TEXT, side TEXT, qty REAL, price REAL,
+            order_id TEXT, signal_type TEXT, strategy TEXT, reason TEXT,
+            status TEXT DEFAULT 'open', pnl REAL, fill_price REAL,
+            occ_symbol TEXT
+        )
+    """)
+    conn.execute(
+        "INSERT INTO trades (timestamp, symbol, side, qty, price, occ_symbol) "
+        "VALUES ('2026-05-06T14:56:45', 'WMT', 'buy', 3, NULL, 'WMT260612P00117000')",
+    )
+    conn.commit()
+    conn.close()
+    state["profiles"][1] = _ctx(1, alpaca_account_id=1, db_path=str(db))
+    state["profiles"][1].api = api
+    state["profiles"][1].get_alpaca_api = lambda: api
+    result = audit_aggregate_drift(profile_ids=[1])
+    assert result["drift"] == [], (
+        f"expected no drift but got {result['drift']}"
+    )
+
+
 def test_options_aggregated_by_occ_not_underlying(mock_module_state):
     """Caught after deploying audit to prod: a bull_put_spread BUY
     journal row stores symbol='MSFT' + occ_symbol='MSFT260612P00375000'.
