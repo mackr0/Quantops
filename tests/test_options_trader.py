@@ -214,6 +214,35 @@ class TestOrderSubmission:
         assert kwargs["type"] == "market"
         assert kwargs["time_in_force"] == "day"
         assert "limit_price" not in kwargs
+        # 2026-05-07: Alpaca async-cancels option opens that arrive
+        # without position_intent. Default for buy = buy_to_open.
+        assert kwargs["position_intent"] == "buy_to_open"
+
+    def test_sell_defaults_to_sell_to_open_intent(self):
+        """Without intent, Alpaca async-cancels short option opens
+        (the ARCC root cause). For a sell, default to sell_to_open."""
+        from options_trader import submit_option_order
+        api = MagicMock()
+        api.submit_order.return_value = MagicMock(id="opt-order-sell")
+        submit_option_order(
+            api, "AAPL  250516P00150000", side="sell", qty=1,
+            order_type="market",
+        )
+        kwargs = api.submit_order.call_args.kwargs
+        assert kwargs["position_intent"] == "sell_to_open"
+
+    def test_explicit_close_intent_passes_through(self):
+        """Closing positions need *_to_close intent. Caller passes it
+        explicitly (e.g., long_vol hedge close uses sell_to_close)."""
+        from options_trader import submit_option_order
+        api = MagicMock()
+        api.submit_order.return_value = MagicMock(id="opt-close")
+        submit_option_order(
+            api, "SPY  260516P00400000", side="sell", qty=1,
+            order_type="market", position_intent="sell_to_close",
+        )
+        kwargs = api.submit_order.call_args.kwargs
+        assert kwargs["position_intent"] == "sell_to_close"
 
     def test_limit_order_includes_limit_price(self):
         from options_trader import submit_option_order
@@ -383,6 +412,77 @@ class TestExecuteOptionStrategy:
         assert kwargs["qty"] == 1
         assert kwargs["symbol"].startswith("AAPL")
         assert kwargs["symbol"].endswith("00150000")  # strike * 1000
+
+    def test_dup_guard_blocks_re_open_with_existing_journal_row(self, monkeypatch, tmp_path):
+        """Caught 2026-05-07: single-leg options had no dup guard, so
+        the same covered_call / CSP / long_call could re-fire on
+        every cycle if the AI re-proposed it. Same shape as the
+        ARCC multileg runaway. Now: pre-submit, query journal for
+        any open row matching the OCC; refuse if found."""
+        import sqlite3
+        from options_trader import execute_option_strategy
+
+        db_path = str(tmp_path / "p.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT, side TEXT, qty REAL,
+                status TEXT DEFAULT 'open',
+                occ_symbol TEXT, option_strategy TEXT
+            )
+        """)
+        # Pre-existing open row matches what execute_option_strategy
+        # would build for AAPL 150C exp 2099-01-01.
+        # OCC format: AAPL  990101C00150000 (year truncated to 2 digits)
+        conn.execute(
+            "INSERT INTO trades (symbol, side, qty, occ_symbol, option_strategy, status) "
+            "VALUES ('AAPL', 'buy', 1, 'AAPL  990101C00150000', 'long_call', 'open')"
+        )
+        conn.commit()
+        conn.close()
+
+        self._patch_account_state(monkeypatch, [],
+            {"equity": 100000, "buying_power": 100000})
+        api = MagicMock()
+        result = execute_option_strategy(api, {
+            "option_strategy": "long_call", "symbol": "AAPL",
+            "strike": 150, "expiry": "2099-01-01", "contracts": 1,
+            "limit_price": 2.55,
+        }, ctx=self._ctx(db_path=db_path), log=False)
+        assert result["action"] == "SKIP"
+        assert "already exists" in result["reason"]
+        api.submit_order.assert_not_called()
+
+    def test_dup_guard_allows_when_journal_clean(self, monkeypatch, tmp_path):
+        """Empty journal — dup guard must not block."""
+        import sqlite3
+        from options_trader import execute_option_strategy
+
+        db_path = str(tmp_path / "p.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT, side TEXT, qty REAL,
+                status TEXT DEFAULT 'open',
+                occ_symbol TEXT, option_strategy TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+        self._patch_account_state(monkeypatch, [],
+            {"equity": 100000, "buying_power": 100000})
+        api = MagicMock()
+        api.submit_order.return_value = MagicMock(id="opt-clean")
+        result = execute_option_strategy(api, {
+            "option_strategy": "long_call", "symbol": "AAPL",
+            "strike": 150, "expiry": "2099-01-01", "contracts": 1,
+            "limit_price": 2.55,
+        }, ctx=self._ctx(db_path=db_path), log=False)
+        assert result["action"] == "OPTIONS_OPEN"
+        api.submit_order.assert_called_once()
 
     def test_successful_covered_call_caps_contracts(self, monkeypatch):
         """Holding 250 shares + asking for 5 contracts → capped to 2."""

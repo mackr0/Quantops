@@ -452,6 +452,42 @@ def execute_option_strategy(
     # Build OCC + submit
     occ = format_occ_symbol(underlying, expiry, strike, right)
 
+    # Duplicate-position guard — same shape as the multileg dup guard
+    # added 2026-05-06. Without this, a strategy that proposes the
+    # same OPTIONS entry on consecutive cycles (e.g., AI repeatedly
+    # surfacing the same covered_call recommendation) would re-fire
+    # on every cycle, accumulating duplicate positions at the broker.
+    db_path = ctx.db_path if ctx else None
+    if db_path:
+        try:
+            import sqlite3 as _sqlite3
+            conn = _sqlite3.connect(db_path)
+            row = conn.execute(
+                "SELECT id FROM trades "
+                "WHERE occ_symbol = ? "
+                "  AND COALESCE(status, 'open') NOT IN ('closed', 'canceled') "
+                "LIMIT 1",
+                (occ,),
+            ).fetchone()
+            conn.close()
+            if row:
+                result["action"] = "SKIP"
+                result["reason"] = (
+                    f"Open journal row for {occ} already exists "
+                    f"(id={row[0]}) — refusing to duplicate "
+                    f"{strategy} entry."
+                )
+                logger.warning(
+                    "[options] %s SKIPPED on %s — %s",
+                    strategy, underlying, result["reason"],
+                )
+                return result
+        except Exception as exc:
+            logger.warning(
+                "Duplicate-position check failed for %s (continuing): %s",
+                occ, exc,
+            )
+
     # Phase A2 — Greeks exposure gate. Compute the leg's contribution
     # to portfolio Greeks and check it doesn't push the book past
     # any active gate. Skips silently when no chain data available
@@ -564,6 +600,7 @@ def submit_option_order(
     order_type: str = "market",
     limit_price: Optional[float] = None,
     time_in_force: str = "day",
+    position_intent: Optional[str] = None,
 ) -> Optional[str]:
     """Submit a single-leg option order via Alpaca's `submit_order`.
 
@@ -573,6 +610,10 @@ def submit_option_order(
     side: "buy" or "sell"
     order_type: "market" or "limit"
     limit_price: required when order_type == "limit"
+    position_intent: "buy_to_open" / "sell_to_open" / "buy_to_close" /
+        "sell_to_close". Required by Alpaca on every option submit; if
+        None, defaults to *_to_open by side. Without intent Alpaca
+        async-cancels short opens (caught 2026-05-06 ARCC runaway).
 
     Returns the broker order_id on success, None on failure (failure
     is logged, not raised — caller decides how to surface).
@@ -584,6 +625,8 @@ def submit_option_order(
             "submit_option_order: limit_price required for limit order"
         )
         return None
+    if position_intent is None:
+        position_intent = "buy_to_open" if side == "buy" else "sell_to_open"
     try:
         kwargs = {
             "symbol": occ_symbol,
@@ -591,6 +634,7 @@ def submit_option_order(
             "side": side,
             "type": order_type,
             "time_in_force": time_in_force,
+            "position_intent": position_intent,
         }
         if order_type == "limit":
             kwargs["limit_price"] = round(float(limit_price), 2)

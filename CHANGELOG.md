@@ -17,6 +17,29 @@ Rules going forward:
 
 ---
 
+## 2026-05-07 — Single-leg options + stat-arb: dup guards, position_intent, exit logging (Severity: critical, runaway prevention)
+
+The 2026-05-06 dup guard only covered multileg. Audit (general-purpose agent) found three same-class gaps:
+
+**1. `submit_option_order` lacked `position_intent`.** Every Alpaca option submit needs intent; without it, short opens (CSP, covered_call) async-cancel the same way ARCC short legs did. Same root cause class as Bug #1, but for single-leg.
+- New optional `position_intent` kwarg on `submit_option_order` (`options_trader.py:559`).
+- Defaults to `*_to_open` based on side when caller doesn't specify.
+- `multi_scheduler._close_hedge` now passes `sell_to_close` explicitly when closing long-vol hedges.
+
+**2. `execute_option_strategy` had no dup guard.** Same shape as the ARCC runaway: AI re-proposes covered_call / long_call on consecutive cycles → multiple positions accumulate. Now: pre-submit, query journal for any open row matching the OCC; refuse with `action='SKIP'` and a reason. Same DB-query pattern as the multileg dup guard added 2026-05-06.
+
+**3. `stat_arb_pair_book.execute_pair_trade` had no dup guard AND no exit logging.**
+- Entry: same dup-guard pattern — query for any open `strategy='pair_trade'` row matching either leg; refuse if found.
+- Exit: previously submitted close orders to the broker but **never called `log_trade`** for them, leaving entry rows forever-open. Now: each close logs a row with `signal_type='PAIR_TRADE'`, status=`closed`, and the entry rows for that symbol get flipped to `closed` so FIFO sees the pair as flat. Without this, the virtual position book carried pairs as held even after the broker had flattened them.
+
+**Tests:** 7 new total.
+- `test_options_trader.py`: market order default intent (buy→buy_to_open), sell default (sell_to_open), explicit close intent passes through, dup guard blocks/allows.
+- `test_stat_arb_pair_book.py`: dup guard blocks re-enter when journal has open row, exit path logs both close rows + flips entry rows to closed.
+
+Suite: 2,161 pass.
+
+---
+
 ## 2026-05-07 — Sequential multileg legs now pass position_intent (Severity: critical, ARCC root cause)
 
 The 2026-05-06 dup-guard for multileg runaways was a band-aid. The real reason ARCC bull_call_spread short legs kept async-canceling: `options_multileg.execute_multileg_strategy`'s sequential fallback called `api.submit_order(...)` with no `position_intent` kwarg. The combo path included it via `_alpaca_leg_dict` (line 444), but the sequential path at line 640 didn't. **Alpaca async-cancels naked-short option opens that arrive without intent declaration** — sometimes labeled "wash trade" in the rejection. That's why the short $21 leg of the ARCC spread vanished every cycle while the long $20 leg filled fine.

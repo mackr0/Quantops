@@ -849,6 +849,38 @@ def execute_pair_trade(api, proposal: Dict[str, Any], ctx,
             result["reason"] = "dollars_per_leg must be > 0 for ENTER"
             return result
 
+        # Duplicate-position guard — same shape as the multileg
+        # dup guard. Without this, the AI re-proposing the same
+        # pair on consecutive cycles would re-fire and accumulate
+        # exposure (the ARCC failure mode for pair trades).
+        try:
+            import sqlite3 as _sqlite3
+            conn = _sqlite3.connect(db_path)
+            row = conn.execute(
+                "SELECT id, symbol FROM trades "
+                "WHERE strategy = 'pair_trade' "
+                "  AND symbol IN (?, ?) "
+                "  AND COALESCE(status, 'open') NOT IN ('closed', 'canceled') "
+                "LIMIT 1",
+                (sym_a, sym_b),
+            ).fetchone()
+            conn.close()
+            if row:
+                result["action"] = "SKIP"
+                result["reason"] = (
+                    f"Open journal row for pair leg {row[1]} already "
+                    f"exists (id={row[0]}) — refusing to duplicate "
+                    f"{pair.label} entry."
+                )
+                logger.warning(
+                    "[pair] %s SKIPPED — %s", pair.label, result["reason"],
+                )
+                return result
+        except Exception as exc:
+            logger.warning(
+                "Pair duplicate-position check failed (continuing): %s", exc,
+            )
+
         # Cap leg size at PAIR_LEG_MAX_PCT_OF_EQUITY of equity
         try:
             from client import get_account_info
@@ -1007,10 +1039,51 @@ def execute_pair_trade(api, proposal: Dict[str, Any], ctx,
                 symbol=actual_sym, qty=qty, side=close_side,
                 type="market", time_in_force="day",
             )
+            order_id_close = getattr(order, "id", None)
             closed.append({
                 "leg": sym, "symbol": actual_sym,
-                "qty": qty, "order_id": getattr(order, "id", None),
+                "qty": qty, "order_id": order_id_close,
             })
+            # Log the closing trade so the journal reflects reality
+            # (without this, the entry rows stay forever-open even
+            # after the broker has flattened the pair).
+            if log and order_id_close:
+                try:
+                    from journal import log_trade
+                    log_trade(
+                        symbol=actual_sym,
+                        side=close_side,
+                        qty=qty,
+                        order_id=order_id_close,
+                        signal_type="PAIR_TRADE",
+                        strategy="pair_trade",
+                        reason=f"Pair exit {pair.label} leg {sym}",
+                        status="closed",
+                        db_path=db_path,
+                    )
+                    # Also flip the matching entry rows to closed so
+                    # FIFO sees the pair as flat. Without this the
+                    # virtual position book carries the entries
+                    # forever even after the close logs above.
+                    # The just-written close row already has
+                    # status='closed' (passed explicitly above), so
+                    # the WHERE 'open' filter excludes it naturally.
+                    import sqlite3 as _sqlite3
+                    conn = _sqlite3.connect(db_path)
+                    conn.execute(
+                        "UPDATE trades SET status='closed' "
+                        "WHERE symbol = ? "
+                        "  AND strategy = 'pair_trade' "
+                        "  AND COALESCE(status, 'open') = 'open'",
+                        (actual_sym,),
+                    )
+                    conn.commit()
+                    conn.close()
+                except Exception as log_exc:
+                    logger.warning(
+                        "EXIT leg %s (%s) submitted but log_trade failed: %s",
+                        sym, actual_sym, log_exc,
+                    )
         except Exception as exc:
             logger.warning("EXIT leg %s (%s) failed: %s",
                             sym, actual_sym, exc)

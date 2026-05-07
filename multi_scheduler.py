@@ -1412,6 +1412,7 @@ def _task_manage_long_vol_hedge(ctx):
             order_id = submit_option_order(
                 api, active_row["occ_symbol"], side="sell",
                 qty=int(active_row["contracts"]),
+                position_intent="sell_to_close",
             )
             # Best-effort fill price for P&L (broker price may not be
             # available immediately; settle for None and let the next

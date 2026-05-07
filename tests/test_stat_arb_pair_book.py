@@ -868,6 +868,99 @@ class TestExecutePairTrade:
         assert result["action"] == "SKIP"
         api.submit_order.assert_not_called()
 
+    def test_dup_guard_blocks_re_enter_with_open_journal_row(self, tmp_db):
+        """Caught 2026-05-07: stat-arb entry had no dup guard. AI
+        re-proposing the same pair on consecutive cycles would
+        accumulate exposure (the multi-leg ARCC failure mode for
+        pair trades). Now: pre-submit, query journal for any open
+        pair_trade row matching either leg; refuse if found."""
+        import sqlite3
+        from stat_arb_pair_book import execute_pair_trade
+        self._seed_active_pair(tmp_db)
+
+        # Pre-existing open journal row for leg A
+        conn = sqlite3.connect(tmp_db)
+        conn.execute(
+            "INSERT INTO trades (symbol, side, qty, strategy, status, "
+            "signal_type) VALUES ('A', 'buy', 10, 'pair_trade', 'open', "
+            "'PAIR_TRADE')"
+        )
+        conn.commit()
+        conn.close()
+
+        api = MagicMock()
+        with patch("market_data.get_bars",
+                   side_effect=[self._bars_df(100.0), self._bars_df(50.0)]), \
+             patch("client.get_account_info",
+                   return_value={"equity": 100000}):
+            result = execute_pair_trade(api, {
+                "pair_action": "ENTER_LONG_A_SHORT_B",
+                "symbol_a": "A", "symbol_b": "B",
+                "dollars_per_leg": 1000,
+            }, ctx=self._ctx(tmp_db), log=False)
+        assert result["action"] == "SKIP"
+        assert "already exists" in result["reason"]
+        api.submit_order.assert_not_called()
+
+    def test_exit_logs_close_and_flips_entry_rows_to_closed(self, tmp_db):
+        """Caught 2026-05-07: pair exit submitted broker SELLs but
+        never wrote a journal row. Entry rows stayed forever-open;
+        the FIFO virtual position book carried the pair as held
+        even after the broker had flattened it. Now: log_trade for
+        each close + flip matching open entry rows to 'closed'."""
+        import sqlite3
+        from stat_arb_pair_book import execute_pair_trade
+        self._seed_active_pair(tmp_db)
+
+        # Seed two open entry rows in the journal (the legs we'll exit)
+        conn = sqlite3.connect(tmp_db)
+        conn.execute(
+            "INSERT INTO trades (symbol, side, qty, strategy, status, "
+            "signal_type) VALUES ('A', 'buy', 10, 'pair_trade', 'open', "
+            "'PAIR_TRADE')"
+        )
+        conn.execute(
+            "INSERT INTO trades (symbol, side, qty, strategy, status, "
+            "signal_type) VALUES ('B', 'sell', 20, 'pair_trade', 'open', "
+            "'PAIR_TRADE')"
+        )
+        conn.commit()
+        conn.close()
+
+        api = MagicMock()
+        api.submit_order.side_effect = [
+            MagicMock(id="close-a"), MagicMock(id="close-b"),
+        ]
+        positions = [
+            {"symbol": "A", "qty": "10"},
+            {"symbol": "B", "qty": "-20"},
+        ]
+        with patch("client.get_positions", return_value=positions):
+            result = execute_pair_trade(api, {
+                "pair_action": "EXIT",
+                "symbol_a": "A", "symbol_b": "B",
+            }, ctx=self._ctx(tmp_db), log=True)
+        assert result["action"] == "PAIR_CLOSE"
+
+        # Check journal: 2 entry rows now 'closed' + 2 close rows added.
+        conn = sqlite3.connect(tmp_db)
+        rows = conn.execute(
+            "SELECT symbol, side, status, order_id FROM trades "
+            "WHERE strategy='pair_trade' ORDER BY id"
+        ).fetchall()
+        conn.close()
+        statuses = {(r[0], r[1]): r[2] for r in rows}
+        # Original entries flipped
+        assert statuses[("A", "buy")] == "closed"
+        assert statuses[("B", "sell")] == "closed"
+        # Closes recorded — at least one new row per leg with order_id
+        a_closes = [r for r in rows if r[0] == "A" and r[1] == "sell"
+                    and r[3] == "close-a"]
+        b_closes = [r for r in rows if r[0] == "B" and r[1] == "buy"
+                    and r[3] == "close-b"]
+        assert len(a_closes) == 1, f"missing close row for A: {rows}"
+        assert len(b_closes) == 1, f"missing close row for B: {rows}"
+
 
 # ---------------------------------------------------------------------------
 # _validate_ai_trades — PAIR_TRADE pass-through
