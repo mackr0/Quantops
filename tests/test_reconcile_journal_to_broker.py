@@ -684,6 +684,74 @@ def test_protective_fill_fallback_finds_exit_without_stored_id(tmp_path):
     assert status == "closed"
 
 
+def test_phantom_sell_detected_and_reverted(tmp_path):
+    """Caught 2026-05-06: profile_6 #83 had side='sell' qty=27 B
+    status='closed' in the journal, but the broker order was
+    canceled with filled_qty=0. The journal logged a SELL that
+    never actually filled — the position was still held at the
+    broker, which produced a broker_orphan in the aggregate audit.
+
+    Fix: reconcile now checks every closed SELL/COVER row's order_id
+    at the broker. If broker says canceled/expired/rejected with
+    filled_qty=0, mark the SELL row 'canceled', and reopen the
+    matching closed BUY/SHORT so the position is correctly tracked."""
+    p = tmp_path / "journal.db"
+    conn = sqlite3.connect(str(p))
+    conn.execute("""
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY,
+            timestamp TEXT, symbol TEXT, side TEXT, qty REAL, price REAL,
+            order_id TEXT, signal_type TEXT, strategy TEXT, reason TEXT,
+            status TEXT, pnl REAL, fill_price REAL,
+            protective_stop_order_id TEXT,
+            protective_tp_order_id TEXT,
+            protective_trailing_order_id TEXT
+        )
+    """)
+    # The matching BUY (currently 'closed' due to phantom SELL)
+    conn.execute(
+        "INSERT INTO trades (id, symbol, side, qty, status, order_id, "
+        "timestamp, price) "
+        "VALUES (62, 'B', 'buy', 27, 'closed', 'b-buy', "
+        "'2026-04-22T19:31:49', 40.69)",
+    )
+    # The phantom SELL — journal says closed, broker says canceled
+    conn.execute(
+        "INSERT INTO trades (id, symbol, side, qty, status, order_id, "
+        "timestamp, price, pnl) "
+        "VALUES (83, 'B', 'sell', 27, 'closed', 'phantom-sell', "
+        "'2026-04-30T15:00:00', 40.90, 5.67)",
+    )
+    conn.commit()
+    conn.close()
+
+    from reconcile_journal_to_broker import reconcile_with_ctx
+    api = MagicMock()
+    api.list_positions.return_value = [_broker_position("B", "27")]
+    # Both order_ids: BUY filled, SELL canceled with 0 fill
+    def get_order(oid):
+        if oid == "phantom-sell":
+            return _broker_order(oid, "sell", "canceled",
+                                  qty=27, filled_qty=0)
+        return _broker_order(oid, "buy", "filled", qty=27, filled_qty=27)
+    api.get_order.side_effect = get_order
+    ctx = _ctx(api, str(p))
+    res = reconcile_with_ctx(ctx, apply_changes=True)
+    assert len(res["uncancel_sell"]) == 1
+    # Verify journal updates
+    conn = sqlite3.connect(str(p))
+    sell_status = conn.execute(
+        "SELECT status, pnl FROM trades WHERE id=83"
+    ).fetchone()
+    assert sell_status[0] == "canceled"
+    assert sell_status[1] is None  # pnl cleared
+    buy_status = conn.execute(
+        "SELECT status FROM trades WHERE id=62"
+    ).fetchone()
+    assert buy_status[0] == "open"  # reopened
+    conn.close()
+
+
 def test_protective_fill_caught_when_siblings_still_hold_symbol(tmp_path):
     """Multi-profile correctness gate. The exact 2026-05-06 GT bug:
     profile_9's trailing stop fired for 573 GT, but the broker still

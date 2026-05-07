@@ -459,9 +459,46 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
         "backfill_cover": [],  # short full close
         "backfill_partial_sell": [],  # long partial close
         "fix_partial_entry": [],      # update journal qty/price to actual fill
+        "uncancel_sell": [],          # phantom SELL (broker canceled): undo
         "ambiguous": [],
         "real_held": 0,
     }
+
+    # PHANTOM-SELL DETECTION (runs first so subsequent open-row sweep
+    # sees the corrected state). For each closed SELL/COVER row, verify
+    # the broker order actually filled. If the broker order is
+    # canceled/expired/rejected with filled_qty=0, the journal row is
+    # phantom — the SELL was logged on submit but never executed.
+    # Caught 2026-05-06 (profile_6 #83 B 27): trade_pipeline marks
+    # SELL status='closed' immediately on submit, doesn't wait for
+    # fill confirmation. If Alpaca cancels the order (wash trade,
+    # off-hours, etc.) the journal claims a SELL that never happened
+    # → broker_orphan in the aggregate audit.
+    try:
+        import sqlite3 as _sqlite3
+        sell_conn = _sqlite3.connect(db_path)
+        sell_rows = sell_conn.execute(
+            "SELECT id, symbol, side, qty, order_id "
+            "FROM trades WHERE side IN ('sell', 'cover') "
+            "AND status='closed' AND order_id IS NOT NULL"
+        ).fetchall()
+        sell_conn.close()
+    except Exception:
+        sell_rows = []
+    for tid, sym, side, qty, oid in sell_rows:
+        order, _exc = _retrying_call(api.get_order, oid)
+        if order is None:
+            continue
+        try:
+            broker_filled = float(getattr(order, "filled_qty", 0) or 0)
+        except Exception:
+            continue
+        broker_status = getattr(order, "status", "")
+        if broker_status in ("canceled", "expired", "rejected") and broker_filled == 0:
+            actions["uncancel_sell"].append({
+                "trade_id": tid, "symbol": sym, "side": side, "qty": qty,
+                "order_id": oid, "broker_status": broker_status,
+            })
 
     positions, exc = _retrying_call(api.list_positions)
     if positions is None:
@@ -629,6 +666,33 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
             })
 
     if apply_changes:
+        # Phantom-SELL undo first: mark the offending SELL/COVER row as
+        # 'canceled' AND reopen the matching closed BUY/SHORT so the
+        # position is correctly reflected as still held. Match by qty +
+        # symbol + side, picking the most recent closed entry.
+        for a in actions["uncancel_sell"]:
+            conn.execute(
+                "UPDATE trades SET status='canceled', pnl=NULL, "
+                "reason=COALESCE(reason || ' | ', '') || ? "
+                "WHERE id=?",
+                (f"reconcile: broker order {a['order_id'][:8]} "
+                 f"never filled ({a['broker_status']})", a["trade_id"]),
+            )
+            opener_side = "short" if a["side"] == "cover" else "buy"
+            opener = conn.execute(
+                "SELECT id FROM trades WHERE symbol=? AND side=? "
+                "AND status='closed' AND qty=? "
+                "ORDER BY timestamp DESC LIMIT 1",
+                (a["symbol"], opener_side, a["qty"]),
+            ).fetchone()
+            if opener:
+                conn.execute(
+                    "UPDATE trades SET status='open', pnl=NULL, "
+                    "reason=COALESCE(reason || ' | ', '') || ? "
+                    "WHERE id=?",
+                    (f"reconcile: reopened after phantom "
+                     f"{a['side'].upper()} undone", opener[0]),
+                )
         for a in actions["cancel"]:
             conn.execute(
                 "UPDATE trades SET status='canceled' WHERE id=?",

@@ -623,7 +623,7 @@ def execute_multileg_strategy(
                 ),
             })
             if log and db_path:
-                _log_strategy_legs(strategy, combo_id, ctx)
+                _log_strategy_legs(strategy, combo_id, ctx, api=api)
             return result
         except Exception as exc:
             logger.warning(
@@ -697,7 +697,7 @@ def execute_multileg_strategy(
     })
     if log and db_path:
         _log_strategy_legs(strategy, None, ctx,
-                              leg_order_ids=leg_order_ids)
+                              leg_order_ids=leg_order_ids, api=api)
     return result
 
 
@@ -1230,7 +1230,8 @@ ALL_MULTILEG_BUILDERS = {
 def _log_strategy_legs(strategy: OptionStrategy,
                           combo_order_id: Optional[str],
                           ctx,
-                          leg_order_ids: Optional[List[str]] = None) -> None:
+                          leg_order_ids: Optional[List[str]] = None,
+                          api=None) -> None:
     """Write one journal row per leg, tagging them with the strategy
     name so the lifecycle sweep + dashboard can group them together.
 
@@ -1249,11 +1250,25 @@ def _log_strategy_legs(strategy: OptionStrategy,
     for i, leg in enumerate(strategy.legs):
         order_id = (leg_order_ids[i]
                     if i < len(leg_order_ids) else combo_order_id)
+        # Capture fill price from broker so the journal row has a
+        # real price (not NULL). Without this, the dashboard shows
+        # blank cost/proceeds for every option leg. (Caught
+        # 2026-05-06: WMT/MSFT multileg legs all displayed as "$--".)
+        leg_price = None
+        if api is not None and order_id:
+            try:
+                o = api.get_order(order_id)
+                fap = getattr(o, "filled_avg_price", None)
+                if fap is not None:
+                    leg_price = float(fap)
+            except Exception:
+                pass
         try:
             log_trade(
                 symbol=leg.underlying,
                 side=leg.side,
                 qty=leg.qty,
+                price=leg_price,
                 order_id=order_id,
                 signal_type="MULTILEG",
                 strategy=strategy.name,
@@ -1262,6 +1277,7 @@ def _log_strategy_legs(strategy: OptionStrategy,
                     f"(combo={combo_order_id or 'sequential'})"
                 ),
                 ai_reasoning=strategy.thesis,
+                fill_price=leg_price,
                 occ_symbol=leg.occ_symbol,
                 option_strategy=strategy.name,
                 expiry=leg.expiry,

@@ -380,3 +380,114 @@ def test_duplicate_guard_allows_when_no_open_position():
 
     assert result["action"] == "MULTILEG_OPEN", result
     fake_api.submit_order.assert_called_once()
+
+
+def test_multileg_log_captures_fill_price():
+    """Caught 2026-05-06: WMT/MSFT multileg legs displayed as $-- on
+    dashboard because log_trade was called without `price`. Now the
+    log path queries each leg order's filled_avg_price after submit
+    and stores it as both `price` and `fill_price`."""
+    import sqlite3
+    import tempfile
+    from unittest.mock import MagicMock, patch
+    from options_multileg import (
+        build_bull_call_spread, execute_multileg_strategy,
+    )
+    from datetime import date as _date
+
+    f = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    f.close()
+    conn = sqlite3.connect(f.name)
+    conn.execute("""
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT DEFAULT (datetime('now')),
+            symbol TEXT, side TEXT, qty REAL, price REAL,
+            order_id TEXT, signal_type TEXT, strategy TEXT, reason TEXT,
+            ai_reasoning TEXT, ai_confidence REAL,
+            stop_loss REAL, take_profit REAL,
+            status TEXT DEFAULT 'open', pnl REAL,
+            decision_price REAL, fill_price REAL, slippage_pct REAL,
+            occ_symbol TEXT, option_strategy TEXT, expiry TEXT, strike REAL,
+            predicted_slippage_bps REAL, adv_at_decision REAL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+    strategy = build_bull_call_spread(
+        underlying="ARCC",
+        expiry=_date(2026, 6, 18),
+        lower_strike=20.0,
+        upper_strike=21.0,
+        qty=1,
+    )
+
+    fake_api = MagicMock()
+    # Combo order returns one id, but each leg is queried separately
+    combo_order = MagicMock()
+    combo_order.id = "combo-id"
+    fake_api.submit_order.return_value = combo_order
+    # When leg orders are queried, return filled_avg_price
+    leg_order_responses = {
+        "combo-id": MagicMock(filled_avg_price=0.45),
+    }
+    fake_api.get_order.side_effect = lambda oid: leg_order_responses.get(
+        oid, MagicMock(filled_avg_price=0.45),
+    )
+
+    fake_ctx = MagicMock()
+    fake_ctx.db_path = f.name
+
+    contracts = [
+        {"symbol": "ARCC260618C00020000", "expiration_date": "2026-06-18",
+         "type": "call", "strike": 20.0},
+        {"symbol": "ARCC260618C00021000", "expiration_date": "2026-06-18",
+         "type": "call", "strike": 21.0},
+    ]
+    with patch(
+        "options_chain_alpaca.list_available_contracts",
+        return_value=contracts,
+    ):
+        result = execute_multileg_strategy(
+            fake_api, strategy, fake_ctx, log=True, use_combo=True,
+        )
+
+    assert result["action"] == "MULTILEG_OPEN", result
+    # Verify journal rows have non-NULL price + fill_price
+    conn = sqlite3.connect(f.name)
+    rows = conn.execute(
+        "SELECT side, qty, price, fill_price FROM trades"
+    ).fetchall()
+    conn.close()
+    assert len(rows) == 2  # both legs logged
+    for side, qty, price, fill_price in rows:
+        assert price is not None and price > 0, (
+            f"leg {side} qty={qty} has NULL/zero price"
+        )
+        assert fill_price is not None and fill_price > 0
+
+
+def test_friendly_time_handles_nanosecond_precision():
+    """Broker timestamps with 9-digit (nanosecond) precision broke
+    Python's strptime %f (max 6 digits). Caught 2026-05-06: a
+    backfilled SELL row showed as raw ISO '2026-05-06T19:59' on the
+    dashboard instead of 'May 6, 3:59 PM ET'."""
+    from display_names import friendly_time
+    nanosecond_iso = "2026-05-06T19:59:07.765154638+00:00"
+    result = friendly_time(nanosecond_iso)
+    assert "May" in result and "ET" in result, (
+        f"expected 'May ... ET', got {result!r}"
+    )
+
+
+def test_friendly_time_still_handles_microsecond_precision():
+    from display_names import friendly_time
+    result = friendly_time("2026-05-06T19:59:07.765154+00:00")
+    assert "May" in result and "ET" in result
+
+
+def test_friendly_time_still_handles_no_subsecond():
+    from display_names import friendly_time
+    result = friendly_time("2026-05-06T19:59:07")
+    assert "May" in result and "ET" in result

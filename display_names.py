@@ -500,6 +500,13 @@ def friendly_time(iso_str: str) -> str:
         from zoneinfo import ZoneInfo
         clean = iso_str.replace("Z", "").split("+")[0]
         if "." in clean:
+            # Truncate sub-microsecond precision. Some broker timestamps
+            # arrive with nanosecond precision (9 digits); Python's %f
+            # only supports up to 6 digits and will ValueError otherwise.
+            # Caught 2026-05-06: backfilled SELL row showed as raw ISO
+            # because the .765154638 wouldn't parse.
+            base, frac = clean.split(".", 1)
+            clean = f"{base}.{frac[:6]}"
             dt = datetime.strptime(clean, "%Y-%m-%dT%H:%M:%S.%f")
         elif "T" in clean:
             dt = datetime.strptime(clean[:19], "%Y-%m-%dT%H:%M:%S")
