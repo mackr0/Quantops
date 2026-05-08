@@ -169,6 +169,31 @@ class TestPendingOrdersPricing:
             assert field in o
             assert o[field] is None
 
+    def test_submitted_at_includes_friendly_format(self):
+        """The pending-orders table should display timestamps the
+        same way every other table on the site does — via the
+        `friendly_time` filter (`May 7, 10:08 AM ET`). The JS
+        auto-refresh path can't easily re-implement timezone math,
+        so the API pre-computes `submitted_at_friendly` and the JS
+        reads that directly."""
+        from views import _safe_pending_orders
+
+        api = MagicMock()
+        api.list_orders.return_value = [_trailing_stop_order()]
+        ctx = _make_ctx_with_no_db()
+        ctx.get_alpaca_api = lambda: api
+
+        result = _safe_pending_orders(ctx)
+        o = result[0]
+        assert o["submitted_at_friendly"], (
+            "Expected pre-formatted submitted_at_friendly so the JS "
+            "auto-refresh shows the same format as the server-rendered "
+            "table"
+        )
+        # Format: "May 7, 3:25 PM ET" — month abbrev, day, time, ET
+        assert " ET" in o["submitted_at_friendly"]
+        assert "ET" not in o["submitted_at"]  # raw ISO doesn't have ET
+
     def test_template_logic_picks_right_price_per_order_type(self):
         """The dashboard template (_trades_table doesn't render
         pending orders; dashboard.html does) shows:

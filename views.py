@@ -247,6 +247,18 @@ def _safe_pending_orders(ctx):
             trail_percent = _f("trail_percent")
             trail_price = _f("trail_price")
             hwm = _f("hwm")
+            submitted_at_iso = (
+                str(o.submitted_at) if getattr(o, "submitted_at", None)
+                else None
+            )
+            # Pre-format the timestamp the same way every other table
+            # on the site does so the JS auto-refresh path doesn't
+            # have to re-implement timezone math. The Jinja filter
+            # is the canonical formatter.
+            from display_names import friendly_time
+            submitted_at_friendly = (
+                friendly_time(submitted_at_iso) if submitted_at_iso else None
+            )
             out.append({
                 "symbol": o.symbol,
                 "side": o.side,
@@ -258,7 +270,8 @@ def _safe_pending_orders(ctx):
                 "trail_price": trail_price,
                 "hwm": hwm,
                 "status": o.status,
-                "submitted_at": str(o.submitted_at) if getattr(o, "submitted_at", None) else None,
+                "submitted_at": submitted_at_iso,
+                "submitted_at_friendly": submitted_at_friendly,
                 "time_in_force": o.time_in_force,
             })
         return out
