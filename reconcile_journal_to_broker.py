@@ -475,13 +475,20 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
     # fill confirmation. If Alpaca cancels the order (wash trade,
     # off-hours, etc.) the journal claims a SELL that never happened
     # → broker_orphan in the aggregate audit.
+    #
+    # 2026-05-07: trade_pipeline / trader / options_roll_manager now
+    # write status='pending_fill' until _task_update_fills confirms
+    # via filled_avg_price. Reconcile checks BOTH ('closed' for legacy
+    # rows + 'pending_fill' for new rows) so phantom detection still
+    # works during the rollover window.
     try:
         import sqlite3 as _sqlite3
         sell_conn = _sqlite3.connect(db_path)
         sell_rows = sell_conn.execute(
             "SELECT id, symbol, side, qty, order_id "
             "FROM trades WHERE side IN ('sell', 'cover') "
-            "AND status='closed' AND order_id IS NOT NULL"
+            "AND status IN ('closed', 'pending_fill') "
+            "AND order_id IS NOT NULL"
         ).fetchall()
         sell_conn.close()
     except Exception:

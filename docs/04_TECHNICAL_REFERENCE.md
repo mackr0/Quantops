@@ -83,8 +83,8 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | `client.py` | Alpaca REST adapter (orders, positions, account, asset metadata). |
 | `order_guard.py` | Schedule-window + duplicate-order checks before submit. |
 | `bracket_orders.py` | Broker-managed protective stops + take-profits. |
-| `trader.py` | Per-position exit logic; trailing-stop reconciliation. |
-| `journal.py` | `trades` + journal-table CRUD + schema migrations. |
+| `trader.py` | Per-position exit logic; trailing-stop reconciliation. Exit-fired SELL/COVER rows write `status='pending_fill'` until broker confirms (deferred to `_task_update_fills`). |
+| `journal.py` | `trades` + journal-table CRUD + schema migrations. Status values: `open` (entry), `pending_fill` (close awaiting broker confirmation, added 2026-05-07), `closed` (broker-confirmed close), `canceled` (entry never filled / phantom undo). FIFO `get_virtual_positions` includes everything except `canceled`. |
 
 ### 3c. Strategy engines
 | Module | Purpose |
@@ -105,8 +105,8 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 |---|---|
 | `options_oracle.py` | Per-symbol IV rank, term structure, skew, GEX, max pain, implied move. |
 | `options_chain_alpaca.py` | Replaces yfinance for options chain fetches. |
-| `options_trader.py` | Single-leg option order execution. |
-| `options_multileg.py` | 11 strategy primitives + atomic multi-leg execution. |
+| `options_trader.py` | Single-leg option order execution. `submit_option_order` accepts `position_intent` kwarg (defaults to `*_to_open` by side); `execute_option_strategy` has a journal-level dup guard (refuses re-submit when an open row matches the OCC). |
+| `options_multileg.py` | 11 strategy primitives + atomic multi-leg execution. Both combo and sequential paths pass `position_intent` (`_INTENT_OPEN` for opening, `_INTENT_CLOSE` for rollback) — Alpaca async-cancels short option opens without intent (the 2026-05-06 ARCC root cause). Sequential rollback unwinds previously-submitted legs with close intent so it isn't treated as a new position. Journal-level dup guard refuses re-submit when any leg's OCC matches an open row. |
 | `options_strategy_advisor.py` | Read-side advisor (covered call / protective put recommendations). |
 | `options_vol_regime.py` | Vol regime classifier (premium_rich / cheap, skew steep_put / call, term contango / backwardation). |
 | `options_earnings_plays.py` | Pre-earnings IV crush capture (iron condor) / long straddle. |

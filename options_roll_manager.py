@@ -298,15 +298,21 @@ def auto_close_high_profit_credits(
                 continue
 
             # Mark journal — premium realized = (entry_price - cur_price) * mult
+            # NEW (2026-05-07): status='pending_fill' until broker
+            # confirms. _task_update_fills will flip to 'closed' once
+            # filled_avg_price populates on this row's order_id.
+            # Without this, an async-canceled close would leave the
+            # journal claiming realized P&L the broker didn't honor.
             premium_in = float(
                 row.get("decision_price") or row.get("price") or 0)
             mult = qty * 100
             realized_pnl = (premium_in - cur_price) * mult
             conn.execute(
                 """UPDATE trades
-                   SET status='closed', pnl=?, reason=?
+                   SET status='pending_fill', pnl=?, reason=?,
+                       order_id=?
                    WHERE id=?""",
-                (realized_pnl, outcome["reason"], row["id"]),
+                (realized_pnl, outcome["reason"], order_id, row["id"]),
             )
             conn.commit()
             summary["auto_closed"] += 1

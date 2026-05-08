@@ -924,19 +924,22 @@ def _task_cancel_stale_orders(ctx):
 
 
 def _task_update_fills(ctx):
-    """Update fill prices on recent trades from Alpaca order data.
+    """Update fill prices + state-machine transitions on recent trades.
 
-    Catches three flavors of unfilled rows:
-    - Stock entries/exits where ``decision_price`` is set but the
-      broker fill hasn't been written back yet (slippage_pct gets
-      computed at the same time).
-    - Multileg option legs where ``decision_price`` is NULL — the
-      option-chain quote isn't available at submit time, so the leg
-      is logged with everything NULL and we backfill on the catch-up
-      pass. Slippage stays NULL on these rows (no decision baseline).
-    - Any row where ``price`` is also NULL gets ``price`` populated
-      alongside ``fill_price`` so the dashboard's ``t.price`` cell
-      isn't a dash.
+    Three responsibilities (added incrementally):
+    1. Backfill ``fill_price`` (and ``price`` if NULL) when the
+       broker has confirmed a fill but the journal hasn't yet seen
+       it. Multileg legs lack ``decision_price`` (option chain quote
+       isn't available at submit time) — slippage stays NULL on
+       those rows. The ``decision_price IS NOT NULL`` filter that
+       previously excluded multileg legs was removed 2026-05-07.
+    2. (NEW 2026-05-07) Flip ``status='pending_fill'`` SELL/COVER
+       rows to ``status='closed'`` once the broker confirms the
+       close fill. Then flip the matching open BUY/SHORT rows to
+       ``status='closed'`` as well so the trades page reflects the
+       confirmed exit. Without this transition, the immediate-close
+       write would create a phantom-SELL window if Alpaca
+       async-canceled (caught 2026-05-06).
     """
     import sqlite3
     from client import get_api
@@ -952,7 +955,9 @@ def _task_update_fills(ctx):
         # Pull every row missing a fill_price; multileg legs lack
         # decision_price so we can't filter on it.
         unfilled = conn.execute(
-            "SELECT id, order_id, price, decision_price FROM trades "
+            "SELECT id, order_id, price, decision_price, side, "
+            "       symbol, status "
+            "FROM trades "
             "WHERE fill_price IS NULL AND order_id IS NOT NULL"
         ).fetchall()
 
@@ -961,6 +966,7 @@ def _task_update_fills(ctx):
             return
 
         updated = 0
+        confirmed_closes = 0
         for trade in unfilled:
             try:
                 order = api.get_order(trade["order_id"])
@@ -996,11 +1002,47 @@ def _task_update_fills(ctx):
                 )
             updated += 1
 
+            # NEW: state-machine transition. If this row was a
+            # SELL/COVER awaiting fill confirmation ('pending_fill'),
+            # the fill_avg_price reply confirms the close happened.
+            # Flip status -> 'closed' and flip matching open
+            # BUY/SHORT rows for this symbol to 'closed' too.
+            if (trade["status"] == "pending_fill"
+                    and trade["side"] in ("sell", "cover")):
+                conn.execute(
+                    "UPDATE trades SET status = 'closed' WHERE id = ?",
+                    (trade["id"],),
+                )
+                # Flip the matching entry rows so the trades page
+                # shows them as closed once the exit is confirmed.
+                opp_side = "buy" if trade["side"] == "sell" else "short"
+                conn.execute(
+                    "UPDATE trades SET status = 'closed' "
+                    "WHERE symbol = ? AND side = ? "
+                    "  AND COALESCE(status, 'open') = 'open'",
+                    (trade["symbol"], opp_side),
+                )
+                confirmed_closes += 1
+            elif trade["status"] == "pending_fill":
+                # Roll-manager / option-leg close path: flip to
+                # 'closed' once confirmed; no opposite-side rows
+                # to flip (option close stands alone).
+                conn.execute(
+                    "UPDATE trades SET status = 'closed' WHERE id = ?",
+                    (trade["id"],),
+                )
+                confirmed_closes += 1
+
         conn.commit()
         conn.close()
 
         if updated > 0:
-            logging.info(f"[{seg_label}] Updated fill prices on {updated} trade(s)")
+            extra = (f" ({confirmed_closes} closes confirmed)"
+                     if confirmed_closes else "")
+            logging.info(
+                f"[{seg_label}] Updated fill prices on "
+                f"{updated} trade(s){extra}"
+            )
     except Exception:
         logging.exception(f"[{seg_label}] Failed to update fill prices")
 

@@ -979,9 +979,16 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 predicted_slip_sell = _est.get("total_bps")
             except Exception:
                 pass
-            # Closing a position produces realized P&L — the row must be
-            # 'closed', not 'open'. Without this, downstream reporting
-            # filters by status get wrong counts.
+            # NEW (2026-05-07): write status='pending_fill' instead of
+            # 'closed' until the broker confirms the fill.
+            # _task_update_fills flips 'pending_fill' -> 'closed' (and
+            # flips matching BUY rows to 'closed') once
+            # filled_avg_price is available. The previous immediate
+            # 'closed' write created a phantom-SELL window every time
+            # Alpaca async-canceled (the May 6 wash-trade scenario).
+            # FIFO `get_virtual_positions` treats 'pending_fill' the
+            # same as 'closed' (the SELL row is included regardless of
+            # status) so the position book stays correct.
             log_trade(
                 symbol=symbol,
                 side="sell",
@@ -994,32 +1001,15 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 ai_reasoning=ai_reasoning,
                 ai_confidence=ai_confidence,
                 pnl=pnl,
-                status="closed" if pnl is not None else "open",
+                status="pending_fill" if pnl is not None else "open",
                 decision_price=price,
                 predicted_slippage_bps=predicted_slip_sell,
                 adv_at_decision=adv_at_sell,
                 db_path=db_path,
             )
-            # Mark matching open BUY rows as closed so the trades page
-            # doesn't show them as open forever after the position exits.
-            try:
-                import sqlite3 as _sqlite3
-                _c = _sqlite3.connect(db_path) if db_path else _sqlite3.connect("journal.db")
-                _c.execute(
-                    "UPDATE trades SET status='closed' "
-                    "WHERE symbol=? AND side='buy' AND status='open'",
-                    (symbol,),
-                )
-                _c.commit()
-                _c.close()
-            except Exception as exc:
-                # Failure here = silent status drift (BUY rows stay open
-                # forever even though the position is exited). Surface it.
-                logging.warning(
-                    "Failed to flip open BUY rows to closed for %s "
-                    "after SELL: %s. Trades page may show stale 'open' state.",
-                    symbol, exc,
-                )
+            # BUY-rows-closed UPDATE deferred to _task_update_fills so
+            # we don't claim the position is flat until the broker
+            # confirms the SELL filled.
 
     # ---- SHORT SELL logic (open new short position) -------------------------
     elif action in ("SELL", "STRONG_SELL") and symbol not in positions:

@@ -178,9 +178,25 @@ Recoverable SKIP, not ERROR. Typically resolves on the next cycle as other order
 
 `order_guard.check_can_submit(ctx, symbol, side)` blocks orders submitted outside the profile's `schedule_type` window.
 
-### 4l. Duplicate prevention
+### 4l. Duplicate prevention (broker-order level)
 
 `order_guard` blocks entries when an open order for the same `(symbol, side)` already exists.
+
+### 4m. Position dup guards (journal-level — added 2026-05-06 / 2026-05-07)
+
+A separate layer above broker-level dup prevention: every entry executor pre-queries the per-profile journal for any open row matching the proposed position; if found, refuses with `action='SKIP'`. Required because the AI re-proposing the same trade on consecutive cycles would otherwise re-fire indefinitely (the 2026-05-06 ARCC runaway: 13 phantom long calls accumulated in 4 hours when one leg of a `bull_call_spread` repeatedly canceled async at Alpaca and the journal-level guard was missing).
+
+| Executor | Match key | Module |
+|---|---|---|
+| `execute_multileg_strategy` | OCC symbol on any leg | `options_multileg.py` |
+| `execute_option_strategy` | OCC symbol | `options_trader.py` |
+| `execute_pair_trade` | symbol on either leg, `strategy='pair_trade'` | `stat_arb_pair_book.py` |
+
+Coverage is enforced by `tests/test_broker_submit_invariants.py::test_every_entry_executor_has_dup_guard` — adding a new entry executor without a dup-guard marker fails CI.
+
+### 4n. Option `position_intent` invariant (added 2026-05-07)
+
+Every option `api.submit_order` call must include `position_intent` (`buy_to_open` / `sell_to_open` / `buy_to_close` / `sell_to_close`). Without it, Alpaca async-cancels short option opens — the underlying root cause of the 2026-05-06 ARCC runaway. The 2026-05-06 dup guard caught the symptom; the 2026-05-07 fix (`options_multileg.py` sequential fallback + `options_trader.submit_option_order`) addresses the cause. Enforced by `tests/test_broker_submit_invariants.py::test_every_option_submit_passes_position_intent`.
 
 ## 5. Portfolio risk model
 

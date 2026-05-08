@@ -613,34 +613,15 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
         strategy=trigger_signal["trigger"],
         reason=trigger_signal["reason"],
         pnl=pnl,
-        # Exit-fired orders realize P&L → the row is closed, not open.
-        # Matching BUY rows get reconciled below.
-        status="closed" if pnl is not None else "open",
+        # NEW (2026-05-07): write 'pending_fill' until broker
+        # confirms. _task_update_fills flips to 'closed' + flips
+        # matching BUY rows when fill_price populates. Avoids the
+        # phantom-SELL window if Alpaca async-cancels.
+        status="pending_fill" if pnl is not None else "open",
         decision_price=trigger_signal["price"],
         db_path=db_path,
     )
-
-    # Mark any still-open BUY rows for this symbol as closed — the
-    # exit has flattened the position. Without this the trades page
-    # shows the old entry as "open" forever.
-    try:
-        import sqlite3 as _sqlite3
-        _c = _sqlite3.connect(db_path) if db_path else _sqlite3.connect("journal.db")
-        _c.execute(
-            "UPDATE trades SET status='closed' "
-            "WHERE symbol=? AND side='buy' AND status='open'",
-            (symbol,),
-        )
-        _c.commit()
-        _c.close()
-    except Exception as _exc:
-        # Reconciliation is best-effort — never block the exit path,
-        # but surface the failure so silent status drift is visible.
-        logging.warning(
-            "Failed to flip open BUY rows to closed for %s "
-            "in exit-fired path: %s. Trades page may show stale state.",
-            symbol, _exc,
-        )
+    # BUY-rows-closed UPDATE deferred to _task_update_fills.
 
     results.append({
         "symbol": symbol,

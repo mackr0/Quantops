@@ -235,7 +235,7 @@ Per-profile DB. Every order submitted lands here.
 | `ai_confidence` | REAL | AI confidence 0-100. |
 | `stop_loss` | REAL | Price level for stop. |
 | `take_profit` | REAL | Price level for TP. |
-| `status` | TEXT | `open` / `filled` / `closed` / `canceled`. |
+| `status` | TEXT | `open` (entry, position held) / `pending_fill` (close submitted to broker, fill not yet confirmed — added 2026-05-07) / `closed` (broker-confirmed close) / `canceled` (entry never filled at broker, phantom undo). FIFO virtual-position book filters only on `status != 'canceled'`. The `pending_fill` → `closed` transition is driven by `_task_update_fills` once Alpaca returns `filled_avg_price`. |
 | `pnl` | REAL | Realized P&L (only on closing rows). |
 | `decision_price` | REAL | Price the strategy/AI saw at decision. |
 | `fill_price` | REAL | Actual broker fill. Updated by fill updater. |

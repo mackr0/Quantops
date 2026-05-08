@@ -149,15 +149,21 @@ class TestAutoCloseHighProfitCredits:
         assert kwargs["side"] == "buy"
         assert kwargs["qty"] == 1
 
-        # Journal updated
+        # Journal updated. Status is 'pending_fill' until
+        # _task_update_fills confirms the broker fill (changed
+        # 2026-05-07 — the immediate 'closed' write created a
+        # phantom-close window if Alpaca async-canceled).
         from journal import _get_conn
         conn = _get_conn(tmp_db)
         row = conn.execute(
-            "SELECT status, pnl FROM trades WHERE id=1"
+            "SELECT status, pnl, order_id FROM trades WHERE id=1"
         ).fetchone()
-        assert row[0] == "closed"
-        # P&L = (2.00 - 0.30) * 100 = $170
+        assert row[0] == "pending_fill"
+        # P&L = (2.00 - 0.30) * 100 = $170 (computed at close-time;
+        # gets corrected by reconcile if the broker async-cancels).
         assert row[1] == pytest.approx(170.0)
+        # order_id wired so update_fills can flip pending_fill to closed
+        assert row[2] == "close-order-1"
 
     def test_skips_below_threshold(self, tmp_db):
         from options_roll_manager import auto_close_high_profit_credits

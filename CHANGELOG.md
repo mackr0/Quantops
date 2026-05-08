@@ -17,6 +17,43 @@ Rules going forward:
 
 ---
 
+## 2026-05-07 — Doc updates: methodology, risk-controls, technical-ref, data-dictionary (Severity: maintenance, doc hygiene)
+
+User feedback: "you should never make a fix that doesn't also include updates to the docs". Catching up the 12-doc tree to reflect today's many changes:
+
+- **`Docs/10_METHODOLOGY.md` §3** — added 5 new guardrail tests (the broker-submit invariants + API-value snake_case).
+- **`Docs/08_RISK_CONTROLS.md` §4** — new sections 4m (journal-level position dup guards) + 4n (option position_intent invariant). 4m enumerates the three executors that have dup guards (`execute_multileg_strategy`, `execute_option_strategy`, `execute_pair_trade`).
+- **`Docs/04_TECHNICAL_REFERENCE.md` §3b/§3d** — `options_trader.py` now passes `position_intent` and has a dup guard; `options_multileg.py` sequential path also passes `_INTENT_OPEN` / `_INTENT_CLOSE`. `trader.py` and `journal.py` updated to mention the new `pending_fill` status.
+- **`Docs/05_DATA_DICTIONARY.md` §2 trades.status** — documented the four valid status values and the `pending_fill` → `closed` transition driven by `_task_update_fills`.
+
+---
+
+## 2026-05-07 — `pending_fill` state machine: SELLs/COVERs/option-closes wait for broker confirmation (Severity: critical, accounting integrity)
+
+The 2026-05-06 phantom-SELL detect-and-correct was a band-aid: SELL/COVER and option-close rows wrote `status='closed'` immediately on submit, claiming a realized close that the broker might async-cancel. The reconcile cron (every 15 min) caught phantoms eventually, but during the window the journal claimed wrong P&L and FIFO showed wrong open BUY rows.
+
+**Fix:** new status value `pending_fill`. Three write sites switched from immediate `closed` to `pending_fill`:
+- `trade_pipeline.py:991` — equity SELL on AI exit signal.
+- `trader.py:610` — exit-fired SELL/COVER (stop loss, take-profit, trailing).
+- `options_roll_manager.py:307` — auto-close credit option at ≥80% max profit.
+
+The matching open BUY/SHORT rows are NO LONGER flipped to `closed` immediately at the SELL site. Instead, `_task_update_fills` (every cycle) reads any `pending_fill` row whose order has `filled_avg_price` set at the broker, and atomically:
+1. Flips the close row's `status` from `pending_fill` → `closed`.
+2. For SELL: flips matching open BUY rows for the symbol → `closed`.
+3. For COVER: flips matching open SHORT rows → `closed`.
+4. For option-leg close (no opposite side): just flips the row.
+
+**Compatibility:**
+- FIFO `get_virtual_positions` filters only on `status != 'canceled'`, so `pending_fill` SELL rows are still consumed against open BUY lots — the position book stays correct from the moment of submit (matching the previous behavior).
+- `reconcile_journal_to_broker` now reads `status IN ('closed', 'pending_fill')` for phantom detection — handles both legacy rows and new rows during the rollover window.
+- `get_performance_summary` filters by `pnl IS NOT NULL` (not status), so realized-P&L numbers are unchanged.
+
+**Tests:** new `tests/test_pending_fill_state_machine.py` — 5 cases (confirmed-sell flips both rows, confirmed-cover flips short rows, unconfirmed leaves both pending, option-leg close has no opposite-side flip, FIFO treats pending_fill same as closed). Existing `test_options_roll_manager.py::test_auto_closes_position_at_high_profit` updated to expect `pending_fill`.
+
+Suite: 2,177 pass.
+
+---
+
 ## 2026-05-07 — Slippage "Source: insufficient_history" snake_case leak + broader API guardrail (Severity: high, UI integrity)
 
 User caught the AI Brain Slippage Model panel rendering `Source: insufficient_history` — raw snake_case in the UI. The existing snake_case guardrail tests (`test_no_snake_case_in_user_facing_ids`, `test_no_snake_case_in_api_responses`) only checked PARAM_BOUNDS keys; they don't catch arbitrary snake_case STRING VALUES returned by API endpoints.

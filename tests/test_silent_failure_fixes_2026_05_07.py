@@ -89,32 +89,30 @@ class TestStaticGuardNoBareExceptPassInTradeExecutionPaths:
             f"expected WARNING about flat position. Window:\n{window}"
         )
 
-    def test_trade_pipeline_update_buys_closed_has_warning(self):
+    def test_trade_pipeline_no_immediate_buy_close_update(self):
+        """2026-05-07 refactor: the immediate UPDATE-buys-closed was
+        REMOVED from trade_pipeline.py (deferred to
+        _task_update_fills). Verify it stays removed; the deferral
+        is what closes the phantom-SELL window."""
         import inspect
         import trade_pipeline
         src = inspect.getsource(trade_pipeline)
-        # The UPDATE happens in the equity SELL block; find by
-        # exact SQL marker.
-        anchor = "UPDATE trades SET status='closed'"
-        idx = src.find(anchor)
-        assert idx >= 0, "anchor moved; update test"
-        window = src[idx:idx + 800]
-        assert "Trades page may show stale" in window, (
-            f"Silent swallow returned at trade_pipeline UPDATE-closed; "
-            f"expected WARNING about stale state. Window:\n{window}"
+        # The UPDATE is no longer in trade_pipeline. The marker for
+        # the deferred behavior is the explanatory comment.
+        assert "BUY-rows-closed UPDATE deferred to _task_update_fills" in src, (
+            "Expected the deferred-UPDATE marker in trade_pipeline.py; "
+            "the SELL path must NOT immediately flip BUY rows to closed "
+            "(that creates the phantom-SELL window if Alpaca async-cancels)."
         )
 
-    def test_trader_update_buys_closed_has_warning(self):
+    def test_trader_no_immediate_buy_close_update(self):
+        """Same as above for trader.py exit-fired path."""
         import inspect
         import trader
         src = inspect.getsource(trader)
-        anchor = "UPDATE trades SET status='closed'"
-        idx = src.find(anchor)
-        assert idx >= 0, "anchor moved; update test"
-        window = src[idx:idx + 800]
-        assert "Trades page may show stale state" in window, (
-            f"Silent swallow returned at trader exit-fired UPDATE; "
-            f"expected WARNING. Window:\n{window}"
+        assert "BUY-rows-closed UPDATE deferred to _task_update_fills" in src, (
+            "Expected the deferred-UPDATE marker in trader.py; the "
+            "exit-fired path must defer the flip to _task_update_fills."
         )
 
     def test_options_multileg_get_order_has_debug_log(self):

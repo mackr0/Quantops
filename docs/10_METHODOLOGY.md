@@ -123,9 +123,14 @@ Every test in this list either prevents a class of regression OR detects drift i
 | `test_scheduled_features_have_settings` | Scheduled per-profile tasks without enable/disable toggles, OR allowlisted INFRASTRUCTURE without rationale. |
 | `test_no_snake_case_in_user_facing_ids` | Identifiers (sectors, factors, scenarios, parameters) rendering as raw `snake_case` in HTML. |
 | `test_no_snake_case_in_api_responses` | API responses leaking `PARAM_BOUNDS` keys to the JS layer. |
+| `test_api_response_values_no_snake_case` | API responses leaking ARBITRARY snake_case STRING VALUES (not just PARAM_BOUNDS). Catches the 2026-05-07 slippage `Source: insufficient_history` leak. Walks every `/api/<route>/1` GET; allowlist `INTERNAL_VALUE_FIELDS` covers fields whose values are switch/case codes for JS. |
 | `test_no_guessing` | Hardcoded data assumptions in templates / JS that don't match the actual API field names. |
 | `test_today_integration` | Scheduler wiring regression — DB backup, AI cost ledger, and 25+ task invocations. |
 | `test_recent_py_commits_paired_with_changelog` | Production `.py` commits without CHANGELOG entries. |
+| `test_broker_submit_invariants::test_every_option_submit_passes_position_intent` | Option `api.submit_order` calls without `position_intent`. Alpaca async-cancels short opens without intent (caught 2026-05-06 ARCC runaway). Static AST scan over `options_trader.py`, `options_multileg.py`. |
+| `test_broker_submit_invariants::test_every_entry_executor_has_dup_guard` | Entry executors (`execute_multileg_strategy`, `execute_option_strategy`, `execute_pair_trade`) without a dup-guard marker. Without the guard, AI re-proposing the same trade on consecutive cycles accumulates exposure (the ARCC failure mode). |
+| `test_broker_submit_invariants::test_no_bare_except_pass_on_db_or_broker_calls` | AST scan: `try` blocks containing `api.submit_order` / `cancel_order` / `UPDATE trades` / `conn.execute` / `cancel_for_symbol` ending in `except: pass`. The silent-state-drift pattern. |
+| `test_broker_submit_invariants::test_filled_avg_price_mocks_include_none_case` | Test files that mock `filled_avg_price` returning a numeric value as the immediate-after-submit reply must also exercise the None case (real Alpaca paper takes 50-500ms). Caught the 2026-05-06 multileg fill bug that shipped to prod despite a passing test. |
 
 ## 4. Conventions for adding new things
 
