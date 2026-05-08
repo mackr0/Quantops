@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — Docs{% endblock %}
+{% block content %}
+<div style="display:grid;grid-template-columns:200px 1fr;gap:1.5rem;">
+    <aside style="font-size:0.85rem;">
+        <p style="margin-bottom:0.5rem;"><a href="/docs">← All docs</a></p>
+        <ul style="list-style:none;padding-left:0;line-height:1.8;">
+            {% for f, t in docs %}
+            <li>
+                {% if f == filename %}
+                <strong>{{ t }}</strong>
+                {% else %}
+                <a href="/docs/{{ f }}" style="color:#666;">{{ t }}</a>
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+    </aside>
+    <article class="docs-body">
+        {{ body_html|safe }}
+    </article>
+</div>
+
+<style>
+.docs-body h1 { margin-top: 0; }
+.docs-body h2 { margin-top: 2rem; border-bottom: 1px solid #eee; padding-bottom: 0.3rem; }
+.docs-body h3 { margin-top: 1.5rem; }
+.docs-body table { border-collapse: collapse; margin: 1rem 0; font-size: 0.9rem; }
+.docs-body th, .docs-body td {
+    border: 1px solid #ddd;
+    padding: 0.4rem 0.6rem;
+    text-align: left;
+    vertical-align: top;
+}
+.docs-body th { background: #f5f5f5; font-weight: 600; }
+.docs-body code {
+    background: #f4f4f4;
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    font-size: 0.9em;
+}
+.docs-body pre {
+    background: #f4f4f4;
+    padding: 0.75rem;
+    border-radius: 4px;
+    overflow-x: auto;
+    font-size: 0.85rem;
+}
+.docs-body pre code { background: transparent; padding: 0; }
+.docs-body blockquote {
+    border-left: 3px solid #ccc;
+    margin: 1rem 0;
+    padding: 0.25rem 0 0.25rem 1rem;
+    color: #555;
+}
+</style>
+{% endblock %}

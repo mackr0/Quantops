@@ -159,7 +159,7 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 | `regime_overrides` | TEXT | `'{}'` | JSON {param: {regime: value}} (Layer 3). |
 | `tod_overrides` | TEXT | `'{}'` | JSON {param: {tod_bucket: value}} (Layer 4). |
 | `symbol_overrides` | TEXT | `'{}'` | JSON {param: {symbol: value}} (Layer 7). |
-| `prompt_layout` | TEXT | `'{}'` | JSON {section: verbosity} (Layer 6). Tunable sections: `alt_data`, `political_context`, `learned_patterns`, `portfolio_state`, `portfolio_risk_scenarios`. Verbosity values: `brief` / `normal` (default) / `detailed`. For `portfolio_risk_scenarios`: brief=0 scenarios, normal=worst-1 (cost-mitigation default 2026-05-07), detailed=worst-3. |
+| `prompt_layout` | TEXT | `'{}'` | JSON {section: verbosity} (Layer 6). Tunable sections: `alt_data`, `political_context`, `learned_patterns`, `portfolio_state`, `portfolio_risk_scenarios`. Verbosity values: `brief` / `normal` (default) / `detailed`. For `portfolio_risk_scenarios`: brief=0 scenarios, normal=worst-1, detailed=worst-3. |
 
 ### Cost levers
 
@@ -235,7 +235,7 @@ Per-profile DB. Every order submitted lands here.
 | `ai_confidence` | REAL | AI confidence 0-100. |
 | `stop_loss` | REAL | Price level for stop. |
 | `take_profit` | REAL | Price level for TP. |
-| `status` | TEXT | `open` (entry, position held) / `pending_fill` (close submitted to broker, fill not yet confirmed — added 2026-05-07) / `closed` (broker-confirmed close) / `canceled` (entry never filled at broker, phantom undo). FIFO virtual-position book filters only on `status != 'canceled'`. The `pending_fill` → `closed` transition is driven by `_task_update_fills` once Alpaca returns `filled_avg_price`. |
+| `status` | TEXT | `open` (entry, position held) / `pending_fill` (close submitted to broker, fill not yet confirmed) / `closed` (broker-confirmed close) / `canceled` (entry never filled at broker, phantom undo). FIFO virtual-position book filters only on `status != 'canceled'`. The `pending_fill` → `closed` transition is driven by `_task_update_fills` once Alpaca returns `filled_avg_price`. |
 | `pnl` | REAL | Realized P&L (only on closing rows). |
 | `decision_price` | REAL | Price the strategy/AI saw at decision. |
 | `fill_price` | REAL | Actual broker fill. Updated by fill updater. |

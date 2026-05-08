@@ -17,6 +17,36 @@ Rules going forward:
 
 ---
 
+## 2026-05-07 — In-app docs viewer (`/docs`) + nav link, plus doc cleanup (Severity: medium, docs hygiene)
+
+User asked for a single document covering the safety / quality / reliability strategy in plain terms, AND for the docs to be visible inside the app with a fresh-on-update render path.
+
+**New doc**: `Docs/13_QUALITY_RELIABILITY.md` describes the test discipline, the AI-behavior guardrails (with each guardrail's catch listed), production safety controls, backup + recovery, pre-deploy verification, and CHANGELOG / memory discipline. Audience: anyone reviewing whether the system is trustworthy plus any future AI assistant editing the codebase.
+
+**New routes**:
+- `GET /docs` — index of every `Docs/*.md` file, sorted by filename (which is the recommended reading order).
+- `GET /docs/<filename>` — renders one markdown file as HTML on every request, mtime-cached so the rendered HTML always reflects the current source. Path-traversal-shaped filenames return 404; non-`.md` extensions return 404.
+- New nav item "Docs" in `templates/base.html` — visible to every authenticated user (viewers + admins), since the docs describe the system, not user-private data.
+- New templates: `templates/docs_index.html`, `templates/docs_view.html` (with sidebar showing all docs + clickable navigation between them).
+
+**Doc-style cleanup** in `Docs/04`, `Docs/05`, `Docs/08`, `Docs/10`: stripped incident-narrative content (date stamps, "caught X", "the 2026-05-Y incident") that I had introduced earlier today. Per the user's correction, the docs describe what the system **is** today; CHANGELOG records the **history of changes**.
+
+**Dependency**: `markdown>=3.5` added to `requirements.txt` and installed on prod.
+
+**Tests** in `tests/test_docs_viewer.py` (8 cases):
+- Index lists known docs, renders as HTML.
+- Index visible to viewers (not admin-gated — docs aren't sensitive).
+- Real doc renders with body content + tables.
+- Invalid filename → 404.
+- Path-traversal-shaped filename blocked.
+- Non-`.md` extension blocked.
+- Render reflects current source after file edit (mtime cache invalidates).
+- Cache returns identical HTML when unchanged (no spurious re-renders).
+
+Suite: 2,198 pass.
+
+---
+
 ## 2026-05-07 — Viewers could mutate admin's account state via 6 ungated endpoints (Severity: critical, security)
 
 User flagged that the dashboard's master kill-switch UI showed activate/deactivate controls to the guest (viewer) account. Investigation found the underlying API was `@login_required` only — **a viewer could POST to `/api/kill-switch` and silently freeze the admin's entire trading book.** Audit found 5 more mutating endpoints with the same gap.

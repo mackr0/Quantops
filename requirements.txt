@@ -1,4 +1,9 @@
 alpaca-trade-api==3.2.0
+# Markdown renderer for the in-app docs viewer (/docs route).
+# Renders each Docs/*.md file on-the-fly so the rendered HTML
+# always reflects the current source — no separate publish step.
+markdown>=3.5
+
 pandas>=2.0.0
 numpy>=1.24.0
 python-dotenv>=1.0.0

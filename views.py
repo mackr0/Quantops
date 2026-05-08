@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from functools import wraps
 
 from flask import (
@@ -5343,3 +5344,97 @@ def run_backtest(market_type):
         return redirect(url_for("views.dashboard"))
 
     return render_template("backtest.html", results=results, market_type=market_type, days=days)
+
+
+# ---------------------------------------------------------------------------
+# Docs viewer (/docs)
+#
+# Renders Docs/*.md on demand. The HTML reflects the current source
+# every time — no separate publish step. A small in-process cache
+# keyed on file mtime avoids re-rendering on every request without
+# letting stale content stick around when a file changes.
+# ---------------------------------------------------------------------------
+
+_DOCS_DIR = os.path.join(os.path.dirname(__file__), "Docs")
+_docs_render_cache = {}  # path -> (mtime, html)
+
+
+def _list_docs():
+    """Return [(filename, title)] sorted by filename. Filename order
+    happens to be the doc-number order (01_, 02_, ...) which matches
+    the recommended reading sequence."""
+    if not os.path.isdir(_DOCS_DIR):
+        return []
+    out = []
+    for fname in sorted(os.listdir(_DOCS_DIR)):
+        if not fname.endswith(".md"):
+            continue
+        path = os.path.join(_DOCS_DIR, fname)
+        # Title = first H1 in the file, falling back to filename.
+        title = fname.replace(".md", "").replace("_", " ")
+        try:
+            with open(path, "r") as f:
+                for line in f:
+                    if line.startswith("# "):
+                        title = line[2:].strip()
+                        break
+        except OSError:
+            pass
+        out.append((fname, title))
+    return out
+
+
+def _render_doc(filename):
+    """Render one doc's markdown to HTML. Cached by mtime so a
+    refresh after editing the source returns the new content
+    without restart, but a re-request without changes is cheap."""
+    if "/" in filename or "\\" in filename or ".." in filename:
+        return None
+    path = os.path.join(_DOCS_DIR, filename)
+    if not os.path.isfile(path) or not filename.endswith(".md"):
+        return None
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+    cached = _docs_render_cache.get(path)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    try:
+        import markdown as _md
+    except ImportError:
+        return None
+    with open(path, "r") as f:
+        src = f.read()
+    html = _md.markdown(
+        src,
+        extensions=["tables", "fenced_code", "toc", "sane_lists"],
+    )
+    _docs_render_cache[path] = (mtime, html)
+    return html
+
+
+@views_bp.route("/docs")
+@login_required
+def docs_index():
+    """List of system docs. Visible to every authenticated user
+    (viewers + admins) — the docs describe the system, not
+    user-private data."""
+    return render_template("docs_index.html", docs=_list_docs())
+
+
+@views_bp.route("/docs/<filename>")
+@login_required
+def docs_view(filename):
+    """Render one doc as HTML. Always reflects the current
+    source on disk (mtime-cached, no restart needed after edits)."""
+    html = _render_doc(filename)
+    if html is None:
+        abort(404)
+    # Find the title (same logic as _list_docs)
+    docs = _list_docs()
+    title = next((t for f, t in docs if f == filename), filename)
+    return render_template(
+        "docs_view.html",
+        filename=filename, title=title, body_html=html, docs=docs,
+    )

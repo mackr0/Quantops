@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Docs — QuantOpsAI{% endblock %}
+{% block content %}
+<hgroup>
+    <h1>Documentation</h1>
+    <p>System reference. Pages render from the markdown source on every request — what you see is current.</p>
+</hgroup>
+
+<article>
+    <h2 style="margin-top:0;">Reading order</h2>
+    <p class="muted" style="font-size:0.9rem;">
+        The numbered files form a recommended sequence: 01 (overview) → 13 (this safety / quality reference).
+        Pick whichever section answers your current question.
+    </p>
+    <ul style="line-height:1.9;">
+        {% for filename, title in docs %}
+        <li><a href="/docs/{{ filename }}"><strong>{{ title }}</strong></a> <small class="muted">— {{ filename }}</small></li>
+        {% endfor %}
+    </ul>
+</article>
+
+<p class="muted" style="font-size:0.85rem;">
+    See also: <a href="/admin">Admin → activity log</a> for system events;
+    the <code>CHANGELOG.md</code> file in the repo root records the full history of changes.
+</p>
+{% endblock %}
