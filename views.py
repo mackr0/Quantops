@@ -3759,20 +3759,27 @@ def api_slippage_model(profile_id):
         bucket_summary = {}
         for k, samples in (fit.get("bootstrap_residuals") or {}).items():
             bucket_summary[k] = len(samples)
+        # Source values like "insufficient_history" / "no_db" / "fit" /
+        # "default" are internal identifiers — route through
+        # display_name so the UI shows "Insufficient history" not
+        # raw snake_case (caught 2026-05-07 dashboard inspection).
+        from display_names import display_name as _dn
         return jsonify({
             "available": True,
             "K_bps": fit.get("K_bps"),
             "n_samples": fit.get("n_samples"),
             "mean_residual_bps": fit.get("mean_residual_bps"),
             "fitted_at": fit.get("fitted_at"),
-            "source": fit.get("source"),
+            "source": _dn(fit.get("source") or "unknown"),
+            "source_raw": fit.get("source"),
             "market_type": market_type,
             "buckets": bucket_summary,
             "sample_estimate": {
                 "components": sample.get("components"),
                 "total_bps": sample.get("total_bps"),
                 "fill_price": sample.get("fill_price"),
-                "K_source": sample.get("K_source"),
+                "K_source": _dn(sample.get("K_source") or "unknown"),
+                "K_source_raw": sample.get("K_source"),
             },
         })
     except Exception as exc:

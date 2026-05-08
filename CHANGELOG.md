@@ -17,6 +17,29 @@ Rules going forward:
 
 ---
 
+## 2026-05-07 — Slippage "Source: insufficient_history" snake_case leak + broader API guardrail (Severity: high, UI integrity)
+
+User caught the AI Brain Slippage Model panel rendering `Source: insufficient_history` — raw snake_case in the UI. The existing snake_case guardrail tests (`test_no_snake_case_in_user_facing_ids`, `test_no_snake_case_in_api_responses`) only checked PARAM_BOUNDS keys; they don't catch arbitrary snake_case STRING VALUES returned by API endpoints.
+
+**Immediate fix** in `views.api_slippage_model`:
+- Routes `source` and `K_source` through `display_name()` server-side.
+- Adds `source_raw` / `K_source_raw` siblings for any consumer that still wants the raw enum (e.g., to switch on `if source_raw == "insufficient_history"`).
+
+**Display-name entries** added for the slippage source vocabulary:
+- `insufficient_history` → "Insufficient history (need more fills)"
+- `no_db` → "No data available"
+- `fit` → "Calibrated from history"
+- `default` → "Default (no calibration yet)"
+- `unknown` → "Unknown"
+
+**Broader new guardrail** (`tests/test_api_response_values_no_snake_case.py`): walks every `/api/<route>/1` GET response, fails on any string value matching the snake_case pattern in a non-allowlisted field. The allowlist `INTERNAL_VALUE_FIELDS` covers ~30 fields whose values are intentionally raw enum codes consumed by JS switch/case logic (regime, prediction_type, status, side, signal_type, etc.) — each entry has a comment naming why. The labeled-list pattern (`{name, label, ...}` rows where `name` is the form-action key and `label` is rendered) is also recognized and allowed.
+
+This is the test that should have caught the slippage leak before the user saw it. The narrow PARAM_BOUNDS-only check missed it because `insufficient_history` isn't a parameter name.
+
+Suite: 2,172 pass.
+
+---
+
 ## 2026-05-07 — "Total P&L" label clarified as "Realized P&L" (Severity: low, UX)
 
 User confused why the dashboard shows "Total P&L $30,660" while total equity is $2.18M against $2.15M initial capital. The math is consistent ($30,660 realized + −$3,636 unrealized = $27,024 net = $2,177,024 − $2,150,000), but the label "Total P&L" implied total when it was realized only.

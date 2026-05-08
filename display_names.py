@@ -11,6 +11,13 @@ from __future__ import annotations
 
 
 _DISPLAY_NAMES = {
+    # Slippage model source values (api_slippage_model returns these)
+    "insufficient_history":     "Insufficient history (need more fills)",
+    "no_db":                    "No data available",
+    "fit":                      "Calibrated from history",
+    "default":                  "Default (no calibration yet)",
+    "unknown":                  "Unknown",
+
     # Built-in strategies (multi-strategy registry)
     "market_engine":            "Market Structure Engine",
     "insider_cluster":          "Insider Buying Cluster",

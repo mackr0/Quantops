@@ -22,8 +22,17 @@ SINCE_UTC=${2:-"$TODAY_UTC 13:30 UTC"}    # 9:30 AM ET = market open
 # a relevant fix. Anything BEFORE the cutoff is a known historic failure
 # and shouldn't count against the fix.
 RESILIENCE_DEPLOY_UTC="2026-04-30 17:09 UTC"      # check_exits per-position try/except
-WASH_CLASSIFY_DEPLOY_UTC="2026-04-30 17:11 UTC"   # wash/insufficient-qty as SKIP
+# Cross-direction error classification was committed at 22:50 UTC on 2026-04-30
+# (commit 909b67e), not 17:11. Bumped 2026-05-07 after the verify script was
+# flagging real pre-fix Apr 30 19:19/19:42 errors as if they were current bugs.
+WASH_CLASSIFY_DEPLOY_UTC="2026-04-30 22:50 UTC"
 DEFER_TO_BROKER_DEPLOY_UTC="2026-04-30 21:19 UTC" # polling defers to broker trailing
+# trade_pipeline.py:1898 logger.debug -> logging.debug, fix shipped 2026-05-04
+# at ~22:30 UTC (after the May 4 15:10/15:28 UTC failures). The two pre-fix
+# failures show up in the resilience window because there's no per-fix cutoff
+# for this NameError. Bumping RESILIENCE on its own would mask resilience
+# regressions, so we add a dedicated cutoff and use it for [A3] only.
+LOGGER_NAMEERROR_DEPLOY_UTC="2026-05-04 22:30 UTC"
 
 PASS=0
 FAIL=0
@@ -133,13 +142,16 @@ else
 fi
 
 echo
-echo "[A3] Scan failures (any TASK FAIL since resilience deploy)"
-FAILS=$(J_SINCE "$RESILIENCE_DEPLOY_UTC" "| grep -c 'TASK FAIL'")
+echo "[A3] Scan failures (any TASK FAIL since latest fix-deploy cutoff)"
+# Use the latest of all relevant per-fix cutoffs so historic
+# pre-fix failures don't show as current.
+A3_CUTOFF="$LOGGER_NAMEERROR_DEPLOY_UTC"
+FAILS=$(J_SINCE "$A3_CUTOFF" "| grep -c 'TASK FAIL'")
 if [ "${FAILS:-0}" -eq 0 ]; then
-    ok "zero TASK FAIL events since resilience deploy"
+    ok "zero TASK FAIL events since $A3_CUTOFF"
 else
-    bad "$FAILS TASK FAIL events since $RESILIENCE_DEPLOY_UTC — investigate"
-    J_SINCE "$RESILIENCE_DEPLOY_UTC" "| grep -B1 -A2 'TASK FAIL' | head -20"
+    bad "$FAILS TASK FAIL events since $A3_CUTOFF — investigate"
+    J_SINCE "$A3_CUTOFF" "| grep -B1 -A2 'TASK FAIL' | head -20"
 fi
 
 # =============================================================================
