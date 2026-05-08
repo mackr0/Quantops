@@ -17,6 +17,23 @@ Rules going forward:
 
 ---
 
+## 2026-05-07 — May 6 multileg test rewritten with realistic Alpaca paper mock (Severity: medium, test integrity)
+
+`tests/test_multileg_contract_snap.py::test_multileg_log_captures_fill_price` was the original "fix" for the multileg "$--" bug — but the mock returned `filled_avg_price=0.45` instantly, which doesn't match real Alpaca paper behavior (50-500ms delay). The test passed but production stayed broken: 28 multileg legs shipped to prod with NULL `fill_price` for days.
+
+Rewrote the test:
+- Mocks `api.get_order` so the FIRST call (immediate after submit, from `_log_strategy_legs`) returns `filled_avg_price=None`. This matches Alpaca paper's actual behavior.
+- Verifies the leg rows are logged anyway (with NULL `price` / `fill_price`).
+- Then drives `_task_update_fills` (the catch-up path) and verifies the rows are populated on the second `get_order` call.
+
+This is the realistic shape: `_log_strategy_legs` is best-effort; `_task_update_fills` is the reliable backstop. Both halves are now covered.
+
+The new `test_broker_submit_invariants::test_filled_avg_price_mocks_include_none_case` guardrail enforces this pattern on every test that mocks `filled_avg_price` — adding a future test that always returns a numeric value will fail CI.
+
+Suite: 2,177 pass.
+
+---
+
 ## 2026-05-07 — Doc updates: methodology, risk-controls, technical-ref, data-dictionary (Severity: maintenance, doc hygiene)
 
 User feedback: "you should never make a fix that doesn't also include updates to the docs". Catching up the 12-doc tree to reflect today's many changes:

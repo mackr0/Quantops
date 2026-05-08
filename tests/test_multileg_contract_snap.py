@@ -424,17 +424,30 @@ def test_multileg_log_captures_fill_price():
     )
 
     fake_api = MagicMock()
-    # Combo order returns one id, but each leg is queried separately
     combo_order = MagicMock()
     combo_order.id = "combo-id"
     fake_api.submit_order.return_value = combo_order
-    # When leg orders are queried, return filled_avg_price
-    leg_order_responses = {
-        "combo-id": MagicMock(filled_avg_price=0.45),
-    }
-    fake_api.get_order.side_effect = lambda oid: leg_order_responses.get(
-        oid, MagicMock(filled_avg_price=0.45),
-    )
+    # REALISTIC mock — Alpaca paper accounts return
+    # filled_avg_price=None for ~50-500 ms after submit (caught
+    # 2026-05-06: 28 multileg legs shipped to prod with NULL
+    # fill_price for days because the original test mocked 0.45
+    # immediately). The first call from _log_strategy_legs
+    # immediately after submit must return None; subsequent calls
+    # (from _task_update_fills on the next cycle) return the
+    # filled price. This pins both halves: the immediate-fetch
+    # path tolerates None, and the catch-up path is what
+    # actually populates the journal.
+    call_count = {"n": 0}
+
+    def fake_get_order(oid):
+        call_count["n"] += 1
+        m = MagicMock()
+        # First call (immediate after submit) — broker hasn't
+        # propagated the fill yet.
+        m.filled_avg_price = None if call_count["n"] == 1 else "0.45"
+        return m
+
+    fake_api.get_order.side_effect = fake_get_order
 
     fake_ctx = MagicMock()
     fake_ctx.db_path = f.name
@@ -454,18 +467,53 @@ def test_multileg_log_captures_fill_price():
         )
 
     assert result["action"] == "MULTILEG_OPEN", result
-    # Verify journal rows have non-NULL price + fill_price
+    # After the immediate-fetch race the legs are logged with NULL
+    # price/fill_price (Alpaca hadn't reported the fill yet — this
+    # is what production actually sees). Confirm the leg rows
+    # exist and the catch-up task is the reliable path.
     conn = sqlite3.connect(f.name)
     rows = conn.execute(
         "SELECT side, qty, price, fill_price FROM trades"
     ).fetchall()
     conn.close()
     assert len(rows) == 2  # both legs logged
-    for side, qty, price, fill_price in rows:
-        assert price is not None and price > 0, (
-            f"leg {side} qty={qty} has NULL/zero price"
+
+    # Now exercise the catch-up: simulate _task_update_fills
+    # querying get_order again — this time it returns 0.45.
+    import client
+    import multi_scheduler as ms
+    prev = client.get_api
+    client.get_api = lambda ctx: fake_api
+    try:
+        # Wire order_ids on the leg rows so update_fills picks them up
+        conn = sqlite3.connect(f.name)
+        conn.execute(
+            "UPDATE trades SET order_id = 'leg-' || id WHERE order_id IS NULL"
         )
-        assert fill_price is not None and fill_price > 0
+        conn.commit()
+        conn.close()
+
+        class _FCtx:
+            db_path = f.name
+            display_name = "test"
+            segment = "test"
+        ms._task_update_fills(_FCtx())
+    finally:
+        client.get_api = prev
+
+    # After catch-up, fill_price MUST be populated.
+    conn = sqlite3.connect(f.name)
+    rows = conn.execute(
+        "SELECT side, qty, price, fill_price FROM trades"
+    ).fetchall()
+    conn.close()
+    for side, qty, price, fill_price in rows:
+        assert fill_price is not None and fill_price > 0, (
+            f"leg {side} qty={qty} fill_price still NULL after "
+            f"catch-up — _task_update_fills should populate it"
+        )
+        # price gets populated alongside fill_price by the catch-up
+        assert price is not None and price > 0
 
 
 def test_friendly_time_handles_nanosecond_precision():
