@@ -26,10 +26,11 @@
             </strong>
         </div>
         <div class="stat-card">
-            <small class="muted">Total P&L</small>
+            <small class="muted"><span class="tip" data-tip="Sum of realized P&amp;L from closed trades. Does NOT include unrealized P&amp;L on open positions — see the dashboard equity figure for total account value.">Realized P&amp;L</span></small>
             <strong style="font-size:2rem;" class="{{ 'pnl-pos' if trade_perf.total_pnl >= 0 else 'pnl-neg' }}">
                 ${{ "{:,.2f}".format(trade_perf.total_pnl) }}
             </strong>
+            <small class="muted">closed trades only</small>
         </div>
         <div class="stat-card">
             <small class="muted">Closed Trades</small>

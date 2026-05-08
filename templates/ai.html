@@ -1789,7 +1789,7 @@
                     var h = '<div class="grid">';
                     h += '<div class="stat-card"><small class="muted">Trades</small><strong>' + d.n_trades + '</strong></div>';
                     h += '<div class="stat-card"><small class="muted">Win rate</small><strong>' + d.win_rate_pct.toFixed(1) + '%</strong></div>';
-                    h += '<div class="stat-card"><small class="muted">Total P&amp;L</small><strong class="' + pnlCls + '">' + (d.total_pnl_dollars >= 0 ? '+$' : '-$') + Math.abs(d.total_pnl_dollars).toLocaleString(undefined, {maximumFractionDigits: 0}) + '</strong></div>';
+                    h += '<div class="stat-card"><small class="muted">Realized P&amp;L <span class="muted" style="font-size:0.7rem;">(closed only)</span></small><strong class="' + pnlCls + '">' + (d.total_pnl_dollars >= 0 ? '+$' : '-$') + Math.abs(d.total_pnl_dollars).toLocaleString(undefined, {maximumFractionDigits: 0}) + '</strong></div>';
                     h += '<div class="stat-card"><small class="muted">Avg P&amp;L / trade</small><strong>$' + d.avg_pnl_dollars.toFixed(0) + '</strong></div>';
                     h += '<div class="stat-card"><small class="muted">Best / worst</small><strong>$' + d.best_trade_pnl.toFixed(0) + ' / $' + d.worst_trade_pnl.toFixed(0) + '</strong></div>';
                     h += '<div class="stat-card"><small class="muted">Sharpe proxy</small><strong>' + d.sharpe_proxy.toFixed(2) + '</strong></div>';

@@ -17,6 +17,18 @@ Rules going forward:
 
 ---
 
+## 2026-05-07 — "Total P&L" label clarified as "Realized P&L" (Severity: low, UX)
+
+User confused why the dashboard shows "Total P&L $30,660" while total equity is $2.18M against $2.15M initial capital. The math is consistent ($30,660 realized + −$3,636 unrealized = $27,024 net = $2,177,024 − $2,150,000), but the label "Total P&L" implied total when it was realized only.
+
+Renamed the metric in two surfaces:
+- `templates/ai_performance.html` — "Total P&L" → "Realized P&L" + tooltip explaining the omission of unrealized + "closed trades only" sub-label.
+- `templates/ai.html` per-strategy panel — "Total P&L" → "Realized P&L (closed only)".
+
+The per-profile `templates/performance.html` already had the correct label + tooltip — no change. Stress-scenario P&L columns (also labeled "Total P&L") refer to scenario-projected P&L, different context — left alone.
+
+---
+
 ## 2026-05-07 — Cross-cutting guardrails for the broker-submit bug class + dashboard fixes (Severity: high, prevention + UX)
 
 The 2026-05-07 audit found 10 same-class bugs (position_intent, dup guards, silent swallows, unrealistic mocks) that the test suite missed. The user's question: "why didn't we catch this?" — because tests verified specific files, not invariants. Adding cross-cutting static guardrails:
