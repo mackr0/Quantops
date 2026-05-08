@@ -17,6 +17,36 @@ Rules going forward:
 
 ---
 
+## 2026-05-08 — Option positions tracked separately + correct unrealized %, pending-orders price column always populated, OPT badge (Severity: high, accounting integrity + UX)
+
+User flagged the dashboard showing **+13,332%** unrealized P&L on an MSFT bull_put_spread leg, plus rows of trailing-stop orders with "—" in the Limit Price column.
+
+**Root cause #1 — option positions silently aggregated under their underlying.** `journal.get_virtual_positions` grouped FIFO lots by stock symbol only, mixing the $3.10 option premium with the $416 stock price under the same "MSFT" key. The `price_fetcher` returned the underlying's stock price for "MSFT" → `unrealized_plpc = (416 - 3.10) / 3.10 = +13,332%`. Same misuse poisoned `market_value`, `unrealized_pl`, etc.
+
+Fixes (data layer):
+- `journal.get_virtual_positions` now keys positions by OCC symbol when present, falling back to the stock symbol. Output dicts include `occ_symbol` (None for stock). Stock holdings and option legs on the same underlying are now separate positions with their own avg-entry, current_price, P&L. Falls back to legacy stock-only query when older test fixtures lack the `occ_symbol` column.
+- `client._make_price_fetcher` detects OCC symbols (21 chars, C/P at idx 12, trailing 8 digits) and routes to `_fetch_option_premium`, which queries Alpaca's `/v1beta1/options/snapshots/<underlying>` endpoint and returns the contract's mid quote (or last trade, or daily close). OCC results are TTL-cached the same way stock prices are.
+- `journal.get_virtual_positions` applies the x100 contract multiplier when computing `unrealized_pl` and `market_value` for option positions (% stays scale-free so unrealized_plpc is correct in both cases).
+- `views._enriched_positions` keys trade-metadata lookup by OCC for option legs (so each leg gets its own AI reasoning row, not the most-recent stock trade on the same underlying), and propagates `occ_symbol` to the rendered dict.
+
+Fixes (template):
+- `templates/_trades_table.html` differentiates option rows: `OPT` purple badge, contract-detail line under the symbol (e.g., `MSFT 12/19 $395 PUT` via the new `format_occ` Jinja filter), tinted background, "ct" suffix on quantity, x100 multiplier on the dollar-value sub-line. The unrealized % row is now correct because `current_price` reflects the actual option premium.
+
+**Root cause #2 — pending-orders table only surfaced `limit_price`.** Trailing-stop and stop orders carry `stop_price`, `trail_percent`, `trail_price`, and `hwm` on the Alpaca order object — none were captured. Result: every Trailing Stop row showed "—" in the Limit Price column.
+
+Fixes:
+- `views._safe_pending_orders` now captures every price-related field defensively (`getattr` with `None` fallback so missing fields don't crash). Output dict includes `stop_price`, `trail_percent`, `trail_price`, `hwm`.
+- `templates/dashboard.html` renames the column to "Price" and renders whichever value exists: limit price → stop price + trail-distance hint underneath → trail-only → "market" fallback. Tooltip explains the column.
+
+**Tests** (12 new):
+- `tests/test_option_positions_correct_pnl.py` — 7 cases: option leg tracked separately from underlying stock, P&L uses option premium not stock price (the +13,332% bug specifically), short option leg P&L sign correct, two legs same underlying produce two distinct positions, OCC symbol detection covers stock tickers + invalid shapes.
+- `tests/test_pending_orders_price_display.py` — 5 cases: trailing-stop returns stop_price + trail_percent, limit returns limit_price, stop returns stop_price, missing fields don't crash, template-logic precondition verifies every order has at least one price-shaped field.
+- Updated existing `test_matches_client_get_positions_shape` to expect `occ_symbol` in the position dict shape.
+
+Suite: 2,210 pass.
+
+---
+
 ## 2026-05-07 — In-app docs viewer (`/docs`) + nav link, plus doc cleanup (Severity: medium, docs hygiene)
 
 User asked for a single document covering the safety / quality / reliability strategy in plain terms, AND for the docs to be visible inside the app with a fresh-on-update render path.

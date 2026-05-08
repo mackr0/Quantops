@@ -40,36 +40,54 @@
             </thead>
             <tbody>
                 {% for t in trades %}
-                <tr class="trade-row" data-symbol="{{ t.symbol }}" data-ts="{{ t.timestamp or '' }}" style="cursor:pointer;" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? '' : 'none'; this.querySelector('.expand-caret').innerHTML = this.nextElementSibling.style.display === 'none' ? '&#9654;' : '&#9660;'">
+                {# Differentiate option legs from stock rows: contract
+                   detail label under the symbol, OPT badge, tinted
+                   row, x100 contract multiplier on dollar values.
+                   The % calculations work for both because the data
+                   layer now fetches the option contract's actual
+                   premium (not the underlying's stock price) for
+                   `current_price` on option rows. #}
+                {% set is_option = t.occ_symbol is defined and t.occ_symbol %}
+                {% set option_mult = 100 if is_option else 1 %}
+                <tr class="trade-row{% if is_option %} option-row{% endif %}" data-symbol="{{ t.symbol }}" data-ts="{{ t.timestamp or '' }}" style="cursor:pointer;{% if is_option %}background:#fbf7ff;{% endif %}" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? '' : 'none'; this.querySelector('.expand-caret').innerHTML = this.nextElementSibling.style.display === 'none' ? '&#9654;' : '&#9660;'">
                     <td style="width:1.5rem;text-align:center;"><span class="expand-caret" style="font-size:0.7rem;color:#888;">&#9654;</span></td>
                     <td class="muted" data-raw="{{ t.timestamp or '' }}">{{ (t.timestamp or '')|friendly_time }}</td>
                     {% if show_profile %}<td>{{ t.profile_name or t.segment or '--' }}</td>{% endif %}
-                    <td><strong>{{ t.symbol }}</strong></td>
+                    <td>
+                        {% if is_option %}
+                            <span style="display:inline-block;background:#7e57c2;color:white;font-size:0.65rem;font-weight:600;padding:0.05rem 0.3rem;border-radius:3px;vertical-align:middle;margin-right:0.25rem;">OPT</span>
+                            <strong>{{ t.symbol }}</strong>
+                            <br><small class="muted" style="font-size:0.75rem;">{{ t.occ_symbol|format_occ }}</small>
+                        {% else %}
+                            <strong>{{ t.symbol }}</strong>
+                        {% endif %}
+                    </td>
                     <td class="{{ 'pnl-pos' if t.side == 'buy' else 'pnl-neg' }}">
                         {{ t.side|upper }}
                     </td>
-                    {# Option contracts represent 100 shares — apply the
-                       multiplier on dollar values so the dashboard doesn't
-                       show an option leg as "$0" when it's really worth $45.
-                       Caught 2026-05-07 (SCHD bull_put_spread legs). #}
-                    {% set option_mult = 100 if t.occ_symbol else 1 %}
-                    <td>{{ t.qty|int }}{% if t.occ_symbol %}<small class="muted"> ct</small>{% endif %}{% if t.price and t.qty %}<br><small class="muted">${{ "{:,.0f}".format(t.qty * t.price * option_mult) }}</small>{% endif %}</td>
+                    <td>{{ t.qty|int }}{% if is_option %}<small class="muted"> ct</small>{% endif %}{% if t.price and t.qty %}<br><small class="muted">${{ "{:,.0f}".format(t.qty * t.price * option_mult) }}</small>{% endif %}</td>
                     <td>
                         {{ "${:,.2f}".format(t.price) if t.price else '--' }}
                         {% if t.current_price is defined and t.current_price is not none and t.current_price > 0 and t.price %}
-                            {# Direction sign: long gains when price rises; short gains when price falls. #}
+                            {# `current_price` is the option's mid premium for
+                               option rows (fetched via the options-snapshot
+                               endpoint) and the stock's last trade for stock
+                               rows. The % calc is therefore consistent in
+                               both cases. Sign-flip for short positions:
+                               shorts gain when price falls. #}
                             {% set price_move = (t.current_price - t.price) / t.price * 100 %}
                             {% set chg_pct = -price_move if t.side in ('sell', 'sell_short', 'short') else price_move %}
                             <br><small class="{{ 'pnl-pos' if chg_pct >= 0 else 'pnl-neg' }}">@ ${{ "{:,.2f}".format(t.current_price) }} ({{ "{:+.1f}%".format(chg_pct) }})</small>
                         {% endif %}
                     </td>
                     <td>{% if t.ai_confidence %}{{ "{}%".format(t.ai_confidence|int) }}{% elif t.side in ('sell', 'cover') %}<small class="muted">Auto-exit</small>{% else %}--{% endif %}</td>
-                    {# P&L — realized on SELL rows (trades page), unrealized on
-                       open positions (dashboard). Never both on the same row. #}
+                    {# P&L — realized on SELL rows (trades page), unrealized
+                       on open positions (dashboard). Never both on the same
+                       row. Cost-basis denominator applies the x100 contract
+                       multiplier for options so % is correct in both paths. #}
                     <td>
                         {% if t.side in ('sell', 'cover') and t.pnl is not none %}
                             {% if t.price and t.qty %}
-                                {# option contracts ×100 multiplier #}
                                 {% set cost_basis = t.price * t.qty * option_mult - t.pnl %}
                                 {% if cost_basis and cost_basis > 0 %}
                                     {% set pnl_pct = t.pnl / cost_basis * 100 %}

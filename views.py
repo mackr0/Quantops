@@ -122,20 +122,32 @@ def _enriched_positions(ctx, profile_id):
         ).fetchall()
         conn.close()
         for r in rows:
-            sym = r["symbol"]
-            if sym not in trade_meta:  # keep most recent open-side trade
-                trade_meta[sym] = dict(r)
+            # Key by OCC for option legs (each contract is its own
+            # journal entry); by underlying symbol for stock. This
+            # mirrors the get_virtual_positions output keying.
+            occ = r["occ_symbol"] if "occ_symbol" in r.keys() else None
+            key = occ if occ else r["symbol"]
+            if key not in trade_meta:  # keep most recent open-side trade
+                trade_meta[key] = dict(r)
     except Exception as exc:
         logger.warning("Could not enrich positions for profile %d: %s",
                        profile_id, exc)
 
     out = []
     for p in positions:
-        meta = trade_meta.get(p["symbol"], {})
+        # For option positions, look up trade metadata by OCC symbol
+        # (every leg is a distinct row in the journal). For stock,
+        # match on underlying. Without this, an option leg's metadata
+        # would be borrowed from the most recent stock trade on the
+        # same underlying — completely unrelated.
+        occ = p.get("occ_symbol")
+        meta_key = occ if occ else p["symbol"]
+        meta = trade_meta.get(meta_key, {})
         side = "sell" if p.get("qty", 0) < 0 else "buy"
         out.append({
             "timestamp": meta.get("timestamp"),
             "symbol": p["symbol"],
+            "occ_symbol": occ,
             "side": side,
             "qty": abs(p["qty"]),
             "price": p["avg_entry_price"],
@@ -217,16 +229,34 @@ def _safe_pending_orders(ctx):
                 qty = float(o.qty) if o.qty else 0.0
             except (TypeError, ValueError):
                 qty = 0.0
-            try:
-                limit_price = float(o.limit_price) if o.limit_price else None
-            except (TypeError, ValueError):
-                limit_price = None
+            # Capture every flavor of order's pricing field so the
+            # dashboard always has SOMETHING to show in the price
+            # column — the user's complaint: a trailing-stop row
+            # showing "—" is unhelpful when the broker has a
+            # current stop price + trail distance available.
+            def _f(attr):
+                v = getattr(o, attr, None)
+                if v is None:
+                    return None
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return None
+            limit_price = _f("limit_price")
+            stop_price = _f("stop_price")
+            trail_percent = _f("trail_percent")
+            trail_price = _f("trail_price")
+            hwm = _f("hwm")
             out.append({
                 "symbol": o.symbol,
                 "side": o.side,
                 "qty": qty,
                 "order_type": o.order_type,
                 "limit_price": limit_price,
+                "stop_price": stop_price,
+                "trail_percent": trail_percent,
+                "trail_price": trail_price,
+                "hwm": hwm,
                 "status": o.status,
                 "submitted_at": str(o.submitted_at) if getattr(o, "submitted_at", None) else None,
                 "time_in_force": o.time_in_force,

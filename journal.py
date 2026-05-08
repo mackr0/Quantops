@@ -606,43 +606,64 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
     """
     conn = _get_conn(db_path)
     try:
-        # Exclude status='canceled' rows — those are entry orders that
-        # never filled at the broker (caught 2026-05-06: 5 phantoms in
-        # profile_11 had been showing as +35% INTC etc. for 12 days).
-        # The FIFO has no matching SELL for a canceled BUY, so without
-        # this filter the phantom stays "open" forever in the UI.
-        rows = conn.execute(
-            "SELECT symbol, side, qty, price, timestamp "
-            "FROM trades "
-            "WHERE COALESCE(status, 'open') != 'canceled' "
-            "ORDER BY timestamp ASC, id ASC"
-        ).fetchall()
+        # Exclude status='canceled' rows — entry orders that never
+        # filled at the broker. Without this the phantom stays
+        # "open" forever in the FIFO.
+        # Pull occ_symbol so option legs are tracked as separate
+        # positions from any underlying-stock holding (without this,
+        # FIFO mixes a $3.10 option premium with a $416 stock price
+        # under the same "MSFT" key and produces nonsense valuations).
+        # Fall back to the legacy stock-only query when occ_symbol
+        # doesn't exist (older test fixtures with minimal schemas).
+        try:
+            rows = conn.execute(
+                "SELECT symbol, side, qty, price, timestamp, occ_symbol "
+                "FROM trades "
+                "WHERE COALESCE(status, 'open') != 'canceled' "
+                "ORDER BY timestamp ASC, id ASC"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            rows = conn.execute(
+                "SELECT symbol, side, qty, price, timestamp "
+                "FROM trades "
+                "WHERE COALESCE(status, 'open') != 'canceled' "
+                "ORDER BY timestamp ASC, id ASC"
+            ).fetchall()
     except Exception:
         conn.close()
         return []
     conn.close()
 
-    # FIFO lot tracking per symbol — separate stacks for long and short
-    # so a profile can run both directions on the same symbol over time.
-    # Each lot: [qty_remaining, entry_price]
+    # FIFO lot tracking. Position key is the OCC symbol when present
+    # (so each option contract is its own position) or the stock
+    # symbol otherwise. Stock holdings and option legs on the same
+    # underlying never share a FIFO bucket. The position output
+    # carries both `symbol` (underlying for grouping/display) and
+    # `occ_symbol` (contract identifier when applicable).
     long_lots: Dict[str, list] = {}
     short_lots: Dict[str, list] = {}
+    pos_meta: Dict[str, Dict[str, Any]] = {}  # key -> {symbol, occ_symbol}
     for row in rows:
         symbol = row[0]
         side = row[1]
         qty = float(row[2] or 0)
         price = float(row[3] or 0)
+        occ_symbol = row[5] if len(row) > 5 else None
         if qty <= 0 or price <= 0:
             continue
+        # Position key: OCC for options, underlying symbol for stock.
+        key = occ_symbol if occ_symbol else symbol
+        if key not in pos_meta:
+            pos_meta[key] = {"symbol": symbol, "occ_symbol": occ_symbol}
 
         if side == "buy":
-            long_lots.setdefault(symbol, []).append([qty, price])
+            long_lots.setdefault(key, []).append([qty, price])
         elif side == "short":
-            short_lots.setdefault(symbol, []).append([qty, price])
+            short_lots.setdefault(key, []).append([qty, price])
         elif side == "sell":
             # Closes a long. FIFO-consume from long_lots first.
             remaining = qty
-            ll = long_lots.setdefault(symbol, [])
+            ll = long_lots.setdefault(key, [])
             while remaining > 0 and ll:
                 consumed = min(ll[0][0], remaining)
                 ll[0][0] -= consumed
@@ -652,7 +673,7 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
         elif side == "cover":
             # Closes a short. FIFO-consume from short_lots.
             remaining = qty
-            sl = short_lots.setdefault(symbol, [])
+            sl = short_lots.setdefault(key, [])
             while remaining > 0 and sl:
                 consumed = min(sl[0][0], remaining)
                 sl[0][0] -= consumed
@@ -660,63 +681,72 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
                 if sl[0][0] <= 0.001:
                     sl.pop(0)
 
-    # Build position dicts. A symbol can have BOTH a long and a short
-    # leg open (rare, but possible across signals or rotations); we net
-    # them and report a single position with the net signed qty.
+    # Build position dicts. A position-key can have BOTH a long and
+    # a short open (rare for stock; common for option spreads where
+    # the same OCC could have offsetting legs); we net them and
+    # report a single position with the net signed qty.
     positions = []
-    all_symbols = set(long_lots.keys()) | set(short_lots.keys())
-    for symbol in all_symbols:
-        long_remaining = sum(lot[0] for lot in long_lots.get(symbol, []))
-        short_remaining = sum(lot[0] for lot in short_lots.get(symbol, []))
+    all_keys = set(long_lots.keys()) | set(short_lots.keys())
+    for key in all_keys:
+        long_remaining = sum(lot[0] for lot in long_lots.get(key, []))
+        short_remaining = sum(lot[0] for lot in short_lots.get(key, []))
         net_qty = long_remaining - short_remaining
         if abs(net_qty) < 0.001:
             continue
 
-        # Cost basis comes from the dominant side. For displayed qty,
-        # use the net (so 10 long + 4 short = 6 net long).
         if net_qty > 0:
-            lots = long_lots[symbol]
+            lots = long_lots[key]
         else:
-            lots = short_lots[symbol]
+            lots = short_lots[key]
         total_qty = abs(net_qty)
         dominant_remaining = long_remaining if net_qty > 0 else short_remaining
 
-        # Weighted average entry price across the dominant side's lots
         total_cost = sum(lot[0] * lot[1] for lot in lots if lot[0] > 0)
         avg_entry = (
             total_cost / dominant_remaining if dominant_remaining > 0 else 0
         )
 
-        # Current price: use price_fetcher if available, else last entry
+        meta = pos_meta.get(key, {"symbol": key, "occ_symbol": None})
+        symbol = meta["symbol"]
+        occ_symbol = meta["occ_symbol"]
+        is_option = bool(occ_symbol)
+
+        # Current price: ask the price_fetcher for the position key
+        # (OCC for options, underlying symbol for stock). The fetcher
+        # is responsible for routing OCC symbols to the option-quote
+        # path. Without this routing, an option leg's "current price"
+        # would be the underlying's stock price — producing absurd
+        # unrealized% values like (416 - 3.10) / 3.10 = +13,332%.
         current_price = 0.0
         if price_fetcher:
             try:
-                current_price = float(price_fetcher(symbol) or 0)
+                current_price = float(price_fetcher(key) or 0)
             except Exception:
                 pass
         if current_price <= 0:
             current_price = avg_entry  # fallback: no price change assumed
 
-        # Sign convention matches Alpaca: long qty>0, short qty<0. P&L
-        # for shorts is (entry - current) * qty (we profit when price
-        # falls). market_value for shorts is negative.
+        # Sign convention matches Alpaca: long qty>0, short qty<0.
+        # Options have a 100x contract multiplier on dollar values.
+        contract_mult = 100 if is_option else 1
         is_short = (net_qty < 0)
         signed_qty = -total_qty if is_short else total_qty
         if is_short:
-            unrealized_pl = (avg_entry - current_price) * total_qty
+            unrealized_pl = (avg_entry - current_price) * total_qty * contract_mult
             unrealized_plpc = (
                 (avg_entry - current_price) / avg_entry if avg_entry > 0 else 0
             )
-            market_value = -current_price * total_qty
+            market_value = -current_price * total_qty * contract_mult
         else:
-            unrealized_pl = (current_price - avg_entry) * total_qty
+            unrealized_pl = (current_price - avg_entry) * total_qty * contract_mult
             unrealized_plpc = (
                 (current_price - avg_entry) / avg_entry if avg_entry > 0 else 0
             )
-            market_value = current_price * total_qty
+            market_value = current_price * total_qty * contract_mult
 
         positions.append({
             "symbol": symbol,
+            "occ_symbol": occ_symbol,
             "qty": round(signed_qty, 4),
             "avg_entry_price": round(avg_entry, 4),
             "current_price": round(current_price, 4),

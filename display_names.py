@@ -596,11 +596,36 @@ def humanize(value):
     return text
 
 
+def format_occ(occ):
+    """Render an OCC option symbol as a short, human-readable label.
+    Example: `MSFT  261219P00395000` -> `MSFT 12/19 $395 PUT`.
+    Returns the raw OCC string on parse failure so the UI never
+    silently shows nothing."""
+    if not occ:
+        return ""
+    try:
+        from options_trader import parse_occ_symbol
+        parts = parse_occ_symbol(occ)
+        right_label = "CALL" if parts["right"] == "C" else "PUT"
+        strike = parts["strike"]
+        strike_str = (f"${strike:.0f}" if strike == int(strike)
+                      else f"${strike:.2f}")
+        exp = parts["expiry"]
+        # Compact m/d (drop year on the dashboard — operator
+        # cares about days-to-expiry; full date is in the
+        # detail row).
+        return (f"{parts['underlying']} {exp.month}/{exp.day} "
+                f"{strike_str} {right_label}")
+    except Exception:
+        return str(occ)
+
+
 def register(app) -> None:
     """Wire up the `display_name`, `humanize`, `reading_value`,
-    `friendly_time`, and `friendly_date` Jinja filters."""
+    `friendly_time`, `friendly_date`, and `format_occ` Jinja filters."""
     app.jinja_env.filters["display_name"] = display_name
     app.jinja_env.filters["humanize"] = humanize
     app.jinja_env.filters["reading_value"] = format_reading_value
     app.jinja_env.filters["friendly_time"] = friendly_time
     app.jinja_env.filters["friendly_date"] = friendly_date
+    app.jinja_env.filters["format_occ"] = format_occ

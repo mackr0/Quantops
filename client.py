@@ -104,9 +104,69 @@ def _prefetch_prices(symbols):
         pass
 
 
+def _is_occ_symbol(s):
+    """Heuristic: an OCC option symbol is exactly 21 chars, has C or P
+    at index 12, and the trailing 8 chars are digits (strike × 1000).
+    Distinguishes `MSFT261219P00395000` from `MSFT`."""
+    if not s or len(s) != 21:
+        return False
+    if s[12] not in ("C", "P"):
+        return False
+    return s[13:21].isdigit()
+
+
+def _fetch_option_premium(occ_symbol):
+    """Latest mid premium for an option contract by OCC symbol.
+    Returns 0.0 on any failure so the caller falls back to the
+    last-known entry price (no nonsense absurd %s in the UI)."""
+    import requests
+    try:
+        from options_chain_alpaca import _alpaca_headers, _ALPACA_DATA_BASE
+    except Exception:
+        return 0.0
+    try:
+        # Need the underlying to query the snapshots endpoint, which
+        # is keyed by underlying symbol. Pull it from the OCC root.
+        underlying = occ_symbol[:6].strip()
+        r = requests.get(
+            f"{_ALPACA_DATA_BASE}/v1beta1/options/snapshots/{underlying}",
+            headers=_alpaca_headers(),
+            params={"feed": "indicative"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return 0.0
+        snaps = (r.json() or {}).get("snapshots") or {}
+        snap = snaps.get(occ_symbol)
+        if not snap:
+            return 0.0
+        q = snap.get("latestQuote") or {}
+        ap = float(q.get("ap") or 0)
+        bp = float(q.get("bp") or 0)
+        if ap > 0 and bp > 0:
+            return (ap + bp) / 2
+        # Fall back to last trade
+        t = snap.get("latestTrade") or {}
+        tp = float(t.get("p") or 0)
+        if tp > 0:
+            return tp
+        # Daily-bar close as final fallback
+        bar = snap.get("dailyBar") or {}
+        cp = float(bar.get("c") or 0)
+        return cp if cp > 0 else 0.0
+    except Exception:
+        return 0.0
+
+
 def _make_price_fetcher(api):
     """Return a callable that gets the current price for a symbol,
     backed by a process-wide TTL cache populated by `_prefetch_prices`.
+
+    OCC option symbols (`<root><yymmdd><CP><strike×1000>`, 21 chars)
+    are routed to the Alpaca options-snapshot endpoint via
+    `_fetch_option_premium` and return the contract's mid premium.
+    Stock symbols continue through the cache + `get_latest_trade`
+    fallback path unchanged.
 
     Per-symbol fallback to `api.get_latest_trade` only fires if the
     batched snapshot path didn't yield a price for that symbol — in
@@ -115,13 +175,30 @@ def _make_price_fetcher(api):
     """
     def fetch(symbol):
         now = time.time()
+        # OCC option symbol: route to option-snapshot path. Cached
+        # the same way as stocks so repeated calls within TTL hit
+        # the in-process cache instead of re-querying Alpaca.
+        if _is_occ_symbol(symbol):
+            with _price_cache_lock:
+                entry = _price_cache.get(symbol)
+                if entry is not None and (now - entry[0]) < _PRICE_CACHE_TTL:
+                    return entry[1]
+            premium = _fetch_option_premium(symbol)
+            if premium > 0:
+                with _price_cache_lock:
+                    _price_cache[symbol] = (now, premium)
+                return premium
+            import logging
+            logging.warning(
+                "Option-premium fetch failed for %s — leg will show "
+                "stale price", symbol,
+            )
+            return 0.0
+        # Stock path
         with _price_cache_lock:
             entry = _price_cache.get(symbol)
             if entry is not None and (now - entry[0]) < _PRICE_CACHE_TTL:
                 return entry[1]
-        # Cache miss / stale: try a one-symbol latest_trade call.
-        # `_make_price_fetcher` callers should call `_prefetch_prices`
-        # with the full symbol list FIRST so this path is rare.
         try:
             trade = api.get_latest_trade(symbol)
             if trade and hasattr(trade, "price"):

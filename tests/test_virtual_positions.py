@@ -175,11 +175,15 @@ class TestOutputShape:
         from journal import get_virtual_positions
         _buy(vdb, "AAPL", 10, 100.0)
         pos = get_virtual_positions(db_path=vdb)
+        # `occ_symbol` is part of the shape so option legs can be
+        # rendered with contract details. None for stock positions.
         required_keys = {
-            "symbol", "qty", "avg_entry_price", "current_price",
-            "market_value", "unrealized_pl", "unrealized_plpc",
+            "symbol", "occ_symbol", "qty", "avg_entry_price",
+            "current_price", "market_value",
+            "unrealized_pl", "unrealized_plpc",
         }
         assert set(pos[0].keys()) == required_keys
+        assert pos[0]["occ_symbol"] is None  # stock row
 
     def test_price_fetcher_failure_falls_back(self, vdb):
         from journal import get_virtual_positions

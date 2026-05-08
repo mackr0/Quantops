@@ -352,7 +352,7 @@
                     <th>Side</th>
                     <th>Qty</th>
                     <th>Type</th>
-                    <th>Limit Price</th>
+                    <th><span class="tip" data-tip="For limit orders: the limit price. For stop / trailing orders: the current stop trigger price (trailing stops also show the trail distance below it).">Price</span></th>
                     <th>Status</th>
                     <th>Submitted</th>
                     <th>TIF</th>
@@ -365,7 +365,29 @@
                     <td><span class="badge badge-{{ 'buy' if o.side == 'buy' else 'sell' }}">{{ o.side|upper }}</span></td>
                     <td>{{ o.qty|int }}</td>
                     <td>{{ o.order_type|humanize }}</td>
-                    <td>{% if o.limit_price %}${{ "{:,.2f}".format(o.limit_price) }}{% else %}—{% endif %}</td>
+                    <td>
+                        {# Show whichever price is relevant for the order
+                           type. Trailing stops carry a current stop_price
+                           that moves with the high-water mark — surfaced
+                           with the trail-distance hint underneath. #}
+                        {% if o.limit_price %}
+                            ${{ "{:,.2f}".format(o.limit_price) }}
+                        {% elif o.stop_price %}
+                            ${{ "{:,.2f}".format(o.stop_price) }}
+                            {% if o.trail_percent %}
+                                <br><small class="muted">trail {{ "{:.1f}%".format(o.trail_percent) }}</small>
+                            {% elif o.trail_price %}
+                                <br><small class="muted">trail ${{ "{:,.2f}".format(o.trail_price) }}</small>
+                            {% endif %}
+                        {% elif o.trail_percent %}
+                            {# Trail-only (no stop_price computed yet) — show the trail distance #}
+                            <small class="muted">trail {{ "{:.1f}%".format(o.trail_percent) }}</small>
+                        {% elif o.trail_price %}
+                            <small class="muted">trail ${{ "{:,.2f}".format(o.trail_price) }}</small>
+                        {% else %}
+                            <small class="muted">market</small>
+                        {% endif %}
+                    </td>
                     <td><span class="muted">{{ o.status|title }}</span></td>
                     <td class="muted">{{ o.submitted_at or '—' }}</td>
                     <td>{{ o.time_in_force|upper }}</td>

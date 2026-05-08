@@ -80,11 +80,11 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | `specialist_calibration.py` | Platt-scaling per specialist. |
 | `meta_model.py` | GBM batch model. |
 | `online_meta_model.py` | SGD freshness layer. |
-| `client.py` | Alpaca REST adapter (orders, positions, account, asset metadata). |
+| `client.py` | Alpaca REST adapter (orders, positions, account, asset metadata). The price-fetcher routes OCC option symbols to the options-snapshot endpoint (mid quote / last trade / daily close fallback) so option positions report their actual contract premium rather than the underlying's stock price. |
 | `order_guard.py` | Schedule-window + duplicate-order checks before submit. |
 | `bracket_orders.py` | Broker-managed protective stops + take-profits. |
 | `trader.py` | Per-position exit logic; trailing-stop reconciliation. Exit-fired SELL/COVER rows write `status='pending_fill'` until broker confirms (deferred to `_task_update_fills`). |
-| `journal.py` | `trades` + journal-table CRUD + schema migrations. Status values: `open` (entry), `pending_fill` (close awaiting broker confirmation), `closed` (broker-confirmed close), `canceled` (entry never filled / phantom undo). FIFO `get_virtual_positions` includes everything except `canceled`. |
+| `journal.py` | `trades` + journal-table CRUD + schema migrations. Status values: `open` (entry), `pending_fill` (close awaiting broker confirmation), `closed` (broker-confirmed close), `canceled` (entry never filled / phantom undo). FIFO `get_virtual_positions` includes everything except `canceled`; option legs are keyed by OCC symbol so they're tracked separately from stock holdings on the same underlying, and the dollar-denominated outputs (`unrealized_pl`, `market_value`) apply the x100 contract multiplier. |
 
 ### 3c. Strategy engines
 | Module | Purpose |
