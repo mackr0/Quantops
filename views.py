@@ -5355,7 +5355,7 @@ def run_backtest(market_type):
 # letting stale content stick around when a file changes.
 # ---------------------------------------------------------------------------
 
-_DOCS_DIR = os.path.join(os.path.dirname(__file__), "Docs")
+_DOCS_DIR = os.path.join(os.path.dirname(__file__), "docs")
 _docs_render_cache = {}  # path -> (mtime, html)
 
 
