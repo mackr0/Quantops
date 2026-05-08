@@ -189,6 +189,117 @@ class TestOptionPositionTracking:
         assert "SCHD  260612P00030000" in occs
 
 
+class TestFetchOptionPremium:
+    """Pin the actual option-premium fetcher's behavior. The journal
+    stores OCC with internal padding (`WMT   260612P00117000`);
+    Alpaca's API returns/accepts the unpadded form
+    (`WMT260612P00117000`). The fetcher must normalize before
+    sending and look up by unpadded key."""
+
+    def _mock_response(self, status, body):
+        from unittest.mock import MagicMock
+        r = MagicMock()
+        r.status_code = status
+        r.json = MagicMock(return_value=body)
+        return r
+
+    def test_padded_occ_strips_internal_whitespace_for_request(self,
+                                                                monkeypatch):
+        from unittest.mock import MagicMock
+        captured = {}
+
+        def fake_get(url, **kw):
+            captured["url"] = url
+            captured["params"] = kw.get("params") or {}
+            return self._mock_response(200, {
+                "snapshots": {
+                    "WMT260612P00117000": {
+                        "latestQuote": {"ap": 1.40, "bp": 1.30},
+                        "latestTrade": {"p": 1.35},
+                    },
+                },
+            })
+
+        monkeypatch.setattr("requests.get", fake_get)
+        from client import _fetch_option_premium
+        # Padded form (as stored in journal)
+        premium = _fetch_option_premium("WMT   260612P00117000")
+        # Sent unpadded
+        assert captured["params"]["symbols"] == "WMT260612P00117000"
+        # Mid of bid/ask = 1.35
+        assert premium == pytest.approx(1.35)
+
+    def test_returns_mid_when_two_sided_quote(self, monkeypatch):
+        def fake_get(url, **kw):
+            return self._mock_response(200, {
+                "snapshots": {
+                    "WMT260612P00117000": {
+                        "latestQuote": {"ap": 2.00, "bp": 1.00},
+                        "latestTrade": {"p": 1.80},
+                    },
+                },
+            })
+
+        monkeypatch.setattr("requests.get", fake_get)
+        from client import _fetch_option_premium
+        # Mid = (2.00 + 1.00) / 2 = 1.50, NOT the last trade
+        assert _fetch_option_premium("WMT260612P00117000") == 1.50
+
+    def test_falls_back_to_last_trade_on_one_sided_quote(self,
+                                                          monkeypatch):
+        """Illiquid contract with stub bid (e.g. $0.01 / $1.40):
+        the mid ($0.705) is unrepresentative; the last trade is
+        more reliable."""
+        def fake_get(url, **kw):
+            return self._mock_response(200, {
+                "snapshots": {
+                    "WMT260612P00117000": {
+                        # bid is stub ($0); ask alone is meaningless
+                        "latestQuote": {"ap": 1.40, "bp": 0.0},
+                        "latestTrade": {"p": 1.02},
+                    },
+                },
+            })
+
+        monkeypatch.setattr("requests.get", fake_get)
+        from client import _fetch_option_premium
+        assert _fetch_option_premium("WMT260612P00117000") == 1.02
+
+    def test_falls_back_to_daily_close_when_no_quote_or_trade(self,
+                                                                monkeypatch):
+        def fake_get(url, **kw):
+            return self._mock_response(200, {
+                "snapshots": {
+                    "WMT260612P00117000": {
+                        "latestQuote": {"ap": 0.0, "bp": 0.0},
+                        "dailyBar": {"c": 1.05},
+                    },
+                },
+            })
+
+        monkeypatch.setattr("requests.get", fake_get)
+        from client import _fetch_option_premium
+        assert _fetch_option_premium("WMT260612P00117000") == 1.05
+
+    def test_returns_zero_on_missing_snapshot(self, monkeypatch):
+        def fake_get(url, **kw):
+            return self._mock_response(200, {"snapshots": {}})
+
+        monkeypatch.setattr("requests.get", fake_get)
+        from client import _fetch_option_premium
+        # Caller (FIFO) will fall back to avg_entry — better than
+        # showing a +13332% on a misread response.
+        assert _fetch_option_premium("WMT260612P00117000") == 0.0
+
+    def test_returns_zero_on_http_error(self, monkeypatch):
+        def fake_get(url, **kw):
+            return self._mock_response(500, {})
+
+        monkeypatch.setattr("requests.get", fake_get)
+        from client import _fetch_option_premium
+        assert _fetch_option_premium("WMT260612P00117000") == 0.0
+
+
 class TestOCCSymbolDetection:
     """Backing the price-fetcher's option-vs-stock routing."""
 

@@ -116,36 +116,56 @@ def _is_occ_symbol(s):
 
 
 def _fetch_option_premium(occ_symbol):
-    """Latest mid premium for an option contract by OCC symbol.
-    Returns 0.0 on any failure so the caller falls back to the
-    last-known entry price (no nonsense absurd %s in the UI)."""
+    """Latest premium for an option contract by OCC symbol.
+
+    Uses Alpaca's per-symbol snapshots endpoint
+    (`/v1beta1/options/snapshots?symbols=<occ>`), which returns
+    quote + last trade + daily bar in a single request. Preference
+    order:
+      1. Mid of bid/ask when both > 0 and ask >= bid (live market).
+      2. Latest trade price (covers illiquid contracts where the
+         quote shows a stub bid like $0.01 vs ask $1.40 and the
+         mid is unrepresentative).
+      3. Daily bar close.
+
+    The OCC stored in the journal is padded to 21 chars
+    (`WMT   260612P00117000`); Alpaca's API accepts and returns
+    the unpadded form (`WMT260612P00117000`), so we strip
+    internal whitespace before sending and look up by the
+    unpadded key in the response.
+
+    Returns 0.0 on any failure so the caller (which falls back
+    to entry price) doesn't surface a nonsense value.
+    """
     import requests
+    if not occ_symbol:
+        return 0.0
     try:
         from options_chain_alpaca import _alpaca_headers, _ALPACA_DATA_BASE
     except Exception:
         return 0.0
+    occ_unpadded = occ_symbol.replace(" ", "")
+    if not occ_unpadded:
+        return 0.0
     try:
-        # Need the underlying to query the snapshots endpoint, which
-        # is keyed by underlying symbol. Pull it from the OCC root.
-        underlying = occ_symbol[:6].strip()
         r = requests.get(
-            f"{_ALPACA_DATA_BASE}/v1beta1/options/snapshots/{underlying}",
+            f"{_ALPACA_DATA_BASE}/v1beta1/options/snapshots",
             headers=_alpaca_headers(),
-            params={"feed": "indicative"},
+            params={"symbols": occ_unpadded, "feed": "indicative"},
             timeout=10,
         )
         if r.status_code != 200:
             return 0.0
         snaps = (r.json() or {}).get("snapshots") or {}
-        snap = snaps.get(occ_symbol)
+        snap = snaps.get(occ_unpadded)
         if not snap:
             return 0.0
         q = snap.get("latestQuote") or {}
         ap = float(q.get("ap") or 0)
         bp = float(q.get("bp") or 0)
-        if ap > 0 and bp > 0:
+        if ap > 0 and bp > 0 and ap >= bp:
             return (ap + bp) / 2
-        # Fall back to last trade
+        # Quote is one-sided / inverted / empty — fall back to last trade
         t = snap.get("latestTrade") or {}
         tp = float(t.get("p") or 0)
         if tp > 0:

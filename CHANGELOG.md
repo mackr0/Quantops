@@ -17,6 +17,24 @@ Rules going forward:
 
 ---
 
+## 2026-05-08 — Option premium fetcher: use per-contract endpoint, strip OCC padding, prefer mid then last-trade (Severity: high, dashboard correctness)
+
+User flagged that every option row showed exactly 0% unrealized — meaning the price fetcher was failing on every option leg and `get_virtual_positions` was falling back to `avg_entry`. Two real bugs in `_fetch_option_premium`:
+
+1. **OCC padding mismatch.** The journal stores OCC symbols padded to 21 chars (`WMT   260612P00117000`); Alpaca's API returns and expects the unpadded form (`WMT260612P00117000`, 18 chars). The fetcher was sending the padded form to the snapshots-by-underlying endpoint and looking up by the padded key — the response keys are unpadded, so every lookup missed.
+
+2. **Snapshots-by-underlying returned only 100 of N contracts.** No pagination, no expiration filter — June-expiry contracts weren't on the first page. Even with the OCC fix, the fetcher would have missed any contract not in the first 100 returned for the underlying.
+
+**Fix:** switched to Alpaca's per-symbol snapshots endpoint (`/v1beta1/options/snapshots?symbols=<unpadded_occ>`) which returns quote + last trade + daily bar in a single round-trip for the exact contract. Strip whitespace from OCC before sending and looking up.
+
+**Premium preference:** mid of bid/ask when both > 0 and ask >= bid → last trade → daily close → 0.0 (caller falls back to `avg_entry`). The mid-vs-trade order matters for stub-bid markets (e.g., `bp=0.01, ap=1.40` where mid $0.705 is unrepresentative and last trade $1.02 is correct).
+
+**Tests** (6 new in `tests/test_option_positions_correct_pnl.py::TestFetchOptionPremium`): padded OCC strips for request, two-sided quote returns mid, one-sided falls back to last trade, no quote/trade falls back to daily close, missing snapshot returns 0.0, HTTP error returns 0.0.
+
+Suite: 2,216 pass.
+
+---
+
 ## 2026-05-08 — Option positions tracked separately + correct unrealized %, pending-orders price column always populated, OPT badge (Severity: high, accounting integrity + UX)
 
 User flagged the dashboard showing **+13,332%** unrealized P&L on an MSFT bull_put_spread leg, plus rows of trailing-stop orders with "—" in the Limit Price column.
