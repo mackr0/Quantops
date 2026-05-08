@@ -1547,11 +1547,28 @@
         fetch('/api/attention-signals/' + pid)
             .then(function(r) { return r.json(); })
             .then(function(d) {
-                if (!d.available || !d.rows || !d.rows.length) {
-                    w.innerHTML = '<p class="muted">No held positions on the selected profile, or attention signals not yet fetched.</p>';
+                if (!d.available) {
+                    w.innerHTML = '<p class="muted">No held positions on the selected profile.</p>';
                     return;
                 }
-                var h = '<div class="overflow-auto"><table class="striped" style="font-size:0.85rem;"><thead><tr>';
+                // The API now filters out symbols that have NO data
+                // across all three sources, and surfaces an explain
+                // string when the panel would otherwise be empty.
+                if (!d.rows || !d.rows.length) {
+                    var msg = d.explain_when_empty || (
+                        'Attention-signal data not yet fetched for current holdings.'
+                    );
+                    w.innerHTML = '<p class="muted">' + esc(msg) + '</p>';
+                    return;
+                }
+                var h = '';
+                if (d.google_trends_disabled_reason) {
+                    h += '<p class="muted" style="font-size:0.8rem;">'
+                        + 'Note: Google Trends column shows blanks because the source is rate-limited '
+                        + '(' + esc(d.google_trends_disabled_reason) + '). Wikipedia + App Store data shown below.'
+                        + '</p>';
+                }
+                h += '<div class="overflow-auto"><table class="striped" style="font-size:0.85rem;"><thead><tr>';
                 h += '<th>Symbol</th><th>Google Trends z</th><th>Direction</th><th>Wiki views z</th><th>Spike</th><th>App Store (free / grossing)</th>';
                 h += '</tr></thead><tbody>';
                 d.rows.forEach(function(r) {

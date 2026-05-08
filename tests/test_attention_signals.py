@@ -32,6 +32,14 @@ def _isolate_alt_cache(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 class TestGoogleTrendsSignal:
+    def setup_method(self, method):
+        # Each test starts with the breaker reset. Without this, a
+        # prior test that returns a 429 trips the process-level
+        # circuit and short-circuits the rest of the tests in this
+        # class. Added 2026-05-07 with the breaker.
+        from alternative_data import reset_google_trends_breaker
+        reset_google_trends_breaker()
+
     def _mock_pytrends(self, weekly_index_series):
         """Build a fake pytrends object whose interest_over_time
         returns the given pandas Series indexed by week."""
@@ -54,6 +62,44 @@ class TestGoogleTrendsSignal:
             r = get_google_trends_signal("AAPL")
         assert r["has_data"] is False
         assert r["trend_z_score"] is None
+
+    def test_429_trips_circuit_breaker_short_circuits_rest(self):
+        """Verified 2026-05-07: pytrends returns HTTP 429 immediately
+        from prod IPs. To stop wasting ~50ms/symbol on every cycle,
+        the first 429 trips a process-level breaker; subsequent
+        calls return has_data=False with disabled_reason set,
+        without hitting pytrends at all."""
+        import alternative_data
+        from alternative_data import (
+            get_google_trends_signal, reset_google_trends_breaker,
+        )
+        reset_google_trends_breaker()
+
+        # First call raises a 429-shaped exception
+        with patch("pytrends.request.TrendReq",
+                    side_effect=Exception("Google returned a response with code 429")):
+            first = get_google_trends_signal("AAPL")
+        assert first["has_data"] is False
+        # Bust the per-symbol cache so the next call would otherwise
+        # re-hit pytrends
+        alternative_data._invalidate_cache_entry = lambda *a, **k: None
+
+        # Subsequent calls short-circuit: pytrends NOT called
+        mock_trend_req = MagicMock(side_effect=Exception("should not be called"))
+        with patch("pytrends.request.TrendReq", mock_trend_req):
+            second = get_google_trends_signal("MSFT")
+        assert second["has_data"] is False
+        assert second.get("disabled_reason"), (
+            "Expected disabled_reason to be set by the breaker"
+        )
+        mock_trend_req.assert_not_called()
+
+        # reset_google_trends_breaker re-enables fetching
+        reset_google_trends_breaker()
+        with patch("pytrends.request.TrendReq",
+                    side_effect=Exception("rate limited again")):
+            third = get_google_trends_signal("NVDA")
+        assert third["has_data"] is False
 
     def test_rising_trend_detected(self):
         from alternative_data import get_google_trends_signal

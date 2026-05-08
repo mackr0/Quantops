@@ -159,7 +159,7 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 | `regime_overrides` | TEXT | `'{}'` | JSON {param: {regime: value}} (Layer 3). |
 | `tod_overrides` | TEXT | `'{}'` | JSON {param: {tod_bucket: value}} (Layer 4). |
 | `symbol_overrides` | TEXT | `'{}'` | JSON {param: {symbol: value}} (Layer 7). |
-| `prompt_layout` | TEXT | `'{}'` | JSON {section: verbosity} (Layer 6). |
+| `prompt_layout` | TEXT | `'{}'` | JSON {section: verbosity} (Layer 6). Tunable sections: `alt_data`, `political_context`, `learned_patterns`, `portfolio_state`, `portfolio_risk_scenarios`. Verbosity values: `brief` / `normal` (default) / `detailed`. For `portfolio_risk_scenarios`: brief=0 scenarios, normal=worst-1 (cost-mitigation default 2026-05-07), detailed=worst-3. |
 
 ### Cost levers
 

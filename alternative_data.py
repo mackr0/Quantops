@@ -1541,6 +1541,16 @@ def get_stocktwits_sentiment(symbol: str) -> Dict[str, Any]:
 _CACHE_TTL["google_trends"] = 86400
 
 
+# Process-level circuit breaker for Google Trends. Verified 2026-05-07:
+# every pytrends request returns HTTP 429 (rate-limited) immediately —
+# Google has tightened scraping limits to the point that pytrends is
+# effectively dead from cloud IPs. We trip the breaker on the first
+# 429 of the process and then short-circuit until manual reset, so we
+# don't waste 50ms/symbol/cycle waiting for the inevitable failure.
+_GT_BREAKER_TRIPPED = False
+_GT_TRIP_REASON = ""
+
+
 def get_google_trends_signal(symbol: str):
     """Web-scraped Google Trends interest for a ticker.
 
@@ -1551,14 +1561,27 @@ def get_google_trends_signal(symbol: str):
         "current_index": int | None,      # last week, 0-100
         "yr_avg_index": float | None,
         "has_data": bool,
+        "disabled_reason": str | None,    # set when circuit-broken
       }
 
-    Best-effort: pytrends rate-limits hard (~5 req/min). On any HTTP
-    error or rate-limit, returns has_data=False and the prompt
-    suppresses the signal. Cached 24h.
+    2026-05-07: Google now rate-limits pytrends from prod IPs to 0
+    successful requests. A process-level circuit breaker trips on
+    the first 429 and short-circuits all subsequent calls until
+    process restart. The signal is effectively disabled until we
+    swap the data source.
     """
+    global _GT_BREAKER_TRIPPED, _GT_TRIP_REASON
     if "/" in symbol:
         return {"has_data": False, "is_crypto": True}
+    if _GT_BREAKER_TRIPPED:
+        return {
+            "trend_z_score": None,
+            "trend_direction": None,
+            "current_index": None,
+            "yr_avg_index": None,
+            "has_data": False,
+            "disabled_reason": _GT_TRIP_REASON,
+        }
     cache_key = f"google_trends_{symbol.upper()}"
     cached = _get_cached(cache_key, "google_trends")
     if cached is not None:
@@ -1570,6 +1593,7 @@ def get_google_trends_signal(symbol: str):
         "current_index": None,
         "yr_avg_index": None,
         "has_data": False,
+        "disabled_reason": None,
     }
     try:
         from pytrends.request import TrendReq
@@ -1619,10 +1643,35 @@ def get_google_trends_signal(symbol: str):
             "has_data": True,
         })
     except Exception as exc:
-        logging.debug("Google Trends fetch failed for %s: %s", symbol, exc)
+        # Trip the breaker on rate-limit / 429 so we don't waste
+        # ~50ms/symbol on every subsequent cycle.
+        msg = str(exc)
+        if ("429" in msg or "TooManyRequestsError" in type(exc).__name__
+                or "Too Many" in msg):
+            _GT_BREAKER_TRIPPED = True
+            _GT_TRIP_REASON = (
+                f"Google rate-limited at {symbol}: {msg[:80]}"
+            )
+            logging.warning(
+                "Google Trends circuit-broken for the rest of this "
+                "process: %s. Subsequent get_google_trends_signal "
+                "calls will short-circuit until restart.", _GT_TRIP_REASON,
+            )
+        else:
+            logging.debug("Google Trends fetch failed for %s: %s", symbol, exc)
 
     _set_cached(cache_key, result)
     return result
+
+
+def reset_google_trends_breaker():
+    """Manual override — call this from the REPL after Google
+    cooldown to retry. Returns the prior breaker state for logging."""
+    global _GT_BREAKER_TRIPPED, _GT_TRIP_REASON
+    was_tripped = _GT_BREAKER_TRIPPED
+    _GT_BREAKER_TRIPPED = False
+    _GT_TRIP_REASON = ""
+    return was_tripped
 
 
 # ---------------------------------------------------------------------------

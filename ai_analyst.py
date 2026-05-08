@@ -933,14 +933,29 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         market_section += f"\n  *** {crisis_ctx} ***"
 
     # Item 2a — Barra-style portfolio risk readout (latest snapshot)
+    # Layer 6 verbosity: 'brief' = summary only, no stress scenarios;
+    # 'normal' (default) = summary + worst-1 stress; 'detailed' =
+    # summary + worst-3 stress. The previous always-3-scenarios
+    # render added ~150 tokens per cycle for marginal informational
+    # value (caught 2026-05-07 cost audit).
     pr_summary = market_context.get("portfolio_risk_summary")
     pr_scenarios = market_context.get("portfolio_risk_scenarios")
     if pr_summary:
         market_section += f"\n  PORTFOLIO RISK: {pr_summary}"
     if pr_scenarios:
-        market_section += "\n  Stress scenarios (worst 3 projected):"
-        for line in pr_scenarios:
-            market_section += f"\n    - {line}"
+        _v = _verbosity("portfolio_risk_scenarios")
+        if _v == "brief":
+            scenario_cap = 0
+        elif _v == "detailed":
+            scenario_cap = 3
+        else:
+            scenario_cap = 1
+        if scenario_cap > 0:
+            label = "Worst stress scenario:" if scenario_cap == 1 \
+                    else f"Stress scenarios (worst {scenario_cap}):"
+            market_section += f"\n  {label}"
+            for line in pr_scenarios[:scenario_cap]:
+                market_section += f"\n    - {line}"
 
     # OPEN_ITEMS #9 — next scheduled macro event (FOMC/CPI/NFP).
     macro_event_block = market_context.get("macro_event_block")
@@ -1247,12 +1262,28 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                 if txt: alt_parts.append(txt)
 
             bio = alt.get("biotech_milestones") or {}
-            if bio.get("days_to_pdufa") is not None or bio.get("active_phase3_count", 0) > 0:
+            # Only render biotech milestones when actionable: PDUFA
+            # within 60d (a 6-month-out PDUFA isn't going to move the
+            # AI's decision today and just bloats the prompt; cost
+            # audit 2026-05-07 found this rendering for every biotech
+            # candidate every cycle). Phase-3 count and recent
+            # changes still render — they're cheap signals.
+            days_to_pdufa = bio.get("days_to_pdufa")
+            days_to_adcomm = bio.get("days_to_adcomm")
+            pdufa_imminent = (days_to_pdufa is not None
+                              and 0 <= days_to_pdufa <= 60)
+            adcomm_imminent = (days_to_adcomm is not None
+                               and 0 <= days_to_adcomm <= 60)
+            if (pdufa_imminent or adcomm_imminent
+                    or bio.get("active_phase3_count", 0) > 0):
                 bits = []
-                if bio.get("days_to_pdufa") is not None:
+                if pdufa_imminent:
                     bits.append(
-                        f"PDUFA in {bio['days_to_pdufa']}d "
+                        f"PDUFA in {days_to_pdufa}d "
                         f"({bio.get('drug_name','?')})")
+                if adcomm_imminent:
+                    cmt = bio.get("adcomm_committee") or "AdComm"
+                    bits.append(f"{cmt} meeting in {days_to_adcomm}d")
                 if bio.get("active_phase3_count", 0) > 0:
                     bits.append(f"{bio['active_phase3_count']} active P3")
                 if bio.get("recent_phase_change"):

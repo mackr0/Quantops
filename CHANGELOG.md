@@ -17,6 +17,41 @@ Rules going forward:
 
 ---
 
+## 2026-05-07 — AI cost spike investigation: Google Trends dead, prompt baseline trim, dashboard panel fix (Severity: high, cost + UX)
+
+User flagged daily AI cost climbed from baseline ~$1.50 → **$2.22 today** (+48%). Audit findings:
+
+**1. `batch_select` average input tokens grew 49%** (3,176 → 4,746) since 2026-05-01. Caused by the May 1-3 commits adding portfolio risk Barra readout (always 3 stress scenarios), per-candidate Google Trends/Wikipedia/App Store, PDUFA/AdComm dates rendered for every biotech candidate every cycle, macro events. Same call count, ~2× cost per call.
+
+**2. Google Trends fetch is 100% dead** — pytrends returns HTTP 429 (rate-limited) on the first request from prod IPs, every cycle. Every `get_google_trends_signal` call wastes ~50ms then returns empty. Dashboard "Attention Signals" panel shows all dashes for held positions because the fetcher never succeeds.
+
+**3. SEC diff calls jumped 5 → 32/day** but are tiny (~$0.001 each, ~$0.03 total impact) — symptom of high-filing-volume tickers, not a real cost driver.
+
+**4. shared_ai_cache barely used** (3 entries today across 10 profiles) — cache key includes per-cycle candidate context so it almost never hits.
+
+**Mitigations shipped:**
+
+a. **Process-level circuit breaker on Google Trends.** First HTTP 429 trips `_GT_BREAKER_TRIPPED`; subsequent calls short-circuit to `has_data=False, disabled_reason=<msg>`. Saves ~50ms × 30 candidates × 10 profiles × ~80 cycles/day = several minutes of CPU + clears log noise. `reset_google_trends_breaker()` allows manual retry after Google cooldown.
+
+b. **Stress scenarios default to worst-1 (was worst-3).** `prompt_layout` per-section verbosity for `portfolio_risk_scenarios`: `brief` = no scenarios, `normal` (default) = worst-1, `detailed` = worst-3. Added `portfolio_risk_scenarios` to `TUNABLE_SECTIONS` so the self-tuner can adjust per profile. Saves ~150 tokens × 200 calls/day = ~30k tokens/day = ~$0.03/day at Haiku rates.
+
+c. **PDUFA / AdComm only render when imminent (≤60 days).** A PDUFA 6 months out doesn't influence today's trade decision; previously rendered for every biotech candidate every cycle. Saves ~50 tokens per biotech candidate.
+
+d. **Dashboard "Attention Signals" panel rewritten:**
+- Filters out symbols with NO data across all three sources (no more rows of all-dashes).
+- Surfaces an `explain_when_empty` message when the panel would otherwise be empty: "These tickers don't appear in Google Trends, Wikipedia, or App Store charts. Attention signals are most useful for consumer-brand tickers (AAPL, TSLA, NVDA, META, NFLX) — institutional / ETF / dividend tickers typically have no coverage."
+- When Google Trends is circuit-broken, shows a one-line note explaining the column blanks aren't a bug.
+
+**Tests** (10 new):
+- `tests/test_attention_signals.py::test_429_trips_circuit_breaker_short_circuits_rest` — 429 trips, subsequent calls short-circuit, reset re-enables.
+- `tests/test_prompt_size_mitigations.py` — 6 cases covering stress-scenario default + brief + PDUFA/AdComm imminent gating.
+
+Suite: 2,184 pass.
+
+**What this likely saves daily:** ~$0.10-0.20 (back toward the baseline). Bigger savings need a different source than Google Trends (consider replacing pytrends with a paid attention-data feed when scaling).
+
+---
+
 ## 2026-05-07 — May 6 multileg test rewritten with realistic Alpaca paper mock (Severity: medium, test integrity)
 
 `tests/test_multileg_contract_snap.py::test_multileg_log_captures_fill_price` was the original "fix" for the multileg "$--" bug — but the mock returned `filled_avg_price=0.45` instantly, which doesn't match real Alpaca paper behavior (50-500ms delay). The test passed but production stayed broken: 28 multileg legs shipped to prod with NULL `fill_price` for days.

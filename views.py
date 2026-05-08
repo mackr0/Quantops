@@ -4319,10 +4319,25 @@ def api_attention_signals(profile_id):
         get_app_store_ranking,
     )
     rows = []
+    has_any_data = False
+    has_any_gt = False
+    has_any_wp = False
+    has_any_ap = False
+    gt_disabled_reason = None
     for sym in symbols[:25]:   # cap at 25 to keep API call cost bounded
         gt = get_google_trends_signal(sym) or {}
         wp = get_wikipedia_pageviews_signal(sym) or {}
         ap = get_app_store_ranking(sym) or {}
+        if gt.get("disabled_reason") and not gt_disabled_reason:
+            gt_disabled_reason = gt["disabled_reason"]
+        # Only include rows that have AT LEAST ONE signal of data.
+        # A row of all dashes adds noise without information.
+        if not (gt.get("has_data") or wp.get("has_data") or ap.get("has_data")):
+            continue
+        has_any_data = True
+        if gt.get("has_data"): has_any_gt = True
+        if wp.get("has_data"): has_any_wp = True
+        if ap.get("has_data"): has_any_ap = True
         rows.append({
             "symbol": sym,
             "google_trends": {
@@ -4346,7 +4361,40 @@ def api_attention_signals(profile_id):
             },
         })
 
-    return jsonify({"available": True, "symbols": symbols, "rows": rows})
+    # When no held position has any attention data, surface a clear
+    # explanation rather than an empty table — the user shouldn't
+    # have to figure out whether the panel is broken or whether their
+    # holdings just don't have consumer-attention coverage.
+    explain = None
+    if not has_any_data:
+        if gt_disabled_reason:
+            explain = (
+                "Google Trends is rate-limited and currently "
+                "unavailable. Wikipedia + App Store have no coverage "
+                "for the held symbols (these tickers don't appear in "
+                "consumer-attention sources)."
+            )
+        else:
+            explain = (
+                "No attention-signal data for current holdings. "
+                "These symbols don't appear in Google Trends, "
+                "Wikipedia, or the App Store charts. Attention "
+                "signals are most useful for consumer-brand tickers "
+                "(AAPL, TSLA, NVDA, META, NFLX) — institutional / "
+                "ETF / dividend tickers typically have no coverage."
+            )
+
+    return jsonify({
+        "available": True,
+        "symbols": symbols,
+        "rows": rows,
+        "has_any_data": has_any_data,
+        "has_any_gt": has_any_gt,
+        "has_any_wp": has_any_wp,
+        "has_any_ap": has_any_ap,
+        "google_trends_disabled_reason": gt_disabled_reason,
+        "explain_when_empty": explain,
+    })
 
 
 @views_bp.route("/admin")

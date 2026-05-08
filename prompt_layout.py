@@ -40,10 +40,13 @@ VERBOSITIES: Tuple[str, ...] = ("brief", "normal", "detailed")
 # a new section: register it here, then teach the prompt builder to
 # consult `get_verbosity(profile, name)`.
 TUNABLE_SECTIONS: Tuple[Tuple[str, str], ...] = (
-    ("alt_data",          "Alternative Data Section"),
-    ("political_context", "Political Context Section"),
-    ("learned_patterns",  "Learned Patterns Section"),
-    ("portfolio_state",   "Portfolio State Section"),
+    ("alt_data",                   "Alternative Data Section"),
+    ("political_context",          "Political Context Section"),
+    ("learned_patterns",           "Learned Patterns Section"),
+    ("portfolio_state",            "Portfolio State Section"),
+    # Added 2026-05-07 cost mitigation: brief = no scenarios,
+    # normal (default) = worst-1, detailed = worst-3.
+    ("portfolio_risk_scenarios",   "Stress Scenarios in Prompt"),
 )
 
 
