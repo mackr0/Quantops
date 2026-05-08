@@ -658,7 +658,26 @@ function showDashTab(event, tabName) {
             if (ptbody && data.pending_orders) {
                 var phtml = '';
                 function humanizeJs(s){if(!s)return '';return String(s).split('_').map(function(p){return p.charAt(0).toUpperCase()+p.slice(1).toLowerCase();}).join(' ');}
-                data.pending_orders.forEach(function(o) { phtml += '<tr><td><strong>' + o.symbol + '</strong></td><td><span class="badge badge-' + (o.side==='buy'?'buy':'sell') + '">' + o.side.toUpperCase() + '</span></td><td>' + Math.floor(o.qty) + '</td><td>' + humanizeJs(o.order_type) + '</td><td>' + (o.limit_price!=null?fmt(o.limit_price):'—') + '</td><td><span class="muted">' + (o.status||'').replace(/\b\w/g,function(c){return c.toUpperCase();}) + '</span></td><td class="muted">' + (o.submitted_at||'—') + '</td><td>' + (o.time_in_force||'').toUpperCase() + '</td></tr>'; });
+                // Mirror the server-render logic in templates/dashboard.html:
+                // limit -> stop_price + trail-distance hint -> trail-only ->
+                // "market" fallback. Returns the inner HTML for the price cell.
+                function priceCell(o) {
+                    if (o.limit_price != null) return fmt(o.limit_price);
+                    if (o.stop_price != null) {
+                        var s = fmt(o.stop_price);
+                        if (o.trail_percent != null)
+                            s += '<br><small class="muted">trail ' + o.trail_percent.toFixed(1) + '%</small>';
+                        else if (o.trail_price != null)
+                            s += '<br><small class="muted">trail ' + fmt(o.trail_price) + '</small>';
+                        return s;
+                    }
+                    if (o.trail_percent != null)
+                        return '<small class="muted">trail ' + o.trail_percent.toFixed(1) + '%</small>';
+                    if (o.trail_price != null)
+                        return '<small class="muted">trail ' + fmt(o.trail_price) + '</small>';
+                    return '<small class="muted">market</small>';
+                }
+                data.pending_orders.forEach(function(o) { phtml += '<tr><td><strong>' + o.symbol + '</strong></td><td><span class="badge badge-' + (o.side==='buy'?'buy':'sell') + '">' + o.side.toUpperCase() + '</span></td><td>' + Math.floor(o.qty) + '</td><td>' + humanizeJs(o.order_type) + '</td><td>' + priceCell(o) + '</td><td><span class="muted">' + (o.status||'').replace(/\b\w/g,function(c){return c.toUpperCase();}) + '</span></td><td class="muted">' + (o.submitted_at||'—') + '</td><td>' + (o.time_in_force||'').toUpperCase() + '</td></tr>'; });
                 ptbody.innerHTML = phtml;
             }
         }).catch(function(){});

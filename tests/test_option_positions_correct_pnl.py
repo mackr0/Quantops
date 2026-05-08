@@ -339,12 +339,29 @@ class TestFetchOptionPremium:
 class TestOCCSymbolDetection:
     """Backing the price-fetcher's option-vs-stock routing."""
 
-    def test_is_occ_symbol_recognizes_valid_occ(self):
+    def test_is_occ_symbol_recognizes_padded_form(self):
+        """Padded form (21 chars, root padded to 6 with spaces) is
+        what some internal builders produce."""
         from client import _is_occ_symbol
         assert _is_occ_symbol("MSFT  261219P00395000") is True
         assert _is_occ_symbol("AAPL  250516C00150000") is True
         # Short root (padded to 6) is also valid
         assert _is_occ_symbol("F     261219C00012000") is True
+
+    def test_is_occ_symbol_recognizes_unpadded_form(self):
+        """Unpadded form is what Alpaca's API returns and what the
+        journal stores when the OCC was logged via Alpaca's response.
+        Caught 2026-05-08 (WMT bull_put_spread leg showing 0% on the
+        dashboard because _is_occ_symbol required exactly 21 chars
+        and rejected the 18-char unpadded form, routing the price
+        fetch through the stock-price path which fails)."""
+        from client import _is_occ_symbol
+        assert _is_occ_symbol("WMT260612P00117000") is True   # 18 chars
+        assert _is_occ_symbol("MSFT261219P00395000") is True  # 19 chars
+        assert _is_occ_symbol("AAPL250516C00150000") is True
+        # Short root unpadded
+        assert _is_occ_symbol("F261219C00012000") is True     # 16 chars
+        assert _is_occ_symbol("X261219P00050000") is True     # 16 chars
 
     def test_is_occ_symbol_rejects_stock_tickers(self):
         from client import _is_occ_symbol
@@ -354,9 +371,13 @@ class TestOCCSymbolDetection:
         assert _is_occ_symbol("") is False
         assert _is_occ_symbol(None) is False
 
-    def test_is_occ_symbol_rejects_wrong_length_and_shape(self):
+    def test_is_occ_symbol_rejects_wrong_shape(self):
         from client import _is_occ_symbol
-        # 21 chars but no C/P at index 12
+        # 21 chars but no C/P at the right slot
         assert _is_occ_symbol("AAAAAAAAAAAAA12345678") is False
-        # 21 chars but trailing chars not all digits
+        # Trailing chars not all digits
         assert _is_occ_symbol("AAAAAA261219Cabc12345") is False
+        # Date portion not digits
+        assert _is_occ_symbol("MSFTabcdefP00395000") is False
+        # Too long
+        assert _is_occ_symbol("EXTRAEXTRA261219C00050000") is False

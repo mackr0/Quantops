@@ -105,14 +105,32 @@ def _prefetch_prices(symbols):
 
 
 def _is_occ_symbol(s):
-    """Heuristic: an OCC option symbol is exactly 21 chars, has C or P
-    at index 12, and the trailing 8 chars are digits (strike × 1000).
-    Distinguishes `MSFT261219P00395000` from `MSFT`."""
-    if not s or len(s) != 21:
+    """Heuristic: an OCC option symbol is the underlying root (1-6
+    chars) + YYMMDD (6 digits) + C/P + strike×1000 (8 digits).
+    The padded form (`MSFT  261219P00395000`, 21 chars total) and
+    the unpadded form (`MSFT261219P00395000`, 14-21 chars) both
+    appear in the system: Alpaca's API accepts/returns unpadded;
+    some internal builders pad to 21. Distinguishes either flavor
+    from a stock ticker (`MSFT`, `BRK.B`)."""
+    if not s or not isinstance(s, str):
         return False
-    if s[12] not in ("C", "P"):
+    if len(s) < 14 or len(s) > 21:
         return False
-    return s[13:21].isdigit()
+    # Trailing 8 chars must be the strike (digits)
+    if not s[-8:].isdigit():
+        return False
+    # Char at index -9 (just before the strike) must be C or P
+    if s[-9] not in ("C", "P"):
+        return False
+    # The 6 chars before C/P must be YYMMDD (digits). Strip any
+    # internal whitespace (padded form has spaces between root and
+    # date) before checking.
+    head = s[:-9].rstrip()  # root + (maybe trailing spaces) + YYMMDD
+    if len(head) < 7:
+        return False
+    if not head[-6:].isdigit():
+        return False
+    return True
 
 
 def _fetch_option_premium(occ_symbol):
