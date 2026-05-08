@@ -17,6 +17,34 @@ Rules going forward:
 
 ---
 
+## 2026-05-07 — Viewers could mutate admin's account state via 6 ungated endpoints (Severity: critical, security)
+
+User flagged that the dashboard's master kill-switch UI showed activate/deactivate controls to the guest (viewer) account. Investigation found the underlying API was `@login_required` only — **a viewer could POST to `/api/kill-switch` and silently freeze the admin's entire trading book.** Audit found 5 more mutating endpoints with the same gap.
+
+**Endpoints fixed (added `@admin_required`):**
+- `POST /api/kill-switch` — toggles the master kill switch (the reported case)
+- `POST /settings/autonomy` — toggles autonomy flags + cost ceiling
+- `POST /ai/profile/<id>/restore-strategy/<type>` — restores deprecated strategies on the admin's profile
+- `POST /api/mc-backtest/<id>` — Monte Carlo backtest (consumes admin's compute / AI budget)
+- `POST /api/options-backtest` — same
+- `POST /api/mc-backtest-by-strategy/<id>` — same
+
+**Defense in depth on `/api/kill-switch`:** in addition to the decorator, the function now does an explicit `is_admin / not is_viewer` check and returns 403 with a clear "View-only accounts cannot toggle the master kill switch. Contact the account administrator." message. Without the inline check, a refactor that inadvertently strips the decorator would silently re-open the hole.
+
+**Frontend (`templates/dashboard.html`):** the activate / deactivate buttons are now hidden for viewers (`{% if not current_user.is_viewer %}` guard around both). Inactive-state shows a one-line "view-only — only the account admin can toggle" message instead of the activate UI.
+
+**Cross-cutting guardrail** — `tests/test_viewer_cannot_mutate_admin_state.py`:
+- `test_every_mutating_endpoint_is_admin_required` — static AST-equivalent scan: every `@views_bp.route(..., methods=["POST"|"PUT"|"DELETE"|"PATCH"])` MUST carry `@admin_required`. New endpoints intentionally writable by viewers must be added to `INTENTIONALLY_VIEWER_WRITABLE` (currently empty) with a written rationale.
+- `test_admin_required_decorator_actually_blocks_viewers` — sanity that the decorator's behavior on a viewer is an abort/redirect, not a pass-through.
+
+Plus `tests/test_kill_switch_admin_only.py` — 4 specific cases (viewer cannot activate, viewer cannot deactivate, admin can activate, dashboard template gates the buttons).
+
+Suite: 2,190 pass.
+
+This was the most dangerous bug class found in today's audit. A viewer with valid credentials could brick the admin's trading. Now it can't ship — the next mutating endpoint added without admin protection fails the guardrail in CI.
+
+---
+
 ## 2026-05-07 — AI cost spike investigation: Google Trends dead, prompt baseline trim, dashboard panel fix (Severity: high, cost + UX)
 
 User flagged daily AI cost climbed from baseline ~$1.50 → **$2.22 today** (+48%). Audit findings:

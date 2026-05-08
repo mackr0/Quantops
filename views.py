@@ -592,9 +592,11 @@ def settings():
 
 @views_bp.route("/settings/autonomy", methods=["POST"])
 @login_required
+@admin_required
 def update_autonomy():
     """Toggle the per-user opt-in autonomy flags + cost ceiling
-    override."""
+    override. Admin-only — viewers must not be able to change the
+    admin's cost ceiling or autonomy state."""
     from models import _get_conn
     enabled = 1 if request.form.get("auto_capital_allocation") else 0
 
@@ -1088,6 +1090,7 @@ def toggle_profile(profile_id):
 @views_bp.route("/ai/profile/<int:profile_id>/restore-strategy/<strategy_type>",
                 methods=["POST"])
 @login_required
+@admin_required
 def restore_deprecated_strategy(profile_id, strategy_type):
     """Manually undo an alpha-decay (or self-tuner) deprecation. The
     pipeline will start considering the strategy's signals again on the
@@ -3534,6 +3537,7 @@ def api_kill_switch_status():
 
 @views_bp.route("/api/kill-switch", methods=["POST"])
 @login_required
+@admin_required
 def api_kill_switch_set():
     """Manually toggle the master kill switch.
 
@@ -3542,7 +3546,21 @@ def api_kill_switch_set():
     Activating blocks all new trade entries across every profile until
     explicitly deactivated. Existing positions and broker stops are
     untouched.
+
+    SECURITY: viewers / non-admin accounts cannot toggle the kill
+    switch. The switch affects EVERY profile on the admin's
+    account; a viewer that could flip it would silently freeze the
+    admin's book. (Caught 2026-05-07: endpoint was @login_required
+    only, so any viewer linked to an admin could POST and stop
+    every trade in the book.)
     """
+    if not getattr(current_user, "is_admin", False) or \
+            getattr(current_user, "is_viewer", False):
+        return jsonify({
+            "error": "View-only accounts cannot toggle the master "
+                     "kill switch. Contact the account administrator."
+        }), 403
+
     payload = request.get_json(silent=True) or {}
     action = (payload.get("action") or "").lower().strip()
     reason = (payload.get("reason") or "").strip()
@@ -3789,9 +3807,12 @@ def api_slippage_model(profile_id):
 
 @views_bp.route("/api/mc-backtest/<int:profile_id>", methods=["POST"])
 @login_required
+@admin_required
 def api_mc_backtest(profile_id):
     """Item 5c — Monte Carlo backtest. Runs N MC trajectories on the
     profile's recent closed trades, returns the P&L distribution.
+    Admin-only: a viewer triggering this would consume the admin's
+    compute / AI cost budget.
 
     POST body (optional JSON): {n_sims: int, lookback_days: int}
     """
@@ -3918,6 +3939,7 @@ def _summarize_options_trades(strategy_name, symbol, period_start,
 
 @views_bp.route("/api/options-backtest", methods=["POST"])
 @login_required
+@admin_required
 def api_options_backtest():
     """OPEN_ITEMS #5 — synthetic options backtester run from dashboard.
 
@@ -4064,6 +4086,7 @@ def api_options_backtest():
 
 @views_bp.route("/api/mc-backtest-by-strategy/<int:profile_id>", methods=["POST"])
 @login_required
+@admin_required
 def api_mc_backtest_by_strategy(profile_id):
     """Item 5c — per-strategy Monte Carlo backtest.
 

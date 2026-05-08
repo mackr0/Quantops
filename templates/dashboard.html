@@ -7,7 +7,10 @@
     <p>Welcome back{% if current_user.display_name %}, {{ current_user.display_name }}{% endif %}</p>
 </hgroup>
 
-<!-- Master kill switch banner -->
+<!-- Master kill switch banner. Viewers see the state but can NOT toggle —
+     the toggle endpoint is @admin-gated server-side AND the activate /
+     deactivate buttons are hidden here for viewers. (Without both
+     layers, a viewer could silently freeze the admin's book.) -->
 {% if kill_switch and kill_switch.enabled %}
 <article style="background:#fff5f5;border:2px solid #d32f2f;padding:0.85rem 1.1rem;margin-bottom:1rem;border-radius:6px;">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">
@@ -17,10 +20,15 @@
                 Reason: <em>{{ kill_switch.reason }}</em>
             </div>
         </div>
+        {% if not current_user.is_viewer %}
         <button id="kill-switch-deactivate" class="outline" style="font-size:0.9rem;padding:0.4rem 0.9rem;border-color:#d32f2f;color:#d32f2f;">Deactivate</button>
+        {% else %}
+        <span class="muted" style="font-size:0.85rem;">View-only — contact admin</span>
+        {% endif %}
     </div>
 </article>
 {% else %}
+{% if not current_user.is_viewer %}
 <details style="margin-bottom:1rem;">
     <summary style="cursor:pointer;color:#888;font-size:0.85rem;">Master kill switch (currently inactive — click to activate manually)</summary>
     <div style="margin-top:0.5rem;padding:0.5rem 0.75rem;background:#fafafa;border-radius:4px;font-size:0.9rem;">
@@ -31,6 +39,11 @@
         </div>
     </div>
 </details>
+{% else %}
+<p class="muted" style="font-size:0.85rem;margin-bottom:1rem;">
+    Master kill switch: <strong>inactive</strong> (view-only — only the account admin can toggle).
+</p>
+{% endif %}
 {% endif %}
 <script>
 (function() {
