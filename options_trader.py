@@ -638,7 +638,11 @@ def submit_option_order(
         }
         if order_type == "limit":
             kwargs["limit_price"] = round(float(limit_price), 2)
-        order = api.submit_order(**kwargs)
+        # alpaca-trade-api's submit_order doesn't accept
+        # `position_intent`, but Alpaca's REST API does. Bypass the
+        # SDK for option orders so the intent reaches the broker.
+        from options_multileg import _submit_alpaca_order_raw
+        order = _submit_alpaca_order_raw(api, kwargs)
         order_id = getattr(order, "id", None)
         if order_id:
             logger.info(

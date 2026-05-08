@@ -432,12 +432,66 @@ logger = logging.getLogger(__name__)
 
 
 # position_intent map shared by combo legs, sequential submits, and
-# the rollback path. Alpaca async-cancels short option opens with no
-# intent (silently, sometimes labeled as "wash trade") — caught
-# 2026-05-06 when ARCC bull_call_spread short legs canceled every
-# cycle for 4 hours, accumulating 13 phantom long calls.
+# the rollback path. Alpaca async-cancels short option opens that
+# arrive without intent (silently, sometimes labeled as "wash
+# trade").
 _INTENT_OPEN = {"buy": "buy_to_open", "sell": "sell_to_open"}
 _INTENT_CLOSE = {"buy": "buy_to_close", "sell": "sell_to_close"}
+
+
+class _RawOrderResult:
+    """Lightweight stand-in for the SDK's Order object so existing
+    callers that read `order.id` continue to work."""
+    def __init__(self, payload):
+        self.id = payload.get("id")
+        self.status = payload.get("status")
+        self._payload = payload
+
+    def __getattr__(self, name):
+        return self._payload.get(name)
+
+
+def _submit_alpaca_order_raw(api, payload):
+    """POST directly to Alpaca's `/v2/orders` endpoint, bypassing
+    the alpaca-trade-api SDK's narrow `submit_order` signature.
+
+    Required because the SDK doesn't expose `position_intent` or
+    `legs` (multileg combo orders) as kwargs, but Alpaca's REST
+    API supports both. Reads auth from the SDK's `_key_id` /
+    `_secret_key` / `_base_url` so behavior matches the SDK call
+    site (paper vs live, per-profile credentials).
+
+    Returns a `_RawOrderResult` with `.id`, `.status`, and any
+    other field accessible via attribute lookup.
+
+    Raises on HTTP error so the caller's try/except sees a real
+    exception (matches SDK behavior).
+    """
+    import requests
+    base = getattr(api, "_base_url", None) or "https://paper-api.alpaca.markets"
+    headers = {
+        "APCA-API-KEY-ID": getattr(api, "_key_id", "") or "",
+        "APCA-API-SECRET-KEY": getattr(api, "_secret_key", "") or "",
+        "Content-Type": "application/json",
+    }
+    # Alpaca expects qty as string and certain fields as nested dicts;
+    # serialize defensively.
+    serializable = {}
+    for k, v in payload.items():
+        if v is None:
+            continue
+        if isinstance(v, (int, float)) and k != "legs":
+            serializable[k] = str(v)
+        else:
+            serializable[k] = v
+    r = requests.post(
+        f"{base}/v2/orders", headers=headers, json=serializable, timeout=15,
+    )
+    if r.status_code >= 400:
+        raise RuntimeError(
+            f"Alpaca order rejected ({r.status_code}): {r.text[:300]}"
+        )
+    return _RawOrderResult(r.json())
 
 
 def _alpaca_leg_dict(leg: OptionLeg, ratio: int = 1) -> Dict[str, Any]:
@@ -614,7 +668,10 @@ def execute_multileg_strategy(
             }
             if limit_price is not None:
                 combo_kwargs["limit_price"] = abs(limit_price)
-            combo_order = api.submit_order(**combo_kwargs)
+            # Direct POST: alpaca-trade-api's submit_order doesn't
+            # accept the `legs` kwarg, but the underlying REST API
+            # does. Bypass the SDK for option orders.
+            combo_order = _submit_alpaca_order_raw(api, combo_kwargs)
             combo_id = getattr(combo_order, "id", None)
             # Combo orders return one parent id; child fills come via
             # api.list_orders(parent=combo_id) once filled.
@@ -646,14 +703,16 @@ def execute_multileg_strategy(
     submitted: List[Dict[str, Any]] = []
     for i, leg in enumerate(strategy.legs):
         try:
-            order = api.submit_order(
-                symbol=leg.occ_symbol,
-                qty=leg.qty,
-                side=leg.side,
-                type="market",
-                time_in_force="day",
-                position_intent=_INTENT_OPEN.get(leg.side, "buy_to_open"),
-            )
+            # Direct POST so position_intent reaches Alpaca — the
+            # SDK's submit_order signature drops the kwarg.
+            order = _submit_alpaca_order_raw(api, {
+                "symbol": leg.occ_symbol,
+                "qty": leg.qty,
+                "side": leg.side,
+                "type": "market",
+                "time_in_force": "day",
+                "position_intent": _INTENT_OPEN.get(leg.side, "buy_to_open"),
+            })
             submitted.append({
                 "leg_index": i, "leg": leg,
                 "order_id": getattr(order, "id", None),
@@ -670,14 +729,14 @@ def execute_multileg_strategy(
             for sub in submitted:
                 try:
                     rev_side = "sell" if sub["leg"].side == "buy" else "buy"
-                    rev = api.submit_order(
-                        symbol=sub["leg"].occ_symbol,
-                        qty=sub["leg"].qty,
-                        side=rev_side,
-                        type="market",
-                        time_in_force="day",
-                        position_intent=_INTENT_CLOSE.get(rev_side, "sell_to_close"),
-                    )
+                    rev = _submit_alpaca_order_raw(api, {
+                        "symbol": sub["leg"].occ_symbol,
+                        "qty": sub["leg"].qty,
+                        "side": rev_side,
+                        "type": "market",
+                        "time_in_force": "day",
+                        "position_intent": _INTENT_CLOSE.get(rev_side, "sell_to_close"),
+                    })
                     rollback_results.append({
                         "leg_index": sub["leg_index"],
                         "rollback_order_id": getattr(rev, "id", None),

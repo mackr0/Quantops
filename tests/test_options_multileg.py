@@ -235,113 +235,288 @@ from unittest.mock import MagicMock  # noqa: E402
 
 
 class TestExecuteMultilegStrategy:
+    """The multileg executor POSTs directly to Alpaca via
+    `_submit_alpaca_order_raw` (bypassing the SDK whose
+    submit_order signature doesn't accept `legs` or
+    `position_intent`). Tests patch that helper and assert on
+    the payload Alpaca would receive."""
+
     def _ctx(self):
         ctx = MagicMock()
         ctx.db_path = None  # skip journal logging in unit tests
         return ctx
 
-    def test_combo_path_submits_single_order_with_legs(self):
+    def _patch_post(self, monkeypatch, side_effect=None, return_value=None):
+        """Install a stand-in for _submit_alpaca_order_raw and return
+        a list that captures every payload received. `side_effect` is
+        a list of return-values-or-exceptions consumed in order;
+        `return_value` is a single value used for every call."""
+        captured = []
+
+        if side_effect is not None:
+            iterator = iter(side_effect)
+
+            def fake(api, payload):
+                captured.append(payload)
+                v = next(iterator)
+                if isinstance(v, Exception):
+                    raise v
+                return v
+        else:
+            rv = return_value
+
+            def fake(api, payload):
+                captured.append(payload)
+                return rv
+
+        monkeypatch.setattr(
+            "options_multileg._submit_alpaca_order_raw", fake,
+        )
+        return captured
+
+    def test_combo_path_submits_single_order_with_legs(self, monkeypatch):
         """Default path: one combo order with all legs in option_legs."""
         from options_multileg import (
             build_bull_call_spread, execute_multileg_strategy,
         )
         spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=2)
-        api = MagicMock()
-        api.submit_order.return_value = MagicMock(id="combo-123")
-        result = execute_multileg_strategy(api, spec, self._ctx())
+        captured = self._patch_post(
+            monkeypatch, return_value=MagicMock(id="combo-123"),
+        )
+        result = execute_multileg_strategy(MagicMock(), spec, self._ctx())
         assert result["action"] == "MULTILEG_OPEN"
         assert result["leg_order_ids"] == ["combo-123"]
         assert result["combo_order_id"] == "combo-123"
-        # Single submit_order call with order_class=mleg
-        assert api.submit_order.call_count == 1
-        kwargs = api.submit_order.call_args.kwargs
-        assert kwargs["order_class"] == "mleg"
-        assert kwargs["qty"] == 2
-        assert len(kwargs["legs"]) == 2
-        assert kwargs["legs"][0]["side"] == "buy"
-        assert kwargs["legs"][1]["side"] == "sell"
+        assert len(captured) == 1
+        payload = captured[0]
+        assert payload["order_class"] == "mleg"
+        assert payload["qty"] == 2
+        assert len(payload["legs"]) == 2
+        assert payload["legs"][0]["side"] == "buy"
+        assert payload["legs"][1]["side"] == "sell"
+        # Each leg must include position_intent (Alpaca async-cancels
+        # short opens otherwise).
+        for leg in payload["legs"]:
+            assert "position_intent" in leg
 
-    def test_combo_with_limit_price_includes_limit(self):
+    def test_combo_with_limit_price_includes_limit(self, monkeypatch):
         from options_multileg import (
             build_bull_call_spread, execute_multileg_strategy,
         )
         spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1)
-        api = MagicMock()
-        api.submit_order.return_value = MagicMock(id="combo-456")
+        captured = self._patch_post(
+            monkeypatch, return_value=MagicMock(id="combo-456"),
+        )
         result = execute_multileg_strategy(
-            api, spec, self._ctx(), limit_price=3.00,
+            MagicMock(), spec, self._ctx(), limit_price=3.00,
         )
         assert result["action"] == "MULTILEG_OPEN"
-        kwargs = api.submit_order.call_args.kwargs
-        assert kwargs["type"] == "limit"
-        assert kwargs["limit_price"] == 3.00
+        payload = captured[0]
+        assert payload["type"] == "limit"
+        assert payload["limit_price"] == 3.00
 
-    def test_combo_failure_falls_back_to_sequential(self):
+    def test_combo_failure_falls_back_to_sequential(self, monkeypatch):
         """When the combo path raises, we should fall through to
         sequential submission and successfully submit each leg."""
         from options_multileg import (
             build_bull_call_spread, execute_multileg_strategy,
         )
         spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1)
-        api = MagicMock()
-        # First call (combo) raises; subsequent calls (sequential legs) succeed
-        api.submit_order.side_effect = [
+        captured = self._patch_post(monkeypatch, side_effect=[
             Exception("MLEG not supported on this account"),
             MagicMock(id="leg-1"),
             MagicMock(id="leg-2"),
-        ]
-        result = execute_multileg_strategy(api, spec, self._ctx())
+        ])
+        result = execute_multileg_strategy(MagicMock(), spec, self._ctx())
         assert result["action"] == "MULTILEG_OPEN"
         assert result["leg_order_ids"] == ["leg-1", "leg-2"]
-        # 1 combo attempt + 2 sequential = 3 total
-        assert api.submit_order.call_count == 3
+        assert len(captured) == 3
+        # Combo first (has `legs` key), then two single-leg posts
+        assert "legs" in captured[0]
+        assert "legs" not in captured[1]
+        assert "legs" not in captured[2]
+        # Sequential legs carry position_intent inline
+        assert captured[1]["position_intent"] == "buy_to_open"
+        assert captured[2]["position_intent"] == "sell_to_open"
 
-    def test_sequential_leg_2_failure_triggers_rollback(self):
+    def test_sequential_leg_2_failure_triggers_rollback(self, monkeypatch):
         """When leg 1 succeeds but leg 2 fails, we should attempt to
         close leg 1 (rollback) and return ERROR with detail."""
         from options_multileg import (
             build_bull_call_spread, execute_multileg_strategy,
         )
         spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1)
-        api = MagicMock()
-        # Force sequential path; 4 calls expected:
-        # 1. combo attempt — fails
-        # 2. leg 1 — succeeds (id=leg-1)
-        # 3. leg 2 — fails
-        # 4. rollback of leg 1 — succeeds (id=rb-1)
-        api.submit_order.side_effect = [
+        # 4 calls: combo (fails) -> leg 1 (succeeds) -> leg 2 (fails)
+        # -> rollback of leg 1 (succeeds).
+        captured = self._patch_post(monkeypatch, side_effect=[
             Exception("combo not supported"),
             MagicMock(id="leg-1"),
             Exception("alpaca rejected leg 2"),
             MagicMock(id="rb-1"),
-        ]
-        result = execute_multileg_strategy(api, spec, self._ctx())
+        ])
+        result = execute_multileg_strategy(MagicMock(), spec, self._ctx())
         assert result["action"] == "ERROR"
         assert result["leg_order_ids"] == ["leg-1"]
         assert "Leg 1 failed" in result["reason"]
         assert "rollback" in result
-        # Rollback details: 1 entry, with rollback_order_id present
         assert len(result["rollback"]) == 1
         assert result["rollback"][0]["leg_index"] == 0
         assert result["rollback"][0]["rollback_order_id"] == "rb-1"
+        # Rollback uses CLOSE intent (sell_to_close on a buy_to_open)
+        rollback_payload = captured[3]
+        assert rollback_payload["position_intent"] == "sell_to_close"
 
-    def test_force_sequential_via_use_combo_false(self):
+    def test_raw_post_helper_sends_correct_alpaca_request(self, monkeypatch):
+        """Pin the actual production HTTP shape that
+        `_submit_alpaca_order_raw` produces. The other tests in
+        this class patch this helper away, so without an integration
+        test exercising the helper itself the production POST path
+        is unverified — exactly the May 6 unrealistic-mock pattern.
+
+        Verifies: URL = <base>/v2/orders, auth headers carry the
+        SDK's _key_id and _secret_key, qty serialized as string,
+        position_intent passed through, response body parsed."""
+        from unittest.mock import MagicMock
+        import options_multileg
+
+        captured = {}
+
+        class _FakeResponse:
+            status_code = 200
+            text = ""
+            def json(self):
+                return {"id": "real-order-1", "status": "accepted"}
+
+        def fake_post(url, headers=None, json=None, timeout=None):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            captured["timeout"] = timeout
+            return _FakeResponse()
+
+        # Real-shaped api object with string credentials so the
+        # helper takes the production path. NOT a MagicMock — that
+        # would auto-create attrs.
+        class _FakeApi:
+            _key_id = "PKLIVEKEY"
+            _secret_key = "secret123"
+            _base_url = "https://paper-api.alpaca.markets"
+
+        monkeypatch.setattr("requests.post", fake_post)
+        order = options_multileg._submit_alpaca_order_raw(_FakeApi(), {
+            "symbol": "AAPL  990101C00150000",
+            "qty": 1,
+            "side": "buy",
+            "type": "market",
+            "time_in_force": "day",
+            "position_intent": "buy_to_open",
+        })
+        assert order.id == "real-order-1"
+        assert order.status == "accepted"
+        # URL hits the real Alpaca trading endpoint
+        assert captured["url"] == "https://paper-api.alpaca.markets/v2/orders"
+        # Auth headers carry the SDK's per-profile credentials
+        assert captured["headers"]["APCA-API-KEY-ID"] == "PKLIVEKEY"
+        assert captured["headers"]["APCA-API-SECRET-KEY"] == "secret123"
+        # Numeric qty serialized as string (Alpaca requirement)
+        assert captured["json"]["qty"] == "1"
+        # position_intent reaches the wire — the whole point of this helper
+        assert captured["json"]["position_intent"] == "buy_to_open"
+        # None values stripped from payload
+        assert "limit_price" not in captured["json"]
+
+    def test_raw_post_helper_passes_legs_array_through(self, monkeypatch):
+        """For combo orders the `legs` array must reach Alpaca verbatim
+        (the SDK's submit_order signature drops it; that's why we
+        bypass the SDK)."""
+        from unittest.mock import MagicMock
+        import options_multileg
+
+        captured = {}
+
+        class _FakeResponse:
+            status_code = 200
+            text = ""
+            def json(self):
+                return {"id": "combo-real-1"}
+
+        def fake_post(url, headers=None, json=None, timeout=None):
+            captured["json"] = json
+            return _FakeResponse()
+
+        class _FakeApi:
+            _key_id = "K"
+            _secret_key = "S"
+            _base_url = "https://paper-api.alpaca.markets"
+
+        monkeypatch.setattr("requests.post", fake_post)
+        legs = [
+            {"symbol": "AAPL  990101C00150000", "side": "buy",
+             "ratio_qty": 1, "position_intent": "buy_to_open"},
+            {"symbol": "AAPL  990101C00160000", "side": "sell",
+             "ratio_qty": 1, "position_intent": "sell_to_open"},
+        ]
+        options_multileg._submit_alpaca_order_raw(_FakeApi(), {
+            "qty": 2,
+            "side": "buy",
+            "type": "market",
+            "time_in_force": "day",
+            "order_class": "mleg",
+            "legs": legs,
+        })
+        assert captured["json"]["order_class"] == "mleg"
+        assert captured["json"]["legs"] == legs
+
+    def test_raw_post_helper_raises_on_alpaca_rejection(self, monkeypatch):
+        """A 4xx/5xx response must raise, so the executor's try/except
+        falls into the rollback path the same way it would for an SDK
+        exception."""
+        import options_multileg
+
+        class _FakeResponse:
+            status_code = 422
+            text = '{"code":40010001,"message":"insufficient buying power"}'
+            def json(self):
+                return {}
+
+        monkeypatch.setattr(
+            "requests.post",
+            lambda url, **kw: _FakeResponse(),
+        )
+
+        class _FakeApi:
+            _key_id = "K"
+            _secret_key = "S"
+            _base_url = "https://paper-api.alpaca.markets"
+
+        try:
+            options_multileg._submit_alpaca_order_raw(_FakeApi(), {
+                "symbol": "X", "qty": 1, "side": "buy", "type": "market",
+                "time_in_force": "day", "position_intent": "buy_to_open",
+            })
+        except RuntimeError as exc:
+            assert "422" in str(exc)
+            assert "insufficient buying power" in str(exc)
+        else:
+            assert False, "Expected RuntimeError on 422 response"
+
+    def test_force_sequential_via_use_combo_false(self, monkeypatch):
         """Setting use_combo=False bypasses the combo attempt."""
         from options_multileg import (
             build_bear_call_spread, execute_multileg_strategy,
         )
         spec = build_bear_call_spread("AAPL", EXPIRY, 150, 160, qty=1)
-        api = MagicMock()
-        api.submit_order.side_effect = [
+        captured = self._patch_post(monkeypatch, side_effect=[
             MagicMock(id="leg-A"), MagicMock(id="leg-B"),
-        ]
+        ])
         result = execute_multileg_strategy(
-            api, spec, self._ctx(), use_combo=False,
+            MagicMock(), spec, self._ctx(), use_combo=False,
         )
         assert result["action"] == "MULTILEG_OPEN"
         assert result["leg_order_ids"] == ["leg-A", "leg-B"]
-        # Exactly 2 calls (no combo attempt)
-        assert api.submit_order.call_count == 2
+        assert len(captured) == 2  # no combo attempt
+        assert "legs" not in captured[0]
+        assert "legs" not in captured[1]
 
     def test_empty_strategy_returns_error(self):
         from options_multileg import OptionStrategy, execute_multileg_strategy

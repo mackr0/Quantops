@@ -198,88 +198,132 @@ class TestLongCall:
 # ---------------------------------------------------------------------------
 
 class TestOrderSubmission:
-    def test_market_order_submitted_with_correct_kwargs(self):
+    """Option orders bypass the alpaca-trade-api SDK (which doesn't
+    accept `position_intent` or `legs` kwargs) and POST directly via
+    `options_multileg._submit_alpaca_order_raw`. Tests patch that
+    helper to assert the payload Alpaca receives."""
+
+    def test_market_order_submitted_with_correct_kwargs(self, monkeypatch):
         from options_trader import submit_option_order
-        api = MagicMock()
-        api.submit_order.return_value = MagicMock(id="opt-order-123")
+        captured = {}
+
+        def fake_post(api, payload):
+            captured.update(payload)
+            return MagicMock(id="opt-order-123")
+
+        monkeypatch.setattr(
+            "options_multileg._submit_alpaca_order_raw", fake_post,
+        )
         order_id = submit_option_order(
-            api, "AAPL  250516C00150000", side="buy", qty=2,
+            MagicMock(), "AAPL  250516C00150000", side="buy", qty=2,
             order_type="market",
         )
         assert order_id == "opt-order-123"
-        kwargs = api.submit_order.call_args.kwargs
-        assert kwargs["symbol"] == "AAPL  250516C00150000"
-        assert kwargs["qty"] == 2
-        assert kwargs["side"] == "buy"
-        assert kwargs["type"] == "market"
-        assert kwargs["time_in_force"] == "day"
-        assert "limit_price" not in kwargs
-        # 2026-05-07: Alpaca async-cancels option opens that arrive
-        # without position_intent. Default for buy = buy_to_open.
-        assert kwargs["position_intent"] == "buy_to_open"
+        assert captured["symbol"] == "AAPL  250516C00150000"
+        assert captured["qty"] == 2
+        assert captured["side"] == "buy"
+        assert captured["type"] == "market"
+        assert captured["time_in_force"] == "day"
+        assert "limit_price" not in captured
+        assert captured["position_intent"] == "buy_to_open"
 
-    def test_sell_defaults_to_sell_to_open_intent(self):
-        """Without intent, Alpaca async-cancels short option opens
-        (the ARCC root cause). For a sell, default to sell_to_open."""
+    def test_sell_defaults_to_sell_to_open_intent(self, monkeypatch):
         from options_trader import submit_option_order
-        api = MagicMock()
-        api.submit_order.return_value = MagicMock(id="opt-order-sell")
+        captured = {}
+
+        def fake_post(api, payload):
+            captured.update(payload)
+            return MagicMock(id="opt-order-sell")
+
+        monkeypatch.setattr(
+            "options_multileg._submit_alpaca_order_raw", fake_post,
+        )
         submit_option_order(
-            api, "AAPL  250516P00150000", side="sell", qty=1,
+            MagicMock(), "AAPL  250516P00150000", side="sell", qty=1,
             order_type="market",
         )
-        kwargs = api.submit_order.call_args.kwargs
-        assert kwargs["position_intent"] == "sell_to_open"
+        assert captured["position_intent"] == "sell_to_open"
 
-    def test_explicit_close_intent_passes_through(self):
-        """Closing positions need *_to_close intent. Caller passes it
-        explicitly (e.g., long_vol hedge close uses sell_to_close)."""
+    def test_explicit_close_intent_passes_through(self, monkeypatch):
         from options_trader import submit_option_order
-        api = MagicMock()
-        api.submit_order.return_value = MagicMock(id="opt-close")
+        captured = {}
+
+        def fake_post(api, payload):
+            captured.update(payload)
+            return MagicMock(id="opt-close")
+
+        monkeypatch.setattr(
+            "options_multileg._submit_alpaca_order_raw", fake_post,
+        )
         submit_option_order(
-            api, "SPY  260516P00400000", side="sell", qty=1,
+            MagicMock(), "SPY  260516P00400000", side="sell", qty=1,
             order_type="market", position_intent="sell_to_close",
         )
-        kwargs = api.submit_order.call_args.kwargs
-        assert kwargs["position_intent"] == "sell_to_close"
+        assert captured["position_intent"] == "sell_to_close"
 
-    def test_limit_order_includes_limit_price(self):
+    def test_limit_order_includes_limit_price(self, monkeypatch):
         from options_trader import submit_option_order
-        api = MagicMock()
-        api.submit_order.return_value = MagicMock(id="opt-order-456")
+        captured = {}
+
+        def fake_post(api, payload):
+            captured.update(payload)
+            return MagicMock(id="opt-order-456")
+
+        monkeypatch.setattr(
+            "options_multileg._submit_alpaca_order_raw", fake_post,
+        )
         order_id = submit_option_order(
-            api, "AAPL  250516C00150000", side="buy", qty=1,
+            MagicMock(), "AAPL  250516C00150000", side="buy", qty=1,
             order_type="limit", limit_price=2.55,
         )
         assert order_id == "opt-order-456"
-        kwargs = api.submit_order.call_args.kwargs
-        assert kwargs["type"] == "limit"
-        assert kwargs["limit_price"] == 2.55
+        assert captured["type"] == "limit"
+        assert captured["limit_price"] == 2.55
 
-    def test_limit_order_without_price_returns_none(self):
+    def test_limit_order_without_price_returns_none(self, monkeypatch):
         """Defensive: limit order without limit_price is invalid."""
         from options_trader import submit_option_order
-        api = MagicMock()
+        called = []
+
+        def fake_post(api, payload):
+            called.append(payload)
+            return MagicMock(id="x")
+
+        monkeypatch.setattr(
+            "options_multileg._submit_alpaca_order_raw", fake_post,
+        )
         order_id = submit_option_order(
-            api, "AAPL  250516C00150000", side="buy", qty=1,
+            MagicMock(), "AAPL  250516C00150000", side="buy", qty=1,
             order_type="limit", limit_price=None,
         )
         assert order_id is None
-        api.submit_order.assert_not_called()
+        assert called == []
 
-    def test_invalid_side_returns_none(self):
+    def test_invalid_side_returns_none(self, monkeypatch):
         from options_trader import submit_option_order
-        api = MagicMock()
-        assert submit_option_order(api, "X", side="hold", qty=1) is None
-        api.submit_order.assert_not_called()
+        called = []
 
-    def test_broker_failure_returns_none_not_raises(self):
+        def fake_post(api, payload):
+            called.append(payload)
+            return MagicMock(id="x")
+
+        monkeypatch.setattr(
+            "options_multileg._submit_alpaca_order_raw", fake_post,
+        )
+        assert submit_option_order(MagicMock(), "X", side="hold", qty=1) is None
+        assert called == []
+
+    def test_broker_failure_returns_none_not_raises(self, monkeypatch):
         """Failure is logged, not raised — caller decides handling."""
         from options_trader import submit_option_order
-        api = MagicMock()
-        api.submit_order.side_effect = Exception("alpaca rejected")
-        order_id = submit_option_order(api, "AAPL  250516C00150000",
+
+        def fake_post(api, payload):
+            raise Exception("alpaca rejected")
+
+        monkeypatch.setattr(
+            "options_multileg._submit_alpaca_order_raw", fake_post,
+        )
+        order_id = submit_option_order(MagicMock(), "AAPL  250516C00150000",
                                           side="buy", qty=1)
         assert order_id is None
 
@@ -393,9 +437,16 @@ class TestExecuteOptionStrategy:
         from options_trader import execute_option_strategy
         self._patch_account_state(monkeypatch, [],
             {"equity": 100000, "buying_power": 100000})
-        api = MagicMock()
-        api.submit_order.return_value = MagicMock(id="opt-1234")
-        result = execute_option_strategy(api, {
+        captured = []
+
+        def fake_post(api, payload):
+            captured.append(payload)
+            return MagicMock(id="opt-1234")
+
+        monkeypatch.setattr(
+            "options_multileg._submit_alpaca_order_raw", fake_post,
+        )
+        result = execute_option_strategy(MagicMock(), {
             "option_strategy": "long_call", "symbol": "AAPL",
             "strike": 150, "expiry": "2099-01-01", "contracts": 1,
             "limit_price": 2.55, "confidence": 65,
@@ -406,12 +457,12 @@ class TestExecuteOptionStrategy:
         assert result["option_strategy"] == "long_call"
         assert result["expiry"] == "2099-01-01"
         assert result["strike"] == 150.0
-        # Submitted with correct OCC + side
-        kwargs = api.submit_order.call_args.kwargs
-        assert kwargs["side"] == "buy"
-        assert kwargs["qty"] == 1
-        assert kwargs["symbol"].startswith("AAPL")
-        assert kwargs["symbol"].endswith("00150000")  # strike * 1000
+        payload = captured[0]
+        assert payload["side"] == "buy"
+        assert payload["qty"] == 1
+        assert payload["symbol"].startswith("AAPL")
+        assert payload["symbol"].endswith("00150000")  # strike * 1000
+        assert payload["position_intent"] == "buy_to_open"
 
     def test_dup_guard_blocks_re_open_with_existing_journal_row(self, monkeypatch, tmp_path):
         """Caught 2026-05-07: single-leg options had no dup guard, so
@@ -474,15 +525,22 @@ class TestExecuteOptionStrategy:
 
         self._patch_account_state(monkeypatch, [],
             {"equity": 100000, "buying_power": 100000})
-        api = MagicMock()
-        api.submit_order.return_value = MagicMock(id="opt-clean")
-        result = execute_option_strategy(api, {
+        captured = []
+
+        def fake_post(api, payload):
+            captured.append(payload)
+            return MagicMock(id="opt-clean")
+
+        monkeypatch.setattr(
+            "options_multileg._submit_alpaca_order_raw", fake_post,
+        )
+        result = execute_option_strategy(MagicMock(), {
             "option_strategy": "long_call", "symbol": "AAPL",
             "strike": 150, "expiry": "2099-01-01", "contracts": 1,
             "limit_price": 2.55,
         }, ctx=self._ctx(db_path=db_path), log=False)
         assert result["action"] == "OPTIONS_OPEN"
-        api.submit_order.assert_called_once()
+        assert len(captured) == 1
 
     def test_successful_covered_call_caps_contracts(self, monkeypatch):
         """Holding 250 shares + asking for 5 contracts → capped to 2."""
@@ -490,18 +548,27 @@ class TestExecuteOptionStrategy:
         self._patch_account_state(monkeypatch,
             [{"symbol": "AAPL", "qty": "250"}],
             {"equity": 100000, "buying_power": 100000})
-        api = MagicMock()
-        api.submit_order.return_value = MagicMock(id="opt-cc")
-        result = execute_option_strategy(api, {
+        captured = []
+
+        def fake_post(api, payload):
+            captured.append(payload)
+            return MagicMock(id="opt-cc")
+
+        monkeypatch.setattr(
+            "options_multileg._submit_alpaca_order_raw", fake_post,
+        )
+        result = execute_option_strategy(MagicMock(), {
             "option_strategy": "covered_call", "symbol": "AAPL",
             "strike": 200, "expiry": "2099-01-01",
             "contracts": 5,  # asks for 5
         }, ctx=self._ctx(), log=False)
         assert result["action"] == "OPTIONS_OPEN"
         assert result["qty"] == 2  # capped at 250 // 100
-        kwargs = api.submit_order.call_args.kwargs
-        assert kwargs["side"] == "sell"  # short the call
-        assert kwargs["qty"] == 2
+        payload = captured[0]
+        assert payload["side"] == "sell"  # short the call
+        assert payload["qty"] == 2
+        # Covered call sells to open
+        assert payload["position_intent"] == "sell_to_open"
 
 
 # ---------------------------------------------------------------------------

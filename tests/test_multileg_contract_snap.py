@@ -155,23 +155,26 @@ def test_execute_multileg_snaps_strikes_before_submit():
     )
 
     fake_api = MagicMock()
-    fake_order = MagicMock()
-    fake_order.id = "order-123"
-    fake_api.submit_order.return_value = fake_order
-
     fake_ctx = MagicMock()
     fake_ctx.db_path = None
+    captured = []
+
+    def fake_post(api, payload):
+        captured.append(payload)
+        return MagicMock(id="order-123")
 
     with patch(
         "options_chain_alpaca.list_available_contracts",
         return_value=SAMPLE_CONTRACTS,
+    ), patch(
+        "options_multileg._submit_alpaca_order_raw", fake_post,
     ):
         result = execute_multileg_strategy(
             fake_api, strategy, fake_ctx, log=False, use_combo=True,
         )
 
     assert result["action"] == "MULTILEG_OPEN", result
-    submitted = fake_api.submit_order.call_args.kwargs
+    submitted = captured[0]
     legs = submitted["legs"]
     # Both leg OCC symbols should match snapped (June 19) contracts
     leg_symbols = [leg["symbol"] for leg in legs]
@@ -235,17 +238,20 @@ def test_execute_multileg_falls_through_when_chain_unavailable():
     )
 
     fake_api = MagicMock()
-    fake_order = MagicMock()
-    fake_order.id = "order-456"
-    fake_api.submit_order.return_value = fake_order
-
     fake_ctx = MagicMock()
     fake_ctx.db_path = None
+    captured = []
+
+    def fake_post(api, payload):
+        captured.append(payload)
+        return MagicMock(id="order-456")
 
     # Contracts API returns empty (failure)
     with patch(
         "options_chain_alpaca.list_available_contracts",
         return_value=[],
+    ), patch(
+        "options_multileg._submit_alpaca_order_raw", fake_post,
     ):
         result = execute_multileg_strategy(
             fake_api, strategy, fake_ctx, log=False, use_combo=True,
@@ -253,7 +259,7 @@ def test_execute_multileg_falls_through_when_chain_unavailable():
 
     # Submitted — let Alpaca reject if needed
     assert result["action"] == "MULTILEG_OPEN"
-    fake_api.submit_order.assert_called_once()
+    assert len(captured) == 1
 
 
 def test_duplicate_position_guard_blocks_re_open():
@@ -358,11 +364,13 @@ def test_duplicate_guard_allows_when_no_open_position():
     )
 
     fake_api = MagicMock()
-    fake_order = MagicMock()
-    fake_order.id = "test-order"
-    fake_api.submit_order.return_value = fake_order
     fake_ctx = MagicMock()
     fake_ctx.db_path = f.name
+    captured = []
+
+    def fake_post(api, payload):
+        captured.append(payload)
+        return MagicMock(id="test-order")
 
     contracts = [
         {"symbol": "ARCC260618C00020000", "expiration_date": "2026-06-18",
@@ -373,13 +381,15 @@ def test_duplicate_guard_allows_when_no_open_position():
     with patch(
         "options_chain_alpaca.list_available_contracts",
         return_value=contracts,
+    ), patch(
+        "options_multileg._submit_alpaca_order_raw", fake_post,
     ):
         result = execute_multileg_strategy(
             fake_api, strategy, fake_ctx, log=False, use_combo=True,
         )
 
     assert result["action"] == "MULTILEG_OPEN", result
-    fake_api.submit_order.assert_called_once()
+    assert len(captured) == 1
 
 
 def test_multileg_log_captures_fill_price():
@@ -424,26 +434,18 @@ def test_multileg_log_captures_fill_price():
     )
 
     fake_api = MagicMock()
-    combo_order = MagicMock()
-    combo_order.id = "combo-id"
-    fake_api.submit_order.return_value = combo_order
     # REALISTIC mock — Alpaca paper accounts return
-    # filled_avg_price=None for ~50-500 ms after submit (caught
-    # 2026-05-06: 28 multileg legs shipped to prod with NULL
-    # fill_price for days because the original test mocked 0.45
-    # immediately). The first call from _log_strategy_legs
-    # immediately after submit must return None; subsequent calls
-    # (from _task_update_fills on the next cycle) return the
-    # filled price. This pins both halves: the immediate-fetch
-    # path tolerates None, and the catch-up path is what
-    # actually populates the journal.
+    # filled_avg_price=None for ~50-500 ms after submit. The first
+    # call from _log_strategy_legs immediately after submit must
+    # return None; subsequent calls (from _task_update_fills on the
+    # next cycle) return the filled price. This pins both halves:
+    # the immediate-fetch path tolerates None, and the catch-up
+    # path is what actually populates the journal.
     call_count = {"n": 0}
 
     def fake_get_order(oid):
         call_count["n"] += 1
         m = MagicMock()
-        # First call (immediate after submit) — broker hasn't
-        # propagated the fill yet.
         m.filled_avg_price = None if call_count["n"] == 1 else "0.45"
         return m
 
@@ -458,9 +460,15 @@ def test_multileg_log_captures_fill_price():
         {"symbol": "ARCC260618C00021000", "expiration_date": "2026-06-18",
          "type": "call", "strike": 21.0},
     ]
+
+    def fake_post(api, payload):
+        return MagicMock(id="combo-id")
+
     with patch(
         "options_chain_alpaca.list_available_contracts",
         return_value=contracts,
+    ), patch(
+        "options_multileg._submit_alpaca_order_raw", fake_post,
     ):
         result = execute_multileg_strategy(
             fake_api, strategy, fake_ctx, log=True, use_combo=True,
@@ -563,12 +571,13 @@ def test_sequential_legs_pass_position_intent_open():
     )
 
     fake_api = MagicMock()
-    fake_order = MagicMock()
-    fake_order.id = "leg-id"
-    fake_api.submit_order.return_value = fake_order
-
     fake_ctx = MagicMock()
     fake_ctx.db_path = None
+    captured = []
+
+    def fake_post(api, payload):
+        captured.append(payload)
+        return MagicMock(id="leg-id")
 
     contracts = [
         {"symbol": "ARCC260618C00020000", "expiration_date": "2026-06-18",
@@ -579,6 +588,8 @@ def test_sequential_legs_pass_position_intent_open():
     with patch(
         "options_chain_alpaca.list_available_contracts",
         return_value=contracts,
+    ), patch(
+        "options_multileg._submit_alpaca_order_raw", fake_post,
     ):
         # Force sequential by passing use_combo=False
         result = execute_multileg_strategy(
@@ -586,19 +597,17 @@ def test_sequential_legs_pass_position_intent_open():
         )
 
     assert result["action"] == "MULTILEG_OPEN", result
-    # Two submit_order calls; each must have position_intent.
-    assert fake_api.submit_order.call_count == 2
-    for call in fake_api.submit_order.call_args_list:
-        kwargs = call.kwargs
-        side = kwargs["side"]
-        assert "position_intent" in kwargs, (
+    # Two submits; each must include position_intent.
+    assert len(captured) == 2
+    for payload in captured:
+        side = payload["side"]
+        assert "position_intent" in payload, (
             f"Sequential leg submit ({side}) missing position_intent — "
-            "this is the ARCC root cause."
+            "Alpaca async-cancels short opens without it."
         )
-        # buy → buy_to_open, sell → sell_to_open
         expected = "buy_to_open" if side == "buy" else "sell_to_open"
-        assert kwargs["position_intent"] == expected, (
-            f"Wrong intent for {side}: got {kwargs['position_intent']}, "
+        assert payload["position_intent"] == expected, (
+            f"Wrong intent for {side}: got {payload['position_intent']}, "
             f"expected {expected}"
         )
 
@@ -628,9 +637,9 @@ def test_sequential_rollback_uses_close_intent():
     submitted_orders = []
     rollback_calls = []
 
-    def submit_side_effect(**kwargs):
-        intent = kwargs.get("position_intent", "")
-        side = kwargs["side"]
+    def fake_post(api, payload):
+        intent = payload.get("position_intent", "")
+        side = payload["side"]
         if "to_open" in intent:
             # opening leg
             if len(submitted_orders) == 0:
@@ -647,8 +656,6 @@ def test_sequential_rollback_uses_close_intent():
             m.id = f"rollback-{len(rollback_calls)}"
             return m
 
-    fake_api.submit_order.side_effect = submit_side_effect
-
     fake_ctx = MagicMock()
     fake_ctx.db_path = None
 
@@ -661,6 +668,8 @@ def test_sequential_rollback_uses_close_intent():
     with patch(
         "options_chain_alpaca.list_available_contracts",
         return_value=contracts,
+    ), patch(
+        "options_multileg._submit_alpaca_order_raw", fake_post,
     ):
         result = execute_multileg_strategy(
             fake_api, strategy, fake_ctx, log=False, use_combo=False,
