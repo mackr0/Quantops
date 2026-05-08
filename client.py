@@ -165,15 +165,25 @@ def _fetch_option_premium(occ_symbol):
         bp = float(q.get("bp") or 0)
         if ap > 0 and bp > 0 and ap >= bp:
             return (ap + bp) / 2
-        # Quote is one-sided / inverted / empty — fall back to last trade
+        # Last trade — typically the best single estimate when the
+        # quote is one-sided / inverted / empty.
         t = snap.get("latestTrade") or {}
         tp = float(t.get("p") or 0)
         if tp > 0:
             return tp
-        # Daily-bar close as final fallback
+        # Daily-bar close — second fallback for off-hours / illiquid.
         bar = snap.get("dailyBar") or {}
         cp = float(bar.get("c") or 0)
-        return cp if cp > 0 else 0.0
+        if cp > 0:
+            return cp
+        # Last resort: use whichever side of the quote IS available.
+        # Better than reporting 0 (which makes the FIFO fall back to
+        # `avg_entry` and silently hide every move on illiquid legs).
+        if ap > 0:
+            return ap
+        if bp > 0:
+            return bp
+        return 0.0
     except Exception:
         return 0.0
 

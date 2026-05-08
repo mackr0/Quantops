@@ -281,6 +281,42 @@ class TestFetchOptionPremium:
         from client import _fetch_option_premium
         assert _fetch_option_premium("WMT260612P00117000") == 1.05
 
+    def test_falls_back_to_one_sided_ask_when_only_signal(self,
+                                                            monkeypatch):
+        """Illiquid legs sometimes have only an ask quote — no bid,
+        no trade, no daily bar. Returning 0 here would make the
+        FIFO fall back to entry price and silently hide every
+        move. Use ask as a last resort."""
+        def fake_get(url, **kw):
+            return self._mock_response(200, {
+                "snapshots": {
+                    "TECK260612P00057000": {
+                        # Only the ask side is filled
+                        "latestQuote": {"ap": 1.62, "bp": 0.0},
+                        # No latestTrade, no dailyBar
+                    },
+                },
+            })
+
+        monkeypatch.setattr("requests.get", fake_get)
+        from client import _fetch_option_premium
+        assert _fetch_option_premium("TECK260612P00057000") == 1.62
+
+    def test_falls_back_to_one_sided_bid_when_only_signal(self,
+                                                            monkeypatch):
+        def fake_get(url, **kw):
+            return self._mock_response(200, {
+                "snapshots": {
+                    "X261219C00050000": {
+                        "latestQuote": {"ap": 0.0, "bp": 1.10},
+                    },
+                },
+            })
+
+        monkeypatch.setattr("requests.get", fake_get)
+        from client import _fetch_option_premium
+        assert _fetch_option_premium("X261219C00050000") == 1.10
+
     def test_returns_zero_on_missing_snapshot(self, monkeypatch):
         def fake_get(url, **kw):
             return self._mock_response(200, {"snapshots": {}})
