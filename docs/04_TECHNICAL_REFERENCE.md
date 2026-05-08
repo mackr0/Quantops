@@ -80,11 +80,11 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | `specialist_calibration.py` | Platt-scaling per specialist. |
 | `meta_model.py` | GBM batch model. |
 | `online_meta_model.py` | SGD freshness layer. |
-| `client.py` | Alpaca REST adapter (orders, positions, account, asset metadata). The price-fetcher routes OCC option symbols to the options-snapshot endpoint (mid quote / last trade / daily close fallback) so option positions report their actual contract premium rather than the underlying's stock price. |
+| `client.py` | Alpaca REST adapter (orders, positions, account, asset metadata). The shared price-fetcher routes OCC option symbols (21 chars, C/P at index 12, 8-digit strike suffix) to `/v1beta1/options/snapshots/<underlying>` for mid premium; stock symbols use the snapshots/latest-trade path. Both paths share the in-process TTL cache. |
 | `order_guard.py` | Schedule-window + duplicate-order checks before submit. |
 | `bracket_orders.py` | Broker-managed protective stops + take-profits. |
 | `trader.py` | Per-position exit logic; trailing-stop reconciliation. Exit-fired SELL/COVER rows write `status='pending_fill'` until broker confirms (deferred to `_task_update_fills`). |
-| `journal.py` | `trades` + journal-table CRUD + schema migrations. Status values: `open` (entry), `pending_fill` (close awaiting broker confirmation), `closed` (broker-confirmed close), `canceled` (entry never filled / phantom undo). FIFO `get_virtual_positions` includes everything except `canceled`; option legs are keyed by OCC symbol so they're tracked separately from stock holdings on the same underlying, and the dollar-denominated outputs (`unrealized_pl`, `market_value`) apply the x100 contract multiplier. |
+| `journal.py` | `trades` + journal-table CRUD + schema migrations. Status values: `open` (entry), `pending_fill` (close awaiting broker confirmation), `closed` (broker-confirmed close), `canceled` (entry never filled / phantom undo). FIFO `get_virtual_positions` keys each position by OCC symbol when set, otherwise by stock symbol, and applies the ×100 contract multiplier on dollar fields (`unrealized_pl`, `market_value`) for option positions. Includes everything except `status='canceled'`. |
 
 ### 3c. Strategy engines
 | Module | Purpose |
