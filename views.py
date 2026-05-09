@@ -4757,8 +4757,9 @@ def api_dashboard_totals():
       {profiles: [{id, name, equity, cash, num_positions, cost_today}],
        total_equity, total_cash, total_positions, total_cost}
     """
-    from models import get_active_profiles
-    from user_context import build_context
+    from models import get_active_profiles, build_user_context_from_profile
+    from ai_cost_ledger import spend_summary
+    from client import get_account_info, get_positions
     profiles = get_active_profiles(user_id=current_user.effective_user_id)
     rows = []
     total_equity = 0.0
@@ -4767,15 +4768,23 @@ def api_dashboard_totals():
     total_cost = 0.0
     for p in profiles:
         try:
-            ctx = build_context(p)
+            ctx = build_user_context_from_profile(p["id"])
             account = get_account_info(ctx=ctx)
             positions = get_positions(ctx=ctx)
-            cost_today = 0.0
+            # Per-profile today's USD spend. Mirrors the server-render
+            # path used at the dashboard route initial load so the
+            # JS auto-refresh shows the same value the page loaded with.
             try:
-                from ai_cost_ledger import get_today_total
-                cost_today = float(get_today_total(ctx.db_path) or 0)
-            except Exception:
-                pass
+                cost_today = float(
+                    (spend_summary(ctx.db_path) or {})
+                    .get("today", {}).get("usd") or 0
+                )
+            except Exception as exc:
+                logger.warning(
+                    "dashboard-totals: spend_summary failed for "
+                    "profile %s: %s", p.get("id"), exc,
+                )
+                cost_today = 0.0
             equity = float(account.get("equity") or 0)
             cash = float(account.get("cash") or 0)
             n_pos = len(positions)
@@ -4792,7 +4801,13 @@ def api_dashboard_totals():
             total_positions += n_pos
             total_cost += cost_today
         except Exception as exc:
-            logger.debug("dashboard-totals: %s skipped (%s)", p.get("name"), exc)
+            # Surface at WARNING so silent skips don't hide a real
+            # failure (e.g., the user_context import bug that 500'd
+            # this endpoint silently for weeks before 2026-05-09).
+            logger.warning(
+                "dashboard-totals: %s (id=%s) skipped: %s",
+                p.get("name"), p.get("id"), exc,
+            )
             continue
     return jsonify({
         "profiles": rows,
