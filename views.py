@@ -2125,6 +2125,46 @@ def performance_dashboard():
                 cur = ai_perf.get("biggest_avoided_loss")
                 if cur is None or al.get("return_pct", 0) < cur.get("return_pct", 0):
                     ai_perf["biggest_avoided_loss"] = al
+            # Per-DB raw-row aggregation for win_rate / calibration /
+            # per-type returns. Lives INSIDE the per-profile loop so
+            # the accumulators (initialized above the loop) sum across
+            # every profile, not just the last one. Before 2026-05-09
+            # this query lived OUTSIDE the loop and used the leftover
+            # `db_path` (set iteration → non-deterministic) so the
+            # aggregate metrics reflected one random profile's data.
+            try:
+                conn = _sqlite3.connect(db_path)
+                conn.row_factory = _sqlite3.Row
+                rows = conn.execute(
+                    "SELECT predicted_signal, actual_outcome, actual_return_pct, "
+                    "confidence, prediction_type "
+                    "FROM ai_predictions WHERE status = 'resolved'"
+                ).fetchall()
+                conn.close()
+                for r in rows:
+                    outcome = r["actual_outcome"]
+                    ret = r["actual_return_pct"]
+                    conf = r["confidence"] or 0
+                    sig = r["predicted_signal"] or ""
+                    ptype = r["prediction_type"]
+                    if outcome == "win":
+                        all_wins += 1
+                        conf_on_wins.append(conf)
+                    elif outcome == "loss":
+                        all_losses += 1
+                        conf_on_losses.append(conf)
+                    if ret is not None:
+                        if "BUY" in sig.upper():
+                            all_return_buys.append(ret)
+                        elif "SELL" in sig.upper() or "SHORT" in sig.upper():
+                            all_return_sells.append(ret)
+                        if ptype and ptype in returns_by_type:
+                            returns_by_type[ptype].append(ret)
+            except Exception as _exc:
+                logger.warning(
+                    "ai-performance per-DB aggregation failed for %s: %s",
+                    db_path, _exc,
+                )
         except Exception:
             pass
 
@@ -2137,40 +2177,6 @@ def performance_dashboard():
         ai_perf["hold_pass_rate"] = round(
             100.0 * hw / ai_perf["hold_resolved"], 1,
         )
-
-        try:
-            conn = _sqlite3.connect(db_path)
-            conn.row_factory = _sqlite3.Row
-            rows = conn.execute(
-                "SELECT predicted_signal, actual_outcome, actual_return_pct, "
-                "confidence, prediction_type "
-                "FROM ai_predictions WHERE status = 'resolved'"
-            ).fetchall()
-            conn.close()
-            for r in rows:
-                outcome = r["actual_outcome"]
-                ret = r["actual_return_pct"]
-                conf = r["confidence"] or 0
-                sig = r["predicted_signal"] or ""
-                ptype = r["prediction_type"]
-                if outcome == "win":
-                    all_wins += 1
-                    conf_on_wins.append(conf)
-                elif outcome == "loss":
-                    all_losses += 1
-                    conf_on_losses.append(conf)
-                if ret is not None:
-                    # Legacy buckets (kept for backwards compat with the
-                    # n_buys/n_sells display the page already shows).
-                    if "BUY" in sig.upper():
-                        all_return_buys.append(ret)
-                    elif "SELL" in sig.upper() or "SHORT" in sig.upper():
-                        all_return_sells.append(ret)
-                    # New per-type buckets for the split dashboard cards.
-                    if ptype and ptype in returns_by_type:
-                        returns_by_type[ptype].append(ret)
-        except Exception:
-            pass
 
     total_resolved = all_wins + all_losses
     if total_resolved > 0:
@@ -3035,6 +3041,44 @@ def ai_dashboard():
                 cur = ai_perf.get("biggest_avoided_loss")
                 if cur is None or al.get("return_pct", 0) < cur.get("return_pct", 0):
                     ai_perf["biggest_avoided_loss"] = al
+            # Per-DB raw-row aggregation for win_rate / calibration /
+            # per-type returns. Lives INSIDE the per-profile loop so
+            # the accumulators (initialized above the loop) sum across
+            # every profile, not just one. See views.api_performance
+            # for the matching fix and the 2026-05-09 root-cause note.
+            try:
+                conn = _sqlite3.connect(db_path)
+                conn.row_factory = _sqlite3.Row
+                rows = conn.execute(
+                    "SELECT predicted_signal, actual_outcome, actual_return_pct, "
+                    "confidence, prediction_type "
+                    "FROM ai_predictions WHERE status = 'resolved'"
+                ).fetchall()
+                conn.close()
+                for r in rows:
+                    outcome = r["actual_outcome"]
+                    ret = r["actual_return_pct"]
+                    conf = r["confidence"] or 0
+                    sig = r["predicted_signal"] or ""
+                    ptype = r["prediction_type"]
+                    if outcome == "win":
+                        all_wins += 1
+                        conf_on_wins.append(conf)
+                    elif outcome == "loss":
+                        all_losses += 1
+                        conf_on_losses.append(conf)
+                    if ret is not None:
+                        if "BUY" in sig.upper():
+                            all_return_buys.append(ret)
+                        elif "SELL" in sig.upper() or "SHORT" in sig.upper():
+                            all_return_sells.append(ret)
+                        if ptype and ptype in returns_by_type:
+                            returns_by_type[ptype].append(ret)
+            except Exception as _exc:
+                logger.warning(
+                    "ai-dashboard per-DB aggregation failed for %s: %s",
+                    db_path, _exc,
+                )
         except Exception:
             pass
 
@@ -3047,39 +3091,6 @@ def ai_dashboard():
         ai_perf["hold_pass_rate"] = round(
             100.0 * hw / ai_perf["hold_resolved"], 1,
         )
-        try:
-            conn = _sqlite3.connect(db_path)
-            conn.row_factory = _sqlite3.Row
-            rows = conn.execute(
-                "SELECT predicted_signal, actual_outcome, actual_return_pct, "
-                "confidence, prediction_type "
-                "FROM ai_predictions WHERE status = 'resolved'"
-            ).fetchall()
-            conn.close()
-            for r in rows:
-                outcome = r["actual_outcome"]
-                ret = r["actual_return_pct"]
-                conf = r["confidence"] or 0
-                sig = r["predicted_signal"] or ""
-                ptype = r["prediction_type"]
-                if outcome == "win":
-                    all_wins += 1
-                    conf_on_wins.append(conf)
-                elif outcome == "loss":
-                    all_losses += 1
-                    conf_on_losses.append(conf)
-                if ret is not None:
-                    # Legacy buckets (kept for backwards compat with the
-                    # n_buys/n_sells display the page already shows).
-                    if "BUY" in sig.upper():
-                        all_return_buys.append(ret)
-                    elif "SELL" in sig.upper() or "SHORT" in sig.upper():
-                        all_return_sells.append(ret)
-                    # New per-type buckets for the split dashboard cards.
-                    if ptype and ptype in returns_by_type:
-                        returns_by_type[ptype].append(ret)
-        except Exception:
-            pass
 
     total_resolved = all_wins + all_losses
     if total_resolved > 0:

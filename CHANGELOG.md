@@ -17,6 +17,32 @@ Rules going forward:
 
 ---
 
+## 2026-05-09 — Aggregate /performance + /ai metrics fixed (was sampling one random profile) (Severity: critical, dashboard correctness)
+
+The `ai_predictions` raw-row aggregation block in `views.api_performance` (line 2141-2173) and `views.api_ai_dashboard` (line 3050-3082) sat OUTSIDE the `for db_path in db_paths` loop and used the leftover `db_path` value. Because `db_paths` is a `set()` (Python sets have non-deterministic iteration order), the aggregate fields below ended up reflecting whichever profile happened to be iterated last — different profile on different page loads.
+
+**Affected fields** on /performance + /ai aggregate views:
+- `win_rate`, `avg_confidence_on_wins`, `avg_confidence_on_losses`
+- `n_buys`, `n_sells`, `avg_return_on_buys`, `avg_return_on_sells`
+- per-prediction-type counts and avg returns (n_directional_long/short, etc.)
+
+Also: the whole block was gated on `if ai_perf["hold_resolved"] > 0:` — if no HOLDs across any profile, none of those metrics computed at all (stayed at 0.0 dict-init defaults).
+
+NOT affected:
+- Single-profile views (set has 1 element → loop iterates once → leftover value is correct).
+- Aggregated-in-the-loop fields: total_predictions, resolved, pending, directional_resolved/wins/win_rate, hold_resolved/pass_rate, best/worst trade, biggest_missed_gain, biggest_avoided_loss.
+- Profit factor (separate query already inside its own per-profile loop; Issue 4 about WHERE clause is a different fix).
+
+**Fix:** moved the query block INSIDE the `for db_path in db_paths` loop in both routes; removed the misplaced `if hold_resolved > 0:` gate (the query collects all resolved predictions regardless of HOLD status); kept the gate around the `hold_pass_rate` calc which IS correctly hold-dependent. Replaced the silent `except: pass` around the per-DB query with a WARNING log surfacing the failing db_path.
+
+**Cross-cutting guardrail** in `tests/test_aggregate_per_profile_loops.py` — AST scan: any function in `views.py` that contains `for db_path in X:` must have all its `<sqlite>.connect(db_path)` calls inside a for-loop body that binds `db_path` per iteration (either as target or as a body assignment). False positives (like `_enriched_positions`) where `db_path` is just a function-scope variable are explicitly skipped.
+
+3 behavioral tests pin: (a) two-profile aggregate sums to N+M, not just N or M; (b) set iteration order doesn't matter (3 runs of the same data give identical results); (c) single-profile view unchanged.
+
+Suite: 2,234 pass.
+
+---
+
 ## 2026-05-08 — Multileg legs now carry AI confidence + per-trade reasoning (Severity: medium, UI completeness)
 
 User flagged: option rows on the trades dashboard show '--' in the AI Conf column (single-leg options + stock trades show the actual confidence). The expanded detail shows the spread's structural thesis ("Bullish on X, max profit at strike Y...") instead of the AI's per-trade reasoning ("StochRSI 100 + sector momentum favors continuation").
