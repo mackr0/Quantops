@@ -165,6 +165,69 @@ class TestOptionPositionTracking:
         # plpc positive (we profited)
         assert opt["unrealized_plpc"] > 0
 
+    def test_long_leg_one_sided_market_does_not_inflate_pnl(self, opt_db):
+        """Caught 2026-05-08: SCHD $28 put (long, qty=3, entry $0.15)
+        showed +413.3% unrealized because the price fetcher returned
+        the ask ($0.77) on a market where bid=$0. A long holder
+        cannot sell at $0.77 — the realistic exit is the bid (or
+        $0 when there's no bid). Fix: FIFO passes side='buy' for
+        longs, fetcher returns 0 instead of ask, FIFO falls back
+        to entry. Result: position shows 0% unrealized (honest
+        'no liquidity' mark) instead of fake +413%."""
+        from journal import get_virtual_positions
+
+        # Three contracts of the long $28 put @ $0.15 entry
+        _buy_opt(opt_db, "SCHD", "SCHD260612P00028000", 3, 0.15)
+
+        # Price fetcher receives side='buy' for the long position
+        # and returns 0 (one-sided market: ask exists, bid doesn't).
+        seen_calls = []
+
+        def fetcher(key, side="buy"):
+            seen_calls.append((key, side))
+            return 0.0  # bid-side fallback for long with no bid
+
+        positions = get_virtual_positions(
+            db_path=opt_db, price_fetcher=fetcher,
+        )
+        assert len(positions) == 1
+        pos = positions[0]
+        # Side hint reached the fetcher
+        assert seen_calls == [("SCHD260612P00028000", "buy")]
+        # Price falls back to entry (no inflated +413%)
+        assert pos["current_price"] == pytest.approx(0.15)
+        assert pos["unrealized_pl"] == pytest.approx(0.0)
+        assert pos["unrealized_plpc"] == pytest.approx(0.0)
+
+    def test_short_leg_uses_ask_side_hint(self, opt_db):
+        """Symmetric: a short option leg passes side='sell' to the
+        fetcher so the conservative side (ask) is used in
+        one-sided-market fallback."""
+        from journal import get_virtual_positions
+
+        # Sell-to-open the $30 put @ $0.05 entry
+        conn = sqlite3.connect(opt_db)
+        conn.execute(
+            "INSERT INTO trades (symbol, side, qty, price, occ_symbol) "
+            "VALUES (?, 'short', ?, ?, ?)",
+            ("SCHD", 3, 0.05, "SCHD260612P00030000"),
+        )
+        conn.commit()
+        conn.close()
+
+        seen_calls = []
+
+        def fetcher(key, side="buy"):
+            seen_calls.append((key, side))
+            return 0.10  # current price for the short, regardless
+
+        positions = get_virtual_positions(
+            db_path=opt_db, price_fetcher=fetcher,
+        )
+        assert len(positions) == 1
+        # Short position → fetcher called with side='sell'
+        assert seen_calls == [("SCHD260612P00030000", "sell")]
+
     def test_two_option_legs_same_underlying_separate_positions(self, opt_db):
         """A bull_put_spread has two legs (long $28 put + short $30
         put) on the same underlying. They must show as TWO positions
@@ -281,29 +344,38 @@ class TestFetchOptionPremium:
         from client import _fetch_option_premium
         assert _fetch_option_premium("WMT260612P00117000") == 1.05
 
-    def test_falls_back_to_one_sided_ask_when_only_signal(self,
-                                                            monkeypatch):
-        """Illiquid legs sometimes have only an ask quote — no bid,
-        no trade, no daily bar. Returning 0 here would make the
-        FIFO fall back to entry price and silently hide every
-        move. Use ask as a last resort."""
+    def test_long_position_with_one_sided_ask_returns_zero_not_ask(self,
+                                                                    monkeypatch):
+        """Caught 2026-05-08: a SCHD $28 put leg (long) showed
+        +413% because the market was bid=$0 / ask=$0.77 and the
+        fetcher returned the ask. A long holder cannot SELL at
+        $0.77 (no buyer at any price); the realistic mark is $0
+        or entry. Returning ask here fakes a gain that doesn't
+        exist."""
         def fake_get(url, **kw):
             return self._mock_response(200, {
                 "snapshots": {
-                    "TECK260612P00057000": {
-                        # Only the ask side is filled
-                        "latestQuote": {"ap": 1.62, "bp": 0.0},
-                        # No latestTrade, no dailyBar
+                    "SCHD260612P00028000": {
+                        # Stub ask, no real bid, no trade, no bar
+                        "latestQuote": {"ap": 0.77, "bp": 0.0},
                     },
                 },
             })
 
         monkeypatch.setattr("requests.get", fake_get)
         from client import _fetch_option_premium
-        assert _fetch_option_premium("TECK260612P00057000") == 1.62
+        # Long position: must NOT use the offer side. Returns 0
+        # so the FIFO falls back to entry (current=entry, 0%
+        # unrealized — honest "no liquidity" mark).
+        assert _fetch_option_premium(
+            "SCHD260612P00028000", side="buy",
+        ) == 0.0
 
-    def test_falls_back_to_one_sided_bid_when_only_signal(self,
-                                                            monkeypatch):
+    def test_short_position_with_one_sided_bid_returns_zero_not_bid(self,
+                                                                     monkeypatch):
+        """Symmetric: a short holder cannot BUY-to-close at the
+        bid alone (no seller at any price). Use entry as fallback
+        rather than understate the cost-to-close."""
         def fake_get(url, **kw):
             return self._mock_response(200, {
                 "snapshots": {
@@ -315,7 +387,49 @@ class TestFetchOptionPremium:
 
         monkeypatch.setattr("requests.get", fake_get)
         from client import _fetch_option_premium
-        assert _fetch_option_premium("X261219C00050000") == 1.10
+        # Short position: must NOT use the bid side alone.
+        assert _fetch_option_premium(
+            "X261219C00050000", side="sell",
+        ) == 0.0
+
+    def test_long_position_uses_bid_when_only_bid_available(self,
+                                                              monkeypatch):
+        """When ONLY the bid is available (ask=0), a long holder's
+        realistic exit is the bid — that's the conservative
+        valuation. Use it."""
+        def fake_get(url, **kw):
+            return self._mock_response(200, {
+                "snapshots": {
+                    "X261219C00050000": {
+                        "latestQuote": {"ap": 0.0, "bp": 1.10},
+                    },
+                },
+            })
+
+        monkeypatch.setattr("requests.get", fake_get)
+        from client import _fetch_option_premium
+        # Long with bid available → use the bid (their exit price)
+        assert _fetch_option_premium(
+            "X261219C00050000", side="buy",
+        ) == 1.10
+
+    def test_short_position_uses_ask_when_only_ask_available(self,
+                                                              monkeypatch):
+        """Symmetric: short holder closes by buying at ask."""
+        def fake_get(url, **kw):
+            return self._mock_response(200, {
+                "snapshots": {
+                    "TECK260612P00057000": {
+                        "latestQuote": {"ap": 1.62, "bp": 0.0},
+                    },
+                },
+            })
+
+        monkeypatch.setattr("requests.get", fake_get)
+        from client import _fetch_option_premium
+        assert _fetch_option_premium(
+            "TECK260612P00057000", side="sell",
+        ) == 1.62
 
     def test_returns_zero_on_missing_snapshot(self, monkeypatch):
         def fake_get(url, **kw):

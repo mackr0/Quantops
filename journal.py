@@ -713,14 +713,25 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
 
         # Current price: ask the price_fetcher for the position key
         # (OCC for options, underlying symbol for stock). The fetcher
-        # is responsible for routing OCC symbols to the option-quote
-        # path. Without this routing, an option leg's "current price"
-        # would be the underlying's stock price — producing absurd
-        # unrealized% values like (416 - 3.10) / 3.10 = +13,332%.
+        # routes OCC symbols to the option-quote path. We pass the
+        # position direction (long/short via `side`) so option
+        # fetchers can use the conservative side of a one-sided
+        # market — a LONG holder values at the bid (their exit
+        # price), a SHORT at the ask. Using the offer side on a
+        # long inflates the mark when the bid is 0.
+        is_short_dir = (net_qty < 0)
+        side_hint = "sell" if is_short_dir else "buy"
         current_price = 0.0
         if price_fetcher:
             try:
-                current_price = float(price_fetcher(key) or 0)
+                # Older fetchers don't accept `side` — fall back to
+                # the single-arg form when TypeError surfaces.
+                try:
+                    current_price = float(
+                        price_fetcher(key, side=side_hint) or 0
+                    )
+                except TypeError:
+                    current_price = float(price_fetcher(key) or 0)
             except Exception:
                 pass
         if current_price <= 0:
@@ -729,7 +740,7 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
         # Sign convention matches Alpaca: long qty>0, short qty<0.
         # Options have a 100x contract multiplier on dollar values.
         contract_mult = 100 if is_option else 1
-        is_short = (net_qty < 0)
+        is_short = is_short_dir  # already computed above for side_hint
         signed_qty = -total_qty if is_short else total_qty
         if is_short:
             unrealized_pl = (avg_entry - current_price) * total_qty * contract_mult

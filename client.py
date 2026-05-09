@@ -133,27 +133,34 @@ def _is_occ_symbol(s):
     return True
 
 
-def _fetch_option_premium(occ_symbol):
+def _fetch_option_premium(occ_symbol, side="buy"):
     """Latest premium for an option contract by OCC symbol.
+
+    `side` is the holder's position direction (`buy` = long,
+    `sell` = short). It controls the one-sided-market fallback:
+    a LONG position is valued at the bid (what the holder would
+    receive selling to close), a SHORT position at the ask (what
+    the holder would pay buying to close). Using the wrong side
+    on an illiquid contract inflates the mark (e.g., bid=$0
+    ask=$0.77 — a long holder cannot sell at $0.77, so marking
+    the position at $0.77 fakes a gain that doesn't exist).
 
     Uses Alpaca's per-symbol snapshots endpoint
     (`/v1beta1/options/snapshots?symbols=<occ>`), which returns
-    quote + last trade + daily bar in a single request. Preference
-    order:
-      1. Mid of bid/ask when both > 0 and ask >= bid (live market).
-      2. Latest trade price (covers illiquid contracts where the
-         quote shows a stub bid like $0.01 vs ask $1.40 and the
-         mid is unrepresentative).
+    quote + last trade + daily bar in one request. Preference:
+      1. Mid of bid/ask when both > 0 and ask >= bid (real market).
+      2. Latest trade if available (representative recent fill).
       3. Daily bar close.
+      4. Conservative side per position direction:
+         - long  → bid  (holder's exit price)
+         - short → ask  (holder's exit price)
+      5. 0.0 — caller's FIFO falls back to entry price (current
+         shows = entry, 0% unrealized; less misleading than a
+         fake gain from the offer side of a one-sided market).
 
-    The OCC stored in the journal is padded to 21 chars
-    (`WMT   260612P00117000`); Alpaca's API accepts and returns
-    the unpadded form (`WMT260612P00117000`), so we strip
-    internal whitespace before sending and look up by the
-    unpadded key in the response.
-
-    Returns 0.0 on any failure so the caller (which falls back
-    to entry price) doesn't surface a nonsense value.
+    OCC normalization: the journal stores the padded 21-char form
+    (`WMT   260612P00117000`); Alpaca returns the unpadded form
+    (`WMT260612P00117000`). Strip whitespace before sending.
     """
     import requests
     if not occ_symbol:
@@ -183,24 +190,24 @@ def _fetch_option_premium(occ_symbol):
         bp = float(q.get("bp") or 0)
         if ap > 0 and bp > 0 and ap >= bp:
             return (ap + bp) / 2
-        # Last trade — typically the best single estimate when the
-        # quote is one-sided / inverted / empty.
+        # Last trade — best single estimate when the quote is
+        # one-sided / inverted / empty.
         t = snap.get("latestTrade") or {}
         tp = float(t.get("p") or 0)
         if tp > 0:
             return tp
-        # Daily-bar close — second fallback for off-hours / illiquid.
+        # Daily bar close — second fallback for off-hours / illiquid.
         bar = snap.get("dailyBar") or {}
         cp = float(bar.get("c") or 0)
         if cp > 0:
             return cp
-        # Last resort: use whichever side of the quote IS available.
-        # Better than reporting 0 (which makes the FIFO fall back to
-        # `avg_entry` and silently hide every move on illiquid legs).
-        if ap > 0:
-            return ap
-        if bp > 0:
-            return bp
+        # Conservative side: use the holder's exit-side. A long
+        # would receive the bid; a short would pay the ask.
+        # Returning the OFFER side on a long position fakes a gain.
+        if side == "buy":
+            return bp if bp > 0 else 0.0
+        if side == "sell":
+            return ap if ap > 0 else 0.0
         return 0.0
     except Exception:
         return 0.0
@@ -221,25 +228,28 @@ def _make_price_fetcher(api):
     practice, only when Alpaca itself returns a `None` snapshot for
     a delisted/halted ticker.
     """
-    def fetch(symbol):
+    def fetch(symbol, side="buy"):
         now = time.time()
         # OCC option symbol: route to option-snapshot path. Cached
-        # the same way as stocks so repeated calls within TTL hit
-        # the in-process cache instead of re-querying Alpaca.
+        # the same way as stocks but per-(symbol, side) since long
+        # and short positions on the same contract take different
+        # fallback marks (bid vs ask) when the market is one-sided.
         if _is_occ_symbol(symbol):
+            cache_key = (symbol, side)
             with _price_cache_lock:
-                entry = _price_cache.get(symbol)
+                entry = _price_cache.get(cache_key)
                 if entry is not None and (now - entry[0]) < _PRICE_CACHE_TTL:
                     return entry[1]
-            premium = _fetch_option_premium(symbol)
+            premium = _fetch_option_premium(symbol, side=side)
             if premium > 0:
                 with _price_cache_lock:
-                    _price_cache[symbol] = (now, premium)
+                    _price_cache[cache_key] = (now, premium)
                 return premium
             import logging
             logging.warning(
-                "Option-premium fetch failed for %s — leg will show "
-                "stale price", symbol,
+                "Option-premium fetch returned 0 for %s (%s) — leg "
+                "will show entry as current; market may be one-sided",
+                symbol, side,
             )
             return 0.0
         # Stock path
