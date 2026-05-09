@@ -4488,18 +4488,29 @@ def admin():
     ).fetchall()
     users = [dict(u) for u in users]
 
-    # Get actual API usage from per-profile cost ledgers
-    import glob
+    # Per-user API usage: each user's API Calls Today must reflect ONLY
+    # the profiles owned by that user. A system-wide glob would attribute
+    # every user's cost to every other user — wrong as a number and a
+    # privacy leak as soon as a second account exists.
     from ai_cost_ledger import spend_summary
-    total_calls = 0
-    total_cost = 0
-    for f in glob.glob("quantopsai_profile_*.db"):
-        s = spend_summary(f)
-        total_calls += s["today"]["calls"]
-        total_cost += s["today"]["usd"]
+    from models import get_user_profiles
     for u in users:
-        u["api_calls_today"] = total_calls
-        u["api_cost_today"] = round(total_cost, 2)
+        profiles = get_user_profiles(u["id"])
+        calls = 0
+        cost = 0.0
+        for p in profiles:
+            db_path = f"quantopsai_profile_{p['id']}.db"
+            try:
+                s = spend_summary(db_path)
+                calls += s["today"]["calls"]
+                cost += s["today"]["usd"]
+            except Exception as exc:
+                logger.warning(
+                    "admin: spend_summary failed for user=%s profile=%s db=%s: %s",
+                    u["id"], p["id"], db_path, exc,
+                )
+        u["api_calls_today"] = calls
+        u["api_cost_today"] = round(cost, 2)
 
     conn.close()
     return render_template("admin.html", users=users)

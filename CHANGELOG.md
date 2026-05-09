@@ -17,6 +17,41 @@ Rules going forward:
 
 ---
 
+## 2026-05-09 — Admin "API Calls Today" / "API Cost Today" now per-user (was system-wide aggregate stamped on every row) (Severity: high, privacy/attribution)
+
+The `/admin` route at `views.py:4491-4502` ran a system-wide
+`glob("quantopsai_profile_*.db")`, summed every profile's today-cost
+into `total_calls` / `total_cost`, then stamped the SAME totals onto
+every user row. Two problems: every number shown was the system
+aggregate (not "what this user spent today"), and the moment a second
+real user account exists the admin's spend would be shown against
+that user (and vice versa).
+
+**Why it wasn't caught:** today there's only one logged-in user
+(admin), so the value displayed *happened* to equal what the admin
+would expect to see — looked correct, was wrong. The bug was
+structural, not numerical, so a single-user prod environment
+masked it.
+
+**Fix:** loop users → `get_user_profiles(u['id'])` → sum
+`spend_summary("quantopsai_profile_<id>.db")` per profile owned by
+that user. Per-profile failures log a WARNING and contribute 0;
+the rest of the user's profiles still aggregate. No template
+change required.
+
+**Tests pinning:** `tests/test_admin_per_user_api_usage.py`:
+- `test_no_cross_user_cost_leakage` — two users, three profiles,
+  asserts each row reflects ONLY that user's profiles.
+- `test_user_with_no_profiles_shows_zero` — empty case.
+- `test_one_profile_failing_doesnt_break_others` — `spend_summary`
+  raising for one profile contributes 0; others aggregate; route
+  stays 200.
+- `test_no_system_wide_profile_glob_in_views_py` — AST guardrail:
+  no view in `views.py` may use `glob("quantopsai_profile_*.db")`
+  (allowlist exists for future legit cases — must be explicit).
+
+---
+
 ## 2026-05-09 — Aggregate /performance + /ai metrics fixed (was sampling one random profile) (Severity: critical, dashboard correctness)
 
 The `ai_predictions` raw-row aggregation block in `views.api_performance` (line 2141-2173) and `views.api_ai_dashboard` (line 3050-3082) sat OUTSIDE the `for db_path in db_paths` loop and used the leftover `db_path` value. Because `db_paths` is a `set()` (Python sets have non-deterministic iteration order), the aggregate fields below ended up reflecting whichever profile happened to be iterated last — different profile on different page loads.
