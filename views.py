@@ -2197,8 +2197,12 @@ def performance_dashboard():
         if vals:
             ai_perf[f"avg_return_on_{ptype}"] = round(sum(vals) / len(vals), 2)
 
-    # Profit factor from BUY/SELL predictions only (not HOLDs — a HOLD
-    # "loss" means the price moved but no trade was made, so no money lost)
+    # Profit factor: every prediction that resulted in a real trade.
+    # HOLD is the established no-trade sentinel (matches the convention
+    # used elsewhere; see ai_tracker.py UPPER(predicted_signal)='HOLD').
+    # We HOLD-exclude rather than IN(...)-whitelist so future signal
+    # types (SHORT, MULTILEG_OPEN, and any new strategy verb) are
+    # counted automatically — whitelisting was the 2026-05-09 bug shape.
     trade_returns = []
     for db_path in db_paths:
         try:
@@ -2206,12 +2210,16 @@ def performance_dashboard():
             rows = conn.execute(
                 "SELECT actual_return_pct FROM ai_predictions "
                 "WHERE status='resolved' AND actual_return_pct IS NOT NULL "
-                "AND predicted_signal IN ('BUY', 'SELL')"
+                "AND predicted_signal IS NOT NULL "
+                "AND UPPER(predicted_signal) != 'HOLD'"
             ).fetchall()
             conn.close()
             trade_returns.extend(r[0] for r in rows if r[0] is not None)
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.warning(
+                "performance: profit_factor query failed for %s: %s",
+                db_path, _exc,
+            )
     total_gains = sum(r for r in trade_returns if r > 0)
     total_losses_abs = abs(sum(r for r in trade_returns if r < 0))
     if total_gains > 0 and total_losses_abs > 0:
@@ -3111,6 +3119,8 @@ def ai_dashboard():
         if vals:
             ai_perf[f"avg_return_on_{ptype}"] = round(sum(vals) / len(vals), 2)
 
+    # Profit factor: HOLD-exclude (every traded signal counts).
+    # See performance_dashboard for the convention rationale.
     trade_returns = []
     for db_path in db_paths:
         try:
@@ -3118,12 +3128,16 @@ def ai_dashboard():
             rows = conn.execute(
                 "SELECT actual_return_pct FROM ai_predictions "
                 "WHERE status='resolved' AND actual_return_pct IS NOT NULL "
-                "AND predicted_signal IN ('BUY', 'SELL')"
+                "AND predicted_signal IS NOT NULL "
+                "AND UPPER(predicted_signal) != 'HOLD'"
             ).fetchall()
             conn.close()
             trade_returns.extend(r[0] for r in rows if r[0] is not None)
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.warning(
+                "ai-dashboard: profit_factor query failed for %s: %s",
+                db_path, _exc,
+            )
     total_gains = sum(r for r in trade_returns if r > 0)
     total_losses_abs = abs(sum(r for r in trade_returns if r < 0))
     if total_gains > 0 and total_losses_abs > 0:

@@ -17,6 +17,34 @@ Rules going forward:
 
 ---
 
+## 2026-05-09 — Profit factor on /performance + /ai now counts every traded signal (was BUY/SELL only; SHORT and MULTILEG_OPEN silently dropped) (Severity: high, dashboard correctness)
+
+The profit_factor query in `views.api_performance` (line 2200-2218) and `views.api_ai_dashboard` (line 3114-3130) used `predicted_signal IN ('BUY', 'SELL')` — closed-set whitelist that pre-dated the addition of SHORT (small-cap shorts profile) and MULTILEG_OPEN (every options profile). New signal types were added to the prediction recorder but the consumer query was never re-audited.
+
+**Production impact at time of fix:** across 11 prod profiles, 138 of 926 actually-traded predictions (~15%) were excluded from profit_factor. On options profiles the displayed profit_factor reflected ~10% of actual trades — essentially noise. Stock-only profiles were less affected but still dropped any SHORT positions.
+
+**Why missed:** the IN(...) was correct when only BUY/SELL existed. New signal types were added without an audit of every downstream consumer. Same lesson as the 2026-05-09 Issue 1 aggregate-loop fix: structural mistakes can persist for months without producing wrong-looking numbers — they produce too-small numbers.
+
+**Fix:** replace the whitelist with a HOLD-exclusion, matching the convention already used in `ai_tracker.py:614,620,723,730`:
+```sql
+WHERE status='resolved' AND actual_return_pct IS NOT NULL
+  AND predicted_signal IS NOT NULL
+  AND UPPER(predicted_signal) != 'HOLD'
+```
+This counts every prediction that resulted in a real trade (BUY/SELL/SHORT/MULTILEG_OPEN today, plus any future strategy verb) and excludes only the no-trade sentinel. Also upgraded silent `except: pass` to a WARNING log naming the failing db_path.
+
+**Tests pinning:** `tests/test_profit_factor_signal_inclusion.py`:
+- `test_includes_every_real_prod_signal_type` — BUY/SELL/SHORT/MULTILEG_OPEN all contribute to a hand-computed profit_factor.
+- `test_excludes_hold_case_insensitive` — `HOLD`, `hold`, `Hold` all excluded via UPPER().
+- `test_excludes_null_signal` — NULL signals can't have been trades; excluded.
+- `test_future_signal_type_included_automatically` — STRONG_BUY, STRONG_SHORT, PAIR_TRADE, EXIT, COVER all included if they ever ship; HOLD still excluded.
+- `test_no_trades_returns_none` — all-HOLD DB ⇒ profit_factor not set (no zero-divide, no misleading 0.0).
+- `test_no_predicted_signal_in_whitelist_in_views_py` — AST guardrail blocks any future regression to closed-set whitelisting in `views.py`.
+
+**User-visible behavior change:** profit_factor on dashboards will move toward truth. Direction: usually up if SHORT/MULTILEG_OPEN have been net winners (~15% of trades suddenly counted). On options profiles the change may be dramatic — by design, the displayed value was structurally wrong, not noisy.
+
+---
+
 ## 2026-05-09 — Admin "API Calls Today" / "API Cost Today" now per-user (was system-wide aggregate stamped on every row) (Severity: high, privacy/attribution)
 
 The `/admin` route at `views.py:4491-4502` ran a system-wide
