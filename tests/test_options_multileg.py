@@ -500,6 +500,68 @@ class TestExecuteMultilegStrategy:
         else:
             assert False, "Expected RuntimeError on 422 response"
 
+    def test_ai_confidence_and_reasoning_propagate_to_leg_logs(self, monkeypatch, tmp_path):
+        """Multileg leg rows must carry ai_confidence and ai_reasoning
+        from the AI proposal — without them the trades-table AI Conf
+        column shows '--' on every multileg row and the expanded
+        detail shows the spread's boilerplate thesis instead of the
+        AI's per-trade rationale."""
+        import sqlite3
+        from options_multileg import (
+            build_bull_call_spread, execute_multileg_strategy,
+        )
+
+        # Real trades-table schema so log_trade can write
+        db = str(tmp_path / "p.db")
+        conn = sqlite3.connect(db)
+        conn.execute("""
+            CREATE TABLE trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT DEFAULT (datetime('now')),
+                symbol TEXT, side TEXT, qty REAL, price REAL,
+                order_id TEXT, signal_type TEXT, strategy TEXT, reason TEXT,
+                ai_reasoning TEXT, ai_confidence REAL,
+                stop_loss REAL, take_profit REAL,
+                status TEXT DEFAULT 'open', pnl REAL,
+                decision_price REAL, fill_price REAL, slippage_pct REAL,
+                occ_symbol TEXT, option_strategy TEXT, expiry TEXT, strike REAL,
+                predicted_slippage_bps REAL, adv_at_decision REAL
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+        spec = build_bull_call_spread("AAPL", EXPIRY, 150, 160, qty=1)
+
+        def fake_post(api, payload):
+            return MagicMock(id="combo-id")
+
+        monkeypatch.setattr(
+            "options_multileg._submit_alpaca_order_raw", fake_post,
+        )
+
+        ctx = MagicMock()
+        ctx.db_path = db
+        execute_multileg_strategy(
+            MagicMock(), spec, ctx, log=True,
+            ai_confidence=83,
+            ai_reasoning="StochRSI 100 + sector momentum favors continuation",
+        )
+
+        conn = sqlite3.connect(db)
+        rows = conn.execute(
+            "SELECT ai_confidence, ai_reasoning FROM trades"
+        ).fetchall()
+        conn.close()
+        assert len(rows) == 2  # two legs
+        for conf, reason in rows:
+            assert conf == 83, (
+                f"leg ai_confidence not propagated: got {conf}"
+            )
+            assert "StochRSI" in (reason or ""), (
+                f"leg ai_reasoning not propagated: got {reason!r}"
+            )
+
     def test_force_sequential_via_use_combo_false(self, monkeypatch):
         """Setting use_combo=False bypasses the combo attempt."""
         from options_multileg import (

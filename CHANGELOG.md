@@ -17,6 +17,21 @@ Rules going forward:
 
 ---
 
+## 2026-05-08 — Multileg legs now carry AI confidence + per-trade reasoning (Severity: medium, UI completeness)
+
+User flagged: option rows on the trades dashboard show '--' in the AI Conf column (single-leg options + stock trades show the actual confidence). The expanded detail shows the spread's structural thesis ("Bullish on X, max profit at strike Y...") instead of the AI's per-trade reasoning ("StochRSI 100 + sector momentum favors continuation").
+
+Cause: `_log_strategy_legs` in `options_multileg.py` called `log_trade` without `ai_confidence`, and used `strategy.thesis` as the reasoning instead of the AI's actual rationale. Both the AI's confidence and reasoning were available on the proposal but never propagated through `execute_multileg_strategy`.
+
+**Fix:**
+- `execute_multileg_strategy` accepts `ai_confidence` and `ai_reasoning` params and forwards them to `_log_strategy_legs` (both call sites: combo + sequential).
+- `_log_strategy_legs` accepts both, passes `ai_confidence` to `log_trade`, prefers the AI's reasoning over the spread's boilerplate thesis (falls back to thesis if no AI reasoning).
+- `trade_pipeline.py` extracts `confidence` and `reasoning` from the AI proposal and passes them to `execute_multileg_strategy`.
+
+**Tests:** 1 new in `tests/test_options_multileg.py` — exercises the full MULTILEG_OPEN flow with a real journal table; asserts both legs carry the AI confidence (83%) and AI reasoning text. 2,228 pass.
+
+---
+
 ## 2026-05-08 — Option premium fetcher: use per-contract endpoint, strip OCC padding, prefer mid then last-trade (Severity: high, dashboard correctness)
 
 User flagged that every option row showed exactly 0% unrealized — meaning the price fetcher was failing on every option leg and `get_virtual_positions` was falling back to `avg_entry`. Two real bugs in `_fetch_option_premium`:

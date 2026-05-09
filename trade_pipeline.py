@@ -2105,6 +2105,8 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                             trade_result = execute_multileg_strategy(
                                 api_for_ml, spec, ctx=ctx, log=log,
                                 limit_price=ai_trade.get("limit_price"),
+                                ai_confidence=ai_trade.get("confidence"),
+                                ai_reasoning=ai_trade.get("reasoning"),
                             )
                             trade_result.setdefault("symbol", symbol)
                         except Exception as exc:

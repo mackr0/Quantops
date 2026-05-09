@@ -520,6 +520,8 @@ def execute_multileg_strategy(
     log: bool = True,
     use_combo: bool = True,
     limit_price: Optional[float] = None,
+    ai_confidence: Optional[int] = None,
+    ai_reasoning: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Execute a multi-leg option strategy atomically.
 
@@ -539,6 +541,13 @@ def execute_multileg_strategy(
         log: write trade rows to journal.
         use_combo: prefer combo-order path. False forces sequential.
         limit_price: optional NET limit price (signed: + debit, - credit).
+        ai_confidence: AI's per-trade confidence (0-100). Stamped on
+            every leg's journal row so the trades-table AI Conf column
+            is populated for multileg trades the same way it is for
+            single-leg options + stock trades.
+        ai_reasoning: AI's per-trade rationale. Stamped on every leg's
+            ai_reasoning column so the expanded trade detail shows the
+            AI's actual reasoning (not the spread's boilerplate thesis).
 
     Returns:
         {
@@ -685,7 +694,11 @@ def execute_multileg_strategy(
                 ),
             })
             if log and db_path:
-                _log_strategy_legs(strategy, combo_id, ctx, api=api)
+                _log_strategy_legs(
+                    strategy, combo_id, ctx, api=api,
+                    ai_confidence=ai_confidence,
+                    ai_reasoning=ai_reasoning,
+                )
             return result
         except Exception as exc:
             logger.warning(
@@ -768,8 +781,11 @@ def execute_multileg_strategy(
         ),
     })
     if log and db_path:
-        _log_strategy_legs(strategy, None, ctx,
-                              leg_order_ids=leg_order_ids, api=api)
+        _log_strategy_legs(
+            strategy, None, ctx,
+            leg_order_ids=leg_order_ids, api=api,
+            ai_confidence=ai_confidence, ai_reasoning=ai_reasoning,
+        )
     return result
 
 
@@ -1303,13 +1319,22 @@ def _log_strategy_legs(strategy: OptionStrategy,
                           combo_order_id: Optional[str],
                           ctx,
                           leg_order_ids: Optional[List[str]] = None,
-                          api=None) -> None:
+                          api=None,
+                          ai_confidence: Optional[int] = None,
+                          ai_reasoning: Optional[str] = None) -> None:
     """Write one journal row per leg, tagging them with the strategy
     name so the lifecycle sweep + dashboard can group them together.
 
     `signal_type=MULTILEG` and `option_strategy=<strategy.name>` make
     the legs queryable as a unit. `reason` includes the combo order id
     when available.
+
+    `ai_confidence` and `ai_reasoning` come from the AI proposal so
+    every leg row carries the same per-trade context that single-leg
+    options + stock trades carry. Without them, the trades-table AI
+    Conf column shows '--' on multileg legs and the expanded reason
+    shows the spread's boilerplate thesis instead of the AI's
+    per-trade rationale.
     """
     db_path = getattr(ctx, "db_path", None) if ctx else None
     if not db_path:
@@ -1345,6 +1370,10 @@ def _log_strategy_legs(strategy: OptionStrategy,
                     order_id, exc,
                 )
         try:
+            # Prefer the AI's per-trade reasoning when present;
+            # fall back to the spread's structural thesis so the
+            # row always carries SOMETHING explanatory.
+            row_reasoning = ai_reasoning or strategy.thesis
             log_trade(
                 symbol=leg.underlying,
                 side=leg.side,
@@ -1357,7 +1386,8 @@ def _log_strategy_legs(strategy: OptionStrategy,
                     f"{strategy.name} leg {i+1}/{len(strategy.legs)} "
                     f"(combo={combo_order_id or 'sequential'})"
                 ),
-                ai_reasoning=strategy.thesis,
+                ai_reasoning=row_reasoning,
+                ai_confidence=ai_confidence,
                 fill_price=leg_price,
                 occ_symbol=leg.occ_symbol,
                 option_strategy=strategy.name,
