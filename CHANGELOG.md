@@ -17,6 +17,27 @@ Rules going forward:
 
 ---
 
+## 2026-05-10 — Issue 14: per-user TTL cache for /api/dashboard-totals + /api/portfolio (Severity: medium, ~50% reduction in Alpaca calls)
+
+`api_dashboard_totals` and `api_portfolio` were polled every 30s by the dashboard JS. Each poll fetched `get_account_info` + `get_positions` from Alpaca PER profile. With 11 profiles, that was **22 Alpaca calls per 30-second poll = 44/min = 2,640 calls/hour per browser tab**. Multi-tab multiplied it. Account state doesn't change second-to-second; the calls were wasted.
+
+**Fix**: per-user TTL cache (`_TTL_CACHE` + `_ttl_cache_get/set` helpers in `views.py`). 30s default TTL matching the JS poll cadence. Per-call key = `(route_name, user_id, [profile_id])`.
+
+- `api_dashboard_totals` cached per `(user_id,)`. Every poll within 30s hits cache; first poll after expiration fetches fresh.
+- `api_portfolio` cached per `(user_id, profile_id)`. Multi-profile tabs dedupe.
+- **Failures NOT cached**: a 500 response leaves the cache untouched so a brief Alpaca outage doesn't cascade for 30s after recovery.
+- **Per-user keying**: user 1's cached payload never served to user 2 (privacy + correctness).
+
+**8 behavioral tests** (`tests/test_dashboard_totals_cache.py`) pin: cache hit within TTL (zero new upstream calls); past-TTL refetch (verified by mutating cached timestamp 100s into the past); failure-not-cached (retry succeeds cleanly); per-user no-leak; direct unit tests of `_ttl_cache_get/set`.
+
+**Updated** `tests/test_api_dashboard_totals.py` with an autouse `_clear_ttl_cache` fixture so cross-test cache pollution doesn't break the existing tests.
+
+**Real-world impact**: ~22 Alpaca calls per 30s → 1 cache miss per 30s window per user = **50% reduction in Alpaca calls** for the dashboard endpoints, more if user has multiple tabs open.
+
+2,603 pass.
+
+---
+
 ## 2026-05-10 — Issue 13: shared JS formatters + 2 server-side label fields + structural guardrail (Severity: medium, JS/server formatter drift)
 
 `templates/dashboard.html` had inline JS that re-implemented server-side formatters from `display_names.py`:

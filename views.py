@@ -3,7 +3,9 @@
 import json
 import logging
 import os
+import time
 from functools import wraps
+from typing import Any, Dict, Tuple
 
 from flask import (
     Blueprint, render_template, request, redirect, url_for,
@@ -4554,26 +4556,76 @@ def api_scan_status(profile_id):
     return jsonify(status if status else {"step": None})
 
 
+# ---------------------------------------------------------------------------
+# Per-user TTL cache for Alpaca-polled endpoints (Issue 14)
+# ---------------------------------------------------------------------------
+# JS auto-refresh polls /api/dashboard-totals and /api/portfolio/<id>
+# every ~30s. Without server-side caching, each poll cascades into
+# 2 Alpaca calls per profile (get_account_info + get_positions). With
+# 11 profiles, that's 22 calls per 30s = 44/min, multiplied by every
+# open browser tab. Account state doesn't change second-to-second;
+# the calls are wasted. A 30s per-(user, route, args) TTL cache
+# matches the JS poll cadence — every poll within the window hits
+# cache, the first poll after expiration fetches fresh.
+#
+# Failures are NOT cached: a 500 response or an exception leaves the
+# cache untouched so a brief Alpaca outage doesn't cascade for 30s
+# after recovery. The `_ttl_cache_set` helper enforces this.
+
+_TTL_CACHE: Dict[Tuple[Any, ...], Tuple[float, Any]] = {}
+_TTL_CACHE_DEFAULT = 30.0  # seconds
+
+
+def _ttl_cache_get(key: Tuple[Any, ...], ttl: float = _TTL_CACHE_DEFAULT):
+    """Return cached value for `key` if it's within `ttl` seconds.
+    Returns None on miss/expiration."""
+    cached = _TTL_CACHE.get(key)
+    if cached is None:
+        return None
+    if (time.time() - cached[0]) >= ttl:
+        return None
+    return cached[1]
+
+
+def _ttl_cache_set(key: Tuple[Any, ...], value: Any) -> None:
+    """Store value with current timestamp."""
+    _TTL_CACHE[key] = (time.time(), value)
+
+
 @views_bp.route("/api/portfolio/<int:profile_id>")
 @login_required
 def api_portfolio(profile_id):
-    """Return live portfolio data for a profile (positions, account info)."""
+    """Return live portfolio data for a profile (positions, account info).
+
+    Cached 30s per (user, profile) — JS polls this every 30s per
+    profile, so every-poll Alpaca calls were wasted. See Issue 14
+    deep-dive in `AUDIT_2026_05_09.md`.
+    """
     try:
         profile = get_trading_profile(profile_id)
         if not profile or profile["user_id"] != current_user.effective_user_id:
             return jsonify({"error": "not found"}), 404
 
+        cache_key = ("api_portfolio",
+                      current_user.effective_user_id, profile_id)
+        cached = _ttl_cache_get(cache_key)
+        if cached is not None:
+            return jsonify(cached)
+
         ctx = build_user_context_from_profile(profile_id)
         account = _safe_account_info(ctx)
         positions = _enriched_positions(ctx, profile_id)
         pending_orders = _safe_pending_orders(ctx)
-
-        return jsonify({
+        payload = {
             "account": account,
             "positions": positions,
             "pending_orders": pending_orders,
-        })
+        }
+        # Cache only on success (we got here without an exception).
+        _ttl_cache_set(cache_key, payload)
+        return jsonify(payload)
     except Exception as exc:
+        # Failures NOT cached; next poll retries cleanly.
         return jsonify({"error": str(exc)}), 500
 
 
@@ -4608,10 +4660,20 @@ def api_dashboard_totals():
     and 5min otherwise. Returns:
       {profiles: [{id, name, equity, cash, num_positions, cost_today}],
        total_equity, total_cash, total_positions, total_cost}
+
+    Cached 30s per user — JS polls this every 30s, so every-poll
+    Alpaca calls were wasted (11 profiles × 2 calls = 22/poll).
+    See Issue 14 deep-dive in `AUDIT_2026_05_09.md`.
     """
     from models import get_active_profiles, build_user_context_from_profile
     from ai_cost_ledger import spend_summary
     from client import get_account_info, get_positions
+
+    cache_key = ("api_dashboard_totals", current_user.effective_user_id)
+    cached = _ttl_cache_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+
     profiles = get_active_profiles(user_id=current_user.effective_user_id)
     rows = []
     total_equity = 0.0
@@ -4661,13 +4723,19 @@ def api_dashboard_totals():
                 p.get("name"), p.get("id"), exc,
             )
             continue
-    return jsonify({
+    payload = {
         "profiles": rows,
         "total_equity": total_equity,
         "total_cash": total_cash,
         "total_positions": total_positions,
         "total_cost": total_cost,
-    })
+    }
+    # Cache only on success. The endpoint never raises explicitly
+    # (per-profile failures are absorbed via the WARNING above), so
+    # we get here for any non-empty result. An empty `rows` list with
+    # no profiles configured is still a valid payload to cache.
+    _ttl_cache_set(cache_key, payload)
+    return jsonify(payload)
 
 
 @views_bp.route("/api/cycle-data/<int:profile_id>")

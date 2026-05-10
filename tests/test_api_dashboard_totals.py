@@ -46,6 +46,17 @@ def _client():
     return app.test_client()
 
 
+@pytest.fixture(autouse=True)
+def _clear_ttl_cache():
+    """Issue 14: api_dashboard_totals now caches per-user for 30s.
+    Clear the module-level cache between tests so one test's
+    mocked response doesn't leak into the next test's assertions."""
+    import views
+    views._TTL_CACHE.clear()
+    yield
+    views._TTL_CACHE.clear()
+
+
 class TestDashboardTotalsEndpoint:
     def test_endpoint_returns_200_with_real_cost_per_profile(self, monkeypatch):
         """The endpoint must return 200 + a real `cost_today` value
