@@ -293,15 +293,21 @@ def _safe_pending_orders(ctx):
             # on the site does so the JS auto-refresh path doesn't
             # have to re-implement timezone math. The Jinja filter
             # is the canonical formatter.
-            from display_names import friendly_time
+            from display_names import friendly_time, humanize
             submitted_at_friendly = (
                 friendly_time(submitted_at_iso) if submitted_at_iso else None
             )
+            # `order_type_label` pre-humanized server-side so the JS
+            # doesn't re-implement humanize() (which it used to do via
+            # a custom `humanizeJs()` function — Issue 13). Single
+            # source of truth: any new entry in display_names._DISPLAY_NAMES
+            # picks up here without a JS edit.
             out.append({
                 "symbol": o.symbol,
                 "side": o.side,
                 "qty": qty,
                 "order_type": o.order_type,
+                "order_type_label": humanize(o.order_type),
                 "limit_price": limit_price,
                 "stop_price": stop_price,
                 "trail_percent": trail_percent,
@@ -4337,7 +4343,14 @@ def admin():
 @views_bp.route("/api/activity")
 @login_required
 def api_activity():
-    """Return JSON array of activity log entries for the current user."""
+    """Return JSON array of activity log entries for the current user.
+
+    Each entry carries `timestamp_friendly` (server-rendered via
+    `friendly_time`) so the JS ticker doesn't re-implement timestamp
+    formatting — single source of truth, matches the format used in
+    server-rendered tables. Issue 13 fix.
+    """
+    from display_names import friendly_time
     profile_id = request.args.get("profile_id", type=int)
     offset = request.args.get("offset", 0, type=int)
     limit = request.args.get("limit", 10, type=int)
@@ -4345,6 +4358,8 @@ def api_activity():
 
     entries = get_activity_feed(current_user.effective_user_id, profile_id=profile_id,
                                 limit=limit, offset=offset)
+    for e in entries:
+        e["timestamp_friendly"] = friendly_time(e.get("timestamp"))
     total = get_activity_count(current_user.effective_user_id, profile_id=profile_id)
     return jsonify({"entries": entries, "total": total})
 

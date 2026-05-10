@@ -178,27 +178,28 @@
             function refresh() {
                 fetch('/api/dashboard-totals').then(function(r){return r.json();}).then(function(d){
                     if (d.error) return;
-                    var fmt0 = function(n){return '$' + Math.round(n).toLocaleString();};
-                    var fmt2 = function(n){return '$' + n.toFixed(2);};
+                    // Use shared QF.* formatters (Issue 13). Inline
+                    // `function fmt*` definitions are blocked by the
+                    // test_no_inline_js_formatters guardrail.
                     (d.profiles || []).forEach(function(p) {
                         var eqEl = document.getElementById('totals-equity-' + p.id);
                         var caEl = document.getElementById('totals-cash-' + p.id);
                         var poEl = document.getElementById('totals-positions-' + p.id);
                         var coEl = document.getElementById('totals-cost-' + p.id);
-                        if (eqEl) eqEl.innerHTML = '<strong>' + fmt0(p.equity) + '</strong>';
-                        if (caEl) caEl.textContent = fmt0(p.cash);
+                        if (eqEl) eqEl.innerHTML = '<strong>' + QF.dollars0(p.equity) + '</strong>';
+                        if (caEl) caEl.textContent = QF.dollars0(p.cash);
                         if (poEl) poEl.textContent = p.num_positions;
-                        if (coEl) coEl.textContent = fmt2(p.cost_today || 0);
+                        if (coEl) coEl.textContent = QF.dollars2(p.cost_today || 0);
                     });
                     var be = document.getElementById('totals-book-equity');
                     var bc = document.getElementById('totals-book-cash');
                     var bp = document.getElementById('totals-book-positions');
                     var bk = document.getElementById('totals-book-cost');
                     var u = document.getElementById('totals-updated');
-                    if (be) be.textContent = fmt0(d.total_equity || 0);
-                    if (bc) bc.textContent = fmt0(d.total_cash || 0);
+                    if (be) be.textContent = QF.dollars0(d.total_equity || 0);
+                    if (bc) bc.textContent = QF.dollars0(d.total_cash || 0);
                     if (bp) bp.textContent = (d.total_positions || 0);
-                    if (bk) bk.textContent = fmt2(d.total_cost || 0);
+                    if (bk) bk.textContent = QF.dollars2(d.total_cost || 0);
                     if (u) u.textContent = '— live · updated ' + new Date().toLocaleTimeString();
                 }).catch(function(){});
             }
@@ -455,21 +456,10 @@ function showDashTab(event, tabName) {
     var prevBtn = document.getElementById('ticker-prev');
     var nextBtn = document.getElementById('ticker-next');
 
-    function formatTimestamp(ts) {
-        if (!ts) return '';
-        var d = new Date(ts + 'Z');
-        var now = new Date();
-        var diff = (now - d) / 1000;
-        var timeStr = d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-        var dateStr = d.toLocaleDateString([], {month: 'short', day: 'numeric'});
-        if (diff < 3600) {
-            var mins = Math.floor(diff / 60);
-            return mins <= 1 ? 'Just now' : mins + 'm ago';
-        } else if (diff < 86400) {
-            return Math.floor(diff / 3600) + 'h ago';
-        }
-        return dateStr + ' ' + timeStr;
-    }
+    // Issue 13 fix — formatTimestamp() removed. The server now returns
+    // entry.timestamp_friendly (display_names.friendly_time) so JS no
+    // longer has to re-implement timestamp formatting. Single source of
+    // truth: matches the format used in every server-rendered table.
 
     function escapeHtml(text) {
         var div = document.createElement('div');
@@ -492,7 +482,7 @@ function showDashTab(event, tabName) {
         }
         var profileTag = entry.profile_name ? ' <span class="ticker-profile">[' + escapeHtml(entry.profile_name) + ']</span>' : '';
         contentEl.innerHTML = '<div class="ticker-entry">' +
-            '<div class="ticker-meta"><span class="ticker-timestamp muted">' + escapeHtml(formatTimestamp(entry.timestamp)) + '</span>' +
+            '<div class="ticker-meta"><span class="ticker-timestamp muted">' + escapeHtml(entry.timestamp_friendly || '') + '</span>' +
             ' <span class="ticker-badge ' + badgeClass + '">' + typeBadge + '</span>' +
             profileTag +
             (entry.symbol ? ' <span class="ticker-symbol">' + escapeHtml(entry.symbol) + '</span>' : '') + '</div>' +
@@ -617,7 +607,10 @@ function showDashTab(event, tabName) {
 <script>
 (function() {
     var profileIds = [{% for prof in profiles_data %}{{ prof.id }}{% if not loop.last %},{% endif %}{% endfor %}];
-    function fmt(n) { return '$' + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+    // Use shared QF.dollars2 (Issue 13). The previous inline `fmt`
+    // diverged from the dashboard-totals refresher's `fmt0`/`fmt2`
+    // pair — same page, different conventions. Now consistent.
+    var fmt = QF.dollars2;
     function updateProfile(pid) {
         fetch('/api/portfolio/' + pid).then(function(r){return r.json();}).then(function(data) {
             if (data.error) return;
@@ -626,10 +619,11 @@ function showDashTab(event, tabName) {
             var ptbody = document.getElementById('pending-orders-' + pid);
             if (ptbody && data.pending_orders) {
                 var phtml = '';
-                function humanizeJs(s){if(!s)return '';return String(s).split('_').map(function(p){return p.charAt(0).toUpperCase()+p.slice(1).toLowerCase();}).join(' ');}
-                // Mirror the server-render logic in templates/dashboard.html:
-                // limit -> stop_price + trail-distance hint -> trail-only ->
-                // "market" fallback. Returns the inner HTML for the price cell.
+                // Issue 13 fix — humanizeJs() removed. The server now
+                // returns o.order_type_label (display_names.humanize)
+                // so JS no longer re-implements snake_case→Title-Case.
+                // Single source of truth: any new entry in
+                // _DISPLAY_NAMES picks up here automatically.
                 function priceCell(o) {
                     if (o.limit_price != null) return fmt(o.limit_price);
                     if (o.stop_price != null) {
@@ -646,7 +640,7 @@ function showDashTab(event, tabName) {
                         return '<small class="muted">trail ' + fmt(o.trail_price) + '</small>';
                     return '<small class="muted">market</small>';
                 }
-                data.pending_orders.forEach(function(o) { phtml += '<tr><td><strong>' + o.symbol + '</strong></td><td><span class="badge badge-' + (o.side==='buy'?'buy':'sell') + '">' + o.side.toUpperCase() + '</span></td><td>' + Math.floor(o.qty) + '</td><td>' + humanizeJs(o.order_type) + '</td><td>' + priceCell(o) + '</td><td><span class="muted">' + (o.status||'').replace(/\b\w/g,function(c){return c.toUpperCase();}) + '</span></td><td class="muted">' + (o.submitted_at_friendly||o.submitted_at||'—') + '</td><td>' + (o.time_in_force||'').toUpperCase() + '</td></tr>'; });
+                data.pending_orders.forEach(function(o) { phtml += '<tr><td><strong>' + o.symbol + '</strong></td><td><span class="badge badge-' + (o.side==='buy'?'buy':'sell') + '">' + o.side.toUpperCase() + '</span></td><td>' + Math.floor(o.qty) + '</td><td>' + (o.order_type_label || o.order_type || '') + '</td><td>' + priceCell(o) + '</td><td><span class="muted">' + (o.status||'').replace(/\b\w/g,function(c){return c.toUpperCase();}) + '</span></td><td class="muted">' + (o.submitted_at_friendly||o.submitted_at||'—') + '</td><td>' + (o.time_in_force||'').toUpperCase() + '</td></tr>'; });
                 ptbody.innerHTML = phtml;
             }
         }).catch(function(){});

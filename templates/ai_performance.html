@@ -178,11 +178,9 @@
             loading.style.display = 'none';
             content.style.display = 'block';
 
-            function fmt(v, suffix) {
-                if (v === null || v === undefined) return 'N/A';
-                var s = (v >= 0 ? '+' : '') + v.toFixed(1) + suffix;
-                return s;
-            }
+            // Issue 13: shared QF.signedPct for all signed-percent
+            // values. The previous inline `function fmt(v, suffix)`
+            // was a thin wrapper around that exact format.
             function cls(v) {
                 if (v === null || v === undefined) return '';
                 return v >= 0 ? 'pnl-pos' : 'pnl-neg';
@@ -190,8 +188,13 @@
             function setCell(id, val, suffix) {
                 var el = document.getElementById(id);
                 if (!el) return;
-                var txt = fmt(val, suffix);
-                el.textContent = txt;
+                if (val === null || val === undefined) {
+                    el.textContent = 'N/A';
+                } else if (suffix === '%') {
+                    el.textContent = QF.signedPct(val, 1);
+                } else {
+                    el.textContent = (val >= 0 ? '+' : '') + val.toFixed(1) + suffix;
+                }
                 el.className = cls(val);
             }
 

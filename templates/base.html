@@ -6,6 +6,10 @@
     <title>{% block title %}QuantOpsAI{% endblock %}</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <link rel="stylesheet" href="/static/style.css?v=20260415-sortable">
+    <!-- Shared price/number formatters (Issue 13). All inline JS
+         `function fmt*` definitions in templates are blocked by the
+         test_no_inline_js_formatters guardrail; use window.QF instead. -->
+    <script src="/static/js/format.js?v=20260510"></script>
 </head>
 <body>
     <nav class="container-fluid qnav">

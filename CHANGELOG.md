@@ -17,6 +17,38 @@ Rules going forward:
 
 ---
 
+## 2026-05-10 — Issue 13: shared JS formatters + 2 server-side label fields + structural guardrail (Severity: medium, JS/server formatter drift)
+
+`templates/dashboard.html` had inline JS that re-implemented server-side formatters from `display_names.py`:
+- `function humanizeJs(s)` — duplicated `humanize()`. If anyone added a custom `_DISPLAY_NAMES` mapping, the JS silently drifted.
+- `function formatTimestamp(ts)` — custom relative+absolute time logic distinct from `friendly_time()`.
+
+Plus 4+ inconsistent inline price formatters (`fmt0` whole-dollar with commas, `fmt2` 2-decimal NO commas, another `fmt` 2-decimal WITH commas via regex, `ai_performance.html`'s signed-percent wrapper). Same page, different conventions; values inconsistent across panels.
+
+**Fix — three layers**:
+
+**1. Server-side label fields** (single source of truth for shipped values):
+- `views.py:_safe_pending_orders` now returns `order_type_label = humanize(order_type)` per order.
+- `views.py:api_activity` now returns `timestamp_friendly = friendly_time(timestamp)` per entry.
+
+**2. Shared JS helper module** (`static/js/format.js`, loaded via `base.html`):
+- `window.QF.dollars2/dollars0/signedDollars0/signedDollars2/intCommas/percent/signedPct` — consistent thousands separators, null-safe (returns `""` for null/Infinity/NaN — never the string `'undefined'`).
+- Migrated `dashboard.html` (3 inline `fmt*` definitions removed) and `ai_performance.html` (1 inline `fmt` removed) to use `QF.*`.
+
+**3. AST guardrail blocks regression** (`tests/test_no_inline_js_formatters.py`): two-layer detection.
+- Layer A — exact-name: `humanizeJs`, `formatTimestamp`, `friendlyTime`, `displayName` (and snake_case variants).
+- Layer B — prefix match: any `function fmt*` / `function format*` declared inside a `<script>` block. Per-template allowlist for the dashboard scan-countdown (mm:ss formatter, not a number formatter).
+- Strips JS comments before scanning so `function fmt(` inside a comment doesn't false-positive.
+- Verified by temporarily inserting `function fmt2(...)` → test failed → restored.
+
+**32 behavioral tests** in `tests/test_qf_format_js.py` pin every `QF.*` output via Node (skipped gracefully when Node isn't installed in CI).
+
+**User-visible change**: activity ticker now shows absolute time ("Apr 15, 3:42 PM ET") instead of relative ("5m ago"). Consistent with every server-rendered table on the dashboard. Trade-off accepted: per-second relative-time updates require client-side computation that re-introduces the duplication problem.
+
+2,595 pass.
+
+---
+
 ## 2026-05-10 — Issue 12: deleted 5 dead templates + structural orphan guardrail (Severity: medium, dead-code cleanup + future-drift prevention)
 
 5 templates were orphaned — no `render_template(...)` call and no extends/include from any other template. They drifted independently from the live `ai.html` consolidated multi-tab page they were replaced by.
