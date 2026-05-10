@@ -17,6 +17,24 @@ Rules going forward:
 
 ---
 
+## 2026-05-10 — Dashboard cache key safety: no `id(ctx)` fallback (Severity: low, test stability + correctness invariant)
+
+**Bug**: `views._safe_positions` and `_safe_account_info` keyed their 30s cache as `f"positions_{getattr(ctx, 'db_path', id(ctx))}"`. The `id(ctx)` fallback was unsafe — CPython reuses object IDs after GC. Two SimpleNamespace ctx objects created seconds apart can land at the same memory address, causing the second `_safe_positions(ctx)` call to return the FIRST ctx's cached positions within the 30s TTL window.
+
+**How it surfaced**: rare flake in `test_enriched_positions::test_short_position_gets_sell_side` under one specific pytest-randomly ordering. The test creates a SimpleNamespace ctx (no db_path), Alpaca-mocks return one short position, `_enriched_positions` calls `_safe_positions(ctx)` → cache hit on stale data from a prior test → assertion `out[0]["side"] == "sell"` fails because the cached positions were a long stock from the earlier test. Reproduced in ~1/8 random orderings.
+
+**Fix**: skip caching entirely when ctx has no `db_path`. Production ctx always has db_path (built via `build_user_context_from_profile`); the fallback only existed for defensive coding and tripped on tests. Source-level fix, not a test-only workaround.
+
+**5 new tests** (`tests/test_dashboard_cache_no_id_fallback.py`) pin:
+- `_safe_positions(ctx_without_db_path)` does NOT populate the cache.
+- `_safe_positions(ctx_with_db_path)` DOES populate it under the db_path-derived key (production behavior preserved).
+- Two SimpleNamespace ctxs with different positions each get their own back, never the other's.
+- Same invariants for `_safe_account_info`.
+
+2,638 pass (was 2,633, +5).
+
+---
+
 ## 2026-05-10 — Auto-exit confidence propagation + combo-path 5xx retry (Severity: medium, narrative + reliability)
 
 **Two coordinated improvements** to close the multileg-orphan investigation cleanly:

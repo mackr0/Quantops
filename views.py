@@ -95,16 +95,28 @@ _DASHBOARD_CACHE_TTL = 30  # seconds — dashboard auto-refreshes every 15s
 
 
 def _safe_account_info(ctx):
-    """Fetch account info with 30s cache for dashboard."""
+    """Fetch account info with 30s cache for dashboard.
+
+    Cache is keyed on `ctx.db_path` (the only stable identifier for a
+    profile across requests). Skips caching entirely when db_path is
+    missing — using `id(ctx)` as fallback was unsafe because CPython
+    reuses object IDs after GC, causing rare cross-test pollution
+    when a fresh ctx happened to land at a recently-freed address
+    within the 30s TTL window (caught 2026-05-10 via flake in
+    test_enriched_positions::test_short_position_gets_sell_side).
+    """
     import time
-    cache_key = f"account_{getattr(ctx, 'db_path', id(ctx))}"
-    cached = _dashboard_cache.get(cache_key)
-    if cached and (time.time() - cached[0]) < _DASHBOARD_CACHE_TTL:
-        return cached[1]
+    db_path = getattr(ctx, "db_path", None)
+    if db_path:
+        cache_key = f"account_{db_path}"
+        cached = _dashboard_cache.get(cache_key)
+        if cached and (time.time() - cached[0]) < _DASHBOARD_CACHE_TTL:
+            return cached[1]
     try:
         from client import get_account_info
         result = get_account_info(ctx=ctx)
-        _dashboard_cache[cache_key] = (time.time(), result)
+        if db_path:
+            _dashboard_cache[f"account_{db_path}"] = (time.time(), result)
         return result
     except Exception as exc:
         logger.warning("Could not fetch account for %s: %s", ctx.display_name or ctx.segment, exc)
@@ -112,16 +124,25 @@ def _safe_account_info(ctx):
 
 
 def _safe_positions(ctx):
-    """Fetch positions with 30s cache for dashboard."""
+    """Fetch positions with 30s cache for dashboard.
+
+    Cache is keyed on `ctx.db_path` (the only stable identifier for a
+    profile across requests). Skips caching entirely when db_path is
+    missing — see `_safe_account_info` docstring for the id(ctx)
+    pollution incident.
+    """
     import time
-    cache_key = f"positions_{getattr(ctx, 'db_path', id(ctx))}"
-    cached = _dashboard_cache.get(cache_key)
-    if cached and (time.time() - cached[0]) < _DASHBOARD_CACHE_TTL:
-        return cached[1]
+    db_path = getattr(ctx, "db_path", None)
+    if db_path:
+        cache_key = f"positions_{db_path}"
+        cached = _dashboard_cache.get(cache_key)
+        if cached and (time.time() - cached[0]) < _DASHBOARD_CACHE_TTL:
+            return cached[1]
     try:
         from client import get_positions
         result = get_positions(ctx=ctx)
-        _dashboard_cache[cache_key] = (time.time(), result)
+        if db_path:
+            _dashboard_cache[f"positions_{db_path}"] = (time.time(), result)
         return result
     except Exception as exc:
         logger.warning("Could not fetch positions for %s: %s", ctx.display_name or ctx.segment, exc)
