@@ -84,6 +84,8 @@ INTERNAL_VALUE_FIELDS = {
     "trigger",                 # cooldown / wash_cooldown / blacklist / etc.
     "intent",                  # buy_to_open / sell_to_open / etc.
     "position_intent",         # same
+    "error_code",              # insufficient_data / etc. — JS switch value
+                                # paired with `error` (human message)
 }
 
 

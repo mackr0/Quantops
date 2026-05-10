@@ -161,10 +161,12 @@
             var errorDiv = document.getElementById('bvr-error');
 
             if (data.error) {
-                if (data.error === 'insufficient_data') {
-                    // Not enough data -- don't show the section at all
-                    return;
-                }
+                // Always render the section so the user knows it
+                // exists — never silently hide. The human-readable
+                // error message ('Need at least 5 closed trades...')
+                // tells the user what they need for the panel to
+                // populate, instead of leaving them wondering whether
+                // the section was removed or never existed.
                 section.style.display = 'block';
                 loading.style.display = 'none';
                 errorDiv.style.display = 'block';

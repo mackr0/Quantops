@@ -47,20 +47,32 @@ def _get_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
 def open_profile_db(db_path: str) -> sqlite3.Connection:
     """The single authorized way for views.py to open a per-profile DB.
 
-    Combines:
-      - WAL + busy_timeout (so concurrent scheduler writes don't error
-        out reads),
-      - schema migration via init_tracker_db (so a never-written-to
-        profile DB still has the ai_predictions table the dashboard
-        reads),
-      - row_factory=Row.
+    Ensures the connection is ready to read every column the dashboard
+    code references. Three migrations run idempotently:
+
+      - ai_tracker.init_tracker_db: CREATE TABLE IF NOT EXISTS
+        ai_predictions with the legacy column set.
+      - journal.init_db: CREATE TABLE IF NOT EXISTS trades + run
+        journal._migrate_columns which ALTER-ADD-COLUMNs every
+        column added since the original schema (regime_at_prediction,
+        strategy_type, features_json, days_held, prediction_type on
+        ai_predictions; the slippage / option / protective-stop set
+        on trades). Without this, a never-written-to or pre-migration
+        profile DB throws "no such column" on dashboard reads — the
+        exact failure mode the silent-pass swallows in views.py used
+        to hide.
+
+    PRAGMAs (WAL + busy_timeout=5000) eliminate the transient-lock
+    failure mode on the read connection.
 
     Use this everywhere views.py would otherwise call sqlite3.connect()
-    directly. It's the foundation for eliminating the silent-pass
-    swallows: with this helper, the failure modes the swallows were
-    catching can no longer occur."""
+    directly. It is the foundation for eliminating the silent-pass
+    swallows: with this helper the failure modes the swallows were
+    catching can no longer occur on a healthy DB."""
     from ai_tracker import init_tracker_db
-    init_tracker_db(db_path)  # idempotent CREATE TABLE IF NOT EXISTS
+    from journal import init_db as init_journal_db
+    init_tracker_db(db_path)        # CREATE TABLE ai_predictions
+    init_journal_db(db_path)        # CREATE TABLE trades + ALTER ADD COLUMN migrations
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
