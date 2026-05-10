@@ -262,15 +262,43 @@ class TestPageRendersTranslateRawIds:
             ],
             "num_positions": 5,
         }]
+        # Specialist veto_stats — seed-data must include the snake_case
+        # names that get displayed in the Veto Activity table. If this
+        # fixture didn't include them, the panel would never render in
+        # the test env and the snake-case scanner would miss any leak
+        # there. Discovered 2026-05-10 — `pattern_recognizer` etc. were
+        # leaking into the AI Operations page because the test never
+        # rendered the Veto Activity panel.
+        veto_stats_sample = {
+            "window_days": 7,
+            "total_vetoes_effective": 0,
+            "total_vetoes_claimed": 60,
+            "by_specialist": [
+                {"name": "pattern_recognizer", "total": 718, "vetoes": 54,
+                 "veto_rate_pct": 7.5, "has_authority": False},
+                {"name": "sentiment_narrative", "total": 772, "vetoes": 6,
+                 "veto_rate_pct": 0.8, "has_authority": False},
+                {"name": "adversarial_reviewer", "total": 1320, "vetoes": 0,
+                 "veto_rate_pct": 0.0, "has_authority": True},
+                {"name": "earnings_analyst", "total": 508, "vetoes": 0,
+                 "veto_rate_pct": 0.0, "has_authority": False},
+                {"name": "risk_assessor", "total": 1249, "vetoes": 0,
+                 "veto_rate_pct": 0.0, "has_authority": True},
+            ],
+        }
         # Patch only the per-page awareness builders (so the panels
         # under test get the seed shapes the templates expect).
-        # Everything else uses the real seeded DB.
+        # Everything else uses the real seeded DB. Also patch the
+        # journal helper that ai_dashboard calls for veto_stats so the
+        # Veto Activity panel renders.
         patches = [
             patch("flask_login.utils._get_user", return_value=user_obj),
             patch("views._build_portfolio_risk_awareness",
                    return_value=portfolio_risk_sample),
             patch("views._build_long_short_awareness",
                    return_value=long_short_sample),
+            patch("journal.get_specialist_veto_stats",
+                   return_value=veto_stats_sample),
         ]
         for p in patches:
             p.start()
@@ -316,4 +344,95 @@ class TestPageRendersTranslateRawIds:
             f"    template, or\n"
             f"  - If the ID is a legitimate body-text word, add it to\n"
             f"    AMBIGUOUS_IDS."
+        )
+
+
+# ---------------------------------------------------------------------------
+# WIDE-COVERAGE: any snake_case in rendered visible text
+# ---------------------------------------------------------------------------
+
+# Snake_case substrings legitimately allowed in visible text (technical
+# terms, code references in tooltips, file paths in error contexts,
+# brand/code names that happen to look like snake_case, etc.).
+#
+# This list MUST grow over time but every entry needs justification.
+# Adding a snake_case identifier from a NEW data source SHOULD NOT be
+# the way to fix a leak — fix the leak with `| humanize` first.
+SNAKE_CASE_VISIBLE_ALLOWLIST = {
+    # File paths shown in operator tooltips/explanations
+    "ai_predictions",       # "the ai_predictions table" referenced in operator-facing copy
+    "trading_profiles",     # ditto
+    "task_runs",            # operator-facing reference to task table
+    "decision_log",         # historical reference (table being deleted)
+    "activity_log",         # operator-facing reference
+    "daily_snapshots",      # ditto
+    # Technical/financial terms with underscores in operator copy
+    "max_pain",             # options term
+    "open_interest",        # options term
+    "iv_rank",              # vol metric
+    "win_rate",             # tooltip language
+    "stop_loss",            # parameter language
+    "take_profit",          # parameter language
+    "ai_confidence",        # column header explanation
+    "long_only",            # state label rendered as "long-only"
+    # Common humanized-snake outputs that still contain underscores
+    # because humanize() preserves them inside the title-cased token
+    # (e.g., "Active" / "Pending review" — these are post-humanize words
+    # so they wouldn't match the regex anyway; not allowlisted unless seen)
+    # Period/window labels
+    "first_friday",
+    "last_friday",
+}
+
+# Tokens that LOOK like snake_case in visible text but are real identifiers
+# people refer to verbatim — symbol names, model IDs, etc.
+SNAKE_CASE_PATTERN = re.compile(
+    r"\b([a-z][a-z0-9]*(?:_[a-z][a-z0-9]+){1,5})\b"
+)
+
+
+@pytest.fixture
+def seeded_app(_seeded_db_and_user):
+    """Reuse the seeded DB + user fixture that already exists on
+    TestPageRendersTranslateRawIds. The fixture above (autouse on the
+    class) doesn't help out-of-class, so we declare a thin wrapper."""
+    yield
+
+
+class TestNoArbitrarySnakeCaseInVisibleText:
+    """Stronger version of the per-id-family check — scans rendered
+    HTML for ANY snake_case-looking token in visible text. New leaks
+    from data sources we haven't enumerated yet (e.g., specialist
+    names, future identifier families) fail this test by default."""
+
+    # Inherit the seeded fixture that the class above sets up.
+    _seeded_db_and_user = TestPageRendersTranslateRawIds._seeded_db_and_user
+
+    @pytest.mark.parametrize("route", ["/ai", "/performance", "/dashboard"])
+    def test_no_unexplained_snake_case_in_visible_text(self, route):
+        client, _ = _logged_in_client()
+        resp = client.get(route)
+        assert resp.status_code == 200, resp.data[:300]
+
+        text = _strip_html_to_visible_text(
+            resp.data.decode("utf-8", "ignore")
+        )
+
+        # Find every snake_case-looking token in visible text
+        matches = set(SNAKE_CASE_PATTERN.findall(text))
+        # Drop allowlisted ones
+        leaks = sorted(matches - SNAKE_CASE_VISIBLE_ALLOWLIST)
+
+        assert not leaks, (
+            f"{route} rendered VISIBLE text contains raw snake_case "
+            f"tokens that should be humanized:\n"
+            f"  {leaks}\n\n"
+            f"Each of these is shown to the user as e.g. "
+            f"'pattern_recognizer' instead of 'Pattern Recognizer'. "
+            f"Pipe the value through `| humanize` in the template, "
+            f"or resolve to a human label server-side. "
+            f"If a token is intentionally shown verbatim (e.g., a "
+            f"file path or technical term), add it to "
+            f"SNAKE_CASE_VISIBLE_ALLOWLIST in this test with a "
+            f"comment explaining why."
         )

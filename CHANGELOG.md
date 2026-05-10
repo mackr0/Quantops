@@ -17,6 +17,29 @@ Rules going forward:
 
 ---
 
+## 2026-05-10 — Specialist names leaking on /ai (pattern_recognizer / risk_assessor / etc.) — fix + structural test gap closed (Severity: high, multiple narrow tests missed it)
+
+User caught raw snake_case rendering in the Veto Activity table on the AI Operations page: `pattern_recognizer`, `sentiment_narrative`, `adversarial_reviewer`, `earnings_analyst`, `risk_assessor`. Despite **3 separate snake-case-in-UI tests** existing, none caught it.
+
+**Root cause of the test gap (not just the leak)**: every existing snake-case test is scoped to a specific enumerated family:
+1. `test_page_visible_text_has_no_raw_ids` — checks 3 hand-listed identifier families (sectors, factors, scenarios)
+2. `test_no_raw_render_of_dynamic_snake_case_fields` (added Issue 5 today) — closed allowlist of dynamic field names (decision_type, ai_signal, market_type, etc.)
+3. `test_no_snake_case_string_values_in_user_facing_fields` — checks API responses for snake_case in named field positions
+
+Specialist names aren't in any of those lists, so all 3 tests passed while the leak shipped to prod. I had repeatedly told the user that snake-case-in-UI was "100% impossible" — false; the tests catch what they were scoped to catch and nothing else.
+
+**Fix:**
+- `templates/ai.html:1211` — added `| humanize` to `{{ s.name }}` in the Veto Activity table.
+- Test fixture `tests/test_no_snake_case_in_user_facing_ids.py` extended with seed data for `journal.get_specialist_veto_stats` so the Veto Activity panel actually renders during tests.
+- **NEW wide-coverage test**: `TestNoArbitrarySnakeCaseInVisibleText` — scans rendered visible text on /ai, /performance, /dashboard for ANY `\b[a-z]+(_[a-z]+)+\b` token. Anything not in `SNAKE_CASE_VISIBLE_ALLOWLIST` (currently 18 documented entries — table names referenced in operator copy, options/financial terms with underscores) fails the test. New identifier families now fail by default; developer must EITHER humanize OR explicitly allowlist with a comment.
+- Verified the new test catches the original bug: temporarily reverted the humanize fix → test failed listing all 5 leaking specialist names → re-applied fix → test passes.
+
+**Lesson recorded as a memory rule** (`feedback_test_for_the_class_not_the_instance.md`): test for the structural pattern (regex / AST shape), not enumerated known cases. The fix that should have existed from the start: scan rendered HTML for the pattern, not specific known values. New leaks fail by default.
+
+2,558 pass.
+
+---
+
 ## 2026-05-10 — Issue 10: 4 stale comments fixed; deleted DOA `fetch_news_yfinance` alias (Severity: low, doc accuracy + dead-alias removal)
 
 Audit caught 4 comments in `mc_backtest.py`, `alternative_data.py`, `news_sentiment.py`, `slippage_model.py` whose claims contradict the actual shipped code:

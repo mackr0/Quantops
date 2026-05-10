@@ -1208,7 +1208,7 @@
                 <tbody>
                     {% for s in ensemble_info.veto_stats.by_specialist %}
                     <tr>
-                        <td style="font-family:monospace;">{{ s.name }}</td>
+                        <td>{{ s.name | humanize }}</td>
                         <td style="text-align:right;">{{ s.total }}</td>
                         <td style="text-align:right;">{{ s.vetoes }}</td>
                         <td style="text-align:right;">{{ s.veto_rate_pct }}%</td>
