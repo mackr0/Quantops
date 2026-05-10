@@ -17,6 +17,34 @@ Rules going forward:
 
 ---
 
+## 2026-05-10 — Issue 11: OPEN_ITEMS.md §10 line refs + statuses synced with source; structural drift guardrail added (Severity: medium, doc-vs-code drift erodes trust)
+
+OPEN_ITEMS.md §10 had 9 `<file>:<line>` references to "deferred" / "future enhancement" comments in source. After Issues 6, 7, 10 rewrote/removed several of those comments, the OPEN_ITEMS entries went stale: line numbers drifted (e.g., `multi_scheduler.py:1196` no longer has any related content; `slippage_model.py:197` is a `notional = qty * dp` line); status remained ⏳ OPEN for items that had actually shipped.
+
+**Audited every `file:line` reference and corrected:**
+- `mc_backtest.py:25` (3 refs across §1.2, §10, §11) → ✅ DONE — `bootstrap_mode='by_day'` is the default, shipped 2026-05-03; module docstring rewritten in Issue 10.
+- `alternative_data.py:1928` → ✅ DONE — App Store WoW logic implemented at L2018-2096 (`_get_wow_change`, "Item 2 of OPEN_ITEMS").
+- `multi_scheduler.py:1196` → ✅ DONE — comment removed in Issue 6; line ref updated to point at the new `_compute_sector_moves` (L1257) / `_compute_halted_held_symbols` (L1284) helpers.
+- `options_earnings_plays.py:25` → ✅ DONE per Issue 7 (already marked).
+- `options_roll_manager.py:32` → ✅ DONE — per-profile tunable knobs shipped; comment at L32-34 confirms ("OPEN_ITEMS #10 — these are now per-profile tunable knobs").
+- `slippage_model.py:165` → ✅ DONE per Issue 10 — comment rewritten to describe `adv_at_decision` usage.
+- `slippage_model.py:197` → 🔒 DEFERRED, line moved to `:42` (the "fills will deviate; recalibrate after going live" concept now lives in the module docstring).
+- `ai_analyst.py:640` → ⏳ OPEN (verified correct).
+- `short_borrow.py:3` → ⏳ OPEN (verified correct).
+
+**NEW structural guardrail** (`tests/test_open_items_refs_match_source.py`, 3 tests):
+1. Every `<file>:<line>` ref in OPEN_ITEMS.md must resolve to an existing file with a valid line number.
+2. For ⏳ OPEN entries with `"quoted source snippets"`, the quote MUST appear in the source — if it doesn't, the work shipped, mark it DONE.
+3. For ✅ DONE entries quoting deferred-prose ("deferred", "future enhancement", "we don't", etc.), the quote MUST NOT appear in source — if it still does, the comment wasn't actually rewritten.
+
+Verified by temporarily flipping one DONE entry to ⏳ OPEN; test failed listing the inconsistency; restored.
+
+Memory rule applied (`feedback_test_for_the_class_not_the_instance`): the test scans the structural pattern (every file:line ref), not enumerated known entries. Future doc-vs-code drift fails the build automatically.
+
+2,561 pass.
+
+---
+
 ## 2026-05-10 — Specialist names leaking on /ai (pattern_recognizer / risk_assessor / etc.) — fix + structural test gap closed (Severity: high, multiple narrow tests missed it)
 
 User caught raw snake_case rendering in the Veto Activity table on the AI Operations page: `pattern_recognizer`, `sentiment_narrative`, `adversarial_reviewer`, `earnings_analyst`, `risk_assessor`. Despite **3 separate snake-case-in-UI tests** existing, none caught it.

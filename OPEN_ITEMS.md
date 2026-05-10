@@ -61,9 +61,9 @@ When something here moves to ✅, update the entry with the commit + date. When 
 | Realistic slippage model (`slippage_model.py`) | ✅ DONE |
 | Monte Carlo backtest with bootstrap (`mc_backtest.py`) | ✅ DONE |
 | Per-strategy MC tiles | ✅ DONE 2026-05-03 |
-| **MC bootstrap by-day not by-trade** | ⏳ OPEN | Currently IID per trade; doesn't capture correlated regimes (full day of wide spreads). Code limit documented in `mc_backtest.py:25`. |
-| **ADV-at-trade-time storage** | ⏳ OPEN | Slippage K calibration uses a coarse `$50M default ADV`. Add `adv_at_decision` column to trades + capture at submit. Calibration becomes much more accurate. |
-| **Slippage model recalibration after real money** | 🔒 DEFERRED | K is currently fitted from paper fills; rerun after 30+ days live. |
+| **MC bootstrap by-day not by-trade** | ✅ DONE 2026-05-03 | `bootstrap_mode='by_day'` is the default at `mc_backtest.py:128`; samples one slippage realization per day so correlated regimes (full day of wide spreads) are captured. `per_trade` mode kept as a legacy baseline. |
+| **ADV-at-trade-time storage** | ✅ DONE | `adv_at_decision` column captured at order submit; calibrator at `slippage_model.py:163-204` uses real participation rate (`qty / adv_shares`) instead of the coarse $50M proxy. Legacy rows pre-dating the column fall back to the proxy. |
+| **Slippage model recalibration after real money** | 🔒 DEFERRED | K is currently fitted from paper fills (see `slippage_model.py:42` docstring); rerun after 30+ days live. |
 
 ---
 
@@ -189,13 +189,13 @@ Out-of-scope (per plan §7): multi-exchange expansion, corporate-action awarenes
 | File:line | Item | Status |
 |---|---|---|
 | `ai_analyst.py:640` | "the AI to propose with action='OPTIONS' (deferred to follow-up)" | ⏳ OPEN — surface vocabulary for AI to propose options trades directly |
-| `alternative_data.py:1928` | App Store WoW rank change — "leave None — future enhancement when daily snapshots persist" | ⏳ OPEN — covered above in §1.1 |
-| `mc_backtest.py:25` | "correlated regimes... To capture those, we'd need to bootstrap by day, not by trade — future enhancement" | ⏳ OPEN — covered above in §1.2 |
-| `multi_scheduler.py:1196` | "sector_moves + halted_held_symbols deferred" | ✅ DONE 2026-05-09 — both wired via `_compute_sector_moves` + `_compute_halted_held_symbols`; AST guardrail in `tests/test_intraday_risk_full_wiring.py` enforces all kwargs are passed |
-| `options_earnings_plays.py:25` | "with index ETFs (SPY/QQQ); deferred until macro-event tracker exists" | ✅ DONE 2026-05-09 — comment rewritten to point at the macro analog (`macro_event_tracker.render_macro_play_recommendation_for_prompt`) which is now wired in trade_pipeline + ai_analyst |
-| `options_roll_manager.py:32` | "Roll-window thresholds. Tunable per-profile in a future commit." | ⏳ OPEN — currently module constants, would benefit from per-profile knobs |
-| `slippage_model.py:165` | "We don't store ADV at trade time, so use a simple proxy" | ⏳ OPEN — covered above in §1.2 |
-| `slippage_model.py:197` | "K is currently fitted from paper fills" | 🔒 DEFERRED — recalibrate after real money |
+| `alternative_data.py` (App Store WoW) | Earlier "leave None — future enhancement when daily snapshots persist" | ✅ DONE — WoW logic implemented at `alternative_data.py:2018-2096` (`_get_wow_change`, "Item 2 of OPEN_ITEMS — WoW change vs 7 days ago") |
+| `mc_backtest.py` (by-day bootstrap) | Earlier "future enhancement" framing | ✅ DONE 2026-05-03 — `bootstrap_mode='by_day'` is the default (line 128); module docstring rewritten in Issue 10 (commit `47de74d`) |
+| `multi_scheduler.py:1257-1284` | Earlier `multi_scheduler.py:1196` "sector_moves + halted_held_symbols deferred" | ✅ DONE 2026-05-09 — comment removed; `_compute_sector_moves` (L1257) + `_compute_halted_held_symbols` (L1284) wired into the intraday risk check; AST guardrail in `tests/test_intraday_risk_full_wiring.py` enforces all kwargs are passed |
+| `options_earnings_plays.py:24-26` | Earlier `:25` "with index ETFs (SPY/QQQ); deferred until macro-event tracker exists" | ✅ DONE 2026-05-09 — comment rewritten to point at the macro analog (`macro_event_tracker.render_macro_play_recommendation_for_prompt`) which is wired in trade_pipeline + ai_analyst |
+| `options_roll_manager.py:31-34` | Earlier "Roll-window thresholds. Tunable per-profile in a future commit." | ✅ DONE — comment now reads "these are now per-profile tunable knobs (UserContext fields, settings UI). Module constants stay as fallbacks when a function is called without ctx." |
+| `slippage_model.py:163-168` | Earlier `:165` "We don't store ADV at trade time, so use a simple proxy" | ✅ DONE 2026-05-10 — comment rewritten in Issue 10 (commit `47de74d`) to describe actual behavior (`adv_at_decision` IS stored and used; legacy rows fall back to the $50M ADV proxy) |
+| `slippage_model.py:42` | Earlier `:197` "K is currently fitted from paper fills" — text now lives in module docstring at L42: "fills will deviate; the calibrator should be re-run after going [live]" | 🔒 DEFERRED — recalibrate after real money. Concept unchanged; only the line moved. |
 | `short_borrow.py:3` | "DYNAMIC_UNIVERSE_PLAN.md / TECHNICAL_DOCUMENTATION.md §15 deferred" | ⏳ OPEN — short borrow rate tracking infrastructure (currently uses Alpaca's binary `easy_to_borrow` flag only) |
 
 ---
@@ -211,8 +211,8 @@ These are NOT bugs; they're scope constraints surfaced in code comments. They sh
 | Stress scenarios miss cross-asset risk | `risk_stress_scenarios.py` | No rates / FX / commodities in factor set yet. 2022-style rate shocks under-report. |
 | 1987 / dot-com scenarios use French only | `risk_stress_scenarios.py` | Sector ETFs didn't exist; sector-tilt P&L flagged as "approximation_quality: low" or "medium". |
 | Long-vol hedge: SPY puts hedge BETA, not idio | `long_vol_hedge.py` | Concentrated single-name books still bleed even if SPY rallies. |
-| Slippage MC: IID per trade | `mc_backtest.py:25` | Doesn't capture full-day-wide-spread regime correlation. |
-| Slippage K calibrated from paper | `slippage_model.py:197` | Real-money fills will deviate. |
+| Slippage MC IID per trade — RESOLVED via `bootstrap_mode='by_day'` (default) at `mc_backtest.py:128` | — | Kept here as a historical limit note; the per_trade mode is preserved as a legacy baseline. |
+| Slippage K calibrated from paper | `slippage_model.py:42` | Real-money fills will deviate. K refit deferred until 30+ days live. |
 
 ---
 
