@@ -22,6 +22,13 @@ from models import (
     build_user_context_from_profile, MARKET_TYPE_NAMES,
     # Activity log
     get_activity_feed, get_activity_count,
+    # DB helpers — open_profile_db is the SINGLE authorized way to open
+    # a per-profile DB from views.py. Includes WAL + busy_timeout=5000
+    # + idempotent schema migration (init_tracker_db). Eliminates the
+    # transient-lock and schema-drift failure modes that the silent-
+    # pass swallows in views.py were protecting against. _get_conn is
+    # the master-DB equivalent (also WAL + busy_timeout + FK on).
+    open_profile_db, _get_conn as _get_main_db_conn,
 )
 from segments import SEGMENTS, get_segment
 from crypto import decrypt, encrypt
@@ -105,10 +112,8 @@ def _enriched_positions(ctx, profile_id):
 
     trade_meta = {}
     try:
-        import sqlite3
         db_path = f"quantopsai_profile_{profile_id}.db"
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
+        conn = open_profile_db(db_path)
         rows = conn.execute(
             "SELECT * FROM trades "
             # log_trade writes side='short' for new short positions, not
@@ -284,10 +289,8 @@ def _safe_pending_orders(ctx):
 def _get_trade_history_for_profile(profile_id, limit=100):
     """Get trade history from the profile's journal DB."""
     try:
-        import sqlite3
         db_path = f"quantopsai_profile_{profile_id}.db"
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
+        conn = open_profile_db(db_path)
         rows = conn.execute(
             "SELECT * FROM trades ORDER BY timestamp DESC LIMIT ?",
             (limit,),
@@ -506,9 +509,7 @@ def dashboard():
             next_scan_text = ""
             if active:
                 try:
-                    import sqlite3 as _sq_sched
-                    import time as _time_sched
-                    _c = _sq_sched.connect(ctx.db_path)
+                    _c = open_profile_db(ctx.db_path)
                     row = _c.execute(
                         "SELECT started_at FROM task_runs "
                         "WHERE task_name LIKE '%Scan%' AND status IN ('completed','failed') "
@@ -758,11 +759,11 @@ def test_keys():
 # ---------------------------------------------------------------------------
 
 def _get_main_conn():
-    """Get a connection to the main quantopsai.db (not per-profile)."""
-    import sqlite3
-    conn = sqlite3.connect("quantopsai.db")
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Get a connection to the main quantopsai.db (not per-profile).
+    Uses models._get_conn so the master-DB connection inherits the
+    same WAL + busy_timeout + foreign_keys PRAGMAs every other
+    connection in the codebase uses."""
+    return _get_main_db_conn()
 
 
 @views_bp.route("/settings/alpaca-accounts", methods=["POST"])
@@ -1338,8 +1339,7 @@ def _calculate_risk_metrics(db_paths):
 
     for db_path in db_paths:
         try:
-            conn = sqlite3.connect(db_path)
-            conn.row_factory = sqlite3.Row
+            conn = open_profile_db(db_path)
             rows = conn.execute(
                 "SELECT timestamp, symbol, pnl, price, qty "
                 "FROM trades WHERE pnl IS NOT NULL "
@@ -1662,8 +1662,7 @@ def ai_performance_legacy():
 
         # Query raw resolved predictions for accurate aggregation
         try:
-            conn = sqlite3.connect(db_path)
-            conn.row_factory = sqlite3.Row
+            conn = open_profile_db(db_path)
             rows = conn.execute(
                 "SELECT predicted_signal, actual_outcome, actual_return_pct, confidence "
                 "FROM ai_predictions WHERE status = 'resolved'"
@@ -1773,8 +1772,7 @@ def ai_performance_legacy():
         total_slip_count = 0
         for db_path in db_paths:
             try:
-                c = sqlite3.connect(db_path)
-                c.row_factory = sqlite3.Row
+                c = open_profile_db(db_path)
                 r = c.execute(
                     "SELECT COUNT(*) AS cnt, SUM(slippage_pct) AS s "
                     "FROM trades WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL "
@@ -1884,8 +1882,7 @@ def performance_dashboard():
             trades = []
             latest_eq = p.get("initial_capital") or 0
             try:
-                conn = _sqlite3.connect(db_path)
-                conn.row_factory = _sqlite3.Row
+                conn = open_profile_db(db_path)
                 trade_rows = conn.execute(
                     "SELECT timestamp, symbol, side, qty, price, pnl, "
                     "decision_price, fill_price, slippage_pct "
@@ -2091,8 +2088,7 @@ def performance_dashboard():
             # `db_path` (set iteration → non-deterministic) so the
             # aggregate metrics reflected one random profile's data.
             try:
-                conn = _sqlite3.connect(db_path)
-                conn.row_factory = _sqlite3.Row
+                conn = open_profile_db(db_path)
                 rows = conn.execute(
                     "SELECT predicted_signal, actual_outcome, actual_return_pct, "
                     "confidence, prediction_type "
@@ -2164,7 +2160,7 @@ def performance_dashboard():
     trade_returns = []
     for db_path in db_paths:
         try:
-            conn = _sqlite3.connect(db_path)
+            conn = open_profile_db(db_path)
             rows = conn.execute(
                 "SELECT actual_return_pct FROM ai_predictions "
                 "WHERE status='resolved' AND actual_return_pct IS NOT NULL "
@@ -2450,7 +2446,7 @@ def performance_dashboard():
             # Distinct strategy types this profile has recorded predictions for
             strat_types = []
             try:
-                c = _sq3.connect(db)
+                c = open_profile_db(db)
                 rows = c.execute(
                     "SELECT DISTINCT strategy_type FROM ai_predictions "
                     "WHERE strategy_type IS NOT NULL AND strategy_type != '' "
@@ -2908,8 +2904,7 @@ def ai_dashboard():
             # every profile, not just one. See views.api_performance
             # for the matching fix and the 2026-05-09 root-cause note.
             try:
-                conn = _sqlite3.connect(db_path)
-                conn.row_factory = _sqlite3.Row
+                conn = open_profile_db(db_path)
                 rows = conn.execute(
                     "SELECT predicted_signal, actual_outcome, actual_return_pct, "
                     "confidence, prediction_type "
@@ -2977,7 +2972,7 @@ def ai_dashboard():
     trade_returns = []
     for db_path in db_paths:
         try:
-            conn = _sqlite3.connect(db_path)
+            conn = open_profile_db(db_path)
             rows = conn.execute(
                 "SELECT actual_return_pct FROM ai_predictions "
                 "WHERE status='resolved' AND actual_return_pct IS NOT NULL "
@@ -3345,7 +3340,7 @@ def ai_dashboard():
                 continue
             strat_types = []
             try:
-                c = _sq3.connect(db)
+                c = open_profile_db(db)
                 rows = c.execute(
                     "SELECT DISTINCT strategy_type FROM ai_predictions "
                     "WHERE strategy_type IS NOT NULL AND strategy_type != '' "
@@ -3536,8 +3531,7 @@ def api_backtest_vs_reality(profile_id):
     # --- Actual trade results (last 30 days) ---
     thirty_days_ago = (datetime.utcnow() - timedelta(days=30)).isoformat()
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
+        conn = open_profile_db(db_path)
 
         actual_trades = conn.execute(
             "SELECT * FROM trades WHERE pnl IS NOT NULL AND timestamp >= ? "
@@ -3600,8 +3594,7 @@ def api_backtest_vs_reality(profile_id):
     # Calculate total return pct from actual trades (approx: pnl relative to equity)
     # Use daily snapshots for better accuracy
     try:
-        conn2 = sqlite3.connect(db_path)
-        conn2.row_factory = sqlite3.Row
+        conn2 = open_profile_db(db_path)
         snap = conn2.execute(
             "SELECT equity FROM daily_snapshots "
             "ORDER BY date DESC, rowid DESC LIMIT 1"
@@ -3754,8 +3747,7 @@ def api_mc_backtest(profile_id):
 
     # Pull recent closed trades from the journal
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
+        conn = open_profile_db(db_path)
         rows = conn.execute(
             f"""SELECT entry_price, exit_price, side, pnl, pnl_pct,
                        symbol, exit_date
@@ -4032,8 +4024,7 @@ def api_mc_backtest_by_strategy(profile_id):
     min_trades_per_strategy = int(payload.get("min_trades_per_strategy") or 5)
 
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
+        conn = open_profile_db(db_path)
         rows = conn.execute(
             f"""SELECT t1.fill_price AS entry_price,
                        t2.fill_price AS exit_price,
@@ -4116,8 +4107,7 @@ def api_slippage_history(profile_id):
         return jsonify({"error": "No data yet"}), 404
 
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
+        conn = open_profile_db(db_path)
         rows = conn.execute(
             """SELECT timestamp, symbol, side, qty,
                       decision_price, fill_price, slippage_pct,
@@ -4859,10 +4849,8 @@ def api_autonomy_timeline():
     if os.path.exists(db_path):
         # Strategy deprecations
         try:
-            import sqlite3
             from display_names import display_name
-            conn = sqlite3.connect(db_path)
-            conn.row_factory = sqlite3.Row
+            conn = open_profile_db(db_path)
             rows = conn.execute(
                 "SELECT strategy_type, deprecated_at, restored_at, reason "
                 "FROM deprecated_strategies "
@@ -4890,9 +4878,7 @@ def api_autonomy_timeline():
 
         # Post-mortem patterns
         try:
-            import sqlite3
-            conn = sqlite3.connect(db_path)
-            conn.row_factory = sqlite3.Row
+            conn = open_profile_db(db_path)
             # Tolerate missing table (profile may pre-date the post_mortem
             # feature; analyze_recent_week creates it on first run).
             tbl = conn.execute(
