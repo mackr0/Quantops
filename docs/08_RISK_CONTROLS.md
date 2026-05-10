@@ -198,6 +198,14 @@ Coverage is enforced by `tests/test_broker_submit_invariants.py::test_every_entr
 
 Every option `api.submit_order` call must include `position_intent` (`buy_to_open` / `sell_to_open` / `buy_to_close` / `sell_to_close`). Alpaca async-cancels short option opens that arrive without an intent declaration. Both `options_multileg.py` (combo + sequential paths) and `options_trader.submit_option_order` enforce this; sequential rollback uses close-intent so reversal legs aren't treated as new opens. Enforced by `tests/test_broker_submit_invariants.py::test_every_option_submit_passes_position_intent`.
 
+### 4o. Multileg partial-fill rollback
+
+`execute_multileg_strategy`'s sequential fallback submits each leg one by one when Alpaca's MLEG combo endpoint returns a transient 500. Submit-failure rollback is immediate (close any legs that submitted before the exception). **Fill-failure rollback** is the late-arriving counterpart: `_task_update_fills` (`multi_scheduler.py`) detects when a MULTILEG leg ends `expired` / `canceled` / `rejected` with `filled_qty=0`, finds its sibling legs by `(option_strategy, symbol, timestamp ±60s)`, and closes any that filled via opposite-side market order. The rollback close is logged as a new MULTILEG row carrying the original AI confidence + reasoning so the trade history reads as a coherent narrative; the closed sibling row flips to `status='closed'`. Without this, a half-filled spread (one leg filled, one expired) would become a permanent naked single-leg position the AI never decided to take. Enforced by `tests/test_multileg_partial_fill_rollback.py` (10 tests covering terminal-status pinning + pairing rules).
+
+### 4p. Terminal-unfilled status pinning
+
+`_task_update_fills` writes `status=<broker_status>` (`expired` / `canceled` / `rejected` / `done_for_day`) on journal rows when the broker confirms the order ended without filling. Without this, the row sits at `status='open'` with `price=NULL` indefinitely — the silent-failure shape that masked 3 orphan multileg legs on prod for 2 days (caught 2026-05-10). The trades-table macro renders these rows greyed/italicized with a status badge so the operator sees what happened at a glance.
+
 ## 5. Portfolio risk model
 
 **Module:** `portfolio_risk_model.py`

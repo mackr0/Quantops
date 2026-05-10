@@ -49,7 +49,12 @@
                    `current_price` on option rows. #}
                 {% set is_option = t.occ_symbol is defined and t.occ_symbol %}
                 {% set option_mult = 100 if is_option else 1 %}
-                <tr class="trade-row{% if is_option %} option-row{% endif %}" data-symbol="{{ t.symbol }}" data-ts="{{ t.timestamp or '' }}" style="cursor:pointer;{% if is_option %}background:#fbf7ff;{% endif %}" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? '' : 'none'; this.querySelector('.expand-caret').innerHTML = this.nextElementSibling.style.display === 'none' ? '&#9654;' : '&#9660;'">
+                {# Terminal-unfilled rows: order ended expired/canceled/
+                   rejected with 0 fill. _task_update_fills marks the
+                   journal accordingly so this branch can render them
+                   distinctly instead of as blank-priced live rows. #}
+                {% set is_terminal_unfilled = t.status in ('expired', 'canceled', 'rejected', 'done_for_day') %}
+                <tr class="trade-row{% if is_option %} option-row{% endif %}" data-symbol="{{ t.symbol }}" data-ts="{{ t.timestamp or '' }}" style="cursor:pointer;{% if is_option %}background:#fbf7ff;{% endif %}{% if is_terminal_unfilled %}opacity:0.55;font-style:italic;{% endif %}" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? '' : 'none'; this.querySelector('.expand-caret').innerHTML = this.nextElementSibling.style.display === 'none' ? '&#9654;' : '&#9660;'">
                     <td style="width:1.5rem;text-align:center;"><span class="expand-caret" style="font-size:0.7rem;color:#888;">&#9654;</span></td>
                     <td class="muted" data-raw="{{ t.timestamp or '' }}">{{ (t.timestamp or '')|friendly_time }}</td>
                     {% if show_profile %}<td>{{ t.profile_name or t.segment or '--' }}</td>{% endif %}
@@ -67,7 +72,11 @@
                     </td>
                     <td>{{ t.qty|int }}{% if is_option %}<small class="muted"> ct</small>{% endif %}{% if t.price and t.qty %}<br><small class="muted">${{ "{:,.0f}".format(t.qty * t.price * option_mult) }}</small>{% endif %}</td>
                     <td>
+                        {% if is_terminal_unfilled %}
+                            <span style="color:#999;font-size:0.7rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;">{{ t.status }}</span>
+                        {% else %}
                         {{ "${:,.2f}".format(t.price) if t.price else '--' }}
+                        {% endif %}
                         {% if t.current_price is defined and t.current_price is not none and t.current_price > 0 and t.price %}
                             {# `current_price` is the option's mid premium for
                                option rows (fetched via the options-snapshot

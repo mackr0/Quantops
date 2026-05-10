@@ -953,12 +953,17 @@ def _task_update_fills(ctx):
         conn.row_factory = sqlite3.Row
 
         # Pull every row missing a fill_price; multileg legs lack
-        # decision_price so we can't filter on it.
+        # decision_price so we can't filter on it. Status filter
+        # excludes rows already marked terminal-unfilled so we don't
+        # re-poll Alpaca for the same expired order forever.
         unfilled = conn.execute(
             "SELECT id, order_id, price, decision_price, side, "
-            "       symbol, status "
+            "       symbol, status, signal_type, option_strategy, "
+            "       occ_symbol, qty, timestamp "
             "FROM trades "
-            "WHERE fill_price IS NULL AND order_id IS NOT NULL"
+            "WHERE fill_price IS NULL AND order_id IS NOT NULL "
+            "  AND COALESCE(status, 'open') NOT IN "
+            "      ('expired', 'canceled', 'rejected', 'done_for_day')"
         ).fetchall()
 
         if not unfilled:
@@ -967,6 +972,8 @@ def _task_update_fills(ctx):
 
         updated = 0
         confirmed_closes = 0
+        terminal_unfilled = 0
+        orphan_rollbacks = 0
         for trade in unfilled:
             try:
                 order = api.get_order(trade["order_id"])
@@ -975,6 +982,57 @@ def _task_update_fills(ctx):
                     "[%s] update_fills: get_order(%s) failed: %s",
                     seg_label, trade["order_id"], exc,
                 )
+                continue
+            # Terminal-unfilled detection. Without this, an expired/
+            # canceled/rejected order with filled_qty=0 is silently
+            # skipped (the `if not filled_avg_price: continue` below)
+            # and the journal row sits at status='open' with
+            # price=NULL forever — which is what put 3 orphan
+            # multileg legs on prod for 2 days as silent half-fills
+            # masquerading as live spreads (caught 2026-05-10).
+            broker_status = (getattr(order, "status", "") or "").lower()
+            filled_qty = float(getattr(order, "filled_qty", 0) or 0)
+            if (broker_status in ("expired", "canceled", "rejected",
+                                  "done_for_day")
+                    and filled_qty == 0):
+                conn.execute(
+                    "UPDATE trades SET status = ?, price = 0 "
+                    "WHERE id = ?",
+                    (broker_status, trade["id"]),
+                )
+                terminal_unfilled += 1
+                logging.warning(
+                    "[%s] order %s ended %s with 0 filled qty — "
+                    "row #%d marked status=%s",
+                    seg_label, trade["order_id"], broker_status,
+                    trade["id"], broker_status,
+                )
+                # Multileg partial-fill rollback. The sequential path
+                # in execute_multileg_strategy only rolls back on
+                # SUBMIT failure (immediate exception). When a leg
+                # submits cleanly but later expires/cancels unfilled
+                # while its partner leg fills, no rollback fires and
+                # the AI's intended spread becomes a naked single-leg
+                # position (caught 2026-05-10: 3 orphans on prod for
+                # 2 days). Same opposite-side close logic the
+                # existing submit-failure rollback uses, just
+                # triggered by the late-arriving fill-failure signal.
+                if (trade["signal_type"] == "MULTILEG"
+                        and trade["option_strategy"]):
+                    # Commit the just-applied terminal-status update
+                    # before the rollback. log_trade opens a fresh
+                    # SQLite connection; without this commit it would
+                    # block on the outer transaction's pending writes
+                    # and time out on busy_timeout. Per-row commits
+                    # are correct here — each terminal-status pin is
+                    # independently durable; we don't want the whole
+                    # task's progress to depend on a single rollback
+                    # succeeding.
+                    conn.commit()
+                    closed = _rollback_orphaned_multileg_partners(
+                        conn, api, trade, seg_label, db_path,
+                    )
+                    orphan_rollbacks += closed
                 continue
             if not order.filled_avg_price:
                 continue
@@ -1036,15 +1094,150 @@ def _task_update_fills(ctx):
         conn.commit()
         conn.close()
 
-        if updated > 0:
-            extra = (f" ({confirmed_closes} closes confirmed)"
-                     if confirmed_closes else "")
-            logging.info(
-                f"[{seg_label}] Updated fill prices on "
-                f"{updated} trade(s){extra}"
-            )
+        if updated > 0 or terminal_unfilled > 0 or orphan_rollbacks > 0:
+            parts = []
+            if updated > 0:
+                parts.append(f"{updated} fill(s) backfilled")
+                if confirmed_closes:
+                    parts.append(f"{confirmed_closes} closes confirmed")
+            if terminal_unfilled > 0:
+                parts.append(
+                    f"{terminal_unfilled} terminal-unfilled marked"
+                )
+            if orphan_rollbacks > 0:
+                parts.append(
+                    f"{orphan_rollbacks} orphan multileg leg(s) closed"
+                )
+            logging.info(f"[{seg_label}] update_fills: " + "; ".join(parts))
     except Exception:
         logging.exception(f"[{seg_label}] Failed to update fill prices")
+
+
+def _rollback_orphaned_multileg_partners(conn, api, expired_leg,
+                                         seg_label, db_path):
+    """Close any sibling legs of a multileg combo whose partner just
+    expired/canceled unfilled. Returns count of legs closed.
+
+    Pairing rule mirrors how `_record_multileg_legs` writes legs:
+    same `option_strategy` (combo name), same underlying `symbol`,
+    timestamp within 60 seconds (legs are written milliseconds apart
+    but allow slack for sequential submission). For each sibling
+    that filled (`fill_price IS NOT NULL` AND `status='open'`), submit
+    an opposite-side market close on its OCC, log the close as a new
+    trade row, and flip the original entry row to status='closed'.
+
+    Same opposite-side close pattern as the submit-failure rollback
+    in `options_multileg.execute_multileg_strategy` — just triggered
+    by the fill-failure signal that arrives later via Alpaca's order
+    status. Without this, a half-filled spread (one leg filled, one
+    expired) becomes a permanent naked single-leg position the AI
+    didn't intend.
+    """
+    import sqlite3
+    from journal import log_trade
+
+    siblings = conn.execute(
+        "SELECT id, order_id, side, qty, occ_symbol, price, "
+        "       fill_price, ai_confidence, ai_reasoning, "
+        "       option_strategy, expiry, strike, timestamp, "
+        "       symbol "
+        "FROM trades "
+        "WHERE signal_type = 'MULTILEG' "
+        "  AND option_strategy = ? "
+        "  AND symbol = ? "
+        "  AND id != ? "
+        "  AND COALESCE(status, 'open') = 'open' "
+        "  AND fill_price IS NOT NULL "
+        "  AND ABS(strftime('%s', timestamp) - "
+        "          strftime('%s', ?)) < 60",
+        (expired_leg["option_strategy"], expired_leg["symbol"],
+         expired_leg["id"], expired_leg["timestamp"]),
+    ).fetchall()
+
+    if not siblings:
+        return 0
+
+    closed = 0
+    for sib in siblings:
+        # Submit opposite-side market close on the sibling's OCC.
+        # buy → sell, sell/short → buy. Mirrors _INTENT_CLOSE in
+        # options_multileg.
+        rev_side = "sell" if sib["side"] == "buy" else "buy"
+        try:
+            close_order = api.submit_order(
+                symbol=sib["occ_symbol"],
+                qty=int(sib["qty"]),
+                side=rev_side,
+                type="market",
+                time_in_force="day",
+            )
+        except Exception as exc:
+            logging.error(
+                "[%s] CRITICAL: orphan-leg rollback FAILED for combo %s "
+                "%s leg #%d (%s): %s. Position remains open.",
+                seg_label, expired_leg["option_strategy"],
+                expired_leg["symbol"], sib["id"], sib["occ_symbol"], exc,
+            )
+            continue
+
+        close_order_id = getattr(close_order, "id", None)
+        # Log the rollback close as a new trade row. fill_price
+        # populates on a later _task_update_fills cycle. pnl filled
+        # in by the same path (cost basis vs close price).
+        try:
+            log_trade(
+                symbol=sib["symbol"],
+                side=rev_side,
+                qty=int(sib["qty"]),
+                price=None,  # backfilled when broker confirms
+                order_id=close_order_id,
+                signal_type="MULTILEG",
+                strategy=sib["option_strategy"],
+                reason=(
+                    f"Auto-rollback: combo {sib['option_strategy']} on "
+                    f"{sib['symbol']} had partner leg expire unfilled "
+                    f"(row #{expired_leg['id']}, order "
+                    f"{expired_leg['order_id']}). Closing this filled "
+                    f"leg to restore intended position state."
+                ),
+                ai_reasoning=sib["ai_reasoning"],
+                ai_confidence=sib["ai_confidence"],
+                occ_symbol=sib["occ_symbol"],
+                option_strategy=sib["option_strategy"],
+                expiry=sib["expiry"],
+                strike=sib["strike"],
+                status="pending_fill",
+                db_path=db_path,
+            )
+        except Exception as exc:
+            logging.error(
+                "[%s] orphan-leg rollback close submitted (%s) but "
+                "log_trade failed for sibling #%d: %s",
+                seg_label, close_order_id, sib["id"], exc,
+            )
+
+        # Flip the originally-filled sibling row to closed so the
+        # virtual book stops carrying it as open. Commit immediately
+        # — log_trade above already opened/closed its own connection
+        # so we're not holding a lock, and per-leg commits keep
+        # rollback progress durable across iterations.
+        conn.execute(
+            "UPDATE trades SET status = 'closed' WHERE id = ?",
+            (sib["id"],),
+        )
+        conn.commit()
+        closed += 1
+        logging.warning(
+            "[%s] orphan-leg rollback: combo %s on %s — partner "
+            "leg #%d expired (order %s), closed sibling leg #%d "
+            "(%s qty=%d) via market %s order %s",
+            seg_label, expired_leg["option_strategy"],
+            expired_leg["symbol"], expired_leg["id"],
+            expired_leg["order_id"], sib["id"], sib["occ_symbol"],
+            int(sib["qty"]), rev_side, close_order_id,
+        )
+
+    return closed
 
 
 def _task_virtual_audit(ctx):

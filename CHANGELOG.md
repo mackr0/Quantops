@@ -17,6 +17,37 @@ Rules going forward:
 
 ---
 
+## 2026-05-10 — Multileg partial-fill rollback + terminal-status pinning in `_task_update_fills` (Severity: critical, data-integrity)
+
+**Bug**: 3 multileg spreads (CWAN ×2, BKLN ×1) on profiles 6 + 7 sat half-filled on prod for **2 days** as silent orphans. Each was a 2-leg spread where the BUY leg filled but the SELL leg expired unfilled at the broker — leaving the AI's profile holding a naked single-leg position it never decided to take. Journal showed status='open' on both legs as if the spread were live; reality was 3 naked long calls/puts with a different risk profile than the AI's intended defined-risk spread.
+
+**Root cause** (two coordinated bugs):
+1. `execute_multileg_strategy`'s sequential fallback (`options_multileg.py:716`, used when Alpaca's MLEG combo returns 500 — confirmed flaky in paper, ~30% failure rate over the May 8 window) submits each leg, returns success the moment all submit calls return without exception, and has rollback only for **submit-failure**. There was no logic anywhere for **fill-failure** (one leg later expires while the partner fills).
+2. `_task_update_fills` (`multi_scheduler.py:926`) had `if not order.filled_avg_price: continue` — silently skipping every expired/canceled/rejected order. Journal rows therefore sat at `status='open'` with `price=NULL` indefinitely, and the half-filled multileg was invisible.
+
+**Fix** (one cohesive change in `multi_scheduler.py`):
+
+- **Terminal-status pinning**: when broker says `status` ∈ {`expired`, `canceled`, `rejected`, `done_for_day`} AND `filled_qty == 0`, the journal row is updated to that status with `price=0` and a WARNING is logged naming the order. The SELECT also adds a status filter so already-marked terminal rows aren't re-polled forever.
+- **Multileg partial-fill rollback** (new helper `_rollback_orphaned_multileg_partners`): when a MULTILEG leg ends terminal-unfilled, find its sibling legs (same `option_strategy`, same underlying `symbol`, timestamp within 60s — mirrors how `_record_multileg_legs` writes legs milliseconds apart). For any sibling that filled (`fill_price IS NOT NULL` AND `status='open'`), submit an opposite-side market close on its OCC, log the rollback close as a new MULTILEG row carrying the original AI confidence + reasoning, and flip the sibling row to `status='closed'`. Same opposite-side close pattern the existing submit-failure rollback uses, just triggered by the fill-failure signal that arrives later.
+- **Display**: `_trades_table.html` macro renders terminal-unfilled rows greyed/italicized with an "EXPIRED" / "CANCELED" / "REJECTED" badge in the price column instead of `--`, so the operator sees what happened.
+
+**Why no separate "remediation policy" task**: this is a bug fix in the multileg execution lifecycle (extending the sequential-fallback's incomplete rollback), not a new policy layer. The AI's normal long/short/exit logic doesn't need to know about partial fills any more than it knew about the existing submit-failure rollback.
+
+**Existing prod orphans**: the 3 naked positions on profiles 6 + 7 will be auto-closed on the first scheduler cycle after deploy by the same code path that prevents future occurrences.
+
+**Combo-path investigation**: log analysis of May 8 17:00–19:00 shows Alpaca's MLEG combo endpoint returns transient 500s (`{"code":50010000,"message":"internal server error occurred"}`) on ~30% of submissions. CWAN/PCG/BKLN all hit it. Some combos succeed (CPRT, FITB, ACHR, RIOT). Combo retry on 500 is a separate follow-up commit.
+
+**10 new tests** (`tests/test_multileg_partial_fill_rollback.py`):
+- Terminal-status pinning: expired / canceled / rejected each marks the row correctly.
+- Already-terminal row not re-polled (assertion fires if get_order is called).
+- Filled-order regression: normal fill backfill path still populates price + slippage.
+- Orphan-leg rollback (the prod CWAN scenario): partner leg auto-closed via opposite-side market order, close logged with original AI confidence carried over, original entry row flipped to closed.
+- Pairing rejected for: different `option_strategy`, different underlying `symbol`, timestamp >60s apart, both legs unfilled (no orphan).
+
+2,619 pass.
+
+---
+
 ## 2026-05-10 — /trades page: live unrealized-P&L enrichment + silent-swallow fix (Severity: high)
 
 **Bug**: On `/trades`, every currently-open option leg and every currently-open stock BUY rendered `--` in the P&L column. The dashboard's Open Positions panel showed P&L correctly for the same trades. User-visible split: identical data, two different views, only one rendered P&L.
