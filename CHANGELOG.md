@@ -17,9 +17,11 @@ Rules going forward:
 
 ---
 
-## 2026-05-09 — /performance route: deleted 4 dead-throw computations + cross-cutting AST guardrail (Severity: medium, dead code + wasted DB queries)
+## 2026-05-09 — /performance: built 4 missing UI panels (Self-Tuning & Alerts tab) + cross-cutting AST guardrail (Severity: high, partially-shipped feature now complete)
 
-`views.api_performance` (the institutional /performance dashboard, route at `views.py:2593`) computed four datasets per page load and then threw them away by passing literal `[]` to the same-named `render_template` kwargs:
+**Two-part history.** Earlier today (commit `52f4cc5`) I deleted 4 dead-throw computations from `views.api_performance` instead of building the panels they were clearly scaffolded for — formatted display strings (`parameter_label`, `old_value_label`), human-readable status messages, severity-sorted alerts. **Mack caught this as a lazy fix.** This commit reverses the delete and builds the panels properly.
+
+The original symptom: `views.api_performance` (the institutional /performance dashboard, route at `views.py:2593`) computed four datasets per page load and then threw them away by passing literal `[]` to the same-named `render_template` kwargs:
 
 | Variable | Computed at | Discarded at |
 |---|---|---|
@@ -28,13 +30,21 @@ Rules going forward:
 | `learned_patterns` | views.py:2228-2235 (per-DB `_analyze_failure_patterns`) | `learned_patterns=[]` at 2609 |
 | `sec_alerts` | views.py:2509-2536 (per-profile SQLite open + `get_active_alerts` + severity sort) | `sec_alerts=[]` at 2613 |
 
-**Audit's claim re-checked:** the audit said "UI blocks expecting these show nothing." That's not quite right — `templates/performance.html` doesn't reference any of these four variables. They're consumed by `templates/ai_performance.html` (a *different* template, rendered from `views.api_performance` at line 1795 which passes `tuning_history=tuning_history[:20]` correctly). So the bug was pure waste — CPU + DB queries + UserContext build per /performance refresh, then discarded — not user-visible missing data.
+**Why it existed (best guess):** the data layer was scaffolded but the UI panels for these four were never designed/added. The empty-list overrides hid the partially-shipped state.
 
-**Why it existed (best guess):** these were copied from `views.api_performance` when the institutional dashboard was scaffolded, but the dashboard's panels for these four were never designed/added. The empty-list args were placeholder overrides that hid the partially-shipped state.
+**Proper fix:** new "Self-Tuning & Alerts" tab on /performance with 4 panels:
+1. **Self-Tuning Status** — per-profile cards showing `resolved / required` predictions, can_tune badge, message, last-run timestamp. Lets the operator see at a glance why a profile's auto-tuner has or hasn't acted.
+2. **Self-Tuning History** — table mirroring the layout already in `ai_performance.html:467-507`: Date / Profile / Change (parameter old → new) / Reason / Win Rate Then / Outcome (improved/worsened/unchanged badges). Up to 30 entries.
+3. **Learned Patterns** — bullet list of insights from `_analyze_failure_patterns` (e.g. "Predictions in volatile markets: 22% win rate, 18 trades. Be extra cautious.").
+4. **SEC Filing Alerts** — table of medium+ severity SEC filings against held positions: severity badge / Filed date / Profile / Symbol / Form / Signal / Summary. Sorted by severity then date.
 
-**Fix:** deleted all 4 dead computations + 4 dead `=[]` kwargs. Saves ~4-N DB queries + 1 UserContext build per /performance refresh. Tests for the routes that DO use these (api_performance via ai_performance.html) remain unchanged.
+Render-call kwargs in `views.py` now pass the actual variables (`tuning_history=tuning_history`, etc.) instead of `[]`. Silent `except: pass` blocks upgraded to WARNING logs naming the failing profile/db.
 
-**Cross-cutting AST guardrail** (`tests/test_no_dead_throw_render_kwargs.py`): scans `views.py` for any `render_template(...)` kwarg whose value is a literal `[]` / `{}` AND a same-named variable was assigned non-trivially earlier in the same function. Pure-default empties (variable never named earlier) pass — this targets the dead-throw shape specifically. Empty allowlist with comment hooks for legitimate JS-populated cases.
+**Cross-cutting AST guardrail kept** (`tests/test_no_dead_throw_render_kwargs.py`): scans `views.py` for any `render_template(...)` kwarg whose value is a literal `[]` / `{}` AND a same-named variable was assigned non-trivially earlier in the same function. Empty allowlist. The guardrail now passes for the right reason (kwargs pass real variables, not empties) instead of the wrong reason (computations deleted).
+
+**9 behavioral tests pinning the panels** (`tests/test_performance_tuning_alerts_panels.py`): each panel renders expected text with seeded data; each panel shows a placeholder when empty; the tab nav link is present. Uses a real Flask test request context so `current_user` / Flask-Login resolve correctly.
+
+**Lesson recorded** as a new feedback memory (`feedback_never_delete_as_shortcut`): "Deleting code/data/UI is NEVER the right fix when the feature is partially shipped — the only correct action is to complete it properly. Display-ready data (formatted labels, sort orders, severity badges) is a strong signal that a UI panel was scaffolded for; build the panel."
 
 ---
 

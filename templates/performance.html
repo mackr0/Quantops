@@ -23,6 +23,7 @@
     <a href="#trades" class="perf-tab" onclick="showTab(event, 'trades')">Trade Analytics</a>
     <a href="#market" class="perf-tab" onclick="showTab(event, 'market')">Market Relationship</a>
     <a href="#scale" class="perf-tab" onclick="showTab(event, 'scale')">Scalability</a>
+    <a href="#tuning" class="perf-tab" onclick="showTab(event, 'tuning')">Self-Tuning &amp; Alerts</a>
 </div>
 
 <!-- ===================================================================
@@ -971,6 +972,156 @@
         </small>
         {% else %}
         <p class="muted">No profile data yet — capacity analysis populates as profiles record their first fills.</p>
+        {% endif %}
+    </article>
+
+</div>
+
+<!-- ===================================================================
+     TAB 6: SELF-TUNING & ALERTS
+     Per-profile self-tuner state, history of automatic parameter
+     adjustments, learned failure patterns, and SEC filing alerts.
+     =================================================================== -->
+<div id="tab-tuning" class="perf-tab-content">
+
+    <!-- Self-Tuning Status: per-profile cards -->
+    <article>
+        <header><h3>Self-Tuning Status</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Whether each profile's auto-tuner has enough data to act, and when it last ran.</p>
+        {% if tuning_status %}
+        <div class="grid">
+            {% for s in tuning_status %}
+            <div class="stat-card">
+                <small class="muted">{{ s.profile_name }}</small>
+                <strong style="display:block;">
+                    {% if s.can_tune %}
+                        <span class="pnl-pos">Active</span>
+                    {% else %}
+                        <span class="muted">Awaiting data</span>
+                    {% endif %}
+                </strong>
+                <small style="display:block;">{{ s.resolved }} / {{ s.required }} resolved predictions</small>
+                <small class="muted" style="display:block;font-size:0.75rem;">{{ s.message }}</small>
+                {% if s.last_run %}
+                <small class="muted" style="display:block;">Last ran: {{ s.last_run | friendly_time }}</small>
+                {% else %}
+                <small class="muted" style="display:block;">Last ran: never</small>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="muted">No tuning status available yet.</p>
+        {% endif %}
+    </article>
+
+    <!-- Self-Tuning History: parameter adjustments and outcomes -->
+    <article>
+        <header><h3>Self-Tuning History</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Automatic parameter changes the system has made based on its own performance.</p>
+        {% if tuning_history %}
+        <div class="overflow-auto">
+            <table class="striped">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Profile</th>
+                        <th>Change</th>
+                        <th>Reason</th>
+                        <th>Win Rate Then</th>
+                        <th>Outcome</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for h in tuning_history[:30] %}
+                    <tr>
+                        <td class="muted">{{ h.timestamp[:10] }}</td>
+                        <td>{{ h.profile_name }}</td>
+                        <td>
+                            <strong>{{ h.parameter_label or (h.parameter_name | display_name) }}</strong><br>
+                            <small>{{ h.old_value_label or h.old_value }} &rarr; {{ h.new_value_label or h.new_value }}</small>
+                        </td>
+                        <td style="font-size:0.85rem;">{{ (h.reason or '')[:80] }}</td>
+                        <td>{{ "{:.1f}".format(h.win_rate_at_change) if h.win_rate_at_change is not none else '--' }}%</td>
+                        <td>
+                            {% if h.outcome_after == 'improved' %}
+                                <span class="pnl-pos">Improved{% if h.win_rate_after %} ({{ "{:.1f}".format(h.win_rate_after) }}%){% endif %}</span>
+                            {% elif h.outcome_after == 'worsened' %}
+                                <span class="pnl-neg">Worsened{% if h.win_rate_after %} ({{ "{:.1f}".format(h.win_rate_after) }}%){% endif %}</span>
+                            {% elif h.outcome_after == 'unchanged' %}
+                                <span class="muted">Unchanged</span>
+                            {% else %}
+                                <span class="muted">Pending review</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="muted">No tuning adjustments recorded yet.</p>
+        {% endif %}
+    </article>
+
+    <!-- Learned Patterns: per-DB failure-pattern bullets -->
+    <article>
+        <header><h3>Learned Patterns</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Conditions the self-tuner has identified as edges or weaknesses (≥5 trade sample).</p>
+        {% if learned_patterns %}
+        <ul style="margin-bottom:0;">
+            {% for p in learned_patterns %}
+            <li style="margin-bottom:0.25rem;">{{ p }}</li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="muted">No patterns identified yet — needs more resolved predictions per regime / strategy / hour.</p>
+        {% endif %}
+    </article>
+
+    <!-- SEC Alerts: medium+ severity filings affecting held symbols -->
+    <article>
+        <header><h3>SEC Filing Alerts</h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Medium- and high-severity SEC filings detected against held positions. Sorted by severity, then date.</p>
+        {% if sec_alerts %}
+        <div class="overflow-auto">
+            <table class="striped">
+                <thead>
+                    <tr>
+                        <th>Severity</th>
+                        <th>Filed</th>
+                        <th>Profile</th>
+                        <th>Symbol</th>
+                        <th>Form</th>
+                        <th>Signal</th>
+                        <th>Summary</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for a in sec_alerts %}
+                    <tr>
+                        <td>
+                            {% if a.severity == 'high' %}
+                                <span class="pnl-neg"><strong>HIGH</strong></span>
+                            {% elif a.severity == 'medium' %}
+                                <span style="color:#c97c1a;">Medium</span>
+                            {% else %}
+                                <span class="muted">{{ a.severity | humanize }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="muted">{{ a.filed_date }}</td>
+                        <td>{{ a.profile_name }}</td>
+                        <td><strong>{{ a.symbol }}</strong></td>
+                        <td>{{ a.form }}</td>
+                        <td style="font-size:0.85rem;">{{ a.signal | humanize }}</td>
+                        <td style="font-size:0.85rem;">{{ a.summary[:120] }}{% if a.summary|length > 120 %}&hellip;{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="muted">No active SEC alerts on held positions.</p>
         {% endif %}
     </article>
 

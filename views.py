@@ -2205,6 +2205,79 @@ def performance_dashboard():
     if slippage["count"] > 0:
         slippage["avg_pct"] = weighted_pct_sum / slippage["count"]
 
+    # Tuning history — filter to selected profile, or show all
+    tuning_history = []
+    tuning_profiles = profiles
+    if selected_profile_int:
+        tuning_profiles = [p for p in profiles if p["id"] == selected_profile_int]
+    for p in tuning_profiles:
+        try:
+            history = get_tuning_history(p["id"], limit=10)
+            for h in history:
+                h["profile_name"] = p["name"]
+                pname = h.get("parameter_name", "")
+                h["parameter_label"] = _format_param_name(pname)
+                h["old_value_label"] = _format_param_value(pname, h.get("old_value"))
+                h["new_value_label"] = _format_param_value(pname, h.get("new_value"))
+            tuning_history.extend(history)
+        except Exception as _exc:
+            logger.warning("performance: tuning_history failed for profile %s: %s",
+                           p.get("id"), _exc)
+    tuning_history.sort(key=lambda h: h.get("timestamp", ""), reverse=True)
+
+    # Learned patterns from self-tuning
+    learned_patterns = []
+    for db_path in db_paths:
+        try:
+            from self_tuning import _analyze_failure_patterns
+            patterns = _analyze_failure_patterns(db_path)
+            learned_patterns.extend(patterns)
+        except Exception as _exc:
+            logger.warning("performance: learned_patterns failed for %s: %s",
+                           db_path, _exc)
+
+    # Self-tuning status panel — shows whether the tuner is alive,
+    # how much data it has, when it last ran, and why it may not
+    # have made changes.
+    tuning_status = []
+    try:
+        from self_tuning import describe_tuning_state
+        import sqlite3 as _sqlite3
+        status_profiles = [p for p in profiles
+                           if not selected_profile_int or p["id"] == selected_profile_int]
+        for p in status_profiles:
+            try:
+                ctx = build_user_context_from_profile(p["id"])
+                state = describe_tuning_state(ctx)
+            except Exception:
+                state = {"can_tune": False, "resolved": 0, "required": 20,
+                         "message": "Could not load tuning state."}
+            # Last run timestamp
+            last_run = None
+            try:
+                _c = _sqlite3.connect(ctx.db_path)
+                row = _c.execute(
+                    "SELECT started_at FROM task_runs "
+                    "WHERE task_name LIKE '%Self-Tune%' "
+                    "ORDER BY started_at DESC LIMIT 1"
+                ).fetchone()
+                _c.close()
+                if row:
+                    last_run = row[0]
+            except Exception:
+                pass
+            tuning_status.append({
+                "profile_id": p["id"],
+                "profile_name": p["name"],
+                "resolved": state["resolved"],
+                "required": state["required"],
+                "can_tune": state["can_tune"],
+                "message": state["message"],
+                "last_run": last_run,
+            })
+    except Exception as _exc:
+        logger.warning("performance: tuning_status build failed: %s", _exc)
+
     # Meta-model info for dashboard (Phase 1)
     meta_info = {"loaded": False, "profiles": []}
     try:
@@ -2434,6 +2507,35 @@ def performance_dashboard():
     except Exception:
         pass
 
+    # SEC filing alerts (Phase 4)
+    sec_alerts = []
+    try:
+        from sec_filings import get_active_alerts
+        profiles_for_sec = [p for p in profiles
+                            if (not selected_profile_int or p["id"] == selected_profile_int)]
+        for p in profiles_for_sec:
+            db = f"quantopsai_profile_{p['id']}.db"
+            if not os.path.exists(db):
+                continue
+            alerts = get_active_alerts(db, min_severity="medium")
+            for a in alerts[:20]:
+                sec_alerts.append({
+                    "profile_id": p["id"],
+                    "profile_name": p["name"],
+                    "symbol": a.get("symbol", ""),
+                    "form": a.get("form_type", ""),
+                    "filed_date": a.get("filed_date", ""),
+                    "severity": a.get("alert_severity", ""),
+                    "signal": a.get("alert_signal", ""),
+                    "summary": a.get("alert_summary", ""),
+                })
+        # Sort by severity, then date desc
+        sev_rank = {"high": 0, "medium": 1, "low": 2}
+        sec_alerts.sort(key=lambda a: (sev_rank.get(a["severity"], 3),
+                                        -(len(a["filed_date"]) and int(a["filed_date"].replace("-", "")) or 0)))
+    except Exception as _exc:
+        logger.warning("performance: sec_alerts build failed: %s", _exc)
+
     # Alpha decay monitoring (Phase 3) — per-profile rolling metrics and
     # deprecated strategy list. Aggregate across selected profiles.
     decay_info = {"per_profile": [], "any_deprecated": False}
@@ -2503,9 +2605,13 @@ def performance_dashboard():
                            slippage=slippage,
                            scaling_real=scaling_real,
                            scaling_capacity=scaling_capacity,
+                           tuning_history=tuning_history,
+                           tuning_status=tuning_status,
+                           learned_patterns=learned_patterns,
                            meta_info=meta_info,
                            validations=validations,
                            decay_info=decay_info,
+                           sec_alerts=sec_alerts,
                            allocation_info=allocation_info,
                            auto_strategy_info=auto_strategy_info,
                            ensemble_info=ensemble_info,
