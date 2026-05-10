@@ -92,31 +92,6 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
 
-        CREATE TABLE IF NOT EXISTS decision_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            segment TEXT NOT NULL,
-            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-            symbol TEXT NOT NULL,
-            decision_type TEXT NOT NULL,
-            technical_score REAL,
-            strategy_votes TEXT,
-            strategy_reasons TEXT,
-            ai_signal TEXT,
-            ai_confidence REAL,
-            ai_reasoning TEXT,
-            ai_risk_factors TEXT,
-            ai_price_targets TEXT,
-            veto_rule TEXT,
-            action_taken TEXT,
-            qty REAL,
-            price REAL,
-            order_id TEXT,
-            exit_trigger TEXT,
-            pnl REAL,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        );
-
         CREATE TABLE IF NOT EXISTS user_api_usage (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -1297,101 +1272,6 @@ def build_user_context(user_id: int, segment: str) -> UserContext:
         # Custom watchlist (already parsed from JSON by get_user_segment_config)
         custom_watchlist=seg_config.get("custom_watchlist", []),
     )
-
-
-# ---------------------------------------------------------------------------
-# Decision log
-# ---------------------------------------------------------------------------
-
-def log_decision(user_id: int, segment: str, symbol: str, decision_type: str,
-                 technical_score: Optional[float] = None,
-                 strategy_votes: Optional[dict] = None,
-                 strategy_reasons: Optional[dict] = None,
-                 ai_signal: Optional[str] = None,
-                 ai_confidence: Optional[float] = None,
-                 ai_reasoning: Optional[str] = None,
-                 ai_risk_factors: Optional[list] = None,
-                 ai_price_targets: Optional[dict] = None,
-                 veto_rule: Optional[str] = None,
-                 action_taken: Optional[str] = None,
-                 qty: Optional[float] = None,
-                 price: Optional[float] = None,
-                 order_id: Optional[str] = None,
-                 exit_trigger: Optional[str] = None,
-                 pnl: Optional[float] = None) -> int:
-    """Insert a row into the decision_log table. Returns the row id."""
-    conn = _get_conn()
-    cursor = conn.execute(
-        """INSERT INTO decision_log
-           (user_id, segment, timestamp, symbol, decision_type,
-            technical_score, strategy_votes, strategy_reasons,
-            ai_signal, ai_confidence, ai_reasoning,
-            ai_risk_factors, ai_price_targets,
-            veto_rule, action_taken, qty, price, order_id,
-            exit_trigger, pnl)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            user_id,
-            segment,
-            datetime.utcnow().isoformat(),
-            symbol,
-            decision_type,
-            technical_score,
-            json.dumps(strategy_votes) if strategy_votes is not None else None,
-            json.dumps(strategy_reasons) if strategy_reasons is not None else None,
-            ai_signal,
-            ai_confidence,
-            ai_reasoning,
-            json.dumps(ai_risk_factors) if ai_risk_factors is not None else None,
-            json.dumps(ai_price_targets) if ai_price_targets is not None else None,
-            veto_rule,
-            action_taken,
-            qty,
-            price,
-            order_id,
-            exit_trigger,
-            pnl,
-        ),
-    )
-    conn.commit()
-    decision_id = cursor.lastrowid
-    conn.close()
-    return decision_id
-
-
-def get_decisions(user_id: int, segment: Optional[str] = None,
-                  limit: int = 50) -> List[Dict[str, Any]]:
-    """Query decision_log for a user, optionally filtered by segment."""
-    conn = _get_conn()
-    if segment:
-        rows = conn.execute(
-            """SELECT * FROM decision_log
-               WHERE user_id = ? AND segment = ?
-               ORDER BY timestamp DESC LIMIT ?""",
-            (user_id, segment, limit),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """SELECT * FROM decision_log
-               WHERE user_id = ?
-               ORDER BY timestamp DESC LIMIT ?""",
-            (user_id, limit),
-        ).fetchall()
-    conn.close()
-
-    results = []
-    for r in rows:
-        d = dict(r)
-        # Parse JSON columns
-        for col in ("strategy_votes", "strategy_reasons",
-                     "ai_risk_factors", "ai_price_targets"):
-            if d.get(col):
-                try:
-                    d[col] = json.loads(d[col])
-                except (json.JSONDecodeError, TypeError):
-                    pass
-        results.append(d)
-    return results
 
 
 # ---------------------------------------------------------------------------

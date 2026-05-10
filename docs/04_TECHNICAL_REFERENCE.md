@@ -12,7 +12,7 @@
                                   app.py · auth.py · views.py
                                               ↑ ↓
         ┌────────────────────── master DB (quantopsai.db) ──────────────────────┐
-        │   users · trading_profiles · alpaca_accounts · decision_log ·        │
+        │   users · trading_profiles · alpaca_accounts ·                       │
         │   universe_audit_runs · app_store_history · pdufa_scrape_runs ·     │
         │   alt_data_cache · shared_ai_cache                                   │
         └──────────────────────────────────────────────────────────────────────┘

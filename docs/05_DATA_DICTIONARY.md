@@ -340,9 +340,6 @@ Operator accounts.
 ### `alpaca_accounts` (master DB)
 Configured Alpaca paper accounts (1-3 per user).
 
-### `decision_log` (master DB)
-Cross-profile decision audit trail.
-
 ---
 
 ## 5. Meta-model NUMERIC_FEATURES

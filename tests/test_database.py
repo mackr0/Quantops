@@ -32,7 +32,7 @@ class TestMainDatabase:
         tables = self._get_tables(tmp_main_db)
         expected = {
             "users", "user_segment_configs", "trading_profiles",
-            "decision_log", "user_api_usage", "activity_log",
+            "user_api_usage", "activity_log",
             "symbol_names", "tuning_history",
         }
         for t in expected:

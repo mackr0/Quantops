@@ -17,6 +17,44 @@ Rules going forward:
 
 ---
 
+## 2026-05-09 — Deleted DOA `decision_log` infrastructure (table, writer, reader, JSON endpoint, 2 hidden UI panels) (Severity: high, dead-code cleanup + hidden-UI rule violation)
+
+The original "Add multi-user web platform with Flask UI" commit (4647854) shipped a "Decision Audit Trail" feature scaffolded but never wired:
+- `decision_log` table (`models.py:95` schema)
+- `log_decision()` writer (`models.py:1306`)
+- `get_decisions()` reader (`models.py:1362`)
+- `trade_detail` JSON endpoint at `/trades/<int:decision_id>` (`views.py:1343`)
+- "Recent Activity" `<article>` on `dashboard.html:253-283` wrapped in `{% if decisions %}`
+- "Decision Audit Trail" table on `trades.html:18-72` wrapped in `{% if decisions %}`
+- expand-row click handler JS in `trades.html:97-188`
+
+`log_decision()` had ZERO call sites in the entire git history of the repo (verified `git log -S "log_decision("`). The table had 0 rows since day 1. Both UI panels were hidden by `{% if decisions %}` so the failure was silently masked — violating the no-hidden-UI rule for the entire lifetime of the multi-user platform.
+
+Six weeks after the original (2026-03-28, b59b48d), the parallel `activity_log` table + Strategy Activity Ticker (`id="activity-ticker"`) was added and wired correctly into `multi_scheduler.py`. Nobody noticed `decision_log` was dead.
+
+**Why missed for so long:** the `{% if decisions %}` Jinja wrapper hid the empty UI from view; the dashboard never showed an empty-but-rendered table that would have surfaced the missing data.
+
+**This is NOT a botched migration** — the AI brain never used `decision_log`. The AI's signal/confidence/reasoning data lives in a separate `ai_predictions` table (`record_prediction()` writer wired since day 1, 23 reader modules including self_tuning, meta_model, alpha_decay, post_mortem; ~15K rows on prod). The two tables had similar column names but no overlap in code paths. Verified by grepping all 10 AI/learning modules — zero references to `decision_log`, `get_decisions`, or `log_decision`.
+
+**Deletions (16 changes, single commit):**
+1-3. `models.py`: removed `decision_log` schema, `log_decision()`, `get_decisions()`, and section header
+4-7. `views.py`: removed import, both `get_decisions()` call sites, both render-context references, and the entire `trade_detail` route
+8. `templates/dashboard.html:253-283`: Recent Activity `<article>`
+9. `templates/trades.html:18-72, 97-188`: decision audit table + click-handler JS (kept the sortable script)
+10. `tests/test_database.py:35`: removed `decision_log` from expected-tables set
+11. `tests/test_no_snake_case_in_user_facing_ids.py:165`: removed from comment
+12. `docs/05_DATA_DICTIONARY.md:343`: removed entry
+13. `docs/04_TECHNICAL_REFERENCE.md:15`: removed from schema diagram
+14-15. CHANGELOG + AUDIT updates
+16. **NEW guardrail: `tests/test_no_unwired_writers.py`** — AST-scans `models.py` for any function whose body contains an `INSERT INTO`/`INSERT OR REPLACE INTO` statement and asserts at least one production-code caller exists. Prevents the same DOA-scaffolding shape from being re-introduced. Allowlist requires explicit comment with rationale + date. Empty allowlist except for one pre-existing one-time migration (`migrate_segments_to_profiles`, surfaced by the new guardrail; pending separate keep-vs-delete decision).
+
+**Side findings surfaced by the new guardrail (NOT bundled — separate decisions):**
+- `migrate_segments_to_profiles()` — one-time historical migration, transition already complete. Allowlisted with a note pending decision.
+
+**Prod table tombstone:** `decision_log` SQLite table left in place on `quantopsai.db` — empty, zero I/O cost, dropping requires manual SQL.
+
+---
+
 ## 2026-05-09 — Recent Activity / Trades / AI Strategy: dynamic snake_case fields now humanized (was rendering `STRONG_BUY`, `bull_put_spread`, `small_cap_shorts` raw to the user) (Severity: medium, UX correctness)
 
 7 cells across 4 templates rendered dynamic snake_case-or-UPPER_SNAKE values without piping through the `humanize` Jinja filter:

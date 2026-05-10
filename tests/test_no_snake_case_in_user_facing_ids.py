@@ -162,7 +162,7 @@ class TestPageRendersTranslateRawIds:
     @pytest.fixture(autouse=True)
     def _seeded_db_and_user(self, tmp_path, monkeypatch):
         """Real temp SQLite DB seeded with the schemas the routes
-        touch (users, trading_profiles, decision_log, ...). The
+        touch (users, trading_profiles, ...). The
         previous approach patched per-function and turned into
         whack-a-mole — every new DB call required another patch.
         Seeding a real DB once means the routes execute their actual

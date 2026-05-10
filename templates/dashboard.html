@@ -250,37 +250,6 @@
         </div>
     </article>
 
-    {% if decisions %}
-    <article>
-        <header><h3>Recent Activity</h3></header>
-        <div class="overflow-auto">
-            <table class="striped">
-                <thead>
-                    <tr>
-                        <th>Time</th>
-                        <th>Profile</th>
-                        <th>Symbol</th>
-                        <th>Decision</th>
-                        <th>Action</th>
-                        <th>AI Confidence</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for d in decisions[:15] %}
-                    <tr>
-                        <td class="muted">{{ (d.timestamp or '')|friendly_time }}</td>
-                        <td>{{ d.segment }}</td>
-                        <td><strong>{{ d.symbol }}</strong></td>
-                        <td>{{ d.decision_type | humanize }}</td>
-                        <td>{{ (d.action_taken | humanize) if d.action_taken else '--' }}</td>
-                        <td>{{ "{:.0f}%".format(d.ai_confidence) if d.ai_confidence else '--' }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </article>
-    {% endif %}
 </div>
 
 <!-- ================================================================

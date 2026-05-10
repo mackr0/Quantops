@@ -13,7 +13,7 @@ from flask_login import login_required, current_user
 
 from models import (
     build_user_context, get_user_segment_config, update_user_segment_config,
-    get_user_by_id, get_user_by_email, get_active_users, get_decisions,
+    get_user_by_id, get_user_by_email, get_active_users,
     update_user_credentials, get_api_usage,
     create_default_segment_configs,
     # Trading profiles
@@ -468,9 +468,6 @@ def dashboard():
     except Exception:
         pass
 
-    # Get recent decisions
-    decisions = get_decisions(current_user.effective_user_id, limit=20)
-
     # Build per-profile schedule status
     from datetime import datetime as _dt
     from zoneinfo import ZoneInfo
@@ -553,7 +550,6 @@ def dashboard():
 
     return render_template("dashboard.html",
                            profiles_data=profiles_data,
-                           decisions=decisions,
                            any_profile_active=any_profile_active,
                            profile_schedules=profile_schedules,
                            scan_failures=scan_failures,
@@ -1268,18 +1264,6 @@ def trades():
     selected_profile = request.args.get("profile_id", "", type=str)
     selected_profile_int = int(selected_profile) if selected_profile else None
 
-    # Filter decisions by profile name (segment column stores profile name)
-    if selected_profile_int:
-        # Find the profile name for filtering decisions
-        prof_name = None
-        for p in profiles:
-            if p["id"] == selected_profile_int:
-                prof_name = p["name"]
-                break
-        decisions = get_decisions(current_user.effective_user_id, segment=prof_name, limit=200) if prof_name else []
-    else:
-        decisions = get_decisions(current_user.effective_user_id, limit=200)
-
     # Pull trades from profile journal DBs
     all_trades = []
     if selected_profile_int:
@@ -1332,37 +1316,11 @@ def trades():
     page_trades = all_trades[start:start + per_page]
 
     return render_template("trades.html",
-                           decisions=decisions,
                            trades=page_trades,
                            profiles=profiles,
                            selected_profile=selected_profile_int,
                            page=page, total_pages=total_pages,
                            total_trades=total, sort_by=sort_by, sort_dir=sort_dir)
-
-
-@views_bp.route("/trades/<int:decision_id>")
-@login_required
-def trade_detail(decision_id):
-    """JSON endpoint for expandable trade detail."""
-    from models import _get_conn
-    conn = _get_conn()
-    row = conn.execute(
-        "SELECT * FROM decision_log WHERE id = ? AND user_id = ?",
-        (decision_id, current_user.effective_user_id),
-    ).fetchone()
-    conn.close()
-    if not row:
-        return jsonify({"error": "Not found"}), 404
-
-    d = dict(row)
-    # Parse JSON columns
-    for col in ("strategy_votes", "strategy_reasons", "ai_risk_factors", "ai_price_targets"):
-        if d.get(col):
-            try:
-                d[col] = json.loads(d[col])
-            except (json.JSONDecodeError, TypeError):
-                pass
-    return jsonify(d)
 
 
 def _calculate_risk_metrics(db_paths):
