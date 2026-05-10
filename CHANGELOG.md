@@ -17,6 +17,27 @@ Rules going forward:
 
 ---
 
+## 2026-05-09 — /performance route: deleted 4 dead-throw computations + cross-cutting AST guardrail (Severity: medium, dead code + wasted DB queries)
+
+`views.api_performance` (the institutional /performance dashboard, route at `views.py:2593`) computed four datasets per page load and then threw them away by passing literal `[]` to the same-named `render_template` kwargs:
+
+| Variable | Computed at | Discarded at |
+|---|---|---|
+| `tuning_history` | views.py:2208-2225 (per-profile loop with `get_tuning_history` + label formatting) | `tuning_history=[]` at 2607 |
+| `tuning_status` | views.py:2240-2275 (per-profile UserContext build + `describe_tuning_state` + last-run timestamp from `task_runs`) | `tuning_status=[]` at 2608 |
+| `learned_patterns` | views.py:2228-2235 (per-DB `_analyze_failure_patterns`) | `learned_patterns=[]` at 2609 |
+| `sec_alerts` | views.py:2509-2536 (per-profile SQLite open + `get_active_alerts` + severity sort) | `sec_alerts=[]` at 2613 |
+
+**Audit's claim re-checked:** the audit said "UI blocks expecting these show nothing." That's not quite right — `templates/performance.html` doesn't reference any of these four variables. They're consumed by `templates/ai_performance.html` (a *different* template, rendered from `views.api_performance` at line 1795 which passes `tuning_history=tuning_history[:20]` correctly). So the bug was pure waste — CPU + DB queries + UserContext build per /performance refresh, then discarded — not user-visible missing data.
+
+**Why it existed (best guess):** these were copied from `views.api_performance` when the institutional dashboard was scaffolded, but the dashboard's panels for these four were never designed/added. The empty-list args were placeholder overrides that hid the partially-shipped state.
+
+**Fix:** deleted all 4 dead computations + 4 dead `=[]` kwargs. Saves ~4-N DB queries + 1 UserContext build per /performance refresh. Tests for the routes that DO use these (api_performance via ai_performance.html) remain unchanged.
+
+**Cross-cutting AST guardrail** (`tests/test_no_dead_throw_render_kwargs.py`): scans `views.py` for any `render_template(...)` kwarg whose value is a literal `[]` / `{}` AND a same-named variable was assigned non-trivially earlier in the same function. Pure-default empties (variable never named earlier) pass — this targets the dead-throw shape specifically. Empty allowlist with comment hooks for legitimate JS-populated cases.
+
+---
+
 ## 2026-05-09 — Macro IV-crush plays now actionable in AI prompt (was: tracker shipped 6 days ago, integration never landed) (Severity: high, missed opportunity surface)
 
 `macro_event_tracker.py` shipped 2026-05-03 with `evaluate_macro_play()` (the SPY/QQQ analog of `options_earnings_plays.evaluate_earnings_play`). The heads-up annotation `render_macro_event_for_prompt()` ("Next macro event: FOMC tomorrow") was wired into the AI prompt at `trade_pipeline.py:2955-2956`. **The actionable recommendation function was never called.** `options_earnings_plays.py:24-25` docstring still claimed it was "deferred until macro-event tracker exists" — false (the tracker exists in full). OPEN_ITEMS contradicted itself: line 80 said `⏳ OPEN`; line 231 said `✅ DONE`.
