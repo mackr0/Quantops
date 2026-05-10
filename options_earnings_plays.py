@@ -22,7 +22,8 @@ earnings window. The blanket avoid-earnings filter still applies for
 EQUITY trades; this is the OPTIONS-side opportunistic layer.
 
 Macro events (FOMC, CPI, NFP) follow the same crush-capture logic
-with index ETFs (SPY/QQQ); deferred until macro-event tracker exists.
+with index ETFs (SPY/QQQ); the analog lives in `macro_event_tracker.py`
+(`evaluate_macro_play` + `render_macro_play_recommendation_for_prompt`).
 """
 from __future__ import annotations
 

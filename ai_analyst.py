@@ -961,6 +961,12 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     macro_event_block = market_context.get("macro_event_block")
     if macro_event_block:
         market_section += f"\n  {macro_event_block}"
+    # Phase F2 — actionable macro IV-crush play (in-window + SPY IV
+    # regime supports it). One line; rationale comes from
+    # evaluate_macro_play.
+    macro_play_block = market_context.get("macro_play_block")
+    if macro_play_block:
+        market_section += f"\n  {macro_play_block}"
 
     # Item 1c — long-vol tail-risk hedge state (only present when
     # the profile has the hedge feature enabled). Multi-line block

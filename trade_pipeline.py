@@ -2957,6 +2957,43 @@ def _build_market_context(regime_info, political_context, ctx):
     except Exception:
         macro_event_block = None
 
+    # Phase F2 — actionable MACRO PLAY recommendation when an event is
+    # in-window AND SPY's IV regime supports an iron condor / straddle
+    # play. Inputs (SPY IV rank + spot) are looked up here so the
+    # render function in macro_event_tracker stays unit-testable.
+    macro_play_block = None
+    try:
+        from macro_event_tracker import (
+            render_macro_play_recommendation_for_prompt,
+        )
+
+        def _spy_iv_rank():
+            try:
+                from options_oracle import get_options_oracle
+                oracle = get_options_oracle("SPY")
+                if oracle and oracle.get("has_options"):
+                    return oracle.get("iv_rank", {}).get("rank_pct")
+            except Exception:
+                return None
+            return None
+
+        def _spy_price():
+            try:
+                from market_data import get_bars as _gb
+                df = _gb("SPY", limit=1)
+                if df is not None and len(df) > 0:
+                    return float(df["close"].iloc[-1])
+            except Exception:
+                return None
+            return None
+
+        macro_play_block = render_macro_play_recommendation_for_prompt(
+            iv_rank_lookup=_spy_iv_rank,
+            spy_price_lookup=_spy_price,
+        ) or None
+    except Exception:
+        macro_play_block = None
+
     # Item 1c — long-vol portfolio hedge state. Surfaces:
     #   - active hedge (if any) + entry strike/expiry/contracts
     #   - which triggers fired (drawdown / crisis / VaR)
@@ -3069,4 +3106,5 @@ def _build_market_context(regime_info, political_context, ctx):
         "portfolio_risk_scenarios": portfolio_risk_scenarios,
         "long_vol_hedge_block": long_vol_hedge_block,
         "macro_event_block": macro_event_block,
+        "macro_play_block": macro_play_block,
     }

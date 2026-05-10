@@ -17,6 +17,25 @@ Rules going forward:
 
 ---
 
+## 2026-05-09 — Macro IV-crush plays now actionable in AI prompt (was: tracker shipped 6 days ago, integration never landed) (Severity: high, missed opportunity surface)
+
+`macro_event_tracker.py` shipped 2026-05-03 with `evaluate_macro_play()` (the SPY/QQQ analog of `options_earnings_plays.evaluate_earnings_play`). The heads-up annotation `render_macro_event_for_prompt()` ("Next macro event: FOMC tomorrow") was wired into the AI prompt at `trade_pipeline.py:2955-2956`. **The actionable recommendation function was never called.** `options_earnings_plays.py:24-25` docstring still claimed it was "deferred until macro-event tracker exists" — false (the tracker exists in full). OPEN_ITEMS contradicted itself: line 80 said `⏳ OPEN`; line 231 said `✅ DONE`.
+
+**Real-world impact:** every FOMC / CPI / NFP day, the AI prompt showed a heads-up but no SELL-iron-condor / BUY-straddle recommendation. The systematic IV-crush playbook (the entire point of having a macro tracker) was silent. Today (2026-05-10) the next FOMC is 2026-06-18 (~39 days out, outside the 5-day pre-window) — so no near-term concrete miss; but the system has been silently missing every macro play opportunity since the tracker shipped.
+
+**Fix:**
+- New `render_macro_play_recommendation_for_prompt(*, iv_rank_lookup, spy_price_lookup)` in `macro_event_tracker.py` — mirrors the earnings analog's contract. Pulls the 4 inputs `evaluate_macro_play` needs (event, days, IV rank, price), calls it, returns prompt block (`MACRO PLAY: …rationale…`) or `""`. Lookups injected so the function stays unit-testable.
+- Wired in `trade_pipeline.py` next to `render_macro_event_for_prompt`. Lookups: SPY IV rank via `options_oracle.get_options_oracle("SPY")["iv_rank"]["rank_pct"]` (same pattern as `ai_analyst.py:649-656` for per-symbol IV); SPY price via `market_data.get_bars("SPY", limit=1)`. Both wrapped in try/except → None on failure.
+- New `macro_play_block` field added to the `market_context` dict; consumed in `ai_analyst.py:961` next to `macro_event_block`.
+- Stale `options_earnings_plays.py:24-25` docstring rewritten: now points at the macro analog instead of claiming it doesn't exist.
+- `OPEN_ITEMS.md` lines 80, 194 (Issue 6's stale entry), and 195 marked DONE with shipped-date.
+
+**Tests pinning:** `tests/test_macro_play_wiring.py`:
+- 7 behavioral tests pin: rich IV → iron condor block, cheap IV → straddle block, dead-zone IV → empty, no-event → empty, IV lookup failure → empty (NEVER a play from broken data), price lookup failure → empty, None IV → empty.
+- `test_macro_play_render_has_production_caller` — narrow regression guard pinning `render_macro_play_recommendation_for_prompt` has at least one caller outside `macro_event_tracker.py`. Catches a future refactor that silently un-wires it.
+
+---
+
 ## 2026-05-09 — Intraday risk monitor: wired the 2 deferred checks (sector concentration swing + held-position halts) (Severity: high, safety system 50% dark)
 
 `multi_scheduler._task_intraday_risk_check` was calling `collect_intraday_alerts(...)` with 4 of 6 named arguments and a comment `# sector_moves + halted_held_symbols deferred`. The two deferred check functions (`check_sector_concentration_swing`, `check_held_position_halts`) are fully implemented and unit-tested in `intraday_risk_monitor.py` — they were just never invoked with non-empty data in production. The intraday safety system, intended to block new entries when SPY drawdown accelerates / vol spikes / **a sector swings hard / a held position is halted**, has been running with 50% coverage for an unknown duration.

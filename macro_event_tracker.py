@@ -231,3 +231,51 @@ def render_macro_event_for_prompt() -> str:
         f"Next macro event: {ev.event_type} {timing} "
         f"({ev.date}, {ev.severity} severity)"
     )
+
+
+def render_macro_play_recommendation_for_prompt(
+    *,
+    iv_rank_lookup,
+    spy_price_lookup,
+) -> str:
+    """Build the MACRO PLAYS prompt block when an actionable index-ETF
+    play exists. Mirrors render_earnings_plays_for_prompt's contract
+    in `options_earnings_plays.py` — pulls the 4 inputs needed by
+    `evaluate_macro_play` and emits a single recommendation line, or
+    `""` when no play applies (no upcoming event, outside pre-/post-
+    window, or IV regime in the dead zone).
+
+    Args:
+      iv_rank_lookup: callable() → SPY IV rank (0-100) or None.
+      spy_price_lookup: callable() → SPY spot price float or None.
+
+    Both injected so the function stays unit-testable without
+    requiring the options_oracle / market_data dependency chain."""
+    ev = get_upcoming_macro_event()
+    if ev is None:
+        return ""
+    days = days_until_next_event()
+    if days is None:
+        return ""
+    try:
+        iv_rank = iv_rank_lookup()
+    except Exception as exc:
+        logger.warning("macro plays: SPY IV-rank lookup failed: %s", exc)
+        return ""
+    try:
+        spy_price = spy_price_lookup()
+    except Exception as exc:
+        logger.warning("macro plays: SPY price lookup failed: %s", exc)
+        return ""
+    if iv_rank is None or spy_price is None or spy_price <= 0:
+        return ""
+
+    rec = evaluate_macro_play(
+        iv_rank_pct=iv_rank,
+        days_until_event=days,
+        event=ev,
+        spy_price=spy_price,
+    )
+    if not rec:
+        return ""
+    return f"MACRO PLAY: {rec.get('rationale', '')}"

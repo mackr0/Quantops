@@ -77,7 +77,7 @@ When something here moves to ✅, update the entry with the commit + date. When 
 | Phase D. Dynamic delta hedging | ✅ DONE | D1 |
 | Phase E. Vol surface analysis | ✅ DONE | E1-E4 |
 | Phase F1. Earnings vol plays | ✅ DONE | |
-| Phase F2. Macro event plays (FOMC/CPI/NFP) | ⏳ OPEN | Per `options_earnings_plays.py:25`: "deferred until macro-event tracker exists" |
+| Phase F2. Macro event plays (FOMC/CPI/NFP) | ✅ DONE | Tracker shipped 2026-05-03; integration shipped 2026-05-09 (`render_macro_play_recommendation_for_prompt` + trade_pipeline + ai_analyst wiring) |
 | Phase G1. Real-time options chain feed | 🔒 DEFERRED | "Defer until real-money phase" (per plan) |
 | Phase H1. Synthetic options backtester L1-L4 | ✅ DONE | 31 tests |
 | **Phase H L5. Backtester dashboard integration** | ⏳ OPEN | API callable; UI panel not yet wired. Plan flags as "not strictly needed". |
@@ -191,8 +191,8 @@ Out-of-scope (per plan §7): multi-exchange expansion, corporate-action awarenes
 | `ai_analyst.py:640` | "the AI to propose with action='OPTIONS' (deferred to follow-up)" | ⏳ OPEN — surface vocabulary for AI to propose options trades directly |
 | `alternative_data.py:1928` | App Store WoW rank change — "leave None — future enhancement when daily snapshots persist" | ⏳ OPEN — covered above in §1.1 |
 | `mc_backtest.py:25` | "correlated regimes... To capture those, we'd need to bootstrap by day, not by trade — future enhancement" | ⏳ OPEN — covered above in §1.2 |
-| `multi_scheduler.py:1196` | "sector_moves + halted_held_symbols deferred" | ⏳ OPEN — intraday risk monitor accepts these but scheduler isn't computing them yet |
-| `options_earnings_plays.py:25` | "with index ETFs (SPY/QQQ); deferred until macro-event tracker exists" | ⏳ OPEN — covered as Phase F2 in §2 |
+| `multi_scheduler.py:1196` | "sector_moves + halted_held_symbols deferred" | ✅ DONE 2026-05-09 — both wired via `_compute_sector_moves` + `_compute_halted_held_symbols`; AST guardrail in `tests/test_intraday_risk_full_wiring.py` enforces all kwargs are passed |
+| `options_earnings_plays.py:25` | "with index ETFs (SPY/QQQ); deferred until macro-event tracker exists" | ✅ DONE 2026-05-09 — comment rewritten to point at the macro analog (`macro_event_tracker.render_macro_play_recommendation_for_prompt`) which is now wired in trade_pipeline + ai_analyst |
 | `options_roll_manager.py:32` | "Roll-window thresholds. Tunable per-profile in a future commit." | ⏳ OPEN — currently module constants, would benefit from per-profile knobs |
 | `slippage_model.py:165` | "We don't store ADV at trade time, so use a simple proxy" | ⏳ OPEN — covered above in §1.2 |
 | `slippage_model.py:197` | "K is currently fitted from paper fills" | 🔒 DEFERRED — recalibrate after real money |
