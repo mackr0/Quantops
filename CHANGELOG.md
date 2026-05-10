@@ -17,6 +17,16 @@ Rules going forward:
 
 ---
 
+## 2026-05-09 — Deleted `migrate_segments_to_profiles()` (one-time historical migration, transition complete) (Severity: low, dead-code cleanup)
+
+Surfaced by the new `test_no_unwired_writers` guardrail. Function defined in `models.py:1125`, never called by any production code, no admin UI / CLI hook to invoke it, and verified on prod to be a no-op for every current user (mack already has both 4 segments + 11 profiles — migration would skip every row; guest has 0 of each). Logic recoverable from `git log -S "migrate_segments_to_profiles"` if ever needed for restore-from-backup.
+
+Side observation (NOT a cleanup target): `user_segment_configs` table itself is still actively used — `create_default_segment_configs()` writes new rows for new users, settings UI (`views.py:1213`) updates existing rows. The legacy segment system coexists with `trading_profiles` and isn't dead.
+
+Allowlist removed from `tests/test_no_unwired_writers.py`. Empty allowlist enforced.
+
+---
+
 ## 2026-05-09 — Deleted DOA `decision_log` infrastructure (table, writer, reader, JSON endpoint, 2 hidden UI panels) (Severity: high, dead-code cleanup + hidden-UI rule violation)
 
 The original "Add multi-user web platform with Flask UI" commit (4647854) shipped a "Decision Audit Trail" feature scaffolded but never wired:

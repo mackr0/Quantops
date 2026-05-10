@@ -101,13 +101,8 @@ def _has_caller_in_production(fn_name):
 # Add a name here ONLY if you're shipping scaffolding intentionally
 # AND have a tracked TODO with a date. Never silently allowlist.
 ALLOWLIST: dict = {
-    # 2026-05-09: one-time migration; the segment→profile transition it
-    # implements already ran historically. Surfaced by this guardrail
-    # while cleaning up the log_decision dead code. Decision pending
-    # on whether to delete entirely (transition is done) or keep as a
-    # restore-from-backup helper. Tracked separately, NOT bundled with
-    # the log_decision cleanup.
-    "migrate_segments_to_profiles": "One-time migration, transition complete; pending deletion-vs-keep decision (2026-05-09)",
+    # Example format:
+    # "log_some_future_thing": "Wired up by Phase-3 work, OPEN_ITEMS #42, by 2026-06-01",
 }
 
 
