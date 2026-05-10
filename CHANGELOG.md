@@ -17,6 +17,26 @@ Rules going forward:
 
 ---
 
+## 2026-05-09 — Recent Activity / Trades / AI Strategy: dynamic snake_case fields now humanized (was rendering `STRONG_BUY`, `bull_put_spread`, `small_cap_shorts` raw to the user) (Severity: medium, UX correctness)
+
+7 cells across 4 templates rendered dynamic snake_case-or-UPPER_SNAKE values without piping through the `humanize` Jinja filter:
+- `dashboard.html:274,275` — `decision_type`, `action_taken`
+- `dashboard.html:330` — `prof.account.status` (Alpaca; e.g. `ACCOUNT_RESTRICTED`)
+- `trades.html:45,49,54` — `decision_type`, `ai_signal`, `action_taken`
+- `ai_strategy.html:35` and `ai.html:499` — `market_type` (e.g. `small_cap_shorts`, `options_earnings`)
+
+Same bug class as the prior `insufficient_history` slippage leak. Each cell would show `STRONG_BUY` instead of "Strong Buy", `bull_put_spread` instead of "Bull Put Spread", `small_cap_shorts` instead of "Small Cap Shorts" — values that come from the LLM, the prediction recorder, the market_type slug system, or third-party APIs.
+
+**Fix:** added `| humanize` to each of the 7 cells. The filter is idempotent (`humanize(humanize(x)) == humanize(x)`) and registered at `display_names.py:627`.
+
+**Tests pinning:** `tests/test_no_raw_snake_case_in_templates.py`:
+- 5 behavioral tests pin per-field rendering (STRONG_BUY → "Strong Buy", etc.).
+- `test_no_raw_render_of_dynamic_snake_case_fields` — cross-cutting Jinja-template scanner that knows the closed allowlist of dynamic fields (decision_type, action_taken, ai_signal, predicted_signal, prediction_type, market_type, exit_trigger, veto_rule, regime, strategy_type) and fails if any render without a humanizing filter (`humanize`/`display_name`/`title`). Knows to skip predicate uses (`if 'BUY' in d.ai_signal`) and HTML-attribute slugs (`action="…/{{ d.strategy_type }}"`).
+
+**Surfaced during deep-dive (separate issue, tracked as Issue 22 in AUDIT_2026_05_09.md):** the `decision_log` table in production has zero rows; `models.log_decision()` writer exists but no production code calls it. The Recent Activity panel has been silently empty for an unknown duration. The rendering fix still matters because the panel will populate the moment a writer is wired up.
+
+---
+
 ## 2026-05-09 — Profit factor on /performance + /ai now counts every traded signal (was BUY/SELL only; SHORT and MULTILEG_OPEN silently dropped) (Severity: high, dashboard correctness)
 
 The profit_factor query in `views.api_performance` (line 2200-2218) and `views.api_ai_dashboard` (line 3114-3130) used `predicted_signal IN ('BUY', 'SELL')` — closed-set whitelist that pre-dated the addition of SHORT (small-cap shorts profile) and MULTILEG_OPEN (every options profile). New signal types were added to the prediction recorder but the consumer query was never re-audited.

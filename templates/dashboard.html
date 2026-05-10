@@ -271,8 +271,8 @@
                         <td class="muted">{{ (d.timestamp or '')|friendly_time }}</td>
                         <td>{{ d.segment }}</td>
                         <td><strong>{{ d.symbol }}</strong></td>
-                        <td>{{ d.decision_type }}</td>
-                        <td>{{ d.action_taken or '--' }}</td>
+                        <td>{{ d.decision_type | humanize }}</td>
+                        <td>{{ (d.action_taken | humanize) if d.action_taken else '--' }}</td>
                         <td>{{ "{:.0f}%".format(d.ai_confidence) if d.ai_confidence else '--' }}</td>
                     </tr>
                     {% endfor %}
@@ -327,7 +327,7 @@
         </div>
         <div class="stat-card">
             <small class="muted">Status</small>
-            <strong>{{ prof.account.status }}</strong>
+            <strong>{{ prof.account.status | humanize }}</strong>
         </div>
     </div>
     {% else %}

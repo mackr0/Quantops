@@ -32,7 +32,7 @@
                     <tr>
                         <td class="muted">{{ v.timestamp[:16] }}</td>
                         <td><strong>{{ v.strategy_name | display_name }}</strong></td>
-                        <td>{{ v.market_type }}</td>
+                        <td>{{ v.market_type | humanize }}</td>
                         <td>
                             {% if v.verdict == 'PASS' %}
                                 <span class="pnl-pos">PASS</span>

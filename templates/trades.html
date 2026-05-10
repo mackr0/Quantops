@@ -42,16 +42,16 @@
                     <td class="muted">{{ d.timestamp[:16] if d.timestamp else '--' }}</td>
                     <td>{{ d.segment or '--' }}</td>
                     <td><strong>{{ d.symbol }}</strong></td>
-                    <td>{{ d.decision_type }}</td>
+                    <td>{{ d.decision_type | humanize }}</td>
                     <td>
                         {% if d.ai_signal %}
                         <span class="{{ 'pnl-pos' if 'BUY' in (d.ai_signal or '') else ('pnl-neg' if 'SELL' in (d.ai_signal or '') else '') }}">
-                            {{ d.ai_signal }}
+                            {{ d.ai_signal | humanize }}
                         </span>
                         {% else %}--{% endif %}
                     </td>
                     <td>{{ "{:.0f}%".format(d.ai_confidence) if d.ai_confidence else '--' }}</td>
-                    <td>{{ d.action_taken or '--' }}</td>
+                    <td>{{ (d.action_taken | humanize) if d.action_taken else '--' }}</td>
                     <td>{{ "{:.0f}".format(d.qty) if d.qty else '--' }}</td>
                     <td>{{ "${:,.2f}".format(d.price) if d.price else '--' }}</td>
                     <td class="{{ 'pnl-pos' if (d.pnl or 0) > 0 else ('pnl-neg' if (d.pnl or 0) < 0 else '') }}">
