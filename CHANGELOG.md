@@ -17,24 +17,35 @@ Rules going forward:
 
 ---
 
-## 2026-05-09 — /performance route: deleted 4 dead-throw computations + cross-cutting AST guardrail (Severity: medium, dead code + wasted DB queries)
+## 2026-05-09 — /performance: deleted 4 orphaned dead-throw computations + cross-cutting AST guardrail (Severity: medium → resolved correctly after a 3-commit detour)
 
-`views.api_performance` (the institutional /performance dashboard, route at `views.py:2593`) computed four datasets per page load and then threw them away by passing literal `[]` to the same-named `render_template` kwargs:
+**Final state (commits `52f4cc5` + `1e0abf5` revert of `0090d2b`):** the four orphaned datasets in `views.py:performance_dashboard` are deleted, the AST guardrail is in place, and `/performance` is unchanged in user-visible behavior. The lessons from the detour are recorded as feedback memories.
 
-| Variable | Computed at | Discarded at |
+The original symptom — `views.api_performance` (the institutional /performance dashboard, route at `views.py:2593`) computed four datasets per page load and then threw them away by passing literal `[]` to the same-named `render_template` kwargs:
+
+| Variable | Computed at | Was discarded at |
 |---|---|---|
-| `tuning_history` | views.py:2208-2225 (per-profile loop with `get_tuning_history` + label formatting) | `tuning_history=[]` at 2607 |
-| `tuning_status` | views.py:2240-2275 (per-profile UserContext build + `describe_tuning_state` + last-run timestamp from `task_runs`) | `tuning_status=[]` at 2608 |
-| `learned_patterns` | views.py:2228-2235 (per-DB `_analyze_failure_patterns`) | `learned_patterns=[]` at 2609 |
-| `sec_alerts` | views.py:2509-2536 (per-profile SQLite open + `get_active_alerts` + severity sort) | `sec_alerts=[]` at 2613 |
+| `tuning_history` | views.py:2208-2225 (per-profile loop with `get_tuning_history` + label formatting) | `tuning_history=[]` |
+| `tuning_status` | views.py:2240-2275 (per-profile UserContext build + `describe_tuning_state` + last-run timestamp from `task_runs`) | `tuning_status=[]` |
+| `learned_patterns` | views.py:2228-2235 (per-DB `_analyze_failure_patterns`) | `learned_patterns=[]` |
+| `sec_alerts` | views.py:2509-2536 (per-profile SQLite open + `get_active_alerts` + severity sort) | `sec_alerts=[]` |
 
-**Audit's claim re-checked:** the audit said "UI blocks expecting these show nothing." That's not quite right — `templates/performance.html` doesn't reference any of these four variables. They're consumed by `templates/ai_performance.html` (a *different* template, rendered from `views.api_performance` at line 1795 which passes `tuning_history=tuning_history[:20]` correctly). So the bug was pure waste — CPU + DB queries + UserContext build per /performance refresh, then discarded — not user-visible missing data.
+**The real reason the data was orphaned:** every one of these 4 datasets is **already surfaced on `/ai#operations`** as richer JS-loaded paginated widgets backed by `/api/tuning-status`, `/api/active-lessons`, and `/api/sec-alerts`. `templates/performance.html` doesn't reference any of these because they were never meant to render there — `/ai` is the canonical home. The `views.py:performance_dashboard` computation was orphaned scaffolding, not partial-shipping; the panels exist, just not on this route.
 
-**Why it existed (best guess):** these were copied from `views.api_performance` when the institutional dashboard was scaffolded, but the dashboard's panels for these four were never designed/added. The empty-list args were placeholder overrides that hid the partially-shipped state.
+**Why it existed (best guess):** copied from `views.api_performance` (which feeds `ai_performance.html`) when the institutional dashboard was scaffolded; the copy never got cleaned up after the equivalent panels landed in `/ai#operations`.
 
-**Fix:** deleted all 4 dead computations + 4 dead `=[]` kwargs. Saves ~4-N DB queries + 1 UserContext build per /performance refresh. Tests for the routes that DO use these (api_performance via ai_performance.html) remain unchanged.
+**Fix:** delete all 4 orphaned computations + 4 dead `=[]` kwargs. Saves ~4-N DB queries + 1 UserContext build per /performance refresh. The actual user-facing panels remain unchanged on `/ai#operations`.
 
-**Cross-cutting AST guardrail** (`tests/test_no_dead_throw_render_kwargs.py`): scans `views.py` for any `render_template(...)` kwarg whose value is a literal `[]` / `{}` AND a same-named variable was assigned non-trivially earlier in the same function. Pure-default empties (variable never named earlier) pass — this targets the dead-throw shape specifically. Empty allowlist with comment hooks for legitimate JS-populated cases.
+**Cross-cutting AST guardrail** (`tests/test_no_dead_throw_render_kwargs.py`): scans `views.py` for any `render_template(...)` kwarg whose value is a literal `[]` / `{}` AND a same-named variable was assigned non-trivially earlier in the same function. Targets the dead-throw shape specifically. Empty allowlist with comment hooks for legitimate JS-populated cases.
+
+**3-commit detour and the lessons recorded as memories:**
+1. **`52f4cc5`** — deleted the dead-throw computations. **Action correct, rationale incomplete** ("no template consumes them" — true but missed the bigger truth that /ai already serves these via richer widgets).
+2. **`0090d2b`** — Mack pushed back on the delete framing it as a "lazy fix" (under the assumption the panels were missing); I built 4 duplicate UI panels on `/performance#tuning`. **Wrong.** The panels already existed on `/ai#operations` — never checked.
+3. **`1e0abf5`** — reverted `0090d2b`. State returns to post-`52f4cc5`: dead-throw deleted, AST guardrail in place, `/ai#operations` unchanged (the canonical home for these panels).
+
+**Two new feedback memories** capture the lesson:
+- `feedback_never_delete_as_shortcut.md` — partially-shipped features must be COMPLETED, not deleted (still applies as a default).
+- `feedback_check_existing_before_acting.md` — **but** before judging delete-vs-build, exhaustively grep the codebase (templates AND JS AND API endpoints AND sibling routes) for the same functionality. Both `52f4cc5` and `0090d2b` skipped this check. The fundamental rule: investigate the WHOLE landscape before acting on a single point.
 
 ---
 
