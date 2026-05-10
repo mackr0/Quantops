@@ -34,13 +34,15 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 # Files we scan for feature-name references. Order doesn't matter.
+# `ai_awareness.html` was removed 2026-05-10 (Issue 12) — it had been a
+# dead template (no render_template caller) since the multi-tab `ai.html`
+# consolidation. All feature references it had also appear in `ai.html`.
 SURFACES = [
     "templates/ai.html",
     "templates/dashboard.html",
     "templates/performance.html",
     "templates/settings.html",
     "templates/trades.html",
-    "templates/ai_awareness.html",
     "views.py",
     "ai_analyst.py",
     "trade_pipeline.py",

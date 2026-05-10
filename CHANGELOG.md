@@ -17,6 +17,32 @@ Rules going forward:
 
 ---
 
+## 2026-05-10 — Issue 12: deleted 5 dead templates + structural orphan guardrail (Severity: medium, dead-code cleanup + future-drift prevention)
+
+5 templates were orphaned — no `render_template(...)` call and no extends/include from any other template. They drifted independently from the live `ai.html` consolidated multi-tab page they were replaced by.
+
+**Verified deletion is safe** (per the never-delete-as-shortcut rule):
+- Every panel header in the 4 ai_*.html dead templates also exists in `ai.html` (Learned Patterns, Meta-Model, Strategy Validations, Strategy Allocation, Evolving Strategy Library, Alpha Decay, Market Intelligence, SEC Filing Alerts, Event Stream, Specialist Ensemble, Self-Tuning, AI Cost — 12/12 mapped).
+- Tokens UNIQUE to `ai_awareness.html` (`fred_indicators`, `etf_flows.net_flow`) are **broken JS references** to API fields that the API doesn't return — `tests/test_no_guessing.py:511-523` literally lists them as "made-up fields". Reviving the template would have shipped broken code.
+- 4 redirect routes (`/ai/brain`, `/ai/strategy`, `/ai/awareness`, `/ai/operations`) kept — they preserve external bookmarks pointing at the old URLs (the legitimate purpose of route-as-redirect).
+
+**Deleted:**
+- `templates/ai_brain.html` (283 lines)
+- `templates/ai_strategy.html` (238 lines)
+- `templates/ai_awareness.html` (416 lines)
+- `templates/ai_operations.html` (215 lines)
+- `templates/_ai_nav.html` — the nav partial for the dead ai_*.html templates; surfaced by the new guardrail (audit hadn't noticed).
+
+**Updated** `tests/test_meta_features_have_ui.py:SURFACES` to remove `templates/ai_awareness.html`. Every feature it referenced also matches in `ai.html` so coverage unchanged.
+
+**NEW structural guardrail** (`tests/test_no_orphan_templates.py`): scans `templates/*.html` for any orphan — no `render_template`, no `{% extends %}` / `{% include %}` / `{% import %}` / `{% from ... import %}` reference. Empty allowlist. Caught `_ai_nav.html` immediately. Initial version only matched `extends|include` patterns and would have missed `_trades_table.html` (used via `{% import %}` in views.py:4579 inside a `render_template_string`); refined to recognize all 4 Jinja directives + Python-embedded Jinja.
+
+**Audit had one error**: `ai_performance.html` was listed among the 5 dead templates, but it IS rendered at `views.py:1834` (the `/ai/performance` route) — Issue 8 worked extensively in this template. NOT deleted; the live route is intact.
+
+2,562 pass.
+
+---
+
 ## 2026-05-10 — Issue 11: OPEN_ITEMS.md §10 line refs + statuses synced with source; structural drift guardrail added (Severity: medium, doc-vs-code drift erodes trust)
 
 OPEN_ITEMS.md §10 had 9 `<file>:<line>` references to "deferred" / "future enhancement" comments in source. After Issues 6, 7, 10 rewrote/removed several of those comments, the OPEN_ITEMS entries went stale: line numbers drifted (e.g., `multi_scheduler.py:1196` no longer has any related content; `slippage_model.py:197` is a `notional = qty * dp` line); status remained ⏳ OPEN for items that had actually shipped.
