@@ -236,24 +236,25 @@ def _safe_pending_orders(ctx):
         db_path = getattr(ctx, "db_path", None)
         if db_path:
             try:
-                import sqlite3 as _sqlite
-                conn = _sqlite.connect(db_path)
+                # open_profile_db ensures init_tracker_db + journal.init_db
+                # (which runs _migrate_columns), so all four protective-
+                # order columns are guaranteed to exist before the SELECT.
+                conn = open_profile_db(db_path)
                 ids: set = set()
                 for col in ("order_id", "protective_stop_order_id",
                              "protective_tp_order_id",
                              "protective_trailing_order_id"):
-                    try:
-                        rows = conn.execute(
-                            f"SELECT {col} FROM trades WHERE {col} IS NOT NULL"
-                        ).fetchall()
-                        ids.update(r[0] for r in rows if r[0])
-                    except Exception:
-                        pass  # column may not exist yet on a fresh DB
+                    rows = conn.execute(
+                        f"SELECT {col} FROM trades WHERE {col} IS NOT NULL"
+                    ).fetchall()
+                    ids.update(r[0] for r in rows if r[0])
                 conn.close()
                 owned_ids = ids
             except Exception as exc:
-                logger.debug("Could not load owned order IDs from %s: %s",
-                              db_path, exc)
+                logger.warning(
+                    "_safe_pending_orders: could not load owned order IDs from %s: %s",
+                    db_path, exc,
+                )
                 # Fail open — better to show extra orders than none at all
                 owned_ids = None
 
@@ -479,29 +480,30 @@ def dashboard():
 
     # Check for recent scan failures across all profiles
     scan_failures = []
-    try:
-        import sqlite3 as _sq_fail
-        for prof in profiles:
-            db = f"quantopsai_profile_{prof['id']}.db"
-            try:
-                conn = _sq_fail.connect(db)
-                conn.row_factory = _sq_fail.Row
-                fails = conn.execute(
-                    "SELECT task_name, started_at FROM task_runs "
-                    "WHERE status='failed' AND started_at >= datetime('now', '-1 hour') "
-                    "ORDER BY started_at DESC LIMIT 1"
-                ).fetchall()
-                conn.close()
-                for f in fails:
-                    scan_failures.append({
-                        "profile_name": prof["name"],
-                        "task": f["task_name"],
-                        "time": f["started_at"],
-                    })
-            except Exception:
-                pass
-    except Exception:
-        pass
+    for prof in profiles:
+        db = f"quantopsai_profile_{prof['id']}.db"
+        try:
+            conn = open_profile_db(db)
+            fails = conn.execute(
+                "SELECT task_name, started_at FROM task_runs "
+                "WHERE status='failed' AND started_at >= datetime('now', '-1 hour') "
+                "ORDER BY started_at DESC LIMIT 1"
+            ).fetchall()
+            conn.close()
+            for f in fails:
+                scan_failures.append({
+                    "profile_name": prof["name"],
+                    "task": f["task_name"],
+                    "time": f["started_at"],
+                })
+        except Exception as exc:
+            # task_runs read failure should not break the dashboard but
+            # MUST surface so we can diagnose. Logging per-profile lets
+            # us see whether one DB is broken vs the whole batch.
+            logger.warning(
+                "dashboard: scan_failures lookup failed for profile %s: %s",
+                prof.get("id"), exc,
+            )
 
     # Build per-profile schedule status
     from datetime import datetime as _dt
@@ -558,8 +560,13 @@ def dashboard():
                             next_scan_text = f"{mins}m"
                         else:
                             next_scan_text = "Due"
-                except Exception:
-                    next_scan_text = ""
+                except Exception as exc:
+                    # next_scan_text falls back to "" (no scan-time
+                    # callout); the rest of the row still renders.
+                    logger.warning(
+                        "dashboard: next_scan_text build failed for profile %s: %s",
+                        prof.get("id"), exc,
+                    )
 
             profile_schedules.append({
                 "profile_id": prof["id"],
@@ -570,8 +577,11 @@ def dashboard():
                 "next_scan_text": next_scan_text,
                 "schedule_type": ctx.schedule_type,
             })
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "dashboard: profile_schedule build failed for profile %s: %s",
+                prof.get("id"), exc,
+            )
 
     # Master kill-switch state for the banner
     try:
@@ -1402,8 +1412,11 @@ def _calculate_risk_metrics(db_paths):
                     "equity": r["equity"],
                 })
             conn.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "_calculate_risk_metrics: per-DB rollup failed for %s: %s",
+                db_path, exc,
+            )
 
     # Sort trades by timestamp
     all_trades.sort(key=lambda t: t["timestamp"])
@@ -1689,54 +1702,56 @@ def ai_performance_legacy():
                         p["worst_prediction"].get("return_pct", 0) <
                         combined_perf["worst_prediction"].get("return_pct", 0)):
                     combined_perf["worst_prediction"] = p["worst_prediction"]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "ai_performance_legacy: get_ai_performance failed for %s: %s",
+                db_path, exc,
+            )
 
-        # Query raw resolved predictions for accurate aggregation
-        try:
-            conn = open_profile_db(db_path)
-            rows = conn.execute(
-                "SELECT predicted_signal, actual_outcome, actual_return_pct, confidence "
-                "FROM ai_predictions WHERE status = 'resolved'"
-            ).fetchall()
-            conn.close()
-            for r in rows:
-                outcome = r["actual_outcome"]
-                ret = r["actual_return_pct"]
-                conf = r["confidence"] or 0
-                sig = r["predicted_signal"] or ""
+        # Query raw resolved predictions for accurate aggregation.
+        # open_profile_db ensures schema + busy_timeout; the only
+        # remaining failure mode would be a real bug, which we want
+        # to see.
+        conn = open_profile_db(db_path)
+        rows = conn.execute(
+            "SELECT predicted_signal, actual_outcome, actual_return_pct, confidence "
+            "FROM ai_predictions WHERE status = 'resolved'"
+        ).fetchall()
+        conn.close()
+        for r in rows:
+            outcome = r["actual_outcome"]
+            ret = r["actual_return_pct"]
+            conf = r["confidence"] or 0
+            sig = r["predicted_signal"] or ""
 
-                if outcome == "win":
-                    all_wins += 1
-                    conf_on_wins.append(conf)
-                    if ret and ret > 0:
-                        total_gains += ret
-                elif outcome == "loss":
-                    all_losses += 1
-                    conf_on_losses.append(conf)
-                    if ret and ret < 0:
-                        total_losses_amt += abs(ret)
+            if outcome == "win":
+                all_wins += 1
+                conf_on_wins.append(conf)
+                if ret and ret > 0:
+                    total_gains += ret
+            elif outcome == "loss":
+                all_losses += 1
+                conf_on_losses.append(conf)
+                if ret and ret < 0:
+                    total_losses_amt += abs(ret)
 
-                if ret is not None:
-                    if "BUY" in sig.upper():
-                        all_return_buys.append(ret)
-                    elif "SELL" in sig.upper():
-                        all_return_sells.append(ret)
-        except Exception:
-            pass
+            if ret is not None:
+                if "BUY" in sig.upper():
+                    all_return_buys.append(ret)
+                elif "SELL" in sig.upper():
+                    all_return_sells.append(ret)
 
-        try:
-            t = get_performance_summary(db_path=db_path)
-            combined_trade["total_trades"] += t.get("total_trades", 0)
-            combined_trade["winning_trades"] += t.get("winning_trades", 0)
-            combined_trade["losing_trades"] += t.get("losing_trades", 0)
-            combined_trade["total_pnl"] += t.get("total_pnl", 0)
-            if t.get("best_trade", 0) > combined_trade["best_trade"]:
-                combined_trade["best_trade"] = t["best_trade"]
-            if t.get("worst_trade", 0) < combined_trade["worst_trade"]:
-                combined_trade["worst_trade"] = t["worst_trade"]
-        except Exception:
-            pass
+        # get_performance_summary returns an empty/zero dict on failure
+        # internally; outer try here was over-defensive.
+        t = get_performance_summary(db_path=db_path)
+        combined_trade["total_trades"] += t.get("total_trades", 0)
+        combined_trade["winning_trades"] += t.get("winning_trades", 0)
+        combined_trade["losing_trades"] += t.get("losing_trades", 0)
+        combined_trade["total_pnl"] += t.get("total_pnl", 0)
+        if t.get("best_trade", 0) > combined_trade["best_trade"]:
+            combined_trade["best_trade"] = t["best_trade"]
+        if t.get("worst_trade", 0) < combined_trade["worst_trade"]:
+            combined_trade["worst_trade"] = t["worst_trade"]
 
     # Calculate derived metrics from raw aggregated data
     total_resolved = all_wins + all_losses
@@ -1778,44 +1793,38 @@ def ai_performance_legacy():
         tuning_history.extend(history)
     tuning_history.sort(key=lambda h: h.get("timestamp", ""), reverse=True)
 
-    # Aggregate slippage stats across relevant DBs
-    from journal import get_slippage_stats
+    # Aggregate slippage stats across relevant DBs.
+    # get_slippage_stats returns None on missing/empty data internally.
     combined_slippage = None
     for db_path in db_paths:
-        try:
-            s = get_slippage_stats(db_path=db_path)
-            if s:
-                if combined_slippage is None:
-                    combined_slippage = {
-                        "trades_with_fills": 0, "avg_slippage_pct": 0,
-                        "total_slippage_cost": 0, "worst_slippage_pct": 0,
-                        "worst_trade": None,
-                    }
-                combined_slippage["trades_with_fills"] += s["trades_with_fills"]
-                combined_slippage["total_slippage_cost"] += s["total_slippage_cost"]
-                if s["worst_slippage_pct"] > combined_slippage.get("worst_slippage_pct", 0):
-                    combined_slippage["worst_slippage_pct"] = s["worst_slippage_pct"]
-                    combined_slippage["worst_trade"] = s.get("worst_trade")
-        except Exception:
-            pass
+        s = get_slippage_stats(db_path=db_path)
+        if s:
+            if combined_slippage is None:
+                combined_slippage = {
+                    "trades_with_fills": 0, "avg_slippage_pct": 0,
+                    "total_slippage_cost": 0, "worst_slippage_pct": 0,
+                    "worst_trade": None,
+                }
+            combined_slippage["trades_with_fills"] += s["trades_with_fills"]
+            combined_slippage["total_slippage_cost"] += s["total_slippage_cost"]
+            if s["worst_slippage_pct"] > combined_slippage.get("worst_slippage_pct", 0):
+                combined_slippage["worst_slippage_pct"] = s["worst_slippage_pct"]
+                combined_slippage["worst_trade"] = s.get("worst_trade")
     if combined_slippage and combined_slippage["trades_with_fills"] > 0:
-        # Re-query for accurate average across all DBs
+        # Re-query for accurate average across all DBs.
         total_slip_sum = 0
         total_slip_count = 0
         for db_path in db_paths:
-            try:
-                c = open_profile_db(db_path)
-                r = c.execute(
-                    "SELECT COUNT(*) AS cnt, SUM(slippage_pct) AS s "
-                    "FROM trades WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL "
-                    "AND decision_price > 0"
-                ).fetchone()
-                c.close()
-                if r and r["cnt"]:
-                    total_slip_count += r["cnt"]
-                    total_slip_sum += r["s"] or 0
-            except Exception:
-                pass
+            c = open_profile_db(db_path)
+            r = c.execute(
+                "SELECT COUNT(*) AS cnt, SUM(slippage_pct) AS s "
+                "FROM trades WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL "
+                "AND decision_price > 0"
+            ).fetchone()
+            c.close()
+            if r and r["cnt"]:
+                total_slip_count += r["cnt"]
+                total_slip_sum += r["s"] or 0
         if total_slip_count > 0:
             combined_slippage["avg_slippage_pct"] = round(total_slip_sum / total_slip_count, 4)
 
@@ -1929,8 +1938,11 @@ def performance_dashboard():
                 if snap and snap["equity"] is not None:
                     latest_eq = float(snap["equity"])
                 conn.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "performance: latest_equity snapshot failed for profile %s: %s",
+                    p.get("id"), exc,
+                )
             profile_data.append({
                 "name": p.get("name", f"profile {p['id']}"),
                 "capital": p.get("initial_capital") or 0,
@@ -1982,10 +1994,9 @@ def performance_dashboard():
                 continue
 
         if n_profiles_with_data and equity_sum > 0:
-            from portfolio_exposure import compute_exposure
             exposure = compute_exposure(all_positions, equity_sum)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("performance: exposure aggregation failed: %s", exc)
 
     # P4.1 of LONG_SHORT_PLAN — surface target_book_beta when a single
     # profile is selected (aggregate "All Profiles" view has no single
@@ -2140,8 +2151,11 @@ def performance_dashboard():
                     "ai-performance per-DB aggregation failed for %s: %s",
                     db_path, _exc,
                 )
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.warning(
+                "ai-performance per-profile rollup failed for %s: %s",
+                db_path, _exc,
+            )
 
     if ai_perf["directional_resolved"] > 0:
         ai_perf["directional_win_rate"] = round(
@@ -2574,80 +2588,67 @@ def _build_long_short_awareness(profiles):
                     "market_value": mv,
                 })
 
-            # Current book beta
-            try:
-                from portfolio_exposure import compute_book_beta
-                row["current_book_beta"] = compute_book_beta(positions, equity)
-                if (row["current_book_beta"] is not None
-                        and row["target_book_beta"] is not None):
-                    row["book_beta_delta"] = (
-                        row["current_book_beta"] - row["target_book_beta"]
-                    )
-            except Exception:
-                pass
+            # Current book beta. compute_book_beta returns None on
+            # insufficient data; no try wrapper needed.
+            row["current_book_beta"] = compute_book_beta(positions, equity)
+            if (row["current_book_beta"] is not None
+                    and row["target_book_beta"] is not None):
+                row["book_beta_delta"] = (
+                    row["current_book_beta"] - row["target_book_beta"]
+                )
 
             # Exposure (sector + factor) — full output, plus derived
             # current short share and balance gate state.
-            try:
-                from portfolio_exposure import compute_exposure, balance_gate
-                if equity > 0 and positions:
-                    exp = compute_exposure(positions, equity)
-                    row["exposure"] = exp
-                    row["num_positions"] = exp.get("num_positions", 0)
-                    gross = float(exp.get("gross_pct") or 0)
-                    if gross > 0:
-                        cur_short = sum(
-                            (b.get("short_pct") or 0)
-                            for b in (exp.get("by_sector") or {}).values()
-                        )
-                        row["current_short_share"] = cur_short / gross
-                        if row["target_short_pct"] is not None:
-                            row["balance_state"] = balance_gate(
-                                target_short_pct=row["target_short_pct"],
-                                current_exposure=exp,
-                            )
-                        # Concentration warnings — sectors over 30% gross
-                        for sec, b in (exp.get("by_sector") or {}).items():
-                            sec_gross = (b.get("long_pct") or 0) + (b.get("short_pct") or 0)
-                            if sec_gross >= 30.0:
-                                row["concentration_warnings"].append({
-                                    "sector": sec,
-                                    "gross_pct": sec_gross,
-                                })
-            except Exception:
-                pass
-
-            # Risk-budget breakdown (P4.4) — per-position weight × vol
-            try:
-                from risk_parity import analyze_position_risk
-                row["risk_budget"] = analyze_position_risk(positions, equity)
-            except Exception:
-                pass
-
-            # Kelly recommendations per direction
-            try:
-                from kelly_sizing import compute_kelly_recommendation
-                row["kelly_long"] = compute_kelly_recommendation(prof_db, "long")
-                row["kelly_short"] = compute_kelly_recommendation(prof_db, "short")
-            except Exception:
-                pass
-
-            # Drawdown + capital scale
-            try:
-                from portfolio_manager import check_drawdown
-                from drawdown_scaling import compute_capital_scale
-                dd = check_drawdown(ctx, account, db_path=prof_db) or {}
-                row["drawdown_pct"] = dd.get("drawdown_pct")
-                if row["drawdown_pct"] is not None:
-                    row["drawdown_scale"] = compute_capital_scale(
-                        row["drawdown_pct"]
+            from portfolio_exposure import balance_gate
+            if equity > 0 and positions:
+                exp = compute_exposure(positions, equity)
+                row["exposure"] = exp
+                row["num_positions"] = exp.get("num_positions", 0)
+                gross = float(exp.get("gross_pct") or 0)
+                if gross > 0:
+                    cur_short = sum(
+                        (b.get("short_pct") or 0)
+                        for b in (exp.get("by_sector") or {}).values()
                     )
-            except Exception:
-                pass
-        except Exception:
-            # Profile-level failure: keep the empty row so the user
-            # sees that the profile is enabled but data wasn't readable.
-            pass
+                    row["current_short_share"] = cur_short / gross
+                    if row["target_short_pct"] is not None:
+                        row["balance_state"] = balance_gate(
+                            target_short_pct=row["target_short_pct"],
+                            current_exposure=exp,
+                        )
+                    # Concentration warnings — sectors over 30% gross
+                    for sec, b in (exp.get("by_sector") or {}).items():
+                        sec_gross = (b.get("long_pct") or 0) + (b.get("short_pct") or 0)
+                        if sec_gross >= 30.0:
+                            row["concentration_warnings"].append({
+                                "sector": sec,
+                                "gross_pct": sec_gross,
+                            })
+
+            # Risk-budget breakdown (P4.4) — per-position weight × vol.
+            # analyze_position_risk returns None on insufficient sample.
+            row["risk_budget"] = analyze_position_risk(positions, equity)
+
+            # Kelly recommendations per direction. Returns None on edge.
+            row["kelly_long"] = compute_kelly_recommendation(prof_db, "long")
+            row["kelly_short"] = compute_kelly_recommendation(prof_db, "short")
+
+            # Drawdown + capital scale.
+            dd = check_drawdown(ctx, account, db_path=prof_db) or {}
+            row["drawdown_pct"] = dd.get("drawdown_pct")
+            if row["drawdown_pct"] is not None:
+                row["drawdown_scale"] = compute_capital_scale(
+                    row["drawdown_pct"]
+                )
+        except Exception as exc:
+            # Profile-level failure: log AND keep the empty row so the
+            # user sees the profile is enabled but data wasn't readable.
+            # Logging the exception lets us trace which profile / which
+            # feature failed instead of just seeing a blank cell.
+            logger.warning(
+                "long_short_awareness: rollup failed for profile %s: %s",
+                p.get("id"), exc,
+            )
         out.append(row)
     return out
 
@@ -2729,8 +2730,13 @@ def _build_portfolio_risk_awareness(profiles):
             row_dict["factor_exposures"] = [
                 (name, float(beta)) for name, beta in ranked[:6]
             ]
-        except Exception:
-            pass
+        except (json.JSONDecodeError, TypeError, ValueError, AttributeError) as exc:
+            # Legacy rows may have malformed factor JSON; the row's
+            # other fields still render, just without factor_exposures.
+            logger.debug(
+                "portfolio_risk: factor_exposures parse failed for snapshot %s: %s",
+                row_dict.get("snapshot_at"), exc,
+            )
         try:
             grouped = _json.loads(row["grouped_decomposition_json"] or "{}")
             total = sum(abs(v or 0) for v in grouped.values()) or 1.0
@@ -2738,13 +2744,19 @@ def _build_portfolio_risk_awareness(profiles):
                 k: round((v or 0) / total * 100, 1)
                 for k, v in grouped.items()
             }
-        except Exception:
-            pass
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            logger.debug(
+                "portfolio_risk: grouped_share parse failed for snapshot %s: %s",
+                row_dict.get("snapshot_at"), exc,
+            )
         try:
             scenarios = _json.loads(row["scenarios_json"] or "[]")
             row_dict["scenarios"] = scenarios[:5]    # worst 5
-        except Exception:
-            pass
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            logger.debug(
+                "portfolio_risk: scenarios parse failed for snapshot %s: %s",
+                row_dict.get("snapshot_at"), exc,
+            )
         out.append(row_dict)
     return out
 
@@ -4504,10 +4516,8 @@ def api_scan_status(profile_id):
 
     # Add next scan countdown from task_runs
     try:
-        import sqlite3 as _sq_scan
-        import time as _t_scan
         db = f"quantopsai_profile_{profile_id}.db"
-        conn = _sq_scan.connect(db)
+        conn = open_profile_db(db)
         row = conn.execute(
             "SELECT started_at FROM task_runs "
             "WHERE task_name LIKE '%Scan%' AND status IN ('completed','failed') "
@@ -4520,8 +4530,11 @@ def api_scan_status(profile_id):
             now = _dt_scan.now(timezone.utc)
             elapsed = (now - last).total_seconds()
             status["next_scan_sec"] = max(0, int(900 - elapsed))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning(
+            "api_scan_status: next_scan_sec lookup failed for profile %s: %s",
+            profile_id, exc,
+        )
 
     return jsonify(status if status else {"step": None})
 
@@ -4703,11 +4716,15 @@ def api_tuning_status():
         try:
             ctx = build_user_context_from_profile(p["id"])
             state = describe_tuning_state(ctx)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "api_tuning_status: tuning state build failed for profile %s: %s",
+                p["id"], exc,
+            )
             state = {"can_tune": False, "resolved": 0, "required": 20, "message": "Error"}
         last_run = None
         try:
-            c = _sq.connect(ctx.db_path)
+            c = open_profile_db(ctx.db_path)
             row = c.execute(
                 "SELECT started_at FROM task_runs WHERE task_name LIKE '%Self-Tune%' "
                 "ORDER BY started_at DESC LIMIT 1"
@@ -4715,8 +4732,11 @@ def api_tuning_status():
             c.close()
             if row:
                 last_run = row[0]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "api_tuning_status: last_run lookup failed for profile %s: %s",
+                p["id"], exc,
+            )
         items.append({
             "profile_name": p["name"], "resolved": state["resolved"],
             "required": state["required"], "can_tune": state["can_tune"],
@@ -4923,8 +4943,11 @@ def api_resolve_param():
                 chain.append({"layer": "symbol", "symbol": symbol,
                                 "value": sym_val, "source": "symbol_overrides"})
                 final_value, final_source = sym_val, f"symbol:{symbol}"
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "api_resolve_param: per-symbol resolve failed (param=%s symbol=%s): %s",
+                param_name, symbol, exc,
+            )
 
     # If no override fired, the global value wins.
     if final_value is None:
@@ -5111,8 +5134,11 @@ def api_tuning_history():
                 h["old_value_label"] = _format_param_value(pname, h.get("old_value"))
                 h["new_value_label"] = _format_param_value(pname, h.get("new_value"))
             all_history.extend(history)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "api_tuning_history: per-profile fetch failed for %s: %s",
+                p["id"], exc,
+            )
     all_history.sort(key=lambda h: h.get("timestamp", ""), reverse=True)
 
     total = len(all_history)
@@ -5140,10 +5166,12 @@ def api_learned_patterns():
         if not os.path.exists(db_path):
             continue
         try:
-            from self_tuning import _analyze_failure_patterns
             patterns.extend(_analyze_failure_patterns(db_path))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "api_learned_patterns: analyze failed for %s: %s",
+                db_path, exc,
+            )
 
     # Deduplicate
     patterns = list(dict.fromkeys(patterns))
@@ -5166,8 +5194,6 @@ def api_sec_alerts():
     if profile_id:
         profiles = [p for p in profiles if p["id"] == profile_id]
 
-    from sec_filings import get_active_alerts
-
     alerts = []
     for p in profiles:
         db_path = f"quantopsai_profile_{p['id']}.db"
@@ -5184,8 +5210,11 @@ def api_sec_alerts():
                     "signal": a.get("alert_signal", ""),
                     "summary": a.get("alert_summary", ""),
                 })
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "api_sec_alerts: get_active_alerts failed for %s: %s",
+                db_path, exc,
+            )
 
     sev_rank = {"high": 0, "medium": 1, "low": 2}
     alerts.sort(key=lambda a: (sev_rank.get(a["severity"], 3), a.get("filed_date", "")),
@@ -5256,8 +5285,13 @@ def _list_docs():
                     if line.startswith("# "):
                         title = line[2:].strip()
                         break
-        except OSError:
-            pass
+        except OSError as exc:
+            # Title falls back to the filename-derived default; log so
+            # a permission-or-encoding issue doesn't go unnoticed.
+            logger.warning(
+                "_list_docs: title-extract failed for %s: %s",
+                fname, exc,
+            )
         out.append((fname, title))
     return out
 

@@ -17,6 +17,37 @@ Rules going forward:
 
 ---
 
+## 2026-05-10 — Issue 9: zero silent-pass swallows in views.py + foundational SQLite hardening (Severity: high, eliminates a structural class of silent failures)
+
+`views.py` had 57 `except [Exception]: pass` handlers that silently swallowed failures from every dashboard route. The user saw missing data without explanation; journald had no diagnostic trail. Fixed end-to-end with a 6-commit progression that solves the root causes instead of just logging:
+
+**Foundational fixes** (commits `9eeaf29`, `a7220a6`):
+- `PRAGMA busy_timeout=5000` added to every connection helper (`models._get_conn`, `journal._get_conn`, `ai_tracker._get_conn`, `self_tuning._get_conn`). SQLite default is 0 — any contested write lock raises `OperationalError` instantly. WAL alone doesn't help when both sides race for the same write lock; busy_timeout makes the loser wait 5s. **Eliminates the entire class of "transient lock" failures** the swallows were protecting against.
+- New `models.open_profile_db(db_path)` helper — the SINGLE authorized way for `views.py` to open a per-profile DB. Combines:
+  - WAL + busy_timeout
+  - `init_tracker_db` (CREATE TABLE IF NOT EXISTS ai_predictions)
+  - `journal.init_db` → runs `journal._migrate_columns` (ALTER ADD COLUMN for every column added since the original schema: regime_at_prediction, strategy_type, features_json, days_held, prediction_type on ai_predictions; protective-stop / option / slippage columns on trades).
+  Result: a never-written-to or pre-migration profile DB now opens with full current schema before any read. **Eliminates schema-drift "no such column" failures.**
+- 21 raw `sqlite3.connect()` sites in `views.py` replaced with `open_profile_db()` (per-profile) or `_get_main_db_conn` (master DB). Every read now inherits WAL + busy_timeout + schema migrations.
+
+**Per-site cleanup** (commits `7c2503a`, `35389bc`, plus the current commit):
+- Hoisted ~30 lazy `from X import Y` lines from inside try blocks to module top of `views.py`. None of those modules are actually optional in production; burying the import meant ImportError silently masked as missing dashboard sections at runtime. Now ImportError fails LOUDLY at startup with a full traceback.
+- For each of the 57 silent swallows, decided per-site:
+  - **Delete** (most common) — when the underlying function returns None on edge cases (kelly, mfe, compute_book_beta, etc.) or now can't fail because of the foundational fixes.
+  - **Replace with `logger.warning(...)`** — when the operation can legitimately fail in ways we want to see (per-profile DB issues during scheduler writes, malformed legacy rows). Each warning names the route + feature + context (profile_id / db_path / symbol) so journald is searchable.
+  - **Narrow the exception type** — for JSON parses on legacy rows: `(json.JSONDecodeError, TypeError, ValueError)` with `logger.debug` (predictable failure mode on older snapshots).
+  - **Fix one root cause that surfaced**: `/api/backtest-vs-reality` was conflating `error` (sometimes a code, sometimes a message) — split into `error_code` (JS switch value) + `error` (human message). The JS that was hiding the entire section on `error === 'insufficient_data'` now always renders the section with the human message.
+
+**Cross-cutting AST guardrails added**:
+- `tests/test_sqlite_busy_timeout.py` (8 tests) — pins busy_timeout >= 1000ms on every helper, asserts `open_profile_db` creates ai_predictions on a fresh DB, and behaviorally pins concurrent read-during-write succeeds (would throw `OperationalError` instantly pre-fix).
+- `tests/test_no_silent_pass_in_views.py` — AST-scans `views.py` for any `except [Exception]: pass` (pure-pass body). Empty allowlist; future regressions fail the build.
+
+**No new failure modes deployed**. The sweep was paired with a hidden-UI sweep across templates (commit `344a0e4`) that fixed 11 hide-when-empty `{% if X %}<article>` wrappers — every section now always renders with either real data or an explicit empty-state message.
+
+**Detour cost recorded as a memory rule** (`feedback_no_sed_inplace.md`): mid-session I ran `sed -i '' ...` on views.py to fix a name aliasing — macOS BSD sed silently truncated the file to 0 bytes. Recovered with `git checkout HEAD -- views.py`, lost ~14 lines of in-progress work, redid them with Edit calls. New rule: never use `sed -i` on production source.
+
+---
+
 ## 2026-05-09 — /performance: deleted 4 orphaned dead-throw computations + cross-cutting AST guardrail (Severity: medium → resolved correctly after a 3-commit detour)
 
 **Final state (commits `52f4cc5` + `1e0abf5` revert of `0090d2b`):** the four orphaned datasets in `views.py:performance_dashboard` are deleted, the AST guardrail is in place, and `/performance` is unchanged in user-visible behavior. The lessons from the detour are recorded as feedback memories.
