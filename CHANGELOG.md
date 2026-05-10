@@ -17,6 +17,31 @@ Rules going forward:
 
 ---
 
+## 2026-05-10 — /trades page: live unrealized-P&L enrichment + silent-swallow fix (Severity: high)
+
+**Bug**: On `/trades`, every currently-open option leg and every currently-open stock BUY rendered `--` in the P&L column. The dashboard's Open Positions panel showed P&L correctly for the same trades. User-visible split: identical data, two different views, only one rendered P&L.
+
+**Root cause**: `_get_trade_history_for_profile` (`views.py:330`) returned RAW journal rows. Realized `pnl` only lives on the **closing** trade row — for an open multileg, both the BUY leg and the SELL leg of the spread carry `pnl=NULL` until the multileg unwinds. The dashboard worked because `_enriched_positions` (`views.py:131`) called Alpaca's live position API and injected `unrealized_pl`/`unrealized_plpc`/`current_price` per position, which the shared `_trades_table.html` macro renders via its `t.unrealized_pl is defined` branch (line 101). The `/trades` route had a deliberate "clean order log" comment explaining the omission — that design choice was wrong for what users expected.
+
+**Fix**:
+1. New helper `_enrich_trade_history_with_live_pnl(trades, ctx)` (`views.py`) — pulls `_safe_positions(ctx)` (already cached 30s in `_dashboard_cache`), builds an OCC→position map (and symbol→position for stock), and attaches `current_price`/`unrealized_pl`/`unrealized_plpc`/`market_value` to the **most recent journal row per position key**. Older adds-to-position stay blank so the user doesn't see the same position-level $200 unrealized stamped on three historical BUY rows.
+2. `trades()` route loops both single-profile and all-profile paths through the enrichment with a per-profile try/except that logs (no silent failure).
+3. Removed the "clean order log — no live P&L" comment.
+
+**Found-along-the-way**: `_get_trade_history_for_profile` had `except Exception: return []` — the exact silent-swallow shape Issue 9 spent the day eradicating from `views.py` (57 → 0). This one survived because it was inside a helper, not a route. Replaced with a `logger.warning(...)` naming the profile and the underlying error.
+
+**6 new tests** (`tests/test_trades_page_live_pnl_enrichment.py`):
+- SELL leg + BUY leg of an open multileg both get unrealized_pl from their respective positions (matched by OCC).
+- Stock BUY of an open position gets enriched (matched by symbol, no occ).
+- Closed trade with realized pnl is NOT touched (the macro's realized branch handles it).
+- Three averaged-in BUY rows for the same position → only the most recent gets enriched (no triple-count).
+- Empty trades list / empty positions list both no-op safely.
+- DB read failure logs a warning naming the profile (verifies the silent-swallow fix).
+
+2,609 pass.
+
+---
+
 ## 2026-05-10 — Issue 14: per-user TTL cache for /api/dashboard-totals + /api/portfolio (Severity: medium, ~50% reduction in Alpaca calls)
 
 `api_dashboard_totals` and `api_portfolio` were polled every 30s by the dashboard JS. Each poll fetched `get_account_info` + `get_positions` from Alpaca PER profile. With 11 profiles, that was **22 Alpaca calls per 30-second poll = 44/min = 2,640 calls/hour per browser tab**. Multi-tab multiplied it. Account state doesn't change second-to-second; the calls were wasted.

@@ -179,7 +179,10 @@ Trade ledger across all profiles.
 
 - Filters: profile, symbol, side, status, date range.
 - Each row: timestamp, symbol, side, qty, price, fill price, slippage_pct, P&L, AI confidence, AI reasoning (truncated, expandable).
-- Click a row → trade detail with full reasoning + features at decision + outcome.
+- **P&L column**:
+  - Closed trades show realized P&L on the closing SELL/cover row (with cost-basis %).
+  - **Open positions** show *unrealized* P&L from Alpaca's live position data on the most recent journal row per OCC (option) or symbol (stock). Older adds-to-position stay blank to avoid double-counting the same position-level unrealized P&L. Multileg open legs show per-leg unrealized P&L from each leg's Alpaca position.
+- Click a row → expanded reasoning + stop/target + slippage panel.
 
 ## 6. Performance page (`/performance`)
 

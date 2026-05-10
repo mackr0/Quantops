@@ -329,8 +329,8 @@ def _safe_pending_orders(ctx):
 
 def _get_trade_history_for_profile(profile_id, limit=100):
     """Get trade history from the profile's journal DB."""
+    db_path = f"quantopsai_profile_{profile_id}.db"
     try:
-        db_path = f"quantopsai_profile_{profile_id}.db"
         conn = open_profile_db(db_path)
         rows = conn.execute(
             "SELECT * FROM trades ORDER BY timestamp DESC LIMIT ?",
@@ -338,8 +338,53 @@ def _get_trade_history_for_profile(profile_id, limit=100):
         ).fetchall()
         conn.close()
         return [dict(r) for r in rows]
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "_get_trade_history_for_profile(profile_id=%d): could not "
+            "read trades from %s: %s", profile_id, db_path, exc,
+        )
         return []
+
+
+def _enrich_trade_history_with_live_pnl(trades, ctx):
+    """Attach `current_price`, `unrealized_pl`, `unrealized_plpc` from
+    Alpaca's live position list to the most recent journal row per OCC
+    (option) or symbol (stock) whose position is currently open.
+
+    Without this, BUY rows and the SELL leg of a multileg open render
+    blank P&L on /trades — because realized P&L only lives on the
+    closing trade, and the dashboard's `_enriched_positions` was the
+    only path injecting unrealized P&L for the shared
+    `_trades_table.html` macro. Caught 2026-05-10: every open option
+    leg displayed `--` in the P&L column.
+
+    Mutates `trades` in place. Only the most recent journal row per
+    position key gets enriched, so historical adds-to-position don't
+    each show the same position-level unrealized P&L.
+    """
+    if not trades:
+        return
+    positions = _safe_positions(ctx)
+    if not positions:
+        return
+    pos_by_key = {}
+    for p in positions:
+        occ = p.get("occ_symbol")
+        key = occ if occ else p.get("symbol")
+        if key:
+            pos_by_key[key] = p
+    seen = set()
+    for t in trades:  # _get_trade_history_for_profile returns DESC
+        occ = t.get("occ_symbol")
+        key = occ if occ else t.get("symbol")
+        if not key or key in seen or key not in pos_by_key:
+            continue
+        p = pos_by_key[key]
+        t["current_price"] = p.get("current_price")
+        t["unrealized_pl"] = p.get("unrealized_pl")
+        t["unrealized_plpc"] = p.get("unrealized_plpc")
+        t["market_value"] = p.get("market_value")
+        seen.add(key)
 
 
 def _mask_key(key):
@@ -1326,6 +1371,14 @@ def trades():
                 t["profile_name"] = prof["name"]
                 t["profile_id"] = prof["id"]
                 t["segment"] = prof["name"]
+            try:
+                ctx = build_user_context_from_profile(prof["id"])
+                _enrich_trade_history_with_live_pnl(prof_trades, ctx)
+            except Exception as exc:
+                logger.warning(
+                    "trades(): live-P&L enrichment failed for profile %d: %s",
+                    prof["id"], exc,
+                )
             all_trades.extend(prof_trades)
     else:
         # All profiles mode (current behavior)
@@ -1335,11 +1388,15 @@ def trades():
                 t["profile_name"] = prof["name"]
                 t["profile_id"] = prof["id"]
                 t["segment"] = prof["name"]
+            try:
+                ctx = build_user_context_from_profile(prof["id"])
+                _enrich_trade_history_with_live_pnl(prof_trades, ctx)
+            except Exception as exc:
+                logger.warning(
+                    "trades(): live-P&L enrichment failed for profile %d: %s",
+                    prof["id"], exc,
+                )
             all_trades.extend(prof_trades)
-
-    # Trades page is a clean order log — no live P&L enrichment.
-    # Unrealized P&L belongs on the dashboard (open positions view).
-    # SELL rows show realized P&L from the pnl column. BUY rows are blank.
 
     # Server-side sorting
     sort_by = request.args.get("sort", "timestamp")
