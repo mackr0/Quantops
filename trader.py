@@ -166,6 +166,8 @@ def execute_trade(symbol, signal, ctx=None, strategy_name="combined", log=True):
                 signal_type=action,
                 strategy=strategy_name,
                 reason=signal.get("reason"),
+                ai_reasoning=signal.get("ai_raw_reasoning"),
+                ai_confidence=signal.get("confidence"),
                 pnl=pnl,
                 decision_price=price,
                 db_path=db_path,
@@ -603,6 +605,14 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
         except Exception as _exc:
             logging.debug("Borrow accrual failed for %s: %s", symbol, _exc)
 
+    # Inherit the entry trade's AI confidence + reasoning so this
+    # protective close row carries the AI's original conviction
+    # through the narrative — without this, the macro shows
+    # "Auto-exit" with no number, and the trades page reads as if
+    # the close came from nowhere.
+    from journal import get_open_entry_metadata
+    entry_meta = get_open_entry_metadata(db_path, symbol)
+
     log_trade(
         symbol=symbol,
         side=side_label,
@@ -612,6 +622,8 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
         signal_type="SELL",
         strategy=trigger_signal["trigger"],
         reason=trigger_signal["reason"],
+        ai_confidence=entry_meta["ai_confidence"],
+        ai_reasoning=entry_meta["ai_reasoning"],
         pnl=pnl,
         # NEW (2026-05-07): write 'pending_fill' until broker
         # confirms. _task_update_fills flips to 'closed' + flips

@@ -17,6 +17,40 @@ Rules going forward:
 
 ---
 
+## 2026-05-10 — Auto-exit confidence propagation + combo-path 5xx retry (Severity: medium, narrative + reliability)
+
+**Two coordinated improvements** to close the multileg-orphan investigation cleanly:
+
+### A. Auto-exit confidence propagation
+**Bug**: protective stop-loss / take-profit / pair-exit close rows on `/trades` showed only "Auto-exit" with no number. The macro fell through to the `<small>Auto-exit</small>` branch because `ai_confidence=NULL` on every close row — the AI's original conviction wasn't being carried onto the auto-exit trade. Operators couldn't read the trade narrative end-to-end without manually cross-referencing the matching entry.
+
+**Root cause**: `log_trade(...)` calls in `trader.py:606` (protective stop/take-profit close), `trader.py:160` (AI-decided sell), `options_lifecycle.py:412` (synthetic equity leg from option exercise), and `stat_arb_pair_book.py:1053` (pair exit) all wrote close rows with no `ai_confidence` / `ai_reasoning` arguments. The information existed on the matching entry row in the journal — nobody was looking it up.
+
+**Fix**: new helper `journal.get_open_entry_metadata(db_path, symbol, occ_symbol=None)` returns the most-recent open entry's `ai_confidence` + `ai_reasoning`, scoped by symbol (for stock) or OCC (for option legs). Wired into all 4 auto-exit call sites. Macro now renders inherited confidence as `78%` with a small `auto-exit` label underneath, distinguishing it from AI-decided sells.
+
+### B. Combo-path 5xx retry
+**Bug context**: Alpaca's paper MLEG endpoint returns transient 500s (`{"code":50010000,"message":"internal server error occurred"}`) on ~30% of submissions. Without retry, every 500 falls through to the sequential path, which is non-atomic — the May 8 incident that left 3 naked orphan positions on prod traced back to combo failures forcing sequential, then one leg expiring unfilled. The yesterday's commit added the rollback safety net; this commit adds the prevention layer.
+
+**Fix**: new helper `_combo_submit_with_retry(api, payload, max_retries=2, backoff_seconds=(0.5, 1.5))` wraps `_submit_alpaca_order_raw` in the combo path. Retries ONLY on:
+- `RuntimeError "Alpaca order rejected (5NN)"` (regex-matched, the exact shape `_submit_alpaca_order_raw` raises on HTTP 5xx)
+- `requests.exceptions.{ConnectionError, Timeout, ChunkedEncodingError}` (real network transients)
+
+Re-raises immediately on:
+- 4xx HTTP (client errors — bad symbol, missing field, retry won't help)
+- Anything else (bare `Exception`, `KeyError`, etc. — could be a code bug or permanent account-config issue like "MLEG not supported"; failing fast lets the caller's outer try/except log + fall through to sequential without wasting 2 seconds on doomed retries)
+
+Final failure re-raises so the caller's existing fall-through-to-sequential behavior is preserved exactly.
+
+**13 new tests**:
+- `tests/test_auto_exit_confidence_propagation.py` (7): metadata lookup returns most-recent open entry, excludes closed/SELL rows, keeps SHORT entries, scopes correctly between stock vs OCC, logs warning + returns None on DB failure (no silent swallow).
+- `tests/test_combo_submit_retry.py` (6): 5xx retried, 4xx not retried, requests network errors retried, bare Exception not retried, max-retries-then-reraise, first-attempt-success skips retries. Plus end-to-end test that combo retry exhaustion still falls through to sequential cleanly.
+
+Updated 2 existing `tests/test_options_multileg.py` tests that mocked bare `Exception` for combo failure — original test setup expected immediate fallthrough; the restricted retry preserves that behavior because bare Exception isn't a transient signal.
+
+2,633 pass (was 2,619, +14).
+
+---
+
 ## 2026-05-10 — Multileg partial-fill rollback + terminal-status pinning in `_task_update_fills` (Severity: critical, data-integrity)
 
 **Bug**: 3 multileg spreads (CWAN ×2, BKLN ×1) on profiles 6 + 7 sat half-filled on prod for **2 days** as silent orphans. Each was a 2-leg spread where the BUY leg filled but the SELL leg expired unfilled at the broker — leaving the AI's profile holding a naked single-leg position it never decided to take. Journal showed status='open' on both legs as if the spread were live; reality was 3 naked long calls/puts with a different risk profile than the AI's intended defined-risk spread.

@@ -451,6 +451,81 @@ class _RawOrderResult:
         return self._payload.get(name)
 
 
+def _combo_submit_with_retry(api, payload, max_retries=2,
+                             backoff_seconds=(0.5, 1.5)):
+    """Wrap `_submit_alpaca_order_raw` with 5xx retry logic for the
+    combo MLEG path.
+
+    Alpaca's paper option-combo endpoint returns transient
+    `{"code":50010000,"message":"internal server error occurred"}`
+    on ~30% of submissions in observed prod traffic (2026-05-08
+    sample: CWAN/PCG/BKLN failed; CPRT/FITB/ACHR/RIOT succeeded —
+    same code path, same minute). Without retry, every 500 falls
+    through to the sequential path, which is non-atomic and can
+    leave the AI with naked single-leg positions when one leg
+    later expires unfilled.
+
+    Retry policy (precise about what counts as transient — vague
+    "retry on any exception" would mask permanent failures like
+    "MLEG not supported on this account" and waste real time on
+    every multileg):
+
+    - RuntimeError matching `"Alpaca order rejected (5NN)"` →
+      retry. The `_submit_alpaca_order_raw` helper raises this exact
+      shape on every HTTP error, so the regex is reliable.
+    - `requests.exceptions.{ConnectionError, Timeout,
+      ChunkedEncodingError}` → retry. Real network transients.
+    - 4xx HTTP → re-raise immediately. Bad symbol / missing field
+      / permission denied — retry can't help.
+    - Anything else (bare `Exception`, `KeyError`, etc.) → re-raise
+      immediately. Could be a code bug or permanent account-config
+      issue; failing fast lets the caller's outer try/except log
+      it and fall through to the sequential path right away.
+
+    Final failure re-raises so the caller's existing fall-through
+    behavior is preserved exactly.
+    """
+    import re
+    import time
+    import requests as _requests
+
+    transient_network_excs = (
+        _requests.exceptions.ConnectionError,
+        _requests.exceptions.Timeout,
+        _requests.exceptions.ChunkedEncodingError,
+    )
+
+    def _is_transient(exc):
+        if isinstance(exc, transient_network_excs):
+            return True
+        if isinstance(exc, RuntimeError):
+            m = re.match(r"Alpaca order rejected \((\d+)\)", str(exc))
+            return bool(m and 500 <= int(m.group(1)) < 600)
+        return False
+
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            return _submit_alpaca_order_raw(api, payload)
+        except Exception as exc:
+            last_exc = exc
+            if not _is_transient(exc) or attempt >= max_retries:
+                raise
+            delay = backoff_seconds[
+                min(attempt, len(backoff_seconds) - 1)
+            ]
+            logger.info(
+                "Combo submit attempt %d/%d failed with %s — "
+                "retrying in %.1fs",
+                attempt + 1, max_retries + 1, str(exc)[:120], delay,
+            )
+            time.sleep(delay)
+    # Unreachable, but defensive
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Combo submit retry loop exited without result")
+
+
 def _submit_alpaca_order_raw(api, payload):
     """POST directly to Alpaca's `/v2/orders` endpoint, bypassing
     the alpaca-trade-api SDK's narrow `submit_order` signature.
@@ -679,8 +754,14 @@ def execute_multileg_strategy(
                 combo_kwargs["limit_price"] = abs(limit_price)
             # Direct POST: alpaca-trade-api's submit_order doesn't
             # accept the `legs` kwarg, but the underlying REST API
-            # does. Bypass the SDK for option orders.
-            combo_order = _submit_alpaca_order_raw(api, combo_kwargs)
+            # does. Bypass the SDK for option orders. Wrapped in a
+            # 5xx-retry helper because Alpaca's paper MLEG endpoint
+            # returns transient 500s on ~30% of submissions (caught
+            # 2026-05-08 — half-filled spread incident traced to
+            # combo failure → sequential fallback → leg expired
+            # unfilled while partner filled). 4xx client errors
+            # bypass retry.
+            combo_order = _combo_submit_with_retry(api, combo_kwargs)
             combo_id = getattr(combo_order, "id", None)
             # Combo orders return one parent id; child fills come via
             # api.list_orders(parent=combo_id) once filled.

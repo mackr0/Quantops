@@ -1049,7 +1049,12 @@ def execute_pair_trade(api, proposal: Dict[str, Any], ctx,
             # after the broker has flattened the pair).
             if log and order_id_close:
                 try:
-                    from journal import log_trade
+                    from journal import log_trade, get_open_entry_metadata
+                    # Inherit the pair entry's AI metadata so the
+                    # exit row carries the original conviction. The
+                    # pair was opened with a single combined
+                    # confidence; both legs now propagate it.
+                    pair_entry = get_open_entry_metadata(db_path, actual_sym)
                     log_trade(
                         symbol=actual_sym,
                         side=close_side,
@@ -1058,6 +1063,8 @@ def execute_pair_trade(api, proposal: Dict[str, Any], ctx,
                         signal_type="PAIR_TRADE",
                         strategy="pair_trade",
                         reason=f"Pair exit {pair.label} leg {sym}",
+                        ai_confidence=pair_entry["ai_confidence"],
+                        ai_reasoning=pair_entry["ai_reasoning"],
                         status="closed",
                         db_path=db_path,
                     )

@@ -89,7 +89,17 @@
                             <br><small class="{{ 'pnl-pos' if chg_pct >= 0 else 'pnl-neg' }}">@ ${{ "{:,.2f}".format(t.current_price) }} ({{ "{:+.1f}%".format(chg_pct) }})</small>
                         {% endif %}
                     </td>
-                    <td>{% if t.ai_confidence %}{{ "{}%".format(t.ai_confidence|int) }}{% elif t.side in ('sell', 'cover') %}<small class="muted">Auto-exit</small>{% else %}--{% endif %}</td>
+                    {# AI confidence column. Auto-exit rows (stop-loss /
+                       take-profit / lifecycle close) inherit the entry
+                       trade's confidence via get_open_entry_metadata so
+                       the macro shows "78% (auto-exit)" instead of just
+                       "Auto-exit" — the original conviction stays
+                       attached through the trade narrative. Strategy
+                       names matching the auto-exit triggers
+                       (stop_loss / take_profit / trailing_stop /
+                       wash_cooldown / time_exit) get the suffix. #}
+                    {% set is_auto_exit = t.side in ('sell', 'cover') and t.strategy in ('stop_loss', 'take_profit', 'short_stop_loss', 'short_take_profit', 'trailing_stop', 'time_stop', 'wash_cooldown') %}
+                    <td>{% if t.ai_confidence %}{{ "{}%".format(t.ai_confidence|int) }}{% if is_auto_exit %}<br><small class="muted" style="font-size:0.7rem;">auto-exit</small>{% endif %}{% elif is_auto_exit %}<small class="muted">Auto-exit</small>{% else %}--{% endif %}</td>
                     {# P&L — realized on SELL rows (trades page), unrealized
                        on open positions (dashboard). Never both on the same
                        row. Cost-basis denominator applies the x100 contract

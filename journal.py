@@ -588,6 +588,61 @@ def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
     return trade_id
 
 
+def get_open_entry_metadata(db_path, symbol, occ_symbol=None):
+    """Return ai_confidence + ai_reasoning from the most-recent open
+    entry (BUY or SHORT) trade row matching `symbol` (or `occ_symbol`
+    for option legs). Used by auto-exit close paths so the close row
+    inherits the AI's original conviction.
+
+    Without this, stop-loss / take-profit / pair-exit close rows
+    show "Auto-exit" on /trades instead of the entry's confidence,
+    breaking the trade narrative — the operator can't tell at a
+    glance what the AI thought when it took the position that just
+    closed.
+
+    Returns a dict with `ai_confidence` and `ai_reasoning`. Both
+    are None if no matching open entry is found OR if the read
+    fails (logged warning, never silently swallowed — the close
+    row still gets logged either way; it just won't carry the
+    propagated metadata).
+    """
+    import logging as _logging
+    try:
+        conn = _get_conn(db_path)
+        if occ_symbol:
+            row = conn.execute(
+                "SELECT ai_confidence, ai_reasoning FROM trades "
+                "WHERE occ_symbol=? "
+                "  AND COALESCE(status,'open')='open' "
+                "  AND side IN ('buy','short') "
+                "ORDER BY timestamp DESC LIMIT 1",
+                (occ_symbol,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT ai_confidence, ai_reasoning FROM trades "
+                "WHERE symbol=? "
+                "  AND occ_symbol IS NULL "
+                "  AND COALESCE(status,'open')='open' "
+                "  AND side IN ('buy','short') "
+                "ORDER BY timestamp DESC LIMIT 1",
+                (symbol,),
+            ).fetchone()
+        conn.close()
+        if row:
+            return {
+                "ai_confidence": row["ai_confidence"],
+                "ai_reasoning": row["ai_reasoning"],
+            }
+        return {"ai_confidence": None, "ai_reasoning": None}
+    except Exception as exc:
+        _logging.warning(
+            "get_open_entry_metadata(symbol=%s, occ=%s) failed: %s",
+            symbol, occ_symbol, exc,
+        )
+        return {"ai_confidence": None, "ai_reasoning": None}
+
+
 def get_virtual_positions(db_path=None, price_fetcher=None):
     """Compute net open positions from the trades table using FIFO lots.
 

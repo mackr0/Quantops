@@ -417,6 +417,13 @@ def sweep_expired_options(api, db_path: str,
                         signal_type="OPTION_EXERCISE",
                         strategy=row.get("option_strategy", ""),
                         reason=synthetic["reason"],
+                        # Inherit the option entry's AI metadata so
+                        # the synthetic equity leg carries the
+                        # original conviction. row["ai_*"] is the
+                        # closing option trade row's data, which
+                        # itself carries the open option's metadata.
+                        ai_reasoning=row.get("ai_reasoning"),
+                        ai_confidence=row.get("ai_confidence"),
                         decision_price=synthetic["price"],
                         fill_price=synthetic["price"],
                         db_path=db_path,

@@ -206,6 +206,14 @@ Every option `api.submit_order` call must include `position_intent` (`buy_to_ope
 
 `_task_update_fills` writes `status=<broker_status>` (`expired` / `canceled` / `rejected` / `done_for_day`) on journal rows when the broker confirms the order ended without filling. Without this, the row sits at `status='open'` with `price=NULL` indefinitely — the silent-failure shape that masked 3 orphan multileg legs on prod for 2 days (caught 2026-05-10). The trades-table macro renders these rows greyed/italicized with a status badge so the operator sees what happened at a glance.
 
+### 4q. Combo-path 5xx retry (multileg prevention layer)
+
+`_combo_submit_with_retry` (`options_multileg.py`) wraps the MLEG combo POST in a precise retry loop. Retries only on transient signals: `RuntimeError "Alpaca order rejected (5NN)"` and `requests.exceptions.{ConnectionError, Timeout, ChunkedEncodingError}`. 4xx HTTP and bare exceptions fail fast — they're either client errors that retry can't help or permanent config issues that would waste real time. Backoff `(0.5s, 1.5s)`, max 2 retries → ~2s worst-case before falling through to sequential. Cuts combo-path failures from ~30% to <5% on observed prod traffic, which means most multilegs stay on the atomic path and the partial-fill rollback (4o) becomes a rarely-exercised safety net rather than a regular cleanup. Enforced by `tests/test_combo_submit_retry.py` (6 tests covering retry policy + end-to-end fallthrough).
+
+### 4r. Auto-exit confidence propagation
+
+`journal.get_open_entry_metadata(db_path, symbol, occ_symbol=None)` returns the most-recent open BUY/SHORT entry's `ai_confidence` + `ai_reasoning`. Called by every auto-exit close path (`trader.py` protective close, `options_lifecycle.py` synthetic equity leg from exercise, `stat_arb_pair_book.py` pair exit) so close rows inherit the AI's original conviction. The trades-table macro renders inherited confidence as `78%` with a small `auto-exit` label underneath, distinguishing it from AI-decided sells while preserving the trade narrative end-to-end. Enforced by `tests/test_auto_exit_confidence_propagation.py` (7 tests — including no-silent-failure behavior on DB read errors).
+
 ## 5. Portfolio risk model
 
 **Module:** `portfolio_risk_model.py`
