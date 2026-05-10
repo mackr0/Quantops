@@ -81,9 +81,9 @@
 </article>
 
 <!-- Trade List -->
-{% if results.trades %}
 <article>
-    <header><h3>All Trades ({{ results.trades|length }})</h3></header>
+    <header><h3>All Trades ({{ results.trades|length if results.trades else 0 }})</h3></header>
+    {% if results.trades %}
     <div style="overflow-x:auto;">
         <table>
             <thead>
@@ -116,8 +116,10 @@
             </tbody>
         </table>
     </div>
+    {% else %}
+    <p class="muted">No trades in this backtest result — the strategy never opened a position over the chosen window.</p>
+    {% endif %}
 </article>
-{% endif %}
 
 {% endif %}
 

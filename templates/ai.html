@@ -713,10 +713,10 @@
      =================================================================== -->
 <div id="tab-awareness" class="perf-tab-content">
 <!-- Long/Short Construction — what the AI sees per profile -->
-{% if long_short_awareness %}
 <article>
     <header><h3>Long/Short Construction — top-line numbers the AI sees</h3></header>
     <p class="muted" style="margin-top:-0.5rem;">For every shorts-enabled profile, the actual numbers the AI sees in its prompt every cycle: target vs current long/short balance, target vs current book beta, per-direction Kelly recommendation, drawdown capital scale. If a number is empty, the AI sees no block (e.g., Kelly needs ≥30 resolved entries per direction).</p>
+    {% if long_short_awareness %}
     <table>
         <thead>
             <tr>
@@ -790,16 +790,20 @@
             {% endfor %}
         </tbody>
     </table>
+    {% else %}
+    <p class="muted">No long/short construction data yet — populates once a shorts-enabled profile records its first round-trip.</p>
+    {% endif %}
 </article>
-{% endif %}
 
 {# Risk Budget — per-position vol contributions; mirrors the AI prompt's RISK-BUDGET block (P4.4) #}
 {% set has_risk_budget = false %}
 {% for r in long_short_awareness %}{% if r.risk_budget %}{% set has_risk_budget = true %}{% endif %}{% endfor %}
-{% if has_risk_budget %}
 <article>
     <header><h3>Risk Budget — per-position variance contribution</h3></header>
     <p class="muted" style="margin-top:-0.5rem;">Each position contributes weight times its annualized volatility to the book's variance. Equal-dollar weights are <em>not</em> equal-risk weights — a 5% slug of a 60%-vol biotech contributes ~3× the variance of a 5% slug of a 20%-vol utility. Names ≥ 2× or ≤ 0.5× the per-position average are flagged. Sizing rule the AI is told: size scales with 25% divided by the name's annualized volatility, clamped [0.4×, 1.6×].</p>
+    {% if not has_risk_budget %}
+    <p class="muted">No risk-budget breakdown yet — needs at least one shorts-enabled profile with open positions and computable variance contributions.</p>
+    {% endif %}
     {% for r in long_short_awareness %}{% if r.risk_budget %}
     <article style="margin:0.75rem 0;">
         <header style="padding:0.5rem 0.75rem;"><h4 style="margin:0;">{{ r.profile_name }}</h4>
@@ -827,13 +831,14 @@
     </article>
     {% endif %}{% endfor %}
 </article>
-{% endif %}
 
 {# Portfolio risk model — mirrors the PORTFOLIO RISK block in the AI prompt (Item 2a) #}
-{% if portfolio_risk_awareness %}
 <article>
     <header><h3>Portfolio Risk — Barra-style factor model the AI sees</h3></header>
     <p class="muted" style="margin-top:-0.5rem;">For every profile with positions, a daily snapshot of factor-decomposed risk: portfolio daily volatility, parametric and Monte Carlo 95/99% Value-at-Risk, Expected Shortfall, top factor exposures (long/short β), and projected P&amp;L under historical stress windows. The same numbers are surfaced in the AI prompt under <code>MARKET CONTEXT &gt; PORTFOLIO RISK</code> so the AI can cite tail-risk readings when sizing or skipping new entries. Factor universe: Ken French 5-factor + Momentum, 11 SPDR sector ETFs, 4 MSCI USA style ETFs (size, momentum, quality, low-vol). Updated daily at the snapshot block.</p>
+    {% if not portfolio_risk_awareness %}
+    <p class="muted">No portfolio risk snapshot yet — populates after the first daily snapshot block runs (typically end-of-day) on a profile with open positions.</p>
+    {% endif %}
     {% for r in portfolio_risk_awareness %}
     <article style="margin:0.75rem 0;">
         <header style="padding:0.5rem 0.75rem;">
@@ -941,15 +946,16 @@
     </article>
     {% endfor %}
 </article>
-{% endif %}
 
 {# Sector concentration — mirrors the EXPOSURE BREAKDOWN block (P2.1) #}
 {% set has_concentration = false %}
 {% for r in long_short_awareness %}{% if r.concentration_warnings %}{% set has_concentration = true %}{% endif %}{% endfor %}
-{% if has_concentration %}
 <article>
     <header><h3>Sector Concentration — what the AI is warned about</h3></header>
     <p class="muted" style="margin-top:-0.5rem;">Real long/short funds typically target &lt;20% gross per sector. Sectors ≥30% gross are flagged in the AI prompt as concentration risk so the AI can avoid stacking another long-tech on top of long-tech.</p>
+    {% if not has_concentration %}
+    <p class="muted">No concentration warnings right now — every shorts-enabled profile is below the per-sector thresholds the AI is told to avoid.</p>
+    {% else %}
     <table>
         <thead><tr><th>Profile</th><th>Concentrated Sectors</th></tr></thead>
         <tbody>
@@ -965,8 +971,8 @@
             {% endif %}{% endfor %}
         </tbody>
     </table>
+    {% endif %}
 </article>
-{% endif %}
 
 <!-- Market Intelligence — loaded via API -->
     <article>

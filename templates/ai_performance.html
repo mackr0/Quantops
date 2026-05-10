@@ -281,9 +281,9 @@
 {% endif %}
 
 <!-- Monthly Returns (Consistency) -->
-{% if monthly_returns %}
 <article style="border-left:4px solid #607d8b;">
     <header><h3>Monthly Returns</h3></header>
+    {% if monthly_returns %}
     <div class="overflow-auto">
         <table>
             <thead>
@@ -310,8 +310,10 @@
             </tbody>
         </table>
     </div>
+    {% else %}
+    <p class="muted">No monthly data yet — fills in as months close with trade activity.</p>
+    {% endif %}
 </article>
-{% endif %}
 
 <!-- AI Prediction Accuracy (theoretical — did the AI predict direction correctly?) -->
 <h3>AI Prediction Accuracy</h3>
@@ -378,9 +380,9 @@
     </article>
 </div>
 
-{% if perf.accuracy_by_confidence %}
 <article>
     <header><h4>Accuracy by Confidence Band</h4></header>
+    {% if perf.accuracy_by_confidence %}
     <div class="overflow-auto">
         <table>
             <thead>
@@ -406,13 +408,15 @@
             </tbody>
         </table>
     </div>
+    {% else %}
+    <p class="muted">Not enough resolved predictions yet — populates once each confidence band has at least a few resolved predictions.</p>
+    {% endif %}
 </article>
-{% endif %}
 
 <div class="grid">
-    {% if perf.best_trade %}
     <article>
         <header><h4>Best Trade</h4></header>
+        {% if perf.best_trade %}
         <p>
             <strong>{{ perf.best_trade.symbol }}</strong>
             <span class="muted">({{ perf.best_trade.signal }}, {{ perf.best_trade.confidence }}% confidence)</span>
@@ -420,12 +424,14 @@
         <p class="pnl-pos" style="font-size: 1.5rem">
             {{ "{:+.2f}".format(perf.best_trade.trade_pnl_pct) }}%
         </p>
+        {% else %}
+        <p class="muted">No closed trades yet.</p>
+        {% endif %}
     </article>
-    {% endif %}
 
-    {% if perf.worst_trade %}
     <article>
         <header><h4>Worst Trade</h4></header>
+        {% if perf.worst_trade %}
         <p>
             <strong>{{ perf.worst_trade.symbol }}</strong>
             <span class="muted">({{ perf.worst_trade.signal }}, {{ perf.worst_trade.confidence }}% confidence)</span>
@@ -433,14 +439,16 @@
         <p class="pnl-neg" style="font-size: 1.5rem">
             {{ "{:+.2f}".format(perf.worst_trade.trade_pnl_pct) }}%
         </p>
+        {% else %}
+        <p class="muted">No closed trades yet.</p>
+        {% endif %}
     </article>
-    {% endif %}
 </div>
 
 <div class="grid">
-    {% if perf.biggest_missed_gain %}
     <article>
         <header><h4>Biggest Missed Gain</h4></header>
+        {% if perf.biggest_missed_gain %}
         <p>
             <strong>{{ perf.biggest_missed_gain.symbol }}</strong>
             <span class="muted">(AI passed; underlying ran)</span>
@@ -448,12 +456,14 @@
         <p class="pnl-pos" style="font-size: 1.5rem">
             {{ "{:+.2f}".format(perf.biggest_missed_gain.return_pct) }}%
         </p>
+        {% else %}
+        <p class="muted">No resolved HOLD predictions where the AI passed and the stock ran — yet.</p>
+        {% endif %}
     </article>
-    {% endif %}
 
-    {% if perf.biggest_avoided_loss %}
     <article>
         <header><h4>Biggest Avoided Loss</h4></header>
+        {% if perf.biggest_avoided_loss %}
         <p>
             <strong>{{ perf.biggest_avoided_loss.symbol }}</strong>
             <span class="muted">(AI passed; underlying dropped)</span>
@@ -461,15 +471,17 @@
         <p class="pnl-neg" style="font-size: 1.5rem">
             {{ "{:+.2f}".format(perf.biggest_avoided_loss.return_pct) }}%
         </p>
+        {% else %}
+        <p class="muted">No resolved HOLD predictions where the AI passed and the stock dropped — yet.</p>
+        {% endif %}
     </article>
-    {% endif %}
 </div>
 
 <!-- Self-Tuning History -->
-{% if tuning_history %}
 <article>
     <header><h3>Self-Tuning History</h3></header>
     <p class="muted" style="margin-top:-0.5rem;">Automatic adjustments the system has made based on its own performance.</p>
+    {% if tuning_history %}
     <table>
         <thead>
             <tr>
@@ -506,7 +518,9 @@
             {% endfor %}
         </tbody>
     </table>
+    {% else %}
+    <p class="muted">No automatic tuning adjustments yet — the tuner needs at least 20 resolved predictions per profile before it acts.</p>
+    {% endif %}
 </article>
-{% endif %}
 
 {% endblock %}
