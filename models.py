@@ -26,11 +26,45 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _get_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
-    """Get a connection to the user database."""
+    """Get a connection to the user database.
+
+    PRAGMAs:
+      - journal_mode=WAL: readers don't block writers, writers don't block readers.
+      - foreign_keys=ON: enforce FK constraints (sqlite default is OFF).
+      - busy_timeout=5000: when a write lock IS contested (rare under WAL),
+        wait up to 5 seconds for it to clear instead of immediately raising
+        OperationalError. Eliminates the entire class of "transient lock"
+        failures the silent-pass blocks in views.py were protecting against.
+    """
     conn = sqlite3.connect(db_path or config.DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
+def open_profile_db(db_path: str) -> sqlite3.Connection:
+    """The single authorized way for views.py to open a per-profile DB.
+
+    Combines:
+      - WAL + busy_timeout (so concurrent scheduler writes don't error
+        out reads),
+      - schema migration via init_tracker_db (so a never-written-to
+        profile DB still has the ai_predictions table the dashboard
+        reads),
+      - row_factory=Row.
+
+    Use this everywhere views.py would otherwise call sqlite3.connect()
+    directly. It's the foundation for eliminating the silent-pass
+    swallows: with this helper, the failure modes the swallows were
+    catching can no longer occur."""
+    from ai_tracker import init_tracker_db
+    init_tracker_db(db_path)  # idempotent CREATE TABLE IF NOT EXISTS
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 

@@ -19,6 +19,10 @@ def _get_conn(db_path=None):
     conn = sqlite3.connect(db_path or config.DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    # busy_timeout: wait up to 5s for write locks to clear instead of
+    # immediately raising OperationalError. Eliminates transient-lock
+    # failures during scheduler-writes-while-dashboard-reads races.
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 

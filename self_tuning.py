@@ -53,6 +53,9 @@ def _get_conn(db_path=None):
     conn = sqlite3.connect(db_path or config.DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    # See models._get_conn — busy_timeout eliminates transient-lock
+    # OperationalError on concurrent reader/writer races.
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
