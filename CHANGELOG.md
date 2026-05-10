@@ -17,6 +17,24 @@ Rules going forward:
 
 ---
 
+## 2026-05-10 — Issue 10: 4 stale comments fixed; deleted DOA `fetch_news_yfinance` alias (Severity: low, doc accuracy + dead-alias removal)
+
+Audit caught 4 comments in `mc_backtest.py`, `alternative_data.py`, `news_sentiment.py`, `slippage_model.py` whose claims contradict the actual shipped code:
+
+1. **`mc_backtest.py:21-29`** — "Limits" docstring claimed by-day bootstrap was a "future enhancement". Verified: `bootstrap_mode='by_day'` is the **default** (line 128) and has been the implementation since 2026-05-03. Rewrote as a "Bootstrap modes" section describing both modes accurately.
+
+2. **`alternative_data.py:8-11`** — Module docstring said intraday 5-min bars "SHOULD migrate to Alpaca... not yet migrated." Verified: the migration is done (`get_intraday_microstructure` calls Alpaca's `/v2/stocks/{sym}/bars?timeframe=5Min` at lines 372/389/395). Rewrote to describe the served path.
+
+3. **`news_sentiment.py`** — `fetch_news_yfinance` was tagged "DEPRECATED yfinance fallback" but the body was literally `return fetch_news_alpaca(symbol, limit=limit)`. **Deleted the alias entirely** + updated the 2 callers in `trade_pipeline.py` (line 2631 import + line 2814 call) to call `fetch_news_alpaca` directly. Also fixed a stale comment at `trade_pipeline.py:2812` ("free from yfinance" → "Alpaca news endpoint").
+
+4. **`slippage_model.py:163-168`** — Comment said "We don't store ADV at trade time, so use a simple proxy" but the next 30 lines query `adv_at_decision FROM trades` and use it as the participation-rate denominator. Rewrote to describe what actually happens (uses the column; legacy rows pre-dating it fall back to the proxy).
+
+**Test fixture update**: `tests/test_long_short_awareness.py` had two patches at `kelly_sizing.compute_kelly_recommendation` / `portfolio_manager.check_drawdown` that stopped working because Issue 9 hoisted those imports to `views.py` module top — patched names are bound IN views.py at that point. Updated to `views.compute_kelly_recommendation` / `views.check_drawdown` with a comment explaining why.
+
+No code-behavior changes beyond the alias deletion (which is a no-op since the body was already delegating to `fetch_news_alpaca`).
+
+---
+
 ## 2026-05-10 — Issue 9: zero silent-pass swallows in views.py + foundational SQLite hardening (Severity: high, eliminates a structural class of silent failures)
 
 `views.py` had 57 `except [Exception]: pass` handlers that silently swallowed failures from every dashboard route. The user saw missing data without explanation; journald had no diagnostic trail. Fixed end-to-end with a 6-commit progression that solves the root causes instead of just logging:

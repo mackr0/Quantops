@@ -223,13 +223,3 @@ def fetch_news_alpaca(symbol, limit=3):
         return []
 
 
-# Legacy yfinance fallback kept for backward-compat callers, but no
-# longer the default path. Will be removed in a future cleanup once
-# all callers point at fetch_news_alpaca.
-def fetch_news_yfinance(symbol, limit=3):
-    """DEPRECATED: prefer fetch_news_alpaca. yfinance is 15+ min
-    delayed and incomplete; kept only for fallback safety.
-
-    Returns list of headline strings.
-    """
-    return fetch_news_alpaca(symbol, limit=limit)

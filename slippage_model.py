@@ -161,11 +161,11 @@ def calibrate_from_history(
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
-        # Pull realized fills + their estimated participation rate.
-        # We don't store ADV at trade time, so use a simple proxy:
-        # `volume_at_decision` if we have it, else fall back to a
-        # default participation. Real calibration improves over time
-        # as traders data fills in.
+        # Pull realized fills + the 20d ADV recorded at decision time.
+        # `adv_at_decision` was added (Item 5c continuation) so calibrator
+        # uses real participation rate (qty / adv_shares) instead of the
+        # coarse $50M ADV proxy. Legacy rows pre-dating the column fall
+        # back to that proxy in the per-row branch below.
         rows = conn.execute(
             "SELECT symbol, qty, decision_price, fill_price, "
             "side, adv_at_decision FROM trades "

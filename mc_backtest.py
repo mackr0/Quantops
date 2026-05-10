@@ -18,14 +18,18 @@ Why it's useful:
   - Distinguishes strategies whose alpha is larger than execution
     variance from strategies whose deterministic P&L is just noise.
 
-Limits:
-  - The MC samples slippage IID per trade; correlated regimes (a
-    full day of wide spreads when the whole strategy fires) aren't
-    captured. To capture those, we'd need to bootstrap by day, not
-    by trade — future enhancement.
-  - Bootstrap residuals require ≥ 20 historical trades per size
-    bucket per market_type. Below that, MC residuals fall back to a
-    Gaussian fit from the global mean/std (configurable).
+Bootstrap modes:
+  - `bootstrap_mode='by_day'` (default; shipped 2026-05-03): samples
+    one slippage realization per day and applies it to every trade
+    that fires that day. Captures correlated regimes — a full day of
+    wide spreads hits every entry/exit on that day together, instead
+    of being averaged out across IID per-trade samples.
+  - `bootstrap_mode='per_trade'` (legacy): samples slippage IID per
+    trade. Underestimates regime risk but useful as a baseline.
+
+Bootstrap residuals require ≥ 20 historical trades per size bucket
+per market_type. Below that, MC residuals fall back to a Gaussian
+fit from the global mean/std (configurable).
 """
 from __future__ import annotations
 

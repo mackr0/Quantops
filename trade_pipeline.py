@@ -2628,7 +2628,7 @@ def _get_latest_indicators(symbol):
 def _build_candidates_data(shortlist, ctx, symbol_reputation):
     """Convert strategy signals into the format ai_select_trades expects."""
     from earnings_calendar import check_earnings as _check_earnings
-    from news_sentiment import fetch_news_yfinance
+    from news_sentiment import fetch_news_alpaca
     from market_data import get_relative_strength_vs_sector
     from alternative_data import get_all_alternative_data
     from social_sentiment import get_ticker_mentions
@@ -2809,9 +2809,9 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
         except Exception:
             pass
 
-        # Recent news headlines (free from yfinance, no AI cost)
+        # Recent news headlines (Alpaca news endpoint, no AI cost)
         try:
-            headlines = fetch_news_yfinance(symbol, limit=3)
+            headlines = fetch_news_alpaca(symbol, limit=3)
             if headlines:
                 entry["news"] = headlines
         except Exception:

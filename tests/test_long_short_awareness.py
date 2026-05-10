@@ -44,12 +44,14 @@ def test_builds_row_per_shorts_enabled_profile(tmp_path, monkeypatch):
         "target_short_pct": 0.5,
         "target_book_beta": 0.0,
     }]
-    # Stub everything that would touch real services.
+    # Stub everything that would touch real services. views.py imports
+    # kelly + drawdown at module top now (Issue 9), so the patches must
+    # target the names bound IN views.py — not the source modules.
     with patch("models.build_user_context_from_profile") as ctx_mock, \
          patch("client.get_account_info", return_value={"equity": 100_000}), \
          patch("client.get_positions", return_value=[]), \
-         patch("kelly_sizing.compute_kelly_recommendation", return_value=None), \
-         patch("portfolio_manager.check_drawdown",
+         patch("views.compute_kelly_recommendation", return_value=None), \
+         patch("views.check_drawdown",
                 return_value={"drawdown_pct": 7.5}):
         ctx_mock.return_value = type("Ctx", (), {"db_path": "x.db"})()
         from views import _build_long_short_awareness
@@ -83,12 +85,15 @@ def test_includes_kelly_when_data_exists(tmp_path, monkeypatch):
     def fake_kelly_call(db, direction):
         return fake_kelly if direction == "long" else None
 
+    # views.py imports kelly + drawdown at module top now, so the
+    # patches must target the names bound IN views.py (not the source
+    # modules — those bindings are different objects after hoisting).
     with patch("models.build_user_context_from_profile") as ctx_mock, \
          patch("client.get_account_info", return_value={"equity": 100_000}), \
          patch("client.get_positions", return_value=[]), \
-         patch("kelly_sizing.compute_kelly_recommendation",
+         patch("views.compute_kelly_recommendation",
                 side_effect=fake_kelly_call), \
-         patch("portfolio_manager.check_drawdown", return_value={}):
+         patch("views.check_drawdown", return_value={}):
         ctx_mock.return_value = type("Ctx", (), {"db_path": "x.db"})()
         from views import _build_long_short_awareness
         out = _build_long_short_awareness(profiles)
