@@ -45,7 +45,7 @@ from mfe_capture import compute_capture_ratio
 from rigorous_backtest import get_recent_validations
 from multi_strategy import get_allocation_summary
 from ai_cost_ledger import spend_summary
-from crisis_state import get_current_level as _get_crisis_level
+from crisis_state import get_current_level
 from event_bus import recent_events as _recent_events
 from strategy_generator import list_strategies
 from alpha_decay import (
@@ -2307,7 +2307,7 @@ def performance_dashboard():
         db = f"quantopsai_profile_{p['id']}.db"
         if not os.path.exists(db):
             continue
-        cur = _get_crisis_level(db)
+        cur = get_current_level(db)
         hist = _crisis_history(db, limit=10)
         crisis_info["per_profile"].append({
             "profile_id": p["id"],
@@ -2916,8 +2916,11 @@ def ai_dashboard():
                     "ai-dashboard per-DB aggregation failed for %s: %s",
                     db_path, _exc,
                 )
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.warning(
+                "ai-dashboard per-profile rollup failed for %s: %s",
+                db_path, _exc,
+            )
 
     if ai_perf["directional_resolved"] > 0:
         ai_perf["directional_win_rate"] = round(
@@ -2977,205 +2980,184 @@ def ai_dashboard():
     slippage = {"avg_pct": 0.0, "total_cost": 0.0, "magnitude": 0.0, "count": 0}
     weighted_pct_sum = 0.0
     for db_path in db_paths:
-        try:
-            from journal import get_slippage_stats
-            s = get_slippage_stats(db_path=db_path)
-            if s:
-                n = s.get("trades_with_fills", 0) or 0
-                slippage["count"] += n
-                slippage["total_cost"] += s.get("total_slippage_cost", 0) or 0
-                slippage["magnitude"] += s.get("total_slippage_magnitude", 0) or 0
-                weighted_pct_sum += (s.get("avg_slippage_pct", 0) or 0) * n
-        except Exception:
-            pass
+        s = get_slippage_stats(db_path=db_path)
+        if s:
+            n = s.get("trades_with_fills", 0) or 0
+            slippage["count"] += n
+            slippage["total_cost"] += s.get("total_slippage_cost", 0) or 0
+            slippage["magnitude"] += s.get("total_slippage_magnitude", 0) or 0
+            weighted_pct_sum += (s.get("avg_slippage_pct", 0) or 0) * n
     if slippage["count"] > 0:
         slippage["avg_pct"] = weighted_pct_sum / slippage["count"]
 
     meta_info = {"loaded": False, "profiles": []}
-    try:
-        import meta_model
-        profiles_to_check = [p for p in profiles
-                             if (not selected_profile_int or p["id"] == selected_profile_int)]
-        for p in profiles_to_check:
-            path = meta_model.model_path_for_profile(p["id"])
-            bundle = meta_model.load_model(path)
-            if bundle:
-                meta_info["loaded"] = True
-                # Item 5a — pull online (SGD freshness layer) info
+    profiles_to_check = [p for p in profiles
+                         if (not selected_profile_int or p["id"] == selected_profile_int)]
+    for p in profiles_to_check:
+        path = meta_model.model_path_for_profile(p["id"])
+        bundle = meta_model.load_model(path)
+        if bundle:
+            meta_info["loaded"] = True
+            # Item 5a — pull online (SGD freshness layer) info. The
+            # online SGD layer is a runtime-optional augment; if it
+            # fails, we surface online=None so the meta-model card
+            # still renders without the freshness sub-detail.
+            try:
+                from online_meta_model import get_online_model_info
+                online_info = get_online_model_info(p["id"])
+            except Exception as exc:
+                logger.warning(
+                    "ai-dashboard: online meta-info lookup failed for profile %s: %s",
+                    p["id"], exc,
+                )
                 online_info = None
-                try:
-                    from online_meta_model import get_online_model_info
-                    online_info = get_online_model_info(p["id"])
-                except Exception:
-                    online_info = None
-                meta_info["profiles"].append({
-                    "name": p["name"],
-                    "id": p["id"],
-                    "auc": bundle["metrics"]["auc"],
-                    "accuracy": bundle["metrics"]["accuracy"],
-                    "n_samples": bundle["metrics"]["n_samples"],
-                    "positive_rate": bundle["metrics"]["positive_rate"],
-                    "top_features": bundle["feature_importance"][:10],
-                    "online": online_info,
-                })
-    except Exception:
-        pass
+            meta_info["profiles"].append({
+                "name": p["name"],
+                "id": p["id"],
+                "auc": bundle["metrics"]["auc"],
+                "accuracy": bundle["metrics"]["accuracy"],
+                "n_samples": bundle["metrics"]["n_samples"],
+                "positive_rate": bundle["metrics"]["positive_rate"],
+                "top_features": bundle["feature_importance"][:10],
+                "online": online_info,
+            })
 
     validations = []
-    try:
-        from rigorous_backtest import get_recent_validations
-        raw = get_recent_validations(limit=30)
-        for v in raw:
-            try:
-                passed = json.loads(v.get("passed_gates", "[]"))
-                failed = json.loads(v.get("failed_gates", "[]"))
-            except Exception:
-                passed, failed = [], []
-            validations.append({
-                "id": v.get("id"),
-                "timestamp": v.get("timestamp", ""),
-                "strategy_name": v.get("strategy_name", ""),
-                "market_type": v.get("market_type", ""),
-                "verdict": v.get("verdict", ""),
-                "score": v.get("score", 0),
-                "passed_count": len(passed),
-                "total_gates": len(passed) + len(failed),
-                "elapsed_sec": v.get("elapsed_sec") or 0,
-            })
-    except Exception:
-        pass
+    raw = get_recent_validations(limit=30)
+    for v in raw:
+        try:
+            passed = json.loads(v.get("passed_gates", "[]"))
+            failed = json.loads(v.get("failed_gates", "[]"))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            passed, failed = [], []
+        validations.append({
+            "id": v.get("id"),
+            "timestamp": v.get("timestamp", ""),
+            "strategy_name": v.get("strategy_name", ""),
+            "market_type": v.get("market_type", ""),
+            "verdict": v.get("verdict", ""),
+            "score": v.get("score", 0),
+            "passed_count": len(passed),
+            "total_gates": len(passed) + len(failed),
+            "elapsed_sec": v.get("elapsed_sec") or 0,
+        })
 
     allocation_info = {"per_profile": []}
-    try:
-        from multi_strategy import get_allocation_summary
-        for p in profiles:
-            if selected_profile_int and p["id"] != selected_profile_int:
-                continue
-            db = f"quantopsai_profile_{p['id']}.db"
-            if not os.path.exists(db):
-                continue
-            summary = get_allocation_summary(db, p["market_type"])
-            allocation_info["per_profile"].append({
-                "profile_id": p["id"],
-                "name": p["name"],
-                "market_type": p["market_type"],
-                "strategies": summary,
-            })
-    except Exception:
-        pass
+    for p in profiles:
+        if selected_profile_int and p["id"] != selected_profile_int:
+            continue
+        db = f"quantopsai_profile_{p['id']}.db"
+        if not os.path.exists(db):
+            continue
+        summary = get_allocation_summary(db, p["market_type"])
+        allocation_info["per_profile"].append({
+            "profile_id": p["id"],
+            "name": p["name"],
+            "market_type": p["market_type"],
+            "strategies": summary,
+        })
 
     ai_cost_info = {"per_profile": [], "totals": {"today": 0.0, "7d": 0.0, "30d": 0.0}}
-    try:
-        from ai_cost_ledger import spend_summary
-        for p in profiles:
-            if selected_profile_int and p["id"] != selected_profile_int:
-                continue
-            db = f"quantopsai_profile_{p['id']}.db"
-            if not os.path.exists(db):
-                continue
-            summary = spend_summary(db)
-            ai_cost_info["per_profile"].append({
-                "profile_id": p["id"],
-                "name": p["name"],
-                "today": summary["today"],
-                "seven_d": summary["7d"],
-                "thirty_d": summary["30d"],
-                "by_purpose": summary["by_purpose_30d"],
-                "by_model": summary["by_model_30d"],
-            })
-            ai_cost_info["totals"]["today"] += summary["today"]["usd"]
-            ai_cost_info["totals"]["7d"] += summary["7d"]["usd"]
-            ai_cost_info["totals"]["30d"] += summary["30d"]["usd"]
-    except Exception:
-        pass
+    for p in profiles:
+        if selected_profile_int and p["id"] != selected_profile_int:
+            continue
+        db = f"quantopsai_profile_{p['id']}.db"
+        if not os.path.exists(db):
+            continue
+        summary = spend_summary(db)
+        ai_cost_info["per_profile"].append({
+            "profile_id": p["id"],
+            "name": p["name"],
+            "today": summary["today"],
+            "seven_d": summary["7d"],
+            "thirty_d": summary["30d"],
+            "by_purpose": summary["by_purpose_30d"],
+            "by_model": summary["by_model_30d"],
+        })
+        ai_cost_info["totals"]["today"] += summary["today"]["usd"]
+        ai_cost_info["totals"]["7d"] += summary["7d"]["usd"]
+        ai_cost_info["totals"]["30d"] += summary["30d"]["usd"]
 
     crisis_info = {"per_profile": [], "max_level": "normal"}
     _level_rank = {"normal": 0, "elevated": 1, "crisis": 2, "severe": 3}
-    try:
-        from crisis_state import get_current_level, history as _crisis_history
-        for p in profiles:
-            if selected_profile_int and p["id"] != selected_profile_int:
-                continue
-            db = f"quantopsai_profile_{p['id']}.db"
-            if not os.path.exists(db):
-                continue
-            cur = get_current_level(db)
-            hist = _crisis_history(db, limit=10)
-            crisis_info["per_profile"].append({
-                "profile_id": p["id"],
-                "name": p["name"],
-                "level": cur.get("level", "normal"),
-                "size_multiplier": cur.get("size_multiplier", 1.0),
-                "transitioned_at": cur.get("transitioned_at"),
-                "signals": cur.get("signals", []),
-                "readings": cur.get("readings", {}),
-                "history": hist,
-            })
-            lvl = cur.get("level", "normal")
-            if _level_rank.get(lvl, 0) > _level_rank.get(crisis_info["max_level"], 0):
-                crisis_info["max_level"] = lvl
-    except Exception:
-        pass
+    from crisis_state import history as _crisis_history
+    for p in profiles:
+        if selected_profile_int and p["id"] != selected_profile_int:
+            continue
+        db = f"quantopsai_profile_{p['id']}.db"
+        if not os.path.exists(db):
+            continue
+        cur = get_current_level(db)
+        hist = _crisis_history(db, limit=10)
+        crisis_info["per_profile"].append({
+            "profile_id": p["id"],
+            "name": p["name"],
+            "level": cur.get("level", "normal"),
+            "size_multiplier": cur.get("size_multiplier", 1.0),
+            "transitioned_at": cur.get("transitioned_at"),
+            "signals": cur.get("signals", []),
+            "readings": cur.get("readings", {}),
+            "history": hist,
+        })
+        lvl = cur.get("level", "normal")
+        if _level_rank.get(lvl, 0) > _level_rank.get(crisis_info["max_level"], 0):
+            crisis_info["max_level"] = lvl
 
     event_info = {"per_profile": []}
-    try:
-        from event_bus import recent_events
-        for p in profiles:
-            if selected_profile_int and p["id"] != selected_profile_int:
-                continue
-            db = f"quantopsai_profile_{p['id']}.db"
-            if not os.path.exists(db):
-                continue
-            try:
-                events = recent_events(db, hours=24, limit=25)
-            except Exception:
-                events = []
-            if not events:
-                continue
-            counts = {"high": 0, "medium": 0, "low": 0, "info": 0, "critical": 0}
-            for e in events:
-                sev = e.get("severity", "info")
-                counts[sev] = counts.get(sev, 0) + 1
-            event_info["per_profile"].append({
-                "profile_id": p["id"],
-                "name": p["name"],
-                "events": events,
-                "counts": counts,
-            })
-    except Exception:
-        pass
+    for p in profiles:
+        if selected_profile_int and p["id"] != selected_profile_int:
+            continue
+        db = f"quantopsai_profile_{p['id']}.db"
+        if not os.path.exists(db):
+            continue
+        events = _recent_events(db, hours=24, limit=25)
+        if not events:
+            continue
+        counts = {"high": 0, "medium": 0, "low": 0, "info": 0, "critical": 0}
+        for e in events:
+            sev = e.get("severity", "info")
+            counts[sev] = counts.get(sev, 0) + 1
+        event_info["per_profile"].append({
+            "profile_id": p["id"],
+            "name": p["name"],
+            "events": events,
+            "counts": counts,
+        })
 
+    # Specialist ensemble breakdown from last cycle (Phase 8). cycle_data
+    # may be a partial write while the scheduler is mid-rotation; narrow
+    # JSON parse handles malformed rows.
     ensemble_info = {"per_profile": []}
-    try:
-        for p in profiles:
-            if selected_profile_int and p["id"] != selected_profile_int:
-                continue
-            cycle_path = f"cycle_data_{p['id']}.json"
-            if not os.path.exists(cycle_path):
-                continue
-            try:
-                with open(cycle_path) as f:
-                    cycle = json.load(f)
-            except Exception:
-                continue
-            ens = cycle.get("ensemble") or {}
-            if not ens.get("enabled"):
-                continue
-            ensemble_info["per_profile"].append({
-                "profile_id": p["id"],
-                "name": p["name"],
-                "cost_calls": ens.get("cost_calls", 0),
-                "vetoed": ens.get("vetoed", []),
-                "rows": ens.get("rows", [])[:12],
-                "timestamp": cycle.get("timestamp"),
-            })
-    except Exception:
-        pass
+    for p in profiles:
+        if selected_profile_int and p["id"] != selected_profile_int:
+            continue
+        cycle_path = f"cycle_data_{p['id']}.json"
+        if not os.path.exists(cycle_path):
+            continue
+        try:
+            with open(cycle_path) as f:
+                cycle = json.load(f)
+        except (json.JSONDecodeError, OSError, ValueError) as exc:
+            logger.warning(
+                "ai-dashboard: cycle_data parse failed for profile %s: %s",
+                p["id"], exc,
+            )
+            continue
+        ens = cycle.get("ensemble") or {}
+        if not ens.get("enabled"):
+            continue
+        ensemble_info["per_profile"].append({
+            "profile_id": p["id"],
+            "name": p["name"],
+            "cost_calls": ens.get("cost_calls", 0),
+            "vetoed": ens.get("vetoed", []),
+            "rows": ens.get("rows", [])[:12],
+            "timestamp": cycle.get("timestamp"),
+        })
 
     # Per-specialist veto activity across all profiles, last 7 days.
     # Surfaces silent-no-op vetoes (specialists w/o VETO authority that
-    # nonetheless wrote VETO into specialist_outcomes — happens when a
-    # bullish-side specialist disagrees but lacks blocking power).
+    # nonetheless wrote VETO into specialist_outcomes).
     try:
         from journal import get_specialist_veto_stats
         ensemble_info["veto_stats"] = get_specialist_veto_stats(
@@ -3188,176 +3170,149 @@ def ai_dashboard():
     # Aggregates net delta/gamma/vega/theta across each profile's open
     # positions (stock + options). Empty when a profile has no positions.
     greeks_info = {"per_profile": []}
-    try:
-        from options_greeks_aggregator import compute_book_greeks
-        from client import get_positions, get_api
-        for p in profiles:
-            if selected_profile_int and p["id"] != selected_profile_int:
-                continue
-            try:
-                from models import build_user_context_from_profile
-                pctx = build_user_context_from_profile(p["id"])
-                positions = get_positions(ctx=pctx) or []
-                if not positions:
-                    continue
-                # Lightweight: pass position's own current_price as
-                # the "lookup" — no extra fetches.
-                price_by = {pp.get("symbol"): float(pp.get("current_price") or 0)
-                            for pp in positions}
-                summary = compute_book_greeks(
-                    positions,
-                    price_lookup=lambda s: price_by.get(s),
-                    iv_lookup=lambda s: None,  # falls back to FALLBACK_IV
-                )
-                if summary["n_options_legs"] == 0 and summary["n_stock_positions"] == 0:
-                    continue
-                greeks_info["per_profile"].append({
-                    "profile_id": p["id"], "name": p["name"],
-                    "summary": summary,
-                    "limits": {
-                        "max_net_options_delta_pct": getattr(
-                            pctx, "max_net_options_delta_pct", None),
-                        "max_theta_burn_dollars_per_day": getattr(
-                            pctx, "max_theta_burn_dollars_per_day", None),
-                        "max_short_vega_dollars": getattr(
-                            pctx, "max_short_vega_dollars", None),
-                    },
-                })
-            except Exception:
-                continue
-    except Exception:
-        pass
+    from client import get_positions
+    for p in profiles:
+        if selected_profile_int and p["id"] != selected_profile_int:
+            continue
+        try:
+            pctx = build_user_context_from_profile(p["id"])
+            positions = get_positions(ctx=pctx) or []
+        except Exception as exc:
+            logger.warning(
+                "ai-dashboard: positions fetch failed for profile %s: %s",
+                p["id"], exc,
+            )
+            continue
+        if not positions:
+            continue
+        # Lightweight: pass position's own current_price as the "lookup"
+        # — no extra fetches.
+        price_by = {pp.get("symbol"): float(pp.get("current_price") or 0)
+                    for pp in positions}
+        summary = compute_book_greeks(
+            positions,
+            price_lookup=lambda s: price_by.get(s),
+            iv_lookup=lambda s: None,  # falls back to FALLBACK_IV
+        )
+        if summary["n_options_legs"] == 0 and summary["n_stock_positions"] == 0:
+            continue
+        greeks_info["per_profile"].append({
+            "profile_id": p["id"], "name": p["name"],
+            "summary": summary,
+            "limits": {
+                "max_net_options_delta_pct": getattr(
+                    pctx, "max_net_options_delta_pct", None),
+                "max_theta_burn_dollars_per_day": getattr(
+                    pctx, "max_theta_burn_dollars_per_day", None),
+                "max_short_vega_dollars": getattr(
+                    pctx, "max_short_vega_dollars", None),
+            },
+        })
 
-    # Item 1b — stat-arb pair book per profile. Surfaces the active
-    # cointegrated pairs so the operator can see the universe scan
-    # is working AND eyeball whether retest is auto-ejecting noisy
-    # pairs. Empty for profiles where the universe scan hasn't run yet.
+    # Item 1b — stat-arb pair book per profile.
     pair_book_info = {"per_profile": []}
-    try:
-        from stat_arb_pair_book import get_active_pairs
-        for p in profiles:
-            if selected_profile_int and p["id"] != selected_profile_int:
-                continue
-            db = f"quantopsai_profile_{p['id']}.db"
-            if not os.path.exists(db):
-                continue
-            try:
-                active = get_active_pairs(db)
-            except Exception:
-                active = []
-            if not active:
-                continue
-            rows = [{
-                "label": ap.label,
-                "hedge_ratio": round(ap.hedge_ratio, 3),
-                "p_value": round(ap.p_value, 3),
-                "half_life_days": round(ap.half_life_days, 1),
-                "correlation": round(ap.correlation, 2),
-            } for ap in active[:20]]
-            pair_book_info["per_profile"].append({
-                "profile_id": p["id"], "name": p["name"],
-                "active_count": len(active),
-                "rows": rows,
-            })
-    except Exception:
-        pass
+    for p in profiles:
+        if selected_profile_int and p["id"] != selected_profile_int:
+            continue
+        db = f"quantopsai_profile_{p['id']}.db"
+        if not os.path.exists(db):
+            continue
+        active = get_active_pairs(db)
+        if not active:
+            continue
+        rows = [{
+            "label": ap.label,
+            "hedge_ratio": round(ap.hedge_ratio, 3),
+            "p_value": round(ap.p_value, 3),
+            "half_life_days": round(ap.half_life_days, 1),
+            "correlation": round(ap.correlation, 2),
+        } for ap in active[:20]]
+        pair_book_info["per_profile"].append({
+            "profile_id": p["id"], "name": p["name"],
+            "active_count": len(active),
+            "rows": rows,
+        })
 
     auto_strategy_info = {"per_profile": []}
-    try:
-        from strategy_generator import list_strategies as _list_auto
-        for p in profiles:
-            if selected_profile_int and p["id"] != selected_profile_int:
-                continue
-            db = f"quantopsai_profile_{p['id']}.db"
-            if not os.path.exists(db):
-                continue
-            rows = _list_auto(db)
-            enriched = []
-            for row in rows[:30]:
-                try:
-                    spec = json.loads(row.get("spec_json") or "{}")
-                except Exception:
-                    spec = {}
-                enriched.append({
-                    "id": row["id"],
-                    "name": row["name"],
-                    "status": row["status"],
-                    "generation": row["generation"],
-                    "description": spec.get("description", ""),
-                    "markets": spec.get("applicable_markets", []),
-                    "direction": spec.get("direction", ""),
-                    "created_at": row.get("created_at", ""),
-                    "shadow_started_at": row.get("shadow_started_at", ""),
-                    "promoted_at": row.get("promoted_at", ""),
-                    "retired_at": row.get("retired_at", ""),
-                    "retirement_reason": row.get("retirement_reason", ""),
-                })
-            counts = {
-                "proposed": sum(1 for r in rows if r["status"] == "proposed"),
-                "shadow":   sum(1 for r in rows if r["status"] == "shadow"),
-                "active":   sum(1 for r in rows if r["status"] == "active"),
-                "retired":  sum(1 for r in rows if r["status"] == "retired"),
-            }
-            auto_strategy_info["per_profile"].append({
-                "profile_id": p["id"],
-                "name": p["name"],
-                "market_type": p["market_type"],
-                "strategies": enriched,
-                "counts": counts,
+    for p in profiles:
+        if selected_profile_int and p["id"] != selected_profile_int:
+            continue
+        db = f"quantopsai_profile_{p['id']}.db"
+        if not os.path.exists(db):
+            continue
+        rows = list_strategies(db)
+        enriched = []
+        for row in rows[:30]:
+            try:
+                spec = json.loads(row.get("spec_json") or "{}")
+            except (json.JSONDecodeError, TypeError, ValueError):
+                spec = {}
+            enriched.append({
+                "id": row["id"],
+                "name": row["name"],
+                "status": row["status"],
+                "generation": row["generation"],
+                "description": spec.get("description", ""),
+                "markets": spec.get("applicable_markets", []),
+                "direction": spec.get("direction", ""),
+                "created_at": row.get("created_at", ""),
+                "shadow_started_at": row.get("shadow_started_at", ""),
+                "promoted_at": row.get("promoted_at", ""),
+                "retired_at": row.get("retired_at", ""),
+                "retirement_reason": row.get("retirement_reason", ""),
             })
-    except Exception:
-        pass
+        counts = {
+            "proposed": sum(1 for r in rows if r["status"] == "proposed"),
+            "shadow":   sum(1 for r in rows if r["status"] == "shadow"),
+            "active":   sum(1 for r in rows if r["status"] == "active"),
+            "retired":  sum(1 for r in rows if r["status"] == "retired"),
+        }
+        auto_strategy_info["per_profile"].append({
+            "profile_id": p["id"],
+            "name": p["name"],
+            "market_type": p["market_type"],
+            "strategies": enriched,
+            "counts": counts,
+        })
 
     decay_info = {"per_profile": [], "any_deprecated": False}
-    try:
-        from alpha_decay import (list_deprecated, compute_rolling_metrics,
-                                  compute_lifetime_metrics)
-        import sqlite3 as _sq3
-        for p in profiles:
-            if selected_profile_int and p["id"] != selected_profile_int:
-                continue
-            db = f"quantopsai_profile_{p['id']}.db"
-            if not os.path.exists(db):
-                continue
-            strat_types = []
-            try:
-                c = open_profile_db(db)
-                rows = c.execute(
-                    "SELECT DISTINCT strategy_type FROM ai_predictions "
-                    "WHERE strategy_type IS NOT NULL AND strategy_type != '' "
-                    "AND status = 'resolved'"
-                ).fetchall()
-                strat_types = [r[0] for r in rows]
-                c.close()
-            except Exception:
-                pass
-            entries = []
-            for stype in strat_types:
-                rolling = compute_rolling_metrics(db, stype, window_days=30)
-                lifetime = compute_lifetime_metrics(db, stype)
-                entries.append({
-                    "strategy_type": stype,
-                    "rolling": rolling,
-                    "lifetime": lifetime,
-                    "edge_change_pct": (
-                        round((rolling["sharpe_ratio"] - lifetime["sharpe_ratio"])
-                              / abs(lifetime["sharpe_ratio"]) * 100, 1)
-                        if lifetime["sharpe_ratio"] and lifetime["n_predictions"] >= 50 else None
-                    ),
-                })
-            deprecated = list_deprecated(db)
-            if deprecated:
-                decay_info["any_deprecated"] = True
-            decay_info["per_profile"].append({
-                "profile_id": p["id"],
-                "name": p["name"],
-                "entries": entries,
-                "deprecated": deprecated,
+    for p in profiles:
+        if selected_profile_int and p["id"] != selected_profile_int:
+            continue
+        db = f"quantopsai_profile_{p['id']}.db"
+        if not os.path.exists(db):
+            continue
+        c = open_profile_db(db)
+        rows = c.execute(
+            "SELECT DISTINCT strategy_type FROM ai_predictions "
+            "WHERE strategy_type IS NOT NULL AND strategy_type != '' "
+            "AND status = 'resolved'"
+        ).fetchall()
+        strat_types = [r[0] for r in rows]
+        c.close()
+        entries = []
+        for stype in strat_types:
+            rolling = compute_rolling_metrics(db, stype, window_days=30)
+            lifetime = compute_lifetime_metrics(db, stype)
+            entries.append({
+                "strategy_type": stype,
+                "rolling": rolling,
+                "lifetime": lifetime,
+                "edge_change_pct": (
+                    round((rolling["sharpe_ratio"] - lifetime["sharpe_ratio"])
+                          / abs(lifetime["sharpe_ratio"]) * 100, 1)
+                    if lifetime["sharpe_ratio"] and lifetime["n_predictions"] >= 50 else None
+                ),
             })
-    except Exception:
-        pass
-
-    # === END COPIED BLOCK ===
+        deprecated = list_deprecated(db)
+        if deprecated:
+            decay_info["any_deprecated"] = True
+        decay_info["per_profile"].append({
+            "profile_id": p["id"],
+            "name": p["name"],
+            "entries": entries,
+            "deprecated": deprecated,
+        })
 
     # Rolling AI win-rate trend (7-day window, last 60 days).
     try:
