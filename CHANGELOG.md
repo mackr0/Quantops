@@ -17,6 +17,26 @@ Rules going forward:
 
 ---
 
+## 2026-05-09 — Intraday risk monitor: wired the 2 deferred checks (sector concentration swing + held-position halts) (Severity: high, safety system 50% dark)
+
+`multi_scheduler._task_intraday_risk_check` was calling `collect_intraday_alerts(...)` with 4 of 6 named arguments and a comment `# sector_moves + halted_held_symbols deferred`. The two deferred check functions (`check_sector_concentration_swing`, `check_held_position_halts`) are fully implemented and unit-tested in `intraday_risk_monitor.py` — they were just never invoked with non-empty data in production. The intraday safety system, intended to block new entries when SPY drawdown accelerates / vol spikes / **a sector swings hard / a held position is halted**, has been running with 50% coverage for an unknown duration.
+
+**Real-world impact:**
+- Sector swing of 5%+ intraday (SVB-day type events): system continued approving new entries; sector concentration alert never fired.
+- A held position getting halted (delisting/restriction): system didn't react; the trade pipeline kept treating the symbol as live.
+
+**Fix:** added two helpers in `multi_scheduler.py`:
+- `_compute_sector_moves()` — iterates `market_data.SECTOR_ETFS` (11 SPDR ETFs), pulls 2-bar daily history per ETF via existing `get_bars()`, computes signed `(today - yesterday) / yesterday`. Sectors with missing 2-bar data are silently omitted (no false alerts from broken data).
+- `_compute_halted_held_symbols(ctx)` — walks `client.get_positions(ctx=ctx)`, calls `api.get_asset(symbol).tradable` for each held symbol (same field already used in `client.py:318` for shortable check). 15-min in-process cache (avoids hammering Alpaca every cycle). Get_asset failures log a WARNING and do NOT fire a halt alert (safety rule: never alert from broken plumbing).
+
+Both passed into `collect_intraday_alerts(...)`. Removed the `# deferred` comment.
+
+**Tests pinning:** `tests/test_intraday_risk_full_wiring.py`:
+- 5 behavioral tests pin the two helpers: signed pct correctness, missing-data omission (no false alerts), zero-divide safety, non-tradable symbol detection, get_asset failure isolation, 15-min cache hit-rate.
+- `test_scheduler_passes_all_collect_intraday_alerts_args` — cross-cutting AST guardrail using `inspect.signature(collect_intraday_alerts)` to enumerate every parameter, then AST-scanning the scheduler's call site to assert all parameter names appear as keyword args. Catches the meta-pattern: any future "deferred" silencing of a check fails the test. Empty allowlist.
+
+---
+
 ## 2026-05-09 — Deleted `migrate_segments_to_profiles()` (one-time historical migration, transition complete) (Severity: low, dead-code cleanup)
 
 Surfaced by the new `test_no_unwired_writers` guardrail. Function defined in `models.py:1125`, never called by any production code, no admin UI / CLI hook to invoke it, and verified on prod to be a no-op for every current user (mack already has both 4 segments + 11 profiles — migration would skip every row; guest has 0 of each). Logic recoverable from `git log -S "migrate_segments_to_profiles"` if ever needed for restore-from-backup.

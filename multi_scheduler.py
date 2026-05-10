@@ -24,7 +24,7 @@ import sys
 import os
 import json as _json
 from datetime import datetime, timedelta
-from typing import Dict
+from typing import Dict, Tuple
 from zoneinfo import ZoneInfo
 
 # Load .env BEFORE any module that reads env vars (e.g. market_data uses
@@ -1250,20 +1250,89 @@ def _task_stat_arb_retest(ctx):
         logging.exception(f"[{seg_label}] Stat-arb pair retest failed")
 
 
-def _task_intraday_risk_check(ctx):
-    """Item 2b — intraday risk monitoring. Runs every cycle. Computes
-    drawdown acceleration + vol spike checks from SPY bars and writes
-    a risk-halt state when alerts fire. The trade pipeline reads this
-    state to block new entries.
+_HALT_CACHE: Dict[str, Tuple[float, bool]] = {}
+_HALT_CACHE_TTL = 15 * 60  # 15 minutes
 
-    v1 covers drawdown + vol spike. Sector-swing and held-halt checks
-    are computed in `intraday_risk_monitor.collect_intraday_alerts`
-    but require extra data plumbing (sector ETF prices + Alpaca asset
-    halt status) that's a follow-up. The check functions return None
-    when called with empty inputs, so the v1 task just doesn't pass
-    those args.
+
+def _compute_sector_moves():
+    """Today's signed pct change per sector ETF.
+
+    Returns {sector_name: pct_change_today} where pct_change is
+    `(today_close - yesterday_close) / yesterday_close` (signed).
+    Sectors whose 2-bar history is unavailable are silently omitted
+    so we never fire a false alert from missing data.
     """
-    import math as _math
+    from market_data import get_bars, SECTOR_ETFS
+    moves = {}
+    for sector, etf in SECTOR_ETFS.items():
+        try:
+            df = get_bars(etf, limit=2)
+            if df is None or len(df) < 2:
+                continue
+            yest_close = float(df["close"].iloc[-2])
+            today_close = float(df["close"].iloc[-1])
+            if yest_close > 0:
+                moves[sector] = (today_close - yest_close) / yest_close
+        except Exception as exc:
+            logging.warning(
+                "intraday_risk: sector_moves fetch failed for %s (%s): %s",
+                sector, etf, exc,
+            )
+    return moves
+
+
+def _compute_halted_held_symbols(ctx):
+    """Symbols where the user holds a position AND the underlying is
+    halted/non-tradable on Alpaca.
+
+    `tradable=False` is Alpaca's signal for halted/restricted/delisted
+    assets — the same field already used in `client.py:318` for the
+    shortable check. 15-min in-process cache to avoid hammering the
+    asset endpoint every cycle. Fetch failures log a WARNING and
+    return [] (NEVER an alert from a broken fetch).
+    """
+    import time as _time
+    from client import get_api, get_positions
+    halted = []
+    try:
+        positions = get_positions(ctx=ctx) or []
+        api = get_api(ctx)
+        now = _time.time()
+        for p in positions:
+            sym = p.get("symbol")
+            if not sym:
+                continue
+            cached = _HALT_CACHE.get(sym)
+            if cached and (now - cached[0]) < _HALT_CACHE_TTL:
+                if cached[1]:
+                    halted.append(sym)
+                continue
+            try:
+                asset = api.get_asset(sym)
+                tradable = bool(getattr(asset, "tradable", True))
+                _HALT_CACHE[sym] = (now, not tradable)
+                if not tradable:
+                    halted.append(sym)
+            except Exception as exc:
+                logging.warning(
+                    "intraday_risk: get_asset(%s) failed: %s", sym, exc,
+                )
+                # Don't cache failures — retry next cycle.
+    except Exception as exc:
+        logging.warning(
+            "intraday_risk: halted-symbol enumeration failed: %s", exc,
+        )
+        return []
+    return halted
+
+
+def _task_intraday_risk_check(ctx):
+    """Item 2b — intraday risk monitoring. Runs every cycle. Wires all
+    four checks: drawdown acceleration, vol spike, sector concentration
+    swing, and held-position halts. Writes a risk-halt state when
+    alerts fire; the trade pipeline reads this state to block new
+    entries.
+    """
     seg_label = ctx.display_name or ctx.segment
     try:
         from intraday_risk_monitor import (
@@ -1304,7 +1373,6 @@ def _task_intraday_risk_check(ctx):
         try:
             spy_20 = get_bars("SPY", limit=22)
             if spy_20 is not None and len(spy_20) >= 20:
-                # Per-day vol approximation: (high - low) / close
                 ranges = []
                 for _, row in spy_20.tail(20).iterrows():
                     c = float(row["close"])
@@ -1316,12 +1384,16 @@ def _task_intraday_risk_check(ctx):
         except Exception:
             pass
 
+        sector_moves = _compute_sector_moves()
+        halted_held_symbols = _compute_halted_held_symbols(ctx)
+
         alerts = collect_intraday_alerts(
             today_intraday_pct=today_intraday_dd,
             avg_7d_intraday_pct=avg_7d_dd,
             current_hourly_vol=current_hourly_vol,
             avg_20d_hourly_vol=avg_20d_hourly_vol,
-            # sector_moves + halted_held_symbols deferred
+            sector_moves=sector_moves,
+            halted_held_symbols=halted_held_symbols,
         )
         action = aggregate_action(alerts)
 
@@ -1332,7 +1404,6 @@ def _task_intraday_risk_check(ctx):
             )
             write_risk_halt_state(ctx.db_path, action, alerts)
         else:
-            # No active alerts — clear any stale halt state
             clear_risk_halt(ctx.db_path)
     except Exception:
         logging.exception(f"[{seg_label}] Intraday risk check failed")
