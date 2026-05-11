@@ -41,12 +41,14 @@ def _exec_block_source():
         logging.error now sits past 7500 chars from the first
         Executing print. Each new action branch pushes the call
         further down. Future branches will need similar bumps.
+      - 12000 after broker_rejections persistence blocks landed in
+        the wash-trade + cross-direction rejection handlers (2026-05-11).
     """
     import trade_pipeline as tp
     src = inspect.getsource(tp)
     start = src.find('print(f"  Executing: ')
     assert start > 0, "Could not locate the Executing: print site"
-    return src[start:start + 9000]
+    return src[start:start + 12000]
 
 
 def test_exception_path_logs_full_traceback():

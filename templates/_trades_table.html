@@ -101,11 +101,20 @@
                     {% set is_auto_exit = t.side in ('sell', 'cover') and t.strategy in ('stop_loss', 'take_profit', 'short_stop_loss', 'short_take_profit', 'trailing_stop', 'time_stop', 'wash_cooldown') %}
                     <td>{% if t.ai_confidence %}{{ "{}%".format(t.ai_confidence|int) }}{% if is_auto_exit %}<br><small class="muted" style="font-size:0.7rem;">auto-exit</small>{% endif %}{% elif is_auto_exit %}<small class="muted">Auto-exit</small>{% else %}--{% endif %}</td>
                     {# P&L — realized on SELL rows (trades page), unrealized
-                       on open positions (dashboard). Never both on the same
-                       row. Cost-basis denominator applies the x100 contract
-                       multiplier for options so % is correct in both paths. #}
+                       on open positions (dashboard). For multileg legs
+                       (rows carrying spread_pnl), display the SPREAD-LEVEL
+                       P&L capped at the structural max loss. Per-leg
+                       numbers were misleading: a credit-side short leg
+                       could display -10100% loss when the actual spread
+                       max loss was $230 (broker stale marks on illiquid
+                       OTM options). Spread-level math gives the truth.
+                       Caught 2026-05-11. #}
                     <td>
-                        {% if t.side in ('sell', 'cover') and t.pnl is not none %}
+                        {% if t.spread_pnl is defined and t.spread_pnl is not none %}
+                            {# Multileg spread — show capped spread-level P&L #}
+                            <span class="{{ 'pnl-pos' if t.spread_pnl >= 0 else 'pnl-neg' }}">{% if t.spread_pnl >= 0 %}+${{ "{:,.2f}".format(t.spread_pnl) }}{% else %}-${{ "{:,.2f}".format(-t.spread_pnl) }}{% endif %}{% if t.spread_pnl_pct is not none %} ({{ "{:+.1f}%".format(t.spread_pnl_pct) }}){% endif %}</span>
+                            <br><small class="muted" style="font-size:0.7rem;">spread {{ t.spread_strategy|humanize if t.spread_strategy else 'leg' }}</small>
+                        {% elif t.side in ('sell', 'cover') and t.pnl is not none %}
                             {% if t.price and t.qty %}
                                 {% set cost_basis = t.price * t.qty * option_mult - t.pnl %}
                                 {% if cost_basis and cost_basis > 0 %}

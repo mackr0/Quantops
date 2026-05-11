@@ -2160,10 +2160,24 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             msg_lower = str(exc).lower()
             if "wash trade" in msg_lower:
                 try:
-                    from journal import record_wash_cooldown
+                    from journal import (
+                        record_wash_cooldown, record_broker_rejection,
+                    )
                     record_wash_cooldown(ctx.db_path if ctx else None, symbol)
-                except Exception:
-                    pass
+                    record_broker_rejection(
+                        ctx.db_path if ctx else None,
+                        symbol=symbol,
+                        action=action,
+                        signal_type=action,
+                        ai_confidence=ai_trade.get("confidence"),
+                        ai_reasoning=ai_trade.get("reasoning"),
+                        broker_message=str(exc),
+                    )
+                except Exception as _rec_exc:
+                    logging.warning(
+                        "wash-trade rejection persist failed for %s: %s",
+                        symbol, _rec_exc,
+                    )
                 details.append({
                     "symbol": symbol, "action": "SKIP",
                     "reason": "Alpaca rejected: potential wash trade — "
@@ -2191,6 +2205,31 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     "Broker rejected order for %s (%s): %s",
                     symbol, action, exc,
                 )
+                # Persist the rejection so the AI Brain panel can
+                # surface it inline ("REJECTED — Cross-Direction
+                # Conflict") instead of the trade silently
+                # disappearing, and so win-rate analytics can
+                # exclude predictions that never actually traded.
+                # Caught 2026-05-11: CWAN BUY on Mid Cap was rejected
+                # by Alpaca's cross-direction guard and the operator
+                # went looking for the trade because nothing on
+                # screen surfaced it.
+                try:
+                    from journal import record_broker_rejection
+                    record_broker_rejection(
+                        ctx.db_path if ctx else None,
+                        symbol=symbol,
+                        action=action,
+                        signal_type=action,
+                        ai_confidence=ai_trade.get("confidence"),
+                        ai_reasoning=ai_trade.get("reasoning"),
+                        broker_message=str(exc),
+                    )
+                except Exception as _rec_exc:
+                    logging.warning(
+                        "record_broker_rejection failed for %s: %s",
+                        symbol, _rec_exc,
+                    )
             else:
                 # Genuine error — keep the noisy traceback for
                 # diagnosis.

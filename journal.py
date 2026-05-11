@@ -93,6 +93,37 @@ def init_db(db_path=None):
             prediction_type TEXT
         );
 
+        -- Broker-rejected order attempts. The AI proposed the trade,
+        -- the system tried to submit it, but the broker (Alpaca)
+        -- refused with a recoverable reason (cross-direction conflict
+        -- with a sibling profile on a shared account, wash-trade
+        -- guard, insufficient buying power, etc.). Captured so the
+        -- UI can show "REJECTED" inline on the AI Brain panel
+        -- instead of the trade silently disappearing, and so
+        -- post-trade analytics can exclude rejected predictions
+        -- from win-rate computations (they didn't actually trade).
+        -- Caught 2026-05-11: CWAN BUY on Mid Cap was rejected by
+        -- Alpaca's cross-direction guard and operator went looking
+        -- for the trade because nothing on screen surfaced it.
+        CREATE TABLE IF NOT EXISTS broker_rejections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+            symbol TEXT NOT NULL,
+            action TEXT NOT NULL,
+            signal_type TEXT,
+            ai_confidence REAL,
+            ai_reasoning TEXT,
+            rejection_code TEXT NOT NULL,
+            broker_message TEXT,
+            prediction_id INTEGER REFERENCES ai_predictions(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_broker_rejections_timestamp
+            ON broker_rejections(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_broker_rejections_symbol
+            ON broker_rejections(symbol);
+        CREATE INDEX IF NOT EXISTS idx_broker_rejections_prediction_id
+            ON broker_rejections(prediction_id);
+
         -- Phase 3: rolling performance snapshots per strategy/signal type.
         -- Written daily by alpha_decay monitoring task. Each row is one
         -- day's 30-day rolling view of a specific signal's performance.
@@ -586,6 +617,113 @@ def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
     trade_id = cursor.lastrowid
     conn.close()
     return trade_id
+
+
+# Broker-rejection classification + persistence ----------------------------
+
+# Map Alpaca's rejection-message patterns to a stable code so the
+# UI + analytics can group rejections by cause without parsing free
+# text. Order matters — first match wins. Patterns are case-folded
+# at lookup time so callers don't have to.
+_REJECTION_PATTERNS = (
+    ("wash trade",
+     "wash_trade"),
+    ("cannot open a long buy while a short sell order",
+     "cross_direction_long_blocked"),
+    ("cannot open a short sell while a long buy order",
+     "cross_direction_short_blocked"),
+    ("insufficient buying power",
+     "insufficient_buying_power"),
+    ("insufficient qty",
+     "insufficient_qty"),
+    ("no available quote",
+     "no_quote_available"),
+)
+
+
+def classify_broker_rejection_message(msg):
+    """Map a broker rejection message to a stable rejection_code.
+
+    Returns 'other' if no known pattern matches — the row still gets
+    written so we can audit + improve the classifier later.
+    """
+    if not msg:
+        return "other"
+    lo = str(msg).lower()
+    for pat, code in _REJECTION_PATTERNS:
+        if pat in lo:
+            return code
+    return "other"
+
+
+def record_broker_rejection(db_path, *, symbol, action, signal_type,
+                            ai_confidence, ai_reasoning,
+                            broker_message, prediction_id=None,
+                            rejection_code=None):
+    """Persist one broker-rejected order attempt to the
+    `broker_rejections` table. The AI proposed it, the system tried,
+    the broker refused — the row exists so the UI can surface it
+    and analytics can exclude these from win-rate stats (they didn't
+    actually trade).
+
+    `rejection_code` is auto-derived from `broker_message` via
+    `classify_broker_rejection_message` when not supplied.
+
+    Returns the row id of the inserted rejection, or None on failure
+    (logged warning, never silent — same shape Issue 9 enforces
+    everywhere else).
+    """
+    import logging as _logging
+    if rejection_code is None:
+        rejection_code = classify_broker_rejection_message(broker_message)
+    try:
+        conn = _get_conn(db_path)
+        cursor = conn.execute(
+            "INSERT INTO broker_rejections "
+            "(symbol, action, signal_type, ai_confidence, ai_reasoning, "
+            " rejection_code, broker_message, prediction_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (symbol, action, signal_type, ai_confidence, ai_reasoning,
+             rejection_code,
+             str(broker_message)[:1000] if broker_message else None,
+             prediction_id),
+        )
+        conn.commit()
+        rid = cursor.lastrowid
+        conn.close()
+        return rid
+    except Exception as exc:
+        _logging.warning(
+            "record_broker_rejection(symbol=%s, code=%s) failed: %s",
+            symbol, rejection_code, exc,
+        )
+        return None
+
+
+def get_recent_broker_rejections(db_path, hours=24, limit=200):
+    """Return broker-rejection rows from the last `hours` for one
+    profile DB. Used by the AI Brain panel to surface "REJECTED"
+    badges on recently-proposed trades."""
+    import logging as _logging
+    try:
+        conn = _get_conn(db_path)
+        rows = conn.execute(
+            "SELECT id, timestamp, symbol, action, signal_type, "
+            "       ai_confidence, ai_reasoning, rejection_code, "
+            "       broker_message, prediction_id "
+            "FROM broker_rejections "
+            "WHERE timestamp >= datetime('now', ?) "
+            "ORDER BY timestamp DESC LIMIT ?",
+            (f"-{int(hours)} hours", int(limit)),
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception as exc:
+        _logging.warning(
+            "get_recent_broker_rejections(%s) failed: %s",
+            db_path, exc,
+        )
+        return []
 
 
 def get_open_entry_metadata(db_path, symbol, occ_symbol=None):

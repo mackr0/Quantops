@@ -233,6 +233,59 @@ def _enriched_positions(ctx, profile_id):
             "unrealized_pl": p["unrealized_pl"],
             "unrealized_plpc": p["unrealized_plpc"],
         })
+    # Phase 4 of Position class refactor: group multileg legs into
+    # Spread objects so the macro can render per-spread P&L capped
+    # at structural max loss. Eliminates the per-leg -10100% display
+    # that broker stale-marks on illiquid OTM options produced
+    # (caught 2026-05-11: PCG bull_call_spread legs showed -$505
+    # loss on a position with $230 structural max loss).
+    #
+    # For each leg in a recognized Spread, stamp:
+    #   spread_pnl, spread_pnl_pct, spread_max_loss, spread_group_key
+    # The macro reads spread_pnl when present and renders it instead
+    # of the per-leg unrealized_pl. Per-leg numbers stay accessible
+    # in the expand-row for diagnostics.
+    try:
+        from spread import group_into_spreads
+        # Reconstruct Position objects from the enriched dicts so
+        # we can run the grouper. (Original Position objects already
+        # exist in `positions` but `out` has the enriched dict shape
+        # the macro consumes.)
+        option_legs_for_grouping = [
+            p for p in positions
+            if getattr(p, "is_option", False) or p.get("occ_symbol")
+        ]
+        # journal_rows = the trade_meta we built above flattened back
+        journal_rows = list(trade_meta.values())
+        if option_legs_for_grouping and journal_rows:
+            spreads, _ungrouped = group_into_spreads(
+                option_legs_for_grouping, journal_rows,
+            )
+            # Build OCC -> spread lookup
+            spread_by_occ = {}
+            for sp in spreads:
+                for leg in sp.legs:
+                    spread_by_occ[leg.occ_symbol] = sp
+            # Stamp spread-level fields onto matching out-rows
+            for row in out:
+                occ = row.get("occ_symbol")
+                if not occ or occ not in spread_by_occ:
+                    continue
+                sp = spread_by_occ[occ]
+                row["spread_pnl"] = sp.display_unrealized_pl
+                row["spread_pnl_pct"] = sp.display_unrealized_pl_pct
+                row["spread_max_loss"] = sp.structural_max_loss
+                row["spread_strategy"] = sp.strategy_name
+                row["spread_group_key"] = (
+                    f"{sp.strategy_name}/{sp.underlying}/"
+                    f"{sp.earliest_entry_ts}"
+                )
+    except Exception as exc:
+        logger.warning(
+            "Spread grouping failed for profile %d: %s — falling back "
+            "to per-leg P&L display", profile_id, exc,
+        )
+
     # Most recently opened positions first
     out.sort(key=lambda x: x.get("timestamp") or "", reverse=True)
     return out

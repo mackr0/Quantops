@@ -84,6 +84,40 @@ The two factories (`Position.from_alpaca` and `Position.from_virtual_row`) are t
 
 2,684 pass (after Phase 2 + Phase 3).
 
+### Phase 4 — multileg-aware Spread class + per-spread P&L display (this commit)
+
+`spread.py` introduces the `Spread` dataclass. `group_into_spreads(positions, journal_rows)` pairs option Positions by shared `option_strategy` + underlying + timestamp window (60s default). For each grouped Spread:
+  - `structural_max_loss` returns the absolute dollar cap. Bull/bear call/put spreads have known formulas (debit paid for debit spreads; `(width - net_credit)` for credit spreads).
+  - `display_unrealized_pl` returns the per-leg unrealized P&L sum, capped at `-structural_max_loss` on the loss side. Loss-capping kills the per-leg fictional numbers that broker stale-marks produce on illiquid OTM options.
+
+`_enriched_positions` runs the grouper and stamps `spread_pnl`, `spread_pnl_pct`, `spread_max_loss`, `spread_strategy` onto each matching leg's macro-bound row. The macro renders spread-level P&L when `spread_pnl` is present, falling back to per-leg display for stocks and ungrouped option legs. Per-leg numbers remain in the expand-row for diagnostics.
+
+The PCG -$10100% display Mack saw becomes -$230 (capped at the spread's $230 debit).
+
+11 new tests pin: max-loss formulas for both debit and credit spreads; display capping at the structural cap; profit uncapped; grouping correctness (strategy + symbol + timestamp window); orphan single legs land in `ungrouped`.
+
+### Phase 5 — structural guardrail (this commit)
+
+`tests/test_no_new_position_dict_access.py` pins the architectural invariant: BOTH position producers (`client.get_positions` and `journal.get_virtual_positions`) must return `List[Position]`, never raw dicts. If either regresses to dict-return, every consumer that uses `pos.broker_symbol` / `pos.is_option` breaks loudly. The bug class that produced the 23 phantom stock-stops (symbol-vs-OCC overload) becomes impossible to construct by definition.
+
+Phase 5 deliberately keeps Position's back-compat shim (`__getitem__`/`.get()`/`__contains__`) so existing consumers continue working without a single massive migration. Phase 5b+ (future) migrates consumers to attribute access opportunistically; when the shim has zero users, a clean commit removes it.
+
+### Broker rejections table + write-path (this commit)
+
+`journal.broker_rejections` table + `record_broker_rejection`/`get_recent_broker_rejections` helpers + `classify_broker_rejection_message` pattern-matcher. Wired into the rejection handler in `trade_pipeline.py`: every cross-direction guard rejection, wash-trade rejection, insufficient-buying-power rejection, etc. now persists a row tagged with `rejection_code`, `broker_message`, `ai_confidence`, and `ai_reasoning` so the AI Brain panel can surface "REJECTED — Cross-Direction Conflict" inline instead of the trade silently disappearing.
+
+12 new tests pin: classification of every known rejection message → stable rejection_code; full-row write of all fields; `get_recent_broker_rejections` returns DESC; DB read/write failures log warnings + return safe defaults (no silent swallow — same shape Issue 9 enforces).
+
+(AI Brain panel rendering — joining `ai_predictions` ↔ `broker_rejections` and surfacing the "REJECTED" badge on proposed-trade rows — is a separate UI commit not in this push.)
+
+### Backfill — multileg negative-price rows (this commit)
+
+Re-ran `backfill_multileg_negative_prices.py` on prod after the per-leg-price fix and the Position class deploys: **20 multileg rows total recovered across 5 profiles today** (14 in this morning's first run, 6 in the post-Phase-2 follow-up that caught rows which landed mid-deploy). Backfill is idempotent and now reports `skipped=0` cleanly.
+
+### Final stats
+
+2,708 pass (was 2,684 + 11 Spread + 4 Phase 5 guardrail + 12 broker_rejections, less one test-window bump for the broker_rejections persistence blocks that pushed `logging.error` past the existing scan boundary in `test_trade_execution_logging.py` — bumped 9000 → 12000 chars).
+
 ---
 
 ## 2026-05-10 — Dashboard cache key safety: no `id(ctx)` fallback (Severity: low, test stability + correctness invariant)
