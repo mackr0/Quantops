@@ -311,13 +311,18 @@
          using the same dict shape; option-specific UI lives in
          the macro's `is_option` branches. -->
     <h4>Open Positions</h4>
+    {# Default to "All" so the dashboard is always populated on load.
+       Defaulting to Stocks meant Mid Cap profiles (which hold mostly
+       options after today's multileg work) showed an empty stocks
+       pane on initial render, which read as "no Open Positions
+       rendered" — caught 2026-05-11. #}
     <div class="perf-tabs op-tabs" data-profile-id="{{ prof.id }}" style="margin-bottom:0.5rem;">
-        <a href="#" class="perf-tab op-tab active" data-target="stocks-{{ prof.id }}" onclick="showOpTab(event, {{ prof.id }}, 'stocks')">Stocks <small class="muted">({{ prof.stock_positions|length }})</small></a>
+        <a href="#" class="perf-tab op-tab" data-target="stocks-{{ prof.id }}" onclick="showOpTab(event, {{ prof.id }}, 'stocks')">Stocks <small class="muted">({{ prof.stock_positions|length }})</small></a>
         <a href="#" class="perf-tab op-tab" data-target="options-{{ prof.id }}" onclick="showOpTab(event, {{ prof.id }}, 'options')">Options <small class="muted">({{ prof.option_positions|length }})</small></a>
-        <a href="#" class="perf-tab op-tab" data-target="all-{{ prof.id }}" onclick="showOpTab(event, {{ prof.id }}, 'all')">All <small class="muted">({{ prof.positions|length }})</small></a>
+        <a href="#" class="perf-tab op-tab active" data-target="all-{{ prof.id }}" onclick="showOpTab(event, {{ prof.id }}, 'all')">All <small class="muted">({{ prof.positions|length }})</small></a>
     </div>
     <div id="positions-wrap-{{ prof.id }}">
-        <div id="op-pane-stocks-{{ prof.id }}" class="perf-tab-content op-pane active">
+        <div id="op-pane-stocks-{{ prof.id }}" class="perf-tab-content op-pane">
             {{ trades_tpl.render_trades(prof.stock_positions, show_profile=False,
                 table_id="trades-table-stocks-" ~ prof.id,
                 empty_message="No open stock positions in this profile.") }}
@@ -327,7 +332,7 @@
                 table_id="trades-table-options-" ~ prof.id,
                 empty_message="No open option positions in this profile.") }}
         </div>
-        <div id="op-pane-all-{{ prof.id }}" class="perf-tab-content op-pane">
+        <div id="op-pane-all-{{ prof.id }}" class="perf-tab-content op-pane active">
             {{ trades_tpl.render_trades(prof.positions, show_profile=False,
                 table_id="trades-table-all-" ~ prof.id,
                 empty_message="No open positions in this profile.") }}
@@ -694,7 +699,35 @@ function showOpTab(event, profileId, which) {
     }
     function captureExpanded(wrap) { var s = {}; wrap.querySelectorAll('.trade-row').forEach(function(r) { var n = r.nextElementSibling; if (n && n.style.display !== 'none' && r.dataset.symbol) s[r.dataset.symbol] = true; }); return s; }
     function restoreExpanded(wrap, s) { wrap.querySelectorAll('.trade-row').forEach(function(r) { if (r.dataset.symbol && s[r.dataset.symbol]) { var n = r.nextElementSibling; if (n) { n.style.display = ''; var c = r.querySelector('.expand-caret'); if (c) c.innerHTML = '&#9660;'; } } }); }
-    function refreshPositions(pid) { var wrap = document.getElementById('positions-wrap-' + pid); if (!wrap) return; var exp = captureExpanded(wrap); fetch('/api/positions-html/' + pid).then(function(r){return r.ok?r.text():null;}).then(function(html){if(html){wrap.innerHTML=html;restoreExpanded(wrap,exp);}}).catch(function(){}); }
+    function refreshPositions(pid) {
+        var wrap = document.getElementById('positions-wrap-' + pid);
+        if (!wrap) return;
+        var exp = captureExpanded(wrap);
+        // Capture which tab is currently active so the auto-refresh
+        // doesn't yank the user back to "All" every 15s.
+        var activeKind = null;
+        ['stocks', 'options', 'all'].forEach(function(k) {
+            var p = document.getElementById('op-pane-' + k + '-' + pid);
+            if (p && p.classList.contains('active')) activeKind = k;
+        });
+        fetch('/api/positions-html/' + pid).then(function(r) {
+            return r.ok ? r.text() : null;
+        }).then(function(html) {
+            if (!html) return;
+            wrap.innerHTML = html;
+            restoreExpanded(wrap, exp);
+            // Restore previously-active tab if the user had switched
+            // away from the default.
+            if (activeKind && activeKind !== 'all') {
+                ['stocks', 'options', 'all'].forEach(function(k) {
+                    var p = document.getElementById('op-pane-' + k + '-' + pid);
+                    if (p) p.classList.remove('active');
+                });
+                var newActive = document.getElementById('op-pane-' + activeKind + '-' + pid);
+                if (newActive) newActive.classList.add('active');
+            }
+        }).catch(function() {});
+    }
     function refreshAll() { profileIds.forEach(function(pid) { updateProfile(pid); refreshPositions(pid); }); }
     setInterval(refreshAll, 15000);
 })();
