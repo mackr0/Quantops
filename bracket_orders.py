@@ -302,39 +302,24 @@ def ensure_protective_stops(api, positions, ctx, db_path,
 
     try:
         for pos in positions:
+            # Skip option positions — defined-risk multileg spreads
+            # are bounded by entry debit (no per-leg stock-style
+            # protection makes sense), and single-leg long options
+            # need OCC-side exits via the option lifecycle path
+            # (TODO). Stock-side trailing stops on the underlying
+            # would mis-route to the wrong instrument and fire as
+            # unintended SHORT orders if triggered (the 2026-05-11
+            # phantom-stops incident — 23 armed across 2 accounts).
+            # Phase 2 of Position class refactor: uses pos.is_option
+            # directly. Phase 1's _is_occ_symbol heuristic guard is
+            # replaced by canonical attribute access.
+            if getattr(pos, "is_option", False) or pos.get("occ_symbol"):
+                continue
+
             symbol = pos.get("symbol")
             qty = float(pos.get("qty", 0))
             entry_price = float(pos.get("avg_entry_price", 0))
             if not symbol or qty == 0 or entry_price <= 0:
-                continue
-
-            # Skip option positions. Per-leg stock-style trailing
-            # stops were being submitted on the underlying ticker
-            # for every option position (caught 2026-05-11: 23
-            # phantom stock-side sell stops armed at Alpaca, each
-            # ready to short-sell the underlying if it dipped).
-            # Wrong instrument; protected nothing; created
-            # unintended short risk if triggered. Defined-risk
-            # multileg spreads have built-in max loss = debit;
-            # single-leg long options need option-side exits which
-            # is a separate design (TODO). Skip-and-document is
-            # the correct minimum.
-            occ_symbol = pos.get("occ_symbol")
-            sym_looks_like_occ = (
-                isinstance(symbol, str)
-                and len(symbol) >= 14
-                and len(symbol) <= 21
-                and symbol[-8:].isdigit()
-                and symbol[-9] in ("C", "P")
-            )
-            if occ_symbol or sym_looks_like_occ:
-                logger.debug(
-                    "ensure_protective_stops: skipping option position "
-                    "%s (occ=%s) — option-side protection not yet "
-                    "implemented; defined-risk spreads are bounded "
-                    "by entry debit",
-                    symbol, occ_symbol,
-                )
                 continue
 
             is_short = qty < 0

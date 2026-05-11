@@ -17,6 +17,75 @@ Rules going forward:
 
 ---
 
+## 2026-05-11 — Option-position safety incident + Position class refactor (Severity: critical, multi-fix sweep)
+
+**Incident**: Mack noticed multileg trades the AI proposed didn't appear on the dashboard's Open Positions panel for virtual profiles. Investigation surfaced SIX places in the codebase where downstream consumers did `pos.get("symbol")` and assumed the value was the right thing to send to the broker. The symbol field meant TWO different things depending on producer:
+  - `client.get_positions` returned the OCC string (`PCG260612C00017000`) for option positions.
+  - `journal.get_virtual_positions` returned the underlying ticker (`PCG`) for option positions.
+
+Downstream code couldn't tell which one it was looking at, so it routed wrong. The cumulative damage:
+
+1. **`bracket_orders.ensure_protective_stops`** submitted **stock-side trailing-stop sells on the underlying ticker** for every virtual-profile option position. **23 phantom stock-stop orders armed at Alpaca across 2 accounts** — each ready to short-sell the underlying if it dipped through the trail. None protected any actual option contract. The wrong instrument got the protection.
+2. **`trader._entry_order_filled_at_broker`** searched Alpaca positions by `symbol.upper() == "PCG"` for every exit. Option positions at the broker have OCC symbols (`PCG260612C00017000`) not the underlying — so the comparison always failed → every option exit deferred forever (`"Deferring exit for PCG: entry order has not filled at the broker yet"` repeated for hours in logs).
+3. **`portfolio_manager.check_trailing_stops` / `check_stop_loss_take_profit`** ran stock-style %-of-price math on option premiums (which move 10-50% daily) and would have triggered exits constantly with downstream stock-side submissions.
+4. **`virtual_audit`** flagged every legitimate short option leg as a "Negative position" data integrity warning after the multileg sell-to-open fix made short legs visible.
+5. **`_record_multileg_legs`** wrote the combo's signed net premium as the per-leg price → 14 multileg legs invisible from the AI's portfolio view (already fixed earlier today, this is for completeness).
+6. **`_enriched_positions` metadata lookup** filtered `WHERE side='buy' OR side='short'` only — multileg short legs (which use `side='sell'` for sell-to-open) were missed → dashboard rows missing AI conf + timestamp.
+
+### Immediate safety actions (deployed first, commits 4d79cff and earlier today's storm)
+
+- `cancel_phantom_option_stock_stops.py` one-shot — **canceled all 23 phantom orders** at the broker. Verified `failed=0`.
+- `bracket_orders.ensure_protective_stops` skip-options guard (TEMPORARY, marked) so the bug couldn't re-arm phantoms on the next exit cycle while the proper refactor was in flight.
+
+### The proper fix — Position class refactor (5 phases)
+
+Rather than ship more `pos.get("occ_symbol")` band-aids in every consumer, introduce a **canonical `Position` dataclass** that both producers construct ONCE. Every downstream consumer reads attributes that are unambiguous:
+  - `pos.broker_symbol` — string for `api.submit_order(symbol=...)`. OCC for options, underlying for stocks.
+  - `pos.display_symbol` — always the underlying ticker.
+  - `pos.is_option` / `pos.is_stock` / `pos.is_short` / `pos.is_long`.
+  - `pos.occ_symbol` — only present on option positions.
+  - `pos.qty_signed` / `pos.abs_qty`.
+
+The two factories (`Position.from_alpaca` and `Position.from_virtual_row`) are the ONLY places that decide stock-vs-option. Defense-in-depth: `Position(instrument_kind="option", occ_symbol=None).broker_symbol` raises `AssertionError` — an option position can NEVER silently route to the underlying.
+
+**Phase 1** (commit `e55f265`): introduces the `Position` dataclass + factories + a back-compat shim (`__getitem__`, `.get()`, `__contains__`, `keys()`) so every existing dict-style consumer keeps working unchanged. `client.get_positions` and `journal.get_virtual_positions` start returning `List[Position]`. **No behavior change.** 21 new tests pin Position semantics.
+
+**Phase 2** (this commit): consumer migration for exit + risk paths.
+  - `bracket_orders.ensure_protective_stops` uses `pos.is_option` (replaces Phase 1's temporary `_is_occ_symbol` heuristic).
+  - `trader._entry_order_filled_at_broker(broker_symbol=...)` — parameter renamed to be unambiguous; option exits now route by OCC.
+  - `_process_exit_trigger` derives `broker_symbol = trigger.get("occ_symbol") or symbol` so option triggers find their broker position.
+  - `portfolio_manager.check_trailing_stops` / `check_stop_loss_take_profit` skip option positions via `pos.is_option`.
+
+**Phase 3** (this commit): consumer migration for display + audit.
+  - `_enriched_positions` uses `pos.display_symbol` (always underlying) for the `symbol` output field, eliminates the OCC-vs-underlying ambiguity at the dashboard render layer.
+  - `virtual_audit` no longer flags short option legs (legitimate negative qty); still catches genuine stock-short bad-state via the `pos.is_option` check.
+
+**Phase 4** (next): multileg-aware `Spread` class — group Positions by `(option_strategy, underlying, timestamp_window)` for per-spread P&L display capped at structural max loss. Kills the -10100% display Mack saw on the PCG short leg.
+
+**Phase 5** (next): drop the back-compat shim + add static guardrail blocking `pos["symbol"]`-style access in production code.
+
+### Tests (this commit)
+
+- `tests/test_phase2_position_consumer_migration.py` (10 tests): bracket_orders + _entry_order_filled_at_broker + portfolio_manager all use Position attributes correctly; stock-position regressions pinned.
+- `tests/test_phase3_display_audit_position.py` (4 tests): `_enriched_positions` returns display_symbol; `virtual_audit` accepts short option legs but flags stock shorts.
+
+### Found-along-the-way (already shipped today, recapped)
+
+- Multileg combo path was using `combo_order.filled_avg_price` (signed net premium) as the per-leg price → negative numbers stored on every leg → 14 rows invisible to `get_virtual_positions` (drops `if price <= 0`). Fix in `_record_multileg_legs` reads per-leg fills from `combo_order.legs[i].filled_avg_price`. Backfill recovered the 14 historical rows.
+- `journal.get_virtual_positions` treated `side='sell'` only as close-a-long. Multileg short legs (sell-to-open) silently dropped. Fix: option SELL with no long lot to consume opens a short FIFO entry.
+- Auto-exit confidence propagation, combo-path 5xx retry, dashboard cache `id(ctx)` removal, `_enriched_positions` metadata lookup including option SELL — all today.
+
+### Still on deck (separate commits)
+
+- Phase 4 multileg Spread class + per-spread P&L display.
+- Phase 5 shim removal + guardrail.
+- Restore `broker_rejections` table + UI annotation from `git stash@{0}` (the cross-profile collision tracking Mack approved earlier).
+- Re-run multileg-price backfill to catch the 2 new rows that landed mid-deploy.
+
+2,684 pass (after Phase 2 + Phase 3).
+
+---
+
 ## 2026-05-10 — Dashboard cache key safety: no `id(ctx)` fallback (Severity: low, test stability + correctness invariant)
 
 **Bug**: `views._safe_positions` and `_safe_account_info` keyed their 30s cache as `f"positions_{getattr(ctx, 'db_path', id(ctx))}"`. The `id(ctx)` fallback was unsafe — CPython reuses object IDs after GC. Two SimpleNamespace ctx objects created seconds apart can land at the same memory address, causing the second `_safe_positions(ctx)` call to return the FIRST ctx's cached positions within the 30s TTL window.

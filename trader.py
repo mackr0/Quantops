@@ -202,11 +202,22 @@ def execute_trade(symbol, signal, ctx=None, strategy_name="combined", log=True):
     return result
 
 
-def _entry_order_filled_at_broker(api, db_path, symbol, is_short):
-    """Return True iff there are actual shares at Alpaca for `symbol`
+def _entry_order_filled_at_broker(api, db_path, broker_symbol, is_short):
+    """Return True iff there are actual shares/contracts at Alpaca
     on the right side (long for a long entry, short for a short
     entry). This is the gate that makes check_exits Alpaca-state-
     aware.
+
+    `broker_symbol` is the broker-facing identity — for stocks the
+    underlying ticker (AAPL), for option positions the OCC symbol
+    (PCG260612C00017000). Caller derives it from `position.broker_symbol`.
+
+    Phase 2 of Position class refactor (2026-05-11): the parameter
+    is now unambiguous instead of overloaded between underlying and
+    OCC. Previously the function searched only by `symbol` (treated
+    as underlying) → option positions were never matched at the
+    broker (Alpaca returns OCC strings as p.symbol for options) →
+    every option exit deferred forever. Caught 2026-05-11.
 
     Why this exists: virtual profiles using LIMIT entry orders compute
     "open positions" from the journal as soon as the order is logged,
@@ -214,17 +225,6 @@ def _entry_order_filled_at_broker(api, db_path, symbol, is_short):
     against zero real shares, Alpaca interprets the SELL as a short
     and rejects it ("cannot open a short sell while a long buy order
     is open" — CHANGELOG 2026-04-27).
-
-    Earlier implementation looked up the journal's entry `order_id`
-    and asked Alpaca about THAT specific order's status. That broke
-    the Large Cap Limit Orders profile (2026-05-05): a limit-order
-    entry from 11 days earlier had its original order_id long since
-    canceled/expired/replaced — but the SHARES existed at the broker
-    because a subsequent limit order filled. The gate saw "old order
-    not filled" and deferred forever, blocking a +33% INTC exit.
-
-    Real intent of this gate: "are there shares at the broker that
-    we can sell?" Answer: query positions, look at the actual qty.
     """
     try:
         positions = api.list_positions()
@@ -232,7 +232,7 @@ def _entry_order_filled_at_broker(api, db_path, symbol, is_short):
         # Broker call failure — be permissive so exits aren't blocked.
         # The submit step has its own error handling.
         return True
-    target = (symbol or "").upper()
+    target = (broker_symbol or "").upper()
     for p in positions:
         if (getattr(p, "symbol", "") or "").upper() != target:
             continue
@@ -506,11 +506,21 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
     # buy). Submitting a SELL against zero real shares makes Alpaca
     # treat it as a short attempt and reject with "cannot open a
     # short sell while a long buy order is open."
-    if not _entry_order_filled_at_broker(api, db_path, symbol, is_short):
+    # Phase 2 Position-class refactor: derive the broker-facing
+    # identity from trigger_signal. For options, trigger carries
+    # `occ_symbol` (set by portfolio_manager.check_* — though those
+    # checks currently skip options; this is here for when option-
+    # exit polling is wired up). For stocks, the underlying symbol IS
+    # the broker identity.
+    occ_symbol = trigger_signal.get("occ_symbol")
+    broker_symbol = occ_symbol or symbol
+    if not _entry_order_filled_at_broker(api, db_path, broker_symbol,
+                                         is_short):
         logging.info(
-            "Deferring exit for %s: entry order has not filled at "
+            "Deferring exit for %s%s: entry order has not filled at "
             "the broker yet. Will retry on next exit cycle.",
             symbol,
+            f" ({occ_symbol})" if occ_symbol else "",
         )
         return
 

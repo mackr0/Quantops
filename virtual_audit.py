@@ -55,11 +55,22 @@ def audit_virtual_profile(db_path: str, initial_capital: float,
         problems.append(f"Could not compute account info: {exc}")
         return problems
 
-    # 2. No negative position quantities
+    # 2. No negative position quantities — but option SHORT legs
+    # (multileg short legs, naked shorts) are LEGITIMATELY negative.
+    # Phase 3 of Position class refactor: uses pos.is_option /
+    # pos.is_short attributes. Only stock positions with qty<0
+    # without an explicit 'short' side entry are flagged. Caught
+    # 2026-05-11: after the multileg sell-to-open fix made short
+    # option legs visible in get_virtual_positions, this audit
+    # started flagging every legitimate short option leg as a
+    # data integrity warning — the audit was wrong, not the data.
     try:
         positions = get_virtual_positions(db_path=db_path)
         for p in positions:
-            if p["qty"] < 0:
+            is_option = getattr(p, "is_option", False) or bool(
+                p.get("occ_symbol")
+            )
+            if p["qty"] < 0 and not is_option:
                 problems.append(
                     f"Negative position: {p['symbol']} qty={p['qty']}"
                 )

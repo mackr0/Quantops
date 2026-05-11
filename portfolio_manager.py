@@ -73,6 +73,15 @@ def check_trailing_stops(positions, ctx=None):
     triggered = []
 
     for pos in positions:
+        # Skip option positions — stock-style trailing stops on
+        # option premium % don't make sense (premiums move 10-50%
+        # daily), and downstream the exit path would submit stock-
+        # side orders against the underlying. Options are managed
+        # by the multileg + options_lifecycle paths. Phase 2 of
+        # Position class refactor: uses pos.is_option attribute.
+        if getattr(pos, "is_option", False) or pos.get("occ_symbol"):
+            continue
+
         symbol = pos.get("symbol")
         current_price = float(pos.get("current_price", 0))
         entry_price = float(pos.get("avg_entry_price", 0))
@@ -336,6 +345,10 @@ def check_stop_loss_take_profit(positions, stop_loss_pct=None, take_profit_pct=N
     triggered = []
 
     for pos in positions:
+        # Skip option positions — same reasoning as check_trailing_stops.
+        if getattr(pos, "is_option", False) or pos.get("occ_symbol"):
+            continue
+
         symbol = pos.get("symbol")
         current_price = float(pos.get("current_price", 0))
         entry_price = float(pos.get("avg_entry_price", 0))

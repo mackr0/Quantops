@@ -200,19 +200,22 @@ def _enriched_positions(ctx, profile_id):
 
     out = []
     for p in positions:
-        # For option positions, look up trade metadata by OCC symbol
-        # (every leg is a distinct row in the journal). For stock,
-        # match on underlying. Without this, an option leg's metadata
-        # would be borrowed from the most recent stock trade on the
-        # same underlying — completely unrelated.
-        occ = p.get("occ_symbol")
-        meta_key = occ if occ else p["symbol"]
+        # Phase 3 of Position class refactor: pos.is_option /
+        # pos.broker_symbol / pos.display_symbol are the canonical
+        # attributes. Metadata lookup keys by OCC for options (every
+        # leg is a distinct journal row), by underlying for stocks.
+        is_option = getattr(p, "is_option", False) or bool(p.get("occ_symbol"))
+        meta_key = (p.get("occ_symbol") if is_option
+                    else getattr(p, "display_symbol", None) or p["symbol"])
         meta = trade_meta.get(meta_key, {})
         side = "sell" if p.get("qty", 0) < 0 else "buy"
         out.append({
             "timestamp": meta.get("timestamp"),
-            "symbol": p["symbol"],
-            "occ_symbol": occ,
+            # display_symbol is always the underlying — what humans
+            # recognize. The macro renders it as the strong header
+            # and the OCC underneath as a contract detail.
+            "symbol": getattr(p, "display_symbol", None) or p["symbol"],
+            "occ_symbol": p.get("occ_symbol"),
             "side": side,
             "qty": abs(p["qty"]),
             "price": p["avg_entry_price"],
