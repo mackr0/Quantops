@@ -5,16 +5,33 @@
 <h1>Trade History</h1>
 
 <div style="margin-bottom:1rem;">
-    <form method="get" action="/trades" style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
-        <select name="profile_id" onchange="this.form.submit()">
+    <form method="get" action="/trades" style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;">
+        <select name="profile_id" onchange="this.form.submit()" style="width:auto;margin:0;">
             <option value="">All Profiles</option>
             {% for p in profiles %}
             <option value="{{ p.id }}" {{ 'selected' if selected_profile == p.id else '' }}>{{ p.name }}</option>
             {% endfor %}
         </select>
-        <input type="search" name="search" value="{{ search }}" placeholder="Symbol (e.g. CWAN)"
-               style="padding:0.3rem 0.6rem;font-size:0.9rem;width:14rem;">
-        <button type="submit" class="outline secondary" style="padding:0.3rem 0.8rem;font-size:0.85rem;">Search</button>
+        {# Search input + button as a single visual unit. type="text"
+           (not "search") so the browser's native magnifying-glass /
+           clear-button icons don't render — those varied per OS and
+           overlapped the placeholder text. #}
+        <div style="display:inline-flex;align-items:stretch;height:2.2rem;">
+            <input type="text" name="search" value="{{ search }}" placeholder="Search symbol (e.g. CWAN)"
+                   autocomplete="off" spellcheck="false"
+                   style="margin:0;padding:0 0.7rem;font-size:0.9rem;width:16rem;height:100%;
+                          border:1px solid #d0d0d8;border-right:none;
+                          border-top-left-radius:4px;border-bottom-left-radius:4px;
+                          border-top-right-radius:0;border-bottom-right-radius:0;
+                          background:#fff;outline:none;">
+            <button type="submit" style="margin:0;padding:0 1rem;font-size:0.85rem;height:100%;
+                                          border:1px solid #1a1a2e;background:#1a1a2e;color:#fff;
+                                          cursor:pointer;
+                                          border-top-right-radius:4px;border-bottom-right-radius:4px;
+                                          border-top-left-radius:0;border-bottom-left-radius:0;">
+                Search
+            </button>
+        </div>
         {% if search %}
         <a href="/trades?{% if selected_profile %}profile_id={{ selected_profile }}&{% endif %}{% if kind %}kind={{ kind }}&{% endif %}sort={{ sort_by }}&dir={{ sort_dir }}"
            class="muted" style="font-size:0.85rem;text-decoration:underline;">Clear</a>
