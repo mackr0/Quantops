@@ -304,11 +304,34 @@
     <p class="muted">Could not connect to Alpaca API. Check your keys in Settings.</p>
     {% endif %}
 
-    <!-- Open Positions -->
+    <!-- Open Positions — split into Stocks / Options tabs.
+         Each profile gets its own tab scope so click events on
+         profile 1 don't toggle tabs on profile 2. The shared
+         _trades_table.html macro renders each tab's positions
+         using the same dict shape; option-specific UI lives in
+         the macro's `is_option` branches. -->
     <h4>Open Positions</h4>
+    <div class="perf-tabs op-tabs" data-profile-id="{{ prof.id }}" style="margin-bottom:0.5rem;">
+        <a href="#" class="perf-tab op-tab active" data-target="stocks-{{ prof.id }}" onclick="showOpTab(event, {{ prof.id }}, 'stocks')">Stocks <small class="muted">({{ prof.stock_positions|length }})</small></a>
+        <a href="#" class="perf-tab op-tab" data-target="options-{{ prof.id }}" onclick="showOpTab(event, {{ prof.id }}, 'options')">Options <small class="muted">({{ prof.option_positions|length }})</small></a>
+        <a href="#" class="perf-tab op-tab" data-target="all-{{ prof.id }}" onclick="showOpTab(event, {{ prof.id }}, 'all')">All <small class="muted">({{ prof.positions|length }})</small></a>
+    </div>
     <div id="positions-wrap-{{ prof.id }}">
-        {{ trades_tpl.render_trades(prof.positions, show_profile=False,
-            empty_message="No open positions in this profile.") }}
+        <div id="op-pane-stocks-{{ prof.id }}" class="perf-tab-content op-pane active">
+            {{ trades_tpl.render_trades(prof.stock_positions, show_profile=False,
+                table_id="trades-table-stocks-" ~ prof.id,
+                empty_message="No open stock positions in this profile.") }}
+        </div>
+        <div id="op-pane-options-{{ prof.id }}" class="perf-tab-content op-pane">
+            {{ trades_tpl.render_trades(prof.option_positions, show_profile=False,
+                table_id="trades-table-options-" ~ prof.id,
+                empty_message="No open option positions in this profile.") }}
+        </div>
+        <div id="op-pane-all-{{ prof.id }}" class="perf-tab-content op-pane">
+            {{ trades_tpl.render_trades(prof.positions, show_profile=False,
+                table_id="trades-table-all-" ~ prof.id,
+                empty_message="No open positions in this profile.") }}
+        </div>
     </div>
 
     <!-- Pending Orders -->
@@ -398,6 +421,30 @@ function showDashTab(event, tabName) {
     document.getElementById('tab-' + tabName).classList.add('active');
     if (event.target.classList) event.target.classList.add('active');
     history.replaceState(null, null, '#' + tabName);
+}
+
+// Open Positions sub-tabs (Stocks / Options / All) — scoped per
+// profile so clicking on profile 1's tabs doesn't toggle profile 2's.
+// All three panes coexist in the DOM; only the active one shows.
+function showOpTab(event, profileId, which) {
+    event.preventDefault();
+    // Hide all panes for THIS profile
+    document.querySelectorAll('.op-pane').forEach(function(el) {
+        if (el.id.endsWith('-' + profileId)) {
+            el.classList.remove('active');
+        }
+    });
+    // Deactivate all tab links for THIS profile
+    var tabBar = event.target.closest('.op-tabs');
+    if (tabBar) {
+        tabBar.querySelectorAll('.op-tab').forEach(function(el) {
+            el.classList.remove('active');
+        });
+    }
+    // Activate target pane + tab
+    var pane = document.getElementById('op-pane-' + which + '-' + profileId);
+    if (pane) pane.classList.add('active');
+    event.target.classList.add('active');
 }
 // Restore tab from URL hash
 (function() {

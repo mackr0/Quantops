@@ -17,6 +17,54 @@ Rules going forward:
 
 ---
 
+## 2026-05-11 — Stocks/Options tabs on dashboard + /trades (TODO #1)
+
+**Why**: Mack noticed that the single shared `_trades_table.html`
+macro was straining to render two instrument classes (stocks +
+options) at once, with `{% if is_option %}` branches for OPT
+badges, OCC contract detail, x100 multipliers, per-spread P&L
+grouping, etc. Splitting them into tabs lets each table show
+exactly the fields that matter, mirrors the performance-page tab
+pattern, and dramatically simplifies future option-specific UI
+(strike, expiry, days-to-expiry, premium per contract).
+
+**Scope**:
+- Dashboard Open Positions: 3 client-side tabs per profile —
+  **Stocks** / **Options** / **All** — scoped via `data-profile-id`
+  so clicking on profile 1's tabs doesn't toggle profile 2's.
+  Splits `prof.positions` into `prof.stock_positions` +
+  `prof.option_positions` at the view layer.
+- /trades page: server-driven tabs — **All** / **Stocks** /
+  **Options** — implemented as real URLs (`?kind=stocks` etc.)
+  so pagination + sort + future search continue to work per-tab.
+- `_get_trade_history_for_profile(profile_id, limit, kind=None)`:
+  extended signature. `kind='stocks'` adds `WHERE occ_symbol IS NULL`
+  to the SQL; `kind='options'` adds `WHERE occ_symbol IS NOT NULL`.
+- `trades()` route validates the kind URL parameter (sanitizes
+  unknown values to `None` so injection attempts fall back to "all"
+  instead of breaking the SQL).
+- `templates/trades.html` rewritten to render tabs + preserve
+  kind/sort/dir across pagination links and the profile-filter
+  form submission.
+
+**Tests** (`tests/test_trades_tabs.py`, 7 tests):
+- `kind` filter applied correctly at the SQL level for each value.
+- Route accepts `?kind=stocks` / `?kind=options` and threads it
+  through.
+- Garbage `kind` values sanitized to `None` (defensive — SQL
+  injection guard).
+
+**Note**: this lays the groundwork for follow-up TODO items
+2 (page-jump pagination) and 3 (symbol search) — both will plug
+into the same per-tab URL pattern. Item 4 (richer "Side" column)
+becomes easier too — with stock and option rows split into separate
+tables, each can render its own action-type column without
+conditional branching.
+
+2,715 pass (was 2,708 + 7 new tab tests).
+
+---
+
 ## 2026-05-11 — Option-position safety incident + Position class refactor (Severity: critical, multi-fix sweep)
 
 **Incident**: Mack noticed multileg trades the AI proposed didn't appear on the dashboard's Open Positions panel for virtual profiles. Investigation surfaced SIX places in the codebase where downstream consumers did `pos.get("symbol")` and assumed the value was the right thing to send to the broker. The symbol field meant TWO different things depending on producer:

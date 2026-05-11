@@ -133,6 +133,98 @@ signal_type is missing.
 
 ---
 
+### 4b. Audit the AI pipeline for option-specific handling end-to-end
+
+**Where**: every step from "AI proposes a trade" → "broker submission"
+→ "position tracking" → "exit logic" → "outcome resolution".
+
+**Why**: today's incident response surfaced six bugs where option
+positions were treated like stocks (the symbol-vs-OCC overload).
+Those were the visible ones. The same root mindset — "options were
+bolted onto a stock-first system" — may have produced other
+silent issues in: the AI prompt (does the AI know what option
+strategies to propose? what features about IV/Greeks does it see?),
+the signal pipeline (do strategies emit option-friendly signals
+or just stock signals reused?), the AI prediction tracker (does it
+resolve option outcomes correctly — strike, expiry, premium decay?),
+the metrics layer (does Sharpe / win-rate count options correctly?
+do contracts vs shares net out in qty-weighted stats?).
+
+**Scope**:
+- Walk each stage and document option-specific behavior vs
+  borrowed-from-stock. Output: a doc listing every "options use the
+  stock path here" finding + whether it's a bug, an acceptable
+  reuse, or a TODO.
+- For each finding tagged as a bug, file a ticket with the same
+  Position-class principle: option-aware code paths use
+  `pos.is_option` / `pos.broker_symbol` / spread economics.
+- Pay particular attention to:
+  - `ai_analyst.py` prompt construction — what features does the AI
+    see about an option candidate? IV rank? Greeks? Days to expiry?
+    Spread economics?
+  - `ai_tracker.resolve_predictions` — does an option win/loss
+    resolve at expiry vs at exit? How is "return %" measured for
+    a contract vs a share?
+  - `metrics.py` Sharpe / Sortino / win-rate — do option contracts
+    count once or x100? Are short option legs treated as positive
+    or negative qty in turnover stats?
+  - `self_tuning.py` parameter optimization — is it tuning stock
+    parameters with option trades mixed in? That would corrupt the
+    stock-tuner's signal.
+  - Strategy signals — do strategies that propose `MULTILEG_OPEN`
+    have option-specific feature sets, or are they just stock
+    signals with a wrapper?
+- Add a guardrail test or two for any structural invariants that
+  surface (e.g., "if signal_type=MULTILEG, expected_features must
+  include implied_vol_rank").
+
+**Prerequisite**: Position class refactor in place (already shipped).
+The audit becomes much easier because option-vs-stock is now
+explicitly tagged on every position object.
+
+**Pitfalls**: this audit could surface a LOT of work. Be aggressive
+about classifying findings: not every "options use stock code here"
+is a bug — some reuse is correct (e.g., AI provider call is the
+same regardless of instrument). Don't make every reuse into a
+ticket.
+
+---
+
+### 4a. Documentation sweep — test counts + drift
+
+**Where**: `docs/13_QUALITY_RELIABILITY.md` (QE/RE doc) and any
+sibling doc that quotes test counts or post-incident state.
+
+**Why**: docs quoting specific test counts (e.g., "2,234 tests")
+drift every time a new test lands. Mack flagged 2026-05-11 that
+the QE/RE doc's numbers are wrong relative to the current suite
+(2,708 passing as of `9df7463`). More broadly: every doc that
+cites a specific number, file path, or function signature is at
+risk of going stale silently — the only reliable enforcement is
+a guardrail test (we already have one for OPEN_ITEMS file:line
+refs; the same pattern could cover docs).
+
+**Scope**:
+- Audit every `docs/*.md` for outdated test counts, broken file
+  refs, stale architecture descriptions, references to deleted
+  features or renamed functions.
+- Update or strike each.
+- Add a guardrail test: scan `docs/*.md` for patterns like
+  `\d{3,4}\s+(?:tests?\s+)?(?:passing|pass\b)` and either (a)
+  compare to the current suite count, OR (b) require the number
+  to live in an auto-generated section so updates are mechanical.
+  Similar pattern for file:line refs (we already have
+  `test_open_items_refs_match_source.py`).
+
+**Prerequisite**: nothing — docs are static; CI guardrail is
+additive.
+
+**Pitfalls**: don't tie docs too tightly to the test count or
+every commit needs a doc bump. The guardrail should auto-replace
+the number when CI runs, OR flag staleness rather than fail outright.
+
+---
+
 ## P2 — Pending from 2026-05-11 incident
 
 ### 5. AI Brain panel surfaces broker_rejections inline

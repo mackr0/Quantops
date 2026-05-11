@@ -409,21 +409,36 @@ def _safe_pending_orders(ctx):
         return []
 
 
-def _get_trade_history_for_profile(profile_id, limit=100):
-    """Get trade history from the profile's journal DB."""
+def _get_trade_history_for_profile(profile_id, limit=100, kind=None):
+    """Get trade history from the profile's journal DB.
+
+    Args:
+        kind: 'stocks' (occ_symbol IS NULL), 'options' (occ_symbol
+            IS NOT NULL), or None (all). The Trades-page tab UI passes
+            this so each tab sees only its instrument class — stock
+            trades and option trades have different row shapes and
+            shouldn't share a single 20-page paginated list. Wired
+            2026-05-11 for the dashboard/trades tab split.
+    """
     db_path = f"quantopsai_profile_{profile_id}.db"
+    sql = "SELECT * FROM trades"
+    params = []
+    if kind == "stocks":
+        sql += " WHERE occ_symbol IS NULL"
+    elif kind == "options":
+        sql += " WHERE occ_symbol IS NOT NULL"
+    sql += " ORDER BY timestamp DESC LIMIT ?"
+    params.append(limit)
     try:
         conn = open_profile_db(db_path)
-        rows = conn.execute(
-            "SELECT * FROM trades ORDER BY timestamp DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        rows = conn.execute(sql, tuple(params)).fetchall()
         conn.close()
         return [dict(r) for r in rows]
     except Exception as exc:
         logger.warning(
-            "_get_trade_history_for_profile(profile_id=%d): could not "
-            "read trades from %s: %s", profile_id, db_path, exc,
+            "_get_trade_history_for_profile(profile_id=%d, kind=%s): "
+            "could not read trades from %s: %s",
+            profile_id, kind, db_path, exc,
         )
         return []
 
@@ -576,6 +591,15 @@ def dashboard():
             ctx = build_user_context_from_profile(prof["id"])
             account = _safe_account_info(ctx)
             positions = _enriched_positions(ctx, prof["id"])
+            # Split into stock vs option for the dashboard's Open
+            # Positions tabs. Each instrument class has different
+            # row shapes — options need OPT badge + OCC + per-spread
+            # P&L, stocks need shares + share price. Tabs render
+            # each cleanly without conditionals. Wired 2026-05-11.
+            stock_positions = [p for p in positions
+                               if not p.get("occ_symbol")]
+            option_positions = [p for p in positions
+                                if p.get("occ_symbol")]
             pending_orders = _safe_pending_orders(ctx)
             try:
                 from ai_cost_ledger import spend_summary
@@ -588,7 +612,10 @@ def dashboard():
                 "market_type": prof["market_type"],
                 "market_type_name": prof.get("market_type_name", prof["market_type"]),
                 "account": account,
-                "positions": positions,
+                "positions": positions,  # legacy — preserved for any
+                                         # consumer not yet using tabs
+                "stock_positions": stock_positions,
+                "option_positions": option_positions,
                 "pending_orders": pending_orders,
                 "is_virtual": getattr(ctx, "is_virtual", False),
                 "cost_today": round(cost_today, 2),
@@ -602,6 +629,8 @@ def dashboard():
                 "market_type_name": prof.get("market_type_name", prof["market_type"]),
                 "account": None,
                 "positions": [],
+                "stock_positions": [],
+                "option_positions": [],
                 "pending_orders": [],
                 "is_virtual": False,
                 "error": str(exc),
@@ -1442,13 +1471,24 @@ def trades():
     selected_profile = request.args.get("profile_id", "", type=str)
     selected_profile_int = int(selected_profile) if selected_profile else None
 
+    # Tab kind: 'stocks' (occ_symbol IS NULL), 'options' (occ_symbol
+    # IS NOT NULL), or '' (all). Server-driven tabs (separate URLs
+    # per tab) so pagination + sort + search continue to work per
+    # tab without loading everything client-side. Wired 2026-05-11.
+    kind = request.args.get("kind", "", type=str)
+    if kind not in ("stocks", "options"):
+        kind = ""  # all
+    sql_kind = kind or None
+
     # Pull trades from profile journal DBs
     all_trades = []
     if selected_profile_int:
         # Single profile mode
         prof = next((p for p in profiles if p["id"] == selected_profile_int), None)
         if prof:
-            prof_trades = _get_trade_history_for_profile(prof["id"], limit=200)
+            prof_trades = _get_trade_history_for_profile(
+                prof["id"], limit=200, kind=sql_kind,
+            )
             for t in prof_trades:
                 t["profile_name"] = prof["name"]
                 t["profile_id"] = prof["id"]
@@ -1465,7 +1505,9 @@ def trades():
     else:
         # All profiles mode (current behavior)
         for prof in profiles:
-            prof_trades = _get_trade_history_for_profile(prof["id"], limit=100)
+            prof_trades = _get_trade_history_for_profile(
+                prof["id"], limit=100, kind=sql_kind,
+            )
             for t in prof_trades:
                 t["profile_name"] = prof["name"]
                 t["profile_id"] = prof["id"]
@@ -1510,7 +1552,8 @@ def trades():
                            profiles=profiles,
                            selected_profile=selected_profile_int,
                            page=page, total_pages=total_pages,
-                           total_trades=total, sort_by=sort_by, sort_dir=sort_dir)
+                           total_trades=total, sort_by=sort_by, sort_dir=sort_dir,
+                           kind=kind)
 
 
 def _calculate_risk_metrics(db_paths):
