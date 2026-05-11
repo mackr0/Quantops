@@ -171,12 +171,17 @@ def _enriched_positions(ctx, profile_id):
         conn = open_profile_db(db_path)
         rows = conn.execute(
             "SELECT * FROM trades "
-            # log_trade writes side='short' for new short positions, not
-            # 'sell_short' (P1.10 of LONG_SHORT_PLAN.md). Old query
-            # missed every short.
-            # Exclude canceled rows so phantom limit orders that never
-            # filled at the broker don't poison the metadata lookup.
-            "WHERE (side='buy' OR side='short') "
+            # Entry rows for metadata: BUY/SHORT for stock entries,
+            # plus option SELL rows (multileg short legs use
+            # side='sell' for sell-to-open — same overloaded
+            # vocabulary as stock close-a-long). Without the
+            # option-side branch, multileg short legs have no
+            # matching entry row → meta={} → timestamp/ai_confidence
+            # render as '--' on the dashboard. Caught 2026-05-11.
+            # Exclude canceled rows so phantom limit orders that
+            # never filled at the broker don't poison the lookup.
+            "WHERE (side='buy' OR side='short' "
+            "       OR (side='sell' AND occ_symbol IS NOT NULL)) "
             "AND COALESCE(status, 'open') != 'canceled' "
             "ORDER BY timestamp DESC"
         ).fetchall()

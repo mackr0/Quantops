@@ -126,6 +126,47 @@ class TestEnrichedPositions:
         assert out[0]["ai_reasoning"] == "NEW reasoning"
         assert out[0]["ai_confidence"] == 80
 
+    def test_multileg_short_leg_metadata_lookup_via_sell_side(self, tmp_profile_db):
+        """Multileg short legs are written to the journal with
+        side='sell' (not 'short' — that's stocks). The metadata
+        lookup must include `side='sell' AND occ_symbol IS NOT NULL`
+        so the dashboard's short-leg rows get timestamp + ai_confidence
+        instead of '--'. Caught 2026-05-11."""
+        from views import _enriched_positions
+        profile_id, db_path = tmp_profile_db
+
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "ALTER TABLE trades ADD COLUMN occ_symbol TEXT"
+        )
+        # Multileg short leg: side='sell', has occ_symbol
+        conn.execute(
+            "INSERT INTO trades (timestamp, symbol, side, qty, "
+            "price, ai_reasoning, ai_confidence, occ_symbol) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            ("2026-05-11T13:44:20", "RTX", "sell", 1, 3.15,
+             "bull put spread", 78, "RTX260618P00170000"),
+        )
+        conn.commit()
+        conn.close()
+
+        ctx = _ctx_with_positions([
+            {"symbol": "RTX260618P00170000", "qty": -1,
+             "current_price": 3.50, "avg_entry_price": 3.15,
+             "unrealized_pl": -35, "unrealized_plpc": -0.11,
+             "market_value": -350},
+        ])
+        out = _enriched_positions(ctx, profile_id)
+        assert len(out) == 1
+        row = out[0]
+        # Metadata propagated from the multileg short leg's journal row
+        assert row["timestamp"] == "2026-05-11T13:44:20", (
+            f"Expected propagated timestamp, got {row['timestamp']} "
+            "(if None, the option-side-sell branch isn't matching)"
+        )
+        assert row["ai_confidence"] == 78
+        assert row["ai_reasoning"] == "bull put spread"
+
     def test_position_without_matching_trade_row_still_renders(self, tmp_profile_db):
         """Manual Alpaca trades (not executed by our pipeline) won't have
         AI metadata. The position should still render with None fields."""
