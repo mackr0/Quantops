@@ -1424,16 +1424,50 @@ def _log_strategy_legs(strategy: OptionStrategy,
         from journal import log_trade
     except Exception:
         return
+
+    # Combo path: every leg shares the SAME parent `combo_order_id`.
+    # Calling `api.get_order(combo_id).filled_avg_price` returns the
+    # COMBO'S NET PREMIUM (signed), not per-leg prices. For credit
+    # spreads that's a NEGATIVE number, which then gets stored as
+    # the price on every leg — silently dropping all legs from
+    # `get_virtual_positions` (`if price <= 0: continue`) and
+    # making them invisible to the AI's portfolio context. Caught
+    # 2026-05-11: 10 multileg legs across 4 profiles invisible since
+    # May 8.
+    #
+    # Per-leg fills live on `combo_order.legs[i].filled_avg_price`
+    # (positive numbers). Build an OCC→price map up front and use
+    # it for any leg whose `order_id == combo_order_id`. Sequential
+    # path (each leg has its own order_id) keeps the existing
+    # per-leg fetch.
+    combo_legs_by_occ = {}
+    if combo_order_id and api is not None:
+        try:
+            combo_o = api.get_order(combo_order_id)
+            for cl in (getattr(combo_o, "legs", []) or []):
+                cl_fap = getattr(cl, "filled_avg_price", None)
+                cl_sym = getattr(cl, "symbol", None)
+                if cl_sym and cl_fap is not None:
+                    combo_legs_by_occ[cl_sym] = float(cl_fap)
+        except Exception as exc:
+            logger.debug(
+                "Combo legs fetch (%s) failed: %s — _task_update_fills "
+                "will backfill per-leg prices on its next cycle",
+                combo_order_id, exc,
+            )
+
     leg_order_ids = leg_order_ids or [combo_order_id] * len(strategy.legs)
     for i, leg in enumerate(strategy.legs):
         order_id = (leg_order_ids[i]
                     if i < len(leg_order_ids) else combo_order_id)
-        # Capture fill price from broker so the journal row has a
-        # real price (not NULL). Without this, the dashboard shows
-        # blank cost/proceeds for every option leg. (Caught
-        # 2026-05-06: WMT/MSFT multileg legs all displayed as "$--".)
-        leg_price = None
-        if api is not None and order_id:
+        # Per-leg price priority:
+        #   (a) combo's per-leg fill (combo path — matched by OCC)
+        #   (b) this leg's own order fill (sequential path — order_id
+        #       differs from combo_order_id)
+        # Never store the combo's signed net price as a leg price.
+        leg_price = combo_legs_by_occ.get(leg.occ_symbol)
+        if leg_price is None and api is not None and order_id \
+                and order_id != combo_order_id:
             try:
                 o = api.get_order(order_id)
                 fap = getattr(o, "filled_avg_price", None)
@@ -1450,6 +1484,21 @@ def _log_strategy_legs(strategy: OptionStrategy,
                     "leg get_order(%s) returned no immediate fill: %s",
                     order_id, exc,
                 )
+        # Defense-in-depth: never store a non-positive price. If
+        # something upstream went wrong, leave the column NULL so
+        # _task_update_fills can backfill it later from the broker.
+        # `get_virtual_positions` skips price=NULL rows the same way
+        # it skips price<=0 rows, so the position remains invisible
+        # but a recovery path exists. Log a warning so we know.
+        if leg_price is not None and leg_price <= 0:
+            logger.warning(
+                "Refusing to write non-positive price %s on multileg "
+                "leg %s/%s (combo=%s) — leaving NULL for update_fills "
+                "to backfill",
+                leg_price, leg.occ_symbol,
+                strategy.name, combo_order_id,
+            )
+            leg_price = None
         try:
             # Prefer the AI's per-trade reasoning when present;
             # fall back to the spread's structural thesis so the

@@ -702,6 +702,7 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
     long_lots: Dict[str, list] = {}
     short_lots: Dict[str, list] = {}
     pos_meta: Dict[str, Dict[str, Any]] = {}  # key -> {symbol, occ_symbol}
+    skipped_bad_price = 0
     for row in rows:
         symbol = row[0]
         side = row[1]
@@ -709,6 +710,14 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
         price = float(row[3] or 0)
         occ_symbol = row[5] if len(row) > 5 else None
         if qty <= 0 or price <= 0:
+            # Defense-in-depth: a row that gets here with qty<=0 or
+            # price<=0 has bad data upstream (e.g. multileg combo
+            # writing the signed net premium as the per-leg price —
+            # caught 2026-05-11). The row's position is silently
+            # invisible to the AI; surface it so the bug class is
+            # observable.
+            if qty > 0 and price <= 0:
+                skipped_bad_price += 1
             continue
         # Position key: OCC for options, underlying symbol for stock.
         key = occ_symbol if occ_symbol else symbol
@@ -824,6 +833,17 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
             "unrealized_pl": round(unrealized_pl, 2),
             "unrealized_plpc": round(unrealized_plpc, 6),
         })
+
+    if skipped_bad_price > 0:
+        import logging as _logging
+        _logging.warning(
+            "get_virtual_positions(%s): skipped %d row(s) with qty>0 "
+            "but price<=0 — these positions are invisible to the AI's "
+            "portfolio view. Likely the multileg combo writing the "
+            "signed net premium as the per-leg price (caught "
+            "2026-05-11). Run the backfill to fix existing rows.",
+            db_path, skipped_bad_price,
+        )
 
     return positions
 
