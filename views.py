@@ -4816,7 +4816,13 @@ def api_portfolio(profile_id):
 def api_positions_html(profile_id):
     """Server-rendered Open Positions table HTML. Used by the dashboard
     auto-refresh so the JS doesn't have to duplicate the expandable
-    trade-row markup."""
+    trade-row markup.
+
+    Returns the SAME 3-pane (Stocks / Options / All) structure the
+    initial dashboard render produces — without it, the auto-refresh
+    swap would replace the tab structure with a flat table and tabs
+    would stop working ~15s after page load. Caught 2026-05-11.
+    """
     from flask import render_template_string
     try:
         profile = get_trading_profile(profile_id)
@@ -4824,11 +4830,31 @@ def api_positions_html(profile_id):
             return "not found", 404
         ctx = build_user_context_from_profile(profile_id)
         positions = _enriched_positions(ctx, profile_id)
+        stock_positions = [p for p in positions
+                           if not p.get("occ_symbol")]
+        option_positions = [p for p in positions
+                            if p.get("occ_symbol")]
         return render_template_string(
             '{% import "_trades_table.html" as trades_tpl %}'
+            '<div id="op-pane-stocks-{{ pid }}" class="perf-tab-content op-pane active">'
+            '{{ trades_tpl.render_trades(stock_positions, show_profile=False, '
+            'table_id="trades-table-stocks-" ~ pid, '
+            'empty_message="No open stock positions in this profile.") }}'
+            '</div>'
+            '<div id="op-pane-options-{{ pid }}" class="perf-tab-content op-pane">'
+            '{{ trades_tpl.render_trades(option_positions, show_profile=False, '
+            'table_id="trades-table-options-" ~ pid, '
+            'empty_message="No open option positions in this profile.") }}'
+            '</div>'
+            '<div id="op-pane-all-{{ pid }}" class="perf-tab-content op-pane">'
             '{{ trades_tpl.render_trades(positions, show_profile=False, '
-            'empty_message="No open positions in this profile.") }}',
+            'table_id="trades-table-all-" ~ pid, '
+            'empty_message="No open positions in this profile.") }}'
+            '</div>',
             positions=positions,
+            stock_positions=stock_positions,
+            option_positions=option_positions,
+            pid=profile_id,
         )
     except Exception as exc:
         return f"<p class='muted'>Failed to refresh: {exc}</p>", 500
