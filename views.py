@@ -409,24 +409,39 @@ def _safe_pending_orders(ctx):
         return []
 
 
-def _get_trade_history_for_profile(profile_id, limit=100, kind=None):
+def _get_trade_history_for_profile(profile_id, limit=100, kind=None,
+                                   search=None):
     """Get trade history from the profile's journal DB.
 
     Args:
         kind: 'stocks' (occ_symbol IS NULL), 'options' (occ_symbol
-            IS NOT NULL), or None (all). The Trades-page tab UI passes
-            this so each tab sees only its instrument class — stock
-            trades and option trades have different row shapes and
-            shouldn't share a single 20-page paginated list. Wired
-            2026-05-11 for the dashboard/trades tab split.
+            IS NOT NULL), or None (all). Wired 2026-05-11 for the
+            dashboard/trades tab split.
+        search: optional case-insensitive symbol prefix filter. Matches
+            on `symbol` AND on `occ_symbol`'s underlying root, so
+            "CWAN" finds both stock CWAN rows and CWAN option leg
+            rows. SQL-injection-safe via parameter binding.
+            Wired 2026-05-11 (TODO #3).
     """
     db_path = f"quantopsai_profile_{profile_id}.db"
-    sql = "SELECT * FROM trades"
+    where = []
     params = []
     if kind == "stocks":
-        sql += " WHERE occ_symbol IS NULL"
+        where.append("occ_symbol IS NULL")
     elif kind == "options":
-        sql += " WHERE occ_symbol IS NOT NULL"
+        where.append("occ_symbol IS NOT NULL")
+    if search and isinstance(search, str):
+        # Match symbol prefix (case-insensitive) OR OCC substring
+        # (OCCs start with the underlying root, so a prefix match
+        # works for both: 'CWAN' matches 'CWAN' stock + 'CWAN260612...').
+        s = search.strip().upper()
+        if s:
+            where.append("(UPPER(symbol) LIKE ? OR "
+                         "UPPER(COALESCE(occ_symbol, '')) LIKE ?)")
+            params.extend([f"{s}%", f"{s}%"])
+    sql = "SELECT * FROM trades"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY timestamp DESC LIMIT ?"
     params.append(limit)
     try:
@@ -436,9 +451,9 @@ def _get_trade_history_for_profile(profile_id, limit=100, kind=None):
         return [dict(r) for r in rows]
     except Exception as exc:
         logger.warning(
-            "_get_trade_history_for_profile(profile_id=%d, kind=%s): "
-            "could not read trades from %s: %s",
-            profile_id, kind, db_path, exc,
+            "_get_trade_history_for_profile(profile_id=%d, kind=%s, "
+            "search=%r): could not read trades from %s: %s",
+            profile_id, kind, search, db_path, exc,
         )
         return []
 
@@ -1480,6 +1495,12 @@ def trades():
         kind = ""  # all
     sql_kind = kind or None
 
+    # Symbol search — case-insensitive prefix on symbol/OCC.
+    # Sanitize: strip whitespace, cap length to defend against absurd
+    # inputs. Empty/None means no filter. Wired 2026-05-11 (TODO #3).
+    search_raw = request.args.get("search", "", type=str) or ""
+    search = search_raw.strip()[:32] or None
+
     # Pull trades from profile journal DBs
     all_trades = []
     if selected_profile_int:
@@ -1487,7 +1508,7 @@ def trades():
         prof = next((p for p in profiles if p["id"] == selected_profile_int), None)
         if prof:
             prof_trades = _get_trade_history_for_profile(
-                prof["id"], limit=200, kind=sql_kind,
+                prof["id"], limit=200, kind=sql_kind, search=search,
             )
             for t in prof_trades:
                 t["profile_name"] = prof["name"]
@@ -1506,7 +1527,7 @@ def trades():
         # All profiles mode (current behavior)
         for prof in profiles:
             prof_trades = _get_trade_history_for_profile(
-                prof["id"], limit=100, kind=sql_kind,
+                prof["id"], limit=100, kind=sql_kind, search=search,
             )
             for t in prof_trades:
                 t["profile_name"] = prof["name"]
@@ -1555,7 +1576,7 @@ def trades():
                            page=page, total_pages=total_pages,
                            page_links=page_links,
                            total_trades=total, sort_by=sort_by, sort_dir=sort_dir,
-                           kind=kind)
+                           kind=kind, search=search or "")
 
 
 def _build_page_links(current_page, total_pages, window=2):

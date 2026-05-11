@@ -5,13 +5,20 @@
 <h1>Trade History</h1>
 
 <div style="margin-bottom:1rem;">
-    <form method="get" action="/trades" style="display:flex;gap:0.5rem;align-items:center;">
+    <form method="get" action="/trades" style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
         <select name="profile_id" onchange="this.form.submit()">
             <option value="">All Profiles</option>
             {% for p in profiles %}
             <option value="{{ p.id }}" {{ 'selected' if selected_profile == p.id else '' }}>{{ p.name }}</option>
             {% endfor %}
         </select>
+        <input type="search" name="search" value="{{ search }}" placeholder="Symbol (e.g. CWAN)"
+               style="padding:0.3rem 0.6rem;font-size:0.9rem;width:14rem;">
+        <button type="submit" class="outline secondary" style="padding:0.3rem 0.8rem;font-size:0.85rem;">Search</button>
+        {% if search %}
+        <a href="/trades?{% if selected_profile %}profile_id={{ selected_profile }}&{% endif %}{% if kind %}kind={{ kind }}&{% endif %}sort={{ sort_by }}&dir={{ sort_dir }}"
+           class="muted" style="font-size:0.85rem;text-decoration:underline;">Clear</a>
+        {% endif %}
         {# Preserve current tab + sort across the profile-change submission #}
         <input type="hidden" name="kind" value="{{ kind }}">
         <input type="hidden" name="sort" value="{{ sort_by }}">
@@ -20,13 +27,13 @@
 </div>
 
 {# Server-driven tabs — each tab is a real URL so pagination + sort
-   work per-tab without loading every row client-side. Wired
-   2026-05-11 (TODO item #1). #}
+   + symbol search work per-tab without loading every row client-side. #}
 {% set _qs_base = (('profile_id=' ~ selected_profile ~ '&') if selected_profile else '') %}
+{% set _qs_search = ('&search=' ~ search) if search else '' %}
 <div class="perf-tabs" style="margin-bottom:1rem;">
-    <a href="?{{ _qs_base }}sort={{ sort_by }}&dir={{ sort_dir }}" class="perf-tab {{ 'active' if not kind else '' }}">All</a>
-    <a href="?{{ _qs_base }}kind=stocks&sort={{ sort_by }}&dir={{ sort_dir }}" class="perf-tab {{ 'active' if kind == 'stocks' else '' }}">Stocks</a>
-    <a href="?{{ _qs_base }}kind=options&sort={{ sort_by }}&dir={{ sort_dir }}" class="perf-tab {{ 'active' if kind == 'options' else '' }}">Options</a>
+    <a href="?{{ _qs_base }}sort={{ sort_by }}&dir={{ sort_dir }}{{ _qs_search }}" class="perf-tab {{ 'active' if not kind else '' }}">All</a>
+    <a href="?{{ _qs_base }}kind=stocks&sort={{ sort_by }}&dir={{ sort_dir }}{{ _qs_search }}" class="perf-tab {{ 'active' if kind == 'stocks' else '' }}">Stocks</a>
+    <a href="?{{ _qs_base }}kind=options&sort={{ sort_by }}&dir={{ sort_dir }}{{ _qs_search }}" class="perf-tab {{ 'active' if kind == 'options' else '' }}">Options</a>
 </div>
 
 <article>
@@ -44,7 +51,7 @@
     {{ trades_tpl.render_trades(trades, show_profile=True, sortable=True,
         empty_message="No trades yet. Trades will appear here once the AI selects and executes positions.") }}
     {% if total_pages > 1 %}
-    {% set _link_qs = ('&sort=' ~ sort_by ~ '&dir=' ~ sort_dir ~ ('&profile_id=' ~ selected_profile if selected_profile else '') ~ ('&kind=' ~ kind if kind else '')) %}
+    {% set _link_qs = ('&sort=' ~ sort_by ~ '&dir=' ~ sort_dir ~ ('&profile_id=' ~ selected_profile if selected_profile else '') ~ ('&kind=' ~ kind if kind else '') ~ ('&search=' ~ search if search else '')) %}
     <div style="display:flex;justify-content:center;align-items:center;gap:0.35rem;margin-top:0.75rem;flex-wrap:wrap;">
         {% if page > 1 %}
         <a href="?page={{ page - 1 }}{{ _link_qs }}" class="outline secondary" style="padding:0.25rem 0.6rem;font-size:0.85rem;" role="button">&larr;</a>
@@ -76,6 +83,7 @@
             <input type="hidden" name="dir" value="{{ sort_dir }}">
             {% if kind %}<input type="hidden" name="kind" value="{{ kind }}">{% endif %}
             {% if selected_profile %}<input type="hidden" name="profile_id" value="{{ selected_profile }}">{% endif %}
+            {% if search %}<input type="hidden" name="search" value="{{ search }}">{% endif %}
         </form>
     </div>
     <div class="muted" style="text-align:center;font-size:0.8rem;margin-top:0.4rem;">
