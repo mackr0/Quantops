@@ -838,7 +838,13 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
             )
             market_value = current_price * total_qty * contract_mult
 
-        positions.append({
+        # Phase 1 Position-class refactor: build the canonical row
+        # then wrap as a Position object. The shim lets every existing
+        # consumer (pos["symbol"], pos.get("qty"), etc.) keep working
+        # unchanged. New code uses pos.broker_symbol / pos.is_option /
+        # pos.is_short directly.
+        from position import Position
+        row = {
             "symbol": symbol,
             "occ_symbol": occ_symbol,
             "qty": round(signed_qty, 4),
@@ -847,7 +853,8 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
             "market_value": round(market_value, 2),
             "unrealized_pl": round(unrealized_pl, 2),
             "unrealized_plpc": round(unrealized_plpc, 6),
-        })
+        }
+        positions.append(Position.from_virtual_row(row))
 
     if skipped_bad_price > 0:
         import logging as _logging

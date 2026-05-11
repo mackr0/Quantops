@@ -172,18 +172,39 @@ class TestUnrealizedPnL:
 
 class TestOutputShape:
     def test_matches_client_get_positions_shape(self, vdb):
+        """Virtual and Alpaca producers must expose the same keys so
+        downstream consumers (dashboard, exit logic, etc.) treat
+        their outputs interchangeably. Phase 1 of the Position class
+        refactor (2026-05-11): both producers now return Position
+        objects with the same shim-exposed dict interface, so this
+        test compares the producers directly instead of a hardcoded
+        list."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
         from journal import get_virtual_positions
+        from client import get_positions
+
         _buy(vdb, "AAPL", 10, 100.0)
-        pos = get_virtual_positions(db_path=vdb)
-        # `occ_symbol` is part of the shape so option legs can be
-        # rendered with contract details. None for stock positions.
-        required_keys = {
-            "symbol", "occ_symbol", "qty", "avg_entry_price",
-            "current_price", "market_value",
-            "unrealized_pl", "unrealized_plpc",
-        }
-        assert set(pos[0].keys()) == required_keys
-        assert pos[0]["occ_symbol"] is None  # stock row
+        v_pos = get_virtual_positions(db_path=vdb)
+
+        # Stock row from the Alpaca path with the same shape
+        api = MagicMock()
+        api.list_positions.return_value = [SimpleNamespace(
+            symbol="AAPL", qty="10", avg_entry_price="100.0",
+            current_price="100.0", market_value="1000.0",
+            unrealized_pl="0.0", unrealized_plpc="0.0",
+        )]
+        c_pos = get_positions(api=api)
+
+        assert set(v_pos[0].keys()) == set(c_pos[0].keys())
+        # Both must include the structural keys downstream consumers
+        # have always read.
+        for k in ("symbol", "occ_symbol", "qty", "avg_entry_price",
+                  "current_price", "market_value",
+                  "unrealized_pl", "unrealized_plpc"):
+            assert k in v_pos[0]
+            assert k in c_pos[0]
+        assert v_pos[0]["occ_symbol"] is None  # stock row
 
     def test_price_fetcher_failure_falls_back(self, vdb):
         from journal import get_virtual_positions

@@ -373,16 +373,12 @@ def get_positions(api=None, ctx=None):
 
     api = api or get_api(ctx)
     from broker_health import call_with_health_tracking
+    from position import Position
     positions = call_with_health_tracking(api.list_positions)
-    return [
-        {
-            "symbol": p.symbol,
-            "qty": float(p.qty),
-            "market_value": float(p.market_value),
-            "unrealized_pl": float(p.unrealized_pl),
-            "unrealized_plpc": float(p.unrealized_plpc),
-            "current_price": float(p.current_price),
-            "avg_entry_price": float(p.avg_entry_price),
-        }
-        for p in positions
-    ]
+    # Phase 1 of Position class refactor: returns List[Position]
+    # instead of List[dict]. Position has a back-compat shim
+    # (__getitem__ / .get / "in"), so every existing consumer that
+    # does pos["symbol"] / pos.get("qty") keeps working unchanged.
+    # New code uses pos.broker_symbol / pos.is_option / etc.
+    # Phase 2+ migrates consumers off the dict shim.
+    return [Position.from_alpaca(p) for p in positions]
