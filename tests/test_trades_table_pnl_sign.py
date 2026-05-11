@@ -20,6 +20,11 @@ def _render(trade):
     """Render the single trade row through the macro and return HTML."""
     env = Environment(loader=FileSystemLoader(TEMPLATE_DIR))
     env.filters["friendly_time"] = lambda x: x or "--"
+    # `humanize` filter (added by display_names.register in production)
+    # is needed by the macro's Action column.
+    from display_names import humanize, format_occ
+    env.filters["humanize"] = humanize
+    env.filters["format_occ"] = format_occ
     tmpl = env.from_string(
         "{% from '_trades_table.html' import render_trades %}"
         "{{ render_trades([t]) }}"

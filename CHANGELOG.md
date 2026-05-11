@@ -17,6 +17,26 @@ Rules going forward:
 
 ---
 
+## 2026-05-11 — TODO sweep: pagination + symbol search + Action column
+
+Three small but high-impact UI improvements bundled:
+
+### TODO #2 — server-side page-jump pagination on /trades
+
+Replaced the prev/next-arrow-only pagination with a numbered page bar (`« 1 ... 8 9 [10] 11 12 ... 20 »`) plus a "Go to:" jump-to-page input. Window of ±2 pages around the current page; first + last pages always shown; ellipsis for gaps wider than 1; single-page gaps render the missing page instead of an ellipsis (avoids ugly "1 ... 3 ..." when only page 2 is the gap). Active page highlighted with inverse colors. All links + the jump-to-page form preserve sort/dir/kind/profile_id/search query parameters. 12 new tests in `tests/test_pagination.py`.
+
+### TODO #3 — symbol search on /trades
+
+Adds `?search=<symbol>` URL parameter and a search input on the page form. Filters at the SQL level via case-insensitive prefix match on `symbol` AND on `occ_symbol`'s underlying root, so "CWAN" finds both stock CWAN trades AND CWAN option leg trades. Defensive: strips whitespace, caps length to 32 chars, SQL-injection-safe via bind parameters (verified by a test that submits the classic `' OR 1=1 --` payload and confirms zero rows returned). Composes with the kind tab filter (e.g., `?search=CWAN&kind=options` returns only CWAN option legs). 10 new tests in `tests/test_trades_search.py`.
+
+### TODO #4 — Action column replaces Side
+
+Renamed the column from "Side" to "Action" and made it render the actual `signal_type` (BUY, STRONG_BUY, MULTILEG_OPEN, PAIR_OPEN, OPTION_EXERCISE, etc.) instead of just BUY/SELL. Multileg legs now read clearly: "Multileg Open" with side subtext "sell" for a short leg, "buy" for the long leg. Falls back to side-uppercased for older trade rows where signal_type is null. Title-case rendering for consistent visual weight (`MULTILEG_OPEN` → "Multileg Open", `BUY` → "Buy"). 8 new tests in `tests/test_trades_action_column.py`. Updated `tests/test_trades_table_pnl_sign.py` to register the `humanize` filter for the test Jinja env (the macro now uses it).
+
+2,744 pass.
+
+---
+
 ## 2026-05-11 — Stocks/Options tabs on dashboard + /trades (TODO #1)
 
 **Why**: Mack noticed that the single shared `_trades_table.html`

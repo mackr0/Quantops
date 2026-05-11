@@ -21,7 +21,7 @@
                     <th class="sortable" data-sort="string" data-col="1">Time <span class="sort-arrow">▼</span></th>
                     {% if show_profile %}<th class="sortable" data-sort="string" data-col="2">Profile</th>{% endif %}
                     <th class="sortable" data-sort="string" data-col="{{ 3 if show_profile else 2 }}">Symbol</th>
-                    <th class="sortable" data-sort="string" data-col="{{ 4 if show_profile else 3 }}">Side</th>
+                    <th class="sortable" data-sort="string" data-col="{{ 4 if show_profile else 3 }}">Action</th>
                     <th class="sortable" data-sort="number" data-col="{{ 5 if show_profile else 4 }}">Qty</th>
                     <th class="sortable" data-sort="number" data-col="{{ 6 if show_profile else 5 }}">Price</th>
                     <th class="sortable" data-sort="number" data-col="{{ 7 if show_profile else 6 }}">AI Conf</th>
@@ -30,7 +30,7 @@
                     <th>Time</th>
                     {% if show_profile %}<th>Profile</th>{% endif %}
                     <th>Symbol</th>
-                    <th>Side</th>
+                    <th>Action</th>
                     <th>Qty</th>
                     <th>Price</th>
                     <th>AI Conf</th>
@@ -67,8 +67,21 @@
                             <strong>{{ t.symbol }}</strong>
                         {% endif %}
                     </td>
+                    {# "Action" column — primary line is t.signal_type
+                       (the actual action: STRONG_BUY, MULTILEG_OPEN,
+                       PAIR_OPEN, etc.). Falls back to side-uppercased
+                       for older rows that don't have signal_type.
+                       Color tracks side for buy/sell visual cue. The
+                       small line below shows the short side label
+                       when it differs from signal_type, so multileg
+                       legs read correctly (e.g., "MULTILEG_OPEN" /
+                       "sell" for a short call leg). #}
+                    {% set _action_label = (t.signal_type or t.side or '--')|lower|replace('_', ' ')|title %}
                     <td class="{{ 'pnl-pos' if t.side == 'buy' else 'pnl-neg' }}">
-                        {{ t.side|upper }}
+                        <strong style="font-size:0.85rem;">{{ _action_label }}</strong>
+                        {% if t.signal_type and t.side and t.side|upper != t.signal_type %}
+                        <br><small class="muted" style="font-size:0.7rem;text-transform:uppercase;">{{ t.side }}</small>
+                        {% endif %}
                     </td>
                     <td>{{ t.qty|int }}{% if is_option %}<small class="muted"> ct</small>{% endif %}{% if t.price and t.qty %}<br><small class="muted">${{ "{:,.0f}".format(t.qty * t.price * option_mult) }}</small>{% endif %}</td>
                     <td>
