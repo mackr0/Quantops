@@ -233,6 +233,123 @@ class TestComboPathPerLegPrice:
             os.unlink(db)
 
 
+class TestOptionSellToOpenBuildsShortPosition:
+    """Pin the second-order fix: an option SELL row with no long lot
+    to consume must be treated as a sell-to-open (short option),
+    not silently ignored. Without this, every multileg short leg
+    produces zero position state — the AI thinks the spread is just
+    the long leg. Caught 2026-05-11 (same incident).
+    """
+
+    def test_multileg_short_leg_creates_short_position(self):
+        """A bull put spread: long leg + short leg both at status='open'.
+        Both legs must produce positions in get_virtual_positions
+        (long qty>0, short qty<0)."""
+        db = _make_db()
+        try:
+            conn = sqlite3.connect(db)
+            # Short leg (sell-to-open higher-strike put)
+            conn.execute(
+                "INSERT INTO trades (timestamp, symbol, side, qty, "
+                "price, fill_price, occ_symbol, signal_type, status) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                ("2026-05-11T13:44:20", "RTX", "sell", 1.0, 3.15,
+                 3.15, "RTX260618P00170000", "MULTILEG", "open"),
+            )
+            # Long leg (buy-to-open lower-strike put)
+            conn.execute(
+                "INSERT INTO trades (timestamp, symbol, side, qty, "
+                "price, fill_price, occ_symbol, signal_type, status) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                ("2026-05-11T13:44:21", "RTX", "buy", 1.0, 1.74,
+                 1.74, "RTX260618P00160000", "MULTILEG", "open"),
+            )
+            conn.commit()
+            conn.close()
+
+            from journal import get_virtual_positions
+            positions = get_virtual_positions(db)
+
+            summary = [(p["symbol"], p.get("occ_symbol"), p["qty"])
+                       for p in positions]
+            assert len(positions) == 2, (
+                f"Both legs should produce positions, got {summary}"
+            )
+            short = next(p for p in positions
+                         if p["occ_symbol"] == "RTX260618P00170000")
+            long_ = next(p for p in positions
+                         if p["occ_symbol"] == "RTX260618P00160000")
+            # Short leg: qty<0, avg_entry from the sell price
+            assert short["qty"] < 0
+            assert abs(short["qty"]) == pytest.approx(1.0)
+            assert short["avg_entry_price"] == pytest.approx(3.15)
+            # Long leg: qty>0, avg_entry from the buy price
+            assert long_["qty"] > 0
+            assert long_["qty"] == pytest.approx(1.0)
+            assert long_["avg_entry_price"] == pytest.approx(1.74)
+        finally:
+            os.unlink(db)
+
+    def test_stock_sell_with_no_long_does_not_open_short(self):
+        """Stocks use explicit `side='short'` for sell-to-open. A
+        stock `side='sell'` with no long lot is NOT a sell-to-open
+        (it would be a phantom — the bug shape we fixed for OPTIONS
+        only). Stock semantics are unchanged."""
+        db = _make_db()
+        try:
+            conn = sqlite3.connect(db)
+            conn.execute(
+                "INSERT INTO trades (timestamp, symbol, side, qty, "
+                "price, fill_price, occ_symbol, signal_type, status) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                ("2026-05-11T10:00:00", "AAPL", "sell", 100, 150.0,
+                 150.0, None, "BUY", "open"),
+            )
+            conn.commit()
+            conn.close()
+
+            from journal import get_virtual_positions
+            positions = get_virtual_positions(db)
+            # No long lot to consume + no occ → produces nothing
+            # (stock sell-to-open requires explicit 'short' side)
+            assert positions == []
+        finally:
+            os.unlink(db)
+
+    def test_option_sell_after_long_consumed_remainder_opens_short(self):
+        """Mixed case: long 1ct already, then sell 3ct. First 1ct
+        consumes the long; remaining 2ct opens a short position.
+        The function should produce the resulting short position."""
+        db = _make_db()
+        try:
+            conn = sqlite3.connect(db)
+            conn.execute(
+                "INSERT INTO trades (timestamp, symbol, side, qty, "
+                "price, fill_price, occ_symbol, signal_type, status) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                ("2026-05-10T10:00:00", "RTX", "buy", 1.0, 1.74,
+                 1.74, "RTX260618P00160000", "MULTILEG", "open"),
+            )
+            conn.execute(
+                "INSERT INTO trades (timestamp, symbol, side, qty, "
+                "price, fill_price, occ_symbol, signal_type, status) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                ("2026-05-11T10:00:00", "RTX", "sell", 3.0, 2.00,
+                 2.00, "RTX260618P00160000", "MULTILEG", "open"),
+            )
+            conn.commit()
+            conn.close()
+
+            from journal import get_virtual_positions
+            positions = get_virtual_positions(db)
+            assert len(positions) == 1
+            p = positions[0]
+            # 1 long consumed, 2 remaining → short 2 contracts
+            assert p["qty"] == pytest.approx(-2.0)
+        finally:
+            os.unlink(db)
+
+
 class TestGetVirtualPositionsSurfacesBadPrice:
     def test_warning_logged_when_skipping_negative_price_row(self, caplog):
         """When `get_virtual_positions` encounters a row with qty>0

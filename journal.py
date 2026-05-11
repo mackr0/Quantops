@@ -738,6 +738,21 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
                 remaining -= consumed
                 if ll[0][0] <= 0.001:
                     ll.pop(0)
+            # OPTION SELL-TO-OPEN: a multileg short leg writes
+            # side='sell' (not 'short') because OptionLeg.side is
+            # 'buy'/'sell' — the same overloaded vocabulary stocks
+            # use for close-a-long. For options specifically, a
+            # `side='sell'` row with no long lot to consume is a
+            # sell-to-open (short option position), not a phantom
+            # close. Without this branch, every multileg short leg
+            # silently produces zero position state and the AI
+            # thinks the spread is just the long leg.
+            # Caught 2026-05-11 (same incident that surfaced the
+            # combo-net price bug).
+            if remaining > 0 and occ_symbol:
+                short_lots.setdefault(key, []).append(
+                    [remaining, price]
+                )
         elif side == "cover":
             # Closes a short. FIFO-consume from short_lots.
             remaining = qty
