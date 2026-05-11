@@ -44,15 +44,42 @@
     {{ trades_tpl.render_trades(trades, show_profile=True, sortable=True,
         empty_message="No trades yet. Trades will appear here once the AI selects and executes positions.") }}
     {% if total_pages > 1 %}
-    <div style="display:flex;justify-content:center;align-items:center;gap:0.5rem;margin-top:0.75rem;">
-        {% set _link_qs = ('&sort=' ~ sort_by ~ '&dir=' ~ sort_dir ~ ('&profile_id=' ~ selected_profile if selected_profile else '') ~ ('&kind=' ~ kind if kind else '')) %}
+    {% set _link_qs = ('&sort=' ~ sort_by ~ '&dir=' ~ sort_dir ~ ('&profile_id=' ~ selected_profile if selected_profile else '') ~ ('&kind=' ~ kind if kind else '')) %}
+    <div style="display:flex;justify-content:center;align-items:center;gap:0.35rem;margin-top:0.75rem;flex-wrap:wrap;">
         {% if page > 1 %}
-        <a href="?page={{ page - 1 }}{{ _link_qs }}" class="outline secondary" style="padding:0.25rem 0.75rem;font-size:0.85rem;" role="button">&larr; Previous</a>
+        <a href="?page={{ page - 1 }}{{ _link_qs }}" class="outline secondary" style="padding:0.25rem 0.6rem;font-size:0.85rem;" role="button">&larr;</a>
+        {% else %}
+        <span class="muted" style="padding:0.25rem 0.6rem;font-size:0.85rem;opacity:0.4;">&larr;</span>
         {% endif %}
-        <span class="muted" style="font-size:0.85rem;">Page {{ page }} of {{ total_pages }} ({{ total_trades }} trades)</span>
+
+        {% for p in page_links %}
+            {% if p is none %}
+                <span class="muted" style="font-size:0.85rem;padding:0.25rem 0.3rem;">…</span>
+            {% elif p == page %}
+                <span style="padding:0.25rem 0.6rem;font-size:0.85rem;background:#1a1a2e;color:#fff;border-radius:3px;font-weight:bold;">{{ p }}</span>
+            {% else %}
+                <a href="?page={{ p }}{{ _link_qs }}" class="outline secondary" style="padding:0.25rem 0.6rem;font-size:0.85rem;" role="button">{{ p }}</a>
+            {% endif %}
+        {% endfor %}
+
         {% if page < total_pages %}
-        <a href="?page={{ page + 1 }}{{ _link_qs }}" class="outline secondary" style="padding:0.25rem 0.75rem;font-size:0.85rem;" role="button">Next &rarr;</a>
+        <a href="?page={{ page + 1 }}{{ _link_qs }}" class="outline secondary" style="padding:0.25rem 0.6rem;font-size:0.85rem;" role="button">&rarr;</a>
+        {% else %}
+        <span class="muted" style="padding:0.25rem 0.6rem;font-size:0.85rem;opacity:0.4;">&rarr;</span>
         {% endif %}
+
+        {# Jump-to-page input — type page number, Enter to go. #}
+        <form method="get" action="/trades" style="display:inline-flex;align-items:center;gap:0.25rem;margin-left:0.5rem;">
+            <small class="muted">Go to:</small>
+            <input type="number" name="page" min="1" max="{{ total_pages }}" placeholder="{{ page }}" style="width:4.5rem;padding:0.2rem 0.4rem;font-size:0.85rem;">
+            <input type="hidden" name="sort" value="{{ sort_by }}">
+            <input type="hidden" name="dir" value="{{ sort_dir }}">
+            {% if kind %}<input type="hidden" name="kind" value="{{ kind }}">{% endif %}
+            {% if selected_profile %}<input type="hidden" name="profile_id" value="{{ selected_profile }}">{% endif %}
+        </form>
+    </div>
+    <div class="muted" style="text-align:center;font-size:0.8rem;margin-top:0.4rem;">
+        Page {{ page }} of {{ total_pages }} · {{ total_trades }} trades
     </div>
     {% endif %}
 </article>

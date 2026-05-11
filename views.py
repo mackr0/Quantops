@@ -1546,14 +1546,57 @@ def trades():
     page = max(1, min(page, total_pages))
     start = (page - 1) * per_page
     page_trades = all_trades[start:start + per_page]
+    page_links = _build_page_links(page, total_pages, window=2)
 
     return render_template("trades.html",
                            trades=page_trades,
                            profiles=profiles,
                            selected_profile=selected_profile_int,
                            page=page, total_pages=total_pages,
+                           page_links=page_links,
                            total_trades=total, sort_by=sort_by, sort_dir=sort_dir,
                            kind=kind)
+
+
+def _build_page_links(current_page, total_pages, window=2):
+    """Build the page-bar entries for a numbered pagination control.
+
+    Returns a list where each entry is either:
+      - an int page number (renders as a clickable link, or as the
+        active page if it equals current_page)
+      - None (renders as an ellipsis gap)
+
+    Always includes page 1 and the last page. Around the current page
+    shows `window` neighbors on each side (default 2 = current ±2).
+    Gaps wider than 1 between consecutive numbers get an ellipsis.
+
+    Examples (window=2):
+      current=1, total=20  → [1, 2, 3, None, 20]
+      current=10, total=20 → [1, None, 8, 9, 10, 11, 12, None, 20]
+      current=20, total=20 → [1, None, 18, 19, 20]
+      total=5              → [1, 2, 3, 4, 5]
+    """
+    if total_pages <= 1:
+        return [1]
+    pages = set([1, total_pages])
+    pages.update(range(max(2, current_page - window),
+                       min(total_pages, current_page + window) + 1))
+    ordered = sorted(pages)
+    out = []
+    prev = None
+    for p in ordered:
+        if prev is not None:
+            gap = p - prev
+            if gap == 2:
+                # Single page missing — render it instead of an
+                # ellipsis. Avoids an ellipsis for a 1-page skip
+                # which looks worse than just showing the page.
+                out.append(prev + 1)
+            elif gap > 2:
+                out.append(None)
+        out.append(p)
+        prev = p
+    return out
 
 
 def _calculate_risk_metrics(db_paths):
