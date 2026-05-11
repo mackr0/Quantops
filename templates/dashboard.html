@@ -622,7 +622,32 @@ function showOpTab(event, profileId, which) {
             if (timeEl && data.timestamp) timeEl.textContent = timeAgo(data.timestamp);
             if (reasonEl && data.ai_reasoning) {
                 var trades = data.trades_selected || [], html = '';
-                if (trades.length > 0) { html += '<strong style="color:#00c853;">TRADES SELECTED:</strong><br>'; trades.forEach(function(t) { html += '<span style="color:#00c853;">' + t.action + ' ' + t.symbol + '</span> (' + t.size_pct + '% equity, ' + t.confidence + '% confidence)<br><em>' + t.reasoning + '</em><br>'; }); }
+                if (trades.length > 0) {
+                    html += '<strong style="color:#00c853;">TRADES SELECTED:</strong><br>';
+                    trades.forEach(function(t) {
+                        // Rejection badge: shows when execution_outcome
+                        // says the broker refused this proposal. Without
+                        // it, the trade silently disappears and the
+                        // operator goes hunting for a non-existent fill
+                        // (caught 2026-05-11: CWAN cross-direction guard).
+                        var badge = '';
+                        if (t.execution_outcome === 'rejected') {
+                            var tip = (t.rejection_code_display || 'Rejected') +
+                                      (t.rejection_message ? ' — ' + t.rejection_message : '');
+                            badge = ' <span title="' + tip.replace(/"/g, '&quot;') +
+                                    '" style="display:inline-block;background:#c62828;color:#fff;' +
+                                    'font-size:0.65rem;font-weight:600;padding:0.05rem 0.4rem;' +
+                                    'border-radius:3px;vertical-align:middle;margin-left:0.4rem;">' +
+                                    'REJECTED · ' + (t.rejection_code_display || 'broker refused') + '</span>';
+                        }
+                        html += '<span style="color:' +
+                                (t.execution_outcome === 'rejected' ? '#999' : '#00c853') + ';' +
+                                (t.execution_outcome === 'rejected' ? 'text-decoration:line-through;' : '') +
+                                '">' + t.action + ' ' + t.symbol + '</span>' + badge +
+                                ' (' + t.size_pct + '% equity, ' + t.confidence + '% confidence)<br>' +
+                                '<em>' + t.reasoning + '</em><br>';
+                    });
+                }
                 else { html += '<strong>Decision:</strong> ' + data.ai_reasoning; }
                 if (data.learned_patterns && data.learned_patterns.length > 0) { html += '<br><small style="color:#888;">Patterns: ' + data.learned_patterns.slice(0,2).join(' | ') + '</small>'; }
                 reasonEl.innerHTML = html;

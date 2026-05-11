@@ -5036,6 +5036,48 @@ def api_cycle_data(profile_id):
             t["reasoning"] = humanize(t["reasoning"])
         if isinstance(t.get("action"), str):
             t["action"] = humanize(t["action"])
+
+    # TODO #5: stamp execution outcome on each TRADES SELECTED row.
+    # Cross-reference recent broker_rejections for this profile so the
+    # AI Brain panel can render an inline "REJECTED" badge with the
+    # reason instead of the trade silently disappearing (Mack's CWAN
+    # incident — operator went looking for a trade that Alpaca had
+    # rejected via the cross-direction guard).
+    try:
+        from journal import get_recent_broker_rejections
+        db_path = f"quantopsai_profile_{profile_id}.db"
+        rejections = get_recent_broker_rejections(db_path, hours=2)
+        # Index by symbol for O(1) lookup. Within the 2h window, the
+        # most recent rejection per symbol is the relevant one.
+        rej_by_symbol = {}
+        for r in rejections:
+            sym = (r.get("symbol") or "").upper()
+            if sym and sym not in rej_by_symbol:
+                rej_by_symbol[sym] = r
+        for t in (data.get("trades_selected") or []):
+            sym = (t.get("symbol") or "").upper()
+            if not sym:
+                continue
+            r = rej_by_symbol.get(sym)
+            if r:
+                # Humanize the rejection_code so "cross_direction_long_blocked"
+                # reads as "Cross Direction Long Blocked" in the badge tooltip.
+                t["execution_outcome"] = "rejected"
+                t["rejection_code"] = r.get("rejection_code") or "other"
+                t["rejection_code_display"] = humanize(
+                    r.get("rejection_code") or "other"
+                )
+                # Truncate the broker message — Alpaca reasons can be
+                # multi-line; the UI just needs the gist on hover.
+                msg = r.get("broker_message") or ""
+                t["rejection_message"] = msg[:240]
+    except Exception as exc:
+        logger.warning(
+            "api_cycle_data: rejection-badge enrichment failed for "
+            "profile %d: %s — proceeding without badges",
+            profile_id, exc,
+        )
+
     return jsonify(data)
 
 

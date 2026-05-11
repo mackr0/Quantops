@@ -17,6 +17,22 @@ Rules going forward:
 
 ---
 
+## 2026-05-11 — TODO #5: AI Brain panel renders broker_rejections badges inline
+
+The `broker_rejections` table (shipped earlier today) was capturing every Alpaca rejection — cross-direction guard, wash-trade, insufficient buying power — but the AI Brain panel still showed "TRADES SELECTED" without execution outcome. Mack's CWAN incident this morning: the AI proposed a BUY, Alpaca refused (sibling profile had a SHORT pending on the same shared account), and the trade silently disappeared. Operator went looking for a fill that never happened.
+
+**Fix**: `/api/cycle-data/<profile_id>` now joins each TRADES SELECTED row to the most recent broker_rejection for that symbol within the last 2 hours. When a match is found, the row gets `execution_outcome="rejected"`, `rejection_code` (e.g., `cross_direction_long_blocked`), `rejection_code_display` (humanized for tooltip), and a truncated `rejection_message` (full broker text, capped at 240 chars).
+
+**UI**: dashboard JS renders rejected trades with a red `REJECTED · <Reason>` badge inline, the symbol struck through, and the row dimmed. Hover shows the full broker message in a native tooltip. Trades that did go through render unchanged (green).
+
+**Defensive**: if the broker_rejection lookup fails (DB lock, etc.), the endpoint logs a warning and returns the cycle data without rejection badges — degraded but not 500ing. No silent swallow.
+
+3 new tests in `tests/test_cycle_data_rejection_badge.py` pin: rejected trades get the correct outcome+code+display+message; unrejected trades get no rejection fields; DB failure logs warning + returns 200 without badges.
+
+2,748 pass.
+
+---
+
 ## 2026-05-11 — TODO sweep: pagination + symbol search + Action column
 
 Three small but high-impact UI improvements bundled:
