@@ -4836,20 +4836,21 @@ def api_positions_html(profile_id):
                             if p.get("occ_symbol")]
         # Default-active pane matches the initial-render template:
         # "All" — guarantees the dashboard is populated on load
-        # regardless of profile composition.
+        # regardless of profile composition. Inline style.display
+        # bypasses any cached CSS state.
         return render_template_string(
             '{% import "_trades_table.html" as trades_tpl %}'
-            '<div id="op-pane-stocks-{{ pid }}" class="perf-tab-content op-pane">'
+            '<div id="op-pane-stocks-{{ pid }}" class="perf-tab-content op-pane" style="display:none;">'
             '{{ trades_tpl.render_trades(stock_positions, show_profile=False, '
             'table_id="trades-table-stocks-" ~ pid, '
             'empty_message="No open stock positions in this profile.") }}'
             '</div>'
-            '<div id="op-pane-options-{{ pid }}" class="perf-tab-content op-pane">'
+            '<div id="op-pane-options-{{ pid }}" class="perf-tab-content op-pane" style="display:none;">'
             '{{ trades_tpl.render_trades(option_positions, show_profile=False, '
             'table_id="trades-table-options-" ~ pid, '
             'empty_message="No open option positions in this profile.") }}'
             '</div>'
-            '<div id="op-pane-all-{{ pid }}" class="perf-tab-content op-pane active">'
+            '<div id="op-pane-all-{{ pid }}" class="perf-tab-content op-pane active" style="display:block;">'
             '{{ trades_tpl.render_trades(positions, show_profile=False, '
             'table_id="trades-table-all-" ~ pid, '
             'empty_message="No open positions in this profile.") }}'

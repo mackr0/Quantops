@@ -321,18 +321,24 @@
         <a href="#" class="perf-tab op-tab" data-target="options-{{ prof.id }}" onclick="showOpTab(event, {{ prof.id }}, 'options')">Options <small class="muted">({{ prof.option_positions|length }})</small></a>
         <a href="#" class="perf-tab op-tab active" data-target="all-{{ prof.id }}" onclick="showOpTab(event, {{ prof.id }}, 'all')">All <small class="muted">({{ prof.positions|length }})</small></a>
     </div>
+    {# Inline `display:block` on the active pane and `display:none` on
+       the others so we don't depend on any external CSS being loaded
+       fresh. Caught 2026-05-11: a browser with cached older CSS could
+       render `.perf-tab-content.active` without the display rule,
+       making the active pane appear hidden on initial load until
+       JS-driven swaps re-applied state. Inline style always wins. #}
     <div id="positions-wrap-{{ prof.id }}">
-        <div id="op-pane-stocks-{{ prof.id }}" class="perf-tab-content op-pane">
+        <div id="op-pane-stocks-{{ prof.id }}" class="perf-tab-content op-pane" style="display:none;">
             {{ trades_tpl.render_trades(prof.stock_positions, show_profile=False,
                 table_id="trades-table-stocks-" ~ prof.id,
                 empty_message="No open stock positions in this profile.") }}
         </div>
-        <div id="op-pane-options-{{ prof.id }}" class="perf-tab-content op-pane">
+        <div id="op-pane-options-{{ prof.id }}" class="perf-tab-content op-pane" style="display:none;">
             {{ trades_tpl.render_trades(prof.option_positions, show_profile=False,
                 table_id="trades-table-options-" ~ prof.id,
                 empty_message="No open option positions in this profile.") }}
         </div>
-        <div id="op-pane-all-{{ prof.id }}" class="perf-tab-content op-pane active">
+        <div id="op-pane-all-{{ prof.id }}" class="perf-tab-content op-pane active" style="display:block;">
             {{ trades_tpl.render_trades(prof.positions, show_profile=False,
                 table_id="trades-table-all-" ~ prof.id,
                 empty_message="No open positions in this profile.") }}
@@ -431,12 +437,15 @@ function showDashTab(event, tabName) {
 // Open Positions sub-tabs (Stocks / Options / All) — scoped per
 // profile so clicking on profile 1's tabs doesn't toggle profile 2's.
 // All three panes coexist in the DOM; only the active one shows.
+// Uses inline style.display directly so cached CSS doesn't affect
+// rendering — same defensive approach the initial render uses.
 function showOpTab(event, profileId, which) {
     event.preventDefault();
-    // Hide all panes for THIS profile
+    // Hide all panes for THIS profile (inline style + class)
     document.querySelectorAll('.op-pane').forEach(function(el) {
         if (el.id.endsWith('-' + profileId)) {
             el.classList.remove('active');
+            el.style.display = 'none';
         }
     });
     // Deactivate all tab links for THIS profile
@@ -448,8 +457,14 @@ function showOpTab(event, profileId, which) {
     }
     // Activate target pane + tab
     var pane = document.getElementById('op-pane-' + which + '-' + profileId);
-    if (pane) pane.classList.add('active');
-    event.target.classList.add('active');
+    if (pane) {
+        pane.classList.add('active');
+        pane.style.display = 'block';
+    }
+    // Find the closest <a> in case event.target is a child element
+    // (small badge inside the link)
+    var link = event.target.closest('.op-tab') || event.target;
+    if (link.classList) link.classList.add('active');
 }
 // Restore tab from URL hash
 (function() {
@@ -717,14 +732,22 @@ function showOpTab(event, profileId, which) {
             wrap.innerHTML = html;
             restoreExpanded(wrap, exp);
             // Restore previously-active tab if the user had switched
-            // away from the default.
+            // away from the default. Inline-style approach matches
+            // the initial render so the active pane is guaranteed
+            // visible regardless of cached CSS state.
             if (activeKind && activeKind !== 'all') {
                 ['stocks', 'options', 'all'].forEach(function(k) {
                     var p = document.getElementById('op-pane-' + k + '-' + pid);
-                    if (p) p.classList.remove('active');
+                    if (p) {
+                        p.classList.remove('active');
+                        p.style.display = 'none';
+                    }
                 });
                 var newActive = document.getElementById('op-pane-' + activeKind + '-' + pid);
-                if (newActive) newActive.classList.add('active');
+                if (newActive) {
+                    newActive.classList.add('active');
+                    newActive.style.display = 'block';
+                }
             }
         }).catch(function() {});
     }
