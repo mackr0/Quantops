@@ -30,25 +30,40 @@ OPTION_SIGNAL_TYPES = (
 def current_win_rate(db_path: str) -> Tuple[float, int]:
     """Option-only win rate from ai_predictions.
 
-    Filters resolved predictions to option signal types so the
-    aggregate reflects option-trade outcomes only — no stock
-    pollution. Returns (win_rate_pct, total_resolved).
+    Phase 5 of the pipeline refactor: prefers the structural
+    `pipeline_kind` tag added in Phase 5a's migration, falling back
+    to the signal-type enumeration for legacy rows the migration
+    couldn't classify.
+
+    Filter logic per row:
+      - pipeline_kind = 'option'                 → IN
+      - pipeline_kind = 'stock' or other         → OUT
+      - pipeline_kind IS NULL AND signal IN      → IN  (legacy fallback)
+        OPTION_SIGNAL_TYPES
+      - pipeline_kind IS NULL AND not in option  → OUT
+
+    Returns (win_rate_pct, total_resolved).
     """
     placeholders = ",".join("?" * len(OPTION_SIGNAL_TYPES))
+    where = (
+        "status='resolved' AND ("
+        "  pipeline_kind = 'option' OR ("
+        "    pipeline_kind IS NULL "
+        f"    AND predicted_signal IN ({placeholders})"
+        "  )"
+        ")"
+    )
     conn = sqlite3.connect(db_path)
     try:
         resolved = conn.execute(
-            f"SELECT COUNT(*) FROM ai_predictions "
-            f"WHERE status='resolved' "
-            f"AND predicted_signal IN ({placeholders})",
+            f"SELECT COUNT(*) FROM ai_predictions WHERE {where}",
             OPTION_SIGNAL_TYPES,
         ).fetchone()[0]
         if resolved == 0:
             return 0.0, 0
         wins = conn.execute(
             f"SELECT COUNT(*) FROM ai_predictions "
-            f"WHERE status='resolved' AND actual_outcome='win' "
-            f"AND predicted_signal IN ({placeholders})",
+            f"WHERE {where} AND actual_outcome='win'",
             OPTION_SIGNAL_TYPES,
         ).fetchone()[0]
         return (wins / resolved * 100), resolved

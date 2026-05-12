@@ -78,11 +78,18 @@ class OptionPipeline(Pipeline):
 
     def record_outcome(self, ctx, prediction_id: int,
                         outcome: Outcome) -> None:
-        raise NotImplementedError(
-            "Phase 5 writes outcome with option-scaled return % "
-            "(notional-weighted) so it doesn't pool with stock "
-            "outcomes. Closes audit finding #2."
-        )
+        """Write a resolved option prediction with pipeline_kind='option'.
+        Phase 5a (this commit) ships the structural tag — downstream
+        tuning aggregations filter by it so option outcomes can never
+        pool with stock outcomes (audit finding #2). Phase 5b will
+        also correct the upstream resolver's wrong-price issue
+        (today's resolver computes underlying price %, not premium %
+        or net P&L vs max-loss)."""
+        from .outcomes import option as option_outcomes
+        db_path = getattr(ctx, "db_path", None)
+        if not db_path:
+            return
+        option_outcomes.record(db_path, prediction_id, outcome)
 
     def compute_metrics(self, ctx) -> Metrics:
         """Option-only metrics. Phase 1: option slippage in $ (never

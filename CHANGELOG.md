@@ -17,6 +17,41 @@ Rules going forward:
 
 ---
 
+## 2026-05-11 — Pipeline Architecture Phase 5a — per-pipeline outcomes + structural kind tag; closes audit finding #2 framework
+
+Phase 5a of the instrument-class pipeline refactor. Adds a structural `pipeline_kind` tag on `ai_predictions` so option outcomes can never pool with stock outcomes in cross-pipeline aggregations regardless of what `predicted_signal` contains.
+
+**Schema**: new `ai_predictions.pipeline_kind TEXT` column added via the existing idempotent `_migrate_all_columns` migration in `journal.py`. NULL on rows written before the migration ran.
+
+**Backfill** (idempotent, in the same migration step): every row where `pipeline_kind IS NULL` and `predicted_signal IN STOCK_SIGNAL_TYPES` gets tagged `'stock'`; same for option signals → `'option'`. Idempotency guarded by `WHERE pipeline_kind IS NULL` — re-running the migration on an already-tagged DB is a no-op (production calls the migration on every Flask app startup).
+
+**New writers** (`pipelines/outcomes/`):
+- `stock.py:record(db_path, prediction_id, outcome)` — writes resolution with `pipeline_kind = 'stock'`.
+- `option.py:record(db_path, prediction_id, outcome)` — writes resolution with `pipeline_kind = 'option'`.
+- `__init__.py:kind_from_signal(signal)` — single source of truth for the inference rule used by both backfill and tests.
+
+**Pipeline integration**: `pipelines/{stock,option}.py:record_outcome()` now wired (no longer `NotImplementedError`). Each delegates to the matching writer.
+
+**Tuning queries updated** (`tuning/{stock,option}.py:current_win_rate`): now filter by `pipeline_kind = 'stock'` (or 'option') with a fallback `pipeline_kind IS NULL AND predicted_signal IN (...)` clause for legacy rows the migration couldn't classify (custom/future signal types). Production aggregations don't go to zero on the day the migration lands but before the backfill completes.
+
+**Tests** (`tests/test_pipelines_phase5_outcomes.py`, 30 tests):
+- CLASS INVARIANT: writing through the stock pipeline always tags `pipeline_kind='stock'`, regardless of signal/symbol/return — even if a buggy upstream calls the stock pipeline with a `MULTILEG_OPEN` row, the writer still tags it `stock` (the pipeline is the authority for kind, not the signal field). Same for option.
+- ISOLATION: stock-tuner win-rate query never counts an option-pipeline outcome and vice versa. Specifically: stock pipeline records WIN, option pipeline records LOSS → stock win rate stays 100%, option win rate stays 0%, n=1 for each.
+- LEGACY FALLBACK: rows with `pipeline_kind=NULL` and `predicted_signal='BUY'` count in stock tuner (n=1, win=100%); same NULL row with `predicted_signal='MULTILEG_OPEN'` counts in option tuner; cross-pipeline tuner sees n=0.
+- BACKFILL CORRECTNESS: BUY rows backfill to `'stock'`; MULTILEG_OPEN rows backfill to `'option'`; migration is idempotent (re-runnable); migration does NOT overwrite existing kind tags (gated on `IS NULL`).
+- CLASS INVARIANT (parametrized over signals): every known signal maps to exactly one kind via `outcomes.kind_from_signal()`; case-insensitive; unknown/future signals (PAIR_OPEN, DELTA_HEDGE) return None for caller-decides handling.
+- DEFENSIVE: `record_outcome` silently no-ops when `ctx.db_path` is missing (test contexts often lack a real DB).
+
+**What this is NOT yet** (deferred to Phase 5b): correcting the upstream resolver's wrong-price issue. Today's `_resolve_one` computes `actual_return_pct` from underlying-stock-price changes for option rows — structurally wrong (the option premium can move 100% on a 2% underlying move). Phase 5a tags the row correctly so the AGGREGATION is safe; Phase 5b will compute the option-side return from premium changes (single-leg) or net P&L vs max-loss (multileg).
+
+**Behavior change on prod**: pipeline_kind column appears + backfill runs on next deploy. Existing dashboards continue to read the same columns; tuning queries now use the structural tag (with legacy fallback) so the win-rate signal is more robust without producing different numbers on the existing data.
+
+**Tests**: 2,606 pass (+30 Phase 5, −2 Phase 0 NotImplementedError parametrizations now obsolete, 0 regressions).
+
+Phase 0 tests updated to remove `record_outcome` from the NotImplementedError-coverage list (now wired in Phase 5).
+
+---
+
 ## 2026-05-11 — Pipeline Architecture Phase 4 — specialist routing per pipeline; closes audit findings #5, #6
 
 Phase 4 of the instrument-class pipeline refactor. Each pipeline now owns its specialist set: stock proposals route through stock-tagged specialists; option proposals route through option-tagged specialists. Multileg trades stop bypassing risk checks; stock-only specialists stop polluting option decisions with chart-pattern noise on premium contracts.

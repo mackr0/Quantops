@@ -127,10 +127,8 @@ class TestPhase0PlaceholdersRaiseClearly:
         # route_to_specialists wired in Phase 4 (concrete on Pipeline
         # base). See test_pipelines_phase4_specialists.py.
         ("execute", (None, SpecialistVerdict())),
-        ("record_outcome", (None, 1, Outcome(
-            prediction_id=1, actual_outcome="win",
-            actual_return_pct=0.0, resolved_at="", resolution_price=0.0,
-        ))),
+        # record_outcome wired in Phase 5 (writes pipeline_kind tag).
+        # See test_pipelines_phase5_outcomes.py.
         # compute_metrics now wired in Phase 1.
         # tune now wired in Phase 2.
         # Both have their own test files pinning behavior.

@@ -419,25 +419,29 @@ Audit findings #5, #6 fixed.
 
 **Estimated work remaining**: ~1 session for Phase 4b (dispatcher wiring + integration test on a synthetic max-loss-exceeded multileg proposal).
 
-### Phase 5 — Per-pipeline outcomes + scaled return
+### Phase 5 — Per-pipeline outcomes + scaled return   ✅ Phase 5a shipped 2026-05-11
 
 **Goal**: option `actual_return_pct` is scaled or stored separately
 so it doesn't pool with stock `actual_return_pct`. Audit findings
 #2, #3 fixed structurally (Phase 2's tuning fork already eliminated
-the *consumer* side of the bug; this phase eliminates the *storage*
+the *consumer* side of the bug; Phase 5a eliminates the *storage*
 side).
 
-**Shipped artifacts**:
-- `ai_predictions.actual_return_pct_pipeline` column OR separate
-  `option_predictions` table.
-- `pipelines/{stock,option}.py:record_outcome()` writes to the
-  right shape.
+**Shipped artifacts (Phase 5a)**:
+- `ai_predictions.pipeline_kind TEXT` column added via journal migration with idempotent backfill from `predicted_signal`.
+- `pipelines/outcomes/{stock,option}.py` writers tag every new outcome write with the correct `pipeline_kind`.
+- `pipelines/outcomes/__init__.py:kind_from_signal()` — single source of truth for the inference rule (used by backfill + tests).
+- `pipelines/{stock,option}.py:record_outcome()` wired to the writers.
+- `tuning/{stock,option}.py:current_win_rate()` filters by `pipeline_kind` with `IS NULL`+signal-type fallback for legacy rows.
+
+**Phase 5b (queued)**: correct the upstream resolver's wrong-price issue. Today's `_resolve_one` computes `actual_return_pct` from underlying price changes for ALL rows including options — structurally wrong (option premium can move 100% on a 2% underlying move). Phase 5b will compute the option-side return from premium changes (single-leg) or net P&L vs max-loss (multileg). Phase 5a's pipeline_kind tag makes this safe to land — option rows can be re-resolved through the option-aware path without touching stock rows.
 
 **Exit criteria**:
-- Stock-only and option-only synthetic resolution histories produce
-  win-rate distributions that don't pollute each other.
+- ✅ Stock-only and option-only synthetic resolution histories produce win-rate distributions that don't pollute each other.
+- ✅ Backfill is idempotent and doesn't overwrite existing kind tags.
+- 🔲 Phase 5b: option `actual_return_pct` reflects option economics, not underlying-stock %.
 
-**Estimated work**: ~1 session.
+**Estimated work remaining**: ~1 session for Phase 5b (option-aware resolver path + re-resolution backfill of existing option rows).
 
 ### Phase 6 — Risk model: delta-adjusted exposure aggregation
 

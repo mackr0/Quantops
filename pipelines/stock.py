@@ -70,11 +70,17 @@ class StockPipeline(Pipeline):
 
     def record_outcome(self, ctx, prediction_id: int,
                         outcome: Outcome) -> None:
-        raise NotImplementedError(
-            "Phase 5 writes outcome to ai_predictions with "
-            "stock-scale return % (current behavior — no scaling "
-            "needed since stocks set the baseline scale)."
-        )
+        """Write a resolved stock prediction with pipeline_kind='stock'.
+        Phase 5 of the pipeline refactor — closes audit finding #2 by
+        construction (downstream aggregations filter by tag, not
+        signal type, so option outcomes can never pool with stock).
+        Returns at stock scale (the existing behavior — stocks set
+        the baseline)."""
+        from .outcomes import stock as stock_outcomes
+        db_path = getattr(ctx, "db_path", None)
+        if not db_path:
+            return
+        stock_outcomes.record(db_path, prediction_id, outcome)
 
     def compute_metrics(self, ctx) -> Metrics:
         """Stock-only metrics. Phase 1: stock-only slippage stats

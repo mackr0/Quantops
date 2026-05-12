@@ -28,26 +28,41 @@ STOCK_SIGNAL_TYPES = (
 def current_win_rate(db_path: str) -> Tuple[float, int]:
     """Stock-only win rate from ai_predictions.
 
-    Filters resolved predictions to stock signal types so option
-    outcomes (premium %-moves are 10-100× stock %-moves) can no
-    longer dominate the aggregate. Returns (win_rate_pct,
-    total_resolved).
+    Phase 5 of the pipeline refactor: prefers the structural
+    `pipeline_kind` tag added in Phase 5a's migration, falling back
+    to the signal-type enumeration for legacy rows the migration
+    couldn't classify (e.g., custom signal types written by future
+    pipelines before they tag themselves).
+
+    Filter logic per row:
+      - pipeline_kind = 'stock'                  → IN
+      - pipeline_kind = 'option' or other        → OUT
+      - pipeline_kind IS NULL AND signal IN      → IN  (legacy fallback)
+        STOCK_SIGNAL_TYPES
+      - pipeline_kind IS NULL AND not in stock   → OUT
+
+    Returns (win_rate_pct, total_resolved).
     """
     placeholders = ",".join("?" * len(STOCK_SIGNAL_TYPES))
+    where = (
+        "status='resolved' AND ("
+        "  pipeline_kind = 'stock' OR ("
+        "    pipeline_kind IS NULL "
+        f"    AND predicted_signal IN ({placeholders})"
+        "  )"
+        ")"
+    )
     conn = sqlite3.connect(db_path)
     try:
         resolved = conn.execute(
-            f"SELECT COUNT(*) FROM ai_predictions "
-            f"WHERE status='resolved' "
-            f"AND predicted_signal IN ({placeholders})",
+            f"SELECT COUNT(*) FROM ai_predictions WHERE {where}",
             STOCK_SIGNAL_TYPES,
         ).fetchone()[0]
         if resolved == 0:
             return 0.0, 0
         wins = conn.execute(
             f"SELECT COUNT(*) FROM ai_predictions "
-            f"WHERE status='resolved' AND actual_outcome='win' "
-            f"AND predicted_signal IN ({placeholders})",
+            f"WHERE {where} AND actual_outcome='win'",
             STOCK_SIGNAL_TYPES,
         ).fetchone()[0]
         return (wins / resolved * 100), resolved

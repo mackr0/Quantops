@@ -490,6 +490,18 @@ def _migrate_all_columns(conn):
             # The resolver applies different win/loss criteria per type so
             # exit-quality doesn't get conflated with directional-bearish accuracy.
             ("prediction_type", "TEXT"),
+            # Phase 5 of the instrument-class pipeline refactor (2026-05-11):
+            # which pipeline owns this prediction. 'stock' or 'option'
+            # (future: 'crypto', 'fx'). Lets per-pipeline tuning queries
+            # filter by structural tag rather than enumerating signal
+            # types — closes audit finding #2 by construction (option
+            # outcomes can no longer pool with stock outcomes).
+            #
+            # NULL on rows written before the migration backfill ran.
+            # tuning/{stock,option}.py reads via a UNION pattern: rows
+            # tagged 'stock' OR (NULL AND signal_type IN STOCK_SIGNAL_TYPES).
+            # See pipelines/outcomes/__init__.py for the writer side.
+            ("pipeline_kind", "TEXT"),
         ],
     }
 
@@ -507,6 +519,42 @@ def _migrate_all_columns(conn):
                     )
         except Exception:
             pass
+
+    # Phase 5 of pipeline refactor: backfill pipeline_kind for any
+    # ai_predictions row that's still NULL after the column was
+    # added. Idempotent — only touches NULL rows. Skipped silently if
+    # the column doesn't exist (e.g., the ALTER above failed for some
+    # reason); subsequent calls retry.
+    try:
+        # Test for the column existing before attempting backfill.
+        cols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(ai_predictions)"
+        ).fetchall()}
+        if "pipeline_kind" in cols and "predicted_signal" in cols:
+            # Stock signal types — keep in sync with tuning/stock.py
+            stock_signals = (
+                "BUY", "STRONG_BUY", "WEAK_BUY",
+                "SELL", "STRONG_SELL", "WEAK_SELL",
+                "SHORT", "COVER",
+            )
+            # Option signal types — keep in sync with tuning/option.py
+            option_signals = ("MULTILEG_OPEN", "OPTIONS", "OPTION_EXERCISE")
+            sp = ",".join("?" * len(stock_signals))
+            op = ",".join("?" * len(option_signals))
+            conn.execute(
+                f"UPDATE ai_predictions SET pipeline_kind = 'stock' "
+                f"WHERE pipeline_kind IS NULL "
+                f"AND predicted_signal IN ({sp})",
+                stock_signals,
+            )
+            conn.execute(
+                f"UPDATE ai_predictions SET pipeline_kind = 'option' "
+                f"WHERE pipeline_kind IS NULL "
+                f"AND predicted_signal IN ({op})",
+                option_signals,
+            )
+    except Exception:
+        pass
 
 
 def _migrate_daily_snapshots_unique(conn):
