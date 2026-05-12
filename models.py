@@ -288,7 +288,12 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         ("user_segment_configs", "alpaca_secret_key_enc", "TEXT NOT NULL DEFAULT ''"),
         # --- trading_profiles table ---
         ("trading_profiles", "maga_mode", "INTEGER NOT NULL DEFAULT 0"),
-        ("trading_profiles", "enable_short_selling", "INTEGER NOT NULL DEFAULT 0"),
+        # 2026-05-12 — default flipped ON (was 0). See conviction-TP
+        # commit for the same reasoning: feature designed correctly
+        # but sitting opt-in / unused for months. Audit showed shorts
+        # had +4.04% avg return on 40 resolved predictions. Crypto
+        # profiles still skip via the migration's name filter.
+        ("trading_profiles", "enable_short_selling", "INTEGER NOT NULL DEFAULT 1"),
         ("trading_profiles", "short_stop_loss_pct", "REAL NOT NULL DEFAULT 0.08"),
         ("trading_profiles", "short_take_profit_pct", "REAL NOT NULL DEFAULT 0.08"),
         # P1.9b of LONG_SHORT_PLAN.md
@@ -309,7 +314,7 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         ("trading_profiles", "drawdown_pause_pct", "REAL NOT NULL DEFAULT 0.20"),
         ("trading_profiles", "drawdown_reduce_pct", "REAL NOT NULL DEFAULT 0.10"),
         ("trading_profiles", "avoid_earnings_days", "INTEGER NOT NULL DEFAULT 2"),
-        ("trading_profiles", "skip_first_minutes", "INTEGER NOT NULL DEFAULT 0"),
+        ("trading_profiles", "skip_first_minutes", "INTEGER NOT NULL DEFAULT 5"),
         ("trading_profiles", "enable_consensus", "INTEGER NOT NULL DEFAULT 0"),
         ("trading_profiles", "consensus_model", "TEXT NOT NULL DEFAULT ''"),
         ("trading_profiles", "consensus_api_key_enc", "TEXT NOT NULL DEFAULT ''"),
@@ -513,6 +518,57 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             logger.info(
                 "Migrated: use_conviction_tp_override flipped 0→1 on %d profile(s)",
                 flipped,
+            )
+        # 2026-05-12 — flip enable_short_selling 0→1 on stock-trading
+        # profiles. Crypto profiles excluded by name (Alpaca crypto
+        # doesn't short). Same idempotent-marker pattern as above.
+        marker_short = "short_selling_default_on_2026_05_12"
+        already_short = conn.execute(
+            "SELECT 1 FROM migration_markers WHERE key = ?",
+            (marker_short,),
+        ).fetchone()
+        if not already_short:
+            cur = conn.execute(
+                "UPDATE trading_profiles SET enable_short_selling = 1 "
+                "WHERE COALESCE(enable_short_selling, 0) = 0 "
+                "  AND COALESCE(name, '') NOT LIKE '%Crypto%' "
+                "  AND COALESCE(market_type, '') NOT LIKE '%crypto%'"
+            )
+            flipped_short = cur.rowcount
+            conn.execute(
+                "INSERT OR REPLACE INTO migration_markers (key, details) "
+                "VALUES (?, ?)",
+                (marker_short,
+                 f"flipped {flipped_short} non-crypto profile(s) 0→1"),
+            )
+            conn.commit()
+            logger.info(
+                "Migrated: enable_short_selling flipped 0→1 on %d profile(s)",
+                flipped_short,
+            )
+        # 2026-05-12 — bump skip_first_minutes from 0→5 on profiles
+        # that left it at the launch default. First 5 minutes after
+        # the open has wider spreads + lower-quality fills. Profiles
+        # that already set this value (10, 20, 25) are preserved.
+        marker_skip = "skip_first_minutes_default_5_2026_05_12"
+        already_skip = conn.execute(
+            "SELECT 1 FROM migration_markers WHERE key = ?", (marker_skip,),
+        ).fetchone()
+        if not already_skip:
+            cur = conn.execute(
+                "UPDATE trading_profiles SET skip_first_minutes = 5 "
+                "WHERE COALESCE(skip_first_minutes, 0) = 0"
+            )
+            flipped_skip = cur.rowcount
+            conn.execute(
+                "INSERT OR REPLACE INTO migration_markers (key, details) "
+                "VALUES (?, ?)",
+                (marker_skip, f"bumped {flipped_skip} profile(s) 0→5"),
+            )
+            conn.commit()
+            logger.info(
+                "Migrated: skip_first_minutes bumped 0→5 on %d profile(s)",
+                flipped_skip,
             )
     except Exception as exc:
         logger.warning(

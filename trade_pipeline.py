@@ -785,9 +785,16 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         else:
             alloc_pct = max_position_pct * 0.75
 
-        # Boost allocation if AI is highly confident
-        if ai_confidence and ai_confidence >= 80:
-            alloc_pct = min(alloc_pct * 1.25, max_position_pct)
+        # 2026-05-12 — confidence-tiered position sizing. The
+        # 19K-prediction audit showed AI confidence is calibrated:
+        # 60-69→50.7% wr, 70-79→54.4%, 80+→58.0%. The old code
+        # only boosted at ≥80 and ignored the rest of the ladder.
+        # confidence_sizing.apply_confidence_sizing applies the
+        # full 4-tier ladder and respects the max_position_pct cap.
+        from confidence_sizing import apply_confidence_sizing
+        alloc_pct = apply_confidence_sizing(
+            alloc_pct, ai_confidence, max_position_pct,
+        )
 
         max_dollars = equity * alloc_pct
         dollars = min(max_dollars, cash)
@@ -1095,9 +1102,12 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             else:
                 alloc_pct = short_cap_pct * 0.75
 
-            # Boost if AI confident
-            if ai_confidence and ai_confidence >= 80:
-                alloc_pct = min(alloc_pct * 1.25, short_cap_pct)
+            # 2026-05-12 — confidence-tiered position sizing (same
+            # 4-tier ladder used for longs). See trade_pipeline:782.
+            from confidence_sizing import apply_confidence_sizing
+            alloc_pct = apply_confidence_sizing(
+                alloc_pct, ai_confidence, short_cap_pct,
+            )
 
             max_dollars = equity * alloc_pct
             dollars = min(max_dollars, cash)

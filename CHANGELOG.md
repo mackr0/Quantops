@@ -17,6 +17,39 @@ Rules going forward:
 
 ---
 
+## 2026-05-12 — Wave 7: short-selling default ON + skip-first-minutes default 5 + confidence-tiered position sizing. Severity: high (system-wide behavior change driven by data audit).
+
+**Audit follow-up to wave 6.** Mack: "are there other things off that should be on?" Answer: yes, three more, each with the same lesson as the conviction-TP gap. All three are now system-defaults + AI-tunable, mirroring the conviction-TP fix pattern.
+
+### 1. `enable_short_selling` default 0→1 + AI-tunable
+- 7 of 11 profiles had this OFF including "Small Cap Aggressive" and "Large Cap 1M" — names suggesting they should be capable of shorting.
+- Data: 40 resolved SHORT predictions had **+4.04% avg return** (positive EV, even at 42.5% win rate).
+- Schema default 0→1; one-shot migration flips non-crypto profiles 0→1 via `migration_markers`. Crypto skipped via name + market_type filter.
+- New self-tuning rule `_optimize_short_selling_toggle` reads the profile's 30-day short-side avg return; flips OFF when < -0.5% (losing on shorts), ON when > +1.0% (proven profitable), no-op otherwise. ≥10 sample gate.
+
+### 2. `skip_first_minutes` default 0→5 + AI-tunable on slippage
+- First 5 minutes after the open has wider spreads + lower-quality fills. 6 of 11 profiles had 0.
+- Schema default 0→5; one-shot migration bumps only profiles that left it at 0 (preserves 10/20/25 settings).
+- New self-tuning rule `_optimize_skip_first_minutes_slippage` computes first-15-min avg slippage vs rest-of-day avg slippage; widens skip when first-15-min is materially worse (≥1.5×), tightens when not. Coexists with the existing win-rate-based `_optimize_skip_first_minutes` — two independent signals on the same param; cooldown guard prevents thrash.
+
+### 3. Confidence-tiered position sizing (`confidence_sizing.py`)
+- The audit showed monotonic confidence calibration: 60-69%→50.7%, 70-79%→54.4%, 80-89%→58.0%. Old code applied a single 1.25× boost at conf ≥ 80 and ignored the rest of the ladder.
+- New 4-tier ladder:
+  - conf < 60  → **0.7×**  (pull back on low conviction)
+  - conf 60-69 → 1.0×  (baseline)
+  - conf 70-79 → **1.2×**  (above-baseline win rate)
+  - conf 80+   → **1.5×**  (best calibrated bucket)
+- Applied to both LONG and SHORT sizing paths in `trade_pipeline.py`. Max-pct cap respected.
+- This is the highest expected-value lift from the data we have today: same risk envelope, larger positions on the buckets that win more, smaller on the ones that don't.
+
+**Regression tests:**
+- `tests/test_confidence_sizing.py` (14 tests): ladder per-bucket values, None safety, max-cap interaction, monotonic ladder invariant, ladder spans ≥2× range.
+- `tests/test_self_tuning_wave3.py` extended: `TestShortSellingToggle` (4 tests — enable/disable/crypto-skip/thin-sample), `TestSkipFirstMinutesTuner` (3 tests — widen/tighten/thin-sample), `TestShortSellingAndSkipMigrations` (2 tests — non-crypto flipped + idempotent / zero-only bumped).
+- Updated `TestConvictionTpRegistered` to also assert the 2 new rules registered.
+- 2938 passed total, zero regressions.
+
+---
+
 ## 2026-05-12 — Profit-taking wave 6: conviction-TP-override ON by default + AI-tunable. Severity: medium (P&L behavior change across all 11 profiles).
 
 **Problem.** `use_conviction_tp_override` shipped 2026-04-15 as opt-in (default OFF) — the conservative rollout of the IONQ-style "let runaway winners run" mechanic. Operator never enabled it on any profile. Audit (2026-05-12) showed: 4.5:1 stop-to-TP exit ratio, UNH-style trades capped at AI's initial target while underlying ran 4-5% further. The mechanism was built, designed correctly, but sitting unused for 27 days because nobody flipped the switch. This contradicted the system's "AI-driven, no manual intervention" thesis.

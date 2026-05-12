@@ -147,6 +147,8 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 | Column | Type | Default | Description |
 |---|---|---|---|
 | `use_conviction_tp_override` | INTEGER | 1 | Skip fixed TP when AI conviction is high (default flipped ON 2026-05-12). AI-tunable via `_optimize_conviction_tp_override` based on MFE capture + stop-to-TP ratio. |
+| `enable_short_selling` | INTEGER | 1 | Allow opening short positions (default flipped ON 2026-05-12 for non-crypto profiles). AI-tunable via `_optimize_short_selling_toggle` based on 30-day short-side avg return. |
+| `skip_first_minutes` | INTEGER | 5 | Skip first N minutes after market open (default bumped 0→5 on 2026-05-12). AI-tunable on win-rate AND slippage signals independently. |
 | `conviction_tp_min_confidence` | REAL | 70.0 | Min AI confidence to skip TP. |
 | `conviction_tp_min_adx` | REAL | 25.0 | Min ADX (trend strength) to skip TP. |
 

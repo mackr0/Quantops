@@ -542,3 +542,287 @@ class TestConvictionTpRegistered:
         import inspect
         src = inspect.getsource(self_tuning._apply_upward_optimizations)
         assert "_optimize_conviction_tp_override" in src
+        # 2026-05-12 — new short-selling + slippage-based skip rule
+        assert "_optimize_short_selling_toggle" in src
+        # slippage rule (new) AND the existing win-rate rule both
+        # registered (independent signals on the same param)
+        assert "_optimize_skip_first_minutes_slippage" in src
+        assert "_optimize_skip_first_minutes," in src
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Short-selling toggle (2026-05-12) — auto-flip per profile
+# ─────────────────────────────────────────────────────────────────────
+
+class TestShortSellingToggle:
+    def _seed_short_outcomes(self, db, n=12, avg_ret=2.0):
+        """Insert n resolved short predictions with the target avg return."""
+        conn = sqlite3.connect(db)
+        from datetime import datetime, timedelta
+        recent = datetime.utcnow().isoformat()
+        for i in range(n):
+            conn.execute(
+                "INSERT INTO ai_predictions "
+                "(timestamp, symbol, predicted_signal, confidence, "
+                " price_at_prediction, status, actual_outcome, "
+                " actual_return_pct, resolved_at) "
+                "VALUES (?, 'X', 'SHORT', 70, 100, 'resolved', "
+                " ?, ?, ?)",
+                (recent, "win" if avg_ret > 0 else "loss", avg_ret, recent),
+            )
+        conn.commit()
+        conn.close()
+
+    def test_disable_when_short_returns_negative(self, tmp_path):
+        db = _make_db(tmp_path)
+        self._seed_short_outcomes(db, n=15, avg_ret=-2.5)
+        ctx = _ctx(db, enable_short_selling=True)
+        from self_tuning import _optimize_short_selling_toggle, _get_conn
+        conn = _get_conn(db)
+        captured = []
+        def fake_update(profile_id, **kwargs):
+            captured.append(kwargs)
+        with patch("self_tuning._get_recent_adjustment", return_value=None), \
+             patch("models.update_trading_profile", side_effect=fake_update), \
+             patch("models.log_tuning_change"):
+            msg = _optimize_short_selling_toggle(
+                conn, ctx, 1, 1, overall_wr=40.0, resolved=20)
+        conn.close()
+        assert msg is not None
+        assert "Disabled" in msg
+        assert captured == [{"enable_short_selling": 0}]
+
+    def test_enable_when_short_returns_strongly_positive(self, tmp_path):
+        db = _make_db(tmp_path)
+        self._seed_short_outcomes(db, n=15, avg_ret=2.0)
+        ctx = _ctx(db, enable_short_selling=False)
+        from self_tuning import _optimize_short_selling_toggle, _get_conn
+        conn = _get_conn(db)
+        captured = []
+        def fake_update(profile_id, **kwargs):
+            captured.append(kwargs)
+        with patch("self_tuning._get_recent_adjustment", return_value=None), \
+             patch("models.update_trading_profile", side_effect=fake_update), \
+             patch("models.log_tuning_change"):
+            msg = _optimize_short_selling_toggle(
+                conn, ctx, 1, 1, overall_wr=50.0, resolved=20)
+        conn.close()
+        assert msg is not None
+        assert "Enabled" in msg
+        assert captured == [{"enable_short_selling": 1}]
+
+    def test_crypto_profile_skipped(self, tmp_path):
+        db = _make_db(tmp_path)
+        self._seed_short_outcomes(db, n=15, avg_ret=-2.5)
+        ctx = _ctx(db, enable_short_selling=True, segment="crypto")
+        from self_tuning import _optimize_short_selling_toggle, _get_conn
+        conn = _get_conn(db)
+        with patch("self_tuning._get_recent_adjustment", return_value=None):
+            msg = _optimize_short_selling_toggle(
+                conn, ctx, 1, 1, overall_wr=40.0, resolved=20)
+        conn.close()
+        assert msg is None  # crypto can't short, never touch the flag
+
+    def test_thin_sample_no_change(self, tmp_path):
+        db = _make_db(tmp_path)
+        self._seed_short_outcomes(db, n=5, avg_ret=-3.0)
+        ctx = _ctx(db, enable_short_selling=True)
+        from self_tuning import _optimize_short_selling_toggle, _get_conn
+        conn = _get_conn(db)
+        with patch("self_tuning._get_recent_adjustment", return_value=None):
+            msg = _optimize_short_selling_toggle(
+                conn, ctx, 1, 1, overall_wr=40.0, resolved=10)
+        conn.close()
+        assert msg is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Skip-first-minutes (2026-05-12) — adjust on slippage signal
+# ─────────────────────────────────────────────────────────────────────
+
+def _make_db_with_slip_and_dq(tmp_path):
+    db = str(tmp_path / "slip.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE ai_predictions (
+            id INTEGER PRIMARY KEY,
+            timestamp TEXT DEFAULT (datetime('now')),
+            symbol TEXT, predicted_signal TEXT, confidence REAL,
+            price_at_prediction REAL, status TEXT DEFAULT 'resolved',
+            actual_outcome TEXT, actual_return_pct REAL,
+            features_json TEXT, resolved_at TEXT, days_held INTEGER
+        );
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY,
+            timestamp TEXT, symbol TEXT, side TEXT, qty REAL,
+            price REAL, pnl REAL, slippage_pct REAL,
+            stop_loss REAL, take_profit REAL, strategy TEXT,
+            status TEXT, data_quality TEXT
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+def _seed_slippage(db, n_first_15_min, n_rest, slip_first, slip_rest):
+    """Insert trade rows with timestamps in/out of the first 15 min."""
+    from datetime import datetime, timedelta
+    conn = sqlite3.connect(db)
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    for i in range(n_first_15_min):
+        ts = f"{today}T09:35:00"
+        conn.execute(
+            "INSERT INTO trades (timestamp, symbol, side, qty, price, "
+            "slippage_pct) VALUES (?, 'X', 'buy', 100, 50, ?)",
+            (ts, slip_first),
+        )
+    for i in range(n_rest):
+        ts = f"{today}T11:30:00"
+        conn.execute(
+            "INSERT INTO trades (timestamp, symbol, side, qty, price, "
+            "slippage_pct) VALUES (?, 'X', 'buy', 100, 50, ?)",
+            (ts, slip_rest),
+        )
+    conn.commit()
+    conn.close()
+
+
+class TestSkipFirstMinutesTuner:
+    def test_widens_when_first_15_min_slippage_high(self, tmp_path):
+        db = _make_db_with_slip_and_dq(tmp_path)
+        # First-15-min slippage 2x rest-of-day
+        _seed_slippage(db, n_first_15_min=8, n_rest=15,
+                        slip_first=0.20, slip_rest=0.08)
+        ctx = _ctx(db, skip_first_minutes=5)
+        from self_tuning import _optimize_skip_first_minutes_slippage, _get_conn
+        conn = _get_conn(db)
+        captured = []
+        def fake_update(profile_id, **kwargs):
+            captured.append(kwargs)
+        with patch("self_tuning._get_recent_adjustment", return_value=None), \
+             patch("models.update_trading_profile", side_effect=fake_update), \
+             patch("models.log_tuning_change"):
+            msg = _optimize_skip_first_minutes_slippage(
+                conn, ctx, 1, 1, overall_wr=40.0, resolved=20)
+        conn.close()
+        assert msg is not None
+        assert "Widened" in msg
+        assert captured == [{"skip_first_minutes": 10}]
+
+    def test_tightens_when_first_15_min_better_than_rest(self, tmp_path):
+        db = _make_db_with_slip_and_dq(tmp_path)
+        _seed_slippage(db, n_first_15_min=8, n_rest=15,
+                        slip_first=0.05, slip_rest=0.10)
+        ctx = _ctx(db, skip_first_minutes=10)
+        from self_tuning import _optimize_skip_first_minutes_slippage, _get_conn
+        conn = _get_conn(db)
+        captured = []
+        def fake_update(profile_id, **kwargs):
+            captured.append(kwargs)
+        with patch("self_tuning._get_recent_adjustment", return_value=None), \
+             patch("models.update_trading_profile", side_effect=fake_update), \
+             patch("models.log_tuning_change"):
+            msg = _optimize_skip_first_minutes_slippage(
+                conn, ctx, 1, 1, overall_wr=50.0, resolved=20)
+        conn.close()
+        assert msg is not None
+        assert "Tightened" in msg
+        assert captured == [{"skip_first_minutes": 5}]
+
+    def test_thin_sample_no_change(self, tmp_path):
+        db = _make_db_with_slip_and_dq(tmp_path)
+        _seed_slippage(db, n_first_15_min=2, n_rest=3,
+                        slip_first=0.30, slip_rest=0.05)
+        ctx = _ctx(db, skip_first_minutes=5)
+        from self_tuning import _optimize_skip_first_minutes_slippage, _get_conn
+        conn = _get_conn(db)
+        with patch("self_tuning._get_recent_adjustment", return_value=None):
+            msg = _optimize_skip_first_minutes_slippage(
+                conn, ctx, 1, 1, overall_wr=50.0, resolved=10)
+        conn.close()
+        assert msg is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Schema migrations for shorts + skip-first-minutes
+# ─────────────────────────────────────────────────────────────────────
+
+class TestShortSellingAndSkipMigrations:
+    def _seed_user_db(self, db, profiles):
+        """profiles = list of (id, name, enable_short_selling,
+        skip_first_minutes, market_type)."""
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "CREATE TABLE trading_profiles ("
+            "id INTEGER PRIMARY KEY, name TEXT, market_type TEXT, "
+            "enable_short_selling INTEGER DEFAULT 0, "
+            "skip_first_minutes INTEGER DEFAULT 0, "
+            "use_conviction_tp_override INTEGER DEFAULT 0)"
+        )
+        for r in profiles:
+            conn.execute(
+                "INSERT INTO trading_profiles "
+                "(id, name, market_type, enable_short_selling, "
+                " skip_first_minutes) "
+                "VALUES (?, ?, ?, ?, ?)",
+                r,
+            )
+        conn.commit()
+        conn.close()
+
+    def test_short_selling_migration_flips_non_crypto(self, tmp_path, monkeypatch):
+        import config, models
+        db = str(tmp_path / "users.db")
+        self._seed_user_db(db, [
+            (1, "Mid Cap", "midcap", 0, 0),
+            (2, "Crypto Trader", "crypto", 0, 0),
+            (3, "Already Short", "smallcap", 1, 0),
+        ])
+        monkeypatch.setattr(config, "DB_PATH", db)
+        models.init_user_db()
+        conn = sqlite3.connect(db)
+        # Stock profile flipped 0→1
+        assert conn.execute(
+            "SELECT enable_short_selling FROM trading_profiles WHERE id=1"
+        ).fetchone()[0] == 1
+        # Crypto profile preserved at 0
+        assert conn.execute(
+            "SELECT enable_short_selling FROM trading_profiles WHERE id=2"
+        ).fetchone()[0] == 0
+        # Already-on profile unchanged
+        assert conn.execute(
+            "SELECT enable_short_selling FROM trading_profiles WHERE id=3"
+        ).fetchone()[0] == 1
+        # Marker present so re-init doesn't re-flip
+        m = conn.execute(
+            "SELECT 1 FROM migration_markers WHERE key=?",
+            ("short_selling_default_on_2026_05_12",)
+        ).fetchone()
+        assert m is not None
+        conn.close()
+
+    def test_skip_first_minutes_migration_bumps_zero_only(
+            self, tmp_path, monkeypatch):
+        import config, models
+        db = str(tmp_path / "users.db")
+        self._seed_user_db(db, [
+            (1, "A", "midcap", 0, 0),    # bump 0→5
+            (2, "B", "smallcap", 0, 25), # preserved at 25
+            (3, "C", "largecap", 0, 0),  # bump 0→5
+        ])
+        monkeypatch.setattr(config, "DB_PATH", db)
+        models.init_user_db()
+        conn = sqlite3.connect(db)
+        assert conn.execute(
+            "SELECT skip_first_minutes FROM trading_profiles WHERE id=1"
+        ).fetchone()[0] == 5
+        assert conn.execute(
+            "SELECT skip_first_minutes FROM trading_profiles WHERE id=2"
+        ).fetchone()[0] == 25
+        assert conn.execute(
+            "SELECT skip_first_minutes FROM trading_profiles WHERE id=3"
+        ).fetchone()[0] == 5
+        conn.close()

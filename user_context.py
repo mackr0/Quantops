@@ -74,8 +74,16 @@ class UserContext:
     # MAGA Mode — factor political volatility into AI analysis
     maga_mode: bool = False
 
-    # Short selling — allow opening short positions on SHORT signals
-    enable_short_selling: bool = False
+    # Short selling — allow opening short positions on SHORT signals.
+    # 2026-05-12 — default flipped ON. Was OFF since launch
+    # (conservative — operator's choice). Audit showed 40 SHORT
+    # trades resolved 42.5% wr but **+4.04% avg return** (positive
+    # EV). 7 of 11 profiles had this OFF, leaving alpha on the
+    # table including "Small Cap Aggressive" and "Large Cap 1M"
+    # whose names suggest they should be capable of shorting.
+    # AI-tunable: `_optimize_short_selling_toggle` flips OFF for
+    # profiles where the 30-day short-side avg return is negative.
+    enable_short_selling: bool = True
     short_stop_loss_pct: float = 0.08  # wider stop for shorts (8% vs 3% for longs)
     short_take_profit_pct: float = 0.08  # shorts profit faster on hard drops
     # Phase 1.5+1.6 of LONG_SHORT_PLAN.md
@@ -164,7 +172,11 @@ class UserContext:
     avoid_earnings_days: int = 2  # skip stocks with earnings within this many days (0 = don't avoid)
 
     # Time-of-day patterns
-    skip_first_minutes: int = 0  # skip first N minutes after market open (0 = don't skip)
+    # 2026-05-12 — default bumped 0→5. First 5 minutes has wider
+    # spreads + lower-quality fills. AI-tunable: bumped UP when
+    # observed first-15-min slippage is materially worse than
+    # rest-of-day, tightened back DOWN when it's not.
+    skip_first_minutes: int = 5
 
     # Drawdown protection
     drawdown_pause_pct: float = 0.20  # pause all trading at 20% drawdown

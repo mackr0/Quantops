@@ -1850,6 +1850,19 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         # locking is winning. AI-tunable; matches "system figures
         # it out" thesis instead of operator-set toggle.
         _optimize_conviction_tp_override,
+        # 2026-05-12 — short-selling toggle. Flips OFF for profiles
+        # where the 30-day short-side avg return is negative (and
+        # sample-size sufficient). Mirror of the conviction-TP
+        # tuner pattern.
+        _optimize_short_selling_toggle,
+        # 2026-05-12 — skip_first_minutes (slippage-based signal).
+        # Adjusts the open-window skip based on observed first-15-min
+        # slippage vs rest-of-day slippage. Complements the existing
+        # win-rate-based skip_first_minutes rule (already in the
+        # registry above) — slippage and win-rate are independent
+        # signals; the cooldown guard prevents both firing on the
+        # same param in the same week.
+        _optimize_skip_first_minutes_slippage,
         # Wave 4 — Layer 2 weighted signal intensity
         _optimize_signal_weights,
         # Wave 5 — Layer 3 per-regime parameter overrides
@@ -3820,6 +3833,209 @@ def _optimize_conviction_tp_override(conn, ctx, profile_id, user_id,
             f"Disabled {_label('use_conviction_tp_override')} ({reason})"
         )
 
+    return None
+
+
+def _optimize_short_selling_toggle(conn, ctx, profile_id, user_id,
+                                     overall_wr, resolved):
+    """Auto-flip `enable_short_selling` per profile based on the
+    profile's actual short-side track record.
+
+    Default flipped ON 2026-05-12 (was OFF since launch). Audit
+    showed shorts had +4.04% avg return on 40 resolved predictions.
+    But profile-level performance varies — some profiles may be bad
+    at shorting their universe. This rule is the safety net: flip
+    OFF when 30-day short-side avg return is materially negative
+    AND sample size is sufficient.
+
+    Decision rule:
+      Flip OFF when: ≥10 resolved SHORT/STRONG_SELL predictions in
+                     the last 30 days AND avg_return_pct < -0.5
+      Flip ON  when: ≥10 resolved short predictions AND
+                     avg_return_pct > +1.0 (proves capable)
+      Otherwise: no change.
+
+    Skips when profile is a crypto profile (can't short crypto).
+
+    2026-05-12.
+    """
+    if not _safe_change_guarded(profile_id, "enable_short_selling"):
+        return None
+    # Don't fire on crypto profiles — Alpaca crypto can't short.
+    segment = (getattr(ctx, "segment", "") or "").lower()
+    if "crypto" in segment:
+        return None
+    try:
+        rows = conn.execute(
+            "SELECT actual_outcome, actual_return_pct FROM ai_predictions "
+            "WHERE status = 'resolved' "
+            "AND predicted_signal IN ('SHORT', 'STRONG_SELL', 'SELL') "
+            "AND resolved_at IS NOT NULL "
+            "AND resolved_at >= datetime('now', '-30 days')"
+        ).fetchall()
+    except Exception:
+        return None
+    rows = [(o, r) for o, r in rows
+            if r is not None and abs(float(r)) < 100]
+    if len(rows) < 10:
+        return None
+    returns = [float(r) for _, r in rows]
+    avg_return = sum(returns) / len(returns)
+
+    current = bool(getattr(ctx, "enable_short_selling", False))
+
+    if current and avg_return < -0.5:
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, enable_short_selling=0)
+        reason = (
+            f"30-day short-side avg return {avg_return:+.2f}% over "
+            f"{len(rows)} predictions — profile is losing on shorts. "
+            f"Disabling new short opens."
+        )
+        log_tuning_change(
+            profile_id, user_id, "short_selling_disable",
+            "enable_short_selling", "1", "0", reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (
+            f"Disabled {_label('enable_short_selling')} ({reason})"
+        )
+
+    if not current and avg_return > 1.0:
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, enable_short_selling=1)
+        reason = (
+            f"30-day short-side avg return {avg_return:+.2f}% over "
+            f"{len(rows)} predictions — profile is profitable on "
+            f"shorts. Enabling new short opens."
+        )
+        log_tuning_change(
+            profile_id, user_id, "short_selling_enable",
+            "enable_short_selling", "0", "1", reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (
+            f"Enabled {_label('enable_short_selling')} ({reason})"
+        )
+    return None
+
+
+def _optimize_skip_first_minutes_slippage(conn, ctx, profile_id, user_id,
+                                            overall_wr, resolved):
+    """Auto-adjust `skip_first_minutes` based on observed slippage
+    in the first 15 minutes after market open vs rest-of-day.
+
+    Default bumped 0→5 minutes on 2026-05-12; this rule tunes that
+    per profile. Trades that filled inside the first 15 minutes are
+    compared against trades filled later. When first-15-min slippage
+    is materially worse, widen the skip window. When it's not,
+    tighten back.
+
+    Complements the existing win-rate-based `_optimize_skip_first_minutes`
+    rule — slippage and win-rate are independent signals that both
+    legitimately want to move this param. The cooldown guard
+    prevents thrash by limiting one change per param per week.
+
+    Decision rule:
+      First-15-min |avg_slippage| > 1.5x rest-of-day avg → bump
+        skip_first_minutes UP by 5 (capped at 30)
+      First-15-min |avg_slippage| < rest-of-day avg → tighten DOWN
+        by 5 (floor at 0)
+      Between: no change
+
+    Needs ≥20 trades total + ≥5 in each bucket. data_quality-
+    excluded.
+
+    2026-05-12.
+    """
+    if not _safe_change_guarded(profile_id, "skip_first_minutes"):
+        return None
+    from journal import data_quality_clause
+    _dq = data_quality_clause(conn)
+    table_check = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='trades'"
+    ).fetchone()
+    if not table_check:
+        return None
+    try:
+        # timestamps are ET-isoformat; the open is 09:30 ET. Inside
+        # the first 15 minutes ≤ 09:45.
+        rows = conn.execute(
+            f"""SELECT slippage_pct, timestamp FROM trades
+                WHERE side IN ('buy', 'sell', 'short', 'cover')
+                  AND slippage_pct IS NOT NULL
+                  AND timestamp >= datetime('now', '-30 days')
+                  {_dq}"""
+        ).fetchall()
+    except Exception:
+        return None
+    first_15 = []
+    rest = []
+    for slip, ts in rows:
+        if not ts:
+            continue
+        try:
+            tod = ts.split("T")[1][:5] if "T" in ts else None
+        except Exception:
+            tod = None
+        if not tod:
+            continue
+        try:
+            hh, mm = int(tod[:2]), int(tod[3:5])
+            minute_of_day = hh * 60 + mm
+        except Exception:
+            continue
+        if 9 * 60 + 30 <= minute_of_day <= 9 * 60 + 45:
+            first_15.append(abs(float(slip)))
+        elif 9 * 60 + 45 < minute_of_day <= 16 * 60:
+            rest.append(abs(float(slip)))
+
+    if len(first_15) < 5 or len(rest) < 5 or len(first_15) + len(rest) < 20:
+        return None
+    first_avg = sum(first_15) / len(first_15)
+    rest_avg = sum(rest) / len(rest) if rest else 0
+    if rest_avg <= 0:
+        return None
+
+    current = int(getattr(ctx, "skip_first_minutes", 5) or 5)
+
+    if first_avg > rest_avg * 1.5 and current < 30:
+        new_val = min(30, current + 5)
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, skip_first_minutes=new_val)
+        reason = (
+            f"First-15-min slippage {first_avg:.3f}% vs rest-of-day "
+            f"{rest_avg:.3f}% ({first_avg/rest_avg:.1f}× worse). "
+            f"Widen open-skip to {new_val} min."
+        )
+        log_tuning_change(
+            profile_id, user_id, "skip_first_minutes_widen",
+            "skip_first_minutes", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (
+            f"Widened {_label('skip_first_minutes')} "
+            f"from {current} to {new_val} min ({reason})"
+        )
+
+    if first_avg < rest_avg and current > 0:
+        new_val = max(0, current - 5)
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, skip_first_minutes=new_val)
+        reason = (
+            f"First-15-min slippage {first_avg:.3f}% no worse than "
+            f"rest-of-day {rest_avg:.3f}% — tighten open-skip "
+            f"to {new_val} min."
+        )
+        log_tuning_change(
+            profile_id, user_id, "skip_first_minutes_tighten",
+            "skip_first_minutes", str(current), str(new_val), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (
+            f"Tightened {_label('skip_first_minutes')} "
+            f"from {current} to {new_val} min ({reason})"
+        )
     return None
 
 
