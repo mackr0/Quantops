@@ -443,27 +443,30 @@ side).
 
 **Estimated work remaining**: ~1 session for Phase 5b (option-aware resolver path + re-resolution backfill of existing option rows).
 
-### Phase 6 — Risk model: delta-adjusted exposure aggregation
+### Phase 6 — Risk model: delta-adjusted exposure aggregation   ✅ Phase 6a shipped 2026-05-11
 
 **Goal**: the risk model aggregates across pipelines into one
 portfolio risk view. For options, position contribution is
 delta-adjusted (audit finding #7), not 1:1 market_value. Greek
 aggregation surfaces in the AI prompt for all pipelines.
 
-**Shipped artifacts**:
-- `portfolio_risk_model.py` updated to compute delta-weighted
-  exposure for option positions.
-- Greek aggregation (sum delta, gamma, vega, theta) added to
-  `render_risk_summary_for_prompt()`.
-- All pipelines see the same portfolio risk picture; their
-  decisions can incorporate it.
+**Shipped artifacts (Phase 6a)**:
+- `pipelines/risk/exposure.py:delta_adjusted_position_value()` — pure function. Stocks: |qty × price|. Options: |delta × qty × 100 × spot| using existing `_greek_contribution`. Never raises; returns 0 for un-pricable inputs.
+- `pipelines/risk/exposure.py:portfolio_delta_exposure()` — aggregates per-position contributions into `{underlying: $exposure}`. Same-underlying stock + option positions roll up into one bucket.
+- `pipelines/risk/__init__.py` re-exports `compute_book_greeks` from `options_greeks_aggregator` (canonical since Phase A1 of OPTIONS_PROGRAM_PLAN — Phase 6 wraps, doesn't reinvent).
+
+**Phase 6b (queued)**:
+- Wire `pipelines.risk.exposure.portfolio_delta_exposure()` into `portfolio_risk_model.compute_portfolio_risk` so factor regressions consume delta-equivalent weights for option positions instead of premium-based weights (today's broken behavior under-weights option contributions by ~10×).
+- Surface aggregate Greeks (`compute_book_greeks`) in `render_risk_summary_for_prompt()` so each pipeline's AI sees the book's net delta/gamma/vega/theta.
 
 **Exit criteria**:
-- Option positions' factor regressions use delta-weighted
-  exposure.
-- Prompt visibly includes portfolio Greeks.
+- ✅ Long call exposure ≥ 5× premium-based exposure (delta-adjusted math correct by construction).
+- ✅ Same-underlying stock+option positions aggregate to one bucket.
+- ✅ Long/short same-params positions have equal absolute exposure (sign-handling correct).
+- 🔲 Phase 6b: factor regressions in `portfolio_risk_model` consume delta-equivalent weights.
+- 🔲 Phase 6b: prompt visibly includes portfolio Greeks.
 
-**Estimated work**: ~2 sessions.
+**Estimated work remaining**: ~1 session for Phase 6b (wire the existing pure functions into the production risk-model + prompt-render paths).
 
 ---
 

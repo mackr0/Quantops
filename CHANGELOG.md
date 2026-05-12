@@ -17,6 +17,33 @@ Rules going forward:
 
 ---
 
+## 2026-05-11 — Pipeline Architecture Phase 6a — delta-adjusted portfolio exposure; closes audit finding #7 framework
+
+Phase 6a of the instrument-class pipeline refactor. Adds the cross-pipeline portfolio-risk infrastructure that aggregates stock and option positions on a delta-equivalent dollar basis. A long call worth $200 in premium, with delta=0.4 on a $50 underlying with qty=1 contract, now correctly contributes ~$2,000 of effective directional exposure (40 delta-shares × $50) to the portfolio risk view — not $200 (which was today's broken behavior, ~10× too low).
+
+**New shared infrastructure** (`pipelines/risk/`):
+- `pipelines/risk/exposure.py:delta_adjusted_position_value(pos, spot, iv, today)` — pure function. Stocks: |qty × price|. Options: |delta × qty × 100 × spot| using `_greek_contribution` from the canonical `options_greeks_aggregator`. Returns 0.0 for any input it can't price (missing spot, expired option, malformed OCC) — never raises.
+- `pipelines/risk/exposure.py:portfolio_delta_exposure(positions, price_lookup, iv_lookup)` — aggregates per-position contributions into `{underlying_symbol: $exposure}`. Option positions roll up under their UNDERLYING ticker so a long AAPL call shares a bucket with an AAPL stock position (factor regressions weight per-underlying, not per-contract).
+- `pipelines/risk/__init__.py` re-exports `compute_book_greeks` from `options_greeks_aggregator` so consumers can use the per-pipeline namespace consistently. The canonical Greeks aggregator (since Phase A1 of OPTIONS_PROGRAM_PLAN) is NOT reinvented — Phase 6a wraps it in the new namespace.
+
+**Architectural intent**: risk is one of the few things INTENTIONALLY shared across pipelines. A $5,000 stock position and an option spread with $5,000 of delta-equivalent exposure consume the same risk budget. The pipeline architecture forks DECISION LOGIC per instrument class but keeps the AGGREGATE RISK VIEW unified.
+
+**Tests** (`tests/test_pipelines_phase6_risk.py`, 24 tests):
+- STOCK CONTRIBUTION: long and short stock positions both contribute |qty × price| (sign captured separately by `net_delta` in the Greeks aggregation).
+- OPTION CONTRIBUTION: a long call's exposure is at LEAST 5× the premium-based value (an ATM call has delta ~0.5 → 0.5 × spot × 100 ≈ 5× the premium per dollar). Direct verification that the bug-fix produces materially different numbers from the broken pre-refactor calculation.
+- BUCKET ROLL-UP: a 10-share AAPL stock position and a long AAPL call aggregate into ONE bucket (`AAPL`), with combined dollar exposure > 1500 (stock alone). Different underlyings produce separate buckets.
+- EDGE CASES (parametrized): missing spot returns 0 (no crash); expired option returns 0; qty=0 returns 0; missing IV uses `FALLBACK_IV` (0.25, the median equity vol) rather than crashing.
+- CLASS INVARIANT (parametrized over strike × right): for any (strike, right), the absolute exposure of a long position equals the absolute exposure of the short position with qty negated. Catches regressions in absolute-value handling at the structural level rather than per-test.
+- Sanity: `pipelines.risk.compute_book_greeks IS options_greeks_aggregator.compute_book_greeks` (re-export identity verified).
+
+**What this is NOT yet** (deferred to Phase 6b): wiring the new functions into `portfolio_risk_model.compute_portfolio_risk` so the factor regressions actually USE delta-equivalent weights. Today's `compute_portfolio_risk` consumes pre-computed weights — Phase 6b will swap the weight derivation upstream. Surfacing aggregate Greeks in the pipeline prompts (so each pipeline's AI sees the book's net delta/gamma/vega/theta) is also Phase 6b.
+
+**Behavior change on prod**: zero. Phase 6a ships pure functions; nothing in production calls them yet. The capability is ready for Phase 6b to wire through.
+
+**Tests**: 2,630 pass (+24 Phase 6, 0 regressions).
+
+---
+
 ## 2026-05-11 — Pipeline Architecture Phase 5a — per-pipeline outcomes + structural kind tag; closes audit finding #2 framework
 
 Phase 5a of the instrument-class pipeline refactor. Adds a structural `pipeline_kind` tag on `ai_predictions` so option outcomes can never pool with stock outcomes in cross-pipeline aggregations regardless of what `predicted_signal` contains.
