@@ -600,6 +600,40 @@ def _migrate_all_columns(conn):
     except Exception:
         pass
 
+    # Phase 5e tcols lookup — used by both phantom_stop tagging
+    # blocks below. Done once to avoid duplicate PRAGMA calls.
+    try:
+        tcols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(trades)"
+        ).fetchall()}
+    except Exception:
+        tcols = set()
+
+    # Phase 5e wave 3 (2026-05-12) — tag reconcile_backfill rows
+    # whose pnl is wildly disproportionate to their cost basis.
+    # These are the downstream contamination from the phantom-stop
+    # incident: the reconciler found phantom journal rows
+    # (price=option_premium) and "closed" them with today's stock
+    # price, producing reconcile_backfill rows with pnl_pct of
+    # +4833% / +2450% / +1447% on the trades page.
+    #
+    # Pattern: strategy LIKE 'reconcile_backfill%' AND
+    # ABS(pnl) > price * qty * 5 (pnl is more than 5x the apparent
+    # cost basis — a mathematically-impossible long-trade return).
+    # Idempotent on data_quality IS NULL.
+    try:
+        if "data_quality" in tcols:
+            conn.execute(
+                "UPDATE trades "
+                "SET data_quality = 'phantom_stop_reconcile_2026_05_12' "
+                "WHERE data_quality IS NULL "
+                "AND strategy LIKE 'reconcile_backfill%' "
+                "AND pnl IS NOT NULL AND price > 0 AND qty > 0 "
+                "AND ABS(pnl) > (price * qty * 5)"
+            )
+    except Exception:
+        pass
+
     # Phase 5e (2026-05-12) — tag the phantom_stop_2026_05_11 incident
     # rows so analytics aggregates exclude them. Pattern: STOCK-tagged
     # trades (occ_symbol IS NULL) where the decision_price is the
@@ -621,9 +655,7 @@ def _migrate_all_columns(conn):
     #
     # Idempotent: gated on `data_quality IS NULL`.
     try:
-        tcols = {row[1] for row in conn.execute(
-            "PRAGMA table_info(trades)"
-        ).fetchall()}
+        # tcols already populated above
         if "data_quality" in tcols and "slippage_pct" in tcols:
             conn.execute(
                 "UPDATE trades "

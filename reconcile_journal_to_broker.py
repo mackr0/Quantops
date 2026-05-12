@@ -408,8 +408,18 @@ def _select_open_rows(conn) -> List[sqlite3.Row]:
         "occ_symbol", "option_strategy",
     ) if c in cols]
     all_cols = base_cols + extra_cols
+    # Phase 5e (2026-05-12) — EXCLUDE rows tagged with a
+    # data_quality marker from reconcile. The phantom-stop incident
+    # rows have price=$0.16 (option premium) but signal_type='SELL'
+    # and occ_symbol=NULL. The reconciler was reading them as
+    # phantom long positions and "closing" them with today's stock
+    # price → bogus Reconcile Backfill rows on the trades page
+    # showing +4833% / +2450% / +1447% pnl_pct. Filtering at the
+    # candidate-fetch boundary prevents NEW bogus rows from being
+    # created.
+    dq_clause = " AND data_quality IS NULL" if "data_quality" in cols else ""
     sql = (f"SELECT {','.join(all_cols)} FROM trades "
-           "WHERE status='open' AND side IN ('buy', 'short', 'sell')")
+           f"WHERE status='open' AND side IN ('buy', 'short', 'sell'){dq_clause}")
     return conn.execute(sql).fetchall()
 
 
