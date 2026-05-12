@@ -24,33 +24,6 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 
-def _ensure_tuning_history_table(db_path: str) -> None:
-    """Create tuning_history if it doesn't exist. Per-profile DB."""
-    if not db_path:
-        return
-    try:
-        conn = sqlite3.connect(db_path)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS tuning_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-                pipeline_name TEXT NOT NULL,
-                param_name TEXT NOT NULL,
-                old_value REAL,
-                new_value REAL NOT NULL,
-                rationale TEXT
-            )
-        """)
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tuning_history_ts "
-            "ON tuning_history(timestamp DESC)"
-        )
-        conn.commit()
-        conn.close()
-    except Exception as exc:
-        logger.debug("tuning_history init failed: %s", exc)
-
-
 def apply_parameter_adjustments(
     profile_id: int,
     db_path: str,
@@ -59,15 +32,24 @@ def apply_parameter_adjustments(
 ) -> int:
     """Apply a `ParameterAdjustments` DTO to the trading_profiles row.
 
+    Records each adjustment via `models.log_tuning_change` —
+    the SAME tuning_history table that the legacy self_tuning
+    module + capital_allocator already write to. Operators see
+    pipeline-tuner adjustments in the same panel as legacy
+    self-tuner adjustments (`ai_weekly_summary` already reads
+    from this table).
+
     Args:
-        profile_id: the trading_profiles.id to update.
-        db_path: the profile's per-profile DB path (for
-            tuning_history logging).
-        adjustments: ParameterAdjustments DTO with `.pipeline_name`,
-            `.changes` (dict of param→new_value), `.rationale`.
-        ctx: optional UserContext for reading current values so
-            tuning_history can record old→new. When provided,
-            avoids a separate DB read.
+        profile_id: trading_profiles.id to update.
+        db_path: profile's per-profile DB path (kept in signature
+            for back-compat with earlier callers; not used for
+            history logging anymore — that goes to the main
+            config DB via models.log_tuning_change).
+        adjustments: ParameterAdjustments DTO with
+            `.pipeline_name`, `.changes` (dict of param→new_value),
+            `.rationale`.
+        ctx: optional UserContext for old-value lookup +
+            user_id required by log_tuning_change.
 
     Returns: count of params actually written.
     """
@@ -79,32 +61,36 @@ def apply_parameter_adjustments(
 
     pipeline_name = getattr(adjustments, "pipeline_name", "unknown")
     rationale = getattr(adjustments, "rationale", "") or ""
+    user_id = getattr(ctx, "user_id", 0) if ctx is not None else 0
 
-    # Record old→new transitions for visibility
-    _ensure_tuning_history_table(db_path)
-    if db_path:
-        try:
-            conn = sqlite3.connect(db_path)
-            for param, new_val in changes.items():
-                old_val = (
-                    getattr(ctx, param, None) if ctx is not None
-                    else None
-                )
-                conn.execute(
-                    "INSERT INTO tuning_history "
-                    "(pipeline_name, param_name, old_value, "
-                    " new_value, rationale) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (pipeline_name, param,
-                     float(old_val) if old_val is not None else None,
-                     float(new_val), rationale),
-                )
-            conn.commit()
-            conn.close()
-        except Exception as exc:
-            logger.debug("tuning_history insert failed: %s", exc)
+    # Record each param change to the canonical tuning_history
+    # table (main config DB). `adjustment_type` distinguishes
+    # pipeline-tuner adjustments from legacy self-tuner ones so
+    # operators can filter the history view by source.
+    try:
+        from models import log_tuning_change
+        for param, new_val in changes.items():
+            old_val = (
+                getattr(ctx, param, None) if ctx is not None
+                else None
+            )
+            log_tuning_change(
+                profile_id=profile_id,
+                user_id=user_id,
+                adjustment_type=f"pipeline_tuner_{pipeline_name}",
+                parameter_name=param,
+                old_value=str(old_val) if old_val is not None else "",
+                new_value=str(new_val),
+                reason=rationale,
+            )
+    except Exception as exc:
+        logger.debug(
+            "log_tuning_change failed for profile=%s pipeline=%s: %s",
+            profile_id, pipeline_name, exc,
+        )
 
-    # Persist to trading_profiles via the central writer
+    # Persist the parameter values to trading_profiles via the
+    # central writer.
     try:
         from models import update_trading_profile
         update_trading_profile(profile_id, **changes)

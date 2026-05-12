@@ -42,7 +42,6 @@ from pipelines.option import OptionPipeline
 from pipelines import Metrics
 from pipelines.tuning_writer import (
     apply_parameter_adjustments,
-    _ensure_tuning_history_table,
     run_pipeline_tuning,
 )
 
@@ -187,32 +186,47 @@ class TestApplyParameterAdjustments:
         assert captured["profile_id"] == 42
         assert captured["kwargs"]["max_net_options_delta_pct"] == 0.06
 
-    def test_records_to_tuning_history(self, db_path):
+    def test_records_to_canonical_tuning_history(self, db_path):
+        """Phase 2b records via the canonical models.log_tuning_change
+        helper (writes to main config DB) — NOT a duplicate per-
+        profile table. Operators see pipeline-tuner adjustments in
+        the same history panel as legacy self-tuner adjustments."""
         from pipelines import ParameterAdjustments
         adj = ParameterAdjustments(
             pipeline_name="option",
             changes={"max_net_options_delta_pct": 0.06},
             rationale="loosened on 70% win",
         )
-        ctx = _ctx(db_path, max_net_options_delta_pct=0.05)
-        with patch("models.update_trading_profile"):
+        ctx = _ctx(db_path, max_net_options_delta_pct=0.05, user_id=1)
+        captured = []
+
+        def fake_log(profile_id, user_id, adjustment_type,
+                       parameter_name, old_value, new_value, reason,
+                       **kwargs):
+            captured.append({
+                "profile_id": profile_id, "user_id": user_id,
+                "adjustment_type": adjustment_type,
+                "parameter_name": parameter_name,
+                "old_value": old_value, "new_value": new_value,
+                "reason": reason,
+            })
+            return 1
+
+        with patch("models.update_trading_profile"), \
+             patch("models.log_tuning_change", side_effect=fake_log):
             apply_parameter_adjustments(
                 profile_id=42, db_path=db_path,
                 adjustments=adj, ctx=ctx,
             )
 
-        conn = sqlite3.connect(db_path)
-        rows = conn.execute(
-            "SELECT pipeline_name, param_name, old_value, "
-            "new_value, rationale FROM tuning_history"
-        ).fetchall()
-        conn.close()
-        assert len(rows) == 1
-        assert rows[0][0] == "option"
-        assert rows[0][1] == "max_net_options_delta_pct"
-        assert rows[0][2] == pytest.approx(0.05)
-        assert rows[0][3] == pytest.approx(0.06)
-        assert "loosened" in rows[0][4]
+        assert len(captured) == 1
+        assert captured[0]["profile_id"] == 42
+        assert captured[0]["user_id"] == 1
+        assert captured[0]["adjustment_type"] == "pipeline_tuner_option"
+        assert captured[0]["parameter_name"] == "max_net_options_delta_pct"
+        assert captured[0]["old_value"] == "0.05"
+        assert captured[0]["new_value"] == "0.06"
+        assert "loosened" in captured[0]["reason"]
 
     def test_empty_changes_skips_write(self, db_path):
         from pipelines import ParameterAdjustments

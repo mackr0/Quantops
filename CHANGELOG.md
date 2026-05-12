@@ -17,6 +17,22 @@ Rules going forward:
 
 ---
 
+## 2026-05-12 — Consolidate tuning_history: pipeline tuner uses canonical models.log_tuning_change
+
+Phase 2b's `pipelines/tuning_writer.py` had been creating a DUPLICATE `tuning_history` table in each per-profile DB. The CANONICAL `tuning_history` table already exists in the main config DB, with the `models.log_tuning_change()` writer used by the legacy `self_tuning` module + `capital_allocator` + read by `ai_weekly_summary` for the weekly recap.
+
+Result of the duplication: pipeline-tuner adjustments would have been invisible to operators because the existing dashboard/summary UI reads from the central table, not the per-profile copies.
+
+**Fix**: `apply_parameter_adjustments` now calls `models.log_tuning_change(profile_id, user_id, adjustment_type=f'pipeline_tuner_{pipeline_name}', ...)`. The `adjustment_type` field distinguishes pipeline-tuner adjustments (`pipeline_tuner_option`, `pipeline_tuner_stock`) from legacy self-tuner ones — operators can filter the history by source. Same UI surface for both, no second-table maintenance.
+
+Removed `_ensure_tuning_history_table` helper (now obsolete). Updated test to verify the canonical writer is called with the right args.
+
+This was discovered during a verification step — the smoke test for tuning_history visibility surfaced two tables with the same name in different DBs.
+
+**Tests**: 2,831 pass.
+
+---
+
 ## 2026-05-12 — Deep cherry-pick audit (round 2): self_tuning + rollback dilution + class guardrail
 
 The HOLD-attribution incident exposed a bug class. First-pass audit caught 4 sites. This deeper pass found another **18 sites** of the same pattern — predominantly stock-side, all silently dropping data from learning/tuning paths.
