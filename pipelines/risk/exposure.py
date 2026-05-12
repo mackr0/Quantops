@@ -139,6 +139,51 @@ def _signed_delta_dollars_for_position(
     return contrib["delta"] * spot  # signed (delta sign + qty sign)
 
 
+def _default_iv_lookup_factory() -> Callable[[str], Optional[float]]:
+    """Phase 6c (2026-05-12): cached per-call IV lookup using the
+    live options oracle. Returns a callable that resolves an
+    underlying ticker to its ATM call IV (annualized decimal,
+    e.g. 0.35 = 35%).
+
+    The lookup hits `options_oracle.get_options_oracle` which is
+    a chain-fetch — caches per-call so multiple positions on the
+    same underlying don't re-fetch. Returns None on any failure;
+    callers fall back to `FALLBACK_IV=0.25`.
+
+    Without this wiring (the Phase 6b state), every option
+    position's delta-adjusted exposure used the 25% fallback,
+    regardless of whether the underlying was actually trading
+    at 60% IV (overpriced, near earnings) or 15% IV (quiet name).
+    """
+    _cache: Dict[str, Optional[float]] = {}
+
+    def lookup(underlying: str) -> Optional[float]:
+        if not underlying:
+            return None
+        if underlying in _cache:
+            return _cache[underlying]
+        try:
+            from options_oracle import get_options_oracle
+            oracle = get_options_oracle(underlying)
+            if not oracle or not oracle.get("has_options"):
+                _cache[underlying] = None
+                return None
+            # Skew dict has call_iv (ATM call IV, annualized
+            # decimal). Use that as the effective IV for delta
+            # calc — close enough for portfolio aggregation.
+            iv = float(oracle.get("skew", {}).get("call_iv") or 0)
+            if iv <= 0:
+                _cache[underlying] = None
+                return None
+            _cache[underlying] = iv
+            return iv
+        except Exception:
+            _cache[underlying] = None
+            return None
+
+    return lookup
+
+
 def signed_portfolio_delta_exposure(
     positions: List[Dict[str, Any]],
     price_lookup: Optional[Callable[[str], Optional[float]]] = None,
@@ -204,6 +249,7 @@ def effective_positions_for_risk_model(
     price_lookup: Optional[Callable[[str], Optional[float]]] = None,
     iv_lookup: Optional[Callable[[str], Optional[float]]] = None,
     today: Optional[_date] = None,
+    use_live_iv: bool = True,
 ) -> List[Dict[str, Any]]:
     """Convert raw positions into synthetic underlying-bucket positions
     suitable for the factor-regression risk model.
@@ -221,6 +267,13 @@ def effective_positions_for_risk_model(
     premium-based weight (under-counting risk by ~10×) or were
     silently dropped (when their OCC symbol had no bars).
     """
+    # Phase 6c (2026-05-12): when caller doesn't provide an explicit
+    # iv_lookup and the new use_live_iv flag is True (default),
+    # build a per-call cached lookup hitting the options_oracle.
+    # Falls back to FALLBACK_IV (0.25) inside the math if the
+    # lookup returns None for any underlying.
+    if iv_lookup is None and use_live_iv:
+        iv_lookup = _default_iv_lookup_factory()
     signed = signed_portfolio_delta_exposure(
         positions, price_lookup=price_lookup,
         iv_lookup=iv_lookup, today=today,

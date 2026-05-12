@@ -610,10 +610,15 @@ def compute_portfolio_risk_from_positions(
     # position's own current_price (broker-shipped); iv defaults to
     # FALLBACK_IV. A future refinement will pass the live IV oracle.
     from pipelines.risk import exposure as _exp
+    # Phase 6c (2026-05-12): use_live_iv=True triggers a per-call
+    # cached IV lookup via options_oracle.get_options_oracle.
+    # When the oracle returns None for an underlying (no chain
+    # data, network failure), the math falls back to FALLBACK_IV.
     effective_positions = _exp.effective_positions_for_risk_model(
         positions,
-        price_lookup=None,   # falls back to position.current_price
-        iv_lookup=None,       # falls back to FALLBACK_IV (0.25)
+        price_lookup=None,
+        iv_lookup=None,
+        use_live_iv=True,
     )
 
     exposures: Dict[str, Dict[str, Any]] = {}

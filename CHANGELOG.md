@@ -17,6 +17,77 @@ Rules going forward:
 
 ---
 
+## 2026-05-12 — Phase 6c: live IV oracle in delta-adjusted exposure
+
+Phase 6b shipped delta-adjusted portfolio exposure but used a hard `FALLBACK_IV=0.25` for every option position regardless of the underlying's actual volatility — a name trading at 60% IV near earnings was scored with the same delta sensitivity as a quiet name at 15%. Phase 6c wires `options_oracle.get_options_oracle` so each position picks up its underlying's live ATM call IV. Per-call caching prevents repeated chain fetches when multiple positions share an underlying.
+
+`pipelines/risk/exposure.py` additions:
+- `_default_iv_lookup_factory()` — builds a per-call cached lookup. Hits the options oracle, returns `skew.call_iv` (annualized decimal). Returns `None` on missing chain / zero IV / network exception → caller falls back to `FALLBACK_IV`.
+- `effective_positions_for_risk_model(..., use_live_iv=True)` — new opt-in flag (default ON). When True and `iv_lookup` is None, builds the default factory. Explicit `iv_lookup` always wins.
+- `portfolio_risk_model.compute_portfolio_risk_from_positions` now passes `use_live_iv=True`.
+
+Tests (10): live lookup pulls IV from oracle; cached per-underlying (1 oracle call regardless of position count); fallback on missing/zero IV; failure-tolerant on exception; `use_live_iv=False` opts out of oracle; explicit iv_lookup wins; OTM call exposure differs materially between fallback and live IV (proves the live IV reaches the Greeks calc).
+
+## 2026-05-12 — Phase 2b: option tuner WRITES (parameter adjustments live)
+
+`OptionPipeline.tune()` was framework-only (read win-rate, return empty changes). Phase 2b closes the loop with real adjustment math + live persistence + audit history.
+
+Adjustment rule:
+- win rate ≥ 60% over ≥ 20 samples → loosen 5% (×1.05, clipped to ceiling)
+- win rate ≤ 40% over ≥ 20 samples → tighten 5% (×0.95, floored)
+- else: no change (don't tune on noise)
+
+Targets the three option-Greeks budget params:
+- `max_net_options_delta_pct` (floor 0.02, ceil 0.10)
+- `max_theta_burn_dollars_per_day` (floor 25, ceil 100)
+- `max_short_vega_dollars` (floor 250, ceil 1000)
+
+Schema migration: three new columns on `trading_profiles` with defaults matching the existing UserContext defaults; `update_trading_profile` allowed_cols extended; `build_user_context_for_profile` populates the fields with default fallbacks.
+
+New writer (`pipelines/tuning_writer.py`):
+- `apply_parameter_adjustments(profile_id, db_path, adjustments, ctx)` — calls `update_trading_profile` + records to a new `tuning_history` table for operator visibility.
+- `run_pipeline_tuning(ctx)` — per-cycle dispatcher. Iterates every pipeline registered for the profile, calls `compute_metrics` + `tune`, applies adjustments. Failure-tolerant per pipeline.
+
+`multi_scheduler._run_full_cycle` now calls `run_pipeline_tuning(ctx)` gated on `ctx.enable_self_tuning`. Failure non-fatal.
+
+Tests (15): adjustment math (high/low/neutral/insufficient samples); bounds clipping; writer; dispatcher; schema guardrails.
+
+Guardrail (`test_every_lever_is_tuned.py`) now scans `pipelines/{stock,option}.py:tune()` BOUNDS dicts in addition to `self_tuning.py` so the new pipeline tuner's columns count as auto-tuned.
+
+## 2026-05-12 — HOLD signals classify as stock; completeness guardrail (CRITICAL)
+
+Critical fix discovered when triggering recalibration on prod: of 18,318 total predictions across 11 profile DBs, **17,111 (93%) were HOLDs sitting unclassified** (`pipeline_kind=NULL`). The Phase 5a backfill's STOCK_SIGNAL_TYPES excluded HOLD, so the dominant signal in the system was being silently dropped from per-pipeline calibration and tuning.
+
+Root cause: HOLD wasn't in any of the four authoritative signal lists. A HOLD prediction is "AI saw this stock candidate, decided not to trade it" — a stock-pipeline decision that must be tagged 'stock'.
+
+Four definition sites updated in lock-step:
+1. `journal.py:_migrate_all_columns` backfill stock_signals
+2. `pipelines/outcomes/__init__.py:kind_from_signal` stock_signals set
+3. `tuning/stock.py:STOCK_SIGNAL_TYPES`
+4. `specialist_calibration.py:fit_calibrator` pk_clause stock fallback IN list
+
+After fix + re-trigger on prod: 18,044 stock-tagged + 274 option-tagged + **0 NULL** = 18,318 total. Stock specialist calibration now trains on ~19× more data (18,044 vs 933).
+
+Completeness guardrail (`test_pipeline_kind_completeness.py`, 19 tests):
+- CLASS INVARIANT: every signal observed in production must classify into 'stock' or 'option' — adding a new signal requires explicit pipeline assignment or the test fails.
+- CONSISTENCY: the four definition sites all agree.
+- HOLD-SPECIFIC pins.
+
+## 2026-05-12 — Cherry-pick audit: kelly + self_tuning + calibration legacy CASE
+
+Audit found 3 other partial-list filter sites (same bug class as the HOLD-exclusion):
+1. `kelly_sizing.py:130-132` — entry_signals missed WEAK_BUY (long), WEAK_SELL/COVER (short).
+2. `self_tuning.py:4087` — gap detection listed only `('BUY', 'SELL')` — missed STRONG_BUY/WEAK_BUY/SHORT/STRONG_SELL/WEAK_SELL/COVER winners.
+3. `specialist_calibration.py:239` — legacy CASE clause for direction inference missed WEAK_BUY.
+
+All three sites now have explanatory comments noting the requirement to keep in sync with `pipelines.outcomes.kind_from_signal`.
+
+## 2026-05-12 — Doc test counts refresh
+
+Bumped `01_EXECUTIVE_SUMMARY.md`, `04_TECHNICAL_REFERENCE.md`, `13_QUALITY_RELIABILITY.md` from 2,748 tests → 3,068 tests (parametrize-expanded count). The `test_docs_test_counts_fresh.py` guardrail caught the >10% drift.
+
+---
+
 ## 2026-05-11 — Pipeline Architecture Phase 4b — multileg specialist veto LIVE; closes audit finding #5
 
 Phase 4b wires the option-pipeline specialist veto into the live multileg dispatch path. Before this commit, `trade_pipeline.py`'s `MULTILEG_OPEN` branch called `execute_multileg_strategy` directly — bypassing the entire ensemble. The `option_spread_risk` specialist (added in Phase 4a, holds VETO authority) had nowhere to fire on actual production trades. After this commit, every multileg proposal flows through `OptionPipeline.route_to_specialists()` BEFORE the broker call.
