@@ -353,3 +353,192 @@ class TestStopToTpRatio:
             conn, ctx, 1, 1, overall_wr=40.0, resolved=20)
         conn.close()
         assert msg is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Conviction-TP-override self-tuner (2026-05-12) — auto flip per
+# profile based on MFE capture + stop-to-TP ratio. Replaces the
+# operator-set toggle with an AI-driven decision.
+# ─────────────────────────────────────────────────────────────────────
+
+class TestConvictionTpOverrideTuner:
+    def test_enable_when_capping_winners(self, tmp_path):
+        """Low capture (winners running but exits cutting) +
+        unbalanced stop-to-TP → flip ON."""
+        db = _make_db_with_strategy_and_dq(tmp_path)
+        ctx = _ctx(db, use_conviction_tp_override=False)
+        ctx.db_path = db
+        from self_tuning import _optimize_conviction_tp_override, _get_conn
+        conn = _get_conn(db)
+        captured = []
+        def fake_update(profile_id, **kwargs):
+            captured.append(kwargs)
+        # Low capture: 35%, stop-to-TP: 2.5 (imbalanced)
+        with patch("self_tuning._get_recent_adjustment", return_value=None), \
+             patch("mfe_capture.compute_capture_ratio", return_value={
+                 "avg_capture_ratio": 0.35, "n_trades": 30,
+                 "median_capture_ratio": 0.30, "n_negative_capture": 5,
+             }), \
+             patch("mfe_capture.compute_stop_to_tp_ratio", return_value={
+                 "ratio": 2.5, "ratio_label": "2.5",
+                 "n_stops": 50, "n_tps": 20, "window_days": 30,
+             }), \
+             patch("models.update_trading_profile", side_effect=fake_update), \
+             patch("models.log_tuning_change"):
+            msg = _optimize_conviction_tp_override(
+                conn, ctx, 1, 1, overall_wr=40.0, resolved=30)
+        conn.close()
+        assert msg is not None
+        assert "Enabled" in msg
+        assert captured == [{"use_conviction_tp_override": 1}]
+
+    def test_disable_when_already_capturing_well(self, tmp_path):
+        """High capture (winners locking in) + balanced stop-to-TP →
+        flip OFF, disciplined fixed TP wins."""
+        db = _make_db_with_strategy_and_dq(tmp_path)
+        ctx = _ctx(db, use_conviction_tp_override=True)
+        ctx.db_path = db
+        from self_tuning import _optimize_conviction_tp_override, _get_conn
+        conn = _get_conn(db)
+        captured = []
+        def fake_update(profile_id, **kwargs):
+            captured.append(kwargs)
+        with patch("self_tuning._get_recent_adjustment", return_value=None), \
+             patch("mfe_capture.compute_capture_ratio", return_value={
+                 "avg_capture_ratio": 0.75, "n_trades": 30,
+                 "median_capture_ratio": 0.70, "n_negative_capture": 2,
+             }), \
+             patch("mfe_capture.compute_stop_to_tp_ratio", return_value={
+                 "ratio": 1.2, "ratio_label": "1.2",
+                 "n_stops": 24, "n_tps": 20, "window_days": 30,
+             }), \
+             patch("models.update_trading_profile", side_effect=fake_update), \
+             patch("models.log_tuning_change"):
+            msg = _optimize_conviction_tp_override(
+                conn, ctx, 1, 1, overall_wr=55.0, resolved=30)
+        conn.close()
+        assert msg is not None
+        assert "Disabled" in msg
+        assert captured == [{"use_conviction_tp_override": 0}]
+
+    def test_no_change_when_data_thin(self, tmp_path):
+        """Below 20 MFE-tracked trades — don't flip on noise."""
+        db = _make_db_with_strategy_and_dq(tmp_path)
+        ctx = _ctx(db, use_conviction_tp_override=False)
+        ctx.db_path = db
+        from self_tuning import _optimize_conviction_tp_override, _get_conn
+        conn = _get_conn(db)
+        with patch("self_tuning._get_recent_adjustment", return_value=None), \
+             patch("mfe_capture.compute_capture_ratio", return_value={
+                 "avg_capture_ratio": 0.30, "n_trades": 10,
+                 "median_capture_ratio": 0.25, "n_negative_capture": 3,
+             }), \
+             patch("mfe_capture.compute_stop_to_tp_ratio", return_value={
+                 "ratio": 3.0, "ratio_label": "3.0",
+                 "n_stops": 30, "n_tps": 10, "window_days": 30,
+             }):
+            msg = _optimize_conviction_tp_override(
+                conn, ctx, 1, 1, overall_wr=40.0, resolved=10)
+        conn.close()
+        assert msg is None
+
+    def test_neutral_band_no_change(self, tmp_path):
+        """Capture 55% + ratio 1.7 — in neutral territory. No flip."""
+        db = _make_db_with_strategy_and_dq(tmp_path)
+        ctx = _ctx(db, use_conviction_tp_override=False)
+        ctx.db_path = db
+        from self_tuning import _optimize_conviction_tp_override, _get_conn
+        conn = _get_conn(db)
+        with patch("self_tuning._get_recent_adjustment", return_value=None), \
+             patch("mfe_capture.compute_capture_ratio", return_value={
+                 "avg_capture_ratio": 0.55, "n_trades": 30,
+                 "median_capture_ratio": 0.50, "n_negative_capture": 3,
+             }), \
+             patch("mfe_capture.compute_stop_to_tp_ratio", return_value={
+                 "ratio": 1.7, "ratio_label": "1.7",
+                 "n_stops": 34, "n_tps": 20, "window_days": 30,
+             }):
+            msg = _optimize_conviction_tp_override(
+                conn, ctx, 1, 1, overall_wr=50.0, resolved=30)
+        conn.close()
+        assert msg is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Schema migration: existing profiles flipped 0→1 idempotently
+# ─────────────────────────────────────────────────────────────────────
+
+class TestConvictionTpDefaultFlipMigration:
+    def test_existing_profile_flipped_on_init(self, tmp_path, monkeypatch):
+        """A profile that was 0 before init_user_db gets flipped to
+        1 on the first init call. The marker prevents re-fire."""
+        import sqlite3
+        import models
+        db = str(tmp_path / "users.db")
+        # Pre-create a trading_profiles table with a profile at 0
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE trading_profiles ("
+                      "id INTEGER PRIMARY KEY, "
+                      "use_conviction_tp_override INTEGER DEFAULT 0)")
+        conn.execute("INSERT INTO trading_profiles (id, "
+                      "use_conviction_tp_override) VALUES (1, 0)")
+        conn.commit()
+        conn.close()
+        import config
+        monkeypatch.setattr(config, "DB_PATH", db)
+        models.init_user_db()
+        # After init: profile flipped to 1, marker present
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT use_conviction_tp_override FROM trading_profiles "
+            "WHERE id = 1"
+        ).fetchone()
+        assert row[0] == 1
+        marker = conn.execute(
+            "SELECT 1 FROM migration_markers WHERE key = ?",
+            ("conviction_tp_default_on_2026_05_12",),
+        ).fetchone()
+        assert marker is not None
+        conn.close()
+
+    def test_migration_idempotent_doesnt_reflip(self, tmp_path, monkeypatch):
+        """If the operator flips a profile back to 0 AFTER the
+        migration ran, a subsequent init does NOT re-flip it."""
+        import sqlite3
+        import models
+        db = str(tmp_path / "users.db")
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE trading_profiles ("
+                      "id INTEGER PRIMARY KEY, "
+                      "use_conviction_tp_override INTEGER DEFAULT 0)")
+        conn.execute("INSERT INTO trading_profiles (id, "
+                      "use_conviction_tp_override) VALUES (1, 0)")
+        conn.commit()
+        conn.close()
+        import config
+        monkeypatch.setattr(config, "DB_PATH", db)
+        # First init: flips to 1, sets marker
+        models.init_user_db()
+        # Operator turns it back off
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE trading_profiles SET "
+                      "use_conviction_tp_override = 0 WHERE id = 1")
+        conn.commit()
+        conn.close()
+        # Second init: marker exists, migration skipped
+        models.init_user_db()
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT use_conviction_tp_override FROM trading_profiles "
+            "WHERE id = 1"
+        ).fetchone()
+        assert row[0] == 0  # operator's choice preserved
+        conn.close()
+
+
+class TestConvictionTpRegistered:
+    def test_optimizer_registered_in_orchestrator(self):
+        import self_tuning
+        import inspect
+        src = inspect.getsource(self_tuning._apply_upward_optimizations)
+        assert "_optimize_conviction_tp_override" in src

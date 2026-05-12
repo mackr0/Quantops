@@ -1843,6 +1843,13 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         # tightens ATR-TP multiplier in one pass. Closes the
         # 4.5:1 stop-to-tp gap observed across 11 profiles.
         _optimize_stop_to_tp_ratio,
+        # 2026-05-12 — conviction-TP override toggle. Reads MFE
+        # capture ratio + stop-to-TP ratio; flips the override ON
+        # when winners are getting capped by fixed TPs, OFF when
+        # the profile is already capturing well and disciplined TP
+        # locking is winning. AI-tunable; matches "system figures
+        # it out" thesis instead of operator-set toggle.
+        _optimize_conviction_tp_override,
         # Wave 4 — Layer 2 weighted signal intensity
         _optimize_signal_weights,
         # Wave 5 — Layer 3 per-regime parameter overrides
@@ -3728,6 +3735,92 @@ def _optimize_stop_to_tp_ratio(conn, ctx, profile_id, user_id,
         f"TP {current_tp:.2f}→{new_tp:.2f} "
         f"(stops={stops}, tps={tps}, {direction})"
     )
+
+
+def _optimize_conviction_tp_override(conn, ctx, profile_id, user_id,
+                                       overall_wr, resolved):
+    """Auto-flip `use_conviction_tp_override` per profile based on
+    the data. Replaces operator-set toggle with AI-driven decision.
+
+    The flag, when ON, skips fixed take-profit firing for runaway
+    winners (AI confidence ≥ 70 + ADX ≥ 25 + new highs all required)
+    and lets the trailing stop manage the exit. Default flipped ON
+    2026-05-12 after audit showed UNH-style trades being capped at
+    initial AI targets while underlying ran 4-5% further.
+
+    Decision rule:
+      Flip ON when:  MFE capture < 50% AND stop-to-TP ratio > 1.5
+                     (capping winners; let trailing stop manage)
+      Flip OFF when: MFE capture > 70% AND stop-to-TP ratio < 1.5
+                     (already capturing well; disciplined TP wins)
+
+    Otherwise: no change. Avoid thrashing the flag on weak signal.
+
+    2026-05-12.
+    """
+    if not _safe_change_guarded(profile_id, "use_conviction_tp_override"):
+        return None
+    db_path = getattr(ctx, "db_path", None)
+    if not db_path:
+        return None
+    try:
+        from mfe_capture import (
+            compute_capture_ratio, compute_stop_to_tp_ratio,
+        )
+        cap = compute_capture_ratio(db_path, lookback=50)
+        s2t = compute_stop_to_tp_ratio(db_path, window_days=30)
+    except Exception:
+        return None
+    if not cap or not s2t:
+        return None
+
+    cap_pct = (cap.get("avg_capture_ratio") or 0) * 100
+    n_trades = cap.get("n_trades") or 0
+    ratio = s2t.get("ratio")
+    if ratio is None or n_trades < 20:
+        return None
+
+    current = bool(getattr(ctx, "use_conviction_tp_override", False))
+
+    # Flip ON: winners capped + stop-to-TP imbalanced.
+    if not current and cap_pct < 50 and ratio > 1.5:
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, use_conviction_tp_override=1)
+        reason = (
+            f"MFE capture {cap_pct:.0f}% over {n_trades} trades + "
+            f"stop-to-TP {ratio:.1f} — fixed TP is capping runaway "
+            f"winners. Enabling override so trailing stop manages "
+            f"exits on high-conviction names."
+        )
+        log_tuning_change(
+            profile_id, user_id, "conviction_tp_enable",
+            "use_conviction_tp_override", "0", "1", reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (
+            f"Enabled {_label('use_conviction_tp_override')} ({reason})"
+        )
+
+    # Flip OFF: already capturing well + stop-to-TP balanced.
+    if current and cap_pct > 70 and ratio < 1.5:
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(profile_id, use_conviction_tp_override=0)
+        reason = (
+            f"MFE capture {cap_pct:.0f}% over {n_trades} trades + "
+            f"stop-to-TP {ratio:.1f} — disciplined fixed TP is "
+            f"winning. Disabling override so we lock in gains at "
+            f"the AI target."
+        )
+        log_tuning_change(
+            profile_id, user_id, "conviction_tp_disable",
+            "use_conviction_tp_override", "1", "0", reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (
+            f"Disabled {_label('use_conviction_tp_override')} ({reason})"
+        )
+
+    return None
 
 
 # ---------------------------------------------------------------------------

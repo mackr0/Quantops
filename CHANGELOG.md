@@ -17,6 +17,28 @@ Rules going forward:
 
 ---
 
+## 2026-05-12 — Profit-taking wave 6: conviction-TP-override ON by default + AI-tunable. Severity: medium (P&L behavior change across all 11 profiles).
+
+**Problem.** `use_conviction_tp_override` shipped 2026-04-15 as opt-in (default OFF) — the conservative rollout of the IONQ-style "let runaway winners run" mechanic. Operator never enabled it on any profile. Audit (2026-05-12) showed: 4.5:1 stop-to-TP exit ratio, UNH-style trades capped at AI's initial target while underlying ran 4-5% further. The mechanism was built, designed correctly, but sitting unused for 27 days because nobody flipped the switch. This contradicted the system's "AI-driven, no manual intervention" thesis.
+
+**Fix.**
+- (a) **Default flipped ON**. Schema default 0→1; one-shot idempotent migration via `migration_markers` flips existing profiles 0→1 on first `init_user_db` after deploy. UserContext dataclass default flipped too. Operators can still flip OFF per-profile after the migration runs; the marker prevents re-fire so the operator's choice sticks.
+- (b) **AI-tunable via `_optimize_conviction_tp_override`**. New self-tuning rule reads `mfe_capture.compute_capture_ratio` + `mfe_capture.compute_stop_to_tp_ratio` and decides per profile:
+  - ON ← MFE capture < 50% AND stop-to-TP > 1.5 (winners getting capped)
+  - OFF ← MFE capture > 70% AND stop-to-TP < 1.5 (already capturing well)
+  - Otherwise: no change. Won't thrash the flag on weak signal. Needs ≥20 MFE-tracked trades to fire.
+
+The combined effect: every profile starts with "let winners run" on; the AI flips back to disciplined-TP for profiles that are already capturing well — per-profile, data-driven, no operator toggle required.
+
+**Regression tests:**
+- `TestConvictionTpOverrideTuner` (4 tests): enable/disable conditions, neutral band no-op, thin-data skip
+- `TestConvictionTpDefaultFlipMigration` (2 tests): existing profile flipped, idempotent (operator override after migration is preserved)
+- `TestConvictionTpRegistered` (1 test): rule wired into the orchestrator
+- `TestUserContextDefaults`: updated to expect new ON default
+- Full suite: 2915 passed, zero regressions.
+
+---
+
 ## 2026-05-12 — Profit-taking wave 5: stop-to-TP tuner + per-trade TP price polling + brain-ticker analytics. Severity: high (P&L impact).
 
 **Three connected fixes addressing Mack's "win rate sucks, profit taking sucks" diagnosis:**

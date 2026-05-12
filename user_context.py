@@ -186,7 +186,11 @@ class UserContext:
     # provided the AI still has high conviction AND the trend is intact
     # (ADX >= threshold) AND price is making new highs. Designed for
     # runaway winners like IONQ where fixed TP caps the upside.
-    use_conviction_tp_override: bool = False
+    # 2026-05-12 — default ON. Was opt-in (default OFF) from
+    # 2026-04-15 to 2026-05-12; flipped after audit showed
+    # 4.5:1 stop-to-TP imbalance + UNH-style runaway winners
+    # being capped at the AI's initial target.
+    use_conviction_tp_override: bool = True
     conviction_tp_min_confidence: float = 70.0     # AI confidence >= this
     conviction_tp_min_adx: float = 25.0            # trend strength (ADX) >= this
 

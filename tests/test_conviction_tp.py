@@ -237,7 +237,7 @@ class TestConfidenceLookup:
 # ---------------------------------------------------------------------------
 
 class TestUserContextDefaults:
-    def test_default_is_off(self):
+    def test_default_is_on_after_2026_05_12(self):
         from user_context import UserContext
         ctx = UserContext(
             user_id=1, segment="small", display_name="t",
@@ -245,7 +245,11 @@ class TestUserContextDefaults:
             ai_provider="anthropic", ai_model="claude-haiku-4-5-20251001",
             ai_api_key="k", db_path=":memory:",
         )
-        # Default OFF — existing profiles must not change behavior
-        assert ctx.use_conviction_tp_override is False
+        # 2026-05-12: default flipped ON after audit showed
+        # 4.5:1 stop-to-TP imbalance + UNH-style runaway winners
+        # being capped at the AI's initial target. Self-tuning
+        # (`_optimize_conviction_tp_override`) flips it back to
+        # OFF for profiles where MFE capture is already strong.
+        assert ctx.use_conviction_tp_override is True
         assert ctx.conviction_tp_min_confidence == 70.0
         assert ctx.conviction_tp_min_adx == 25.0

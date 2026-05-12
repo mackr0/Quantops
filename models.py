@@ -321,7 +321,15 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         ("trading_profiles", "use_limit_orders", "INTEGER NOT NULL DEFAULT 0"),
         ("trading_profiles", "max_correlation", "REAL NOT NULL DEFAULT 0.7"),
         ("trading_profiles", "max_sector_positions", "INTEGER NOT NULL DEFAULT 5"),
-        ("trading_profiles", "use_conviction_tp_override", "INTEGER NOT NULL DEFAULT 0"),
+        # 2026-05-12 — flipped default ON. Originally shipped off
+        # (2026-04-15) as opt-in. The data shows fixed TPs are
+        # capping runaway winners — UNH-style trades where the AI
+        # set $379 target but the position kept running to $396+.
+        # ON default + AI-tunable means: every new profile starts
+        # with "let winners run" enabled; the self-tuner will flip
+        # it back to OFF for profiles where MFE capture is already
+        # strong and stop-to-TP is balanced (no asymmetry to fix).
+        ("trading_profiles", "use_conviction_tp_override", "INTEGER NOT NULL DEFAULT 1"),
         ("trading_profiles", "conviction_tp_min_confidence", "REAL NOT NULL DEFAULT 70.0"),
         ("trading_profiles", "conviction_tp_min_adx", "REAL NOT NULL DEFAULT 25.0"),
         # Virtual account layer
@@ -467,6 +475,49 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             logger.info("Migrated: added %s.%s", table, col)
         except sqlite3.OperationalError:
             pass  # Column already exists
+
+    # 2026-05-12 — one-shot data migration: flip
+    # use_conviction_tp_override from 0 → 1 on existing profiles.
+    # The DEFAULT change above only affects NEW profiles; existing
+    # rows keep their old 0. Idempotent via the migration_markers
+    # table so it runs exactly once per DB. Profiles that the
+    # operator manually flipped back to 0 BEFORE this migration
+    # WILL be flipped back to 1 here — that's intentional, the
+    # change is a system-wide default reset. Operators can flip
+    # back to 0 after this if they want.
+    try:
+        # The migration_markers table lives in the user DB (same as
+        # trading_profiles). Create it inline because this code
+        # path is _init_user_db, not the per-profile journal init.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS migration_markers ("
+            "key TEXT PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+            "details TEXT)"
+        )
+        marker = "conviction_tp_default_on_2026_05_12"
+        already = conn.execute(
+            "SELECT 1 FROM migration_markers WHERE key = ?", (marker,),
+        ).fetchone()
+        if not already:
+            cur = conn.execute(
+                "UPDATE trading_profiles SET use_conviction_tp_override = 1 "
+                "WHERE COALESCE(use_conviction_tp_override, 0) = 0"
+            )
+            flipped = cur.rowcount
+            conn.execute(
+                "INSERT OR REPLACE INTO migration_markers (key, details) "
+                "VALUES (?, ?)",
+                (marker, f"flipped {flipped} profile(s) 0→1"),
+            )
+            conn.commit()
+            logger.info(
+                "Migrated: use_conviction_tp_override flipped 0→1 on %d profile(s)",
+                flipped,
+            )
+    except Exception as exc:
+        logger.warning(
+            "Conviction-TP default flip migration failed (non-fatal): %s", exc,
+        )
 
     conn.close()
     logger.info("User database initialised.")

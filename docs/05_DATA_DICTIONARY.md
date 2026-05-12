@@ -146,7 +146,7 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 
 | Column | Type | Default | Description |
 |---|---|---|---|
-| `use_conviction_tp_override` | INTEGER | 0 | Skip fixed TP when AI conviction is high. |
+| `use_conviction_tp_override` | INTEGER | 1 | Skip fixed TP when AI conviction is high (default flipped ON 2026-05-12). AI-tunable via `_optimize_conviction_tp_override` based on MFE capture + stop-to-TP ratio. |
 | `conviction_tp_min_confidence` | REAL | 70.0 | Min AI confidence to skip TP. |
 | `conviction_tp_min_adx` | REAL | 25.0 | Min ADX (trend strength) to skip TP. |
 
