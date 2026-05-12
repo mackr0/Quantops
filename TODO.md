@@ -8,6 +8,107 @@ and any technical pre-requisites or pitfalls.
 
 ---
 
+## P0 — Instrument-class pipeline architecture (ratified 2026-05-11)
+
+See `docs/14_INSTRUMENT_PIPELINE_ARCHITECTURE.md` for the full
+plan + rationale + migration spec. Six phases, each independently
+shippable with explicit exit criteria.
+
+### Phase 0 — Define `Pipeline` ABC + concrete `StockPipeline`/`OptionPipeline` (no behavior change)
+
+**What**: Add `pipelines/` package with the `Pipeline` ABC and
+two concrete subclasses that delegate to existing functions.
+Like Phase 1 of the Position class refactor: introduces the
+abstraction without moving any business logic.
+
+**Files to add**:
+- `pipelines/__init__.py` — `Pipeline` ABC + DTO types
+  (`Candidate`, `AIResult`, `SpecialistVerdict`,
+  `ExecutionResult`, `Outcome`, `Metrics`, `ParameterAdjustments`).
+- `pipelines/stock.py` — `StockPipeline` (delegates to existing
+  `ai_analyst`, `trader`, `trade_pipeline` code).
+- `pipelines/option.py` — `OptionPipeline` (delegates to
+  `options_multileg`, `options_trader`).
+- `pipelines/registry.py` — `get_pipelines_for_profile(ctx)`.
+- `tests/test_pipelines_phase0.py` — interface conformance + smoke.
+
+**Exit criteria** (per spec):
+- 100% of existing tests still pass (no behavior change).
+- `get_pipelines_for_profile(ctx)` returns expected list per profile.
+- Both pipelines pass smoke: `pipeline.generate_candidates(ctx)`
+  doesn't throw on prod-like context.
+
+### Phase 1 — Move metrics into per-pipeline namespaces
+
+**What**: `metrics/stock.py`, `metrics/option.py`,
+`metrics/portfolio.py`. Stock queries filter `WHERE occ_symbol IS
+NULL`; option queries filter the inverse; aggregate metrics span both.
+
+**Eliminates**: TODO #8 (1130% slippage) by construction.
+
+**Exit criteria**: Per-instrument-class metrics panels render on the
+performance page; existing tests pass with no regression in
+displayed metrics for a synthetic stock-only or option-only profile.
+
+### Phase 2 — Move tuning into per-pipeline namespaces
+
+**What**: `tuning/stock.py`, `tuning/option.py`. Each tuner reads
+its own metrics module, adjusts its own parameter set. No pollution.
+
+**Eliminates**: audit finding #3 (self-tuning corruption).
+
+**Exit criteria**: Self-tuning history shows independent stock and
+option parameter adjustments; backfill of `pipeline_name` on
+existing `ai_predictions` rows.
+
+### Phase 3 — Fork the AI prompt
+
+**What**: `pipelines/stock_prompt.py` (technicals only),
+`pipelines/option_prompt.py` (technicals + IV/Greeks/DTE/spread
+economics). `ai_analyst.py` retires its instrument-branching.
+
+**Eliminates**: audit finding #4 (option proposals lack option context).
+
+**Exit criteria**: option proposals consistently reference
+IV/Greeks/DTE in their reasoning (verified by inspecting recent
+ai_predictions).
+
+### Phase 4 — Specialist routing per pipeline
+
+**What**: `pipelines/stock_specialists.py`,
+`pipelines/option_specialists.py` (new option-specific specialists:
+IV-skew, Greeks risk, spread P&L). `MULTILEG_OPEN` proposals route
+through option specialists with veto authority.
+
+**Eliminates**: audit findings #5, #6 (multileg bypasses veto;
+stock specialists shouldn't see option proposals).
+
+**Exit criteria**: veto rate for option proposals is non-zero on
+a wide-loss-spread test scenario.
+
+### Phase 5 — Per-pipeline outcomes + scaled return
+
+**What**: option `actual_return_pct` is scaled or stored separately
+so it doesn't pool with stock outcomes.
+
+**Eliminates**: audit finding #2 (return % scaling).
+
+**Exit criteria**: synthetic stock-only and option-only resolution
+histories produce win-rate distributions that don't pollute each other.
+
+### Phase 6 — Risk model: delta-adjusted exposure
+
+**What**: `portfolio_risk_model.py` aggregates delta-weighted
+underlying exposure for option positions, not 1:1 market_value.
+Greek aggregation surfaces in the AI prompt.
+
+**Eliminates**: audit finding #7.
+
+**Exit criteria**: option positions' factor regressions use
+delta-weighted exposure; prompt visibly includes portfolio Greeks.
+
+---
+
 ## P0 — Active risk (none currently)
 
 (All P0 items as of 2026-05-11 have been shipped. The 23-phantom-
@@ -133,7 +234,24 @@ signal_type is missing.
 
 ---
 
-### 4b. Audit the AI pipeline for option-specific handling end-to-end
+### 4b. ✅ DONE 2026-05-11 — Audit the AI pipeline for option-specific handling end-to-end
+
+Audit shipped as `AUDIT_2026_05_11_AI_PIPELINE.md`. 11 findings
+across 7 pipeline stages confirmed the bug class is system-wide.
+Mack ratified the architectural response (per-instrument-class
+pipelines) — see `docs/14_INSTRUMENT_PIPELINE_ARCHITECTURE.md`.
+The audit findings are now the migration roadmap; each is
+eliminated by construction at one of the migration phases below.
+
+The original audit-driven individual-fix items (#9 actual_return_pct
+scaling, #10 delta-adjusted exposure, #11 specialist veto on
+multileg, #12 option-aware AI prompt) are NOT being added as
+discrete TODO items. They become side effects of the pipeline
+phases (Phase 5, Phase 6, Phase 4, Phase 3 respectively) and
+would only be re-introduced as separate fixes if the pipeline
+refactor were abandoned.
+
+### 4b-archive. Audit the AI pipeline for option-specific handling end-to-end
 
 **Where**: every step from "AI proposes a trade" → "broker submission"
 → "position tracking" → "exit logic" → "outcome resolution".
@@ -371,6 +489,47 @@ unambiguous via `pos.broker_symbol`.
 **Pitfalls**: option bid-ask spreads are wide; market orders can
 fill badly. Prefer limit-at-mid with a fallback to market after
 N seconds.
+
+---
+
+## Methodology — class tests over instance tests
+
+Mack flagged 2026-05-11: the test suite grew from ~300 to ~2,800 in
+a short window, mostly via *instance tests* (one test per specific
+case). The higher-leverage pattern is *class tests* — one test that
+catches the entire bug shape via AST/regex scan, property-based
+invariant, or table-driven roundtrip from a source of truth.
+
+**Rule**: before writing test #2 of a similar shape, ask "is there
+an invariant that catches both #1 and #2 plus cases I haven't
+thought of?" If yes, write the class test instead.
+
+**Examples of class tests already in the suite** (each replaces
+50-200 hypothetical instance tests):
+- `test_no_silent_pass_in_views.py` — AST scan for `except: pass`.
+- `test_no_orphan_templates.py` — every template must be rendered.
+- `test_no_snake_case_in_user_facing_ids.py` — wide-coverage regex.
+- `test_no_unwired_writers.py` — every INSERT writer must have callers.
+- `test_no_new_position_dict_access.py` — producers must return Position.
+- `test_docs_test_counts_fresh.py` — documented counts within ±10% of actual.
+
+**Patterns I should reach for first**:
+1. AST / regex scan for code-shape bugs.
+2. `hypothesis` property tests for invariants over input space.
+3. Table-driven tests parametrized from a source of truth (e.g.
+   `pytest.mark.parametrize` from a registry list, not hand-listed).
+4. Roundtrip tests (every entry in mapping X must roundtrip through
+   function Y).
+
+**Periodic refactor target**: collapse instance-test clusters into
+class tests. Examples queued (~1 day of work, ~200-400 net test
+reduction with broader coverage):
+- `tests/test_pagination.py` (12 cases) → 1-2 hypothesis properties.
+- `tests/test_trades_search.py` cases → composition-property test.
+- `tests/test_multileg_partial_fill_rollback.py` mismatch cases →
+  table-driven single test.
+- `tests/test_broker_rejections.py::TestClassifyRejectionMessage`
+  cases → parametrized from `_REJECTION_PATTERNS` itself.
 
 ---
 

@@ -17,6 +17,37 @@ Rules going forward:
 
 ---
 
+## 2026-05-11 — TODO #4b + Pipeline Architecture Phase 0
+
+Two coordinated landings closing today's option-handling
+investigation:
+
+### TODO #4b — AI pipeline option-handling audit (shipped as `AUDIT_2026_05_11_AI_PIPELINE.md`)
+
+Read-only audit of seven pipeline stages (prompt construction, strategy signals, AI prediction tracker, metrics, self-tuning, specialists, risk model). Found **11 bugs** classified BUG / REUSE_OK / INCOMPLETE, all rooted in the same architectural pattern: option trades flow through stock-shaped decision logic. Critical findings include slippage display bloat (1130% — TODO #8), `actual_return_pct` collation that lets option moves dominate stock outcomes, self-tuning corruption from mixed win-rate aggregates, multileg trades bypassing specialist veto, and risk model regressing options 1:1 against the underlying.
+
+### Architectural response — `docs/14_INSTRUMENT_PIPELINE_ARCHITECTURE.md` ratified
+
+Per-instrument-class pipelines (`StockPipeline`, `OptionPipeline`, future `CryptoPipeline`/`FXPipeline`/`FuturesPipeline`) sharing infrastructure (Position, Broker, Journal, Scheduler, AI provider, risk aggregation) but NOT decision logic (candidates, prompt, specialists, executor, metrics, tuning per-pipeline). Six migration phases, each shippable independently with explicit exit criteria. Every audit finding is eliminated by construction at one of the phases — they become the migration roadmap, not 4-5 individual band-aids that the next refactor would have to undo.
+
+### Phase 0 — `Pipeline` ABC + concrete shells (this commit)
+
+- `pipelines/__init__.py` — `Pipeline` ABC + DTO types (`Candidate`, `AIResult`, `SpecialistVerdict`, `ExecutionResult`, `Outcome`, `Metrics`, `ParameterAdjustments`).
+- `pipelines/stock.py` — `StockPipeline` shell. `applies_to()` implemented; other methods raise `NotImplementedError` with explicit pointer to the phase that wires them.
+- `pipelines/option.py` — `OptionPipeline` shell. Same pattern.
+- `pipelines/registry.py` — `get_pipelines_for_profile(ctx)` returns enabled pipelines; default behavior is both stock + option for every profile (matches today's behavior).
+- 37 tests (`tests/test_pipelines_phase0.py`) pinning ABC conformance, registry behavior, DTO defaults, lifecycle composition, and the "every NotImplementedError mentions a Phase number" debuggability invariant.
+
+**Behavior change**: zero. The scheduler doesn't dispatch through pipelines yet — Phase 1 wires the first method (`compute_metrics`) and subsequent phases extract logic out of the existing modules. Pipelines exist as a CAPABILITY ready to be filled in; nothing depends on them yet.
+
+### Methodology note (TODO.md)
+
+Mack flagged that test count growth (~300 → ~2,800) is heavy on instance tests (one per case) where class tests (one scan for the bug shape) would have higher leverage. Methodology section added to TODO with the rule "before writing test #2 of a similar shape, ask if there's an invariant that catches both #1 and #2 plus cases I haven't thought of." Periodic refactor pass queued post-options-work to collapse instance-test clusters; not blocking.
+
+2,786 pass (was 2,749 + 37 Phase 0 + 0 regressions).
+
+---
+
 ## 2026-05-11 — TODO #4a: docs sweep — stale test counts updated + ±10% drift guardrail
 
 Mack flagged that `docs/13_QUALITY_RELIABILITY.md` claimed "~180 files, 2,000+ tests" while the actual count was 216 files / 2,748 tests. Same drift in `docs/01_EXECUTIVE_SUMMARY.md` ("1,914 tests pass") and `docs/04_TECHNICAL_REFERENCE.md` ("151 test files", "1,914 tests").
