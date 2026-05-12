@@ -81,6 +81,48 @@ def _build_multileg_strategy(builder, strategy_name, underlying,
     raise ValueError(f"No build dispatch for strategy {strategy_name!r}")
 
 
+def check_multileg_specialist_veto(ctx, ai_trade, symbol):
+    """Phase 4b of pipeline refactor (2026-05-11): check whether the
+    proposed multileg trade survives the option pipeline's specialist
+    veto BEFORE the broker call.
+
+    Returns (vetoed: bool, reason: str). Vetoed=True means at least
+    one option-pipeline specialist (option_spread_risk holds VETO
+    authority) blocked the trade. Caller should skip execution +
+    log to broker_rejections.
+
+    Failure-tolerant: if the routing call itself raises (network /
+    AI provider failure / ensemble bug), returns (False, "") so the
+    trade proceeds through the pre-Phase-4b path. Phase 4b's intent
+    is to ADD a veto layer — not to introduce a new failure mode
+    that blocks trades on infrastructure problems.
+
+    Extracted as a module-level helper so tests can pin the contract
+    independently of the full trade_pipeline integration.
+    """
+    try:
+        from pipelines import AIResult
+        from pipelines.option import OptionPipeline
+        proposal = dict(ai_trade)
+        proposal.setdefault("symbol", symbol)
+        verdict = OptionPipeline().route_to_specialists(
+            ctx, AIResult(proposals=[proposal]),
+        )
+        vetoed_syms = {p.get("symbol") for p in verdict.vetoed}
+        if symbol in vetoed_syms:
+            reason = (
+                verdict.veto_log[0]
+                if verdict.veto_log else "specialist veto"
+            )
+            return True, reason
+    except Exception as exc:
+        logging.warning(
+            "MULTILEG_OPEN %s: specialist routing failed (%s) — "
+            "proceeding with trade", symbol, exc,
+        )
+    return False, ""
+
+
 def _get_shared_political_context(ctx):
     """Return MAGA political context, cached for 30 minutes.
 
@@ -2063,6 +2105,50 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             # executor. Builds the strategy via the registry then submits
             # via Alpaca combo order (sequential fallback with rollback).
             elif action == "MULTILEG_OPEN":
+                # Phase 4b of pipeline refactor (2026-05-11): route the
+                # proposal through OptionPipeline.route_to_specialists()
+                # BEFORE the broker call so option-only specialists
+                # (option_spread_risk holds VETO authority) can block
+                # structurally-bad trades. Closes audit finding #5
+                # LIVE: multileg trades no longer bypass specialist
+                # veto. Failure-tolerant — if the route fails for any
+                # reason, we proceed with the trade rather than block
+                # it (don't introduce a NEW failure mode).
+                _phase4b_vetoed, _phase4b_veto_reason = (
+                    check_multileg_specialist_veto(ctx, ai_trade, symbol)
+                )
+
+                if _phase4b_vetoed:
+                    print(f"  MULTILEG_OPEN {symbol}: VETOED by specialist — "
+                          f"{_phase4b_veto_reason}")
+                    trade_result = {
+                        "action": "SPECIALIST_VETOED",
+                        "symbol": symbol,
+                        "reason": _phase4b_veto_reason,
+                    }
+                    # Persist the veto so operators see it on the
+                    # rejections panel — same path stock-side rejections
+                    # use; signal_type tags it as a multileg veto.
+                    try:
+                        from journal import record_broker_rejection
+                        record_broker_rejection(
+                            ctx.db_path if ctx else None,
+                            symbol=symbol,
+                            action="MULTILEG_OPEN",
+                            signal_type="MULTILEG_OPEN",
+                            ai_confidence=ai_trade.get("confidence"),
+                            ai_reasoning=ai_trade.get("reasoning"),
+                            broker_message=(
+                                f"specialist veto: {_phase4b_veto_reason}"
+                            ),
+                        )
+                    except Exception:
+                        # Non-fatal — the operator still sees the
+                        # SPECIALIST_VETOED entry in details.
+                        pass
+                    details.append(trade_result)
+                    continue
+
                 from options_multileg import (
                     ALL_MULTILEG_BUILDERS, execute_multileg_strategy,
                 )

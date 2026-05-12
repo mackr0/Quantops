@@ -43,12 +43,16 @@ def _exec_block_source():
         further down. Future branches will need similar bumps.
       - 12000 after broker_rejections persistence blocks landed in
         the wash-trade + cross-direction rejection handlers (2026-05-11).
+      - 14000 after Phase 4b of the pipeline refactor added the
+        multileg specialist-veto block (~50 lines: SPECIALIST_VETOED
+        result construction, broker_rejection persistence, details
+        append + continue).
     """
     import trade_pipeline as tp
     src = inspect.getsource(tp)
     start = src.find('print(f"  Executing: ')
     assert start > 0, "Could not locate the Executing: print site"
-    return src[start:start + 12000]
+    return src[start:start + 14000]
 
 
 def test_exception_path_logs_full_traceback():

@@ -17,6 +17,39 @@ Rules going forward:
 
 ---
 
+## 2026-05-11 — Pipeline Architecture Phase 4b — multileg specialist veto LIVE; closes audit finding #5
+
+Phase 4b wires the option-pipeline specialist veto into the live multileg dispatch path. Before this commit, `trade_pipeline.py`'s `MULTILEG_OPEN` branch called `execute_multileg_strategy` directly — bypassing the entire ensemble. The `option_spread_risk` specialist (added in Phase 4a, holds VETO authority) had nowhere to fire on actual production trades. After this commit, every multileg proposal flows through `OptionPipeline.route_to_specialists()` BEFORE the broker call.
+
+**The change** (`trade_pipeline.py:run_trade_cycle` MULTILEG_OPEN branch):
+- New module-level helper `check_multileg_specialist_veto(ctx, ai_trade, symbol)` returns `(vetoed: bool, reason: str)`. Called at the top of the elif branch.
+- When vetoed: trade_result is set to `{"action": "SPECIALIST_VETOED", ...}`, the proposal is logged to `broker_rejections` (visible on the rejections panel), and the loop continues — no broker call.
+- When approved or routing fails: existing flow proceeds unchanged. Phase 4b is ADDITIVE.
+
+**Failure tolerance** (the most important Phase 4b invariant): if `OptionPipeline.route_to_specialists` raises (network error, AI provider down, ensemble crash), the helper returns `(False, "")` so the trade proceeds through the pre-Phase-4b path. Phase 4b adds a VETO LAYER — it must NOT introduce a new failure mode that blocks trades on infrastructure problems. Two failure-tolerance tests pin this contract.
+
+**Why a module-level helper?** Extracting the veto check into `check_multileg_specialist_veto` lets Phase 4b's tests pin the contract without running the full `run_trade_cycle` (which has dozens of dependencies). The helper is the testable seam; the elif branch just calls it.
+
+**Tests** (`tests/test_pipelines_phase4b_multileg_veto.py`, 9 tests):
+- VETOED → returns (True, reason); falls back to `"specialist veto"` when the verdict's veto_log is empty.
+- APPROVED → returns (False, ""); empty verdict also returns False.
+- FAILURE TOLERANCE: route raises `RuntimeError` → returns (False, ""); route raises `ConnectionError` → returns (False, ""). MUST NOT block.
+- ROUTES THROUGH OPTION PIPELINE: confirmed via patch on `OptionPipeline.route_to_specialists` (NOT StockPipeline — `option_spread_risk` only fires for option pipeline; stock pipeline would route through `pattern_recognizer` and produce noise on multileg proposals).
+- SYMBOL PROPAGATION: helper sets symbol on proposal when missing; preserves caller-set symbol when present.
+
+**Stale instance-test bump**: `test_trade_execution_logging.py::test_exception_path_logs_full_traceback` scans the `run_trade_cycle` source from the first `Executing:` print for N chars, asserting `logging.error` appears within. Phase 4b's ~50-line addition pushed `logging.error` past the 12000-char window. Bumped to 14000 with a comment noting Phase 4b's contribution. Test author already anticipated this growth ("Each new action branch pushes the call further down. Future branches will need similar bumps."). Once the strategy-driven instance test is replaced with an AST scan in the post-options-cleanup pass, this kind of bump won't be needed.
+
+**Behavior change on prod**:
+- Multileg proposals that the option pipeline's specialists VETO no longer reach the broker. The broker_rejections panel will show `signal_type=MULTILEG_OPEN` rows with `broker_message="specialist veto: <reason>"`.
+- All other multileg behavior is unchanged — approved trades flow through `execute_multileg_strategy` exactly as before.
+- Routing failures (rare) are logged at WARNING level and the trade proceeds — preserves availability over completeness during infrastructure incidents.
+
+**Tests**: 2,672 pass (+9 Phase 4b, 0 regressions).
+
+This closes audit finding #5 LIVE — every multileg proposal now goes through the option pipeline's specialist veto path before execution. Combined with Phase 4a's `option_spread_risk` framework, the structural and live fixes are both in place. The `option_spread_risk` specialist's prompt already defines the four veto conditions (max-loss vs budget, IV crush exposure, near-expiry gamma blowup, credit/max-loss ratio) — Phase 4b makes them enforceable.
+
+---
+
 ## 2026-05-11 — Pipeline Architecture Phase 5b — option resolver safety floor; stops wrong values
 
 Phase 5b stops the bleeding on option prediction resolution. Today's `_resolve_one` in `ai_tracker.py` computes return % as `(current_price - pred_price) / pred_price * 100` for ALL prediction rows including options. For option rows that's structurally wrong: `current_price` is the underlying ticker price (because `_get_current_prices_bulk` doesn't know about OCC symbols), but `pred_price` is the option premium. A $1.20 premium with a "current price" of $50 (the underlying) resolves to a +4067% return — pure nonsense — and that nonsense return drives the directional win/loss classification.

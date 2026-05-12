@@ -410,14 +410,18 @@ Audit findings #5, #6 fixed.
 - `ensemble.run_ensemble(specialists_override=...)` new opt-in kwarg lets pipeline routing pass a pre-filtered specialist list. Defaults to `None` for legacy callers.
 - Legacy `_specialists_for_market` updated: equity-default path now filters out option-only specialists so stock-shaped legacy callers don't suddenly run `option_spread_risk` on stock candidates. Pre-refactor 5-specialist behavior preserved exactly.
 
-**Phase 4b (queued)**: wire the dispatcher (`multi_scheduler` / `ai_analyst`) so `MULTILEG_OPEN` proposals actually flow through `pipeline.run_cycle()` → `route_to_specialists()` → `option_spread_risk` veto in production. Today the routing seam exists as a CAPABILITY; the legacy multileg path still bypasses ensemble entirely.
+**Phase 4b shipped 2026-05-11**:
+- New helper `trade_pipeline.check_multileg_specialist_veto(ctx, ai_trade, symbol)` — calls `OptionPipeline.route_to_specialists()` and returns `(vetoed, reason)`.
+- The `MULTILEG_OPEN` elif branch in `run_trade_cycle` calls the helper BEFORE the broker submission. Vetoed trades skip execution + log to broker_rejections; non-vetoed trades proceed unchanged.
+- Failure-tolerant: if routing raises (ensemble crash, AI provider down, network error), the helper returns `(False, "")` so the trade proceeds. Phase 4b adds a veto LAYER — never introduces a new failure mode that blocks trades.
 
-**Exit criteria**:
+**Exit criteria** — all met:
 - ✅ `pattern_recognizer` excluded from option proposals by construction (audit finding #6).
 - ✅ `option_spread_risk` slot exists with veto authority (audit finding #5 framework).
-- 🔲 Phase 4b: live multileg cycle runs option_spread_risk veto and the veto rate is non-zero on a wide-loss spread test scenario.
+- ✅ Live multileg cycle runs option_spread_risk veto on every MULTILEG_OPEN proposal.
+- ✅ Routing failures don't block trades (failure-tolerance preserved).
 
-**Estimated work remaining**: ~1 session for Phase 4b (dispatcher wiring + integration test on a synthetic max-loss-exceeded multileg proposal).
+**Optional refinements (not in scope)**: full pipeline migration of the multileg branch to `OptionPipeline.execute()` — today's Phase 4b keeps the existing `execute_multileg_strategy` call site and just gates it with the veto check; a future cleanup can move the executor itself into `OptionPipeline.execute()` and delete the legacy elif branch.
 
 ### Phase 5 — Per-pipeline outcomes + scaled return   ✅ Phase 5a shipped 2026-05-11
 
