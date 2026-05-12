@@ -42,28 +42,41 @@ def current_win_rate(db_path: str) -> Tuple[float, int]:
         OPTION_SIGNAL_TYPES
       - pipeline_kind IS NULL AND not in option  → OUT
 
+    TODO #5b (2026-05-11): predictions matching a recent
+    broker_rejection row (same symbol + signal, ±5 min) are
+    EXCLUDED. Especially important for option pipeline — Phase 4b's
+    specialist veto persists to broker_rejections with
+    rejection_code='specialist_veto', and those vetoed predictions
+    must not count in option win rate.
+
     Returns (win_rate_pct, total_resolved).
     """
     placeholders = ",".join("?" * len(OPTION_SIGNAL_TYPES))
     where = (
-        "status='resolved' AND ("
-        "  pipeline_kind = 'option' OR ("
-        "    pipeline_kind IS NULL "
-        f"    AND predicted_signal IN ({placeholders})"
+        "ap.status='resolved' AND ("
+        "  ap.pipeline_kind = 'option' OR ("
+        "    ap.pipeline_kind IS NULL "
+        f"    AND ap.predicted_signal IN ({placeholders})"
         "  )"
+        ") AND NOT EXISTS ("
+        "  SELECT 1 FROM broker_rejections r "
+        "  WHERE r.symbol = ap.symbol "
+        "  AND r.signal_type = ap.predicted_signal "
+        "  AND ABS(julianday(r.timestamp) - julianday(ap.timestamp))"
+        "      * 24 * 60 <= 5"
         ")"
     )
     conn = sqlite3.connect(db_path)
     try:
         resolved = conn.execute(
-            f"SELECT COUNT(*) FROM ai_predictions WHERE {where}",
+            f"SELECT COUNT(*) FROM ai_predictions ap WHERE {where}",
             OPTION_SIGNAL_TYPES,
         ).fetchone()[0]
         if resolved == 0:
             return 0.0, 0
         wins = conn.execute(
-            f"SELECT COUNT(*) FROM ai_predictions "
-            f"WHERE {where} AND actual_outcome='win'",
+            f"SELECT COUNT(*) FROM ai_predictions ap "
+            f"WHERE {where} AND ap.actual_outcome='win'",
             OPTION_SIGNAL_TYPES,
         ).fetchone()[0]
         return (wins / resolved * 100), resolved

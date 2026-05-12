@@ -50,6 +50,52 @@ This closes audit finding #5 LIVE — every multileg proposal now goes through t
 
 ---
 
+## 2026-05-11 — TODO #5b — specialist_veto rejection_code + win-rate exclusion
+
+Two improvements completing TODO #5 (AI Brain panel rejection visibility):
+
+1. **Phase 4b's `"specialist veto: <reason>"` messages get a structurally distinct rejection_code**. Previously they classified as `other`, blending into broker rejections like wash trades and insufficient buying power. Now they classify as `specialist_veto`, displayed as `Specialist Veto` on the AI Brain panel's REJECTED badge. Operators can tell "system blocked this structurally" from "broker refused this."
+
+2. **Win-rate aggregations exclude broker-rejected predictions**. Until this commit, `tuning/{stock,option}.py:current_win_rate` counted predictions that were rejected (broker refused, system vetoed, wash trade, etc.) as if they had actually traded. This let the AI "be right" or "wrong" about positions that never opened — a bug that grew worse with Phase 4b's vetoes (every option_spread_risk veto now adds a row to broker_rejections, and pre-this-commit those vetoed proposals would have polluted option win rate).
+
+**Schema additions to `journal._REJECTION_PATTERNS`**:
+```python
+("specialist veto", "specialist_veto"),
+```
+First-match-wins semantics — `"specialist veto: gamma blowup"` now matches and produces `specialist_veto` rather than falling through to `other`.
+
+**SQL changes in tuning queries**:
+```sql
+-- Both tuning/stock.py and tuning/option.py:current_win_rate now add:
+AND NOT EXISTS (
+  SELECT 1 FROM broker_rejections r
+  WHERE r.symbol = ap.symbol
+  AND r.signal_type = ap.predicted_signal
+  AND ABS(julianday(r.timestamp) - julianday(ap.timestamp)) * 24 * 60 <= 5
+)
+```
+±5 minute window matches the prediction → trade execution interval. Queries renamed table alias `ap` (ai_predictions) for the join clarity.
+
+**Tests** (`tests/test_specialist_veto_classification.py`, 12 tests):
+- CLASSIFICATION: `"specialist veto: max loss exceeds budget"` → `specialist_veto`; case-insensitive; distinct from `other`; unrelated messages unchanged (`wash trade` → `wash_trade`, etc.).
+- HUMANIZE: `humanize("specialist_veto")` → `"Specialist Veto"`.
+- WIN-RATE EXCLUSION (stock): rejected stock prediction excluded (n=0, not 1); unrejected included (n=1, win=100%); rejection >5min away does NOT exclude; rejection on different signal does NOT match.
+- WIN-RATE EXCLUSION (option): specialist-vetoed multileg excluded (the headline Phase 4b case); unvetoed multileg included.
+- CROSS-PIPELINE ISOLATION: stock rejection on AAPL BUY does not exclude AAPL MULTILEG_OPEN prediction (signal-type mismatch).
+
+**Test fixture update**: `tests/test_pipelines_phase5_outcomes.py` synthetic DB fixture now also creates the `broker_rejections` table since the tuning queries reference it via NOT EXISTS subquery. Without this, the Phase 5 tests' tiny standalone schema would fail to parse the new SQL.
+
+**Behavior change on prod**:
+- Tomorrow's first scheduler cycle: any Phase 4b-vetoed multileg trades will appear on the AI Brain panel with badge `REJECTED · Specialist Veto` (rather than `REJECTED · Other`).
+- Stock and option win-rate reported by the dashboard's tuning panel will, for any profile with rejected trades, drop slightly as those rejected trades are no longer double-counted. The numbers become more meaningful — they reflect the AI's actual realized track record, not its hypothetical track record.
+- Self-tuning's parameter adjustments (driven by win rate) will respond to honest signal rather than rejection-polluted signal.
+
+**Tests**: 2,749 pass (+12 TODO #5b, 0 regressions).
+
+This finishes TODO #5 — the AI Brain panel now surfaces both the broker_rejections rows (existing infrastructure from `fbd375c`) AND the new specialist_veto code distinction, AND tuning analytics correctly exclude rejected trades.
+
+---
+
 ## 2026-05-11 — TODO #7 — single-leg long option exit logic (closes safety gap)
 
 Closes the safety gap where single-leg long option positions had no automated exit. Today's `portfolio_manager.check_stop_loss_take_profit` skips ALL option positions (safe for multileg legs which are protected by structural max loss; UNSAFE for single-leg longs which can lose 100% of premium with no automated exit). Three exit triggers added:

@@ -31,8 +31,7 @@ def current_win_rate(db_path: str) -> Tuple[float, int]:
     Phase 5 of the pipeline refactor: prefers the structural
     `pipeline_kind` tag added in Phase 5a's migration, falling back
     to the signal-type enumeration for legacy rows the migration
-    couldn't classify (e.g., custom signal types written by future
-    pipelines before they tag themselves).
+    couldn't classify.
 
     Filter logic per row:
       - pipeline_kind = 'stock'                  → IN
@@ -41,28 +40,44 @@ def current_win_rate(db_path: str) -> Tuple[float, int]:
         STOCK_SIGNAL_TYPES
       - pipeline_kind IS NULL AND not in stock   → OUT
 
+    TODO #5b (2026-05-11): predictions matching a recent
+    broker_rejection row (same symbol + signal, within ±5 min) are
+    EXCLUDED — the AI selected the trade, but it never actually
+    executed (broker refused, system vetoed, wash trade, etc.).
+    Counting them in win rate would let the AI "be right" or
+    "wrong" about a position that never opened.
+
     Returns (win_rate_pct, total_resolved).
     """
     placeholders = ",".join("?" * len(STOCK_SIGNAL_TYPES))
+    # Phase 5b filter + TODO #5b broker-rejection exclusion. The
+    # NOT EXISTS subquery uses julianday-difference for the ±5min
+    # match — small performance cost, big correctness win.
     where = (
-        "status='resolved' AND ("
-        "  pipeline_kind = 'stock' OR ("
-        "    pipeline_kind IS NULL "
-        f"    AND predicted_signal IN ({placeholders})"
+        "ap.status='resolved' AND ("
+        "  ap.pipeline_kind = 'stock' OR ("
+        "    ap.pipeline_kind IS NULL "
+        f"    AND ap.predicted_signal IN ({placeholders})"
         "  )"
+        ") AND NOT EXISTS ("
+        "  SELECT 1 FROM broker_rejections r "
+        "  WHERE r.symbol = ap.symbol "
+        "  AND r.signal_type = ap.predicted_signal "
+        "  AND ABS(julianday(r.timestamp) - julianday(ap.timestamp))"
+        "      * 24 * 60 <= 5"
         ")"
     )
     conn = sqlite3.connect(db_path)
     try:
         resolved = conn.execute(
-            f"SELECT COUNT(*) FROM ai_predictions WHERE {where}",
+            f"SELECT COUNT(*) FROM ai_predictions ap WHERE {where}",
             STOCK_SIGNAL_TYPES,
         ).fetchone()[0]
         if resolved == 0:
             return 0.0, 0
         wins = conn.execute(
-            f"SELECT COUNT(*) FROM ai_predictions "
-            f"WHERE {where} AND actual_outcome='win'",
+            f"SELECT COUNT(*) FROM ai_predictions ap "
+            f"WHERE {where} AND ap.actual_outcome='win'",
             STOCK_SIGNAL_TYPES,
         ).fetchone()[0]
         return (wins / resolved * 100), resolved

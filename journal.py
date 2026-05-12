@@ -713,6 +713,14 @@ _REJECTION_PATTERNS = (
      "insufficient_qty"),
     ("no available quote",
      "no_quote_available"),
+    # Phase 4b of pipeline refactor (2026-05-11): SYSTEM-side veto by
+    # an option specialist (option_spread_risk + future option-only
+    # specialists). Distinct from broker-side rejections — we said
+    # no, never sent to broker. Operators see a different badge code
+    # so they understand the trade was blocked structurally rather
+    # than refused by the exchange.
+    ("specialist veto",
+     "specialist_veto"),
 )
 
 

@@ -81,6 +81,24 @@ def db_path():
                 pipeline_kind TEXT
             )
         """)
+        # broker_rejections is referenced by tuning queries' NOT
+        # EXISTS subquery (TODO #5b — exclude rejected predictions
+        # from win rate). Even when this fixture has no rejections,
+        # the table must exist so the SQL parses.
+        conn.execute("""
+            CREATE TABLE broker_rejections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                symbol TEXT,
+                action TEXT,
+                signal_type TEXT,
+                ai_confidence REAL,
+                ai_reasoning TEXT,
+                rejection_code TEXT,
+                broker_message TEXT,
+                prediction_id INTEGER
+            )
+        """)
         conn.commit()
     finally:
         conn.close()
