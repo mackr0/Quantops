@@ -294,6 +294,57 @@ passing.
 
 ---
 
+### 8. Slippage stats showing impossible values (1130% avg)
+
+**Where**: performance page Slippage Impact panel (and underlying
+metrics calc).
+
+**Why**: Mack flagged 2026-05-11 — performance page shows:
+  - Avg Slippage: **1130.102%**
+  - Net Slippage Cost: -$1,863.13
+  - Execution Variance: $15,167.15
+  - Trades with Fill Data: 1,004
+
+A 1130% average slippage is impossible — slippage is bounded by the
+bid-ask spread plus a small market-impact term, typically <0.5%
+for stocks and a few % for liquid options. The two dollar columns
+($1,863 cost vs $15,167 variance) also don't reconcile in a way
+that makes economic sense.
+
+**Hypothesis** (related to today's option-handling discoveries):
+the slippage % is being computed as `(fill - decision) / decision`
+on option premiums, which produces 10-100% moves on normal
+contract value swings (a $0.01 → $1.00 mark-to-market on an OTM
+option = 10,000% by that formula). The `1004 trades with fill data`
+bucket likely includes option legs whose entry premium was
+pennies — when the closing premium is anything more than pennies,
+the % balloons. Probably the same option-vs-stock conflation
+class that produced the phantom-stock-stops, the deferral-forever
+bug, etc.
+
+**Scope**:
+- Find the slippage calc (likely `journal.get_slippage_stats`
+  or `metrics.py`).
+- Audit it for option vs stock handling. Per-leg option premium
+  % is misleading; spread-level dollar is more meaningful.
+- Either: (a) compute slippage in DOLLARS and report dollars-
+  only on options, OR (b) compute % only when entry premium is
+  above a sanity floor (e.g. $0.10) so penny premiums don't
+  produce 10,000% spurious values, OR (c) split the panel into
+  Stock Slippage / Option Slippage with appropriate units.
+- Add a guardrail test that asserts displayed slippage % is
+  bounded (e.g. < 200%) for any individual row.
+
+**Prerequisite**: Position class refactor in place (already
+shipped). Easier to detect option vs stock now that we have the
+canonical attributes.
+
+**Pitfalls**: don't just clip the display — the underlying calc is
+wrong, and clipping hides the real distortion in net-slippage
+aggregates. Fix at the calc layer.
+
+---
+
 ### 7. Option-side exit logic for single-leg long options
 
 **Why**: today, defined-risk multileg spreads are protected by
