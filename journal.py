@@ -601,16 +601,22 @@ def _migrate_all_columns(conn):
         pass
 
     # Phase 5e (2026-05-12) — tag the phantom_stop_2026_05_11 incident
-    # rows so analytics aggregates exclude them. These are STOCK-tagged
-    # trades (occ_symbol IS NULL) with a decision_price under $1 and
-    # a fill price plausibly above $1 — the pattern produced when
-    # yesterday's phantom-stops bug logged option premium as the
-    # decision price for what executed as a stock sell. ABS(slippage_pct)
-    # > 50 catches the resulting nonsense values (real stock slippage
-    # almost never exceeds 5%).
+    # rows so analytics aggregates exclude them. Pattern: STOCK-tagged
+    # trades (occ_symbol IS NULL) where the decision_price is the
+    # option premium ($0.16, $1.10, $1.48 — not the actual stock
+    # price) but the SELL was submitted to the underlying ticker
+    # and filled at the real stock price ($78, $292, $66...).
+    # Result: slippage_pct of thousands-of-percent.
     #
-    # The match window is < 2026-05-12 to scope this strictly to the
-    # historical incident. Future high-slippage rows must be
+    # Initial criterion `decision_price < 1.0` was too tight — it
+    # missed AAPL ($1.07-$1.13), TECK ($1.44-$1.48), U ($1.12)
+    # rows. Real stock slippage NEVER exceeds 50% on a normal
+    # fill (the price would have to halve or double in the
+    # decision-to-fill window). Combined with the timestamp window
+    # (<2026-05-12), `ABS(slippage_pct) > 50` is sufficient and
+    # captures all 31 incident rows.
+    #
+    # Future high-slippage rows from after 2026-05-12 must be
     # investigated individually — not auto-tagged.
     #
     # Idempotent: gated on `data_quality IS NULL`.
@@ -625,7 +631,6 @@ def _migrate_all_columns(conn):
                 "WHERE data_quality IS NULL "
                 "AND occ_symbol IS NULL "
                 "AND ABS(slippage_pct) > 50 "
-                "AND decision_price < 1.0 "
                 "AND timestamp < '2026-05-12T00:00:00'"
             )
     except Exception:

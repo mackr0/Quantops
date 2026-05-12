@@ -114,6 +114,28 @@ class TestPhantomStopBackfill:
         conn.close()
         assert row[0] == "phantom_stop_2026_05_11"
 
+    def test_tags_aapl_pattern_with_higher_decision_price(self, db_path):
+        """The 2026-05-12 widening — AAPL rows with decision_price
+        $1.07 (above the original tight $1.0 threshold) but still
+        a clear phantom-stop pattern (fill at $292) should be
+        tagged. Earlier criterion missed these; new one catches
+        them via the >50% slippage_pct alone."""
+        _insert_trade(
+            db_path, symbol="AAPL", side="sell", qty=1,
+            decision_price=1.07, fill_price=291.91,
+            slippage_pct=27181.31,
+            timestamp="2026-05-11T16:08:03",
+            occ_symbol=None,
+        )
+        from journal import init_db
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT data_quality FROM trades"
+        ).fetchone()
+        conn.close()
+        assert row[0] == "phantom_stop_2026_05_11"
+
     def test_does_not_tag_normal_stock_trades(self, db_path):
         """A normal stock trade with realistic slippage_pct
         stays untagged."""
