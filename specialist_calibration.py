@@ -170,7 +170,8 @@ def update_outcomes_on_resolve(
 # ---------------------------------------------------------------------------
 
 def fit_calibrator(db_path: str, specialist_name: str,
-                    direction: Optional[str] = None) -> Optional[Any]:
+                    direction: Optional[str] = None,
+                    pipeline_kind: Optional[str] = None) -> Optional[Any]:
     """Fit a logistic regression on (raw_confidence, was_correct)
     pairs for one specialist. Returns None if fewer than
     MIN_SAMPLES_TO_FIT resolved samples exist.
@@ -183,13 +184,41 @@ def fit_calibrator(db_path: str, specialist_name: str,
       direction = 'long'  → fit on directional_long predictions only
       direction = 'short' → fit on directional_short predictions only
       direction = None    → fit on all predictions (legacy behavior)
-    Direction-specific calibrators let the ensemble apply the right
-    calibration based on which way a specialist voted, instead of
-    one-size-fits-all that mixes long-edge and short-edge stats.
+
+    Pipeline-aware calibration (2026-05-11): pipeline_kind = 'stock'
+    or 'option' filters to only that pipeline's predictions. This
+    matters because pre-Phase-5c historical option rows had wrong
+    actual_return_pct values that contaminated specialist
+    calibration when option outcomes pooled with stock outcomes.
+    Phase 5a's pipeline_kind tag now lets the calibrator filter
+    structurally — a stock specialist's calibrator trains on
+    pipeline_kind='stock' (and signal-fallback for legacy NULLs)
+    so its calibration reflects its accuracy on stock proposals.
     """
     if not db_path or not specialist_name:
         return None
     init_calibration_db(db_path)
+
+    # Build the per-pipeline filter clause (matches the same logic
+    # used by tuning/{stock,option}.py:current_win_rate so the
+    # calibrator and tuner see the same data definition).
+    pk_clause = ""
+    if pipeline_kind == "stock":
+        pk_clause = (
+            "AND (ap.pipeline_kind = 'stock' OR ("
+            "  ap.pipeline_kind IS NULL "
+            "  AND ap.predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY',"
+            "    'SELL','STRONG_SELL','WEAK_SELL','SHORT','COVER')"
+            ")) "
+        )
+    elif pipeline_kind == "option":
+        pk_clause = (
+            "AND (ap.pipeline_kind = 'option' OR ("
+            "  ap.pipeline_kind IS NULL "
+            "  AND ap.predicted_signal IN ('MULTILEG_OPEN','OPTIONS','OPTION_EXERCISE')"
+            ")) "
+        )
+
     try:
         conn = sqlite3.connect(db_path)
         if direction in ("long", "short"):
@@ -208,8 +237,22 @@ def fit_calibrator(db_path: str, specialist_name: str,
                 "  CASE WHEN ap.predicted_signal IN ('BUY','HOLD','STRONG_BUY') "
                 "       THEN 'directional_long' ELSE 'directional_short' END"
                 ") = ? "
+                f"{pk_clause}"
                 "ORDER BY so.resolved_at ASC",
                 (specialist_name, f"-{RESOLUTION_LOOKBACK_DAYS}", ptype),
+            ).fetchall()
+        elif pipeline_kind in ("stock", "option"):
+            # Pipeline-only filter (no direction split).
+            rows = conn.execute(
+                "SELECT so.raw_confidence, so.was_correct "
+                "FROM specialist_outcomes so "
+                "JOIN ai_predictions ap ON ap.id = so.prediction_id "
+                "WHERE so.specialist_name = ? "
+                "AND so.was_correct IS NOT NULL "
+                "AND so.resolved_at >= datetime('now', ? || ' days') "
+                f"{pk_clause}"
+                "ORDER BY so.resolved_at ASC",
+                (specialist_name, f"-{RESOLUTION_LOOKBACK_DAYS}"),
             ).fetchall()
         else:
             rows = conn.execute(
@@ -255,78 +298,94 @@ def fit_calibrator(db_path: str, specialist_name: str,
 # ---------------------------------------------------------------------------
 
 def _calibrator_path(db_path: str, specialist_name: str,
-                       direction: Optional[str] = None) -> str:
+                       direction: Optional[str] = None,
+                       pipeline_kind: Optional[str] = None) -> str:
     """Per-specialist pkl alongside the journal db.
-    P1.11 — direction-specific filename when direction is given,
-    otherwise the legacy unified filename.
+    P1.11 — direction-specific filename when direction is given.
+    Pipeline-aware (2026-05-11) — pipeline_kind suffix when set so
+    stock and option calibrators are separate files (the stock
+    calibrator can't accidentally be used for option proposals).
     """
     base_dir = os.path.dirname(os.path.abspath(db_path))
     db_stem = os.path.splitext(os.path.basename(db_path))[0]
     safe_name = specialist_name.replace("/", "_").replace(" ", "_")
+    parts = [f"calibrator_{db_stem}_{safe_name}"]
+    if pipeline_kind in ("stock", "option"):
+        parts.append(pipeline_kind)
     if direction in ("long", "short"):
-        return os.path.join(base_dir,
-                            f"calibrator_{db_stem}_{safe_name}_{direction}.pkl")
-    return os.path.join(base_dir,
-                        f"calibrator_{db_stem}_{safe_name}.pkl")
+        parts.append(direction)
+    return os.path.join(base_dir, "_".join(parts) + ".pkl")
 
 
 def save_calibrator(db_path: str, specialist_name: str, calibrator: Any,
-                     direction: Optional[str] = None) -> None:
+                     direction: Optional[str] = None,
+                     pipeline_kind: Optional[str] = None) -> None:
     if calibrator is None:
         return
     try:
-        path = _calibrator_path(db_path, specialist_name, direction)
+        path = _calibrator_path(db_path, specialist_name, direction,
+                                  pipeline_kind)
         with open(path, "wb") as fh:
             pickle.dump(calibrator, fh)
         with _calibrator_cache_lock:
-            _calibrator_cache[(db_path, specialist_name, direction)] = calibrator
+            _calibrator_cache[
+                (db_path, specialist_name, direction, pipeline_kind)
+            ] = calibrator
     except Exception as exc:
-        logger.warning("Failed to save calibrator for %s (dir=%s): %s",
-                       specialist_name, direction, exc)
+        logger.warning(
+            "Failed to save calibrator for %s (dir=%s, kind=%s): %s",
+            specialist_name, direction, pipeline_kind, exc,
+        )
 
 
 def get_calibrator(db_path: str, specialist_name: str,
-                    direction: Optional[str] = None) -> Optional[Any]:
+                    direction: Optional[str] = None,
+                    pipeline_kind: Optional[str] = None) -> Optional[Any]:
     """Load (with cache) the persisted calibrator for one specialist.
-    P1.11 — pass direction='long' or 'short' to get the direction-
-    specific calibrator. Falls back to the legacy unified calibrator
-    if a direction-specific one hasn't been fit yet (graceful upgrade).
+
+    Lookup priority — falls through gracefully from most-specific to
+    least-specific so callers always get the best available
+    calibrator without having to worry about which has been fit yet:
+      1. (specialist, direction, pipeline_kind) — most specific
+      2. (specialist, direction)                 — direction-only
+      3. (specialist,)                            — legacy unified
+
+    A fresh option specialist with no fitted calibrator yet falls
+    back to the unified legacy calibrator (better than nothing).
     """
     if not db_path or not specialist_name:
         return None
-    key = (db_path, specialist_name, direction)
+    key = (db_path, specialist_name, direction, pipeline_kind)
     with _calibrator_cache_lock:
         if key in _calibrator_cache:
             return _calibrator_cache[key]
-    path = _calibrator_path(db_path, specialist_name, direction)
-    if not os.path.exists(path):
-        # Fallback: if a direction-specific calibrator doesn't exist
-        # yet, try the legacy unified calibrator. This means a fresh
-        # short specialist still gets *some* calibration based on the
-        # broader specialist track record, until enough short outcomes
-        # accumulate to fit a dedicated short calibrator.
-        if direction in ("long", "short"):
-            legacy_path = _calibrator_path(db_path, specialist_name, None)
-            if os.path.exists(legacy_path):
-                path = legacy_path
-            else:
+
+    # Build the fallback chain.
+    candidates = []
+    if pipeline_kind in ("stock", "option"):
+        candidates.append((direction, pipeline_kind))
+    if direction in ("long", "short"):
+        candidates.append((direction, None))
+    candidates.append((None, None))
+
+    for d, pk in candidates:
+        path = _calibrator_path(db_path, specialist_name, d, pk)
+        if os.path.exists(path):
+            try:
+                with open(path, "rb") as fh:
+                    cal = pickle.load(fh)
                 with _calibrator_cache_lock:
-                    _calibrator_cache[key] = None
-                return None
-        else:
-            with _calibrator_cache_lock:
-                _calibrator_cache[key] = None
-            return None
-    try:
-        with open(path, "rb") as fh:
-            cal = pickle.load(fh)
-        with _calibrator_cache_lock:
-            _calibrator_cache[key] = cal
-        return cal
-    except Exception as exc:
-        logger.warning("Failed to load calibrator for %s (dir=%s): %s",
-                       specialist_name, direction, exc)
-        return None
+                    _calibrator_cache[key] = cal
+                return cal
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load calibrator for %s "
+                    "(dir=%s, kind=%s): %s",
+                    specialist_name, d, pk, exc,
+                )
+    with _calibrator_cache_lock:
+        _calibrator_cache[key] = None
+    return None
 
 
 def clear_calibrator_cache() -> None:

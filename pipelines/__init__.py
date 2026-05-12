@@ -253,6 +253,10 @@ class Pipeline(ABC):
             ai_model=getattr(ctx, "ai_model", ""),
             ai_api_key=getattr(ctx, "ai_api_key", ""),
             specialists_override=spec_list,
+            # Pipeline-aware calibrator lookup — stock pipeline gets
+            # stock-trained calibration; option pipeline gets
+            # option-trained. See specialist_calibration.fit_calibrator.
+            pipeline_kind=self.name,
         )
         per_symbol = (result or {}).get("per_symbol", {})
         approved, vetoed, veto_log = [], [], []

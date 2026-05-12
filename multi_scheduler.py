@@ -169,6 +169,23 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             f"Phase 5d backfill failed (non-fatal): {_exc}",
         )
 
+    # 2026-05-11: pipeline-aware specialist calibrator recalibration.
+    # Pre-this-commit, calibrators were trained on a mix of stock +
+    # option resolutions where option rows had wrong actual_return_pct
+    # values (Phase 5b/5c fixed forward; Phase 5d fixed historical).
+    # This recalibration refits every specialist's calibrators across
+    # the new (direction × pipeline_kind) matrix on the now-clean
+    # training data. Marker-gated; runs once per profile DB.
+    try:
+        from pipelines.outcomes.recalibrate import (
+            recalibrate_all_specialists,
+        )
+        recalibrate_all_specialists(ctx.db_path)
+    except Exception as _exc:
+        logging.debug(
+            f"Specialist recalibration failed (non-fatal): {_exc}",
+        )
+
     seg_label = ctx.display_name or ctx.segment
     logging.info(f"--- [{seg_label.upper()}] segment cycle start ---")
 

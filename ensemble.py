@@ -160,6 +160,7 @@ def run_ensemble(
     ai_api_key: str,
     max_candidates: int = 15,
     specialists_override: Optional[List[Any]] = None,
+    pipeline_kind: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run every specialist against the shortlist and synthesize verdicts.
 
@@ -346,9 +347,13 @@ def run_ensemble(
 
         raw_by_specialist[name] = combined
 
-    # Synthesize per-symbol consensus
+    # Synthesize per-symbol consensus. pipeline_kind flows through
+    # so the calibrator lookup uses the right (specialist, direction,
+    # pipeline_kind) calibrator — stock pipeline gets stock-trained
+    # calibration, option pipeline gets option-trained calibration.
     per_symbol = _synthesize(batch, raw_by_specialist,
-                              db_path=getattr(ctx, "db_path", None))
+                              db_path=getattr(ctx, "db_path", None),
+                              pipeline_kind=pipeline_kind)
 
     return {
         "per_symbol": per_symbol,
@@ -359,7 +364,8 @@ def run_ensemble(
 
 def _synthesize(candidates: List[Dict[str, Any]],
                 raw_by_specialist: Dict[str, List[Dict[str, Any]]],
-                db_path: Optional[str] = None) -> Dict[str, Any]:
+                db_path: Optional[str] = None,
+                pipeline_kind: Optional[str] = None) -> Dict[str, Any]:
     """Combine specialist verdicts into a per-symbol final consensus.
 
     Wave 3 / Fix #9 (METHODOLOGY_FIX_PLAN.md): when `db_path` is
@@ -391,8 +397,19 @@ def _synthesize(candidates: List[Dict[str, Any]],
         try:
             from specialist_calibration import get_calibrator
             for name in raw_by_specialist:
-                calibrators[(name, "long")] = get_calibrator(db_path, name, "long")
-                calibrators[(name, "short")] = get_calibrator(db_path, name, "short")
+                # Pipeline-aware lookup (2026-05-11). When
+                # pipeline_kind is set, get_calibrator first tries
+                # the (specialist, direction, pipeline_kind) file;
+                # falls back to (specialist, direction); then to the
+                # legacy unified calibrator. Stock pipelines get
+                # stock-trained calibration; option pipelines get
+                # option-trained calibration.
+                calibrators[(name, "long")] = get_calibrator(
+                    db_path, name, "long", pipeline_kind=pipeline_kind,
+                )
+                calibrators[(name, "short")] = get_calibrator(
+                    db_path, name, "short", pipeline_kind=pipeline_kind,
+                )
         except Exception:
             calibrators = {}
 
