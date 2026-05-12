@@ -204,11 +204,13 @@ def fit_calibrator(db_path: str, specialist_name: str,
     # calibrator and tuner see the same data definition).
     pk_clause = ""
     if pipeline_kind == "stock":
+        # HOLD included: stock-pipeline decision-not-to-trade.
+        # Dominant signal in production (17,111 of 18,318 = 93%).
         pk_clause = (
             "AND (ap.pipeline_kind = 'stock' OR ("
             "  ap.pipeline_kind IS NULL "
             "  AND ap.predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY',"
-            "    'SELL','STRONG_SELL','WEAK_SELL','SHORT','COVER')"
+            "    'SELL','STRONG_SELL','WEAK_SELL','SHORT','COVER','HOLD')"
             ")) "
         )
     elif pipeline_kind == "option":

@@ -22,6 +22,11 @@ STOCK_SIGNAL_TYPES = (
     "BUY", "STRONG_BUY", "WEAK_BUY",
     "SELL", "STRONG_SELL", "WEAK_SELL",
     "SHORT", "COVER",
+    # HOLD: stock-pipeline "decided not to trade". Dominant signal
+    # in production (17,111 of 18,318 = 93%). Excluding it left
+    # stock calibration starved (~5% of data). Keep in sync with
+    # journal.py backfill + pipelines.outcomes.kind_from_signal.
+    "HOLD",
 )
 
 

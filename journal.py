@@ -559,10 +559,17 @@ def _migrate_all_columns(conn):
         ).fetchall()}
         if "pipeline_kind" in cols and "predicted_signal" in cols:
             # Stock signal types — keep in sync with tuning/stock.py
+            # and pipelines.outcomes.kind_from_signal.
+            # HOLD is included: a HOLD prediction is "AI saw this
+            # stock candidate, decided not to trade it" — that's a
+            # stock-pipeline decision and should be tagged 'stock'
+            # so it counts in stock-only calibration / tuning rather
+            # than staying NULL (which left ~90% of resolved rows
+            # untagged on prod through 2026-05-11).
             stock_signals = (
                 "BUY", "STRONG_BUY", "WEAK_BUY",
                 "SELL", "STRONG_SELL", "WEAK_SELL",
-                "SHORT", "COVER",
+                "SHORT", "COVER", "HOLD",
             )
             # Option signal types — keep in sync with tuning/option.py
             option_signals = ("MULTILEG_OPEN", "OPTIONS", "OPTION_EXERCISE")

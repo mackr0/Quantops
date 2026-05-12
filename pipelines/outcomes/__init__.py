@@ -45,10 +45,16 @@ def kind_from_signal(signal: str) -> Optional[str]:
     if not signal:
         return None
     s = signal.upper().strip()
+    # HOLD is a stock-pipeline decision (AI saw a stock candidate,
+    # chose not to trade it). The HOLD volume DOMINATES the
+    # prediction stream — 17,111 of 18,318 prod predictions on
+    # 2026-05-11 were HOLDs. Excluding them leaves stock
+    # calibration with ~5% of available data. Keep in sync with
+    # journal.py backfill + tuning/stock.py STOCK_SIGNAL_TYPES.
     stock_signals = {
         "BUY", "STRONG_BUY", "WEAK_BUY",
         "SELL", "STRONG_SELL", "WEAK_SELL",
-        "SHORT", "COVER",
+        "SHORT", "COVER", "HOLD",
     }
     option_signals = {"MULTILEG_OPEN", "OPTIONS", "OPTION_EXERCISE"}
     if s in stock_signals:
