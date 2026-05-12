@@ -39,9 +39,12 @@ SLIPPAGE_HELPER_ALLOWLIST = {
     "journal.py":
         "Defines get_slippage_stats — kind=None branch is the helper's "
         "implementation, not a consumer.",
-    "metrics/legacy.py":
-        "Legacy metrics module — operates on the result of the helper, "
-        "doesn't itself query the DB unscoped.",
+    # 2026-05-12 — metrics/legacy.py was previously here as
+    # "operates on the result" but it's actually a consumer that
+    # CALLS get_slippage_stats unscoped. That was the source of the
+    # SECOND +1130% incident on the performance.html page. Removed
+    # from the allowlist; metrics/legacy.py now passes kind="stocks"
+    # explicitly.
 }
 
 

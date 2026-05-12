@@ -1328,6 +1328,12 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
     # via get_slippage_stats — so the Performance page reports the same
     # numbers as the AI page. total_slippage_cost is SIGNED (favorable
     # slippage reduces it); magnitude is the absolute gross variance.
+    # 2026-05-12 fix: scope the % aggregation to STOCK rows so option
+    # premium %-moves don't drive the displayed average to nonsense
+    # (+1130% incident, second occurrence). The $ totals (cost +
+    # magnitude) include BOTH stock and option trades because dollar
+    # cost is comparable across instrument classes — only the % is
+    # the broken-when-mixed metric.
     all_fills_count = 0
     all_fills_total_cost = 0.0
     all_fills_magnitude = 0.0
@@ -1335,13 +1341,25 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
     for db_path in db_paths:
         try:
             from journal import get_slippage_stats
-            s = get_slippage_stats(db_path=db_path)
-            if s:
-                n = s.get("trades_with_fills", 0) or 0
+            # STOCK-only for the % weighted average
+            s_stock = get_slippage_stats(db_path=db_path, kind="stocks")
+            if s_stock:
+                n = s_stock.get("trades_with_fills", 0) or 0
                 all_fills_count += n
-                all_fills_total_cost += s.get("total_slippage_cost", 0) or 0
-                all_fills_magnitude += s.get("total_slippage_magnitude", 0) or 0
-                weighted_pct_sum += (s.get("avg_slippage_pct", 0) or 0) * n
+                weighted_pct_sum += (
+                    s_stock.get("avg_slippage_pct", 0) or 0
+                ) * n
+            # $ totals: include BOTH stocks and options (dollars are
+            # comparable; this is the realized economic cost).
+            s_opt = get_slippage_stats(db_path=db_path, kind="options")
+            for s in (s_stock, s_opt):
+                if s:
+                    all_fills_total_cost += (
+                        s.get("total_slippage_cost", 0) or 0
+                    )
+                    all_fills_magnitude += (
+                        s.get("total_slippage_magnitude", 0) or 0
+                    )
         except Exception:
             pass
 

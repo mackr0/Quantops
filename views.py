@@ -5117,6 +5117,24 @@ def api_cycle_data(profile_id):
                 # multi-line; the UI just needs the gist on hover.
                 msg = r.get("broker_message") or ""
                 t["rejection_message"] = msg[:240]
+                # 2026-05-12 — for specialist_veto rejections, parse
+                # the specialist NAME from broker_message format
+                # "specialist veto (<name>): <reason>" and surface
+                # as vetoed_by so the badge can attribute the block
+                # to a specific reviewer (option_spread_risk vs.
+                # adversarial_reviewer vs. risk_assessor etc.).
+                if r.get("rejection_code") == "specialist_veto":
+                    import re as _re
+                    m = _re.match(
+                        r"specialist veto\s*\(([^)]+)\):\s*(.*)",
+                        msg, _re.IGNORECASE,
+                    )
+                    if m:
+                        t["vetoed_by"] = m.group(1)
+                        t["vetoed_by_display"] = humanize(m.group(1))
+                        # Replace rejection_message with just the
+                        # reason (no leading "specialist veto (X):")
+                        t["rejection_message"] = m.group(2).strip()[:240]
     except Exception as exc:
         logger.warning(
             "api_cycle_data: rejection-badge enrichment failed for "

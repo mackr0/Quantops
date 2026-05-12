@@ -99,12 +99,16 @@ class OptionPipeline(Pipeline):
         # SKIPPED — vetoed proposals
         for vetoed in (verdict.vetoed or []):
             sym = vetoed.get("symbol", "") if isinstance(vetoed, dict) else ""
-            veto_reason = self._veto_reason_for(verdict, sym)
-            self._record_veto(ctx, vetoed, sym, veto_reason)
+            veto_reason, vetoed_by = self._veto_reason_for(verdict, sym)
+            self._record_veto(ctx, vetoed, sym, (veto_reason, vetoed_by))
             result.skipped.append({
                 "action": "SPECIALIST_VETOED",
                 "symbol": sym,
                 "reason": veto_reason,
+                # 2026-05-12 — surface the specialist name on the
+                # result entry so callers (dashboard, logs) can
+                # attribute the block.
+                "vetoed_by": vetoed_by,
             })
 
         # APPROVED — execute each proposal
@@ -146,26 +150,56 @@ class OptionPipeline(Pipeline):
     # -----------------------------------------------------------------
 
     @staticmethod
-    def _veto_reason_for(verdict, sym: str) -> str:
-        """Pick the veto_log entry that mentions this symbol; fall
-        back to the first entry or a generic message."""
+    def _veto_reason_for(verdict, sym: str):
+        """Pick the veto_log entry that mentions this symbol and
+        return (reason, vetoed_by). vetoed_by is None when the
+        log entry doesn't include a parenthesized specialist name.
+
+        Pipeline.route_to_specialists formats entries as
+        '<sym>: VETO (<specialist>) — <reason>' (2026-05-12+) or
+        the older '<sym>: VETO — <reason>' format. Both parsed.
+        """
         if not sym:
-            return "specialist veto"
+            return ("specialist veto", None)
         log = list(getattr(verdict, "veto_log", None) or [])
         for entry in log:
             if sym in entry:
                 # Strip leading "<sym>: " prefix when present
-                if entry.startswith(f"{sym}:"):
-                    return entry[len(sym) + 1:].strip().lstrip("VETO —").strip()
-                return entry
-        return log[0] if log else "specialist veto"
+                body = entry[len(sym) + 1:].strip() if entry.startswith(f"{sym}:") else entry
+                # Parse "VETO (<specialist>) — <reason>" → reason +
+                # vetoed_by
+                import re
+                m = re.match(
+                    r"VETO\s*(?:\(([^)]+)\))?\s*[—-]\s*(.*)",
+                    body,
+                )
+                if m:
+                    return (m.group(2).strip(), m.group(1))
+                # Older format with no VETO prefix — return as-is
+                return (body.strip(), None)
+        return (log[0] if log else "specialist veto", None)
 
     @staticmethod
-    def _record_veto(ctx, proposal, symbol, reason) -> None:
+    def _record_veto(ctx, proposal, symbol, reason_or_pair) -> None:
         """Persist a specialist veto to broker_rejections so the
-        dashboard's REJECTED badge fires. Failure is non-fatal."""
+        dashboard's REJECTED badge fires. Failure is non-fatal.
+
+        `reason_or_pair` may be a string (legacy) or a
+        (reason, specialist_name) tuple. When the specialist name
+        is known, format broker_message as
+        'specialist veto (<name>): <reason>' so the dashboard
+        tooltip surfaces the attribution."""
         if not ctx or not getattr(ctx, "db_path", None):
             return
+        # Normalize input
+        if isinstance(reason_or_pair, tuple):
+            reason, vetoed_by = reason_or_pair
+        else:
+            reason, vetoed_by = reason_or_pair, None
+        msg = (
+            f"specialist veto ({vetoed_by}): {reason}"
+            if vetoed_by else f"specialist veto: {reason}"
+        )
         try:
             from journal import record_broker_rejection
             record_broker_rejection(
@@ -175,7 +209,7 @@ class OptionPipeline(Pipeline):
                 signal_type=proposal.get("action", "MULTILEG_OPEN"),
                 ai_confidence=proposal.get("confidence"),
                 ai_reasoning=proposal.get("reasoning"),
-                broker_message=f"specialist veto: {reason}",
+                broker_message=msg,
             )
         except Exception:
             pass

@@ -632,13 +632,24 @@ function showOpTab(event, profileId, which) {
                         // (caught 2026-05-11: CWAN cross-direction guard).
                         var badge = '';
                         if (t.execution_outcome === 'rejected') {
-                            var tip = (t.rejection_code_display || 'Rejected') +
+                            // 2026-05-12 — when the rejection is a
+                            // specialist veto, attribute it to the
+                            // specific specialist on the badge AND
+                            // in the tooltip so the operator knows
+                            // which reviewer blocked the trade
+                            // (option_spread_risk, risk_assessor,
+                            // adversarial_reviewer, etc.).
+                            var label = t.rejection_code_display || 'broker refused';
+                            if (t.vetoed_by_display) {
+                                label = label + ' · ' + t.vetoed_by_display;
+                            }
+                            var tip = label +
                                       (t.rejection_message ? ' — ' + t.rejection_message : '');
                             badge = ' <span title="' + tip.replace(/"/g, '&quot;') +
                                     '" style="display:inline-block;background:#c62828;color:#fff;' +
                                     'font-size:0.65rem;font-weight:600;padding:0.05rem 0.4rem;' +
                                     'border-radius:3px;vertical-align:middle;margin-left:0.4rem;">' +
-                                    'REJECTED · ' + (t.rejection_code_display || 'broker refused') + '</span>';
+                                    'REJECTED · ' + label + '</span>';
                         }
                         html += '<span style="color:' +
                                 (t.execution_outcome === 'rejected' ? '#999' : '#00c853') + ';' +

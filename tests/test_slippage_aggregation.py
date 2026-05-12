@@ -180,16 +180,20 @@ def test_metrics_slippage_matches_get_slippage_stats(tmp_path):
     import sqlite3
     db = str(tmp_path / "trades.db")
     conn = sqlite3.connect(db)
+    # 2026-05-12: schema now includes occ_symbol so the
+    # kind="stocks" filter (added by the slippage-display fix) can
+    # match these rows as stock trades via `occ_symbol IS NULL`.
     conn.execute("""
         CREATE TABLE trades (
             id INTEGER PRIMARY KEY,
             timestamp TEXT, symbol TEXT, side TEXT, qty REAL, price REAL,
             decision_price REAL, fill_price REAL, slippage_pct REAL,
-            status TEXT, pnl REAL, strategy TEXT
+            status TEXT, pnl REAL, strategy TEXT,
+            occ_symbol TEXT
         )
     """)
     # Mix of open entries (no pnl) and closed exits (with pnl).
-    # All have slippage data.
+    # All have slippage data. occ_symbol defaults to NULL (stock rows).
     rows = [
         # (sym, qty, dp, fp, pnl)
         ("AAPL", 100, 150.0, 150.30, None),    # open entry

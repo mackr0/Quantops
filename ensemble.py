@@ -423,6 +423,13 @@ def _synthesize(candidates: List[Dict[str, Any]],
         sell_score = 0.0
         vetoed = False
         veto_reason: Optional[str] = None
+        # 2026-05-12 — capture WHICH specialist vetoed for
+        # dashboard surfacing. The first VETO-authority specialist
+        # to fire wins the attribution; subsequent vetoers' reasons
+        # remain in symbol_verdicts but the headline name is the
+        # first one (matches `veto_reason` semantics — first veto
+        # wins).
+        vetoed_by: Optional[str] = None
 
         for name in raw_by_specialist:
             v = by_symbol_and_spec.get((sym, name))
@@ -470,6 +477,7 @@ def _synthesize(candidates: List[Dict[str, Any]],
             if v["verdict"] == "VETO" and name in VETO_AUTHORIZED:
                 if not vetoed:
                     veto_reason = v["reasoning"] or f"{name} veto"
+                    vetoed_by = name
                 vetoed = True
                 continue
 
@@ -507,6 +515,8 @@ def _synthesize(candidates: List[Dict[str, Any]],
             "confidence": final_confidence,
             "vetoed": vetoed,
             "veto_reason": veto_reason,
+            # 2026-05-12 — specialist name for dashboard attribution
+            "vetoed_by": vetoed_by,
             "buy_score": round(buy_score, 3),
             "sell_score": round(sell_score, 3),
             "specialists": symbol_verdicts,

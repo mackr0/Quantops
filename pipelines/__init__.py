@@ -265,8 +265,16 @@ class Pipeline(ABC):
             verdict_data = per_symbol.get(sym, {}) if sym else {}
             if verdict_data.get("vetoed"):
                 vetoed.append(proposal)
+                # 2026-05-12 — include WHICH specialist vetoed so the
+                # dashboard / broker_rejections message can attribute
+                # the block to a specific reviewer (e.g.,
+                # "VETO (option_spread_risk) — max loss exceeds budget").
+                # Format consumed by OptionPipeline._record_veto and
+                # the trade_pipeline.py log line.
+                vetoed_by = verdict_data.get("vetoed_by")
+                attr = f" ({vetoed_by})" if vetoed_by else ""
                 veto_log.append(
-                    f"{sym}: VETO — "
+                    f"{sym}: VETO{attr} — "
                     f"{(verdict_data.get('veto_reason') or '')[:120]}"
                 )
             else:
