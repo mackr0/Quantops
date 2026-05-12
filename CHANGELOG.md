@@ -17,6 +17,51 @@ Rules going forward:
 
 ---
 
+## 2026-05-12 — Option exit + veto thresholds become AI-tunable (no more hardcoded module constants). Severity: medium.
+
+**Problem.** Eight option-side decision parameters were hardcoded as module
+constants — five exit thresholds in `options_exits.py`
+(`PREMIUM_STOP_LOSS_PCT = -0.50`, `PREMIUM_TAKE_PROFIT_PCT = 1.00`,
+`DTE_EXIT_THRESHOLD_DAYS = 7`, `SHORT_PREMIUM_TAKE_PROFIT_PCT = -0.50`,
+`SHORT_PREMIUM_STOP_LOSS_PCT = 1.00`), and three VETO thresholds baked
+into the `option_spread_risk` specialist prompt (IV rank `> 80`, gamma
+`DTE < 7`, credit/max-loss `< 0.20`). The whole premise of QuantOps is
+that the AI figures out the right parameters from outcome data — having
+hand-picked starting values the tuner could not touch contradicted that
+design.
+
+**Why it wasn't caught.** Phase 2b shipped `OptionPipeline.tune()` with
+only the three Greek-budget caps in its `BOUNDS` dict (delta / theta /
+vega). Anything else option-shaped was effectively frozen. No test
+pinned "every option decision parameter must be tunable."
+
+**Fix.**
+- 8 new columns on `trading_profiles` (5 exit + 3 veto) with deliberate
+  defaults matching the prior constants — current behavior preserved at
+  rollout; the tuner now has somewhere to write.
+- 8 new fields on `UserContext`, populated by
+  `build_user_context_from_profile`.
+- `options_exits.check_single_leg_option_exits(positions, db_path, ctx=...)`
+  resolves thresholds from `ctx` (with module-constant fallback for
+  legacy callers / tests). `trader.py` passes `ctx` through.
+- `specialists/option_spread_risk.build_prompt` formats the three VETO
+  thresholds into the prompt text dynamically — the LLM is told the
+  tuner-converged values, not training-time numbers.
+- `OptionPipeline.tune()` BOUNDS extended to 11 params total. Per-param
+  direction is explicit (`(floor, ceiling, loosen_multiplier,
+  tighten_multiplier, kind)`) because most caps loosen by going UP, but
+  DTE-based exits and gamma-DTE/credit-ratio vetoes loosen by going
+  DOWN. Integer-stored params (DTE counts) are rounded.
+
+**Regression test.** `tests/test_option_tuner_writes.py::TestNewTunable*`
+classes pin: every new param has a schema migration entry, an
+allowed_cols entry, and a UserContext field; tuner adjustments use the
+right direction per param; integer params stay integer; bounds clipping
+prevents runaway; `options_exits` resolves thresholds from ctx;
+`option_spread_risk` prompt surfaces the ctx-driven values.
+
+---
+
 ## 2026-05-12 — Phase 5e wave 3: reconcile filter + bogus reconcile_backfill tagging
 
 Mack saw "Reconcile Backfill" rows on the trades page with insane P&L percentages today at market open:

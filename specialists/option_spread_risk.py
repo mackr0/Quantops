@@ -46,6 +46,21 @@ def build_prompt(candidates: List[Dict[str, Any]], ctx: Any) -> str:
         if isinstance(risk_budget, (int, float)) and risk_budget > 0 else ""
     )
 
+    # 2026-05-12 — VETO thresholds are AI-tunable per-profile.
+    # Surface the effective values so the LLM applies the
+    # threshold the tuner has converged on (not hardcoded values
+    # from training). Defaults fire when ctx lacks the attribute
+    # (legacy callers / tests).
+    iv_rank_veto = float(getattr(
+        ctx, "option_spread_iv_rank_veto_threshold", 80.0,
+    ))
+    gamma_dte_veto = int(getattr(
+        ctx, "option_spread_gamma_dte_veto_threshold", 7,
+    ))
+    credit_ratio_veto = float(getattr(
+        ctx, "option_spread_credit_ratio_veto_threshold", 0.20,
+    ))
+
     # 2026-05-12 — surface current book-Greeks context. The
     # specialist now sees not just the proposal but where the
     # portfolio already stands on net delta / gamma / vega / theta.
@@ -106,16 +121,17 @@ lens.
   - SPREAD MAX-LOSS: does the structural max loss
     (spread_max_loss × 100 × contracts) exceed the per-trade risk
     budget? If yes — VETO.
-  - IV CRUSH: is this LONG premium with iv_rank > 80 (premium will
-    deflate even on a directional win)? Or SHORT premium with
-    earnings inside the spread's DTE (event will spike IV against
-    you)? If yes — VETO.
-  - GAMMA RISK: SHORT options with DTE < 7 and strike within 2% of
-    spot — gamma exposure makes P&L unstable. VETO unless explicitly
-    a 0DTE strategy.
+  - IV CRUSH: is this LONG premium with iv_rank > {iv_rank_veto:.0f}
+    (premium will deflate even on a directional win)? Or SHORT
+    premium with earnings inside the spread's DTE (event will spike
+    IV against you)? If yes — VETO.
+  - GAMMA RISK: SHORT options with DTE < {gamma_dte_veto} and strike
+    within 2% of spot — gamma exposure makes P&L unstable. VETO
+    unless explicitly a 0DTE strategy.
   - CREDIT/MAX-LOSS ratio: for credit spreads, credit received /
-    max loss should be at least 0.20. Below that, the trade is
-    negative-expectancy regardless of directional view. VETO.
+    max loss should be at least {credit_ratio_veto:.2f}. Below that,
+    the trade is negative-expectancy regardless of directional view.
+    VETO.
 
 Candidates:
 {candidates_block(candidates)}
@@ -137,7 +153,7 @@ VERDICT DISCIPLINE:
          iv-crush exposure, near-expiry gamma blowup, credit
          insufficient vs max loss. Name the risk in the reasoning.
   BUY  = option economics ACTIVELY support the trade (rare —
-         e.g., short premium at iv_rank > 90 with no event risk).
+         e.g., short premium at iv_rank > {iv_rank_veto + 10:.0f} with no event risk).
   SELL = the option position should be closed (only relevant when
          a candidate is an existing-position close decision).
 

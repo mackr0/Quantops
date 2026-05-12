@@ -90,6 +90,16 @@ def _ctx(db_path, **overrides):
         "max_net_options_delta_pct": 0.05,
         "max_theta_burn_dollars_per_day": 50.0,
         "max_short_vega_dollars": 500.0,
+        # 2026-05-12 — 8 new AI-tunable option params. Defaults
+        # match user_context.py / models.py.
+        "option_premium_stop_loss_pct": -0.50,
+        "option_premium_take_profit_pct": 1.00,
+        "option_dte_exit_threshold_days": 7,
+        "option_short_premium_take_profit_pct": -0.50,
+        "option_short_premium_stop_loss_pct": 1.00,
+        "option_spread_iv_rank_veto_threshold": 80.0,
+        "option_spread_gamma_dte_veto_threshold": 7,
+        "option_spread_credit_ratio_veto_threshold": 0.20,
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -313,3 +323,219 @@ class TestSchemaMigration:
         assert "max_net_options_delta_pct" in src
         assert "max_theta_burn_dollars_per_day" in src
         assert "max_short_vega_dollars" in src
+
+
+# ---------------------------------------------------------------------------
+# 2026-05-12 — 8 NEW AI-tunable option params (exit + veto thresholds)
+# ---------------------------------------------------------------------------
+
+NEW_TUNABLE_PARAMS = [
+    "option_premium_stop_loss_pct",
+    "option_premium_take_profit_pct",
+    "option_dte_exit_threshold_days",
+    "option_short_premium_take_profit_pct",
+    "option_short_premium_stop_loss_pct",
+    "option_spread_iv_rank_veto_threshold",
+    "option_spread_gamma_dte_veto_threshold",
+    "option_spread_credit_ratio_veto_threshold",
+]
+
+
+class TestNewTunableParamsSchema:
+    """The whole premise: the AI should figure out these values from
+    outcome data. The schema, allowlist, and loader must all carry
+    each one or the tuner silently no-ops."""
+
+    def test_migration_list_includes_all_new_params(self):
+        import inspect
+        import models
+        src = inspect.getsource(models.init_user_db)
+        for p in NEW_TUNABLE_PARAMS:
+            assert p in src, f"missing migration entry for {p}"
+
+    def test_allowed_cols_includes_all_new_params(self):
+        import inspect
+        import models
+        src = inspect.getsource(models.update_trading_profile)
+        for p in NEW_TUNABLE_PARAMS:
+            assert p in src, f"missing allowed_cols entry for {p}"
+
+    def test_user_context_dataclass_has_all_new_params(self):
+        from user_context import UserContext
+        ctx = UserContext(user_id=1, segment="t")
+        for p in NEW_TUNABLE_PARAMS:
+            assert hasattr(ctx, p), f"UserContext missing field {p}"
+
+
+class TestNewTunableParamsTuning:
+    """OptionPipeline.tune() must adjust each new param with the
+    right per-param direction. The crux: most caps go UP when
+    loosening, but DTE-based exits and gamma-DTE/credit-ratio vetoes
+    go DOWN when loosening. Sign errors here would invert tuning."""
+
+    def test_high_win_rate_loosens_all_8_params(self, db_path):
+        _seed_option_outcomes(db_path, n=25, win_rate=0.72)
+        # DTE-based params at default 7 with 0.95 multiplier round
+        # back to 7 (no-op by design — bounded integer). Bump them
+        # so we verify the tuner reaches each param.
+        ctx = _ctx(
+            db_path,
+            option_dte_exit_threshold_days=11,
+            option_spread_gamma_dte_veto_threshold=11,
+        )
+        adj = OptionPipeline().tune(ctx, Metrics(pipeline_name="option"))
+        for p in NEW_TUNABLE_PARAMS:
+            assert p in adj.changes, f"loosen produced no change for {p}"
+
+    def test_loosen_direction_per_param(self, db_path):
+        """Each param has a deliberate direction. This pins it."""
+        _seed_option_outcomes(db_path, n=25, win_rate=0.72)
+        adj = OptionPipeline().tune(_ctx(db_path), Metrics(pipeline_name="option"))
+        # LONG stop = -0.50; loosen = more negative (let positions
+        # ride further)
+        assert adj.changes["option_premium_stop_loss_pct"] < -0.50
+        # LONG TP = 1.00; loosen = higher (let winners run)
+        assert adj.changes["option_premium_take_profit_pct"] > 1.00
+        # DTE exit = 7; loosen = LOWER (close less aggressively
+        # near expiry). 7 * 0.95 = 6.65 → rounds to 7 — too close.
+        # Use a higher current to verify the rounding crosses.
+        ctx_dte = _ctx(db_path, option_dte_exit_threshold_days=11)
+        adj_dte = OptionPipeline().tune(ctx_dte, Metrics(pipeline_name="option"))
+        assert adj_dte.changes["option_dte_exit_threshold_days"] < 11
+        # IV-rank veto = 80; loosen = HIGHER (veto less often)
+        assert adj.changes["option_spread_iv_rank_veto_threshold"] > 80.0
+        # Gamma-DTE veto = 7; loosen = LOWER (use the same workaround)
+        ctx_gam = _ctx(db_path, option_spread_gamma_dte_veto_threshold=11)
+        adj_gam = OptionPipeline().tune(ctx_gam, Metrics(pipeline_name="option"))
+        assert adj_gam.changes["option_spread_gamma_dte_veto_threshold"] < 11
+        # Credit-ratio veto = 0.20; loosen = LOWER (accept thinner
+        # credits)
+        assert adj.changes["option_spread_credit_ratio_veto_threshold"] < 0.20
+
+    def test_tighten_direction_per_param(self, db_path):
+        _seed_option_outcomes(db_path, n=25, win_rate=0.30)
+        adj = OptionPipeline().tune(_ctx(db_path), Metrics(pipeline_name="option"))
+        # LONG stop = -0.50; tighten = less negative (exit sooner)
+        assert adj.changes["option_premium_stop_loss_pct"] > -0.50
+        # LONG TP = 1.00; tighten = lower (lock in sooner)
+        assert adj.changes["option_premium_take_profit_pct"] < 1.00
+        # IV-rank veto = 80; tighten = LOWER (veto more aggressively)
+        assert adj.changes["option_spread_iv_rank_veto_threshold"] < 80.0
+        # Credit-ratio veto = 0.20; tighten = HIGHER (demand richer credits)
+        assert adj.changes["option_spread_credit_ratio_veto_threshold"] > 0.20
+
+    def test_bounds_clipping_prevents_runaway(self, db_path):
+        """Repeated loosening doesn't push past ceiling. Repeated
+        tightening doesn't push past floor."""
+        _seed_option_outcomes(db_path, n=25, win_rate=0.72)
+        # Ceiling check: option_premium_take_profit_pct ceiling = 2.0
+        ctx = _ctx(db_path, option_premium_take_profit_pct=2.0)
+        adj = OptionPipeline().tune(ctx, Metrics(pipeline_name="option"))
+        # At ceiling — clipped to ceiling = current → no change recorded
+        assert "option_premium_take_profit_pct" not in adj.changes
+
+    def test_integer_params_stay_integer(self, db_path):
+        """option_dte_exit_threshold_days + gamma_dte are INTEGER
+        columns. Tuner must round, not write a float."""
+        _seed_option_outcomes(db_path, n=25, win_rate=0.30)
+        adj = OptionPipeline().tune(
+            _ctx(db_path, option_dte_exit_threshold_days=8),
+            Metrics(pipeline_name="option"),
+        )
+        if "option_dte_exit_threshold_days" in adj.changes:
+            v = adj.changes["option_dte_exit_threshold_days"]
+            assert isinstance(v, int), f"DTE param must be int, got {type(v)}"
+
+
+class TestOptionsExitsCtxResolution:
+    """options_exits.check_single_leg_option_exits must read
+    thresholds from ctx when provided. Without ctx → fall back to
+    module defaults (legacy callers / tests)."""
+
+    def test_resolve_thresholds_reads_ctx_when_present(self):
+        from options_exits import _resolve_thresholds
+        ctx = SimpleNamespace(
+            option_premium_stop_loss_pct=-0.60,
+            option_premium_take_profit_pct=1.50,
+            option_dte_exit_threshold_days=5,
+            option_short_premium_take_profit_pct=-0.40,
+            option_short_premium_stop_loss_pct=1.20,
+        )
+        t = _resolve_thresholds(ctx)
+        assert t["premium_stop_loss_pct"] == -0.60
+        assert t["premium_take_profit_pct"] == 1.50
+        assert t["dte_exit_threshold_days"] == 5
+        assert t["short_premium_take_profit_pct"] == -0.40
+        assert t["short_premium_stop_loss_pct"] == 1.20
+
+    def test_resolve_thresholds_falls_back_when_ctx_none(self):
+        from options_exits import (
+            _resolve_thresholds, PREMIUM_STOP_LOSS_PCT,
+            PREMIUM_TAKE_PROFIT_PCT, DTE_EXIT_THRESHOLD_DAYS,
+        )
+        t = _resolve_thresholds(None)
+        assert t["premium_stop_loss_pct"] == PREMIUM_STOP_LOSS_PCT
+        assert t["premium_take_profit_pct"] == PREMIUM_TAKE_PROFIT_PCT
+        assert t["dte_exit_threshold_days"] == DTE_EXIT_THRESHOLD_DAYS
+
+    def test_check_uses_per_profile_threshold(self, db_path):
+        """Position with -55% premium drop. Default threshold of
+        -50% would trigger; a tuned -60% threshold should NOT."""
+        from options_exits import check_single_leg_option_exits
+
+        pos = {
+            "occ_symbol": "AAPL  250620P00150000",
+            "qty": 1,
+            "avg_entry_price": 1.00,
+            "current_price": 0.45,  # -55% drop
+            "is_option": True,
+        }
+
+        ctx_default = SimpleNamespace(
+            option_premium_stop_loss_pct=-0.50,
+        )
+        sigs = check_single_leg_option_exits(
+            [pos], db_path, ctx=ctx_default,
+        )
+        assert any(s["trigger"] == "premium_stop" for s in sigs)
+
+        # Same position, looser tuned threshold — should NOT fire
+        ctx_looser = SimpleNamespace(
+            option_premium_stop_loss_pct=-0.60,
+        )
+        sigs = check_single_leg_option_exits(
+            [pos], db_path, ctx=ctx_looser,
+        )
+        assert not any(s["trigger"] == "premium_stop" for s in sigs)
+
+
+class TestOptionSpreadRiskCtxResolution:
+    """The veto-threshold values must surface in the prompt text,
+    so a tuned threshold actually changes what the LLM is told."""
+
+    def test_prompt_uses_ctx_iv_rank_threshold(self):
+        from specialists.option_spread_risk import build_prompt
+        ctx = SimpleNamespace(
+            option_spread_iv_rank_veto_threshold=65.0,
+            option_spread_gamma_dte_veto_threshold=5,
+            option_spread_credit_ratio_veto_threshold=0.30,
+            max_per_trade_loss=500,
+        )
+        prompt = build_prompt(
+            [{"symbol": "AAPL", "strategy_name": "iron_condor"}],
+            ctx,
+        )
+        assert "iv_rank > 65" in prompt
+        assert "DTE < 5" in prompt
+        assert "at least 0.30" in prompt
+
+    def test_prompt_falls_back_to_default_thresholds(self):
+        from specialists.option_spread_risk import build_prompt
+        ctx = SimpleNamespace(max_per_trade_loss=500)  # no veto attrs
+        prompt = build_prompt(
+            [{"symbol": "AAPL", "strategy_name": "iron_condor"}],
+            ctx,
+        )
+        assert "iv_rank > 80" in prompt
+        assert "DTE < 7" in prompt
+        assert "at least 0.20" in prompt

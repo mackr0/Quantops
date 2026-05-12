@@ -349,23 +349,27 @@ class OptionPipeline(Pipeline):
         return Metrics(pipeline_name=self.name, numbers=numbers)
 
     def tune(self, ctx, metrics: Metrics) -> ParameterAdjustments:
-        """Option-only tuning (Phase 2b, 2026-05-12).
+        """Option-only tuning (2026-05-12).
 
-        Computes adjustments to the three option-Greeks budget
-        parameters that already exist on UserContext / trading_profiles:
-          - max_net_options_delta_pct (directional cap)
-          - max_theta_burn_dollars_per_day (long-vol budget)
-          - max_short_vega_dollars (short-vol cap)
+        Adjusts every AI-tunable option parameter based on option
+        win rate over resolved predictions:
+          - 3 Greek-budget caps (delta / theta / vega)
+          - 5 single-leg exit thresholds (LONG stop/TP/DTE; SHORT TP/stop)
+          - 3 option_spread_risk specialist VETO thresholds
+            (iv-rank, gamma-DTE, credit-ratio)
 
         Adjustment rule (simple, defensible):
-          - win rate ≥ 60% over ≥ MIN_SAMPLES → LOOSEN by 5%
-            (multiply by 1.05, clipped to ceiling). The system is
-            making money with options; give it slightly more rope.
-          - win rate ≤ 40% over ≥ MIN_SAMPLES → TIGHTEN by 5%
-            (multiply by 0.95, clipped to floor). Bleeding money;
+          - win rate ≥ 60% over ≥ MIN_SAMPLES → LOOSEN. System is
+            making money on options; give it more rope.
+          - win rate ≤ 40% over ≥ MIN_SAMPLES → TIGHTEN. Bleeding;
             pull in.
-          - between 40% and 60%, OR sample size < MIN_SAMPLES:
-            no change. Don't tune on noise.
+          - between 40-60% OR sample size < MIN_SAMPLES: no change.
+
+        Direction is per-param. For most caps "looser = higher",
+        but for DTE-based exits and gamma-DTE veto, "looser = LOWER"
+        (close less aggressively / veto less often). Each entry in
+        BOUNDS carries explicit (loosen_multiplier, tighten_multiplier)
+        so each param's direction is unambiguous.
 
         Floors and ceilings keep the tuner from running away. The
         changes dict is consumed by `apply_parameter_adjustments`
@@ -397,12 +401,11 @@ class OptionPipeline(Pipeline):
                 rationale="; ".join(rationale_parts),
             )
 
-        # Direction of adjustment
         if wr >= 60.0:
-            multiplier = 1.05
+            mode = "loosen"
             direction = "loosened"
         elif wr <= 40.0:
-            multiplier = 0.95
+            mode = "tighten"
             direction = "tightened"
         else:
             rationale_parts.append(
@@ -413,22 +416,63 @@ class OptionPipeline(Pipeline):
                 rationale="; ".join(rationale_parts),
             )
 
-        # Range guards per parameter (floor, ceiling).
+        # (floor, ceiling, loosen_mult, tighten_mult, kind).
+        # kind = "int" for params stored as integers (rounded after
+        # multiplication); "float" for the rest.
+        # For most caps, looser = larger threshold (multiplier > 1).
+        # INVERTED params (DTE-based exits / gamma-DTE veto /
+        # credit-ratio veto) have looser = smaller threshold.
         BOUNDS = {
-            "max_net_options_delta_pct": (0.02, 0.10),
-            "max_theta_burn_dollars_per_day": (25.0, 100.0),
-            "max_short_vega_dollars": (250.0, 1000.0),
+            # Greek-budget caps (existing — 2026-05-12 Phase 2b).
+            "max_net_options_delta_pct":
+                (0.02, 0.10, 1.05, 0.95, "float"),
+            "max_theta_burn_dollars_per_day":
+                (25.0, 100.0, 1.05, 0.95, "float"),
+            "max_short_vega_dollars":
+                (250.0, 1000.0, 1.05, 0.95, "float"),
+            # LONG single-leg exits — looser = wider band (more
+            # negative stop, higher TP threshold).
+            "option_premium_stop_loss_pct":
+                (-0.80, -0.20, 1.05, 0.95, "float"),
+            "option_premium_take_profit_pct":
+                (0.50, 2.00, 1.05, 0.95, "float"),
+            # DTE exit — INVERTED. Looser = LOWER N (close less
+            # aggressively near expiry); tighter = HIGHER N.
+            "option_dte_exit_threshold_days":
+                (3, 14, 0.95, 1.05, "int"),
+            # SHORT single-leg exits — looser = wider band.
+            "option_short_premium_take_profit_pct":
+                (-0.80, -0.25, 1.05, 0.95, "float"),
+            "option_short_premium_stop_loss_pct":
+                (0.50, 2.00, 1.05, 0.95, "float"),
+            # option_spread_risk VETO thresholds.
+            # iv_rank veto: looser = HIGHER threshold (fewer vetoes).
+            "option_spread_iv_rank_veto_threshold":
+                (50.0, 95.0, 1.05, 0.95, "float"),
+            # gamma_dte veto: INVERTED. Looser = LOWER threshold
+            # (veto only the deepest-near-expiry trades).
+            "option_spread_gamma_dte_veto_threshold":
+                (3, 14, 0.95, 1.05, "int"),
+            # credit_ratio veto: INVERTED. Looser = LOWER threshold
+            # (accept thinner credits).
+            "option_spread_credit_ratio_veto_threshold":
+                (0.10, 0.40, 0.95, 1.05, "float"),
         }
-        for param, (floor, ceil) in BOUNDS.items():
+        for param, (floor, ceil, loosen_m, tighten_m, kind) in BOUNDS.items():
             current = getattr(ctx, param, None)
             if current is None:
                 continue
+            multiplier = loosen_m if mode == "loosen" else tighten_m
             new_val = float(current) * multiplier
             new_val = max(floor, min(ceil, new_val))
-            # Only record a change if the bound-clipped value is
-            # actually different (avoid no-op writes).
-            if abs(new_val - float(current)) > 1e-9:
-                changes[param] = new_val
+            if kind == "int":
+                new_val = int(round(new_val))
+                if int(new_val) == int(current):
+                    continue
+                changes[param] = int(new_val)
+            else:
+                if abs(new_val - float(current)) > 1e-9:
+                    changes[param] = float(new_val)
 
         if changes:
             rationale_parts.append(

@@ -126,6 +126,29 @@ class UserContext:
     #   against vol spikes wiping a short-vol book.
     max_short_vega_dollars: Optional[float] = 500.0
 
+    # 2026-05-12 — AI-tunable option exit thresholds (single-leg).
+    # Were module constants in options_exits.py until this commit;
+    # moved here so OptionPipeline.tune() can adjust them based on
+    # observed win rate. Defaults match the old constants.
+    # LONG side — premium-paid positions (qty > 0):
+    option_premium_stop_loss_pct: float = -0.50
+    option_premium_take_profit_pct: float = 1.00
+    option_dte_exit_threshold_days: int = 7
+    # SHORT side — premium-collected positions (qty < 0). Asymmetric
+    # thresholds: win when premium DROPS (theta), lose when it RISES.
+    option_short_premium_take_profit_pct: float = -0.50
+    option_short_premium_stop_loss_pct: float = 1.00
+
+    # 2026-05-12 — AI-tunable VETO thresholds for the
+    # option_spread_risk specialist. Surfaced in the LLM prompt so
+    # the specialist's veto decisions track per-profile policy.
+    # iv_rank: VETO if LONG premium with iv_rank > threshold (crush risk)
+    # gamma_dte: VETO if SHORT options with DTE < threshold (gamma blowup)
+    # credit_ratio: VETO if credit spread with credit/max_loss < threshold
+    option_spread_iv_rank_veto_threshold: float = 80.0
+    option_spread_gamma_dte_veto_threshold: int = 7
+    option_spread_credit_ratio_veto_threshold: float = 0.20
+
     # OPTIONS_PROGRAM_PLAN Phase C3 — wheel automation. Empty list =
     # wheel disabled (default). Comma- or list-form symbols opt the
     # profile into the wheel cycle on those underlyings: cash → CSP →

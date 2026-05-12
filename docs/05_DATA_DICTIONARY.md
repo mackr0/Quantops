@@ -212,6 +212,17 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 | `options_roll_window_days` | INTEGER | 7 | Days-to-expiry window for roll manager. |
 | `options_auto_close_profit_pct` | REAL | 0.80 | Auto-close credit positions at this % of max profit. |
 | `options_roll_recommend_profit_pct` | REAL | 0.50 | Recommend roll above this % of max profit. |
+| `max_net_options_delta_pct` | REAL | 0.05 | Greek-budget cap: `|options-only delta| / equity`. Tunable by `OptionPipeline.tune`. |
+| `max_theta_burn_dollars_per_day` | REAL | 50.0 | Greek-budget cap: max $/day of premium decay before blocking new long-premium trades. Tunable. |
+| `max_short_vega_dollars` | REAL | 500.0 | Greek-budget cap: max short vega before blocking new short-premium trades. Tunable. |
+| `option_premium_stop_loss_pct` | REAL | -0.50 | LONG single-leg: close when premium drops by this fraction (-0.50 = -50%). Read by `options_exits.check_single_leg_option_exits` via ctx. Tunable. |
+| `option_premium_take_profit_pct` | REAL | 1.00 | LONG single-leg: close when premium gains by this fraction (1.00 = +100%). Tunable. |
+| `option_dte_exit_threshold_days` | INTEGER | 7 | LONG and SHORT single-leg: close when days-to-expiry ≤ this value. Tunable (looser = lower N). |
+| `option_short_premium_take_profit_pct` | REAL | -0.50 | SHORT single-leg: close (win) when premium drops by this fraction. Tunable. |
+| `option_short_premium_stop_loss_pct` | REAL | 1.00 | SHORT single-leg: close (loss) when premium expands by this fraction. Tunable. |
+| `option_spread_iv_rank_veto_threshold` | REAL | 80.0 | `option_spread_risk` specialist VETOes LONG-premium proposals at iv_rank > this. Surfaced in the LLM prompt. Tunable. |
+| `option_spread_gamma_dte_veto_threshold` | INTEGER | 7 | `option_spread_risk` VETOes SHORT-options proposals at DTE < this. Tunable (looser = lower N). |
+| `option_spread_credit_ratio_veto_threshold` | REAL | 0.20 | `option_spread_risk` VETOes credit-spread proposals at credit/max-loss < this. Tunable (looser = lower). |
 
 ---
 

@@ -36,23 +36,45 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-# Triggers — tunable per-profile in the future via ctx fields.
+# Default thresholds — kept as named module values so tests and
+# legacy non-ctx callers still work. The live trading path resolves
+# the effective value from `ctx` (per-profile, AI-tunable) via
+# `_resolve_thresholds(ctx)` below. As of 2026-05-12, these are
+# AI-tunable: OptionPipeline.tune() adjusts the matching ctx fields
+# based on the option win rate over resolved option predictions.
+#
 # LONG SIDE — premium-paid positions (qty > 0):
-#   Win when premium goes UP. Lose when premium goes DOWN.
 PREMIUM_STOP_LOSS_PCT = -0.50      # -50% premium drop → close
 PREMIUM_TAKE_PROFIT_PCT = 1.00     # +100% premium gain → close
 DTE_EXIT_THRESHOLD_DAYS = 7        # ≤ N days to expiry → close
-
 # SHORT SIDE — premium-collected positions (qty < 0):
-#   Win when premium goes DOWN (theta decay; we keep the credit).
-#   Lose when premium goes UP (the trade ran against us).
-# Asymmetric thresholds reflect short-premium economics:
-#   - Take profit when 50% of credit captured (premium dropped 50%)
-#   - Stop loss when premium DOUBLES against us (200% expansion)
 SHORT_PREMIUM_TAKE_PROFIT_PCT = -0.50  # premium dropped 50% → close (win)
 SHORT_PREMIUM_STOP_LOSS_PCT = 1.00     # premium up 100% → close (loss)
-# DTE exit applies to both long and short — gamma blowup risk
-# is the same near expiration regardless of side.
+
+
+def _resolve_thresholds(ctx: Any) -> Dict[str, float]:
+    """Resolve the effective exit thresholds from ctx, falling back
+    to module defaults when ctx is None or missing a field. Returns
+    a dict so the caller can use one named lookup per trigger."""
+    return {
+        "premium_stop_loss_pct": float(getattr(
+            ctx, "option_premium_stop_loss_pct", PREMIUM_STOP_LOSS_PCT
+        ) if ctx is not None else PREMIUM_STOP_LOSS_PCT),
+        "premium_take_profit_pct": float(getattr(
+            ctx, "option_premium_take_profit_pct", PREMIUM_TAKE_PROFIT_PCT
+        ) if ctx is not None else PREMIUM_TAKE_PROFIT_PCT),
+        "dte_exit_threshold_days": int(getattr(
+            ctx, "option_dte_exit_threshold_days", DTE_EXIT_THRESHOLD_DAYS
+        ) if ctx is not None else DTE_EXIT_THRESHOLD_DAYS),
+        "short_premium_take_profit_pct": float(getattr(
+            ctx, "option_short_premium_take_profit_pct",
+            SHORT_PREMIUM_TAKE_PROFIT_PCT,
+        ) if ctx is not None else SHORT_PREMIUM_TAKE_PROFIT_PCT),
+        "short_premium_stop_loss_pct": float(getattr(
+            ctx, "option_short_premium_stop_loss_pct",
+            SHORT_PREMIUM_STOP_LOSS_PCT,
+        ) if ctx is not None else SHORT_PREMIUM_STOP_LOSS_PCT),
+    }
 
 
 def _entry_signal_type(db_path: str, occ_symbol: str) -> Optional[str]:
@@ -103,9 +125,14 @@ def check_single_leg_option_exits(
     positions: List[Any],
     db_path: str,
     today: Optional[_date] = None,
+    ctx: Any = None,
 ) -> List[Dict[str, Any]]:
     """Return exit signals for single-leg long option positions
     that hit a premium-stop, take-profit, or DTE threshold.
+
+    Thresholds are read from `ctx` (per-profile, AI-tunable). When
+    ctx is None — legacy callers, tests — the module defaults
+    (PREMIUM_STOP_LOSS_PCT etc.) apply.
 
     Each signal dict:
       {
@@ -120,6 +147,8 @@ def check_single_leg_option_exits(
     triggered: List[Dict[str, Any]] = []
     if not positions:
         return triggered
+
+    t = _resolve_thresholds(ctx)
 
     for pos in positions:
         if not _pos_is_option(pos):
@@ -145,40 +174,42 @@ def check_single_leg_option_exits(
 
             if not is_short:
                 # LONG: stop on premium drop, take-profit on rise.
-                if pct_change <= PREMIUM_STOP_LOSS_PCT:
+                if pct_change <= t["premium_stop_loss_pct"]:
                     triggered.append(_make_signal(
                         occ, qty, "premium_stop",
                         f"Premium dropped {pct_change:+.0%} (threshold "
-                        f"{PREMIUM_STOP_LOSS_PCT:+.0%})",
+                        f"{t['premium_stop_loss_pct']:+.0%})",
                         pct_change,
                     ))
                     continue
-                if pct_change >= PREMIUM_TAKE_PROFIT_PCT:
+                if pct_change >= t["premium_take_profit_pct"]:
                     triggered.append(_make_signal(
                         occ, qty, "premium_take_profit",
                         f"Premium gained {pct_change:+.0%} (threshold "
-                        f"{PREMIUM_TAKE_PROFIT_PCT:+.0%})",
+                        f"{t['premium_take_profit_pct']:+.0%})",
                         pct_change,
                     ))
                     continue
             else:
                 # SHORT: take-profit when premium DROPS (theta wins);
                 # stop when premium RISES against us. 2026-05-12.
-                if pct_change <= SHORT_PREMIUM_TAKE_PROFIT_PCT:
+                if pct_change <= t["short_premium_take_profit_pct"]:
                     triggered.append(_make_signal(
                         occ, qty, "short_premium_take_profit",
                         f"Short premium decayed {pct_change:+.0%} "
-                        f"(threshold {SHORT_PREMIUM_TAKE_PROFIT_PCT:+.0%}) "
+                        f"(threshold "
+                        f"{t['short_premium_take_profit_pct']:+.0%}) "
                         f"— closing to lock in {abs(pct_change)*100:.0f}% "
                         f"of credit",
                         pct_change,
                     ))
                     continue
-                if pct_change >= SHORT_PREMIUM_STOP_LOSS_PCT:
+                if pct_change >= t["short_premium_stop_loss_pct"]:
                     triggered.append(_make_signal(
                         occ, qty, "short_premium_stop",
                         f"Short premium expanded {pct_change:+.0%} "
-                        f"(threshold {SHORT_PREMIUM_STOP_LOSS_PCT:+.0%}) "
+                        f"(threshold "
+                        f"{t['short_premium_stop_loss_pct']:+.0%}) "
                         f"— closing before further expansion",
                         pct_change,
                     ))
@@ -186,14 +217,15 @@ def check_single_leg_option_exits(
 
         # DTE-based trigger — independent of premium price + side.
         dte = _days_to_expiry(occ, today=today)
-        if dte is not None and dte <= DTE_EXIT_THRESHOLD_DAYS:
+        if dte is not None and dte <= t["dte_exit_threshold_days"]:
             pct_change = (
                 (current - entry) / entry
                 if entry > 0 and current > 0 else 0.0
             )
             triggered.append(_make_signal(
                 occ, qty, "dte_exit",
-                f"DTE={dte} <= threshold={DTE_EXIT_THRESHOLD_DAYS} "
+                f"DTE={dte} <= threshold="
+                f"{t['dte_exit_threshold_days']} "
                 f"(closing to avoid gamma blowup)",
                 pct_change,
             ))

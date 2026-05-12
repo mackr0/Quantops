@@ -176,6 +176,16 @@ The 12 layers:
 
 The complete tuning rule list is in `self_tuning.py` and described in `docs/03_TRADING_STRATEGY.md`.
 
+### Option-pipeline tuner (`OptionPipeline.tune`)
+
+The instrument-class pipeline migration moved option-specific tuning into `pipelines/option.py:OptionPipeline.tune` so option outcomes can never pool with stock outcomes (audit finding #3). The tuner adjusts 11 parameters based on option win rate over resolved option predictions:
+
+- **3 Greek-budget caps** — `max_net_options_delta_pct`, `max_theta_burn_dollars_per_day`, `max_short_vega_dollars` (directional / theta / vega exposure ceilings).
+- **5 single-leg exit thresholds** — `option_premium_stop_loss_pct`, `option_premium_take_profit_pct`, `option_dte_exit_threshold_days`, `option_short_premium_take_profit_pct`, `option_short_premium_stop_loss_pct`. Read by `options_exits.check_single_leg_option_exits(positions, db_path, ctx=...)` on every trade-pipeline pass; module-constant defaults apply only when `ctx` is None.
+- **3 `option_spread_risk` VETO thresholds** — `option_spread_iv_rank_veto_threshold`, `option_spread_gamma_dte_veto_threshold`, `option_spread_credit_ratio_veto_threshold`. Formatted into the specialist's LLM prompt so vetoes track per-profile policy, not training-time numbers.
+
+Rule: ≥60% win rate with ≥20 samples loosens by 5%, ≤40% tightens by 5%, otherwise no change. Per-param direction is explicit — most caps loosen by going UP, but DTE-based exits and gamma-DTE/credit-ratio vetoes loosen by going DOWN (close less aggressively / veto less often). Floors and ceilings prevent runaway. Integer-stored params (DTE counts) are rounded.
+
 ## 10. Backtesting infrastructure
 
 Three independent layers, each serving a different question:

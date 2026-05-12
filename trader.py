@@ -392,7 +392,7 @@ def check_exits(ctx=None):
                 check_single_leg_option_exits, submit_option_close,
             )
             opt_signals = check_single_leg_option_exits(
-                positions, db_path,
+                positions, db_path, ctx=ctx,
             )
             for sig in opt_signals:
                 try:

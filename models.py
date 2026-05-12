@@ -430,6 +430,35 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             "REAL NOT NULL DEFAULT 50.0"),
         ("trading_profiles", "max_short_vega_dollars",
             "REAL NOT NULL DEFAULT 500.0"),
+        # 2026-05-12 — AI-tunable option exit + veto thresholds.
+        # Until this commit these lived as module constants in
+        # options_exits.py / option_spread_risk.py. The whole system
+        # is built so the AI figures out the right parameters from
+        # outcome data; hardcoded constants violated that premise.
+        # OptionPipeline.tune() adjusts each based on option win
+        # rate with per-param direction (some loosen=raise,
+        # some loosen=lower).
+        # LONG single-leg exits — trigger when pct_change crosses:
+        ("trading_profiles", "option_premium_stop_loss_pct",
+            "REAL NOT NULL DEFAULT -0.50"),
+        ("trading_profiles", "option_premium_take_profit_pct",
+            "REAL NOT NULL DEFAULT 1.00"),
+        ("trading_profiles", "option_dte_exit_threshold_days",
+            "INTEGER NOT NULL DEFAULT 7"),
+        # SHORT single-leg exits (asymmetric — premium-collected):
+        ("trading_profiles", "option_short_premium_take_profit_pct",
+            "REAL NOT NULL DEFAULT -0.50"),
+        ("trading_profiles", "option_short_premium_stop_loss_pct",
+            "REAL NOT NULL DEFAULT 1.00"),
+        # option_spread_risk specialist VETO thresholds (surfaced
+        # in the prompt text, controlling when the LLM is told to
+        # veto for IV crush / gamma blowup / credit insufficiency):
+        ("trading_profiles", "option_spread_iv_rank_veto_threshold",
+            "REAL NOT NULL DEFAULT 80.0"),
+        ("trading_profiles", "option_spread_gamma_dte_veto_threshold",
+            "INTEGER NOT NULL DEFAULT 7"),
+        ("trading_profiles", "option_spread_credit_ratio_veto_threshold",
+            "REAL NOT NULL DEFAULT 0.20"),
     ]
     for table, col, col_def in _migrations:
         try:
@@ -915,6 +944,15 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "max_net_options_delta_pct",
         "max_theta_burn_dollars_per_day",
         "max_short_vega_dollars",
+        # 2026-05-12 — AI-tunable option exit + veto thresholds.
+        "option_premium_stop_loss_pct",
+        "option_premium_take_profit_pct",
+        "option_dte_exit_threshold_days",
+        "option_short_premium_take_profit_pct",
+        "option_short_premium_stop_loss_pct",
+        "option_spread_iv_rank_veto_threshold",
+        "option_spread_gamma_dte_veto_threshold",
+        "option_spread_credit_ratio_veto_threshold",
     }
     updates = {}
     rejected = []
@@ -1197,6 +1235,39 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
             profile.get("max_short_vega_dollars", 500.0)
             if profile.get("max_short_vega_dollars") is not None
             else 500.0),
+        # 2026-05-12 — AI-tunable option exit + veto thresholds.
+        option_premium_stop_loss_pct=float(
+            profile.get("option_premium_stop_loss_pct", -0.50)
+            if profile.get("option_premium_stop_loss_pct") is not None
+            else -0.50),
+        option_premium_take_profit_pct=float(
+            profile.get("option_premium_take_profit_pct", 1.00)
+            if profile.get("option_premium_take_profit_pct") is not None
+            else 1.00),
+        option_dte_exit_threshold_days=int(
+            profile.get("option_dte_exit_threshold_days", 7)
+            if profile.get("option_dte_exit_threshold_days") is not None
+            else 7),
+        option_short_premium_take_profit_pct=float(
+            profile.get("option_short_premium_take_profit_pct", -0.50)
+            if profile.get("option_short_premium_take_profit_pct") is not None
+            else -0.50),
+        option_short_premium_stop_loss_pct=float(
+            profile.get("option_short_premium_stop_loss_pct", 1.00)
+            if profile.get("option_short_premium_stop_loss_pct") is not None
+            else 1.00),
+        option_spread_iv_rank_veto_threshold=float(
+            profile.get("option_spread_iv_rank_veto_threshold", 80.0)
+            if profile.get("option_spread_iv_rank_veto_threshold") is not None
+            else 80.0),
+        option_spread_gamma_dte_veto_threshold=int(
+            profile.get("option_spread_gamma_dte_veto_threshold", 7)
+            if profile.get("option_spread_gamma_dte_veto_threshold") is not None
+            else 7),
+        option_spread_credit_ratio_veto_threshold=float(
+            profile.get("option_spread_credit_ratio_veto_threshold", 0.20)
+            if profile.get("option_spread_credit_ratio_veto_threshold") is not None
+            else 0.20),
     )
 
 
