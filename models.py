@@ -417,6 +417,19 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             "REAL NOT NULL DEFAULT 0.80"),
         ("trading_profiles", "options_roll_recommend_profit_pct",
             "REAL NOT NULL DEFAULT 0.50"),
+        # 2026-05-12 — Phase 2b option-tuner WRITE targets. The
+        # OptionPipeline.tune() method adjusts these three Greek-
+        # budget caps based on option win rate (loosens at >=60%,
+        # tightens at <=40%). Defaults match the UserContext
+        # dataclass defaults (user_context.py:118-127). Without
+        # these as actual columns, the tuner had nothing to write
+        # to and per-profile customization was impossible.
+        ("trading_profiles", "max_net_options_delta_pct",
+            "REAL NOT NULL DEFAULT 0.05"),
+        ("trading_profiles", "max_theta_burn_dollars_per_day",
+            "REAL NOT NULL DEFAULT 50.0"),
+        ("trading_profiles", "max_short_vega_dollars",
+            "REAL NOT NULL DEFAULT 500.0"),
     ]
     for table, col, col_def in _migrations:
         try:
@@ -898,6 +911,10 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "options_roll_window_days",
         "options_auto_close_profit_pct",
         "options_roll_recommend_profit_pct",
+        # 2026-05-12 — Phase 2b option-tuner WRITE targets.
+        "max_net_options_delta_pct",
+        "max_theta_burn_dollars_per_day",
+        "max_short_vega_dollars",
     }
     updates = {}
     rejected = []
@@ -1165,6 +1182,21 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
             profile.get("options_auto_close_profit_pct", 0.80) or 0.80),
         options_roll_recommend_profit_pct=float(
             profile.get("options_roll_recommend_profit_pct", 0.50) or 0.50),
+        # 2026-05-12 — Phase 2b option-Greeks budget caps. Per-profile
+        # values; OptionPipeline.tune() can adjust them based on
+        # option win rate. Defaults match user_context.py:118-127.
+        max_net_options_delta_pct=float(
+            profile.get("max_net_options_delta_pct", 0.05)
+            if profile.get("max_net_options_delta_pct") is not None
+            else 0.05),
+        max_theta_burn_dollars_per_day=float(
+            profile.get("max_theta_burn_dollars_per_day", 50.0)
+            if profile.get("max_theta_burn_dollars_per_day") is not None
+            else 50.0),
+        max_short_vega_dollars=float(
+            profile.get("max_short_vega_dollars", 500.0)
+            if profile.get("max_short_vega_dollars") is not None
+            else 500.0),
     )
 
 

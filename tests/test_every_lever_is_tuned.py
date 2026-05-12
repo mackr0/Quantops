@@ -197,16 +197,47 @@ def _profile_columns() -> Set[str]:
 
 def _tuned_columns() -> Set[str]:
     """Find columns that the tuner directly updates via
-    update_trading_profile(...) calls in self_tuning.py.
+    update_trading_profile(...) calls.
+
+    Scans BOTH legacy self_tuning.py AND the new
+    pipelines/tuning_writer.py path (Phase 2b, 2026-05-12). The
+    pipeline tuner adjusts columns via the Pipeline.tune() ->
+    apply_parameter_adjustments path; columns it writes appear in
+    the BOUNDS dict in pipelines/option.py:tune (and similar in
+    future stock.py:tune).
 
     Catches three patterns:
       1. update_trading_profile(pid, <col>=value)
       2. update_trading_profile(pid, **{<col>: value})
-      3. The strategy-toggle dict-key pattern, where the column name
-         is in `_STRATEGY_TYPE_TO_TOGGLE` values.
+      3. The strategy-toggle dict-key pattern.
+    Plus the BOUNDS dict in pipelines/{stock,option}.py:tune which
+    enumerates columns the new pipeline tuner adjusts.
     """
-    src = (Path(__file__).resolve().parent.parent / "self_tuning.py").read_text()
+    base = Path(__file__).resolve().parent.parent
+    sources = [
+        (base / "self_tuning.py").read_text(),
+    ]
     cols = set()
+
+    # Phase 2b — pipeline tuner BOUNDS dicts. Each key is a column
+    # the OptionPipeline.tune() / StockPipeline.tune() adjusts.
+    for pipeline_file in ("pipelines/option.py", "pipelines/stock.py"):
+        try:
+            pipe_src = (base / pipeline_file).read_text()
+        except FileNotFoundError:
+            continue
+        # Match `BOUNDS = { "<col>": ... }` style declarations
+        bounds_match = re.search(
+            r"BOUNDS\s*=\s*\{(.*?)\n\s*\}",
+            pipe_src, flags=re.DOTALL,
+        )
+        if bounds_match:
+            for col in re.findall(
+                r'"([a-z_]+)"', bounds_match.group(1)
+            ):
+                cols.add(col)
+
+    src = sources[0]
 
     # Pattern 1 + 2
     for m in re.finditer(

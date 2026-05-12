@@ -385,7 +385,7 @@ Run: `venv/bin/python -m pytest tests/ -q`.
 
 Test discipline:
 
-- 2,748 tests, zero skipped.
+- 3,068 tests, zero skipped.
 - pytest-randomly for order-independence.
 - 30s default timeout per test.
 - Mocked external APIs (no network calls).

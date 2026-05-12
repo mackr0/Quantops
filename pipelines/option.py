@@ -108,22 +108,93 @@ class OptionPipeline(Pipeline):
         return Metrics(pipeline_name=self.name, numbers=numbers)
 
     def tune(self, ctx, metrics: Metrics) -> ParameterAdjustments:
-        """Option-only tuning. Phase 2: ships option-filtered win
-        rate. Subsequent commits add option-specific parameter
-        adjustments (max_spread_loss_pct, min_dte, iv_rank_threshold).
+        """Option-only tuning (Phase 2b, 2026-05-12).
+
+        Computes adjustments to the three option-Greeks budget
+        parameters that already exist on UserContext / trading_profiles:
+          - max_net_options_delta_pct (directional cap)
+          - max_theta_burn_dollars_per_day (long-vol budget)
+          - max_short_vega_dollars (short-vol cap)
+
+        Adjustment rule (simple, defensible):
+          - win rate ≥ 60% over ≥ MIN_SAMPLES → LOOSEN by 5%
+            (multiply by 1.05, clipped to ceiling). The system is
+            making money with options; give it slightly more rope.
+          - win rate ≤ 40% over ≥ MIN_SAMPLES → TIGHTEN by 5%
+            (multiply by 0.95, clipped to floor). Bleeding money;
+            pull in.
+          - between 40% and 60%, OR sample size < MIN_SAMPLES:
+            no change. Don't tune on noise.
+
+        Floors and ceilings keep the tuner from running away. The
+        changes dict is consumed by `apply_parameter_adjustments`
+        which UPDATEs the trading_profiles row.
         """
         from tuning import option as option_tuning
         db_path = getattr(ctx, "db_path", None)
-        changes = {}
+        changes: dict = {}
         rationale_parts = []
-        if db_path:
-            wr, n = option_tuning.current_win_rate(db_path)
-            rationale_parts.append(
-                f"option win rate {wr:.1f}% over {n} resolved "
-                f"option predictions"
+        if not db_path:
+            return ParameterAdjustments(
+                pipeline_name=self.name, changes=changes, rationale="",
             )
+
+        wr, n = option_tuning.current_win_rate(db_path)
+        rationale_parts.append(
+            f"option win rate {wr:.1f}% over {n} resolved "
+            f"option predictions"
+        )
+
+        MIN_SAMPLES = 20
+        if n < MIN_SAMPLES:
+            rationale_parts.append(
+                f"insufficient samples (need ≥{MIN_SAMPLES}); "
+                f"no parameter adjustments"
+            )
+            return ParameterAdjustments(
+                pipeline_name=self.name, changes=changes,
+                rationale="; ".join(rationale_parts),
+            )
+
+        # Direction of adjustment
+        if wr >= 60.0:
+            multiplier = 1.05
+            direction = "loosened"
+        elif wr <= 40.0:
+            multiplier = 0.95
+            direction = "tightened"
+        else:
+            rationale_parts.append(
+                f"win rate in neutral band 40-60%; no adjustments"
+            )
+            return ParameterAdjustments(
+                pipeline_name=self.name, changes=changes,
+                rationale="; ".join(rationale_parts),
+            )
+
+        # Range guards per parameter (floor, ceiling).
+        BOUNDS = {
+            "max_net_options_delta_pct": (0.02, 0.10),
+            "max_theta_burn_dollars_per_day": (25.0, 100.0),
+            "max_short_vega_dollars": (250.0, 1000.0),
+        }
+        for param, (floor, ceil) in BOUNDS.items():
+            current = getattr(ctx, param, None)
+            if current is None:
+                continue
+            new_val = float(current) * multiplier
+            new_val = max(floor, min(ceil, new_val))
+            # Only record a change if the bound-clipped value is
+            # actually different (avoid no-op writes).
+            if abs(new_val - float(current)) > 1e-9:
+                changes[param] = new_val
+
+        if changes:
+            rationale_parts.append(
+                f"{direction} {len(changes)} param(s)"
+            )
+
         return ParameterAdjustments(
-            pipeline_name=self.name,
-            changes=changes,
+            pipeline_name=self.name, changes=changes,
             rationale="; ".join(rationale_parts),
         )

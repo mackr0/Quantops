@@ -169,6 +169,23 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             f"Phase 5d backfill failed (non-fatal): {_exc}",
         )
 
+    # 2026-05-12 — Phase 2b option tuner WRITES. Each cycle, the
+    # OptionPipeline.tune() proposes adjustments to the three
+    # Greek-budget params (max_net_options_delta_pct,
+    # max_theta_burn_dollars_per_day, max_short_vega_dollars) based
+    # on option win rate, and persists them to trading_profiles.
+    # StockPipeline.tune() is also called but its tuning isn't yet
+    # writing parameters — that's a separate future commit.
+    # gated on enable_self_tuning so a profile can opt out.
+    try:
+        if getattr(ctx, "enable_self_tuning", True):
+            from pipelines.tuning_writer import run_pipeline_tuning
+            run_pipeline_tuning(ctx)
+    except Exception as _exc:
+        logging.debug(
+            f"Pipeline tuning failed (non-fatal): {_exc}",
+        )
+
     # 2026-05-11: pipeline-aware specialist calibrator recalibration.
     # Pre-this-commit, calibrators were trained on a mix of stock +
     # option resolutions where option rows had wrong actual_return_pct
