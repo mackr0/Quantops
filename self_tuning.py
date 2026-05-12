@@ -4079,12 +4079,20 @@ def _optimize_commission_strategy(conn, ctx, profile_id, user_id,
     if "strategy_type" not in cols:
         return None
 
-    # Gaps = resolved winning BUY predictions where no strategy fired.
+    # Gaps = resolved winning entry predictions where no strategy
+    # fired. 2026-05-12 fix: previously listed only ('BUY', 'SELL')
+    # — missed STRONG_BUY/WEAK_BUY/SHORT/STRONG_SELL/WEAK_SELL/COVER
+    # winners. Same partial-list class as the HOLD-exclusion fix.
+    # HOLD intentionally excluded — gap-detection looks for missed
+    # ENTRY opportunities (rows where AI conviction was high enough
+    # to commit), not no-trade decisions.
     gap_rows = conn.execute(
         "SELECT symbol, predicted_signal, actual_return_pct "
         "FROM ai_predictions "
         "WHERE status='resolved' AND actual_outcome='win' "
-        "  AND predicted_signal IN ('BUY', 'SELL') "
+        "  AND predicted_signal IN ('BUY', 'STRONG_BUY', 'WEAK_BUY', "
+        "                            'SELL', 'STRONG_SELL', 'WEAK_SELL', "
+        "                            'SHORT', 'COVER') "
         "  AND (strategy_type IS NULL OR strategy_type = '') "
         "  AND datetime(timestamp) >= datetime('now', '-30 days') "
         "ORDER BY timestamp DESC LIMIT 50"

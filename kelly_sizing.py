@@ -124,12 +124,21 @@ def compute_kelly_recommendation(
         ptype = "directional_long" if direction == "long" else "directional_short"
         # Kelly is for sizing NEW entries — only count rows where we
         # actually took a position. HOLD predictions tagged as
-        # directional_long must be excluded; their P&L reflects existing
-        # positions, not new bets, and pollutes win rate / avg win/loss.
+        # directional_long are EXCLUDED here because they represent
+        # decisions NOT to enter — sizing math doesn't apply.
+        #
+        # 2026-05-12 fix: previously missed WEAK_BUY (long) and
+        # WEAK_SELL/COVER (short), which silently dropped a fraction
+        # of the entry-signal data from Kelly calculation. Same
+        # bug-class as the HOLD-exclusion in pipeline_kind backfill.
+        # Keep these in sync with pipelines.outcomes.kind_from_signal
+        # — every "stock entry" signal must be listed here.
         if direction == "long":
-            entry_signals = ("BUY", "STRONG_BUY")
+            entry_signals = ("BUY", "STRONG_BUY", "WEAK_BUY")
         else:
-            entry_signals = ("SHORT", "SELL", "STRONG_SELL", "STRONG_SHORT")
+            entry_signals = (
+                "SHORT", "SELL", "STRONG_SELL", "WEAK_SELL", "COVER",
+            )
         placeholders = ",".join("?" * len(entry_signals))
         # Use prediction_type when present; fall back to predicted_signal
         # for legacy rows that haven't been backfilled.

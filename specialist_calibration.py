@@ -236,7 +236,12 @@ def fit_calibrator(db_path: str, specialist_name: str,
                 "AND so.was_correct IS NOT NULL "
                 "AND so.resolved_at >= datetime('now', ? || ' days') "
                 "AND COALESCE(ap.prediction_type, "
-                "  CASE WHEN ap.predicted_signal IN ('BUY','HOLD','STRONG_BUY') "
+                # 2026-05-12 fix: previously missed WEAK_BUY in the
+                # long inference. Now lists every long-direction
+                # signal explicitly so legacy NULL-prediction_type
+                # rows route to the correct direction calibrator.
+                "  CASE WHEN ap.predicted_signal IN "
+                "    ('BUY','STRONG_BUY','WEAK_BUY','HOLD') "
                 "       THEN 'directional_long' ELSE 'directional_short' END"
                 ") = ? "
                 f"{pk_clause}"
