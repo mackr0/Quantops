@@ -2486,6 +2486,23 @@ def _task_portfolio_risk_snapshot(ctx):
             logging.info(f"[{seg_label}] Risk snapshot — insufficient factor data")
             return
 
+        # Phase 6b of pipeline refactor: attach aggregate book Greeks
+        # to the risk snapshot so render_risk_summary_for_prompt can
+        # surface them in the AI prompts. Pipelines now see the
+        # book's net delta/gamma/vega/theta alongside the factor-risk
+        # numbers — visibility on the option-specific risk
+        # dimensions (theta decay, vol exposure) the factor model
+        # can't capture. Failure-tolerant: if Greeks computation
+        # raises, the snapshot continues without them.
+        try:
+            from pipelines.risk import compute_book_greeks
+            risk["book_greeks"] = compute_book_greeks(positions) or {}
+        except Exception as exc:
+            logging.debug(
+                f"[{seg_label}] Greeks aggregation failed (non-fatal): {exc}"
+            )
+            risk["book_greeks"] = {}
+
         scenarios = run_all_scenarios(
             risk["weights"], risk["exposures"], portfolio_value=equity,
         )

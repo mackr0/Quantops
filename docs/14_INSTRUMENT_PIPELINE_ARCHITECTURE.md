@@ -455,18 +455,19 @@ aggregation surfaces in the AI prompt for all pipelines.
 - `pipelines/risk/exposure.py:portfolio_delta_exposure()` — aggregates per-position contributions into `{underlying: $exposure}`. Same-underlying stock + option positions roll up into one bucket.
 - `pipelines/risk/__init__.py` re-exports `compute_book_greeks` from `options_greeks_aggregator` (canonical since Phase A1 of OPTIONS_PROGRAM_PLAN — Phase 6 wraps, doesn't reinvent).
 
-**Phase 6b (queued)**:
-- Wire `pipelines.risk.exposure.portfolio_delta_exposure()` into `portfolio_risk_model.compute_portfolio_risk` so factor regressions consume delta-equivalent weights for option positions instead of premium-based weights (today's broken behavior under-weights option contributions by ~10×).
-- Surface aggregate Greeks (`compute_book_greeks`) in `render_risk_summary_for_prompt()` so each pipeline's AI sees the book's net delta/gamma/vega/theta.
+**Phase 6b shipped 2026-05-11**:
+- `compute_portfolio_risk_from_positions` calls `effective_positions_for_risk_model` before the factor regression. Option positions stop being silently dropped (OCC symbols had no bars); they now roll up under the underlying ticker with signed delta-equivalent market_value.
+- New helpers in `pipelines/risk/exposure.py`: `signed_portfolio_delta_exposure` (sign-preserving) and `effective_positions_for_risk_model` (synthetic-position roll-up).
+- `multi_scheduler` attaches `book_greeks` to the risk snapshot via `compute_book_greeks`. `render_risk_summary_for_prompt` surfaces a `Greeks: Δ ... Γ ... ν ... θ ...` line when `n_options_legs > 0`; omitted for stock-only books (back-compat preserved).
 
-**Exit criteria**:
-- ✅ Long call exposure ≥ 5× premium-based exposure (delta-adjusted math correct by construction).
+**Exit criteria** — all met:
+- ✅ Long call exposure ≥ 5× premium-based exposure.
 - ✅ Same-underlying stock+option positions aggregate to one bucket.
-- ✅ Long/short same-params positions have equal absolute exposure (sign-handling correct).
-- 🔲 Phase 6b: factor regressions in `portfolio_risk_model` consume delta-equivalent weights.
-- 🔲 Phase 6b: prompt visibly includes portfolio Greeks.
+- ✅ Long/short same-params positions have equal absolute exposure.
+- ✅ Factor regressions in `portfolio_risk_model` consume delta-equivalent weights.
+- ✅ Prompt visibly includes portfolio Greeks when options are present.
 
-**Estimated work remaining**: ~1 session for Phase 6b (wire the existing pure functions into the production risk-model + prompt-render paths).
+**Optional refinements (not in scope)**: live IV oracle wired to `iv_lookup` (today's first wiring uses `FALLBACK_IV=0.25`); position-level Greek breakdown surfaced in the risk dashboard panel.
 
 ---
 

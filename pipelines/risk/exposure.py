@@ -99,6 +99,155 @@ def delta_adjusted_position_value(
     return abs(delta_shares * spot)
 
 
+def _signed_delta_dollars_for_position(
+    pos: Dict[str, Any],
+    spot: Optional[float],
+    iv: Optional[float],
+    today: _date,
+) -> float:
+    """Signed delta-equivalent $ contribution for one position.
+
+    Stocks: qty × price (signed by qty).
+    Options: contrib['delta'] × spot, where contrib['delta'] is
+        already qty-signed (long call positive, short call negative).
+
+    Returns 0.0 for un-pricable inputs.
+    """
+    qty = float(pos.get("qty") or 0)
+    if qty == 0:
+        return 0.0
+
+    if not _is_option_position(pos):
+        price = pos.get("current_price")
+        try:
+            price = float(price) if price is not None else None
+        except (TypeError, ValueError):
+            price = None
+        if price is None or price <= 0:
+            price = spot
+        if price is None or price <= 0:
+            return 0.0
+        return qty * price  # signed
+
+    parsed = _parse_option_position(pos)
+    if parsed is None or spot is None or spot <= 0:
+        return 0.0
+    iv_eff = iv if (iv is not None and iv > 0) else FALLBACK_IV
+    contrib = _greek_contribution(parsed, spot, iv_eff, today=today)
+    if contrib is None:
+        return 0.0
+    return contrib["delta"] * spot  # signed (delta sign + qty sign)
+
+
+def signed_portfolio_delta_exposure(
+    positions: List[Dict[str, Any]],
+    price_lookup: Optional[Callable[[str], Optional[float]]] = None,
+    iv_lookup: Optional[Callable[[str], Optional[float]]] = None,
+    today: Optional[_date] = None,
+) -> Dict[str, float]:
+    """Like `portfolio_delta_exposure` but preserves SIGN.
+
+    Used by `effective_positions_for_risk_model` to feed the
+    factor-regression model (which needs signed weights so a long
+    AAPL stock and a short AAPL call partially offset rather than
+    doubling up).
+    """
+    today = today or _date.today()
+    out: Dict[str, float] = {}
+
+    for pos in positions or []:
+        qty = float(pos.get("qty") or 0)
+        if qty == 0:
+            continue
+
+        if _is_option_position(pos):
+            parsed = _parse_option_position(pos)
+            if parsed is None:
+                continue
+            underlying = parsed["underlying"]
+        else:
+            underlying = pos.get("symbol", "")
+            if not underlying:
+                continue
+
+        spot = None
+        if price_lookup:
+            try:
+                spot = price_lookup(underlying)
+            except Exception:
+                spot = None
+        if spot is None or spot <= 0:
+            cp = pos.get("current_price")
+            try:
+                spot = float(cp) if cp is not None else None
+            except (TypeError, ValueError):
+                spot = None
+
+        iv = None
+        if _is_option_position(pos) and iv_lookup:
+            try:
+                iv = iv_lookup(underlying)
+            except Exception:
+                iv = None
+
+        contribution = _signed_delta_dollars_for_position(
+            pos, spot=spot, iv=iv, today=today,
+        )
+        if contribution != 0:
+            out[underlying] = out.get(underlying, 0.0) + contribution
+
+    return out
+
+
+def effective_positions_for_risk_model(
+    positions: List[Dict[str, Any]],
+    price_lookup: Optional[Callable[[str], Optional[float]]] = None,
+    iv_lookup: Optional[Callable[[str], Optional[float]]] = None,
+    today: Optional[_date] = None,
+) -> List[Dict[str, Any]]:
+    """Convert raw positions into synthetic underlying-bucket positions
+    suitable for the factor-regression risk model.
+
+    Each output dict has:
+      - symbol: the UNDERLYING ticker (option positions roll up here)
+      - market_value: signed delta-equivalent $ exposure
+      - n_legs: count of underlying legs that contributed (for
+        debugging / display)
+
+    The factor-regression model in `portfolio_risk_model.
+    compute_portfolio_risk_from_positions` consumes this list in
+    place of raw positions — replaces audit-finding-#7's broken
+    behavior where option positions either contributed
+    premium-based weight (under-counting risk by ~10×) or were
+    silently dropped (when their OCC symbol had no bars).
+    """
+    signed = signed_portfolio_delta_exposure(
+        positions, price_lookup=price_lookup,
+        iv_lookup=iv_lookup, today=today,
+    )
+    # Per-underlying leg counts for visibility
+    leg_counts: Dict[str, int] = {}
+    for pos in positions or []:
+        qty = float(pos.get("qty") or 0)
+        if qty == 0:
+            continue
+        if _is_option_position(pos):
+            parsed = _parse_option_position(pos)
+            underlying = parsed["underlying"] if parsed else None
+        else:
+            underlying = pos.get("symbol", "")
+        if underlying:
+            leg_counts[underlying] = leg_counts.get(underlying, 0) + 1
+    return [
+        {
+            "symbol": sym,
+            "market_value": mv,
+            "n_legs": leg_counts.get(sym, 0),
+        }
+        for sym, mv in signed.items()
+    ]
+
+
 def portfolio_delta_exposure(
     positions: List[Dict[str, Any]],
     price_lookup: Optional[Callable[[str], Optional[float]]] = None,

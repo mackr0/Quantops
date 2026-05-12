@@ -598,9 +598,27 @@ def compute_portfolio_risk_from_positions(
     if factor_cov is None:
         return None
 
+    # Phase 6b of pipeline refactor: convert raw positions into
+    # underlying-bucket "effective positions" where option contributions
+    # are delta-equivalent dollars (delta × spot × |qty| × 100, signed
+    # by direction). Closes audit finding #7 — option positions used
+    # to be silently dropped here (OCC symbol has no bars) which
+    # ignored their directional risk entirely. Now they roll up under
+    # the underlying ticker which DOES have bars.
+    #
+    # For Phase 6b's first wiring: spot lookup falls back to the
+    # position's own current_price (broker-shipped); iv defaults to
+    # FALLBACK_IV. A future refinement will pass the live IV oracle.
+    from pipelines.risk import exposure as _exp
+    effective_positions = _exp.effective_positions_for_risk_model(
+        positions,
+        price_lookup=None,   # falls back to position.current_price
+        iv_lookup=None,       # falls back to FALLBACK_IV (0.25)
+    )
+
     exposures: Dict[str, Dict[str, Any]] = {}
     weights: Dict[str, float] = {}
-    for p in positions:
+    for p in effective_positions:
         sym = (p.get("symbol") or "").upper()
         mv = float(p.get("market_value") or 0)
         if not sym or mv == 0:
@@ -672,5 +690,19 @@ def render_risk_summary_for_prompt(risk: Dict[str, Any]) -> str:
             f"styles: {grouped.get('styles',0)/tv*100:.0f}%, "
             f"french: {grouped.get('french',0)/tv*100:.0f}%, "
             f"idio: {grouped.get('idio',0)/tv*100:.0f}%"
+        )
+    # Phase 6b of pipeline refactor: surface aggregate book Greeks
+    # alongside factor-risk metrics. Each pipeline's AI now sees the
+    # book's net delta/gamma/vega/theta — visibility on the option-
+    # specific risk dimensions the factor model can't capture
+    # (theta decay, vol exposure). Only included when book_greeks
+    # is populated (no-op for stock-only books).
+    greeks = risk.get("book_greeks") or {}
+    if greeks and (greeks.get("n_options_legs", 0) > 0):
+        parts.append(
+            f"Greeks: Δ={greeks.get('net_delta', 0):+.0f}sh "
+            f"Γ={greeks.get('net_gamma', 0):+.4f} "
+            f"ν=${greeks.get('net_vega', 0):+,.0f}/vol "
+            f"θ=${greeks.get('net_theta', 0):+,.0f}/day"
         )
     return " | ".join(parts)

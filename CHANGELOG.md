@@ -17,6 +17,39 @@ Rules going forward:
 
 ---
 
+## 2026-05-11 — Pipeline Architecture Phase 6b — wire risk model + Greeks in prompt; closes audit finding #7 live
+
+Phase 6b of the pipeline refactor wires the Phase 6a pure functions into production. Two material behavior changes:
+
+1. **`portfolio_risk_model.compute_portfolio_risk_from_positions`** now converts raw positions into "effective positions" via `pipelines.risk.exposure.effective_positions_for_risk_model` BEFORE the factor regression. The pre-refactor loop silently dropped option positions (their OCC symbol had no bars in `get_bars`), so option exposure was completely invisible to the factor model. Now option positions roll up under their UNDERLYING ticker with signed delta-equivalent dollar exposure (delta × spot × |qty| × 100, signed by direction). A long AAPL call now contributes to AAPL's risk bucket alongside any AAPL stock — direction-aware, magnitude-correct.
+
+2. **`render_risk_summary_for_prompt`** now appends a Greeks line when `book_greeks` is attached to the risk dict: `Greeks: Δ=+35sh Γ=+0.1200 ν=$-200/vol θ=$-45/day`. `multi_scheduler` attaches `book_greeks` via `pipelines.risk.compute_book_greeks(positions)` immediately after computing the factor risk. The Greeks line is omitted entirely when `n_options_legs == 0` so stock-only books see no change to their AI prompt.
+
+**New helpers in `pipelines/risk/exposure.py`** (Phase 6b additions to the Phase 6a module):
+- `signed_portfolio_delta_exposure(positions, price_lookup, iv_lookup)` — like the Phase 6a `portfolio_delta_exposure` but preserves SIGN (long call positive, short call negative). Used internally by `effective_positions_for_risk_model`.
+- `effective_positions_for_risk_model(positions, price_lookup, iv_lookup)` — produces the synthetic-position list (one per underlying, signed delta-equivalent market_value) that `compute_portfolio_risk_from_positions` consumes.
+
+**Failure tolerance**: the Greeks attachment in `multi_scheduler` is wrapped in try/except — if `compute_book_greeks` raises (missing IV oracle data, exotic position shape), the snapshot continues without Greeks. The factor-risk numbers always render, even when Greeks aren't available.
+
+**Tests** (`tests/test_pipelines_phase6b_wiring.py`, 15 tests):
+- SIGN PRESERVATION: long stock +1500, short stock -1500; long call positive signed exposure; short call negative; long put negative (correct since long puts have negative delta).
+- COVERED CALL: long 100 shares + short 1 call → net positive but LESS than stock-alone $5,000 (partially offset position correctly modeled).
+- ROLL-UP: stock + option on same underlying → ONE effective position with combined market_value and `n_legs=2`.
+- PROMPT INTEGRATION: Greeks line appears with `Δ`/`Γ`/`ν`/`θ` symbols when book_greeks dict has options legs; omitted when `n_options_legs=0`; omitted when book_greeks key missing entirely (back-compat for any caller that doesn't attach it).
+- Existing risk-summary fields (VaR, σ) continue to render unchanged.
+- Greek signs render with explicit + / - (negative delta as `-50`, positive vega as `+100`).
+
+**Behavior change on prod**:
+- Risk dashboard's per-symbol weights for portfolios with options will now show non-zero contributions for option positions (previously zero — silently dropped). VaR estimates for option-holding accounts will reflect the actual directional risk instead of ignoring it.
+- AI prompts for any pipeline running on a profile with options will now include the Greeks line.
+- Risk snapshots written to `portfolio_risk_snapshots` table now include `book_greeks` in the persisted JSON.
+
+**Tests**: 2,645 pass (+15 Phase 6b, 0 regressions).
+
+This closes the structural fix for audit finding #7 — option positions are now first-class citizens in the portfolio risk model, with delta-adjusted exposure rolled up under the underlying for the factor regression and aggregate Greeks visible in every pipeline's AI prompt.
+
+---
+
 ## 2026-05-11 — Pipeline Architecture Phase 6a — delta-adjusted portfolio exposure; closes audit finding #7 framework
 
 Phase 6a of the instrument-class pipeline refactor. Adds the cross-pipeline portfolio-risk infrastructure that aggregates stock and option positions on a delta-equivalent dollar basis. A long call worth $200 in premium, with delta=0.4 on a $50 underlying with qty=1 contract, now correctly contributes ~$2,000 of effective directional exposure (40 delta-shares × $50) to the portfolio risk view — not $200 (which was today's broken behavior, ~10× too low).
