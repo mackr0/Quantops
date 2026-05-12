@@ -141,8 +141,8 @@ class TestCalmarGuard:
         from metrics import calculate_all_metrics
         # Patch gather functions to return our synthetic data
         from unittest.mock import patch
-        with patch("metrics._gather_snapshots", lambda *a, **kw: snapshots), \
-             patch("metrics._gather_trades", lambda *a: trades):
+        with patch("metrics.legacy._gather_snapshots", lambda *a, **kw: snapshots), \
+             patch("metrics.legacy._gather_trades", lambda *a: trades):
             return calculate_all_metrics({"fake.db"}, initial_capital=10000)
 
     def test_tiny_drawdown_returns_zero_calmar(self):
@@ -224,7 +224,7 @@ class TestTradeCountsIncludeOpen:
 
         from metrics import _count_open_trades, calculate_all_metrics
         from unittest.mock import patch
-        with patch("metrics._gather_snapshots", return_value=[]):
+        with patch("metrics.legacy._gather_snapshots", return_value=[]):
             m = calculate_all_metrics({tmp_profile_db}, initial_capital=10000)
 
         assert m["open_trades"] == 2
@@ -256,7 +256,7 @@ class TestWinLossRatio:
                   status="closed", db_path=tmp_profile_db)
         from metrics import calculate_all_metrics
         from unittest.mock import patch
-        with patch("metrics._gather_snapshots", return_value=[]):
+        with patch("metrics.legacy._gather_snapshots", return_value=[]):
             m = calculate_all_metrics({tmp_profile_db}, initial_capital=10000)
         assert m["win_loss_ratio_computable"] is False
 
@@ -266,7 +266,7 @@ class TestWinLossRatio:
                   status="closed", db_path=tmp_profile_db)
         from metrics import calculate_all_metrics
         from unittest.mock import patch
-        with patch("metrics._gather_snapshots", return_value=[]):
+        with patch("metrics.legacy._gather_snapshots", return_value=[]):
             m = calculate_all_metrics({tmp_profile_db}, initial_capital=10000)
         assert m["win_loss_ratio_computable"] is False
 
@@ -278,7 +278,7 @@ class TestWinLossRatio:
                   status="closed", db_path=tmp_profile_db)
         from metrics import calculate_all_metrics
         from unittest.mock import patch
-        with patch("metrics._gather_snapshots", return_value=[]):
+        with patch("metrics.legacy._gather_snapshots", return_value=[]):
             m = calculate_all_metrics({tmp_profile_db}, initial_capital=10000)
         assert m["win_loss_ratio_computable"] is True
         assert m["win_loss_ratio"] == 2.0   # avg_win(100) / avg_loss(50)
@@ -306,7 +306,7 @@ class TestAvgHoldDays:
 
         from metrics import calculate_all_metrics
         from unittest.mock import patch
-        with patch("metrics._gather_snapshots", return_value=[]):
+        with patch("metrics.legacy._gather_snapshots", return_value=[]):
             m = calculate_all_metrics({tmp_profile_db}, initial_capital=10000)
 
         assert m["avg_hold_days"] == 1.0, (
@@ -318,7 +318,7 @@ class TestAvgHoldDays:
         log_trade(symbol="X", side="buy", qty=10, price=100, db_path=tmp_profile_db)
         from metrics import calculate_all_metrics
         from unittest.mock import patch
-        with patch("metrics._gather_snapshots", return_value=[]):
+        with patch("metrics.legacy._gather_snapshots", return_value=[]):
             m = calculate_all_metrics({tmp_profile_db}, initial_capital=10000)
         assert m["avg_hold_days"] == 0.0
 

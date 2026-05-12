@@ -17,6 +17,59 @@ Rules going forward:
 
 ---
 
+## 2026-05-11 — Pipeline Architecture Phase 1 — per-pipeline metrics; closes TODO #8
+
+Phase 1 of the instrument-class pipeline refactor (see
+`docs/14_INSTRUMENT_PIPELINE_ARCHITECTURE.md`). Moves slippage stats
+out of the cross-instrument `metrics.legacy.calculate_all_metrics`
+mixed aggregate into per-pipeline namespaces. Closes TODO #8 (1130%
+slippage display) and audit finding #1 by construction.
+
+**Module restructure**: `metrics.py` → `metrics/legacy.py` inside a
+new `metrics/` package. `metrics/__init__.py` re-exports the legacy
+public surface (and underscore-prefixed helpers for tests) so every
+existing `from metrics import ...` consumer keeps working unchanged.
+33 importers verified compatible.
+
+**New per-pipeline modules**:
+- `metrics/stock.py` — `slippage_stats(db_path)` filters
+  `WHERE occ_symbol IS NULL`. Stock slippage averages can no longer
+  be polluted by option premium %-moves.
+- `metrics/option.py` — `slippage_stats(db_path)` filters
+  `WHERE occ_symbol IS NOT NULL` AND explicitly returns `None` for
+  the `avg_slippage_pct` and `worst_slippage_pct` fields. Option
+  premium % is mathematically valid but practically misleading on
+  penny premiums (the 1130% bug). Dollar fields apply the contract
+  multiplier (×100) so they reflect actual portfolio impact.
+- `metrics/portfolio.py` — `slippage_stats_all(db_path)` is the
+  legacy mixed aggregate, deprecated and kept only for migration
+  verification.
+
+**Journal helper extended**: `journal.get_slippage_stats(db_path,
+kind=None)` accepts the `kind` parameter (`'stocks'` / `'options'`
+/ `None`) and applies the SQL filter at the data layer. Bind-
+parameter safe.
+
+**Pipeline integration**: `pipelines/stock.py:compute_metrics()`
+and `pipelines/option.py:compute_metrics()` are now wired (no
+longer `NotImplementedError`). Each calls into its module and
+returns a `Metrics` DTO with slippage under `numbers["slippage"]`.
+
+**Tests**:
+- 8 new in `tests/test_pipelines_phase1_metrics.py` pinning
+  the per-pipeline split and pipeline-method wiring.
+- `tests/test_insufficient_data_guards.py` and
+  `tests/test_metrics_bugs.py` updated to patch
+  `metrics.legacy._gather_*` instead of `metrics._gather_*` —
+  consumer-side adjustment for the package restructure.
+- Phase 0 tests updated to remove `compute_metrics` from the
+  NotImplementedError-coverage parametrize list.
+
+2,796 pass (was 2,786 + 8 new Phase 1 + adjustments + 0
+regressions in the broader suite).
+
+---
+
 ## 2026-05-11 — TODO #4b + Pipeline Architecture Phase 0
 
 Two coordinated landings closing today's option-handling

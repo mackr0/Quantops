@@ -17,8 +17,14 @@ import pytest
 def _empty_metrics():
     """Run calculate_all_metrics with no data."""
     from metrics import calculate_all_metrics
-    with patch("metrics._gather_snapshots", return_value=[]), \
-         patch("metrics._gather_trades", return_value=[]):
+    # `metrics` is now a package (Phase 1, 2026-05-11). The
+    # `calculate_all_metrics` function lives in `metrics.legacy` and
+    # looks up `_gather_snapshots`/`_gather_trades` in its OWN module
+    # namespace (`metrics.legacy`), so patches must target there —
+    # patching `metrics._gather_snapshots` aliases the top-level
+    # re-export but doesn't affect the legacy module's bindings.
+    with patch("metrics.legacy._gather_snapshots", return_value=[]), \
+         patch("metrics.legacy._gather_trades", return_value=[]):
         return calculate_all_metrics({"fake.db"}, initial_capital=10000)
 
 
@@ -31,12 +37,12 @@ def _one_trade_metrics():
         "symbol": "LUNR", "side": "sell", "qty": 18,
         "price": 23.29, "pnl": -29.7, "status": "closed",
     }]
-    with patch("metrics._gather_snapshots",
+    with patch("metrics.legacy._gather_snapshots",
                return_value=[
                    {"date": "2026-04-12", "equity": 30000, "daily_pnl": 0},
                    {"date": "2026-04-13", "equity": 29979.80, "daily_pnl": -20.20},
                ]), \
-         patch("metrics._gather_trades", return_value=one_trade):
+         patch("metrics.legacy._gather_trades", return_value=one_trade):
         return calculate_all_metrics({"fake.db"}, initial_capital=10000)
 
 
@@ -160,8 +166,8 @@ class TestSufficientData:
     def test_sharpe_computable_with_enough_returns(self):
         from metrics import calculate_all_metrics
         snaps = self._make_snapshots(30)
-        with patch("metrics._gather_snapshots", return_value=snaps), \
-             patch("metrics._gather_trades", return_value=[]):
+        with patch("metrics.legacy._gather_snapshots", return_value=snaps), \
+             patch("metrics.legacy._gather_trades", return_value=[]):
             m = calculate_all_metrics({"fake.db"}, initial_capital=10000)
         assert m["sharpe_ratio_computable"] is True
         assert m["annualized_volatility_computable"] is True
@@ -174,8 +180,8 @@ class TestSufficientData:
              "price": 100, "pnl": -10 * i, "status": "closed"}
             for i in range(1, 7)   # 6 trades
         ]
-        with patch("metrics._gather_snapshots", return_value=[]), \
-             patch("metrics._gather_trades", return_value=trades):
+        with patch("metrics.legacy._gather_snapshots", return_value=[]), \
+             patch("metrics.legacy._gather_trades", return_value=trades):
             m = calculate_all_metrics({"fake.db"}, initial_capital=10000)
         assert m["var_95_computable"] is True
         assert m["cvar_95_computable"] is True
@@ -188,8 +194,8 @@ class TestSufficientData:
             {"timestamp": "2026-04-02T10:00:00", "symbol": "B", "side": "sell",
              "qty": 10, "price": 100, "pnl": -100, "status": "closed"},
         ]
-        with patch("metrics._gather_snapshots", return_value=[]), \
-             patch("metrics._gather_trades", return_value=trades):
+        with patch("metrics.legacy._gather_snapshots", return_value=[]), \
+             patch("metrics.legacy._gather_trades", return_value=trades):
             m = calculate_all_metrics({"fake.db"}, initial_capital=10000)
         assert m["profit_factor_computable"] is True
         assert m["profit_factor"] == 2.0

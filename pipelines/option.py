@@ -89,12 +89,20 @@ class OptionPipeline(Pipeline):
         )
 
     def compute_metrics(self, ctx) -> Metrics:
-        raise NotImplementedError(
-            "Phase 1 implements: theta-decay-adjusted return, "
-            "gamma exposure, IV-rank-bucketed P&L, slippage in $ "
-            "(never as % of penny premiums). Eliminates TODO #8 "
-            "(1130% slippage display) by construction."
-        )
+        """Option-only metrics. Phase 1: option slippage in $ (never
+        as % of penny premiums — see `metrics/option.py`). Closes
+        TODO #8 / audit finding #1 by construction. Subsequent
+        commits will add theta-decay-adjusted return, gamma
+        exposure, IV-rank-bucketed P&L.
+        """
+        from metrics import option as option_metrics
+        db_path = getattr(ctx, "db_path", None)
+        numbers = {}
+        if db_path:
+            slip = option_metrics.slippage_stats(db_path)
+            if slip is not None:
+                numbers["slippage"] = slip
+        return Metrics(pipeline_name=self.name, numbers=numbers)
 
     def tune(self, ctx, metrics: Metrics) -> ParameterAdjustments:
         raise NotImplementedError(

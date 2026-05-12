@@ -77,11 +77,20 @@ class StockPipeline(Pipeline):
         )
 
     def compute_metrics(self, ctx) -> Metrics:
-        raise NotImplementedError(
-            "Phase 1 implements: Sharpe on stock-only equity "
-            "contributions, sector beta, stock-book drawdown, "
-            "stock-only slippage in $."
-        )
+        """Stock-only metrics. Phase 1: stock-only slippage stats
+        (the only metric extracted into per-pipeline namespaces so
+        far). Subsequent commits will add Sharpe / sector beta /
+        stock-book drawdown / win rate as they're moved out of
+        `metrics.legacy.calculate_all_metrics`.
+        """
+        from metrics import stock as stock_metrics
+        db_path = getattr(ctx, "db_path", None)
+        numbers = {}
+        if db_path:
+            slip = stock_metrics.slippage_stats(db_path)
+            if slip is not None:
+                numbers["slippage"] = slip
+        return Metrics(pipeline_name=self.name, numbers=numbers)
 
     def tune(self, ctx, metrics: Metrics) -> ParameterAdjustments:
         raise NotImplementedError(

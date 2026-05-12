@@ -1352,8 +1352,22 @@ def get_equity_curve(days=30, db_path=None):
     return [dict(r) for r in reversed(rows)]
 
 
-def get_slippage_stats(db_path=None):
+def get_slippage_stats(db_path=None, kind=None):
     """Return slippage statistics from trades that have fill_price data.
+
+    Args:
+        kind: 'stocks' (occ_symbol IS NULL), 'options' (occ_symbol
+            IS NOT NULL), or None (all). Wired 2026-05-11 (Phase 1
+            of instrument-class pipeline refactor).
+
+            Mixing stock and option rows in one slippage aggregate
+            inflates `avg_slippage_pct` to impossible values
+            (1130% observed in prod 2026-05-11) because option
+            premiums move 10-100% per cycle on small underlying
+            moves and pollute the average. Per-pipeline metrics
+            (metrics.stock / metrics.option) call this with kind=
+            set so each instrument class gets its own clean
+            aggregate.
 
     The total_slippage_cost is the SIGNED net economic cost — favorable
     slippage (buying cheaper than decision price, selling higher than
@@ -1373,8 +1387,13 @@ def get_slippage_stats(db_path=None):
     variance independent of direction.
     """
     conn = _get_conn(db_path)
+    where_kind = ""
+    if kind == "stocks":
+        where_kind = " AND occ_symbol IS NULL"
+    elif kind == "options":
+        where_kind = " AND occ_symbol IS NOT NULL"
     try:
-        row = conn.execute("""
+        row = conn.execute(f"""
             SELECT
                 COUNT(*) AS trades_with_fills,
                 AVG(slippage_pct) AS avg_slippage_pct,
@@ -1392,19 +1411,20 @@ def get_slippage_stats(db_path=None):
                 ) AS total_slippage_cost
             FROM trades
             WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL
-              AND decision_price > 0
+              AND decision_price > 0{where_kind}
         """).fetchone()
 
         if not row or row["trades_with_fills"] == 0:
             conn.close()
             return None
 
-        # Get the worst slippage trade details
-        worst = conn.execute("""
+        # Get the worst slippage trade details — same kind filter
+        # so the row shown matches the aggregate's instrument class.
+        worst = conn.execute(f"""
             SELECT symbol, side, qty, decision_price, fill_price, slippage_pct, timestamp
             FROM trades
             WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL
-              AND decision_price > 0
+              AND decision_price > 0{where_kind}
             ORDER BY ABS(slippage_pct) DESC
             LIMIT 1
         """).fetchone()
