@@ -105,7 +105,22 @@ class OptionPipeline(Pipeline):
         return Metrics(pipeline_name=self.name, numbers=numbers)
 
     def tune(self, ctx, metrics: Metrics) -> ParameterAdjustments:
-        raise NotImplementedError(
-            "Phase 2 implements: max_spread_loss_pct, min_dte, "
-            "iv_rank_threshold — all driven by option-only metrics."
+        """Option-only tuning. Phase 2: ships option-filtered win
+        rate. Subsequent commits add option-specific parameter
+        adjustments (max_spread_loss_pct, min_dte, iv_rank_threshold).
+        """
+        from tuning import option as option_tuning
+        db_path = getattr(ctx, "db_path", None)
+        changes = {}
+        rationale_parts = []
+        if db_path:
+            wr, n = option_tuning.current_win_rate(db_path)
+            rationale_parts.append(
+                f"option win rate {wr:.1f}% over {n} resolved "
+                f"option predictions"
+            )
+        return ParameterAdjustments(
+            pipeline_name=self.name,
+            changes=changes,
+            rationale="; ".join(rationale_parts),
         )

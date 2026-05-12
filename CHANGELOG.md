@@ -17,6 +17,52 @@ Rules going forward:
 
 ---
 
+## 2026-05-11 — Pipeline Architecture Phase 2 — per-pipeline tuning; closes audit finding #3
+
+Phase 2 of the instrument-class pipeline refactor. Splits the
+self-tuning win-rate aggregator (audit finding #3 corruption point)
+by signal type. Stock tuning sees only stock predictions; option
+tuning sees only option predictions. Cross-pollution eliminated by
+construction.
+
+**New `tuning/` package**:
+- `tuning/stock.py:current_win_rate(db_path)` — filters resolved
+  predictions to stock signal types only (`BUY`, `STRONG_BUY`,
+  `WEAK_BUY`, `SELL`, `STRONG_SELL`, `WEAK_SELL`, `SHORT`, `COVER`).
+  Option outcomes (premium %-moves are 10-100× stock %-moves) can
+  no longer dominate the aggregate.
+- `tuning/option.py:current_win_rate(db_path)` — filters to option
+  signal types only (`MULTILEG_OPEN`, `OPTIONS`, `OPTION_EXERCISE`).
+  Stock outcomes can no longer drown out option signal.
+
+**Pipeline integration**: `pipelines/{stock,option}.py:tune()` now
+wired (no longer `NotImplementedError`). Each calls into its
+tuning module and returns a `ParameterAdjustments` DTO with
+pipeline-name-tagged rationale. Phase 2 returns the read but
+doesn't yet WRITE parameter changes — the legacy `self_tuning`
+module still owns the parameter-write path; subsequent commits
+move parameter writes here, gated on the per-pipeline win-rate
+signal.
+
+**Tests** (`tests/test_pipelines_phase2_tuning.py`, 9 tests):
+- Mixed-prediction dataset: stock tuner sees 60% (3W/2L stocks),
+  option tuner sees 20% (1W/4L options), neither sees the
+  pollution-shape 40% mixed average.
+- Empty-instrument-class behavior: option-only profile returns
+  (0.0, 0) for stock win rate, no crash.
+- Pipeline `tune()` wiring: rationale references the per-pipeline
+  win rate.
+- Signal type coverage: stock and option signal type lists are
+  disjoint; pair signals belong to neither (future PairPipeline).
+
+Phase 0 tests updated to remove `tune` from the
+NotImplementedError-coverage parametrize list.
+
+2,803 pass (was 2,796 + 9 new Phase 2 + 0 regressions in the
+broader suite).
+
+---
+
 ## 2026-05-11 — Pipeline Architecture Phase 1 — per-pipeline metrics; closes TODO #8
 
 Phase 1 of the instrument-class pipeline refactor (see

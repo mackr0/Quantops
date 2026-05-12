@@ -93,8 +93,29 @@ class StockPipeline(Pipeline):
         return Metrics(pipeline_name=self.name, numbers=numbers)
 
     def tune(self, ctx, metrics: Metrics) -> ParameterAdjustments:
-        raise NotImplementedError(
-            "Phase 2 implements: stop_loss_pct, max_position_pct, "
-            "stock-momentum params — all driven by stock-only "
-            "metrics, no option pollution."
+        """Stock-only tuning. Phase 2: ships the win-rate aggregator
+        (the audit finding #3 corruption point) filtered to stock
+        signal types. Subsequent commits move the per-parameter
+        adjustment logic (stop_loss_pct, max_position_pct, etc.)
+        into this method.
+        """
+        from tuning import stock as stock_tuning
+        db_path = getattr(ctx, "db_path", None)
+        changes = {}
+        rationale_parts = []
+        if db_path:
+            wr, n = stock_tuning.current_win_rate(db_path)
+            rationale_parts.append(
+                f"stock win rate {wr:.1f}% over {n} resolved "
+                f"stock predictions"
+            )
+            # Phase 2 returns the read but doesn't yet WRITE
+            # parameter changes — the legacy self_tuning module
+            # still owns the write path. Subsequent commits move
+            # parameter writes here, gated on this stock-only
+            # win rate signal.
+        return ParameterAdjustments(
+            pipeline_name=self.name,
+            changes=changes,
+            rationale="; ".join(rationale_parts),
         )

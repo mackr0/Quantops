@@ -130,10 +130,9 @@ class TestPhase0PlaceholdersRaiseClearly:
             prediction_id=1, actual_outcome="win",
             actual_return_pct=0.0, resolved_at="", resolution_price=0.0,
         ))),
-        # compute_metrics now wired in Phase 1 — removed from this
-        # list. The Phase 1 tests in test_pipelines_phase1.py pin
-        # its actual behavior.
-        ("tune", (None, Metrics(pipeline_name="x"))),
+        # compute_metrics now wired in Phase 1.
+        # tune now wired in Phase 2.
+        # Both have their own test files pinning behavior.
     ])
     def test_unimplemented_methods_raise_with_phase_pointer(
         self, cls, method, args,
