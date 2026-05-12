@@ -311,31 +311,22 @@ class TestReconcileBackfillBogusRowsTagged:
     themselves be tagged so they're excluded from analytics."""
 
     def test_bogus_reconcile_backfill_pnl_tagged(self, db_path):
-        # BCS-shape row: qty=2, price=$22.20, pnl=+$43.50 →
-        # pnl ($43.50) is ~98% of cost basis ($44.40) which is
-        # plausible BY ITSELF, but the row was inserted by
-        # reconcile_backfill against a phantom entry price of
-        # $0.45 (i.e., the implicit pnl-vs-cost ratio is +98x).
-        # The detector compares ABS(pnl) vs price*qty*5.
-        # For BCS: 43.50 < 44.40 * 5 (=222) → would NOT tag.
-        # We need to verify the detector skips that case (correct
-        # behavior — it's not actually a bogus row, even though
-        # the pnl % calc in the template happens to render +4833%
-        # for a different reason: cost_basis = price*qty - pnl,
-        # which can go near zero when pnl ≈ proceeds).
-        # So this test pins: detector is RESTRICTIVE — only tags
-        # rows where pnl > 5x cost.
+        """BCS-shape row: qty=2 price=$22.20 pnl=$43.50.
+        Implied cost_basis = price*qty - pnl = $44.40-$43.50 = $0.90.
+        That's the structural fingerprint of pnl computed against
+        a phantom entry price (~$0.45 option premium, not $22.20
+        stock). Detector catches `cost_basis_implied < $1`."""
         _insert_trade(
             db_path, symbol="BCS", side="sell", qty=2,
             price=22.20, fill_price=22.20, pnl=43.50,
             strategy="reconcile_backfill", status="closed",
             occ_symbol=None,
         )
-        # And a row that IS clearly bogus: pnl WAY larger than
-        # cost basis would imply
+        # A legitimate reconcile_backfill: pnl is small fraction
+        # of proceeds — cost_basis ≈ price*qty (NOT near zero).
         _insert_trade(
-            db_path, symbol="ZZZZ", side="sell", qty=2,
-            price=22.20, fill_price=22.20, pnl=1000.0,
+            db_path, symbol="AAPL", side="sell", qty=10,
+            price=150.0, fill_price=150.0, pnl=20.0,
             strategy="reconcile_backfill", status="closed",
             occ_symbol=None,
         )
@@ -347,11 +338,10 @@ class TestReconcileBackfillBogusRowsTagged:
             "WHERE strategy = 'reconcile_backfill'"
         ).fetchall())
         conn.close()
-        # ZZZZ is the bogus shape (pnl > 5*cost) → tagged
-        assert rows["ZZZZ"] == "phantom_stop_reconcile_2026_05_12"
-        # BCS is plausibly real (pnl ≈ cost) → NOT tagged. Cost
-        # = price*qty = $44.40; pnl = $43.50; ratio = 0.98 < 5.
-        assert rows["BCS"] is None
+        # BCS: cost_basis = $0.90 < $1 → tagged
+        assert rows["BCS"] == "phantom_stop_reconcile_2026_05_12"
+        # AAPL: cost_basis = $1500 - $20 = $1480 >> $1 → NOT tagged
+        assert rows["AAPL"] is None
 
 
 class TestWorstTradeExcludesTagged:

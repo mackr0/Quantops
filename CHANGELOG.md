@@ -17,6 +17,40 @@ Rules going forward:
 
 ---
 
+## 2026-05-12 — Phase 5e wave 3: reconcile filter + bogus reconcile_backfill tagging
+
+Mack saw "Reconcile Backfill" rows on the trades page with insane P&L percentages today at market open:
+- BCS: qty=2, price=$22.20, pnl=$43.50 → displayed **+4833.3%**
+- ACHR: qty=1, price=$6.50, pnl=$6.08 → **+1447.6%**
+- RIOT: qty=1, price=$24.74, pnl=$23.77 → **+2450.5%**
+
+**Root cause: same phantom-stop incident from 2026-05-11, downstream contamination via the reconciler.** Yesterday's phantom-stops left journal rows with `status='open'`, `price=$0.16-$1.48` (option premium, not stock price), `occ_symbol=NULL`. Today's reconcile cycle:
+1. Loaded those rows as "open positions"
+2. Saw broker has 0 of that ticker → "phantom long needing close"
+3. Matched a recent broker SELL fill at today's actual stock price ($22+)
+4. Created a `reconcile_backfill` row with `pnl = (sell_price - buy_price) * qty` where `buy_price` = corrupt $0.45 option premium
+5. The dashboard template's `pnl_pct = pnl / (price*qty - pnl) * 100` formula goes to thousands of percent when `price*qty - pnl ≈ 0` (which happens whenever the corrupt buy_price was tiny and the sell proceeds ≈ pnl)
+
+Two-part fix:
+
+1. **Stop creating new bogus rows.** `reconcile_journal_to_broker._select_open_rows` now filters `data_quality IS NULL`. Phantom-stop tagged rows are no longer loaded as reconcile candidates → no new bogus reconcile_backfill rows will be created. Back-compat column-presence check for legacy DBs.
+
+2. **Tag the already-created bogus rows.** New `journal._migrate_all_columns` pass detects the structural fingerprint: `strategy LIKE 'reconcile_backfill%' AND ABS((price * qty) - pnl) < 1.0`. The `cost_basis_implied < $1` test catches rows where pnl ≈ proceeds (the only way the template's cost_basis denominator goes near zero). Tags them with `data_quality='phantom_stop_reconcile_2026_05_12'`.
+
+   First attempt used `ABS(pnl) > price*qty*5` which was wrong — pnl is never more than proceeds, so that threshold catches nothing. Re-derived from the template's actual formula.
+
+   Idempotent: gated on `data_quality IS NULL`. Moved `tcols` PRAGMA lookup before both tagging blocks so they share one query.
+
+**Tests** — 2 new in `test_phase5e_data_quality.py`:
+- `_select_open_rows` excludes data_quality-tagged candidates → no new bogus rows possible
+- Bogus reconcile_backfill rows (cost_basis_implied < $1) tagged; legitimate ones (cost_basis_implied >> $1) NOT tagged
+
+**2,865 pass.**
+
+This was discovered DURING the first market-open scheduler cycle today. The reconciler had run 9:31-9:34 AM ET, creating ~7 bogus rows that Mack saw on the trades page. After this deploy, the migration retroactively tags those rows (they're excluded from analytics) and the reconciler stops creating new ones.
+
+---
+
 ## 2026-05-12 — Slippage display +1130% killed (the SECOND time); class-invariant guardrail
 
 The +1130% Avg Slippage incident happened on 2026-05-11 and Phase 1 of the pipeline refactor was supposed to fix it via per-pipeline metrics modules with kind-scoped queries. **It didn't** — the legacy display code in `views.py` was never migrated to call the kind-scoped helper. Mack saw the same +1130% on 2026-05-12.

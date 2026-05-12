@@ -610,16 +610,22 @@ def _migrate_all_columns(conn):
         tcols = set()
 
     # Phase 5e wave 3 (2026-05-12) — tag reconcile_backfill rows
-    # whose pnl is wildly disproportionate to their cost basis.
-    # These are the downstream contamination from the phantom-stop
-    # incident: the reconciler found phantom journal rows
-    # (price=option_premium) and "closed" them with today's stock
-    # price, producing reconcile_backfill rows with pnl_pct of
-    # +4833% / +2450% / +1447% on the trades page.
+    # whose pnl was computed against a phantom entry price.
     #
-    # Pattern: strategy LIKE 'reconcile_backfill%' AND
-    # ABS(pnl) > price * qty * 5 (pnl is more than 5x the apparent
-    # cost basis — a mathematically-impossible long-trade return).
+    # Pattern: the dashboard's template renders
+    #   pnl_pct = pnl / (price*qty - pnl) * 100
+    # which goes to thousands of percent when price*qty - pnl
+    # approaches zero. That happens specifically when the
+    # reconciler computed pnl = (sell - buy) * qty with `buy` =
+    # corrupt option premium (~$0.45) and `sell` = real stock
+    # price (~$22). Then pnl ≈ qty * sell ≈ qty * price, so
+    # cost_basis_implied = qty*price - pnl ≈ 0.
+    #
+    # Detector: cost_basis_implied = (price * qty) - pnl < $1.
+    # That's the structural fingerprint of the bug. Real
+    # reconcile_backfill rows have cost_basis ≈ price*qty
+    # (because pnl is a small fraction of proceeds).
+    #
     # Idempotent on data_quality IS NULL.
     try:
         if "data_quality" in tcols:
@@ -629,7 +635,7 @@ def _migrate_all_columns(conn):
                 "WHERE data_quality IS NULL "
                 "AND strategy LIKE 'reconcile_backfill%' "
                 "AND pnl IS NOT NULL AND price > 0 AND qty > 0 "
-                "AND ABS(pnl) > (price * qty * 5)"
+                "AND ABS((price * qty) - pnl) < 1.0"
             )
     except Exception:
         pass
