@@ -2120,136 +2120,60 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                         )
                 except Exception:
                     pass
-            # Phase B4 — route MULTILEG_OPEN through the multi-leg
-            # executor. Builds the strategy via the registry then submits
-            # via Alpaca combo order (sequential fallback with rollback).
+            # Phase 4c (2026-05-12): MULTILEG_OPEN proposals now flow
+            # through OptionPipeline.execute() — the SAME entry point
+            # the dispatcher will eventually use for full pipeline
+            # migration. The legacy 80-line body is now in
+            # pipelines/option.py:OptionPipeline._execute_multileg.
+            #
+            # Flow:
+            #   1. check_multileg_specialist_veto() builds (vetoed,
+            #      reason) — Phase 4b veto layer.
+            #   2. Build a one-element SpecialistVerdict (proposal in
+            #      either approved OR vetoed).
+            #   3. OptionPipeline.execute(ctx, verdict) handles both
+            #      sides: vetoed → persist + skipped; approved →
+            #      build strategy + submit + link prediction.
+            #   4. Convert ExecutionResult → trade_result dict for
+            #      the existing details.append flow (back-compat).
+            #
+            # Failure tolerance: route_to_specialists failure → not
+            # vetoed → trade proceeds (Phase 4b contract preserved).
             elif action == "MULTILEG_OPEN":
-                # Phase 4b of pipeline refactor (2026-05-11): route the
-                # proposal through OptionPipeline.route_to_specialists()
-                # BEFORE the broker call so option-only specialists
-                # (option_spread_risk holds VETO authority) can block
-                # structurally-bad trades. Closes audit finding #5
-                # LIVE: multileg trades no longer bypass specialist
-                # veto. Failure-tolerant — if the route fails for any
-                # reason, we proceed with the trade rather than block
-                # it (don't introduce a NEW failure mode).
                 _phase4b_vetoed, _phase4b_veto_reason = (
                     check_multileg_specialist_veto(ctx, ai_trade, symbol)
                 )
-
+                from pipelines import SpecialistVerdict
+                from pipelines.option import OptionPipeline
+                _proposal = dict(ai_trade)
+                _proposal.setdefault("symbol", symbol)
                 if _phase4b_vetoed:
-                    print(f"  MULTILEG_OPEN {symbol}: VETOED by specialist — "
-                          f"{_phase4b_veto_reason}")
-                    trade_result = {
-                        "action": "SPECIALIST_VETOED",
-                        "symbol": symbol,
-                        "reason": _phase4b_veto_reason,
-                    }
-                    # Persist the veto so operators see it on the
-                    # rejections panel — same path stock-side rejections
-                    # use; signal_type tags it as a multileg veto.
-                    try:
-                        from journal import record_broker_rejection
-                        record_broker_rejection(
-                            ctx.db_path if ctx else None,
-                            symbol=symbol,
-                            action="MULTILEG_OPEN",
-                            signal_type="MULTILEG_OPEN",
-                            ai_confidence=ai_trade.get("confidence"),
-                            ai_reasoning=ai_trade.get("reasoning"),
-                            broker_message=(
-                                f"specialist veto: {_phase4b_veto_reason}"
-                            ),
-                        )
-                    except Exception:
-                        # Non-fatal — the operator still sees the
-                        # SPECIALIST_VETOED entry in details.
-                        pass
-                    details.append(trade_result)
-                    continue
-
-                from options_multileg import (
-                    ALL_MULTILEG_BUILDERS, execute_multileg_strategy,
-                )
-                from client import get_api as _get_api
-                from datetime import date as _ml_date
-                api_for_ml = _get_api(ctx)
-                strategy_name = ai_trade.get("strategy_name")
-                strikes = ai_trade.get("strikes") or {}
-                expiry_str = ai_trade.get("expiry")
-                contracts = int(ai_trade.get("contracts") or 0)
-
-                trade_result = {
-                    "action": "ERROR", "symbol": symbol,
-                    "reason": "",
-                }
-                builder = ALL_MULTILEG_BUILDERS.get(strategy_name)
-                if not builder:
-                    trade_result["reason"] = (
-                        f"Unknown strategy {strategy_name!r}")
+                    _verdict = SpecialistVerdict(
+                        approved=[], vetoed=[_proposal],
+                        veto_log=[
+                            f"{symbol}: VETO — {_phase4b_veto_reason}"
+                        ],
+                    )
+                    print(f"  MULTILEG_OPEN {symbol}: VETOED by "
+                          f"specialist — {_phase4b_veto_reason}")
                 else:
-                    try:
-                        # Parse expiry
-                        y, m, d = expiry_str.split("-")
-                        expiry_date = _ml_date(int(y), int(m), int(d))
-                    except Exception as exc:
-                        trade_result["reason"] = (
-                            f"Invalid expiry {expiry_str!r}: {exc}")
-                        expiry_date = None
-
-                    if expiry_date is not None:
-                        # Build kwargs from the strikes dict shape that
-                        # matches the chosen builder's signature.
-                        try:
-                            print(f"  Executing: MULTILEG_OPEN {strategy_name} "
-                                  f"{symbol} ({contracts}× exp {expiry_str})")
-                            spec = _build_multileg_strategy(
-                                builder, strategy_name, symbol,
-                                expiry_date, strikes, contracts,
-                            )
-                            trade_result = execute_multileg_strategy(
-                                api_for_ml, spec, ctx=ctx, log=log,
-                                limit_price=ai_trade.get("limit_price"),
-                                ai_confidence=ai_trade.get("confidence"),
-                                ai_reasoning=ai_trade.get("reasoning"),
-                            )
-                            trade_result.setdefault("symbol", symbol)
-                            # Phase 5c of pipeline refactor (2026-05-11):
-                            # link the just-executed combo to its
-                            # prediction row so the option-aware
-                            # resolver can find the legs at resolution
-                            # time. Best-effort — failure here doesn't
-                            # break the trade. The most recent pending
-                            # MULTILEG_OPEN prediction for this symbol
-                            # is the match.
-                            try:
-                                _combo_id = trade_result.get(
-                                    "combo_order_id"
-                                ) or (
-                                    trade_result.get("leg_order_ids")
-                                    or [None]
-                                )[0]
-                                if _combo_id and ctx and getattr(
-                                    ctx, "db_path", None
-                                ):
-                                    from journal import (
-                                        link_option_prediction_to_trade,
-                                    )
-                                    link_option_prediction_to_trade(
-                                        ctx.db_path,
-                                        symbol=symbol,
-                                        signal="MULTILEG_OPEN",
-                                        option_order_id=_combo_id,
-                                    )
-                            except Exception:
-                                # Non-fatal — Phase 5b's deferral
-                                # safety floor still applies.
-                                pass
-                        except Exception as exc:
-                            trade_result["action"] = "ERROR"
-                            trade_result["reason"] = (
-                                f"Multi-leg build/submit failed: {exc}"
-                            )
+                    _verdict = SpecialistVerdict(
+                        approved=[_proposal], vetoed=[],
+                    )
+                _exec_result = OptionPipeline().execute(ctx, _verdict)
+                # Convert ExecutionResult → single trade_result dict
+                # for back-compat with the existing details.append +
+                # warning-on-action path.
+                _entries = (
+                    list(_exec_result.skipped or [])
+                    + list(_exec_result.submitted or [])
+                    + list(_exec_result.rejected or [])
+                    + list(_exec_result.errors or [])
+                )
+                trade_result = _entries[0] if _entries else {
+                    "action": "ERROR", "symbol": symbol,
+                    "reason": "OptionPipeline.execute returned empty result",
+                }
             # Item 1b — route PAIR_TRADE through the stat-arb executor.
             # Two-leg dollar-neutral execution; sizing + atomicity live
             # in stat_arb_pair_book.execute_pair_trade.

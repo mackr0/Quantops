@@ -2047,11 +2047,18 @@ def ai_performance_legacy():
         tuning_history.extend(history)
     tuning_history.sort(key=lambda h: h.get("timestamp", ""), reverse=True)
 
-    # Aggregate slippage stats across relevant DBs.
-    # get_slippage_stats returns None on missing/empty data internally.
+    # 2026-05-12 fix: SCOPE the slippage % aggregation to STOCK
+    # rows only. The previous code mixed stock + option rows
+    # together and option premium %-moves (10-100% per cycle on
+    # small underlying moves) drove the displayed average to
+    # +1130% — a number that's mathematically real but operationally
+    # meaningless. Stock-side % is the meaningful display.
+    # Options-side surfaces separately as a $-cost line because %
+    # on penny premiums isn't comparable to stock-share %.
     combined_slippage = None
+    options_slippage = None
     for db_path in db_paths:
-        s = get_slippage_stats(db_path=db_path)
+        s = get_slippage_stats(db_path=db_path, kind="stocks")
         if s:
             if combined_slippage is None:
                 combined_slippage = {
@@ -2064,16 +2071,33 @@ def ai_performance_legacy():
             if s["worst_slippage_pct"] > combined_slippage.get("worst_slippage_pct", 0):
                 combined_slippage["worst_slippage_pct"] = s["worst_slippage_pct"]
                 combined_slippage["worst_trade"] = s.get("worst_trade")
+        # Option-side: $-cost only (% is meaningless on penny
+        # premium denominators).
+        s_opt = get_slippage_stats(db_path=db_path, kind="options")
+        if s_opt:
+            if options_slippage is None:
+                options_slippage = {
+                    "trades_with_fills": 0, "total_slippage_cost": 0,
+                    "total_slippage_magnitude": 0,
+                }
+            options_slippage["trades_with_fills"] += s_opt["trades_with_fills"]
+            options_slippage["total_slippage_cost"] += s_opt["total_slippage_cost"]
+            options_slippage["total_slippage_magnitude"] += s_opt.get(
+                "total_slippage_magnitude", 0
+            ) or 0
     if combined_slippage and combined_slippage["trades_with_fills"] > 0:
-        # Re-query for accurate average across all DBs.
+        # Re-query for accurate average across all DBs — STOCK rows only
+        # (occ_symbol IS NULL). 2026-05-12 fix matching the
+        # get_slippage_stats kind='stocks' filter above.
         total_slip_sum = 0
         total_slip_count = 0
         for db_path in db_paths:
             c = open_profile_db(db_path)
             r = c.execute(
                 "SELECT COUNT(*) AS cnt, SUM(slippage_pct) AS s "
-                "FROM trades WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL "
-                "AND decision_price > 0"
+                "FROM trades WHERE fill_price IS NOT NULL "
+                "AND decision_price IS NOT NULL "
+                "AND decision_price > 0 AND occ_symbol IS NULL"
             ).fetchone()
             c.close()
             if r and r["cnt"]:
@@ -2093,6 +2117,7 @@ def ai_performance_legacy():
                            selected_profile=selected_profile_int,
                            selected_profile_name=selected_profile_name,
                            slippage=combined_slippage,
+                           options_slippage=options_slippage,
                            risk=risk_metrics,
                            monthly_returns=risk_metrics.get("monthly_returns", []))
 
@@ -2474,9 +2499,11 @@ def performance_dashboard():
     # Both surface so the user can distinguish "execution variance"
     # from "net economic cost."
     slippage = {"avg_pct": 0.0, "total_cost": 0.0, "magnitude": 0.0, "count": 0}
+    # 2026-05-12 fix: scope % to STOCK rows so option premium %-moves
+    # don't dilute the average to nonsense (+1130% incident).
     weighted_pct_sum = 0.0
     for db_path in db_paths:
-        s = get_slippage_stats(db_path=db_path)
+        s = get_slippage_stats(db_path=db_path, kind="stocks")
         if s:
             n = s.get("trades_with_fills", 0) or 0
             slippage["count"] += n
@@ -3244,9 +3271,11 @@ def ai_dashboard():
     # Slippage stats — signed total_cost + absolute magnitude both
     # surfaced. See performance_dashboard for the rationale.
     slippage = {"avg_pct": 0.0, "total_cost": 0.0, "magnitude": 0.0, "count": 0}
+    # 2026-05-12 fix: scope % to STOCK rows so option premium %-moves
+    # don't dilute the average to nonsense (+1130% incident).
     weighted_pct_sum = 0.0
     for db_path in db_paths:
-        s = get_slippage_stats(db_path=db_path)
+        s = get_slippage_stats(db_path=db_path, kind="stocks")
         if s:
             n = s.get("trades_with_fills", 0) or 0
             slippage["count"] += n
@@ -3742,7 +3771,12 @@ def api_backtest_vs_reality(profile_id):
         ).fetchall()
         actual_trades = [dict(r) for r in actual_trades]
 
-        # Slippage stats for this profile
+        # Slippage stats for this profile (last 30 days).
+        # 2026-05-12 fix: scope to STOCK rows (occ_symbol IS NULL).
+        # Mixing stock + option premium % moves drove the displayed
+        # average to +1130% in the prior bug. Stock-side % is the
+        # meaningful display; option-side $ cost is surfaced
+        # separately on the AI performance page.
         slippage_row = conn.execute("""
             SELECT
                 COUNT(*) AS trades_with_fills,
@@ -3751,6 +3785,7 @@ def api_backtest_vs_reality(profile_id):
             FROM trades
             WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL
               AND decision_price > 0 AND timestamp >= ?
+              AND occ_symbol IS NULL
         """, (thirty_days_ago,)).fetchone()
 
         conn.close()
@@ -3849,7 +3884,13 @@ def api_backtest_vs_reality(profile_id):
 @views_bp.route("/api/slippage-stats/<int:profile_id>")
 @login_required
 def api_slippage_stats(profile_id):
-    """Return slippage statistics for a profile."""
+    """Return slippage statistics for a profile.
+
+    2026-05-12 fix: now returns BOTH stocks and options aggregates
+    separately. The unscoped legacy version mixed the two and
+    produced nonsense %-values (+1130% incident). Stock-side: %
+    + $ are both meaningful. Option-side: $ only (% on penny
+    premiums is noise)."""
     import os
 
     profile = get_trading_profile(profile_id)
@@ -3861,11 +3902,16 @@ def api_slippage_stats(profile_id):
         return jsonify({"error": "No trade data"}), 404
 
     from journal import get_slippage_stats
-    stats = get_slippage_stats(db_path=db_path)
-    if stats is None:
+    stocks_stats = get_slippage_stats(db_path=db_path, kind="stocks")
+    options_stats = get_slippage_stats(db_path=db_path, kind="options")
+    if stocks_stats is None and options_stats is None:
         return jsonify({"available": False})
 
-    return jsonify({"available": True, **stats})
+    return jsonify({
+        "available": True,
+        "stocks": stocks_stats,
+        "options": options_stats,
+    })
 
 
 @views_bp.route("/api/slippage-model/<int:profile_id>")

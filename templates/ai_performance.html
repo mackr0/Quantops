@@ -62,8 +62,8 @@
 <!-- Slippage Impact (only shown when fill_price data is available) -->
 {% if slippage and slippage.trades_with_fills > 0 %}
 <article style="border-left:4px solid #ff9800;">
-    <header><h3>Slippage Impact</h3></header>
-    <p class="muted" style="margin-top:-0.5rem;">Difference between the strategy's decision price and the actual fill price from Alpaca. Only includes trades with fill data.</p>
+    <header><h3>Slippage Impact &mdash; Stocks</h3></header>
+    <p class="muted" style="margin-top:-0.5rem;">Difference between the strategy's decision price and the actual fill price from Alpaca. Stock trades only (option % is meaningless on penny premiums; option $-cost surfaces below).</p>
     <div class="grid">
         <div class="stat-card">
             <small class="muted">Avg Slippage per Trade</small>
@@ -89,6 +89,35 @@
         <div class="stat-card">
             <small class="muted">Trades with Fill Data</small>
             <strong style="font-size:2rem;">{{ slippage.trades_with_fills }}</strong>
+        </div>
+    </div>
+</article>
+{% endif %}
+
+{# Option-side slippage: $ only. % on penny premium denominators is
+   noise (a $0.01 → $0.02 fill = +100%) so the % column is intentionally
+   omitted here in favor of the per-leg dollar cost. #}
+{% if options_slippage and options_slippage.trades_with_fills > 0 %}
+<article style="border-left:4px solid #7e57c2;">
+    <header><h3>Slippage Impact &mdash; Options</h3></header>
+    <p class="muted" style="margin-top:-0.5rem;">Per-leg slippage cost in dollars. % of premium is omitted because it's noisy on penny-priced contracts &mdash; total $ cost is the meaningful number.</p>
+    <div class="grid">
+        <div class="stat-card">
+            <small class="muted">Total Slippage Cost</small>
+            <strong style="font-size:2rem;" class="{{ 'pnl-neg' if options_slippage.total_slippage_cost > 0 else 'pnl-pos' }}">
+                ${{ "{:,.2f}".format(options_slippage.total_slippage_cost) }}
+            </strong>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Total Slippage Magnitude</small>
+            <strong style="font-size:2rem;">
+                ${{ "{:,.2f}".format(options_slippage.total_slippage_magnitude) }}
+            </strong>
+            <small class="muted">absolute value of fill vs decision</small>
+        </div>
+        <div class="stat-card">
+            <small class="muted">Option Trades with Fill Data</small>
+            <strong style="font-size:2rem;">{{ options_slippage.trades_with_fills }}</strong>
         </div>
     </div>
 </article>

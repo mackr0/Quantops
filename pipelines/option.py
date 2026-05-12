@@ -70,11 +70,218 @@ class OptionPipeline(Pipeline):
     # stock-only specialists like pattern_recognizer filter out.
 
     def execute(self, ctx, verdict: SpecialistVerdict) -> ExecutionResult:
-        raise NotImplementedError(
-            "Phase 4 wires this to options_multileg."
-            "execute_multileg_strategy and options_trader for "
-            "surviving option proposals."
+        """Phase 4c (2026-05-12): execute the option proposals that
+        survived the specialist veto. Vetoed proposals are persisted
+        to broker_rejections + surfaced in `skipped`; approved
+        multileg proposals flow through `execute_multileg_strategy`;
+        approved single-leg proposals (signal == 'OPTIONS') flow
+        through `execute_option_strategy`.
+
+        Replaces the legacy `elif action == "MULTILEG_OPEN":` branch
+        in `trade_pipeline.run_trade_cycle`. The branch is now a
+        thin caller that builds a one-element SpecialistVerdict and
+        delegates here.
+
+        Each entry in `verdict.approved` is a proposal dict with the
+        same shape the legacy elif branch consumed (symbol,
+        strategy_name, strikes, expiry, contracts, limit_price,
+        confidence, reasoning).
+
+        Returns ExecutionResult with submitted/rejected/skipped/
+        errors lists. `submitted[i]` and `skipped[i]` are dicts
+        compatible with the legacy `details.append(trade_result)`
+        flow — same keys.
+        """
+        result = ExecutionResult()
+        if not verdict:
+            return result
+
+        # SKIPPED — vetoed proposals
+        for vetoed in (verdict.vetoed or []):
+            sym = vetoed.get("symbol", "") if isinstance(vetoed, dict) else ""
+            veto_reason = self._veto_reason_for(verdict, sym)
+            self._record_veto(ctx, vetoed, sym, veto_reason)
+            result.skipped.append({
+                "action": "SPECIALIST_VETOED",
+                "symbol": sym,
+                "reason": veto_reason,
+            })
+
+        # APPROVED — execute each proposal
+        for proposal in (verdict.approved or []):
+            if not isinstance(proposal, dict):
+                continue
+            action = (proposal.get("action") or "").upper()
+            symbol = proposal.get("symbol", "")
+            try:
+                if action == "MULTILEG_OPEN":
+                    res = self._execute_multileg(ctx, proposal, symbol)
+                elif action == "OPTIONS":
+                    res = self._execute_single_leg(ctx, proposal, symbol)
+                else:
+                    res = {
+                        "action": "ERROR", "symbol": symbol,
+                        "reason": f"Unknown option action {action!r}",
+                    }
+                # Classify into submitted vs errors based on the
+                # result's action field
+                ra = (res.get("action") or "").upper()
+                if ra in ("MULTILEG_OPEN", "OPTIONS", "BUY", "SELL"):
+                    result.submitted.append(res)
+                elif ra == "ERROR":
+                    result.errors.append(res)
+                else:
+                    # SKIP / REJECT / etc. — surface as rejected
+                    result.rejected.append(res)
+            except Exception as exc:
+                result.errors.append({
+                    "action": "ERROR", "symbol": symbol,
+                    "reason": f"OptionPipeline.execute crashed: {exc}",
+                })
+
+        return result
+
+    # -----------------------------------------------------------------
+    # Internal helpers — extracted from the legacy elif branches
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def _veto_reason_for(verdict, sym: str) -> str:
+        """Pick the veto_log entry that mentions this symbol; fall
+        back to the first entry or a generic message."""
+        if not sym:
+            return "specialist veto"
+        log = list(getattr(verdict, "veto_log", None) or [])
+        for entry in log:
+            if sym in entry:
+                # Strip leading "<sym>: " prefix when present
+                if entry.startswith(f"{sym}:"):
+                    return entry[len(sym) + 1:].strip().lstrip("VETO —").strip()
+                return entry
+        return log[0] if log else "specialist veto"
+
+    @staticmethod
+    def _record_veto(ctx, proposal, symbol, reason) -> None:
+        """Persist a specialist veto to broker_rejections so the
+        dashboard's REJECTED badge fires. Failure is non-fatal."""
+        if not ctx or not getattr(ctx, "db_path", None):
+            return
+        try:
+            from journal import record_broker_rejection
+            record_broker_rejection(
+                ctx.db_path,
+                symbol=symbol or proposal.get("symbol", ""),
+                action=proposal.get("action", "MULTILEG_OPEN"),
+                signal_type=proposal.get("action", "MULTILEG_OPEN"),
+                ai_confidence=proposal.get("confidence"),
+                ai_reasoning=proposal.get("reasoning"),
+                broker_message=f"specialist veto: {reason}",
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _execute_multileg(ctx, proposal, symbol):
+        """Build the multileg strategy + submit to broker. Body
+        extracted from trade_pipeline.run_trade_cycle's
+        `elif action == "MULTILEG_OPEN":` branch (Phase 4c migration)."""
+        from options_multileg import (
+            ALL_MULTILEG_BUILDERS, execute_multileg_strategy,
         )
+        from client import get_api as _get_api
+        from datetime import date as _ml_date
+        from trade_pipeline import _build_multileg_strategy
+
+        api_for_ml = _get_api(ctx)
+        strategy_name = proposal.get("strategy_name")
+        strikes = proposal.get("strikes") or {}
+        expiry_str = proposal.get("expiry")
+        contracts = int(proposal.get("contracts") or 0)
+
+        builder = ALL_MULTILEG_BUILDERS.get(strategy_name)
+        if not builder:
+            return {
+                "action": "ERROR", "symbol": symbol,
+                "reason": f"Unknown strategy {strategy_name!r}",
+            }
+        try:
+            y, m, d = expiry_str.split("-")
+            expiry_date = _ml_date(int(y), int(m), int(d))
+        except Exception as exc:
+            return {
+                "action": "ERROR", "symbol": symbol,
+                "reason": f"Invalid expiry {expiry_str!r}: {exc}",
+            }
+
+        try:
+            print(f"  Executing: MULTILEG_OPEN {strategy_name} "
+                  f"{symbol} ({contracts}× exp {expiry_str})")
+            spec = _build_multileg_strategy(
+                builder, strategy_name, symbol,
+                expiry_date, strikes, contracts,
+            )
+            trade_result = execute_multileg_strategy(
+                api_for_ml, spec, ctx=ctx, log=print,
+                limit_price=proposal.get("limit_price"),
+                ai_confidence=proposal.get("confidence"),
+                ai_reasoning=proposal.get("reasoning"),
+            )
+            trade_result.setdefault("symbol", symbol)
+            # Phase 5c linkage — best-effort
+            try:
+                combo_id = trade_result.get("combo_order_id") or (
+                    trade_result.get("leg_order_ids") or [None]
+                )[0]
+                if combo_id and getattr(ctx, "db_path", None):
+                    from journal import link_option_prediction_to_trade
+                    link_option_prediction_to_trade(
+                        ctx.db_path, symbol=symbol,
+                        signal="MULTILEG_OPEN",
+                        option_order_id=combo_id,
+                    )
+            except Exception:
+                pass
+            return trade_result
+        except Exception as exc:
+            return {
+                "action": "ERROR", "symbol": symbol,
+                "reason": f"Multi-leg build/submit failed: {exc}",
+            }
+
+    @staticmethod
+    def _execute_single_leg(ctx, proposal, symbol):
+        """Single-leg option execution. Body extracted from
+        trade_pipeline's `if action == "OPTIONS":` branch (Phase 4c
+        migration). For symmetry with multileg — the elif branch
+        for single-leg can also delegate here in a future cleanup."""
+        from options_trader import execute_option_strategy
+        from client import get_api as _get_api
+        api = _get_api(ctx)
+        try:
+            print(f"  Executing: OPTIONS {proposal.get('option_strategy', '?')} "
+                  f"{symbol} ({proposal.get('contracts', '?')}× "
+                  f"@ ${proposal.get('strike', '?')}/{proposal.get('expiry', '?')})")
+            trade_result = execute_option_strategy(
+                api, proposal, ctx=ctx, log=print,
+            )
+            trade_result.setdefault("symbol", symbol)
+            try:
+                occ = (trade_result.get("occ_symbol")
+                       or proposal.get("occ_symbol"))
+                if occ and getattr(ctx, "db_path", None):
+                    from journal import link_option_prediction_to_trade
+                    link_option_prediction_to_trade(
+                        ctx.db_path, symbol=symbol,
+                        signal="OPTIONS", occ_symbol=occ,
+                    )
+            except Exception:
+                pass
+            return trade_result
+        except Exception as exc:
+            return {
+                "action": "ERROR", "symbol": symbol,
+                "reason": f"Single-leg option submit failed: {exc}",
+            }
 
     def record_outcome(self, ctx, prediction_id: int,
                         outcome: Outcome) -> None:

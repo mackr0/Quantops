@@ -17,6 +17,48 @@ Rules going forward:
 
 ---
 
+## 2026-05-12 — Slippage display +1130% killed (the SECOND time); class-invariant guardrail
+
+The +1130% Avg Slippage incident happened on 2026-05-11 and Phase 1 of the pipeline refactor was supposed to fix it via per-pipeline metrics modules with kind-scoped queries. **It didn't** — the legacy display code in `views.py` was never migrated to call the kind-scoped helper. Mack saw the same +1130% on 2026-05-12.
+
+**Sites fixed**:
+- `views.py:_calculate_slippage` (the AI-Brain page) — now passes `kind="stocks"` to `get_slippage_stats`. Stock-side % display is meaningful; no more option-premium-% pollution.
+- `views.py:_calculate_slippage` re-query (line 2074) — added `AND occ_symbol IS NULL` to the SQL.
+- `views.py` lines 2479 + 3247 — both per-DB aggregations now scope to stocks.
+- `views.py:3787` (Backtest-vs-Reality 30d query) — added `AND occ_symbol IS NULL`.
+- `views.py:api_slippage_stats` endpoint — now returns BOTH `stocks` and `options` aggregates as separate keys; consumers pick the right one.
+
+**Template update** (`templates/ai_performance.html`):
+- "Slippage Impact" section retitled "Slippage Impact — Stocks" with explanatory note.
+- New "Slippage Impact — Options" section (rendered when `options_slippage` non-empty) showing $-cost + magnitude only — % omitted because penny-premium denominators make it noisy.
+
+**Class-invariant guardrail** (`tests/test_slippage_pct_kind_scoping.py`, 3 tests):
+- Every `AVG(slippage_pct)` / `SUM(slippage_pct)` SQL aggregate must include `occ_symbol IS NULL` (stocks) OR `occ_symbol IS NOT NULL` (options) in the same SQL block.
+- Every `get_slippage_stats(...)` call must pass an explicit `kind=` argument.
+- Allowlist limited to the helper itself + legacy metrics module that operates on the helper's output.
+
+This makes the +1130% bug class structurally impossible to re-introduce. **The next time someone writes a slippage query, the test fails on commit** — they have to either scope it or explicitly allowlist with rationale.
+
+## 2026-05-12 — Phase 4c: multileg full pipeline migration
+
+The legacy 80-line `elif action == "MULTILEG_OPEN":` branch in `trade_pipeline.run_trade_cycle` is now a thin caller (~15 lines) that builds a one-element `SpecialistVerdict` and delegates to `OptionPipeline.execute()`. The execution body — strategy build, broker submission, Phase 5c linkage, error classification — moved into `OptionPipeline._execute_multileg`.
+
+`OptionPipeline.execute()` now handles the full lifecycle:
+- Vetoed proposals → `record_broker_rejection` + `result.skipped` with `SPECIALIST_VETOED` action.
+- Approved multileg → `_execute_multileg` (extracted body).
+- Approved single-leg (`OPTIONS` action) → `_execute_single_leg` (also extracted, for symmetry).
+- Each entry classified into `submitted` / `rejected` / `errors` / `skipped` based on result action.
+
+Back-compat: the trade_result dict shape produced by Phase 4c delegation matches what the legacy elif branch produced (same keys), so the existing `details.append(trade_result)` flow + warning-on-action logic + downstream consumers all keep working.
+
+10 new tests pin: vetoed → SKIPPED + persisted; approved multileg → executor + linkage called; bad strategy → ERROR; bad expiry → ERROR; executor exception → ERROR; veto-persistence failure non-fatal; back-compat dict shape; empty verdict → empty result.
+
+Phase 0 NotImplementedError parametrization updated (execute now wired in Phase 4c).
+
+**Tests**: 2,841 pass (+10 Phase 4c + 3 slippage-scoping guardrail, 0 regressions).
+
+---
+
 ## 2026-05-12 — Consolidate tuning_history: pipeline tuner uses canonical models.log_tuning_change
 
 Phase 2b's `pipelines/tuning_writer.py` had been creating a DUPLICATE `tuning_history` table in each per-profile DB. The CANONICAL `tuning_history` table already exists in the main config DB, with the `models.log_tuning_change()` writer used by the legacy `self_tuning` module + `capital_allocator` + read by `ai_weekly_summary` for the weekly recap.

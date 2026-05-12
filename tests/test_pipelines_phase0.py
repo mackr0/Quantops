@@ -126,12 +126,12 @@ class TestPhase0PlaceholdersRaiseClearly:
         ("decide", (None, "")),
         # route_to_specialists wired in Phase 4 (concrete on Pipeline
         # base). See test_pipelines_phase4_specialists.py.
-        ("execute", (None, SpecialistVerdict())),
+        # execute wired in Phase 4c (2026-05-12) — see
+        # test_pipelines_phase4c_execute.py.
         # record_outcome wired in Phase 5 (writes pipeline_kind tag).
         # See test_pipelines_phase5_outcomes.py.
         # compute_metrics now wired in Phase 1.
         # tune now wired in Phase 2.
-        # Both have their own test files pinning behavior.
     ])
     def test_unimplemented_methods_raise_with_phase_pointer(
         self, cls, method, args,
