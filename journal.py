@@ -502,6 +502,22 @@ def _migrate_all_columns(conn):
             # tagged 'stock' OR (NULL AND signal_type IN STOCK_SIGNAL_TYPES).
             # See pipelines/outcomes/__init__.py for the writer side.
             ("pipeline_kind", "TEXT"),
+            # Phase 5b of pipeline refactor (2026-05-11): the OCC option
+            # symbol the prediction refers to (single-leg option rows
+            # only; multileg rows reference the combo via
+            # `option_order_id` instead). NULL for stock predictions
+            # and legacy option rows pre-Phase-5b. The Phase 5c
+            # resolver uses this to fetch the contract's current
+            # premium via client._fetch_option_premium → compute return
+            # from premium delta, replacing today's broken behavior
+            # (resolver computes return % from underlying price moves
+            # which are structurally meaningless for option premiums).
+            ("occ_symbol", "TEXT"),
+            # Phase 5b: order_id used to look up multileg trade legs
+            # from the `trades` table at resolution time. Phase 5c
+            # uses this to compute net spread P&L vs entry credit/
+            # debit — the only correct return metric for multileg.
+            ("option_order_id", "TEXT"),
         ],
     }
 

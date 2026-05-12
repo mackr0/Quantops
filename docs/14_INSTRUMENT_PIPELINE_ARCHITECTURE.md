@@ -434,14 +434,26 @@ side).
 - `pipelines/{stock,option}.py:record_outcome()` wired to the writers.
 - `tuning/{stock,option}.py:current_win_rate()` filters by `pipeline_kind` with `IS NULL`+signal-type fallback for legacy rows.
 
-**Phase 5b (queued)**: correct the upstream resolver's wrong-price issue. Today's `_resolve_one` computes `actual_return_pct` from underlying price changes for ALL rows including options — structurally wrong (option premium can move 100% on a 2% underlying move). Phase 5b will compute the option-side return from premium changes (single-leg) or net P&L vs max-loss (multileg). Phase 5a's pipeline_kind tag makes this safe to land — option rows can be re-resolved through the option-aware path without touching stock rows.
+**Phase 5b shipped 2026-05-11 (safety floor)**:
+- `_resolve_one` defers ALL option signals (MULTILEG_OPEN, OPTIONS, OPTION_EXERCISE) — returns None so the row stays 'pending'. No option row gets a wrong actual_return_pct/actual_outcome value written. Stock resolution unchanged.
+- `resolve_pending_predictions` logs the deferred-option count per cycle (visible in journalctl).
+- New schema columns: `ai_predictions.occ_symbol` (for single-leg lookup via `_fetch_option_premium`) and `ai_predictions.option_order_id` (for multileg leg lookup via the trades table). NULL today; Phase 5c will populate.
+
+**Phase 5c (queued)**:
+- Update `ai_analyst.py` prediction-insert sites to populate `occ_symbol` (single-leg) and `option_order_id` (multileg) at write time.
+- Wire `_fetch_option_premium` for single-leg option rows → return % from premium delta.
+- Add multileg leg-lookup via the trades table → return % from net spread P&L vs entry credit/debit.
+- One-time backfill of previously-resolved-with-wrong-values option rows.
 
 **Exit criteria**:
-- ✅ Stock-only and option-only synthetic resolution histories produce win-rate distributions that don't pollute each other.
-- ✅ Backfill is idempotent and doesn't overwrite existing kind tags.
-- 🔲 Phase 5b: option `actual_return_pct` reflects option economics, not underlying-stock %.
+- ✅ Phase 5a: Stock-only and option-only synthetic resolution histories produce non-pooling win-rate distributions.
+- ✅ Phase 5a: Backfill is idempotent and doesn't overwrite existing kind tags.
+- ✅ Phase 5b: NO option row gets an incorrect `actual_return_pct` value written from this commit forward.
+- ✅ Phase 5b: `_OPTION_SIGNALS` (resolver) and `kind_from_signal` (writer) agree (single source of truth).
+- 🔲 Phase 5c: option `actual_return_pct` reflects option economics, not underlying-stock %.
+- 🔲 Phase 5c: historical option rows backfilled with correct values.
 
-**Estimated work remaining**: ~1 session for Phase 5b (option-aware resolver path + re-resolution backfill of existing option rows).
+**Estimated work remaining**: ~1 session for Phase 5c (insert-site updates + premium fetch wiring + multileg leg lookup + historical backfill script).
 
 ### Phase 6 — Risk model: delta-adjusted exposure aggregation   ✅ Phase 6a shipped 2026-05-11
 

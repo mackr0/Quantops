@@ -17,6 +17,41 @@ Rules going forward:
 
 ---
 
+## 2026-05-11 — Pipeline Architecture Phase 5b — option resolver safety floor; stops wrong values
+
+Phase 5b stops the bleeding on option prediction resolution. Today's `_resolve_one` in `ai_tracker.py` computes return % as `(current_price - pred_price) / pred_price * 100` for ALL prediction rows including options. For option rows that's structurally wrong: `current_price` is the underlying ticker price (because `_get_current_prices_bulk` doesn't know about OCC symbols), but `pred_price` is the option premium. A $1.20 premium with a "current price" of $50 (the underlying) resolves to a +4067% return — pure nonsense — and that nonsense return drives the directional win/loss classification.
+
+**The Phase 5b safety floor**: when the prediction signal is in `_OPTION_SIGNALS` (`MULTILEG_OPEN`, `OPTIONS`, `OPTION_EXERCISE`), `_resolve_one` returns None. The row stays 'pending'. NO option row gets a wrong `actual_return_pct` or `actual_outcome` value written from this commit forward. Stock-row resolution is unchanged — the defer check fires only on option signals.
+
+**`resolve_pending_predictions`** now counts deferred option rows and logs the count after each cycle so operators see the backlog growing (visible in journalctl). Once Phase 5c lands the option-aware resolver, that backlog drains.
+
+**Schema** (idempotent migration in `journal._migrate_all_columns`):
+- `ai_predictions.occ_symbol TEXT` — the OCC option contract symbol the prediction refers to. Phase 5c will fetch the contract's current premium via `client._fetch_option_premium` and compute return from premium delta. NULL on stock rows and legacy option rows pre-Phase 5b.
+- `ai_predictions.option_order_id TEXT` — order_id used to look up multileg trade legs from the `trades` table at resolution time. Phase 5c uses this to compute net spread P&L vs entry credit/debit (the only correct return metric for multileg).
+
+Both columns are NULL for everyone today; Phase 5c will populate them at prediction-insert time and use them at resolution time.
+
+**Tests** (`tests/test_pipelines_phase5b_option_resolver.py`, 18 tests):
+- CLASS INVARIANT (parametrized over every option signal in `_OPTION_SIGNALS`): `_resolve_one` returns None. Three variations per signal: ordinary case, past-timeout case (must still defer — the timeout path's return_pct is also computed from the wrong price), and `prediction_type='directional_long'`-mislabeled case (signal is the authority, not pred_type).
+- STOCK BEHAVIOR UNCHANGED: BUY with +2.5% gain still resolves win; BUY with -2.5% loss still resolves loss; SHORT with drop still resolves win; min-hold defer still works.
+- SCHEMA: `occ_symbol` and `option_order_id` columns appear after `init_db`; migration is idempotent across multiple `init_db` calls.
+- CONSTANT PINNING (cross-module agreement): `_OPTION_SIGNALS` matches `pipelines.outcomes.kind_from_signal`'s option set — single source of truth across the two modules. No stock signal accidentally leaks into the option-defer set.
+
+**Behavior change on prod**:
+- Option rows that would have resolved this cycle now stay 'pending'. The cycle log gains a "Deferred N option predictions" line whenever the count is non-zero.
+- Option win-rate aggregations in tuning queries no longer see new resolutions land — but they were aggregating wrong values before, so this is a strict improvement (clean unknown beats dirty known).
+- Existing previously-resolved option rows in the production DB still hold their old (wrong) `actual_return_pct` / `actual_outcome` values. Phase 5c will include a one-time backfill that re-resolves those rows correctly using the option-aware path; this commit does not touch historical data.
+
+**Tests**: 2,663 pass (+18 Phase 5b, 0 regressions).
+
+This is the SAFETY FLOOR for the option resolver. Phase 5c will:
+- Update prediction-insert sites in `ai_analyst.py` to populate `occ_symbol` (single-leg) or `option_order_id` (multileg).
+- Wire `_fetch_option_premium` for single-leg option rows — return % from premium delta.
+- Add multileg leg-lookup via the trades table — return % from net spread P&L vs entry credit/debit.
+- Backfill previously-resolved-with-wrong-values option rows.
+
+---
+
 ## 2026-05-11 — Pipeline Architecture Phase 6b — wire risk model + Greeks in prompt; closes audit finding #7 live
 
 Phase 6b of the pipeline refactor wires the Phase 6a pure functions into production. Two material behavior changes:

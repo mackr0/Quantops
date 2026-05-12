@@ -324,6 +324,10 @@ def _trading_days_since(timestamp_str):
     return int(calendar_days * 5 / 7)
 
 
+_OPTION_SIGNALS = frozenset({"MULTILEG_OPEN", "OPTIONS",
+                              "OPTION_EXERCISE"})
+
+
 def _resolve_one(prediction, current_price):
     """Determine outcome for a single prediction.
 
@@ -343,6 +347,18 @@ def _resolve_one(prediction, current_price):
       exit_short        — price stays flat or rises (we covered OK).
                           Loses if price keeps dropping >= EXIT_BUFFER_PCT
                           (we covered too early).
+
+    Phase 5b safety floor (2026-05-11): when the prediction is an
+    option signal (MULTILEG_OPEN / OPTIONS / OPTION_EXERCISE), this
+    function returns None to DEFER resolution. The pre-refactor
+    behavior was structurally wrong: it computed return % from
+    underlying-stock price moves, which is meaningless for option
+    premiums (a 2% underlying move can produce a 100% premium swing
+    or a 0% swing depending on Greeks). Deferring → option rows
+    stay 'pending' until Phase 5c lands the option-aware resolver
+    that uses `_fetch_option_premium` (single-leg) or net spread
+    P&L from the trades table (multileg). NO option rows get
+    incorrect win/loss values written from this point forward.
     """
     pred_price = prediction["price_at_prediction"]
     signal = (prediction.get("predicted_signal") or "").upper()
@@ -350,6 +366,17 @@ def _resolve_one(prediction, current_price):
     days_elapsed = _trading_days_since(prediction["timestamp"])
 
     if pred_price is None or pred_price == 0:
+        return None
+
+    # Phase 5b: defer option rows. The option-aware resolver lands
+    # in Phase 5c — until then, option rows accumulate in 'pending'
+    # rather than acquire wrong actual_return_pct/actual_outcome
+    # values. Stock-pipeline tuning (which filters by pipeline_kind
+    # = 'stock' OR signal IN stock-types) is unaffected. Option
+    # tuning sees zero resolved rows for now — already preferable
+    # to the noise of underlying-derived "wins" and "losses" on
+    # option premium movements.
+    if signal in _OPTION_SIGNALS:
         return None
 
     return_pct = ((current_price - pred_price) / pred_price) * 100.0
@@ -446,6 +473,7 @@ def resolve_predictions(api=None, db_path=None, profile_id=None):
         return 0
 
     resolved_count = 0
+    deferred_option_count = 0
     now_iso = datetime.utcnow().isoformat()
 
     # Bulk-fetch all unique symbols in one (or few) Alpaca calls. With
@@ -460,8 +488,15 @@ def resolve_predictions(api=None, db_path=None, profile_id=None):
             continue
 
         current_price = price_cache[sym]
-        result = _resolve_one(dict(row), current_price)
+        prediction_dict = dict(row)
+        result = _resolve_one(prediction_dict, current_price)
         if result is None:
+            # Phase 5b: option rows defer to Phase 5c. Count them so
+            # operators can see the deferred backlog (and so a
+            # spike in deferred rows is visible in cycle logs).
+            sig = (prediction_dict.get("predicted_signal") or "").upper()
+            if sig in _OPTION_SIGNALS:
+                deferred_option_count += 1
             continue
 
         outcome, return_pct, days_held = result
@@ -527,6 +562,14 @@ def resolve_predictions(api=None, db_path=None, profile_id=None):
 
     conn.close()
     logger.info("Resolved %d / %d pending predictions.", resolved_count, len(pending))
+    if deferred_option_count > 0:
+        # Phase 5b safety floor: option rows accumulate as 'pending'
+        # until Phase 5c lands the option-aware resolver. A growing
+        # number here just means option rows aren't yet evaluable.
+        logger.info(
+            "Deferred %d option predictions (Phase 5c will land "
+            "option-aware resolver).", deferred_option_count,
+        )
     return resolved_count
 
 
