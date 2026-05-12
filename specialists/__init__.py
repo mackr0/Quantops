@@ -33,6 +33,9 @@ SPECIALIST_MODULES = [
     "specialists.sentiment_narrative",
     "specialists.risk_assessor",
     "specialists.adversarial_reviewer",
+    # Option-only — Phase 4 of pipeline refactor. Auto-skipped on stock
+    # pipelines via APPLIES_TO_PIPELINES = ("option",) tag.
+    "specialists.option_spread_risk",
 ]
 
 

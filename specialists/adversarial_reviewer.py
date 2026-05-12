@@ -32,6 +32,9 @@ from specialists._common import candidates_block, extract_verdict_array
 NAME = "adversarial_reviewer"
 DESCRIPTION = "Red-team reviewer — hunts failure modes pre-execution; holds VETO"
 HAS_VETO_AUTHORITY = True
+# Red-team review applies to every proposal regardless of instrument
+# class — every trade has failure modes worth hunting before execution.
+APPLIES_TO_PIPELINES = ("stock", "option")
 
 
 def _portfolio_summary(ctx: Any) -> str:

@@ -14,6 +14,9 @@ from specialists._common import candidates_block, extract_verdict_array
 
 NAME = "sentiment_narrative"
 DESCRIPTION = "Reads narrative: news flow, political risk, insider/options tells"
+# News flow and macro narrative move the underlying — and therefore both
+# stock positions and option premiums via delta. Relevant to both pipelines.
+APPLIES_TO_PIPELINES = ("stock", "option")
 
 
 def build_prompt(candidates: List[Dict[str, Any]], ctx: Any) -> str:

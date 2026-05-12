@@ -124,7 +124,8 @@ class TestPhase0PlaceholdersRaiseClearly:
         ("generate_candidates", (None,)),
         # build_prompt now wired in Phase 3.
         ("decide", (None, "")),
-        ("route_to_specialists", (None, AIResult(proposals=[]))),
+        # route_to_specialists wired in Phase 4 (concrete on Pipeline
+        # base). See test_pipelines_phase4_specialists.py.
         ("execute", (None, SpecialistVerdict())),
         ("record_outcome", (None, 1, Outcome(
             prediction_id=1, actual_outcome="win",

@@ -17,6 +17,10 @@ from specialists._common import candidates_block, extract_verdict_array
 NAME = "risk_assessor"
 DESCRIPTION = "Portfolio and regime risk gatekeeper — holds VETO authority"
 HAS_VETO_AUTHORITY = True
+# Portfolio-level concentration, regime, and liquidity risk apply to all
+# instrument classes — stock and option positions both consume risk
+# budget and contribute to drawdown.
+APPLIES_TO_PIPELINES = ("stock", "option")
 
 
 def build_prompt(candidates: List[Dict[str, Any]], ctx: Any) -> str:

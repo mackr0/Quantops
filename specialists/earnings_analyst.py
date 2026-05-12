@@ -16,6 +16,10 @@ from specialists._common import candidates_block, extract_verdict_array
 
 NAME = "earnings_analyst"
 DESCRIPTION = "Interprets earnings context, guidance tone, and SEC filing alerts"
+# Earnings drives both stock direction (post-announcement drift, guidance
+# reaction) AND option behavior (IV expansion pre-event, IV crush post-
+# event). Relevant to both pipelines.
+APPLIES_TO_PIPELINES = ("stock", "option")
 
 
 def build_prompt(candidates: List[Dict[str, Any]], ctx: Any) -> str:

@@ -396,25 +396,28 @@ cross-pollution.
 
 **Estimated work**: ~2 sessions.
 
-### Phase 4 — Specialist routing per pipeline
+### Phase 4 — Specialist routing per pipeline   ✅ Phase 4a shipped 2026-05-11
 
 **Goal**: each pipeline owns its specialist list. Multileg trades
 route through option-specific specialists with veto authority.
 Audit findings #5, #6 fixed.
 
-**Shipped artifacts**:
-- `pipelines/stock_specialists.py` — existing stock specialist set.
-- `pipelines/option_specialists.py` — new option specialists
-  (IV-skew, Greeks risk, spread P&L) with veto authority.
-- `MULTILEG_OPEN` proposals route through option specialists before
-  reaching the executor.
+**Shipped artifacts (Phase 4a)**:
+- Each specialist module declares `APPLIES_TO_PIPELINES` tuple — `pattern_recognizer` is stock-only, `option_spread_risk` is option-only, the other 4 are cross-pipeline.
+- `specialists/option_spread_risk.py` — NEW option-specific specialist with VETO authority. Hunts max-loss-vs-budget, IV crush exposure, near-expiry gamma blowup, credit/max-loss ratio.
+- `pipelines/specialist_router.py` — pure `applicable_specialists(pipeline_name)` filter; untagged modules default to `("stock",)` for back-compat.
+- `Pipeline.route_to_specialists()` lifted to a concrete base-class method — per-pipeline behavior fully captured by `self.name` driving the router. Future `CryptoPipeline` / `FXPipeline` subclasses get correct routing for free without overriding.
+- `ensemble.run_ensemble(specialists_override=...)` new opt-in kwarg lets pipeline routing pass a pre-filtered specialist list. Defaults to `None` for legacy callers.
+- Legacy `_specialists_for_market` updated: equity-default path now filters out option-only specialists so stock-shaped legacy callers don't suddenly run `option_spread_risk` on stock candidates. Pre-refactor 5-specialist behavior preserved exactly.
+
+**Phase 4b (queued)**: wire the dispatcher (`multi_scheduler` / `ai_analyst`) so `MULTILEG_OPEN` proposals actually flow through `pipeline.run_cycle()` → `route_to_specialists()` → `option_spread_risk` veto in production. Today the routing seam exists as a CAPABILITY; the legacy multileg path still bypasses ensemble entirely.
 
 **Exit criteria**:
-- Audit finding #5 (multileg bypasses veto) is closed.
-- Veto rate for option proposals is non-zero on a wide-loss spread
-  test scenario.
+- ✅ `pattern_recognizer` excluded from option proposals by construction (audit finding #6).
+- ✅ `option_spread_risk` slot exists with veto authority (audit finding #5 framework).
+- 🔲 Phase 4b: live multileg cycle runs option_spread_risk veto and the veto rate is non-zero on a wide-loss spread test scenario.
 
-**Estimated work**: ~3 sessions (option specialists need design).
+**Estimated work remaining**: ~1 session for Phase 4b (dispatcher wiring + integration test on a synthetic max-loss-exceeded multileg proposal).
 
 ### Phase 5 — Per-pipeline outcomes + scaled return
 

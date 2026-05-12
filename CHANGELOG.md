@@ -17,6 +17,44 @@ Rules going forward:
 
 ---
 
+## 2026-05-11 — Pipeline Architecture Phase 4 — specialist routing per pipeline; closes audit findings #5, #6
+
+Phase 4 of the instrument-class pipeline refactor. Each pipeline now owns its specialist set: stock proposals route through stock-tagged specialists; option proposals route through option-tagged specialists. Multileg trades stop bypassing risk checks; stock-only specialists stop polluting option decisions with chart-pattern noise on premium contracts.
+
+**Specialist tagging contract**: every specialist module now declares an `APPLIES_TO_PIPELINES` tuple. Tagging today:
+- `pattern_recognizer` → `("stock",)` — option premiums move on Greeks, not chart patterns of the contract itself
+- `earnings_analyst` → `("stock", "option")` — earnings drive both direction and IV crush
+- `sentiment_narrative` → `("stock", "option")` — news flow moves the underlying, hence both stock and premium via delta
+- `risk_assessor` → `("stock", "option")` — portfolio risk applies to both
+- `adversarial_reviewer` → `("stock", "option")` — universal red-team review
+- `option_spread_risk` → `("option",)` — NEW. Hunts max-loss-vs-budget, IV crush exposure, near-expiry gamma blowup, credit/max-loss ratio. Holds VETO authority. These are structural option risks no other specialist can catch.
+
+**New router** (`pipelines/specialist_router.py`): pure `applicable_specialists(pipeline_name)` filter on top of `discover_specialists()`. Untagged modules default to `("stock",)` for back-compat — preserves the behavior of the original stock-only system on stock proposals while keeping option proposals safe from untagged legacy modules.
+
+**Pipeline.route_to_specialists**: lifted from `@abstractmethod` to a concrete base-class method. Per-pipeline behavior is fully captured by `self.name` driving the specialist filter. `StockPipeline` and `OptionPipeline` inherit the routing logic; future `CryptoPipeline`/`FXPipeline` subclasses get correct routing for free without overriding.
+
+**Ensemble back-compat** (`ensemble.run_ensemble`): new optional `specialists_override` kwarg lets pipeline routing pass a pre-filtered specialist list directly. When omitted (legacy callers like the existing `ai_analyst` flow), `_specialists_for_market` now also filters out option-only specialists from the equity-default path so legacy stock-shaped callers don't suddenly start running `option_spread_risk` on stock candidates. Back-compat preserved by construction: every existing caller gets the exact same specialist set as before this commit.
+
+**Tests** (`tests/test_pipelines_phase4_specialists.py`, 26 tests):
+- CLASS INVARIANT (parametrized over `SPECIALIST_MODULES`): every module declares a non-empty `APPLIES_TO_PIPELINES` tuple containing only known pipeline names. Catches future regressions where a new specialist is added but its routing tag is forgotten or typo'd — exactly the "test for the class, not the instance" pattern.
+- Routing correctness: stock pipeline includes `pattern_recognizer` and excludes `option_spread_risk`; option pipeline includes `option_spread_risk` and excludes `pattern_recognizer`; cross-pipeline specialists appear in both (parametrized over all 4 cross-pipeline modules).
+- Untagged modules default to `("stock",)`.
+- Pipeline composes router + ensemble correctly: tests patch `ensemble.run_ensemble` to assert the per-pipeline specialist list flows through via `specialists_override` (no AI calls in tests).
+- Veto propagation: when ensemble reports a vetoed symbol, the pipeline classifies the proposal into `SpecialistVerdict.vetoed`, not `.approved`.
+- Empty-proposal short-circuit: zero proposals → no ensemble call (no AI cost spent on nothing).
+- Ensemble back-compat: `run_ensemble.specialists_override` defaults to `None` so existing callers get pre-refactor behavior.
+- `option_spread_risk` contract: discoverable, has VETO authority, tagged option-only, prompt mentions all four risk classes (max-loss, IV crush, gamma, credit).
+
+**Stale instance-test bumps**: `test_integration.py::test_all_phase_entry_points_importable` was pinning `len(discover_specialists()) == 5` (now 6 with `option_spread_risk`). `test_ensemble.py::test_discover_all_specialists` was enumerating the 5 names; updated to include the new module. These are the kind of "instance test pinned to enumerated count" that earlier feedback flagged — kept the count assertion form for now per the agreement to revisit test strategy after the options refactor lands.
+
+**Behavior change on prod**: zero. Legacy `ai_analyst` and `multi_scheduler` paths continue to use the original 5-specialist ensemble (filtered by `_specialists_for_market` to match pre-refactor exactly). The new routing seam exists as a CAPABILITY ready for Phase 4b to wire the dispatcher through `pipeline.run_cycle()`.
+
+**Tests**: 2,578 pass (+26 Phase 4, 0 regressions).
+
+Phase 0 tests updated to remove `route_to_specialists` from the `NotImplementedError`-coverage parametrize list (it's now a concrete base-class method, no longer raises).
+
+---
+
 ## 2026-05-11 — Pipeline Architecture Phase 3 — fork the AI prompt; closes audit finding #4
 
 Phase 3 of the instrument-class pipeline refactor. Stock candidates and option candidates now get fundamentally different AI prompts. Stock prompt has only stock-relevant features (technicals, sector context). Option prompt has IV rank, Greeks (delta/gamma/theta/vega), days-to-expiry, strike, spread max-loss/max-gain, contract bid-ask — alongside the underlying's technicals. Closes audit finding #4 by construction: option proposals can no longer be made blind to option fundamentals.

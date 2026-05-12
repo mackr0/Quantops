@@ -55,13 +55,12 @@ class StockPipeline(Pipeline):
             "Phase 3 wires this to the shared ai_providers call."
         )
 
-    def route_to_specialists(self, ctx,
-                              ai_result: AIResult) -> SpecialistVerdict:
-        raise NotImplementedError(
-            "Phase 4 routes proposals through stock specialists "
-            "(technical, sector, sentiment, risk_assessor, "
-            "adversarial_reviewer)."
-        )
+    # route_to_specialists: Phase 4 lifted this to the Pipeline base
+    # class — the per-pipeline behavior is fully captured by self.name
+    # driving `specialist_router.applicable_specialists`. StockPipeline
+    # therefore inherits the routing logic; stock-tagged specialists
+    # (pattern_recognizer + the cross-pipeline ones) automatically
+    # filter in.
 
     def execute(self, ctx, verdict: SpecialistVerdict) -> ExecutionResult:
         raise NotImplementedError(

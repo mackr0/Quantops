@@ -15,6 +15,10 @@ from specialists._common import candidates_block, extract_verdict_array
 
 NAME = "pattern_recognizer"
 DESCRIPTION = "Judges chart structure, trend quality, and volume confirmation"
+# Stock-only: option contract premiums move on Greeks, not chart patterns
+# of the contract itself. Underlying technicals are surfaced separately
+# in the option pipeline's prompt — pipelines/option_prompt.py.
+APPLIES_TO_PIPELINES = ("stock",)
 
 
 def build_prompt(candidates: List[Dict[str, Any]], ctx: Any) -> str:

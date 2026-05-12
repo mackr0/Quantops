@@ -63,11 +63,28 @@ APPLICABLE_SPECIALISTS_BY_MARKET = {
 
 
 def _specialists_for_market(market_type: str, all_specialists):
-    """Filter the specialist list to those applicable to this market."""
+    """Filter the specialist list to those applicable to this market.
+
+    For markets in the explicit allowlist (currently crypto): use
+    that allowlist. For everything else (equity, default), the legacy
+    callers (ai_analyst.run_ai_analysis) are stock-shaped — they
+    don't pass `specialists_override`, and they're proposing stock
+    trades. Option-only specialists (those tagged
+    APPLIES_TO_PIPELINES = ("option",)) must NOT fire on those stock
+    proposals (audit finding #6). They only run when a caller
+    explicitly passes `specialists_override` via Phase 4 pipeline
+    routing.
+    """
     allowed = APPLICABLE_SPECIALISTS_BY_MARKET.get(market_type)
-    if allowed is None:
-        return list(all_specialists)
-    return [s for s in all_specialists if s.NAME in allowed]
+    if allowed is not None:
+        return [s for s in all_specialists if s.NAME in allowed]
+    # Legacy default: exclude option-only specialists from the
+    # stock-shaped legacy path. Specialists with no tag default to
+    # ("stock",), specialists tagged ("stock", "option") still apply.
+    return [
+        s for s in all_specialists
+        if "stock" in getattr(s, "APPLIES_TO_PIPELINES", ("stock",))
+    ]
 
 
 # Window (days) around now in which upcoming earnings make the
@@ -142,6 +159,7 @@ def run_ensemble(
     ai_model: str,
     ai_api_key: str,
     max_candidates: int = 15,
+    specialists_override: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
     """Run every specialist against the shortlist and synthesize verdicts.
 
@@ -166,8 +184,19 @@ def run_ensemble(
     batch = candidates[:max_candidates]
     chunks = [batch[i:i + CHUNK_SIZE] for i in range(0, len(batch), CHUNK_SIZE)]
 
+    # Phase 4 of pipeline refactor: when a per-pipeline specialist list
+    # is supplied, use it directly (it was already filtered by
+    # `pipelines.specialist_router.applicable_specialists(pipeline_name)`
+    # — closes audit findings #5, #6 by ensuring stock specialists
+    # never see option proposals and option-only specialists never
+    # see stock proposals). Otherwise discover all and apply the
+    # market filter — preserves pre-refactor behavior for any caller
+    # not yet routed through a Pipeline subclass.
     market_type = getattr(ctx, "segment", "") or ""
-    specialists = _specialists_for_market(market_type, discover_specialists())
+    if specialists_override is not None:
+        specialists = list(specialists_override)
+    else:
+        specialists = _specialists_for_market(market_type, discover_specialists())
 
     # Lever 3 of COST_AND_QUALITY_LEVERS_PLAN.md — per-profile
     # disable list. When calibration data shows a specialist is

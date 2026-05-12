@@ -208,15 +208,68 @@ class Pipeline(ABC):
             "shared AI provider call lands in Phase 3."
         )
 
-    @abstractmethod
     def route_to_specialists(self, ctx,
                               ai_result: AIResult) -> SpecialistVerdict:
         """Route AI proposals through this pipeline's specialist
         ensemble. Each specialist can VETO a proposal.
 
-        Closes the audit gap (finding #5) where MULTILEG_OPEN
-        bypassed all specialist checks today.
+        Phase 4 of the pipeline refactor: this is a concrete base-
+        class method. The per-pipeline behavior is captured entirely
+        by `self.name` driving the specialist filter — stock pipeline
+        sees stock-tagged specialists; option pipeline sees option-
+        tagged specialists; future CryptoPipeline or FXPipeline
+        subclasses get correct routing for free without overriding.
+
+        Closes audit findings:
+          #5 — multileg trades bypassed all specialist checks today
+               (the legacy options_multileg path skips ensemble
+               entirely). Once Phase 4b wires the dispatcher, the
+               pipeline.run_cycle() path runs every option proposal
+               through option_spread_risk + adversarial_reviewer.
+          #6 — stock specialists like pattern_recognizer fired on
+               option proposals and produced noise. The router now
+               filters them out by tag.
         """
+        from . import specialist_router
+        spec_list = specialist_router.applicable_specialists(self.name)
+        proposals = list(getattr(ai_result, "proposals", []) or [])
+        if not proposals:
+            return SpecialistVerdict(
+                approved=[], vetoed=[],
+                veto_log=[
+                    f"{self.name} pipeline: no proposals to route "
+                    f"(would have used {len(spec_list)} specialists)"
+                ],
+            )
+        # Compose the per-pipeline ensemble call. Tests patch
+        # `ensemble.run_ensemble` to verify the specialist list flows
+        # through without making AI calls; production callers get the
+        # real ensemble.
+        from ensemble import run_ensemble
+        result = run_ensemble(
+            candidates=proposals,
+            ctx=ctx,
+            ai_provider=getattr(ctx, "ai_provider", "anthropic"),
+            ai_model=getattr(ctx, "ai_model", ""),
+            ai_api_key=getattr(ctx, "ai_api_key", ""),
+            specialists_override=spec_list,
+        )
+        per_symbol = (result or {}).get("per_symbol", {})
+        approved, vetoed, veto_log = [], [], []
+        for proposal in proposals:
+            sym = proposal.get("symbol") if isinstance(proposal, dict) else None
+            verdict_data = per_symbol.get(sym, {}) if sym else {}
+            if verdict_data.get("vetoed"):
+                vetoed.append(proposal)
+                veto_log.append(
+                    f"{sym}: VETO — "
+                    f"{(verdict_data.get('veto_reason') or '')[:120]}"
+                )
+            else:
+                approved.append(proposal)
+        return SpecialistVerdict(
+            approved=approved, vetoed=vetoed, veto_log=veto_log,
+        )
 
     @abstractmethod
     def execute(self, ctx, verdict: SpecialistVerdict) -> ExecutionResult:

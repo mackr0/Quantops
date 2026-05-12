@@ -62,15 +62,12 @@ class OptionPipeline(Pipeline):
             "Phase 3 wires this to the shared ai_providers call."
         )
 
-    def route_to_specialists(self, ctx,
-                              ai_result: AIResult) -> SpecialistVerdict:
-        raise NotImplementedError(
-            "Phase 4 routes proposals through option-specific "
-            "specialists: IV-skew, Greeks risk, spread P&L, plus "
-            "the cross-pipeline adversarial_reviewer. Closes audit "
-            "findings #5 (multileg bypasses veto today) and #6 "
-            "(stock specialists shouldn't see option proposals)."
-        )
+    # route_to_specialists: Phase 4 lifted this to the Pipeline base
+    # class — the per-pipeline behavior is fully captured by self.name
+    # driving `specialist_router.applicable_specialists`. OptionPipeline
+    # therefore inherits the routing logic; option-tagged specialists
+    # (option_spread_risk + the cross-pipeline ones) filter in,
+    # stock-only specialists like pattern_recognizer filter out.
 
     def execute(self, ctx, verdict: SpecialistVerdict) -> ExecutionResult:
         raise NotImplementedError(
