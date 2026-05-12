@@ -2065,9 +2065,15 @@ def ai_performance_legacy():
                     "trades_with_fills": 0, "avg_slippage_pct": 0,
                     "total_slippage_cost": 0, "worst_slippage_pct": 0,
                     "worst_trade": None,
+                    # Phase 5e — count of rows excluded due to a
+                    # data_quality tag (e.g., 'phantom_stop_2026_05_11').
+                    "excluded_data_quality": 0,
                 }
             combined_slippage["trades_with_fills"] += s["trades_with_fills"]
             combined_slippage["total_slippage_cost"] += s["total_slippage_cost"]
+            combined_slippage["excluded_data_quality"] += s.get(
+                "excluded_data_quality", 0
+            ) or 0
             if s["worst_slippage_pct"] > combined_slippage.get("worst_slippage_pct", 0):
                 combined_slippage["worst_slippage_pct"] = s["worst_slippage_pct"]
                 combined_slippage["worst_trade"] = s.get("worst_trade")
@@ -2502,6 +2508,7 @@ def performance_dashboard():
     # 2026-05-12 fix: scope % to STOCK rows so option premium %-moves
     # don't dilute the average to nonsense (+1130% incident).
     weighted_pct_sum = 0.0
+    slippage["excluded_data_quality"] = 0  # Phase 5e count
     for db_path in db_paths:
         s = get_slippage_stats(db_path=db_path, kind="stocks")
         if s:
@@ -2510,6 +2517,9 @@ def performance_dashboard():
             slippage["total_cost"] += s.get("total_slippage_cost", 0) or 0
             slippage["magnitude"] += s.get("total_slippage_magnitude", 0) or 0
             weighted_pct_sum += (s.get("avg_slippage_pct", 0) or 0) * n
+            slippage["excluded_data_quality"] += s.get(
+                "excluded_data_quality", 0
+            ) or 0
     if slippage["count"] > 0:
         slippage["avg_pct"] = weighted_pct_sum / slippage["count"]
 
@@ -3274,6 +3284,7 @@ def ai_dashboard():
     # 2026-05-12 fix: scope % to STOCK rows so option premium %-moves
     # don't dilute the average to nonsense (+1130% incident).
     weighted_pct_sum = 0.0
+    slippage["excluded_data_quality"] = 0  # Phase 5e count
     for db_path in db_paths:
         s = get_slippage_stats(db_path=db_path, kind="stocks")
         if s:
@@ -3282,6 +3293,9 @@ def ai_dashboard():
             slippage["total_cost"] += s.get("total_slippage_cost", 0) or 0
             slippage["magnitude"] += s.get("total_slippage_magnitude", 0) or 0
             weighted_pct_sum += (s.get("avg_slippage_pct", 0) or 0) * n
+            slippage["excluded_data_quality"] += s.get(
+                "excluded_data_quality", 0
+            ) or 0
     if slippage["count"] > 0:
         slippage["avg_pct"] = weighted_pct_sum / slippage["count"]
 

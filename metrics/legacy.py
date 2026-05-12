@@ -1338,6 +1338,7 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
     all_fills_total_cost = 0.0
     all_fills_magnitude = 0.0
     weighted_pct_sum = 0.0
+    excluded_data_quality_total = 0  # Phase 5e
     for db_path in db_paths:
         try:
             from journal import get_slippage_stats
@@ -1349,6 +1350,9 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
                 weighted_pct_sum += (
                     s_stock.get("avg_slippage_pct", 0) or 0
                 ) * n
+                excluded_data_quality_total += (
+                    s_stock.get("excluded_data_quality", 0) or 0
+                )
             # $ totals: include BOTH stocks and options (dollars are
             # comparable; this is the realized economic cost).
             s_opt = get_slippage_stats(db_path=db_path, kind="options")
@@ -1369,6 +1373,9 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
     result["slippage_total_cost"] = round(all_fills_total_cost, 2)
     result["slippage_magnitude"] = round(all_fills_magnitude, 2)
     result["trades_with_slippage"] = all_fills_count
+    # Phase 5e — count of rows excluded by data_quality tag. Zero
+    # when there's no known data corruption.
+    result["slippage_excluded_data_quality"] = excluded_data_quality_total
 
     # Slippage vs gross — uses signed CLOSED-trade slippage costs (the
     # only ones that have a realized P&L to ratio against). Signed so

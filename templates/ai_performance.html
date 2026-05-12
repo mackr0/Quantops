@@ -89,6 +89,11 @@
         <div class="stat-card">
             <small class="muted">Trades with Fill Data</small>
             <strong style="font-size:2rem;">{{ slippage.trades_with_fills }}</strong>
+            {% if slippage.excluded_data_quality and slippage.excluded_data_quality > 0 %}
+            <small class="muted" style="display:block;color:#ff9800;margin-top:0.25rem;">
+                {{ slippage.excluded_data_quality }} excluded as data-quality artifacts
+            </small>
+            {% endif %}
         </div>
     </div>
 </article>

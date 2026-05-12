@@ -785,6 +785,13 @@
             <div class="stat-card" style="text-align:center;">
                 <small class="muted">Trades with Fill Data</small>
                 <strong style="font-size:2rem;">{{ m.trades_with_slippage }}</strong>
+                {% if m.slippage_excluded_data_quality and m.slippage_excluded_data_quality > 0 %}
+                <small class="muted" style="display:block;color:#ff9800;margin-top:0.25rem;">
+                    <span class="tip" data-tip="Rows tagged with a known data-corruption marker (e.g., the 2026-05-11 phantom-stop incident) — excluded from the aggregate so the displayed numbers reflect actual execution quality. See the CHANGELOG for details.">
+                        {{ m.slippage_excluded_data_quality }} excluded as data-quality artifacts
+                    </span>
+                </small>
+                {% endif %}
             </div>
         </div>
         {% else %}

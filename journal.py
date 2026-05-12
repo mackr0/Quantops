@@ -487,6 +487,16 @@ def _migrate_all_columns(conn):
             # (qty * price / adv_dollars) instead of the coarse
             # `assumed_adv_dollars=$50M` default.
             ("adv_at_decision", "REAL"),
+            # Phase 5e (2026-05-12) — generic data-quality marker.
+            # NULL on normal trades. Set to a tag string for rows
+            # excluded from analytics aggregates due to a known
+            # data-quality issue (e.g., 'phantom_stop_2026_05_11'
+            # for the 31 KO / mis-classified-stock-stop rows
+            # written during yesterday's phantom-stops incident).
+            # Excluded by get_slippage_stats and surfaced as a
+            # separate count so operators see when corrupt data
+            # is present without it polluting the headline metrics.
+            ("data_quality", "TEXT"),
         ],
         "ai_predictions": [
             ("regime_at_prediction", "TEXT"),
@@ -586,6 +596,37 @@ def _migrate_all_columns(conn):
                 f"WHERE pipeline_kind IS NULL "
                 f"AND predicted_signal IN ({op})",
                 option_signals,
+            )
+    except Exception:
+        pass
+
+    # Phase 5e (2026-05-12) — tag the phantom_stop_2026_05_11 incident
+    # rows so analytics aggregates exclude them. These are STOCK-tagged
+    # trades (occ_symbol IS NULL) with a decision_price under $1 and
+    # a fill price plausibly above $1 — the pattern produced when
+    # yesterday's phantom-stops bug logged option premium as the
+    # decision price for what executed as a stock sell. ABS(slippage_pct)
+    # > 50 catches the resulting nonsense values (real stock slippage
+    # almost never exceeds 5%).
+    #
+    # The match window is < 2026-05-12 to scope this strictly to the
+    # historical incident. Future high-slippage rows must be
+    # investigated individually — not auto-tagged.
+    #
+    # Idempotent: gated on `data_quality IS NULL`.
+    try:
+        tcols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(trades)"
+        ).fetchall()}
+        if "data_quality" in tcols and "slippage_pct" in tcols:
+            conn.execute(
+                "UPDATE trades "
+                "SET data_quality = 'phantom_stop_2026_05_11' "
+                "WHERE data_quality IS NULL "
+                "AND occ_symbol IS NULL "
+                "AND ABS(slippage_pct) > 50 "
+                "AND decision_price < 1.0 "
+                "AND timestamp < '2026-05-12T00:00:00'"
             )
     except Exception:
         pass
@@ -1482,7 +1523,40 @@ def get_slippage_stats(db_path=None, kind=None):
         where_kind = " AND occ_symbol IS NULL"
     elif kind == "options":
         where_kind = " AND occ_symbol IS NOT NULL"
+    # Phase 5e (2026-05-12): exclude data-quality-tagged rows from
+    # the aggregate. data_quality IS NULL for normal trades; a
+    # tag string indicates a known data corruption (e.g.,
+    # 'phantom_stop_2026_05_11'). The excluded count is returned
+    # in `excluded_data_quality` so operators see when corrupt
+    # data is present — masked from the metric, surfaced as a
+    # separate signal.
+    #
+    # Back-compat: minimal test fixtures + legacy DBs may not
+    # have the data_quality column yet. Detect its presence
+    # before adding the filter.
     try:
+        cols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(trades)"
+        ).fetchall()}
+        has_dq = "data_quality" in cols
+    except Exception:
+        has_dq = False
+    excluded_data_quality_clause = (
+        " AND data_quality IS NULL" if has_dq else ""
+    )
+    try:
+        # Count of rows excluded by the data_quality filter.
+        # Returns 0 when the column doesn't exist.
+        if has_dq:
+            excluded_data_quality = conn.execute(f"""
+                SELECT COUNT(*) FROM trades
+                WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL
+                  AND decision_price > 0{where_kind}
+                  AND data_quality IS NOT NULL
+            """).fetchone()[0] or 0
+        else:
+            excluded_data_quality = 0
+
         row = conn.execute(f"""
             SELECT
                 COUNT(*) AS trades_with_fills,
@@ -1501,7 +1575,7 @@ def get_slippage_stats(db_path=None, kind=None):
                 ) AS total_slippage_cost
             FROM trades
             WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL
-              AND decision_price > 0{where_kind}
+              AND decision_price > 0{where_kind}{excluded_data_quality_clause}
         """).fetchone()
 
         if not row or row["trades_with_fills"] == 0:
@@ -1509,12 +1583,15 @@ def get_slippage_stats(db_path=None, kind=None):
             return None
 
         # Get the worst slippage trade details — same kind filter
-        # so the row shown matches the aggregate's instrument class.
+        # AND same data_quality filter so the row shown matches the
+        # aggregate (operators clicking "worst" should see a trade
+        # that's actually IN the average, not the phantom-stop
+        # row that got excluded).
         worst = conn.execute(f"""
             SELECT symbol, side, qty, decision_price, fill_price, slippage_pct, timestamp
             FROM trades
             WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL
-              AND decision_price > 0{where_kind}
+              AND decision_price > 0{where_kind}{excluded_data_quality_clause}
             ORDER BY ABS(slippage_pct) DESC
             LIMIT 1
         """).fetchone()
@@ -1527,6 +1604,10 @@ def get_slippage_stats(db_path=None, kind=None):
             "total_slippage_cost": round(row["total_slippage_cost"] or 0, 2),
             "total_slippage_magnitude": round(row["total_slippage_magnitude"] or 0, 2),
             "worst_trade": dict(worst) if worst else None,
+            # Phase 5e: count of rows excluded by data_quality
+            # tag (e.g., phantom-stop incident artifacts). Zero
+            # when the table has no tagged rows in scope.
+            "excluded_data_quality": excluded_data_quality,
         }
     except Exception:
         conn.close()
