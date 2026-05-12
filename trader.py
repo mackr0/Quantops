@@ -377,6 +377,46 @@ def check_exits(ctx=None):
         conviction_tp_skip=conviction_tp_skip,
     )
 
+    # TODO #7 (2026-05-11): single-leg long option exit logic.
+    # check_stop_loss_take_profit explicitly skips ALL options (safe
+    # for multileg legs which are protected by structural max loss,
+    # UNSAFE for single-leg longs which can lose 100% of premium with
+    # no automated exit). options_exits.check_single_leg_option_exits
+    # adds three triggers for single-leg long options: premium-stop
+    # at -50%, take-profit at +100%, DTE exit at ≤7 days. Multileg
+    # legs are explicitly skipped. Failure-tolerant — if the option
+    # exit module raises, the rest of check_exits proceeds.
+    if db_path and positions:
+        try:
+            from options_exits import (
+                check_single_leg_option_exits, submit_option_close,
+            )
+            opt_signals = check_single_leg_option_exits(
+                positions, db_path,
+            )
+            for sig in opt_signals:
+                try:
+                    result = submit_option_close(
+                        api, sig["occ_symbol"], sig["qty"],
+                        side_to_close=sig.get("side_to_close", "sell"),
+                    )
+                    logging.info(
+                        "Option exit submitted: %s qty=%s trigger=%s "
+                        "reason=%s status=%s",
+                        sig["occ_symbol"], sig["qty"],
+                        sig["trigger"], sig["reason"],
+                        result.get("status"),
+                    )
+                except Exception as _exc:
+                    logging.warning(
+                        "Option exit submission failed for %s: %s",
+                        sig["occ_symbol"], _exc,
+                    )
+        except Exception as _exc:
+            logging.warning(
+                "Option exits check failed (non-fatal): %s", _exc,
+            )
+
     # P1.5 of LONG_SHORT_PLAN.md — time stops on shorts.
     # Cover any short position older than ctx.short_max_hold_days
     # regardless of P&L. Borrow keeps charging while a stuck short

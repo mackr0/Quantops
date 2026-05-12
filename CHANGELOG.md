@@ -50,6 +50,53 @@ This closes audit finding #5 LIVE — every multileg proposal now goes through t
 
 ---
 
+## 2026-05-11 — TODO #7 — single-leg long option exit logic (closes safety gap)
+
+Closes the safety gap where single-leg long option positions had no automated exit. Today's `portfolio_manager.check_stop_loss_take_profit` skips ALL option positions (safe for multileg legs which are protected by structural max loss; UNSAFE for single-leg longs which can lose 100% of premium with no automated exit). Three exit triggers added:
+
+1. **Premium stop-loss**: close at -50% premium drop from entry.
+2. **Premium take-profit**: close at +100% premium gain from entry.
+3. **DTE exit**: close at ≤7 days to expiry (avoid gamma blowup near expiration).
+
+**Multileg leg safety**: positions whose entry trade was logged with `signal_type='MULTILEG'` are EXPLICITLY skipped — independently closing one leg of a spread would orphan its partner, exposing it to undefined risk. Determined by looking up the most recent open entry trade in the `trades` table.
+
+**Short single-leg skip**: short positions (`qty < 0`) are skipped this commit. Short premium economics differ (theta is GOOD, premium drop = profit) — different threshold semantics needed. A future iteration can add short-side exits.
+
+**New module `options_exits.py`**:
+- `check_single_leg_option_exits(positions, db_path, today=None)` — returns exit signal dicts for positions hitting a trigger. Pure function.
+- `submit_option_close(api, occ_symbol, qty, side_to_close, limit_price=None)` — submits sell-to-close (long) via Alpaca's raw POST endpoint with `position_intent='sell_to_close'`. Bypasses SDK's narrow `submit_order` signature so position_intent reaches the broker (without it, Alpaca sometimes treats the order as opening a new position).
+- Helpers `_is_multileg_leg`, `_days_to_expiry`, `_pos_is_option` etc. work on both Position objects and dict-shaped positions.
+
+**Trigger constants** (tunable in future via ctx fields):
+- `PREMIUM_STOP_LOSS_PCT = -0.50`
+- `PREMIUM_TAKE_PROFIT_PCT = 1.00`
+- `DTE_EXIT_THRESHOLD_DAYS = 7`
+
+**Wiring in `trader.check_exits`**: after the existing stock `check_stop_loss_take_profit` call, also iterates `options_exits.check_single_leg_option_exits` and submits closes via `submit_option_close`. Failure-tolerant — both the check call and individual submissions are wrapped in try/except so a broken option-exit module never blocks stock exits.
+
+**Tests** (`tests/test_options_exits.py`, 20 tests):
+- PREMIUM STOP: -50% triggers; -45% does NOT (boundary correctness).
+- PREMIUM TAKE-PROFIT: +100% triggers; +90% does NOT.
+- DTE EXIT: 7 days triggers; 8 days does NOT; fires on neutral premium too.
+- MULTILEG SKIP (CRITICAL): leg with -91% premium drop does NOT trigger when entry was MULTILEG; same row with entry=OPTIONS DOES trigger. Catches the orphan-the-partner regression by structural shape.
+- SHORT-LEG SKIP: short positions with +100% premium gain do NOT trigger.
+- STOCK IGNORE: stock-only book → empty signals; mixed book → only option evaluated.
+- PAYLOAD SHAPE: `submit_option_close` builds correct Alpaca POST payload with `position_intent='sell_to_close'`, unpadded OCC symbol, optional limit price.
+- FAILURE: rejected order returns error dict (doesn't raise).
+- THRESHOLD CONSTANTS pinned (catches accidental loosening).
+
+**Behavior change on prod**:
+- Single-leg long option positions in the production book will now close automatically when they hit any of the three triggers. Logs: `"Option exit submitted: <occ> qty=N trigger=premium_stop reason=..."`.
+- No effect on multileg spreads — they continue to be managed at the spread level.
+- No effect on stock positions — existing stop-loss/take-profit logic unchanged.
+- Failure-tolerant — option-exit module errors don't block stock exits.
+
+**Tests**: 2,737 pass (+20 TODO #7, 0 regressions).
+
+This is the last critical safety gap in the option pipeline before market open tomorrow. Combined with Phase 4b's specialist veto (entry-side risk), Phase 5c's option-aware resolver (outcome correctness), and Phase 6b's delta-adjusted exposure (portfolio-level risk), single-leg long options now have full lifecycle coverage: gated entry, correct outcome resolution, automated exit on either premium move OR time decay.
+
+---
+
 ## 2026-05-11 — Pipeline Architecture Phase 5d — historical option backfill (auto-run)
 
 Phase 5d completes the audit-finding-#2 closure by backfilling historical option prediction rows that were resolved with the broken pre-Phase-5c math (underlying-stock-derived `actual_return_pct` on option premiums — produced nonsense like 4067% returns). Phase 5a's `pipeline_kind` tag had isolated those rows from stock tuning, but option calibration / specialist learning was still contaminated by them. Phase 5d cleans up the historical contamination by re-resolving those rows through the Phase 5c option-aware resolver.
