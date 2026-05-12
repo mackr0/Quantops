@@ -59,6 +59,15 @@ def recalibrate_all_specialists(
         return counts
 
     try:
+        # Ensure the journal schema is current — the
+        # pipeline-aware fit needs ai_predictions.pipeline_kind,
+        # which only exists after the Phase 5a migration has run.
+        # Calling init_db here is idempotent and self-sufficient
+        # (recalibration can be invoked outside a scheduler cycle,
+        # e.g., manual triggering via SSH after deploy).
+        from journal import init_db
+        init_db(db_path)
+
         from specialists import discover_specialists
         from specialist_calibration import (
             fit_calibrator, save_calibrator, clear_calibrator_cache,
