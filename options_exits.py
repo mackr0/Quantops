@@ -37,9 +37,22 @@ logger = logging.getLogger(__name__)
 
 
 # Triggers — tunable per-profile in the future via ctx fields.
+# LONG SIDE — premium-paid positions (qty > 0):
+#   Win when premium goes UP. Lose when premium goes DOWN.
 PREMIUM_STOP_LOSS_PCT = -0.50      # -50% premium drop → close
 PREMIUM_TAKE_PROFIT_PCT = 1.00     # +100% premium gain → close
 DTE_EXIT_THRESHOLD_DAYS = 7        # ≤ N days to expiry → close
+
+# SHORT SIDE — premium-collected positions (qty < 0):
+#   Win when premium goes DOWN (theta decay; we keep the credit).
+#   Lose when premium goes UP (the trade ran against us).
+# Asymmetric thresholds reflect short-premium economics:
+#   - Take profit when 50% of credit captured (premium dropped 50%)
+#   - Stop loss when premium DOUBLES against us (200% expansion)
+SHORT_PREMIUM_TAKE_PROFIT_PCT = -0.50  # premium dropped 50% → close (win)
+SHORT_PREMIUM_STOP_LOSS_PCT = 1.00     # premium up 100% → close (loss)
+# DTE exit applies to both long and short — gamma blowup risk
+# is the same near expiration regardless of side.
 
 
 def _entry_signal_type(db_path: str, occ_symbol: str) -> Optional[str]:
@@ -120,35 +133,58 @@ def check_single_leg_option_exits(
             continue
 
         qty = float(_pos_get(pos, "qty") or 0)
-        if qty <= 0:
-            # Short premium has different economics (theta is good)
-            # — defer to a future iteration.
+        if qty == 0:
             continue
         entry = float(_pos_get(pos, "avg_entry_price") or 0)
         current = float(_pos_get(pos, "current_price") or 0)
+        is_short = qty < 0
 
         # Premium-based triggers require both prices.
         if entry > 0 and current > 0:
             pct_change = (current - entry) / entry
 
-            if pct_change <= PREMIUM_STOP_LOSS_PCT:
-                triggered.append(_make_signal(
-                    occ, qty, "premium_stop",
-                    f"Premium dropped {pct_change:+.0%} (threshold "
-                    f"{PREMIUM_STOP_LOSS_PCT:+.0%})",
-                    pct_change,
-                ))
-                continue
-            if pct_change >= PREMIUM_TAKE_PROFIT_PCT:
-                triggered.append(_make_signal(
-                    occ, qty, "premium_take_profit",
-                    f"Premium gained {pct_change:+.0%} (threshold "
-                    f"{PREMIUM_TAKE_PROFIT_PCT:+.0%})",
-                    pct_change,
-                ))
-                continue
+            if not is_short:
+                # LONG: stop on premium drop, take-profit on rise.
+                if pct_change <= PREMIUM_STOP_LOSS_PCT:
+                    triggered.append(_make_signal(
+                        occ, qty, "premium_stop",
+                        f"Premium dropped {pct_change:+.0%} (threshold "
+                        f"{PREMIUM_STOP_LOSS_PCT:+.0%})",
+                        pct_change,
+                    ))
+                    continue
+                if pct_change >= PREMIUM_TAKE_PROFIT_PCT:
+                    triggered.append(_make_signal(
+                        occ, qty, "premium_take_profit",
+                        f"Premium gained {pct_change:+.0%} (threshold "
+                        f"{PREMIUM_TAKE_PROFIT_PCT:+.0%})",
+                        pct_change,
+                    ))
+                    continue
+            else:
+                # SHORT: take-profit when premium DROPS (theta wins);
+                # stop when premium RISES against us. 2026-05-12.
+                if pct_change <= SHORT_PREMIUM_TAKE_PROFIT_PCT:
+                    triggered.append(_make_signal(
+                        occ, qty, "short_premium_take_profit",
+                        f"Short premium decayed {pct_change:+.0%} "
+                        f"(threshold {SHORT_PREMIUM_TAKE_PROFIT_PCT:+.0%}) "
+                        f"— closing to lock in {abs(pct_change)*100:.0f}% "
+                        f"of credit",
+                        pct_change,
+                    ))
+                    continue
+                if pct_change >= SHORT_PREMIUM_STOP_LOSS_PCT:
+                    triggered.append(_make_signal(
+                        occ, qty, "short_premium_stop",
+                        f"Short premium expanded {pct_change:+.0%} "
+                        f"(threshold {SHORT_PREMIUM_STOP_LOSS_PCT:+.0%}) "
+                        f"— closing before further expansion",
+                        pct_change,
+                    ))
+                    continue
 
-        # DTE-based trigger — independent of premium price.
+        # DTE-based trigger — independent of premium price + side.
         dte = _days_to_expiry(occ, today=today)
         if dte is not None and dte <= DTE_EXIT_THRESHOLD_DAYS:
             pct_change = (
@@ -263,10 +299,15 @@ def _pos_get(pos, key, default=None):
 
 
 def _make_signal(occ_symbol, qty, trigger, reason, pct_change):
+    """side_to_close is opposite of the position direction:
+      long position (qty > 0)  → sell-to-close
+      short position (qty < 0) → buy-to-close
+    """
+    side = "buy" if qty < 0 else "sell"
     return {
         "occ_symbol": occ_symbol,
         "qty": abs(int(qty)),
-        "side_to_close": "sell",   # long position → sell-to-close
+        "side_to_close": side,
         "trigger": trigger,
         "reason": reason,
         "premium_pct_change": pct_change,

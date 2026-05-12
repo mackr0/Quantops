@@ -36,6 +36,7 @@ from options_exits import (
     check_single_leg_option_exits, submit_option_close,
     PREMIUM_STOP_LOSS_PCT, PREMIUM_TAKE_PROFIT_PCT,
     DTE_EXIT_THRESHOLD_DAYS,
+    SHORT_PREMIUM_TAKE_PROFIT_PCT, SHORT_PREMIUM_STOP_LOSS_PCT,
 )
 
 
@@ -231,15 +232,88 @@ class TestMultilegSkip:
 # SHORT-LEG SKIP — defensive (different economics)
 # ---------------------------------------------------------------------------
 
-class TestShortLegSkip:
-    def test_short_position_not_triggered(self, db_path):
-        """qty<0 (short premium) — skipped this commit. Different
-        threshold semantics needed (theta is GOOD for shorts)."""
+class TestShortLegExits:
+    """2026-05-12: short single-leg option exits added.
+
+    Short premium economics: the position is OPENED by collecting
+    a credit (premium received). It WINS as the premium decays
+    (theta) and we keep more of the credit. It LOSES when the
+    premium expands against us (price moved into our short strike).
+
+    Asymmetric thresholds:
+      - Take profit at -50% premium drop (lock in 50% of credit)
+      - Stop loss at +100% premium expansion (cut at 1× credit
+        risk)
+    """
+
+    def test_short_premium_decay_triggers_take_profit(self, db_path):
+        """Premium dropped 50% — short side wins (theta works)."""
         occ = _occ(expiry_days=32)
         _log_open_trade(db_path, occ, "OPTIONS")
-        pos = _option_position(occ, qty=-1, entry=2.40, current=4.80)
+        # Short call at $2.40 entry, premium decayed to $1.20
+        pos = _option_position(occ, qty=-1, entry=2.40, current=1.20)
+        signals = check_single_leg_option_exits([pos], db_path)
+        assert len(signals) == 1
+        assert signals[0]["trigger"] == "short_premium_take_profit"
+        # side_to_close: short → buy-to-close
+        assert signals[0]["side_to_close"] == "buy"
+        assert signals[0]["qty"] == 1
+
+    def test_short_premium_45pct_drop_does_not_trigger(self, db_path):
+        """Just inside the threshold — must NOT fire."""
+        occ = _occ(expiry_days=32)
+        _log_open_trade(db_path, occ, "OPTIONS")
+        # 2.40 → 1.32 = -45%
+        pos = _option_position(occ, qty=-1, entry=2.40, current=1.32)
         signals = check_single_leg_option_exits([pos], db_path)
         assert signals == []
+
+    def test_short_premium_expansion_triggers_stop(self, db_path):
+        """Premium doubled against us — short side stops out."""
+        occ = _occ(expiry_days=32)
+        _log_open_trade(db_path, occ, "OPTIONS")
+        # Short call at $2.40 entry, ran to $4.80 (+100%)
+        pos = _option_position(occ, qty=-1, entry=2.40, current=4.80)
+        signals = check_single_leg_option_exits([pos], db_path)
+        assert len(signals) == 1
+        assert signals[0]["trigger"] == "short_premium_stop"
+        assert signals[0]["side_to_close"] == "buy"
+
+    def test_short_premium_90pct_expansion_does_not_trigger(self, db_path):
+        """Just inside the stop threshold — must NOT fire."""
+        occ = _occ(expiry_days=32)
+        _log_open_trade(db_path, occ, "OPTIONS")
+        # 2.40 → 4.56 = +90%
+        pos = _option_position(occ, qty=-1, entry=2.40, current=4.56)
+        signals = check_single_leg_option_exits([pos], db_path)
+        assert signals == []
+
+    def test_short_dte_exit_uses_buy_to_close(self, db_path):
+        """Short positions near expiry also close via DTE exit
+        (gamma blowup risk applies regardless of side). side_to_close
+        must be buy (closing a short)."""
+        occ = _occ(expiry_days=5)
+        _log_open_trade(db_path, occ, "OPTIONS")
+        pos = _option_position(occ, qty=-1, entry=2.40, current=2.40)
+        signals = check_single_leg_option_exits([pos], db_path)
+        assert len(signals) == 1
+        assert signals[0]["trigger"] == "dte_exit"
+        assert signals[0]["side_to_close"] == "buy"
+
+    def test_short_multileg_leg_still_skipped(self, db_path):
+        """The multileg-skip safety still applies to shorts —
+        independently closing one leg of a spread orphans its
+        partner regardless of leg direction."""
+        occ = _occ(expiry_days=32)
+        _log_open_trade(db_path, occ, "MULTILEG")
+        # Short leg of a spread — even with -91% premium drop
+        # (massive theta win), do NOT close independently
+        pos = _option_position(occ, qty=-1, entry=2.40, current=0.20)
+        signals = check_single_leg_option_exits([pos], db_path)
+        assert signals == [], (
+            "Short multileg leg with -91% drop must NOT trigger "
+            "independent close (would orphan partner)"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -349,3 +423,11 @@ class TestThresholdConstants:
 
     def test_dte_threshold_is_7_days(self):
         assert DTE_EXIT_THRESHOLD_DAYS == 7
+
+    def test_short_take_profit_is_negative_50pct(self):
+        """Short wins on premium decay (negative pct_change)."""
+        assert SHORT_PREMIUM_TAKE_PROFIT_PCT == -0.50
+
+    def test_short_stop_loss_is_positive_100pct(self):
+        """Short loses on premium expansion."""
+        assert SHORT_PREMIUM_STOP_LOSS_PCT == 1.00

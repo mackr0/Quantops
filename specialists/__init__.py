@@ -36,6 +36,12 @@ SPECIALIST_MODULES = [
     # Option-only — Phase 4 of pipeline refactor. Auto-skipped on stock
     # pipelines via APPLIES_TO_PIPELINES = ("option",) tag.
     "specialists.option_spread_risk",
+    # 2026-05-12 — additional option-specialists for ensemble depth.
+    # iv_skew judges put_iv vs call_iv premium edge; gamma_pin
+    # judges pinning regime via GEX + max_pain. Neither holds veto
+    # (option_spread_risk remains the structural gate).
+    "specialists.iv_skew_specialist",
+    "specialists.gamma_pin_specialist",
 ]
 
 

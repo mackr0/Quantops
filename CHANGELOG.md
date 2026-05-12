@@ -17,6 +17,44 @@ Rules going forward:
 
 ---
 
+## 2026-05-12 — Option ensemble depth: Greeks context + short exits + 2 new option specialists
+
+Three additions completing the option-pipeline parity-with-stocks gap:
+
+**1. option_spread_risk gets book Greeks + budget caps in its prompt context.**
+Pre-this-commit, the specialist saw only the proposal candidate. Couldn't reason about "this trade pushes the book past max_short_vega_dollars" because it didn't know the book's current net_vega or the cap. Now the prompt surfaces:
+- Current book Greeks (delta/gamma/vega/theta + n_options_legs) — only when the book has options.
+- Per-profile Greek-budget caps (delta_pct, theta burn, short vega) — only when set.
+Failure-tolerant: broker call exception or compute_book_greeks failure → prompt renders without the Greeks line.
+Tests (9): Greeks line appears with options legs / omits without; broker exception graceful; compute exception graceful; budget caps render correctly per type (% vs $).
+
+**2. Short single-leg option exits.**
+TODO #7 originally covered longs only; shorts skipped. Asymmetric thresholds appropriate to short-premium economics:
+- Short take-profit: -50% premium drop (lock in 50% of credit).
+- Short stop-loss: +100% premium expansion (cut at 1× credit risk).
+- DTE exit applies to both sides.
+- side_to_close: long → sell; short → buy.
+- Multileg-skip safety still applies — no orphaning partner legs even on shorts.
+Tests (6 new + threshold pins): short premium decay triggers TP; short premium expansion triggers stop; boundary cases (-45%, +90%) don't trigger; short DTE exit uses buy-to-close; short multileg leg still skipped.
+
+**3. Two additional option-only specialists** (`iv_skew_specialist`, `gamma_pin_specialist`).
+Brings option-pipeline ensemble depth to 3 dedicated specialists (vs 5 stock-only stock-pipeline specialists), matching coverage shape.
+- `iv_skew_specialist`: judges put_iv vs call_iv premium edge. Validates spread direction (e.g., bull put spreads align with negative skew). Does NOT veto.
+- `gamma_pin_specialist`: judges max-pain pinning vs negative-GEX instability. Short-premium spreads near positive-GEX/pin → BUY. Short premium in negative-GEX → SELL. Does NOT veto.
+Both tagged `APPLIES_TO_PIPELINES = ("option",)` and registered in `SPECIALIST_MODULES`.
+Two enumerated-count tests bumped (test_ensemble.test_discover_all_specialists, test_integration.test_all_phase_entry_points_importable) — same instance-test class as the prior bumps; the completeness guardrail catches new arrivals at a higher level.
+
+**Tests**: 2,827 pass (+18, 0 regressions).
+
+This closes the option-pipeline parity gap. Option proposals now flow through:
+- iv_skew_specialist (direction validation)
+- gamma_pin_specialist (regime check)
+- option_spread_risk (structural veto with full Greeks + budget context)
+- earnings_analyst, sentiment_narrative, risk_assessor, adversarial_reviewer (cross-pipeline)
+A total of 7 specialists, comparable to the 5-specialist stock ensemble but with option-aware lenses for the option-only three.
+
+---
+
 ## 2026-05-12 — Phase 6c: live IV oracle in delta-adjusted exposure
 
 Phase 6b shipped delta-adjusted portfolio exposure but used a hard `FALLBACK_IV=0.25` for every option position regardless of the underlying's actual volatility — a name trading at 60% IV near earnings was scored with the same delta sensitivity as a quiet name at 15%. Phase 6c wires `options_oracle.get_options_oracle` so each position picks up its underlying's live ATM call IV. Per-call caching prevents repeated chain fetches when multiple positions share an underlying.

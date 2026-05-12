@@ -45,12 +45,64 @@ def build_prompt(candidates: List[Dict[str, Any]], ctx: Any) -> str:
         f"Per-trade risk budget: ${risk_budget:.0f}\n"
         if isinstance(risk_budget, (int, float)) and risk_budget > 0 else ""
     )
+
+    # 2026-05-12 — surface current book-Greeks context. The
+    # specialist now sees not just the proposal but where the
+    # portfolio already stands on net delta / gamma / vega / theta.
+    # Without this, vetoing for "Greeks-portfolio-impact" was
+    # impossible (specialist couldn't see what the book already
+    # held). Pulled from compute_book_greeks via the live broker
+    # positions; failure-tolerant — no Greeks line if anything
+    # raises.
+    greeks_line = ""
+    try:
+        positions = _current_positions(ctx)
+        if positions:
+            from pipelines.risk import compute_book_greeks
+            book = compute_book_greeks(positions) or {}
+            n_legs = int(book.get("n_options_legs") or 0)
+            if n_legs > 0:
+                greeks_line = (
+                    f"Current book Greeks (BEFORE this proposal): "
+                    f"net_delta={book.get('net_delta', 0):+.0f}sh, "
+                    f"net_gamma={book.get('net_gamma', 0):+.4f}, "
+                    f"net_vega=${book.get('net_vega', 0):+,.0f}/vol, "
+                    f"net_theta=${book.get('net_theta', 0):+,.0f}/day, "
+                    f"options_legs={n_legs}\n"
+                )
+    except Exception:
+        greeks_line = ""
+
+    # Surface the per-pipeline Greek-budget caps so the specialist
+    # can reason about whether THIS proposal would push the book
+    # past one of them. These are tunable per-profile via the
+    # Phase 2b option tuner.
+    budget_caps_lines = []
+    for cap_name, cap_label in [
+        ("max_net_options_delta_pct",
+         "max |options-delta| / equity"),
+        ("max_theta_burn_dollars_per_day",
+         "max $theta burn / day"),
+        ("max_short_vega_dollars",
+         "max short $vega"),
+    ]:
+        v = getattr(ctx, cap_name, None)
+        if v is not None:
+            if "pct" in cap_name:
+                budget_caps_lines.append(f"  {cap_label}: {v*100:.1f}%")
+            else:
+                budget_caps_lines.append(f"  {cap_label}: ${v:.0f}")
+    budget_caps_block = (
+        "Per-profile Greek-budget caps:\n" + "\n".join(budget_caps_lines) + "\n"
+        if budget_caps_lines else ""
+    )
+
     return f"""You are an option-specific risk specialist. Your lens is structural
 option failure modes — not direction, not technicals. Other specialists
 cover those. You judge each candidate ONLY through the option-economics
 lens.
 
-{budget_line}For each candidate, consider:
+{budget_line}{greeks_line}{budget_caps_block}For each candidate, consider:
   - SPREAD MAX-LOSS: does the structural max loss
     (spread_max_loss × 100 × contracts) exceed the per-trade risk
     budget? If yes — VETO.
@@ -92,6 +144,30 @@ VERDICT DISCIPLINE:
 You MUST return exactly {len(candidates)} entries, one per candidate,
 in the same order as the list above.
 """
+
+
+def _current_positions(ctx: Any) -> List[Dict[str, Any]]:
+    """Get current broker positions for the ctx's account.
+    Failure-tolerant — returns [] if anything goes wrong (the
+    specialist still gets the rest of its prompt context)."""
+    try:
+        from client import get_api
+        api = get_api(ctx)
+        # Alpaca positions are list_positions; client handles paging
+        positions = api.list_positions() or []
+        # Convert to plain dicts compatible with compute_book_greeks
+        out = []
+        for p in positions:
+            out.append({
+                "symbol": getattr(p, "symbol", "") or "",
+                "qty": float(getattr(p, "qty", 0) or 0),
+                "current_price": float(
+                    getattr(p, "current_price", 0) or 0
+                ),
+            })
+        return out
+    except Exception:
+        return []
 
 
 def parse_response(raw: str) -> List[Dict[str, Any]]:

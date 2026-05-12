@@ -335,6 +335,6 @@ class TestCrossPhaseSmoke:
         assert len(ALL_EVENT_TYPES) == 6
         assert len(LEVELS) == 4
         assert SIZE_MULTIPLIERS["crisis"] == 0.0
-        # 6 = 5 original specialists + option_spread_risk (Phase 4 of
-        # the instrument-class pipeline refactor).
-        assert len(discover_specialists()) == 6
+        # 8 = 5 original + option_spread_risk (Phase 4) +
+        # iv_skew_specialist + gamma_pin_specialist (2026-05-12).
+        assert len(discover_specialists()) == 8

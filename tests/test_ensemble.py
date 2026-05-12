@@ -310,12 +310,11 @@ class TestSpecialistRegistry:
             "risk_assessor",
             "adversarial_reviewer",
             # Phase 4 of pipeline refactor — option-only specialist.
-            # Discovered by the registry, but the legacy ensemble path
-            # filters it out via _specialists_for_market so existing
-            # stock-shaped callers see no behavior change. It only
-            # fires when the option pipeline explicitly opts in via
-            # specialists_override (Phase 4 routing).
             "option_spread_risk",
+            # 2026-05-12 — additional option specialists for ensemble
+            # depth. Both option-only, neither holds veto authority.
+            "iv_skew_specialist",
+            "gamma_pin_specialist",
         }
 
     def test_every_specialist_exposes_required_interface(self):
