@@ -17,6 +17,32 @@ Rules going forward:
 
 ---
 
+## 2026-05-11 — Pipeline Architecture Phase 3 — fork the AI prompt; closes audit finding #4
+
+Phase 3 of the instrument-class pipeline refactor. Stock candidates and option candidates now get fundamentally different AI prompts. Stock prompt has only stock-relevant features (technicals, sector context). Option prompt has IV rank, Greeks (delta/gamma/theta/vega), days-to-expiry, strike, spread max-loss/max-gain, contract bid-ask — alongside the underlying's technicals. Closes audit finding #4 by construction: option proposals can no longer be made blind to option fundamentals.
+
+**New per-pipeline prompt builders**:
+- `pipelines/stock_prompt.py:build_prompt(ctx, candidates)` — renders stock-only features. Defense-in-depth: strips any option-specific feature key (`iv_rank`, `delta`, `dte`, `strike`, etc.) from candidate extras BEFORE rendering, even if a buggy upstream candidate generator leaks them. Bug stays caught at the prompt boundary.
+- `pipelines/option_prompt.py:build_prompt(ctx, candidates)` — renders option-aware features. Orders option-specific keys FIRST in each candidate's rendered JSON (so the AI's attention anchors on option economics) before underlying technicals. Handles missing option keys gracefully — when the upstream feature pipeline isn't yet wired to provide IV/Greeks, the prompt still renders the underlying technicals without crashing.
+
+**Pipeline integration**: `pipelines/{stock,option}.py:build_prompt()` now wired (no longer `NotImplementedError`). Each delegates to its prompt module.
+
+**Tests** (`tests/test_pipelines_phase3_prompt.py`, 11 tests):
+- Stock prompt excludes all option keys (zero mentions in rendered output).
+- Stock prompt strips leaked option keys via parametrized class-level invariant — one test per known option key (iv_rank, delta, gamma, theta, vega, dte, strike, spread_max_loss, spread_max_gain, option_strategy, occ_symbol). Catches future regressions where a new option feature is added but the blocklist isn't updated.
+- Option prompt includes all expected option terms (IV rank, DTE, strike, spread economics, Greeks).
+- Option prompt orders option features before underlying technicals.
+- Option prompt handles missing option-key extras gracefully.
+- Pipeline `build_prompt()` wiring verified for both pipelines.
+
+**Behavior change on prod**: zero. The legacy `ai_analyst._build_batch_prompt` continues to handle the production-running prompt; Phase 4+ will route the dispatcher through the new builders. Until then, the new builders exist as a CAPABILITY ready to be wired up.
+
+Phase 0 tests updated to remove `build_prompt` from the NotImplementedError-coverage parametrize list.
+
+2,823 pass (was 2,803 + 20 new Phase 3 + 0 regressions).
+
+---
+
 ## 2026-05-11 — Pipeline Architecture Phase 2 — per-pipeline tuning; closes audit finding #3
 
 Phase 2 of the instrument-class pipeline refactor. Splits the

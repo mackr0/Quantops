@@ -122,7 +122,7 @@ class TestPhase0PlaceholdersRaiseClearly:
     @pytest.mark.parametrize("cls", [StockPipeline, OptionPipeline])
     @pytest.mark.parametrize("method,args", [
         ("generate_candidates", (None,)),
-        ("build_prompt", (None, [])),
+        # build_prompt now wired in Phase 3.
         ("decide", (None, "")),
         ("route_to_specialists", (None, AIResult(proposals=[]))),
         ("execute", (None, SpecialistVerdict())),

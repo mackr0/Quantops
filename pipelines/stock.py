@@ -43,11 +43,12 @@ class StockPipeline(Pipeline):
         )
 
     def build_prompt(self, ctx, candidates: List[Candidate]) -> str:
-        raise NotImplementedError(
-            "Phase 3 forks the AI prompt — stock-only features "
-            "(RSI, MACD, sector rotation, sentiment, news). Pulled "
-            "out of ai_analyst.analyze_symbol's stock branch."
-        )
+        """Stock-only AI prompt — delegates to the per-pipeline
+        builder which strips any option-specific feature keys (IV,
+        Greeks, DTE, strike, spread economics) before they reach
+        the AI. Phase 3 of the pipeline refactor."""
+        from . import stock_prompt
+        return stock_prompt.build_prompt(ctx, candidates)
 
     def decide(self, ctx, prompt: str) -> AIResult:
         raise NotImplementedError(

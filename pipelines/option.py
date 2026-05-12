@@ -50,13 +50,12 @@ class OptionPipeline(Pipeline):
         )
 
     def build_prompt(self, ctx, candidates: List[Candidate]) -> str:
-        raise NotImplementedError(
-            "Phase 3 forks the AI prompt — option-specific features: "
-            "IV rank, Greeks (delta/gamma/theta/vega), days-to-expiry, "
-            "spread max-loss/max-gain, contract bid-ask. Closes "
-            "audit finding #4 (today's prompt feeds option candidates "
-            "only stock technicals)."
-        )
+        """Option-aware AI prompt — delegates to the per-pipeline
+        builder which surfaces IV rank, Greeks, DTE, strike, and
+        spread economics alongside the underlying's technicals.
+        Closes audit finding #4 by construction. Phase 3."""
+        from . import option_prompt
+        return option_prompt.build_prompt(ctx, candidates)
 
     def decide(self, ctx, prompt: str) -> AIResult:
         raise NotImplementedError(
