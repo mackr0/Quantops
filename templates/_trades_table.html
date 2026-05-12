@@ -54,7 +54,16 @@
                    journal accordingly so this branch can render them
                    distinctly instead of as blank-priced live rows. #}
                 {% set is_terminal_unfilled = t.status in ('expired', 'canceled', 'rejected', 'done_for_day') %}
-                <tr class="trade-row{% if is_option %} option-row{% endif %}" data-symbol="{{ t.symbol }}" data-ts="{{ t.timestamp or '' }}" style="cursor:pointer;{% if is_option %}background:#fbf7ff;{% endif %}{% if is_terminal_unfilled %}opacity:0.55;font-style:italic;{% endif %}" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? '' : 'none'; this.querySelector('.expand-caret').innerHTML = this.nextElementSibling.style.display === 'none' ? '&#9654;' : '&#9660;'">
+                {# Phase 5e (2026-05-12) — rows with a data_quality
+                   marker are known data-corruption artifacts (e.g.,
+                   phantom_stop_2026_05_11). They're EXCLUDED from
+                   every analytics aggregate (slippage, win-rate,
+                   Sharpe, CVaR, etc.) but still rendered on the
+                   trades page so operators can audit them. The
+                   muted row styling + EXCLUDED badge make it clear
+                   they're not counted in headline metrics. #}
+                {% set is_excluded_dq = t.data_quality is defined and t.data_quality %}
+                <tr class="trade-row{% if is_option %} option-row{% endif %}{% if is_excluded_dq %} dq-excluded-row{% endif %}" data-symbol="{{ t.symbol }}" data-ts="{{ t.timestamp or '' }}" style="cursor:pointer;{% if is_option %}background:#fbf7ff;{% endif %}{% if is_terminal_unfilled %}opacity:0.55;font-style:italic;{% endif %}{% if is_excluded_dq %}opacity:0.5;background:#f5f5f5;{% endif %}" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? '' : 'none'; this.querySelector('.expand-caret').innerHTML = this.nextElementSibling.style.display === 'none' ? '&#9654;' : '&#9660;'">
                     <td style="width:1.5rem;text-align:center;"><span class="expand-caret" style="font-size:0.7rem;color:#888;">&#9654;</span></td>
                     <td class="muted" data-raw="{{ t.timestamp or '' }}">{{ (t.timestamp or '')|friendly_time }}</td>
                     {% if show_profile %}<td>{{ t.profile_name or t.segment or '--' }}</td>{% endif %}
@@ -65,6 +74,9 @@
                             <br><small class="muted" style="font-size:0.75rem;">{{ t.occ_symbol|format_occ }}</small>
                         {% else %}
                             <strong>{{ t.symbol }}</strong>
+                        {% endif %}
+                        {% if is_excluded_dq %}
+                            <span title="Excluded from analytics aggregates due to a known incident. The trade is shown here for audit transparency but doesn't count toward slippage, win-rate, Sharpe, CVaR, or any other displayed metric. See CHANGELOG for incident details." style="display:inline-block;background:#888;color:#fff;font-size:0.6rem;font-weight:600;padding:0.05rem 0.35rem;border-radius:3px;vertical-align:middle;margin-left:0.25rem;letter-spacing:0.05em;">EXCLUDED</span>
                         {% endif %}
                     </td>
                     {# "Action" column — primary line is t.signal_type
