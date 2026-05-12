@@ -50,6 +50,65 @@ This closes audit finding #5 LIVE — every multileg proposal now goes through t
 
 ---
 
+## 2026-05-11 — Pipeline Architecture Phase 5d — historical option backfill (auto-run)
+
+Phase 5d completes the audit-finding-#2 closure by backfilling historical option prediction rows that were resolved with the broken pre-Phase-5c math (underlying-stock-derived `actual_return_pct` on option premiums — produced nonsense like 4067% returns). Phase 5a's `pipeline_kind` tag had isolated those rows from stock tuning, but option calibration / specialist learning was still contaminated by them. Phase 5d cleans up the historical contamination by re-resolving those rows through the Phase 5c option-aware resolver.
+
+**The backfill** (`pipelines/outcomes/backfill.py`):
+- Finds rows where `pipeline_kind='option' AND status='resolved' AND option_order_id IS NULL AND occ_symbol IS NULL` (the pre-Phase-5c historical pattern).
+- For each row, looks up matching trades in the `trades` table within ±60 minutes of the prediction timestamp:
+  - Multileg (`MULTILEG_OPEN`): finds a `signal_type='MULTILEG'` trade with the same underlying. Extracts the parent combo_id from the leg's `reason LIKE '%(combo=...)%'` (sequential path) or falls back to the leg's own `order_id` (combo path). Stores in `option_order_id`.
+  - Single-leg (`OPTIONS`/`OPTION_EXERCISE`): finds a non-MULTILEG trade with the same underlying that has `occ_symbol` populated. Stores in `occ_symbol`.
+- Resets the prediction: `status='pending'`, `actual_outcome=NULL`, `actual_return_pct=NULL`, `resolved_at=NULL`, `resolution_price=NULL`. Phase 5c resolver re-resolves it correctly on the next cycle.
+- Marks the migration done in the new `migration_markers` table.
+
+**Auto-runs** at `multi_scheduler._run_full_cycle` immediately after `init_db`. Per-profile DB. Failure non-fatal. Per the AI-driven-system policy, no manual intervention is needed — the backfill self-runs once per profile, gates itself via the marker, and reports counts (`scanned`, `linked_multileg`, `linked_single_leg`, `no_match`) to the logger.
+
+**Idempotency double-gated**:
+1. Marker check (`migration_markers.key='phase_5d_option_backfill'`) — subsequent calls return immediately with `skipped_already_done=1`.
+2. WHERE clause itself filters out already-linked rows (`option_order_id IS NULL AND occ_symbol IS NULL`) — even `force=True` re-runs are safe (no double-link).
+
+**New schema** (`migration_markers` table — generic for future one-shot migrations):
+```sql
+CREATE TABLE IF NOT EXISTS migration_markers (
+  key TEXT PRIMARY KEY,
+  completed_at TEXT NOT NULL DEFAULT (datetime('now')),
+  details TEXT
+);
+```
+
+**New journal helpers**:
+- `is_migration_done(db_path, key)` — returns True if the migration ran.
+- `mark_migration_done(db_path, key, details=None)` — INSERT OR REPLACE.
+
+**Tests** (`tests/test_pipelines_phase5d_backfill.py`, 16 tests):
+- MULTILEG MATCHING:
+  - Combo path → links via order_id; row resets to pending with NULL fields.
+  - Sequential path → extracts parent combo_id from `(combo=...)` in reason string (preferred over leg's own order_id).
+  - No matching trade → no_match counter; row stays untouched.
+  - Trade outside ±60min window → no_match.
+- SINGLE-LEG MATCHING:
+  - Links occ_symbol from non-MULTILEG trade.
+  - MULTILEG trade NOT used for single-leg lookup (different signal classes — would corrupt linkage).
+- IDEMPOTENCY:
+  - Second call skips via marker (`skipped_already_done=1`, `scanned=0`).
+  - `force=True` bypasses marker but self-gates via WHERE clause (`scanned=0` on second forced run).
+- MIGRATION MARKER HELPERS: initially false → mark → check; mark idempotent (INSERT OR REPLACE); no-db_path safe.
+- DEFENSIVE: empty DB → all-zero counts; no db_path → all-zero counts; already-linked Phase 5c row → untouched.
+- MIXED BATCH: multileg + single-leg + no-match in one run all classified into the right counter.
+
+**Behavior change on prod**:
+- First scheduler cycle for each profile after this deploy will run the backfill once. Logs: `"Phase 5d backfill on <db_path>: scanned=N linked_multileg=N linked_single_leg=N no_match=N"`.
+- Successfully-linked rows transition to `pending`; the next `resolve_predictions` cycle will re-resolve them correctly (or defer per Phase 5c logic if premium fetch fails for an old expired contract).
+- Rows where no matching trade can be inferred stay in their (wrong) resolved state but remain isolated from stock tuning by `pipeline_kind`. They count as `no_match` in the backfill report.
+- Marker prevents the backfill from re-running on subsequent restarts.
+
+**Tests**: 2,717 pass (+16 Phase 5d, 0 regressions).
+
+This closes audit finding #2 fully — both forward-going (Phase 5b/5c) AND historical (Phase 5d). Option calibration and specialist learning will, over the coming days, get their first batch of correctly-resolved option outcomes from historical data.
+
+---
+
 ## 2026-05-11 — Pipeline Architecture Phase 5c — option-aware resolver wired LIVE
 
 Phase 5c replaces Phase 5b's defer-everything safety floor with actual option-economics computation. Option predictions now resolve to real win/loss/neutral outcomes — based on premium delta (single-leg) or net spread P&L (multileg) — instead of accumulating in 'pending' indefinitely. Tomorrow's first market-open cycle will be the first one where option signals can produce learnable outcomes.

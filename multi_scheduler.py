@@ -152,6 +152,23 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
     from journal import init_db
     init_db(ctx.db_path)
 
+    # Phase 5d of pipeline refactor (2026-05-11): one-time backfill
+    # of historical option-prediction rows that were resolved with
+    # the broken pre-Phase-5c math (underlying-stock-derived
+    # actual_return_pct on option premiums). Gated by a migration
+    # marker — runs ONCE per profile DB, no-ops thereafter. Failure
+    # is non-fatal; the cycle continues. See pipelines/outcomes/
+    # backfill.py for details.
+    try:
+        from pipelines.outcomes.backfill import (
+            backfill_historical_option_predictions,
+        )
+        backfill_historical_option_predictions(ctx.db_path)
+    except Exception as _exc:
+        logging.debug(
+            f"Phase 5d backfill failed (non-fatal): {_exc}",
+        )
+
     seg_label = ctx.display_name or ctx.segment
     logging.info(f"--- [{seg_label.upper()}] segment cycle start ---")
 

@@ -312,6 +312,17 @@ def init_db(db_path=None):
         );
         CREATE INDEX IF NOT EXISTS idx_stat_arb_pairs_status
             ON stat_arb_pairs(status);
+
+        -- Phase 5d of pipeline refactor (2026-05-11): one-time
+        -- migration markers. The Phase 5d historical option-row
+        -- backfill checks `WHERE key='phase_5d_option_backfill'`
+        -- to know whether it has already run on this DB. Generic
+        -- design — future one-shot migrations register here.
+        CREATE TABLE IF NOT EXISTS migration_markers (
+            key TEXT PRIMARY KEY,
+            completed_at TEXT NOT NULL DEFAULT (datetime('now')),
+            details TEXT
+        );
     """)
 
     # Universal schema migration: ensures every column defined in the
@@ -1505,6 +1516,49 @@ def get_slippage_stats(db_path=None, kind=None):
     except Exception:
         conn.close()
         return None
+
+
+def is_migration_done(db_path, key):
+    """Phase 5d (2026-05-11): check whether a one-time migration
+    has already run on this DB. Used by backfill scripts to gate
+    themselves so the same migration doesn't re-fire on every
+    scheduler restart."""
+    if not db_path or not key:
+        return False
+    try:
+        conn = _get_conn(db_path)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM migration_markers WHERE key = ?",
+                (key,),
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+    except Exception:
+        return False
+
+
+def mark_migration_done(db_path, key, details=None):
+    """Phase 5d (2026-05-11): record that a one-time migration has
+    completed. Idempotent (INSERT OR REPLACE). Caller should mark
+    AFTER the migration's writes have committed."""
+    if not db_path or not key:
+        return False
+    try:
+        conn = _get_conn(db_path)
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO migration_markers "
+                "(key, details) VALUES (?, ?)",
+                (key, str(details) if details is not None else None),
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+    except Exception:
+        return False
 
 
 def link_option_prediction_to_trade(db_path, symbol, signal,

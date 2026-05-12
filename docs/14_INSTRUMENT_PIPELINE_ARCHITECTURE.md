@@ -451,8 +451,10 @@ side).
 - `ai_tracker._resolve_one` routes option signals through the resolver. Min-hold window applies. Defers when metadata missing (Phase 5b safety floor still applies for that case).
 - `ai_tracker.resolve_pending_predictions` no longer requires stock price for option rows; injects `db_path` into the prediction dict for multileg resolution.
 
-**Phase 5d (queued, optional)**:
-- One-time backfill script that re-resolves historical option rows where `option_order_id` can be inferred from the trades table (matching predictions to combos by `(symbol, signal, timestamp window)`).
+**Phase 5d shipped 2026-05-11**:
+- `pipelines/outcomes/backfill.py:backfill_historical_option_predictions(db_path)` — finds pre-Phase-5c option rows, looks up matching trades within ±60min window, populates `option_order_id` (multileg) or `occ_symbol` (single-leg), resets row to 'pending' for Phase 5c re-resolution.
+- New `migration_markers` table + `journal.is_migration_done` / `mark_migration_done` helpers — generic infrastructure for future one-shot migrations.
+- Auto-runs at `multi_scheduler._run_full_cycle` startup. Marker-gated (one-shot) + WHERE-clause-gated (force-safe). Failure non-fatal.
 
 **Exit criteria** — all met:
 - ✅ Phase 5a: Stock and option win-rate distributions don't pool.
