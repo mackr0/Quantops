@@ -182,3 +182,72 @@ class TestPnlRendering:
         assert "Unrealized" not in html
         assert "Realized" not in html
         assert ">P&L<" in html or ">P&amp;L<" in html
+
+
+class TestReconcileBackfillLabelRename:
+    """2026-05-12 — reconcile_backfill rows are renamed at the
+    display layer to 'Protective Exit (broker)'. The old 'Reconcile
+    Backfill' label read as scary data-corruption when it's actually
+    the reconciler catching a legitimate broker-side stop/TP fill.
+
+    This pins:
+    - Old label is GONE from rendered output
+    - New label is present
+    - Tooltip explains what it actually is
+    - reconcile_backfill_partial gets the (partial) variant
+    """
+
+    def _reconcile_trade(self, signal_type="reconcile_backfill"):
+        return {
+            "timestamp": "2026-05-12T13:33:00",
+            "profile_name": "Mid Cap",
+            "symbol": "SHOP",
+            "side": "sell",
+            "qty": 24,
+            "price": 101.93,
+            "pnl": -130.44,
+            "status": "closed",
+            "signal_type": signal_type,
+            "strategy": signal_type,
+            "ai_confidence": None,
+            "ai_reasoning": None,
+            "stop_loss": None,
+            "take_profit": None,
+            "decision_price": None,
+            "fill_price": 101.93,
+            "slippage_pct": None,
+        }
+
+    def test_full_backfill_label_renamed(self):
+        html = _render(
+            "{% import '_trades_table.html' as tpl %}"
+            "{{ tpl.render_trades(trades, show_profile=False) }}",
+            trades=[self._reconcile_trade("reconcile_backfill")],
+        )
+        # New label present
+        assert "Protective Exit" in html
+        # Old label gone
+        assert "Reconcile Backfill" not in html
+        # Tooltip explains what it actually is
+        assert "Broker-side protective order" in html
+
+    def test_partial_backfill_label_variant(self):
+        html = _render(
+            "{% import '_trades_table.html' as tpl %}"
+            "{{ tpl.render_trades(trades, show_profile=False) }}",
+            trades=[self._reconcile_trade("reconcile_backfill_partial")],
+        )
+        assert "Protective Exit (partial)" in html
+        assert "Reconcile Backfill" not in html
+
+    def test_normal_signal_types_unaffected(self):
+        """Don't touch other signal_types — only the two reconcile variants."""
+        t = self._reconcile_trade("STRONG_BUY")
+        t["side"] = "buy"
+        html = _render(
+            "{% import '_trades_table.html' as tpl %}"
+            "{{ tpl.render_trades(trades, show_profile=False) }}",
+            trades=[t],
+        )
+        assert "Protective Exit" not in html
+        assert "Strong Buy" in html

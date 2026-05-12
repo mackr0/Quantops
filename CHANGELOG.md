@@ -17,6 +17,28 @@ Rules going forward:
 
 ---
 
+## 2026-05-12 — Rename "Reconcile Backfill" → "Protective Exit (broker)" on the trades page. Severity: low (cosmetic, no data change).
+
+**Problem.** Mack flagged "I'm still seeing NEW Reconcile Backfill rows on the trades page" today — 5 untagged rows (no EXCLUDED badge) showed up at 9:31-9:34 AM ET and one at 11:58 AM ET. The label read as scary data-corruption.
+
+**Investigation.** All 5 untagged rows have a `protective_trailing_order_id` set on their corresponding entry trade. They are legitimate broker-side trailing-stop fills that fired between 5-min poll cycles at market open (morning gap-down volatility). The reconciler caught the broker-vs-journal discrepancy and backfilled the rows. Math is sane (-1% to -5% P&L, not the +1130% phantom-stop pattern). NOT a corruption — the reconciler doing exactly what it's supposed to.
+
+| Symbol | Entry | Exit | Move |
+|---|---|---|---|
+| SHOP p4 | 2026-05-11 $107.09 | today $101.85 | -4.89% |
+| SHOP p11 | 2026-05-11 $107.37 | today $101.93 | -5.06% |
+| AMKR p7 | 2026-05-08 $73.72 | today $73.75 | +0.04% |
+| SOUN p9 | 2026-05-11 $8.43 | today $8.18 | -3.00% |
+| MBLY p10 | 2026-04-24 $9.09 | today $8.95 | -1.55% |
+
+**Fix (display-only).** In `templates/_trades_table.html`, the Action column maps `signal_type in ('reconcile_backfill', 'reconcile_backfill_partial')` to "Protective Exit" / "Protective Exit (partial)" instead of the title-cased raw signal type. A hover tooltip explains: *Broker-side protective order (stop-loss, take-profit, or trailing stop) fired between the trade pipeline's 5-min poll cycles. The reconciler caught the position-vs-journal discrepancy and backfilled this row from the broker fill. Not a data-corruption row — sane P&L expected.*
+
+**No data change.** The underlying `signal_type` and `strategy` columns are unchanged. Only the rendered label is renamed. Tests/analytics/exports that filter on `signal_type='reconcile_backfill'` keep working.
+
+**Regression test.** `tests/test_trades_table_shared.py::TestReconcileBackfillLabelRename` pins: old "Reconcile Backfill" gone, new "Protective Exit" present, tooltip text present, partial variant gets `(partial)` suffix, non-reconcile signal types unaffected.
+
+---
+
 ## 2026-05-12 — Option exit + veto thresholds become AI-tunable (no more hardcoded module constants). Severity: medium.
 
 **Problem.** Eight option-side decision parameters were hardcoded as module

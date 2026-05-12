@@ -87,10 +87,31 @@
                        small line below shows the short side label
                        when it differs from signal_type, so multileg
                        legs read correctly (e.g., "MULTILEG_OPEN" /
-                       "sell" for a short call leg). #}
-                    {% set _action_label = (t.signal_type or t.side or '--')|lower|replace('_', ' ')|title %}
+                       "sell" for a short call leg).
+
+                       2026-05-12 — reconcile_backfill[_partial] signal
+                       types are RENAMED at the display layer to
+                       "Protective Exit (broker)". They represent a
+                       broker-side stop/TP/trailing-stop that fired
+                       between poll cycles and that the reconciler
+                       patched into the journal. The old label
+                       "Reconcile Backfill" read as scary
+                       data-corruption when it's actually the
+                       reconciler working as designed. Data shape is
+                       unchanged — only the display label. Use the
+                       tooltip to surface the explanation. #}
+                    {% set _is_reconcile_protective = t.signal_type in ('reconcile_backfill', 'reconcile_backfill_partial') %}
+                    {% if _is_reconcile_protective %}
+                        {% set _action_label = 'Protective Exit' if t.signal_type == 'reconcile_backfill' else 'Protective Exit (partial)' %}
+                    {% else %}
+                        {% set _action_label = (t.signal_type or t.side or '--')|lower|replace('_', ' ')|title %}
+                    {% endif %}
                     <td class="{{ 'pnl-pos' if t.side == 'buy' else 'pnl-neg' }}">
+                        {% if _is_reconcile_protective %}
+                        <strong style="font-size:0.85rem;" title="Broker-side protective order (stop-loss, take-profit, or trailing stop) fired between the trade pipeline's 5-min poll cycles. The reconciler caught the position-vs-journal discrepancy and backfilled this row from the broker fill. Not a data-corruption row — sane P&amp;L expected.">{{ _action_label }}</strong>
+                        {% else %}
                         <strong style="font-size:0.85rem;">{{ _action_label }}</strong>
+                        {% endif %}
                         {% if t.signal_type and t.side and t.side|upper != t.signal_type %}
                         <br><small class="muted" style="font-size:0.7rem;text-transform:uppercase;">{{ t.side }}</small>
                         {% endif %}
