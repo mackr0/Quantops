@@ -17,6 +17,43 @@ Rules going forward:
 
 ---
 
+## 2026-05-12 — Deep cherry-pick audit (round 2): self_tuning + rollback dilution + class guardrail
+
+The HOLD-attribution incident exposed a bug class. First-pass audit caught 4 sites. This deeper pass found another **18 sites** of the same pattern — predominantly stock-side, all silently dropping data from learning/tuning paths.
+
+**Sites fixed:**
+
+1. **`models.py:1468-1485` — self-tuning rollback win-rate dilution.** The rollback trigger computed `wins / total_resolved` where `total` included NEUTRALS (timeout-resolved rows). Dilution → understated win rate → could trigger SPURIOUS rollbacks when a parameter change actually improved decisive outcomes. Fix: denominator now `wins + losses` only. The `total` variable retained for the cadence gate ("at least 10 new resolved before re-evaluating"), where neutral inclusion is correct.
+
+2. **`ai_tracker.py:720-734` — `avg_return_on_buys/sells` partial filters.** Only counted `predicted_signal = 'BUY'` / `'SELL'`. Missed STRONG_BUY/WEAK_BUY/STRONG_SELL/WEAK_SELL — 30-50% of entry data missing from the dashboard's "Avg Return" displays. Fix: full IN-list of entry-signal variants.
+
+3. **`self_tuning.py` — 16 query sites** in 4 tuning rules (lines 200-209, 822-834, 1287-1299, 1609-1621). Each computes per-signal-tier stats (BUY win rate, SELL win rate, avg return) that get FED INTO THE AI'S PRE-TRADE PROMPT (`_get_self_tuning_guidance_for_prompt`). The AI was being told "your BUY win rate is X%" computed from only `BUY` rows, with STRONG_BUY/WEAK_BUY ignored. Fix via two `replace_all` edits: `predicted_signal='BUY'` → `predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY')` (15 occurrences), same for SELL → SELL/STRONG_SELL/WEAK_SELL/SHORT (4 occurrences).
+
+**New class-invariant guardrail** (`tests/test_no_partial_signal_filters.py`, 4 tests scanning 10 production files):
+- `TestNoPartialSignalFilters.test_no_unexpected_single_signal_filters` — fails if any new occurrence of `predicted_signal = 'X'` lands without an explicit allowlist entry with rationale.
+- `TestNoPartialSignalFilters.test_no_partial_in_list_for_entry_signals` — catches IN-lists that include `BUY` but miss `STRONG_BUY`/`WEAK_BUY`. Same for SELL.
+- `TestNoNeutralDilutedWinRate.test_no_undocumented_neutral_dilution` — pins that `models.py` retains the `actual_outcome IN ('win','loss')` filter on the rollback denominator.
+- `TestAllowlistHygiene.test_partial_signal_allowlist_entries_still_match` — stale entries fail.
+
+**Allowlist contains 4 legitimate single-signal sites** (one-shot legacy migrations + HOLD which has no STRONG/WEAK variants).
+
+**Sided breakdown** — answering Mack's "do these issues exist on stock side too?":
+| Fix | Side |
+|---|---|
+| HOLD-exclusion in pipeline_kind backfill | STOCK |
+| Kelly entry-signals | STOCK |
+| self_tuning gap-detection | STOCK |
+| specialist_calibration legacy CASE | STOCK |
+| 16 sites in self_tuning.py | STOCK |
+| models.py rollback dilution | STOCK |
+| ai_tracker.py avg_return_on_buys | STOCK |
+
+The cherry-pick bug class was **predominantly STOCK-side**. Option side has only 3 signal values (no STRONG/WEAK variants), which makes partial-filter bugs much harder to introduce — and the architectural cleanness of "option pipeline built fresh after the audit" caught the option-side equivalents structurally via `test_pipeline_kind_completeness.py`.
+
+**Tests**: 2,831 pass (+22 across both audits, 0 regressions).
+
+---
+
 ## 2026-05-12 — Option ensemble depth: Greeks context + short exits + 2 new option specialists
 
 Three additions completing the option-pipeline parity-with-stocks gap:

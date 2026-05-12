@@ -1465,14 +1465,33 @@ def review_past_adjustments(profile_id: int,
                 conn.close()
                 return []
 
-            total = pred_conn.execute(
-                "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved'"
+            # 2026-05-12 fix: previously `total` counted ALL resolved
+            # rows (wins + losses + NEUTRALS). Neutrals are timeouts
+            # where the AI's directional thesis didn't play out — they
+            # diluted the denominator and UNDERSTATED win rate, which
+            # made parameter changes look worse than they were and
+            # could trigger SPURIOUS rollbacks. The correct win rate
+            # is wins / (wins + losses) — neutrals belong in their own
+            # tracking but never in the denominator of "did the AI's
+            # directional call work out?". Same bug class as the
+            # HOLD-attribution gap (2026-05-11).
+            decisive = pred_conn.execute(
+                "SELECT COUNT(*) FROM ai_predictions "
+                "WHERE status='resolved' "
+                "AND actual_outcome IN ('win', 'loss')"
             ).fetchone()[0]
             wins = pred_conn.execute(
                 "SELECT COUNT(*) FROM ai_predictions "
                 "WHERE status='resolved' AND actual_outcome='win'"
             ).fetchone()[0]
-            current_wr = (wins / total * 100) if total > 0 else 0.0
+            current_wr = (wins / decisive * 100) if decisive > 0 else 0.0
+            # `total` retained for the "10 new resolved" gate further
+            # down — it intentionally counts everything resolved
+            # (including neutrals) since that's the cadence signal,
+            # not a quality signal.
+            total = pred_conn.execute(
+                "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved'"
+            ).fetchone()[0]
             pred_conn.close()
             pred_conn = None
         except Exception:

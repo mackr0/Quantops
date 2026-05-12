@@ -717,9 +717,16 @@ def get_ai_performance(db_path=None):
     # Average return by signal type, plus the sample size behind each
     # (so the dashboard can N/A small-sample readings instead of
     # rendering "+1.63% on SELLs" computed from 3 predictions).
+    # 2026-05-12 fix: previously filtered to ONLY 'BUY' / 'SELL',
+    # missing STRONG_BUY/WEAK_BUY/STRONG_SELL/WEAK_SELL. That left
+    # 30-50% of entry signals out of the displayed averages. Same
+    # bug class as the HOLD-attribution gap. Now uses every long-
+    # entry / sell-entry signal type — keep in sync with
+    # pipelines.outcomes.kind_from_signal.
     buys_row = conn.execute(
         "SELECT COUNT(*), AVG(actual_return_pct) FROM ai_predictions "
-        "WHERE status='resolved' AND predicted_signal='BUY' "
+        "WHERE status='resolved' "
+        "AND predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY') "
         "AND actual_return_pct IS NOT NULL"
     ).fetchone()
     n_buys = buys_row[0] or 0
@@ -727,7 +734,8 @@ def get_ai_performance(db_path=None):
 
     sells_row = conn.execute(
         "SELECT COUNT(*), AVG(actual_return_pct) FROM ai_predictions "
-        "WHERE status='resolved' AND predicted_signal='SELL' "
+        "WHERE status='resolved' "
+        "AND predicted_signal IN ('SELL','STRONG_SELL','WEAK_SELL') "
         "AND actual_return_pct IS NOT NULL"
     ).fetchone()
     n_sells = sells_row[0] or 0

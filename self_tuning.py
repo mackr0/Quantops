@@ -197,15 +197,15 @@ def _build_cross_profile_insights(user_id, current_profile_id, current_db_path):
             # BUY-specific stats
             buy_total = conn.execute(
                 "SELECT COUNT(*) FROM ai_predictions "
-                "WHERE status='resolved' AND predicted_signal='BUY'"
+                "WHERE status='resolved' AND predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY')"
             ).fetchone()[0]
             buy_wins = conn.execute(
                 "SELECT COUNT(*) FROM ai_predictions "
-                "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal='BUY'"
+                "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY')"
             ).fetchone()[0]
             buy_avg_ret = conn.execute(
                 "SELECT AVG(actual_return_pct) FROM ai_predictions "
-                "WHERE status='resolved' AND predicted_signal='BUY'"
+                "WHERE status='resolved' AND predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY')"
             ).fetchone()[0] or 0
             buy_wr = (buy_wins / buy_total * 100) if buy_total > 0 else 0
 
@@ -819,19 +819,19 @@ def build_performance_context(ctx, symbol=None, db_path=None):
         # Check BUY vs SELL performance
         buy_total = conn.execute(
             "SELECT COUNT(*) FROM ai_predictions "
-            "WHERE status='resolved' AND predicted_signal='BUY'"
+            "WHERE status='resolved' AND predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY')"
         ).fetchone()[0]
         buy_wins_count = conn.execute(
             "SELECT COUNT(*) FROM ai_predictions "
-            "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal='BUY'"
+            "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY')"
         ).fetchone()[0]
         sell_total = conn.execute(
             "SELECT COUNT(*) FROM ai_predictions "
-            "WHERE status='resolved' AND predicted_signal='SELL'"
+            "WHERE status='resolved' AND predicted_signal IN ('SELL','STRONG_SELL','WEAK_SELL','SHORT')"
         ).fetchone()[0]
         sell_wins_count = conn.execute(
             "SELECT COUNT(*) FROM ai_predictions "
-            "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal='SELL'"
+            "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal IN ('SELL','STRONG_SELL','WEAK_SELL','SHORT')"
         ).fetchone()[0]
 
         buy_wr = (buy_wins_count / buy_total * 100) if buy_total > 0 else 0
@@ -1284,19 +1284,19 @@ def get_auto_adjustments(ctx, db_path=None):
         # BUY vs SELL performance
         buy_total = conn.execute(
             "SELECT COUNT(*) FROM ai_predictions "
-            "WHERE status='resolved' AND predicted_signal='BUY'"
+            "WHERE status='resolved' AND predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY')"
         ).fetchone()[0]
         buy_wins = conn.execute(
             "SELECT COUNT(*) FROM ai_predictions "
-            "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal='BUY'"
+            "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY')"
         ).fetchone()[0]
         sell_total = conn.execute(
             "SELECT COUNT(*) FROM ai_predictions "
-            "WHERE status='resolved' AND predicted_signal='SELL'"
+            "WHERE status='resolved' AND predicted_signal IN ('SELL','STRONG_SELL','WEAK_SELL','SHORT')"
         ).fetchone()[0]
         sell_wins = conn.execute(
             "SELECT COUNT(*) FROM ai_predictions "
-            "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal='SELL'"
+            "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal IN ('SELL','STRONG_SELL','WEAK_SELL','SHORT')"
         ).fetchone()[0]
 
         buy_wr = (buy_wins / buy_total * 100) if buy_total > 5 else 50
@@ -1606,19 +1606,19 @@ def apply_auto_adjustments(ctx, db_path=None):
         # --- BUY vs SELL performance ---
         buy_total = conn.execute(
             "SELECT COUNT(*) FROM ai_predictions "
-            "WHERE status='resolved' AND predicted_signal='BUY'"
+            "WHERE status='resolved' AND predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY')"
         ).fetchone()[0]
         buy_wins = conn.execute(
             "SELECT COUNT(*) FROM ai_predictions "
-            "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal='BUY'"
+            "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY')"
         ).fetchone()[0]
         sell_total = conn.execute(
             "SELECT COUNT(*) FROM ai_predictions "
-            "WHERE status='resolved' AND predicted_signal='SELL'"
+            "WHERE status='resolved' AND predicted_signal IN ('SELL','STRONG_SELL','WEAK_SELL','SHORT')"
         ).fetchone()[0]
         sell_wins = conn.execute(
             "SELECT COUNT(*) FROM ai_predictions "
-            "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal='SELL'"
+            "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal IN ('SELL','STRONG_SELL','WEAK_SELL','SHORT')"
         ).fetchone()[0]
 
         buy_wr = (buy_wins / buy_total * 100) if buy_total > 5 else 50
