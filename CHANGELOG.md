@@ -50,6 +50,69 @@ This closes audit finding #5 LIVE — every multileg proposal now goes through t
 
 ---
 
+## 2026-05-11 — Pipeline Architecture Phase 5c — option-aware resolver wired LIVE
+
+Phase 5c replaces Phase 5b's defer-everything safety floor with actual option-economics computation. Option predictions now resolve to real win/loss/neutral outcomes — based on premium delta (single-leg) or net spread P&L (multileg) — instead of accumulating in 'pending' indefinitely. Tomorrow's first market-open cycle will be the first one where option signals can produce learnable outcomes.
+
+**Two resolver paths**:
+
+1. **Single-leg** (signal in `OPTIONS`/`OPTION_EXERCISE` with `occ_symbol` populated):
+   - Fetch current premium via `client._fetch_option_premium` (mid-of-bid-ask with conservative fallbacks for one-sided markets).
+   - `return_pct = (current - entry) / entry × 100`.
+
+2. **Multileg** (signal `MULTILEG_OPEN` with `option_order_id` populated):
+   - Look up legs from the `trades` table via `journal.get_multileg_legs_by_combo_order` (handles both combo-path matching by `order_id` and sequential-path matching by `reason LIKE '%(combo=...)%'`).
+   - Sum signed `qty × premium × 100` across legs for entry value and current value.
+   - `return_pct = (current_value - entry_value) / abs(entry_value) × 100`.
+   - Sign semantics correct for both credit spreads (negative entry, profit when current rises toward zero) and debit spreads (positive entry, profit when current rises further).
+   - Requires ALL legs to have current premiums available — partial data returns None (defer rather than compute on incomplete data).
+
+**Win/loss thresholds appropriate to option volatility** (stocks resolve at ±2%; options need higher):
+- Long premium: ±25% return → win/loss; ±10% region → neutral.
+- Short premium (qty<0): inverted (theta wins → short wins on premium drop).
+- Multileg: asymmetric — +25% profit → win, -50% loss → loss (reflects asymmetric P&L of spreads where max-loss is multiples of credit/debit).
+
+**New module `pipelines/outcomes/option_resolver.py`**:
+- `compute_option_return_pct(prediction, fetch_premium, get_legs)` — pure function. Defaults wire to real implementations; tests inject mocks.
+- `_resolve_single_leg`, `_resolve_multileg` — dispatched internally by signal.
+- `classify_option_outcome(return_pct, signal, signed_qty_hint)` — applies the threshold rules.
+
+**New journal helpers**:
+- `link_option_prediction_to_trade(db_path, symbol, signal, option_order_id, occ_symbol, max_age_minutes=10)` — UPDATEs the most recent pending option prediction row for `(symbol, signal)` within the time window. Idempotent; safely no-ops with no match.
+- `get_multileg_legs_by_combo_order(db_path, combo_order_id)` — returns legs for a combo via either order_id match or reason-string match. Empty list when no legs.
+
+**Wiring in `trade_pipeline.py`**:
+- After successful `OPTIONS` execution: calls `link_option_prediction_to_trade(...)` with `occ_symbol`. Best-effort; failure non-fatal.
+- After successful `MULTILEG_OPEN` execution: calls `link_option_prediction_to_trade(...)` with `option_order_id` (combo_order_id, with leg_order_ids[0] fallback). Best-effort; failure non-fatal.
+
+**Wiring in `ai_tracker.py`**:
+- `_resolve_one`: option signals now route through `option_resolver.compute_option_return_pct`. Returns `(outcome, return_pct, days)` when computable; returns None (defers per Phase 5b safety floor) when metadata missing or premium fetch fails.
+- Min-hold gate (`MIN_HOLD_DAYS_BEFORE_RESOLVE`) applies to options too — avoids resolving on intraday premium noise.
+- Timeout path (`TIMEOUT_DAYS`) still applies; lands the row as 'neutral' with the option-economics return value (NOT the pre-Phase-5b underlying-stock value).
+- `resolve_pending_predictions`: option rows no longer require a stock price in `price_cache` — the option resolver fetches premiums directly. `db_path` is injected into the prediction dict so the multileg resolver can look up legs.
+
+**Tests** (`tests/test_pipelines_phase5c_option_resolver.py`, 29 tests):
+- SINGLE-LEG MATH: $1.20→$2.40 = +100%; $1.20→$0.60 = -50%; entry=0 returns None; fetch failure returns None; missing occ_symbol returns None.
+- MULTILEG MATH: bull put credit spread profitable case computes +80% (worked example with signed qty × price × 100 multiplier and absolute-value denominator); partial leg pricing returns None (don't compute on incomplete data); no combo_id returns None; no legs returns None.
+- CLASSIFICATION: long premium 30% → win, -30% → loss, 10% → neutral; short premium -30% → win, +30% → loss; multileg +30% → win, -30% → neutral, -60% → loss.
+- LINK HELPER: links combo_id and occ_symbol to recent pending row; safely no-ops with no match; old pending rows excluded by max_age; no-db_path returns False.
+- LEGS HELPER: returns legs matched by order_id; empty when no match; empty with no db.
+- _resolve_one INTEGRATION: OPTIONS row with occ_symbol resolves to win when premium gain ≥ +25%; OPTIONS row without metadata defers (Phase 5b floor still applies); within min-hold window defers regardless of computed return.
+
+**Stale instance-test bump**: `test_trade_execution_logging.py` window bumped 14000 → 16000 to accommodate Phase 5c's two linkage blocks (~30 lines each in OPTIONS and MULTILEG_OPEN branches).
+
+**Behavior change on prod**:
+- Option predictions inserted from this commit forward AND linked to a successfully-executed trade will resolve to real win/loss outcomes once they cross the min-hold window with sufficient premium movement.
+- Option win-rate aggregations in tuning queries will start showing non-zero `n` and meaningful win-rate percentages — for the first time in production history.
+- Pre-Phase-5c historical option rows still hold their old (wrong) `actual_return_pct`/`actual_outcome` values; the structural pipeline_kind tag from Phase 5a keeps them isolated from stock tuning. A future Phase 5d will add a one-time backfill script that re-resolves historical rows where `option_order_id` can be inferred from the trades table.
+- `resolve_predictions` cycle log gains "Resolved N option predictions" visibility as resolutions actually land.
+
+**Tests**: 2,701 pass (+29 Phase 5c, 0 regressions).
+
+This is the LIVE wiring of audit finding #2. Combined with Phase 5a (pipeline_kind tag) and Phase 5b (safety floor), option outcomes can no longer pool with stock outcomes structurally AND option outcomes are now computed on the right economics. The full option-pipeline-from-decision-to-tuning loop is closed: AI proposes MULTILEG_OPEN → Phase 4b's specialist veto fires → Phase 5c's resolver computes spread P&L → Phase 5a's pipeline_kind tag isolates the outcome → Phase 2's option-only tuner aggregates it without stock contamination.
+
+---
+
 ## 2026-05-11 — Pipeline Architecture Phase 5b — option resolver safety floor; stops wrong values
 
 Phase 5b stops the bleeding on option prediction resolution. Today's `_resolve_one` in `ai_tracker.py` computes return % as `(current_price - pred_price) / pred_price * 100` for ALL prediction rows including options. For option rows that's structurally wrong: `current_price` is the underlying ticker price (because `_get_current_prices_bulk` doesn't know about OCC symbols), but `pred_price` is the option premium. A $1.20 premium with a "current price" of $50 (the underlying) resolves to a +4067% return — pure nonsense — and that nonsense return drives the directional win/loss classification.

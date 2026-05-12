@@ -47,12 +47,16 @@ def _exec_block_source():
         multileg specialist-veto block (~50 lines: SPECIALIST_VETOED
         result construction, broker_rejection persistence, details
         append + continue).
+      - 16000 after Phase 5c of the pipeline refactor added option-
+        prediction-to-trade linkage blocks in both the OPTIONS and
+        MULTILEG_OPEN branches (~30 lines each, plus the multileg
+        block already pushed by Phase 4b).
     """
     import trade_pipeline as tp
     src = inspect.getsource(tp)
     start = src.find('print(f"  Executing: ')
     assert start > 0, "Could not locate the Executing: print site"
-    return src[start:start + 14000]
+    return src[start:start + 16000]
 
 
 def test_exception_path_logs_full_traceback():

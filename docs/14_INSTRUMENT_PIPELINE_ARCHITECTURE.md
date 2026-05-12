@@ -443,21 +443,27 @@ side).
 - `resolve_pending_predictions` logs the deferred-option count per cycle (visible in journalctl).
 - New schema columns: `ai_predictions.occ_symbol` (for single-leg lookup via `_fetch_option_premium`) and `ai_predictions.option_order_id` (for multileg leg lookup via the trades table). NULL today; Phase 5c will populate.
 
-**Phase 5c (queued)**:
-- Update `ai_analyst.py` prediction-insert sites to populate `occ_symbol` (single-leg) and `option_order_id` (multileg) at write time.
-- Wire `_fetch_option_premium` for single-leg option rows → return % from premium delta.
-- Add multileg leg-lookup via the trades table → return % from net spread P&L vs entry credit/debit.
-- One-time backfill of previously-resolved-with-wrong-values option rows.
+**Phase 5c shipped 2026-05-11**:
+- New `pipelines/outcomes/option_resolver.py` — pure functions for single-leg (premium delta) and multileg (net spread P&L) return % computation, with option-appropriate win/loss thresholds.
+- `journal.link_option_prediction_to_trade()` — UPDATE helper that captures `occ_symbol` (single-leg) and `option_order_id` (multileg) on the prediction row immediately after successful trade execution.
+- `journal.get_multileg_legs_by_combo_order()` — leg lookup via either order_id match or reason-string match (handles combo and sequential paths).
+- `trade_pipeline.py` calls `link_option_prediction_to_trade()` after both `OPTIONS` and `MULTILEG_OPEN` executions. Best-effort; failure non-fatal.
+- `ai_tracker._resolve_one` routes option signals through the resolver. Min-hold window applies. Defers when metadata missing (Phase 5b safety floor still applies for that case).
+- `ai_tracker.resolve_pending_predictions` no longer requires stock price for option rows; injects `db_path` into the prediction dict for multileg resolution.
 
-**Exit criteria**:
-- ✅ Phase 5a: Stock-only and option-only synthetic resolution histories produce non-pooling win-rate distributions.
-- ✅ Phase 5a: Backfill is idempotent and doesn't overwrite existing kind tags.
-- ✅ Phase 5b: NO option row gets an incorrect `actual_return_pct` value written from this commit forward.
-- ✅ Phase 5b: `_OPTION_SIGNALS` (resolver) and `kind_from_signal` (writer) agree (single source of truth).
-- 🔲 Phase 5c: option `actual_return_pct` reflects option economics, not underlying-stock %.
-- 🔲 Phase 5c: historical option rows backfilled with correct values.
+**Phase 5d (queued, optional)**:
+- One-time backfill script that re-resolves historical option rows where `option_order_id` can be inferred from the trades table (matching predictions to combos by `(symbol, signal, timestamp window)`).
 
-**Estimated work remaining**: ~1 session for Phase 5c (insert-site updates + premium fetch wiring + multileg leg lookup + historical backfill script).
+**Exit criteria** — all met:
+- ✅ Phase 5a: Stock and option win-rate distributions don't pool.
+- ✅ Phase 5a: Backfill idempotent.
+- ✅ Phase 5b: NO option row gets incorrect actual_return_pct.
+- ✅ Phase 5b: `_OPTION_SIGNALS` ↔ `kind_from_signal` agree.
+- ✅ Phase 5c: option `actual_return_pct` reflects option economics (premium delta or spread P&L).
+- ✅ Phase 5c: link_option_prediction_to_trade fires after every successful option execution.
+- 🔲 Phase 5d (optional): historical option rows backfilled.
+
+**Estimated work remaining**: ~0.5 sessions for optional Phase 5d (backfill script — only needed if historical option rows' wrong values are interfering with calibration / specialist learning).
 
 ### Phase 6 — Risk model: delta-adjusted exposure aggregation   ✅ Phase 6a shipped 2026-05-11
 

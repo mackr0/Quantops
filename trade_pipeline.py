@@ -2101,6 +2101,25 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     api_for_opt, ai_trade, ctx=ctx, log=log,
                 )
                 trade_result.setdefault("symbol", symbol)
+                # Phase 5c (2026-05-11): link the just-executed
+                # single-leg option to its prediction row so the
+                # option-aware resolver can fetch the contract's
+                # current premium at resolution time. Best-effort.
+                try:
+                    _occ = (trade_result.get("occ_symbol")
+                            or ai_trade.get("occ_symbol"))
+                    if _occ and ctx and getattr(ctx, "db_path", None):
+                        from journal import (
+                            link_option_prediction_to_trade,
+                        )
+                        link_option_prediction_to_trade(
+                            ctx.db_path,
+                            symbol=symbol,
+                            signal="OPTIONS",
+                            occ_symbol=_occ,
+                        )
+                except Exception:
+                    pass
             # Phase B4 — route MULTILEG_OPEN through the multi-leg
             # executor. Builds the strategy via the registry then submits
             # via Alpaca combo order (sequential fallback with rollback).
@@ -2195,6 +2214,37 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                                 ai_reasoning=ai_trade.get("reasoning"),
                             )
                             trade_result.setdefault("symbol", symbol)
+                            # Phase 5c of pipeline refactor (2026-05-11):
+                            # link the just-executed combo to its
+                            # prediction row so the option-aware
+                            # resolver can find the legs at resolution
+                            # time. Best-effort — failure here doesn't
+                            # break the trade. The most recent pending
+                            # MULTILEG_OPEN prediction for this symbol
+                            # is the match.
+                            try:
+                                _combo_id = trade_result.get(
+                                    "combo_order_id"
+                                ) or (
+                                    trade_result.get("leg_order_ids")
+                                    or [None]
+                                )[0]
+                                if _combo_id and ctx and getattr(
+                                    ctx, "db_path", None
+                                ):
+                                    from journal import (
+                                        link_option_prediction_to_trade,
+                                    )
+                                    link_option_prediction_to_trade(
+                                        ctx.db_path,
+                                        symbol=symbol,
+                                        signal="MULTILEG_OPEN",
+                                        option_order_id=_combo_id,
+                                    )
+                            except Exception:
+                                # Non-fatal — Phase 5b's deferral
+                                # safety floor still applies.
+                                pass
                         except Exception as exc:
                             trade_result["action"] = "ERROR"
                             trade_result["reason"] = (

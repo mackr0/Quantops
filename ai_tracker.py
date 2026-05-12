@@ -368,16 +368,35 @@ def _resolve_one(prediction, current_price):
     if pred_price is None or pred_price == 0:
         return None
 
-    # Phase 5b: defer option rows. The option-aware resolver lands
-    # in Phase 5c — until then, option rows accumulate in 'pending'
-    # rather than acquire wrong actual_return_pct/actual_outcome
-    # values. Stock-pipeline tuning (which filters by pipeline_kind
-    # = 'stock' OR signal IN stock-types) is unaffected. Option
-    # tuning sees zero resolved rows for now — already preferable
-    # to the noise of underlying-derived "wins" and "losses" on
-    # option premium movements.
+    # Phase 5c (2026-05-11): option-aware resolution. For option
+    # signals, route through the option-economics resolver
+    # (premium delta for single-leg; net spread P&L for multileg).
+    # Returns None when the row lacks the metadata needed to
+    # compute correctly (occ_symbol or option_order_id missing) —
+    # falls back to Phase 5b's safety floor (stays pending) rather
+    # than the broken pre-Phase-5b behavior (writes wrong values).
     if signal in _OPTION_SIGNALS:
-        return None
+        from pipelines.outcomes import option_resolver
+        # Forward-horizon gate: even option rows benefit from a
+        # min-hold buffer to avoid resolving on intraday premium
+        # noise (especially MULTILEG_OPEN credit spreads where the
+        # first day's premium can swing 30% on bid/ask alone).
+        if days_elapsed < MIN_HOLD_DAYS_BEFORE_RESOLVE:
+            return None
+        ret = option_resolver.compute_option_return_pct(prediction)
+        if ret is None:
+            return None
+        outcome, ret_pct = option_resolver.classify_option_outcome(
+            ret, signal,
+        )
+        if outcome == "neutral":
+            # Neutral within a normal hold — keep waiting unless
+            # we're past the timeout (resolves as neutral with the
+            # computed value).
+            if days_elapsed >= TIMEOUT_DAYS:
+                return ("neutral", ret_pct, days_elapsed)
+            return None
+        return (outcome, ret_pct, days_elapsed)
 
     return_pct = ((current_price - pred_price) / pred_price) * 100.0
 
@@ -484,18 +503,32 @@ def resolve_predictions(api=None, db_path=None, profile_id=None):
 
     for row in pending:
         sym = row["symbol"]
-        if sym not in price_cache:
+        prediction_dict = dict(row)
+        # Phase 5c: option rows route through option_resolver which
+        # fetches premiums directly via _fetch_option_premium —
+        # doesn't need the bulk stock price. Inject db_path so the
+        # multileg resolver can look up legs from trades table.
+        prediction_dict["db_path"] = db_path
+        sig = (prediction_dict.get("predicted_signal") or "").upper()
+        is_option = sig in _OPTION_SIGNALS
+
+        if not is_option and sym not in price_cache:
+            # Stock rows still need the bulk-fetched price.
             continue
 
-        current_price = price_cache[sym]
-        prediction_dict = dict(row)
+        current_price = price_cache.get(sym, 0.0)
         result = _resolve_one(prediction_dict, current_price)
         if result is None:
-            # Phase 5b: option rows defer to Phase 5c. Count them so
-            # operators can see the deferred backlog (and so a
-            # spike in deferred rows is visible in cycle logs).
-            sig = (prediction_dict.get("predicted_signal") or "").upper()
-            if sig in _OPTION_SIGNALS:
+            # Option rows that didn't resolve this cycle. Phase 5c
+            # makes most option rows resolvable now (fetches premium
+            # via _fetch_option_premium, computes net spread P&L for
+            # multileg from trades-table legs). Rows still defer when
+            # they lack the metadata (no occ_symbol / no
+            # option_order_id — typically pre-Phase-5c rows or
+            # newly-inserted rows whose linkage hasn't run yet) or
+            # when the AI's directional thesis is still developing
+            # (within MIN_HOLD_DAYS_BEFORE_RESOLVE).
+            if is_option:
                 deferred_option_count += 1
             continue
 

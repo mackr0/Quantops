@@ -1507,6 +1507,116 @@ def get_slippage_stats(db_path=None, kind=None):
         return None
 
 
+def link_option_prediction_to_trade(db_path, symbol, signal,
+                                      option_order_id=None,
+                                      occ_symbol=None,
+                                      max_age_minutes=10):
+    """Phase 5c of pipeline refactor (2026-05-11): link an option
+    prediction row in `ai_predictions` to its broker order so the
+    Phase 5c resolver can fetch the right premium / spread legs at
+    resolution time.
+
+    Called from `trade_pipeline.py` immediately after a successful
+    option trade execution. Finds the most recent pending
+    ai_predictions row matching `(symbol, predicted_signal,
+    status='pending')` within `max_age_minutes` and UPDATEs its
+    `option_order_id` and/or `occ_symbol` columns. Idempotent;
+    safely no-ops when no matching row exists (the prediction may
+    not have been recorded if `record_prediction` failed for any
+    reason — don't crash the trade-execution flow).
+
+    Returns True if a row was updated, False otherwise.
+    """
+    if not db_path or not symbol or not signal:
+        return False
+    if not option_order_id and not occ_symbol:
+        return False
+    try:
+        from datetime import datetime, timedelta
+        cutoff = (datetime.utcnow()
+                  - timedelta(minutes=max_age_minutes)).isoformat()
+        conn = _get_conn(db_path)
+        try:
+            # Find the latest pending row for this symbol+signal.
+            row = conn.execute(
+                """SELECT id FROM ai_predictions
+                   WHERE symbol = ? AND predicted_signal = ?
+                   AND status = 'pending'
+                   AND timestamp >= ?
+                   ORDER BY id DESC LIMIT 1""",
+                (symbol.upper(), signal.upper(), cutoff),
+            ).fetchone()
+            if row is None:
+                return False
+            pred_id = row[0]
+            # Build dynamic UPDATE — only set the columns we have.
+            sets, vals = [], []
+            if option_order_id:
+                sets.append("option_order_id = ?")
+                vals.append(str(option_order_id))
+            if occ_symbol:
+                sets.append("occ_symbol = ?")
+                vals.append(str(occ_symbol))
+            vals.append(pred_id)
+            conn.execute(
+                f"UPDATE ai_predictions SET {', '.join(sets)} WHERE id = ?",
+                vals,
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+    except Exception:
+        # Non-fatal — the trade still went through. Resolver will
+        # just defer this row (Phase 5b safety floor still applies).
+        return False
+
+
+def get_multileg_legs_by_combo_order(db_path, combo_order_id):
+    """Phase 5c of pipeline refactor (2026-05-11): return the leg
+    rows for a multileg combo, used by the option-aware resolver
+    to compute net spread P&L.
+
+    A combo is identified by either:
+      - `order_id == combo_order_id` (combo path: every leg shares
+        the parent's order_id)
+      - `reason LIKE '%(combo=<combo_order_id>)%'` (sequential path:
+        each leg has its own order_id; the combo id is in the
+        reason string)
+
+    Returns a list of dicts {occ_symbol, qty, price, side} suitable
+    for net-P&L computation. Empty list when no legs found.
+    """
+    if not db_path or not combo_order_id:
+        return []
+    try:
+        conn = _get_conn(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                """SELECT occ_symbol, qty, price, side, fill_price
+                   FROM trades
+                   WHERE signal_type = 'MULTILEG'
+                   AND (order_id = ? OR reason LIKE ?)""",
+                (str(combo_order_id),
+                 f"%(combo={combo_order_id})%"),
+            ).fetchall()
+            return [
+                {
+                    "occ_symbol": r["occ_symbol"],
+                    "qty": float(r["qty"] or 0),
+                    "price": float(r["fill_price"] or r["price"] or 0),
+                    "side": r["side"],
+                }
+                for r in rows
+                if r["occ_symbol"]
+            ]
+        finally:
+            conn.close()
+    except Exception:
+        return []
+
+
 def get_specialist_veto_stats(db_paths, days=7):
     """Aggregate per-specialist verdict counts across profiles.
 
