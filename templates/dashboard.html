@@ -268,6 +268,12 @@
             </div>
         </header>
         <div style="padding:0 0.75rem 0.5rem;">
+            {# 2026-05-12 — profit-taking metrics inline. Surfaces
+               whether the new stop_to_tp self-tuner has converged
+               (target band 0.5-2.5) and how much of the available
+               MFE the exit logic is capturing. Operator sees what
+               the AI sees. Hidden until cycle data arrives. #}
+            <div id="ai-profit-taking-{{ prof.id }}" style="font-size:0.75rem; color:#666; margin-bottom:0.5rem;"></div>
             <div id="ai-reasoning-{{ prof.id }}" style="font-size:0.9rem; color:#333; margin-bottom:0.5rem;">
                 Waiting for first cycle...
             </div>
@@ -632,6 +638,32 @@ function showOpTab(event, profileId, which) {
             var reasonEl = document.getElementById('ai-reasoning-' + pid);
             var listEl = document.getElementById('ai-shortlist-' + pid);
             if (timeEl && data.timestamp) timeEl.textContent = timeAgo(data.timestamp);
+            // 2026-05-12 — profit-taking metrics line. Shows
+            // stop-to-tp ratio + MFE capture so the operator can
+            // see whether the AI tuner is converged.
+            var ptEl = document.getElementById('ai-profit-taking-' + pid);
+            if (ptEl) {
+                var bits = [];
+                if (data.stop_to_tp) {
+                    var s = data.stop_to_tp;
+                    var pColor = (s.ratio !== null && s.ratio > 2.5) ? '#e65100' :
+                                 (s.ratio !== null && s.ratio < 0.5) ? '#e65100' : '#2e7d32';
+                    bits.push('<span style="color:' + pColor +
+                              ';">Stop-to-TP: ' + escapeHtml(s.ratio_label) +
+                              '</span> <span class="muted">(' +
+                              s.n_stops + ' stops / ' + s.n_tps + ' tps, ' +
+                              s.window_days + 'd)</span>');
+                }
+                if (data.mfe_capture) {
+                    var c = data.mfe_capture;
+                    var pct = (c.avg_capture_ratio || 0) * 100;
+                    var cColor = pct < 30 ? '#e65100' : pct < 50 ? '#f57c00' : '#2e7d32';
+                    bits.push('<span style="color:' + cColor +
+                              ';">MFE capture: ' + pct.toFixed(0) + '%</span> ' +
+                              '<span class="muted">(' + c.n_trades + ' trades)</span>');
+                }
+                ptEl.innerHTML = bits.join(' &nbsp;·&nbsp; ');
+            }
             if (reasonEl && data.ai_reasoning) {
                 var trades = data.trades_selected || [], html = '';
                 if (trades.length > 0) {

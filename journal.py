@@ -1000,6 +1000,33 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
                 "WHERE COALESCE(status, 'open') != 'canceled' "
                 "ORDER BY timestamp ASC, id ASC"
             ).fetchall()
+        # 2026-05-12 — per-trade TP/SL price lookup. UNH bug: the AI
+        # set a $379 target on a $356 entry (6.5%), but the polling
+        # take-profit check used the profile-level take_profit_pct
+        # (15% on Large Cap profiles), so the position never fired
+        # the TP at $379 and rode all the way to $396+ with no
+        # capture. Pull the most-recent open BUY's stop_loss /
+        # take_profit PRICES per symbol so they can be propagated
+        # into the position output for `check_stop_loss_take_profit`.
+        try:
+            tp_sl_rows = conn.execute(
+                "SELECT symbol, occ_symbol, stop_loss, take_profit "
+                "FROM trades "
+                "WHERE side IN ('buy', 'short') "
+                "  AND status = 'open' "
+                "  AND (stop_loss IS NOT NULL OR take_profit IS NOT NULL) "
+                "ORDER BY timestamp DESC, id DESC"
+            ).fetchall()
+            per_trade_targets: Dict[str, Dict[str, float]] = {}
+            for sym, occ, sl, tp in tp_sl_rows:
+                key = occ if occ else sym
+                # First (most recent) wins per key
+                if key not in per_trade_targets:
+                    per_trade_targets[key] = {
+                        "stop_loss_price": sl, "take_profit_price": tp,
+                    }
+        except sqlite3.OperationalError:
+            per_trade_targets = {}
     except Exception:
         conn.close()
         return []
@@ -1156,6 +1183,13 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
         # unchanged. New code uses pos.broker_symbol / pos.is_option /
         # pos.is_short directly.
         from position import Position
+        # Per-trade TP/SL prices from the most-recent open entry row.
+        # `check_stop_loss_take_profit` (portfolio_manager.py) reads
+        # these as `take_profit_price` / `stop_loss_price` and
+        # compares directly to current_price — bypassing the
+        # profile-level percent threshold, which is often miles wider
+        # than the AI's per-trade target.
+        targets = per_trade_targets.get(key, {})
         row = {
             "symbol": symbol,
             "occ_symbol": occ_symbol,
@@ -1165,6 +1199,8 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
             "market_value": round(market_value, 2),
             "unrealized_pl": round(unrealized_pl, 2),
             "unrealized_plpc": round(unrealized_plpc, 6),
+            "take_profit_price": targets.get("take_profit_price"),
+            "stop_loss_price": targets.get("stop_loss_price"),
         }
         positions.append(Position.from_virtual_row(row))
 

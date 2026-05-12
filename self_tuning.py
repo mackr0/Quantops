@@ -1835,6 +1835,14 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_atr_multiplier_sl,
         _optimize_atr_multiplier_tp,
         _optimize_trailing_atr_multiplier,
+        # 2026-05-12 — stop-to-TP ratio rebalance. Reads the exit
+        # strategy distribution (stop_loss / trailing_stop vs
+        # take_profit); when stops fire >3× as often as TPs, the
+        # reward/risk asymmetry is inverted (losers run to the stop,
+        # winners get cut short). Widens ATR-SL multiplier AND
+        # tightens ATR-TP multiplier in one pass. Closes the
+        # 4.5:1 stop-to-tp gap observed across 11 profiles.
+        _optimize_stop_to_tp_ratio,
         # Wave 4 — Layer 2 weighted signal intensity
         _optimize_signal_weights,
         # Wave 5 — Layer 3 per-regime parameter overrides
@@ -3599,6 +3607,127 @@ def _optimize_trailing_atr_multiplier(conn, ctx, profile_id, user_id,
             f"{current:.2f} to {new_val:.2f} ({reason})"
         )
     return None
+
+
+def _optimize_stop_to_tp_ratio(conn, ctx, profile_id, user_id,
+                                 overall_wr, resolved):
+    """When the exit-strategy distribution skews way more toward
+    stops than take-profits, the reward/risk asymmetry is inverted —
+    losers run to the stop while winners get cut short by the
+    trailing/fixed stop. Widens the ATR stop-loss multiplier AND
+    tightens the ATR take-profit multiplier in the same pass so
+    the next batch of trades has wider stops + closer TPs.
+
+    Counts the `strategy` column on closed exit rows in the last
+    N days:
+      stops = strategy IN ('stop_loss', 'trailing_stop',
+                            'short_stop_loss')
+      tps   = strategy IN ('take_profit', 'short_take_profit')
+
+    Acceptable band: 0.5 ≤ stops/tps ≤ 2.5. Outside that band,
+    adjust both multipliers in the same direction the asymmetry
+    needs to flip.
+
+    Needs ≥30 closed exits with strategy attribution to fire
+    (small samples are noise). 2026-05-12.
+    """
+    # Both multipliers must be in scope for this to mean anything —
+    # short-circuit if ATR stops are off.
+    if not getattr(ctx, "use_atr_stops", True):
+        return None
+    # Cooldown guard on BOTH targets — don't thrash either if
+    # another rule touched it recently.
+    if not _safe_change_guarded(profile_id, "atr_multiplier_sl"):
+        return None
+    if not _safe_change_guarded(profile_id, "atr_multiplier_tp"):
+        return None
+    table_check = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='trades'"
+    ).fetchone()
+    if not table_check:
+        return None
+
+    # 2026-05-12 — data_quality filter so phantom-stop incidents
+    # don't drive the asymmetry calculation (a polluted SELL row
+    # with strategy='stop_loss' would inflate the stop count).
+    from journal import data_quality_clause
+    _dq = data_quality_clause(conn)
+    rows = conn.execute(
+        f"""SELECT strategy, COUNT(*) as n FROM trades
+            WHERE strategy IS NOT NULL
+              AND side IN ('sell', 'cover')
+              AND status = 'closed'
+              AND timestamp >= datetime('now', '-30 days')
+              {_dq}
+            GROUP BY strategy"""
+    ).fetchall()
+    counts = {r[0]: r[1] for r in rows}
+    stop_strats = ("stop_loss", "trailing_stop", "short_stop_loss")
+    tp_strats = ("take_profit", "short_take_profit")
+    stops = sum(counts.get(s, 0) for s in stop_strats)
+    tps = sum(counts.get(s, 0) for s in tp_strats)
+    total_attributed = stops + tps
+    if total_attributed < 30:
+        return None  # not enough signal
+
+    ratio = stops / tps if tps > 0 else float("inf")
+
+    # Acceptable band: 0.5 - 2.5. Tighter than the observed 4.5:1
+    # but wider than 1:1 so the rule doesn't fire on noise.
+    if 0.5 <= ratio <= 2.5:
+        return None
+
+    current_sl = float(getattr(ctx, "atr_multiplier_sl", 2.0))
+    current_tp = float(getattr(ctx, "atr_multiplier_tp", 3.0))
+
+    if ratio > 2.5:
+        # Too many stops, not enough TPs. Wider stops (give trades
+        # more room) + tighter TPs (lock in winners sooner).
+        new_sl = _bound("atr_multiplier_sl", round(current_sl * 1.15, 2))
+        new_tp = _bound("atr_multiplier_tp", round(current_tp * 0.90, 2))
+        direction = "widen SL + tighten TP"
+    else:  # ratio < 0.5
+        # Way more TPs than stops — could be loosening too much.
+        # Tighten the SL slightly + loosen TP slightly.
+        new_sl = _bound("atr_multiplier_sl", round(current_sl * 0.90, 2))
+        new_tp = _bound("atr_multiplier_tp", round(current_tp * 1.10, 2))
+        direction = "tighten SL + loosen TP"
+
+    changed_any = False
+    from models import update_trading_profile, log_tuning_change
+    if abs(new_sl - current_sl) > 1e-9:
+        update_trading_profile(profile_id, atr_multiplier_sl=new_sl)
+        reason = (
+            f"stop-to-TP ratio {ratio:.1f} over {total_attributed} "
+            f"exits (stops={stops}, tps={tps}) — {direction}"
+        )
+        log_tuning_change(
+            profile_id, user_id, "stop_to_tp_rebalance",
+            "atr_multiplier_sl", str(current_sl), str(new_sl), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        changed_any = True
+    if abs(new_tp - current_tp) > 1e-9:
+        update_trading_profile(profile_id, atr_multiplier_tp=new_tp)
+        reason = (
+            f"stop-to-TP ratio {ratio:.1f} over {total_attributed} "
+            f"exits (stops={stops}, tps={tps}) — {direction}"
+        )
+        log_tuning_change(
+            profile_id, user_id, "stop_to_tp_rebalance",
+            "atr_multiplier_tp", str(current_tp), str(new_tp), reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        changed_any = True
+
+    if not changed_any:
+        return None
+    return (
+        f"Stop-to-TP rebalance: ratio={ratio:.1f}, "
+        f"SL {current_sl:.2f}→{new_sl:.2f}, "
+        f"TP {current_tp:.2f}→{new_tp:.2f} "
+        f"(stops={stops}, tps={tps}, {direction})"
+    )
 
 
 # ---------------------------------------------------------------------------

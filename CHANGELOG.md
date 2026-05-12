@@ -17,6 +17,38 @@ Rules going forward:
 
 ---
 
+## 2026-05-12 — Profit-taking wave 5: stop-to-TP tuner + per-trade TP price polling + brain-ticker analytics. Severity: high (P&L impact).
+
+**Three connected fixes addressing Mack's "win rate sucks, profit taking sucks" diagnosis:**
+
+### Diagnosis (no code change; data-driven)
+Investigation across 11 profile DBs revealed:
+- **18,864 predictions, 16,637 resolved; trading-only win rate (excluding 15,629 HOLD predictions) = 53.8%** (not the 40% the headline suggested).
+- **Confidence calibration is monotonic and working** (60-69% bucket → 50.7%, 70-79% → 54.4%, 80-89% → 58.0%).
+- **The system IS learning** — weekly trajectory was 51% → 53.5% → 59% before this week's bug-fix chaos.
+- **Stop-to-TP exit-strategy distribution: 4.5:1** (215 trailing_stop + 157 stop_loss vs 82 take_profit). Reward/risk inverted.
+- **Median hold: 3 days. Mean return per prediction: -0.04%, Sharpe ≈ 0** — net flat with high variance.
+
+### Fix 1: Stop-to-TP ratio self-tuner (`self_tuning._optimize_stop_to_tp_ratio`)
+New self-tuning rule reads the `strategy` column on closed sell rows in the last 30 days. Acceptable band: 0.5 ≤ ratio ≤ 2.5. Outside that band, the AI auto-widens `atr_multiplier_sl` and/or tightens `atr_multiplier_tp` (or vice versa for too-easy TPs). data_quality-tagged rows are excluded so phantom-stop incidents can't feed back into the tuner. AI-driven (no manual values picked). Runs once per night per profile with a per-parameter cooldown guard.
+
+### Fix 2: Per-trade TP/SL price polling (the UNH bug)
+Mack flagged UNH: AI bought at $356.37 with target $379.36 (6.5%) and stop $341.05; current price $396.44 (+11.2%); but no TP order fired and no broker TP existed. **Root cause**: `bracket_orders.ensure_protective_stops` deliberately doesn't place broker-side TP orders ("polling check fires at threshold breach"), but `portfolio_manager.check_stop_loss_take_profit`'s polling used the profile-level percentage (Large Cap = 15%), not the AI's per-trade target. UNH at 11.2% < 15% never fired. The AI's per-trade target was invisible to the polling layer.
+
+**Fix**: `journal.get_virtual_positions` now propagates `take_profit_price` and `stop_loss_price` from the most-recent open BUY row into the position dict. `position.Position` carries them as explicit fields (separate from the historically-overloaded `stop_loss`/`take_profit` fields). `check_stop_loss_take_profit` fires the moment `current_price` crosses the per-trade target — and falls back to the profile percentage when no per-trade price is present.
+
+### Fix 3: Profit-taking metrics on the AI Brain panel
+`mfe_capture.compute_stop_to_tp_ratio` returns the exit-strategy distribution (stops, tps, ratio, window). Surfaced alongside the existing `compute_capture_ratio` on `/api/cycle-data`. The dashboard's AI Brain panel shows both metrics inline, colored amber when out-of-band, so operators can see whether the new tuner is converging without digging into the database.
+
+**Regression tests:**
+- `tests/test_self_tuning_wave3.py::TestStopToTpRatio` (6 tests) — pins per-direction adjustment, sample-size guard, data_quality filter, ATR-off skip.
+- `tests/test_per_trade_tp_price_polling.py` (7 tests) — pins UNH-shaped trades fire at AI target, conviction override still works with price target, get_virtual_positions propagates prices, legacy behavior preserved when prices absent.
+- Full suite: 2908 passed, zero regressions.
+
+**What this does NOT solve.** This wave fixes the trigger mechanism. It does not invent more data — the trading set is still ~1K resolved predictions, mostly in bull regime. Cleaner data over a 30-day no-bug-fix window will tell us more than another fix.
+
+---
+
 ## 2026-05-12 — Wave 4 dashboard truthfulness fixes: snake_case leaks, action labels, AI-intent-vs-outcome badges, lifecycle defense-in-depth. Severity: medium.
 
 **Five distinct issues bundled in one wave:**

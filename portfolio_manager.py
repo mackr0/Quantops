@@ -359,7 +359,18 @@ def check_stop_loss_take_profit(positions, stop_loss_pct=None, take_profit_pct=N
 
         pct_change = (current_price - entry_price) / entry_price
 
-        # Use per-position thresholds if set, otherwise use provided defaults
+        # 2026-05-12 — per-trade PRICE thresholds win over profile
+        # PERCENT thresholds. UNH bug: AI set a $379 target on a
+        # $356 entry (6.5%), but the profile take_profit_pct was
+        # 15%, so the polling check never fired and the position
+        # rode unrealized gains all the way to $396+ with no
+        # capture. When `take_profit_price` is propagated by
+        # `get_virtual_positions`, fire the moment current_price
+        # crosses it — that's the AI's actual target.
+        # `pos.get("take_profit")` is the legacy fallback (per-percent)
+        # for callers that pre-date the price propagation.
+        tp_price = pos.get("take_profit_price")
+        sl_price = pos.get("stop_loss_price")
         pos_stop_loss = pos.get("stop_loss") or stop_loss_pct
         pos_take_profit = pos.get("take_profit") or take_profit_pct
 
@@ -399,30 +410,56 @@ def check_stop_loss_take_profit(positions, stop_loss_pct=None, take_profit_pct=N
                     "is_short": True,
                 })
         else:
-            if pct_change <= -pos_stop_loss:
+            # 2026-05-12 — prefer per-trade price thresholds when
+            # present. Falls back to profile-level percentage when
+            # the per-trade row didn't carry a price (legacy or
+            # entry path that didn't set stop_loss/take_profit).
+            sl_hit_by_price = (
+                sl_price is not None and sl_price > 0
+                and current_price <= float(sl_price)
+            )
+            tp_hit_by_price = (
+                tp_price is not None and tp_price > 0
+                and current_price >= float(tp_price)
+            )
+            if sl_hit_by_price or pct_change <= -pos_stop_loss:
+                if sl_hit_by_price:
+                    reason = (
+                        f"Stop-loss triggered: price ${current_price:.2f} "
+                        f"<= AI target ${float(sl_price):.2f} ({pct_change:+.2%})"
+                    )
+                else:
+                    reason = (
+                        f"Stop-loss triggered: {pct_change:+.2%} "
+                        f"(threshold -{pos_stop_loss:.0%})"
+                    )
                 triggered.append({
                     "symbol": symbol,
                     "signal": "SELL",
-                    "reason": (
-                        f"Stop-loss triggered: {pct_change:+.2%} "
-                        f"(threshold -{pos_stop_loss:.0%})"
-                    ),
+                    "reason": reason,
                     "price": current_price,
                     "qty": qty,
                     "trigger": "stop_loss",
                 })
-            elif pct_change >= pos_take_profit:
+            elif tp_hit_by_price or pct_change >= pos_take_profit:
                 # Conviction override — let a runaway winner keep running
                 # and rely on the trailing stop instead of capping at TP.
                 if conviction_tp_skip and conviction_tp_skip(symbol, pct_change):
                     continue
+                if tp_hit_by_price:
+                    reason = (
+                        f"Take-profit triggered: price ${current_price:.2f} "
+                        f">= AI target ${float(tp_price):.2f} ({pct_change:+.2%})"
+                    )
+                else:
+                    reason = (
+                        f"Take-profit triggered: {pct_change:+.2%} "
+                        f"(threshold +{pos_take_profit:.0%})"
+                    )
                 triggered.append({
                     "symbol": symbol,
                     "signal": "SELL",
-                    "reason": (
-                        f"Take-profit triggered: {pct_change:+.2%} "
-                        f"(threshold +{pos_take_profit:.0%})"
-                    ),
+                    "reason": reason,
                     "price": current_price,
                     "qty": qty,
                     "trigger": "take_profit",

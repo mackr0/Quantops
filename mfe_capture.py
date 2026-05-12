@@ -159,3 +159,63 @@ def render_for_prompt(capture: Optional[Dict[str, Any]]) -> str:
             f"These are positions that ran up then collapsed past entry.\n"
         )
     return block
+
+
+def compute_stop_to_tp_ratio(db_path: str,
+                              window_days: int = 30) -> Optional[Dict[str, Any]]:
+    """Return the stop-to-take-profit exit-strategy distribution over
+    the last `window_days`. The AI auto-tuner reads this number too
+    (`_optimize_stop_to_tp_ratio` in self_tuning.py); the dashboard
+    surfaces it so operators can see whether the tuner has converged
+    or is still chasing.
+
+    Returns dict:
+      n_stops    — stop_loss + trailing_stop + short_stop_loss fires
+      n_tps      — take_profit + short_take_profit fires
+      ratio      — n_stops / n_tps (inf if n_tps == 0)
+      window     — string label for the time window
+    or None when the trades table doesn't exist / has < 10 attributed
+    exits in the window.
+
+    data_quality-tagged rows are excluded so phantom-stop incidents
+    can never inflate the stop count and drive bad tuning.
+    """
+    if not db_path:
+        return None
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            from journal import data_quality_clause
+            _dq = data_quality_clause(conn)
+            rows = conn.execute(
+                f"""SELECT strategy, COUNT(*) as n FROM trades
+                    WHERE strategy IS NOT NULL
+                      AND side IN ('sell', 'cover')
+                      AND status = 'closed'
+                      AND timestamp >= datetime('now', '-' || ? || ' days')
+                      {_dq}
+                    GROUP BY strategy""",
+                (window_days,),
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.debug("compute_stop_to_tp_ratio failed: %s", exc)
+        return None
+
+    counts = {r[0]: r[1] for r in rows}
+    stop_strats = ("stop_loss", "trailing_stop", "short_stop_loss")
+    tp_strats = ("take_profit", "short_take_profit")
+    n_stops = sum(counts.get(s, 0) for s in stop_strats)
+    n_tps = sum(counts.get(s, 0) for s in tp_strats)
+    if n_stops + n_tps < 10:
+        return None
+
+    ratio = (n_stops / n_tps) if n_tps > 0 else float("inf")
+    return {
+        "n_stops": n_stops,
+        "n_tps": n_tps,
+        "ratio": round(ratio, 2) if ratio != float("inf") else None,
+        "ratio_label": "inf" if ratio == float("inf") else f"{ratio:.1f}",
+        "window_days": window_days,
+    }

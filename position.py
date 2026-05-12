@@ -114,6 +114,9 @@ _DICT_KEY_MAP = {
     "side": "side_label",
     "reason": "reason",
     "pnl": "pnl",
+    # 2026-05-12 — explicit per-trade TP/SL PRICES.
+    "take_profit_price": "take_profit_price",
+    "stop_loss_price": "stop_loss_price",
 }
 
 
@@ -173,6 +176,12 @@ class Position:
     side_label: Optional[str] = None
     reason: Optional[str] = None
     pnl: Optional[float] = None
+    # 2026-05-12 — explicit per-trade TP/SL PRICES (unambiguous name
+    # — `stop_loss`/`take_profit` above are historically overloaded).
+    # `check_stop_loss_take_profit` reads these to fire at the AI's
+    # actual target instead of the profile-level percentage.
+    take_profit_price: Optional[float] = None
+    stop_loss_price: Optional[float] = None
 
     # ------------------------------------------------------------------
     # The properties consumer code should use after Phase 2 migration.
@@ -312,5 +321,7 @@ class Position:
             market_value=float(row.get("market_value", 0) or 0),
             unrealized_pl=float(row.get("unrealized_pl", 0) or 0),
             unrealized_plpc=float(row.get("unrealized_plpc", 0) or 0),
+            take_profit_price=row.get("take_profit_price"),
+            stop_loss_price=row.get("stop_loss_price"),
             **enrichment,
         )

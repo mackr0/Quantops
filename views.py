@@ -5152,6 +5152,25 @@ def api_cycle_data(profile_id):
         if isinstance(c.get("options_oracle_summary"), str):
             c["options_oracle_summary"] = humanize(c["options_oracle_summary"])
 
+    # 2026-05-12 — profit-taking analytics on the brain ticker.
+    # `stop_to_tp_ratio` shows whether the new tuner's converged
+    # toward the desired 0.5-2.5 band; `mfe_capture` shows
+    # whether we're leaving money on the table. Operator sees
+    # what the AI sees.
+    try:
+        from mfe_capture import compute_stop_to_tp_ratio, compute_capture_ratio
+        db_path = f"quantopsai_profile_{profile_id}.db"
+        s2t = compute_stop_to_tp_ratio(db_path, window_days=30)
+        cap = compute_capture_ratio(db_path, lookback=50)
+        data["stop_to_tp"] = s2t
+        data["mfe_capture"] = cap
+    except Exception as _exc:
+        logger.debug(
+            "cycle_data profit-taking metrics skipped: %s", _exc
+        )
+        data["stop_to_tp"] = None
+        data["mfe_capture"] = None
+
     # 2026-05-12 — surface the AI-intent vs executed-outcome
     # mismatch on the brain ticker. Mack's case: AI proposed
     # SHORT F (1.25% equity) but F was already held long; the

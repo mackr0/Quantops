@@ -186,6 +186,17 @@ The instrument-class pipeline migration moved option-specific tuning into `pipel
 
 Rule: ≥60% win rate with ≥20 samples loosens by 5%, ≤40% tightens by 5%, otherwise no change. Per-param direction is explicit — most caps loosen by going UP, but DTE-based exits and gamma-DTE/credit-ratio vetoes loosen by going DOWN (close less aggressively / veto less often). Floors and ceilings prevent runaway. Integer-stored params (DTE counts) are rounded.
 
+### Stop-to-TP ratio rebalancer (`_optimize_stop_to_tp_ratio`)
+
+Reads the exit-strategy distribution on closed sell rows in the last 30 days. Acceptable band: 0.5 ≤ stops/tps ≤ 2.5. When the ratio is outside, the AI auto-adjusts both ATR multipliers in one pass:
+- ratio > 2.5: stops fire too often → widen `atr_multiplier_sl` (+15%), tighten `atr_multiplier_tp` (-10%)
+- ratio < 0.5: TPs fire too easily → tighten `atr_multiplier_sl` (-10%), loosen `atr_multiplier_tp` (+10%)
+data_quality-tagged rows are excluded so phantom-stop incidents don't pollute the asymmetry calc. Needs ≥30 attributed exits to fire.
+
+### Per-trade TP/SL price polling
+
+`portfolio_manager.check_stop_loss_take_profit` reads per-trade target prices (`take_profit_price`, `stop_loss_price`) propagated by `get_virtual_positions` from the entry row. Fires the moment `current_price` crosses the AI's per-trade target, bypassing the profile-level percentage. Falls back to the profile percentage when no per-trade price was set. Conviction-TP override still applies to runaway winners.
+
 ## 10. Backtesting infrastructure
 
 Three independent layers, each serving a different question:
