@@ -97,10 +97,21 @@
                        patched into the journal. The old label
                        "Reconcile Backfill" read as scary
                        data-corruption when it's actually the
-                       reconciler working as designed. Data shape is
-                       unchanged — only the display label. Use the
-                       tooltip to surface the explanation. #}
-                    {% set _is_reconcile_protective = t.signal_type in ('reconcile_backfill', 'reconcile_backfill_partial') %}
+                       reconciler working as designed.
+
+                       BUT — EXCLUDED rows (data_quality tagged) are
+                       NOT real protective exits. They're known-corrupt
+                       cascade artifacts from the 2026-05-11
+                       phantom-stop incident: the reconciler matched
+                       bogus journal positions against today's real
+                       broker fills and produced garbage rows
+                       (+1131% / +4833% P&L). Renaming THEM to
+                       "Protective Exit" would be a lie — the tooltip
+                       promises sane P&L. So the rename is gated on
+                       `not is_excluded_dq`. EXCLUDED rows keep the
+                       raw label because the EXCLUDED badge already
+                       tells operators "ignore this row." #}
+                    {% set _is_reconcile_protective = (t.signal_type in ('reconcile_backfill', 'reconcile_backfill_partial')) and not is_excluded_dq %}
                     {% if _is_reconcile_protective %}
                         {% set _action_label = 'Protective Exit' if t.signal_type == 'reconcile_backfill' else 'Protective Exit (partial)' %}
                     {% else %}

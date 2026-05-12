@@ -251,3 +251,30 @@ class TestReconcileBackfillLabelRename:
         )
         assert "Protective Exit" not in html
         assert "Strong Buy" in html
+
+    def test_excluded_reconcile_rows_keep_raw_label(self):
+        """EXCLUDED rows (data_quality tagged) are NOT real protective
+        exits — they're known-corrupt cascade artifacts from the
+        2026-05-11 phantom-stop incident. Renaming them to "Protective
+        Exit" with the "sane P&L expected" tooltip would be a lie:
+        these rows show +1131% / +4833% P&L. They keep the raw
+        "Reconcile Backfill" label so operators can see they came
+        from the reconciler; the EXCLUDED badge already tells them
+        to ignore the row."""
+        t = self._reconcile_trade("reconcile_backfill")
+        t["data_quality"] = "phantom_stop_reconcile_2026_05_12"
+        t["pnl"] = 23.77  # the actual RIOT corrupt row
+        t["qty"] = 1
+        t["price"] = 24.74
+        html = _render(
+            "{% import '_trades_table.html' as tpl %}"
+            "{{ tpl.render_trades(trades, show_profile=False) }}",
+            trades=[t],
+        )
+        # Old label retained for excluded rows
+        assert "Reconcile Backfill" in html
+        # Tooltip promising sane P&L MUST NOT appear on excluded rows
+        assert "sane P&amp;L expected" not in html
+        assert "sane P&L expected" not in html
+        # EXCLUDED badge present (the existing audit cue)
+        assert "EXCLUDED" in html

@@ -35,7 +35,9 @@ Rules going forward:
 
 **No data change.** The underlying `signal_type` and `strategy` columns are unchanged. Only the rendered label is renamed. Tests/analytics/exports that filter on `signal_type='reconcile_backfill'` keep working.
 
-**Regression test.** `tests/test_trades_table_shared.py::TestReconcileBackfillLabelRename` pins: old "Reconcile Backfill" gone, new "Protective Exit" present, tooltip text present, partial variant gets `(partial)` suffix, non-reconcile signal types unaffected.
+**Correction (same day):** Mack caught that the rename was applying to EXCLUDED rows too — the 3 data_quality-tagged rows from yesterday's phantom-stop cascade (RIOT/ACHR/BCS) were rendering as "Protective Exit" with a tooltip promising sane P&L, but those rows show +1131% / +1448% / +4833% P&L. Calling them "Protective Exit" was a lie. Fix: the rename is now gated on `not is_excluded_dq`. EXCLUDED rows keep the raw "Reconcile Backfill" label because the EXCLUDED badge already signals "ignore this row." Only legitimate (untagged) reconcile_backfill rows get the new "Protective Exit" label + tooltip.
+
+**Regression test.** `tests/test_trades_table_shared.py::TestReconcileBackfillLabelRename` pins: old "Reconcile Backfill" gone for untagged rows, new "Protective Exit" present, tooltip text present, partial variant gets `(partial)` suffix, non-reconcile signal types unaffected, AND `test_excluded_reconcile_rows_keep_raw_label` pins that EXCLUDED rows do NOT get the rename or the tooltip.
 
 ---
 
