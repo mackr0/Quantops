@@ -613,6 +613,18 @@ function showOpTab(event, profileId, which) {
 (function() {
     var profileIds = [{% for prof in profiles_data %}{{ prof.id }}{% if not loop.last %},{% endif %}{% endfor %}];
     function timeAgo(ts) { var d = Math.floor(Date.now()/1000 - ts); if (d<60) return d+'s ago'; if (d<3600) return Math.floor(d/60)+'m ago'; return Math.floor(d/3600)+'h ago'; }
+    // 2026-05-12 — local escapeHtml: this IIFE is scope-separate
+    // from the activity-ticker IIFE which defines its own. The
+    // brain panel was previously inlining `t.action` / `t.symbol`
+    // / `t.reasoning` raw into innerHTML — XSS-prone if an LLM
+    // ever returns a string with `<` characters.
+    function escapeHtml(text) {
+        if (text == null) return '';
+        var s = String(text);
+        return s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+    }
     function fetchCycleData(pid) {
         fetch('/api/cycle-data/' + pid).then(function(r){return r.json();}).then(function(data) {
             if (data.error) return;
@@ -651,12 +663,30 @@ function showOpTab(event, profileId, which) {
                                     'border-radius:3px;vertical-align:middle;margin-left:0.4rem;">' +
                                     'REJECTED · ' + label + '</span>';
                         }
+                        // 2026-05-12 — surface intent-vs-outcome
+                        // mismatch (e.g. AI says SHORT F but
+                        // executor closes existing long). Without
+                        // this badge the brain ticker lied about
+                        // what executed. Badge styling matches
+                        // REJECTED — muted amber instead of red so
+                        // it reads as "different from intent" not
+                        // "blocked."
+                        var convertBadge = '';
+                        if (t.execution_outcome === 'converted_to_close') {
+                            var ctip = escapeHtml(t.execution_outcome_display || '');
+                            convertBadge = ' <span title="' + ctip +
+                                    '" style="display:inline-block;background:#ff8f00;color:#fff;' +
+                                    'font-size:0.65rem;font-weight:600;padding:0.05rem 0.4rem;' +
+                                    'border-radius:3px;vertical-align:middle;margin-left:0.4rem;">' +
+                                    'EXECUTED AS ' + escapeHtml((t.executed_action || '').toUpperCase()) +
+                                    '</span>';
+                        }
                         html += '<span style="color:' +
                                 (t.execution_outcome === 'rejected' ? '#999' : '#00c853') + ';' +
                                 (t.execution_outcome === 'rejected' ? 'text-decoration:line-through;' : '') +
-                                '">' + t.action + ' ' + t.symbol + '</span>' + badge +
+                                '">' + escapeHtml(t.action || '') + ' ' + escapeHtml(t.symbol || '') + '</span>' + badge + convertBadge +
                                 ' (' + t.size_pct + '% equity, ' + t.confidence + '% confidence)<br>' +
-                                '<em>' + t.reasoning + '</em><br>';
+                                '<em>' + escapeHtml(t.reasoning || '') + '</em><br>';
                     });
                 }
                 else { html += '<strong>Decision:</strong> ' + data.ai_reasoning; }
@@ -673,7 +703,7 @@ function showOpTab(event, profileId, which) {
                     if (c.options_signal && c.options_signal !== 'neutral') alt.push('Opts: ' + c.options_signal);
                     if (c.reddit_mentions > 0) alt.push('Reddit: ' + c.reddit_mentions);
                     if (c.news && c.news.length) alt.push(c.news.length + ' news');
-                    tbl += '<tr><td><strong>' + c.symbol + '</strong></td><td>' + c.signal + '</td><td>' + c.score + '/4</td><td>' + (c.rsi||0).toFixed(0) + '</td><td>' + (c.adx||0).toFixed(0) + '</td><td>' + (c.mfi||0).toFixed(0) + '</td><td>' + (c.volume_ratio||0).toFixed(1) + 'x</td><td>' + (c.track_record||'new') + '</td><td style="font-size:0.75rem;">' + (alt.join('<br>')||'-') + '</td></tr>';
+                    tbl += '<tr><td><strong>' + escapeHtml(c.symbol||'') + '</strong></td><td>' + escapeHtml(c.signal||'') + '</td><td>' + c.score + '/4</td><td>' + (c.rsi||0).toFixed(0) + '</td><td>' + (c.adx||0).toFixed(0) + '</td><td>' + (c.mfi||0).toFixed(0) + '</td><td>' + (c.volume_ratio||0).toFixed(1) + 'x</td><td>' + escapeHtml(c.track_record||'new') + '</td><td style="font-size:0.75rem;">' + (alt.join('<br>')||'-') + '</td></tr>';
                 });
                 tbl += '</tbody></table>';
                 listEl.innerHTML = tbl;

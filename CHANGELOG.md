@@ -17,6 +17,35 @@ Rules going forward:
 
 ---
 
+## 2026-05-12 — Wave 4 dashboard truthfulness fixes: snake_case leaks, action labels, AI-intent-vs-outcome badges, lifecycle defense-in-depth. Severity: medium.
+
+**Five distinct issues bundled in one wave:**
+
+### 1. Strategy Activity ticker showed raw "STRONG_SELL" in trade detail.
+The `/api/activity` endpoint passed `detail` straight through — the field stores the AI's raw reasoning text which routinely echoes the action token ("STRONG_SELL signal (-2/4 score)..."). Other panels (AI Brain → trades_selected) were humanized at `views.api_cycle_data`; this one was missed. **Fix**: apply `humanize()` to `title` + `detail` in `views.api_activity` before returning.
+
+### 2. Candidates Considered panel showed raw "STRONG_BUY" in Signal column.
+JS rendered `c.signal` raw via `td>' + c.signal + '<` in `templates/dashboard.html:676`. **Fix**: `views.api_cycle_data` now humanizes shortlist `signal`, `track_record`, `options_signal`, and `options_oracle_summary` before returning. JS additionally `escapeHtml`-wraps the values (XSS hygiene).
+
+### 3. ALLCAPS_SNAKE_CASE guardrail test.
+The existing `test_no_snake_case_in_api_responses.py` only caught lowercase `PARAM_BOUNDS` keys. AI-shaped tokens (`STRONG_SELL`, `MULTILEG_OPEN`, `BULL_PUT_SPREAD`) had no structural coverage. New file `tests/test_no_allcaps_snake_case_in_api.py` regex-scans every GET `/api/*` response for `\b[A-Z]{2,}(_[A-Z]+)+\b` in non-raw-enum fields. **Tests for the class, not the instance**: future AI inventions (e.g. `BUTTERFLY_OPEN`) get caught without needing per-token enumeration. Allowlist (`RAW_ENUM_FIELDS`) is tight — only fields where the JS consumer maps the raw enum before rendering (e.g. `predicted_signal`, `_code`, `_type` suffixes). `signal`, `action` were intentionally NOT allowlisted because the JS renders them raw.
+
+### 4. Trades-page Action column showed bare lowercase "sell" for the sub-line.
+Mack repeatedly asked for the column to show *what kind* of buy/sell — a bare "sell" hides whether the trade closed a long or opened a short. The F STRONG_SELL trade today was a *long-close*, not a short-open, but the column read as ambiguous. **Fix**: new `display_names.action_label(side, signal_type, is_option)` filter derives **Long Open / Long Close / Short Open / Short Cover** for stocks and **Buy to Open / Buy to Open Leg / Sell to Open Leg / Sell to Close / Buy to Close** for options. Registered as the `action_label` Jinja filter. `_trades_table.html` now renders `{{ t.side | action_label(t.signal_type, is_option) }}` in place of the lowercase raw side.
+
+### 5. Brain ticker said "SHORT F" when no short ever opened.
+The trade pipeline (`trade_pipeline.py:1056-1057`) routes `STRONG_SELL` action through the close-existing-long branch when the symbol is already held long — you can't simultaneously hold long+short. Result: AI proposed SHORT F but executor closed the existing long. The brain ticker never communicated that conversion; the operator saw "SHORT F" with no resulting short position. **Fix**: `views.api_cycle_data` now queries the profile's `trades` table for recent fills (4h window) per `trades_selected` symbol, stamps `executed_action` (e.g., "Long Close") on each entry, and sets `execution_outcome='converted_to_close'` when the AI's intent contained "short" but the executed action was a long-close. The brain-ticker JS surfaces this as an `EXECUTED AS LONG CLOSE` badge alongside the existing `REJECTED` badge.
+
+### 6. Defense-in-depth: data_quality filter in option resolver + backfill paths.
+Mack flagged: "I want to make sure the [phantom-stop] errors don't impact the self-tuning review." Audit found that ai_predictions resolution today is clean (no `|actual_return_pct| > 100` rows on any profile), BUT the multileg resolver (`journal.get_multileg_legs_by_combo_order`) and the prediction-to-trades backfill (`pipelines/outcomes/backfill.py`) had no `data_quality` filter — a future phantom-stop-style incident could still propagate into ai_predictions and pollute alpha_decay / strategy_lifecycle deprecate decisions. **Fix**: added `data_quality_clause(conn)` to those three query sites. The bug class (corrupt trade → corrupt prediction → wrong deprecation) is now structurally blocked at every consumer of the trades table that feeds resolution.
+
+**Regression tests:**
+- `tests/test_no_allcaps_snake_case_in_api.py` (8 tests) — regex guardrail, activity feed humanization, cycle-data shortlist humanization, intent-vs-outcome enrichment, broad endpoint sweep.
+- `tests/test_trades_table_shared.py::TestActionLabelResolver` (5 tests) — `action_label` covers stock/options/None inputs; template renders "Long Close" for the F STRONG_SELL case and "Short Open" for a real side='short' row.
+- All 2895 tests pass; no regressions.
+
+---
+
 ## 2026-05-12 — Rename "Reconcile Backfill" → "Protective Exit (broker)" on the trades page. Severity: low (cosmetic, no data change).
 
 **Problem.** Mack flagged "I'm still seeing NEW Reconcile Backfill rows on the trades page" today — 5 untagged rows (no EXCLUDED badge) showed up at 9:31-9:34 AM ET and one at 11:58 AM ET. The label read as scary data-corruption.

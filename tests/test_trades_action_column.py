@@ -23,9 +23,10 @@ TEMPLATE_DIR = os.path.join(REPO_ROOT, "templates")
 def _render(trade):
     env = Environment(loader=FileSystemLoader(TEMPLATE_DIR))
     env.filters["friendly_time"] = lambda x: x or "--"
-    from display_names import humanize, format_occ
+    from display_names import humanize, format_occ, action_label
     env.filters["humanize"] = humanize
     env.filters["format_occ"] = format_occ
+    env.filters["action_label"] = action_label
     tmpl = env.from_string(
         "{% from '_trades_table.html' import render_trades %}"
         "{{ render_trades([t]) }}"
@@ -93,15 +94,20 @@ class TestSideSubtextOnDivergence:
     def test_multileg_short_leg_shows_signal_plus_side(self):
         """A multileg short leg has signal_type='MULTILEG_OPEN' but
         side='sell'. Both should be visible: primary "Multileg Open"
-        with secondary "sell" subtext so the operator sees this is
-        the short leg of an opening multileg."""
+        with secondary "Sell to Open Leg" subtext so the operator
+        sees this is the short leg of an opening multileg.
+        2026-05-12: the side subtext was changed from raw lowercase
+        side to a derived action label (display_names.action_label),
+        because plain "sell" hid whether this was a long-close or
+        a sell-to-open. Sell-to-Open Leg is the correct semantic
+        label for the short leg of a multileg open."""
         html = _render(_trade(
             signal_type="MULTILEG_OPEN", side="sell",
             occ_symbol="RTX260618P00170000",
         ))
         assert "Multileg Open" in html
-        # Side subtext appears (in lowercase, in a small tag)
-        assert "sell" in html
+        # Side subtext uses the derived label
+        assert "Sell to Open Leg" in html
 
     def test_buy_signal_with_buy_side_no_redundant_subtext(self):
         """When signal_type and side say the same thing (BUY/buy),

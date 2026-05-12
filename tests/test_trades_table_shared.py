@@ -278,3 +278,98 @@ class TestReconcileBackfillLabelRename:
         assert "sane P&L expected" not in html
         # EXCLUDED badge present (the existing audit cue)
         assert "EXCLUDED" in html
+
+
+class TestActionLabelResolver:
+    """2026-05-12 — Mack: the action column should say WHAT KIND of
+    buy/sell, not just `buy`/`sell`. The trades_table sub-line now
+    derives a specific action label via display_names.action_label.
+
+    For stocks: Long Open / Long Close / Short Open / Short Cover.
+    For options: Buy to Open / Sell to Open Leg / Sell to Close /
+    Buy to Close.
+
+    The F STRONG_SELL row that triggered this fix was a LONG CLOSE
+    (closing an existing long), not a Short Sell. Calling it "Short
+    Sell" would be wrong."""
+
+    def test_action_label_function_stocks(self):
+        from display_names import action_label
+        assert action_label("buy", "BUY", is_option=False) == "Long Open"
+        assert action_label("sell", "STRONG_SELL", is_option=False) == "Long Close"
+        assert action_label("short", "SHORT", is_option=False) == "Short Open"
+        assert action_label("cover", None, is_option=False) == "Short Cover"
+
+    def test_action_label_function_options(self):
+        from display_names import action_label
+        # multileg legs at entry — sell leg is sell-to-open
+        assert action_label("sell", "MULTILEG", is_option=True) == "Sell to Open Leg"
+        assert action_label("buy", "MULTILEG", is_option=True) == "Buy to Open Leg"
+        # single-leg long open
+        assert action_label("buy", "OPTIONS", is_option=True) == "Buy to Open"
+        # single-leg close
+        assert action_label("sell", "OPTIONS", is_option=True) == "Sell to Close"
+        # cover a short option
+        assert action_label("cover", None, is_option=True) == "Buy to Close"
+
+    def test_action_label_handles_none(self):
+        from display_names import action_label
+        assert action_label(None) == "--"
+        assert action_label("") == "--"
+
+    def test_template_uses_action_label_for_stocks(self):
+        # The F STRONG_SELL trade — must show "Long Close", NOT
+        # "Short Sell" or plain "sell"
+        t = {
+            "timestamp": "2026-05-12T17:41:02",
+            "profile_name": "Small Cap",
+            "symbol": "F",
+            "side": "sell",
+            "qty": 139,
+            "price": 11.915,
+            "pnl": 2.08,
+            "status": "closed",
+            "signal_type": "STRONG_SELL",
+            "strategy": "small",
+            "ai_confidence": 62,
+            "ai_reasoning": None,
+            "stop_loss": None, "take_profit": None,
+            "decision_price": 11.915, "fill_price": 11.91,
+            "slippage_pct": -0.042,
+        }
+        html = _render(
+            "{% import '_trades_table.html' as tpl %}"
+            "{{ tpl.render_trades(trades, show_profile=False) }}",
+            trades=[t],
+        )
+        assert "Long Close" in html
+        # Raw lowercase `sell` sub-line is gone
+        assert "<small class=\"muted\" style=\"font-size:0.7rem;\">sell</small>" not in html
+
+    def test_template_distinguishes_short_open_from_long_close(self):
+        # When the journal records side='short' (real short-open),
+        # the row should say "Short Open" — distinct from "Long Close"
+        t = {
+            "timestamp": "2026-05-12T17:41:02",
+            "profile_name": "Small Cap Shorts",
+            "symbol": "TSLA",
+            "side": "short",
+            "qty": 50,
+            "price": 250.0,
+            "pnl": None,
+            "status": "open",
+            "signal_type": "STRONG_SELL",
+            "strategy": "small_shorts",
+            "ai_confidence": 70,
+            "ai_reasoning": None,
+            "stop_loss": 270.0, "take_profit": 230.0,
+            "decision_price": 250.0, "fill_price": 250.0,
+            "slippage_pct": 0.0,
+        }
+        html = _render(
+            "{% import '_trades_table.html' as tpl %}"
+            "{{ tpl.render_trades(trades, show_profile=False) }}",
+            trades=[t],
+        )
+        assert "Short Open" in html
+        assert "Long Close" not in html

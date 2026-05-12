@@ -209,7 +209,7 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | Module | Purpose |
 |---|---|
 | `dashboard.py` | Dashboard data assembly. |
-| `display_names.py` | snake_case → human label registry + Jinja filters. |
+| `display_names.py` | snake_case → human label registry + Jinja filters (`humanize`, `display_name`, `format_occ`, `action_label`, `friendly_time`, `friendly_date`). `action_label(side, signal_type, is_option)` derives Long Open / Long Close / Short Open / Short Cover for stocks and Buy to Open / Sell to Open Leg / Sell to Close / Buy to Close for options. API endpoints that return user-facing text MUST call `humanize()` server-side — caught by `tests/test_no_allcaps_snake_case_in_api.py` regex guardrail. |
 | `param_bounds.py` | Min/max bounds for every tunable parameter. |
 | `notifications.py` | Alert dispatching. |
 | `metrics.py` | Performance metric computation. |

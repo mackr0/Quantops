@@ -4686,7 +4686,7 @@ def api_activity():
     formatting — single source of truth, matches the format used in
     server-rendered tables. Issue 13 fix.
     """
-    from display_names import friendly_time
+    from display_names import friendly_time, humanize
     profile_id = request.args.get("profile_id", type=int)
     offset = request.args.get("offset", 0, type=int)
     limit = request.args.get("limit", 10, type=int)
@@ -4696,6 +4696,19 @@ def api_activity():
                                 limit=limit, offset=offset)
     for e in entries:
         e["timestamp_friendly"] = friendly_time(e.get("timestamp"))
+        # 2026-05-12 — humanize title + detail so raw AI tokens
+        # (STRONG_SELL, MULTILEG_OPEN, bull_put_spread) don't leak
+        # into the Strategy Activity ticker. The activity feed
+        # detail field stores raw AI reasoning verbatim — the LLM
+        # routinely echoes the action token it was asked about.
+        # Without this pass the operator sees "STRONG_SELL signal
+        # (-2/4 score)..." on a panel that's supposed to be
+        # human-readable. Idempotent (humanize is a no-op on
+        # already-humanized text).
+        if e.get("title"):
+            e["title"] = humanize(e["title"])
+        if e.get("detail"):
+            e["detail"] = humanize(e["detail"])
     total = get_activity_count(current_user.effective_user_id, profile_id=profile_id)
     return jsonify({"entries": entries, "total": total})
 
@@ -5124,6 +5137,82 @@ def api_cycle_data(profile_id):
             t["reasoning"] = humanize(t["reasoning"])
         if isinstance(t.get("action"), str):
             t["action"] = humanize(t["action"])
+    # 2026-05-12 — shortlist's `signal` field renders raw in the
+    # Candidates Considered panel (JS does `td>' + c.signal + '<`
+    # in templates/dashboard.html:676). Humanize server-side so
+    # STRONG_BUY → "Strong Buy" before it reaches the browser.
+    # Same for track_record (LLM-emitted) and alt-data strings.
+    for c in (data.get("shortlist") or []):
+        if isinstance(c.get("signal"), str):
+            c["signal"] = humanize(c["signal"])
+        if isinstance(c.get("track_record"), str):
+            c["track_record"] = humanize(c["track_record"])
+        if isinstance(c.get("options_signal"), str):
+            c["options_signal"] = humanize(c["options_signal"])
+        if isinstance(c.get("options_oracle_summary"), str):
+            c["options_oracle_summary"] = humanize(c["options_oracle_summary"])
+
+    # 2026-05-12 — surface the AI-intent vs executed-outcome
+    # mismatch on the brain ticker. Mack's case: AI proposed
+    # SHORT F (1.25% equity) but F was already held long; the
+    # trade pipeline routed STRONG_SELL action through the
+    # close-existing-long branch (trade_pipeline.py:1056-1057).
+    # Result: brain ticker said "SHORT F" but no short ever
+    # opened. Stamp each trades_selected entry with what
+    # actually traded for the symbol within the last 4 hours.
+    try:
+        import sqlite3 as _sql
+        db_path = f"quantopsai_profile_{profile_id}.db"
+        conn = _sql.connect(db_path)
+        try:
+            # Most recent trade per symbol in the last 4 hours
+            recent = {}
+            rows = conn.execute(
+                "SELECT symbol, side, signal_type, status, timestamp, "
+                "occ_symbol FROM trades "
+                "WHERE timestamp >= datetime('now', '-4 hours') "
+                "ORDER BY timestamp DESC"
+            ).fetchall()
+            for r in rows:
+                sym = (r[0] or "").upper()
+                if sym and sym not in recent:
+                    recent[sym] = {
+                        "side": r[1], "signal_type": r[2],
+                        "status": r[3], "timestamp": r[4],
+                        "is_option": bool(r[5]),
+                    }
+            from display_names import action_label as _act_label
+            for t in (data.get("trades_selected") or []):
+                sym = (t.get("symbol") or "").upper()
+                if not sym:
+                    continue
+                rec = recent.get(sym)
+                if not rec:
+                    continue
+                executed = _act_label(
+                    rec["side"], rec.get("signal_type"),
+                    is_option=rec.get("is_option", False),
+                )
+                t["executed_action"] = executed
+                # Detect intent-vs-outcome mismatch. AI's action is
+                # already humanized above ("Strong Sell" / "Short").
+                # The conversion we care about: intent says "Short"
+                # but the executed action was "Long Close".
+                intent = (t.get("action") or "").lower()
+                if "short" in intent and executed == "Long Close":
+                    t["execution_outcome"] = "converted_to_close"
+                    t["execution_outcome_display"] = (
+                        "Executed as long-close — "
+                        "F was already held long, can't open a new "
+                        "short on the same symbol")
+        finally:
+            conn.close()
+    except Exception as _exc:
+        logger.warning(
+            "api_cycle_data: execution-outcome enrichment failed for "
+            "profile %d: %s — proceeding without badges",
+            profile_id, _exc,
+        )
 
     # TODO #5: stamp execution outcome on each TRADES SELECTED row.
     # Cross-reference recent broker_rejections for this profile so the

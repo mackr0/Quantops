@@ -123,8 +123,16 @@
                         {% else %}
                         <strong style="font-size:0.85rem;">{{ _action_label }}</strong>
                         {% endif %}
-                        {% if t.signal_type and t.side and t.side|upper != t.signal_type %}
-                        <br><small class="muted" style="font-size:0.7rem;text-transform:uppercase;">{{ t.side }}</small>
+                        {# 2026-05-12 — sub-line shows a specific action
+                           label ("Long Open" / "Long Close" / "Short
+                           Open" / "Short Cover" for stocks; "Buy to
+                           Open" / "Sell to Open Leg" / "Sell to
+                           Close" / "Buy to Close" for options).
+                           Replaces the bare lowercase t.side which
+                           hid whether a sell was a long-close or a
+                           short-open. #}
+                        {% if t.side %}
+                        <br><small class="muted" style="font-size:0.7rem;">{{ t.side | action_label(t.signal_type, is_option) }}</small>
                         {% endif %}
                     </td>
                     <td>{{ t.qty|int }}{% if is_option %}<small class="muted"> ct</small>{% endif %}{% if t.price and t.qty %}<br><small class="muted">${{ "{:,.0f}".format(t.qty * t.price * option_mult) }}</small>{% endif %}</td>

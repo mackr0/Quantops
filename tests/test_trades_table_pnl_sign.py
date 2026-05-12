@@ -22,9 +22,10 @@ def _render(trade):
     env.filters["friendly_time"] = lambda x: x or "--"
     # `humanize` filter (added by display_names.register in production)
     # is needed by the macro's Action column.
-    from display_names import humanize, format_occ
+    from display_names import humanize, format_occ, action_label
     env.filters["humanize"] = humanize
     env.filters["format_occ"] = format_occ
+    env.filters["action_label"] = action_label
     tmpl = env.from_string(
         "{% from '_trades_table.html' import render_trades %}"
         "{{ render_trades([t]) }}"

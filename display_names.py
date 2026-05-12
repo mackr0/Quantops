@@ -620,12 +620,84 @@ def format_occ(occ):
         return str(occ)
 
 
+def action_label(side, signal_type=None, is_option=False) -> str:
+    """Derive a specific action label from the trade record's
+    (side, signal_type, is_option) — replaces the lowercase raw `side`
+    sub-line on the trades table.
+
+    Why this exists: Mack repeatedly asked for the action column to
+    show *what kind* of buy/sell, not just `buy`/`sell`. A bare
+    "sell" hides whether the trade closed a long or opened a short,
+    and whether an option leg is a sell-to-open (credit) or
+    sell-to-close (closing a long premium).
+
+    Mapping:
+      STOCK rows (no occ_symbol):
+        side='buy'    → "Long Open"
+        side='sell'   → "Long Close"
+        side='short'  → "Short Open"
+        side='cover'  → "Short Cover"
+
+      OPTION rows (occ_symbol present):
+        side='buy'  + signal_type='MULTILEG'  → "Buy to Open Leg"
+        side='buy'  + other                    → "Buy to Open"
+        side='sell' + signal_type='MULTILEG'  → "Sell to Open Leg"
+        side='sell' + other                    → "Sell to Close"
+        side='cover'                           → "Buy to Close"
+
+    For unknown sides, returns the raw side title-cased so we never
+    show empty. None side → "--".
+    """
+    if not side:
+        return "--"
+    side = str(side).lower()
+    sig = (signal_type or "").upper()
+
+    if is_option:
+        # MULTILEG legs at entry — match both legacy 'MULTILEG' tag
+        # and the actual stored 'MULTILEG_OPEN' / 'MULTILEG_CLOSE'.
+        is_multileg = sig.startswith("MULTILEG")
+        is_multileg_close = sig == "MULTILEG_CLOSE"
+        if side == "buy":
+            if is_multileg and not is_multileg_close:
+                return "Buy to Open Leg"
+            if is_multileg_close:
+                return "Buy to Close Leg"
+            return "Buy to Open"
+        if side == "sell":
+            if is_multileg and not is_multileg_close:
+                return "Sell to Open Leg"
+            if is_multileg_close:
+                return "Sell to Close Leg"
+            return "Sell to Close"
+        if side == "cover":
+            return "Buy to Close"
+        return side.title()
+
+    # Stocks
+    if side == "buy":
+        return "Long Open"
+    if side == "sell":
+        return "Long Close"
+    if side == "short":
+        return "Short Open"
+    if side == "cover":
+        return "Short Cover"
+    return side.title()
+
+
 def register(app) -> None:
     """Wire up the `display_name`, `humanize`, `reading_value`,
-    `friendly_time`, `friendly_date`, and `format_occ` Jinja filters."""
+    `friendly_time`, `friendly_date`, `format_occ`, and
+    `action_label` Jinja filters."""
     app.jinja_env.filters["display_name"] = display_name
     app.jinja_env.filters["humanize"] = humanize
     app.jinja_env.filters["reading_value"] = format_reading_value
     app.jinja_env.filters["friendly_time"] = friendly_time
     app.jinja_env.filters["friendly_date"] = friendly_date
     app.jinja_env.filters["format_occ"] = format_occ
+    # As a filter — `t.side | action_label(t.signal_type, is_option)`.
+    # Filter is more portable across raw-Jinja test environments
+    # than a global; tests that wire up humanize as a filter can
+    # add this one the same way.
+    app.jinja_env.filters["action_label"] = action_label

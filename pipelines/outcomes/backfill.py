@@ -162,14 +162,21 @@ def _find_multileg_combo_for_prediction(
     cutoff_min, cutoff_max = _window_cutoffs(pred_timestamp)
     if not cutoff_min:
         return None
+    # 2026-05-12 — exclude data_quality-tagged rows (phantom-stop
+    # cascade artifacts). Without this filter, a future incident
+    # that pollutes a MULTILEG leg row could resurface during
+    # backfill and link to an ai_prediction, polluting alpha_decay
+    # / strategy_lifecycle decisions downstream.
+    from journal import data_quality_clause
+    _dq = data_quality_clause(conn)
     # The legs share the underlying ticker (the `symbol` column of
     # the trade row is the underlying for multileg legs).
     rows = conn.execute(
-        """SELECT order_id, reason, timestamp
+        f"""SELECT order_id, reason, timestamp
            FROM trades
            WHERE signal_type = 'MULTILEG'
            AND symbol = ?
-           AND timestamp BETWEEN ? AND ?
+           AND timestamp BETWEEN ? AND ?{_dq}
            ORDER BY timestamp ASC""",
         (symbol.upper(), cutoff_min, cutoff_max),
     ).fetchall()
@@ -203,13 +210,18 @@ def _find_single_leg_occ_for_prediction(
     cutoff_min, cutoff_max = _window_cutoffs(pred_timestamp)
     if not cutoff_min:
         return None
+    # 2026-05-12 — same defense as the multileg path above: exclude
+    # data_quality-tagged rows so a future incident can't pollute
+    # the OPTIONS-prediction-to-trades linkage during backfill.
+    from journal import data_quality_clause
+    _dq = data_quality_clause(conn)
     rows = conn.execute(
-        """SELECT occ_symbol
+        f"""SELECT occ_symbol
            FROM trades
            WHERE symbol = ?
            AND occ_symbol IS NOT NULL
            AND signal_type != 'MULTILEG'
-           AND timestamp BETWEEN ? AND ?
+           AND timestamp BETWEEN ? AND ?{_dq}
            ORDER BY timestamp ASC LIMIT 1""",
         (symbol.upper(), cutoff_min, cutoff_max),
     ).fetchone()

@@ -1789,12 +1789,21 @@ def get_multileg_legs_by_combo_order(db_path, combo_order_id):
     try:
         conn = _get_conn(db_path)
         conn.row_factory = sqlite3.Row
+        # 2026-05-12 — exclude data_quality-tagged rows. Without this,
+        # a phantom-stop-style incident that pollutes a MULTILEG leg
+        # row would drive the option resolver to compute a wrong
+        # spread P&L → wrong actual_return_pct on the linked
+        # ai_predictions row → wrong alpha_decay/strategy_lifecycle
+        # signal. Defense-in-depth: today's MULTILEG rows are clean,
+        # but the filter ensures future incidents can't propagate
+        # without going through the data_quality-tagging audit trail.
+        _dq = data_quality_clause(conn)
         try:
             rows = conn.execute(
-                """SELECT occ_symbol, qty, price, side, fill_price
+                f"""SELECT occ_symbol, qty, price, side, fill_price
                    FROM trades
                    WHERE signal_type = 'MULTILEG'
-                   AND (order_id = ? OR reason LIKE ?)""",
+                   AND (order_id = ? OR reason LIKE ?){_dq}""",
                 (str(combo_order_id),
                  f"%(combo={combo_order_id})%"),
             ).fetchall()
