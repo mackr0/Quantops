@@ -190,7 +190,11 @@ ticket.
 
 ---
 
-### 4a. Documentation sweep — test counts + drift
+### 4a. ✅ DONE 2026-05-11 — Documentation sweep — test counts + drift
+
+(commit pending — see CHANGELOG entry "TODO #4a: docs sweep — stale test counts updated + ±10% drift guardrail")
+
+### 4a-archive. Documentation sweep — test counts + drift
 
 **Where**: `docs/13_QUALITY_RELIABILITY.md` (QE/RE doc) and any
 sibling doc that quotes test counts or post-incident state.

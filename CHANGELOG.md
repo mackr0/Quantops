@@ -17,6 +17,18 @@ Rules going forward:
 
 ---
 
+## 2026-05-11 — TODO #4a: docs sweep — stale test counts updated + ±10% drift guardrail
+
+Mack flagged that `docs/13_QUALITY_RELIABILITY.md` claimed "~180 files, 2,000+ tests" while the actual count was 216 files / 2,748 tests. Same drift in `docs/01_EXECUTIVE_SUMMARY.md` ("1,914 tests pass") and `docs/04_TECHNICAL_REFERENCE.md` ("151 test files", "1,914 tests").
+
+**Fix**: updated all three docs to current counts.
+
+**Guardrail** (`tests/test_docs_test_counts_fresh.py`): scans `docs/*.md` for documented test counts and asserts each is within ±10% of the actual `pytest --collect-only` count. ±10% tolerance gives ~6 months of normal growth between forced updates so the test isn't churn-noisy on every commit but catches multi-year drift before it gets bad. On failure, lists each stale doc + the current count so the fix is mechanical.
+
+2,749 pass (was 2,748 + 1 guardrail).
+
+---
+
 ## 2026-05-11 — TODO #5: AI Brain panel renders broker_rejections badges inline
 
 The `broker_rejections` table (shipped earlier today) was capturing every Alpaca rejection — cross-direction guard, wash-trade, insufficient buying power — but the AI Brain panel still showed "TRADES SELECTED" without execution outcome. Mack's CWAN incident this morning: the AI proposed a BUY, Alpaca refused (sibling profile had a SHORT pending on the same shared account), and the trade silently disappeared. Operator went looking for a fill that never happened.
