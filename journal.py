@@ -1395,8 +1395,12 @@ def get_performance_summary(db_path=None):
     total_pnl, avg_pnl, best_trade, worst_trade.
     """
     conn = _get_conn(db_path)
+    # Phase 5e — exclude data_quality-tagged rows.
+    _dq = data_quality_clause(conn)
 
-    total = conn.execute("SELECT COUNT(*) FROM trades WHERE pnl IS NOT NULL").fetchone()[0]
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM trades WHERE pnl IS NOT NULL{_dq}"
+    ).fetchone()[0]
     if total == 0:
         conn.close()
         return {
@@ -1410,7 +1414,7 @@ def get_performance_summary(db_path=None):
             "worst_trade": 0.0,
         }
 
-    row = conn.execute("""
+    row = conn.execute(f"""
         SELECT
             COUNT(*) AS total_trades,
             SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS winning_trades,
@@ -1420,7 +1424,7 @@ def get_performance_summary(db_path=None):
             MAX(pnl) AS best_trade,
             MIN(pnl) AS worst_trade
         FROM trades
-        WHERE pnl IS NOT NULL
+        WHERE pnl IS NOT NULL{_dq}
     """).fetchone()
 
     conn.close()
@@ -1770,6 +1774,33 @@ def get_multileg_legs_by_combo_order(db_path, combo_order_id):
             conn.close()
     except Exception:
         return []
+
+
+def data_quality_clause(conn) -> str:
+    """Phase 5e (2026-05-12) — return ' AND data_quality IS NULL'
+    if the trades table has the data_quality column, else ''.
+    Use in any analytics SQL on the trades table to exclude
+    rows tagged with a known data-corruption marker (e.g.,
+    'phantom_stop_2026_05_11').
+
+    Wrapped in a helper so analytics call sites don't have to
+    duplicate the column-presence check (which is needed for
+    back-compat with legacy DBs / minimal test fixtures that
+    pre-date Phase 5e).
+
+    Usage:
+        cls = data_quality_clause(conn)
+        rows = conn.execute(
+            f"SELECT ... FROM trades WHERE pnl IS NOT NULL{cls}"
+        ).fetchall()
+    """
+    try:
+        cols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(trades)"
+        ).fetchall()}
+        return " AND data_quality IS NULL" if "data_quality" in cols else ""
+    except Exception:
+        return ""
 
 
 def get_specialist_veto_stats(db_paths, days=7):

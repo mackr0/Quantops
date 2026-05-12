@@ -115,17 +115,40 @@ def _fetch_benchmark_returns(ticker: str, start_date: str, end_date: str) -> Dic
 # ---------------------------------------------------------------------------
 
 def _gather_trades(db_paths) -> List[Dict]:
-    """Collect all closed trades (with pnl) from the provided DBs."""
+    """Collect all closed trades (with pnl) from the provided DBs.
+
+    Phase 5e (2026-05-12): rows tagged with `data_quality` are
+    EXCLUDED — they're known data-corruption artifacts (e.g.,
+    the phantom_stop_2026_05_11 incident). Including them
+    contaminated CVaR (-8409% observed in prod), VaR, Sharpe,
+    Sortino, win-rate, drawdown, and every other metric that
+    consumed `trade_return_pct = pnl / (price * qty) * 100` —
+    when `price` is the corrupted option premium ($0.16) but
+    `pnl` is the actual stock-sell realized P&L, the per-trade
+    return % goes to thousands of percent. Filtering here
+    cleans EVERY downstream metric in one place.
+
+    Back-compat: detect column presence first so legacy DBs and
+    minimal test fixtures without the data_quality column
+    continue to work.
+    """
     all_trades = []
     for db_path in db_paths:
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
+            cols = {row[1] for row in conn.execute(
+                "PRAGMA table_info(trades)"
+            ).fetchall()}
+            dq_clause = (
+                " AND data_quality IS NULL"
+                if "data_quality" in cols else ""
+            )
             rows = conn.execute(
-                "SELECT timestamp, symbol, side, qty, price, pnl, strategy, "
-                "decision_price, fill_price, slippage_pct, status "
-                "FROM trades WHERE pnl IS NOT NULL "
-                "ORDER BY timestamp ASC"
+                f"SELECT timestamp, symbol, side, qty, price, pnl, strategy, "
+                f"decision_price, fill_price, slippage_pct, status "
+                f"FROM trades WHERE pnl IS NOT NULL{dq_clause} "
+                f"ORDER BY timestamp ASC"
             ).fetchall()
             for r in rows:
                 all_trades.append(dict(r))

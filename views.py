@@ -1636,10 +1636,23 @@ def _calculate_risk_metrics(db_paths):
     for db_path in db_paths:
         try:
             conn = open_profile_db(db_path)
+            # Phase 5e — exclude data_quality-tagged rows. Their
+            # `price` field is corrupted (option premium logged
+            # for stock-side trades); using them in per-trade %
+            # calcs (CVaR, drawdown tail, monthly returns)
+            # produces nonsense. Back-compat for legacy DBs
+            # without the column.
+            cols = {row[1] for row in conn.execute(
+                "PRAGMA table_info(trades)"
+            ).fetchall()}
+            dq_clause = (
+                " AND data_quality IS NULL"
+                if "data_quality" in cols else ""
+            )
             rows = conn.execute(
-                "SELECT timestamp, symbol, pnl, price, qty "
-                "FROM trades WHERE pnl IS NOT NULL "
-                "ORDER BY timestamp ASC"
+                f"SELECT timestamp, symbol, pnl, price, qty "
+                f"FROM trades WHERE pnl IS NOT NULL{dq_clause} "
+                f"ORDER BY timestamp ASC"
             ).fetchall()
             for r in rows:
                 all_trades.append({
@@ -2209,10 +2222,21 @@ def performance_dashboard():
             latest_eq = p.get("initial_capital") or 0
             try:
                 conn = open_profile_db(db_path)
+                # Phase 5e — exclude data_quality-tagged rows from
+                # per-profile scaling analytics (corrupt `price`
+                # field would poison participation-rate calcs).
+                cols = {row[1] for row in conn.execute(
+                    "PRAGMA table_info(trades)"
+                ).fetchall()}
+                dq_clause = (
+                    " AND data_quality IS NULL"
+                    if "data_quality" in cols else ""
+                )
                 trade_rows = conn.execute(
-                    "SELECT timestamp, symbol, side, qty, price, pnl, "
-                    "decision_price, fill_price, slippage_pct "
-                    "FROM trades WHERE pnl IS NOT NULL ORDER BY timestamp ASC"
+                    f"SELECT timestamp, symbol, side, qty, price, pnl, "
+                    f"decision_price, fill_price, slippage_pct "
+                    f"FROM trades WHERE pnl IS NOT NULL{dq_clause} "
+                    f"ORDER BY timestamp ASC"
                 ).fetchall()
                 trades = [dict(r) for r in trade_rows]
                 snap = conn.execute(
@@ -3777,10 +3801,14 @@ def api_backtest_vs_reality(profile_id):
     thirty_days_ago = (datetime.utcnow() - timedelta(days=30)).isoformat()
     try:
         conn = open_profile_db(db_path)
+        # Phase 5e — exclude data_quality-tagged rows
+        from journal import data_quality_clause
+        _dq = data_quality_clause(conn)
 
         actual_trades = conn.execute(
-            "SELECT * FROM trades WHERE pnl IS NOT NULL AND timestamp >= ? "
-            "ORDER BY timestamp DESC",
+            f"SELECT * FROM trades WHERE pnl IS NOT NULL "
+            f"AND timestamp >= ?{_dq} "
+            f"ORDER BY timestamp DESC",
             (thirty_days_ago,),
         ).fetchall()
         actual_trades = [dict(r) for r in actual_trades]

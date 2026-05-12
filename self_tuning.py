@@ -409,13 +409,16 @@ def _build_trade_performance_context(db_path):
             return ""
 
         # Query trades grouped by side (buy, sell, short, cover)
+        # Phase 5e — exclude data_quality-tagged rows.
+        from journal import data_quality_clause
+        _dq = data_quality_clause(conn)
         rows = conn.execute(
-            "SELECT side, COUNT(*) as cnt, "
-            "SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins, "
-            "SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) as losses, "
-            "SUM(pnl) as total_pnl "
-            "FROM trades WHERE pnl IS NOT NULL "
-            "GROUP BY side"
+            f"SELECT side, COUNT(*) as cnt, "
+            f"SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins, "
+            f"SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) as losses, "
+            f"SUM(pnl) as total_pnl "
+            f"FROM trades WHERE pnl IS NOT NULL{_dq} "
+            f"GROUP BY side"
         ).fetchall()
 
         if not rows:
@@ -1636,11 +1639,15 @@ def apply_auto_adjustments(ctx, db_path=None):
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='trades'"
             ).fetchone()
             if trade_table:
+                # Phase 5e — exclude data_quality-tagged rows.
+                from journal import data_quality_clause
+                _dq = data_quality_clause(conn)
                 short_rows = conn.execute(
-                    "SELECT COUNT(*) as cnt, "
-                    "SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins, "
-                    "SUM(pnl) as total_pnl "
-                    "FROM trades WHERE pnl IS NOT NULL AND side IN ('short', 'cover')"
+                    f"SELECT COUNT(*) as cnt, "
+                    f"SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins, "
+                    f"SUM(pnl) as total_pnl "
+                    f"FROM trades WHERE pnl IS NOT NULL "
+                    f"AND side IN ('short', 'cover'){_dq}"
                 ).fetchone()
                 short_cnt = short_rows["cnt"] if short_rows else 0
                 short_wins = short_rows["wins"] or 0 if short_rows else 0
@@ -2144,12 +2151,16 @@ def _optimize_stop_take_profit(conn, ctx, profile_id, user_id,
     if not table_check:
         return None
 
-    # Get closed trades with P&L
+    # Get closed trades with P&L. Phase 5e — exclude
+    # data_quality-tagged rows (corrupt `price` field would
+    # poison stop/TP threshold tuning).
+    from journal import data_quality_clause
+    _dq = data_quality_clause(conn)
     trades = conn.execute(
-        """SELECT price, qty, pnl, stop_loss, take_profit
+        f"""SELECT price, qty, pnl, stop_loss, take_profit
            FROM trades
            WHERE pnl IS NOT NULL AND lower(side) = 'buy'
-             AND price > 0 AND qty > 0"""
+             AND price > 0 AND qty > 0{_dq}"""
     ).fetchall()
 
     if len(trades) < 15:
@@ -2386,17 +2397,23 @@ def _optimize_max_correlation(conn, ctx, profile_id, user_id,
     if not table_check:
         return None
 
+    # Phase 5e — exclude data_quality-tagged rows from cluster
+    # detection. Phantom-stop incident rows all hit on the same
+    # day; including them would inflate "losing weeks with
+    # clusters" and falsely trigger max_correlation tightening.
+    from journal import data_quality_clause
+    _dq = data_quality_clause(conn)
     cluster_row = conn.execute(
-        """SELECT strftime('%Y-%W', timestamp) as week, COUNT(*) as cnt
+        f"""SELECT strftime('%Y-%W', timestamp) as week, COUNT(*) as cnt
            FROM trades
-           WHERE pnl IS NOT NULL AND pnl < 0
+           WHERE pnl IS NOT NULL AND pnl < 0{_dq}
            GROUP BY week HAVING cnt >= 3"""
     ).fetchall()
 
     losing_weeks_with_clusters = len(cluster_row)
     total_weeks_row = conn.execute(
-        """SELECT COUNT(DISTINCT strftime('%Y-%W', timestamp)) as n
-           FROM trades WHERE pnl IS NOT NULL"""
+        f"""SELECT COUNT(DISTINCT strftime('%Y-%W', timestamp)) as n
+           FROM trades WHERE pnl IS NOT NULL{_dq}"""
     ).fetchone()
     total_weeks = total_weeks_row["n"] if total_weeks_row else 0
 
@@ -2545,11 +2562,20 @@ def _optimize_price_band(conn, ctx, profile_id, user_id, overall_wr, resolved):
     current_max = float(getattr(ctx, "max_price", 20.0))
 
     # Bottom-of-band failure check: trades entered within 1.5× of min_price.
+    # Phase 5e — CRITICAL fix. Without the data_quality filter, the
+    # phantom-stop rows (price=$0.16-$1.48) all matched this bottom-
+    # of-band query and triggered min_price RAISES based on their
+    # 100% loss rate. The corrupt price field IS the trigger
+    # condition itself; without filtering, self-tuning was
+    # systematically WRONG for the past day.
+    from journal import data_quality_clause
+    _dq = data_quality_clause(conn)
     bottom_threshold = current_min * 1.5
     bot_row = conn.execute(
-        "SELECT COUNT(*) as cnt, "
-        " SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins "
-        "FROM trades WHERE pnl IS NOT NULL AND price <= ? AND price > 0",
+        f"SELECT COUNT(*) as cnt, "
+        f" SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins "
+        f"FROM trades WHERE pnl IS NOT NULL AND price <= ? "
+        f"AND price > 0{_dq}",
         (bottom_threshold,),
     ).fetchone()
     if (bot_row and bot_row["cnt"] >= 5):
@@ -2577,11 +2603,12 @@ def _optimize_price_band(conn, ctx, profile_id, user_id, overall_wr, resolved):
                         f"${new_min:.2f} ({reason})")
 
     # Top-of-band failure check: trades entered within 0.85× of max_price.
+    # Phase 5e exclusion: same pattern as bottom-of-band.
     top_threshold = current_max * 0.85
     top_row = conn.execute(
-        "SELECT COUNT(*) as cnt, "
-        " SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins "
-        "FROM trades WHERE pnl IS NOT NULL AND price >= ?",
+        f"SELECT COUNT(*) as cnt, "
+        f" SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins "
+        f"FROM trades WHERE pnl IS NOT NULL AND price >= ?{_dq}",
         (top_threshold,),
     ).fetchone()
     if (top_row and top_row["cnt"] >= 5):
