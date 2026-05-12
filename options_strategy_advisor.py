@@ -86,8 +86,16 @@ PROTECTIVE_PUT_TARGET_DAYS_TO_EXPIRY = 45
 # IV regime thresholds — same definition (above 60 = rich, below 50 =
 # cheap) as the single-leg advisor. The "neutral" 50-60 band falls
 # through with no recommendation (not enough edge in either direction).
-MULTILEG_IV_RICH_THRESHOLD = 60.0
-MULTILEG_IV_CHEAP_THRESHOLD = 50.0
+# 2026-05-12 — IV-rich/cheap thresholds. Old defaults 60/50 left a
+# 10-point dead zone (IV 50-60) where no option proposals fired.
+# Audit showed option pipeline win rate is 61% on resolved trades;
+# closing the dead zone roughly doubles the proposal funnel without
+# changing what's actually proposed (just enables ONE branch in the
+# 50-60 band based on which is closer). Tunable per profile via
+# ctx (`option_iv_rich_threshold`, `option_iv_cheap_threshold`);
+# self-tuner adjusts based on option win rate.
+MULTILEG_IV_RICH_THRESHOLD = 55.0    # was 60.0
+MULTILEG_IV_CHEAP_THRESHOLD = 55.0   # was 50.0
 MULTILEG_VERTICAL_STRIKE_PCT_OTM = 5.0  # short leg sits this far OTM
 MULTILEG_VERTICAL_WIDTH_PCT = 5.0       # long leg this far past short
 MULTILEG_TARGET_DAYS_TO_EXPIRY = 35     # sweet spot: theta capture + liquid
@@ -211,6 +219,7 @@ def evaluate_candidate_for_multileg(
     candidate: Dict[str, Any],
     iv_rank_pct: Optional[float] = None,
     regime: Optional[str] = None,
+    ctx: Any = None,
 ) -> List[Dict[str, Any]]:
     """For a screener candidate (NOT a held position), return list of
     multi-leg strategy recommendations. AI takes it from there.
@@ -246,8 +255,17 @@ def evaluate_candidate_for_multileg(
         # Don't recommend any IV-conditional strategy without IV data
         return recs
 
-    is_iv_rich = iv_rank_pct >= MULTILEG_IV_RICH_THRESHOLD
-    is_iv_cheap = iv_rank_pct <= MULTILEG_IV_CHEAP_THRESHOLD
+    # 2026-05-12 — read tunable thresholds from ctx; fall back to
+    # module defaults. With rich==cheap default (55/55), every IV
+    # value triggers exactly one of the two branches (no dead zone).
+    iv_rich_thresh = float(getattr(
+        ctx, "option_iv_rich_threshold", MULTILEG_IV_RICH_THRESHOLD
+    ) if ctx is not None else MULTILEG_IV_RICH_THRESHOLD)
+    iv_cheap_thresh = float(getattr(
+        ctx, "option_iv_cheap_threshold", MULTILEG_IV_CHEAP_THRESHOLD
+    ) if ctx is not None else MULTILEG_IV_CHEAP_THRESHOLD)
+    is_iv_rich = iv_rank_pct >= iv_rich_thresh
+    is_iv_cheap = iv_rank_pct <= iv_cheap_thresh
     is_bullish = signal in ("BUY", "STRONG_BUY")
     is_bearish = signal in ("SELL", "STRONG_SELL", "SHORT", "STRONG_SHORT")
     expiry = _next_friday(MULTILEG_TARGET_DAYS_TO_EXPIRY)
@@ -395,6 +413,7 @@ def render_multileg_recs_for_prompt(
     candidates: List[Dict[str, Any]],
     iv_rank_lookup=None,
     regime: Optional[str] = None,
+    ctx: Any = None,
 ) -> str:
     """Build the MULTI-LEG STRATEGIES prompt block.
 
@@ -424,7 +443,7 @@ def render_multileg_recs_for_prompt(
             except Exception:
                 iv_rank = None
         recs = evaluate_candidate_for_multileg(
-            c, iv_rank_pct=iv_rank, regime=regime,
+            c, iv_rank_pct=iv_rank, regime=regime, ctx=ctx,
         )
         all_recs.extend(recs)
 

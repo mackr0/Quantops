@@ -149,6 +149,9 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 | `use_conviction_tp_override` | INTEGER | 1 | Skip fixed TP when AI conviction is high (default flipped ON 2026-05-12). AI-tunable via `_optimize_conviction_tp_override` based on MFE capture + stop-to-TP ratio. |
 | `enable_short_selling` | INTEGER | 1 | Allow opening short positions (default flipped ON 2026-05-12 for non-crypto profiles). AI-tunable via `_optimize_short_selling_toggle` based on 30-day short-side avg return. |
 | `skip_first_minutes` | INTEGER | 5 | Skip first N minutes after market open (default bumped 0→5 on 2026-05-12). AI-tunable on win-rate AND slippage signals independently. |
+| `option_iv_rich_threshold` | REAL | 55.0 | Above this IV rank, option candidate generator proposes credit-spread strategies (bull_put / bear_call). AI-tunable via `OptionPipeline.tune()`. |
+| `option_iv_cheap_threshold` | REAL | 55.0 | Below this IV rank, option candidate generator proposes debit-spread strategies (bull_call / bear_put). Default 55/55 = no dead zone. AI-tunable. |
+| `entry_blacklist` | TEXT (JSON) | `'{}'` | Per-symbol entry cool-off after 3+ stop-outs in 30 days. JSON `{"NVDA": "ISO_EXPIRY"}`. Auto-expires on read. Maintained by `_optimize_stop_out_blacklist`. |
 | `conviction_tp_min_confidence` | REAL | 70.0 | Min AI confidence to skip TP. |
 | `conviction_tp_min_adx` | REAL | 25.0 | Min ADX (trend strength) to skip TP. |
 

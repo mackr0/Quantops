@@ -157,6 +157,29 @@ class UserContext:
     option_spread_gamma_dte_veto_threshold: int = 7
     option_spread_credit_ratio_veto_threshold: float = 0.20
 
+    # 2026-05-12 — AI-tunable IV-rich/cheap thresholds for option
+    # multileg CANDIDATE GENERATION (not the veto layer above).
+    # Defaults 55/55 = no dead zone (every IV value triggers either
+    # the credit-spread branch ≥ rich OR the debit-spread branch
+    # ≤ cheap). Old constants were 60/50 with a 10-point dead zone
+    # that produced zero option proposals in the IV 50-60 band.
+    # Self-tuner widens or narrows the spread between these based
+    # on the option pipeline's win rate (loosen when winning,
+    # tighten when not).
+    option_iv_rich_threshold: float = 55.0
+    option_iv_cheap_threshold: float = 55.0
+
+    # 2026-05-12 — per-symbol entry blacklist (Wave 8c). Symbols
+    # that stopped out 3+ times in the last 30 days are
+    # auto-added with a 14-day cool-off via
+    # `_optimize_stop_out_blacklist`. The trade pipeline checks
+    # `entry_blacklist.is_blacklisted(ctx, symbol)` before opening
+    # a new long/short and skips when True. JSON shape:
+    #   {"NVDA": "2026-05-26T15:30:00", ...}
+    # Auto-expiry happens on the read path so stale entries never
+    # accumulate.
+    entry_blacklist: str = "{}"
+
     # OPTIONS_PROGRAM_PLAN Phase C3 — wheel automation. Empty list =
     # wheel disabled (default). Comma- or list-form symbols opt the
     # profile into the wheel cycle on those underlyings: cash → CSP →

@@ -1855,6 +1855,20 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         # sample-size sufficient). Mirror of the conviction-TP
         # tuner pattern.
         _optimize_short_selling_toggle,
+        # 2026-05-12 — fast-lane strategy retirement. Reads
+        # rolling 10-trade win rate per strategy_type; auto-deprecates
+        # strategies with wr < 25% (and ≥10 samples). Existing
+        # alpha_decay deprecates on 30-day Sharpe degradation —
+        # way too slow for a strategy stuck at 0% (mean_reversion
+        # right now). This rule runs daily and catches them within
+        # 10 trades.
+        _optimize_fast_lane_retirement,
+        # 2026-05-12 — per-symbol stop-out blacklist (Wave 8c).
+        # Symbols with 3+ stop-outs in 30 days get a 14-day entry
+        # blacklist. Stops the AI from re-picking names that aren't
+        # working in the current regime and paying spread + slip
+        # to relearn it.
+        _optimize_stop_out_blacklist,
         # 2026-05-12 — skip_first_minutes (slippage-based signal).
         # Adjusts the open-window skip based on observed first-15-min
         # slippage vs rest-of-day slippage. Complements the existing
@@ -3918,6 +3932,276 @@ def _optimize_short_selling_toggle(conn, ctx, profile_id, user_id,
             f"Enabled {_label('enable_short_selling')} ({reason})"
         )
     return None
+
+
+def _optimize_fast_lane_retirement(conn, ctx, profile_id, user_id,
+                                     overall_wr, resolved):
+    """Fast-lane strategy retirement (2026-05-12).
+
+    Existing alpha_decay deprecates strategies after 30+ days of
+    Sharpe degradation — too slow for clearly-broken strategies.
+    Example: `mean_reversion` was 0% win rate on 10 recent trades,
+    bleeding money the entire time, and alpha_decay hadn't caught
+    it because the lifetime Sharpe baseline includes older
+    profitable periods.
+
+    This rule runs daily on every profile, computes per-strategy
+    rolling 10-trade win rate from resolved predictions, and:
+
+      - DEPRECATE strategies whose 10-trade rolling wr < 25%
+        AND samples ≥ 10. Tagged with reason
+        "fast_lane: rolling-10 wr <25%" so it can be distinguished
+        from alpha_decay deprecations.
+      - RESTORE strategies that were deprecated by THIS rule (tag
+        check) more than 14 days ago. Lets them re-prove
+        themselves with fresh trades. Alpha-decay-tagged
+        deprecations are left alone (they have their own
+        Sharpe-recovery restore path).
+
+    Independent of alpha_decay; the two systems run on different
+    signals (fast wr vs slow Sharpe) and tag their deprecations
+    distinctly so neither steps on the other.
+
+    AI-tunable: threshold (25%), min samples (10), reactivation
+    window (14d). Defaults chosen from the data audit.
+    """
+    if not _safe_change_guarded(profile_id, "fast_lane_retirement"):
+        return None
+    db_path = getattr(ctx, "db_path", None)
+    if not db_path:
+        return None
+    try:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='deprecated_strategies'"
+        ).fetchone()
+        if not rows:
+            return None
+    except Exception:
+        return None
+
+    actions = []  # human-readable messages
+
+    # --- AUTO-RESTORE fast-lane-tagged deprecations older than 14d
+    try:
+        restored_rows = conn.execute(
+            "SELECT strategy_type FROM deprecated_strategies "
+            "WHERE restored_at IS NULL "
+            "  AND reason LIKE 'fast_lane:%' "
+            "  AND deprecated_at <= datetime('now', '-14 days')"
+        ).fetchall()
+    except Exception:
+        restored_rows = []
+    for (st,) in restored_rows:
+        try:
+            from alpha_decay import restore_strategy
+            from models import log_tuning_change
+            restore_strategy(db_path, st)
+            log_tuning_change(
+                profile_id, user_id, "fast_lane_restore",
+                "strategy_active", st, st,
+                f"Fast-lane deprecation aged 14 days; restoring "
+                f"{st} for re-evaluation",
+                win_rate_at_change=overall_wr,
+                predictions_resolved=resolved,
+            )
+            actions.append(f"Restored {st} (14d aged)")
+        except Exception:
+            continue
+
+    # --- DEPRECATE strategies with rolling 10-trade wr < 25%
+    try:
+        strat_rows = conn.execute(
+            "SELECT strategy_type, "
+            "   SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) AS wins, "
+            "   COUNT(*) AS n "
+            "FROM ("
+            "   SELECT strategy_type, actual_outcome FROM ai_predictions "
+            "   WHERE status='resolved' "
+            "     AND actual_outcome IN ('win', 'loss') "
+            "     AND strategy_type IS NOT NULL AND strategy_type != '' "
+            "   ORDER BY resolved_at DESC, id DESC"
+            ") "
+            "GROUP BY strategy_type"
+        ).fetchall()
+    except Exception:
+        strat_rows = []
+
+    # For each strategy, examine ONLY the last 10 resolved predictions
+    # (not the full GROUP BY which counts all). Need a second query
+    # per strategy. Skip strategies with <10 samples or rows
+    # already fast-lane-deprecated (or alpha-decay deprecated).
+    for st, _wins_full, _n_full in strat_rows:
+        if not st:
+            continue
+        # Already deprecated? Skip (either by us or alpha_decay).
+        try:
+            dep = conn.execute(
+                "SELECT 1 FROM deprecated_strategies "
+                "WHERE strategy_type=? AND restored_at IS NULL",
+                (st,),
+            ).fetchone()
+        except Exception:
+            dep = None
+        if dep:
+            continue
+
+        try:
+            last10 = conn.execute(
+                "SELECT actual_outcome FROM ai_predictions "
+                "WHERE strategy_type=? "
+                "  AND status='resolved' "
+                "  AND actual_outcome IN ('win', 'loss') "
+                "ORDER BY resolved_at DESC, id DESC LIMIT 10",
+                (st,),
+            ).fetchall()
+        except Exception:
+            continue
+        if len(last10) < 10:
+            continue
+        wins = sum(1 for (o,) in last10 if o == "win")
+        wr = wins / len(last10) * 100
+        if wr >= 25:
+            continue  # acceptable
+
+        try:
+            from alpha_decay import deprecate_strategy
+            from models import log_tuning_change
+            deprecate_strategy(
+                db_path, st,
+                {"reason": f"fast_lane: rolling-10 wr {wr:.0f}%",
+                 "current_rolling_sharpe": None,
+                 "lifetime_sharpe": None,
+                 "consecutive_bad_days": 0},
+            )
+            log_tuning_change(
+                profile_id, user_id, "fast_lane_deprecate",
+                "strategy_active", st,
+                f"{st} (deprecated 14d)",
+                f"Rolling-10 wr {wr:.0f}% < 25% — auto-deprecating "
+                f"for 14 days. Auto-restore after the cool-off.",
+                win_rate_at_change=overall_wr,
+                predictions_resolved=resolved,
+            )
+            actions.append(f"Deprecated {st} (rolling-10 wr {wr:.0f}%)")
+        except Exception:
+            continue
+
+    if not actions:
+        return None
+    return "Fast-lane retirement: " + "; ".join(actions[:3]) + (
+        f" (+{len(actions)-3} more)" if len(actions) > 3 else ""
+    )
+
+
+def _optimize_stop_out_blacklist(conn, ctx, profile_id, user_id,
+                                   overall_wr, resolved):
+    """Per-symbol stop-out blacklist (2026-05-12 — Wave 8c).
+
+    For each symbol in this profile's recent trade history, count
+    stop-out exits in the last 30 days. When count ≥ 3, add the
+    symbol to `entry_blacklist` for 14 days. Stops the system from
+    re-entering names that aren't working in the current regime.
+
+    Stop-out exits = strategy IN ('stop_loss', 'trailing_stop',
+    'short_stop_loss'). data_quality-tagged rows are excluded so
+    phantom-stop incidents can never drive the blacklist.
+
+    Idempotent — if a symbol already has an active blacklist entry,
+    re-adding refreshes the 14-day window. Auto-expiry happens on
+    the read path in `entry_blacklist.parse_blacklist`.
+
+    AI-tunable: stop-out threshold count (3), window (30 days),
+    cool-off (14 days). These are defaults for v1.
+    """
+    if not _safe_change_guarded(profile_id, "entry_blacklist"):
+        return None
+    db_path = getattr(ctx, "db_path", None)
+    if not db_path:
+        return None
+    from journal import data_quality_clause
+    _dq = data_quality_clause(conn)
+    try:
+        rows = conn.execute(
+            f"""SELECT symbol, COUNT(*) AS n FROM trades
+                WHERE strategy IN ('stop_loss', 'trailing_stop',
+                                    'short_stop_loss')
+                  AND side IN ('sell', 'cover')
+                  AND status = 'closed'
+                  AND timestamp >= datetime('now', '-30 days')
+                  AND symbol IS NOT NULL
+                  {_dq}
+                GROUP BY symbol
+                HAVING COUNT(*) >= 3"""
+        ).fetchall()
+    except Exception:
+        return None
+    if not rows:
+        return None
+
+    # Read existing blacklist so we don't double-log "added" for
+    # symbols that are already blacklisted (refresh is fine; log noise
+    # isn't).
+    try:
+        from entry_blacklist import (
+            parse_blacklist, add_to_blacklist,
+        )
+    except Exception:
+        return None
+    raw = getattr(ctx, "entry_blacklist", None) or "{}"
+    existing = set(parse_blacklist(raw).keys())
+
+    # Build the new blacklist dict in-memory then write ONCE via
+    # update_trading_profile. The direct call makes this column's
+    # tuning visible to the structural guardrail test
+    # (tests/test_every_lever_is_tuned.py scans for
+    # `update_trading_profile(pid, <col>=...)` patterns).
+    import json
+    from datetime import datetime, timedelta
+    new_bl = dict(parse_blacklist(raw))  # active entries only
+    added = []
+    refreshed = []
+    expiry = (datetime.utcnow() + timedelta(days=14)).isoformat()
+    for sym, n in rows:
+        sym_u = (sym or "").upper()
+        if not sym_u:
+            continue
+        new_bl[sym_u] = expiry
+        if sym_u in existing:
+            refreshed.append((sym_u, n))
+        else:
+            added.append((sym_u, n))
+    try:
+        from models import update_trading_profile, log_tuning_change
+        update_trading_profile(
+            profile_id, entry_blacklist=json.dumps(new_bl),
+        )
+        for sym_u, n in added:
+            try:
+                log_tuning_change(
+                    profile_id, user_id, "stop_out_blacklist_add",
+                    "entry_blacklist", "", sym_u,
+                    f"{sym_u} stopped out {n}× in last 30 days — "
+                    f"blacklisted for 14 days. Auto-expires.",
+                    win_rate_at_change=overall_wr,
+                    predictions_resolved=resolved,
+                )
+            except Exception:
+                continue
+    except Exception:
+        return None
+
+    if not added and not refreshed:
+        return None
+    msg_parts = []
+    if added:
+        msg_parts.append(
+            f"Blacklisted {len(added)}: "
+            + ", ".join(f"{s}({n}×)" for s, n in added[:5])
+        )
+    if refreshed:
+        msg_parts.append(f"refreshed {len(refreshed)}")
+    return "Stop-out blacklist: " + "; ".join(msg_parts)
 
 
 def _optimize_skip_first_minutes_slippage(conn, ctx, profile_id, user_id,

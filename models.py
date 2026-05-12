@@ -472,6 +472,18 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             "INTEGER NOT NULL DEFAULT 7"),
         ("trading_profiles", "option_spread_credit_ratio_veto_threshold",
             "REAL NOT NULL DEFAULT 0.20"),
+        # 2026-05-12 — AI-tunable option candidate-gen IV thresholds.
+        # See user_context.py for semantics. Defaults close the
+        # 10-point dead zone that suppressed option proposals on
+        # IV-rank 50-60 candidates.
+        ("trading_profiles", "option_iv_rich_threshold",
+            "REAL NOT NULL DEFAULT 55.0"),
+        ("trading_profiles", "option_iv_cheap_threshold",
+            "REAL NOT NULL DEFAULT 55.0"),
+        # 2026-05-12 — per-symbol entry blacklist (Wave 8c).
+        # See entry_blacklist.py for semantics.
+        ("trading_profiles", "entry_blacklist",
+            "TEXT NOT NULL DEFAULT '{}'"),
     ]
     for table, col, col_def in _migrations:
         try:
@@ -1060,6 +1072,11 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "option_spread_iv_rank_veto_threshold",
         "option_spread_gamma_dte_veto_threshold",
         "option_spread_credit_ratio_veto_threshold",
+        # 2026-05-12 — option candidate-gen IV thresholds.
+        "option_iv_rich_threshold",
+        "option_iv_cheap_threshold",
+        # 2026-05-12 — per-symbol entry blacklist (Wave 8c).
+        "entry_blacklist",
     }
     updates = {}
     rejected = []
@@ -1375,6 +1392,17 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
             profile.get("option_spread_credit_ratio_veto_threshold", 0.20)
             if profile.get("option_spread_credit_ratio_veto_threshold") is not None
             else 0.20),
+        # 2026-05-12 — option candidate-gen IV thresholds.
+        option_iv_rich_threshold=float(
+            profile.get("option_iv_rich_threshold", 55.0)
+            if profile.get("option_iv_rich_threshold") is not None
+            else 55.0),
+        option_iv_cheap_threshold=float(
+            profile.get("option_iv_cheap_threshold", 55.0)
+            if profile.get("option_iv_cheap_threshold") is not None
+            else 55.0),
+        entry_blacklist=str(
+            profile.get("entry_blacklist", "{}") or "{}"),
     )
 
 

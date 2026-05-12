@@ -237,13 +237,35 @@ class TestEvaluateCandidateForMultileg:
         names = [r["strategy"] for r in recs]
         assert "bear_put_spread" in names
 
-    def test_neutral_iv_no_recs(self):
-        """IV in the 50-60 neutral band → no recs (no edge either way)."""
+    def test_neutral_iv_default_fires_branch(self):
+        """2026-05-12: IV-rich/cheap thresholds collapsed to 55/55
+        (no dead zone). IV 55 fires the credit-spread branch (≥55).
+        Per-profile ctx can re-open a dead zone via
+        option_iv_rich_threshold / option_iv_cheap_threshold."""
         from options_strategy_advisor import evaluate_candidate_for_multileg
         recs = evaluate_candidate_for_multileg(
             _candidate(signal="BUY"), iv_rank_pct=55,
         )
-        assert recs == []
+        # At default 55/55, IV=55 is "rich" → bull_put_spread
+        assert any(r["strategy"] == "bull_put_spread" for r in recs)
+
+    def test_neutral_iv_with_tuned_dead_zone(self):
+        """When ctx widens the rich/cheap thresholds, the dead zone
+        re-opens — IV in the widened band produces no recs.
+        Confirms the ctx hook works end-to-end."""
+        from types import SimpleNamespace
+        from options_strategy_advisor import evaluate_candidate_for_multileg
+        ctx = SimpleNamespace(
+            option_iv_rich_threshold=65.0,
+            option_iv_cheap_threshold=45.0,
+        )
+        recs = evaluate_candidate_for_multileg(
+            _candidate(signal="BUY"), iv_rank_pct=55, ctx=ctx,
+        )
+        # 55 falls in the new 45-65 dead zone — no vertical spreads
+        verticals = [r for r in recs
+                      if "_spread" in r.get("strategy", "")]
+        assert verticals == []
 
     def test_iv_unknown_no_recs(self):
         """No IV data → don't recommend (we don't price-blind on premium)."""

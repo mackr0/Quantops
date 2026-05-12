@@ -793,6 +793,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             candidates_data or [],
             iv_rank_lookup=_iv_rank_lookup,
             regime=regime,
+            ctx=ctx,  # 2026-05-12 — ctx-tuned IV thresholds
         )
     except Exception:
         pass

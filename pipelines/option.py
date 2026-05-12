@@ -457,6 +457,16 @@ class OptionPipeline(Pipeline):
             # (accept thinner credits).
             "option_spread_credit_ratio_veto_threshold":
                 (0.10, 0.40, 0.95, 1.05, "float"),
+            # 2026-05-12 — candidate-gen IV thresholds. Defaults
+            # 55/55 close the dead zone. When option wins, widen
+            # the dead zone (rich UP, cheap DOWN — only propose on
+            # extreme IV); when losing, contract dead zone further
+            # (rich DOWN, cheap UP — propose more aggressively to
+            # accumulate sample).
+            "option_iv_rich_threshold":
+                (50.0, 75.0, 1.02, 0.98, "float"),
+            "option_iv_cheap_threshold":
+                (35.0, 60.0, 0.98, 1.02, "float"),
         }
         for param, (floor, ceil, loosen_m, tighten_m, kind) in BOUNDS.items():
             current = getattr(ctx, param, None)

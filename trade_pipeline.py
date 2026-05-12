@@ -780,6 +780,22 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
 
     # ---- BUY logic --------------------------------------------------------
     if action in ("BUY", "STRONG_BUY") and symbol not in positions:
+        # 2026-05-12 — Wave 8c entry blacklist. If this symbol has
+        # stopped out 3+ times in the last 30 days, the self-tuner
+        # added it to a 14-day cool-off. Skip new entries on
+        # blacklisted symbols. Auto-expiry on read so this self-
+        # heals after the window.
+        try:
+            from entry_blacklist import is_blacklisted
+            if ctx is not None and is_blacklisted(ctx, symbol):
+                result["action"] = "SKIP"
+                result["reason"] = (
+                    f"{symbol} on entry blacklist (3+ stop-outs in "
+                    f"last 30 days; auto-expires)"
+                )
+                return result
+        except Exception:
+            pass  # blacklist check is best-effort — don't block trades on bug
         if action == "STRONG_BUY":
             alloc_pct = max_position_pct
         else:
@@ -1062,6 +1078,21 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
 
     # ---- SHORT SELL logic (open new short position) -------------------------
     elif action in ("SELL", "STRONG_SELL") and symbol not in positions:
+        # 2026-05-12 — Wave 8c entry blacklist. Same check as the
+        # BUY path above. Stop-outs lookup includes
+        # `short_stop_loss` so SHORT-side stops also drive entries
+        # for the same symbol onto the blacklist.
+        try:
+            from entry_blacklist import is_blacklisted
+            if ctx is not None and is_blacklisted(ctx, symbol):
+                result["action"] = "SKIP"
+                result["reason"] = (
+                    f"{symbol} on entry blacklist (3+ stop-outs in "
+                    f"last 30 days; auto-expires)"
+                )
+                return result
+        except Exception:
+            pass
         # Only if short selling is enabled for this profile
         enable_shorts = ctx.enable_short_selling if ctx is not None else False
         if not enable_shorts:

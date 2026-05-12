@@ -17,6 +17,34 @@ Rules going forward:
 
 ---
 
+## 2026-05-12 — Wave 8: fast-lane strategy retirement + options-IV dead-zone closed + per-symbol entry blacklist. Severity: medium (autonomy-layer expansion).
+
+**Three new AI-tunable levers, all with data-driven defaults:**
+
+### 8a: Fast-lane strategy retirement
+- **Problem**: `mean_reversion` at 0% win rate on 10 recent trades, bleeding money daily. Alpha-decay deprecates only after 30+ days of Sharpe degradation — way too slow.
+- **Fix**: new `_optimize_fast_lane_retirement` rule. Per-strategy rolling 10-trade win rate; if <25% AND ≥10 samples → `deprecate_strategy(reason='fast_lane: …')`. Tagged distinctly so alpha_decay's slow-Sharpe deprecations are untouched. Auto-restores fast-lane-tagged entries after 14 days for re-evaluation.
+- AI-tunable defaults: 25% threshold, 10-sample min, 14-day cool-off.
+
+### 8b: Options pipeline IV dead-zone closed + tunable
+- **Investigation findings**: 307 multileg proposals (vs 938 stock signals → ~25% ratio, not as bad as headline). 141 resolved at 61% wr; specialist vetoes only ~3.3%. Real bottleneck: 10-point IV dead zone (50-60) produced zero option proposals.
+- **Fix**: `MULTILEG_IV_RICH_THRESHOLD` / `MULTILEG_IV_CHEAP_THRESHOLD` are now ctx-driven (`option_iv_rich_threshold`, `option_iv_cheap_threshold`) with new defaults of 55/55 (no dead zone — every IV value triggers exactly one branch).
+- AI-tunable via `OptionPipeline.tune()` BOUNDS: widens dead zone when option pipeline is winning (be more selective), contracts when losing (gather more sample).
+- **Doubles the option proposal funnel without changing what's actually proposed.** Single-leg option proposals (=0 today) deferred to a future wave.
+
+### 8c: Per-symbol entry blacklist (stop-out memory)
+- **New module** `entry_blacklist.py` + JSON column `entry_blacklist` on `trading_profiles`.
+- New `_optimize_stop_out_blacklist` rule queries trades for `stop_loss` / `trailing_stop` / `short_stop_loss` exits in last 30 days, grouped by symbol. Symbols with 3+ stop-outs → added to entry_blacklist for 14 days. data_quality-filtered so phantom-stop incidents can't drive the blacklist.
+- Trade-pipeline BUY + SHORT entry gates check `is_blacklisted(ctx, symbol)` and skip with reason "X on entry blacklist". Auto-expires on the read path (parse_blacklist filters expired entries on every check).
+- **AI-tunable defaults**: 3-stop threshold, 30-day window, 14-day cool-off. Idempotent — repeated stop-outs refresh the cool-off, don't compound it.
+
+**Regression tests:**
+- `tests/test_wave8_levers.py` (18 tests): fast-lane deprecate/restore/sample-gate/alpha-decay-isolation, IV threshold ctx-aware, blacklist parse/expiry/case-insensitive, blacklist tuner threshold/data-quality-exclusion, trade-pipeline gate verified.
+- Updated `tests/test_options_strategy_advisor.py::test_neutral_iv_*` for the new default.
+- 2956 passed total, zero regressions.
+
+---
+
 ## 2026-05-12 — Wave 7: short-selling default ON + skip-first-minutes default 5 + confidence-tiered position sizing. Severity: high (system-wide behavior change driven by data audit).
 
 **Audit follow-up to wave 6.** Mack: "are there other things off that should be on?" Answer: yes, three more, each with the same lesson as the conviction-TP gap. All three are now system-defaults + AI-tunable, mirroring the conviction-TP fix pattern.
