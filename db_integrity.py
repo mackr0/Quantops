@@ -147,6 +147,55 @@ def any_corrupt(results: Dict[str, Dict[str, str]]) -> List[str]:
     ]
 
 
+# 2026-05-13 — DB criticality classification (Wave 9b).
+# Critical DBs hold trade-pipeline truth (master config, per-profile
+# trades + ai_predictions, primary alt-data caches the AI prompt
+# reads from). Their corruption MUST halt the scheduler — refusing
+# to trade on broken data is the right behavior.
+#
+# Non-critical DBs hold derived/auxiliary state that can be
+# re-created from scratch without losing trade data. Their
+# corruption SHOULD email + log + continue rather than halt the
+# scheduler. The 2026-05-13 incident was a 0-byte
+# strategy_validations.db (no rows ever written) crashing the
+# scheduler in a 30-second restart loop, sending 145 ERROR emails
+# before being noticed.
+#
+# A path is non-critical iff it matches one of these basenames.
+NON_CRITICAL_DB_BASENAMES = {
+    # Strategy backtest results — recreated from scratch when the
+    # rigorous_backtest path runs. No trade data lost if blank.
+    "strategy_validations.db",
+}
+
+
+def is_critical(path: str) -> bool:
+    """True iff this DB path holds load-bearing trade-pipeline data.
+    A False return means corruption should NOT halt the scheduler."""
+    return os.path.basename(path) not in NON_CRITICAL_DB_BASENAMES
+
+
+def critical_corrupt(results: Dict[str, Dict[str, str]]) -> List[str]:
+    """Return relative paths that are corrupt AND critical. The
+    scheduler should refuse to start when this is non-empty.
+    Non-critical corruption is reported separately (log + email)
+    but does not halt."""
+    return [
+        rel for rel, info in results.items()
+        if info["status"] == "corrupt" and is_critical(rel)
+    ]
+
+
+def non_critical_corrupt(results: Dict[str, Dict[str, str]]) -> List[str]:
+    """Return relative paths that are corrupt AND non-critical.
+    Reported and emailed (with debounce) but the scheduler can
+    safely continue."""
+    return [
+        rel for rel, info in results.items()
+        if info["status"] == "corrupt" and not is_critical(rel)
+    ]
+
+
 # Strict timestamp suffix to keep sidecars (-wal/-shm) and corrupt-archive
 # files (corrupt-<TS>) from matching. Accepts either:
 #   YYYYMMDD       (date only — used by some hand-named snapshots)

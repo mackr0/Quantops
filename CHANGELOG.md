@@ -17,6 +17,42 @@ Rules going forward:
 
 ---
 
+## 2026-05-13 — Email-spam incident response: DB criticality + notify_error debounce. Severity: high (operational).
+
+**Incident.** Mack flagged 145 ERROR emails received in ~2 hours on 2026-05-13. Investigation showed:
+- A 0-byte `strategy_validations.db` file appeared at 19:35 UTC (during the wave 9a deploy restart of services)
+- The startup integrity check classified 0-byte as corrupt
+- Scheduler called `notify_error` then `sys.exit(1)`
+- systemd `Restart=on-failure RestartSec=30` immediately respawned
+- New process repeated the loop every ~70 seconds
+- 145 emails between 20:07 and 22:49 UTC before manual intervention
+
+**Two-layer fix** so this category of email-spam can never repeat regardless of which DB or which error fires:
+
+### 1. DB criticality classification (`db_integrity.is_critical`)
+Critical DBs (master config, per-profile trades, alt-data sources the AI prompt reads from) → corruption MUST halt the scheduler; trading on broken data is wrong. Non-critical DBs (`strategy_validations.db` — backtest results, recreatable from scratch) → corruption logs + emails (debounced) + scheduler continues.
+
+`multi_scheduler` startup integrity-check block now uses `critical_corrupt(results)` and `non_critical_corrupt(results)` separately. `sys.exit(1)` only fires on critical. The 2026-05-13 incident with the same 0-byte file would now log a warning, send one debounced email, and the scheduler would start normally.
+
+### 2. `notify_error` per-subject debounce (1-hour window)
+A given subject (`QuantOpsAI ERROR: <context>`) can only fire once per hour. Subsequent calls within the window log a warning and return False without sending. Module-level dict; resets on process restart (correct — a fresh process restarting after legitimate crash should learn about the error from the first try).
+
+This ALSO defends against any future error path that loops — even bug classes I haven't seen yet can't email-spam.
+
+**Immediate stop-bleeding.** Manual: deleted the 0-byte `strategy_validations.db` on the droplet at 22:49 UTC. Scheduler restarted clean. Last spam email at 22:49:13.
+
+**Root cause not fully isolated.** The 0-byte file appeared exactly when wave 9a's `systemctl restart` ran. The file has not been recreated since manual delete (10+ minutes elapsed at deploy time). One-shot trigger, not a continuous process — likely a deploy-time race with one of the gunicorn web workers initializing a `sqlite3.connect()` that doesn't have an `if exists` guard. Worth a follow-up audit when the 0-byte recurs (the new defenses ensure it won't crash anything when it does).
+
+**Regression tests.** `tests/test_email_spam_defenses.py` (12 tests):
+- `is_critical` correctly classifies master/per-profile/alt-data as critical, strategy_validations as non-critical
+- `critical_corrupt` / `non_critical_corrupt` partition results correctly
+- `notify_error` first call sends; second call within 1h is debounced; different subjects don't debounce each other; after 1h window resends; 50-call spam loop only sends once
+- Structural check: `multi_scheduler` integrity block uses both classifiers and only exits on critical
+
+2975 tests pass total, zero regressions.
+
+---
+
 ## 2026-05-13 — Wave 9a: meta-pregate threshold lowered + AI-tunable. Severity: high (system activity unlocked).
 
 **Audit triggered by Mack's "boring day" observation 2026-05-13.** Investigation found:

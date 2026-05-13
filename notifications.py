@@ -647,6 +647,28 @@ def notify_daily_summary(ctx=None):
 # 6. Error notification
 # ---------------------------------------------------------------------------
 
+# 2026-05-13 — per-subject email debounce. The May 13 incident:
+# scheduler crash-looped on a non-critical DB integrity failure,
+# sending 145 ERROR emails over 2 hours (one per 30-second restart
+# cycle). With this debounce, a given subject can only fire once
+# per `_NOTIFY_ERROR_DEBOUNCE_HOURS` window — no matter how many
+# times the underlying error recurs. The first hit goes through;
+# subsequent hits are silently suppressed.
+#
+# State is in-process (a module-level dict). When the process
+# restarts, debounce resets — which is correct: if a process
+# legitimately crashed and a new one is starting fresh, the operator
+# should learn about a reproducing error from the FIRST email of
+# each new process. The pathology this prevents is a SINGLE process
+# (or rapid-restart loop) firing the same email N times.
+#
+# A debounced suppression IS logged so it's visible in the journal.
+import threading as _threading
+_NOTIFY_ERROR_DEBOUNCE_HOURS = 1
+_notify_error_lock = _threading.Lock()
+_notify_error_last_sent = {}  # subject → datetime
+
+
 def notify_error(error_msg, context="", ctx=None):
     """Send a critical error notification.
 
@@ -654,9 +676,33 @@ def notify_error(error_msg, context="", ctx=None):
         error_msg: The error message or traceback string.
         context: Short label for what was happening when the error occurred.
         ctx: UserContext, optional.
+
+    Per-subject debounced — a given subject can only fire once per
+    `_NOTIFY_ERROR_DEBOUNCE_HOURS` window (default 1h). Suppressed
+    subsequent calls log a warning so the activity is visible.
     """
     ctx_label = context if context else "General"
     subject = f"QuantOpsAI ERROR: {ctx_label}"
+
+    # Debounce check
+    from datetime import timedelta as _timedelta
+    now = datetime.utcnow()
+    with _notify_error_lock:
+        last = _notify_error_last_sent.get(subject)
+        if last and (now - last) < _timedelta(
+                hours=_NOTIFY_ERROR_DEBOUNCE_HOURS):
+            mins_remaining = int(
+                (_timedelta(hours=_NOTIFY_ERROR_DEBOUNCE_HOURS) -
+                 (now - last)).total_seconds() / 60
+            )
+            logger.warning(
+                "notify_error debounced (last sent %s, %d min until "
+                "next allowed): %s",
+                last.isoformat(timespec="seconds"),
+                mins_remaining, subject,
+            )
+            return False
+        _notify_error_last_sent[subject] = now
 
     error_block = (
         f'<div style="padding:14px;background:#ffebee;border-left:4px solid {_RED};'

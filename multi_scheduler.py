@@ -3659,18 +3659,52 @@ def main_loop(active_segments=None, legacy_mode=False):
     # mis-recording every fill. The operator restores from the
     # backup_daily.sh snapshot using db_integrity.restore_from_backup().
     try:
-        from db_integrity import check_all_dbs, any_corrupt
+        from db_integrity import (
+            check_all_dbs, critical_corrupt, non_critical_corrupt,
+        )
         results = check_all_dbs()
-        corrupt = any_corrupt(results)
-        if corrupt:
-            for bad in corrupt:
-                logging.error("DB CORRUPT: %s — %s", bad, results[bad]["detail"])
+        critical = critical_corrupt(results)
+        non_critical = non_critical_corrupt(results)
+        # Non-critical corruption: log + email (debounced) but
+        # CONTINUE. The 2026-05-13 incident: a 0-byte
+        # strategy_validations.db crashed the scheduler in a 30-sec
+        # restart loop, sending 145 ERROR emails. Non-critical DBs
+        # don't carry trade-pipeline truth and the scheduler can
+        # safely run without them.
+        if non_critical:
+            for bad in non_critical:
+                logging.warning(
+                    "DB CORRUPT (non-critical, continuing): %s — %s",
+                    bad, results[bad]["detail"],
+                )
             try:
                 from notifications import notify_error
                 notify_error(
                     error_msg=(
-                        "DB integrity_check failed for: "
-                        + ", ".join(corrupt)
+                        "Non-critical DB integrity_check failed for: "
+                        + ", ".join(non_critical)
+                        + "\nScheduler is continuing — non-critical DBs "
+                        "don't carry trade-pipeline truth and can be "
+                        "recreated from scratch. Investigate when "
+                        "convenient."
+                    ),
+                    context="DB corruption detected (non-critical)",
+                )
+            except Exception:
+                pass
+        # Critical corruption: halt as before.
+        if critical:
+            for bad in critical:
+                logging.error(
+                    "DB CORRUPT (critical): %s — %s",
+                    bad, results[bad]["detail"],
+                )
+            try:
+                from notifications import notify_error
+                notify_error(
+                    error_msg=(
+                        "CRITICAL DB integrity_check failed for: "
+                        + ", ".join(critical)
                         + "\nScheduler is halting. Restore from backup with:"
                         + "\n  python3 -c 'from db_integrity import "
                         + "restore_from_backup; print(restore_from_backup(\"<filename>\"))'"
@@ -3680,10 +3714,10 @@ def main_loop(active_segments=None, legacy_mode=False):
             except Exception:
                 pass
             logging.error(
-                "Scheduler refusing to start with corrupt DB — exit 1"
+                "Scheduler refusing to start with critical DB corruption — exit 1"
             )
             sys.exit(1)
-        else:
+        if not critical and not non_critical:
             logging.info(
                 "DB integrity check: %d DBs healthy", len(results),
             )
