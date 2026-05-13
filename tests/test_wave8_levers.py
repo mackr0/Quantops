@@ -443,3 +443,151 @@ class TestWave8Registered:
         src = inspect.getsource(self_tuning._apply_upward_optimizations)
         assert "_optimize_fast_lane_retirement" in src
         assert "_optimize_stop_out_blacklist" in src
+        # 2026-05-13 — Wave 9a meta-pregate tuner
+        assert "_optimize_meta_pregate_threshold" in src
+
+
+# ---------------------------------------------------------------------------
+# 9a — Meta-pregate threshold auto-tuner (2026-05-13)
+# ---------------------------------------------------------------------------
+
+class TestMetaPregateThreshold:
+    def _seed_predictions(self, db, n_actionable, n_hold):
+        conn = sqlite3.connect(db)
+        from datetime import datetime
+        ts = datetime.utcnow().isoformat()
+        for i in range(n_actionable):
+            conn.execute(
+                "INSERT INTO ai_predictions "
+                "(timestamp, symbol, predicted_signal, status) "
+                "VALUES (?, 'X', 'BUY', 'pending')",
+                (ts,),
+            )
+        for i in range(n_hold):
+            conn.execute(
+                "INSERT INTO ai_predictions "
+                "(timestamp, symbol, predicted_signal, status) "
+                "VALUES (?, 'X', 'HOLD', 'pending')",
+                (ts,),
+            )
+        conn.commit()
+        conn.close()
+
+    def test_lowers_when_actionable_ratio_too_low(self, tmp_path):
+        """3% actionable signals → filter is too tight → lower."""
+        db = _make_db(tmp_path)
+        self._seed_predictions(db, n_actionable=3, n_hold=97)
+        ctx = _ctx(db, meta_pregate_threshold=0.50)
+        from self_tuning import _optimize_meta_pregate_threshold, _get_conn
+        conn = _get_conn(db)
+        captured = []
+        def fake_update(profile_id, **kwargs):
+            captured.append(kwargs)
+        with patch("self_tuning._get_recent_adjustment", return_value=None), \
+             patch("models.update_trading_profile", side_effect=fake_update), \
+             patch("models.log_tuning_change"):
+            msg = _optimize_meta_pregate_threshold(
+                conn, ctx, 1, 1, overall_wr=40.0, resolved=20)
+        conn.close()
+        assert msg is not None
+        assert "Lowered" in msg
+        assert captured == [{"meta_pregate_threshold": 0.45}]
+
+    def test_raises_when_actionable_ratio_too_high(self, tmp_path):
+        """40% actionable signals → filter is too loose → raise."""
+        db = _make_db(tmp_path)
+        self._seed_predictions(db, n_actionable=40, n_hold=60)
+        ctx = _ctx(db, meta_pregate_threshold=0.35)
+        from self_tuning import _optimize_meta_pregate_threshold, _get_conn
+        conn = _get_conn(db)
+        captured = []
+        def fake_update(profile_id, **kwargs):
+            captured.append(kwargs)
+        with patch("self_tuning._get_recent_adjustment", return_value=None), \
+             patch("models.update_trading_profile", side_effect=fake_update), \
+             patch("models.log_tuning_change"):
+            msg = _optimize_meta_pregate_threshold(
+                conn, ctx, 1, 1, overall_wr=55.0, resolved=20)
+        conn.close()
+        assert msg is not None
+        assert "Raised" in msg
+        assert captured == [{"meta_pregate_threshold": 0.40}]
+
+    def test_no_change_in_healthy_band(self, tmp_path):
+        """15% actionable → healthy band 5-30% → no change."""
+        db = _make_db(tmp_path)
+        self._seed_predictions(db, n_actionable=15, n_hold=85)
+        ctx = _ctx(db, meta_pregate_threshold=0.35)
+        from self_tuning import _optimize_meta_pregate_threshold, _get_conn
+        conn = _get_conn(db)
+        with patch("self_tuning._get_recent_adjustment", return_value=None):
+            msg = _optimize_meta_pregate_threshold(
+                conn, ctx, 1, 1, overall_wr=50.0, resolved=20)
+        conn.close()
+        assert msg is None
+
+    def test_thin_sample_no_change(self, tmp_path):
+        """20 predictions — below the 50-sample gate."""
+        db = _make_db(tmp_path)
+        self._seed_predictions(db, n_actionable=1, n_hold=19)
+        ctx = _ctx(db, meta_pregate_threshold=0.50)
+        from self_tuning import _optimize_meta_pregate_threshold, _get_conn
+        conn = _get_conn(db)
+        with patch("self_tuning._get_recent_adjustment", return_value=None):
+            msg = _optimize_meta_pregate_threshold(
+                conn, ctx, 1, 1, overall_wr=40.0, resolved=10)
+        conn.close()
+        assert msg is None
+
+    def test_floor_prevents_runaway_down(self, tmp_path):
+        """Already at 0.15 floor — even with 0% actionable, no change."""
+        db = _make_db(tmp_path)
+        self._seed_predictions(db, n_actionable=0, n_hold=100)
+        ctx = _ctx(db, meta_pregate_threshold=0.15)
+        from self_tuning import _optimize_meta_pregate_threshold, _get_conn
+        conn = _get_conn(db)
+        with patch("self_tuning._get_recent_adjustment", return_value=None):
+            msg = _optimize_meta_pregate_threshold(
+                conn, ctx, 1, 1, overall_wr=40.0, resolved=20)
+        conn.close()
+        assert msg is None  # already at floor
+
+    def test_migration_lowers_existing_05_to_035(self, tmp_path, monkeypatch):
+        """Migration flips profiles still at 0.5 → 0.35. Profiles
+        the operator already tuned are preserved."""
+        import config, models
+        db = str(tmp_path / "users.db")
+        conn = sqlite3.connect(db)
+        # Include market_type — other migrations in init_user_db
+        # reference it (short-selling crypto filter).
+        conn.execute(
+            "CREATE TABLE trading_profiles ("
+            "id INTEGER PRIMARY KEY, name TEXT, market_type TEXT, "
+            "meta_pregate_threshold REAL DEFAULT 0.5, "
+            "use_conviction_tp_override INTEGER DEFAULT 0, "
+            "enable_short_selling INTEGER DEFAULT 0, "
+            "skip_first_minutes INTEGER DEFAULT 0)"
+        )
+        conn.execute(
+            "INSERT INTO trading_profiles "
+            "(id, name, market_type, meta_pregate_threshold) "
+            "VALUES (1, 'A', 'midcap', 0.5), (2, 'B', 'smallcap', 0.30), "
+            "(3, 'C', 'largecap', 0.5)"
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setattr(config, "DB_PATH", db)
+        models.init_user_db()
+        conn = sqlite3.connect(db)
+        # Profiles 1 and 3 (at 0.5) flipped to 0.35
+        assert conn.execute(
+            "SELECT meta_pregate_threshold FROM trading_profiles WHERE id=1"
+        ).fetchone()[0] == 0.35
+        assert conn.execute(
+            "SELECT meta_pregate_threshold FROM trading_profiles WHERE id=3"
+        ).fetchone()[0] == 0.35
+        # Profile 2 (operator-tuned 0.30) preserved
+        assert conn.execute(
+            "SELECT meta_pregate_threshold FROM trading_profiles WHERE id=2"
+        ).fetchone()[0] == 0.30
+        conn.close()

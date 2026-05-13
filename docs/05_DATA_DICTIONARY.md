@@ -171,7 +171,7 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 | Column | Type | Default | Description |
 |---|---|---|---|
 | `disabled_specialists` | TEXT | `'[]'` | JSON list of specialist names to skip (Lever 3). |
-| `meta_pregate_threshold` | REAL | 0.5 | Min meta_prob to pass pre-gate (Lever 2). |
+| `meta_pregate_threshold` | REAL | 0.35 | Min meta_prob to pass pre-gate (Lever 2). Default lowered 0.5→0.35 on 2026-05-13 after audit found 68% of candidates being filtered before AI evaluation. AI-tunable via `_optimize_meta_pregate_threshold` based on 5-day actionable-signal ratio. |
 
 ### Capital allocation
 

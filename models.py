@@ -378,7 +378,12 @@ def init_user_db(db_path: Optional[str] = None) -> None:
         # are dropped BEFORE the ensemble runs. 0.0 = disabled (gate
         # falls open). 0.5 default = drop candidates the meta-model
         # is more confident the AI is wrong about than right.
-        ("trading_profiles", "meta_pregate_threshold", "REAL NOT NULL DEFAULT 0.5"),
+        # 2026-05-13 — default lowered 0.5 → 0.35. Audit (139
+        # cycles, 1985 candidates, 68% drop rate, median 73% per
+        # cycle) showed the 0.5 threshold was structurally
+        # over-filtering. AI-tunable via
+        # `_optimize_meta_pregate_threshold`.
+        ("trading_profiles", "meta_pregate_threshold", "REAL NOT NULL DEFAULT 0.35"),
 
         # Item 2b of COMPETITIVE_GAP_PLAN.md — intraday risk monitor
         # auto-halt. When alerts fire (drawdown acceleration, vol
@@ -581,6 +586,34 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             logger.info(
                 "Migrated: skip_first_minutes bumped 0→5 on %d profile(s)",
                 flipped_skip,
+            )
+        # 2026-05-13 — lower meta_pregate_threshold default from
+        # 0.5 → 0.35. Audit found 68% of all candidates filtered
+        # before AI evaluation across 139 cycles, suppressing
+        # system activity. Only flips profiles still at the
+        # historical default 0.5 — profiles the operator already
+        # tuned are preserved.
+        marker_pregate = "meta_pregate_default_0_35_2026_05_13"
+        already_pregate = conn.execute(
+            "SELECT 1 FROM migration_markers WHERE key = ?",
+            (marker_pregate,),
+        ).fetchone()
+        if not already_pregate:
+            cur = conn.execute(
+                "UPDATE trading_profiles SET meta_pregate_threshold = 0.35 "
+                "WHERE COALESCE(meta_pregate_threshold, 0.5) = 0.5"
+            )
+            flipped_pregate = cur.rowcount
+            conn.execute(
+                "INSERT OR REPLACE INTO migration_markers (key, details) "
+                "VALUES (?, ?)",
+                (marker_pregate,
+                 f"lowered {flipped_pregate} profile(s) 0.5→0.35"),
+            )
+            conn.commit()
+            logger.info(
+                "Migrated: meta_pregate_threshold lowered 0.5→0.35 on %d profile(s)",
+                flipped_pregate,
             )
     except Exception as exc:
         logger.warning(

@@ -1869,6 +1869,11 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         # working in the current regime and paying spread + slip
         # to relearn it.
         _optimize_stop_out_blacklist,
+        # 2026-05-13 — meta_pregate_threshold (Wave 9a). Audit
+        # found the 0.5 default filtering 68% of candidates before
+        # AI evaluation across 139 cycles. Tunes per profile based
+        # on observed actionable-signal ratio over the last 5 days.
+        _optimize_meta_pregate_threshold,
         # 2026-05-12 — skip_first_minutes (slippage-based signal).
         # Adjusts the open-window skip based on observed first-15-min
         # slippage vs rest-of-day slippage. Complements the existing
@@ -4202,6 +4207,95 @@ def _optimize_stop_out_blacklist(conn, ctx, profile_id, user_id,
     if refreshed:
         msg_parts.append(f"refreshed {len(refreshed)}")
     return "Stop-out blacklist: " + "; ".join(msg_parts)
+
+
+def _optimize_meta_pregate_threshold(conn, ctx, profile_id, user_id,
+                                       overall_wr, resolved):
+    """Auto-tune `meta_pregate_threshold` per profile based on the
+    observed actionable-signal ratio (2026-05-13 — Wave 9a).
+
+    The audit on 2026-05-13 found that the launch default (0.5) was
+    structurally over-filtering: 68% of 1,985 candidates evaluated
+    across 139 cycles got dropped before the AI ever saw them. The
+    AI then "selected 0 trades" because the choices were
+    pre-filtered, not because it judged them poor.
+
+    Tuning signal: actionable-signal ratio over the last 5 days =
+    (predictions where predicted_signal != 'HOLD') / total predictions.
+
+    Decision rule:
+      ratio < 5%  → LOWER threshold by 0.05 (filter is too tight;
+                    AI never gets actionable candidates)
+      ratio > 30% → RAISE threshold by 0.05 (filter is too loose;
+                    can sharpen the cohort)
+      5%-30%     → no change. Healthy operating band.
+
+    Bounds: 0.15 (floor — essentially no filtering) to 0.70
+    (ceiling — extreme selectivity). Per-profile cooldown via
+    `_safe_change_guarded` prevents thrash.
+
+    Needs ≥50 resolved+pending predictions in the 5-day window for
+    a stable signal; below that, no change.
+    """
+    if not _safe_change_guarded(profile_id, "meta_pregate_threshold"):
+        return None
+    try:
+        rows = conn.execute(
+            "SELECT predicted_signal FROM ai_predictions "
+            "WHERE timestamp >= datetime('now', '-5 days')"
+        ).fetchall()
+    except Exception:
+        return None
+    if len(rows) < 50:
+        return None
+    total = len(rows)
+    actionable = sum(
+        1 for (s,) in rows
+        if s and s.upper() != "HOLD"
+    )
+    ratio = actionable / total * 100
+
+    # Healthy band: 5%-30% actionable.
+    current = float(getattr(ctx, "meta_pregate_threshold", 0.35) or 0.35)
+    if 5.0 <= ratio <= 30.0:
+        return None
+
+    if ratio < 5.0:
+        new_val = _bound("meta_pregate_threshold",
+                          round(max(0.15, current - 0.05), 2))
+        if new_val >= current:
+            return None
+        direction = "lowered"
+        why = (
+            f"Actionable-signal ratio {ratio:.1f}% over {total} "
+            f"recent predictions — pre-AI filter is too tight; "
+            f"loosen to let more candidates through"
+        )
+    else:  # ratio > 30
+        new_val = _bound("meta_pregate_threshold",
+                          round(min(0.70, current + 0.05), 2))
+        if new_val <= current:
+            return None
+        direction = "raised"
+        why = (
+            f"Actionable-signal ratio {ratio:.1f}% over {total} "
+            f"recent predictions — AI is firing aggressively; "
+            f"sharpen the cohort with a tighter pre-filter"
+        )
+    from models import update_trading_profile, log_tuning_change
+    update_trading_profile(profile_id, meta_pregate_threshold=new_val)
+    log_tuning_change(
+        profile_id, user_id,
+        ("meta_pregate_lower" if direction == "lowered"
+         else "meta_pregate_raise"),
+        "meta_pregate_threshold", str(current), str(new_val), why,
+        win_rate_at_change=overall_wr, predictions_resolved=resolved,
+    )
+    return (
+        f"{direction.capitalize()} "
+        f"{_label('meta_pregate_threshold')} from "
+        f"{current:.2f} to {new_val:.2f} ({why})"
+    )
 
 
 def _optimize_skip_first_minutes_slippage(conn, ctx, profile_id, user_id,

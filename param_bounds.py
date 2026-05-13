@@ -64,6 +64,11 @@ PARAM_BOUNDS: Dict[str, Tuple[Number, Number]] = {
     "atr_multiplier_sl":             (1.0, 4.0),
     "atr_multiplier_tp":             (1.0, 5.0),
     "trailing_atr_multiplier":       (0.5, 3.0),
+    # 2026-05-13 — meta-pregate prob threshold. Below the floor,
+    # essentially no filtering (passes ~all candidates); above the
+    # ceiling, almost everything gets dropped. AI-tunable per
+    # profile based on observed actionable-signal ratio.
+    "meta_pregate_threshold":        (0.15, 0.70),
 
     # ── Entry filters ─────────────────────────────────────────────
     "min_volume":                    (100_000, 5_000_000),

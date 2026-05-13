@@ -242,7 +242,11 @@ class UserContext:
     # meta_pregate_threshold: candidates with meta_prob below this
     # are dropped before the ensemble fires. 0.0 = disabled.
     disabled_specialists: str = "[]"
-    meta_pregate_threshold: float = 0.5
+    # 2026-05-13 — default lowered 0.5 → 0.35 after audit found
+    # 68% of all candidates being filtered before AI evaluation.
+    # AI-tunable via `_optimize_meta_pregate_threshold` based on
+    # the profile's recent actionable-signal ratio.
+    meta_pregate_threshold: float = 0.35
 
     # Layer storage JSON columns. These ARE accessed by
     # `getattr(ctx, X, ...)` from self_tuning.py and ai_analyst.py.

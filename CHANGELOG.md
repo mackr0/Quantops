@@ -17,6 +17,39 @@ Rules going forward:
 
 ---
 
+## 2026-05-13 — Wave 9a: meta-pregate threshold lowered + AI-tunable. Severity: high (system activity unlocked).
+
+**Audit triggered by Mack's "boring day" observation 2026-05-13.** Investigation found:
+- 11 of 11 profiles had `meta_pregate_threshold` sitting at the launch default of 0.5
+- **139 cycles ran today, 1985 candidates evaluated, 1343 dropped (68%) before the AI ever saw them**
+- Median per-cycle dropout: **73%**; 19 cycles dropped ≥90% of candidates; 4 cycles dropped 100%
+- AI then "selected 0 trades" because the choices were pre-filtered to nothing — not because it judged them poor
+- Zero new stock entries today across all 11 profiles. Only multileg spreads and exit closures.
+
+**Same opt-in-default pattern as conviction-TP (wave 6) and short-selling (wave 7).** Designed correctly, defaulted conservatively, never tuned by anybody, structurally suppressed system activity for months.
+
+**Fix.**
+- `meta_pregate_threshold` schema default: 0.5 → 0.35. One-shot idempotent migration via `migration_markers` flips existing profiles still at 0.5 to 0.35; operator-tuned values preserved.
+- `UserContext.meta_pregate_threshold` default 0.5 → 0.35.
+- `param_bounds.py`: added `meta_pregate_threshold` bounds (0.15, 0.70).
+- New self-tuning rule `_optimize_meta_pregate_threshold`:
+  - Signal: 5-day actionable-signal ratio = `(non-HOLD predictions) / total predictions`
+  - ratio < 5% → LOWER threshold by 0.05 (filter too tight; loosen)
+  - ratio > 30% → RAISE threshold by 0.05 (filter too loose; sharpen)
+  - 5%-30% → no change (healthy band)
+  - Needs ≥50 recent predictions to fire; per-param cooldown prevents thrash.
+
+**Why the data audit was the right call before flipping anything.** The fix could have been "lower the default and hope." Instead the audit produced specific numbers (68% drop rate, 73% median per-cycle, 0 new stock entries) that told us:
+- the filter was clearly too tight, not borderline
+- AI was being unfairly blamed for "not trading" when it never had inputs
+- the right structural fix was a tuner that responds to observed conversion, not a manual number-pick
+
+**Regression tests:** `tests/test_wave8_levers.py::TestMetaPregateThreshold` (6 tests): lower-on-low-ratio, raise-on-high-ratio, no-op in healthy band, thin-sample skip, floor preventing runaway, idempotent migration with operator-tuned-value preservation. 2963 passed total, zero regressions.
+
+**Expected effect:** profiles whose AI was being starved of candidates will see meaningfully more shortlist size, more specialist calls, more AI batch evaluations. The downstream specialist-veto + AI judgement layers still gate trades — this only stops the pre-AI filter from preempting them.
+
+---
+
 ## 2026-05-12 — Wave 8: fast-lane strategy retirement + options-IV dead-zone closed + per-symbol entry blacklist. Severity: medium (autonomy-layer expansion).
 
 **Three new AI-tunable levers, all with data-driven defaults:**
