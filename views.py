@@ -5159,9 +5159,9 @@ def api_cycle_data(profile_id):
     # actually traded for the symbol within the last 4 hours.
     try:
         import sqlite3 as _sql
+        from contextlib import closing
         db_path = f"quantopsai_profile_{profile_id}.db"
-        conn = _sql.connect(db_path)
-        try:
+        with closing(_sql.connect(db_path)) as conn:
             # Most recent trade per symbol in the last 4 hours
             recent = {}
             rows = conn.execute(
@@ -5178,14 +5178,13 @@ def api_cycle_data(profile_id):
                         "status": r[3], "timestamp": r[4],
                         "is_option": bool(r[5]),
                     }
-            from display_names import action_label as _act_label
-            for t in (data.get("trades_selected") or []):
-                sym = (t.get("symbol") or "").upper()
-                if not sym:
-                    continue
-                rec = recent.get(sym)
-                if not rec:
-                    continue
+        from display_names import action_label as _act_label
+        for t in (data.get("trades_selected") or []):
+            sym = (t.get("symbol") or "").upper()
+            if not sym:
+                continue
+            rec = recent.get(sym)
+            if rec:
                 executed = _act_label(
                     rec["side"], rec.get("signal_type"),
                     is_option=rec.get("is_option", False),
@@ -5202,8 +5201,38 @@ def api_cycle_data(profile_id):
                         "Executed as long-close — "
                         "F was already held long, can't open a new "
                         "short on the same symbol")
-        finally:
-            conn.close()
+                # 2026-05-14 — surface canceled trades on the brain
+                # ticker. Limit-order profiles can submit a trade
+                # that never fills (market moves past the limit) and
+                # the stale-cleanup task cancels it after N minutes.
+                # Without this, the brain ticker shows the trade as
+                # if it fired and the operator goes hunting for a
+                # non-existent position. Skip if a more specific
+                # outcome was already stamped above.
+                elif rec.get("status") == "canceled":
+                    t["execution_outcome"] = "canceled"
+                    t["execution_outcome_display"] = (
+                        "Order canceled — limit price not filled "
+                        "within the stale-order window, or the order "
+                        "was canceled by reconcile (broker had no "
+                        "matching position)."
+                    )
+            else:
+                # 2026-05-14 — NO-FILL: AI selected the trade but no
+                # row was created in the trades table. Most common
+                # causes: already-positioned dedup ("Already short
+                # KO"), pre-broker safety gate, or post-AI
+                # meta-model suppression (meta_prob below the
+                # SUPPRESSION_THRESHOLD). Without this badge, the
+                # trade silently disappears from the brain ticker
+                # and the operator can't tell what happened.
+                t["execution_outcome"] = "no_fill"
+                t["execution_outcome_display"] = (
+                    "Not submitted — most likely already-positioned "
+                    "dedup, pre-broker safety gate, or post-AI "
+                    "meta-model suppression. No trades row was "
+                    "created."
+                )
     except Exception as _exc:
         logger.warning(
             "api_cycle_data: execution-outcome enrichment failed for "

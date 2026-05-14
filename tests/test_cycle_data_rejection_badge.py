@@ -101,22 +101,42 @@ class TestRejectionBadgeStamping:
 
     def test_unrejected_trade_has_no_rejection_fields(self,
                                                        cycle_data_setup):
+        """AAPL was AI-selected but produced no rejection AND no
+        trade row (the fixture creates neither). After the
+        2026-05-14 silent-disappearance fix, such trades are stamped
+        with execution_outcome='no_fill' so the operator can see why
+        the trade vanished. The REJECTION-specific fields
+        (rejection_code, rejection_message) must still be absent
+        because there was no broker rejection."""
         pid = cycle_data_setup
         with patch("flask_login.utils._get_user", return_value=_admin()):
             r = _client().get(f"/api/cycle-data/{pid}")
         data = json.loads(r.data)
         aapl = next(t for t in data["trades_selected"]
                     if t["symbol"] == "AAPL")
-        # No rejection — fields should be absent
-        assert "execution_outcome" not in aapl
+        # AAPL has no broker_rejection AND no trade row → the
+        # no_fill stamp surfaces "trade silently disappeared, here's
+        # the likely class of cause" so the operator isn't left
+        # hunting for a non-existent fill (the bug that motivated
+        # the 2026-05-14 brain-ticker fix).
+        assert aapl.get("execution_outcome") == "no_fill", (
+            f"Expected AAPL execution_outcome='no_fill' (no trade "
+            f"row exists for it). Got: {aapl.get('execution_outcome')!r}"
+        )
+        # Rejection-specific fields still absent — the trade was not
+        # rejected, it was no-filled.
         assert "rejection_code" not in aapl
+        assert "rejection_message" not in aapl
 
     def test_rejection_fetch_failure_returns_cycle_data_without_badges(
         self, cycle_data_setup, monkeypatch,
     ):
         """If get_recent_broker_rejections raises, the endpoint must
-        still return the cycle data (just without rejection badges)
-        and log a warning. No silent swallow, no 500."""
+        still return the cycle data (just without REJECTION badges)
+        and log a warning. No silent swallow, no 500. Trades may
+        still carry execution_outcome='no_fill' from the trades-table
+        cross-reference pass — that pass is independent of the
+        broker_rejection pass that the test simulates failing."""
         pid = cycle_data_setup
         monkeypatch.setattr(
             "journal.get_recent_broker_rejections",
@@ -129,7 +149,10 @@ class TestRejectionBadgeStamping:
         # 200 OK — degraded but not failed
         assert r.status_code == 200
         data = json.loads(r.data)
-        # Trades present, no rejection fields
+        # Trades present
         assert len(data["trades_selected"]) == 2
+        # Rejection-specific fields absent for all trades (the
+        # rejection pass failed and was caught)
         for t in data["trades_selected"]:
-            assert "execution_outcome" not in t
+            assert "rejection_code" not in t
+            assert "rejection_message" not in t

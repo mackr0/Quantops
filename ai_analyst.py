@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 
 import config
 from ai_providers import call_ai
@@ -512,13 +513,22 @@ def ai_select_trades(candidates_data, portfolio_state, market_context, ctx=None)
     api_key = getattr(ctx, "ai_api_key", "") if ctx else ""
 
     try:
+        # 2026-05-14 — bumped max_tokens 1024 → 4096. Prior cap was
+        # too low after the prompt grew (symmetric stock recs +
+        # multileg recs + per-action notes + no fixed-cap framing).
+        # The AI was truncating responses mid-string and producing
+        # "Unterminated string starting at line N column M" parse
+        # errors across multiple profiles. 4096 gives ample room
+        # for the AI to propose every conviction trade without
+        # truncation.
         raw = call_ai(prompt, provider=provider, model=model, api_key=api_key,
-                       max_tokens=1024,
+                       max_tokens=4096,
                        db_path=getattr(ctx, "db_path", None),
                        purpose="batch_select")
-        result = json.loads(raw)
+        result = _parse_ai_response_tolerant(raw)
     except (json.JSONDecodeError, Exception) as exc:
-        logger.error("AI batch call failed: %s", exc)
+        logger.error("AI batch call failed: %s — raw[:300]=%r",
+                     exc, (raw if 'raw' in locals() else '')[:300])
         return {
             "trades": [],
             "portfolio_reasoning": f"AI call failed: {exc}",
@@ -527,6 +537,102 @@ def ai_select_trades(candidates_data, portfolio_state, market_context, ctx=None)
 
     return _validate_ai_trades(result, candidates_data, ctx,
                                  portfolio_state=portfolio_state)
+
+
+def _parse_ai_response_tolerant(raw: str) -> dict:
+    """Parse the AI's batch response, tolerating common malformations.
+
+    The strict json.loads contract requires perfect JSON. Real AI
+    responses sometimes ship with:
+      - Markdown code fences (```json ... ``` or ``` ... ```)
+      - Leading/trailing prose ("Here's my analysis: { ... }")
+      - Trailing commas before } or ]
+      - Truncated trailing string from max_tokens cutoff
+
+    This parser strips fences, isolates the outermost {...} block,
+    removes trailing commas, and as a last resort attempts to
+    salvage the largest valid JSON prefix when the response was
+    truncated. Returns a dict with at minimum the "trades" key.
+
+    On total failure, raises json.JSONDecodeError so the caller can
+    treat as an AI-call failure and skip the cycle.
+    """
+    if not raw or not raw.strip():
+        raise json.JSONDecodeError("empty response", "", 0)
+    text = raw.strip()
+    # Strip ```json ... ``` or ``` ... ``` fences.
+    if text.startswith("```"):
+        # remove opening fence (with optional language tag)
+        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+        # remove closing fence
+        text = re.sub(r"\n?```\s*$", "", text)
+    # Isolate the outermost {...} block — strips any leading/trailing
+    # prose like "Here is the analysis: {...}".
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+    if first_brace >= 0 and last_brace > first_brace:
+        text = text[first_brace:last_brace + 1]
+    # Remove trailing commas before ] or }.
+    text = re.sub(r",(\s*[}\]])", r"\1", text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as first_err:
+        # Truncated-string salvage. The AI was likely writing a
+        # `"trades": [{...},{...},{...partial` array when max_tokens
+        # cut it off. Strategy: walk backward through trade-object
+        # boundaries (`},` patterns), truncate at each candidate
+        # boundary, then append the minimum closing punctuation
+        # needed to balance brackets, and try to parse. The first
+        # parseable prefix wins.
+        original_len = len(text)
+        # Find all `}` positions — each is a candidate end-of-trade
+        # boundary. We try them from rightmost (most data preserved)
+        # backward to leftmost (most conservative). The first one
+        # that yields parseable JSON (after balancing brackets) wins.
+        boundaries = [
+            i for i in range(len(text)) if text[i] == "}"
+        ]
+        for boundary in reversed(boundaries):
+            candidate = text[:boundary + 1]  # include the closing `}`
+            # Balance brackets: add `]` for unclosed `[`, `}` for
+            # unclosed `{`. Order matters — close inner first.
+            open_brackets = candidate.count("[") - candidate.count("]")
+            open_braces = candidate.count("{") - candidate.count("}")
+            if open_brackets > 0:
+                candidate = candidate + ("]" * open_brackets)
+            if open_braces > 0:
+                candidate = candidate + ("}" * open_braces)
+            # Strip any trailing comma we may have re-introduced.
+            candidate = re.sub(r",(\s*[}\]])", r"\1", candidate)
+            try:
+                parsed = json.loads(candidate)
+                logger.warning(
+                    "AI response salvaged from truncation; parsed "
+                    "%d trades from a %d-char prefix (full response "
+                    "was %d chars).",
+                    len(parsed.get("trades") or []),
+                    boundary + 1, original_len,
+                )
+                return parsed
+            except json.JSONDecodeError:
+                continue
+        # Last resort: maybe the AI wrote `{"trades": []}` partially
+        # and we can return an empty trades list as a recovery.
+        # Better than dropping the cycle.
+        if '"trades"' in text:
+            logger.warning(
+                "AI response unparseable; returning empty trades "
+                "list as recovery (raw[:200]=%r).",
+                text[:200],
+            )
+            return {
+                "trades": [],
+                "portfolio_reasoning": "AI response was malformed; "
+                                       "no trades could be salvaged.",
+                "pass_this_cycle": True,
+            }
+        # Truly unrecoverable — re-raise.
+        raise first_err
 
 
 def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=None):
