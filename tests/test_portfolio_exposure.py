@@ -314,3 +314,51 @@ def test_render_for_prompt_warns_on_concentration():
     )
     rendered = render_for_prompt(out)
     assert "CONCENTRATION" in rendered.upper()
+
+
+# ---------------------------------------------------------------------------
+# 2026-05-13 — Profile 5 /performance crash: empty positions early-exit
+# returned a 5-key dict. Template tried `exposure.book_beta is not none`
+# on Jinja Undefined, passed (Undefined != None), then crashed on
+# format(). Both layers now defended:
+#   1. compute_exposure early-exit returns the full key set
+#   2. template guard adds `is defined` (not in this test file —
+#      pinned by test_portfolio_exposure_template_safety below)
+# ---------------------------------------------------------------------------
+
+class TestEmptyPositionsReturnsFullShape:
+    """Profile with positive equity but zero positions must get a
+    dict shape compatible with every template/dashboard consumer."""
+
+    REQUIRED_KEYS = {
+        "net_pct", "gross_pct", "num_positions", "by_sector",
+        "concentration_flags",
+        # 2026-05-13 — these were missing before, broke the
+        # /performance page for profile 5
+        "book_beta", "factors", "long_pct", "short_pct",
+    }
+
+    def test_zero_positions_with_equity_returns_full_shape(self):
+        out = compute_exposure([], equity=25_000)
+        missing = self.REQUIRED_KEYS - set(out.keys())
+        assert not missing, (
+            f"compute_exposure early-exit dict missing keys: "
+            f"{missing}. Template/dashboard consumers will crash "
+            f"on access. Add to the early-exit branch in "
+            f"portfolio_exposure.compute_exposure."
+        )
+
+    def test_zero_equity_returns_full_shape(self):
+        out = compute_exposure(
+            [{"symbol": "AAPL", "qty": 100, "market_value": 20_000}],
+            equity=0,
+        )
+        missing = self.REQUIRED_KEYS - set(out.keys())
+        assert not missing
+
+    def test_book_beta_explicitly_none_when_no_positions(self):
+        """Not Undefined, not 0 — explicit None so consumers
+        can distinguish 'no data' from 'beta = 0.0'."""
+        out = compute_exposure([], equity=25_000)
+        assert out["book_beta"] is None
+        assert out["factors"] is None

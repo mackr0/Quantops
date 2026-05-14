@@ -17,6 +17,33 @@ Rules going forward:
 
 ---
 
+## 2026-05-13 — /performance?profile_id=5 500 fix + structural no-5xx-on-any-page guardrail. Severity: high (page-level outage on a profile).
+
+**Incident.** Mack: `/performance?profile_id=5` returns 500. Other profiles work.
+
+**Root cause.** Profile 5 (Small Cap 25K) has $25K equity but zero open positions. `compute_exposure`'s empty-positions early-exit returned a truncated dict (only 5 keys: `net_pct`, `gross_pct`, `num_positions`, `by_sector`, `concentration_flags`). `book_beta` and `factors` were missing entirely. The performance template's guard `{% if exposure.book_beta is not none %}` passed because Jinja's `Undefined` sentinel (returned for missing dict keys) is NOT None. Then `"{:+.2f}".format(exposure.book_beta)` crashed on Undefined.
+
+**Why narrower test missed it.** `tests/test_web.py::test_performance` hit `/performance` with no query params (the "all profiles" view, which aggregates positions across profiles and never reaches the empty-positions branch). The bug only manifested with `?profile_id=<empty-positions-profile>`. The test class wasn't structurally complete.
+
+**Fix.**
+- `portfolio_exposure.compute_exposure` early-exit now returns the FULL key set with `book_beta=None`, `factors=None`. Consumer code can safely access any documented key.
+- `templates/performance.html` Book Beta block guard tightened from `is not none` to `is defined and is not none` — defense-in-depth against future shape drift.
+
+**Structural test added: `tests/test_no_500_per_profile.py`.**
+- Auto-discovers every GET-able non-API page route via `app.url_map.iter_rules()`
+- Walks every `?profile_id=<N>` variation including N=5 (zero-positions profile shape)
+- Real SQLite test fixtures: `init_user_db()` + per-profile `init_db()`, seeded with realistic `trading_profiles` rows
+- Mocked broker layer returns position/equity shapes that match production (profile 1: long position; profile 5: empty positions, positive equity ← the incident shape; profile 10: short position)
+- Asserts NO route × profile_id combination returns 5xx
+- New page routes get coverage automatically — no allowlist to maintain
+- Verified: this test FAILS against the buggy code (caught both `/performance?profile_id=5` AND the targeted regression test) and PASSES against the fixed code
+
+This closes the test-class gap: it's no longer possible for an existing or new page route to silently 500 on any profile shape we test, including the empty-positions edge case.
+
+2980 tests pass total.
+
+---
+
 ## 2026-05-13 — Email-spam incident response: DB criticality + notify_error debounce. Severity: high (operational).
 
 **Incident.** Mack flagged 145 ERROR emails received in ~2 hours on 2026-05-13. Investigation showed:

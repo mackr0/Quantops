@@ -597,7 +597,14 @@
                 <small class="muted">Positions</small>
                 <strong style="font-size:2rem;">{{ exposure.num_positions }}</strong>
             </div>
-            {% if exposure.book_beta is not none %}
+            {# 2026-05-13 — `is defined and ... is not none` belt-and-
+               suspenders: Jinja Undefined (returned for missing dict
+               keys) passes `is not none` but crashes on format().
+               compute_exposure was returning a truncated dict for
+               profile 5 (cash-only, no positions); now returns full
+               shape with explicit None, but keep the defensive
+               guard against future shape drift. #}
+            {% if exposure.book_beta is defined and exposure.book_beta is not none %}
             <div class="stat-card" style="text-align:center;">
                 <small class="muted"><span class="tip" data-tip="Gross-weighted average beta of the book. Long positions add positive signed beta; shorts subtract. 0 = market-neutral. 1 = market-correlated. Real long/short funds typically target 0 ± 0.30.">Book Beta</span></small>
                 <strong style="font-size:2rem;">{{ "{:+.2f}".format(exposure.book_beta) }}</strong>

@@ -62,12 +62,24 @@ def compute_exposure(
     "no exposure" state).
     """
     if equity is None or equity <= 0 or not positions:
+        # 2026-05-13 — return the FULL shape with empty/None values
+        # so consumers (the performance template, dashboards, AI
+        # prompt builders) don't crash on missing keys when the
+        # profile has no open positions. The early-exit was
+        # previously only 5 keys, breaking the template's
+        # `exposure.book_beta is not none` guard (Jinja Undefined
+        # is not None, so the guard passed and `format()` crashed).
+        # Profile 5 (Small Cap 25K) tripped this 2026-05-13.
         return {
             "net_pct": 0.0,
             "gross_pct": 0.0,
             "num_positions": 0,
             "by_sector": {},
             "concentration_flags": [],
+            "book_beta": None,
+            "factors": None,
+            "long_pct": 0.0,
+            "short_pct": 0.0,
         }
 
     if sector_lookup is None:
