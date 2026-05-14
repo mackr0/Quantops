@@ -2,6 +2,12 @@
 production source must be paired with a guaranteed close
 (via context manager OR explicit try/finally close).
 
+Mode: strict (post-2026-05-14 audit).
+The full ratchet baseline was paid down to zero on 2026-05-14
+— every existing site was converted to a safe pattern. From
+this point forward ANY unsafe `sqlite3.connect()` call in
+production source fails the test on first introduction.
+
 The bug class.
 A long-running scheduler process accumulates open file handles
 when sqlite3.connect() leaks. After ~1024 leaked connections (OS
@@ -19,6 +25,10 @@ Acceptable patterns:
   2. `with closing(sqlite3.connect(...)) as conn:` (contextlib helper)
   3. `conn = sqlite3.connect(...); try: ... finally: conn.close()`
   4. `conn = _get_conn(...); try: ... finally: conn.close()` (helper-wrapped)
+  5. Connection-factory pattern: a function that does
+     `conn = sqlite3.connect(...); ...; return conn` (e.g.
+     `models._get_conn`, `journal._get_conn`). The CALLER manages
+     the lifetime; the factory itself is exempt.
 
 Unsafe pattern:
   - `conn = sqlite3.connect(...); ...; conn.close()` (without try/finally
@@ -65,6 +75,9 @@ ALLOWLIST_FILES = {
         "Migration script.",
     "migrate_activity_log_format.py":
         "Migration script.",
+    "cancel_phantom_option_stock_stops.py":
+        "One-shot remediation script (not imported by scheduler). "
+        "Process exits before any leak accumulates.",
 }
 
 
@@ -90,6 +103,7 @@ def _is_safe_connect(call_node: ast.Call, parent_lookup) -> bool:
     Walks the parent chain to look for:
       - Surrounding `with` statement → safe
       - Subsequent .close() call inside try/finally → safe (heuristic)
+      - Connection-factory pattern (assign + return) → safe (caller closes)
     """
     parent = parent_lookup.get(id(call_node))
     # Pattern 1: directly inside `with sqlite3.connect(...) as X:`
@@ -100,9 +114,46 @@ def _is_safe_connect(call_node: ast.Call, parent_lookup) -> bool:
             return True
         if isinstance(parent, ast.Assign):
             # `conn = sqlite3.connect(...)` — need to check
-            # surrounding scope for try/finally with close
-            return _has_try_finally_close_in_scope(parent, parent_lookup)
+            # surrounding scope for try/finally with close OR
+            # for the factory pattern (function returns conn).
+            if _has_try_finally_close_in_scope(parent, parent_lookup):
+                return True
+            return _is_factory_return_pattern(parent, parent_lookup)
+        if isinstance(parent, ast.Return):
+            # `return sqlite3.connect(...)` — caller is responsible
+            # for closing the connection. Connection-factory pattern.
+            return True
         parent = parent_lookup.get(id(parent))
+    return False
+
+
+def _is_factory_return_pattern(assign_node: ast.Assign,
+                                  parent_lookup) -> bool:
+    """`conn = sqlite3.connect(...); ...; return conn` — the function is a
+    connection factory; the caller manages the lifetime. Examples:
+    `models._get_conn`, `models.open_profile_db`, `journal._get_conn`.
+
+    Rule: in the enclosing function body, the assigned name appears
+    in a `return <name>` statement. Heuristic but tight — captures the
+    factory pattern without false-allowing assigns that just leak.
+    """
+    if not assign_node.targets:
+        return False
+    target = assign_node.targets[0]
+    if not isinstance(target, ast.Name):
+        return False
+    var_name = target.id
+    parent = parent_lookup.get(id(assign_node))
+    while parent is not None and not isinstance(parent, ast.FunctionDef):
+        parent = parent_lookup.get(id(parent))
+    if parent is None:
+        return False
+    for node in ast.walk(parent):
+        if not isinstance(node, ast.Return):
+            continue
+        if (isinstance(node.value, ast.Name)
+                and node.value.id == var_name):
+            return True
     return False
 
 
@@ -176,54 +227,12 @@ def _find_unsafe_connects(src: str) -> List[int]:
     return unsafe
 
 
-# Per-file baseline of existing unsafe connects (ratchet style,
-# same as the silent-except-pass guardrail). New violations on
-# top of baseline fail; reductions trigger a baseline-update
-# notice.
-GRANDFATHER_BASELINE = {
-    "ai_consistency_floor.py": 1,
-    "ai_tracker.py": 1,
-    "ai_weekly_summary.py": 6,
-    "alpha_decay.py": 1,
-    "alternative_data.py": 7,
-    "book_concentration.py": 1,
-    "bracket_orders.py": 2,
-    "cancel_phantom_option_stock_stops.py": 1,
-    "capital_allocator.py": 1,
-    "client.py": 1,
-    "conviction_tp.py": 1,
-    "crisis_detector.py": 1,
-    "db_integrity.py": 1,
-    "earnings_calendar.py": 3,
-    "factor_data.py": 3,
-    "historical_universe_augment.py": 6,
-    "journal.py": 1,
-    "kelly_sizing.py": 1,
-    "kill_switch.py": 2,
-    "macro_data.py": 3,
-    "meta_model.py": 1,
-    "metrics/legacy.py": 4,
-    "mfe_capture.py": 1,
-    "models.py": 3,
-    "multi_scheduler.py": 1,
-    "pdufa_scraper.py": 4,
-    "portfolio_manager.py": 1,
-    "position_runaway.py": 2,
-    "post_mortem.py": 1,
-    "reconcile_journal_to_broker.py": 1,
-    "rigorous_backtest.py": 3,
-    "sec_filings.py": 3,
-    "sector_classifier.py": 3,
-    "self_tuning.py": 1,
-    "shared_ai_cache.py": 4,
-    "single_trade_gate.py": 1,
-    "slippage_model.py": 1,
-    "specialist_calibration.py": 5,
-    "stop_coverage.py": 1,
-    "strategies/catalyst_filing_short.py": 1,
-    "task_watchdog.py": 6,
-    "virtual_audit.py": 1,
-}
+# Per-file baseline of existing unsafe connects. Empty as of the
+# 2026-05-14 audit — every prior site was converted to a safe
+# pattern. From this point on the test runs in strict mode: any
+# unsafe `sqlite3.connect()` in a critical-path file (not in
+# ALLOWLIST_FILES) fails on first introduction.
+GRANDFATHER_BASELINE: dict = {}
 
 
 class TestEveryDbConnectionIsClosed:
@@ -282,6 +291,88 @@ class TestEveryDbConnectionIsClosed:
                 "  4. If the file is a one-shot script that exits "
                 "before leaks accumulate, add to ALLOWLIST_FILES "
                 "with a written rationale"
+            )
+
+    def test_factory_helper_callers_have_try_finally(self):
+        """Class-level check: any caller of a known connection-factory
+        helper (`_get_conn`, `_open_journal_conn`, `open_profile_db`)
+        must close the returned connection in a try/finally block. The
+        factory itself is exempt (it returns the conn for the caller to
+        manage); the CALLERS are not.
+
+        Why this exists.
+        The 2026-05-14 audit converted 93 direct `sqlite3.connect()`
+        sites to safe patterns. One conversion used a factory-extraction
+        shortcut (`reconcile_journal_to_broker._open_journal_conn`)
+        which made the AST scanner happy on the factory itself but
+        left a 290-line caller body with `conn.close()` outside any
+        try/finally — an exception between connect and close still
+        leaks the handle. This check closes that gap by also tracking
+        callers of the factory."""
+        FACTORY_HELPERS = {
+            "_get_conn",
+            "_open_journal_conn",
+            "open_profile_db",
+            "_open_conn",
+        }
+        violations = []
+        for src_path in _walk_critical_path_files():
+            rel = os.path.relpath(src_path, REPO_ROOT)
+            if os.path.basename(src_path) in ALLOWLIST_FILES:
+                continue
+            try:
+                with open(src_path) as fh:
+                    src = fh.read()
+            except Exception:
+                continue
+            try:
+                tree = ast.parse(src)
+            except SyntaxError:
+                continue
+            parent_lookup = _build_parent_lookup(tree)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Assign):
+                    continue
+                if not isinstance(node.value, ast.Call):
+                    continue
+                fn = node.value.func
+                fn_name = None
+                if isinstance(fn, ast.Name):
+                    fn_name = fn.id
+                elif isinstance(fn, ast.Attribute):
+                    fn_name = fn.attr
+                if fn_name not in FACTORY_HELPERS:
+                    continue
+                # Skip the factory itself (it's the function whose body
+                # contains the assign+return).
+                if _is_factory_return_pattern(node, parent_lookup):
+                    continue
+                # Skip if inside a `with closing(...)` context.
+                parent = parent_lookup.get(id(node))
+                in_with = False
+                while parent is not None:
+                    if isinstance(parent, (ast.With, ast.withitem)):
+                        in_with = True
+                        break
+                    parent = parent_lookup.get(id(parent))
+                if in_with:
+                    continue
+                if _has_try_finally_close_in_scope(node, parent_lookup):
+                    continue
+                violations.append((rel, node.lineno, fn_name))
+        if violations:
+            details = "\n".join(
+                f"  {rel}:{lineno}  conn = {fn_name}(...)  — "
+                f"no surrounding try/finally close"
+                for rel, lineno, fn_name in violations
+            )
+            pytest.fail(
+                "Factory-helper conn assignments without try/finally "
+                "close:\n\n" + details + "\n\nFix:\n"
+                "  conn = _get_conn(...)\n"
+                "  try:\n      ...\n"
+                "  finally:\n      conn.close()\n"
+                "Or use `with closing(_get_conn(...)) as conn:`."
             )
 
     def test_scanner_correctly_flags_unsafe_pattern(self):

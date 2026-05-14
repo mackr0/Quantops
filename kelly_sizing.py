@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from contextlib import closing
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -120,41 +121,40 @@ def compute_kelly_recommendation(
     if not db_path or direction not in ("long", "short"):
         return None
     try:
-        conn = sqlite3.connect(db_path)
-        ptype = "directional_long" if direction == "long" else "directional_short"
-        # Kelly is for sizing NEW entries — only count rows where we
-        # actually took a position. HOLD predictions tagged as
-        # directional_long are EXCLUDED here because they represent
-        # decisions NOT to enter — sizing math doesn't apply.
-        #
-        # 2026-05-12 fix: previously missed WEAK_BUY (long) and
-        # WEAK_SELL/COVER (short), which silently dropped a fraction
-        # of the entry-signal data from Kelly calculation. Same
-        # bug-class as the HOLD-exclusion in pipeline_kind backfill.
-        # Keep these in sync with pipelines.outcomes.kind_from_signal
-        # — every "stock entry" signal must be listed here.
-        if direction == "long":
-            entry_signals = ("BUY", "STRONG_BUY", "WEAK_BUY")
-        else:
-            entry_signals = (
-                "SHORT", "SELL", "STRONG_SELL", "WEAK_SELL", "COVER",
-            )
-        placeholders = ",".join("?" * len(entry_signals))
-        # Use prediction_type when present; fall back to predicted_signal
-        # for legacy rows that haven't been backfilled.
-        rows = conn.execute(
-            "SELECT actual_outcome, actual_return_pct "
-            "FROM ai_predictions "
-            "WHERE status = 'resolved' "
-            "AND actual_return_pct IS NOT NULL "
-            f"AND predicted_signal IN ({placeholders}) "
-            "AND ("
-            "  prediction_type = ? OR "
-            "  prediction_type IS NULL"
-            ")",
-            (*entry_signals, ptype),
-        ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            ptype = "directional_long" if direction == "long" else "directional_short"
+            # Kelly is for sizing NEW entries — only count rows where we
+            # actually took a position. HOLD predictions tagged as
+            # directional_long are EXCLUDED here because they represent
+            # decisions NOT to enter — sizing math doesn't apply.
+            #
+            # 2026-05-12 fix: previously missed WEAK_BUY (long) and
+            # WEAK_SELL/COVER (short), which silently dropped a fraction
+            # of the entry-signal data from Kelly calculation. Same
+            # bug-class as the HOLD-exclusion in pipeline_kind backfill.
+            # Keep these in sync with pipelines.outcomes.kind_from_signal
+            # — every "stock entry" signal must be listed here.
+            if direction == "long":
+                entry_signals = ("BUY", "STRONG_BUY", "WEAK_BUY")
+            else:
+                entry_signals = (
+                    "SHORT", "SELL", "STRONG_SELL", "WEAK_SELL", "COVER",
+                )
+            placeholders = ",".join("?" * len(entry_signals))
+            # Use prediction_type when present; fall back to predicted_signal
+            # for legacy rows that haven't been backfilled.
+            rows = conn.execute(
+                "SELECT actual_outcome, actual_return_pct "
+                "FROM ai_predictions "
+                "WHERE status = 'resolved' "
+                "AND actual_return_pct IS NOT NULL "
+                f"AND predicted_signal IN ({placeholders}) "
+                "AND ("
+                "  prediction_type = ? OR "
+                "  prediction_type IS NULL"
+                ")",
+                (*entry_signals, ptype),
+            ).fetchall()
     except Exception as exc:
         logger.debug("kelly query failed: %s", exc)
         return None

@@ -20,6 +20,7 @@ import os
 import sqlite3
 import time
 import threading
+from contextlib import closing
 from typing import Any, Dict
 from urllib.request import urlopen, Request
 import urllib.parse
@@ -57,16 +58,15 @@ _http_lock = threading.Lock()
 
 def _ensure_cache_table():
     try:
-        conn = sqlite3.connect(_DB_PATH)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS alt_data_cache (
-                cache_key TEXT PRIMARY KEY,
-                data_json TEXT,
-                fetched_at REAL NOT NULL
-            )
-        """)
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(_DB_PATH)) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS alt_data_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    data_json TEXT,
+                    fetched_at REAL NOT NULL
+                )
+            """)
+            conn.commit()
     # SILENT_OK: cache schema init; cache writes that fail leave callers in non-cached path
     except Exception:
         pass
@@ -81,12 +81,11 @@ def _get_cached(key, ttl_type="insider"):
         _ensure_cache_table()
         _table_ensured = True
     try:
-        conn = sqlite3.connect(_DB_PATH)
-        row = conn.execute(
-            "SELECT data_json, fetched_at FROM alt_data_cache WHERE cache_key=?",
-            (key,)
-        ).fetchone()
-        conn.close()
+        with closing(sqlite3.connect(_DB_PATH)) as conn:
+            row = conn.execute(
+                "SELECT data_json, fetched_at FROM alt_data_cache WHERE cache_key=?",
+                (key,)
+            ).fetchone()
         if row and (time.time() - row[1]) < _CACHE_TTL.get(ttl_type, 3600):
             return json.loads(row[0])
     # SILENT_OK: cache read fallback; caller fetches from source on miss
@@ -101,14 +100,13 @@ def _set_cached(key, value):
         _ensure_cache_table()
         _table_ensured = True
     try:
-        conn = sqlite3.connect(_DB_PATH)
-        conn.execute(
-            "INSERT OR REPLACE INTO alt_data_cache (cache_key, data_json, fetched_at) "
-            "VALUES (?, ?, ?)",
-            (key, json.dumps(value, default=str), time.time())
-        )
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(_DB_PATH)) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO alt_data_cache (cache_key, data_json, fetched_at) "
+                "VALUES (?, ?, ?)",
+                (key, json.dumps(value, default=str), time.time())
+            )
+            conn.commit()
     # SILENT_OK: cache write fallback; cache miss is acceptable next time
     except Exception:
         pass
@@ -1155,11 +1153,10 @@ def _altdata_query(project: str, db_filename: str, sql: str,
     if not os.path.exists(path):
         return []
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True,
-                                timeout=2.0)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(sql, params).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True,
+                                      timeout=2.0)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(sql, params).fetchall()
         return rows
     except Exception as exc:
         logger.debug("altdata query failed (%s): %s", project, exc)
@@ -1976,19 +1973,18 @@ def _ensure_app_store_history_table():
     """One-time DDL — daily snapshots of best ranks per ticker.
     Snapshots come from the daily scheduler task."""
     try:
-        conn = sqlite3.connect(_DB_PATH)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS app_store_history (
-                snapshot_date TEXT NOT NULL,
-                ticker TEXT NOT NULL,
-                best_grossing_rank INTEGER,
-                best_free_rank INTEGER,
-                primary_app TEXT,
-                PRIMARY KEY (snapshot_date, ticker)
-            )
-        """)
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(_DB_PATH)) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS app_store_history (
+                    snapshot_date TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    best_grossing_rank INTEGER,
+                    best_free_rank INTEGER,
+                    primary_app TEXT,
+                    PRIMARY KEY (snapshot_date, ticker)
+                )
+            """)
+            conn.commit()
     # SILENT_OK: snapshot-table schema init; writes that fail leave snapshot empty (cron retries)
     except Exception:
         pass
@@ -2003,29 +1999,28 @@ def snapshot_app_store_rankings_for_all_tickers() -> int:
     today = _dt.utcnow().date().isoformat()
     written = 0
     try:
-        conn = sqlite3.connect(_DB_PATH)
-        for ticker in APP_STORE_TICKER_OVERRIDES.keys():
-            r = get_app_store_ranking(ticker)
-            if not r.get("has_data"):
-                continue
-            primary = (r.get("apps") or [{}])[0].get("name", "")
-            try:
-                conn.execute(
-                    """INSERT OR REPLACE INTO app_store_history
-                       (snapshot_date, ticker, best_grossing_rank,
-                        best_free_rank, primary_app)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (today, ticker.upper(),
-                     r.get("best_grossing_rank"),
-                     r.get("best_free_rank"),
-                     primary),
-                )
-                written += 1
-            # SILENT_OK: per-row snapshot write; one bad row shouldn't kill the loop
-            except Exception:
-                continue
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(_DB_PATH)) as conn:
+            for ticker in APP_STORE_TICKER_OVERRIDES.keys():
+                r = get_app_store_ranking(ticker)
+                if not r.get("has_data"):
+                    continue
+                primary = (r.get("apps") or [{}])[0].get("name", "")
+                try:
+                    conn.execute(
+                        """INSERT OR REPLACE INTO app_store_history
+                           (snapshot_date, ticker, best_grossing_rank,
+                            best_free_rank, primary_app)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (today, ticker.upper(),
+                         r.get("best_grossing_rank"),
+                         r.get("best_free_rank"),
+                         primary),
+                    )
+                    written += 1
+                # SILENT_OK: per-row snapshot write; one bad row shouldn't kill the loop
+                except Exception:
+                    continue
+            conn.commit()
     except Exception as exc:
         logging.warning("app_store snapshot failed: %s", exc)
     return written
@@ -2037,17 +2032,16 @@ def _get_wow_change(ticker: str):
     Negative delta = rank improved (lower number = better)."""
     _ensure_app_store_history_table()
     try:
-        conn = sqlite3.connect(_DB_PATH)
-        row = conn.execute(
-            """SELECT best_grossing_rank, best_free_rank
-            FROM app_store_history
-            WHERE ticker = ?
-              AND snapshot_date >= date('now', '-9 days')
-              AND snapshot_date <= date('now', '-6 days')
-            ORDER BY snapshot_date DESC LIMIT 1""",
-            (ticker.upper(),),
-        ).fetchone()
-        conn.close()
+        with closing(sqlite3.connect(_DB_PATH)) as conn:
+            row = conn.execute(
+                """SELECT best_grossing_rank, best_free_rank
+                FROM app_store_history
+                WHERE ticker = ?
+                  AND snapshot_date >= date('now', '-9 days')
+                  AND snapshot_date <= date('now', '-6 days')
+                ORDER BY snapshot_date DESC LIMIT 1""",
+                (ticker.upper(),),
+            ).fetchone()
     except Exception:
         return None, None
     return (row[0] if row else None, row[1] if row else None)

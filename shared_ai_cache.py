@@ -44,6 +44,7 @@ import pickle
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -75,23 +76,22 @@ def _init_schema(db_path: Optional[str] = None) -> None:
         if db_path in _schema_initialized:
             return
         try:
-            conn = sqlite3.connect(db_path)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS shared_ai_cache (
-                    cache_key   TEXT NOT NULL,
-                    cache_kind  TEXT NOT NULL,
-                    bucket      INTEGER NOT NULL,
-                    payload     BLOB NOT NULL,
-                    fetched_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                    PRIMARY KEY (cache_key, cache_kind)
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS shared_ai_cache (
+                        cache_key   TEXT NOT NULL,
+                        cache_kind  TEXT NOT NULL,
+                        bucket      INTEGER NOT NULL,
+                        payload     BLOB NOT NULL,
+                        fetched_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                        PRIMARY KEY (cache_key, cache_kind)
+                    )
+                """)
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_shared_ai_cache_kind "
+                    "ON shared_ai_cache(cache_kind, bucket)"
                 )
-            """)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_shared_ai_cache_kind "
-                "ON shared_ai_cache(cache_kind, bucket)"
-            )
-            conn.commit()
-            conn.close()
+                conn.commit()
             _schema_initialized.add(db_path)
         except Exception as exc:
             logger.warning("Failed to init shared_ai_cache: %s", exc)
@@ -112,13 +112,12 @@ def get(cache_kind: str, cache_key: str,
     _init_schema(db_path)
     cur_bucket = int(time.time() / bucket_seconds)
     try:
-        conn = sqlite3.connect(db_path)
-        row = conn.execute(
-            "SELECT payload, bucket FROM shared_ai_cache "
-            "WHERE cache_kind = ? AND cache_key = ?",
-            (cache_kind, cache_key),
-        ).fetchone()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            row = conn.execute(
+                "SELECT payload, bucket FROM shared_ai_cache "
+                "WHERE cache_kind = ? AND cache_key = ?",
+                (cache_kind, cache_key),
+            ).fetchone()
     except Exception:
         return None
     if not row:
@@ -155,15 +154,14 @@ def put(cache_kind: str, cache_key: str, value: Any,
                        cache_kind, cache_key, exc)
         return
     try:
-        conn = sqlite3.connect(db_path)
-        conn.execute(
-            "INSERT OR REPLACE INTO shared_ai_cache "
-            "(cache_key, cache_kind, bucket, payload, fetched_at) "
-            "VALUES (?, ?, ?, ?, datetime('now'))",
-            (cache_key, cache_kind, cur_bucket, payload),
-        )
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO shared_ai_cache "
+                "(cache_key, cache_kind, bucket, payload, fetched_at) "
+                "VALUES (?, ?, ?, ?, datetime('now'))",
+                (cache_key, cache_kind, cur_bucket, payload),
+            )
+            conn.commit()
     except Exception as exc:
         logger.warning("Failed to write shared_ai_cache for %s/%s: %s",
                        cache_kind, cache_key, exc)
@@ -176,13 +174,12 @@ def clear_kind(cache_kind: str, db_path: Optional[str] = None) -> None:
         return
     _init_schema(db_path)
     try:
-        conn = sqlite3.connect(db_path)
-        conn.execute(
-            "DELETE FROM shared_ai_cache WHERE cache_kind = ?",
-            (cache_kind,),
-        )
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.execute(
+                "DELETE FROM shared_ai_cache WHERE cache_kind = ?",
+                (cache_kind,),
+            )
+            conn.commit()
     # SILENT_OK: cache-purge by kind; cache miss is acceptable on next read
     except Exception:
         pass

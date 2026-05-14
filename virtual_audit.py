@@ -102,9 +102,9 @@ def audit_virtual_profile(db_path: str, initial_capital: float,
     # 5. Trade count sanity — log if no trades at all (profile may be misconfigured)
     try:
         import sqlite3
-        conn = sqlite3.connect(db_path)
-        count = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
-        conn.close()
+        from contextlib import closing
+        with closing(sqlite3.connect(db_path)) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
         if count == 0:
             problems.append("No trades recorded — profile may not be executing")
     # SILENT_OK: trade-count sanity check is best-effort; audit reports continue without it

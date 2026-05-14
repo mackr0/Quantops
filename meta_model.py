@@ -154,40 +154,40 @@ def build_training_set(db_path: str,
     Returns (None, None, None) if insufficient resolved data.
     """
     import sqlite3
+    from contextlib import closing
 
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        # P1.12 of LONG_SHORT_PLAN.md — pull prediction_type when
-        # available. Legacy DBs may not have the column yet (fresh test
-        # fixtures, pre-migration prod). Probe schema first; fall back
-        # to query without prediction_type when missing — _resolve_one's
-        # legacy fallback in extract_features still works on those rows.
-        cols = {r[1] for r in conn.execute(
-            "PRAGMA table_info(ai_predictions)"
-        )}
-        has_ptype = "prediction_type" in cols
-        # ORDER BY id ASC is REQUIRED for time-ordered train/test split.
-        if has_ptype:
-            rows = conn.execute(
-                "SELECT features_json, actual_outcome, prediction_type "
-                "FROM ai_predictions "
-                "WHERE status = 'resolved' "
-                "AND actual_outcome IN ('win', 'loss') "
-                "AND features_json IS NOT NULL "
-                "ORDER BY id ASC"
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT features_json, actual_outcome, "
-                "NULL AS prediction_type "
-                "FROM ai_predictions "
-                "WHERE status = 'resolved' "
-                "AND actual_outcome IN ('win', 'loss') "
-                "AND features_json IS NOT NULL "
-                "ORDER BY id ASC"
-            ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            # P1.12 of LONG_SHORT_PLAN.md — pull prediction_type when
+            # available. Legacy DBs may not have the column yet (fresh test
+            # fixtures, pre-migration prod). Probe schema first; fall back
+            # to query without prediction_type when missing — _resolve_one's
+            # legacy fallback in extract_features still works on those rows.
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(ai_predictions)"
+            )}
+            has_ptype = "prediction_type" in cols
+            # ORDER BY id ASC is REQUIRED for time-ordered train/test split.
+            if has_ptype:
+                rows = conn.execute(
+                    "SELECT features_json, actual_outcome, prediction_type "
+                    "FROM ai_predictions "
+                    "WHERE status = 'resolved' "
+                    "AND actual_outcome IN ('win', 'loss') "
+                    "AND features_json IS NOT NULL "
+                    "ORDER BY id ASC"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT features_json, actual_outcome, "
+                    "NULL AS prediction_type "
+                    "FROM ai_predictions "
+                    "WHERE status = 'resolved' "
+                    "AND actual_outcome IN ('win', 'loss') "
+                    "AND features_json IS NOT NULL "
+                    "ORDER BY id ASC"
+                ).fetchall()
     except Exception as exc:
         logger.warning("Failed to load training data from %s: %s", db_path, exc)
         return None, None, None

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import math
+from contextlib import closing
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -321,50 +322,48 @@ def upsert_pair(db_path: str, pair: Pair) -> int:
     if (pair.symbol_a.upper(), pair.symbol_b.upper()) != (a, b):
         hedge_ratio = 1.0 / hedge_ratio if abs(hedge_ratio) > 1e-9 else 0.0
 
-    conn = _get_conn(db_path)
-    cur = conn.execute(
-        "SELECT id FROM stat_arb_pairs WHERE symbol_a=? AND symbol_b=?",
-        (a, b),
-    )
-    row = cur.fetchone()
-    if row:
-        conn.execute(
-            """UPDATE stat_arb_pairs
-               SET hedge_ratio=?, p_value=?, half_life_days=?,
-                   correlation=?, retested_at=datetime('now'),
-                   status=CASE WHEN status='retired' THEN 'active' ELSE status END,
-                   retired_at=NULL, retirement_reason=NULL
-               WHERE id=?""",
-            (hedge_ratio, pair.p_value, pair.half_life_days,
-             pair.correlation, row["id"]),
-        )
-        pair_id = row["id"]
-    else:
+    with closing(_get_conn(db_path)) as conn:
         cur = conn.execute(
-            """INSERT INTO stat_arb_pairs
-               (symbol_a, symbol_b, hedge_ratio, p_value,
-                half_life_days, correlation, status)
-               VALUES (?, ?, ?, ?, ?, ?, 'active')""",
-            (a, b, hedge_ratio, pair.p_value, pair.half_life_days,
-             pair.correlation),
+            "SELECT id FROM stat_arb_pairs WHERE symbol_a=? AND symbol_b=?",
+            (a, b),
         )
-        pair_id = cur.lastrowid
-    conn.commit()
-    conn.close()
+        row = cur.fetchone()
+        if row:
+            conn.execute(
+                """UPDATE stat_arb_pairs
+                   SET hedge_ratio=?, p_value=?, half_life_days=?,
+                       correlation=?, retested_at=datetime('now'),
+                       status=CASE WHEN status='retired' THEN 'active' ELSE status END,
+                       retired_at=NULL, retirement_reason=NULL
+                   WHERE id=?""",
+                (hedge_ratio, pair.p_value, pair.half_life_days,
+                 pair.correlation, row["id"]),
+            )
+            pair_id = row["id"]
+        else:
+            cur = conn.execute(
+                """INSERT INTO stat_arb_pairs
+                   (symbol_a, symbol_b, hedge_ratio, p_value,
+                    half_life_days, correlation, status)
+                   VALUES (?, ?, ?, ?, ?, ?, 'active')""",
+                (a, b, hedge_ratio, pair.p_value, pair.half_life_days,
+                 pair.correlation),
+            )
+            pair_id = cur.lastrowid
+        conn.commit()
     return pair_id
 
 
 def get_active_pairs(db_path: str) -> List[Pair]:
     """Return all active pairs from the book."""
     from journal import _get_conn
-    conn = _get_conn(db_path)
-    rows = conn.execute(
-        """SELECT symbol_a, symbol_b, hedge_ratio, p_value,
-                  half_life_days, correlation
-           FROM stat_arb_pairs WHERE status='active'
-           ORDER BY p_value ASC""",
-    ).fetchall()
-    conn.close()
+    with closing(_get_conn(db_path)) as conn:
+        rows = conn.execute(
+            """SELECT symbol_a, symbol_b, hedge_ratio, p_value,
+                      half_life_days, correlation
+               FROM stat_arb_pairs WHERE status='active'
+               ORDER BY p_value ASC""",
+        ).fetchall()
     return [
         Pair(symbol_a=r["symbol_a"], symbol_b=r["symbol_b"],
              hedge_ratio=float(r["hedge_ratio"]),
@@ -380,17 +379,16 @@ def retire_pair(db_path: str, sym_a: str, sym_b: str,
     """Mark a pair retired with a reason. Returns True if a row updated."""
     from journal import _get_conn
     a, b = _canonical_order(sym_a, sym_b)
-    conn = _get_conn(db_path)
-    cur = conn.execute(
-        """UPDATE stat_arb_pairs
-           SET status='retired', retired_at=datetime('now'),
-               retirement_reason=?
-           WHERE symbol_a=? AND symbol_b=? AND status='active'""",
-        (reason, a, b),
-    )
-    conn.commit()
-    affected = cur.rowcount
-    conn.close()
+    with closing(_get_conn(db_path)) as conn:
+        cur = conn.execute(
+            """UPDATE stat_arb_pairs
+               SET status='retired', retired_at=datetime('now'),
+                   retirement_reason=?
+               WHERE symbol_a=? AND symbol_b=? AND status='active'""",
+            (reason, a, b),
+        )
+        conn.commit()
+        affected = cur.rowcount
     return affected > 0
 
 
@@ -755,15 +753,14 @@ def _lookup_active_pair(db_path: str, symbol_a: str,
     None if no active row matches."""
     a, b = _canonical_order(symbol_a, symbol_b)
     from journal import _get_conn
-    conn = _get_conn(db_path)
-    row = conn.execute(
-        """SELECT symbol_a, symbol_b, hedge_ratio, p_value,
-                  half_life_days, correlation
-           FROM stat_arb_pairs
-           WHERE symbol_a=? AND symbol_b=? AND status='active'""",
-        (a, b),
-    ).fetchone()
-    conn.close()
+    with closing(_get_conn(db_path)) as conn:
+        row = conn.execute(
+            """SELECT symbol_a, symbol_b, hedge_ratio, p_value,
+                      half_life_days, correlation
+               FROM stat_arb_pairs
+               WHERE symbol_a=? AND symbol_b=? AND status='active'""",
+            (a, b),
+        ).fetchone()
     if not row:
         return None
     return Pair(

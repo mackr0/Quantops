@@ -23,6 +23,7 @@ or assigned, the wheel state machine takes over the cycle.
 from __future__ import annotations
 
 import logging
+from contextlib import closing
 from datetime import date as _date, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
@@ -46,21 +47,21 @@ def find_near_expiry_options(db_path: str,
     today = today or _date.today()
     cutoff = today + timedelta(days=window_days)
     from journal import _get_conn
-    conn = _get_conn(db_path)
-    cur = conn.execute(
-        """SELECT id, symbol, side, qty, occ_symbol, option_strategy,
-                  expiry, strike, price, decision_price,
-                  ai_confidence, ai_reasoning
-           FROM trades
-           WHERE signal_type IN ('OPTIONS', 'MULTILEG')
-             AND status='open'
-             AND expiry IS NOT NULL
-             AND expiry >= ?
-             AND expiry <= ?""",
-        (today.isoformat(), cutoff.isoformat()),
-    )
-    cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    with closing(_get_conn(db_path)) as conn:
+        cur = conn.execute(
+            """SELECT id, symbol, side, qty, occ_symbol, option_strategy,
+                      expiry, strike, price, decision_price,
+                      ai_confidence, ai_reasoning
+               FROM trades
+               WHERE signal_type IN ('OPTIONS', 'MULTILEG')
+                 AND status='open'
+                 AND expiry IS NOT NULL
+                 AND expiry >= ?
+                 AND expiry <= ?""",
+            (today.isoformat(), cutoff.isoformat()),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
 def _is_credit_position(option_row: Dict[str, Any]) -> bool:
@@ -257,78 +258,81 @@ def auto_close_high_profit_credits(
 
     from journal import _get_conn
     conn = _get_conn(db_path)
-    for row in rows:
-        try:
-            cur_price = None
-            occ = row.get("occ_symbol")
-            if quote_lookup and occ:
-                try:
-                    cur_price = quote_lookup(occ)
-                except Exception:
-                    cur_price = None
-            if cur_price is None:
-                continue
-
-            outcome = evaluate_for_roll(
-                row, cur_price,
-                auto_close_profit_pct=auto_close_profit_pct,
-                roll_recommend_profit_pct=roll_recommend_profit_pct,
-            )
-            if outcome["action"] != "AUTO_CLOSE":
-                continue
-
-            # Submit closing order — opposite side of the entry
-            entry_side = row.get("side", "").lower()
-            close_side = "buy" if entry_side == "sell" else "sell"
-            qty = int(row.get("qty") or 0)
-            if qty <= 0:
-                continue
+    try:
+        for row in rows:
             try:
-                order = api.submit_order(
-                    symbol=occ, qty=qty, side=close_side,
-                    type="market", time_in_force="day",
+                cur_price = None
+                occ = row.get("occ_symbol")
+                if quote_lookup and occ:
+                    try:
+                        cur_price = quote_lookup(occ)
+                    except Exception:
+                        cur_price = None
+                if cur_price is None:
+                    continue
+
+                outcome = evaluate_for_roll(
+                    row, cur_price,
+                    auto_close_profit_pct=auto_close_profit_pct,
+                    roll_recommend_profit_pct=roll_recommend_profit_pct,
                 )
-                order_id = getattr(order, "id", None)
-            except Exception as exc:
-                summary["errors"] += 1
+                if outcome["action"] != "AUTO_CLOSE":
+                    continue
+
+                # Submit closing order — opposite side of the entry
+                entry_side = row.get("side", "").lower()
+                close_side = "buy" if entry_side == "sell" else "sell"
+                qty = int(row.get("qty") or 0)
+                if qty <= 0:
+                    continue
+                try:
+                    order = api.submit_order(
+                        symbol=occ, qty=qty, side=close_side,
+                        type="market", time_in_force="day",
+                    )
+                    order_id = getattr(order, "id", None)
+                except Exception as exc:
+                    summary["errors"] += 1
+                    summary["details"].append({
+                        "id": row["id"], "occ": occ,
+                        "error": f"close submit failed: {exc}",
+                    })
+                    continue
+
+                # Mark journal — premium realized = (entry_price - cur_price) * mult
+                # NEW (2026-05-07): status='pending_fill' until broker
+                # confirms. _task_update_fills will flip to 'closed' once
+                # filled_avg_price populates on this row's order_id.
+                # Without this, an async-canceled close would leave the
+                # journal claiming realized P&L the broker didn't honor.
+                premium_in = float(
+                    row.get("decision_price") or row.get("price") or 0)
+                mult = qty * 100
+                realized_pnl = (premium_in - cur_price) * mult
+                conn.execute(
+                    """UPDATE trades
+                       SET status='pending_fill', pnl=?, reason=?,
+                           order_id=?
+                       WHERE id=?""",
+                    (realized_pnl, outcome["reason"], order_id, row["id"]),
+                )
+                conn.commit()
+                summary["auto_closed"] += 1
                 summary["details"].append({
                     "id": row["id"], "occ": occ,
-                    "error": f"close submit failed: {exc}",
+                    "profit_pct": outcome["profit_pct"],
+                    "pnl": realized_pnl, "close_order_id": order_id,
                 })
-                continue
-
-            # Mark journal — premium realized = (entry_price - cur_price) * mult
-            # NEW (2026-05-07): status='pending_fill' until broker
-            # confirms. _task_update_fills will flip to 'closed' once
-            # filled_avg_price populates on this row's order_id.
-            # Without this, an async-canceled close would leave the
-            # journal claiming realized P&L the broker didn't honor.
-            premium_in = float(
-                row.get("decision_price") or row.get("price") or 0)
-            mult = qty * 100
-            realized_pnl = (premium_in - cur_price) * mult
-            conn.execute(
-                """UPDATE trades
-                   SET status='pending_fill', pnl=?, reason=?,
-                       order_id=?
-                   WHERE id=?""",
-                (realized_pnl, outcome["reason"], order_id, row["id"]),
-            )
-            conn.commit()
-            summary["auto_closed"] += 1
-            summary["details"].append({
-                "id": row["id"], "occ": occ,
-                "profit_pct": outcome["profit_pct"],
-                "pnl": realized_pnl, "close_order_id": order_id,
-            })
-            logger.info(
-                "Auto-closed %s at %.0f%% max profit; pnl=%+.2f",
-                occ, outcome["profit_pct"] * 100, realized_pnl,
-            )
-        except Exception as exc:
-            summary["errors"] += 1
-            logger.exception(
-                "Roll-manager evaluation failed for %s: %s",
-                row.get("id"), exc,
-            )
+                logger.info(
+                    "Auto-closed %s at %.0f%% max profit; pnl=%+.2f",
+                    occ, outcome["profit_pct"] * 100, realized_pnl,
+                )
+            except Exception as exc:
+                summary["errors"] += 1
+                logger.exception(
+                    "Roll-manager evaluation failed for %s: %s",
+                    row.get("id"), exc,
+                )
+    finally:
+        conn.close()
     return summary

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from contextlib import closing
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -41,13 +42,12 @@ def _latest_ai_confidence(db_path: str, symbol: str) -> Optional[float]:
     if not db_path:
         return None
     try:
-        conn = sqlite3.connect(db_path)
-        row = conn.execute(
-            "SELECT confidence FROM ai_predictions "
-            "WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1",
-            (symbol,),
-        ).fetchone()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            row = conn.execute(
+                "SELECT confidence FROM ai_predictions "
+                "WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1",
+                (symbol,),
+            ).fetchone()
         return float(row[0]) if row and row[0] is not None else None
     except Exception as exc:
         logger.warning("conviction_tp: AI confidence lookup failed for %s: %s",

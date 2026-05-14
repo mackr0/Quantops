@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -63,14 +63,13 @@ def track_run(db_path: str, task_name: str):
 
 def _insert_start(db_path: str, task_name: str) -> Optional[int]:
     try:
-        conn = sqlite3.connect(db_path)
-        cur = conn.execute(
-            "INSERT INTO task_runs (task_name) VALUES (?)",
-            (task_name,),
-        )
-        conn.commit()
-        rid = int(cur.lastrowid)
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            cur = conn.execute(
+                "INSERT INTO task_runs (task_name) VALUES (?)",
+                (task_name,),
+            )
+            conn.commit()
+            rid = int(cur.lastrowid)
         return rid
     except Exception as exc:
         logger.debug("track_run start failed: %s", exc)
@@ -82,14 +81,13 @@ def _mark_completed(db_path: str, run_id: Optional[int],
     if run_id is None:
         return
     try:
-        conn = sqlite3.connect(db_path)
-        conn.execute(
-            "UPDATE task_runs SET completed_at = datetime('now'), "
-            "duration_seconds = ?, status = 'completed' WHERE id = ?",
-            (round(duration, 2), run_id),
-        )
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.execute(
+                "UPDATE task_runs SET completed_at = datetime('now'), "
+                "duration_seconds = ?, status = 'completed' WHERE id = ?",
+                (round(duration, 2), run_id),
+            )
+            conn.commit()
     except Exception as exc:
         logger.debug("track_run complete failed: %s", exc)
 
@@ -99,15 +97,14 @@ def _mark_failed(db_path: str, run_id: Optional[int],
     if run_id is None:
         return
     try:
-        conn = sqlite3.connect(db_path)
-        conn.execute(
-            "UPDATE task_runs SET completed_at = datetime('now'), "
-            "duration_seconds = ?, status = 'failed', "
-            "error_message = ? WHERE id = ?",
-            (round(duration, 2), error, run_id),
-        )
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.execute(
+                "UPDATE task_runs SET completed_at = datetime('now'), "
+                "duration_seconds = ?, status = 'failed', "
+                "error_message = ? WHERE id = ?",
+                (round(duration, 2), error, run_id),
+            )
+            conn.commit()
     except Exception as exc:
         logger.debug("track_run fail mark failed: %s", exc)
 
@@ -127,27 +124,26 @@ def check_stalled_runs(db_path: str,
     """
     stalled: List[Dict[str, Any]] = []
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            """SELECT id, task_name, started_at,
-                      (julianday('now') - julianday(started_at)) * 24 * 60
-                      AS minutes_elapsed
-               FROM task_runs
-               WHERE completed_at IS NULL
-                 AND status = 'running'
-                 AND started_at <= datetime('now', ?)""",
-            (f"-{int(stall_minutes)} minutes",),
-        ).fetchall()
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """SELECT id, task_name, started_at,
+                          (julianday('now') - julianday(started_at)) * 24 * 60
+                          AS minutes_elapsed
+                   FROM task_runs
+                   WHERE completed_at IS NULL
+                     AND status = 'running'
+                     AND started_at <= datetime('now', ?)""",
+                (f"-{int(stall_minutes)} minutes",),
+            ).fetchall()
 
-        for row in rows:
-            stalled.append(dict(row))
-            conn.execute(
-                "UPDATE task_runs SET status = 'stalled' WHERE id = ?",
-                (row["id"],),
-            )
-        conn.commit()
-        conn.close()
+            for row in rows:
+                stalled.append(dict(row))
+                conn.execute(
+                    "UPDATE task_runs SET status = 'stalled' WHERE id = ?",
+                    (row["id"],),
+                )
+            conn.commit()
     except Exception as exc:
         logger.warning("watchdog scan failed: %s", exc)
 
@@ -162,15 +158,14 @@ def recent_runs(db_path: str, hours: int = 24,
                 limit: int = 100) -> List[Dict[str, Any]]:
     """Return recent task runs for dashboard display."""
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT * FROM task_runs "
-            "WHERE started_at >= datetime('now', ?) "
-            "ORDER BY started_at DESC LIMIT ?",
-            (f"-{int(hours)} hours", limit),
-        ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM task_runs "
+                "WHERE started_at >= datetime('now', ?) "
+                "ORDER BY started_at DESC LIMIT ?",
+                (f"-{int(hours)} hours", limit),
+            ).fetchall()
         return [dict(r) for r in rows]
     except Exception:
         return []
@@ -180,13 +175,12 @@ def summary(db_path: str, hours: int = 24) -> Dict[str, int]:
     """Counts by status over the last N hours."""
     counts = {"completed": 0, "failed": 0, "stalled": 0, "running": 0}
     try:
-        conn = sqlite3.connect(db_path)
-        rows = conn.execute(
-            "SELECT status, COUNT(*) FROM task_runs "
-            "WHERE started_at >= datetime('now', ?) GROUP BY status",
-            (f"-{int(hours)} hours",),
-        ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) FROM task_runs "
+                "WHERE started_at >= datetime('now', ?) GROUP BY status",
+                (f"-{int(hours)} hours",),
+            ).fetchall()
         for status, n in rows:
             counts[status] = int(n)
     # SILENT_OK: task-status counts read; counts dict stays empty (caller treats as no data)

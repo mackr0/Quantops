@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import closing
 from typing import Any, Dict, Optional, Set
 
 logger = logging.getLogger(__name__)
@@ -135,13 +136,12 @@ def set_override(profile_id: int, param_name: str, regime: str,
     else:
         overrides.pop(param_name, None)
 
-    conn = _get_conn()
-    conn.execute(
-        "UPDATE trading_profiles SET regime_overrides = ? WHERE id = ?",
-        (json.dumps(overrides), profile_id),
-    )
-    conn.commit()
-    conn.close()
+    with closing(_get_conn()) as conn:
+        conn.execute(
+            "UPDATE trading_profiles SET regime_overrides = ? WHERE id = ?",
+            (json.dumps(overrides), profile_id),
+        )
+        conn.commit()
 
 
 _regime_cache: Dict[str, Any] = {"regime": None, "ts": 0}

@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import sqlite3
+from contextlib import closing
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -75,11 +76,10 @@ def check_db(path: str) -> Dict[str, str]:
         if magic != _SQLITE_MAGIC:
             return {"status": "corrupt",
                     "detail": "missing SQLite file header magic"}
-        conn = sqlite3.connect(
+        with closing(sqlite3.connect(
             f"file:{path}?mode=ro&immutable=1", uri=True, timeout=5.0,
-        )
-        result = conn.execute("PRAGMA quick_check").fetchall()
-        conn.close()
+        )) as conn:
+            result = conn.execute("PRAGMA quick_check").fetchall()
         # An OK DB returns exactly [("ok",)]
         if len(result) == 1 and result[0][0] == "ok":
             return {"status": "ok", "detail": "ok"}

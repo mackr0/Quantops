@@ -26,6 +26,7 @@ import json
 import logging
 import sqlite3
 import time
+from contextlib import closing
 from typing import Any, Dict, Optional
 
 import config
@@ -43,18 +44,17 @@ def _ensure_cache_table() -> None:
     if _table_ensured:
         return
     try:
-        conn = sqlite3.connect(_DB_PATH)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS factor_cache (
-                symbol TEXT NOT NULL,
-                factor TEXT NOT NULL,
-                value REAL,
-                fetched_at REAL NOT NULL,
-                PRIMARY KEY (symbol, factor)
-            )
-        """)
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(_DB_PATH)) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS factor_cache (
+                    symbol TEXT NOT NULL,
+                    factor TEXT NOT NULL,
+                    value REAL,
+                    fetched_at REAL NOT NULL,
+                    PRIMARY KEY (symbol, factor)
+                )
+            """)
+            conn.commit()
         _table_ensured = True
     except Exception as exc:
         logger.debug("factor_cache table ensure failed: %s", exc)
@@ -63,13 +63,12 @@ def _ensure_cache_table() -> None:
 def _get_cached(symbol: str, factor: str) -> Optional[float]:
     _ensure_cache_table()
     try:
-        conn = sqlite3.connect(_DB_PATH)
-        row = conn.execute(
-            "SELECT value, fetched_at FROM factor_cache "
-            "WHERE symbol = ? AND factor = ?",
-            (symbol.upper(), factor),
-        ).fetchone()
-        conn.close()
+        with closing(sqlite3.connect(_DB_PATH)) as conn:
+            row = conn.execute(
+                "SELECT value, fetched_at FROM factor_cache "
+                "WHERE symbol = ? AND factor = ?",
+                (symbol.upper(), factor),
+            ).fetchone()
         if row and (time.time() - row[1]) < _FACTOR_TTL_SECONDS:
             return row[0]
     # SILENT_OK: factor cache read fallback; caller fetches from source on miss
@@ -81,15 +80,14 @@ def _get_cached(symbol: str, factor: str) -> Optional[float]:
 def _set_cached(symbol: str, factor: str, value: Optional[float]) -> None:
     _ensure_cache_table()
     try:
-        conn = sqlite3.connect(_DB_PATH)
-        conn.execute(
-            "INSERT OR REPLACE INTO factor_cache "
-            "(symbol, factor, value, fetched_at) "
-            "VALUES (?, ?, ?, ?)",
-            (symbol.upper(), factor, value, time.time()),
-        )
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(_DB_PATH)) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO factor_cache "
+                "(symbol, factor, value, fetched_at) "
+                "VALUES (?, ?, ?, ?)",
+                (symbol.upper(), factor, value, time.time()),
+            )
+            conn.commit()
     # SILENT_OK: factor cache write fallback; cache miss is acceptable next time
     except Exception:
         pass

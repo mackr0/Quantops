@@ -29,6 +29,7 @@ import logging
 import math
 import sqlite3
 import statistics
+from contextlib import closing
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -238,39 +239,37 @@ def snapshot_all_strategies(
 
     snapshot_date = as_of or datetime.now().strftime("%Y-%m-%d")
 
-    conn = sqlite3.connect(db_path)
-    try:
-        rows = conn.execute(
-            "SELECT DISTINCT strategy_type FROM ai_predictions "
-            "WHERE strategy_type IS NOT NULL AND strategy_type != ''"
-        ).fetchall()
-    except sqlite3.OperationalError:
-        conn.close()
-        return []
-
-    types = [r[0] for r in rows]
-
-    for stype in types:
-        metrics = compute_rolling_metrics(db_path, stype, window_days, as_of)
+    with closing(sqlite3.connect(db_path)) as conn:
         try:
-            conn.execute(
-                """INSERT OR REPLACE INTO signal_performance_history
-                   (snapshot_date, strategy_type, window_days,
-                    n_predictions, wins, losses, win_rate,
-                    avg_return_pct, sharpe_ratio, profit_factor)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    snapshot_date, stype, window_days,
-                    metrics["n_predictions"], metrics["wins"], metrics["losses"],
-                    metrics["win_rate"], metrics["avg_return_pct"],
-                    metrics["sharpe_ratio"], metrics.get("profit_factor"),
-                ),
-            )
-        except sqlite3.OperationalError as exc:
-            logger.warning("Failed to write snapshot for %s: %s", stype, exc)
+            rows = conn.execute(
+                "SELECT DISTINCT strategy_type FROM ai_predictions "
+                "WHERE strategy_type IS NOT NULL AND strategy_type != ''"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
 
-    conn.commit()
-    conn.close()
+        types = [r[0] for r in rows]
+
+        for stype in types:
+            metrics = compute_rolling_metrics(db_path, stype, window_days, as_of)
+            try:
+                conn.execute(
+                    """INSERT OR REPLACE INTO signal_performance_history
+                       (snapshot_date, strategy_type, window_days,
+                        n_predictions, wins, losses, win_rate,
+                        avg_return_pct, sharpe_ratio, profit_factor)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        snapshot_date, stype, window_days,
+                        metrics["n_predictions"], metrics["wins"], metrics["losses"],
+                        metrics["win_rate"], metrics["avg_return_pct"],
+                        metrics["sharpe_ratio"], metrics.get("profit_factor"),
+                    ),
+                )
+            except sqlite3.OperationalError as exc:
+                logger.warning("Failed to write snapshot for %s: %s", stype, exc)
+
+        conn.commit()
     logger.info("Wrote %d signal performance snapshots for %s", len(types), snapshot_date)
     return types
 

@@ -20,6 +20,7 @@ predictions in each profile's DB.
 from __future__ import annotations
 
 import logging
+from contextlib import closing
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -37,14 +38,13 @@ def _peer_profiles(source_profile_id: int) -> List[Dict[str, Any]]:
         user_id = source.get("user_id")
         if user_id is None:
             return []
-        conn = _get_conn()
-        rows = conn.execute(
-            "SELECT * FROM trading_profiles "
-            "WHERE user_id = ? AND id != ? "
-            "  AND COALESCE(enabled, 1) = 1",
-            (user_id, source_profile_id),
-        ).fetchall()
-        conn.close()
+        with closing(_get_conn()) as conn:
+            rows = conn.execute(
+                "SELECT * FROM trading_profiles "
+                "WHERE user_id = ? AND id != ? "
+                "  AND COALESCE(enabled, 1) = 1",
+                (user_id, source_profile_id),
+            ).fetchall()
         return [dict(r) for r in rows]
     except Exception as exc:
         logger.debug("peer enumeration failed: %s", exc)

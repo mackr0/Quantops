@@ -36,6 +36,7 @@ The wheel runs only on profiles that opt in via `wheel_symbols`
 from __future__ import annotations
 
 import logging
+from contextlib import closing
 from datetime import date as _date
 from typing import Any, Dict, List, Optional
 
@@ -74,19 +75,19 @@ def _open_options_for_symbol(db_path: str, symbol: str
                                   ) -> List[Dict[str, Any]]:
     """Return open OPTIONS rows for a given underlying (single-leg only)."""
     from journal import _get_conn
-    conn = _get_conn(db_path)
-    cur = conn.execute(
-        """SELECT id, side, qty, occ_symbol, option_strategy, expiry,
-                  strike, decision_price
-           FROM trades
-           WHERE symbol = ?
-             AND signal_type = 'OPTIONS'
-             AND status = 'open'
-             AND expiry IS NOT NULL""",
-        (symbol.upper(),),
-    )
-    cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    with closing(_get_conn(db_path)) as conn:
+        cur = conn.execute(
+            """SELECT id, side, qty, occ_symbol, option_strategy, expiry,
+                      strike, decision_price
+               FROM trades
+               WHERE symbol = ?
+                 AND signal_type = 'OPTIONS'
+                 AND status = 'open'
+                 AND expiry IS NOT NULL""",
+            (symbol.upper(),),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
 def determine_wheel_state(db_path: str,

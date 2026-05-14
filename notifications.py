@@ -5,6 +5,7 @@ import logging
 import threading
 import urllib.request
 import urllib.error
+from contextlib import closing
 from datetime import date, datetime
 from typing import Dict
 
@@ -562,14 +563,13 @@ def notify_daily_summary(ctx=None):
     # -- AI vetoes today -----------------------------------------------------
     try:
         from journal import _get_conn
-        conn = _get_conn(db_path)
-        vetoes = conn.execute(
-            "SELECT * FROM signals WHERE acted_on = 0 AND timestamp LIKE ? "
-            "AND signal IN ('BUY','STRONG_BUY','SELL','STRONG_SELL') "
-            "ORDER BY timestamp DESC",
-            (f"{today_str}%",),
-        ).fetchall()
-        conn.close()
+        with closing(_get_conn(db_path)) as conn:
+            vetoes = conn.execute(
+                "SELECT * FROM signals WHERE acted_on = 0 AND timestamp LIKE ? "
+                "AND signal IN ('BUY','STRONG_BUY','SELL','STRONG_SELL') "
+                "ORDER BY timestamp DESC",
+                (f"{today_str}%",),
+            ).fetchall()
         if vetoes:
             rows = []
             for v in vetoes:

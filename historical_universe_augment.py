@@ -47,6 +47,7 @@ import logging
 import os
 import sqlite3
 import threading
+from contextlib import closing
 from datetime import datetime
 from typing import Iterable, List, Optional, Set
 
@@ -71,28 +72,27 @@ def _init_schema(db_path: str = MASTER_DB) -> None:
         if _schema_initialized:
             return
         try:
-            conn = sqlite3.connect(db_path)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS historical_universe_additions (
-                    symbol               TEXT PRIMARY KEY,
-                    last_seen_active     TEXT NOT NULL,
-                    first_seen_inactive  TEXT NOT NULL,
-                    segment              TEXT
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS historical_universe_additions (
+                        symbol               TEXT PRIMARY KEY,
+                        last_seen_active     TEXT NOT NULL,
+                        first_seen_inactive  TEXT NOT NULL,
+                        segment              TEXT
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS daily_active_universe_snapshots (
+                        snapshot_date TEXT PRIMARY KEY,
+                        symbols_json  TEXT NOT NULL
+                    )
+                """)
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "idx_hist_universe_last_seen "
+                    "ON historical_universe_additions(last_seen_active)"
                 )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS daily_active_universe_snapshots (
-                    snapshot_date TEXT PRIMARY KEY,
-                    symbols_json  TEXT NOT NULL
-                )
-            """)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS "
-                "idx_hist_universe_last_seen "
-                "ON historical_universe_additions(last_seen_active)"
-            )
-            conn.commit()
-            conn.close()
+                conn.commit()
             _schema_initialized = True
         except Exception as exc:
             logger.warning("Failed to init historical_universe schema: %s", exc)
@@ -133,14 +133,13 @@ def record_daily_snapshot(active_symbols: Iterable[str],
     syms = sorted(set(active_symbols))
     try:
         import json as _json
-        conn = sqlite3.connect(db_path)
-        conn.execute(
-            "INSERT OR REPLACE INTO daily_active_universe_snapshots "
-            "(snapshot_date, symbols_json) VALUES (?, ?)",
-            (today, _json.dumps(syms)),
-        )
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO daily_active_universe_snapshots "
+                "(snapshot_date, symbols_json) VALUES (?, ?)",
+                (today, _json.dumps(syms)),
+            )
+            conn.commit()
     except Exception as exc:
         logger.warning("Failed to record daily snapshot: %s", exc)
         return 0
@@ -154,14 +153,13 @@ def _load_most_recent_snapshot_before(
     strictly before `today_iso`. None if there's no prior snapshot."""
     try:
         import json as _json
-        conn = sqlite3.connect(db_path)
-        row = conn.execute(
-            "SELECT symbols_json FROM daily_active_universe_snapshots "
-            "WHERE snapshot_date < ? "
-            "ORDER BY snapshot_date DESC LIMIT 1",
-            (today_iso,),
-        ).fetchone()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            row = conn.execute(
+                "SELECT symbols_json FROM daily_active_universe_snapshots "
+                "WHERE snapshot_date < ? "
+                "ORDER BY snapshot_date DESC LIMIT 1",
+                (today_iso,),
+            ).fetchone()
     except Exception:
         return None
     if not row:
@@ -200,32 +198,31 @@ def diff_and_record_departures(active_symbols: Iterable[str],
 
     new_count = 0
     try:
-        conn = sqlite3.connect(db_path)
-        for sym in departed:
-            seg = _segment_for_symbol(sym)
-            cur = conn.execute(
-                "SELECT 1 FROM historical_universe_additions "
-                "WHERE symbol = ?",
-                (sym,),
-            ).fetchone()
-            if cur:
-                # Already in the ledger — bump last_seen_active.
-                conn.execute(
-                    "UPDATE historical_universe_additions "
-                    "SET last_seen_active = ? "
+        with closing(sqlite3.connect(db_path)) as conn:
+            for sym in departed:
+                seg = _segment_for_symbol(sym)
+                cur = conn.execute(
+                    "SELECT 1 FROM historical_universe_additions "
                     "WHERE symbol = ?",
-                    (today, sym),
-                )
-            else:
-                conn.execute(
-                    "INSERT INTO historical_universe_additions "
-                    "(symbol, last_seen_active, first_seen_inactive, segment) "
-                    "VALUES (?, ?, ?, ?)",
-                    (sym, today, today, seg),
-                )
-                new_count += 1
-        conn.commit()
-        conn.close()
+                    (sym,),
+                ).fetchone()
+                if cur:
+                    # Already in the ledger — bump last_seen_active.
+                    conn.execute(
+                        "UPDATE historical_universe_additions "
+                        "SET last_seen_active = ? "
+                        "WHERE symbol = ?",
+                        (today, sym),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO historical_universe_additions "
+                        "(symbol, last_seen_active, first_seen_inactive, segment) "
+                        "VALUES (?, ?, ?, ?)",
+                        (sym, today, today, seg),
+                    )
+                    new_count += 1
+            conn.commit()
     except Exception as exc:
         logger.warning("Failed to record departures: %s", exc)
         return 0
@@ -262,20 +259,19 @@ def get_augmented_universe(segment_name: str,
     additions: List[str] = []
     try:
         _init_schema(db_path)
-        conn = sqlite3.connect(db_path)
-        if start_date:
-            rows = conn.execute(
-                "SELECT symbol FROM historical_universe_additions "
-                "WHERE segment = ? AND last_seen_active >= ?",
-                (segment_name, start_date),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT symbol FROM historical_universe_additions "
-                "WHERE segment = ?",
-                (segment_name,),
-            ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            if start_date:
+                rows = conn.execute(
+                    "SELECT symbol FROM historical_universe_additions "
+                    "WHERE segment = ? AND last_seen_active >= ?",
+                    (segment_name, start_date),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT symbol FROM historical_universe_additions "
+                    "WHERE segment = ?",
+                    (segment_name,),
+                ).fetchall()
         additions = [r[0] for r in rows if r and r[0]]
     except Exception:
         additions = []
@@ -301,12 +297,11 @@ def departures_summary(db_path: str = MASTER_DB) -> dict:
     _init_schema(db_path)
     out = {"total_recorded": 0, "by_segment": {}, "frozen_at": None}
     try:
-        conn = sqlite3.connect(db_path)
-        rows = conn.execute(
-            "SELECT segment, COUNT(*) FROM historical_universe_additions "
-            "GROUP BY segment"
-        ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT segment, COUNT(*) FROM historical_universe_additions "
+                "GROUP BY segment"
+            ).fetchall()
         for seg, ct in rows:
             out["total_recorded"] += int(ct)
             if seg:

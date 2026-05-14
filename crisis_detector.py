@@ -285,13 +285,13 @@ def _check_event_cluster(db_path: str,
     """Phase 9 price_shock events clustering in time = regime break in progress."""
     try:
         import sqlite3
-        conn = sqlite3.connect(db_path)
-        row = conn.execute(
-            """SELECT COUNT(*) FROM events
-               WHERE type = 'price_shock'
-                 AND detected_at >= datetime('now', '-30 minutes')""",
-        ).fetchone()
-        conn.close()
+        from contextlib import closing
+        with closing(sqlite3.connect(db_path)) as conn:
+            row = conn.execute(
+                """SELECT COUNT(*) FROM events
+                   WHERE type = 'price_shock'
+                     AND detected_at >= datetime('now', '-30 minutes')""",
+            ).fetchone()
         n = int(row[0] if row else 0)
         readings["price_shock_count_30m"] = n
         if n >= THRESHOLDS["event_cluster_count"]:

@@ -18,6 +18,7 @@ our cycle timing. Fills land at the stop price (or near it on gaps).
 from __future__ import annotations
 
 import logging
+from contextlib import closing
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -448,15 +449,14 @@ def has_active_broker_trailing(api, db_path: str, symbol: str) -> bool:
     if not db_path or not symbol:
         return False
     try:
-        conn = sqlite3.connect(db_path)
-        row = conn.execute(
-            "SELECT protective_trailing_order_id FROM trades "
-            "WHERE symbol = ? AND side = 'buy' AND status = 'open' "
-            "AND protective_trailing_order_id IS NOT NULL "
-            "ORDER BY id DESC LIMIT 1",
-            (symbol,),
-        ).fetchone()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            row = conn.execute(
+                "SELECT protective_trailing_order_id FROM trades "
+                "WHERE symbol = ? AND side = 'buy' AND status = 'open' "
+                "AND protective_trailing_order_id IS NOT NULL "
+                "ORDER BY id DESC LIMIT 1",
+                (symbol,),
+            ).fetchone()
         if not row or not row[0]:
             return False
         return _is_order_active(api, row[0])
@@ -477,33 +477,32 @@ def cancel_for_symbol(api, db_path: str, symbol: str) -> None:
     if not db_path or not symbol:
         return
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT id, protective_stop_order_id, protective_tp_order_id, "
-            "protective_trailing_order_id "
-            "FROM trades "
-            "WHERE symbol = ? AND status = 'open' "
-            "AND (protective_stop_order_id IS NOT NULL "
-            "     OR protective_tp_order_id IS NOT NULL "
-            "     OR protective_trailing_order_id IS NOT NULL)",
-            (symbol,),
-        ).fetchall()
-        for r in rows:
-            if r["protective_stop_order_id"]:
-                cancel_protective_stop(api, r["protective_stop_order_id"])
-            if r["protective_tp_order_id"]:
-                cancel_protective_stop(api, r["protective_tp_order_id"])
-            if r["protective_trailing_order_id"]:
-                cancel_protective_stop(api, r["protective_trailing_order_id"])
-            conn.execute(
-                "UPDATE trades SET protective_stop_order_id = NULL, "
-                "protective_tp_order_id = NULL, "
-                "protective_trailing_order_id = NULL "
-                "WHERE id = ?",
-                (r["id"],),
-            )
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT id, protective_stop_order_id, protective_tp_order_id, "
+                "protective_trailing_order_id "
+                "FROM trades "
+                "WHERE symbol = ? AND status = 'open' "
+                "AND (protective_stop_order_id IS NOT NULL "
+                "     OR protective_tp_order_id IS NOT NULL "
+                "     OR protective_trailing_order_id IS NOT NULL)",
+                (symbol,),
+            ).fetchall()
+            for r in rows:
+                if r["protective_stop_order_id"]:
+                    cancel_protective_stop(api, r["protective_stop_order_id"])
+                if r["protective_tp_order_id"]:
+                    cancel_protective_stop(api, r["protective_tp_order_id"])
+                if r["protective_trailing_order_id"]:
+                    cancel_protective_stop(api, r["protective_trailing_order_id"])
+                conn.execute(
+                    "UPDATE trades SET protective_stop_order_id = NULL, "
+                    "protective_tp_order_id = NULL, "
+                    "protective_trailing_order_id = NULL "
+                    "WHERE id = ?",
+                    (r["id"],),
+                )
+            conn.commit()
     except Exception as exc:
         logger.debug("cancel_for_symbol(%s) skipped: %s", symbol, exc)

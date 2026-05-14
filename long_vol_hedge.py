@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -236,43 +237,41 @@ def should_close(triggers: List[HedgeTrigger]) -> Optional[str]:
 
 def _ensure_table(db_path: str) -> None:
     from journal import _get_conn
-    conn = _get_conn(db_path)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS long_vol_hedges (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            opened_at TEXT NOT NULL DEFAULT (datetime('now')),
-            closed_at TEXT,
-            status TEXT NOT NULL DEFAULT 'open',
-            occ_symbol TEXT NOT NULL,
-            underlying TEXT NOT NULL DEFAULT 'SPY',
-            strike REAL NOT NULL,
-            expiry TEXT NOT NULL,
-            contracts INTEGER NOT NULL,
-            entry_premium REAL,
-            entry_spot REAL,
-            entry_delta REAL,
-            close_reason TEXT,
-            close_premium REAL,
-            close_pnl_dollars REAL,
-            triggers_json TEXT,
-            order_id TEXT,
-            close_order_id TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+    with closing(_get_conn(db_path)) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS long_vol_hedges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                opened_at TEXT NOT NULL DEFAULT (datetime('now')),
+                closed_at TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                occ_symbol TEXT NOT NULL,
+                underlying TEXT NOT NULL DEFAULT 'SPY',
+                strike REAL NOT NULL,
+                expiry TEXT NOT NULL,
+                contracts INTEGER NOT NULL,
+                entry_premium REAL,
+                entry_spot REAL,
+                entry_delta REAL,
+                close_reason TEXT,
+                close_premium REAL,
+                close_pnl_dollars REAL,
+                triggers_json TEXT,
+                order_id TEXT,
+                close_order_id TEXT
+            )
+        """)
+        conn.commit()
 
 
 def get_active_hedge(db_path: str) -> Optional[Dict[str, Any]]:
     """Return the currently-open hedge row, or None."""
     _ensure_table(db_path)
     from journal import _get_conn
-    conn = _get_conn(db_path)
-    row = conn.execute(
-        "SELECT * FROM long_vol_hedges WHERE status='open' "
-        "ORDER BY id DESC LIMIT 1"
-    ).fetchone()
-    conn.close()
+    with closing(_get_conn(db_path)) as conn:
+        row = conn.execute(
+            "SELECT * FROM long_vol_hedges WHERE status='open' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
     return dict(row) if row else None
 
 
@@ -283,26 +282,25 @@ def record_hedge_opened(
     """Insert a new hedge row when an opening order is submitted."""
     _ensure_table(db_path)
     from journal import _get_conn
-    conn = _get_conn(db_path)
-    cur = conn.execute(
-        """INSERT INTO long_vol_hedges (
-            occ_symbol, underlying, strike, expiry, contracts,
-            entry_premium, entry_spot, entry_delta, triggers_json,
-            order_id
-        ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (
-            hedge["occ_symbol"], hedge.get("underlying", HEDGE_UNDERLYING),
-            float(hedge["strike"]), hedge["expiry"],
-            int(hedge["contracts"]),
-            hedge.get("entry_premium"), hedge.get("entry_spot"),
-            hedge.get("entry_delta"),
-            json.dumps([t.as_dict() for t in triggers]),
-            order_id,
-        ),
-    )
-    row_id = cur.lastrowid
-    conn.commit()
-    conn.close()
+    with closing(_get_conn(db_path)) as conn:
+        cur = conn.execute(
+            """INSERT INTO long_vol_hedges (
+                occ_symbol, underlying, strike, expiry, contracts,
+                entry_premium, entry_spot, entry_delta, triggers_json,
+                order_id
+            ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                hedge["occ_symbol"], hedge.get("underlying", HEDGE_UNDERLYING),
+                float(hedge["strike"]), hedge["expiry"],
+                int(hedge["contracts"]),
+                hedge.get("entry_premium"), hedge.get("entry_spot"),
+                hedge.get("entry_delta"),
+                json.dumps([t.as_dict() for t in triggers]),
+                order_id,
+            ),
+        )
+        row_id = cur.lastrowid
+        conn.commit()
     return row_id
 
 
@@ -315,21 +313,20 @@ def record_hedge_closed(
     """Mark a hedge row closed."""
     _ensure_table(db_path)
     from journal import _get_conn
-    conn = _get_conn(db_path)
-    conn.execute(
-        """UPDATE long_vol_hedges SET
-            status = 'closed',
-            closed_at = datetime('now'),
-            close_reason = ?,
-            close_premium = ?,
-            close_pnl_dollars = ?,
-            close_order_id = ?
-        WHERE id = ?""",
-        (close_reason, close_premium, close_pnl_dollars,
-         close_order_id, hedge_id),
-    )
-    conn.commit()
-    conn.close()
+    with closing(_get_conn(db_path)) as conn:
+        conn.execute(
+            """UPDATE long_vol_hedges SET
+                status = 'closed',
+                closed_at = datetime('now'),
+                close_reason = ?,
+                close_premium = ?,
+                close_pnl_dollars = ?,
+                close_order_id = ?
+            WHERE id = ?""",
+            (close_reason, close_premium, close_pnl_dollars,
+             close_order_id, hedge_id),
+        )
+        conn.commit()
 
 
 def hedge_cost_summary(db_path: str, days: int = 90) -> Dict[str, Any]:
@@ -338,13 +335,12 @@ def hedge_cost_summary(db_path: str, days: int = 90) -> Dict[str, Any]:
     insurance bill."""
     _ensure_table(db_path)
     from journal import _get_conn
-    conn = _get_conn(db_path)
-    rows = conn.execute(
-        f"""SELECT entry_premium, contracts, close_pnl_dollars
-        FROM long_vol_hedges
-        WHERE opened_at >= datetime('now', '-{int(days)} days')""",
-    ).fetchall()
-    conn.close()
+    with closing(_get_conn(db_path)) as conn:
+        rows = conn.execute(
+            f"""SELECT entry_premium, contracts, close_pnl_dollars
+            FROM long_vol_hedges
+            WHERE opened_at >= datetime('now', '-{int(days)} days')""",
+        ).fetchall()
 
     n = len(rows)
     total_premium = 0.0
@@ -372,12 +368,11 @@ def compute_drawdown_from_30d_peak(db_path: str, current_equity: float) -> float
     drawdown vs current as a positive fraction. 0.0 if no history."""
     from journal import _get_conn
     try:
-        conn = _get_conn(db_path)
-        rows = conn.execute(
-            "SELECT MAX(equity) FROM daily_snapshots "
-            "WHERE date >= date('now', '-30 days')"
-        ).fetchone()
-        conn.close()
+        with closing(_get_conn(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT MAX(equity) FROM daily_snapshots "
+                "WHERE date >= date('now', '-30 days')"
+            ).fetchone()
     except Exception:
         return 0.0
     if not rows or rows[0] is None:

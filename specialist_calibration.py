@@ -47,6 +47,7 @@ import os
 import pickle
 import sqlite3
 import threading
+from contextlib import closing
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -73,26 +74,25 @@ def init_calibration_db(db_path: str) -> None:
         if db_path in _schema_initialized:
             return
         try:
-            conn = sqlite3.connect(db_path)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS specialist_outcomes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    prediction_id INTEGER NOT NULL,
-                    specialist_name TEXT NOT NULL,
-                    verdict TEXT NOT NULL,
-                    raw_confidence INTEGER NOT NULL,
-                    recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    was_correct INTEGER,
-                    resolved_at TEXT,
-                    UNIQUE(prediction_id, specialist_name)
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS specialist_outcomes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        prediction_id INTEGER NOT NULL,
+                        specialist_name TEXT NOT NULL,
+                        verdict TEXT NOT NULL,
+                        raw_confidence INTEGER NOT NULL,
+                        recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                        was_correct INTEGER,
+                        resolved_at TEXT,
+                        UNIQUE(prediction_id, specialist_name)
+                    )
+                """)
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_specialist_outcomes_name_resolved "
+                    "ON specialist_outcomes(specialist_name, resolved_at)"
                 )
-            """)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_specialist_outcomes_name_resolved "
-                "ON specialist_outcomes(specialist_name, resolved_at)"
-            )
-            conn.commit()
-            conn.close()
+                conn.commit()
             _schema_initialized.add(db_path)
         except Exception as exc:
             logger.warning("Failed to init specialist_outcomes table: %s", exc)
@@ -118,25 +118,24 @@ def record_outcomes_for_prediction(
         return
     init_calibration_db(db_path)
     try:
-        conn = sqlite3.connect(db_path)
-        for s in specialists:
-            name = s.get("specialist")
-            verdict = s.get("verdict")
-            raw_conf = s.get("confidence")
-            if not name or not verdict or raw_conf is None:
-                continue
-            try:
-                conn.execute(
-                    "INSERT OR IGNORE INTO specialist_outcomes "
-                    "(prediction_id, specialist_name, verdict, raw_confidence) "
-                    "VALUES (?, ?, ?, ?)",
-                    (prediction_id, name, verdict, int(raw_conf)),
-                )
-            # SILENT_OK: per-specialist outcome insert; one bad specialist shouldn't kill the loop
-            except Exception:
-                continue
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            for s in specialists:
+                name = s.get("specialist")
+                verdict = s.get("verdict")
+                raw_conf = s.get("confidence")
+                if not name or not verdict or raw_conf is None:
+                    continue
+                try:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO specialist_outcomes "
+                        "(prediction_id, specialist_name, verdict, raw_confidence) "
+                        "VALUES (?, ?, ?, ?)",
+                        (prediction_id, name, verdict, int(raw_conf)),
+                    )
+                # SILENT_OK: per-specialist outcome insert; one bad specialist shouldn't kill the loop
+                except Exception:
+                    continue
+            conn.commit()
     except Exception as exc:
         logger.warning("Failed to record specialist outcomes: %s", exc)
 
@@ -152,15 +151,14 @@ def update_outcomes_on_resolve(
         return
     init_calibration_db(db_path)
     try:
-        conn = sqlite3.connect(db_path)
-        conn.execute(
-            "UPDATE specialist_outcomes "
-            "SET was_correct = ?, resolved_at = datetime('now') "
-            "WHERE prediction_id = ? AND was_correct IS NULL",
-            (1 if was_correct else 0, prediction_id),
-        )
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.execute(
+                "UPDATE specialist_outcomes "
+                "SET was_correct = ?, resolved_at = datetime('now') "
+                "WHERE prediction_id = ? AND was_correct IS NULL",
+                (1 if was_correct else 0, prediction_id),
+            )
+            conn.commit()
     except Exception as exc:
         logger.warning("Failed to update specialist outcomes for "
                        "prediction %d: %s", prediction_id, exc)
@@ -223,56 +221,55 @@ def fit_calibrator(db_path: str, specialist_name: str,
         )
 
     try:
-        conn = sqlite3.connect(db_path)
-        if direction in ("long", "short"):
-            ptype = "directional_long" if direction == "long" else "directional_short"
-            # JOIN to ai_predictions to filter by prediction_type. Legacy
-            # rows without prediction_type fall back to inferred-from-
-            # signal classification (matches the resolver's logic).
-            rows = conn.execute(
-                "SELECT so.raw_confidence, so.was_correct "
-                "FROM specialist_outcomes so "
-                "JOIN ai_predictions ap ON ap.id = so.prediction_id "
-                "WHERE so.specialist_name = ? "
-                "AND so.was_correct IS NOT NULL "
-                "AND so.resolved_at >= datetime('now', ? || ' days') "
-                "AND COALESCE(ap.prediction_type, "
-                # 2026-05-12 fix: previously missed WEAK_BUY in the
-                # long inference. Now lists every long-direction
-                # signal explicitly so legacy NULL-prediction_type
-                # rows route to the correct direction calibrator.
-                "  CASE WHEN ap.predicted_signal IN "
-                "    ('BUY','STRONG_BUY','WEAK_BUY','HOLD') "
-                "       THEN 'directional_long' ELSE 'directional_short' END"
-                ") = ? "
-                f"{pk_clause}"
-                "ORDER BY so.resolved_at ASC",
-                (specialist_name, f"-{RESOLUTION_LOOKBACK_DAYS}", ptype),
-            ).fetchall()
-        elif pipeline_kind in ("stock", "option"):
-            # Pipeline-only filter (no direction split).
-            rows = conn.execute(
-                "SELECT so.raw_confidence, so.was_correct "
-                "FROM specialist_outcomes so "
-                "JOIN ai_predictions ap ON ap.id = so.prediction_id "
-                "WHERE so.specialist_name = ? "
-                "AND so.was_correct IS NOT NULL "
-                "AND so.resolved_at >= datetime('now', ? || ' days') "
-                f"{pk_clause}"
-                "ORDER BY so.resolved_at ASC",
-                (specialist_name, f"-{RESOLUTION_LOOKBACK_DAYS}"),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT raw_confidence, was_correct "
-                "FROM specialist_outcomes "
-                "WHERE specialist_name = ? "
-                "AND was_correct IS NOT NULL "
-                "AND resolved_at >= datetime('now', ? || ' days') "
-                "ORDER BY resolved_at ASC",
-                (specialist_name, f"-{RESOLUTION_LOOKBACK_DAYS}"),
-            ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            if direction in ("long", "short"):
+                ptype = "directional_long" if direction == "long" else "directional_short"
+                # JOIN to ai_predictions to filter by prediction_type. Legacy
+                # rows without prediction_type fall back to inferred-from-
+                # signal classification (matches the resolver's logic).
+                rows = conn.execute(
+                    "SELECT so.raw_confidence, so.was_correct "
+                    "FROM specialist_outcomes so "
+                    "JOIN ai_predictions ap ON ap.id = so.prediction_id "
+                    "WHERE so.specialist_name = ? "
+                    "AND so.was_correct IS NOT NULL "
+                    "AND so.resolved_at >= datetime('now', ? || ' days') "
+                    "AND COALESCE(ap.prediction_type, "
+                    # 2026-05-12 fix: previously missed WEAK_BUY in the
+                    # long inference. Now lists every long-direction
+                    # signal explicitly so legacy NULL-prediction_type
+                    # rows route to the correct direction calibrator.
+                    "  CASE WHEN ap.predicted_signal IN "
+                    "    ('BUY','STRONG_BUY','WEAK_BUY','HOLD') "
+                    "       THEN 'directional_long' ELSE 'directional_short' END"
+                    ") = ? "
+                    f"{pk_clause}"
+                    "ORDER BY so.resolved_at ASC",
+                    (specialist_name, f"-{RESOLUTION_LOOKBACK_DAYS}", ptype),
+                ).fetchall()
+            elif pipeline_kind in ("stock", "option"):
+                # Pipeline-only filter (no direction split).
+                rows = conn.execute(
+                    "SELECT so.raw_confidence, so.was_correct "
+                    "FROM specialist_outcomes so "
+                    "JOIN ai_predictions ap ON ap.id = so.prediction_id "
+                    "WHERE so.specialist_name = ? "
+                    "AND so.was_correct IS NOT NULL "
+                    "AND so.resolved_at >= datetime('now', ? || ' days') "
+                    f"{pk_clause}"
+                    "ORDER BY so.resolved_at ASC",
+                    (specialist_name, f"-{RESOLUTION_LOOKBACK_DAYS}"),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT raw_confidence, was_correct "
+                    "FROM specialist_outcomes "
+                    "WHERE specialist_name = ? "
+                    "AND was_correct IS NOT NULL "
+                    "AND resolved_at >= datetime('now', ? || ' days') "
+                    "ORDER BY resolved_at ASC",
+                    (specialist_name, f"-{RESOLUTION_LOOKBACK_DAYS}"),
+                ).fetchall()
     except Exception as exc:
         logger.warning("fit_calibrator query failed for %s: %s",
                        specialist_name, exc)
@@ -471,45 +468,44 @@ def backfill_from_resolved_predictions(db_path: str) -> int:
     inserted = 0
     try:
         import json as _json
-        conn = sqlite3.connect(db_path)
-        rows = conn.execute(
-            "SELECT id, features_json, actual_outcome "
-            "FROM ai_predictions "
-            "WHERE status='resolved' AND features_json IS NOT NULL "
-            "AND actual_outcome IN ('win', 'loss')"
-        ).fetchall()
-        for pred_id, fjson, outcome in rows:
-            try:
-                features = _json.loads(fjson)
-            # SILENT_OK: per-prediction features-json parse; skip malformed feature blobs
-            except Exception:
-                continue
-            summary = features.get("ensemble_summary", "")
-            if not summary:
-                continue
-            was_correct = 1 if outcome == "win" else 0
-            for prefix, verdict, conf_str in _ENSEMBLE_PREFIX_RE.findall(summary):
-                name = _PREFIX_TO_SPECIALIST.get(prefix)
-                if not name:
-                    continue
-                # Skip ABSTAIN (no opinion) and VETO (separate path)
-                if verdict in ("ABSTAIN", "VETO"):
-                    continue
+        with closing(sqlite3.connect(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT id, features_json, actual_outcome "
+                "FROM ai_predictions "
+                "WHERE status='resolved' AND features_json IS NOT NULL "
+                "AND actual_outcome IN ('win', 'loss')"
+            ).fetchall()
+            for pred_id, fjson, outcome in rows:
                 try:
-                    cur = conn.execute(
-                        "INSERT OR IGNORE INTO specialist_outcomes "
-                        "(prediction_id, specialist_name, verdict, "
-                        " raw_confidence, was_correct, resolved_at) "
-                        "VALUES (?, ?, ?, ?, ?, datetime('now'))",
-                        (pred_id, name, verdict, int(conf_str), was_correct),
-                    )
-                    if cur.rowcount > 0:
-                        inserted += 1
-                # SILENT_OK: per-specialist backfill insert; one bad row shouldn't kill the loop
+                    features = _json.loads(fjson)
+                # SILENT_OK: per-prediction features-json parse; skip malformed feature blobs
                 except Exception:
                     continue
-        conn.commit()
-        conn.close()
+                summary = features.get("ensemble_summary", "")
+                if not summary:
+                    continue
+                was_correct = 1 if outcome == "win" else 0
+                for prefix, verdict, conf_str in _ENSEMBLE_PREFIX_RE.findall(summary):
+                    name = _PREFIX_TO_SPECIALIST.get(prefix)
+                    if not name:
+                        continue
+                    # Skip ABSTAIN (no opinion) and VETO (separate path)
+                    if verdict in ("ABSTAIN", "VETO"):
+                        continue
+                    try:
+                        cur = conn.execute(
+                            "INSERT OR IGNORE INTO specialist_outcomes "
+                            "(prediction_id, specialist_name, verdict, "
+                            " raw_confidence, was_correct, resolved_at) "
+                            "VALUES (?, ?, ?, ?, ?, datetime('now'))",
+                            (pred_id, name, verdict, int(conf_str), was_correct),
+                        )
+                        if cur.rowcount > 0:
+                            inserted += 1
+                    # SILENT_OK: per-specialist backfill insert; one bad row shouldn't kill the loop
+                    except Exception:
+                        continue
+            conn.commit()
     except Exception as exc:
         logger.warning("Backfill failed for %s: %s", db_path, exc)
     return inserted

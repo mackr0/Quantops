@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from contextlib import closing
 from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -29,16 +30,15 @@ def recent_avg_position_value(
     """Average $ value of the profile's last `window` trades. Returns
     None when insufficient history (we can't gate against zero base)."""
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT qty, price FROM trades "
-            "WHERE qty IS NOT NULL AND price IS NOT NULL "
-            "AND qty > 0 AND price > 0 "
-            "ORDER BY id DESC LIMIT ?",
-            (window,),
-        ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT qty, price FROM trades "
+                "WHERE qty IS NOT NULL AND price IS NOT NULL "
+                "AND qty > 0 AND price > 0 "
+                "ORDER BY id DESC LIMIT ?",
+                (window,),
+            ).fetchall()
     except Exception as exc:
         logger.debug("recent_avg_position_value: %s", exc)
         return None

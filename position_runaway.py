@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from contextlib import closing
 from typing import Dict, List
 
 logger = logging.getLogger(__name__)
@@ -27,15 +28,14 @@ RECENT_TRADE_WINDOW = 50
 def find_duplicate_open_buys(db_path: str) -> List[Dict[str, object]]:
     """List symbols with >1 open buy. Empty list if none / on error."""
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT symbol, COUNT(*) AS n, SUM(qty) AS total_qty, "
-            "MIN(timestamp) AS oldest, MAX(timestamp) AS newest "
-            "FROM trades WHERE side='buy' AND status='open' "
-            "GROUP BY UPPER(symbol) HAVING COUNT(*) > 1"
-        ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT symbol, COUNT(*) AS n, SUM(qty) AS total_qty, "
+                "MIN(timestamp) AS oldest, MAX(timestamp) AS newest "
+                "FROM trades WHERE side='buy' AND status='open' "
+                "GROUP BY UPPER(symbol) HAVING COUNT(*) > 1"
+            ).fetchall()
     except Exception as exc:
         logger.debug("find_duplicate_open_buys: %s", exc)
         return []
@@ -55,26 +55,24 @@ def find_excessive_qty_trades(
 ) -> List[Dict[str, object]]:
     """Open trades whose qty is > mult × profile-recent median."""
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        recent = conn.execute(
-            "SELECT qty FROM trades WHERE qty IS NOT NULL AND qty > 0 "
-            "ORDER BY id DESC LIMIT ?",
-            (window,),
-        ).fetchall()
-        if not recent or len(recent) < 5:
-            conn.close()
-            return []
-        qtys = sorted(float(r["qty"]) for r in recent)
-        mid = qtys[len(qtys) // 2]
-        threshold = mid * mult
-        flagged = conn.execute(
-            "SELECT id, symbol, qty FROM trades "
-            "WHERE status='open' AND qty > ? "
-            "ORDER BY qty DESC",
-            (threshold,),
-        ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            recent = conn.execute(
+                "SELECT qty FROM trades WHERE qty IS NOT NULL AND qty > 0 "
+                "ORDER BY id DESC LIMIT ?",
+                (window,),
+            ).fetchall()
+            if not recent or len(recent) < 5:
+                return []
+            qtys = sorted(float(r["qty"]) for r in recent)
+            mid = qtys[len(qtys) // 2]
+            threshold = mid * mult
+            flagged = conn.execute(
+                "SELECT id, symbol, qty FROM trades "
+                "WHERE status='open' AND qty > ? "
+                "ORDER BY qty DESC",
+                (threshold,),
+            ).fetchall()
     except Exception as exc:
         logger.debug("find_excessive_qty_trades: %s", exc)
         return []

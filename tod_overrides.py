@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import closing
 from datetime import datetime
 from typing import Any, Dict, Optional, Set
 
@@ -151,13 +152,12 @@ def set_override(profile_id: int, param_name: str, tod: str,
         overrides[param_name] = param_map
     else:
         overrides.pop(param_name, None)
-    conn = _get_conn()
-    conn.execute(
-        "UPDATE trading_profiles SET tod_overrides = ? WHERE id = ?",
-        (json.dumps(overrides), profile_id),
-    )
-    conn.commit()
-    conn.close()
+    with closing(_get_conn()) as conn:
+        conn.execute(
+            "UPDATE trading_profiles SET tod_overrides = ? WHERE id = ?",
+            (json.dumps(overrides), profile_id),
+        )
+        conn.commit()
 
 
 def get_all_overrides(profile_or_dict: Any) -> Dict[str, Dict[str, Any]]:

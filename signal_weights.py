@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import closing
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
@@ -230,13 +231,12 @@ def set_weight(profile_id: int, signal_name: str, weight: float) -> None:
         weights.pop(signal_name, None)
     else:
         weights[signal_name] = snapped
-    conn = _get_conn()
-    conn.execute(
-        "UPDATE trading_profiles SET signal_weights = ? WHERE id = ?",
-        (json.dumps(weights), profile_id),
-    )
-    conn.commit()
-    conn.close()
+    with closing(_get_conn()) as conn:
+        conn.execute(
+            "UPDATE trading_profiles SET signal_weights = ? WHERE id = ?",
+            (json.dumps(weights), profile_id),
+        )
+        conn.commit()
 
 
 def nudge_down(profile_id: int, signal_name: str) -> Optional[float]:

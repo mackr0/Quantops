@@ -149,6 +149,7 @@ def calibrate_from_history(
     bootstrap residual distributions per size bucket.
     """
     import sqlite3
+    from contextlib import closing
     K_default = {
         "K_bps": DEFAULT_K_BPS,
         "n_samples": 0,
@@ -159,20 +160,19 @@ def calibrate_from_history(
         "source": "default",
     }
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        # Pull realized fills + the 20d ADV recorded at decision time.
-        # `adv_at_decision` was added (Item 5c continuation) so calibrator
-        # uses real participation rate (qty / adv_shares) instead of the
-        # coarse $50M ADV proxy. Legacy rows pre-dating the column fall
-        # back to that proxy in the per-row branch below.
-        rows = conn.execute(
-            "SELECT symbol, qty, decision_price, fill_price, "
-            "side, adv_at_decision FROM trades "
-            "WHERE decision_price IS NOT NULL AND fill_price IS NOT NULL "
-            "AND decision_price > 0 AND status = 'filled'"
-        ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            # Pull realized fills + the 20d ADV recorded at decision time.
+            # `adv_at_decision` was added (Item 5c continuation) so calibrator
+            # uses real participation rate (qty / adv_shares) instead of the
+            # coarse $50M ADV proxy. Legacy rows pre-dating the column fall
+            # back to that proxy in the per-row branch below.
+            rows = conn.execute(
+                "SELECT symbol, qty, decision_price, fill_price, "
+                "side, adv_at_decision FROM trades "
+                "WHERE decision_price IS NOT NULL AND fill_price IS NOT NULL "
+                "AND decision_price > 0 AND status = 'filled'"
+            ).fetchall()
     except Exception as exc:
         logger.debug("calibrate_from_history: query failed: %s", exc)
         return K_default

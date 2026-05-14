@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from contextlib import closing
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -59,52 +60,50 @@ def compute_capture_ratio(db_path: str, lookback: int = 50) -> Optional[Dict[str
     if not db_path:
         return None
     try:
-        conn = sqlite3.connect(db_path)
-        # Pull recent SELL rows (the exits, where pnl lives).
-        sells = conn.execute(
-            "SELECT id, timestamp, symbol, qty, price, pnl "
-            "FROM trades "
-            "WHERE pnl IS NOT NULL "
-            "AND side IN ('sell', 'cover') "
-            "AND qty > 0 AND price > 0 "
-            "ORDER BY id DESC LIMIT ?",
-            (lookback,),
-        ).fetchall()
-        if not sells:
-            conn.close()
-            return None
-        # For each SELL, find the most recent prior BUY for that symbol
-        # with an MFE recorded. The BUY's price is the entry; its MFE
-        # is the highest favorable price during the position's life.
-        captures = []
-        n_negative = 0
-        for sid, ts, sym, sell_qty, sell_px, pnl in sells:
-            buy = conn.execute(
-                "SELECT price, max_favorable_excursion FROM trades "
-                "WHERE symbol = ? AND side = 'buy' "
-                "AND timestamp < ? "
-                "AND max_favorable_excursion IS NOT NULL "
-                "AND max_favorable_excursion > 0 "
-                "ORDER BY id DESC LIMIT 1",
-                (sym, ts),
-            ).fetchone()
-            if not buy:
-                continue
-            entry_price, mfe = buy
-            if not entry_price or entry_price <= 0 or not mfe or mfe <= entry_price:
-                # No favorable excursion (price never went above entry).
-                # Capture is undefined — exclude.
-                continue
-            notional = abs(sell_qty * entry_price)
-            if notional <= 0:
-                continue
-            realized_pct = (pnl / notional) * 100.0
-            mfe_pct = ((float(mfe) - entry_price) / entry_price) * 100.0
-            capture = realized_pct / mfe_pct
-            captures.append(capture)
-            if capture < 0:
-                n_negative += 1
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            # Pull recent SELL rows (the exits, where pnl lives).
+            sells = conn.execute(
+                "SELECT id, timestamp, symbol, qty, price, pnl "
+                "FROM trades "
+                "WHERE pnl IS NOT NULL "
+                "AND side IN ('sell', 'cover') "
+                "AND qty > 0 AND price > 0 "
+                "ORDER BY id DESC LIMIT ?",
+                (lookback,),
+            ).fetchall()
+            if not sells:
+                return None
+            # For each SELL, find the most recent prior BUY for that symbol
+            # with an MFE recorded. The BUY's price is the entry; its MFE
+            # is the highest favorable price during the position's life.
+            captures = []
+            n_negative = 0
+            for sid, ts, sym, sell_qty, sell_px, pnl in sells:
+                buy = conn.execute(
+                    "SELECT price, max_favorable_excursion FROM trades "
+                    "WHERE symbol = ? AND side = 'buy' "
+                    "AND timestamp < ? "
+                    "AND max_favorable_excursion IS NOT NULL "
+                    "AND max_favorable_excursion > 0 "
+                    "ORDER BY id DESC LIMIT 1",
+                    (sym, ts),
+                ).fetchone()
+                if not buy:
+                    continue
+                entry_price, mfe = buy
+                if not entry_price or entry_price <= 0 or not mfe or mfe <= entry_price:
+                    # No favorable excursion (price never went above entry).
+                    # Capture is undefined — exclude.
+                    continue
+                notional = abs(sell_qty * entry_price)
+                if notional <= 0:
+                    continue
+                realized_pct = (pnl / notional) * 100.0
+                mfe_pct = ((float(mfe) - entry_price) / entry_price) * 100.0
+                capture = realized_pct / mfe_pct
+                captures.append(capture)
+                if capture < 0:
+                    n_negative += 1
     except Exception as exc:
         logger.debug("compute_capture_ratio query failed: %s", exc)
         return None

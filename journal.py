@@ -2,6 +2,7 @@
 
 import sqlite3
 import json
+from contextlib import closing
 from datetime import datetime, date
 
 import config
@@ -28,318 +29,320 @@ def _get_conn(db_path=None):
 
 def init_db(db_path=None):
     """Create journal tables if they don't exist."""
-    conn = _get_conn(db_path)
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-            symbol TEXT NOT NULL,
-            side TEXT NOT NULL,
-            qty REAL NOT NULL,
-            price REAL,
-            order_id TEXT,
-            signal_type TEXT,
-            strategy TEXT,
-            reason TEXT,
-            ai_reasoning TEXT,
-            ai_confidence REAL,
-            stop_loss REAL,
-            take_profit REAL,
-            status TEXT DEFAULT 'open',
-            pnl REAL,
-            decision_price REAL,
-            fill_price REAL,
-            slippage_pct REAL
-        );
+    try:
+        conn = _get_conn(db_path)
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL,
+                qty REAL NOT NULL,
+                price REAL,
+                order_id TEXT,
+                signal_type TEXT,
+                strategy TEXT,
+                reason TEXT,
+                ai_reasoning TEXT,
+                ai_confidence REAL,
+                stop_loss REAL,
+                take_profit REAL,
+                status TEXT DEFAULT 'open',
+                pnl REAL,
+                decision_price REAL,
+                fill_price REAL,
+                slippage_pct REAL
+            );
 
-        CREATE TABLE IF NOT EXISTS signals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-            symbol TEXT NOT NULL,
-            strategy TEXT,
-            signal TEXT NOT NULL,
-            reason TEXT,
-            price REAL,
-            indicators TEXT,
-            acted_on INTEGER DEFAULT 0
-        );
+            CREATE TABLE IF NOT EXISTS signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                symbol TEXT NOT NULL,
+                strategy TEXT,
+                signal TEXT NOT NULL,
+                reason TEXT,
+                price REAL,
+                indicators TEXT,
+                acted_on INTEGER DEFAULT 0
+            );
 
-        CREATE TABLE IF NOT EXISTS daily_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL UNIQUE,
-            equity REAL,
-            cash REAL,
-            portfolio_value REAL,
-            num_positions INTEGER,
-            daily_pnl REAL
-        );
+            CREATE TABLE IF NOT EXISTS daily_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL UNIQUE,
+                equity REAL,
+                cash REAL,
+                portfolio_value REAL,
+                num_positions INTEGER,
+                daily_pnl REAL
+            );
 
-        CREATE TABLE IF NOT EXISTS ai_predictions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-            symbol TEXT NOT NULL,
-            predicted_signal TEXT NOT NULL,
-            confidence REAL,
-            reasoning TEXT,
-            price_at_prediction REAL NOT NULL,
-            target_entry REAL,
-            target_stop_loss REAL,
-            target_take_profit REAL,
-            status TEXT NOT NULL DEFAULT 'pending',
-            actual_outcome TEXT,
-            actual_return_pct REAL,
-            resolved_at TEXT,
-            resolution_price REAL,
-            prediction_type TEXT
-        );
+            CREATE TABLE IF NOT EXISTS ai_predictions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                symbol TEXT NOT NULL,
+                predicted_signal TEXT NOT NULL,
+                confidence REAL,
+                reasoning TEXT,
+                price_at_prediction REAL NOT NULL,
+                target_entry REAL,
+                target_stop_loss REAL,
+                target_take_profit REAL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                actual_outcome TEXT,
+                actual_return_pct REAL,
+                resolved_at TEXT,
+                resolution_price REAL,
+                prediction_type TEXT
+            );
 
-        -- Broker-rejected order attempts. The AI proposed the trade,
-        -- the system tried to submit it, but the broker (Alpaca)
-        -- refused with a recoverable reason (cross-direction conflict
-        -- with a sibling profile on a shared account, wash-trade
-        -- guard, insufficient buying power, etc.). Captured so the
-        -- UI can show "REJECTED" inline on the AI Brain panel
-        -- instead of the trade silently disappearing, and so
-        -- post-trade analytics can exclude rejected predictions
-        -- from win-rate computations (they didn't actually trade).
-        -- Caught 2026-05-11: CWAN BUY on Mid Cap was rejected by
-        -- Alpaca's cross-direction guard and operator went looking
-        -- for the trade because nothing on screen surfaced it.
-        CREATE TABLE IF NOT EXISTS broker_rejections (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-            symbol TEXT NOT NULL,
-            action TEXT NOT NULL,
-            signal_type TEXT,
-            ai_confidence REAL,
-            ai_reasoning TEXT,
-            rejection_code TEXT NOT NULL,
-            broker_message TEXT,
-            prediction_id INTEGER REFERENCES ai_predictions(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_broker_rejections_timestamp
-            ON broker_rejections(timestamp);
-        CREATE INDEX IF NOT EXISTS idx_broker_rejections_symbol
-            ON broker_rejections(symbol);
-        CREATE INDEX IF NOT EXISTS idx_broker_rejections_prediction_id
-            ON broker_rejections(prediction_id);
+            -- Broker-rejected order attempts. The AI proposed the trade,
+            -- the system tried to submit it, but the broker (Alpaca)
+            -- refused with a recoverable reason (cross-direction conflict
+            -- with a sibling profile on a shared account, wash-trade
+            -- guard, insufficient buying power, etc.). Captured so the
+            -- UI can show "REJECTED" inline on the AI Brain panel
+            -- instead of the trade silently disappearing, and so
+            -- post-trade analytics can exclude rejected predictions
+            -- from win-rate computations (they didn't actually trade).
+            -- Caught 2026-05-11: CWAN BUY on Mid Cap was rejected by
+            -- Alpaca's cross-direction guard and operator went looking
+            -- for the trade because nothing on screen surfaced it.
+            CREATE TABLE IF NOT EXISTS broker_rejections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                symbol TEXT NOT NULL,
+                action TEXT NOT NULL,
+                signal_type TEXT,
+                ai_confidence REAL,
+                ai_reasoning TEXT,
+                rejection_code TEXT NOT NULL,
+                broker_message TEXT,
+                prediction_id INTEGER REFERENCES ai_predictions(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_broker_rejections_timestamp
+                ON broker_rejections(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_broker_rejections_symbol
+                ON broker_rejections(symbol);
+            CREATE INDEX IF NOT EXISTS idx_broker_rejections_prediction_id
+                ON broker_rejections(prediction_id);
 
-        -- Phase 3: rolling performance snapshots per strategy/signal type.
-        -- Written daily by alpha_decay monitoring task. Each row is one
-        -- day's 30-day rolling view of a specific signal's performance.
-        CREATE TABLE IF NOT EXISTS signal_performance_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            snapshot_date TEXT NOT NULL,
-            strategy_type TEXT NOT NULL,
-            window_days INTEGER NOT NULL,
-            n_predictions INTEGER NOT NULL,
-            wins INTEGER NOT NULL,
-            losses INTEGER NOT NULL,
-            win_rate REAL NOT NULL,
-            avg_return_pct REAL NOT NULL,
-            sharpe_ratio REAL NOT NULL,
-            profit_factor REAL,
-            UNIQUE (snapshot_date, strategy_type, window_days)
-        );
+            -- Phase 3: rolling performance snapshots per strategy/signal type.
+            -- Written daily by alpha_decay monitoring task. Each row is one
+            -- day's 30-day rolling view of a specific signal's performance.
+            CREATE TABLE IF NOT EXISTS signal_performance_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_date TEXT NOT NULL,
+                strategy_type TEXT NOT NULL,
+                window_days INTEGER NOT NULL,
+                n_predictions INTEGER NOT NULL,
+                wins INTEGER NOT NULL,
+                losses INTEGER NOT NULL,
+                win_rate REAL NOT NULL,
+                avg_return_pct REAL NOT NULL,
+                sharpe_ratio REAL NOT NULL,
+                profit_factor REAL,
+                UNIQUE (snapshot_date, strategy_type, window_days)
+            );
 
-        -- Phase 3: strategies that have been auto-deprecated due to alpha
-        -- decay. The trade pipeline checks this table and skips deprecated
-        -- strategies' signals. Restoration sets deprecated_at=NULL.
-        CREATE TABLE IF NOT EXISTS deprecated_strategies (
-            strategy_type TEXT PRIMARY KEY,
-            deprecated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            reason TEXT NOT NULL,
-            rolling_sharpe_at_deprecation REAL,
-            lifetime_sharpe REAL,
-            consecutive_bad_days INTEGER,
-            restored_at TEXT
-        );
+            -- Phase 3: strategies that have been auto-deprecated due to alpha
+            -- decay. The trade pipeline checks this table and skips deprecated
+            -- strategies' signals. Restoration sets deprecated_at=NULL.
+            CREATE TABLE IF NOT EXISTS deprecated_strategies (
+                strategy_type TEXT PRIMARY KEY,
+                deprecated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                reason TEXT NOT NULL,
+                rolling_sharpe_at_deprecation REAL,
+                lifetime_sharpe REAL,
+                consecutive_bad_days INTEGER,
+                restored_at TEXT
+            );
 
-        -- Phase 4: SEC filing history and AI-analyzed semantic alerts.
-        -- One row per (symbol, accession_number). Consecutive filings of
-        -- the same type are diffed by the AI to detect material language
-        -- changes (going concern, material weakness, risk factor shifts).
-        CREATE TABLE IF NOT EXISTS sec_filings_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT NOT NULL,
-            accession_number TEXT NOT NULL,
-            form_type TEXT NOT NULL,
-            filed_date TEXT NOT NULL,
-            fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
-            filing_url TEXT,
-            risk_factors_text TEXT,
-            mdna_text TEXT,
-            going_concern_flag INTEGER DEFAULT 0,
-            material_weakness_flag INTEGER DEFAULT 0,
-            analyzed_at TEXT,
-            alert_severity TEXT,
-            alert_signal TEXT,
-            alert_summary TEXT,
-            alert_changes_json TEXT,
-            UNIQUE (symbol, accession_number)
-        );
+            -- Phase 4: SEC filing history and AI-analyzed semantic alerts.
+            -- One row per (symbol, accession_number). Consecutive filings of
+            -- the same type are diffed by the AI to detect material language
+            -- changes (going concern, material weakness, risk factor shifts).
+            CREATE TABLE IF NOT EXISTS sec_filings_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                accession_number TEXT NOT NULL,
+                form_type TEXT NOT NULL,
+                filed_date TEXT NOT NULL,
+                fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
+                filing_url TEXT,
+                risk_factors_text TEXT,
+                mdna_text TEXT,
+                going_concern_flag INTEGER DEFAULT 0,
+                material_weakness_flag INTEGER DEFAULT 0,
+                analyzed_at TEXT,
+                alert_severity TEXT,
+                alert_signal TEXT,
+                alert_summary TEXT,
+                alert_changes_json TEXT,
+                UNIQUE (symbol, accession_number)
+            );
 
-        -- Task-run ledger: one row per scheduled task invocation. Used
-        -- by the run-completion watchdog to detect stalled runs — any
-        -- row with started_at older than N minutes but completed_at NULL
-        -- is a stuck task that needs investigation.
-        CREATE TABLE IF NOT EXISTS task_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_name TEXT NOT NULL,
-            started_at TEXT NOT NULL DEFAULT (datetime('now')),
-            completed_at TEXT,
-            duration_seconds REAL,
-            status TEXT NOT NULL DEFAULT 'running',
-            error_message TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_task_runs_active
-            ON task_runs(completed_at) WHERE completed_at IS NULL;
-        CREATE INDEX IF NOT EXISTS idx_task_runs_started
-            ON task_runs(started_at DESC);
+            -- Task-run ledger: one row per scheduled task invocation. Used
+            -- by the run-completion watchdog to detect stalled runs — any
+            -- row with started_at older than N minutes but completed_at NULL
+            -- is a stuck task that needs investigation.
+            CREATE TABLE IF NOT EXISTS task_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_name TEXT NOT NULL,
+                started_at TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at TEXT,
+                duration_seconds REAL,
+                status TEXT NOT NULL DEFAULT 'running',
+                error_message TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_runs_active
+                ON task_runs(completed_at) WHERE completed_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_task_runs_started
+                ON task_runs(started_at DESC);
 
-        -- Symbols that were recently exited (stop-loss, trailing-stop,
-        -- take-profit, or manual close). The trade pipeline skips BUY
-        -- signals on symbols with a row here within the cooldown window.
-        -- Prevents the sell→immediate-rebuy-higher churn.
-        CREATE TABLE IF NOT EXISTS recently_exited_symbols (
-            symbol TEXT PRIMARY KEY,
-            exited_at TEXT NOT NULL DEFAULT (datetime('now')),
-            trigger TEXT,
-            exit_price REAL
-        );
+            -- Symbols that were recently exited (stop-loss, trailing-stop,
+            -- take-profit, or manual close). The trade pipeline skips BUY
+            -- signals on symbols with a row here within the cooldown window.
+            -- Prevents the sell→immediate-rebuy-higher churn.
+            CREATE TABLE IF NOT EXISTS recently_exited_symbols (
+                symbol TEXT PRIMARY KEY,
+                exited_at TEXT NOT NULL DEFAULT (datetime('now')),
+                trigger TEXT,
+                exit_price REAL
+            );
 
-        -- AI cost ledger: one row per call_ai invocation. Token counts
-        -- are stored separately from USD so re-pricing history is a
-        -- single-file change in ai_pricing.py.
-        CREATE TABLE IF NOT EXISTS ai_cost_ledger (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-            provider TEXT NOT NULL,
-            model TEXT NOT NULL,
-            input_tokens INTEGER NOT NULL DEFAULT 0,
-            output_tokens INTEGER NOT NULL DEFAULT 0,
-            purpose TEXT,
-            estimated_cost_usd REAL NOT NULL DEFAULT 0
-        );
-        CREATE INDEX IF NOT EXISTS idx_ai_cost_ts
-            ON ai_cost_ledger(timestamp DESC);
+            -- AI cost ledger: one row per call_ai invocation. Token counts
+            -- are stored separately from USD so re-pricing history is a
+            -- single-file change in ai_pricing.py.
+            CREATE TABLE IF NOT EXISTS ai_cost_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                purpose TEXT,
+                estimated_cost_usd REAL NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_cost_ts
+                ON ai_cost_ledger(timestamp DESC);
 
-        -- Phase 10: cross-asset crisis state transitions. One row per
-        -- transition (normal → elevated → crisis → severe). The trade
-        -- pipeline reads the latest active row to gate position sizing
-        -- and new longs.
-        CREATE TABLE IF NOT EXISTS crisis_state_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            transitioned_at TEXT NOT NULL DEFAULT (datetime('now')),
-            from_level TEXT,
-            to_level TEXT NOT NULL,
-            signals_json TEXT,
-            readings_json TEXT,
-            size_multiplier REAL NOT NULL DEFAULT 1.0
-        );
-        CREATE INDEX IF NOT EXISTS idx_crisis_state_time
-            ON crisis_state_history(transitioned_at DESC);
+            -- Phase 10: cross-asset crisis state transitions. One row per
+            -- transition (normal → elevated → crisis → severe). The trade
+            -- pipeline reads the latest active row to gate position sizing
+            -- and new longs.
+            CREATE TABLE IF NOT EXISTS crisis_state_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                transitioned_at TEXT NOT NULL DEFAULT (datetime('now')),
+                from_level TEXT,
+                to_level TEXT NOT NULL,
+                signals_json TEXT,
+                readings_json TEXT,
+                size_multiplier REAL NOT NULL DEFAULT 1.0
+            );
+            CREATE INDEX IF NOT EXISTS idx_crisis_state_time
+                ON crisis_state_history(transitioned_at DESC);
 
-        -- Phase 9: event stream. Events are detected by pollers and
-        -- dispatched to subscribed handlers. Idempotency is enforced on
-        -- (type, symbol, DATE(detected_at)) so the same detector run
-        -- twice in a day doesn't duplicate an event.
-        CREATE TABLE IF NOT EXISTS events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            type TEXT NOT NULL,
-            symbol TEXT,
-            severity TEXT NOT NULL DEFAULT 'info',
-            payload_json TEXT,
-            detected_at TEXT NOT NULL DEFAULT (datetime('now')),
-            handled_at TEXT,
-            handler_results_json TEXT,
-            dedup_key TEXT UNIQUE
-        );
-        CREATE INDEX IF NOT EXISTS idx_events_handled
-            ON events(handled_at) WHERE handled_at IS NULL;
-        CREATE INDEX IF NOT EXISTS idx_events_type_time
-            ON events(type, detected_at DESC);
+            -- Phase 9: event stream. Events are detected by pollers and
+            -- dispatched to subscribed handlers. Idempotency is enforced on
+            -- (type, symbol, DATE(detected_at)) so the same detector run
+            -- twice in a day doesn't duplicate an event.
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL,
+                symbol TEXT,
+                severity TEXT NOT NULL DEFAULT 'info',
+                payload_json TEXT,
+                detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+                handled_at TEXT,
+                handler_results_json TEXT,
+                dedup_key TEXT UNIQUE
+            );
+            CREATE INDEX IF NOT EXISTS idx_events_handled
+                ON events(handled_at) WHERE handled_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_events_type_time
+                ON events(type, detected_at DESC);
 
-        -- Phase 7: auto-generated strategies proposed by the AI. Each row is
-        -- a strategy variant with its full JSON spec, lifecycle status, and
-        -- lineage. Status progression:
-        --   proposed  → AI wrote the spec; awaiting backtest validation
-        --   validated → passed Phase 2 rigorous_backtest
-        --   shadow    → runs live; predictions tracked but no real capital
-        --   active    → promoted after shadow period with sufficient edge
-        --   retired   → failed validation, decayed, or lost shadow race
-        -- parent_id links genealogies (Phase 7 evolves variants of winners).
-        CREATE TABLE IF NOT EXISTS auto_generated_strategies (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            spec_json TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'proposed',
-            generation INTEGER NOT NULL DEFAULT 1,
-            parent_id INTEGER,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            validated_at TEXT,
-            shadow_started_at TEXT,
-            promoted_at TEXT,
-            retired_at TEXT,
-            retirement_reason TEXT,
-            validation_report_json TEXT,
-            FOREIGN KEY (parent_id) REFERENCES auto_generated_strategies(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_auto_strategies_status
-            ON auto_generated_strategies(status);
-        -- Item 1b — stat-arb pair book. Each row is one cointegrated
-        -- pair the daily scanner has flagged as tradeable. The (a,b)
-        -- pair is canonical: symbol_a < symbol_b alphabetically so
-        -- there's exactly one row per unordered pair. last_*_at fields
-        -- track lifecycle: created_at when first detected, retested_at
-        -- when the daily rebalance last verified cointegration,
-        -- retired_at when the pair broke (p > 0.10) or was manually
-        -- closed.
-        CREATE TABLE IF NOT EXISTS stat_arb_pairs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol_a TEXT NOT NULL,
-            symbol_b TEXT NOT NULL,
-            hedge_ratio REAL NOT NULL,
-            p_value REAL NOT NULL,
-            half_life_days REAL NOT NULL,
-            correlation REAL NOT NULL,
-            status TEXT NOT NULL DEFAULT 'active',
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            retested_at TEXT,
-            retired_at TEXT,
-            retirement_reason TEXT,
-            UNIQUE(symbol_a, symbol_b)
-        );
-        CREATE INDEX IF NOT EXISTS idx_stat_arb_pairs_status
-            ON stat_arb_pairs(status);
+            -- Phase 7: auto-generated strategies proposed by the AI. Each row is
+            -- a strategy variant with its full JSON spec, lifecycle status, and
+            -- lineage. Status progression:
+            --   proposed  → AI wrote the spec; awaiting backtest validation
+            --   validated → passed Phase 2 rigorous_backtest
+            --   shadow    → runs live; predictions tracked but no real capital
+            --   active    → promoted after shadow period with sufficient edge
+            --   retired   → failed validation, decayed, or lost shadow race
+            -- parent_id links genealogies (Phase 7 evolves variants of winners).
+            CREATE TABLE IF NOT EXISTS auto_generated_strategies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                spec_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'proposed',
+                generation INTEGER NOT NULL DEFAULT 1,
+                parent_id INTEGER,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                validated_at TEXT,
+                shadow_started_at TEXT,
+                promoted_at TEXT,
+                retired_at TEXT,
+                retirement_reason TEXT,
+                validation_report_json TEXT,
+                FOREIGN KEY (parent_id) REFERENCES auto_generated_strategies(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_auto_strategies_status
+                ON auto_generated_strategies(status);
+            -- Item 1b — stat-arb pair book. Each row is one cointegrated
+            -- pair the daily scanner has flagged as tradeable. The (a,b)
+            -- pair is canonical: symbol_a < symbol_b alphabetically so
+            -- there's exactly one row per unordered pair. last_*_at fields
+            -- track lifecycle: created_at when first detected, retested_at
+            -- when the daily rebalance last verified cointegration,
+            -- retired_at when the pair broke (p > 0.10) or was manually
+            -- closed.
+            CREATE TABLE IF NOT EXISTS stat_arb_pairs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol_a TEXT NOT NULL,
+                symbol_b TEXT NOT NULL,
+                hedge_ratio REAL NOT NULL,
+                p_value REAL NOT NULL,
+                half_life_days REAL NOT NULL,
+                correlation REAL NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                retested_at TEXT,
+                retired_at TEXT,
+                retirement_reason TEXT,
+                UNIQUE(symbol_a, symbol_b)
+            );
+            CREATE INDEX IF NOT EXISTS idx_stat_arb_pairs_status
+                ON stat_arb_pairs(status);
 
-        -- Phase 5d of pipeline refactor (2026-05-11): one-time
-        -- migration markers. The Phase 5d historical option-row
-        -- backfill checks `WHERE key='phase_5d_option_backfill'`
-        -- to know whether it has already run on this DB. Generic
-        -- design — future one-shot migrations register here.
-        CREATE TABLE IF NOT EXISTS migration_markers (
-            key TEXT PRIMARY KEY,
-            completed_at TEXT NOT NULL DEFAULT (datetime('now')),
-            details TEXT
-        );
-    """)
+            -- Phase 5d of pipeline refactor (2026-05-11): one-time
+            -- migration markers. The Phase 5d historical option-row
+            -- backfill checks `WHERE key='phase_5d_option_backfill'`
+            -- to know whether it has already run on this DB. Generic
+            -- design — future one-shot migrations register here.
+            CREATE TABLE IF NOT EXISTS migration_markers (
+                key TEXT PRIMARY KEY,
+                completed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                details TEXT
+            );
+        """)
 
-    # Universal schema migration: ensures every column defined in the
-    # CREATE TABLE statements above actually exists in the DB. Catches
-    # any column added to the schema that wasn't present when the DB
-    # was first created. Replaces the old per-column migration functions.
-    _migrate_all_columns(conn)
+        # Universal schema migration: ensures every column defined in the
+        # CREATE TABLE statements above actually exists in the DB. Catches
+        # any column added to the schema that wasn't present when the DB
+        # was first created. Replaces the old per-column migration functions.
+        _migrate_all_columns(conn)
 
-    # daily_snapshots: dedupe + add UNIQUE(date) constraint.
-    # Existing DBs created before 2026-04-28 had no UNIQUE constraint
-    # and accumulated duplicate rows when the scheduler restarted
-    # before the marker-file fix landed. Combine the dedupe and the
-    # constraint addition in one table-rebuild migration.
-    _migrate_daily_snapshots_unique(conn)
+        # daily_snapshots: dedupe + add UNIQUE(date) constraint.
+        # Existing DBs created before 2026-04-28 had no UNIQUE constraint
+        # and accumulated duplicate rows when the scheduler restarted
+        # before the marker-file fix landed. Combine the dedupe and the
+        # constraint addition in one table-rebuild migration.
+        _migrate_daily_snapshots_unique(conn)
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def record_exit(db_path: str, symbol: str, trigger: str,
@@ -369,15 +372,14 @@ def record_wash_cooldown(db_path: str, symbol: str) -> None:
     if not db_path or not symbol:
         return
     try:
-        conn = _get_conn(db_path)
-        conn.execute(
-            "INSERT OR REPLACE INTO recently_exited_symbols "
-            "(symbol, exited_at, trigger, exit_price) "
-            "VALUES (?, datetime('now'), 'wash_cooldown', NULL)",
-            (symbol,),
-        )
-        conn.commit()
-        conn.close()
+        with closing(_get_conn(db_path)) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO recently_exited_symbols "
+                "(symbol, exited_at, trigger, exit_price) "
+                "VALUES (?, datetime('now'), 'wash_cooldown', NULL)",
+                (symbol,),
+            )
+            conn.commit()
     # SILENT_OK: wash-cooldown marker write; cooldown is best-effort and self-heals on next exit
     except Exception:
         pass
@@ -388,14 +390,13 @@ def get_wash_cooldown_symbols(db_path: str, days: int = 30) -> set:
     if not db_path:
         return set()
     try:
-        conn = _get_conn(db_path)
-        rows = conn.execute(
-            "SELECT symbol FROM recently_exited_symbols "
-            "WHERE trigger = 'wash_cooldown' "
-            "AND exited_at >= datetime('now', ?)",
-            (f"-{int(days)} days",),
-        ).fetchall()
-        conn.close()
+        with closing(_get_conn(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT symbol FROM recently_exited_symbols "
+                "WHERE trigger = 'wash_cooldown' "
+                "AND exited_at >= datetime('now', ?)",
+                (f"-{int(days)} days",),
+            ).fetchall()
         return {r[0] for r in rows}
     except Exception:
         return set()
@@ -404,13 +405,12 @@ def get_wash_cooldown_symbols(db_path: str, days: int = 30) -> set:
 def get_recently_exited(db_path: str, cooldown_minutes: int = 60) -> set:
     """Return the set of symbols currently in the post-exit cooldown window."""
     try:
-        conn = _get_conn(db_path)
-        rows = conn.execute(
-            "SELECT symbol FROM recently_exited_symbols "
-            "WHERE exited_at >= datetime('now', ?)",
-            (f"-{int(cooldown_minutes)} minutes",),
-        ).fetchall()
-        conn.close()
+        with closing(_get_conn(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT symbol FROM recently_exited_symbols "
+                "WHERE exited_at >= datetime('now', ?)",
+                (f"-{int(cooldown_minutes)} minutes",),
+            ).fetchall()
         return {r["symbol"] for r in rows}
     except Exception:
         return set()
@@ -779,27 +779,26 @@ def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
 
     Returns the row id of the inserted trade.
     """
-    conn = _get_conn(db_path)
-    cursor = conn.execute(
-        """INSERT INTO trades
-           (timestamp, symbol, side, qty, price, order_id, signal_type, strategy,
-            reason, ai_reasoning, ai_confidence, stop_loss, take_profit, status, pnl,
-            decision_price, fill_price, slippage_pct,
-            occ_symbol, option_strategy, expiry, strike,
-            predicted_slippage_bps, adv_at_decision)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            datetime.utcnow().isoformat(),
-            symbol, side, qty, price, order_id, signal_type, strategy,
-            reason, ai_reasoning, ai_confidence, stop_loss, take_profit,
-            status, pnl, decision_price, fill_price, slippage_pct,
-            occ_symbol, option_strategy, expiry, strike,
-            predicted_slippage_bps, adv_at_decision,
-        ),
-    )
-    conn.commit()
-    trade_id = cursor.lastrowid
-    conn.close()
+    with closing(_get_conn(db_path)) as conn:
+        cursor = conn.execute(
+            """INSERT INTO trades
+               (timestamp, symbol, side, qty, price, order_id, signal_type, strategy,
+                reason, ai_reasoning, ai_confidence, stop_loss, take_profit, status, pnl,
+                decision_price, fill_price, slippage_pct,
+                occ_symbol, option_strategy, expiry, strike,
+                predicted_slippage_bps, adv_at_decision)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                datetime.utcnow().isoformat(),
+                symbol, side, qty, price, order_id, signal_type, strategy,
+                reason, ai_reasoning, ai_confidence, stop_loss, take_profit,
+                status, pnl, decision_price, fill_price, slippage_pct,
+                occ_symbol, option_strategy, expiry, strike,
+                predicted_slippage_bps, adv_at_decision,
+            ),
+        )
+        conn.commit()
+        trade_id = cursor.lastrowid
     return trade_id
 
 
@@ -869,20 +868,19 @@ def record_broker_rejection(db_path, *, symbol, action, signal_type,
     if rejection_code is None:
         rejection_code = classify_broker_rejection_message(broker_message)
     try:
-        conn = _get_conn(db_path)
-        cursor = conn.execute(
-            "INSERT INTO broker_rejections "
-            "(symbol, action, signal_type, ai_confidence, ai_reasoning, "
-            " rejection_code, broker_message, prediction_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (symbol, action, signal_type, ai_confidence, ai_reasoning,
-             rejection_code,
-             str(broker_message)[:1000] if broker_message else None,
-             prediction_id),
-        )
-        conn.commit()
-        rid = cursor.lastrowid
-        conn.close()
+        with closing(_get_conn(db_path)) as conn:
+            cursor = conn.execute(
+                "INSERT INTO broker_rejections "
+                "(symbol, action, signal_type, ai_confidence, ai_reasoning, "
+                " rejection_code, broker_message, prediction_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (symbol, action, signal_type, ai_confidence, ai_reasoning,
+                 rejection_code,
+                 str(broker_message)[:1000] if broker_message else None,
+                 prediction_id),
+            )
+            conn.commit()
+            rid = cursor.lastrowid
         return rid
     except Exception as exc:
         _logging.warning(
@@ -898,17 +896,16 @@ def get_recent_broker_rejections(db_path, hours=24, limit=200):
     badges on recently-proposed trades."""
     import logging as _logging
     try:
-        conn = _get_conn(db_path)
-        rows = conn.execute(
-            "SELECT id, timestamp, symbol, action, signal_type, "
-            "       ai_confidence, ai_reasoning, rejection_code, "
-            "       broker_message, prediction_id "
-            "FROM broker_rejections "
-            "WHERE timestamp >= datetime('now', ?) "
-            "ORDER BY timestamp DESC LIMIT ?",
-            (f"-{int(hours)} hours", int(limit)),
-        ).fetchall()
-        conn.close()
+        with closing(_get_conn(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT id, timestamp, symbol, action, signal_type, "
+                "       ai_confidence, ai_reasoning, rejection_code, "
+                "       broker_message, prediction_id "
+                "FROM broker_rejections "
+                "WHERE timestamp >= datetime('now', ?) "
+                "ORDER BY timestamp DESC LIMIT ?",
+                (f"-{int(hours)} hours", int(limit)),
+            ).fetchall()
         return [dict(r) for r in rows]
     except Exception as exc:
         _logging.warning(
@@ -938,27 +935,26 @@ def get_open_entry_metadata(db_path, symbol, occ_symbol=None):
     """
     import logging as _logging
     try:
-        conn = _get_conn(db_path)
-        if occ_symbol:
-            row = conn.execute(
-                "SELECT ai_confidence, ai_reasoning FROM trades "
-                "WHERE occ_symbol=? "
-                "  AND COALESCE(status,'open')='open' "
-                "  AND side IN ('buy','short') "
-                "ORDER BY timestamp DESC LIMIT 1",
-                (occ_symbol,),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT ai_confidence, ai_reasoning FROM trades "
-                "WHERE symbol=? "
-                "  AND occ_symbol IS NULL "
-                "  AND COALESCE(status,'open')='open' "
-                "  AND side IN ('buy','short') "
-                "ORDER BY timestamp DESC LIMIT 1",
-                (symbol,),
-            ).fetchone()
-        conn.close()
+        with closing(_get_conn(db_path)) as conn:
+            if occ_symbol:
+                row = conn.execute(
+                    "SELECT ai_confidence, ai_reasoning FROM trades "
+                    "WHERE occ_symbol=? "
+                    "  AND COALESCE(status,'open')='open' "
+                    "  AND side IN ('buy','short') "
+                    "ORDER BY timestamp DESC LIMIT 1",
+                    (occ_symbol,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT ai_confidence, ai_reasoning FROM trades "
+                    "WHERE symbol=? "
+                    "  AND occ_symbol IS NULL "
+                    "  AND COALESCE(status,'open')='open' "
+                    "  AND side IN ('buy','short') "
+                    "ORDER BY timestamp DESC LIMIT 1",
+                    (symbol,),
+                ).fetchone()
         if row:
             return {
                 "ai_confidence": row["ai_confidence"],
@@ -995,60 +991,61 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
     """
     conn = _get_conn(db_path)
     try:
-        # Exclude status='canceled' rows — entry orders that never
-        # filled at the broker. Without this the phantom stays
-        # "open" forever in the FIFO.
-        # Pull occ_symbol so option legs are tracked as separate
-        # positions from any underlying-stock holding (without this,
-        # FIFO mixes a $3.10 option premium with a $416 stock price
-        # under the same "MSFT" key and produces nonsense valuations).
-        # Fall back to the legacy stock-only query when occ_symbol
-        # doesn't exist (older test fixtures with minimal schemas).
         try:
-            rows = conn.execute(
-                "SELECT symbol, side, qty, price, timestamp, occ_symbol "
-                "FROM trades "
-                "WHERE COALESCE(status, 'open') != 'canceled' "
-                "ORDER BY timestamp ASC, id ASC"
-            ).fetchall()
-        except sqlite3.OperationalError:
-            rows = conn.execute(
-                "SELECT symbol, side, qty, price, timestamp "
-                "FROM trades "
-                "WHERE COALESCE(status, 'open') != 'canceled' "
-                "ORDER BY timestamp ASC, id ASC"
-            ).fetchall()
-        # 2026-05-12 — per-trade TP/SL price lookup. UNH bug: the AI
-        # set a $379 target on a $356 entry (6.5%), but the polling
-        # take-profit check used the profile-level take_profit_pct
-        # (15% on Large Cap profiles), so the position never fired
-        # the TP at $379 and rode all the way to $396+ with no
-        # capture. Pull the most-recent open BUY's stop_loss /
-        # take_profit PRICES per symbol so they can be propagated
-        # into the position output for `check_stop_loss_take_profit`.
-        try:
-            tp_sl_rows = conn.execute(
-                "SELECT symbol, occ_symbol, stop_loss, take_profit "
-                "FROM trades "
-                "WHERE side IN ('buy', 'short') "
-                "  AND status = 'open' "
-                "  AND (stop_loss IS NOT NULL OR take_profit IS NOT NULL) "
-                "ORDER BY timestamp DESC, id DESC"
-            ).fetchall()
-            per_trade_targets: Dict[str, Dict[str, float]] = {}
-            for sym, occ, sl, tp in tp_sl_rows:
-                key = occ if occ else sym
-                # First (most recent) wins per key
-                if key not in per_trade_targets:
-                    per_trade_targets[key] = {
-                        "stop_loss_price": sl, "take_profit_price": tp,
-                    }
-        except sqlite3.OperationalError:
-            per_trade_targets = {}
-    except Exception:
+            # Exclude status='canceled' rows — entry orders that never
+            # filled at the broker. Without this the phantom stays
+            # "open" forever in the FIFO.
+            # Pull occ_symbol so option legs are tracked as separate
+            # positions from any underlying-stock holding (without this,
+            # FIFO mixes a $3.10 option premium with a $416 stock price
+            # under the same "MSFT" key and produces nonsense valuations).
+            # Fall back to the legacy stock-only query when occ_symbol
+            # doesn't exist (older test fixtures with minimal schemas).
+            try:
+                rows = conn.execute(
+                    "SELECT symbol, side, qty, price, timestamp, occ_symbol "
+                    "FROM trades "
+                    "WHERE COALESCE(status, 'open') != 'canceled' "
+                    "ORDER BY timestamp ASC, id ASC"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                rows = conn.execute(
+                    "SELECT symbol, side, qty, price, timestamp "
+                    "FROM trades "
+                    "WHERE COALESCE(status, 'open') != 'canceled' "
+                    "ORDER BY timestamp ASC, id ASC"
+                ).fetchall()
+            # 2026-05-12 — per-trade TP/SL price lookup. UNH bug: the AI
+            # set a $379 target on a $356 entry (6.5%), but the polling
+            # take-profit check used the profile-level take_profit_pct
+            # (15% on Large Cap profiles), so the position never fired
+            # the TP at $379 and rode all the way to $396+ with no
+            # capture. Pull the most-recent open BUY's stop_loss /
+            # take_profit PRICES per symbol so they can be propagated
+            # into the position output for `check_stop_loss_take_profit`.
+            try:
+                tp_sl_rows = conn.execute(
+                    "SELECT symbol, occ_symbol, stop_loss, take_profit "
+                    "FROM trades "
+                    "WHERE side IN ('buy', 'short') "
+                    "  AND status = 'open' "
+                    "  AND (stop_loss IS NOT NULL OR take_profit IS NOT NULL) "
+                    "ORDER BY timestamp DESC, id DESC"
+                ).fetchall()
+                per_trade_targets: Dict[str, Dict[str, float]] = {}
+                for sym, occ, sl, tp in tp_sl_rows:
+                    key = occ if occ else sym
+                    # First (most recent) wins per key
+                    if key not in per_trade_targets:
+                        per_trade_targets[key] = {
+                            "stop_loss_price": sl, "take_profit_price": tp,
+                        }
+            except sqlite3.OperationalError:
+                per_trade_targets = {}
+        except Exception:
+            return []
+    finally:
         conn.close()
-        return []
-    conn.close()
 
     # FIFO lot tracking. Position key is the OCC symbol when present
     # (so each option contract is its own position) or the stock
@@ -1253,19 +1250,20 @@ def get_virtual_account_info(db_path=None, initial_capital=100000.0,
     """
     conn = _get_conn(db_path)
     try:
-        rows = conn.execute(
-            "SELECT side, qty, price FROM trades"
-        ).fetchall()
-    except Exception:
+        try:
+            rows = conn.execute(
+                "SELECT side, qty, price FROM trades"
+            ).fetchall()
+        except Exception:
+            return {
+                "equity": initial_capital,
+                "buying_power": initial_capital,
+                "cash": initial_capital,
+                "portfolio_value": 0.0,
+                "status": "ACTIVE",
+            }
+    finally:
         conn.close()
-        return {
-            "equity": initial_capital,
-            "buying_power": initial_capital,
-            "cash": initial_capital,
-            "portfolio_value": 0.0,
-            "status": "ACTIVE",
-        }
-    conn.close()
 
     total_buys = 0.0
     total_sells = 0.0
@@ -1319,82 +1317,80 @@ def reconcile_trade_statuses(db_path=None, open_symbols=None):
 
     Returns dict with counts: {"sells_fixed", "buys_fixed", "pnl_computed"}.
     """
-    conn = _get_conn(db_path)
+    with closing(_get_conn(db_path)) as conn:
+        # 1. SELL rows with pnl but open status
+        cur = conn.execute(
+            "UPDATE trades SET status='closed' "
+            "WHERE side='sell' AND pnl IS NOT NULL AND status='open'"
+        )
+        sells_fixed = cur.rowcount
 
-    # 1. SELL rows with pnl but open status
-    cur = conn.execute(
-        "UPDATE trades SET status='closed' "
-        "WHERE side='sell' AND pnl IS NOT NULL AND status='open'"
-    )
-    sells_fixed = cur.rowcount
-
-    # 2. BUY rows for closed positions
-    if open_symbols is not None:
-        placeholders = ",".join("?" * len(open_symbols)) if open_symbols else "''"
-        if open_symbols:
-            cur = conn.execute(
-                f"UPDATE trades SET status='closed' "
-                f"WHERE side='buy' AND status='open' "
-                f"AND symbol NOT IN ({placeholders})",
-                list(open_symbols),
-            )
+        # 2. BUY rows for closed positions
+        if open_symbols is not None:
+            placeholders = ",".join("?" * len(open_symbols)) if open_symbols else "''"
+            if open_symbols:
+                cur = conn.execute(
+                    f"UPDATE trades SET status='closed' "
+                    f"WHERE side='buy' AND status='open' "
+                    f"AND symbol NOT IN ({placeholders})",
+                    list(open_symbols),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE trades SET status='closed' "
+                    "WHERE side='buy' AND status='open'"
+                )
+            buys_fixed = cur.rowcount
         else:
             cur = conn.execute(
                 "UPDATE trades SET status='closed' "
-                "WHERE side='buy' AND status='open'"
+                "WHERE side='buy' AND status='open' AND symbol IN ("
+                "  SELECT DISTINCT symbol FROM trades "
+                "  WHERE side='sell' AND pnl IS NOT NULL"
+                ")"
             )
-        buys_fixed = cur.rowcount
-    else:
-        cur = conn.execute(
-            "UPDATE trades SET status='closed' "
-            "WHERE side='buy' AND status='open' AND symbol IN ("
-            "  SELECT DISTINCT symbol FROM trades "
-            "  WHERE side='sell' AND pnl IS NOT NULL"
-            ")"
-        )
-        buys_fixed = cur.rowcount
+            buys_fixed = cur.rowcount
 
-    # 3. FIFO-match BUY lots to SELLs to compute realized pnl on BUY rows
-    pnl_computed = 0
-    symbols = [
-        r[0] for r in conn.execute(
-            "SELECT DISTINCT symbol FROM trades "
-            "WHERE side='buy' AND status='closed' AND pnl IS NULL"
-        ).fetchall()
-    ]
-    for symbol in symbols:
-        rows = conn.execute(
-            "SELECT id, side, qty, price, pnl, timestamp "
-            "FROM trades WHERE symbol=? "
-            "ORDER BY timestamp ASC, id ASC",
-            (symbol,),
-        ).fetchall()
-        # Lots: list of [buy_id, qty_remaining, entry_price, realized_pnl]
-        lots = []
-        for r in rows:
-            tid, side, qty, price, row_pnl, ts = r
-            qty = float(qty or 0)
-            price = float(price or 0)
-            if side == "buy":
-                lots.append([tid, qty, price, 0.0])
-            elif side == "sell" and qty > 0 and price > 0:
-                remaining = qty
-                for lot in lots:
-                    if remaining <= 0:
-                        break
-                    if lot[1] <= 0:
-                        continue
-                    consumed = min(lot[1], remaining)
-                    # Realized for this slice: (exit - entry) × qty
-                    lot[3] += (price - lot[2]) * consumed
-                    lot[1] -= consumed
-                    remaining -= consumed
-        # BUY rows no longer get pnl backfilled — realized P&L belongs
-        # on the SELL row only. The UI now has separate Unrealized and
-        # Realized columns so there's no need to duplicate the number.
+        # 3. FIFO-match BUY lots to SELLs to compute realized pnl on BUY rows
+        pnl_computed = 0
+        symbols = [
+            r[0] for r in conn.execute(
+                "SELECT DISTINCT symbol FROM trades "
+                "WHERE side='buy' AND status='closed' AND pnl IS NULL"
+            ).fetchall()
+        ]
+        for symbol in symbols:
+            rows = conn.execute(
+                "SELECT id, side, qty, price, pnl, timestamp "
+                "FROM trades WHERE symbol=? "
+                "ORDER BY timestamp ASC, id ASC",
+                (symbol,),
+            ).fetchall()
+            # Lots: list of [buy_id, qty_remaining, entry_price, realized_pnl]
+            lots = []
+            for r in rows:
+                tid, side, qty, price, row_pnl, ts = r
+                qty = float(qty or 0)
+                price = float(price or 0)
+                if side == "buy":
+                    lots.append([tid, qty, price, 0.0])
+                elif side == "sell" and qty > 0 and price > 0:
+                    remaining = qty
+                    for lot in lots:
+                        if remaining <= 0:
+                            break
+                        if lot[1] <= 0:
+                            continue
+                        consumed = min(lot[1], remaining)
+                        # Realized for this slice: (exit - entry) × qty
+                        lot[3] += (price - lot[2]) * consumed
+                        lot[1] -= consumed
+                        remaining -= consumed
+            # BUY rows no longer get pnl backfilled — realized P&L belongs
+            # on the SELL row only. The UI now has separate Unrealized and
+            # Realized columns so there's no need to duplicate the number.
 
-    conn.commit()
-    conn.close()
+        conn.commit()
     return {
         "sells_fixed": sells_fixed,
         "buys_fixed": buys_fixed,
@@ -1410,21 +1406,20 @@ def log_signal(symbol, signal, strategy=None, reason=None, price=None,
         indicators: dict of indicator values; stored as JSON.
     Returns the row id.
     """
-    conn = _get_conn(db_path)
     indicators_json = json.dumps(indicators) if indicators else None
-    cursor = conn.execute(
-        """INSERT INTO signals
-           (timestamp, symbol, strategy, signal, reason, price, indicators, acted_on)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            datetime.utcnow().isoformat(),
-            symbol, strategy, signal, reason, price,
-            indicators_json, int(acted_on),
-        ),
-    )
-    conn.commit()
-    signal_id = cursor.lastrowid
-    conn.close()
+    with closing(_get_conn(db_path)) as conn:
+        cursor = conn.execute(
+            """INSERT INTO signals
+               (timestamp, symbol, strategy, signal, reason, price, indicators, acted_on)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                datetime.utcnow().isoformat(),
+                symbol, strategy, signal, reason, price,
+                indicators_json, int(acted_on),
+            ),
+        )
+        conn.commit()
+        signal_id = cursor.lastrowid
     return signal_id
 
 
@@ -1445,19 +1440,18 @@ def log_daily_snapshot(equity, cash, portfolio_value, num_positions, daily_pnl=N
     # snapshots to land under tomorrow's date from the user's perspective.
     from zoneinfo import ZoneInfo
     today_et = datetime.now(ZoneInfo("America/New_York")).date()
-    conn = _get_conn(db_path)
-    cursor = conn.execute(
-        """INSERT OR REPLACE INTO daily_snapshots
-           (date, equity, cash, portfolio_value, num_positions, daily_pnl)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (
-            today_et.isoformat(),
-            equity, cash, portfolio_value, num_positions, daily_pnl,
-        ),
-    )
-    conn.commit()
-    snapshot_id = cursor.lastrowid
-    conn.close()
+    with closing(_get_conn(db_path)) as conn:
+        cursor = conn.execute(
+            """INSERT OR REPLACE INTO daily_snapshots
+               (date, equity, cash, portfolio_value, num_positions, daily_pnl)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                today_et.isoformat(),
+                equity, cash, portfolio_value, num_positions, daily_pnl,
+            ),
+        )
+        conn.commit()
+        snapshot_id = cursor.lastrowid
     return snapshot_id
 
 
@@ -1466,18 +1460,17 @@ def get_trade_history(symbol=None, limit=50, db_path=None):
 
     Returns a list of dicts.
     """
-    conn = _get_conn(db_path)
-    if symbol:
-        rows = conn.execute(
-            "SELECT * FROM trades WHERE symbol = ? ORDER BY timestamp DESC LIMIT ?",
-            (symbol, limit),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM trades ORDER BY timestamp DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-    conn.close()
+    with closing(_get_conn(db_path)) as conn:
+        if symbol:
+            rows = conn.execute(
+                "SELECT * FROM trades WHERE symbol = ? ORDER BY timestamp DESC LIMIT ?",
+                (symbol, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM trades ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -1487,40 +1480,37 @@ def get_performance_summary(db_path=None):
     Returns a dict with total_trades, winning_trades, losing_trades, win_rate,
     total_pnl, avg_pnl, best_trade, worst_trade.
     """
-    conn = _get_conn(db_path)
-    # Phase 5e — exclude data_quality-tagged rows.
-    _dq = data_quality_clause(conn)
+    with closing(_get_conn(db_path)) as conn:
+        # Phase 5e — exclude data_quality-tagged rows.
+        _dq = data_quality_clause(conn)
 
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM trades WHERE pnl IS NOT NULL{_dq}"
-    ).fetchone()[0]
-    if total == 0:
-        conn.close()
-        return {
-            "total_trades": 0,
-            "winning_trades": 0,
-            "losing_trades": 0,
-            "win_rate": 0.0,
-            "total_pnl": 0.0,
-            "avg_pnl": 0.0,
-            "best_trade": 0.0,
-            "worst_trade": 0.0,
-        }
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM trades WHERE pnl IS NOT NULL{_dq}"
+        ).fetchone()[0]
+        if total == 0:
+            return {
+                "total_trades": 0,
+                "winning_trades": 0,
+                "losing_trades": 0,
+                "win_rate": 0.0,
+                "total_pnl": 0.0,
+                "avg_pnl": 0.0,
+                "best_trade": 0.0,
+                "worst_trade": 0.0,
+            }
 
-    row = conn.execute(f"""
-        SELECT
-            COUNT(*) AS total_trades,
-            SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS winning_trades,
-            SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) AS losing_trades,
-            SUM(pnl) AS total_pnl,
-            AVG(pnl) AS avg_pnl,
-            MAX(pnl) AS best_trade,
-            MIN(pnl) AS worst_trade
-        FROM trades
-        WHERE pnl IS NOT NULL{_dq}
-    """).fetchone()
-
-    conn.close()
+        row = conn.execute(f"""
+            SELECT
+                COUNT(*) AS total_trades,
+                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS winning_trades,
+                SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) AS losing_trades,
+                SUM(pnl) AS total_pnl,
+                AVG(pnl) AS avg_pnl,
+                MAX(pnl) AS best_trade,
+                MIN(pnl) AS worst_trade
+            FROM trades
+            WHERE pnl IS NOT NULL{_dq}
+        """).fetchone()
 
     total_trades = row["total_trades"]
     winning = row["winning_trades"]
@@ -1542,18 +1532,17 @@ def get_signal_history(symbol=None, limit=100, db_path=None):
 
     Returns a list of dicts with indicators parsed from JSON.
     """
-    conn = _get_conn(db_path)
-    if symbol:
-        rows = conn.execute(
-            "SELECT * FROM signals WHERE symbol = ? ORDER BY timestamp DESC LIMIT ?",
-            (symbol, limit),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM signals ORDER BY timestamp DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-    conn.close()
+    with closing(_get_conn(db_path)) as conn:
+        if symbol:
+            rows = conn.execute(
+                "SELECT * FROM signals WHERE symbol = ? ORDER BY timestamp DESC LIMIT ?",
+                (symbol, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM signals ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
 
     results = []
     for r in rows:
@@ -1572,15 +1561,14 @@ def get_equity_curve(days=30, db_path=None):
 
     Returns a list of dicts with date, equity, portfolio_value, daily_pnl.
     """
-    conn = _get_conn(db_path)
-    rows = conn.execute(
-        """SELECT date, equity, cash, portfolio_value, num_positions, daily_pnl
-           FROM daily_snapshots
-           ORDER BY date DESC
-           LIMIT ?""",
-        (days,),
-    ).fetchall()
-    conn.close()
+    with closing(_get_conn(db_path)) as conn:
+        rows = conn.execute(
+            """SELECT date, equity, cash, portfolio_value, num_positions, daily_pnl
+               FROM daily_snapshots
+               ORDER BY date DESC
+               LIMIT ?""",
+            (days,),
+        ).fetchall()
     # Return in chronological order
     return [dict(r) for r in reversed(rows)]
 
@@ -1619,101 +1607,98 @@ def get_slippage_stats(db_path=None, kind=None):
     sum of |fill - decision| * qty — useful as a measure of execution
     variance independent of direction.
     """
-    conn = _get_conn(db_path)
-    where_kind = ""
-    if kind == "stocks":
-        where_kind = " AND occ_symbol IS NULL"
-    elif kind == "options":
-        where_kind = " AND occ_symbol IS NOT NULL"
-    # Phase 5e (2026-05-12): exclude data-quality-tagged rows from
-    # the aggregate. data_quality IS NULL for normal trades; a
-    # tag string indicates a known data corruption (e.g.,
-    # 'phantom_stop_2026_05_11'). The excluded count is returned
-    # in `excluded_data_quality` so operators see when corrupt
-    # data is present — masked from the metric, surfaced as a
-    # separate signal.
-    #
-    # Back-compat: minimal test fixtures + legacy DBs may not
-    # have the data_quality column yet. Detect its presence
-    # before adding the filter.
-    try:
-        cols = {row[1] for row in conn.execute(
-            "PRAGMA table_info(trades)"
-        ).fetchall()}
-        has_dq = "data_quality" in cols
-    except Exception:
-        has_dq = False
-    excluded_data_quality_clause = (
-        " AND data_quality IS NULL" if has_dq else ""
-    )
-    try:
-        # Count of rows excluded by the data_quality filter.
-        # Returns 0 when the column doesn't exist.
-        if has_dq:
-            excluded_data_quality = conn.execute(f"""
-                SELECT COUNT(*) FROM trades
+    with closing(_get_conn(db_path)) as conn:
+        where_kind = ""
+        if kind == "stocks":
+            where_kind = " AND occ_symbol IS NULL"
+        elif kind == "options":
+            where_kind = " AND occ_symbol IS NOT NULL"
+        # Phase 5e (2026-05-12): exclude data-quality-tagged rows from
+        # the aggregate. data_quality IS NULL for normal trades; a
+        # tag string indicates a known data corruption (e.g.,
+        # 'phantom_stop_2026_05_11'). The excluded count is returned
+        # in `excluded_data_quality` so operators see when corrupt
+        # data is present — masked from the metric, surfaced as a
+        # separate signal.
+        #
+        # Back-compat: minimal test fixtures + legacy DBs may not
+        # have the data_quality column yet. Detect its presence
+        # before adding the filter.
+        try:
+            cols = {row[1] for row in conn.execute(
+                "PRAGMA table_info(trades)"
+            ).fetchall()}
+            has_dq = "data_quality" in cols
+        except Exception:
+            has_dq = False
+        excluded_data_quality_clause = (
+            " AND data_quality IS NULL" if has_dq else ""
+        )
+        try:
+            # Count of rows excluded by the data_quality filter.
+            # Returns 0 when the column doesn't exist.
+            if has_dq:
+                excluded_data_quality = conn.execute(f"""
+                    SELECT COUNT(*) FROM trades
+                    WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL
+                      AND decision_price > 0{where_kind}
+                      AND data_quality IS NOT NULL
+                """).fetchone()[0] or 0
+            else:
+                excluded_data_quality = 0
+
+            row = conn.execute(f"""
+                SELECT
+                    COUNT(*) AS trades_with_fills,
+                    AVG(slippage_pct) AS avg_slippage_pct,
+                    MAX(ABS(slippage_pct)) AS worst_slippage_pct,
+                    SUM(ABS(fill_price - decision_price) * qty)
+                        AS total_slippage_magnitude,
+                    SUM(
+                        CASE
+                            WHEN side IN ('buy', 'sell_short')
+                                THEN (fill_price - decision_price) * qty
+                            WHEN side IN ('sell', 'cover', 'short')
+                                THEN (decision_price - fill_price) * qty
+                            ELSE 0
+                        END
+                    ) AS total_slippage_cost
+                FROM trades
                 WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL
-                  AND decision_price > 0{where_kind}
-                  AND data_quality IS NOT NULL
-            """).fetchone()[0] or 0
-        else:
-            excluded_data_quality = 0
+                  AND decision_price > 0{where_kind}{excluded_data_quality_clause}
+            """).fetchone()
 
-        row = conn.execute(f"""
-            SELECT
-                COUNT(*) AS trades_with_fills,
-                AVG(slippage_pct) AS avg_slippage_pct,
-                MAX(ABS(slippage_pct)) AS worst_slippage_pct,
-                SUM(ABS(fill_price - decision_price) * qty)
-                    AS total_slippage_magnitude,
-                SUM(
-                    CASE
-                        WHEN side IN ('buy', 'sell_short')
-                            THEN (fill_price - decision_price) * qty
-                        WHEN side IN ('sell', 'cover', 'short')
-                            THEN (decision_price - fill_price) * qty
-                        ELSE 0
-                    END
-                ) AS total_slippage_cost
-            FROM trades
-            WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL
-              AND decision_price > 0{where_kind}{excluded_data_quality_clause}
-        """).fetchone()
+            if not row or row["trades_with_fills"] == 0:
+                return None
 
-        if not row or row["trades_with_fills"] == 0:
-            conn.close()
+            # Get the worst slippage trade details — same kind filter
+            # AND same data_quality filter so the row shown matches the
+            # aggregate (operators clicking "worst" should see a trade
+            # that's actually IN the average, not the phantom-stop
+            # row that got excluded).
+            worst = conn.execute(f"""
+                SELECT symbol, side, qty, decision_price, fill_price, slippage_pct, timestamp
+                FROM trades
+                WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL
+                  AND decision_price > 0{where_kind}{excluded_data_quality_clause}
+                ORDER BY ABS(slippage_pct) DESC
+                LIMIT 1
+            """).fetchone()
+
+            return {
+                "trades_with_fills": row["trades_with_fills"],
+                "avg_slippage_pct": round(row["avg_slippage_pct"] or 0, 4),
+                "worst_slippage_pct": round(row["worst_slippage_pct"] or 0, 4),
+                "total_slippage_cost": round(row["total_slippage_cost"] or 0, 2),
+                "total_slippage_magnitude": round(row["total_slippage_magnitude"] or 0, 2),
+                "worst_trade": dict(worst) if worst else None,
+                # Phase 5e: count of rows excluded by data_quality
+                # tag (e.g., phantom-stop incident artifacts). Zero
+                # when the table has no tagged rows in scope.
+                "excluded_data_quality": excluded_data_quality,
+            }
+        except Exception:
             return None
-
-        # Get the worst slippage trade details — same kind filter
-        # AND same data_quality filter so the row shown matches the
-        # aggregate (operators clicking "worst" should see a trade
-        # that's actually IN the average, not the phantom-stop
-        # row that got excluded).
-        worst = conn.execute(f"""
-            SELECT symbol, side, qty, decision_price, fill_price, slippage_pct, timestamp
-            FROM trades
-            WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL
-              AND decision_price > 0{where_kind}{excluded_data_quality_clause}
-            ORDER BY ABS(slippage_pct) DESC
-            LIMIT 1
-        """).fetchone()
-
-        conn.close()
-        return {
-            "trades_with_fills": row["trades_with_fills"],
-            "avg_slippage_pct": round(row["avg_slippage_pct"] or 0, 4),
-            "worst_slippage_pct": round(row["worst_slippage_pct"] or 0, 4),
-            "total_slippage_cost": round(row["total_slippage_cost"] or 0, 2),
-            "total_slippage_magnitude": round(row["total_slippage_magnitude"] or 0, 2),
-            "worst_trade": dict(worst) if worst else None,
-            # Phase 5e: count of rows excluded by data_quality
-            # tag (e.g., phantom-stop incident artifacts). Zero
-            # when the table has no tagged rows in scope.
-            "excluded_data_quality": excluded_data_quality,
-        }
-    except Exception:
-        conn.close()
-        return None
 
 
 def is_migration_done(db_path, key):
@@ -1956,15 +1941,14 @@ def get_specialist_veto_stats(db_paths, days=7):
     counts = {}  # name -> {"total": int, "vetoes": int}
     for db_path in db_paths:
         try:
-            conn = _get_conn(db_path)
-            rows = conn.execute(
-                """SELECT specialist_name, verdict, COUNT(*) as n
-                   FROM specialist_outcomes
-                   WHERE recorded_at > datetime('now', '-' || ? || ' days')
-                   GROUP BY specialist_name, verdict""",
-                (days,),
-            ).fetchall()
-            conn.close()
+            with closing(_get_conn(db_path)) as conn:
+                rows = conn.execute(
+                    """SELECT specialist_name, verdict, COUNT(*) as n
+                       FROM specialist_outcomes
+                       WHERE recorded_at > datetime('now', '-' || ? || ' days')
+                       GROUP BY specialist_name, verdict""",
+                    (days,),
+                ).fetchall()
         # SILENT_OK: per-DB specialist outcomes aggregation; one bad DB shouldn't kill cross-profile reporting
         except Exception:
             continue

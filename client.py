@@ -287,11 +287,11 @@ def _held_symbols_from_journal(db_path):
         return []
     try:
         import sqlite3
-        conn = sqlite3.connect(db_path)
-        rows = conn.execute(
-            "SELECT DISTINCT symbol FROM trades WHERE symbol IS NOT NULL"
-        ).fetchall()
-        conn.close()
+        from contextlib import closing
+        with closing(sqlite3.connect(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT symbol FROM trades WHERE symbol IS NOT NULL"
+            ).fetchall()
         return [r[0] for r in rows if r and r[0]]
     except Exception:
         return []

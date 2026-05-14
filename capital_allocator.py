@@ -40,6 +40,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+from contextlib import closing
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -61,15 +62,14 @@ def _profile_score(db_path: str, days: int = 30) -> Optional[float]:
     if not os.path.exists(db_path):
         return None
     try:
-        conn = sqlite3.connect(db_path)
-        # Need at least 5 closed trades in the window for any score.
-        rows = conn.execute(
-            "SELECT pnl FROM trades "
-            "WHERE pnl IS NOT NULL "
-            "  AND datetime(timestamp) >= datetime('now', '-' || ? || ' days')",
-            (days,),
-        ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            # Need at least 5 closed trades in the window for any score.
+            rows = conn.execute(
+                "SELECT pnl FROM trades "
+                "WHERE pnl IS NOT NULL "
+                "  AND datetime(timestamp) >= datetime('now', '-' || ? || ' days')",
+                (days,),
+            ).fetchall()
         if len(rows) < 5:
             return None
         pnls = [r[0] for r in rows]
@@ -91,15 +91,14 @@ def _user_profiles_with_scores(user_id: int) -> List[Dict[str, Any]]:
     """Enumerate this user's enabled profiles with their current
     capital_scale, alpaca_account_id, and computed score."""
     from models import _get_conn
-    conn = _get_conn()
-    rows = conn.execute(
-        "SELECT id, name, capital_scale, alpaca_account_id "
-        "FROM trading_profiles "
-        "WHERE user_id = ? AND COALESCE(enabled, 1) = 1 "
-        "ORDER BY id",
-        (user_id,),
-    ).fetchall()
-    conn.close()
+    with closing(_get_conn()) as conn:
+        rows = conn.execute(
+            "SELECT id, name, capital_scale, alpaca_account_id "
+            "FROM trading_profiles "
+            "WHERE user_id = ? AND COALESCE(enabled, 1) = 1 "
+            "ORDER BY id",
+            (user_id,),
+        ).fetchall()
     out = []
     for r in rows:
         rd = dict(r)
@@ -193,12 +192,11 @@ def rebalance(user_id: int) -> List[Dict[str, Any]]:
     what changed. No-op for users without auto_capital_allocation
     enabled."""
     from models import _get_conn
-    conn = _get_conn()
-    user_row = conn.execute(
-        "SELECT auto_capital_allocation FROM users WHERE id = ?",
-        (user_id,),
-    ).fetchone()
-    conn.close()
+    with closing(_get_conn()) as conn:
+        user_row = conn.execute(
+            "SELECT auto_capital_allocation FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
     if not user_row or not user_row[0]:
         return []
 
@@ -215,13 +213,12 @@ def rebalance(user_id: int) -> List[Dict[str, Any]]:
         if abs(new - old) < 0.01:
             continue
         # Persist
-        conn = _get_conn()
-        conn.execute(
-            "UPDATE trading_profiles SET capital_scale = ? WHERE id = ?",
-            (new, p["id"]),
-        )
-        conn.commit()
-        conn.close()
+        with closing(_get_conn()) as conn:
+            conn.execute(
+                "UPDATE trading_profiles SET capital_scale = ? WHERE id = ?",
+                (new, p["id"]),
+            )
+            conn.commit()
         changes.append({
             "profile_id": p["id"],
             "name": p["name"],

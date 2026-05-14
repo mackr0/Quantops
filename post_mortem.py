@@ -25,6 +25,7 @@ import json
 import logging
 import sqlite3
 from collections import Counter
+from contextlib import closing
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -280,12 +281,11 @@ def get_active_patterns(db_path: str) -> List[str]:
     AI sees the most recent post-mortem learnings."""
     try:
         init_post_mortem_db(db_path)
-        conn = sqlite3.connect(db_path)
-        rows = conn.execute(
-            "SELECT pattern_text FROM learned_patterns "
-            "WHERE still_active = 1 ORDER BY created_at DESC LIMIT 3"
-        ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT pattern_text FROM learned_patterns "
+                "WHERE still_active = 1 ORDER BY created_at DESC LIMIT 3"
+            ).fetchall()
         return [r[0] for r in rows]
     except Exception:
         return []

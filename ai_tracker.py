@@ -7,6 +7,7 @@ AI is actually helping make money.
 
 import sqlite3
 import logging
+from contextlib import closing
 from datetime import datetime, timedelta
 
 import config
@@ -122,30 +123,29 @@ def backfill_prediction_type(db_path=None):
 
 def init_tracker_db(db_path=None):
     """Create the ai_predictions table if it doesn't exist."""
-    conn = _get_conn(db_path)
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS ai_predictions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-            symbol TEXT NOT NULL,
-            predicted_signal TEXT NOT NULL,
-            confidence INTEGER,
-            reasoning TEXT,
-            price_at_prediction REAL NOT NULL,
-            target_entry REAL,
-            target_stop_loss REAL,
-            target_take_profit REAL,
-            status TEXT DEFAULT 'pending',
-            actual_outcome TEXT,
-            actual_return_pct REAL,
-            resolved_at TEXT,
-            resolution_price REAL,
-            days_held INTEGER,
-            prediction_type TEXT
-        );
-    """)
-    conn.commit()
-    conn.close()
+    with closing(_get_conn(db_path)) as conn:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS ai_predictions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                symbol TEXT NOT NULL,
+                predicted_signal TEXT NOT NULL,
+                confidence INTEGER,
+                reasoning TEXT,
+                price_at_prediction REAL NOT NULL,
+                target_entry REAL,
+                target_stop_loss REAL,
+                target_take_profit REAL,
+                status TEXT DEFAULT 'pending',
+                actual_outcome TEXT,
+                actual_return_pct REAL,
+                resolved_at TEXT,
+                resolution_price REAL,
+                days_held INTEGER,
+                prediction_type TEXT
+            );
+        """)
+        conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -203,33 +203,32 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
     price_targets = price_targets or {}
     features_json = _json.dumps(features) if features else None
 
-    conn = _get_conn(db_path)
-    cursor = conn.execute(
-        """INSERT INTO ai_predictions
-           (timestamp, symbol, predicted_signal, confidence, reasoning,
-            price_at_prediction, target_entry, target_stop_loss,
-            target_take_profit, status, regime_at_prediction, strategy_type,
-            features_json, prediction_type)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
-        (
-            datetime.utcnow().isoformat(),
-            symbol.upper(),
-            predicted_signal.upper(),
-            confidence,
-            reasoning,
-            price_at_prediction,
-            price_targets.get("entry"),
-            price_targets.get("stop_loss"),
-            price_targets.get("take_profit"),
-            regime,
-            strategy_type,
-            features_json,
-            prediction_type,
-        ),
-    )
-    conn.commit()
-    prediction_id = cursor.lastrowid
-    conn.close()
+    with closing(_get_conn(db_path)) as conn:
+        cursor = conn.execute(
+            """INSERT INTO ai_predictions
+               (timestamp, symbol, predicted_signal, confidence, reasoning,
+                price_at_prediction, target_entry, target_stop_loss,
+                target_take_profit, status, regime_at_prediction, strategy_type,
+                features_json, prediction_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
+            (
+                datetime.utcnow().isoformat(),
+                symbol.upper(),
+                predicted_signal.upper(),
+                confidence,
+                reasoning,
+                price_at_prediction,
+                price_targets.get("entry"),
+                price_targets.get("stop_loss"),
+                price_targets.get("take_profit"),
+                regime,
+                strategy_type,
+                features_json,
+                prediction_type,
+            ),
+        )
+        conn.commit()
+        prediction_id = cursor.lastrowid
     logger.info(
         "Recorded AI prediction #%d: %s %s @ %.2f (confidence %d%%)",
         prediction_id, predicted_signal.upper(), symbol, price_at_prediction,
@@ -482,119 +481,118 @@ def resolve_predictions(api=None, db_path=None, profile_id=None):
     init_tracker_db(db_path)
     api = api or get_api()
     conn = _get_conn(db_path)
+    try:
+        pending = conn.execute(
+            "SELECT * FROM ai_predictions WHERE status = 'pending'"
+        ).fetchall()
 
-    pending = conn.execute(
-        "SELECT * FROM ai_predictions WHERE status = 'pending'"
-    ).fetchall()
+        if not pending:
+            logger.info("No pending AI predictions to resolve.")
+            return 0
 
-    if not pending:
-        conn.close()
-        logger.info("No pending AI predictions to resolve.")
-        return 0
+        resolved_count = 0
+        deferred_option_count = 0
+        now_iso = datetime.utcnow().isoformat()
 
-    resolved_count = 0
-    deferred_option_count = 0
-    now_iso = datetime.utcnow().isoformat()
+        # Bulk-fetch all unique symbols in one (or few) Alpaca calls. With
+        # 800+ pending predictions over a long weekend this is the difference
+        # between ~30 seconds and 15-30 minutes per profile.
+        symbols = list({row["symbol"] for row in pending})
+        price_cache = _get_current_prices_bulk(symbols, api=api)
 
-    # Bulk-fetch all unique symbols in one (or few) Alpaca calls. With
-    # 800+ pending predictions over a long weekend this is the difference
-    # between ~30 seconds and 15-30 minutes per profile.
-    symbols = list({row["symbol"] for row in pending})
-    price_cache = _get_current_prices_bulk(symbols, api=api)
+        for row in pending:
+            sym = row["symbol"]
+            prediction_dict = dict(row)
+            # Phase 5c: option rows route through option_resolver which
+            # fetches premiums directly via _fetch_option_premium —
+            # doesn't need the bulk stock price. Inject db_path so the
+            # multileg resolver can look up legs from trades table.
+            prediction_dict["db_path"] = db_path
+            sig = (prediction_dict.get("predicted_signal") or "").upper()
+            is_option = sig in _OPTION_SIGNALS
 
-    for row in pending:
-        sym = row["symbol"]
-        prediction_dict = dict(row)
-        # Phase 5c: option rows route through option_resolver which
-        # fetches premiums directly via _fetch_option_premium —
-        # doesn't need the bulk stock price. Inject db_path so the
-        # multileg resolver can look up legs from trades table.
-        prediction_dict["db_path"] = db_path
-        sig = (prediction_dict.get("predicted_signal") or "").upper()
-        is_option = sig in _OPTION_SIGNALS
+            if not is_option and sym not in price_cache:
+                # Stock rows still need the bulk-fetched price.
+                continue
 
-        if not is_option and sym not in price_cache:
-            # Stock rows still need the bulk-fetched price.
-            continue
+            current_price = price_cache.get(sym, 0.0)
+            result = _resolve_one(prediction_dict, current_price)
+            if result is None:
+                # Option rows that didn't resolve this cycle. Phase 5c
+                # makes most option rows resolvable now (fetches premium
+                # via _fetch_option_premium, computes net spread P&L for
+                # multileg from trades-table legs). Rows still defer when
+                # they lack the metadata (no occ_symbol / no
+                # option_order_id — typically pre-Phase-5c rows or
+                # newly-inserted rows whose linkage hasn't run yet) or
+                # when the AI's directional thesis is still developing
+                # (within MIN_HOLD_DAYS_BEFORE_RESOLVE).
+                if is_option:
+                    deferred_option_count += 1
+                continue
 
-        current_price = price_cache.get(sym, 0.0)
-        result = _resolve_one(prediction_dict, current_price)
-        if result is None:
-            # Option rows that didn't resolve this cycle. Phase 5c
-            # makes most option rows resolvable now (fetches premium
-            # via _fetch_option_premium, computes net spread P&L for
-            # multileg from trades-table legs). Rows still defer when
-            # they lack the metadata (no occ_symbol / no
-            # option_order_id — typically pre-Phase-5c rows or
-            # newly-inserted rows whose linkage hasn't run yet) or
-            # when the AI's directional thesis is still developing
-            # (within MIN_HOLD_DAYS_BEFORE_RESOLVE).
-            if is_option:
-                deferred_option_count += 1
-            continue
-
-        outcome, return_pct, days_held = result
-        conn.execute(
-            """UPDATE ai_predictions
-               SET status = 'resolved',
-                   actual_outcome = ?,
-                   actual_return_pct = ?,
-                   resolved_at = ?,
-                   resolution_price = ?,
-                   days_held = ?
-               WHERE id = ?""",
-            (outcome, round(return_pct, 4), now_iso, current_price,
-             days_held, row["id"]),
-        )
-        # Commit *each row* immediately. Specialist-calibration and
-        # online-meta-model updates below open their own connections
-        # and need to write to the same DB. With a long-running outer
-        # transaction we hit "database is locked" on every iteration
-        # (250+ warnings / 10 min observed in prod 2026-05-04).
-        # Per-row commit gives those inner writes a window to land
-        # between iterations.
-        conn.commit()
-        resolved_count += 1
-        # Wave 3 / Fix #9 — backfill specialist outcomes for this
-        # prediction so the calibrators can learn from each
-        # specialist's empirical accuracy. Treat 'win' as correct,
-        # 'loss' as incorrect, 'neutral' as no-signal (not labeled —
-        # we skip the calibration update for neutrals).
-        if outcome in ("win", "loss"):
-            try:
-                from specialist_calibration import update_outcomes_on_resolve
-                update_outcomes_on_resolve(
-                    db_path, row["id"], was_correct=(outcome == "win"),
-                )
-            except Exception as _exc:
-                logger.debug(
-                    "Specialist calibration update failed for "
-                    "prediction %d: %s", row["id"], _exc,
-                )
-            # Item 5a — incremental update to the online (SGD) meta-model
-            # so it adapts in real time to each new resolution.
-            if profile_id is not None:
+            outcome, return_pct, days_held = result
+            conn.execute(
+                """UPDATE ai_predictions
+                   SET status = 'resolved',
+                       actual_outcome = ?,
+                       actual_return_pct = ?,
+                       resolved_at = ?,
+                       resolution_price = ?,
+                       days_held = ?
+                   WHERE id = ?""",
+                (outcome, round(return_pct, 4), now_iso, current_price,
+                 days_held, row["id"]),
+            )
+            # Commit *each row* immediately. Specialist-calibration and
+            # online-meta-model updates below open their own connections
+            # and need to write to the same DB. With a long-running outer
+            # transaction we hit "database is locked" on every iteration
+            # (250+ warnings / 10 min observed in prod 2026-05-04).
+            # Per-row commit gives those inner writes a window to land
+            # between iterations.
+            conn.commit()
+            resolved_count += 1
+            # Wave 3 / Fix #9 — backfill specialist outcomes for this
+            # prediction so the calibrators can learn from each
+            # specialist's empirical accuracy. Treat 'win' as correct,
+            # 'loss' as incorrect, 'neutral' as no-signal (not labeled —
+            # we skip the calibration update for neutrals).
+            if outcome in ("win", "loss"):
                 try:
-                    import json as _json
-                    from online_meta_model import update_online_model
-                    feats = _json.loads(row["features_json"]) if row["features_json"] else None
-                    if feats:
-                        update_online_model(
-                            profile_id, feats,
-                            outcome_label=(1 if outcome == "win" else 0),
-                        )
+                    from specialist_calibration import update_outcomes_on_resolve
+                    update_outcomes_on_resolve(
+                        db_path, row["id"], was_correct=(outcome == "win"),
+                    )
                 except Exception as _exc:
                     logger.debug(
-                        "Online model update failed for prediction "
-                        "%d: %s", row["id"], _exc,
+                        "Specialist calibration update failed for "
+                        "prediction %d: %s", row["id"], _exc,
                     )
-        logger.info(
-            "Resolved prediction #%d (%s %s): %s (%.2f%%, %d days)",
-            row["id"], row["predicted_signal"], sym, outcome, return_pct,
-            days_held,
-        )
-
-    conn.close()
+                # Item 5a — incremental update to the online (SGD) meta-model
+                # so it adapts in real time to each new resolution.
+                if profile_id is not None:
+                    try:
+                        import json as _json
+                        from online_meta_model import update_online_model
+                        feats = _json.loads(row["features_json"]) if row["features_json"] else None
+                        if feats:
+                            update_online_model(
+                                profile_id, feats,
+                                outcome_label=(1 if outcome == "win" else 0),
+                            )
+                    except Exception as _exc:
+                        logger.debug(
+                            "Online model update failed for prediction "
+                            "%d: %s", row["id"], _exc,
+                        )
+            logger.info(
+                "Resolved prediction #%d (%s %s): %s (%.2f%%, %d days)",
+                row["id"], row["predicted_signal"], sym, outcome, return_pct,
+                days_held,
+            )
+    finally:
+        conn.close()
     logger.info("Resolved %d / %d pending predictions.", resolved_count, len(pending))
     if deferred_option_count > 0:
         # Phase 5b safety floor: option rows accumulate as 'pending'
@@ -625,281 +623,282 @@ def get_ai_performance(db_path=None):
     """
     init_tracker_db(db_path)
     conn = _get_conn(db_path)
+    try:
 
-    total = conn.execute("SELECT COUNT(*) FROM ai_predictions").fetchone()[0]
-    resolved = conn.execute(
-        "SELECT COUNT(*) FROM ai_predictions WHERE status = 'resolved'"
-    ).fetchone()[0]
-    pending = conn.execute(
-        "SELECT COUNT(*) FROM ai_predictions WHERE status = 'pending'"
-    ).fetchone()[0]
-
-    if resolved == 0:
-        conn.close()
-        return {
-            "total_predictions": total,
-            "resolved": 0,
-            "pending": pending,
-            "win_rate": 0.0,
-            "avg_confidence_on_wins": 0.0,
-            "avg_confidence_on_losses": 0.0,
-            "avg_return_on_buys": 0.0,
-            "avg_return_on_sells": 0.0,
-            "accuracy_by_confidence": {
-                "0-25": 0.0, "25-50": 0.0, "50-75": 0.0, "75-100": 0.0,
-            },
-            "best_prediction": None,
-            "worst_prediction": None,
-            "profit_factor": 0.0,
-        }
-
-    # Win rate (everything blended — kept for backwards compat)
-    wins = conn.execute(
-        "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved' AND actual_outcome='win'"
-    ).fetchone()[0]
-    win_rate = (wins / resolved) * 100.0 if resolved else 0.0
-
-    # Directional-only win rate. The blended win rate above conflates
-    # actual trade decisions (BUY / SHORT / STRONG_SELL / SELL /
-    # MULTILEG) with HOLDs (which the resolver labels "win" when the
-    # underlying didn't move much, "loss" otherwise — that's mostly a
-    # measure of how volatile the universe is, not how good the AI is).
-    # The directional rate is the actually meaningful number for "is
-    # the AI's trading decision better than a coin flip?".
-    DIRECTIONAL_SQL = (
-        "UPPER(predicted_signal) IN "
-        "('BUY','SHORT','STRONG_SELL','SELL','MULTILEG_OPEN')"
-    )
-    dir_resolved = conn.execute(
-        f"SELECT COUNT(*) FROM ai_predictions "
-        f"WHERE status='resolved' AND {DIRECTIONAL_SQL} "
-        f"AND actual_outcome IN ('win','loss')"
-    ).fetchone()[0]
-    dir_wins = conn.execute(
-        f"SELECT COUNT(*) FROM ai_predictions "
-        f"WHERE status='resolved' AND {DIRECTIONAL_SQL} "
-        f"AND actual_outcome='win'"
-    ).fetchone()[0]
-    directional_win_rate = (
-        (dir_wins / dir_resolved) * 100.0 if dir_resolved else 0.0
-    )
-
-    # HOLD pass rate. Different semantics: a HOLD "wins" when the AI
-    # passed AND the underlying stayed flat enough that no opportunity
-    # was missed. Surfaced separately so users don't read it as "AI
-    # accuracy on trades".
-    hold_resolved = conn.execute(
-        "SELECT COUNT(*) FROM ai_predictions "
-        "WHERE status='resolved' "
-        "AND UPPER(predicted_signal) = 'HOLD' "
-        "AND actual_outcome IN ('win','loss')"
-    ).fetchone()[0]
-    hold_wins = conn.execute(
-        "SELECT COUNT(*) FROM ai_predictions "
-        "WHERE status='resolved' "
-        "AND UPPER(predicted_signal) = 'HOLD' "
-        "AND actual_outcome='win'"
-    ).fetchone()[0]
-    hold_pass_rate = (
-        (hold_wins / hold_resolved) * 100.0 if hold_resolved else 0.0
-    )
-
-    # Average confidence on wins vs losses
-    avg_conf_wins = conn.execute(
-        "SELECT AVG(confidence) FROM ai_predictions "
-        "WHERE status='resolved' AND actual_outcome='win'"
-    ).fetchone()[0] or 0.0
-
-    avg_conf_losses = conn.execute(
-        "SELECT AVG(confidence) FROM ai_predictions "
-        "WHERE status='resolved' AND actual_outcome='loss'"
-    ).fetchone()[0] or 0.0
-
-    # Average return by signal type, plus the sample size behind each
-    # (so the dashboard can N/A small-sample readings instead of
-    # rendering "+1.63% on SELLs" computed from 3 predictions).
-    # 2026-05-12 fix: previously filtered to ONLY 'BUY' / 'SELL',
-    # missing STRONG_BUY/WEAK_BUY/STRONG_SELL/WEAK_SELL. That left
-    # 30-50% of entry signals out of the displayed averages. Same
-    # bug class as the HOLD-attribution gap. Now uses every long-
-    # entry / sell-entry signal type — keep in sync with
-    # pipelines.outcomes.kind_from_signal.
-    buys_row = conn.execute(
-        "SELECT COUNT(*), AVG(actual_return_pct) FROM ai_predictions "
-        "WHERE status='resolved' "
-        "AND predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY') "
-        "AND actual_return_pct IS NOT NULL"
-    ).fetchone()
-    n_buys = buys_row[0] or 0
-    avg_ret_buys = buys_row[1] or 0.0
-
-    sells_row = conn.execute(
-        "SELECT COUNT(*), AVG(actual_return_pct) FROM ai_predictions "
-        "WHERE status='resolved' "
-        "AND predicted_signal IN ('SELL','STRONG_SELL','WEAK_SELL') "
-        "AND actual_return_pct IS NOT NULL"
-    ).fetchone()
-    n_sells = sells_row[0] or 0
-    avg_ret_sells = sells_row[1] or 0.0
-
-    # Accuracy by confidence band
-    bands = {"0-25": (0, 25), "25-50": (25, 50), "50-75": (50, 75), "75-100": (75, 100)}
-    accuracy_by_confidence = {}
-    for label, (lo, hi) in bands.items():
-        # Use <= 100 for the top band so confidence=100 is included
-        hi_op = "<=" if hi == 100 else "<"
-        band_total = conn.execute(
-            f"SELECT COUNT(*) FROM ai_predictions "
-            f"WHERE status='resolved' AND confidence >= ? AND confidence {hi_op} ?",
-            (lo, hi),
+        total = conn.execute("SELECT COUNT(*) FROM ai_predictions").fetchone()[0]
+        resolved = conn.execute(
+            "SELECT COUNT(*) FROM ai_predictions WHERE status = 'resolved'"
         ).fetchone()[0]
-        band_wins = conn.execute(
-            f"SELECT COUNT(*) FROM ai_predictions "
-            f"WHERE status='resolved' AND actual_outcome='win' "
-            f"AND confidence >= ? AND confidence {hi_op} ?",
-            (lo, hi),
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM ai_predictions WHERE status = 'pending'"
         ).fetchone()[0]
-        accuracy_by_confidence[label] = (
-            round((band_wins / band_total) * 100.0, 1) if band_total > 0 else 0.0
+
+        if resolved == 0:
+            return {
+                "total_predictions": total,
+                "resolved": 0,
+                "pending": pending,
+                "win_rate": 0.0,
+                "avg_confidence_on_wins": 0.0,
+                "avg_confidence_on_losses": 0.0,
+                "avg_return_on_buys": 0.0,
+                "avg_return_on_sells": 0.0,
+                "accuracy_by_confidence": {
+                    "0-25": 0.0, "25-50": 0.0, "50-75": 0.0, "75-100": 0.0,
+                },
+                "best_prediction": None,
+                "worst_prediction": None,
+                "profit_factor": 0.0,
+            }
+
+        # Win rate (everything blended — kept for backwards compat)
+        wins = conn.execute(
+            "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved' AND actual_outcome='win'"
+        ).fetchone()[0]
+        win_rate = (wins / resolved) * 100.0 if resolved else 0.0
+
+        # Directional-only win rate. The blended win rate above conflates
+        # actual trade decisions (BUY / SHORT / STRONG_SELL / SELL /
+        # MULTILEG) with HOLDs (which the resolver labels "win" when the
+        # underlying didn't move much, "loss" otherwise — that's mostly a
+        # measure of how volatile the universe is, not how good the AI is).
+        # The directional rate is the actually meaningful number for "is
+        # the AI's trading decision better than a coin flip?".
+        DIRECTIONAL_SQL = (
+            "UPPER(predicted_signal) IN "
+            "('BUY','SHORT','STRONG_SELL','SELL','MULTILEG_OPEN')"
+        )
+        dir_resolved = conn.execute(
+            f"SELECT COUNT(*) FROM ai_predictions "
+            f"WHERE status='resolved' AND {DIRECTIONAL_SQL} "
+            f"AND actual_outcome IN ('win','loss')"
+        ).fetchone()[0]
+        dir_wins = conn.execute(
+            f"SELECT COUNT(*) FROM ai_predictions "
+            f"WHERE status='resolved' AND {DIRECTIONAL_SQL} "
+            f"AND actual_outcome='win'"
+        ).fetchone()[0]
+        directional_win_rate = (
+            (dir_wins / dir_resolved) * 100.0 if dir_resolved else 0.0
         )
 
-    # ----- Best/worst predictions split by prediction nature -----
-    # The previous single best/worst pair conflated two very different
-    # things on the dashboard:
-    #   - A directional trade with a real entry (BUY / STRONG_SELL /
-    #     SHORT / SELL) — its `actual_return_pct` IS the trade outcome
-    #     (with sign flipped for shorts since return_pct is the
-    #     underlying's price move, not the position's P&L).
-    #   - A HOLD prediction — the AI explicitly chose NOT to trade.
-    #     `actual_return_pct` is what the underlying did afterwards.
-    #     Positive = a gain we passed on (missed opportunity), negative
-    #     = a loss we avoided (correct call).
-    # Surface both pairs so the dashboard isn't conflating "biggest
-    # avoided loss" with "worst prediction".
+        # HOLD pass rate. Different semantics: a HOLD "wins" when the AI
+        # passed AND the underlying stayed flat enough that no opportunity
+        # was missed. Surfaced separately so users don't read it as "AI
+        # accuracy on trades".
+        hold_resolved = conn.execute(
+            "SELECT COUNT(*) FROM ai_predictions "
+            "WHERE status='resolved' "
+            "AND UPPER(predicted_signal) = 'HOLD' "
+            "AND actual_outcome IN ('win','loss')"
+        ).fetchone()[0]
+        hold_wins = conn.execute(
+            "SELECT COUNT(*) FROM ai_predictions "
+            "WHERE status='resolved' "
+            "AND UPPER(predicted_signal) = 'HOLD' "
+            "AND actual_outcome='win'"
+        ).fetchone()[0]
+        hold_pass_rate = (
+            (hold_wins / hold_resolved) * 100.0 if hold_resolved else 0.0
+        )
 
-    # `trade_pnl_pct` flips sign for shorts so the ordering is
-    # apples-to-apples in actual-P&L terms across BUY and SHORT.
-    # Legacy SELL was always "directional_short" semantically (see
-    # _resolve_one), so we treat SELL the same as SHORT here.
-    DIRECTIONAL = ("BUY", "STRONG_SELL", "SHORT", "SELL")
-    pnl_expr = (
-        "CASE WHEN UPPER(predicted_signal) IN ('BUY') "
-        "THEN actual_return_pct ELSE -actual_return_pct END"
-    )
+        # Average confidence on wins vs losses
+        avg_conf_wins = conn.execute(
+            "SELECT AVG(confidence) FROM ai_predictions "
+            "WHERE status='resolved' AND actual_outcome='win'"
+        ).fetchone()[0] or 0.0
 
-    best_trade_row = conn.execute(
-        f"SELECT symbol, confidence, actual_return_pct, "
-        f"predicted_signal, ({pnl_expr}) AS trade_pnl_pct "
-        f"FROM ai_predictions "
-        f"WHERE status='resolved' "
-        f"AND UPPER(predicted_signal) IN ('BUY','STRONG_SELL','SHORT','SELL') "
-        f"AND actual_return_pct IS NOT NULL "
-        f"ORDER BY trade_pnl_pct DESC LIMIT 1"
-    ).fetchone()
-    worst_trade_row = conn.execute(
-        f"SELECT symbol, confidence, actual_return_pct, "
-        f"predicted_signal, ({pnl_expr}) AS trade_pnl_pct "
-        f"FROM ai_predictions "
-        f"WHERE status='resolved' "
-        f"AND UPPER(predicted_signal) IN ('BUY','STRONG_SELL','SHORT','SELL') "
-        f"AND actual_return_pct IS NOT NULL "
-        f"ORDER BY trade_pnl_pct ASC LIMIT 1"
-    ).fetchone()
-    missed_gain_row = conn.execute(
-        "SELECT symbol, confidence, actual_return_pct "
-        "FROM ai_predictions WHERE status='resolved' "
-        "AND UPPER(predicted_signal) = 'HOLD' "
-        "AND actual_return_pct IS NOT NULL "
-        "ORDER BY actual_return_pct DESC LIMIT 1"
-    ).fetchone()
-    avoided_loss_row = conn.execute(
-        "SELECT symbol, confidence, actual_return_pct "
-        "FROM ai_predictions WHERE status='resolved' "
-        "AND UPPER(predicted_signal) = 'HOLD' "
-        "AND actual_return_pct IS NOT NULL "
-        "ORDER BY actual_return_pct ASC LIMIT 1"
-    ).fetchone()
+        avg_conf_losses = conn.execute(
+            "SELECT AVG(confidence) FROM ai_predictions "
+            "WHERE status='resolved' AND actual_outcome='loss'"
+        ).fetchone()[0] or 0.0
 
-    def _trade(row):
-        if row is None:
-            return None
+        # Average return by signal type, plus the sample size behind each
+        # (so the dashboard can N/A small-sample readings instead of
+        # rendering "+1.63% on SELLs" computed from 3 predictions).
+        # 2026-05-12 fix: previously filtered to ONLY 'BUY' / 'SELL',
+        # missing STRONG_BUY/WEAK_BUY/STRONG_SELL/WEAK_SELL. That left
+        # 30-50% of entry signals out of the displayed averages. Same
+        # bug class as the HOLD-attribution gap. Now uses every long-
+        # entry / sell-entry signal type — keep in sync with
+        # pipelines.outcomes.kind_from_signal.
+        buys_row = conn.execute(
+            "SELECT COUNT(*), AVG(actual_return_pct) FROM ai_predictions "
+            "WHERE status='resolved' "
+            "AND predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY') "
+            "AND actual_return_pct IS NOT NULL"
+        ).fetchone()
+        n_buys = buys_row[0] or 0
+        avg_ret_buys = buys_row[1] or 0.0
+
+        sells_row = conn.execute(
+            "SELECT COUNT(*), AVG(actual_return_pct) FROM ai_predictions "
+            "WHERE status='resolved' "
+            "AND predicted_signal IN ('SELL','STRONG_SELL','WEAK_SELL') "
+            "AND actual_return_pct IS NOT NULL"
+        ).fetchone()
+        n_sells = sells_row[0] or 0
+        avg_ret_sells = sells_row[1] or 0.0
+
+        # Accuracy by confidence band
+        bands = {"0-25": (0, 25), "25-50": (25, 50), "50-75": (50, 75), "75-100": (75, 100)}
+        accuracy_by_confidence = {}
+        for label, (lo, hi) in bands.items():
+            # Use <= 100 for the top band so confidence=100 is included
+            hi_op = "<=" if hi == 100 else "<"
+            band_total = conn.execute(
+                f"SELECT COUNT(*) FROM ai_predictions "
+                f"WHERE status='resolved' AND confidence >= ? AND confidence {hi_op} ?",
+                (lo, hi),
+            ).fetchone()[0]
+            band_wins = conn.execute(
+                f"SELECT COUNT(*) FROM ai_predictions "
+                f"WHERE status='resolved' AND actual_outcome='win' "
+                f"AND confidence >= ? AND confidence {hi_op} ?",
+                (lo, hi),
+            ).fetchone()[0]
+            accuracy_by_confidence[label] = (
+                round((band_wins / band_total) * 100.0, 1) if band_total > 0 else 0.0
+            )
+
+        # ----- Best/worst predictions split by prediction nature -----
+        # The previous single best/worst pair conflated two very different
+        # things on the dashboard:
+        #   - A directional trade with a real entry (BUY / STRONG_SELL /
+        #     SHORT / SELL) — its `actual_return_pct` IS the trade outcome
+        #     (with sign flipped for shorts since return_pct is the
+        #     underlying's price move, not the position's P&L).
+        #   - A HOLD prediction — the AI explicitly chose NOT to trade.
+        #     `actual_return_pct` is what the underlying did afterwards.
+        #     Positive = a gain we passed on (missed opportunity), negative
+        #     = a loss we avoided (correct call).
+        # Surface both pairs so the dashboard isn't conflating "biggest
+        # avoided loss" with "worst prediction".
+
+        # `trade_pnl_pct` flips sign for shorts so the ordering is
+        # apples-to-apples in actual-P&L terms across BUY and SHORT.
+        # Legacy SELL was always "directional_short" semantically (see
+        # _resolve_one), so we treat SELL the same as SHORT here.
+        DIRECTIONAL = ("BUY", "STRONG_SELL", "SHORT", "SELL")
+        pnl_expr = (
+            "CASE WHEN UPPER(predicted_signal) IN ('BUY') "
+            "THEN actual_return_pct ELSE -actual_return_pct END"
+        )
+
+        best_trade_row = conn.execute(
+            f"SELECT symbol, confidence, actual_return_pct, "
+            f"predicted_signal, ({pnl_expr}) AS trade_pnl_pct "
+            f"FROM ai_predictions "
+            f"WHERE status='resolved' "
+            f"AND UPPER(predicted_signal) IN ('BUY','STRONG_SELL','SHORT','SELL') "
+            f"AND actual_return_pct IS NOT NULL "
+            f"ORDER BY trade_pnl_pct DESC LIMIT 1"
+        ).fetchone()
+        worst_trade_row = conn.execute(
+            f"SELECT symbol, confidence, actual_return_pct, "
+            f"predicted_signal, ({pnl_expr}) AS trade_pnl_pct "
+            f"FROM ai_predictions "
+            f"WHERE status='resolved' "
+            f"AND UPPER(predicted_signal) IN ('BUY','STRONG_SELL','SHORT','SELL') "
+            f"AND actual_return_pct IS NOT NULL "
+            f"ORDER BY trade_pnl_pct ASC LIMIT 1"
+        ).fetchone()
+        missed_gain_row = conn.execute(
+            "SELECT symbol, confidence, actual_return_pct "
+            "FROM ai_predictions WHERE status='resolved' "
+            "AND UPPER(predicted_signal) = 'HOLD' "
+            "AND actual_return_pct IS NOT NULL "
+            "ORDER BY actual_return_pct DESC LIMIT 1"
+        ).fetchone()
+        avoided_loss_row = conn.execute(
+            "SELECT symbol, confidence, actual_return_pct "
+            "FROM ai_predictions WHERE status='resolved' "
+            "AND UPPER(predicted_signal) = 'HOLD' "
+            "AND actual_return_pct IS NOT NULL "
+            "ORDER BY actual_return_pct ASC LIMIT 1"
+        ).fetchone()
+
+        def _trade(row):
+            if row is None:
+                return None
+            return {
+                "symbol": row["symbol"],
+                "return_pct": row["actual_return_pct"],
+                "trade_pnl_pct": row["trade_pnl_pct"],
+                "confidence": row["confidence"],
+                "signal": row["predicted_signal"],
+            }
+
+        def _hold(row):
+            if row is None:
+                return None
+            return {
+                "symbol": row["symbol"],
+                "return_pct": row["actual_return_pct"],
+            }
+
+        best_trade = _trade(best_trade_row)
+        worst_trade = _trade(worst_trade_row)
+        biggest_missed_gain = _hold(missed_gain_row)
+        biggest_avoided_loss = _hold(avoided_loss_row)
+
+        # Backwards-compat: keep best_prediction/worst_prediction populated
+        # so any consumers that still query them don't break. Prefer the
+        # new split fields above for new UI surfaces.
+        best_prediction = (
+            {"symbol": best_trade["symbol"],
+              "return_pct": best_trade["trade_pnl_pct"],
+              "confidence": best_trade["confidence"]}
+            if best_trade else None
+        )
+        worst_prediction = (
+            {"symbol": worst_trade["symbol"],
+              "return_pct": worst_trade["trade_pnl_pct"],
+              "confidence": worst_trade["confidence"]}
+            if worst_trade else None
+        )
+
+        # Profit factor: total_gains / abs(total_losses)
+        total_gains = conn.execute(
+            "SELECT COALESCE(SUM(actual_return_pct), 0) FROM ai_predictions "
+            "WHERE status='resolved' AND actual_return_pct > 0"
+        ).fetchone()[0]
+        total_losses = abs(conn.execute(
+            "SELECT COALESCE(SUM(actual_return_pct), 0) FROM ai_predictions "
+            "WHERE status='resolved' AND actual_return_pct < 0"
+        ).fetchone()[0])
+        profit_factor = round(total_gains / total_losses, 2) if total_losses > 0 else float("inf")
+
+
         return {
-            "symbol": row["symbol"],
-            "return_pct": row["actual_return_pct"],
-            "trade_pnl_pct": row["trade_pnl_pct"],
-            "confidence": row["confidence"],
-            "signal": row["predicted_signal"],
+            "total_predictions": total,
+            "resolved": resolved,
+            "pending": pending,
+            "win_rate": round(win_rate, 1),
+            "directional_win_rate": round(directional_win_rate, 1),
+            "directional_resolved": dir_resolved,
+            "directional_wins": dir_wins,
+            "hold_pass_rate": round(hold_pass_rate, 1),
+            "hold_resolved": hold_resolved,
+            "avg_confidence_on_wins": round(avg_conf_wins, 1),
+            "avg_confidence_on_losses": round(avg_conf_losses, 1),
+            "avg_return_on_buys": round(avg_ret_buys, 2),
+            "avg_return_on_sells": round(avg_ret_sells, 2),
+            "n_buys": n_buys,
+            "n_sells": n_sells,
+            "accuracy_by_confidence": accuracy_by_confidence,
+            "best_prediction": best_prediction,
+            "worst_prediction": worst_prediction,
+            "best_trade": best_trade,
+            "worst_trade": worst_trade,
+            "biggest_missed_gain": biggest_missed_gain,
+            "biggest_avoided_loss": biggest_avoided_loss,
+            "profit_factor": profit_factor,
         }
 
-    def _hold(row):
-        if row is None:
-            return None
-        return {
-            "symbol": row["symbol"],
-            "return_pct": row["actual_return_pct"],
-        }
 
-    best_trade = _trade(best_trade_row)
-    worst_trade = _trade(worst_trade_row)
-    biggest_missed_gain = _hold(missed_gain_row)
-    biggest_avoided_loss = _hold(avoided_loss_row)
-
-    # Backwards-compat: keep best_prediction/worst_prediction populated
-    # so any consumers that still query them don't break. Prefer the
-    # new split fields above for new UI surfaces.
-    best_prediction = (
-        {"symbol": best_trade["symbol"],
-          "return_pct": best_trade["trade_pnl_pct"],
-          "confidence": best_trade["confidence"]}
-        if best_trade else None
-    )
-    worst_prediction = (
-        {"symbol": worst_trade["symbol"],
-          "return_pct": worst_trade["trade_pnl_pct"],
-          "confidence": worst_trade["confidence"]}
-        if worst_trade else None
-    )
-
-    # Profit factor: total_gains / abs(total_losses)
-    total_gains = conn.execute(
-        "SELECT COALESCE(SUM(actual_return_pct), 0) FROM ai_predictions "
-        "WHERE status='resolved' AND actual_return_pct > 0"
-    ).fetchone()[0]
-    total_losses = abs(conn.execute(
-        "SELECT COALESCE(SUM(actual_return_pct), 0) FROM ai_predictions "
-        "WHERE status='resolved' AND actual_return_pct < 0"
-    ).fetchone()[0])
-    profit_factor = round(total_gains / total_losses, 2) if total_losses > 0 else float("inf")
-
-    conn.close()
-
-    return {
-        "total_predictions": total,
-        "resolved": resolved,
-        "pending": pending,
-        "win_rate": round(win_rate, 1),
-        "directional_win_rate": round(directional_win_rate, 1),
-        "directional_resolved": dir_resolved,
-        "directional_wins": dir_wins,
-        "hold_pass_rate": round(hold_pass_rate, 1),
-        "hold_resolved": hold_resolved,
-        "avg_confidence_on_wins": round(avg_conf_wins, 1),
-        "avg_confidence_on_losses": round(avg_conf_losses, 1),
-        "avg_return_on_buys": round(avg_ret_buys, 2),
-        "avg_return_on_sells": round(avg_ret_sells, 2),
-        "n_buys": n_buys,
-        "n_sells": n_sells,
-        "accuracy_by_confidence": accuracy_by_confidence,
-        "best_prediction": best_prediction,
-        "worst_prediction": worst_prediction,
-        "best_trade": best_trade,
-        "worst_trade": worst_trade,
-        "biggest_missed_gain": biggest_missed_gain,
-        "biggest_avoided_loss": biggest_avoided_loss,
-        "profit_factor": profit_factor,
-    }
-
-
+    finally:
+        conn.close()
 # ---------------------------------------------------------------------------
 # 4. Rolling win-rate timeseries (for charting)
 # ---------------------------------------------------------------------------

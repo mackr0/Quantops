@@ -2,6 +2,7 @@
 
 import logging
 import sqlite3
+from contextlib import closing
 
 import config
 from market_data import get_bars
@@ -543,11 +544,10 @@ def check_drawdown(ctx, account_info, db_path=None):
 
     if db:
         try:
-            conn = sqlite3.connect(db)
-            row = conn.execute(
-                "SELECT MAX(equity) FROM daily_snapshots"
-            ).fetchone()
-            conn.close()
+            with closing(sqlite3.connect(db)) as conn:
+                row = conn.execute(
+                    "SELECT MAX(equity) FROM daily_snapshots"
+                ).fetchone()
             if row and row[0] is not None:
                 peak_equity = max(float(row[0]), current_equity)
         except Exception as exc:

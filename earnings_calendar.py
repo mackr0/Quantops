@@ -10,6 +10,7 @@ rescheduled, so we refresh weekly instead of monthly).
 import logging
 import sqlite3
 import time
+from contextlib import closing
 from datetime import datetime, date, timedelta
 from typing import Optional, Dict
 
@@ -22,16 +23,15 @@ _REFRESH_INTERVAL = 7 * 24 * 60 * 60  # 7 days (was 24 hours — way too aggress
 def _ensure_table():
     """Create the earnings_dates table if it doesn't exist."""
     try:
-        conn = sqlite3.connect(_DB_PATH)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS earnings_dates (
-                symbol TEXT PRIMARY KEY,
-                earnings_date TEXT,
-                fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
-            )
-        """)
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(_DB_PATH)) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS earnings_dates (
+                    symbol TEXT PRIMARY KEY,
+                    earnings_date TEXT,
+                    fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+            """)
+            conn.commit()
     # SILENT_OK: cache schema init; cache writes that fail leave callers in non-cached path
     except Exception:
         pass
@@ -97,14 +97,13 @@ def _fetch_and_store(symbol: str) -> Optional[str]:
 def _store(symbol: str, earnings_date: Optional[str]):
     """Store earnings date in DB."""
     try:
-        conn = sqlite3.connect(_DB_PATH)
-        conn.execute(
-            "INSERT OR REPLACE INTO earnings_dates (symbol, earnings_date, fetched_at) "
-            "VALUES (?, ?, datetime('now'))",
-            (symbol, earnings_date),
-        )
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(_DB_PATH)) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO earnings_dates (symbol, earnings_date, fetched_at) "
+                "VALUES (?, ?, datetime('now'))",
+                (symbol, earnings_date),
+            )
+            conn.commit()
     # SILENT_OK: cache write fallback; cache miss is acceptable next time
     except Exception:
         pass
@@ -119,12 +118,11 @@ def _get_cached(symbol: str) -> tuple:
         no known date, we re-check periodically)
     """
     try:
-        conn = sqlite3.connect(_DB_PATH)
-        row = conn.execute(
-            "SELECT earnings_date, fetched_at FROM earnings_dates WHERE symbol=?",
-            (symbol,),
-        ).fetchone()
-        conn.close()
+        with closing(sqlite3.connect(_DB_PATH)) as conn:
+            row = conn.execute(
+                "SELECT earnings_date, fetched_at FROM earnings_dates WHERE symbol=?",
+                (symbol,),
+            ).fetchone()
         if row is None:
             return None, False
 

@@ -30,6 +30,7 @@ import math
 import random
 import statistics
 import time
+from contextlib import closing
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -720,24 +721,23 @@ VALIDATIONS_DB = "strategy_validations.db"
 def init_validations_db(db_path: str = VALIDATIONS_DB) -> None:
     """Create the strategy_validations table if missing."""
     import sqlite3
-    conn = sqlite3.connect(db_path)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS strategy_validations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-            strategy_name TEXT NOT NULL,
-            market_type TEXT NOT NULL,
-            verdict TEXT NOT NULL,
-            score REAL NOT NULL,
-            passed_gates TEXT NOT NULL,
-            failed_gates TEXT NOT NULL,
-            metrics_json TEXT NOT NULL,
-            config_json TEXT NOT NULL,
-            elapsed_sec REAL
-        )
-    """)
-    conn.commit()
-    conn.close()
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_validations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                strategy_name TEXT NOT NULL,
+                market_type TEXT NOT NULL,
+                verdict TEXT NOT NULL,
+                score REAL NOT NULL,
+                passed_gates TEXT NOT NULL,
+                failed_gates TEXT NOT NULL,
+                metrics_json TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                elapsed_sec REAL
+            )
+        """)
+        conn.commit()
 
 
 def save_validation(
@@ -749,27 +749,26 @@ def save_validation(
     init_validations_db(db_path)
 
     import sqlite3
-    conn = sqlite3.connect(db_path)
-    cursor = conn.execute(
-        """INSERT INTO strategy_validations
-           (strategy_name, market_type, verdict, score,
-            passed_gates, failed_gates, metrics_json, config_json, elapsed_sec)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            strategy_name,
-            result.get("config", {}).get("market_type", "unknown"),
-            result.get("verdict", "FAIL"),
-            result.get("score", 0),
-            json.dumps(result.get("passed_gates", [])),
-            json.dumps(result.get("failed_gates", [])),
-            json.dumps(result.get("metrics", {}), default=str),
-            json.dumps(result.get("config", {}), default=str),
-            result.get("elapsed_sec", 0),
-        ),
-    )
-    conn.commit()
-    row_id = cursor.lastrowid
-    conn.close()
+    with closing(sqlite3.connect(db_path)) as conn:
+        cursor = conn.execute(
+            """INSERT INTO strategy_validations
+               (strategy_name, market_type, verdict, score,
+                passed_gates, failed_gates, metrics_json, config_json, elapsed_sec)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                strategy_name,
+                result.get("config", {}).get("market_type", "unknown"),
+                result.get("verdict", "FAIL"),
+                result.get("score", 0),
+                json.dumps(result.get("passed_gates", [])),
+                json.dumps(result.get("failed_gates", [])),
+                json.dumps(result.get("metrics", {}), default=str),
+                json.dumps(result.get("config", {}), default=str),
+                result.get("elapsed_sec", 0),
+            ),
+        )
+        conn.commit()
+        row_id = cursor.lastrowid
     logger.info("Saved validation #%d: %s -> %s (score=%.1f)",
                 row_id, strategy_name, result.get("verdict"), result.get("score", 0))
     return row_id
@@ -781,11 +780,10 @@ def get_recent_validations(limit: int = 50, db_path: str = VALIDATIONS_DB) -> Li
     import sqlite3
     if not os.path.exists(db_path):
         return []
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT * FROM strategy_validations ORDER BY id DESC LIMIT ?",
-        (limit,),
-    ).fetchall()
-    conn.close()
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM strategy_validations ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
     return [dict(r) for r in rows]

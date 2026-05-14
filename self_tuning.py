@@ -8,6 +8,7 @@ its own learning.
 import logging
 import sqlite3
 import time
+from contextlib import closing
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -175,7 +176,6 @@ def _build_cross_profile_insights(user_id, current_profile_id, current_db_path):
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_predictions'"
             ).fetchone()
             if not table_check:
-                conn.close()
                 continue
 
             # 2026-05-13 — exclude data_quality-tagged ai_predictions
@@ -188,7 +188,6 @@ def _build_cross_profile_insights(user_id, current_profile_id, current_db_path):
             ).fetchone()[0]
 
             if resolved < 20:
-                conn.close()
                 continue
 
             wins = conn.execute(
@@ -217,8 +216,6 @@ def _build_cross_profile_insights(user_id, current_profile_id, current_db_path):
             ).fetchone()[0] or 0
             buy_wr = (buy_wins / buy_total * 100) if buy_total > 0 else 0
 
-            conn.close()
-
             profile_stats.append({
                 "id": pid,
                 "name": prof["name"],
@@ -233,12 +230,13 @@ def _build_cross_profile_insights(user_id, current_profile_id, current_db_path):
             })
         except Exception as exc:
             logger.warning("Cross-profile: error reading profile #%d: %s", pid, exc)
+            continue
+        finally:
             try:
                 conn.close()
-            # SILENT_OK: cleanup close after error; conn may already be closed.
+            # SILENT_OK: cleanup close; conn may already be closed.
             except Exception:
                 pass
-            continue
 
     # Need 2+ profiles with enough data
     if len(profile_stats) < 2:
@@ -327,7 +325,6 @@ def get_symbol_reputation(db_path, min_predictions=3):
             "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_predictions'"
         ).fetchone()
         if not table_check:
-            conn.close()
             return {}
 
         # Per-signal-type aggregation. Group by (symbol, signal) so
@@ -339,7 +336,6 @@ def get_symbol_reputation(db_path, min_predictions=3):
             "FROM ai_predictions WHERE status='resolved' "
             "GROUP BY symbol, predicted_signal"
         ).fetchall()
-        conn.close()
 
         result = {}
         for r in rows:
@@ -384,12 +380,13 @@ def get_symbol_reputation(db_path, min_predictions=3):
 
     except Exception as exc:
         logger.warning("Failed to get symbol reputation: %s", exc)
+        return {}
+    finally:
         try:
             conn.close()
-        # SILENT_OK: cleanup close after error; conn may already be closed.
+        # SILENT_OK: cleanup close; conn may already be closed.
         except Exception:
             pass
-        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +412,6 @@ def _build_trade_performance_context(db_path):
             "SELECT name FROM sqlite_master WHERE type='table' AND name='trades'"
         ).fetchone()
         if not table_check:
-            conn.close()
             return ""
 
         # Query trades grouped by side (buy, sell, short, cover)
@@ -432,12 +428,10 @@ def _build_trade_performance_context(db_path):
         ).fetchall()
 
         if not rows:
-            conn.close()
             return ""
 
         total_trades = sum(r["cnt"] for r in rows)
         if total_trades < 3:
-            conn.close()
             return ""
 
         lines = ["ACTUAL TRADE PERFORMANCE (not just predictions):"]
@@ -479,17 +473,17 @@ def _build_trade_performance_context(db_path):
             lines.append("")
             lines.append(w)
 
-        conn.close()
         return "\n".join(lines)
 
     except Exception as exc:
         logger.warning("Failed to build trade performance context: %s", exc)
+        return ""
+    finally:
         try:
             conn.close()
-        # SILENT_OK: cleanup close after error; conn may already be closed.
+        # SILENT_OK: cleanup close; conn may already be closed.
         except Exception:
             pass
-        return ""
 
 
 def _get_track_record_by_direction(conn):
@@ -574,49 +568,48 @@ def build_concise_context(ctx, symbol=None):
     # 3. Overall win rate (1 line)
     if db:
         try:
-            conn = _get_conn(db)
-            table_check = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_predictions'"
-            ).fetchone()
-            if table_check:
-                # 2026-05-13 — exclude data_quality-tagged rows
-                from journal import data_quality_clause
-                _aip_dq = data_quality_clause(conn, table="ai_predictions")
-                total = conn.execute(
-                    f"SELECT COUNT(*) FROM ai_predictions "
-                    f"WHERE status='resolved'{_aip_dq}"
-                ).fetchone()[0]
-                wins = conn.execute(
-                    f"SELECT COUNT(*) FROM ai_predictions "
-                    f"WHERE status='resolved' AND actual_outcome='win'{_aip_dq}"
-                ).fetchone()[0]
-                if total >= 10:
-                    wr = wins / total * 100
-                    selectivity = "Be more selective." if wr < 40 else "Good accuracy."
-                    lines.append(
-                        f"YOUR OVERALL: {wr:.0f}% win rate "
-                        f"({wins}W/{total - wins}L). {selectivity}"
-                    )
-                # P1.9: per-direction breakdown for shorts-enabled
-                # profiles. Aggregate WR drowns out small short books;
-                # surfacing the split lets the AI act per-direction.
-                if getattr(ctx, "enable_short_selling", False):
-                    by_dir = _get_track_record_by_direction(conn)
-                    parts = []
-                    for ptype_label, ptype_key in [
-                        ("Longs", "directional_long"),
-                        ("Shorts", "directional_short"),
-                        ("Exits", "exit_long"),
-                    ]:
-                        d = by_dir.get(ptype_key)
-                        if d and d["total"] >= 5:
-                            parts.append(
-                                f"{ptype_label} {d['win_rate']:.0f}%W "
-                                f"({d['wins']}W/{d['losses']}L, n={d['total']})"
-                            )
-                    if parts:
-                        lines.append("BY DIRECTION: " + " | ".join(parts))
-            conn.close()
+            with closing(_get_conn(db)) as conn:
+                table_check = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_predictions'"
+                ).fetchone()
+                if table_check:
+                    # 2026-05-13 — exclude data_quality-tagged rows
+                    from journal import data_quality_clause
+                    _aip_dq = data_quality_clause(conn, table="ai_predictions")
+                    total = conn.execute(
+                        f"SELECT COUNT(*) FROM ai_predictions "
+                        f"WHERE status='resolved'{_aip_dq}"
+                    ).fetchone()[0]
+                    wins = conn.execute(
+                        f"SELECT COUNT(*) FROM ai_predictions "
+                        f"WHERE status='resolved' AND actual_outcome='win'{_aip_dq}"
+                    ).fetchone()[0]
+                    if total >= 10:
+                        wr = wins / total * 100
+                        selectivity = "Be more selective." if wr < 40 else "Good accuracy."
+                        lines.append(
+                            f"YOUR OVERALL: {wr:.0f}% win rate "
+                            f"({wins}W/{total - wins}L). {selectivity}"
+                        )
+                    # P1.9: per-direction breakdown for shorts-enabled
+                    # profiles. Aggregate WR drowns out small short books;
+                    # surfacing the split lets the AI act per-direction.
+                    if getattr(ctx, "enable_short_selling", False):
+                        by_dir = _get_track_record_by_direction(conn)
+                        parts = []
+                        for ptype_label, ptype_key in [
+                            ("Longs", "directional_long"),
+                            ("Shorts", "directional_short"),
+                            ("Exits", "exit_long"),
+                        ]:
+                            d = by_dir.get(ptype_key)
+                            if d and d["total"] >= 5:
+                                parts.append(
+                                    f"{ptype_label} {d['win_rate']:.0f}%W "
+                                    f"({d['wins']}W/{d['losses']}L, n={d['total']})"
+                                )
+                        if parts:
+                            lines.append("BY DIRECTION: " + " | ".join(parts))
         # SILENT_OK: overall WR enrichment for concise context; AI prompt continues without it.
         except Exception:
             pass
@@ -665,7 +658,6 @@ def build_performance_context(ctx, symbol=None, db_path=None):
             "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_predictions'"
         ).fetchone()
         if not table_check:
-            conn.close()
             return ""
 
         resolved = conn.execute(
@@ -673,7 +665,6 @@ def build_performance_context(ctx, symbol=None, db_path=None):
         ).fetchone()[0]
 
         if resolved < 10:
-            conn.close()
             _set_cache(cache_key, "")
             return ""
 
@@ -935,19 +926,19 @@ def build_performance_context(ctx, symbol=None, db_path=None):
             except Exception as _cross_exc:
                 logger.warning("Failed to build cross-profile insights: %s", _cross_exc)
 
-        conn.close()
         result = "\n".join(lines)
         _set_cache(cache_key, result)
         return result
 
     except Exception as exc:
         logger.warning("Failed to build performance context: %s", exc)
+        return ""
+    finally:
         try:
             conn.close()
-        # SILENT_OK: cleanup close after error; conn may already be closed.
+        # SILENT_OK: cleanup close; conn may already be closed.
         except Exception:
             pass
-        return ""
 
 
 def _build_time_context(db_path):
@@ -968,14 +959,12 @@ def _build_time_context(db_path):
             "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_predictions'"
         ).fetchone()
         if not table_check:
-            conn.close()
             return ""
 
         rows = conn.execute(
             "SELECT timestamp, actual_outcome FROM ai_predictions "
             "WHERE status='resolved' AND timestamp IS NOT NULL"
         ).fetchall()
-        conn.close()
 
         if not rows:
             return ""
@@ -1046,12 +1035,13 @@ def _build_time_context(db_path):
 
     except Exception as exc:
         logger.warning("Failed to build time context: %s", exc)
+        return ""
+    finally:
         try:
             conn.close()
-        # SILENT_OK: cleanup close after error; conn may already be closed.
+        # SILENT_OK: cleanup close; conn may already be closed.
         except Exception:
             pass
-        return ""
 
 
 def _build_lessons_learned(profile_id):
@@ -1161,7 +1151,6 @@ def get_auto_adjustments(ctx, db_path=None):
             "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_predictions'"
         ).fetchone()
         if not table_check:
-            conn.close()
             return {"reasons": []}
 
         resolved = conn.execute(
@@ -1169,7 +1158,6 @@ def get_auto_adjustments(ctx, db_path=None):
         ).fetchone()[0]
 
         if resolved < 20:
-            conn.close()
             return {"reasons": [f"Only {resolved} resolved predictions (need 20+)"]}
 
         wins = conn.execute(
@@ -1351,17 +1339,17 @@ def get_auto_adjustments(ctx, db_path=None):
             )
             result["reduce_position_size"] = False
 
-        conn.close()
         return result
 
     except Exception as exc:
         logger.warning("Failed to get auto adjustments: %s", exc)
+        return {"reasons": [str(exc)]}
+    finally:
         try:
             conn.close()
-        # SILENT_OK: cleanup close after error; conn may already be closed.
+        # SILENT_OK: cleanup close; conn may already be closed.
         except Exception:
             pass
-        return {"reasons": [str(exc)]}
 
 
 # ---------------------------------------------------------------------------
@@ -1391,18 +1379,16 @@ def describe_tuning_state(ctx, db_path=None):
                 "message": "Self-tuning is disabled on this profile."}
     db = db_path or ctx.db_path
     try:
-        conn = _get_conn(db)
-        table = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_predictions'"
-        ).fetchone()
-        if not table:
-            conn.close()
-            return {"can_tune": False, "resolved": 0, "required": required,
-                    "message": "AI prediction history not yet initialized."}
-        resolved = conn.execute(
-            "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved'"
-        ).fetchone()[0]
-        conn.close()
+        with closing(_get_conn(db)) as conn:
+            table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_predictions'"
+            ).fetchone()
+            if not table:
+                return {"can_tune": False, "resolved": 0, "required": required,
+                        "message": "AI prediction history not yet initialized."}
+            resolved = conn.execute(
+                "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved'"
+            ).fetchone()[0]
         if resolved < required:
             return {
                 "can_tune": False, "resolved": resolved, "required": required,
@@ -1501,9 +1487,8 @@ def apply_auto_adjustments(ctx, db_path=None):
 
                         # Get current stats for the reversal log
                         try:
-                            conn_tmp = _get_conn(db)
-                            cur_wr, cur_resolved = _get_current_win_rate(conn_tmp)
-                            conn_tmp.close()
+                            with closing(_get_conn(db)) as conn_tmp:
+                                cur_wr, cur_resolved = _get_current_win_rate(conn_tmp)
                         except Exception:
                             cur_wr, cur_resolved = 0, 0
 
@@ -1537,7 +1522,6 @@ def apply_auto_adjustments(ctx, db_path=None):
             "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_predictions'"
         ).fetchone()
         if not table_check:
-            conn.close()
             return adjustments_made
 
         resolved = conn.execute(
@@ -1545,11 +1529,9 @@ def apply_auto_adjustments(ctx, db_path=None):
         ).fetchone()[0]
 
         if resolved < 20:
-            conn.close()
             return adjustments_made
 
         if not profile_id:
-            conn.close()
             return adjustments_made
 
         from models import update_trading_profile, log_tuning_change
@@ -1772,17 +1754,17 @@ def apply_auto_adjustments(ctx, db_path=None):
             )
             adjustments_made.extend(upward)
 
-        conn.close()
         return adjustments_made
 
     except Exception as exc:
         logger.warning("Failed to apply auto adjustments: %s", exc)
+        return adjustments_made
+    finally:
         try:
             conn.close()
-        # SILENT_OK: cleanup close after error; conn may already be closed.
+        # SILENT_OK: cleanup close; conn may already be closed.
         except Exception:
             pass
-        return adjustments_made
 
 
 def _cast_param_value(param_name, value_str):
@@ -5413,7 +5395,6 @@ def _analyze_failure_patterns(db_path):
         has_strategy = "strategy_type" in cols
 
         if not has_regime and not has_strategy:
-            conn.close()
             return []
 
         # Pattern 1: Win rate by regime
@@ -5486,17 +5467,17 @@ def _analyze_failure_patterns(db_path):
                     f"Avoid trading this hour."
                 )
 
-        conn.close()
         return patterns[:5]  # Max 5 patterns
 
     except Exception as exc:
         logger.warning("Failed to analyze failure patterns: %s", exc)
+        return []
+    finally:
         try:
             conn.close()
-        # SILENT_OK: cleanup close after error; conn may already be closed.
+        # SILENT_OK: cleanup close; conn may already be closed.
         except Exception:
             pass
-        return []
 
 
 def get_batch_context_data(ctx, symbols=None):
@@ -5514,9 +5495,8 @@ def get_batch_context_data(ctx, symbols=None):
                 "symbol_records": {}, "profile_summary": None}
 
     try:
-        conn = _get_conn(db_path)
-        wr, total = _get_current_win_rate(conn)
-        conn.close()
+        with closing(_get_conn(db_path)) as conn:
+            wr, total = _get_current_win_rate(conn)
     except Exception:
         wr, total = 0.0, 0
 

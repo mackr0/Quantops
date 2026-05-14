@@ -34,6 +34,7 @@ import re
 import sqlite3
 import time
 import urllib.parse
+from contextlib import closing
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import urllib.error
@@ -65,32 +66,31 @@ def _ensure_pdufa_table(db_path: str) -> None:
     """Create the pdufa_events table if it doesn't exist. Schema matches
     biotechevents/biotechevents/store.py and what
     alternative_data.get_biotech_milestones queries."""
-    conn = sqlite3.connect(db_path)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS pdufa_events (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            drug_name       TEXT    NOT NULL,
-            sponsor_company TEXT    NOT NULL,
-            ticker          TEXT,
-            pdufa_date      TEXT    NOT NULL,
-            action_type     TEXT,
-            indication      TEXT,
-            outcome         TEXT    DEFAULT 'pending',
-            outcome_date    TEXT,
-            source_url      TEXT,
-            parser_version  TEXT,
-            fetched_at      TEXT    NOT NULL,
-            UNIQUE (drug_name, sponsor_company, pdufa_date)
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pdufa_events (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                drug_name       TEXT    NOT NULL,
+                sponsor_company TEXT    NOT NULL,
+                ticker          TEXT,
+                pdufa_date      TEXT    NOT NULL,
+                action_type     TEXT,
+                indication      TEXT,
+                outcome         TEXT    DEFAULT 'pending',
+                outcome_date    TEXT,
+                source_url      TEXT,
+                parser_version  TEXT,
+                fetched_at      TEXT    NOT NULL,
+                UNIQUE (drug_name, sponsor_company, pdufa_date)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pdufa_ticker ON pdufa_events(ticker)"
         )
-    """)
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pdufa_ticker ON pdufa_events(ticker)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pdufa_date ON pdufa_events(pdufa_date)"
-    )
-    conn.commit()
-    conn.close()
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pdufa_date ON pdufa_events(pdufa_date)"
+        )
+        conn.commit()
 
 
 def _fetch_html(url: str, timeout: int = 15) -> Optional[str]:
@@ -275,32 +275,31 @@ def sync_pdufa_events_to_altdata_db(
     _ensure_pdufa_table(db_path)
     written = 0
     try:
-        conn = sqlite3.connect(db_path)
-        for e in events:
-            try:
-                # Match the existing biotechevents schema:
-                # UNIQUE(drug_name, sponsor_company, pdufa_date), and
-                # both drug_name + sponsor_company are NOT NULL. EDGAR
-                # gives us the ticker reliably; sponsor_company defaults
-                # to the ticker when we don't have a company name.
-                drug = e.get("drug_name") or "(see filing)"
-                sponsor = e.get("sponsor_company") or e["ticker"]
-                conn.execute(
-                    """INSERT OR REPLACE INTO pdufa_events
-                       (drug_name, sponsor_company, ticker, pdufa_date,
-                        action_type, source_url, parser_version, fetched_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-                    (drug, sponsor, e["ticker"], e["pdufa_date"],
-                     e.get("action_type") or None,
-                     e.get("source_url", e.get("source", "")),
-                     e.get("parser_version", "edgar_8k_v1")),
-                )
-                written += 1
-            # SILENT_OK: per-event PDUFA insert; one bad event shouldn't kill the scrape loop
-            except Exception:
-                continue
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            for e in events:
+                try:
+                    # Match the existing biotechevents schema:
+                    # UNIQUE(drug_name, sponsor_company, pdufa_date), and
+                    # both drug_name + sponsor_company are NOT NULL. EDGAR
+                    # gives us the ticker reliably; sponsor_company defaults
+                    # to the ticker when we don't have a company name.
+                    drug = e.get("drug_name") or "(see filing)"
+                    sponsor = e.get("sponsor_company") or e["ticker"]
+                    conn.execute(
+                        """INSERT OR REPLACE INTO pdufa_events
+                           (drug_name, sponsor_company, ticker, pdufa_date,
+                            action_type, source_url, parser_version, fetched_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                        (drug, sponsor, e["ticker"], e["pdufa_date"],
+                         e.get("action_type") or None,
+                         e.get("source_url", e.get("source", "")),
+                         e.get("parser_version", "edgar_8k_v1")),
+                    )
+                    written += 1
+                # SILENT_OK: per-event PDUFA insert; one bad event shouldn't kill the scrape loop
+                except Exception:
+                    continue
+            conn.commit()
     except Exception as exc:
         logger.warning("PDUFA sync write failed: %s", exc)
     return written
@@ -768,31 +767,30 @@ _COMMITTEE_NAME_RE = re.compile(
 
 def _ensure_adcomm_table(db_path: str) -> None:
     """Create adcomm_events table if it doesn't exist."""
-    conn = sqlite3.connect(db_path)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS adcomm_events (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticker          TEXT    NOT NULL,
-            sponsor_company TEXT    NOT NULL,
-            drug_name       TEXT,
-            adcomm_date     TEXT    NOT NULL,
-            committee_name  TEXT,
-            outcome         TEXT    DEFAULT 'pending',
-            outcome_date    TEXT,
-            source_url      TEXT,
-            parser_version  TEXT,
-            fetched_at      TEXT    NOT NULL,
-            UNIQUE (ticker, adcomm_date)
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS adcomm_events (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker          TEXT    NOT NULL,
+                sponsor_company TEXT    NOT NULL,
+                drug_name       TEXT,
+                adcomm_date     TEXT    NOT NULL,
+                committee_name  TEXT,
+                outcome         TEXT    DEFAULT 'pending',
+                outcome_date    TEXT,
+                source_url      TEXT,
+                parser_version  TEXT,
+                fetched_at      TEXT    NOT NULL,
+                UNIQUE (ticker, adcomm_date)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_adcomm_ticker ON adcomm_events(ticker)"
         )
-    """)
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_adcomm_ticker ON adcomm_events(ticker)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_adcomm_date ON adcomm_events(adcomm_date)"
-    )
-    conn.commit()
-    conn.close()
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_adcomm_date ON adcomm_events(adcomm_date)"
+        )
+        conn.commit()
 
 
 def _parse_adcomm_dates_from_text(text: str) -> List[str]:
@@ -891,26 +889,25 @@ def sync_adcomm_events_to_altdata_db(
     _ensure_adcomm_table(db_path)
     written = 0
     try:
-        conn = sqlite3.connect(db_path)
-        for e in events:
-            try:
-                conn.execute(
-                    """INSERT OR REPLACE INTO adcomm_events
-                       (ticker, sponsor_company, drug_name, adcomm_date,
-                        committee_name, source_url, parser_version,
-                        fetched_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-                    (e["ticker"], e.get("sponsor_company") or e["ticker"],
-                     e.get("drug_name") or "(see filing)",
-                     e["adcomm_date"], e.get("committee_name") or None,
-                     e.get("source_url", ""), "edgar_8k_v1"),
-                )
-                written += 1
-            # SILENT_OK: per-event AdComm insert; one bad event shouldn't kill the scrape loop
-            except Exception:
-                continue
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            for e in events:
+                try:
+                    conn.execute(
+                        """INSERT OR REPLACE INTO adcomm_events
+                           (ticker, sponsor_company, drug_name, adcomm_date,
+                            committee_name, source_url, parser_version,
+                            fetched_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                        (e["ticker"], e.get("sponsor_company") or e["ticker"],
+                         e.get("drug_name") or "(see filing)",
+                         e["adcomm_date"], e.get("committee_name") or None,
+                         e.get("source_url", ""), "edgar_8k_v1"),
+                    )
+                    written += 1
+                # SILENT_OK: per-event AdComm insert; one bad event shouldn't kill the scrape loop
+                except Exception:
+                    continue
+            conn.commit()
     except Exception as exc:
         logger.warning("AdComm sync write failed: %s", exc)
     return written

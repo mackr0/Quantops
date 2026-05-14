@@ -11,6 +11,7 @@ import glob
 import logging
 import os
 import sqlite3
+from contextlib import closing
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -32,14 +33,13 @@ def coverage_snapshot(db_paths: Optional[List[str]] = None) -> Dict[str, object]
     naked: List = []
     for path in paths:
         try:
-            conn = sqlite3.connect(path)
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT symbol, protective_stop_order_id, "
-                "protective_trailing_order_id "
-                "FROM trades WHERE side='buy' AND status='open'"
-            ).fetchall()
-            conn.close()
+            with closing(sqlite3.connect(path)) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT symbol, protective_stop_order_id, "
+                    "protective_trailing_order_id "
+                    "FROM trades WHERE side='buy' AND status='open'"
+                ).fetchall()
         except Exception as exc:
             logger.debug("coverage_snapshot: %s skipped (%s)", path, exc)
             continue

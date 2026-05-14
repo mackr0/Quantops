@@ -8,6 +8,7 @@ data gracefully (returning zeroes or empty lists).
 import math
 import sqlite3
 import os
+from contextlib import closing
 import time
 import logging
 from datetime import datetime, timedelta, date
@@ -135,24 +136,23 @@ def _gather_trades(db_paths) -> List[Dict]:
     all_trades = []
     for db_path in db_paths:
         try:
-            conn = sqlite3.connect(db_path)
-            conn.row_factory = sqlite3.Row
-            cols = {row[1] for row in conn.execute(
-                "PRAGMA table_info(trades)"
-            ).fetchall()}
-            dq_clause = (
-                " AND data_quality IS NULL"
-                if "data_quality" in cols else ""
-            )
-            rows = conn.execute(
-                f"SELECT timestamp, symbol, side, qty, price, pnl, strategy, "
-                f"decision_price, fill_price, slippage_pct, status "
-                f"FROM trades WHERE pnl IS NOT NULL{dq_clause} "
-                f"ORDER BY timestamp ASC"
-            ).fetchall()
-            for r in rows:
-                all_trades.append(dict(r))
-            conn.close()
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                cols = {row[1] for row in conn.execute(
+                    "PRAGMA table_info(trades)"
+                ).fetchall()}
+                dq_clause = (
+                    " AND data_quality IS NULL"
+                    if "data_quality" in cols else ""
+                )
+                rows = conn.execute(
+                    f"SELECT timestamp, symbol, side, qty, price, pnl, strategy, "
+                    f"decision_price, fill_price, slippage_pct, status "
+                    f"FROM trades WHERE pnl IS NOT NULL{dq_clause} "
+                    f"ORDER BY timestamp ASC"
+                ).fetchall()
+                for r in rows:
+                    all_trades.append(dict(r))
         # SILENT_OK: per-DB trade aggregation; one bad DB shouldn't kill cross-profile metrics
         except Exception:
             pass
@@ -171,14 +171,13 @@ def _count_open_trades(db_paths) -> int:
     total = 0
     for db_path in db_paths:
         try:
-            conn = sqlite3.connect(db_path)
-            rows = conn.execute(
-                "SELECT COUNT(*) FROM trades "
-                "WHERE pnl IS NULL AND side IN ('buy', 'short')"
-            ).fetchone()
-            if rows:
-                total += int(rows[0] or 0)
-            conn.close()
+            with closing(sqlite3.connect(db_path)) as conn:
+                rows = conn.execute(
+                    "SELECT COUNT(*) FROM trades "
+                    "WHERE pnl IS NULL AND side IN ('buy', 'short')"
+                ).fetchone()
+                if rows:
+                    total += int(rows[0] or 0)
         # SILENT_OK: per-DB open-position count; one bad DB shouldn't kill cross-profile metrics
         except Exception:
             pass
@@ -208,25 +207,24 @@ def _gather_snapshots(db_paths, initial_capital_per_profile=None) -> List[Dict]:
     all_dates = set()
     for db_path in db_paths:
         try:
-            conn = sqlite3.connect(db_path)
-            conn.row_factory = sqlite3.Row
-            # Pick latest row per date (rowid works on all SQLite tables,
-            # including ones that don't declare an explicit `id` column —
-            # safer than referencing `id` directly). On the real schema
-            # `id INTEGER PRIMARY KEY AUTOINCREMENT` is an alias for rowid
-            # so MAX(rowid) and MAX(id) return the same value.
-            rows = conn.execute(
-                "SELECT date, equity, cash, portfolio_value, num_positions, daily_pnl "
-                "FROM daily_snapshots WHERE equity IS NOT NULL "
-                "AND rowid IN (SELECT MAX(rowid) FROM daily_snapshots GROUP BY date) "
-                "ORDER BY date ASC"
-            ).fetchall()
-            snaps = [dict(r) for r in rows]
-            per_db_snaps[db_path] = snaps
-            for s in snaps:
-                if s.get("date"):
-                    all_dates.add(s["date"])
-            conn.close()
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                # Pick latest row per date (rowid works on all SQLite tables,
+                # including ones that don't declare an explicit `id` column —
+                # safer than referencing `id` directly). On the real schema
+                # `id INTEGER PRIMARY KEY AUTOINCREMENT` is an alias for rowid
+                # so MAX(rowid) and MAX(id) return the same value.
+                rows = conn.execute(
+                    "SELECT date, equity, cash, portfolio_value, num_positions, daily_pnl "
+                    "FROM daily_snapshots WHERE equity IS NOT NULL "
+                    "AND rowid IN (SELECT MAX(rowid) FROM daily_snapshots GROUP BY date) "
+                    "ORDER BY date ASC"
+                ).fetchall()
+                snaps = [dict(r) for r in rows]
+                per_db_snaps[db_path] = snaps
+                for s in snaps:
+                    if s.get("date"):
+                        all_dates.add(s["date"])
         except Exception:
             per_db_snaps[db_path] = []
 
@@ -1008,13 +1006,12 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
     all_rows: List[Dict] = []
     for db_path in db_paths:
         try:
-            conn = sqlite3.connect(db_path)
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT timestamp, symbol, side FROM trades ORDER BY timestamp ASC"
-            ).fetchall()
-            all_rows.extend(dict(r) for r in rows)
-            conn.close()
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT timestamp, symbol, side FROM trades ORDER BY timestamp ASC"
+                ).fetchall()
+                all_rows.extend(dict(r) for r in rows)
         # SILENT_OK: per-DB trade-list aggregation; one bad DB shouldn't kill cross-profile metrics
         except Exception:
             pass

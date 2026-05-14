@@ -20,6 +20,7 @@ import glob
 import logging
 import os
 import sqlite3
+from contextlib import closing
 from typing import Iterable, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -54,35 +55,34 @@ def get_book_exposure_to_symbol(
 
     for path in paths:
         try:
-            conn = sqlite3.connect(path)
-            conn.row_factory = sqlite3.Row
-            # Open trades on this profile for this symbol. Uses the
-            # `price` column (entry price). The trades table doesn't
-            # store live current_price; for a conservative concentration
-            # check, entry-cost exposure is the right unit anyway —
-            # what matters is "how much capital is committed to this
-            # single name?", not "what would it sell for right now?"
-            rows = conn.execute(
-                "SELECT qty, price FROM trades "
-                "WHERE status = 'open' AND UPPER(symbol) = ?",
-                (sym,),
-            ).fetchall()
-            for r in rows:
-                qty = float(r["qty"] or 0)
-                px = float(r["price"] or 0)
-                # Long and short both contribute to single-name exposure
-                # — a -50% move on a 25% book-share short is just as
-                # bad as a -50% move on a 25% book-share long.
-                total_exposure += abs(qty) * px
+            with closing(sqlite3.connect(path)) as conn:
+                conn.row_factory = sqlite3.Row
+                # Open trades on this profile for this symbol. Uses the
+                # `price` column (entry price). The trades table doesn't
+                # store live current_price; for a conservative concentration
+                # check, entry-cost exposure is the right unit anyway —
+                # what matters is "how much capital is committed to this
+                # single name?", not "what would it sell for right now?"
+                rows = conn.execute(
+                    "SELECT qty, price FROM trades "
+                    "WHERE status = 'open' AND UPPER(symbol) = ?",
+                    (sym,),
+                ).fetchall()
+                for r in rows:
+                    qty = float(r["qty"] or 0)
+                    px = float(r["price"] or 0)
+                    # Long and short both contribute to single-name exposure
+                    # — a -50% move on a 25% book-share short is just as
+                    # bad as a -50% move on a 25% book-share long.
+                    total_exposure += abs(qty) * px
 
-            # Latest equity from daily_snapshots
-            eq_row = conn.execute(
-                "SELECT equity FROM daily_snapshots "
-                "ORDER BY date DESC, rowid DESC LIMIT 1"
-            ).fetchone()
-            if eq_row and eq_row["equity"] is not None:
-                total_equity += float(eq_row["equity"])
-            conn.close()
+                # Latest equity from daily_snapshots
+                eq_row = conn.execute(
+                    "SELECT equity FROM daily_snapshots "
+                    "ORDER BY date DESC, rowid DESC LIMIT 1"
+                ).fetchone()
+                if eq_row and eq_row["equity"] is not None:
+                    total_equity += float(eq_row["equity"])
         except Exception as exc:
             logger.debug("book_concentration: %s skipped (%s)", path, exc)
             continue

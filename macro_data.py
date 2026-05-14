@@ -14,6 +14,7 @@ import os
 import sqlite3
 import time
 import threading
+from contextlib import closing
 from typing import Any, Dict
 from urllib.request import urlopen, Request
 from urllib.error import URLError
@@ -43,16 +44,15 @@ _table_ensured = False
 
 def _ensure_cache_table():
     try:
-        conn = sqlite3.connect(_DB_PATH)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS alt_data_cache (
-                cache_key TEXT PRIMARY KEY,
-                data_json TEXT,
-                fetched_at REAL NOT NULL
-            )
-        """)
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(_DB_PATH)) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS alt_data_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    data_json TEXT,
+                    fetched_at REAL NOT NULL
+                )
+            """)
+            conn.commit()
     # SILENT_OK: cache schema init; cache writes that fail leave callers in non-cached path
     except Exception:
         pass
@@ -64,12 +64,11 @@ def _get_cached(key, ttl_type):
         _ensure_cache_table()
         _table_ensured = True
     try:
-        conn = sqlite3.connect(_DB_PATH)
-        row = conn.execute(
-            "SELECT data_json, fetched_at FROM alt_data_cache WHERE cache_key=?",
-            (key,)
-        ).fetchone()
-        conn.close()
+        with closing(sqlite3.connect(_DB_PATH)) as conn:
+            row = conn.execute(
+                "SELECT data_json, fetched_at FROM alt_data_cache WHERE cache_key=?",
+                (key,)
+            ).fetchone()
         if row and (time.time() - row[1]) < _CACHE_TTL.get(ttl_type, 3600):
             return json.loads(row[0])
     # SILENT_OK: cache read fallback; caller fetches from source on miss
@@ -84,14 +83,13 @@ def _set_cached(key, value):
         _ensure_cache_table()
         _table_ensured = True
     try:
-        conn = sqlite3.connect(_DB_PATH)
-        conn.execute(
-            "INSERT OR REPLACE INTO alt_data_cache (cache_key, data_json, fetched_at) "
-            "VALUES (?, ?, ?)",
-            (key, json.dumps(value, default=str), time.time())
-        )
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(_DB_PATH)) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO alt_data_cache (cache_key, data_json, fetched_at) "
+                "VALUES (?, ?, ?)",
+                (key, json.dumps(value, default=str), time.time())
+            )
+            conn.commit()
     # SILENT_OK: cache write fallback; cache miss is acceptable next time
     except Exception:
         pass

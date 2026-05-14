@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -231,24 +232,23 @@ def write_risk_halt_state(db_path: str,
     """
     import json
     from journal import _get_conn
-    conn = _get_conn(db_path)
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS intraday_risk_halt (
-              id INTEGER PRIMARY KEY,
-              created_at TEXT NOT NULL DEFAULT (datetime('now')),
-              action TEXT NOT NULL,
-              alerts_json TEXT
-        )"""
-    )
-    # Replace the single row (id=1) atomically
-    conn.execute("DELETE FROM intraday_risk_halt WHERE id=1")
-    conn.execute(
-        """INSERT INTO intraday_risk_halt (id, action, alerts_json)
-           VALUES (1, ?, ?)""",
-        (action, json.dumps([a.as_dict() for a in alerts])),
-    )
-    conn.commit()
-    conn.close()
+    with closing(_get_conn(db_path)) as conn:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS intraday_risk_halt (
+                  id INTEGER PRIMARY KEY,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  action TEXT NOT NULL,
+                  alerts_json TEXT
+            )"""
+        )
+        # Replace the single row (id=1) atomically
+        conn.execute("DELETE FROM intraday_risk_halt WHERE id=1")
+        conn.execute(
+            """INSERT INTO intraday_risk_halt (id, action, alerts_json)
+               VALUES (1, ?, ?)""",
+            (action, json.dumps([a.as_dict() for a in alerts])),
+        )
+        conn.commit()
 
 
 def get_active_risk_halt(db_path: str) -> Optional[Dict[str, Any]]:
@@ -260,12 +260,11 @@ def get_active_risk_halt(db_path: str) -> Optional[Dict[str, Any]]:
     import json
     from journal import _get_conn
     try:
-        conn = _get_conn(db_path)
-        row = conn.execute(
-            "SELECT created_at, action, alerts_json "
-            "FROM intraday_risk_halt WHERE id=1"
-        ).fetchone()
-        conn.close()
+        with closing(_get_conn(db_path)) as conn:
+            row = conn.execute(
+                "SELECT created_at, action, alerts_json "
+                "FROM intraday_risk_halt WHERE id=1"
+            ).fetchone()
     except Exception:
         return None
     if not row:
@@ -281,10 +280,9 @@ def get_active_risk_halt(db_path: str) -> Optional[Dict[str, Any]]:
     if age_seconds > HALT_AUTO_CLEAR_SECONDS:
         # Stale — clear and return None
         try:
-            conn = _get_conn(db_path)
-            conn.execute("DELETE FROM intraday_risk_halt WHERE id=1")
-            conn.commit()
-            conn.close()
+            with closing(_get_conn(db_path)) as conn:
+                conn.execute("DELETE FROM intraday_risk_halt WHERE id=1")
+                conn.commit()
         # SILENT_OK: stale-halt cleanup write; halt state will re-evaluate on next read
         except Exception:
             pass
@@ -313,10 +311,9 @@ def clear_risk_halt(db_path: str) -> None:
     """Manually clear the halt state."""
     from journal import _get_conn
     try:
-        conn = _get_conn(db_path)
-        conn.execute("DELETE FROM intraday_risk_halt WHERE id=1")
-        conn.commit()
-        conn.close()
+        with closing(_get_conn(db_path)) as conn:
+            conn.execute("DELETE FROM intraday_risk_halt WHERE id=1")
+            conn.commit()
     # SILENT_OK: halt clear write; next read re-evaluates
     except Exception:
         pass

@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+from contextlib import closing
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -117,13 +118,12 @@ def set_verbosity(profile_id: int, section_name: str,
         layout.pop(section_name, None)
     else:
         layout[section_name] = verbosity
-    conn = _get_conn()
-    conn.execute(
-        "UPDATE trading_profiles SET prompt_layout = ? WHERE id = ?",
-        (json.dumps(layout), profile_id),
-    )
-    conn.commit()
-    conn.close()
+    with closing(_get_conn()) as conn:
+        conn.execute(
+            "UPDATE trading_profiles SET prompt_layout = ? WHERE id = ?",
+            (json.dumps(layout), profile_id),
+        )
+        conn.commit()
 
 
 def all_verbosities(profile_or_dict: Any) -> Dict[str, str]:

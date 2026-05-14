@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from contextlib import closing
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -31,18 +32,17 @@ def recent_win_rate(db_path: str, window: int = 100) -> Optional[Dict[str, objec
     Returns {win_rate_pct, n_resolved, n_wins, n_losses} or None
     when insufficient history."""
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT actual_outcome FROM ai_predictions "
-            "WHERE status='resolved' "
-            "AND UPPER(predicted_signal) IN "
-            "('BUY','STRONG_SELL','SHORT','SELL') "
-            "AND actual_outcome IN ('win', 'loss') "
-            "ORDER BY id DESC LIMIT ?",
-            (window,),
-        ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT actual_outcome FROM ai_predictions "
+                "WHERE status='resolved' "
+                "AND UPPER(predicted_signal) IN "
+                "('BUY','STRONG_SELL','SHORT','SELL') "
+                "AND actual_outcome IN ('win', 'loss') "
+                "ORDER BY id DESC LIMIT ?",
+                (window,),
+            ).fetchall()
     except Exception as exc:
         logger.debug("recent_win_rate: %s", exc)
         return None

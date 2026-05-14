@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from typing import Optional, Tuple
 
@@ -188,20 +189,19 @@ def compute_book_day_pnl_pct(profile_db_paths) -> Optional[float]:
     rows_seen = 0
     for path in profile_db_paths:
         try:
-            conn = sqlite3.connect(path)
-            conn.row_factory = sqlite3.Row
-            # Yesterday-or-earlier snapshot equity = today's baseline
-            prev = conn.execute(
-                "SELECT equity FROM daily_snapshots "
-                "WHERE date < date('now') "
-                "ORDER BY date DESC, rowid DESC LIMIT 1"
-            ).fetchone()
-            today = conn.execute(
-                "SELECT equity FROM daily_snapshots "
-                "WHERE date = date('now') "
-                "ORDER BY rowid DESC LIMIT 1"
-            ).fetchone()
-            conn.close()
+            with closing(sqlite3.connect(path)) as conn:
+                conn.row_factory = sqlite3.Row
+                # Yesterday-or-earlier snapshot equity = today's baseline
+                prev = conn.execute(
+                    "SELECT equity FROM daily_snapshots "
+                    "WHERE date < date('now') "
+                    "ORDER BY date DESC, rowid DESC LIMIT 1"
+                ).fetchone()
+                today = conn.execute(
+                    "SELECT equity FROM daily_snapshots "
+                    "WHERE date = date('now') "
+                    "ORDER BY rowid DESC LIMIT 1"
+                ).fetchone()
             if prev is None or today is None:
                 continue
             total_baseline += float(prev["equity"] or 0)

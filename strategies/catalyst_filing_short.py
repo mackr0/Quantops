@@ -31,6 +31,7 @@ Markets: equities only. Crypto has no comparable filings system.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
@@ -51,26 +52,25 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
 
     out = []
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        # Pull every adverse filing in the last 30 days for any symbol
-        # we care about. The table is small enough on most profile DBs
-        # that we don't need a per-symbol prefilter.
-        rows = conn.execute(
-            "SELECT symbol, form_type, filed_date, alert_severity, "
-            "alert_signal, going_concern_flag, material_weakness_flag, "
-            "alert_summary "
-            "FROM sec_filings_history "
-            "WHERE filed_date >= ? "
-            "AND ("
-            "  going_concern_flag = 1 "
-            "  OR material_weakness_flag = 1 "
-            "  OR (alert_severity = 'high' AND alert_signal = 'concerning')"
-            ") "
-            "ORDER BY filed_date DESC",
-            (cutoff_date,),
-        ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            # Pull every adverse filing in the last 30 days for any symbol
+            # we care about. The table is small enough on most profile DBs
+            # that we don't need a per-symbol prefilter.
+            rows = conn.execute(
+                "SELECT symbol, form_type, filed_date, alert_severity, "
+                "alert_signal, going_concern_flag, material_weakness_flag, "
+                "alert_summary "
+                "FROM sec_filings_history "
+                "WHERE filed_date >= ? "
+                "AND ("
+                "  going_concern_flag = 1 "
+                "  OR material_weakness_flag = 1 "
+                "  OR (alert_severity = 'high' AND alert_signal = 'concerning')"
+                ") "
+                "ORDER BY filed_date DESC",
+                (cutoff_date,),
+            ).fetchall()
     except Exception:
         return []  # table missing or other error — graceful degrade
 

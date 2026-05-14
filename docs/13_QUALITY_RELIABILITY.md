@@ -9,7 +9,7 @@
 
 QuantOpsAI ships changes daily, often via AI-assisted edits. The threat model is not just "does the code compile" — it includes "did the assistant hallucinate a column name?", "did the assistant remove a guard while fixing something else?", "did the assistant claim a fix is done when it isn't?". The safety system has three layers, all enforced automatically:
 
-1. **Pre-commit / CI tests** (258 files, 3,028 tests, zero skipped) — must pass before merge.
+1. **Pre-commit / CI tests** (258 files, 3,029 tests, zero skipped) — must pass before merge.
 2. **Production-side controls** — defense-in-depth gates that catch what slips past tests.
 3. **Backups + rehearsed disaster recovery** — assume something will eventually break.
 
@@ -79,7 +79,8 @@ The user's standing rule: *"Never guess table names, column names, or function s
 |---|---|
 | `test_no_silent_except_pass` (strict, baseline empty) | AST scan over **all** production source. Any `except: pass` or `except Exception: pass` fails unless annotated with `# SILENT_OK: <rationale>` immediately above the `except` keyword. Replaces the per-module check below — covers the entire codebase, not just trade-execution paths. |
 | `test_json_decode_paths_safe` (strict, baseline empty) | AST scan for `json.loads()` / `json.load()` calls without a `try` ancestor. Fails unless wrapped in try/except or annotated with `# JSON_OK: <rationale>`. Catches malformed-cache and malformed-API-response crash classes. |
-| `test_every_db_connection_is_closed` (ratchet, baseline ~93 sites) | AST scan for `sqlite3.connect()` without context-manager / try-finally close. New leaks fail; existing sites tracked for proper-fix audit. |
+| `test_every_db_connection_is_closed` (strict, baseline empty) | AST scan for `sqlite3.connect()` without context-manager / try-finally close. The 2026-05-14 audit converted all 93 historical direct-leak sites to safe patterns; baseline empty so any new leak fails on first introduction. |
+| `test_factory_helper_callers_have_try_finally` (strict, no baseline) | Class-level AST scan for `conn = factory(...)` assignments where `factory` is one of `_get_conn`, `_open_journal_conn`, `open_profile_db`, `_open_conn`. Each must be inside `with closing(...)` or wrapped in try/finally. Closes the gap that the original factory-pattern detector left open: a caller of a connection factory without try/finally still leaks on exception. The 2026-05-14 audit fixed 131 such sites including 3 ACTUAL leaks where conn was never closed at all. |
 | `test_broker_submit_invariants::test_no_bare_except_pass_on_db_or_broker_calls` | Tightened version of the above for trade-execution modules. Kept as belt-and-suspenders. |
 | `test_silent_failure_fixes_*` | Per-site static checks that historical WARNING-log markers stay in place. Catches refactor-strips-warning regressions. |
 | `test_no_undefined_logger` | Files using `logger.X(...)` without `logger = logging.getLogger(__name__)` defined. Catches the latent NameError class on conditional code paths. |

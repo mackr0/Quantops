@@ -17,6 +17,41 @@ Rules going forward:
 
 ---
 
+## 2026-05-14 — sqlite3 connection-leak audit: 224 sites converted to safe patterns (93 direct + 131 factory-helper callers); 3 real leaks fixed. Severity: high (silent handle accumulation that would crash the scheduler after weeks of uptime).
+
+**Context.** Companion to the same-day silent-swallow + json-decode audits. The ratchet test `test_every_db_connection_is_closed` had ~93 grandfathered direct `sqlite3.connect()` sites without try/finally close. Mack chose the proper-fix path. Sister agent converted the 93 direct sites; during review, the parent (this work) discovered the agent's `_open_journal_conn` factory-extraction shortcut HID a real leak in `reconcile_journal_to_broker.reconcile_with_ctx` (290 lines between connect and close, no try/finally). Fixed that one site and added a class-level test (`test_factory_helper_callers_have_try_finally`) that scans for the same anti-pattern across all factory-helper callers — found **131 more sites** silently leaking handles via `open_profile_db`, `_get_conn`, `_open_journal_conn`, and `_open_conn`. Audited and fixed all of them.
+
+### Direct `sqlite3.connect()` audit — 93 sites across 42 files
+
+- 90 sites converted to `with closing(sqlite3.connect(...))` (Pattern A)
+- 2 sites converted to explicit try/finally (Pattern B — long bodies in `ai_weekly_summary._per_profile`, `multi_scheduler.update_fills`)
+- 1 file added to `ALLOWLIST_FILES`: `cancel_phantom_option_stock_stops.py` (one-shot remediation script not imported by scheduler).
+- Added `_is_factory_return_pattern` AST detector that exempts `models._get_conn`, `journal._get_conn`, `models.open_profile_db`-style factories from the direct-leak scanner (they return the conn for the caller to manage).
+
+### Factory-helper caller audit — 131 sites across 23 files
+
+- 116 sites converted to `with closing(_get_conn(...))` (Pattern A) or equivalent
+- 15 sites converted to explicit try/finally (Pattern B)
+- 2 ACTUAL LEAKS surfaced and fixed (functions with no `conn.close()` at all):
+  - `options_lifecycle.sweep_expired_options` — 94-line loop body, conn opened then never closed. In production this leaked a journal-DB handle every cycle the function ran (every ~hour during market hours).
+  - `options_roll_manager.evaluate_and_close` — same shape. Same leak rate.
+- 1 leak from review of sister agent's work: `reconcile_journal_to_broker.reconcile_with_ctx` — 290 lines between connect and close with no try/finally; ANY exception in that body would leak. Wrapped in try/finally.
+
+### New class-level test
+
+`test_factory_helper_callers_have_try_finally` — AST-walks every assignment of the form `conn = <factory_name>(...)` where factory_name is in `{"_get_conn", "_open_journal_conn", "open_profile_db", "_open_conn"}`. Each must have a try/finally close in scope OR be inside a `with closing(...)` context. Strict mode (no baseline). Ratchets the entire factory-caller class so future regressions are caught at PR time, not after a 2-week scheduler crash.
+
+### Why it matters in production
+
+QuantOpsAI's scheduler runs continuously for weeks at a time. Each leaked SQLite handle consumes one OS file descriptor (default limit 1024). The two `options_*` leaks were opening one handle per cycle; over a 2-week run that's ~336 leaks (hourly cycle × 14 days). At current rate the scheduler would have hit `OSError: too many open files` within ~30-45 days of the next options-trading volume uptick. The audit closes the leak and the new test prevents reintroduction.
+
+### Test-categorization updates
+
+- Test count: **3029** (was 3028 — +1 for the new factory-caller class-level test)
+- 59 production files modified (224 sites converted + 3 functions hardened with try/finally + new AST detector)
+
+---
+
 ## 2026-05-14 — Silent-swallow + json-decode audits: 263 sites classified, 4 production bugs hardened. Severity: medium (latent crash-on-corrupt-data closed; visibility added to silent risk-gate).
 
 **Context.** Continuation of the 2026-05-13 structural-test wave. Two ratchet tests (`test_no_silent_except_pass`, `test_json_decode_paths_safe`) had grandfathered baselines of ~270 + ~3 sites. Mack chose the proper-fix path over deferred grandfathering: classify every site (Cat 1 intentional / Cat 2 latent risk / Cat 3 hidden bug) and annotate or fix accordingly.

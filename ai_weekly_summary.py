@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -105,6 +106,7 @@ def _gather_profile_stats(
     }
 
     # --- per-profile DB queries ---
+    conn = None
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
@@ -237,31 +239,31 @@ def _gather_profile_stats(
                 (start, end),
             ).fetchall():
                 stats["crisis_transitions"].append(dict(r))
-
-        conn.close()
     except Exception as exc:
         logger.warning("weekly summary: per-profile query failed for %s: %s",
                        db_path, exc)
+    finally:
+        if conn is not None:
+            conn.close()
 
     # --- tuning_history from MASTER DB ---
     try:
-        conn = sqlite3.connect(master_db_path)
-        conn.row_factory = sqlite3.Row
-        if _safe_table_exists(conn, "tuning_history"):
-            for r in conn.execute(
-                """
-                SELECT timestamp, adjustment_type, parameter_name,
-                       old_value, new_value, reason, win_rate_at_change,
-                       outcome_after, win_rate_after
-                FROM tuning_history
-                WHERE profile_id = ?
-                  AND timestamp BETWEEN ? AND ?
-                ORDER BY timestamp DESC
-                """,
-                (pid, start, end),
-            ).fetchall():
-                stats["tuning_changes"].append(dict(r))
-        conn.close()
+        with closing(sqlite3.connect(master_db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            if _safe_table_exists(conn, "tuning_history"):
+                for r in conn.execute(
+                    """
+                    SELECT timestamp, adjustment_type, parameter_name,
+                           old_value, new_value, reason, win_rate_at_change,
+                           outcome_after, win_rate_after
+                    FROM tuning_history
+                    WHERE profile_id = ?
+                      AND timestamp BETWEEN ? AND ?
+                    ORDER BY timestamp DESC
+                    """,
+                    (pid, start, end),
+                ).fetchall():
+                    stats["tuning_changes"].append(dict(r))
     except Exception as exc:
         logger.warning("weekly summary: tuning_history query failed: %s", exc)
 
@@ -283,13 +285,12 @@ def build_weekly_summary(
 
     profiles: List[Dict[str, Any]] = []
     try:
-        conn = sqlite3.connect(master_db_path)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT id, name, market_type, user_id, enabled "
-            "FROM trading_profiles WHERE enabled=1 ORDER BY id"
-        ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(master_db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT id, name, market_type, user_id, enabled "
+                "FROM trading_profiles WHERE enabled=1 ORDER BY id"
+            ).fetchall()
         profiles = [dict(r) for r in rows]
     except Exception as exc:
         logger.warning("weekly summary: trading_profiles query failed: %s", exc)
@@ -588,11 +589,10 @@ def _render_autonomy_summary(summary: Dict[str, Any]) -> str:
     # user_id from master DB on the first profile.
     if user_id is None:
         try:
-            conn = sqlite3.connect("quantopsai.db")
-            row = conn.execute(
-                "SELECT user_id FROM trading_profiles WHERE enabled=1 LIMIT 1"
-            ).fetchone()
-            conn.close()
+            with closing(sqlite3.connect("quantopsai.db")) as conn:
+                row = conn.execute(
+                    "SELECT user_id FROM trading_profiles WHERE enabled=1 LIMIT 1"
+                ).fetchone()
             if row:
                 user_id = row[0]
         # SILENT_OK: user_id derivation fallback; weekly summary continues with default user_id
@@ -620,13 +620,12 @@ def _render_autonomy_summary(summary: Dict[str, Any]) -> str:
     active_symbol_overrides = 0
     profiles_with_capital_scale = 0
     try:
-        conn = sqlite3.connect("quantopsai.db")
-        prof_rows = conn.execute(
-            "SELECT id, signal_weights, regime_overrides, tod_overrides, "
-            " symbol_overrides, capital_scale "
-            "FROM trading_profiles WHERE enabled=1"
-        ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect("quantopsai.db")) as conn:
+            prof_rows = conn.execute(
+                "SELECT id, signal_weights, regime_overrides, tod_overrides, "
+                " symbol_overrides, capital_scale "
+                "FROM trading_profiles WHERE enabled=1"
+            ).fetchall()
         from signal_weights import get_all_weights
         from regime_overrides import get_all_overrides as get_regime
         from tod_overrides import get_all_overrides as get_tod
@@ -675,20 +674,18 @@ def _render_autonomy_summary(summary: Dict[str, Any]) -> str:
             db_path = f"quantopsai_profile_{pid}.db"
             if not os.path.exists(db_path):
                 continue
-            conn = sqlite3.connect(db_path)
-            tbl = conn.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name='learned_patterns'"
-            ).fetchone()
-            if not tbl:
-                conn.close()
-                continue
-            rows = conn.execute(
-                "SELECT pattern_text FROM learned_patterns "
-                "WHERE datetime(created_at) >= datetime('now', '-7 days') "
-                "ORDER BY created_at DESC LIMIT 3"
-            ).fetchall()
-            conn.close()
+            with closing(sqlite3.connect(db_path)) as conn:
+                tbl = conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='table' AND name='learned_patterns'"
+                ).fetchone()
+                if not tbl:
+                    continue
+                rows = conn.execute(
+                    "SELECT pattern_text FROM learned_patterns "
+                    "WHERE datetime(created_at) >= datetime('now', '-7 days') "
+                    "ORDER BY created_at DESC LIMIT 3"
+                ).fetchall()
             pm_extracted += len(rows)
             for r in rows[:1]:  # one example per profile, max
                 pm_pattern_examples.append(

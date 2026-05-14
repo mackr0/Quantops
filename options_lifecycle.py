@@ -24,6 +24,7 @@ are flagged for manual review via a `reason` string on the trade row.
 from __future__ import annotations
 
 import logging
+from contextlib import closing
 from datetime import date as _date
 from typing import Any, Dict, List, Optional
 
@@ -44,19 +45,19 @@ def find_expired_open_options(db_path: str,
     """
     today = today or _date.today()
     from journal import _get_conn
-    conn = _get_conn(db_path)
-    cur = conn.execute(
-        """SELECT id, symbol, side, qty, occ_symbol, option_strategy,
-                  expiry, strike, price, decision_price, ai_confidence
-           FROM trades
-           WHERE signal_type='OPTIONS'
-             AND status='open'
-             AND expiry IS NOT NULL
-             AND expiry < ?""",
-        (today.isoformat(),),
-    )
-    cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    with closing(_get_conn(db_path)) as conn:
+        cur = conn.execute(
+            """SELECT id, symbol, side, qty, occ_symbol, option_strategy,
+                      expiry, strike, price, decision_price, ai_confidence
+               FROM trades
+               WHERE signal_type='OPTIONS'
+                 AND status='open'
+                 AND expiry IS NOT NULL
+                 AND expiry < ?""",
+            (today.isoformat(),),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
 def _option_position_at_broker(api, occ_symbol: str) -> Optional[Dict[str, Any]]:
@@ -369,96 +370,98 @@ def sweep_expired_options(api, db_path: str,
 
     from journal import _get_conn, log_trade
     conn = _get_conn(db_path)
-
-    for row in rows:
-        try:
-            broker_pos = _option_position_at_broker(api, row.get("occ_symbol"))
-            # Fetch underlying close at the option's expiry date
+    try:
+        for row in rows:
             try:
-                expiry_d = _date.fromisoformat(row["expiry"])
-            except Exception:
-                expiry_d = today
-            underlying_close = _underlying_close_at_expiry(
-                row.get("symbol", ""), expiry_d,
-            )
-
-            outcome = _compute_pnl_for_expired(
-                row, broker_pos, underlying_close=underlying_close,
-            )
-
-            # Status mapping per outcome
-            outcome_status_map = {
-                "expired_worthless": "closed",
-                "assigned": "closed",
-                "exercised": "closed",
-                "needs_review": "needs_review",
-                "unknown": "needs_review",
-            }
-            new_status = outcome_status_map.get(
-                outcome["outcome"], "needs_review")
-
-            conn.execute(
-                "UPDATE trades SET status=?, pnl=?, reason=? WHERE id=?",
-                (new_status, outcome["pnl_dollars"], outcome["reason"],
-                 row["id"]),
-            )
-            conn.commit()
-
-            # Log the synthetic equity leg when assignment / exercise
-            # happened. The leg sits in the journal as a stock trade so
-            # FIFO P&L matching works for the resulting position.
-            synthetic = outcome.get("synthetic_equity_leg")
-            if synthetic:
+                broker_pos = _option_position_at_broker(api, row.get("occ_symbol"))
+                # Fetch underlying close at the option's expiry date
                 try:
-                    log_trade(
-                        symbol=synthetic["symbol"],
-                        side=synthetic["side"],
-                        qty=synthetic["qty"],
-                        price=synthetic["price"],
-                        signal_type="OPTION_EXERCISE",
-                        strategy=row.get("option_strategy", ""),
-                        reason=synthetic["reason"],
-                        # Inherit the option entry's AI metadata so
-                        # the synthetic equity leg carries the
-                        # original conviction. row["ai_*"] is the
-                        # closing option trade row's data, which
-                        # itself carries the open option's metadata.
-                        ai_reasoning=row.get("ai_reasoning"),
-                        ai_confidence=row.get("ai_confidence"),
-                        decision_price=synthetic["price"],
-                        fill_price=synthetic["price"],
-                        db_path=db_path,
-                    )
-                    summary["equity_legs_logged"] += 1
-                except Exception as exc:
-                    logger.warning(
-                        "Synthetic equity leg log failed for option "
-                        "trade %s: %s", row["id"], exc,
-                    )
+                    expiry_d = _date.fromisoformat(row["expiry"])
+                except Exception:
+                    expiry_d = today
+                underlying_close = _underlying_close_at_expiry(
+                    row.get("symbol", ""), expiry_d,
+                )
 
-            # Bookkeeping
-            if outcome["outcome"] == "expired_worthless":
-                summary["closed_worthless"] += 1
-            elif outcome["outcome"] == "assigned":
-                summary["assigned"] += 1
-            elif outcome["outcome"] == "exercised":
-                summary["exercised"] += 1
-            elif outcome["outcome"] == "needs_review":
-                summary["needs_review"] += 1
+                outcome = _compute_pnl_for_expired(
+                    row, broker_pos, underlying_close=underlying_close,
+                )
 
-            summary["details"].append({
-                "id": row["id"], "occ": row.get("occ_symbol"),
-                **outcome,
-            })
-            logger.info(
-                "Lifecycle: trade %s (%s) → %s (%s)",
-                row["id"], row.get("occ_symbol"),
-                outcome["outcome"], outcome["reason"],
-            )
-        except Exception as exc:
-            summary["errors"] += 1
-            logger.exception(
-                "Lifecycle sweep failed for trade %s: %s", row.get("id"), exc,
-            )
+                # Status mapping per outcome
+                outcome_status_map = {
+                    "expired_worthless": "closed",
+                    "assigned": "closed",
+                    "exercised": "closed",
+                    "needs_review": "needs_review",
+                    "unknown": "needs_review",
+                }
+                new_status = outcome_status_map.get(
+                    outcome["outcome"], "needs_review")
+
+                conn.execute(
+                    "UPDATE trades SET status=?, pnl=?, reason=? WHERE id=?",
+                    (new_status, outcome["pnl_dollars"], outcome["reason"],
+                     row["id"]),
+                )
+                conn.commit()
+
+                # Log the synthetic equity leg when assignment / exercise
+                # happened. The leg sits in the journal as a stock trade so
+                # FIFO P&L matching works for the resulting position.
+                synthetic = outcome.get("synthetic_equity_leg")
+                if synthetic:
+                    try:
+                        log_trade(
+                            symbol=synthetic["symbol"],
+                            side=synthetic["side"],
+                            qty=synthetic["qty"],
+                            price=synthetic["price"],
+                            signal_type="OPTION_EXERCISE",
+                            strategy=row.get("option_strategy", ""),
+                            reason=synthetic["reason"],
+                            # Inherit the option entry's AI metadata so
+                            # the synthetic equity leg carries the
+                            # original conviction. row["ai_*"] is the
+                            # closing option trade row's data, which
+                            # itself carries the open option's metadata.
+                            ai_reasoning=row.get("ai_reasoning"),
+                            ai_confidence=row.get("ai_confidence"),
+                            decision_price=synthetic["price"],
+                            fill_price=synthetic["price"],
+                            db_path=db_path,
+                        )
+                        summary["equity_legs_logged"] += 1
+                    except Exception as exc:
+                        logger.warning(
+                            "Synthetic equity leg log failed for option "
+                            "trade %s: %s", row["id"], exc,
+                        )
+
+                # Bookkeeping
+                if outcome["outcome"] == "expired_worthless":
+                    summary["closed_worthless"] += 1
+                elif outcome["outcome"] == "assigned":
+                    summary["assigned"] += 1
+                elif outcome["outcome"] == "exercised":
+                    summary["exercised"] += 1
+                elif outcome["outcome"] == "needs_review":
+                    summary["needs_review"] += 1
+
+                summary["details"].append({
+                    "id": row["id"], "occ": row.get("occ_symbol"),
+                    **outcome,
+                })
+                logger.info(
+                    "Lifecycle: trade %s (%s) → %s (%s)",
+                    row["id"], row.get("occ_symbol"),
+                    outcome["outcome"], outcome["reason"],
+                )
+            except Exception as exc:
+                summary["errors"] += 1
+                logger.exception(
+                    "Lifecycle sweep failed for trade %s: %s", row.get("id"), exc,
+                )
+    finally:
+        conn.close()
 
     return summary

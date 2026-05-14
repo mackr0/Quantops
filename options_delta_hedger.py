@@ -28,6 +28,7 @@ Conservative defaults:
 from __future__ import annotations
 
 import logging
+from contextlib import closing
 from datetime import date as _date
 from typing import Any, Callable, Dict, List, Optional
 
@@ -87,16 +88,15 @@ def compute_hedge_target(
     """
     today = today or _date.today()
     from journal import _get_conn
-    conn = _get_conn(db_path)
-    cur = conn.execute(
-        """SELECT id, symbol, side, qty, occ_symbol, option_strategy,
-                  expiry, strike
-           FROM trades
-           WHERE signal_type='OPTIONS' AND status='open'""",
-    )
-    cols = [d[0] for d in cur.description]
-    rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-    conn.close()
+    with closing(_get_conn(db_path)) as conn:
+        cur = conn.execute(
+            """SELECT id, symbol, side, qty, occ_symbol, option_strategy,
+                      expiry, strike
+               FROM trades
+               WHERE signal_type='OPTIONS' AND status='open'""",
+        )
+        cols = [d[0] for d in cur.description]
+        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
 
     # Build hedgeable-option position dicts (compatible with the
     # Greeks aggregator's input shape)

@@ -24,6 +24,7 @@ from __future__ import annotations
 import glob
 import logging
 import os
+from contextlib import closing
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -44,13 +45,12 @@ def _user_profile_dbs(user_id: int) -> List[str]:
     the master DB to enumerate."""
     try:
         from models import _get_conn
-        conn = _get_conn()
-        rows = conn.execute(
-            "SELECT id FROM trading_profiles "
-            "WHERE user_id = ? AND COALESCE(enabled, 1) = 1",
-            (user_id,),
-        ).fetchall()
-        conn.close()
+        with closing(_get_conn()) as conn:
+            rows = conn.execute(
+                "SELECT id FROM trading_profiles "
+                "WHERE user_id = ? AND COALESCE(enabled, 1) = 1",
+                (user_id,),
+            ).fetchall()
         out = []
         for r in rows:
             pid = r["id"] if hasattr(r, "keys") else r[0]
@@ -87,12 +87,11 @@ def daily_ceiling_usd(user_id: int) -> float:
     # User override takes precedence — they've explicitly chosen a cap.
     try:
         from models import _get_conn
-        conn = _get_conn()
-        row = conn.execute(
-            "SELECT daily_cost_ceiling_usd FROM users WHERE id = ?",
-            (user_id,),
-        ).fetchone()
-        conn.close()
+        with closing(_get_conn()) as conn:
+            row = conn.execute(
+                "SELECT daily_cost_ceiling_usd FROM users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
         if row and row[0] is not None and float(row[0]) > 0:
             return float(row[0])
     # SILENT_OK: user override read; falls through to auto-derived ceiling
@@ -107,12 +106,11 @@ def ceiling_source(user_id: int) -> str:
     auto-computed default. Useful for the UI to show provenance."""
     try:
         from models import _get_conn
-        conn = _get_conn()
-        row = conn.execute(
-            "SELECT daily_cost_ceiling_usd FROM users WHERE id = ?",
-            (user_id,),
-        ).fetchone()
-        conn.close()
+        with closing(_get_conn()) as conn:
+            row = conn.execute(
+                "SELECT daily_cost_ceiling_usd FROM users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
         if row and row[0] is not None and float(row[0]) > 0:
             return "user"
     # SILENT_OK: user override read; falls through to auto attribution

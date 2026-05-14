@@ -48,6 +48,7 @@ import logging
 import os
 import sqlite3
 import threading
+from contextlib import closing
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -141,16 +142,15 @@ def _init_schema(db_path: str = MASTER_DB) -> None:
         if db_path in _schema_initialized:
             return
         try:
-            conn = sqlite3.connect(db_path)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS sector_cache (
-                    symbol     TEXT PRIMARY KEY,
-                    sector     TEXT NOT NULL,
-                    fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
-                )
-            """)
-            conn.commit()
-            conn.close()
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS sector_cache (
+                        symbol     TEXT PRIMARY KEY,
+                        sector     TEXT NOT NULL,
+                        fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    )
+                """)
+                conn.commit()
             _schema_initialized.add(db_path)
         except Exception as exc:
             logger.warning("Failed to init sector_cache: %s", exc)
@@ -167,12 +167,11 @@ def _read_cache(symbol: str, db_path: str = MASTER_DB) -> Optional[str]:
         return None
     _init_schema(db_path)
     try:
-        conn = sqlite3.connect(db_path)
-        row = conn.execute(
-            "SELECT sector, fetched_at FROM sector_cache WHERE symbol = ?",
-            (symbol.upper(),),
-        ).fetchone()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            row = conn.execute(
+                "SELECT sector, fetched_at FROM sector_cache WHERE symbol = ?",
+                (symbol.upper(),),
+            ).fetchone()
     except Exception:
         return None
     if not row:
@@ -197,14 +196,13 @@ def _write_cache(symbol: str, sector: str, db_path: str = MASTER_DB) -> None:
         return
     _init_schema(db_path)
     try:
-        conn = sqlite3.connect(db_path)
-        conn.execute(
-            "INSERT OR REPLACE INTO sector_cache "
-            "(symbol, sector, fetched_at) VALUES (?, ?, datetime('now'))",
-            (symbol.upper(), sector),
-        )
-        conn.commit()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO sector_cache "
+                "(symbol, sector, fetched_at) VALUES (?, ?, datetime('now'))",
+                (symbol.upper(), sector),
+            )
+            conn.commit()
     except Exception as exc:
         logger.debug("Failed to write sector_cache for %s: %s", symbol, exc)
 

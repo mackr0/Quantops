@@ -1,5 +1,6 @@
 """Authentication blueprint — login, register, logout."""
 
+from contextlib import closing
 from datetime import datetime
 
 from flask import Blueprint, render_template, request, redirect, url_for, flash
@@ -30,13 +31,12 @@ def login():
                 flash("Your account has been deactivated.", "error")
                 return render_template("auth/login.html")
             # Update last login timestamp
-            conn = _get_conn()
-            conn.execute(
-                "UPDATE users SET last_login_at = ? WHERE id = ?",
-                (datetime.utcnow().isoformat(), user["id"]),
-            )
-            conn.commit()
-            conn.close()
+            with closing(_get_conn()) as conn:
+                conn.execute(
+                    "UPDATE users SET last_login_at = ? WHERE id = ?",
+                    (datetime.utcnow().isoformat(), user["id"]),
+                )
+                conn.commit()
 
             login_user(User(user), remember=True)
             next_page = request.args.get("next")

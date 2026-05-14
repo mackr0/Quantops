@@ -23,6 +23,7 @@ import signal
 import sys
 import os
 import json as _json
+from contextlib import closing
 from datetime import datetime, timedelta
 from typing import Dict, Tuple
 from zoneinfo import ZoneInfo
@@ -1004,6 +1005,7 @@ def _task_update_fills(ctx):
     db_path = ctx.db_path
     api = get_api(ctx)
 
+    conn = None
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
@@ -1023,7 +1025,6 @@ def _task_update_fills(ctx):
         ).fetchall()
 
         if not unfilled:
-            conn.close()
             return
 
         updated = 0
@@ -1148,7 +1149,6 @@ def _task_update_fills(ctx):
                 confirmed_closes += 1
 
         conn.commit()
-        conn.close()
 
         if updated > 0 or terminal_unfilled > 0 or orphan_rollbacks > 0:
             parts = []
@@ -1167,6 +1167,9 @@ def _task_update_fills(ctx):
             logging.info(f"[{seg_label}] update_fills: " + "; ".join(parts))
     except Exception:
         logging.exception(f"[{seg_label}] Failed to update fill prices")
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def _rollback_orphaned_multileg_partners(conn, api, expired_leg,
@@ -2425,9 +2428,8 @@ def _task_self_tune(ctx):
     if state.get("can_tune") and not real_changes:
         try:
             from self_tuning import _get_conn, _get_current_win_rate
-            _c = _get_conn(ctx.db_path)
-            wr, n_resolved = _get_current_win_rate(_c)
-            _c.close()
+            with closing(_get_conn(ctx.db_path)) as _c:
+                wr, n_resolved = _get_current_win_rate(_c)
             from models import log_tuning_change, _get_conn as _get_main_conn
             summary = f"Evaluated {state['resolved']} predictions, win rate {wr:.0f}% — no changes needed"
             row_id = log_tuning_change(
@@ -2437,13 +2439,12 @@ def _task_self_tune(ctx):
                 win_rate_at_change=wr,
                 predictions_resolved=n_resolved,
             )
-            mc = _get_main_conn()
-            mc.execute(
-                "UPDATE tuning_history SET outcome_after='n/a' WHERE id=?",
-                (row_id,),
-            )
-            mc.commit()
-            mc.close()
+            with closing(_get_main_conn()) as mc:
+                mc.execute(
+                    "UPDATE tuning_history SET outcome_after='n/a' WHERE id=?",
+                    (row_id,),
+                )
+                mc.commit()
         # SILENT_OK: tuning-history "no change" log is informational; tuner state already correct.
         except Exception:
             pass
@@ -2598,62 +2599,61 @@ def _persist_risk_snapshot(db_path, risk, scenarios, equity):
     """Write the snapshot to portfolio_risk_snapshots; keep last 90 days."""
     import json
     from journal import _get_conn
-    conn = _get_conn(db_path)
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS portfolio_risk_snapshots (
-              id INTEGER PRIMARY KEY,
-              created_at TEXT NOT NULL DEFAULT (datetime('now')),
-              equity REAL,
-              sigma REAL,
-              var_95_dollars REAL,
-              var_99_dollars REAL,
-              es_95_dollars REAL,
-              es_99_dollars REAL,
-              mc_var_95_dollars REAL,
-              factor_exposures_json TEXT,
-              grouped_decomposition_json TEXT,
-              scenarios_json TEXT,
-              n_symbols INTEGER
-        )"""
-    )
-    mc = risk.get("monte_carlo") or {}
-    conn.execute(
-        """INSERT INTO portfolio_risk_snapshots (
-              equity, sigma,
-              var_95_dollars, var_99_dollars,
-              es_95_dollars, es_99_dollars,
-              mc_var_95_dollars,
-              factor_exposures_json, grouped_decomposition_json,
-              scenarios_json, n_symbols
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-        (
-            equity, risk["sigma"],
-            risk["var_95_dollars"], risk["var_99_dollars"],
-            risk["es_95_dollars"], risk["es_99_dollars"],
-            mc.get("var_95_dollars"),
-            json.dumps(risk["factor_exposures"]),
-            json.dumps(risk["grouped_decomposition"]),
-            json.dumps([{
-                "scenario": s["scenario"],
-                "description": s["description"],
-                "severity": s["severity"],
-                "total_pnl_pct": s["total_pnl_pct"],
-                "total_pnl_dollars": s["total_pnl_dollars"],
-                "worst_day_pct": s["worst_day_pct"],
-                "worst_day_date": s["worst_day_date"],
-                "max_drawdown_pct": s["max_drawdown_pct"],
-                "approximation_quality": s["approximation_quality"],
-            } for s in scenarios]),
-            risk["n_symbols"],
-        ),
-    )
-    # Trim history (keep 90 days)
-    conn.execute(
-        "DELETE FROM portfolio_risk_snapshots "
-        "WHERE created_at < datetime('now', '-90 days')"
-    )
-    conn.commit()
-    conn.close()
+    with closing(_get_conn(db_path)) as conn:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS portfolio_risk_snapshots (
+                  id INTEGER PRIMARY KEY,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  equity REAL,
+                  sigma REAL,
+                  var_95_dollars REAL,
+                  var_99_dollars REAL,
+                  es_95_dollars REAL,
+                  es_99_dollars REAL,
+                  mc_var_95_dollars REAL,
+                  factor_exposures_json TEXT,
+                  grouped_decomposition_json TEXT,
+                  scenarios_json TEXT,
+                  n_symbols INTEGER
+            )"""
+        )
+        mc = risk.get("monte_carlo") or {}
+        conn.execute(
+            """INSERT INTO portfolio_risk_snapshots (
+                  equity, sigma,
+                  var_95_dollars, var_99_dollars,
+                  es_95_dollars, es_99_dollars,
+                  mc_var_95_dollars,
+                  factor_exposures_json, grouped_decomposition_json,
+                  scenarios_json, n_symbols
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                equity, risk["sigma"],
+                risk["var_95_dollars"], risk["var_99_dollars"],
+                risk["es_95_dollars"], risk["es_99_dollars"],
+                mc.get("var_95_dollars"),
+                json.dumps(risk["factor_exposures"]),
+                json.dumps(risk["grouped_decomposition"]),
+                json.dumps([{
+                    "scenario": s["scenario"],
+                    "description": s["description"],
+                    "severity": s["severity"],
+                    "total_pnl_pct": s["total_pnl_pct"],
+                    "total_pnl_dollars": s["total_pnl_dollars"],
+                    "worst_day_pct": s["worst_day_pct"],
+                    "worst_day_date": s["worst_day_date"],
+                    "max_drawdown_pct": s["max_drawdown_pct"],
+                    "approximation_quality": s["approximation_quality"],
+                } for s in scenarios]),
+                risk["n_symbols"],
+            ),
+        )
+        # Trim history (keep 90 days)
+        conn.execute(
+            "DELETE FROM portfolio_risk_snapshots "
+            "WHERE created_at < datetime('now', '-90 days')"
+        )
+        conn.commit()
 
 
 def _task_app_store_snapshot(ctx):
@@ -3348,11 +3348,10 @@ def _task_capital_rebalance(ctx):
         from capital_allocator import rebalance
         from models import _get_conn
         # Iterate all users who have opted in.
-        conn = _get_conn()
-        users = conn.execute(
-            "SELECT id, email FROM users WHERE auto_capital_allocation = 1"
-        ).fetchall()
-        conn.close()
+        with closing(_get_conn()) as conn:
+            users = conn.execute(
+                "SELECT id, email FROM users WHERE auto_capital_allocation = 1"
+            ).fetchall()
 
         if not users:
             logging.info(

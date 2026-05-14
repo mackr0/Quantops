@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import time
+from contextlib import closing
 from functools import wraps
 from typing import Any, Dict, Tuple
 
@@ -168,24 +169,23 @@ def _enriched_positions(ctx, profile_id):
     trade_meta = {}
     try:
         db_path = f"quantopsai_profile_{profile_id}.db"
-        conn = open_profile_db(db_path)
-        rows = conn.execute(
-            "SELECT * FROM trades "
-            # Entry rows for metadata: BUY/SHORT for stock entries,
-            # plus option SELL rows (multileg short legs use
-            # side='sell' for sell-to-open — same overloaded
-            # vocabulary as stock close-a-long). Without the
-            # option-side branch, multileg short legs have no
-            # matching entry row → meta={} → timestamp/ai_confidence
-            # render as '--' on the dashboard. Caught 2026-05-11.
-            # Exclude canceled rows so phantom limit orders that
-            # never filled at the broker don't poison the lookup.
-            "WHERE (side='buy' OR side='short' "
-            "       OR (side='sell' AND occ_symbol IS NOT NULL)) "
-            "AND COALESCE(status, 'open') != 'canceled' "
-            "ORDER BY timestamp DESC"
-        ).fetchall()
-        conn.close()
+        with closing(open_profile_db(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT * FROM trades "
+                # Entry rows for metadata: BUY/SHORT for stock entries,
+                # plus option SELL rows (multileg short legs use
+                # side='sell' for sell-to-open — same overloaded
+                # vocabulary as stock close-a-long). Without the
+                # option-side branch, multileg short legs have no
+                # matching entry row → meta={} → timestamp/ai_confidence
+                # render as '--' on the dashboard. Caught 2026-05-11.
+                # Exclude canceled rows so phantom limit orders that
+                # never filled at the broker don't poison the lookup.
+                "WHERE (side='buy' OR side='short' "
+                "       OR (side='sell' AND occ_symbol IS NOT NULL)) "
+                "AND COALESCE(status, 'open') != 'canceled' "
+                "ORDER BY timestamp DESC"
+            ).fetchall()
         for r in rows:
             # Key by OCC for option legs (each contract is its own
             # journal entry); by underlying symbol for stock. This
@@ -323,17 +323,16 @@ def _safe_pending_orders(ctx):
                 # open_profile_db ensures init_tracker_db + journal.init_db
                 # (which runs _migrate_columns), so all four protective-
                 # order columns are guaranteed to exist before the SELECT.
-                conn = open_profile_db(db_path)
-                ids: set = set()
-                for col in ("order_id", "protective_stop_order_id",
-                             "protective_tp_order_id",
-                             "protective_trailing_order_id"):
-                    rows = conn.execute(
-                        f"SELECT {col} FROM trades WHERE {col} IS NOT NULL"
-                    ).fetchall()
-                    ids.update(r[0] for r in rows if r[0])
-                conn.close()
-                owned_ids = ids
+                with closing(open_profile_db(db_path)) as conn:
+                    ids: set = set()
+                    for col in ("order_id", "protective_stop_order_id",
+                                 "protective_tp_order_id",
+                                 "protective_trailing_order_id"):
+                        rows = conn.execute(
+                            f"SELECT {col} FROM trades WHERE {col} IS NOT NULL"
+                        ).fetchall()
+                        ids.update(r[0] for r in rows if r[0])
+                    owned_ids = ids
             except Exception as exc:
                 logger.warning(
                     "_safe_pending_orders: could not load owned order IDs from %s: %s",
@@ -445,9 +444,8 @@ def _get_trade_history_for_profile(profile_id, limit=100, kind=None,
     sql += " ORDER BY timestamp DESC LIMIT ?"
     params.append(limit)
     try:
-        conn = open_profile_db(db_path)
-        rows = conn.execute(sql, tuple(params)).fetchall()
-        conn.close()
+        with closing(open_profile_db(db_path)) as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
         return [dict(r) for r in rows]
     except Exception as exc:
         logger.warning(
@@ -662,13 +660,12 @@ def dashboard():
     for prof in profiles:
         db = f"quantopsai_profile_{prof['id']}.db"
         try:
-            conn = open_profile_db(db)
-            fails = conn.execute(
-                "SELECT task_name, started_at FROM task_runs "
-                "WHERE status='failed' AND started_at >= datetime('now', '-1 hour') "
-                "ORDER BY started_at DESC LIMIT 1"
-            ).fetchall()
-            conn.close()
+            with closing(open_profile_db(db)) as conn:
+                fails = conn.execute(
+                    "SELECT task_name, started_at FROM task_runs "
+                    "WHERE status='failed' AND started_at >= datetime('now', '-1 hour') "
+                    "ORDER BY started_at DESC LIMIT 1"
+                ).fetchall()
             for f in fails:
                 scan_failures.append({
                     "profile_name": prof["name"],
@@ -722,13 +719,12 @@ def dashboard():
             next_scan_text = ""
             if active:
                 try:
-                    _c = open_profile_db(ctx.db_path)
-                    row = _c.execute(
-                        "SELECT started_at FROM task_runs "
-                        "WHERE task_name LIKE '%Scan%' AND status IN ('completed','failed') "
-                        "ORDER BY started_at DESC LIMIT 1"
-                    ).fetchone()
-                    _c.close()
+                    with closing(open_profile_db(ctx.db_path)) as _c:
+                        row = _c.execute(
+                            "SELECT started_at FROM task_runs "
+                            "WHERE task_name LIKE '%Scan%' AND status IN ('completed','failed') "
+                            "ORDER BY started_at DESC LIMIT 1"
+                        ).fetchone()
                     if row:
                         from datetime import datetime as _dt2
                         last_scan_dt = _dt2.strptime(row[0][:19], "%Y-%m-%d %H:%M:%S")
@@ -875,14 +871,13 @@ def update_autonomy():
             flash(f"Invalid cost ceiling value: {raw_ceiling!r}", "error")
             return redirect(url_for("views.settings") + "#autonomy")
 
-    conn = _get_conn()
-    conn.execute(
-        "UPDATE users SET auto_capital_allocation = ?, "
-        " daily_cost_ceiling_usd = ? WHERE id = ?",
-        (enabled, ceiling_value, current_user.effective_user_id),
-    )
-    conn.commit()
-    conn.close()
+    with closing(_get_conn()) as conn:
+        conn.execute(
+            "UPDATE users SET auto_capital_allocation = ?, "
+            " daily_cost_ceiling_usd = ? WHERE id = ?",
+            (enabled, ceiling_value, current_user.effective_user_id),
+        )
+        conn.commit()
     msgs = ["Auto capital allocation " + ("enabled" if enabled else "disabled") + "."]
     if ceiling_value is None:
         msgs.append("Cost ceiling: auto-computed (trailing-7d-avg × 1.5).")
@@ -1635,50 +1630,49 @@ def _calculate_risk_metrics(db_paths):
 
     for db_path in db_paths:
         try:
-            conn = open_profile_db(db_path)
-            # Phase 5e — exclude data_quality-tagged rows. Their
-            # `price` field is corrupted (option premium logged
-            # for stock-side trades); using them in per-trade %
-            # calcs (CVaR, drawdown tail, monthly returns)
-            # produces nonsense. Back-compat for legacy DBs
-            # without the column.
-            cols = {row[1] for row in conn.execute(
-                "PRAGMA table_info(trades)"
-            ).fetchall()}
-            dq_clause = (
-                " AND data_quality IS NULL"
-                if "data_quality" in cols else ""
-            )
-            rows = conn.execute(
-                f"SELECT timestamp, symbol, pnl, price, qty "
-                f"FROM trades WHERE pnl IS NOT NULL{dq_clause} "
-                f"ORDER BY timestamp ASC"
-            ).fetchall()
-            for r in rows:
-                all_trades.append({
-                    "timestamp": r["timestamp"] or "",
-                    "symbol": r["symbol"] or "",
-                    "pnl": r["pnl"] or 0,
-                    "price": r["price"] or 0,
-                    "qty": r["qty"] or 0,
-                })
+            with closing(open_profile_db(db_path)) as conn:
+                # Phase 5e — exclude data_quality-tagged rows. Their
+                # `price` field is corrupted (option premium logged
+                # for stock-side trades); using them in per-trade %
+                # calcs (CVaR, drawdown tail, monthly returns)
+                # produces nonsense. Back-compat for legacy DBs
+                # without the column.
+                cols = {row[1] for row in conn.execute(
+                    "PRAGMA table_info(trades)"
+                ).fetchall()}
+                dq_clause = (
+                    " AND data_quality IS NULL"
+                    if "data_quality" in cols else ""
+                )
+                rows = conn.execute(
+                    f"SELECT timestamp, symbol, pnl, price, qty "
+                    f"FROM trades WHERE pnl IS NOT NULL{dq_clause} "
+                    f"ORDER BY timestamp ASC"
+                ).fetchall()
+                for r in rows:
+                    all_trades.append({
+                        "timestamp": r["timestamp"] or "",
+                        "symbol": r["symbol"] or "",
+                        "pnl": r["pnl"] or 0,
+                        "price": r["price"] or 0,
+                        "qty": r["qty"] or 0,
+                    })
 
-            # Daily snapshots for drawdown — pick latest row per date
-            # so historical days with multiple snapshot writes (pre-2026-04-25
-            # marker fix) don't inflate drawdown by treating intra-day
-            # variations as separate days.
-            snap_rows = conn.execute(
-                "SELECT date, equity FROM daily_snapshots "
-                "WHERE equity IS NOT NULL "
-                "AND rowid IN (SELECT MAX(rowid) FROM daily_snapshots GROUP BY date) "
-                "ORDER BY date ASC"
-            ).fetchall()
-            for r in snap_rows:
-                all_snapshots.append({
-                    "date": r["date"],
-                    "equity": r["equity"],
-                })
-            conn.close()
+                # Daily snapshots for drawdown — pick latest row per date
+                # so historical days with multiple snapshot writes (pre-2026-04-25
+                # marker fix) don't inflate drawdown by treating intra-day
+                # variations as separate days.
+                snap_rows = conn.execute(
+                    "SELECT date, equity FROM daily_snapshots "
+                    "WHERE equity IS NOT NULL "
+                    "AND rowid IN (SELECT MAX(rowid) FROM daily_snapshots GROUP BY date) "
+                    "ORDER BY date ASC"
+                ).fetchall()
+                for r in snap_rows:
+                    all_snapshots.append({
+                        "date": r["date"],
+                        "equity": r["equity"],
+                    })
         except Exception as exc:
             logger.warning(
                 "_calculate_risk_metrics: per-DB rollup failed for %s: %s",
@@ -1979,12 +1973,11 @@ def ai_performance_legacy():
         # open_profile_db ensures schema + busy_timeout; the only
         # remaining failure mode would be a real bug, which we want
         # to see.
-        conn = open_profile_db(db_path)
-        rows = conn.execute(
-            "SELECT predicted_signal, actual_outcome, actual_return_pct, confidence "
-            "FROM ai_predictions WHERE status = 'resolved'"
-        ).fetchall()
-        conn.close()
+        with closing(open_profile_db(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT predicted_signal, actual_outcome, actual_return_pct, confidence "
+                "FROM ai_predictions WHERE status = 'resolved'"
+            ).fetchall()
         for r in rows:
             outcome = r["actual_outcome"]
             ret = r["actual_return_pct"]
@@ -2111,14 +2104,13 @@ def ai_performance_legacy():
         total_slip_sum = 0
         total_slip_count = 0
         for db_path in db_paths:
-            c = open_profile_db(db_path)
-            r = c.execute(
-                "SELECT COUNT(*) AS cnt, SUM(slippage_pct) AS s "
-                "FROM trades WHERE fill_price IS NOT NULL "
-                "AND decision_price IS NOT NULL "
-                "AND decision_price > 0 AND occ_symbol IS NULL"
-            ).fetchone()
-            c.close()
+            with closing(open_profile_db(db_path)) as c:
+                r = c.execute(
+                    "SELECT COUNT(*) AS cnt, SUM(slippage_pct) AS s "
+                    "FROM trades WHERE fill_price IS NOT NULL "
+                    "AND decision_price IS NOT NULL "
+                    "AND decision_price > 0 AND occ_symbol IS NULL"
+                ).fetchone()
             if r and r["cnt"]:
                 total_slip_count += r["cnt"]
                 total_slip_sum += r["s"] or 0
@@ -2221,32 +2213,31 @@ def performance_dashboard():
             trades = []
             latest_eq = p.get("initial_capital") or 0
             try:
-                conn = open_profile_db(db_path)
-                # Phase 5e — exclude data_quality-tagged rows from
-                # per-profile scaling analytics (corrupt `price`
-                # field would poison participation-rate calcs).
-                cols = {row[1] for row in conn.execute(
-                    "PRAGMA table_info(trades)"
-                ).fetchall()}
-                dq_clause = (
-                    " AND data_quality IS NULL"
-                    if "data_quality" in cols else ""
-                )
-                trade_rows = conn.execute(
-                    f"SELECT timestamp, symbol, side, qty, price, pnl, "
-                    f"decision_price, fill_price, slippage_pct "
-                    f"FROM trades WHERE pnl IS NOT NULL{dq_clause} "
-                    f"ORDER BY timestamp ASC"
-                ).fetchall()
-                trades = [dict(r) for r in trade_rows]
-                snap = conn.execute(
-                    "SELECT equity FROM daily_snapshots "
-                    "WHERE equity IS NOT NULL "
-                    "ORDER BY date DESC, rowid DESC LIMIT 1"
-                ).fetchone()
-                if snap and snap["equity"] is not None:
-                    latest_eq = float(snap["equity"])
-                conn.close()
+                with closing(open_profile_db(db_path)) as conn:
+                    # Phase 5e — exclude data_quality-tagged rows from
+                    # per-profile scaling analytics (corrupt `price`
+                    # field would poison participation-rate calcs).
+                    cols = {row[1] for row in conn.execute(
+                        "PRAGMA table_info(trades)"
+                    ).fetchall()}
+                    dq_clause = (
+                        " AND data_quality IS NULL"
+                        if "data_quality" in cols else ""
+                    )
+                    trade_rows = conn.execute(
+                        f"SELECT timestamp, symbol, side, qty, price, pnl, "
+                        f"decision_price, fill_price, slippage_pct "
+                        f"FROM trades WHERE pnl IS NOT NULL{dq_clause} "
+                        f"ORDER BY timestamp ASC"
+                    ).fetchall()
+                    trades = [dict(r) for r in trade_rows]
+                    snap = conn.execute(
+                        "SELECT equity FROM daily_snapshots "
+                        "WHERE equity IS NOT NULL "
+                        "ORDER BY date DESC, rowid DESC LIMIT 1"
+                    ).fetchone()
+                    if snap and snap["equity"] is not None:
+                        latest_eq = float(snap["equity"])
             except Exception as exc:
                 logger.warning(
                     "performance: latest_equity snapshot failed for profile %s: %s",
@@ -2430,13 +2421,12 @@ def performance_dashboard():
             # `db_path` (set iteration → non-deterministic) so the
             # aggregate metrics reflected one random profile's data.
             try:
-                conn = open_profile_db(db_path)
-                rows = conn.execute(
-                    "SELECT predicted_signal, actual_outcome, actual_return_pct, "
-                    "confidence, prediction_type "
-                    "FROM ai_predictions WHERE status = 'resolved'"
-                ).fetchall()
-                conn.close()
+                with closing(open_profile_db(db_path)) as conn:
+                    rows = conn.execute(
+                        "SELECT predicted_signal, actual_outcome, actual_return_pct, "
+                        "confidence, prediction_type "
+                        "FROM ai_predictions WHERE status = 'resolved'"
+                    ).fetchall()
                 for r in rows:
                     outcome = r["actual_outcome"]
                     ret = r["actual_return_pct"]
@@ -2505,14 +2495,13 @@ def performance_dashboard():
     trade_returns = []
     for db_path in db_paths:
         try:
-            conn = open_profile_db(db_path)
-            rows = conn.execute(
-                "SELECT actual_return_pct FROM ai_predictions "
-                "WHERE status='resolved' AND actual_return_pct IS NOT NULL "
-                "AND predicted_signal IS NOT NULL "
-                "AND UPPER(predicted_signal) != 'HOLD'"
-            ).fetchall()
-            conn.close()
+            with closing(open_profile_db(db_path)) as conn:
+                rows = conn.execute(
+                    "SELECT actual_return_pct FROM ai_predictions "
+                    "WHERE status='resolved' AND actual_return_pct IS NOT NULL "
+                    "AND predicted_signal IS NOT NULL "
+                    "AND UPPER(predicted_signal) != 'HOLD'"
+                ).fetchall()
             trade_returns.extend(r[0] for r in rows if r[0] is not None)
         except Exception as _exc:
             logger.warning(
@@ -2761,14 +2750,13 @@ def performance_dashboard():
         if not os.path.exists(db):
             continue
         # Distinct strategy types this profile has recorded predictions for
-        c = open_profile_db(db)
-        rows = c.execute(
-            "SELECT DISTINCT strategy_type FROM ai_predictions "
-            "WHERE strategy_type IS NOT NULL AND strategy_type != '' "
-            "AND status = 'resolved'"
-        ).fetchall()
+        with closing(open_profile_db(db)) as c:
+            rows = c.execute(
+                "SELECT DISTINCT strategy_type FROM ai_predictions "
+                "WHERE strategy_type IS NOT NULL AND strategy_type != '' "
+                "AND status = 'resolved'"
+            ).fetchall()
         strat_types = [r[0] for r in rows]
-        c.close()
 
         entries = []
         for stype in strat_types:
@@ -3213,13 +3201,12 @@ def ai_dashboard():
             # every profile, not just one. See views.api_performance
             # for the matching fix and the 2026-05-09 root-cause note.
             try:
-                conn = open_profile_db(db_path)
-                rows = conn.execute(
-                    "SELECT predicted_signal, actual_outcome, actual_return_pct, "
-                    "confidence, prediction_type "
-                    "FROM ai_predictions WHERE status = 'resolved'"
-                ).fetchall()
-                conn.close()
+                with closing(open_profile_db(db_path)) as conn:
+                    rows = conn.execute(
+                        "SELECT predicted_signal, actual_outcome, actual_return_pct, "
+                        "confidence, prediction_type "
+                        "FROM ai_predictions WHERE status = 'resolved'"
+                    ).fetchall()
                 for r in rows:
                     outcome = r["actual_outcome"]
                     ret = r["actual_return_pct"]
@@ -3284,14 +3271,13 @@ def ai_dashboard():
     trade_returns = []
     for db_path in db_paths:
         try:
-            conn = open_profile_db(db_path)
-            rows = conn.execute(
-                "SELECT actual_return_pct FROM ai_predictions "
-                "WHERE status='resolved' AND actual_return_pct IS NOT NULL "
-                "AND predicted_signal IS NOT NULL "
-                "AND UPPER(predicted_signal) != 'HOLD'"
-            ).fetchall()
-            conn.close()
+            with closing(open_profile_db(db_path)) as conn:
+                rows = conn.execute(
+                    "SELECT actual_return_pct FROM ai_predictions "
+                    "WHERE status='resolved' AND actual_return_pct IS NOT NULL "
+                    "AND predicted_signal IS NOT NULL "
+                    "AND UPPER(predicted_signal) != 'HOLD'"
+                ).fetchall()
             trade_returns.extend(r[0] for r in rows if r[0] is not None)
         except Exception as _exc:
             logger.warning(
@@ -3616,14 +3602,13 @@ def ai_dashboard():
         db = f"quantopsai_profile_{p['id']}.db"
         if not os.path.exists(db):
             continue
-        c = open_profile_db(db)
-        rows = c.execute(
-            "SELECT DISTINCT strategy_type FROM ai_predictions "
-            "WHERE strategy_type IS NOT NULL AND strategy_type != '' "
-            "AND status = 'resolved'"
-        ).fetchall()
+        with closing(open_profile_db(db)) as c:
+            rows = c.execute(
+                "SELECT DISTINCT strategy_type FROM ai_predictions "
+                "WHERE strategy_type IS NOT NULL AND strategy_type != '' "
+                "AND status = 'resolved'"
+            ).fetchall()
         strat_types = [r[0] for r in rows]
-        c.close()
         entries = []
         for stype in strat_types:
             rolling = compute_rolling_metrics(db, stype, window_days=30)
@@ -3801,37 +3786,35 @@ def api_backtest_vs_reality(profile_id):
     # --- Actual trade results (last 30 days) ---
     thirty_days_ago = (datetime.utcnow() - timedelta(days=30)).isoformat()
     try:
-        conn = open_profile_db(db_path)
-        # Phase 5e — exclude data_quality-tagged rows
-        from journal import data_quality_clause
-        _dq = data_quality_clause(conn)
+        with closing(open_profile_db(db_path)) as conn:
+            # Phase 5e — exclude data_quality-tagged rows
+            from journal import data_quality_clause
+            _dq = data_quality_clause(conn)
 
-        actual_trades = conn.execute(
-            f"SELECT * FROM trades WHERE pnl IS NOT NULL "
-            f"AND timestamp >= ?{_dq} "
-            f"ORDER BY timestamp DESC",
-            (thirty_days_ago,),
-        ).fetchall()
-        actual_trades = [dict(r) for r in actual_trades]
+            actual_trades = conn.execute(
+                f"SELECT * FROM trades WHERE pnl IS NOT NULL "
+                f"AND timestamp >= ?{_dq} "
+                f"ORDER BY timestamp DESC",
+                (thirty_days_ago,),
+            ).fetchall()
+            actual_trades = [dict(r) for r in actual_trades]
 
-        # Slippage stats for this profile (last 30 days).
-        # 2026-05-12 fix: scope to STOCK rows (occ_symbol IS NULL).
-        # Mixing stock + option premium % moves drove the displayed
-        # average to +1130% in the prior bug. Stock-side % is the
-        # meaningful display; option-side $ cost is surfaced
-        # separately on the AI performance page.
-        slippage_row = conn.execute("""
-            SELECT
-                COUNT(*) AS trades_with_fills,
-                AVG(slippage_pct) AS avg_slippage_pct,
-                SUM(ABS(fill_price - decision_price) * qty) AS total_slippage_cost
-            FROM trades
-            WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL
-              AND decision_price > 0 AND timestamp >= ?
-              AND occ_symbol IS NULL
-        """, (thirty_days_ago,)).fetchone()
-
-        conn.close()
+            # Slippage stats for this profile (last 30 days).
+            # 2026-05-12 fix: scope to STOCK rows (occ_symbol IS NULL).
+            # Mixing stock + option premium % moves drove the displayed
+            # average to +1130% in the prior bug. Stock-side % is the
+            # meaningful display; option-side $ cost is surfaced
+            # separately on the AI performance page.
+            slippage_row = conn.execute("""
+                SELECT
+                    COUNT(*) AS trades_with_fills,
+                    AVG(slippage_pct) AS avg_slippage_pct,
+                    SUM(ABS(fill_price - decision_price) * qty) AS total_slippage_cost
+                FROM trades
+                WHERE fill_price IS NOT NULL AND decision_price IS NOT NULL
+                  AND decision_price > 0 AND timestamp >= ?
+                  AND occ_symbol IS NULL
+            """, (thirty_days_ago,)).fetchone()
     except Exception as exc:
         logger.warning("Failed to query actual trades for profile %d: %s", profile_id, exc)
         return jsonify({"error": "Failed to query trade data"}), 500
@@ -3883,12 +3866,11 @@ def api_backtest_vs_reality(profile_id):
     # Calculate total return pct from actual trades (approx: pnl relative to equity)
     # Use daily snapshots for better accuracy
     try:
-        conn2 = open_profile_db(db_path)
-        snap = conn2.execute(
-            "SELECT equity FROM daily_snapshots "
-            "ORDER BY date DESC, rowid DESC LIMIT 1"
-        ).fetchone()
-        conn2.close()
+        with closing(open_profile_db(db_path)) as conn2:
+            snap = conn2.execute(
+                "SELECT equity FROM daily_snapshots "
+                "ORDER BY date DESC, rowid DESC LIMIT 1"
+            ).fetchone()
         equity_base = snap["equity"] if snap else 10_000
     except Exception:
         equity_base = 10_000
@@ -4047,31 +4029,30 @@ def api_mc_backtest(profile_id):
 
     # Pull recent closed trades from the journal
     try:
-        conn = open_profile_db(db_path)
-        rows = conn.execute(
-            f"""SELECT entry_price, exit_price, side, pnl, pnl_pct,
-                       symbol, exit_date
-            FROM (
-                SELECT t1.fill_price AS entry_price,
-                       t2.fill_price AS exit_price,
-                       'long' AS side,
-                       t2.pnl AS pnl,
-                       NULL AS pnl_pct,
-                       t1.symbol AS symbol,
-                       t2.timestamp AS exit_date
-                FROM trades t1
-                JOIN trades t2 ON t2.symbol = t1.symbol
-                  AND t2.id > t1.id
-                WHERE t1.side='buy' AND t2.side='sell'
-                  AND t1.fill_price IS NOT NULL
-                  AND t2.fill_price IS NOT NULL
-                  AND t1.status='filled' AND t2.status='filled'
-                  AND t2.timestamp >= datetime('now', '-{lookback_days} days')
-                ORDER BY t2.timestamp DESC
-                LIMIT 200
-            )"""
-        ).fetchall()
-        conn.close()
+        with closing(open_profile_db(db_path)) as conn:
+            rows = conn.execute(
+                f"""SELECT entry_price, exit_price, side, pnl, pnl_pct,
+                           symbol, exit_date
+                FROM (
+                    SELECT t1.fill_price AS entry_price,
+                           t2.fill_price AS exit_price,
+                           'long' AS side,
+                           t2.pnl AS pnl,
+                           NULL AS pnl_pct,
+                           t1.symbol AS symbol,
+                           t2.timestamp AS exit_date
+                    FROM trades t1
+                    JOIN trades t2 ON t2.symbol = t1.symbol
+                      AND t2.id > t1.id
+                    WHERE t1.side='buy' AND t2.side='sell'
+                      AND t1.fill_price IS NOT NULL
+                      AND t2.fill_price IS NOT NULL
+                      AND t1.status='filled' AND t2.status='filled'
+                      AND t2.timestamp >= datetime('now', '-{lookback_days} days')
+                    ORDER BY t2.timestamp DESC
+                    LIMIT 200
+                )"""
+            ).fetchall()
     except Exception as exc:
         return jsonify({"error": f"DB query failed: {exc}"}), 500
 
@@ -4324,23 +4305,22 @@ def api_mc_backtest_by_strategy(profile_id):
     min_trades_per_strategy = int(payload.get("min_trades_per_strategy") or 5)
 
     try:
-        conn = open_profile_db(db_path)
-        rows = conn.execute(
-            f"""SELECT t1.fill_price AS entry_price,
-                       t2.fill_price AS exit_price,
-                       'long' AS side,
-                       COALESCE(t1.strategy, 'unknown') AS strategy,
-                       t1.symbol AS symbol
-            FROM trades t1
-            JOIN trades t2 ON t2.symbol = t1.symbol AND t2.id > t1.id
-            WHERE t1.side='buy' AND t2.side='sell'
-              AND t1.fill_price IS NOT NULL AND t2.fill_price IS NOT NULL
-              AND t1.status='filled' AND t2.status='filled'
-              AND t2.timestamp >= datetime('now', '-{lookback_days} days')
-            ORDER BY t2.timestamp DESC
-            LIMIT 500"""
-        ).fetchall()
-        conn.close()
+        with closing(open_profile_db(db_path)) as conn:
+            rows = conn.execute(
+                f"""SELECT t1.fill_price AS entry_price,
+                           t2.fill_price AS exit_price,
+                           'long' AS side,
+                           COALESCE(t1.strategy, 'unknown') AS strategy,
+                           t1.symbol AS symbol
+                FROM trades t1
+                JOIN trades t2 ON t2.symbol = t1.symbol AND t2.id > t1.id
+                WHERE t1.side='buy' AND t2.side='sell'
+                  AND t1.fill_price IS NOT NULL AND t2.fill_price IS NOT NULL
+                  AND t1.status='filled' AND t2.status='filled'
+                  AND t2.timestamp >= datetime('now', '-{lookback_days} days')
+                ORDER BY t2.timestamp DESC
+                LIMIT 500"""
+            ).fetchall()
     except Exception as exc:
         return jsonify({"error": f"DB query failed: {exc}"}), 500
 
@@ -4407,20 +4387,19 @@ def api_slippage_history(profile_id):
         return jsonify({"error": "No data yet"}), 404
 
     try:
-        conn = open_profile_db(db_path)
-        rows = conn.execute(
-            """SELECT timestamp, symbol, side, qty,
-                      decision_price, fill_price, slippage_pct,
-                      predicted_slippage_bps
-            FROM trades
-            WHERE predicted_slippage_bps IS NOT NULL
-              AND fill_price IS NOT NULL
-              AND decision_price IS NOT NULL
-              AND status='filled'
-            ORDER BY timestamp DESC
-            LIMIT 200"""
-        ).fetchall()
-        conn.close()
+        with closing(open_profile_db(db_path)) as conn:
+            rows = conn.execute(
+                """SELECT timestamp, symbol, side, qty,
+                          decision_price, fill_price, slippage_pct,
+                          predicted_slippage_bps
+                FROM trades
+                WHERE predicted_slippage_bps IS NOT NULL
+                  AND fill_price IS NOT NULL
+                  AND decision_price IS NOT NULL
+                  AND status='filled'
+                ORDER BY timestamp DESC
+                LIMIT 200"""
+            ).fetchall()
     except Exception as exc:
         return jsonify({"error": f"DB query failed: {exc}"}), 500
 
@@ -4638,11 +4617,11 @@ def api_attention_signals(profile_id):
 def admin():
     """Admin panel — user list, API usage."""
     from models import _get_conn
-    conn = _get_conn()
-    users = conn.execute(
-        "SELECT id, email, display_name, is_admin, is_active, created_at, last_login_at "
-        "FROM users ORDER BY id"
-    ).fetchall()
+    with closing(_get_conn()) as conn:
+        users = conn.execute(
+            "SELECT id, email, display_name, is_admin, is_active, created_at, last_login_at "
+            "FROM users ORDER BY id"
+        ).fetchall()
     users = [dict(u) for u in users]
 
     # Per-user API usage: each user's API Calls Today must reflect ONLY
@@ -4669,7 +4648,6 @@ def admin():
         u["api_calls_today"] = calls
         u["api_cost_today"] = round(cost, 2)
 
-    conn.close()
     return render_template("admin.html", users=users)
 
 
@@ -4882,13 +4860,12 @@ def api_scan_status(profile_id):
     # Add next scan countdown from task_runs
     try:
         db = f"quantopsai_profile_{profile_id}.db"
-        conn = open_profile_db(db)
-        row = conn.execute(
-            "SELECT started_at FROM task_runs "
-            "WHERE task_name LIKE '%Scan%' AND status IN ('completed','failed') "
-            "ORDER BY started_at DESC LIMIT 1"
-        ).fetchone()
-        conn.close()
+        with closing(open_profile_db(db)) as conn:
+            row = conn.execute(
+                "SELECT started_at FROM task_runs "
+                "WHERE task_name LIKE '%Scan%' AND status IN ('completed','failed') "
+                "ORDER BY started_at DESC LIMIT 1"
+            ).fetchone()
         if row:
             from datetime import datetime as _dt_scan, timezone
             last = _dt_scan.strptime(row[0][:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
@@ -5340,12 +5317,11 @@ def api_tuning_status():
             state = {"can_tune": False, "resolved": 0, "required": 20, "message": "Error"}
         last_run = None
         try:
-            c = open_profile_db(ctx.db_path)
-            row = c.execute(
-                "SELECT started_at FROM task_runs WHERE task_name LIKE '%Self-Tune%' "
-                "ORDER BY started_at DESC LIMIT 1"
-            ).fetchone()
-            c.close()
+            with closing(open_profile_db(ctx.db_path)) as c:
+                row = c.execute(
+                    "SELECT started_at FROM task_runs WHERE task_name LIKE '%Self-Tune%' "
+                    "ORDER BY started_at DESC LIMIT 1"
+                ).fetchone()
             if row:
                 last_run = row[0]
         except Exception as exc:
@@ -5401,17 +5377,16 @@ def api_autonomy_timeline():
     try:
         from models import _get_conn
         from display_names import display_name
-        conn = _get_conn()
-        rows = conn.execute(
-            "SELECT timestamp, change_type, parameter_name, old_value, "
-            " new_value, reason, win_rate_at_change, outcome_after "
-            "FROM tuning_history "
-            "WHERE profile_id = ? "
-            "  AND datetime(timestamp) >= datetime('now', '-' || ? || ' days') "
-            "ORDER BY timestamp DESC",
-            (profile_id, days),
-        ).fetchall()
-        conn.close()
+        with closing(_get_conn()) as conn:
+            rows = conn.execute(
+                "SELECT timestamp, change_type, parameter_name, old_value, "
+                " new_value, reason, win_rate_at_change, outcome_after "
+                "FROM tuning_history "
+                "WHERE profile_id = ? "
+                "  AND datetime(timestamp) >= datetime('now', '-' || ? || ' days') "
+                "ORDER BY timestamp DESC",
+                (profile_id, days),
+            ).fetchall()
         for r in rows:
             events.append({
                 "timestamp": r["timestamp"],
@@ -5431,15 +5406,14 @@ def api_autonomy_timeline():
         # Strategy deprecations
         try:
             from display_names import display_name
-            conn = open_profile_db(db_path)
-            rows = conn.execute(
-                "SELECT strategy_type, deprecated_at, restored_at, reason "
-                "FROM deprecated_strategies "
-                "WHERE datetime(deprecated_at) >= datetime('now', '-' || ? || ' days') "
-                "ORDER BY deprecated_at DESC",
-                (days,),
-            ).fetchall()
-            conn.close()
+            with closing(open_profile_db(db_path)) as conn:
+                rows = conn.execute(
+                    "SELECT strategy_type, deprecated_at, restored_at, reason "
+                    "FROM deprecated_strategies "
+                    "WHERE datetime(deprecated_at) >= datetime('now', '-' || ? || ' days') "
+                    "ORDER BY deprecated_at DESC",
+                    (days,),
+                ).fetchall()
             for r in rows:
                 events.append({
                     "timestamp": r["deprecated_at"],
@@ -5459,33 +5433,32 @@ def api_autonomy_timeline():
 
         # Post-mortem patterns
         try:
-            conn = open_profile_db(db_path)
-            # Tolerate missing table (profile may pre-date the post_mortem
-            # feature; analyze_recent_week creates it on first run).
-            tbl = conn.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name='learned_patterns'"
-            ).fetchone()
-            if tbl:
-                rows = conn.execute(
-                    "SELECT created_at, pattern_text, period_wr, baseline_wr, "
-                    " losing_trade_count "
-                    "FROM learned_patterns "
-                    "WHERE datetime(created_at) >= datetime('now', '-' || ? || ' days') "
-                    "ORDER BY created_at DESC",
-                    (days,),
-                ).fetchall()
-                for r in rows:
-                    events.append({
-                        "timestamp": r["created_at"],
-                        "kind": "post_mortem",
-                        "label": "Losing-week pattern extracted",
-                        "reason": r["pattern_text"],
-                        "period_wr": r["period_wr"],
-                        "baseline_wr": r["baseline_wr"],
-                        "losing_trade_count": r["losing_trade_count"],
-                    })
-            conn.close()
+            with closing(open_profile_db(db_path)) as conn:
+                # Tolerate missing table (profile may pre-date the post_mortem
+                # feature; analyze_recent_week creates it on first run).
+                tbl = conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='table' AND name='learned_patterns'"
+                ).fetchone()
+                if tbl:
+                    rows = conn.execute(
+                        "SELECT created_at, pattern_text, period_wr, baseline_wr, "
+                        " losing_trade_count "
+                        "FROM learned_patterns "
+                        "WHERE datetime(created_at) >= datetime('now', '-' || ? || ' days') "
+                        "ORDER BY created_at DESC",
+                        (days,),
+                    ).fetchall()
+                    for r in rows:
+                        events.append({
+                            "timestamp": r["created_at"],
+                            "kind": "post_mortem",
+                            "label": "Losing-week pattern extracted",
+                            "reason": r["pattern_text"],
+                            "period_wr": r["period_wr"],
+                            "baseline_wr": r["baseline_wr"],
+                            "losing_trade_count": r["losing_trade_count"],
+                        })
         except Exception as exc:
             logger.debug("learned_patterns fetch failed: %s", exc)
 

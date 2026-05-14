@@ -28,6 +28,7 @@ import json
 import logging
 import re
 import time
+from contextlib import closing
 from typing import Any, Dict, List, Optional
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -450,15 +451,14 @@ def get_latest_filing_in_db(db_path: str, symbol: str, form_type: str) -> Option
     """Return the most recent row for (symbol, form_type) from sec_filings_history."""
     import sqlite3
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT * FROM sec_filings_history "
-            "WHERE symbol = ? AND form_type = ? "
-            "ORDER BY filed_date DESC LIMIT 1",
-            (symbol.upper(), form_type),
-        ).fetchone()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM sec_filings_history "
+                "WHERE symbol = ? AND form_type = ? "
+                "ORDER BY filed_date DESC LIMIT 1",
+                (symbol.upper(), form_type),
+            ).fetchone()
         return dict(row) if row else None
     except Exception:
         return None
@@ -511,26 +511,25 @@ def get_active_alerts(db_path: str, symbols: Optional[List[str]] = None,
     min_level = sev_order.get(min_severity, 1)
 
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        if symbols:
-            q_marks = ",".join("?" * len(symbols))
-            sql = (
-                f"SELECT * FROM sec_filings_history "
-                f"WHERE symbol IN ({q_marks}) "
-                f"AND analyzed_at IS NOT NULL "
-                f"AND filed_date >= date('now', '-90 days') "
-                f"ORDER BY filed_date DESC"
-            )
-            rows = conn.execute(sql, [s.upper() for s in symbols]).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM sec_filings_history "
-                "WHERE analyzed_at IS NOT NULL "
-                "AND filed_date >= date('now', '-90 days') "
-                "ORDER BY filed_date DESC"
-            ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            if symbols:
+                q_marks = ",".join("?" * len(symbols))
+                sql = (
+                    f"SELECT * FROM sec_filings_history "
+                    f"WHERE symbol IN ({q_marks}) "
+                    f"AND analyzed_at IS NOT NULL "
+                    f"AND filed_date >= date('now', '-90 days') "
+                    f"ORDER BY filed_date DESC"
+                )
+                rows = conn.execute(sql, [s.upper() for s in symbols]).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM sec_filings_history "
+                    "WHERE analyzed_at IS NOT NULL "
+                    "AND filed_date >= date('now', '-90 days') "
+                    "ORDER BY filed_date DESC"
+                ).fetchall()
 
         alerts = []
         for row in rows:
@@ -584,12 +583,11 @@ def monitor_symbol(symbol: str, db_path: str, ctx: Any = None,
     # Quick lookup of what's already in DB
     existing = set()
     try:
-        conn = sqlite3.connect(db_path)
-        rows = conn.execute(
-            "SELECT accession_number FROM sec_filings_history WHERE symbol = ?",
-            (symbol.upper(),),
-        ).fetchall()
-        conn.close()
+        with closing(sqlite3.connect(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT accession_number FROM sec_filings_history WHERE symbol = ?",
+                (symbol.upper(),),
+            ).fetchall()
         existing = {r[0] for r in rows}
     # SILENT_OK: existing-accession set load; falls through with empty set (all filings re-evaluated)
     except Exception:
