@@ -415,6 +415,15 @@ def _synthesize(candidates: List[Dict[str, Any]],
             calibrators = {}
 
     out: Dict[str, Any] = {}
+    # Sort specialist names for deterministic iteration. Without this,
+    # the consensus output (specifically `vetoed_by` attribution and
+    # the order of entries in `symbol_verdicts`) depends on the
+    # caller's dict-construction order, which can drift between
+    # backtest and live (run_ensemble builds the dict from a
+    # ThreadPoolExecutor.as_completed loop in production but from
+    # a fixed list in backtests). Alphabetical sort gives a stable
+    # contract: same input → same output, byte-identical.
+    specialist_names_sorted = sorted(raw_by_specialist)
     for c in candidates:
         sym = c.get("symbol", "")
         if not sym:
@@ -429,10 +438,11 @@ def _synthesize(candidates: List[Dict[str, Any]],
         # to fire wins the attribution; subsequent vetoers' reasons
         # remain in symbol_verdicts but the headline name is the
         # first one (matches `veto_reason` semantics — first veto
-        # wins).
+        # wins). 2026-05-14 — iteration is now alphabetical so
+        # "first" is deterministic regardless of caller dict order.
         vetoed_by: Optional[str] = None
 
-        for name in raw_by_specialist:
+        for name in specialist_names_sorted:
             v = by_symbol_and_spec.get((sym, name))
             if not v:
                 symbol_verdicts.append({

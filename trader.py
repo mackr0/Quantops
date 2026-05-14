@@ -99,6 +99,10 @@ def execute_trade(symbol, signal, ctx=None, strategy_name="combined", log=True):
                     result["action"] = "SKIP"
                     result["reason"] = "Order blocked: outside trading window"
                     return result
+                # RETRY_OK: execute_trade is the contract boundary — its only
+                # callers (main.py:cmd_trade_scan, multi_scheduler trade_pipeline)
+                # wrap each call in try/except. A transient 429/503 surfaces
+                # to the per-position handler and the cycle continues.
                 order = api.submit_order(
                     symbol=symbol,
                     qty=qty,
@@ -145,6 +149,8 @@ def execute_trade(symbol, signal, ctx=None, strategy_name="combined", log=True):
         else:
             sell_qty = max(1, int(qty * 0.5))
 
+        # RETRY_OK: execute_trade is the contract boundary — callers
+        # wrap in try/except (see BUY-side rationale above).
         order = api.submit_order(
             symbol=symbol,
             qty=sell_qty,
@@ -598,6 +604,9 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
         logging.debug("Protective stop cleanup skipped: %s", _exc)
 
     if is_short:
+        # RETRY_OK: _process_exit_trigger is called from the per-position
+        # try/except loop in check_exits (line ~513) — broker exceptions
+        # surface there and the next position is processed normally.
         order = api.submit_order(
             symbol=symbol,
             qty=qty,
@@ -629,6 +638,8 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
                 symbol, qty, allowed_qty, guard_reason,
             )
             qty = int(allowed_qty)
+        # RETRY_OK: _process_exit_trigger is called from the per-position
+        # try/except loop in check_exits — broker exceptions surface there.
         order = api.submit_order(
             symbol=symbol,
             qty=qty,

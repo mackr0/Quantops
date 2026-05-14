@@ -907,6 +907,10 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         }
         if use_limit:
             order_kwargs["limit_price"] = str(round(price, 2))
+        # RETRY_OK: trade_pipeline.execute_trade is the contract boundary
+        # — its caller in multi_scheduler (trade_pipeline.py ~line 2259)
+        # wraps each call in try/except. A transient 429/503 surfaces
+        # there and the cycle continues with the next candidate.
         order = api.submit_order(**order_kwargs)
 
         result["action"] = "BUY"
@@ -1015,6 +1019,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 symbol, exc,
             )
 
+        # RETRY_OK: see BUY-side rationale above — caller wraps execute_trade.
         order = api.submit_order(
             symbol=symbol,
             qty=sell_qty,
@@ -1213,6 +1218,8 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                     }
                     if use_limit:
                         order_kwargs["limit_price"] = str(round(price, 2))
+                    # RETRY_OK: see BUY-side rationale above — execute_trade
+                    # caller in multi_scheduler wraps in try/except.
                     order = api.submit_order(**order_kwargs)
 
                     result["action"] = "SHORT"

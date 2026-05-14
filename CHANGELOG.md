@@ -17,6 +17,54 @@ Rules going forward:
 
 ---
 
+## 2026-05-14 — Batch 3 structural-test wave: 7 new strict-mode guardrails, 1 backtest-vs-live consistency bug closed. Severity: medium (silent determinism bug + future-regression-prevention layer).
+
+**Context.** Final batch from the 2026-05-13 24-test plan. All 7 new tests are strict-mode (no grandfathered baselines) per Mack's standing rule. Each one was designed, run, and any violations classified Cat 1/2/3 and fixed or annotated.
+
+### 7 new structural tests
+
+1. **`test_api_numeric_fields_are_numeric`** — recursive walk of every `/api/*` JSON response × profile-id variations; flags string- or unallowed-None values in numeric fields (`*_pct`, `*_count`, `equity`, `pnl`, etc.). Catches the "JS does string concat instead of math" bug class. Default-deny; explicit `ALLOWED_NULL_FIELDS` allowlist for fields legitimately Null on open positions (`decision_price`, `pnl`, `slippage_pct`).
+
+2. **`test_every_specialist_is_registered`** — verifies every `specialists/*.py` module is wired into `SPECIALIST_MODULES` AND loads cleanly via `discover_specialists()`. Catches the "added a new specialist file but forgot to register it; consensus runs on N-1 specialists" bug class.
+
+3. **`test_specialist_consensus_deterministic`** — runtime test calling `ensemble._synthesize` 5× with fixed inputs + reverse-orderings; asserts byte-identical output. **FOUND REAL Cat 3 BUG.**
+
+4. **`test_every_trade_action_labeled`** — AST scan of every trade-decision module's return-dict literals; asserts `action` field uses a value in `KNOWN_ACTIONS`. Catches the "new code path returns dict missing action label, trader silently drops" bug class. Refined sibling-key heuristic to avoid false positives on non-trade-result dicts.
+
+5. **`test_alert_severity_rendering`** — every `severity=` literal in production source must use a value in `KNOWN_SEVERITIES`; cross-checked against `templates/*.html` CSS classes. Catches "added severity='urgent' but template has no `.severity-urgent` class, alert renders unstyled".
+
+6. **`test_broker_api_retry_guards`** — AST scan of broker-touching files; every `api.{submit_order, cancel_order, list_positions, get_account, ...}` call must be in try/except, wrapped by `_retrying_call`, OR annotated `# RETRY_OK: <rationale>` naming the contract boundary. Catches "new direct broker call crashes cycle on transient 429/503 with no operator notification".
+
+7. **`test_expensive_operations_throttled`** — AST scan for LLM/yfinance/per-symbol broker calls inside `for` loops; each must have a cache, rate limiter, budget guard, or `# COSTLY_OK:` annotation. Defends against the "200-symbol loop calls Anthropic per iteration → $400/cycle silent bill explosion" class.
+
+### Production bug fixed (Cat 3, found by #3)
+
+**`ensemble._synthesize` non-deterministic veto attribution** — the synthesize loop iterated `for name in raw_by_specialist:` in caller-controlled dict order. In production, `run_ensemble` builds the dict from a `ThreadPoolExecutor.as_completed` loop (arrival order varies by network latency); in backtests it's built from a fixed list. When two VETO-authorized specialists both vetoed (`risk_assessor` and `adversarial_reviewer`), the recorded `vetoed_by` attribution flipped between runs. Same input → different output, breaking backtest-vs-live consistency for any trade gated by veto attribution. **Fix**: `specialist_names_sorted = sorted(raw_by_specialist)`; iterate that. Behavior unchanged for the dominant single-veto case; only the tie-break order is now deterministic.
+
+### Annotations added (Cat 1)
+
+- `trader.py:102, 148, 601, 632` — 4× `# RETRY_OK:` on `api.submit_order` calls inside `execute_trade` and `_process_exit_trigger`. Each rationale names the caller (multi_scheduler / `check_exits` per-position try/except) that handles the surfaced exception.
+- `trade_pipeline.py:910, 1018, 1216` — 3× `# RETRY_OK:` on BUY/SELL/SHORT order submissions; same rationale (multi_scheduler wraps `execute_trade` in try/except per candidate).
+
+### Test-categorization updates
+
+- Test count: **3,041** (was 3,029 — +12 from this batch's 7 new tests)
+- Test files: **268** (was ~263)
+- Strict-mode guardrails total: 4 ratchets at empty baseline + 7 strict tests with no baseline + the new factory-caller test from this morning = 12 strict structural tests in production.
+
+### Why these tests matter going forward
+
+Every one defends against a class of bug that would otherwise be invisible in tests but visible only in production:
+- #17: silent string-concat in JS produces wrong numbers on dashboard
+- #18: new specialist silently never voted, weakens consensus
+- #19: backtest vs live diverge on the same input
+- #20: trade silently dropped, no log entry
+- #21: alert silently unstyled, operator misses it
+- #23: transient broker error crashes cycle, no notification
+- #24: expensive call loop spams budget without throttle
+
+---
+
 ## 2026-05-14 — sqlite3 connection-leak audit: 224 sites converted to safe patterns (93 direct + 131 factory-helper callers); 3 real leaks fixed. Severity: high (silent handle accumulation that would crash the scheduler after weeks of uptime).
 
 **Context.** Companion to the same-day silent-swallow + json-decode audits. The ratchet test `test_every_db_connection_is_closed` had ~93 grandfathered direct `sqlite3.connect()` sites without try/finally close. Mack chose the proper-fix path. Sister agent converted the 93 direct sites; during review, the parent (this work) discovered the agent's `_open_journal_conn` factory-extraction shortcut HID a real leak in `reconcile_journal_to_broker.reconcile_with_ctx` (290 lines between connect and close, no try/finally). Fixed that one site and added a class-level test (`test_factory_helper_callers_have_try_finally`) that scans for the same anti-pattern across all factory-helper callers — found **131 more sites** silently leaking handles via `open_profile_db`, `_get_conn`, `_open_journal_conn`, and `_open_conn`. Audited and fixed all of them.
