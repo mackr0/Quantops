@@ -17,6 +17,36 @@ Rules going forward:
 
 ---
 
+## 2026-05-13 — Data-quality filter generalized to ai_predictions + 13 analytics sites fixed. Severity: medium (defense-in-depth + structural).
+
+**Context.** The class-style `test_data_quality_filter_present` (this morning's wave) found **13 analytics queries** on `trades` + `ai_predictions` that don't filter `data_quality`. The phantom-stop pollution chain is:
+```
+corrupt trades row → resolver computes wrong actual_return_pct →
+polluted ai_predictions row → analytics on ai_predictions pool the pollution
+```
+Per-fix audit confirmed today's resolver gates (multileg leg-lookup excludes data_quality-tagged trades) prevent the chain at source — but the 11 ai_predictions analytics sites had **no way** to filter even if pollution did slip through, because `ai_predictions` had no `data_quality` column at all. Architectural gap.
+
+**Proper fix (per Mack's standing principle "always proper fix for everything"):**
+
+1. **Schema**: `ai_predictions.data_quality TEXT` added to `journal.init_db()` migration list (idempotent ALTER TABLE). Mirrors `trades.data_quality`.
+2. **Helper generalized**: `data_quality_clause(conn, table='trades')` now accepts a `table` parameter. Back-compat — existing callers continue passing `trades` (default). New callers pass `ai_predictions`. Same column-presence check; returns empty string when the column doesn't exist.
+3. **13 analytics query sites updated**:
+   - `self_tuning.py`: 10 sites (overall win-rate, BUY/SELL stats, signal-bucket aggregation, regime overrides, strategy-toggle decisions, position-size upward, max_total_positions on trades.pnl avg-win/avg-loss)
+   - `ai_weekly_summary.py`: 2 sites (weekly buys/sells/pnl + weekly resolved win/loss counts)
+   - `recover_cycle_data.py`: allowlisted (false positive — recovery script lists rows for human review, not analytics; subquery `MAX(timestamp)` triggered the analytics detector but no actual aggregation of pollution columns)
+
+**The bug class is now structurally killed end-to-end.** Both tables have the column. The same helper pattern works on either. Any future analytics query added to either table inherits the filter via the structural test.
+
+**Test improvements:**
+- `test_data_quality_filter_present.py` (the structural test from this morning's audit) now uses better detection: function-scope `data_quality_clause` reference (not just 20-line window) + regex pattern for any `<word>_dq` interp slot. Fewer false positives, catches all real fixes.
+- Added scanner-sanity tests so the main check can't silently weaken if regex breaks.
+
+**Production state on deploy**: zero rows in either table currently have `data_quality` set on `ai_predictions` (column is brand-new) and the existing 31 tagged rows on `trades` continue to be excluded. No analytics number changes immediately. The defense activates the next time pollution appears.
+
+2999 tests pass total.
+
+---
+
 ## 2026-05-13 — Test audit follow-up: 5 new structural guardrail test files. Severity: medium (defensive — no production change).
 
 **Context.** Mack: "audit tests and find opportunities to refactor this way." After the 5+ same-shape incidents this week (conviction-TP, short-selling, skip-first-minutes, meta-pregate, performance-page-500), the audit identified 15 instance-style tests with class-style refactor opportunities. Built the top 5.

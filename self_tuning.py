@@ -176,8 +176,13 @@ def _build_cross_profile_insights(user_id, current_profile_id, current_db_path):
                 conn.close()
                 continue
 
+            # 2026-05-13 — exclude data_quality-tagged ai_predictions
+            # rows from analytics. See journal.data_quality_clause.
+            from journal import data_quality_clause
+            _aip_dq = data_quality_clause(conn, table="ai_predictions")
             resolved = conn.execute(
-                "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved'"
+                f"SELECT COUNT(*) FROM ai_predictions "
+                f"WHERE status='resolved'{_aip_dq}"
             ).fetchone()[0]
 
             if resolved < 20:
@@ -185,27 +190,28 @@ def _build_cross_profile_insights(user_id, current_profile_id, current_db_path):
                 continue
 
             wins = conn.execute(
-                "SELECT COUNT(*) FROM ai_predictions "
-                "WHERE status='resolved' AND actual_outcome='win'"
+                f"SELECT COUNT(*) FROM ai_predictions "
+                f"WHERE status='resolved' AND actual_outcome='win'{_aip_dq}"
             ).fetchone()[0]
             win_rate = (wins / resolved * 100) if resolved > 0 else 0
 
             avg_return = conn.execute(
-                "SELECT AVG(actual_return_pct) FROM ai_predictions WHERE status='resolved'"
+                f"SELECT AVG(actual_return_pct) FROM ai_predictions "
+                f"WHERE status='resolved'{_aip_dq}"
             ).fetchone()[0] or 0
 
             # BUY-specific stats
             buy_total = conn.execute(
-                "SELECT COUNT(*) FROM ai_predictions "
-                "WHERE status='resolved' AND predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY')"
+                f"SELECT COUNT(*) FROM ai_predictions "
+                f"WHERE status='resolved' AND predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY'){_aip_dq}"
             ).fetchone()[0]
             buy_wins = conn.execute(
-                "SELECT COUNT(*) FROM ai_predictions "
-                "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY')"
+                f"SELECT COUNT(*) FROM ai_predictions "
+                f"WHERE status='resolved' AND actual_outcome='win' AND predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY'){_aip_dq}"
             ).fetchone()[0]
             buy_avg_ret = conn.execute(
-                "SELECT AVG(actual_return_pct) FROM ai_predictions "
-                "WHERE status='resolved' AND predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY')"
+                f"SELECT AVG(actual_return_pct) FROM ai_predictions "
+                f"WHERE status='resolved' AND predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY'){_aip_dq}"
             ).fetchone()[0] or 0
             buy_wr = (buy_wins / buy_total * 100) if buy_total > 0 else 0
 
@@ -565,11 +571,16 @@ def build_concise_context(ctx, symbol=None):
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_predictions'"
             ).fetchone()
             if table_check:
+                # 2026-05-13 — exclude data_quality-tagged rows
+                from journal import data_quality_clause
+                _aip_dq = data_quality_clause(conn, table="ai_predictions")
                 total = conn.execute(
-                    "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved'"
+                    f"SELECT COUNT(*) FROM ai_predictions "
+                    f"WHERE status='resolved'{_aip_dq}"
                 ).fetchone()[0]
                 wins = conn.execute(
-                    "SELECT COUNT(*) FROM ai_predictions WHERE status='resolved' AND actual_outcome='win'"
+                    f"SELECT COUNT(*) FROM ai_predictions "
+                    f"WHERE status='resolved' AND actual_outcome='win'{_aip_dq}"
                 ).fetchone()[0]
                 if total >= 10:
                     wr = wins / total * 100
@@ -768,20 +779,23 @@ def build_performance_context(ctx, symbol=None, db_path=None):
         # --- Signal performance ---
         lines.append("")
         lines.append("Signal Performance:")
+        # 2026-05-13 — exclude data_quality-tagged ai_predictions
+        from journal import data_quality_clause
+        _aip_dq = data_quality_clause(conn, table="ai_predictions")
         for sig in ("BUY", "SELL"):
             sig_total = conn.execute(
-                "SELECT COUNT(*) FROM ai_predictions "
-                "WHERE status='resolved' AND predicted_signal=?",
+                f"SELECT COUNT(*) FROM ai_predictions "
+                f"WHERE status='resolved' AND predicted_signal=?{_aip_dq}",
                 (sig,),
             ).fetchone()[0]
             sig_wins = conn.execute(
-                "SELECT COUNT(*) FROM ai_predictions "
-                "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal=?",
+                f"SELECT COUNT(*) FROM ai_predictions "
+                f"WHERE status='resolved' AND actual_outcome='win' AND predicted_signal=?{_aip_dq}",
                 (sig,),
             ).fetchone()[0]
             sig_avg_ret = conn.execute(
-                "SELECT AVG(actual_return_pct) FROM ai_predictions "
-                "WHERE status='resolved' AND predicted_signal=?",
+                f"SELECT AVG(actual_return_pct) FROM ai_predictions "
+                f"WHERE status='resolved' AND predicted_signal=?{_aip_dq}",
                 (sig,),
             ).fetchone()[0] or 0
             if sig_total > 0:
@@ -1921,8 +1935,11 @@ def _optimize_confidence_threshold_upward(conn, ctx, profile_id, user_id,
     if _was_adjustment_effective(profile_id, "ai_confidence_threshold") == "worsened":
         return None
 
+    # 2026-05-13 — exclude data_quality-tagged ai_predictions
+    from journal import data_quality_clause
+    _aip_dq = data_quality_clause(conn, table="ai_predictions")
     rows = conn.execute(
-        """SELECT
+        f"""SELECT
              CASE WHEN confidence >= 80 THEN 80
                   WHEN confidence >= 70 THEN 70
                   WHEN confidence >= 60 THEN 60
@@ -1930,7 +1947,7 @@ def _optimize_confidence_threshold_upward(conn, ctx, profile_id, user_id,
                   ELSE 0 END as band_floor,
              COUNT(*) as total,
              SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) as wins
-           FROM ai_predictions WHERE status='resolved'
+           FROM ai_predictions WHERE status='resolved'{_aip_dq}
            GROUP BY band_floor HAVING COUNT(*) >= 10
            ORDER BY band_floor"""
     ).fetchall()
@@ -2001,11 +2018,14 @@ def _optimize_regime_position_sizing(conn, ctx, profile_id, user_id,
     if "regime_at_prediction" not in cols:
         return None
 
+    # 2026-05-13 — exclude data_quality-tagged ai_predictions
+    from journal import data_quality_clause
+    _aip_dq = data_quality_clause(conn, table="ai_predictions")
     rows = conn.execute(
-        """SELECT regime_at_prediction, COUNT(*) as total,
+        f"""SELECT regime_at_prediction, COUNT(*) as total,
                   SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) as wins
            FROM ai_predictions
-           WHERE status='resolved' AND regime_at_prediction IS NOT NULL
+           WHERE status='resolved' AND regime_at_prediction IS NOT NULL{_aip_dq}
            GROUP BY regime_at_prediction HAVING COUNT(*) >= 10"""
     ).fetchall()
 
@@ -2083,11 +2103,14 @@ def _optimize_strategy_toggles(conn, ctx, profile_id, user_id,
     if "strategy_type" not in cols:
         return None
 
+    # 2026-05-13 — exclude data_quality-tagged ai_predictions
+    from journal import data_quality_clause
+    _aip_dq = data_quality_clause(conn, table="ai_predictions")
     rows = conn.execute(
-        """SELECT strategy_type, COUNT(*) as total,
+        f"""SELECT strategy_type, COUNT(*) as total,
                   SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) as wins
            FROM ai_predictions
-           WHERE status='resolved' AND strategy_type IS NOT NULL
+           WHERE status='resolved' AND strategy_type IS NOT NULL{_aip_dq}
            GROUP BY strategy_type HAVING COUNT(*) >= 10
            ORDER BY (CAST(SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) AS REAL)
                      / COUNT(*)) ASC"""
@@ -2295,8 +2318,11 @@ def _optimize_position_size_upward(conn, ctx, profile_id, user_id,
         return None
 
     # Verify average return is positive
+    # 2026-05-13 — exclude data_quality-tagged ai_predictions
+    from journal import data_quality_clause
+    _aip_dq = data_quality_clause(conn, table="ai_predictions")
     avg_ret = conn.execute(
-        "SELECT AVG(actual_return_pct) FROM ai_predictions WHERE status='resolved'"
+        f"SELECT AVG(actual_return_pct) FROM ai_predictions WHERE status='resolved'{_aip_dq}"
     ).fetchone()[0]
     if avg_ret is None or avg_ret <= 0:
         return None
@@ -2373,10 +2399,15 @@ def _optimize_max_total_positions(conn, ctx, profile_id, user_id,
     if not table_check:
         return None
 
+    # 2026-05-13 — exclude data_quality-tagged trades from
+    # avg-loss / avg-win calc; phantom-stop pollution would
+    # extreme-distort these.
+    from journal import data_quality_clause
+    _trades_dq = data_quality_clause(conn, table="trades")
     # Average loss size on closed losers
     row = conn.execute(
-        "SELECT AVG(pnl) as avg_loss FROM trades "
-        "WHERE pnl IS NOT NULL AND pnl < 0"
+        f"SELECT AVG(pnl) as avg_loss FROM trades "
+        f"WHERE pnl IS NOT NULL AND pnl < 0{_trades_dq}"
     ).fetchone()
     avg_loss = row["avg_loss"] if row and row["avg_loss"] is not None else 0
 
@@ -2403,9 +2434,10 @@ def _optimize_max_total_positions(conn, ctx, profile_id, user_id,
         return f"Reduced max concurrent positions from {current} to {new_val} ({reason})"
 
     # Increase when strong WR AND average winner is meaningful.
+    # _trades_dq already in scope from the avg_loss block above.
     row = conn.execute(
-        "SELECT AVG(pnl) as avg_win FROM trades "
-        "WHERE pnl IS NOT NULL AND pnl > 0"
+        f"SELECT AVG(pnl) as avg_win FROM trades "
+        f"WHERE pnl IS NOT NULL AND pnl > 0{_trades_dq}"
     ).fetchone()
     avg_win = row["avg_win"] if row and row["avg_win"] is not None else 0
 

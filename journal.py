@@ -539,6 +539,19 @@ def _migrate_all_columns(conn):
             # uses this to compute net spread P&L vs entry credit/
             # debit — the only correct return metric for multileg.
             ("option_order_id", "TEXT"),
+            # 2026-05-13 — generic data-quality marker, mirroring
+            # the trades.data_quality column. Defense-in-depth
+            # against the pollution chain:
+            #   corrupt trades row → resolver computes wrong
+            #   actual_return_pct → polluted ai_predictions row
+            #   → analytics on ai_predictions pool the pollution
+            # Today's resolver gates (multileg leg-lookup excludes
+            # data_quality-tagged trades) prevent the chain at
+            # source, but having the column on ai_predictions
+            # lets analytics queries use the same data_quality_clause
+            # filter pattern uniformly across both tables, killing
+            # the bug class structurally.
+            ("data_quality", "TEXT"),
         ],
     }
 
@@ -1859,27 +1872,43 @@ def get_multileg_legs_by_combo_order(db_path, combo_order_id):
         return []
 
 
-def data_quality_clause(conn) -> str:
-    """Phase 5e (2026-05-12) — return ' AND data_quality IS NULL'
-    if the trades table has the data_quality column, else ''.
-    Use in any analytics SQL on the trades table to exclude
-    rows tagged with a known data-corruption marker (e.g.,
+def data_quality_clause(conn, table: str = "trades") -> str:
+    """Phase 5e (2026-05-12, generalized 2026-05-13) — return
+    ' AND data_quality IS NULL' if the named table has the
+    data_quality column, else ''.
+
+    Use in any analytics SQL on `trades` or `ai_predictions` to
+    exclude rows tagged with a known data-corruption marker (e.g.,
     'phantom_stop_2026_05_11').
+
+    The 2026-05-13 generalization added the `table` parameter
+    after the structural audit found 11 analytics queries on
+    `ai_predictions` that couldn't filter data_quality (the
+    column didn't exist on that table). Same column was added in
+    the same commit; this helper now serves both tables uniformly.
 
     Wrapped in a helper so analytics call sites don't have to
     duplicate the column-presence check (which is needed for
     back-compat with legacy DBs / minimal test fixtures that
-    pre-date Phase 5e).
+    pre-date the migration).
 
     Usage:
+        # trades (default — back-compat with old callers):
         cls = data_quality_clause(conn)
         rows = conn.execute(
             f"SELECT ... FROM trades WHERE pnl IS NOT NULL{cls}"
         ).fetchall()
+
+        # ai_predictions:
+        cls = data_quality_clause(conn, table='ai_predictions')
+        rows = conn.execute(
+            f"SELECT AVG(actual_return_pct) FROM ai_predictions "
+            f"WHERE status='resolved'{cls}"
+        ).fetchall()
     """
     try:
         cols = {row[1] for row in conn.execute(
-            "PRAGMA table_info(trades)"
+            f"PRAGMA table_info({table})"
         ).fetchall()}
         return " AND data_quality IS NULL" if "data_quality" in cols else ""
     except Exception:

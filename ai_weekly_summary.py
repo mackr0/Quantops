@@ -110,15 +110,21 @@ def _gather_profile_stats(
         conn.row_factory = sqlite3.Row
 
         if _safe_table_exists(conn, "trades"):
+            # 2026-05-13 — exclude data_quality-tagged trades from
+            # the weekly digest aggregations. Phantom-stop pollution
+            # would inflate the realized P&L number for the operator
+            # otherwise.
+            from journal import data_quality_clause
+            _trades_dq = data_quality_clause(conn, table="trades")
             # Aggregate buys/sells/pnl
             row = conn.execute(
-                """
+                f"""
                 SELECT
                     SUM(CASE WHEN side='buy' THEN 1 ELSE 0 END) buys,
                     SUM(CASE WHEN side='sell' THEN 1 ELSE 0 END) sells,
                     COALESCE(SUM(CASE WHEN side='sell' THEN pnl ELSE 0 END), 0) pnl
                 FROM trades
-                WHERE timestamp BETWEEN ? AND ?
+                WHERE timestamp BETWEEN ? AND ?{_trades_dq}
                 """,
                 (start, end),
             ).fetchone()
@@ -141,15 +147,18 @@ def _gather_profile_stats(
             stats["trades"] = [dict(r) for r in rows]
 
         if _safe_table_exists(conn, "ai_predictions"):
+            # 2026-05-13 — exclude data_quality-tagged predictions
+            from journal import data_quality_clause
+            _aip_dq = data_quality_clause(conn, table="ai_predictions")
             row = conn.execute(
-                """
+                f"""
                 SELECT
                     COUNT(*) n,
                     SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) wins,
                     SUM(CASE WHEN actual_outcome='loss' THEN 1 ELSE 0 END) losses
                 FROM ai_predictions
                 WHERE resolved_at IS NOT NULL
-                  AND resolved_at BETWEEN ? AND ?
+                  AND resolved_at BETWEEN ? AND ?{_aip_dq}
                 """,
                 (start, end),
             ).fetchone()
