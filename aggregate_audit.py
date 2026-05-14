@@ -141,6 +141,7 @@ def _broker_qty_per_symbol(api) -> Dict[str, float]:
         sym = (getattr(p, "symbol", "") or "").upper()
         try:
             out[sym] = float(getattr(p, "qty", 0) or 0)
+        # SILENT_OK: per-position qty parse; skip rows with malformed qty
         except Exception:
             continue
     return out

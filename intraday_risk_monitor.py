@@ -285,16 +285,26 @@ def get_active_risk_halt(db_path: str) -> Optional[Dict[str, Any]]:
             conn.execute("DELETE FROM intraday_risk_halt WHERE id=1")
             conn.commit()
             conn.close()
+        # SILENT_OK: stale-halt cleanup write; halt state will re-evaluate on next read
         except Exception:
             pass
         return None
 
     if row["action"] in ("pass", None):
         return None
+    try:
+        alerts = json.loads(row["alerts_json"] or "[]")
+    except (json.JSONDecodeError, ValueError, TypeError):
+        logging.warning(
+            "intraday_risk_halt.alerts_json is corrupt (id=1); "
+            "falling back to empty list so halt gate keeps working",
+            exc_info=True,
+        )
+        alerts = []
     return {
         "created_at": row["created_at"],
         "action": row["action"],
-        "alerts": json.loads(row["alerts_json"] or "[]"),
+        "alerts": alerts,
         "age_seconds": age_seconds,
     }
 
@@ -307,5 +317,6 @@ def clear_risk_halt(db_path: str) -> None:
         conn.execute("DELETE FROM intraday_risk_halt WHERE id=1")
         conn.commit()
         conn.close()
+    # SILENT_OK: halt clear write; next read re-evaluates
     except Exception:
         pass

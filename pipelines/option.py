@@ -211,6 +211,7 @@ class OptionPipeline(Pipeline):
                 ai_reasoning=proposal.get("reasoning"),
                 broker_message=msg,
             )
+        # SILENT_OK: veto-prediction journal write; veto-state unchanged on log failure
         except Exception:
             pass
 
@@ -273,6 +274,7 @@ class OptionPipeline(Pipeline):
                         signal="MULTILEG_OPEN",
                         option_order_id=combo_id,
                     )
+            # SILENT_OK: multileg prediction-to-trade link; trade already executed
             except Exception:
                 pass
             return trade_result
@@ -308,6 +310,7 @@ class OptionPipeline(Pipeline):
                         ctx.db_path, symbol=symbol,
                         signal="OPTIONS", occ_symbol=occ,
                     )
+            # SILENT_OK: single-leg prediction-to-trade link; trade already executed
             except Exception:
                 pass
             return trade_result

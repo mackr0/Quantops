@@ -60,6 +60,7 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
                     f"breakout above 20d high on {vol/avg_vol:.1f}x volume"
                 ),
             })
+        # SILENT_OK: per-symbol strategy scoring; one bad symbol shouldn't kill the strategy loop
         except Exception:
             continue
     return out

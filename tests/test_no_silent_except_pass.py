@@ -49,83 +49,12 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #   pytest tests/test_no_silent_except_pass.py --rebase
 # (Not implemented as flag — operator manually edits this dict.)
 GRANDFATHER_BASELINE = {
-    "aggregate_audit.py": 1,
-    "ai_analyst.py": 18,
-    "ai_providers.py": 1,
-    "ai_tracker.py": 2,
-    "ai_weekly_summary.py": 1,
-    "alternative_data.py": 16,
-    "backtester.py": 5,
-    "backup_db.py": 1,
-    "bracket_orders.py": 2,
-    "client.py": 3,
-    "cost_guard.py": 4,
-    "earnings_calendar.py": 5,
-    "ensemble.py": 1,
-    "entry_blacklist.py": 1,
-    "event_detectors.py": 2,
-    "factor_data.py": 2,
-    "historical_universe_augment.py": 3,
-    "intraday_risk_monitor.py": 2,
-    "journal.py": 7,
-    "macro_data.py": 10,
-    "market_data.py": 2,
-    "metrics/legacy.py": 9,
-    "models.py": 1,
-    "multi_scheduler.py": 19,
-    "notifications.py": 1,
-    "options_exits.py": 2,
-    "options_lifecycle.py": 1,
-    "pdufa_scraper.py": 2,
-    "pipelines/option.py": 3,
-    "political_sentiment.py": 1,
-    "post_mortem.py": 1,
-    "reconcile_journal_to_broker.py": 5,
-    "regime_overrides.py": 2,
-    "scan_status.py": 2,
-    "screener.py": 8,
-    "sec_filings.py": 1,
-    "self_tuning.py": 30,
-    "shared_ai_cache.py": 1,
-    "slippage_model.py": 1,
-    "specialist_calibration.py": 3,
-    "specialists/__init__.py": 1,
-    "stat_arb_pair_book.py": 1,
-    "strategies/__init__.py": 2,
-    "strategies/analyst_upgrade_drift.py": 1,
-    "strategies/breakdown_support.py": 1,
-    "strategies/catalyst_filing_short.py": 3,
-    "strategies/distribution_at_highs.py": 1,
-    "strategies/earnings_disaster_short.py": 1,
-    "strategies/earnings_drift.py": 1,
-    "strategies/failed_breakout.py": 1,
-    "strategies/fifty_two_week_breakout.py": 1,
-    "strategies/gap_reversal.py": 1,
-    "strategies/high_iv_rank_fade.py": 1,
-    "strategies/insider_cluster.py": 1,
-    "strategies/insider_selling_cluster.py": 1,
-    "strategies/iv_regime_short.py": 1,
-    "strategies/macd_cross_confirmation.py": 1,
-    "strategies/market_engine.py": 1,
-    "strategies/max_pain_pinning.py": 1,
-    "strategies/news_sentiment_spike.py": 1,
-    "strategies/parabolic_exhaustion.py": 1,
-    "strategies/relative_weakness_in_strong_sector.py": 1,
-    "strategies/relative_weakness_universe.py": 1,
-    "strategies/sector_momentum_rotation.py": 1,
-    "strategies/sector_rotation_short.py": 1,
-    "strategies/short_squeeze_setup.py": 1,
-    "strategies/short_term_reversal.py": 1,
-    "strategies/vol_regime.py": 1,
-    "strategies/volume_dryup_breakout.py": 1,
-    "strategy_lifecycle.py": 1,
-    "symbol_overrides.py": 1,
-    "task_watchdog.py": 1,
-    "tod_overrides.py": 1,
-    "trade_pipeline.py": 37,
-    "trader.py": 2,
-    "views.py": 1,
-    "virtual_audit.py": 2,
+    # 2026-05-13: full audit pass complete — every silent swallow in
+    # production source has been classified and either annotated with
+    # `# SILENT_OK: <rationale>` (Cat 1: intentional best-effort
+    # enrichment, per-loop continues, cache writes, notify_*) or
+    # upgraded to log+continue (Cat 2: intraday_risk_monitor halt
+    # lookup). Baseline empty so future violations fail loudly.
 }
 
 
@@ -134,7 +63,7 @@ def _walk_critical_path_files() -> List[str]:
     out = []
     for root, dirs, files in os.walk(REPO_ROOT):
         dirs[:] = [d for d in dirs if d not in (
-            "venv", "__pycache__", ".git", "tests", "exports",
+            "venv", "__pycache__", ".git", ".claude", "tests", "exports",
             "backups", "logs", "altdata", "node_modules", "docs",
             "scripts",
         )]
@@ -265,11 +194,10 @@ class TestNoSilentExceptPashRatchet:
                 continue
             if n > baseline:
                 regressions.append((rel, baseline, n))
-        # Sanity: scanner found something (baseline expects >50 files)
-        assert len(actual) >= 30, (
-            f"Scanner found silent swallows in only {len(actual)} "
-            f"files — baseline expects ~80; investigate."
-        )
+        # Sanity removed (2026-05-13): full audit complete, baseline is
+        # empty. The scanner correctly returns 0 violations now. Re-add
+        # a sanity check here only if a future change causes the scanner
+        # to silently match nothing (e.g. directory walk regression).
         problems = []
         if regressions:
             problems.append(

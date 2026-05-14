@@ -1170,6 +1170,7 @@ def _parse_wheel_symbols(raw):
         parsed = json.loads(raw)
         if isinstance(parsed, list):
             return [str(s).upper() for s in parsed if s]
+    # SILENT_OK: JSON list-of-symbols parse fallback; returns [] on malformed input
     except Exception:
         pass
     return []

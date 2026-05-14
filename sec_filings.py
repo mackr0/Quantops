@@ -591,6 +591,7 @@ def monitor_symbol(symbol: str, db_path: str, ctx: Any = None,
         ).fetchall()
         conn.close()
         existing = {r[0] for r in rows}
+    # SILENT_OK: existing-accession set load; falls through with empty set (all filings re-evaluated)
     except Exception:
         pass
 

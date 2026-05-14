@@ -95,6 +95,7 @@ def audit_virtual_profile(db_path: str, initial_capital: float,
                 "Position computation not deterministic — two consecutive "
                 "calls returned different results"
             )
+    # SILENT_OK: determinism check is best-effort; audit reports continue without it
     except Exception:
         pass
 
@@ -106,6 +107,7 @@ def audit_virtual_profile(db_path: str, initial_capital: float,
         conn.close()
         if count == 0:
             problems.append("No trades recorded — profile may not be executing")
+    # SILENT_OK: trade-count sanity check is best-effort; audit reports continue without it
     except Exception:
         pass
 

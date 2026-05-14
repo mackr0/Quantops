@@ -311,6 +311,7 @@ def analyze_symbol_consensus(symbol, ctx=None, api=None, political_context=None)
             try:
                 from models import increment_api_usage
                 increment_api_usage(ctx.user_id)
+            # SILENT_OK: API-usage counter is telemetry; secondary AI call already succeeded.
             except Exception:
                 pass
 
@@ -407,6 +408,7 @@ def analyze_portfolio_risk(positions, account_info, ctx=None):
             try:
                 from models import increment_api_usage
                 increment_api_usage(ctx.user_id)
+            # SILENT_OK: API-usage counter is telemetry; portfolio-review AI call already succeeded.
             except Exception:
                 pass
 
@@ -598,6 +600,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         try:
             from portfolio_exposure import render_for_prompt
             exposure_block = "\nEXPOSURE BREAKDOWN:\n" + render_for_prompt(exp)
+        # SILENT_OK: exposure-block is AI-prompt enrichment; prompt continues without it.
         except Exception:
             pass
 
@@ -613,6 +616,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             from mfe_capture import compute_capture_ratio, render_for_prompt as _cap_render
             cap = compute_capture_ratio(db_path_for_capture)
             mfe_capture_block = _cap_render(cap)
+        # SILENT_OK: MFE-capture block is AI-prompt enrichment; prompt continues without it.
         except Exception:
             pass
 
@@ -631,6 +635,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         equity_for_risk = float(portfolio_state.get("equity") or 0)
         analysis = analyze_position_risk(positions_for_risk, equity_for_risk)
         risk_budget_block = risk_render(analysis)
+    # SILENT_OK: risk-budget block is AI-prompt enrichment; prompt continues without it.
     except Exception:
         pass
 
@@ -651,12 +656,14 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                 oracle = get_options_oracle(sym)
                 if oracle and oracle.get("has_options"):
                     return oracle.get("iv_rank", {}).get("rank_pct")
+            # SILENT_OK: per-symbol IV-rank lookup; advisor falls back to no-IV path.
             except Exception:
                 return None
             return None
         options_strategy_block = opt_render(
             positions_for_opts, iv_rank_lookup=_iv_rank_lookup,
         )
+    # SILENT_OK: options-advisor block is AI-prompt enrichment; prompt continues without it.
     except Exception:
         pass
 
@@ -681,6 +688,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                     db_path_for_weights, sorted(strategies_in_play),
                 )
                 strategy_weights_block = render_weights_for_prompt(weights)
+    # SILENT_OK: strategy-weights block is AI-prompt enrichment; prompt continues without it.
     except Exception:
         pass
 
@@ -699,6 +707,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                     bars = get_bars(sym, limit=2)
                     if bars is not None and len(bars) > 0:
                         return float(bars["close"].iloc[-1])
+                # SILENT_OK: per-symbol price fetch fallback; wheel block uses None price.
                 except Exception:
                     pass
                 return None
@@ -707,6 +716,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                 wheel_symbols=wheel_syms,
                 price_lookup=_wheel_price,
             )
+    # SILENT_OK: wheel block is AI-prompt enrichment; prompt continues without it.
     except Exception:
         pass
 
@@ -725,11 +735,13 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                     api = _ga(ctx)
                     pos = api.get_position(occ)
                     return float(getattr(pos, "current_price", 0) or 0) or None
+                # SILENT_OK: per-position broker quote fallback; roll-block uses None quote.
                 except Exception:
                     return None
             roll_block = render_roll_recommendations_for_prompt(
                 db_path_for_roll, quote_lookup=_option_quote,
             )
+    # SILENT_OK: roll-recommendations block is AI-prompt enrichment; prompt continues without it.
     except Exception:
         pass
 
@@ -743,6 +755,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         def _earn_lookup(sym):
             try:
                 return _check_earn(sym)
+            # SILENT_OK: per-symbol earnings lookup; play renderer uses None earnings.
             except Exception:
                 return None
         # iv lookup defined below — define early for both blocks.
@@ -752,6 +765,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                 oracle = get_options_oracle(sym)
                 if oracle and oracle.get("has_options"):
                     return oracle.get("iv_rank", {}).get("rank_pct")
+            # SILENT_OK: per-symbol IV-rank lookup; play renderer uses None IV.
             except Exception:
                 return None
             return None
@@ -760,6 +774,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             earnings_lookup=_earn_lookup,
             iv_rank_lookup=_iv_rank_lookup_2,
         )
+    # SILENT_OK: earnings-plays block is AI-prompt enrichment; prompt continues without it.
     except Exception:
         pass
 
@@ -774,11 +789,13 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         def _oracle_lookup(sym):
             try:
                 return get_options_oracle(sym)
+            # SILENT_OK: per-symbol oracle lookup; vol-regime renderer uses None oracle.
             except Exception:
                 return None
         vol_regime_block = render_vol_regime_for_prompt(
             candidates_data or [], oracle_lookup=_oracle_lookup,
         )
+    # SILENT_OK: vol-regime block is AI-prompt enrichment; prompt continues without it.
     except Exception:
         pass
 
@@ -795,6 +812,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             regime=regime,
             ctx=ctx,  # 2026-05-12 — ctx-tuned IV thresholds
         )
+    # SILENT_OK: multileg recs block is AI-prompt enrichment; prompt continues without it.
     except Exception:
         pass
 
@@ -810,6 +828,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             "peak_equity": portfolio_state.get("peak_equity"),
             "current_equity": portfolio_state.get("equity"),
         })
+    # SILENT_OK: drawdown-scaling block is AI-prompt enrichment; prompt continues without it.
     except Exception:
         pass
 
@@ -829,6 +848,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             rec_short = (compute_kelly_recommendation(db_path_for_kelly, "short")
                           if enable_shorts else None)
             kelly_block = kelly_render(rec_long, rec_short)
+        # SILENT_OK: Kelly-sizing block is AI-prompt enrichment; prompt continues without it.
         except Exception:
             pass
 
@@ -1462,6 +1482,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             pair_block = render_pairs_for_prompt(pairs)
             if pair_block:
                 sections.append(pair_block)
+        # SILENT_OK: pair-trade block is AI-prompt enrichment; prompt continues without it.
         except Exception:
             pass
 
@@ -1495,6 +1516,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                         if bars is None or len(bars) < 30:
                             return None
                         return bars["close"].tolist()
+                    # SILENT_OK: per-symbol price history fallback; pair book uses None history.
                     except Exception:
                         return None
 
@@ -1505,6 +1527,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                 if book_block:
                     sections.append(book_block)
                     pair_book_rendered = True
+        # SILENT_OK: stat-arb pair-book block is AI-prompt enrichment; prompt continues without it.
         except Exception:
             pass
 
@@ -1681,6 +1704,7 @@ def _validate_ai_trades(result, candidates_data, ctx=None,
                 target_short_pct=getattr(ctx, "target_short_pct", 0.0) or 0.0,
                 current_exposure=portfolio_state.get("exposure"),
             )
+        # SILENT_OK: balance-gate is advisory; defaults to "pass" on lookup failure.
         except Exception:
             pass
 

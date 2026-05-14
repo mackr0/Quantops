@@ -27,6 +27,7 @@ def _get_bars_for_symbols(symbols, limit=30):
             df = get_bars(sym, limit=limit)
             if df is not None and not df.empty and len(df) >= 2:
                 result[sym] = df
+        # SILENT_OK: per-symbol bar fetch; one bad symbol shouldn't kill the screener
         except Exception:
             pass
     return result
@@ -161,6 +162,7 @@ def screen_by_price_range(min_price=1.0, max_price=20.0, min_volume=500_000,
                     "price_change_pct": round(change_pct, 2),
                     "reason": f"${price:.2f} | vol: {volume:,} | chg: {change_pct:+.1f}%",
                 })
+        # SILENT_OK: per-symbol price/volume scoring; one bad symbol shouldn't kill the screener
         except Exception:
             pass
 
@@ -204,6 +206,7 @@ def find_volume_surges(candidates, volume_multiplier=2.0, api=None):
                         "avg_vol": int(avg_vol),
                         "reason": f"Volume {ratio:.1f}x average ({int(today_vol):,} vs {int(avg_vol):,})",
                     })
+        # SILENT_OK: per-symbol volume-surge scoring; one bad symbol shouldn't kill the screener
         except Exception:
             pass
 
@@ -243,6 +246,7 @@ def find_momentum_stocks(candidates, min_gain_5d=3.0, min_gain_20d=5.0, api=None
                     "gain_20d": round(gain_20d, 1),
                     "reason": f"5d: +{gain_5d:.1f}% | 20d: +{gain_20d:.1f}%",
                 })
+        # SILENT_OK: per-symbol momentum scoring; one bad symbol shouldn't kill the screener
         except Exception:
             pass
 
@@ -284,6 +288,7 @@ def find_breakouts(candidates, api=None):
                     "volume_ratio": round(vol_ratio, 1),
                     "reason": f"Broke ${high_20d:.2f} by +{breakout_pct:.1f}% on {vol_ratio:.1f}x volume",
                 })
+        # SILENT_OK: per-symbol breakout scoring; one bad symbol shouldn't kill the screener
         except Exception:
             pass
 
@@ -550,6 +555,7 @@ def _load_disk_cache():
             raw = _json.load(f)
         # Format: {cache_key: [timestamp, [symbols]]}
         _dynamic_cache = {k: (float(v[0]), list(v[1])) for k, v in raw.items()}
+    # SILENT_OK: disk cache load fallback; cold cache rebuilt from in-memory state
     except Exception:
         pass
 
@@ -560,6 +566,7 @@ def _save_disk_cache():
         import json as _json
         with open(_DYNAMIC_CACHE_FILE, "w") as f:
             _json.dump({k: [v[0], v[1]] for k, v in _dynamic_cache.items()}, f)
+    # SILENT_OK: disk cache write fallback; in-memory cache survives restart loss
     except Exception:
         pass
 
@@ -788,6 +795,7 @@ def screen_dynamic_universe(min_price=1.0, max_price=20.0, min_volume=500_000,
                     avg_volume = float(vol_data.mean())
                     if min_price <= last_price <= max_price and avg_volume >= min_volume:
                         results.append((sym, avg_volume))
+                # SILENT_OK: per-symbol price/volume eligibility; one bad symbol shouldn't kill universe scan
                 except Exception:
                     continue
 

@@ -413,6 +413,7 @@ def get_sector_rotation():
                     "return_20d": round(ret_20d, 2),
                     "trend": trend,
                 }
+            # SILENT_OK: per-sector return calc; one bad ETF shouldn't kill the rotation snapshot
             except Exception:
                 continue
 
@@ -494,6 +495,7 @@ def get_snapshot(symbol, api=None):
                     "daily_bar_close": prev_close,
                     "daily_bar_volume": daily_volume,
                 }
+            # SILENT_OK: per-symbol latest-trade enrichment; falls through to yfinance fallback
             except Exception:
                 pass
 

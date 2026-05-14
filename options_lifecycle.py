@@ -101,6 +101,7 @@ def _underlying_close_at_expiry(symbol: str,
         for ts, row in bars.iterrows():
             try:
                 ts_date = ts.date()
+            # SILENT_OK: per-bar timestamp parse; skip rows with malformed index
             except Exception:
                 continue
             if ts_date == expiry:

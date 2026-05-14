@@ -439,6 +439,7 @@ def _fetch_yf_history_range(
     try:
         if df.index.tz is not None:
             df = df.tz_localize(None)
+    # SILENT_OK: tz-strip on warm-start df; downstream comparison handles either tz state
     except Exception:
         pass
     if warm_start.tz is not None:
@@ -611,6 +612,7 @@ def backtest_strategy(
             try:
                 if df.index.tz is not None:
                     start_ts = start_ts.tz_localize(df.index.tz) if start_ts.tz is None else start_ts
+            # SILENT_OK: tz-localize start_ts; mask filter still applied
             except Exception:
                 pass
             mask = df.index >= start_ts
@@ -691,6 +693,7 @@ def backtest_strategy(
                             # Fallback: fixed 3%/6% stops
                             stop_loss = entry_price * 0.97
                             take_profit = entry_price * 1.06
+                # SILENT_OK: per-bar strategy invocation; one bad bar shouldn't kill the simulation
                 except Exception:
                     pass  # Strategy error -- skip this bar
 
@@ -890,6 +893,7 @@ def _fetch_universe_batch(market_type: str, days: int) -> Optional[pd.DataFrame]
                     # Capitalize columns for MultiIndex compat with _extract_symbol_df
                     df.columns = [c.capitalize() for c in df.columns]
                     frames[sym] = df
+            # SILENT_OK: per-symbol bars fetch; one bad symbol shouldn't kill the multi-symbol backtest
             except Exception:
                 continue
 
@@ -1155,6 +1159,7 @@ def backtest_with_params(market_type: str, params: dict, days: int = 90,
                         else:
                             stop_loss = entry_price * (1 - fixed_sl_pct)
                             take_profit = entry_price * (1 + fixed_tp_pct)
+                # SILENT_OK: per-bar stop/target compute; bar processed without stops on failure
                 except Exception:
                     pass
 

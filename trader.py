@@ -56,6 +56,7 @@ def execute_trade(symbol, signal, ctx=None, strategy_name="combined", log=True):
             if bars is not None and not bars.empty:
                 price = float(bars.iloc[-1]["close"])
                 signal["price"] = price
+        # SILENT_OK: best-effort price re-fetch when signal lacks price; downstream handles 0
         except Exception:
             pass
 
@@ -238,6 +239,7 @@ def _entry_order_filled_at_broker(api, db_path, broker_symbol, is_short):
             continue
         try:
             qty = float(getattr(p, "qty", 0) or 0)
+        # SILENT_OK: per-position qty parse; skip rows with malformed qty
         except Exception:
             continue
         if is_short and qty < 0:

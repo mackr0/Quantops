@@ -258,6 +258,7 @@ def _get_current_price(symbol, api=None):
             trade = api.get_latest_trade(symbol)
             if trade and trade.price:
                 return float(trade.price)
+        # SILENT_OK: Alpaca latest-trade fallback; falls through to market_data path below
         except Exception:
             pass
 
@@ -959,6 +960,7 @@ def compute_rolling_win_rate(db_paths, window_days=7, lookback_days=60):
                 except Exception:
                     d = datetime.strptime(r[0][:10], "%Y-%m-%d").date()
                 resolutions.append((d, r[1]))
+        # SILENT_OK: per-DB resolutions aggregation; one bad DB shouldn't kill cross-profile rollup
         except Exception:
             continue
 

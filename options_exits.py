@@ -297,6 +297,7 @@ def _pos_is_option(pos) -> bool:
     if hasattr(pos, "is_option"):
         try:
             return bool(pos.is_option)
+        # SILENT_OK: duck-typed is_option attribute access; falls through to OCC heuristic
         except Exception:
             pass
     occ = _pos_occ(pos)
@@ -320,6 +321,7 @@ def _pos_get(pos, key, default=None):
     if hasattr(pos, key):
         try:
             return getattr(pos, key)
+        # SILENT_OK: duck-typed attribute access; falls through to dict-style lookup
         except Exception:
             pass
     if isinstance(pos, dict):

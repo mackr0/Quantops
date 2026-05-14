@@ -329,6 +329,7 @@ def call_ai_structured(prompt, schema, tool_name="emit",
             from ai_cost_ledger import log_ai_call
             log_ai_call(db_path, "anthropic", model or "?",
                         in_tok, out_tok, purpose or "")
+        # SILENT_OK: ai_cost_ledger telemetry write; AI call result already returned to caller
         except Exception:
             pass
 

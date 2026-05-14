@@ -47,6 +47,7 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
             # Only keep non-HOLD signals
             if signal.get("signal", "HOLD") != "HOLD":
                 out.append(signal)
+        # SILENT_OK: per-symbol strategy scoring; one bad symbol shouldn't kill the strategy loop
         except Exception:
             continue
     return out

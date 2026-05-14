@@ -132,6 +132,7 @@ def record_outcomes_for_prediction(
                     "VALUES (?, ?, ?, ?)",
                     (prediction_id, name, verdict, int(raw_conf)),
                 )
+            # SILENT_OK: per-specialist outcome insert; one bad specialist shouldn't kill the loop
             except Exception:
                 continue
         conn.commit()
@@ -480,6 +481,7 @@ def backfill_from_resolved_predictions(db_path: str) -> int:
         for pred_id, fjson, outcome in rows:
             try:
                 features = _json.loads(fjson)
+            # SILENT_OK: per-prediction features-json parse; skip malformed feature blobs
             except Exception:
                 continue
             summary = features.get("ensemble_summary", "")
@@ -503,6 +505,7 @@ def backfill_from_resolved_predictions(db_path: str) -> int:
                     )
                     if cur.rowcount > 0:
                         inserted += 1
+                # SILENT_OK: per-specialist backfill insert; one bad row shouldn't kill the loop
                 except Exception:
                     continue
         conn.commit()

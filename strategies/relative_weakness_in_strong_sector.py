@@ -120,6 +120,7 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
                     f"price below 20d MA"
                 ),
             })
+        # SILENT_OK: per-symbol strategy scoring; one bad symbol shouldn't kill the strategy loop
         except Exception:
             continue
     return out

@@ -53,6 +53,7 @@ def _ensure_cache_table():
         """)
         conn.commit()
         conn.close()
+    # SILENT_OK: cache schema init; cache writes that fail leave callers in non-cached path
     except Exception:
         pass
 
@@ -71,6 +72,7 @@ def _get_cached(key, ttl_type):
         conn.close()
         if row and (time.time() - row[1]) < _CACHE_TTL.get(ttl_type, 3600):
             return json.loads(row[0])
+    # SILENT_OK: cache read fallback; caller fetches from source on miss
     except Exception:
         pass
     return None
@@ -90,6 +92,7 @@ def _set_cached(key, value):
         )
         conn.commit()
         conn.close()
+    # SILENT_OK: cache write fallback; cache miss is acceptable next time
     except Exception:
         pass
 
@@ -104,7 +107,16 @@ def _fred_fetch(series_id, limit=5):
     req = Request(url, headers={"User-Agent": _USER_AGENT})
     with _http_lock:
         resp = urlopen(req, timeout=15)
-        data = json.loads(resp.read())
+        raw = resp.read()
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        logger.warning(
+            "FRED returned non-JSON for series_id=%s (len=%d); "
+            "treating as no observations",
+            series_id, len(raw or b""),
+        )
+        return []
     values = []
     for obs in data.get("observations", []):
         try:
@@ -147,6 +159,7 @@ def get_yield_curve() -> Dict[str, Any]:
                 vals = _fred_fetch(sid, limit=1)
                 if vals:
                     result[key] = round(vals[0], 2)
+            # SILENT_OK: per-series FRED fetch; one bad series shouldn't kill the loop
             except Exception:
                 pass
 
@@ -215,6 +228,7 @@ def get_etf_flows() -> Dict[str, Dict[str, Any]]:
                     "flow_direction": "inflow" if weekly_flow > 0 else "outflow",
                     "magnitude": magnitude,
                 }
+            # SILENT_OK: per-sector ETF flow; one bad sector shouldn't kill the loop
             except Exception:
                 continue
     except Exception as exc:
@@ -310,6 +324,7 @@ def get_fred_macro() -> Dict[str, Any]:
                         result["unemployment_trend"] = "rising"
                     elif vals[0] < vals[-1] - 0.2:
                         result["unemployment_trend"] = "falling"
+        # SILENT_OK: unemployment annotation; rest of macro dict still returned
         except Exception:
             pass
 
@@ -318,6 +333,7 @@ def get_fred_macro() -> Dict[str, Any]:
             vals = _fred_fetch("CPIAUCSL", limit=13)
             if vals and len(vals) >= 13:
                 result["cpi_yoy"] = round((vals[0] / vals[12] - 1) * 100, 1)
+        # SILENT_OK: CPI annotation; rest of macro dict still returned
         except Exception:
             pass
 
@@ -331,6 +347,7 @@ def get_fred_macro() -> Dict[str, Any]:
                         result["consumer_sentiment_trend"] = "rising"
                     elif vals[0] < vals[-1] - 2:
                         result["consumer_sentiment_trend"] = "falling"
+        # SILENT_OK: consumer-sentiment annotation; rest of macro dict still returned
         except Exception:
             pass
 
@@ -339,6 +356,7 @@ def get_fred_macro() -> Dict[str, Any]:
             vals = _fred_fetch("ICSA", limit=4)
             if vals:
                 result["initial_claims_4wk_avg"] = round(sum(vals) / len(vals))
+        # SILENT_OK: claims annotation; rest of macro dict still returned
         except Exception:
             pass
 
@@ -496,6 +514,7 @@ def get_market_gex_aggregate() -> Dict[str, Any]:
                                     positive_count += 1
                     except (json.JSONDecodeError, TypeError):
                         continue
+            # SILENT_OK: per-symbol GEX aggregation; one bad symbol shouldn't kill the loop
             except Exception:
                 continue
 

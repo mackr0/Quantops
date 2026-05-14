@@ -66,6 +66,7 @@ def parse_overrides(raw_json: Optional[str]) -> Dict[str, Dict[str, Any]]:
                 continue
             try:
                 clean_map[regime] = clamp(param_name, value)
+            # SILENT_OK: per-regime value clamp; skip values that don't pass bounds
             except Exception:
                 continue
         if clean_map:
@@ -194,6 +195,7 @@ def resolve_for_current_regime(profile_or_dict: Any, param_name: str,
                                      default=None)
             if sym_value is not None and sym_value != global_value:
                 return sym_value
+        # SILENT_OK: per-symbol override lookup; falls through to per-regime layer below
         except Exception:
             pass
 

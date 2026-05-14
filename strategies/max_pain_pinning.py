@@ -55,6 +55,7 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
                     f"price {distance:+.1f}% from ${max_pain_strike:.2f} pain strike"
                 ),
             })
+        # SILENT_OK: per-symbol strategy scoring; one bad symbol shouldn't kill the strategy loop
         except Exception:
             continue
     return out

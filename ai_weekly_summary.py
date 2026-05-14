@@ -595,6 +595,7 @@ def _render_autonomy_summary(summary: Dict[str, Any]) -> str:
             conn.close()
             if row:
                 user_id = row[0]
+        # SILENT_OK: user_id derivation fallback; weekly summary continues with default user_id
         except Exception:
             pass
 

@@ -99,6 +99,7 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
                     f"{vol_now/avg_vol:.1f}× avg volume"
                 ),
             })
+        # SILENT_OK: per-symbol strategy scoring; one bad symbol shouldn't kill the strategy loop
         except Exception:
             continue
     return out

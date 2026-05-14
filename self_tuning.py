@@ -114,6 +114,7 @@ def _get_recent_adjustment(profile_id, parameter_name, days=3):
             ts = datetime.fromisoformat(entry["timestamp"])
             if ts >= cutoff and entry["parameter_name"] == parameter_name:
                 return entry
+        # SILENT_OK: per-entry timestamp parse; skip malformed history rows.
         except Exception:
             continue
     return None
@@ -165,6 +166,7 @@ def _build_cross_profile_insights(user_id, current_profile_id, current_db_path):
 
         try:
             conn = _get_conn(db)
+        # SILENT_OK: per-profile DB open; skip the profile if its DB is unavailable.
         except Exception:
             continue
 
@@ -233,6 +235,7 @@ def _build_cross_profile_insights(user_id, current_profile_id, current_db_path):
             logger.warning("Cross-profile: error reading profile #%d: %s", pid, exc)
             try:
                 conn.close()
+            # SILENT_OK: cleanup close after error; conn may already be closed.
             except Exception:
                 pass
             continue
@@ -383,6 +386,7 @@ def get_symbol_reputation(db_path, min_predictions=3):
         logger.warning("Failed to get symbol reputation: %s", exc)
         try:
             conn.close()
+        # SILENT_OK: cleanup close after error; conn may already be closed.
         except Exception:
             pass
         return {}
@@ -482,6 +486,7 @@ def _build_trade_performance_context(db_path):
         logger.warning("Failed to build trade performance context: %s", exc)
         try:
             conn.close()
+        # SILENT_OK: cleanup close after error; conn may already be closed.
         except Exception:
             pass
         return ""
@@ -519,6 +524,7 @@ def _get_track_record_by_direction(conn):
             wr = (wins / total * 100) if total > 0 else 0.0
             out[ptype] = {"wins": wins, "losses": losses,
                           "total": total, "win_rate": wr}
+    # SILENT_OK: per-direction breakdown is enrichment; aggregate stats still surface.
     except Exception:
         pass
     return out
@@ -546,6 +552,7 @@ def build_concise_context(ctx, symbol=None):
         if regime and regime.get("regime", "unknown") != "unknown":
             vix = regime.get("vix", 0)
             lines.append(f"MARKET: {regime['regime'].upper()} (VIX {vix:.0f})")
+    # SILENT_OK: market regime is enrichment; concise context skips line on failure.
     except Exception:
         pass
 
@@ -560,6 +567,7 @@ def build_concise_context(ctx, symbol=None):
                     f"{r['wins']}W/{r['losses']}L "
                     f"({r['win_rate']:.0f}% win rate)"
                 )
+        # SILENT_OK: per-symbol reputation is enrichment; concise context skips line on failure.
         except Exception:
             pass
 
@@ -609,6 +617,7 @@ def build_concise_context(ctx, symbol=None):
                     if parts:
                         lines.append("BY DIRECTION: " + " | ".join(parts))
             conn.close()
+        # SILENT_OK: overall WR enrichment for concise context; AI prompt continues without it.
         except Exception:
             pass
 
@@ -621,6 +630,7 @@ def build_concise_context(ctx, symbol=None):
                 lines.append(
                     f"EARNINGS: {symbol} reports in {e['days_until']} days. High uncertainty."
                 )
+        # SILENT_OK: earnings warning is enrichment; concise context skips line on failure.
         except Exception:
             pass
 
@@ -934,6 +944,7 @@ def build_performance_context(ctx, symbol=None, db_path=None):
         logger.warning("Failed to build performance context: %s", exc)
         try:
             conn.close()
+        # SILENT_OK: cleanup close after error; conn may already be closed.
         except Exception:
             pass
         return ""
@@ -1002,6 +1013,7 @@ def _build_time_context(db_path):
                 buckets[bucket]["total"] += 1
                 if r["actual_outcome"] == "win":
                     buckets[bucket]["wins"] += 1
+            # SILENT_OK: per-row timestamp parse; skip malformed prediction rows.
             except Exception:
                 continue
 
@@ -1036,6 +1048,7 @@ def _build_time_context(db_path):
         logger.warning("Failed to build time context: %s", exc)
         try:
             conn.close()
+        # SILENT_OK: cleanup close after error; conn may already be closed.
         except Exception:
             pass
         return ""
@@ -1345,6 +1358,7 @@ def get_auto_adjustments(ctx, db_path=None):
         logger.warning("Failed to get auto adjustments: %s", exc)
         try:
             conn.close()
+        # SILENT_OK: cleanup close after error; conn may already be closed.
         except Exception:
             pass
         return {"reasons": [str(exc)]}
@@ -1765,6 +1779,7 @@ def apply_auto_adjustments(ctx, db_path=None):
         logger.warning("Failed to apply auto adjustments: %s", exc)
         try:
             conn.close()
+        # SILENT_OK: cleanup close after error; conn may already be closed.
         except Exception:
             pass
         return adjustments_made
@@ -2754,6 +2769,7 @@ def _optimize_avoid_earnings_days(conn, ctx, profile_id, user_id,
     for fjson, outcome in rows:
         try:
             f = _json.loads(fjson)
+        # SILENT_OK: per-row JSON parse; skip malformed feature blobs.
         except Exception:
             continue
         d2e = f.get("days_to_earnings")
@@ -2860,6 +2876,7 @@ def _optimize_skip_first_minutes(conn, ctx, profile_id, user_id,
             ts = _dt.fromisoformat(ts_iso.replace("Z", "+00:00"))
             if ts.tzinfo is not None:
                 ts = ts.replace(tzinfo=None)
+        # SILENT_OK: per-row timestamp parse; skip malformed prediction rows.
         except Exception:
             continue
         # Market open in UTC = 13:30 (during DST; 14:30 in winter).
@@ -2957,6 +2974,7 @@ def _bucket_by_feature(conn, feature_name):
     for r in rows:
         try:
             f = _j.loads(r["features_json"])
+        # SILENT_OK: per-row JSON parse; skip malformed feature blobs.
         except Exception:
             continue
         v = f.get(feature_name)
@@ -4050,6 +4068,7 @@ def _optimize_fast_lane_retirement(conn, ctx, profile_id, user_id,
                 predictions_resolved=resolved,
             )
             actions.append(f"Restored {st} (14d aged)")
+        # SILENT_OK: per-strategy restore; one failed restore shouldn't kill the loop.
         except Exception:
             continue
 
@@ -4099,6 +4118,7 @@ def _optimize_fast_lane_retirement(conn, ctx, profile_id, user_id,
                 "ORDER BY resolved_at DESC, id DESC LIMIT 10",
                 (st,),
             ).fetchall()
+        # SILENT_OK: per-strategy lookup; one bad query shouldn't kill the loop.
         except Exception:
             continue
         if len(last10) < 10:
@@ -4128,6 +4148,7 @@ def _optimize_fast_lane_retirement(conn, ctx, profile_id, user_id,
                 predictions_resolved=resolved,
             )
             actions.append(f"Deprecated {st} (rolling-10 wr {wr:.0f}%)")
+        # SILENT_OK: per-strategy deprecation; one failed call shouldn't kill the loop.
         except Exception:
             continue
 
@@ -4230,6 +4251,7 @@ def _optimize_stop_out_blacklist(conn, ctx, profile_id, user_id,
                     win_rate_at_change=overall_wr,
                     predictions_resolved=resolved,
                 )
+            # SILENT_OK: per-symbol audit log; one failed write shouldn't kill the loop.
             except Exception:
                 continue
     except Exception:
@@ -4400,6 +4422,7 @@ def _optimize_skip_first_minutes_slippage(conn, ctx, profile_id, user_id,
         try:
             hh, mm = int(tod[:2]), int(tod[3:5])
             minute_of_day = hh * 60 + mm
+        # SILENT_OK: per-row tod parse; skip malformed timestamp rows.
         except Exception:
             continue
         if 9 * 60 + 30 <= minute_of_day <= 9 * 60 + 45:
@@ -4664,6 +4687,7 @@ def _optimize_tod_overrides(conn, ctx, profile_id, user_id,
                 continue
             minutes = dt_et.hour * 60 + dt_et.minute
             bucket = _bucket_for_minute(minutes)
+        # SILENT_OK: per-row timestamp parse; skip malformed prediction rows.
         except Exception:
             continue
         if not bucket:
@@ -4992,6 +5016,7 @@ def _optimize_commission_strategy(conn, ctx, profile_id, user_id,
                 f"(detected {len(gap_rows)} no-strategy winners in last 30d)",
                 user_id, _COMMISSION_EST_USD,
             )
+    # SILENT_OK: cost-gate import failure falls open — strategy generation proceeds.
     except Exception:
         pass
 
@@ -5145,6 +5170,7 @@ def _optimize_prompt_layout(conn, ctx, profile_id, user_id,
                     f"{current} to {new}",
                     user_id, cost_delta,
                 )
+        # SILENT_OK: cost-gate import failure falls open — rotation proceeds.
         except Exception:
             pass
 
@@ -5199,6 +5225,7 @@ def _optimize_signal_weights(conn, ctx, profile_id, user_id,
     for r in rows:
         try:
             f = _j.loads(r["features_json"])
+        # SILENT_OK: per-row JSON parse; skip malformed feature blobs.
         except Exception:
             continue
         feature_rows.append((f, r["actual_outcome"]))
@@ -5216,6 +5243,7 @@ def _optimize_signal_weights(conn, ctx, profile_id, user_id,
         for feats, outcome in feature_rows:
             try:
                 active = bool(predicate(feats))
+            # SILENT_OK: per-feature predicate eval; skip rows where the predicate doesn't apply.
             except Exception:
                 continue
             if active:
@@ -5328,6 +5356,7 @@ def _optimize_maga_mode(conn, ctx, profile_id, user_id, overall_wr, resolved):
         try:
             import json as _j
             feats = _j.loads(r["features_json"]) if r["features_json"] else {}
+        # SILENT_OK: per-row JSON parse; skip malformed feature blobs.
         except Exception:
             continue
         if feats.get("political_context") or feats.get("maga_mode"):
@@ -5464,6 +5493,7 @@ def _analyze_failure_patterns(db_path):
         logger.warning("Failed to analyze failure patterns: %s", exc)
         try:
             conn.close()
+        # SILENT_OK: cleanup close after error; conn may already be closed.
         except Exception:
             pass
         return []

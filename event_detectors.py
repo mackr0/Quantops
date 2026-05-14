@@ -102,6 +102,7 @@ def detect_earnings_imminent(ctx: Any) -> int:
         try:
             info = check_earnings(sym) or {}
             days = info.get("days_until")
+        # SILENT_OK: per-symbol earnings lookup; skip symbols where lookup fails
         except Exception:
             continue
         if days is None or days < 0 or days > 1:
@@ -147,6 +148,7 @@ def detect_price_shocks(ctx: Any, threshold_pct: float = 5.0,
             move_pct = (today_close - yday_close) / yday_close * 100
             vol = float(df["volume"].iloc[-1])
             avg_vol = float(df["volume"].iloc[-21:-1].mean()) if len(df) >= 21 else 0
+        # SILENT_OK: per-symbol move/volume calc; skip symbols where bar data is malformed
         except Exception:
             continue
 

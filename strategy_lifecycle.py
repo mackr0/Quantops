@@ -71,7 +71,13 @@ def validate_and_promote(
         )
 
     import json
-    spec = json.loads(strat["spec_json"])
+    try:
+        spec = json.loads(strat["spec_json"])
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(
+            f"auto-strategy spec_id={spec_id} has corrupt spec_json — "
+            f"cannot activate. DB integrity issue: {exc}"
+        ) from exc
 
     # 1. Render the module to disk. The registry discovers it on next import.
     path = write_strategy_module(spec, spec_id)
@@ -125,6 +131,7 @@ def _run_validation(spec: Dict[str, Any], market_type: str,
             results = module.find_candidates(_Ctx(), [symbol]) or []
             if results:
                 return results[0]
+        # SILENT_OK: per-strategy probe call; falls back to HOLD when strategy errors
         except Exception:
             pass
         return {"signal": "HOLD"}

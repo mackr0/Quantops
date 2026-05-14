@@ -32,6 +32,7 @@ def _ensure_table():
         """)
         conn.commit()
         conn.close()
+    # SILENT_OK: cache schema init; cache writes that fail leave callers in non-cached path
     except Exception:
         pass
 
@@ -68,6 +69,7 @@ def _fetch_and_store(symbol: str) -> Optional[str]:
                         earnings_date = ed.iloc[0]
                     else:
                         earnings_date = ed
+            # SILENT_OK: yfinance calendar parse fallback; falls through to other date sources
             except Exception:
                 pass
 
@@ -103,6 +105,7 @@ def _store(symbol: str, earnings_date: Optional[str]):
         )
         conn.commit()
         conn.close()
+    # SILENT_OK: cache write fallback; cache miss is acceptable next time
     except Exception:
         pass
 
@@ -136,6 +139,7 @@ def _get_cached(symbol: str) -> tuple:
                 ed = datetime.strptime(earnings_date_str[:10], "%Y-%m-%d").date()
                 if ed >= today_et:
                     return earnings_date_str, True
+            # SILENT_OK: ET date parse fallback; falls through to staleness check below
             except Exception:
                 pass
 
@@ -168,6 +172,7 @@ def _reset_yf_crumb():
             path = os.path.join(cache_dir, fname)
             if os.path.exists(path):
                 os.remove(path)
+    # SILENT_OK: yfinance cookie cleanup; failure has no functional impact
     except Exception:
         pass
 

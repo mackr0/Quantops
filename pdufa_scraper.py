@@ -296,6 +296,7 @@ def sync_pdufa_events_to_altdata_db(
                      e.get("parser_version", "edgar_8k_v1")),
                 )
                 written += 1
+            # SILENT_OK: per-event PDUFA insert; one bad event shouldn't kill the scrape loop
             except Exception:
                 continue
         conn.commit()
@@ -905,6 +906,7 @@ def sync_adcomm_events_to_altdata_db(
                      e.get("source_url", ""), "edgar_8k_v1"),
                 )
                 written += 1
+            # SILENT_OK: per-event AdComm insert; one bad event shouldn't kill the scrape loop
             except Exception:
                 continue
         conn.commit()

@@ -75,6 +75,7 @@ def trailing_avg_daily_spend(user_id: int, days: int = 7) -> float:
             key = "7d" if days == 7 else f"{days}d"
             window = s.get(key, {}) or {}
             total += float(window.get("usd", 0))
+        # SILENT_OK: per-DB spend aggregation; one bad DB shouldn't kill cross-profile cost trailing-avg
         except Exception:
             continue
     return total / max(days, 1)
@@ -94,6 +95,7 @@ def daily_ceiling_usd(user_id: int) -> float:
         conn.close()
         if row and row[0] is not None and float(row[0]) > 0:
             return float(row[0])
+    # SILENT_OK: user override read; falls through to auto-derived ceiling
     except Exception:
         pass
     avg = trailing_avg_daily_spend(user_id, days=7)
@@ -113,6 +115,7 @@ def ceiling_source(user_id: int) -> str:
         conn.close()
         if row and row[0] is not None and float(row[0]) > 0:
             return "user"
+    # SILENT_OK: user override read; falls through to auto attribution
     except Exception:
         pass
     return "auto"
@@ -126,6 +129,7 @@ def today_spend(user_id: int) -> float:
         try:
             s = spend_summary(db_path)
             total += float(s.get("today", {}).get("usd", 0))
+        # SILENT_OK: per-DB today-spend aggregation; one bad DB shouldn't kill cross-profile total
         except Exception:
             continue
     return total

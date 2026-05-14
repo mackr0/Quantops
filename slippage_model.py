@@ -207,6 +207,7 @@ def calibrate_from_history(
                 participation = notional / 50_000_000
             participation = max(participation, 1e-6)
             samples.append((participation, bps, notional))
+        # SILENT_OK: per-trade slippage sample build; one bad trade shouldn't kill the calibration
         except Exception:
             continue
 

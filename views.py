@@ -2299,6 +2299,7 @@ def performance_dashboard():
                     all_positions.extend(positions)
                 if positions or account:
                     n_profiles_with_data += 1
+            # SILENT_OK: per-profile broker fetch in dashboard rollup; one bad profile shouldn't kill the page
             except Exception:
                 continue
 

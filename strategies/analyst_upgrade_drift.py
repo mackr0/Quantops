@@ -87,6 +87,7 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
                     f"{days_since}d ago, price confirming ({move_pct:+.1f}%)"
                 ),
             })
+        # SILENT_OK: per-symbol strategy scoring; one bad symbol shouldn't kill the strategy loop
         except Exception:
             continue
     return out

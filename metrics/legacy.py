@@ -153,6 +153,7 @@ def _gather_trades(db_paths) -> List[Dict]:
             for r in rows:
                 all_trades.append(dict(r))
             conn.close()
+        # SILENT_OK: per-DB trade aggregation; one bad DB shouldn't kill cross-profile metrics
         except Exception:
             pass
     all_trades.sort(key=lambda t: t.get("timestamp") or "")
@@ -178,6 +179,7 @@ def _count_open_trades(db_paths) -> int:
             if rows:
                 total += int(rows[0] or 0)
             conn.close()
+        # SILENT_OK: per-DB open-position count; one bad DB shouldn't kill cross-profile metrics
         except Exception:
             pass
     return total
@@ -759,6 +761,7 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
                 for s in snapshots:
                     try:
                         sd = datetime.strptime(s.get("date", ""), "%Y-%m-%d")
+                    # SILENT_OK: per-snapshot date parse; skip malformed snapshot rows
                     except Exception:
                         continue
                     if sd > tr and (s.get("equity", 0) or 0) >= peak:
@@ -768,6 +771,7 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
                 if not recovered:
                     last_d = datetime.strptime(snapshots[-1].get("date", dd_trough_date), "%Y-%m-%d")
                     max_dd_duration = (last_d - pk).days
+            # SILENT_OK: drawdown-duration calc; metric stays None on parse failure
             except Exception:
                 pass
 
@@ -1011,6 +1015,7 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
             ).fetchall()
             all_rows.extend(dict(r) for r in rows)
             conn.close()
+        # SILENT_OK: per-DB trade-list aggregation; one bad DB shouldn't kill cross-profile metrics
         except Exception:
             pass
     open_positions: Dict[str, str] = {}  # symbol -> timestamp of buy
@@ -1025,6 +1030,7 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
                 d1 = datetime.strptime(open_positions[sym], "%Y-%m-%d")
                 d2 = datetime.strptime(ts, "%Y-%m-%d")
                 hold_days_list.append(max((d2 - d1).days, 0))
+            # SILENT_OK: per-trade hold-days parse; skip rows with malformed timestamps
             except Exception:
                 pass
             del open_positions[sym]
@@ -1203,6 +1209,7 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
         for i in range(len(sorted_days)):
             try:
                 start_d = datetime.strptime(sorted_days[i], "%Y-%m-%d")
+            # SILENT_OK: per-day rolling-window parse; skip malformed timestamp rows
             except Exception:
                 continue
             window_pnl = 0
@@ -1210,6 +1217,7 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
             for j in range(i, len(sorted_days)):
                 try:
                     cur_d = datetime.strptime(sorted_days[j], "%Y-%m-%d")
+                # SILENT_OK: per-day window inner parse; skip malformed timestamp rows
                 except Exception:
                     continue
                 if (cur_d - start_d).days > n_days:
@@ -1387,6 +1395,7 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
                     all_fills_magnitude += (
                         s.get("total_slippage_magnitude", 0) or 0
                     )
+        # SILENT_OK: per-symbol slippage-fill aggregation; one bad symbol shouldn't kill totals
         except Exception:
             pass
 

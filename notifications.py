@@ -433,6 +433,7 @@ def _notify_exit_disabled(symbol, trigger, qty, reason, ctx=None):
             match = re.search(r'([+-]?\d+\.?\d*)%', reason)
             if match:
                 pct_str = f" ({match.group(0)})"
+        # SILENT_OK: regex pct extract for subject line; subject still rendered without pct on failure
         except Exception:
             pass
 

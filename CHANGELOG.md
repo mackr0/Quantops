@@ -17,6 +17,46 @@ Rules going forward:
 
 ---
 
+## 2026-05-14 — Silent-swallow + json-decode audits: 263 sites classified, 4 production bugs hardened. Severity: medium (latent crash-on-corrupt-data closed; visibility added to silent risk-gate).
+
+**Context.** Continuation of the 2026-05-13 structural-test wave. Two ratchet tests (`test_no_silent_except_pass`, `test_json_decode_paths_safe`) had grandfathered baselines of ~270 + ~3 sites. Mack chose the proper-fix path over deferred grandfathering: classify every site (Cat 1 intentional / Cat 2 latent risk / Cat 3 hidden bug) and annotate or fix accordingly.
+
+### Silent-except-pass audit — 260 sites across 77 files
+
+- **Cat 1 (259 sites)**: best-effort patterns — cache writes, per-loop continues, AI-prompt enrichment fallbacks, telemetry writes, notify_* call sites. Each annotated with a specific `# SILENT_OK: <rationale>` comment above the `except` keyword. Behavior unchanged.
+- **Cat 2 (1 site)**: `trade_pipeline.py:2051` (`intraday_risk_monitor.get_active_risk_halt()` lookup). Silent failure here meant the halt gate was being bypassed without any operator visibility. Upgraded to `logging.warning(..., exc_info=True)`; falls through to no-halt as before, but the degraded gate is now audible.
+- **Cat 3 (0 sites)**: no hidden bugs found. Every swallow was either correctly intentional or the Cat 2 visibility issue above. Important confirmation that the existing codebase was not actively concealing real failures behind these `except: pass` blocks.
+- **Baseline emptied** to `{}`; ratchet now strict — any new silent swallow in any production source file fails the test.
+
+### Json-decode audit — 3 sites, all properly fixed (Cat 2)
+
+- **`intraday_risk_monitor.py:298`** — `json.loads(row["alerts_json"])` on a corrupt row would crash `get_active_risk_halt()`, taking out every consumer of the halt API for the affected profile until manual DB cleanup. Fix: wrapped in try/except, defaults to `[]` on corrupt JSON with logged warning, halt action still returned.
+- **`strategy_lifecycle.py:74`** — `json.loads(strat["spec_json"])` on a corrupt auto-strategy row would propagate a bare `JSONDecodeError` with no context. Fix: try/except converts to `ValueError(f"auto-strategy spec_id={spec_id} has corrupt spec_json — cannot activate. DB integrity issue: {exc}")` so the operator knows which row to inspect.
+- **`macro_data.py:110`** — `json.loads(resp.read())` from FRED API. A non-JSON response (HTML error page, network truncation) would crash `_fred_fetch`, blocking all macro indicator updates. Fix: try/except returns `[]` (function semantics already accept empty observations) and logs a warning naming the series_id and response length.
+- **Baseline empty**; ratchet strict for any new `json.loads` call without a `try` ancestor or `# JSON_OK:` annotation.
+
+### Worktree-contamination defense
+
+The audit was performed in a git worktree under `.claude/worktrees/`. When the patch landed in main, the three ratchet tests' AST scanners began descending into the worktree directory, double-counting source files as new violations. Added `.claude` to the directory exclusion list in all three scanners (`test_no_silent_except_pass.py`, `test_every_db_connection_is_closed.py`, `test_json_decode_paths_safe.py`) so future agent worktrees never trigger false positives. Worktree itself cleaned up.
+
+### Test-categorization updates
+
+- Test count: **3028** (was 3026 — +2 from json safety tests now passing; +260 production sites with annotations)
+- 78 production files modified (annotation-only edits aside from the 4 production fixes above)
+
+### Why the new tests would catch a regression
+
+- Any new `except: pass` or `except Exception: pass` added to production source fails `test_no_silent_except_pass` immediately (baseline = `{}`)
+- Any new `json.loads()` outside a try/except fails `test_json_decode_paths_safe` immediately (baseline = `{}`)
+- Either can be silenced only by an explicit `# SILENT_OK: <rationale>` or `# JSON_OK: <rationale>` comment, which is reviewable in the PR diff.
+
+### Pending
+
+- **`sqlite3.connect()` audit** — 93 sites across 42 files still grandfathered by `test_every_db_connection_is_closed`. Same proper-fix-path planned: classify and either wrap with `with closing(...)` / `try/finally` or fix to use a context manager.
+- **Batch 3 remaining structural tests** (#17, #18, #19, #20, #21, #23, #24).
+
+---
+
 ## 2026-05-13 — Comprehensive structural-test wave: 11 new tests + 1 production bug fixed. Severity: medium (defense in depth, one real bug closed).
 
 **Context.** Mack: "audit tests and create a plan to make all the class-based tests we need; one-at-a-time is wasteful." Comprehensive audit found 24 candidate tests across 11 categories. Built batches 1+2 (top 14 by ROI). Of those:

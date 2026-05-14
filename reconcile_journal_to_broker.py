@@ -128,6 +128,7 @@ def _find_matching_exit_fill(api, symbol: str, qty: float, after_ts: datetime,
             continue
         try:
             filled_qty = float(getattr(o, "filled_qty", 0) or 0)
+        # SILENT_OK: per-order qty parse; skip orders with malformed filled_qty
         except Exception:
             continue
         if abs(filled_qty - qty) > 0.001:
@@ -279,6 +280,7 @@ def _all_journal_sell_order_ids(profile_ids: Iterable[int]) -> set:
                 if r[0]:
                     used.add(r[0])
             conn.close()
+        # SILENT_OK: per-DB used-order-id aggregation; one bad DB shouldn't kill cross-profile reconcile
         except Exception:
             continue
     return used
@@ -336,12 +338,14 @@ def _detect_protective_fill(api, row, used_sell_ids):
             continue
         try:
             filled_qty = float(getattr(order, "filled_qty", 0) or 0)
+        # SILENT_OK: per-order qty parse; skip orders with malformed filled_qty
         except Exception:
             continue
         if filled_qty <= 0:
             continue
         try:
             fill_price = float(getattr(order, "filled_avg_price", 0) or 0)
+        # SILENT_OK: per-order price parse; skip orders with malformed filled_avg_price
         except Exception:
             continue
         if fill_price <= 0:
@@ -509,6 +513,7 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
             continue
         try:
             broker_filled = float(getattr(order, "filled_qty", 0) or 0)
+        # SILENT_OK: per-row broker filled-qty parse; skip rows with malformed broker response
         except Exception:
             continue
         broker_status = getattr(order, "status", "")

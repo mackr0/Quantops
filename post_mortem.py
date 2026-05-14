@@ -230,6 +230,7 @@ def analyze_recent_week(db_path: str) -> Optional[Dict[str, Any]]:
         for r in loss_rows:
             try:
                 losing_features.append(json.loads(r["features_json"]))
+            # SILENT_OK: per-row features-json parse; skip malformed feature blobs
             except Exception:
                 continue
 

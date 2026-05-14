@@ -347,6 +347,7 @@ def ensure_protective_stops(api, positions, ctx, db_path,
                                    if entry_price > 0 and cur_price > 0 else 0)
                     if conviction_tp_skip(symbol, pct_change):
                         continue
+                # SILENT_OK: conviction-TP skip eval; falls through to standard SL/TP placement
                 except Exception:
                     pass
 
@@ -398,6 +399,7 @@ def ensure_protective_stops(api, positions, ctx, db_path,
     finally:
         try:
             conn.close()
+        # SILENT_OK: finally-block conn cleanup; conn may already be closed
         except Exception:
             pass
 

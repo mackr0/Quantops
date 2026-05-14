@@ -94,6 +94,7 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
             filed_date = r["filed_date"]
             try:
                 filing_dt = datetime.strptime(filed_date, "%Y-%m-%d").date()
+            # SILENT_OK: per-row date parse; skip rows with malformed filed_date
             except Exception:
                 continue
 
@@ -111,6 +112,7 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
                                      <= filing_dt.isoformat()]
                     if len(matching) > 0:
                         ref_close = float(matching["close"].iloc[-1])
+            # SILENT_OK: per-row reference-bar lookup; falls through to 5-bar proxy
             except Exception:
                 pass
             if ref_close is None:
@@ -148,6 +150,7 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
                     f"(${ref_close:.2f}→${close_now:.2f})"
                 ),
             })
+        # SILENT_OK: per-row catalyst evaluation; one bad row shouldn't kill the strategy
         except Exception:
             continue
 

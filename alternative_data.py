@@ -67,6 +67,7 @@ def _ensure_cache_table():
         """)
         conn.commit()
         conn.close()
+    # SILENT_OK: cache schema init; cache writes that fail leave callers in non-cached path
     except Exception:
         pass
 
@@ -88,6 +89,7 @@ def _get_cached(key, ttl_type="insider"):
         conn.close()
         if row and (time.time() - row[1]) < _CACHE_TTL.get(ttl_type, 3600):
             return json.loads(row[0])
+    # SILENT_OK: cache read fallback; caller fetches from source on miss
     except Exception:
         pass
     return None
@@ -107,6 +109,7 @@ def _set_cached(key, value):
         )
         conn.commit()
         conn.close()
+    # SILENT_OK: cache write fallback; cache miss is acceptable next time
     except Exception:
         pass
 
@@ -614,6 +617,7 @@ def get_finra_short_volume(symbol):
                         break
                 if result["date"]:
                     break
+            # SILENT_OK: per-date FINRA short-volume row parse; skip malformed rows
             except Exception:
                 continue
 
@@ -690,6 +694,7 @@ def get_dark_pool_volume(symbol):
                 result["ats_trade_count"] = total_trades
                 result["num_venues"] = len(data)
                 result["week_start"] = data[0].get("weekStartDate")
+        # SILENT_OK: ATS volume enrichment; per-symbol info still returned
         except Exception:
             pass
 
@@ -764,6 +769,7 @@ def get_insider_cluster(symbol):
                 buy_dates.append(date_val)
                 buy_names.add(name)
                 buy_value += value
+            # SILENT_OK: per-row insider-trade parse; skip malformed rows
             except Exception:
                 continue
 
@@ -835,6 +841,7 @@ def get_analyst_estimates(symbol):
                                 result["eps_revision_direction"] = "up"
                             elif diff_pct < -2:
                                 result["eps_revision_direction"] = "down"
+            # SILENT_OK: EPS-revision enrichment; rest of fundamentals dict still returned
             except Exception:
                 pass
 
@@ -852,6 +859,7 @@ def get_analyst_estimates(symbol):
                             result["revenue_revision_direction"] = "up"
                         elif diff_pct < -2:
                             result["revenue_revision_direction"] = "down"
+            # SILENT_OK: revenue-revision enrichment; rest of fundamentals dict still returned
             except Exception:
                 pass
 
@@ -1043,6 +1051,7 @@ def get_patent_activity(symbol):
                 ticker = yf.Ticker(symbol)
                 info = getattr(ticker, "info", {}) or {}
             company_name = info.get("shortName") or info.get("longName")
+        # SILENT_OK: company-name lookup fallback; symbol-only lookup proceeds without name
         except Exception:
             pass
 
@@ -1095,6 +1104,7 @@ def get_patent_activity(symbol):
                     result["velocity_trend"] = "accelerating"
                 elif avg_prior_q > 0 and result["recent_filings_90d"] < avg_prior_q * 0.5:
                     result["velocity_trend"] = "declining"
+        # SILENT_OK: filing-velocity trend annotation; rest of result dict still returned
         except Exception:
             pass
 
@@ -1424,6 +1434,7 @@ def get_biotech_milestones(symbol: str) -> Dict[str, Any]:
             d = datetime.strptime(pdufa_date, "%Y-%m-%d").date()
             today_et = datetime.now(ZoneInfo("America/New_York")).date()
             result["days_to_pdufa"] = (d - today_et).days
+        # SILENT_OK: PDUFA days-to-event annotation; result still has the date
         except Exception:
             pass
 
@@ -1448,6 +1459,7 @@ def get_biotech_milestones(symbol: str) -> Dict[str, Any]:
             d = datetime.strptime(adcomm_date, "%Y-%m-%d").date()
             today_et = datetime.now(ZoneInfo("America/New_York")).date()
             result["days_to_adcomm"] = (d - today_et).days
+        # SILENT_OK: AdComm days-to-event annotation; result still has the date
         except Exception:
             pass
 
@@ -1766,6 +1778,7 @@ def _resolve_wikipedia_article(symbol: str):
         # Response shape: [query, [titles], [descs], [urls]]
         if isinstance(data, list) and len(data) >= 2 and data[1]:
             return data[1][0].replace(" ", "_")
+    # SILENT_OK: Wikipedia title resolution fallback; caller handles None title
     except Exception:
         pass
     return None
@@ -1949,6 +1962,7 @@ def _fetch_apple_chart(chart_kind: str = "topgrossingapplications",
                 app_id = int(e.get("id", {}).get("attributes", {}).get("im:id") or 0)
                 if app_id:
                     out.append({"rank": i, "name": name, "app_id": app_id})
+            # SILENT_OK: per-entry RSS parse; skip malformed entries
             except Exception:
                 continue
     except Exception as exc:
@@ -1975,6 +1989,7 @@ def _ensure_app_store_history_table():
         """)
         conn.commit()
         conn.close()
+    # SILENT_OK: snapshot-table schema init; writes that fail leave snapshot empty (cron retries)
     except Exception:
         pass
 
@@ -2006,6 +2021,7 @@ def snapshot_app_store_rankings_for_all_tickers() -> int:
                      primary),
                 )
                 written += 1
+            # SILENT_OK: per-row snapshot write; one bad row shouldn't kill the loop
             except Exception:
                 continue
         conn.commit()

@@ -21,6 +21,7 @@ def update_status(profile_id, step, detail=""):
                 "detail": detail,
                 "timestamp": time.time(),
             }, f)
+    # SILENT_OK: scan-status file write; status display is informational, never blocks scan
     except Exception:
         pass
 
@@ -44,5 +45,6 @@ def clear_status(profile_id):
     try:
         import os
         os.remove("scan_status_%d.json" % profile_id)
+    # SILENT_OK: scan-status file removal; missing file is the desired post-condition anyway
     except Exception:
         pass

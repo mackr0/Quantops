@@ -110,6 +110,7 @@ def _segment_for_symbol(symbol: str) -> Optional[str]:
         for seg, names in HISTORICAL_UNIVERSES.items():
             if symbol in names:
                 return seg
+    # SILENT_OK: frozen-universe import fallback; symbol classification returns None gracefully
     except Exception:
         pass
     return None
@@ -310,11 +311,13 @@ def departures_summary(db_path: str = MASTER_DB) -> dict:
             out["total_recorded"] += int(ct)
             if seg:
                 out["by_segment"][seg] = int(ct)
+    # SILENT_OK: per-segment count rollup; partial state still returned
     except Exception:
         pass
     try:
         from segments_historical import FROZEN_AT
         out["frozen_at"] = FROZEN_AT
+    # SILENT_OK: FROZEN_AT import fallback; partial state still returned
     except Exception:
         pass
     return out

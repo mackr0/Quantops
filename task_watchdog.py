@@ -189,6 +189,7 @@ def summary(db_path: str, hours: int = 24) -> Dict[str, int]:
         conn.close()
         for status, n in rows:
             counts[status] = int(n)
+    # SILENT_OK: task-status counts read; counts dict stays empty (caller treats as no data)
     except Exception:
         pass
     return counts

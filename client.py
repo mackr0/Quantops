@@ -81,6 +81,7 @@ def _prefetch_prices(symbols):
             chunk = needed[i:i + 200]
             try:
                 snaps.update(data_client.get_snapshots(chunk))
+            # SILENT_OK: per-chunk snapshot fetch fallback; covered by inline comment
             except Exception:
                 # Per-chunk failure is non-fatal; we'll fall back to
                 # last-known cached price (stale ok) for those symbols.
@@ -98,6 +99,7 @@ def _prefetch_prices(symbols):
                     continue
                 if price > 0:
                     _price_cache[sym] = (now, price)
+    # SILENT_OK: data-client wedge fallback; covered by inline comment (callers use stale prices)
     except Exception:
         # If the data client is wedged, leave the cache untouched —
         # callers will fall back to stale prices, not break the page.
@@ -265,6 +267,7 @@ def _make_price_fetcher(api):
                     with _price_cache_lock:
                         _price_cache[symbol] = (now, price)
                     return price
+        # SILENT_OK: live-trade price fetch fallback; warning logged below before stale fallback
         except Exception:
             pass
         import logging

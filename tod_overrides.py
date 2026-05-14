@@ -71,6 +71,7 @@ def parse_overrides(raw_json: Optional[str]) -> Dict[str, Dict[str, Any]]:
                 continue
             try:
                 clean[tod] = clamp(param_name, value)
+            # SILENT_OK: per-TOD value clamp; skip values that don't pass bounds
             except Exception:
                 continue
         if clean:

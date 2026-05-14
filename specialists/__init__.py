@@ -51,6 +51,7 @@ def discover_specialists() -> List[Any]:
     for mod_path in SPECIALIST_MODULES:
         try:
             mod = importlib.import_module(mod_path)
+        # SILENT_OK: per-module specialist import; one bad specialist shouldn't kill registry load
         except Exception:
             continue
         if callable(getattr(mod, "build_prompt", None)) and callable(

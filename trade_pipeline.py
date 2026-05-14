@@ -166,6 +166,7 @@ def _get_shared_political_context(ctx):
             try:
                 _cache_put("political", "global", result,
                            bucket_seconds=1800)
+            # SILENT_OK: cache-write failure is acceptable; in-memory L1 still has the result.
             except Exception:
                 pass
         return result
@@ -222,6 +223,7 @@ def _get_shared_ensemble(candidates_data, ctx):
             try:
                 _cache_put("ensemble", cache_key, result,
                            bucket_seconds=1800)
+            # SILENT_OK: cache-write failure is acceptable; in-memory L1 still has the result.
             except Exception:
                 pass
         return result
@@ -540,6 +542,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                         "reason": f"Skipping {symbol}: earnings in {earnings['days_until']} day(s) (on {earnings['earnings_date']})",
                         "strategy": ctx.segment if ctx else "unknown",
                     }
+        # SILENT_OK: earnings lookup is enrichment; never block a trade on failure.
         except Exception as _earn_exc:
             # Never block a trade due to earnings lookup failure
             pass
@@ -574,6 +577,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             cap_scale = float(getattr(ctx, "capital_scale", 1.0) or 1.0)
             if cap_scale != 1.0 and max_position_pct is not None:
                 max_position_pct = max_position_pct * cap_scale
+        # SILENT_OK: bad capital_scale value falls back to existing max_position_pct.
         except Exception:
             pass
     else:
@@ -726,6 +730,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             if not corr_result.get("allowed", True):
                 correlation_reduce = True
                 print(f"    Correlation warning: {corr_result.get('reason', 'too correlated')} — reducing position size 50%")
+        # SILENT_OK: correlation check is advisory; never block a trade on lookup failure.
         except Exception as _corr_exc:
             # Never block a trade due to correlation check failure
             pass
@@ -749,6 +754,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 price = float(bars.iloc[-1]["close"])
                 signal["price"] = price
                 logging.info("Re-fetched price for %s: $%.2f (was missing from signal)", symbol, price)
+        # SILENT_OK: re-fetch is best-effort recovery; downstream price=0 guard handles failure.
         except Exception:
             pass
 
@@ -794,6 +800,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                     f"last 30 days; auto-expires)"
                 )
                 return result
+        # SILENT_OK: blacklist check is best-effort; bug here must not block trades.
         except Exception:
             pass  # blacklist check is best-effort — don't block trades on bug
         if action == "STRONG_BUY":
@@ -924,6 +931,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 _bars = get_bars(symbol, limit=25)
                 if _bars is not None and len(_bars) >= 5:
                     adv_at_decision = float(_bars["volume"].tail(20).mean())
+            # SILENT_OK: ADV capture is calibration telemetry; trade proceeds without it.
             except Exception:
                 pass
             try:
@@ -936,6 +944,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                     market_type=getattr(ctx, "market_type", None) if ctx else None,
                 )
                 predicted_slip = _est.get("total_bps")
+            # SILENT_OK: predicted-slippage capture is telemetry; trade proceeds without it.
             except Exception:
                 pass
             log_trade(
@@ -1030,6 +1039,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 _bars = get_bars(symbol, limit=25)
                 if _bars is not None and len(_bars) >= 5:
                     adv_at_sell = float(_bars["volume"].tail(20).mean())
+            # SILENT_OK: ADV capture on exit is calibration telemetry; sell proceeds without it.
             except Exception:
                 pass
             try:
@@ -1042,6 +1052,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                     market_type=getattr(ctx, "market_type", None) if ctx else None,
                 )
                 predicted_slip_sell = _est.get("total_bps")
+            # SILENT_OK: predicted-slippage capture on exit is telemetry; sell proceeds without it.
             except Exception:
                 pass
             # NEW (2026-05-07): write status='pending_fill' instead of
@@ -1091,6 +1102,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                     f"last 30 days; auto-expires)"
                 )
                 return result
+        # SILENT_OK: short-side blacklist check is best-effort; bug here must not block trades.
         except Exception:
             pass
         # Only if short selling is enabled for this profile
@@ -1118,6 +1130,7 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                                 acted_on=False, db_path=db_path,
                             )
                         return result
+            # SILENT_OK: bounce-day check is advisory; if unavailable, proceed with short.
             except Exception:
                 pass  # If we can't check, proceed
             # Asymmetric short sizing (P1.6 of LONG_SHORT_PLAN.md):
@@ -1367,6 +1380,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     e = _check_earnings(sym)
                     if e and e["days_until"] <= avoid_days:
                         earnings_blocklist.add(sym)
+                # SILENT_OK: per-symbol earnings lookup; one bad symbol shouldn't kill the loop.
                 except Exception:
                     pass
 
@@ -1450,6 +1464,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                         f"Market regime: {regime_label} (VIX {vix_val:.1f})",
                         regime_info.get("summary", ""),
                     )
+                # SILENT_OK: activity log is informational; pipeline continues if write fails.
                 except Exception:
                     pass
     except Exception as _regime_exc:
@@ -1538,6 +1553,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 _bars = _get_bars_for_price(c["symbol"], limit=1)
                 if _bars is not None and not _bars.empty:
                     c["price"] = float(_bars.iloc[-1]["close"])
+            # SILENT_OK: per-candidate price re-fetch; price=0 candidates filtered next line.
             except Exception:
                 pass
     shortlist = [c for c in shortlist if c.get("price", 0) > 0]
@@ -1997,6 +2013,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                             f"new predictions resolve.",
                             symbol=sym,
                         )
+                    # SILENT_OK: activity log is informational; gate decision already made above.
                     except Exception:
                         pass
                 continue
@@ -2034,7 +2051,13 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 intraday_halt_action = halt.get("action")
                 intraday_halt_alerts = halt.get("alerts", [])
         except Exception:
-            pass
+            # Risk halt lookup failure means we don't know whether
+            # a halt is active — surface the warning so the operator
+            # can investigate. Falls through to no-halt behavior.
+            logging.warning(
+                "Intraday risk-halt lookup failed; proceeding without halt gate",
+                exc_info=True,
+            )
     if intraday_halt_action and ai_trades:
         new_entry_actions = {"BUY", "SHORT", "OPTIONS",
                               "MULTILEG_OPEN", "PAIR_TRADE"}
@@ -2159,6 +2182,7 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                             signal="OPTIONS",
                             occ_symbol=_occ,
                         )
+                # SILENT_OK: prediction-to-trade linking is best-effort; trade already executed.
                 except Exception:
                     pass
             # Phase 4c (2026-05-12): MULTILEG_OPEN proposals now flow
@@ -2527,6 +2551,7 @@ def _classify_market_regime() -> str:
                 regime = "strong_bull"
             elif close_now < sma_200 and sma_20 < sma_50:
                 regime = "bear"
+    # SILENT_OK: regime classification falls back to "neutral" on data error.
     except Exception:
         pass
     _REGIME_CACHE["market"] = (time.time(), regime)
@@ -2559,6 +2584,7 @@ def _squeeze_risk(symbol: str) -> str:
         risk = (info.get("squeeze_risk") or "low").upper()
         if risk == "MEDIUM":
             risk = "MED"
+    # SILENT_OK: conservative LOW fallback; documented intentional choice (see docstring).
     except Exception:
         pass
     _SQUEEZE_CACHE[symbol.upper()] = (time.time(), risk)
@@ -2656,6 +2682,7 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
                 signal["_borrow_rate_str"] = render_borrow_rate_for_prompt(
                     symbol, easy_to_borrow=borrow.get("easy_to_borrow"),
                 )
+            # SILENT_OK: borrow-rate annotation is enrichment; AI still has easy_to_borrow flag.
             except Exception:
                 pass
             # 1.3 Squeeze risk — high short interest + low float
@@ -2794,6 +2821,7 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
                         "signal": a["alert_signal"],
                         "summary": a["alert_summary"],
                     }
+        # SILENT_OK: SEC alert prefetch is enrichment; per-symbol attach below stays empty.
         except Exception:
             pass
 
@@ -2885,6 +2913,7 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
             e = _check_earnings(symbol)
             if e and e.get("days_until", 999) <= 5:
                 entry["earnings_warning"] = f"EARNINGS in {e['days_until']} days"
+        # SILENT_OK: per-candidate earnings annotation; AI-prompt enrichment only.
         except Exception:
             pass
 
@@ -2906,6 +2935,7 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
                     from client import get_account_info as _gai
                     _acct = _gai(ctx=ctx) or {}
                     _equity = float(_acct.get("equity") or _equity)
+                # SILENT_OK: equity sizing for slippage estimate falls back to $100k default.
                 except Exception:
                     pass
                 _max_pct = float(getattr(ctx, "max_position_pct", 0.10))
@@ -2946,6 +2976,7 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
                 summary = summarize_for_ai(oracle)
                 if summary:
                     entry["options_oracle_summary"] = summary
+        # SILENT_OK: per-candidate options-oracle annotation; AI prompt continues without it.
         except Exception:
             pass
 
@@ -2954,6 +2985,7 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
             headlines = fetch_news_alpaca(symbol, limit=3)
             if headlines:
                 entry["news"] = headlines
+        # SILENT_OK: per-candidate news annotation; AI prompt continues without it.
         except Exception:
             pass
 
@@ -2962,6 +2994,7 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
             rs = get_relative_strength_vs_sector(symbol)
             if rs:
                 entry["rel_strength"] = rs
+        # SILENT_OK: per-candidate rel-strength annotation; AI prompt continues without it.
         except Exception:
             pass
 
@@ -2973,9 +3006,11 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
                 try:
                     from sec_filings import get_earnings_call_sentiment
                     alt["transcript_sentiment"] = get_earnings_call_sentiment(symbol, ctx=ctx)
+                # SILENT_OK: transcript-sentiment add-on; rest of alt_data still attached.
                 except Exception:
                     pass
                 entry["alt_data"] = alt
+        # SILENT_OK: per-candidate alt-data annotation; AI prompt continues without it.
         except Exception:
             pass
 
@@ -2984,6 +3019,7 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
             social = get_ticker_mentions(symbol)
             if social and social.get("mentions", 0) > 0:
                 entry["social"] = social
+        # SILENT_OK: per-candidate social annotation; AI prompt continues without it.
         except Exception:
             pass
 
@@ -3002,6 +3038,7 @@ def _build_portfolio_state(account, positions_list, dd, ctx):
         equity = float(account.get("equity", 0) or 0)
         if equity > 0 and positions_list:
             exposure = compute_exposure(positions_list, equity)
+    # SILENT_OK: portfolio-exposure annotation; AI prompt continues without sector-concentration block.
     except Exception:
         pass
 
@@ -3039,6 +3076,7 @@ def _build_market_context(regime_info, political_context, ctx):
             batch_ctx = get_batch_context_data(ctx)
             profile_summary = batch_ctx.get("profile_summary")
             learned_patterns = batch_ctx.get("learned_patterns", [])
+        # SILENT_OK: self-tuning context is enrichment; AI prompt continues without it.
         except Exception:
             pass
         # Post-mortem patterns from losing-week analysis. Prepended so
@@ -3048,6 +3086,7 @@ def _build_market_context(regime_info, political_context, ctx):
             pm_patterns = get_active_patterns(ctx.db_path)
             if pm_patterns:
                 learned_patterns = pm_patterns + list(learned_patterns)
+        # SILENT_OK: post-mortem patterns are enrichment; AI prompt continues without them.
         except Exception:
             pass
 
@@ -3056,6 +3095,7 @@ def _build_market_context(regime_info, political_context, ctx):
     try:
         from market_data import get_sector_rotation
         sector_rotation = get_sector_rotation()
+    # SILENT_OK: sector-rotation annotation; AI prompt continues without it.
     except Exception:
         pass
 
@@ -3076,6 +3116,7 @@ def _build_market_context(regime_info, political_context, ctx):
                     f"Bias toward capital preservation; tighter stops; "
                     f"prefer exits over entries."
                 )
+        # SILENT_OK: crisis-state annotation; AI prompt continues without elevated-risk callout.
         except Exception:
             pass
 
@@ -3084,6 +3125,7 @@ def _build_market_context(regime_info, political_context, ctx):
     try:
         from macro_data import get_all_macro_data
         macro_context = get_all_macro_data()
+    # SILENT_OK: macro-data annotation; AI prompt continues without macro context block.
     except Exception:
         pass
 

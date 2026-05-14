@@ -183,5 +183,6 @@ def clear_kind(cache_kind: str, db_path: Optional[str] = None) -> None:
         )
         conn.commit()
         conn.close()
+    # SILENT_OK: cache-purge by kind; cache miss is acceptable on next read
     except Exception:
         pass

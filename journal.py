@@ -378,6 +378,7 @@ def record_wash_cooldown(db_path: str, symbol: str) -> None:
         )
         conn.commit()
         conn.close()
+    # SILENT_OK: wash-cooldown marker write; cooldown is best-effort and self-heals on next exit
     except Exception:
         pass
 
@@ -567,6 +568,7 @@ def _migrate_all_columns(conn):
                     conn.execute(
                         f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"
                     )
+        # SILENT_OK: per-table column ALTER; column may already exist on later schema
         except Exception:
             pass
 
@@ -610,6 +612,7 @@ def _migrate_all_columns(conn):
                 f"AND predicted_signal IN ({op})",
                 option_signals,
             )
+    # SILENT_OK: pipeline_kind backfill UPDATE; idempotent — next call retries
     except Exception:
         pass
 
@@ -650,6 +653,7 @@ def _migrate_all_columns(conn):
                 "AND pnl IS NOT NULL AND price > 0 AND qty > 0 "
                 "AND ABS((price * qty) - pnl) < 1.0"
             )
+    # SILENT_OK: phantom-stop reconcile data_quality tag; idempotent UPDATE retries next call
     except Exception:
         pass
 
@@ -684,6 +688,7 @@ def _migrate_all_columns(conn):
                 "AND ABS(slippage_pct) > 50 "
                 "AND timestamp < '2026-05-12T00:00:00'"
             )
+    # SILENT_OK: phantom-stop 2026-05-11 data_quality tag; idempotent UPDATE retries next call
     except Exception:
         pass
 
@@ -1167,6 +1172,7 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
                     )
                 except TypeError:
                     current_price = float(price_fetcher(key) or 0)
+            # SILENT_OK: side-aware price-fetcher fallback; current_price falls through to entry-price assumption
             except Exception:
                 pass
         if current_price <= 0:
@@ -1959,6 +1965,7 @@ def get_specialist_veto_stats(db_paths, days=7):
                 (days,),
             ).fetchall()
             conn.close()
+        # SILENT_OK: per-DB specialist outcomes aggregation; one bad DB shouldn't kill cross-profile reporting
         except Exception:
             continue
         for row in rows:

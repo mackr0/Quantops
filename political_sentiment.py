@@ -216,6 +216,7 @@ def analyze_political_climate(ctx=None) -> Dict[str, Any]:
             try:
                 from models import increment_api_usage
                 increment_api_usage(ctx.user_id)
+            # SILENT_OK: API-usage counter is telemetry; political-context AI call already succeeded
             except Exception:
                 pass
 

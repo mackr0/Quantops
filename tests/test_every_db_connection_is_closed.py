@@ -72,7 +72,7 @@ def _walk_critical_path_files() -> List[str]:
     out = []
     for root, dirs, files in os.walk(REPO_ROOT):
         dirs[:] = [d for d in dirs if d not in (
-            "venv", "__pycache__", ".git", "tests", "exports",
+            "venv", "__pycache__", ".git", ".claude", "tests", "exports",
             "backups", "logs", "altdata", "node_modules", "docs",
         )]
         for f in files:

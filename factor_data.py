@@ -72,6 +72,7 @@ def _get_cached(symbol: str, factor: str) -> Optional[float]:
         conn.close()
         if row and (time.time() - row[1]) < _FACTOR_TTL_SECONDS:
             return row[0]
+    # SILENT_OK: factor cache read fallback; caller fetches from source on miss
     except Exception:
         pass
     return None
@@ -89,6 +90,7 @@ def _set_cached(symbol: str, factor: str, value: Optional[float]) -> None:
         )
         conn.commit()
         conn.close()
+    # SILENT_OK: factor cache write fallback; cache miss is acceptable next time
     except Exception:
         pass
 

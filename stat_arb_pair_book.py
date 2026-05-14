@@ -687,6 +687,7 @@ def render_pair_book_for_prompt(
         try:
             ph_a = price_history(pair.symbol_a)
             ph_b = price_history(pair.symbol_b)
+        # SILENT_OK: per-pair price-history fetch; one bad pair shouldn't kill the book scan
         except Exception:
             continue
         if ph_a is None or ph_b is None:

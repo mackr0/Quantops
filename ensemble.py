@@ -116,6 +116,7 @@ def _any_candidate_has_upcoming_earnings(candidates: List[Dict[str, Any]],
             continue
         try:
             result = check_earnings(sym)
+        # SILENT_OK: per-symbol earnings lookup; covered by inline comment (gate stays open per-symbol)
         except Exception:
             # Per-symbol failure shouldn't disable the gate for everyone —
             # skip this symbol and keep checking. If ALL symbols error,
