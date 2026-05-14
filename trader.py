@@ -257,6 +257,97 @@ def _entry_order_filled_at_broker(api, db_path, broker_symbol, is_short):
     return False
 
 
+# OCC patterns indicating Alpaca disagrees with the journal about
+# whether we hold the option position. Both translate to "the
+# journal is phantom-ing this position; the broker has nothing to
+# close." Detected via substring match on the rejection message.
+_PHANTOM_JOURNAL_PATTERNS = (
+    "account not eligible to trade uncovered option",  # 403/40310000
+    "position intent mismatch",                          # 422/42210000
+    "you do not have a position",                        # 403 alt
+    "insufficient quantity to close",                    # 422 alt
+)
+
+
+def _handle_phantom_option_close(
+    db_path: str,
+    occ_symbol: str,
+    underlying: str,
+    qty,
+    rejection_reason: str,
+    ctx=None,
+) -> None:
+    """When Alpaca rejects an option close because the broker has no
+    matching position, mark the journal row as canceled with reason
+    and notify the operator. Per-symbol debounce on the notify so
+    repeated cycle attempts don't spam.
+
+    This stops the system from infinitely retrying the same close on
+    a phantom journal row (the cause of ~196 close-rejections/day
+    observed 2026-05-13 to 2026-05-14).
+    """
+    msg = (rejection_reason or "").lower()
+    is_phantom = any(p in msg for p in _PHANTOM_JOURNAL_PATTERNS)
+    if not is_phantom:
+        return  # different broker error; let the caller's normal flow handle
+    try:
+        import sqlite3 as _sql
+        from contextlib import closing
+        with closing(_sql.connect(db_path)) as conn:
+            cur = conn.execute(
+                "UPDATE trades SET status='canceled', "
+                "reason=COALESCE(reason || ' | ', '') || ? "
+                "WHERE occ_symbol = ? AND status = 'open'",
+                (
+                    f"phantom: broker had no matching position "
+                    f"({rejection_reason[:160]})",
+                    occ_symbol,
+                ),
+            )
+            updated = cur.rowcount
+            conn.commit()
+    except Exception as exc:
+        logging.warning(
+            "Phantom-option-close cleanup failed for %s: %s",
+            occ_symbol, exc,
+        )
+        return
+    if updated <= 0:
+        # Already cleaned up or no matching row — nothing to notify.
+        return
+    logging.warning(
+        "Marked %d journal phantom row(s) for %s as canceled. "
+        "Reason: %s. Stops infinite-retry loop.",
+        updated, occ_symbol, rejection_reason[:200],
+    )
+    # Operator notification with per-symbol debounce. Reuses the
+    # notify_error subject-debounce: passing the OCC symbol in the
+    # subject means a given symbol notifies at most once per debounce
+    # window even if it crops up across many cycles.
+    try:
+        from notifications import notify_error
+        notify_error(
+            (
+                f"Phantom option position cleaned up: {occ_symbol} "
+                f"({underlying}, qty={qty}). The journal showed this "
+                f"as open but the broker rejected the close: "
+                f"{rejection_reason[:200]}. The journal row has been "
+                f"marked canceled to stop the retry loop. Investigate "
+                f"how the position got into this state — most likely "
+                f"a multi-leg combo that lost its leg-pair link, or "
+                f"a manual broker-side close that didn't reflect "
+                f"back into the journal."
+            ),
+            context=f"Phantom option close — {occ_symbol}",
+            ctx=ctx,
+        )
+    except Exception as exc:
+        logging.warning(
+            "Phantom-option-close notification failed for %s: %s",
+            occ_symbol, exc,
+        )
+
+
 def check_exits(ctx=None):
     """Check all positions for stop-loss/take-profit triggers and execute sells.
 
@@ -415,6 +506,25 @@ def check_exits(ctx=None):
                         sig["trigger"], sig["reason"],
                         result.get("status"),
                     )
+                    # 2026-05-14 — phantom-journal detection. When
+                    # Alpaca rejects with 403 "uncovered" or 422
+                    # "position intent mismatch", the journal thinks
+                    # we hold this option but the broker doesn't.
+                    # Without this code, the system retries the same
+                    # close every cycle (~196 rejections/day for >2
+                    # days observed). Detect, mark journal canceled,
+                    # notify operator. Per-symbol debounce prevents
+                    # email spam for symbols already cleaned up.
+                    if (
+                        result.get("status") == "failed"
+                        and result.get("action") == "ERROR"
+                    ):
+                        _handle_phantom_option_close(
+                            db_path, sig["occ_symbol"],
+                            sig.get("symbol"), sig.get("qty"),
+                            result.get("reason", ""),
+                            ctx=ctx,
+                        )
                 except Exception as _exc:
                     logging.warning(
                         "Option exit submission failed for %s: %s",
