@@ -323,6 +323,94 @@ class TestNoPageRoute500s:
             )
 
 
+class TestNoApiRoute500s:
+    """The structural invariant for /api/* JSON endpoints. Same
+    fixture as the page-route test — every /api/* route × every
+    profile_id variation × valid response shape (JSON-parseable
+    when status is 200).
+
+    Bug class this catches: an API endpoint that 500s on the
+    empty-positions / zero-trades / archived-profile shape (the
+    May 13 incident class, but for JSON consumers like the
+    dashboard JS that never bubbles a clear error to the user)."""
+
+    # Path-param defaults for /api/* routes (e.g.
+    # /api/cycle-data/<int:profile_id>). Sourced from the
+    # PATH_PARAM_DEFAULTS in the page-route tests.
+    API_PATH_PARAM_DEFAULTS = PATH_PARAM_DEFAULTS
+
+    @staticmethod
+    def _discover_api_routes(app):
+        """Return URLs for every GET-able /api/* route, with path
+        params substituted."""
+        out = []
+        for rule in app.url_map.iter_rules():
+            path = str(rule)
+            if not path.startswith("/api/"):
+                continue
+            if "GET" not in (rule.methods or set()):
+                continue
+            skip = False
+            for arg_name in (rule.arguments or set()):
+                default = TestNoApiRoute500s.API_PATH_PARAM_DEFAULTS.get(
+                    arg_name)
+                if default is None:
+                    skip = True
+                    break
+                path = (path.replace("<int:" + arg_name + ">", default)
+                            .replace("<" + arg_name + ">", default)
+                            .replace("<path:" + arg_name + ">", default))
+            if skip:
+                continue
+            out.append(path)
+        return sorted(set(out))
+
+    def test_no_5xx_on_any_api_route(self, patched_user_with_profiles):
+        client, app = _logged_in_client()
+        routes = self._discover_api_routes(app)
+        assert len(routes) >= 5, (
+            f"Discovered only {len(routes)} /api/* routes — likely "
+            f"a Flask blueprint registration regression. Investigate "
+            f"before relying on this guardrail."
+        )
+        failures = []
+        with patch("flask_login.utils._get_user",
+                    return_value=patched_user_with_profiles):
+            for route in routes:
+                # Bare + every profile_id variation
+                urls = [route] + [
+                    f"{route}?profile_id={pid}"
+                    for pid in PROFILE_ID_VARIATIONS
+                ]
+                for url in urls:
+                    try:
+                        resp = client.get(url, follow_redirects=False)
+                    except Exception as exc:
+                        failures.append(
+                            (url, "EXCEPTION",
+                             f"{type(exc).__name__}: {str(exc)[:200]}")
+                        )
+                        continue
+                    if 500 <= resp.status_code < 600:
+                        body = resp.data.decode(
+                            "utf-8", errors="replace"
+                        )[:400]
+                        failures.append((url, resp.status_code, body))
+        if failures:
+            details = "\n".join(
+                f"  {url} → {code}\n    {snippet}"
+                for url, code, snippet in failures[:10]
+            )
+            pytest.fail(
+                f"{len(failures)} /api/* route × profile_id "
+                f"combinations returned 5xx (or raised). Same "
+                f"bug class as the May 13 page-route incident "
+                f"but for JSON consumers (dashboard JS swallows "
+                f"these silently — empty panels, no error).\n\n"
+                f"First {min(10, len(failures))} failures:\n{details}"
+            )
+
+
 class TestPerformancePageZeroPositionProfile:
     """Specific regression for the 2026-05-13 incident — pin the
     exact /performance?profile_id=<empty-positions-profile> path."""

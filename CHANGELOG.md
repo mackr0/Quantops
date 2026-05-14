@@ -17,6 +17,39 @@ Rules going forward:
 
 ---
 
+## 2026-05-13 — Test audit follow-up: 5 new structural guardrail test files. Severity: medium (defensive — no production change).
+
+**Context.** Mack: "audit tests and find opportunities to refactor this way." After the 5+ same-shape incidents this week (conviction-TP, short-selling, skip-first-minutes, meta-pregate, performance-page-500), the audit identified 15 instance-style tests with class-style refactor opportunities. Built the top 5.
+
+### 1. `tests/test_userctx_bools_default_on_or_tuned.py` (3 tests)
+Walks every `bool` field on `UserContext`. For each, requires either:
+default=True (active behavior on by default), OR `_optimize_<field>` exists in self_tuning.py, OR explicitly listed in `KNOWN_OFF_BY_DESIGN` with a written rationale.
+Catches the "feature designed correctly, sitting at conservative default for months" bug class — exactly the pattern that caused this week's 5 fix waves. Currently passes; defends against future drift.
+
+### 2. `tests/test_override_keys_cross_ref.py` (3 tests)
+AST-walks tuning-writer modules for `set_override(pid, '<param>', ...)` and `set_signal_weight(pid, '<signal>', ...)` calls with hard-coded string-literal arguments. Validates each literal against `PARAM_BOUNDS` / `WEIGHTABLE_SIGNALS`. Catches the silent-typo class where a tuning rule writes a key that the read path drops on `parse_overrides`.
+
+**Honest limitation surfaced**: production tuning code today uses runtime variables (loop iteration), not literals. The static-analysis approach catches 0 violations on current code — defends against future drift but doesn't catch existing bugs. Documented in the test docstring.
+
+### 3. `tests/test_no_500_per_profile.py::TestNoApiRoute500s` (1 test, added to existing file)
+Same fixture as the page-route version — auto-discovers every GET-able `/api/*` route, exercises with profile_id variations including the empty-positions shape (May 13 incident). Real DB fixtures + mocked broker. New API endpoints get coverage automatically.
+
+### 4. `tests/test_signal_humanization_structural.py` (3 tests)
+Discovers signal types from multiple sources (display_names mapping, signal_weights registry, hardcoded strategy emissions). For each multi-word ALLCAPS_SNAKE token, verifies `humanize()` produces a clean form (no underscores, no run of all-caps tokens). Plus humanize() idempotence + single-word capitalization tests.
+Catches the case where AI invents a new signal name (`BUTTERFLY_OPEN`) and the dashboard renders it ugly because `display_names._DISPLAY_NAMES` doesn't have a canonical mapping.
+
+### 5. `tests/test_cross_user_data_isolation.py` (3 tests)
+AST-scans `views.py` route handlers for dangerous shapes: `glob.glob("quantopsai_profile_*.db")` or `os.listdir(...)` patterns that would aggregate across all users' data. Requires user-scoping (`current_user.effective_user_id` / `get_user_profiles(user_id=...)`) in the same function. Includes positive + negative scanner-sanity tests so the main check can't silently pass.
+Privacy/security class — defends against the "dev copy-pastes scheduler glob into a view handler" regression.
+
+**Test count**: 2993 passed (+13 from 2980). Zero regressions. Currently no production code change required — these are pure structural defenses.
+
+**What I learned during the audit (honest):**
+- Tests #1, #3, #4, #5 catch real bug classes with clear past or future surfacing
+- Test #2 currently has zero hits in production code (production uses runtime variables, not string literals). Documented honestly in the test rather than over-promising. Defends against future drift only.
+
+---
+
 ## 2026-05-13 — /performance?profile_id=5 500 fix + structural no-5xx-on-any-page guardrail. Severity: high (page-level outage on a profile).
 
 **Incident.** Mack: `/performance?profile_id=5` returns 500. Other profiles work.
