@@ -651,8 +651,8 @@ function showOpTab(event, profileId, which) {
                     bits.push('<span style="color:' + pColor +
                               ';">Stop-to-TP: ' + escapeHtml(s.ratio_label) +
                               '</span> <span class="muted">(' +
-                              s.n_stops + ' stops / ' + s.n_tps + ' tps, ' +
-                              s.window_days + 'd)</span>');
+                              (s.n_stops || 0) + ' stops / ' + (s.n_tps || 0) + ' tps, ' +
+                              (s.window_days || 0) + 'd)</span>');
                 }
                 if (data.mfe_capture) {
                     var c = data.mfe_capture;
@@ -660,7 +660,7 @@ function showOpTab(event, profileId, which) {
                     var cColor = pct < 30 ? '#e65100' : pct < 50 ? '#f57c00' : '#2e7d32';
                     bits.push('<span style="color:' + cColor +
                               ';">MFE capture: ' + pct.toFixed(0) + '%</span> ' +
-                              '<span class="muted">(' + c.n_trades + ' trades)</span>');
+                              '<span class="muted">(' + (c.n_trades || 0) + ' trades)</span>');
                 }
                 ptEl.innerHTML = bits.join(' &nbsp;·&nbsp; ');
             }
@@ -713,11 +713,45 @@ function showOpTab(event, profileId, which) {
                                     'EXECUTED AS ' + escapeHtml((t.executed_action || '').toUpperCase()) +
                                     '</span>';
                         }
+                        // Sizing detail differs by action type:
+                        //   BUY/SELL/SHORT — `size_pct` (% equity)
+                        //   MULTILEG_OPEN — `contracts` + strategy_name
+                        //   OPTIONS — `contracts` + option_strategy
+                        // Falling through to "size_pct% equity" for
+                        // every action prints "null% equity" for
+                        // multileg and options trades. Branch here.
+                        var sizing;
+                        var actionUpper = (t.action || '').toUpperCase();
+                        if (actionUpper === 'MULTILEG_OPEN' || actionUpper === 'MULTILEG_CLOSE') {
+                            var n = t.contracts;
+                            var stratName = t.strategy_name || '';
+                            if (n != null && stratName) {
+                                sizing = escapeHtml(stratName) + ', ' + n + ' contract' + (n === 1 ? '' : 's');
+                            } else if (n != null) {
+                                sizing = n + ' contract' + (n === 1 ? '' : 's');
+                            } else if (stratName) {
+                                sizing = escapeHtml(stratName);
+                            } else {
+                                sizing = 'multileg';
+                            }
+                        } else if (actionUpper === 'OPTIONS') {
+                            var oc = t.contracts;
+                            var oStrat = t.option_strategy || '';
+                            sizing = (oStrat ? escapeHtml(oStrat) + ', ' : '') +
+                                     (oc != null ? oc + ' contract' + (oc === 1 ? '' : 's') : 'options');
+                        } else if (actionUpper === 'PAIR_TRADE') {
+                            sizing = (t.size_pct != null ? t.size_pct + '% equity' : 'pair trade');
+                        } else if (t.size_pct != null) {
+                            sizing = t.size_pct + '% equity';
+                        } else {
+                            sizing = '';
+                        }
+                        var detail = sizing ? sizing + ', ' : '';
                         html += '<span style="color:' +
                                 (t.execution_outcome === 'rejected' ? '#999' : '#00c853') + ';' +
                                 (t.execution_outcome === 'rejected' ? 'text-decoration:line-through;' : '') +
                                 '">' + escapeHtml(t.action || '') + ' ' + escapeHtml(t.symbol || '') + '</span>' + badge + convertBadge +
-                                ' (' + t.size_pct + '% equity, ' + t.confidence + '% confidence)<br>' +
+                                ' (' + detail + (t.confidence != null ? t.confidence + '% confidence' : 'confidence n/a') + ')<br>' +
                                 '<em>' + escapeHtml(t.reasoning || '') + '</em><br>';
                     });
                 }
@@ -735,7 +769,7 @@ function showOpTab(event, profileId, which) {
                     if (c.options_signal && c.options_signal !== 'neutral') alt.push('Opts: ' + c.options_signal);
                     if (c.reddit_mentions > 0) alt.push('Reddit: ' + c.reddit_mentions);
                     if (c.news && c.news.length) alt.push(c.news.length + ' news');
-                    tbl += '<tr><td><strong>' + escapeHtml(c.symbol||'') + '</strong></td><td>' + escapeHtml(c.signal||'') + '</td><td>' + c.score + '/4</td><td>' + (c.rsi||0).toFixed(0) + '</td><td>' + (c.adx||0).toFixed(0) + '</td><td>' + (c.mfi||0).toFixed(0) + '</td><td>' + (c.volume_ratio||0).toFixed(1) + 'x</td><td>' + escapeHtml(c.track_record||'new') + '</td><td style="font-size:0.75rem;">' + (alt.join('<br>')||'-') + '</td></tr>';
+                    tbl += '<tr><td><strong>' + escapeHtml(c.symbol||'') + '</strong></td><td>' + escapeHtml(c.signal||'') + '</td><td>' + (c.score || 0) + '/4</td><td>' + (c.rsi||0).toFixed(0) + '</td><td>' + (c.adx||0).toFixed(0) + '</td><td>' + (c.mfi||0).toFixed(0) + '</td><td>' + (c.volume_ratio||0).toFixed(1) + 'x</td><td>' + escapeHtml(c.track_record||'new') + '</td><td style="font-size:0.75rem;">' + (alt.join('<br>')||'-') + '</td></tr>';
                 });
                 tbl += '</tbody></table>';
                 listEl.innerHTML = tbl;
