@@ -69,6 +69,14 @@ PARAM_BOUNDS: Dict[str, Tuple[Number, Number]] = {
     # ceiling, almost everything gets dropped. AI-tunable per
     # profile based on observed actionable-signal ratio.
     "meta_pregate_threshold":        (0.15, 0.70),
+    # 2026-05-13 — boolean toggle (0/1) tuned by wave-6's
+    # _optimize_conviction_tp_override based on MFE capture +
+    # stop-to-TP ratio. Bounds reflect the binary value space.
+    "use_conviction_tp_override":    (0, 1),
+    # 2026-05-12 — boolean toggle tuned by wave-7's
+    # _optimize_short_selling_toggle based on 30-day short-side
+    # avg return. (0=disable shorts, 1=enable.)
+    "enable_short_selling":          (0, 1),
 
     # ── Entry filters ─────────────────────────────────────────────
     "min_volume":                    (100_000, 5_000_000),

@@ -2717,6 +2717,10 @@ def _optimize_price_band(conn, ctx, profile_id, user_id, overall_wr, resolved):
 
 def _optimize_avoid_earnings_days(conn, ctx, profile_id, user_id,
                                    overall_wr, resolved):
+    # THRASH_OK: implicit neutral band via the 5pp threshold
+    # (only fires when in-window WR differs from out-of-window WR
+    # by ≥5pp). Within ±5pp of parity, the rule returns None
+    # without changing anything — equivalent to a cooldown.
     """Earnings window: tighten when predictions made within
     `current_avoid_days` of earnings underperform predictions made
     outside that window; loosen when intra-window predictions are
@@ -2818,6 +2822,9 @@ def _optimize_avoid_earnings_days(conn, ctx, profile_id, user_id,
 
 def _optimize_skip_first_minutes(conn, ctx, profile_id, user_id,
                                   overall_wr, resolved):
+    # THRASH_OK: implicit neutral band via the 5pp threshold
+    # (only fires when early-window WR differs from late-window WR
+    # by ≥5pp). Within ±5pp of parity, the rule returns None.
     """First-X-minutes filter: tighten when predictions made within
     the first `current` minutes of the trading session underperform;
     loosen when those are fine.

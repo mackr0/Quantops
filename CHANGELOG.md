@@ -17,6 +17,53 @@ Rules going forward:
 
 ---
 
+## 2026-05-13 — Comprehensive structural-test wave: 11 new tests + 1 production bug fixed. Severity: medium (defense in depth, one real bug closed).
+
+**Context.** Mack: "audit tests and create a plan to make all the class-based tests we need; one-at-a-time is wasteful." Comprehensive audit found 24 candidate tests across 11 categories. Built batches 1+2 (top 14 by ROI). Of those:
+  - 11 shipped (passed against current code; defend future drift)
+  - 1 found a REAL bug (`notify_error` propagated exceptions; production fix shipped)
+  - 2 skipped honestly with rationale (#3 row-access guards subsumed by schema migration tests; #11 cron error context already provided by `run_task` wrapper)
+
+### New structural tests shipped:
+
+1. **`test_every_db_migration_is_idempotent`** — runs `init_db` and `init_user_db` twice, asserts schema unchanged. Catches non-idempotent ALTER TABLE.
+
+2. **`test_per_profile_db_schema_consistency`** — verifies multiple fresh per-profile DBs get identical schemas; pin-tests for `data_quality` columns on both `trades` and `ai_predictions`. Catches today's lazy-init bug class.
+
+3. **`test_every_tuned_param_has_bounds_and_default`** — for every `update_trading_profile(pid, X=value)` in self_tuning.py, verifies X has a PARAM_BOUNDS entry, a UserContext field, and a schema column. **FOUND 2 real gaps**: `use_conviction_tp_override` and `enable_short_selling` were tuned without PARAM_BOUNDS entries — added them.
+
+4. **`test_update_trading_profile_paired_with_log_tuning_change`** — every tuner function that writes to a profile must also call log_tuning_change in the same function. Catches silent param updates.
+
+5. **`test_every_notify_has_debounce_or_rationale`** — discovers every notify_* function; requires debounce, marker-file, no-op stub, OR allowlist with rationale. Defends against the next email-spam loop.
+
+6. **`test_no_silent_except_pass`** (ratchet style) — counts existing bare-except-pass blocks per file as baseline; new violations on top of baseline fail. ~270 grandfathered violations across the codebase form the baseline; future additions get caught. Proper-fix path: annotate each with `# SILENT_OK: <rationale>` over time.
+
+7. **`test_every_db_connection_is_closed`** (ratchet style) — same pattern as #6 but for `sqlite3.connect()` without try/finally close. Long-running scheduler accumulates handle leaks; this catches new ones.
+
+8. **`test_tuning_rule_doesnt_thrash`** — every `_optimize_*` rule must have an anti-thrash guard (`_safe_change_guarded`, neutral band, or `# THRASH_OK:` annotation). **Found 2 rules** with implicit-but-undocumented guards (`_optimize_avoid_earnings_days`, `_optimize_skip_first_minutes`); annotated.
+
+9. **`test_notify_error_never_raises`** — mocks SMTP failure, malformed body, formatting failures, weird subjects. Asserts notify_error returns False cleanly without raising. **FOUND REAL BUG**: notify_error was propagating `ConnectionError`, `UnicodeDecodeError`, `ValueError` from internal helpers. Fixed with outer try/except + safety-net logger.
+
+10. **`test_every_api_returns_valid_json`** — every `/api/*` endpoint × profile_id variation must return parseable JSON with correct Content-Type, top-level dict/list. Extends today's no-500 work to API contract correctness.
+
+### Production bug fixed (found by #9):
+- **`notify_error` outer safety net.** The function called `_section`, `_kv_row`, `_wrap_html`, and `send_email` without a top-level except. Any of those raising would propagate up to the calling code's except block, replacing the original error with the notification error. Fixed with try/except wrapping the whole function body. Logger-of-last-resort guard for the case where logger itself fails.
+
+### Test-categorization updates:
+- Test count: 3026 (was 2999 — +27 from this wave's new tests)
+- Files: 258 (was 245)
+- Docs updated to match.
+
+**Three deferred (not built):**
+- #3 column-presence guards — subsumed by tests #1 + #2 (schema migration ensures columns exist).
+- #11 cron task error context — `run_task` wrapper at multi_scheduler:132 already catches/logs every task exception.
+- #14 data_quality propagation — already covered by this morning's `test_data_quality_filter_present.py` extension.
+
+### Tests deferred to batch 3 (per Mack's framing):
+- #6 (signal_type → action_label coverage), #15 (UserContext mutation persisted), #17 (API numeric type consistency), #18 (specialist registration), #19 (specialist consensus determinism), #20 (alert severity rendering), #21 (broker call retry), #23 (resource cleanup beyond DB), #24 (cost guard coverage). Lower-ROI; revisit after batches 1-2 land.
+
+---
+
 ## 2026-05-13 — Data-quality filter generalized to ai_predictions + 13 analytics sites fixed. Severity: medium (defense-in-depth + structural).
 
 **Context.** The class-style `test_data_quality_filter_present` (this morning's wave) found **13 analytics queries** on `trades` + `ai_predictions` that don't filter `data_quality`. The phantom-stop pollution chain is:

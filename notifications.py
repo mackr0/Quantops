@@ -680,39 +680,66 @@ def notify_error(error_msg, context="", ctx=None):
     Per-subject debounced — a given subject can only fire once per
     `_NOTIFY_ERROR_DEBOUNCE_HOURS` window (default 1h). Suppressed
     subsequent calls log a warning so the activity is visible.
+
+    The OUTERMOST safety net: this function MUST NEVER raise.
+    It's called from many critical-path try/except blocks. If it
+    propagates an exception, the original error is replaced by the
+    notification error in tracebacks, error visibility collapses,
+    and recursion-style retry loops can crash the system. Any
+    failure inside (SMTP down, malformed body, debounce dict
+    corrupted) is caught and logged-only.
     """
-    ctx_label = context if context else "General"
-    subject = f"QuantOpsAI ERROR: {ctx_label}"
+    try:
+        ctx_label = (context if context else "General") or ""
+        subject = f"QuantOpsAI ERROR: {ctx_label}"
 
-    # Debounce check
-    from datetime import timedelta as _timedelta
-    now = datetime.utcnow()
-    with _notify_error_lock:
-        last = _notify_error_last_sent.get(subject)
-        if last and (now - last) < _timedelta(
-                hours=_NOTIFY_ERROR_DEBOUNCE_HOURS):
-            mins_remaining = int(
-                (_timedelta(hours=_NOTIFY_ERROR_DEBOUNCE_HOURS) -
-                 (now - last)).total_seconds() / 60
-            )
+        # Debounce check
+        from datetime import timedelta as _timedelta
+        now = datetime.utcnow()
+        with _notify_error_lock:
+            last = _notify_error_last_sent.get(subject)
+            if last and (now - last) < _timedelta(
+                    hours=_NOTIFY_ERROR_DEBOUNCE_HOURS):
+                mins_remaining = int(
+                    (_timedelta(hours=_NOTIFY_ERROR_DEBOUNCE_HOURS) -
+                     (now - last)).total_seconds() / 60
+                )
+                logger.warning(
+                    "notify_error debounced (last sent %s, %d min until "
+                    "next allowed): %s",
+                    last.isoformat(timespec="seconds"),
+                    mins_remaining, subject,
+                )
+                return False
+            _notify_error_last_sent[subject] = now
+
+        # Build the body. Defensive str() in case error_msg is None.
+        error_block = (
+            f'<div style="padding:14px;background:#ffebee;border-left:4px solid {_RED};'
+            f'font-family:monospace;font-size:13px;white-space:pre-wrap;word-break:break-all">'
+            f"{str(error_msg) if error_msg is not None else '(no message)'}</div>"
+        )
+        body = _section(f"Error in: {ctx_label}", error_block)
+        body += _kv_row(
+            "Occurred at",
+            datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        )
+        html = _wrap_html("Error Alert", body)
+        return send_email(subject, html, ctx=ctx)
+    except Exception as exc:
+        # Outermost safety net — log + return False, never raise.
+        # 2026-05-13 — pinned by tests/test_notify_error_never_raises.py
+        # after that test caught notify_error propagating
+        # send_email/_wrap_html/_kv_row failures.
+        try:
             logger.warning(
-                "notify_error debounced (last sent %s, %d min until "
-                "next allowed): %s",
-                last.isoformat(timespec="seconds"),
-                mins_remaining, subject,
+                "notify_error itself failed (this is the safety net "
+                "preventing error-handler crash loop): %s: %s",
+                type(exc).__name__, exc,
             )
-            return False
-        _notify_error_last_sent[subject] = now
-
-    error_block = (
-        f'<div style="padding:14px;background:#ffebee;border-left:4px solid {_RED};'
-        f'font-family:monospace;font-size:13px;white-space:pre-wrap;word-break:break-all">'
-        f"{error_msg}</div>"
-    )
-    body = _section(f"Error in: {ctx_label}", error_block)
-
-    # Timestamp
-    body += _kv_row("Occurred at", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"))
-
-    html = _wrap_html("Error Alert", body)
-    return send_email(subject, html, ctx=ctx)
+        # SILENT_OK: even the logger failed — there's nothing
+        # left to do. The outer notify_error MUST never raise per
+        # contract, so a failed-logger swallow is the right ending.
+        except Exception:
+            pass
+        return False
