@@ -876,24 +876,60 @@ def _task_scan_and_trade(ctx):
     except Exception:
         logging.exception("Failed to build scan summary for activity log")
 
+    # 2026-05-14 — every action type that the AI can propose must
+    # generate a notification + activity log entry, not just stock
+    # actions. Mack flagged that options trades were appearing on
+    # the trades page but missing from the dashboard ticker because
+    # MULTILEG_OPEN / OPTIONS / PAIR_TRADE were silently filtered
+    # here.
+    EXECUTED_ACTIONS = {
+        "BUY", "STRONG_BUY", "SELL", "STRONG_SELL",
+        "SHORT", "COVER",
+        "OPTIONS", "MULTILEG_OPEN", "MULTILEG_CLOSE",
+        "PAIR_TRADE",
+    }
     for detail in summary.get("details", []):
-        if detail.get("action") in ("BUY", "SELL", "SHORT"):
+        if detail.get("action") in EXECUTED_ACTIONS:
             try:
                 notify_trade(detail, detail, detail, ctx=ctx)
             except Exception:
                 logging.exception("Failed to send trade notification")
 
-            # Log trade executed activity
+            # Log trade executed activity. Sizing detail varies by
+            # action type — branch on the action so the ticker
+            # doesn't render "BUY 0 SHOP @ $0.00" for multileg
+            # trades that don't carry qty/price at the top level.
             sym = detail.get("symbol", "?")
             action = detail.get("action", "?")
-            qty = detail.get("qty", 0)
-            price = detail.get("price", 0)
+            if action in ("MULTILEG_OPEN", "MULTILEG_CLOSE"):
+                strat = detail.get("strategy_name") or detail.get("multileg_strategy") or ""
+                contracts = detail.get("contracts")
+                title = (
+                    f"{action} {strat} {sym}"
+                    f"{' x' + str(contracts) if contracts else ''}"
+                ).strip()
+            elif action == "OPTIONS":
+                strat = detail.get("option_strategy") or ""
+                contracts = detail.get("contracts")
+                title = (
+                    f"{action} {strat} {sym}"
+                    f"{' x' + str(contracts) if contracts else ''}"
+                ).strip()
+            elif action == "PAIR_TRADE":
+                title = f"{action} {sym}"
+            else:
+                qty = detail.get("qty", 0)
+                price = detail.get("price", 0)
+                title = (
+                    f"{action} {qty:,.0f} {sym} @ ${price:,.2f}"
+                    if qty and price
+                    else f"{action} {sym}"
+                )
             reason = detail.get("reason", "")
             _safe_log_activity(
                 getattr(ctx, "profile_id", 0), ctx.user_id,
                 "trade_executed",
-                f"{action} {qty:,.0f} {sym} @ ${price:,.2f}" if qty and price
-                else f"{action} {sym}",
+                title,
                 f"Trade executed: {action} {sym}\n{reason}",
                 symbol=sym,
             )
