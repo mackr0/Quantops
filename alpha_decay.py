@@ -547,7 +547,67 @@ def run_decay_cycle(db_path: str) -> Dict[str, Any]:
         except Exception as exc:
             summary["errors"].append(f"{stype}: {exc}")
 
+    # Step 3 (2026-05-14) — TTL-based auto-restoration. Every
+    # deprecation has a 14-day half-life. After that, the strategy
+    # is automatically restored unless it has been re-deprecated in
+    # the meantime by Sharpe-recovery checks above. Principle: market
+    # conditions change; a strategy that lost in March may win in May.
+    # Without TTL restoration, deprecations become permanent (as
+    # observed in the 2026-05-14 over-restriction collapse). After
+    # restoration, the strategy must produce a fresh ≥30-sample
+    # signal before it can be deprecated again.
+    try:
+        ttl_restored = restore_expired_deprecations(db_path)
+        summary["restored"].extend(ttl_restored)
+    except Exception as exc:
+        summary["errors"].append(f"ttl_restore: {exc}")
+
     return summary
+
+
+def restore_expired_deprecations(db_path: str, ttl_days: int = 14
+                                  ) -> List[str]:
+    """Auto-restore any strategy that has been deprecated longer than
+    ttl_days. Returns list of restored strategy_types.
+
+    Companion to check_restoration (Sharpe-based). The Sharpe path
+    can never trigger for deprecated strategies (they emit no
+    signals). This TTL path guarantees they get a fresh chance after
+    a fixed period, regardless of signal availability.
+
+    Re-deprecation requires a fresh ≥30-sample signal (enforced by
+    the self_tuning sample-size minimum). Without this guarantee,
+    the system drifts toward stasis.
+    """
+    restored: List[str] = []
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT strategy_type FROM deprecated_strategies "
+            "WHERE restored_at IS NULL "
+            "AND deprecated_at <= datetime('now', ?)",
+            (f"-{int(ttl_days)} days",),
+        ).fetchall()
+        for (stype,) in rows:
+            conn.execute(
+                "UPDATE deprecated_strategies "
+                "SET restored_at = datetime('now') "
+                "WHERE strategy_type = ? AND restored_at IS NULL",
+                (stype,),
+            )
+            restored.append(stype)
+            logger.info(
+                "TTL auto-restored strategy '%s' after %dd "
+                "deprecation. Must re-evidence on >=30 samples to "
+                "be deprecated again.",
+                stype, ttl_days,
+            )
+        conn.commit()
+    except sqlite3.OperationalError as exc:
+        logger.warning("TTL restoration failed: %s", exc)
+    finally:
+        conn.close()
+    return restored
 
 
 def list_deprecated(db_path: str) -> List[Dict[str, Any]]:

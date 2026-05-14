@@ -94,8 +94,9 @@ class TestDeprecationAutoAction:
         a healthy overall baseline. The tuner should auto-deprecate it
         instead of returning a 'Recommendation:' string."""
         db = _make_db(tmp_path)
-        # 18 insider_cluster predictions, 3 wins -> 17% win rate
-        _insert_preds(db, "insider_cluster", total=18, wins=3)
+        # 35 insider_cluster predictions, 6 wins -> 17% win rate
+        # (≥30 samples required after 2026-05-14 architecture fix)
+        _insert_preds(db, "insider_cluster", total=35, wins=6)
         # 50 momentum_breakout predictions, 25 wins -> 50% win rate
         # (push overall_wr well above the bad strategy)
         _insert_preds(db, "momentum_breakout", total=50, wins=25)
@@ -199,8 +200,10 @@ class TestDeprecationAutoAction:
         the strategies that DO have profile-level toggles. The new
         deprecation path is for strategies WITHOUT toggles only."""
         db = _make_db(tmp_path)
-        # mean_reversion has a profile toggle. Make it bad.
-        _insert_preds(db, "mean_reversion", total=18, wins=3)
+        # mean_reversion has a profile toggle. Make it bad with
+        # enough samples (≥30) to satisfy the post-2026-05-14
+        # minimum-evidence rule.
+        _insert_preds(db, "mean_reversion", total=35, wins=6)
         _insert_preds(db, "momentum_breakout", total=50, wins=25)
 
         ctx = _ctx(db)

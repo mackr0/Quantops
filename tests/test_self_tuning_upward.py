@@ -141,13 +141,16 @@ class TestConfidenceThresholdUpward:
     def test_raised_to_best_band(self, setup, monkeypatch):
         db = _make_db(setup)
         ctx = _make_ctx(db)
+        # Each band needs >=30 samples after 2026-05-14
+        # minimum-evidence rule. Tripled fixture preserves
+        # original win-rate proportions: 45@30%, 65@50%, 75@80%.
         preds = (
-            [{"confidence": 45, "outcome": "loss"} for _ in range(7)]
-            + [{"confidence": 45, "outcome": "win"} for _ in range(3)]
-            + [{"confidence": 65, "outcome": "loss"} for _ in range(5)]
-            + [{"confidence": 65, "outcome": "win"} for _ in range(5)]
-            + [{"confidence": 75, "outcome": "win"} for _ in range(8)]
-            + [{"confidence": 75, "outcome": "loss"} for _ in range(2)]
+            [{"confidence": 45, "outcome": "loss"} for _ in range(21)]
+            + [{"confidence": 45, "outcome": "win"} for _ in range(9)]
+            + [{"confidence": 65, "outcome": "loss"} for _ in range(15)]
+            + [{"confidence": 65, "outcome": "win"} for _ in range(15)]
+            + [{"confidence": 75, "outcome": "win"} for _ in range(24)]
+            + [{"confidence": 75, "outcome": "loss"} for _ in range(6)]
         )
         _insert_predictions(db, preds)
 
@@ -213,11 +216,14 @@ class TestRegimePositionSizing:
     def test_reduces_in_bad_regime(self, setup, monkeypatch):
         db = _make_db(setup)
         ctx = _make_ctx(db)
+        # Each regime needs >=30 samples after 2026-05-14
+        # minimum-evidence rule. Tripled fixture preserves
+        # original proportions: bull@67%, sideways@27%.
         preds = (
-            [{"regime": "bull", "outcome": "win"} for _ in range(10)]
-            + [{"regime": "bull", "outcome": "loss"} for _ in range(5)]
-            + [{"regime": "sideways", "outcome": "loss"} for _ in range(11)]
-            + [{"regime": "sideways", "outcome": "win"} for _ in range(4)]
+            [{"regime": "bull", "outcome": "win"} for _ in range(30)]
+            + [{"regime": "bull", "outcome": "loss"} for _ in range(15)]
+            + [{"regime": "sideways", "outcome": "loss"} for _ in range(33)]
+            + [{"regime": "sideways", "outcome": "win"} for _ in range(12)]
         )
         _insert_predictions(db, preds)
 
@@ -239,11 +245,14 @@ class TestRegimePositionSizing:
     def test_increases_in_strong_regime(self, setup, monkeypatch):
         db = _make_db(setup)
         ctx = _make_ctx(db)
+        # Each regime needs >=30 samples after 2026-05-14
+        # minimum-evidence rule. Tripled fixture preserves
+        # original proportions: bull@80%, sideways@40%.
         preds = (
-            [{"regime": "bull", "outcome": "win"} for _ in range(12)]
-            + [{"regime": "bull", "outcome": "loss"} for _ in range(3)]
-            + [{"regime": "sideways", "outcome": "win"} for _ in range(6)]
-            + [{"regime": "sideways", "outcome": "loss"} for _ in range(9)]
+            [{"regime": "bull", "outcome": "win"} for _ in range(36)]
+            + [{"regime": "bull", "outcome": "loss"} for _ in range(9)]
+            + [{"regime": "sideways", "outcome": "win"} for _ in range(18)]
+            + [{"regime": "sideways", "outcome": "loss"} for _ in range(27)]
         )
         _insert_predictions(db, preds)
 
@@ -267,11 +276,14 @@ class TestStrategyToggles:
     def test_disables_worst_strategy(self, setup, monkeypatch):
         db = _make_db(setup)
         ctx = _make_ctx(db)
+        # Each strategy needs >=30 samples after 2026-05-14
+        # minimum-evidence rule. Tripled fixture preserves
+        # original proportions: momentum_breakout@20%, mean_reversion@70%.
         preds = (
-            [{"strategy": "momentum_breakout", "outcome": "loss"} for _ in range(8)]
-            + [{"strategy": "momentum_breakout", "outcome": "win"} for _ in range(2)]
-            + [{"strategy": "mean_reversion", "outcome": "win"} for _ in range(7)]
-            + [{"strategy": "mean_reversion", "outcome": "loss"} for _ in range(3)]
+            [{"strategy": "momentum_breakout", "outcome": "loss"} for _ in range(24)]
+            + [{"strategy": "momentum_breakout", "outcome": "win"} for _ in range(6)]
+            + [{"strategy": "mean_reversion", "outcome": "win"} for _ in range(21)]
+            + [{"strategy": "mean_reversion", "outcome": "loss"} for _ in range(9)]
         )
         _insert_predictions(db, preds)
 

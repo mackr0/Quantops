@@ -17,6 +17,66 @@ Rules going forward:
 
 ---
 
+## 2026-05-14 — Self-tuner architecture: bias toward action, not stasis. Severity: medium (architectural fix to prevent recurrence of the same-day over-restriction collapse).
+
+**Context.** Companion to the same-day emergency revert. The revert undid the damage; this entry redesigns the self-tuner so it can never re-create the failure mode.
+
+**Core principle (per Mack):** "The system should not be moving in a direction of stasis, it should be moving in a direction of confident trading. We shouldn't need that revert script in the future."
+
+The self-tuner had been singularly focused on "stop losses" with no offsetting "create wins" goal. It only tightened criteria when it saw bad patterns; it had no mechanism to LOOSEN when trade volume dropped too low. Each daily change passed its own sanity check; the *sum* of 30+ daily restrictions over 14 days drove stock new entries from 24/day to 0/day.
+
+The fix is NOT to disable tightening. Tightening on truly bad patterns is correct behavior. The fix is to use the auto-tuning tools INTELLIGENTLY:
+
+### 1. Sample-size minimum 30 for every tightening decision
+
+Every place in `self_tuning.py` where the tuner makes a TIGHTENING decision now requires ≥30 resolved predictions of evidence (was 5-10). Specifically:
+
+- `apply_auto_adjustments`: ai_confidence_threshold tightening (band70 / band60 raises) now requires ≥30 (was >5).
+- `_optimize_confidence_threshold_upward`: HAVING COUNT(*) ≥ 30 (was ≥10).
+- `_optimize_regime_position_sizing`: HAVING COUNT(*) ≥ 30 per regime (was ≥10).
+- `_optimize_strategy_toggles`: HAVING COUNT(*) ≥ 30 per strategy (was ≥10).
+- Short stop-loss auto-widen: ≥30 trades required (was ≥5).
+- Auto-disable shorts: ≥30 trades required (was ≥10).
+
+Display-only / div-by-zero / cluster-definition / blacklist-definition gates that don't drive tightening are explicitly annotated `# DISPLAY_ONLY: <rationale>`.
+
+### 2. Trade-volume floor as a SIGNAL (not a hard block)
+
+`apply_auto_adjustments` now sets `ctx._runtime_under_volume_floor = True` when the profile produced fewer than 3 stock-entry trades in the last 7 days. This is a SIGNAL, not a switch:
+
+- **Tightening still allowed** when under floor — but the sample-size bar doubles to ≥60 for ai_confidence_threshold raises, strategy deprecations, and short-related tightening. Tightening on truly catastrophic patterns (≥60 samples + clear evidence) remains available.
+- **Loosening prioritized** — the optimizer registry reorders to put `_optimize_false_negatives` (and other loosening rules) FIRST when under floor. If a loosener can fire (e.g., AI confidence threshold is too tight given recent rejected-but-would-have-won trades), it fires before the regular tightening pass even runs.
+
+This design respects Mack's directive: "use the tools properly to make the right trades, it's not an on/off thing."
+
+### 3. TTL-based auto-restoration in alpha_decay
+
+`alpha_decay.run_decay_cycle` now calls a new `restore_expired_deprecations(db_path, ttl_days=14)` step. Every deprecated strategy auto-restores after 14 days unless the existing Sharpe-recovery check (which requires the strategy to emit signals) has already restored it. Without this, deprecations were effectively permanent — a deprecated strategy emits no signals, can never recover its Sharpe, can never trigger restoration. The TTL guarantees a fresh chance regardless of signal availability. Re-deprecation requires fresh ≥30-sample evidence (enforced by the sample-size minimum above).
+
+### 4. New strict-mode test: `tests/test_self_tuner_minimum_sample_sizes.py`
+
+Three tests that fail CI on architectural drift:
+
+- `test_no_tightening_rule_below_minimum_sample_size`: AST-equivalent regex scan of `self_tuning.py` for any `>= N` or `> N` pattern near count-flavored variable names where N < 30. Fails unless explicitly annotated `# LOOSEN_OK:` (loosening can fire on smaller samples — bias toward action) or `# DISPLAY_ONLY:` (analysis/display, not a tuning decision).
+- `test_volume_floor_signal_present_in_apply_auto_adjustments`: pin-tests for the `_runtime_under_volume_floor` marker and the `VOLUME-FLOOR signal` log message. Catches a future refactor that accidentally removes the volume-floor signal.
+- `test_alpha_decay_has_ttl_restoration`: pin-tests for `restore_expired_deprecations` in `alpha_decay.py`. Catches a future removal of the TTL path that would re-create the permanent-deprecation failure mode.
+
+### Test-categorization updates
+
+- Test count: **3,044** (was 3,041 — +3 from the new strict-mode tests)
+- Fixtures in `test_self_tuning_upward.py` and `test_self_tuning_deprecation.py` updated to ≥30 samples per band/regime/strategy (preserving original win-rate proportions).
+
+### Why next time will be caught
+
+A future PR that introduces another `if band80_total > 5: tighten_threshold(...)` line will fail CI before the scheduler ever sees it. The strict-mode test demands either a real evidence threshold or an explicit LOOSEN_OK / DISPLAY_ONLY annotation that's reviewable in the PR diff. The volume-floor signal and TTL restoration are pin-tested so they can't silently disappear.
+
+### Remaining work (not in this PR — Mack to direct)
+
+- **Options-exit failures** (Cause #1 of today's audit): NU/KO/WMT/ET/RIOT options closes returning 403 / 422 from Alpaca for ~2+ days. Journal/broker desync. Fix path: surface broker rejections to notifications + reconcile journal entries against actual broker positions.
+- **Phase 2 of self-tuner architecture**: rebalance the optimizer registry so loosening rules are first-class (currently only `_optimize_false_negatives` loosens; most rules tighten). Add a "system biased toward action" health dashboard.
+
+---
+
 ## 2026-05-14 — EMERGENCY REVERT: self-tuner over-restriction killed all stock entries. Severity: critical (system non-trading for ~10 days).
 
 **Symptom.** Mack noticed today: "no trades except for bad trades, did everything you did yesterday fix nothing?" Audit found that the failure pattern long pre-dates yesterday's work.

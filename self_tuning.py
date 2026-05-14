@@ -194,6 +194,7 @@ def _build_cross_profile_insights(user_id, current_profile_id, current_db_path):
                 f"SELECT COUNT(*) FROM ai_predictions "
                 f"WHERE status='resolved' AND actual_outcome='win'{_aip_dq}"
             ).fetchone()[0]
+            # DISPLAY_ONLY: div-by-zero guard for cross-profile insight stats.
             win_rate = (wins / resolved * 100) if resolved > 0 else 0
 
             avg_return = conn.execute(
@@ -214,6 +215,7 @@ def _build_cross_profile_insights(user_id, current_profile_id, current_db_path):
                 f"SELECT AVG(actual_return_pct) FROM ai_predictions "
                 f"WHERE status='resolved' AND predicted_signal IN ('BUY','STRONG_BUY','WEAK_BUY'){_aip_dq}"
             ).fetchone()[0] or 0
+            # DISPLAY_ONLY: div-by-zero guard for cross-profile insights dict.
             buy_wr = (buy_wins / buy_total * 100) if buy_total > 0 else 0
 
             profile_stats.append({
@@ -344,6 +346,7 @@ def get_symbol_reputation(db_path, min_predictions=3):
             total = r["total"]
             wins = r["wins"]
             losses = total - wins
+            # DISPLAY_ONLY: div-by-zero guard for symbol-reputation dict.
             win_rate = (wins / total * 100) if total > 0 else 0
             avg_ret = r["avg_return"] or 0
 
@@ -452,11 +455,14 @@ def _build_trade_performance_context(db_path):
             losses = r["losses"] or 0
             total_pnl = r["total_pnl"] or 0
 
+            # DISPLAY_ONLY: div-by-zero guard for the AI-prompt line below.
             win_rate = (wins / cnt * 100) if cnt > 0 else 0
             pnl_str = f"+${total_pnl:,.0f}" if total_pnl >= 0 else f"-${abs(total_pnl):,.0f}"
             lines.append(f"  {label:16s} {wins} wins / {losses} losses | P&L: {pnl_str}")
 
             # Flag critical problems
+            # DISPLAY_ONLY: appends to warnings[] list for AI prompt context;
+            # not a programmatic tightener.
             if side in ("short", "cover") and cnt >= 5 and win_rate == 0:
                 warnings.append(
                     f"WARNING: Short selling has a 0% win rate across {cnt} trades.\n"
@@ -515,6 +521,7 @@ def _get_track_record_by_direction(conn):
             wins = int(r["wins"] or 0)
             losses = int(r["losses"] or 0)
             total = int(r["total"] or 0)
+            # DISPLAY_ONLY: div-by-zero guard for prediction-type breakdown dict.
             wr = (wins / total * 100) if total > 0 else 0.0
             out[ptype] = {"wins": wins, "losses": losses,
                           "total": total, "win_rate": wr}
@@ -584,6 +591,8 @@ def build_concise_context(ctx, symbol=None):
                         f"SELECT COUNT(*) FROM ai_predictions "
                         f"WHERE status='resolved' AND actual_outcome='win'{_aip_dq}"
                     ).fetchone()[0]
+                    # DISPLAY_ONLY: gates the OVERALL win-rate line in
+                    # the AI prompt. Not a tightener.
                     if total >= 10:
                         wr = wins / total * 100
                         selectivity = "Be more selective." if wr < 40 else "Good accuracy."
@@ -767,6 +776,8 @@ def build_performance_context(ctx, symbol=None, db_path=None):
                 f"AND confidence >= ? AND confidence {hi_op} ?",
                 (lo, hi),
             ).fetchone()[0]
+            # DISPLAY_ONLY: div-by-zero guard for confidence-band line
+            # in performance context (AI prompt).
             if band_total > 0:
                 bwr = band_wins / band_total * 100
                 if bwr < 45:
@@ -799,6 +810,7 @@ def build_performance_context(ctx, symbol=None, db_path=None):
                 f"WHERE status='resolved' AND predicted_signal=?{_aip_dq}",
                 (sig,),
             ).fetchone()[0] or 0
+            # DISPLAY_ONLY: div-by-zero guard for per-signal AI prompt line.
             if sig_total > 0:
                 swr = sig_wins / sig_total * 100
                 lines.append(
@@ -852,14 +864,17 @@ def build_performance_context(ctx, symbol=None, db_path=None):
             "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal IN ('SELL','STRONG_SELL','WEAK_SELL','SHORT')"
         ).fetchone()[0]
 
+        # DISPLAY_ONLY: div-by-zero guards for display strings below.
         buy_wr = (buy_wins_count / buy_total * 100) if buy_total > 0 else 0
         sell_wr = (sell_wins_count / sell_total * 100) if sell_total > 0 else 0
 
+        # DISPLAY_ONLY: text appended to AI prompt; AI weighs it.
         if buy_total > 5 and buy_wr < 45:
             lines.append(
                 f"- Your BUY predictions in the current market are losing more "
                 f"than winning ({buy_wr:.0f}% win rate). Be more selective."
             )
+        # DISPLAY_ONLY: text appended to AI prompt; AI weighs it.
         if sell_total > 5 and sell_wr > buy_wr + 10:
             lines.append(
                 f"- SELL predictions ({sell_wr:.0f}%) outperform BUY predictions "
@@ -875,6 +890,7 @@ def build_performance_context(ctx, symbol=None, db_path=None):
             "SELECT COUNT(*) FROM ai_predictions "
             "WHERE status='resolved' AND actual_outcome='win' AND confidence >= 70"
         ).fetchone()[0]
+        # DISPLAY_ONLY: text appended to AI prompt; AI weighs it.
         if high_conf_total > 5:
             hcwr = high_conf_wins / high_conf_total * 100
             if hcwr > win_rate + 10:
@@ -1317,6 +1333,7 @@ def get_auto_adjustments(ctx, db_path=None):
             "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal IN ('SELL','STRONG_SELL','WEAK_SELL','SHORT')"
         ).fetchone()[0]
 
+        # DISPLAY_ONLY: defaults for AI prompt context, not a tightener.
         buy_wr = (buy_wins / buy_total * 100) if buy_total > 5 else 50
         sell_wr = (sell_wins / sell_total * 100) if sell_total > 5 else 50
 
@@ -1538,6 +1555,44 @@ def apply_auto_adjustments(ctx, db_path=None):
 
         overall_wr, _ = _get_current_win_rate(conn)
 
+        # 2026-05-14 — trade-volume signal (NOT a hard block). When
+        # the profile is producing too few stock entries, the tuner
+        # SHOULD prefer loosening adjustments and raise the bar for
+        # tightening — but tightening on truly broken patterns
+        # (≥60 samples + clear evidence) remains available. Principle:
+        # the system must drift toward CONFIDENT TRADING, not stasis,
+        # and that means using the tools intelligently, not turning
+        # them off. (See feedback_self_tuner_must_drift_toward_trading.md.)
+        MIN_RECENT_ENTRIES = 3
+        WINDOW_DAYS = 7
+        try:
+            recent_entries = conn.execute(
+                f"""SELECT COUNT(*) FROM trades
+                    WHERE date(timestamp) >= date('now', '-{WINDOW_DAYS} days')
+                    AND side IN ('buy', 'short')
+                    AND signal_type IN
+                       ('BUY', 'STRONG_BUY', 'SHORT', 'STRONG_SELL')"""
+            ).fetchone()[0]
+        except sqlite3.OperationalError as exc:
+            logger.warning("Volume floor check failed: %s", exc)
+            recent_entries = MIN_RECENT_ENTRIES  # fail-open
+        ctx._runtime_under_volume_floor = (
+            recent_entries < MIN_RECENT_ENTRIES
+        )
+        if ctx._runtime_under_volume_floor:
+            adjustments_made.append(
+                f"VOLUME-FLOOR signal: only {recent_entries} stock "
+                f"entries in last {WINDOW_DAYS}d (floor="
+                f"{MIN_RECENT_ENTRIES}). Tuner will prefer loosening "
+                f"and require stronger evidence for tightening."
+            )
+            logger.info(
+                "Volume-floor signal active for profile %s: %d entries "
+                "< %d in %dd. Loosening prioritized; tightening bar "
+                "raised but not blocked.",
+                profile_id, recent_entries, MIN_RECENT_ENTRIES, WINDOW_DAYS,
+            )
+
         # --- Check if confidence threshold was adjusted recently ---
         recent_conf = _get_recent_adjustment(
             profile_id, "ai_confidence_threshold", days=3)
@@ -1557,7 +1612,14 @@ def apply_auto_adjustments(ctx, db_path=None):
                 "WHERE status='resolved' AND actual_outcome='win' AND confidence < 70"
             ).fetchone()[0]
 
-            if band70_total > 5:
+            # 2026-05-14: minimum sample size 30 (60 when the profile
+            # is below the trade-volume floor). Previously 5, which
+            # let the tuner ratchet thresholds up to 70-80 on noise.
+            # The volume-floor signal RAISES the bar but doesn't
+            # block; tightening on truly broken patterns stays
+            # available with stronger evidence.
+            _min_n_70 = 60 if getattr(ctx, "_runtime_under_volume_floor", False) else 30
+            if band70_total >= _min_n_70:
                 wr70 = band70_wins / band70_total * 100
                 if wr70 < 35 and ctx.ai_confidence_threshold < 70:
                     past_outcome = _was_adjustment_effective(
@@ -1592,7 +1654,10 @@ def apply_auto_adjustments(ctx, db_path=None):
                     "WHERE status='resolved' AND actual_outcome='win' AND confidence < 60"
                 ).fetchone()[0]
 
-                if band60_total > 5:
+                # 2026-05-14: same min-30 (60 if under volume floor)
+                # rule as the band70 check above (was previously >5).
+                _min_n_60 = 60 if getattr(ctx, "_runtime_under_volume_floor", False) else 30
+                if band60_total >= _min_n_60:
                     wr60 = band60_wins / band60_total * 100
                     if wr60 < 35 and ctx.ai_confidence_threshold < 60:
                         past_outcome = _was_adjustment_effective(
@@ -1634,6 +1699,9 @@ def apply_auto_adjustments(ctx, db_path=None):
             "WHERE status='resolved' AND actual_outcome='win' AND predicted_signal IN ('SELL','STRONG_SELL','WEAK_SELL','SHORT')"
         ).fetchone()[0]
 
+        # DISPLAY_ONLY: defaults for the recommendation text below.
+        # The recommendation is a string for human/AI consumption,
+        # not a programmatic tightening.
         buy_wr = (buy_wins / buy_total * 100) if buy_total > 5 else 50
         sell_wr = (sell_wins / sell_total * 100) if sell_total > 5 else 50
 
@@ -1662,10 +1730,14 @@ def apply_auto_adjustments(ctx, db_path=None):
                 short_cnt = short_rows["cnt"] if short_rows else 0
                 short_wins = short_rows["wins"] or 0 if short_rows else 0
                 short_pnl = short_rows["total_pnl"] or 0 if short_rows else 0
+                # DISPLAY_ONLY: div-by-zero guard for the if-checks below.
                 short_wr = (short_wins / short_cnt * 100) if short_cnt > 0 else 100
 
-                # Auto-widen short stop-loss if 0% win rate with 5+ trades
-                if short_cnt >= 5 and short_wr == 0:
+                # Auto-widen short stop-loss if 0% win rate. Min 30
+                # samples (60 if profile is below volume floor) — was
+                # previously 5 which fired on noise.
+                _min_short = 60 if getattr(ctx, "_runtime_under_volume_floor", False) else 30
+                if short_cnt >= _min_short and short_wr == 0:
                     recent_short_sl = _get_recent_adjustment(
                         profile_id, "short_stop_loss_pct", days=3)
                     if not recent_short_sl:
@@ -1695,7 +1767,10 @@ def apply_auto_adjustments(ctx, db_path=None):
                 # (auto-enabling shorts) is intentionally left as a
                 # recommendation only because flipping a high-risk feature ON
                 # without human review is dangerous.
-                if (short_cnt >= 10 and short_wr < 20 and short_pnl < 0
+                # Auto-disable shorts. Min 30 (60 if under volume
+                # floor) — was 10 which fired on noise.
+                _min_disable = 60 if getattr(ctx, "_runtime_under_volume_floor", False) else 30
+                if (short_cnt >= _min_disable and short_wr < 20 and short_pnl < 0
                         and getattr(ctx, "enable_short_selling", False)):
                     if not _get_recent_adjustment(
                             profile_id, "enable_short_selling", days=3):
@@ -1910,6 +1985,23 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_false_negatives,
     ]
 
+    # 2026-05-14 — when the profile is below the trade-volume floor,
+    # try the LOOSENING optimizer first. Goal: drift toward confident
+    # trading. If a loosening adjustment is available, take it before
+    # we even consider the tightening rules. Tightening still runs
+    # after if no loosener fired (with raised evidence bars per the
+    # _runtime_under_volume_floor flag plumbed into individual
+    # optimizers).
+    LOOSENING_OPTIMIZERS = {
+        "_optimize_false_negatives",
+    }
+    if getattr(ctx, "_runtime_under_volume_floor", False):
+        looseners = [o for o in optimizers
+                     if o.__name__ in LOOSENING_OPTIMIZERS]
+        rest = [o for o in optimizers
+                if o.__name__ not in LOOSENING_OPTIMIZERS]
+        optimizers = looseners + rest
+
     results = []
     for optimizer in optimizers:
         try:
@@ -1945,7 +2037,7 @@ def _optimize_confidence_threshold_upward(conn, ctx, profile_id, user_id,
              COUNT(*) as total,
              SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) as wins
            FROM ai_predictions WHERE status='resolved'{_aip_dq}
-           GROUP BY band_floor HAVING COUNT(*) >= 10
+           GROUP BY band_floor HAVING COUNT(*) >= 30
            ORDER BY band_floor"""
     ).fetchall()
 
@@ -2023,7 +2115,7 @@ def _optimize_regime_position_sizing(conn, ctx, profile_id, user_id,
                   SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) as wins
            FROM ai_predictions
            WHERE status='resolved' AND regime_at_prediction IS NOT NULL{_aip_dq}
-           GROUP BY regime_at_prediction HAVING COUNT(*) >= 10"""
+           GROUP BY regime_at_prediction HAVING COUNT(*) >= 30"""
     ).fetchall()
 
     if not rows:
@@ -2108,9 +2200,10 @@ def _optimize_strategy_toggles(conn, ctx, profile_id, user_id,
                   SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) as wins
            FROM ai_predictions
            WHERE status='resolved' AND strategy_type IS NOT NULL{_aip_dq}
-           GROUP BY strategy_type HAVING COUNT(*) >= 10
+           GROUP BY strategy_type HAVING COUNT(*) >= ?
            ORDER BY (CAST(SUM(CASE WHEN actual_outcome='win' THEN 1 ELSE 0 END) AS REAL)
-                     / COUNT(*)) ASC"""
+                     / COUNT(*)) ASC""",
+        (60 if getattr(ctx, "_runtime_under_volume_floor", False) else 30,),
     ).fetchall()
 
     if not rows:
@@ -2125,6 +2218,7 @@ def _optimize_strategy_toggles(conn, ctx, profile_id, user_id,
     for r in rows:
         stype = r["strategy_type"]
         total = r["total"]
+        # DISPLAY_ONLY: div-by-zero guard, not a tightening gate.
         wr = (r["wins"] / total * 100) if total > 0 else 0
 
         # Must be both bad absolutely AND bad relative to overall
@@ -2479,6 +2573,9 @@ def _optimize_max_correlation(conn, ctx, profile_id, user_id,
     # clusters" and falsely trigger max_correlation tightening.
     from journal import data_quality_clause
     _dq = data_quality_clause(conn)
+    # DISPLAY_ONLY: 3 = cluster definition (3 losing trades in one
+    # week = a "loss cluster"), not a sample-size for tightening
+    # evidence. The actual evidence gate is total_weeks below.
     cluster_row = conn.execute(
         f"""SELECT strftime('%Y-%W', timestamp) as week, COUNT(*) as cnt
            FROM trades
@@ -4169,6 +4266,9 @@ def _optimize_stop_out_blacklist(conn, ctx, profile_id, user_id,
     from journal import data_quality_clause
     _dq = data_quality_clause(conn)
     try:
+        # DISPLAY_ONLY: 3 = blacklist definition (3 stop-outs in 30
+        # days = blacklistable per AI-tunable rule), not a sample-size
+        # for tightening evidence.
         rows = conn.execute(
             f"""SELECT symbol, COUNT(*) AS n FROM trades
                 WHERE strategy IN ('stop_loss', 'trailing_stop',
@@ -5398,6 +5498,8 @@ def _analyze_failure_patterns(db_path):
             return []
 
         # Pattern 1: Win rate by regime
+        # DISPLAY_ONLY: builds AI-prompt context strings (patterns
+        # are surfaced to the AI, not used to mechanically tighten).
         if has_regime:
             rows = conn.execute(
                 "SELECT regime_at_prediction, COUNT(*) as total, "
@@ -5427,6 +5529,7 @@ def _analyze_failure_patterns(db_path):
                     )
 
         # Pattern 2: Win rate by strategy type
+        # DISPLAY_ONLY: AI-prompt pattern strings (informational).
         if has_strategy:
             from display_names import display_name as _dn
             rows = conn.execute(
@@ -5449,6 +5552,7 @@ def _analyze_failure_patterns(db_path):
                     )
 
         # Pattern 3: Win rate by time of day (hour)
+        # DISPLAY_ONLY: AI-prompt pattern strings (informational).
         rows = conn.execute(
             "SELECT CAST(strftime('%H', timestamp) AS INTEGER) as hour, "
             "COUNT(*) as total, "
@@ -5503,6 +5607,7 @@ def get_batch_context_data(ctx, symbols=None):
     symbol_records = get_symbol_reputation(db_path, min_predictions=1)
 
     summary = None
+    # DISPLAY_ONLY: builds a human/AI summary string, not a tightener.
     if total >= 5:
         quality = "Good accuracy." if wr >= 45 else "Be more selective."
         summary = f"Overall: {wr:.0f}% win rate ({total} resolved). {quality}"
@@ -5511,6 +5616,9 @@ def get_batch_context_data(ctx, symbols=None):
     failure_patterns = _analyze_failure_patterns(db_path)
 
     return {
+        # DISPLAY_ONLY: gates whether the win-rate is reported in the
+        # AI-prompt context dict; consumed by AI as informational, not
+        # by a tightener.
         "overall_win_rate": wr if total >= 5 else None,
         "total_resolved": total,
         "symbol_records": symbol_records,

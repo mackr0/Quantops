@@ -9,7 +9,7 @@
 
 QuantOpsAI ships changes daily, often via AI-assisted edits. The threat model is not just "does the code compile" — it includes "did the assistant hallucinate a column name?", "did the assistant remove a guard while fixing something else?", "did the assistant claim a fix is done when it isn't?". The safety system has three layers, all enforced automatically:
 
-1. **Pre-commit / CI tests** (268 files, 3,041 tests, zero skipped) — must pass before merge.
+1. **Pre-commit / CI tests** (269 files, 3,044 tests, zero skipped) — must pass before merge.
 2. **Production-side controls** — defense-in-depth gates that catch what slips past tests.
 3. **Backups + rehearsed disaster recovery** — assume something will eventually break.
 
