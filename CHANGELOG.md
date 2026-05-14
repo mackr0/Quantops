@@ -17,6 +17,72 @@ Rules going forward:
 
 ---
 
+## 2026-05-14 — EMERGENCY REVERT: self-tuner over-restriction killed all stock entries. Severity: critical (system non-trading for ~10 days).
+
+**Symptom.** Mack noticed today: "no trades except for bad trades, did everything you did yesterday fix nothing?" Audit found that the failure pattern long pre-dates yesterday's work.
+
+**Root cause (14-day compounding).** The self-tuner has been running daily since 2026-04-22 and aggressively tightening entry criteria across all 11 profiles based on small-sample loss patterns. Stock new entries collapsed from 24/day (Apr 30, peak) to 0/day (May 13-14):
+
+| Date | new stock buys book-wide | new shorts | multileg pairs |
+|---|---|---|---|
+| Apr 30 | **24** | 0 | 0 |
+| May 1 | 11 | 0 | 0 |
+| May 4 | **0** ← drop | 0 | 0 |
+| May 5-12 | 1-4/day | 0 | 3-15/day |
+| May 13-14 | **0** | 0 | 18, then 0 |
+
+The multileg pipeline that shipped May 6 partly masked the stock-entry collapse — total trade volume looked OK because options spreads filled the gap.
+
+**Specific cumulative damage:**
+
+1. **ai_confidence_threshold creep.** Self-tuner tightened to extreme values:
+   - pid 3 Small Cap: 50 → 70 → **80**
+   - pid 4 Large Cap: 25 → 50
+   - pid 9 Small Cap Aggressive: 50 → **70**
+   - pid 10 Small Cap Shorts: 60 → **70**
+   - pid 11 Large Cap Limit Orders: 50 → **60**
+
+2. **27 strategies deprecated** across profiles, many on tiny sample sizes:
+   - Max Pain Pinning deprecated on **10 samples** (20% wr)
+   - Index Correlation deprecated on **10 samples** (20% wr)
+   - Ma Alignment deprecated on **10 samples** (0% wr)
+   - … and 14 more sub-30-sample deprecations
+   - These are noise, not signal — 10 samples is statistically insignificant.
+
+3. **Compounding effect.** For Large Cap 1M (pid 8) today: screener fed 30 candidates, multi-strategy produced 29 candidates, **`holds=29 sent_to_ai=0`** — every candidate filtered out before AI even saw it because all strategies returned HOLD on largecap after 3 strategies (`dividend_yield`, `index_correlation`, `relative_strength`) were deprecated.
+
+**Why this wasn't caught.** No guardrail tested *aggregate* trade-eligibility rate. Each individual self-tuner change passed its own sanity check ("this strategy has low win rate") — the *sum* of 30+ daily restrictions over 14 days did not.
+
+**Why this is a critical-severity entry.** The system was silently non-trading for days while Mack believed yesterday's audit work was the cause. The self-tuner was operating singularly on "stop losses" with no offsetting "create wins" goal — there's no mechanism for it to LOOSEN restrictions when trade volume drops too low.
+
+### Immediate revert (this entry — applied to prod 2026-05-14 15:11 UTC)
+
+Ran `/tmp/revert_self_tuner_overcorrection.py` on prod. Backups in `/opt/quantopsai/backups/pre_revert_20260514T151116Z/`.
+
+- **5 ai_confidence_threshold resets** to last-known-trading values:
+  - pid 3: 80 → 50, pid 4: 50 → 25, pid 9: 70 → 50, pid 10: 70 → 50, pid 11: already 50
+- **17 strategy un-deprecations** (all on <30 samples):
+  - pid 1: macd_cross, insider_selling_cluster, pullback_support
+  - pid 4: gap_reversal, dividend_yield, ma_alignment
+  - pid 5: insider_cluster
+  - pid 6: max_pain_pinning, vol_regime
+  - pid 7: vol_regime, max_pain_pinning, gap_reversal
+  - pid 8: dividend_yield, relative_strength, index_correlation
+  - pid 11: index_correlation
+- **Self-tuner paused** on all 10 active profiles (`enable_self_tuning=0`). Will stay paused until permanent guardrails ship.
+- **Strategies kept deprecated** (≥30 samples backing them, statistically defensible): gap_reversal/max_pain_pinning/insider_cluster on pid 1, sector_momentum on pid 6 and 7, insider_selling_cluster on pid 3 and 10, vol_regime and relative_strength on pid 4, relative_strength and gap_reversal on pid 11.
+- Every change written to `tuning_history` with `adjustment_type='manual_revert'` for audit trail.
+- Scheduler restarted at 15:12:56 UTC.
+
+### Permanent fix (separate work, next entry will cover)
+
+1. Self-tuner needs a **minimum-sample-size requirement** (≥30 resolved predictions) before deprecating ANY strategy.
+2. Self-tuner needs an **aggregate trade-eligibility floor** — if profile's actionable-signal rate drops below N% for K days, STOP tightening and start LOOSENING.
+3. Self-tuner needs a **two-sided goal**: not just "minimize loss-cluster weeks" but also "achieve minimum trade volume". Currently it has no LOOSEN action; that's the architectural bug behind the slow collapse.
+4. New strict-mode test that measures "what % of yesterday's screener candidates would survive today's filter stack" — fails if cumulative drop exceeds X% in a 7-day window.
+
+---
+
 ## 2026-05-14 — Batch 3 structural-test wave: 7 new strict-mode guardrails, 1 backtest-vs-live consistency bug closed. Severity: medium (silent determinism bug + future-regression-prevention layer).
 
 **Context.** Final batch from the 2026-05-13 24-test plan. All 7 new tests are strict-mode (no grandfathered baselines) per Mack's standing rule. Each one was designed, run, and any violations classified Cat 1/2/3 and fixed or annotated.
