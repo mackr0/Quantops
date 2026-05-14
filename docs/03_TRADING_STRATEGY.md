@@ -112,7 +112,19 @@ The options program is governed by:
 
 ### Options strategy advisor
 
-`options_strategy_advisor.py` evaluates each held position for opportunistic options strategies (covered call on a stable long, protective put on a high-conviction long with elevated IV). It emits recommendations into the AI prompt — the AI decides whether to act.
+`options_strategy_advisor.py` evaluates each held position for opportunistic options strategies (covered call on a stable long, protective put on a high-conviction long with elevated IV). It also evaluates each screener candidate for multi-leg opportunities via `evaluate_candidate_for_multileg`, which produces fully-specified strategy recommendations (strategy name, strikes, expiry, rationale) inserted into the AI prompt as the MULTI-LEG OPTIONS STRATEGIES block.
+
+**IV dead zone.** Multi-leg recommendations only fire when IV rank is OUTSIDE the neutral band (default rich threshold 60, cheap threshold 45 — must remain ≥10 points apart). When a candidate's IV rank falls in the 45-60 neutral band, no multileg rec is generated; the AI evaluates the candidate as a stock opportunity (or skips) without a pre-built options recommendation crowding the prompt. Restoring the dead zone (originally 50-60, removed 2026-05-12, re-added 2026-05-14 as 45-60) was the immediate fix for the bug class that drove stock BUY signals to 0/day. Per-profile overrides via `option_iv_rich_threshold` / `option_iv_cheap_threshold` honor the ≥10-point minimum, enforced by `tests/test_multileg_iv_dead_zone.py`.
+
+### Stocks and options as equal opportunities
+
+Critical architectural principle (added 2026-05-14): **stocks and options are independent opportunity streams, not competing alternatives for a candidate's recommendation slot.** Both flow into the AI prompt as parallel pre-built recommendations:
+
+- `stock_strategy_advisor.evaluate_candidate_for_stock_action` produces sized + ATR-stop + ATR-TP + rationale recs for every directional candidate.
+- `options_strategy_advisor.evaluate_candidate_for_multileg` produces strategy + strikes + expiry + rationale recs (gated by the IV dead zone above).
+- The AI prompt presents both as STOCK ACTION RECOMMENDATIONS and MULTI-LEG OPTIONS STRATEGIES with the same level of detail. The AI picks per-candidate based on quality of setup, not on which side has more pre-built work.
+
+This symmetry is enforced by `tests/test_stocks_and_options_equal_in_prompt.py` and follows the principle Mack laid out: "stocks and options are not in competition with each other — they are two different opportunities; we should take the best candidates from both and determine action."
 
 ### Macro event opportunism (Phase F2)
 

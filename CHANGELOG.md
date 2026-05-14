@@ -17,6 +17,23 @@ Rules going forward:
 
 ---
 
+## 2026-05-14 — AI prompt symmetry audit + documentation refresh. Severity: low (alignment / documentation; behavior unchanged from the symmetric-stock-recs deploy earlier the same day).
+
+**Context.** After the symmetric stock-recommendations deploy landed real stock trades (XPEV, CSCO), Mack asked for a re-audit: "do another evaluation on our ai strategies and make sure we are aligned on what we discussed and that is represented in the ai's instructions and decision making process for both stocks and options. Also, i believe you have forgotten to update our documentation."
+
+**Audit finding.** Every action type (OPTIONS, PAIR_TRADE, MULTILEG_OPEN) has an explicit `_note` block in the AI prompt RULES section describing required fields, gating, and how to use any pre-built recommendations. Stocks did NOT have a parallel `stock_recs_note` — they were the implicit default. Subtle asymmetry that could subtly bias the AI toward the explicitly-described action types.
+
+**Fix.** Added `stock_recs_note` parallel to `multileg_note`/`options_note`/`pair_note`. Tells the AI explicitly to use the pre-built STOCK ACTION RECOMMENDATIONS as a starting point, adjust based on portfolio context, or propose a different setup not in the pre-list. Closes the asymmetry; every action type now has parallel guidance.
+
+**Documentation refresh.** Today's earlier deploys shipped four substantive AI/strategy fixes (revert script, self-tuner architecture, IV dead zone, symmetric stock recs) — none had been reflected in the prose docs. Updated:
+
+- `docs/02_AI_SYSTEM.md` §7 — rewrote the "apex LLM call" section to describe the new prompt structure: core directive (no fixed cap, stocks=options), section order with the new STOCK ACTION RECOMMENDATIONS block, and the symmetric pre-computation table comparing stock vs options rec fields.
+- `docs/02_AI_SYSTEM.md` §9 — added new §9.0 "Architectural principle: bias toward confident trading" describing the four guardrails (sample-size minimum, volume-floor signal, TTL auto-restoration, no manual rescue scripts). Updated layer 11 (Alpha decay monitor) to describe both Sharpe-based and TTL-based restoration paths.
+- `docs/03_TRADING_STRATEGY.md` — extended Options strategy advisor section to describe the IV dead zone and the multi-leg recommendation generation. Added new "Stocks and options as equal opportunities" subsection naming the architectural principle and the enforcing test.
+- `docs/04_TECHNICAL_REFERENCE.md` and `docs/13_QUALITY_RELIABILITY.md` — test count refreshed to 3,059 across 274 files.
+
+---
+
 ## 2026-05-14 — Restore IV dead zone: stop crowding stock BUY signals out of the AI prompt. Severity: high (zero new stock entries since 2026-05-12 caused by this exact bug).
 
 **Symptom.** Mack noticed: "it seems unlikely that 0 trades for stocks are happening, this system isn't just for trading options." Audit confirmed: zero stock BUY trades since 2026-05-12 across all profiles. Every actionable AI signal was MULTILEG_OPEN (options spread).

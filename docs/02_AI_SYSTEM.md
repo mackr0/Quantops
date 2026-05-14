@@ -127,17 +127,52 @@ The drift can be inspected on the AI Brain tab; the slippage panel exposes calib
 
 ## 7. The apex LLM call
 
-After the candidate list has been pre-gated (meta-model), enriched (specialist ensemble), and contextualized (portfolio state + market context + per-stock memory), the system makes **one batched LLM call per scan cycle** via `ai_analyst.ai_select_trades`. The prompt contains:
+After the candidate list has been pre-gated (meta-model), enriched (specialist ensemble), and contextualized (portfolio state + market context + per-stock memory), the system makes **one batched LLM call per scan cycle** via `ai_analyst.ai_select_trades`.
 
-- **Candidate block** for each of the (typically 5-15) survivors, including: technical indicators, options oracle summary (IV rank, term structure, skew, GEX, max pain, implied move), alternative data (insider, short interest, options flow, intraday patterns, congressional, 13F, biotech, StockTwits, Google Trends, Wikipedia views, App Store ranks), specialist ensemble verdicts, per-stock track record by signal type, last prediction reasoning, earnings warning, SEC alerts, news headlines, slippage estimate, borrow rate (for shorts).
+### 7.1 Core directive (added 2026-05-14)
+
+The prompt opens with two non-negotiable principles:
+
+1. **No fixed cap on the number of trades.** "Propose every trade where conviction is genuine. There is no fixed cap — propose as many high-conviction setups as you see, and zero is acceptable when none qualify." The previous "PICK the best 0-3 trades" cap was removed: it was an artificial constraint that left real opportunity on the table when many candidates qualified.
+2. **Stocks and options are equal opportunities, not competing alternatives.** "When you see a candidate, evaluate it on its own merits — directional stock entry (BUY/SHORT), defined-risk options structure (MULTILEG_OPEN), or single-leg option (OPTIONS) — and pick the action with the best risk/reward for THAT setup." Stocks and options flow into the prompt as parallel pre-built recommendations (see §7.3); the AI picks based on quality of setup, not on which side has more pre-built work.
+
+This framing is the architectural fix for the bug class that drove stock BUY signals from ~24/day to 0/day between 2026-05-06 and 2026-05-14. Root cause: the multi-leg options advisor pre-computed a fully-analyzed strategy block for every candidate, while stocks were a bare indicator dump. The AI consistently chose the side with the pre-built analysis. Fixed by adding `stock_strategy_advisor.evaluate_candidate_for_stock_action`, which produces sized + ATR-stop + ATR-TP + rationale recs for every directional candidate, rendered alongside multileg recs.
+
+### 7.2 Prompt sections (in order)
+
+- **Header**: directives 1 & 2 above + role framing ("portfolio manager for an automated {market_type} trading system").
 - **Portfolio state block:** equity, cash, current positions, exposure breakdown (sector + factor + direction), book beta (current vs target), Kelly recommendations per direction, drawdown capital scale, risk-budget per-position contributions, MFE capture ratio, sector concentration warnings.
+- **STOCK ACTION RECOMMENDATIONS** (new 2026-05-14): one entry per directional candidate with action (BUY/SHORT), size_pct (conviction-scaled), stop_loss_pct (ATR-based), take_profit_pct (ATR-based), confidence, rationale. Built by `stock_strategy_advisor.render_stock_recs_for_prompt`.
+- **MULTI-LEG OPTIONS STRATEGIES**: defined-risk options structures with strategy name, strikes, expiry, rationale. Built by `options_strategy_advisor.render_multileg_recs_for_prompt`. Gated by IV dead zone (no rec when IV rank is in the 45-60 neutral band).
 - **Market context block:** regime label + VIX, SPY trend, sector rotation (5-day returns), crisis level (with size multiplier), macro context (yield curve, CBOE skew, FRED indicators, ETF flows), portfolio risk readout (daily σ, 95% VaR, ES, top factor exposures, worst-3 stress scenarios), next macro event (FOMC/CPI/NFP), long-vol hedge state (when active).
+- **Candidate block** for each of the (typically 5-15) survivors, including: technical indicators, options oracle summary (IV rank, term structure, skew, GEX, max pain, implied move), alternative data (insider, short interest, options flow, intraday patterns, congressional, 13F, biotech, StockTwits, Google Trends, Wikipedia views, App Store ranks), specialist ensemble verdicts, per-stock track record by signal type, last prediction reasoning, earnings warning, SEC alerts, news headlines, slippage estimate, borrow rate (for shorts).
 - **Long/short balance target** and **book-beta target** with directives ("UNDERSHORTED — pick a SHORT this cycle"; "BETA TOO HIGH — DEFENSIVE picks long or LEVERED shorts").
 - **Learned patterns** from prior post-mortems and self-tuner findings.
 - **Track record** aggregated and split by signal type to prevent confabulation (e.g., the AI cannot claim "100% win rate on VALE shorts" when all 13 wins were HOLDs).
+- **RULES section**: max position size (longs and asymmetric shorts), independent stock/options evaluation, drawdown-aware sizing without artificial trade-count cap, and per-action notes (`stock_recs_note`, `options_note`, `pair_note`, `multileg_note`) describing required fields and how to use the pre-built recommendations. Each action type has parallel guidance — no implicit-default action that biases the AI.
 - **Allowed actions** dynamically scoped: BUY, HOLD; plus SHORT (when enabled), OPTIONS (when any candidate has tradeable options or the advisor surfaced an opportunity), PAIR_TRADE (when stat-arb book has actionable pairs), MULTILEG_OPEN (when multi-leg advisor has surfaced one).
 
+### 7.3 Symmetric pre-computed recommendations
+
+Both stock and options recommendations are pre-computed before the LLM sees them, and presented with the same level of detail:
+
+| Aspect | Stock rec (`stock_strategy_advisor`) | Options rec (`options_strategy_advisor`) |
+|---|---|---|
+| Action | BUY / SHORT | bull_put_spread / bear_call_spread / iron_condor / etc. |
+| Sizing | `size_pct` (conviction-scaled, asymmetric for shorts) | `contracts` (defined-risk by structure) |
+| Risk control | `stop_loss_pct` (ATR-based) | implicit by spread width |
+| Profit target | `take_profit_pct` (ATR-based) | implicit by spread credit |
+| Rationale | technicals summary + sizing rationale | direction + IV regime + structure rationale |
+| Confidence | strategy-ensemble conviction | rule-evaluator confidence |
+| Cap per prompt | 8 entries (mirrors options) | 8 entries |
+
+This symmetry is enforced by `tests/test_stocks_and_options_equal_in_prompt.py` (7 checks covering field parity, prompt insertion, both blocks present).
+
+### 7.4 Verbosity tuning
+
 The prompt structure is verbosity-tunable per profile via `prompt_layout.set_verbosity` (Layer 6 of the self-tuning stack — see §9).
+
+### 7.5 Response parsing
 
 The LLM's response is parsed by `_parse_ai_response_strict_json`, which is a defensive parser tolerant of common malformations (markdown fences, single quotes, trailing commas). Strict-JSON parse failure logs the response and skips the cycle without any trades.
 
@@ -159,9 +194,20 @@ After the LLM returns trades, hard rules in `_validate_ai_trades` filter them. E
 
 The self-tuner runs nightly per profile (`_task_self_tune`) and is the largest single source of long-term improvement. It is a rule-based system, not learned: each rule is a small, auditable piece of code that adjusts one parameter, signal weight, override, or enable/disable bit based on its own track record.
 
-The 12 layers:
+### 9.0 Architectural principle (added 2026-05-14): bias toward confident trading
 
-1. **Parameter coverage.** ~35 numeric parameters on `trading_profiles` (stop loss, take profit, max position, RSI thresholds, gap threshold, volume floors, max correlation, max sector positions, drawdown thresholds, etc.) Each has a tuning rule in `self_tuning.py` of the form: "buckets of recent resolved predictions by parameter value range; if win rate is materially worse in one bucket, shift the parameter toward the better bucket." A bounded step size (typically 5-20% per change) prevents oscillation.
+The self-tuner exists to make the system trade better, not to make it trade less. The architectural principle, enforced by all 12 layers, is that the system should drift toward CONFIDENT TRADING, not stasis. This is not optional — it is the contract every tuning rule honors:
+
+- **Sample-size minimum.** Every tightening decision (deprecate strategy, raise confidence threshold, narrow regime sizing, disable shorts, widen short stop) requires at least **30 resolved predictions** of evidence. Below 30 is statistical noise. Enforced by `tests/test_self_tuner_minimum_sample_sizes.py` — any new tightening rule with a sample-size check below 30 fails CI unless explicitly annotated `# DISPLAY_ONLY:` (analytics) or `# LOOSEN_OK:` (loosening can fire on smaller samples by design).
+- **Trade-volume floor signal.** When a profile produces fewer than 3 stock-entry trades in the last 7 days, `apply_auto_adjustments` sets `ctx._runtime_under_volume_floor = True`. This is a SIGNAL not a kill switch: tightening sample-size requirements double to ≥60, and the optimizer registry reorders to put loosening rules (`_optimize_false_negatives`) FIRST. Tightening on truly catastrophic patterns (≥60 samples + clear evidence) remains available.
+- **TTL-based auto-restoration.** Every strategy deprecation auto-restores after 14 days unless the existing Sharpe-recovery check has already restored it. Without TTL, deprecations were effectively permanent (a deprecated strategy emits no signals → can never recover its Sharpe → stays deprecated forever). Re-deprecation requires fresh ≥30-sample evidence. Implemented in `alpha_decay.restore_expired_deprecations`.
+- **No manual rescue scripts.** A revert script needed to "rescue" the system from over-restriction is evidence of architectural failure, not a feature. Every restriction must have a path back to action.
+
+These guarantees were added on 2026-05-14 in response to a 14-day compounding-restriction collapse (stock entries fell from 24/day to 0/day system-wide) — see `feedback_self_tuner_must_drift_toward_trading.md` and the 2026-05-14 CHANGELOG entries for the incident narrative.
+
+### 9.1 The 12 layers
+
+1. **Parameter coverage.** ~35 numeric parameters on `trading_profiles` (stop loss, take profit, max position, RSI thresholds, gap threshold, volume floors, max correlation, max sector positions, drawdown thresholds, etc.) Each has a tuning rule in `self_tuning.py` of the form: "buckets of recent resolved predictions by parameter value range (≥30 samples per bucket); if win rate is materially worse in one bucket, shift the parameter toward the better bucket." A bounded step size (typically 5-20% per change) prevents oscillation.
 2. **Weighted signal intensity.** Each entry in `signal_weights.WEIGHTABLE_SIGNALS` (~28 signals) has a weight in [0.0, 1.0]. The tuner buckets resolved predictions by whether the signal was materially present, computes differential win rate, and nudges the weight up (signal reliable) or down (signal noise). Weight 0.0 = signal completely omitted from prompt; 0.4 = mention with discount hint; 0.7 = mention without flag; 1.0 = full strength. Anti-correlated signals are auto-suppressed at 0.0.
 3. **Per-regime overrides.** `regime_overrides.set_override(param, regime, value)` — a parameter can have a different value in `bull` / `bear` / `sideways` / `volatile` regimes. Tuner bucket: prediction outcomes split by regime label.
 4. **Per-time-of-day overrides.** Same mechanic but bucketing by `open` (09:30-10:30 ET) / `mid` (10:30-15:00) / `close` (15:00-16:00). Names with poor open-hour win rates get a smaller `max_position_pct` during the open.
@@ -171,7 +217,7 @@ The 12 layers:
 8. **Self-commissioned new strategies.** `strategy_proposer.propose_strategies` periodically generates new strategy variants by recombining successful signal patterns. New strategies enter a probationary period and run through the rigorous backtest gauntlet before being added to the live engine pool.
 9. **Auto capital allocation.** Per-profile recommendation of `capital_scale` ∈ [0.5, 2.0] based on rolling Sharpe. Disabled by default; opt-in.
 10. **Cost guard.** Daily AI-spend ceiling enforced cross-cutting all autonomous actions. Spend-affecting changes are surfaced as recommendations rather than auto-applied when over-budget.
-11. **Alpha decay monitor.** Tracks per-strategy rolling 30-day Sharpe vs lifetime baseline. Auto-deprecates after 30+ consecutive days of degradation; auto-restores after 14+ days of recovery. Implemented in `alpha_decay.py`.
+11. **Alpha decay monitor.** Tracks per-strategy rolling 30-day Sharpe vs lifetime baseline. Auto-deprecates after 30+ consecutive days of degradation. Two complementary restoration paths (both implemented in `alpha_decay.py`): (a) Sharpe-based restoration when rolling Sharpe recovers to within X% of lifetime for Y consecutive days; (b) TTL-based auto-restoration after 14 days regardless of signal availability. The TTL path closes the death-spiral gap where a deprecated strategy emits no signals → can never recover its Sharpe → stays deprecated forever.
 12. **Losing-week post-mortems.** When the past 7 days underperformed the long-term baseline by ≥10pt, `post_mortem.py` clusters losing predictions by feature signature and stores a learned pattern that gets injected into future prompts under "LEARNED PATTERNS."
 
 The complete tuning rule list is in `self_tuning.py` and described in `docs/03_TRADING_STRATEGY.md`.

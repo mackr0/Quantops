@@ -1637,6 +1637,27 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             '"reasoning": "z=+2.5; spread reverts toward 0"}'
         )
 
+    # 2026-05-14 — explicit stock-action guidance, parallel to
+    # options_note / pair_note / multileg_note. Without this, every
+    # other action type had explicit usage rules and stocks were
+    # only the implicit default — an asymmetry that subtly biased
+    # the AI toward the explicitly-described action types.
+    stock_recs_note = ""
+    if stock_recs_block:
+        stock_recs_note = (
+            "\n- BUY/SHORT (stocks): pre-computed setups are listed "
+            "in STOCK ACTION RECOMMENDATIONS above with size, "
+            "ATR-based stop-loss, and ATR-based take-profit ready "
+            "to use. Take them as-is when they fit the portfolio "
+            "context, ADJUST size/stop/TP based on concentration / "
+            "regime / your symbol track record, or PROPOSE a "
+            "different stock setup not in the pre-list. Required "
+            "fields for BUY/SHORT: symbol, size_pct, confidence, "
+            "stop_loss_pct, take_profit_pct, reasoning. Stock "
+            "setups are first-class trades — there is no preference "
+            "for or against them relative to options.\n"
+        )
+
     multileg_note = ""
     multileg_example = ""
     if multileg_action_enabled:
@@ -1694,6 +1715,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"sizing but do not artificially cap the number of trades\n"
         f"- If at max positions, only recommend exits"
         f"{long_short_note}"
+        f"{stock_recs_note}"
         f"{options_note}"
         f"{pair_note}"
         f"{multileg_note}\n\n"
