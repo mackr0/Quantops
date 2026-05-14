@@ -816,6 +816,23 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     except Exception:
         pass
 
+    # 2026-05-14 — symmetric stock-action recommendations. Mirror of
+    # multileg_block: same level of pre-computed analysis (size /
+    # stop / TP / rationale) so stocks and options appear to the AI
+    # as equally-prepared trade ideas. Prevents the asymmetric-prompt
+    # bias that drove stock BUY signals to 0/day from 2026-05-06 to
+    # 2026-05-14. Per Mack: "stocks and options are not in
+    # competition with each other — two different opportunities."
+    stock_recs_block = ""
+    try:
+        from stock_strategy_advisor import render_stock_recs_for_prompt
+        stock_recs_block = render_stock_recs_for_prompt(
+            candidates_data or [], ctx=ctx,
+        )
+    # SILENT_OK: stock recs block is AI-prompt enrichment; prompt continues without it.
+    except Exception:
+        pass
+
     # P4.3 of LONG_SHORT_PLAN.md — drawdown-aware capital scaling.
     # Continuous size modifier (vs the discrete normal/reduce/pause
     # action). Tells the AI: "we're below peak — multiply your sizes
@@ -935,6 +952,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"{options_strategy_block}"
         f"{vol_regime_block}"
         f"{earnings_plays_block}"
+        f"{stock_recs_block}"
         f"{multileg_block}"
         f"{wheel_block}"
         f"{roll_block}"
