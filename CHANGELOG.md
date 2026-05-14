@@ -17,6 +17,48 @@ Rules going forward:
 
 ---
 
+## 2026-05-14 — Restore IV dead zone: stop crowding stock BUY signals out of the AI prompt. Severity: high (zero new stock entries since 2026-05-12 caused by this exact bug).
+
+**Symptom.** Mack noticed: "it seems unlikely that 0 trades for stocks are happening, this system isn't just for trading options." Audit confirmed: zero stock BUY trades since 2026-05-12 across all profiles. Every actionable AI signal was MULTILEG_OPEN (options spread).
+
+**Root cause.** On 2026-05-12 the `MULTILEG_IV_RICH_THRESHOLD` and `MULTILEG_IV_CHEAP_THRESHOLD` constants in `options_strategy_advisor.py` were both set to `55.0`, deliberately closing the previous "neutral dead zone" (50-60). The intent was to "double the proposal funnel" since option-pipeline win rate was 61%. Side effect was not measured: with rich==cheap==55, **every** candidate's IV rank falls into either rich (≥55) or cheap (≤55) → every candidate received a pre-built multileg recommendation in the AI prompt. The AI, faced with a fully-analyzed options strategy adjacent to a bare stock candidate, picked the options strategy nearly every time. Result: stock BUY signals fell from ~24/day (Apr 30) to **0/day** by 2026-05-13.
+
+This is the exact same class of bug as the same-day self-tuner over-restriction: a single change passed its individual sanity check (option win rate is high → more options proposals) but the second-order effect on the rest of the system (stock signals collapse) was not measured.
+
+**Fix.** Restored the dead zone to a 15-point band (`rich=60, cheap=45`):
+- IV rank ≤ 45: cheap → debit spread (long call / long put)
+- IV rank 45-60: NEUTRAL → no multileg recommendation; AI evaluates as stock or skips
+- IV rank ≥ 60: rich → credit spread
+
+Per-profile overrides via `option_iv_rich_threshold` / `option_iv_cheap_threshold` columns continue to work; self-tuner can still adjust within bounds, but a future change cannot re-zero the dead zone — see new test below.
+
+Also updated the 10 prod profiles (rich=55, cheap=55) → (rich=60, cheap=45) directly in the master DB so per-profile overrides aren't stuck at the bug's values.
+
+### Important caveat — this is a band-aid, not the proper architecture
+
+The dead zone reduces but doesn't eliminate the asymmetry between stocks and options in the AI prompt. When IV IS outside the dead zone, the AI still sees "fully-analyzed options strategy" next to "bare stock candidate" and tends toward options. Mack: "stocks and options are not in competition with each other — they are two different opportunities; we should take the best candidates from both and determine action."
+
+The proper architecture (tracked as separate Phase 2 work):
+- Evaluate stock-action and options-action as INDEPENDENT opportunity streams
+- Pre-compute equally-detailed analysis for both (size/SL/TP for stocks; strikes/expiry/strategy for options)
+- Combine into one ranked list of trade ideas; AI picks the best 0-N from the union (no symbol-level "stock OR option" forced choice)
+- Action type is just a field on each idea, not a separate prompt section
+
+### New strict-mode test: `tests/test_multileg_iv_dead_zone.py`
+
+Four tests that prevent the dead zone from re-zeroing:
+
+- `test_module_defaults_have_dead_zone`: asserts `MULTILEG_IV_RICH_THRESHOLD - MULTILEG_IV_CHEAP_THRESHOLD ≥ 10`. A future PR that sets them equal (or inverted) fails CI.
+- `test_neutral_iv_emits_no_multileg_rec`: behavioral check — bullish + neutral IV produces empty recs list.
+- `test_rich_iv_still_fires_credit_spread`: sanity that the rich-side credit spread still fires above the threshold.
+- `test_cheap_iv_still_fires_debit_spread`: sanity that the cheap-side debit spread still fires below the threshold.
+
+### Test-categorization updates
+
+- Test count: **3,048** (was 3,044 — +4 from new dead-zone tests; 2 existing tests inverted from the old closed-dead-zone behavior to the new dead-zone-required behavior).
+
+---
+
 ## 2026-05-14 — Self-tuner architecture: bias toward action, not stasis. Severity: medium (architectural fix to prevent recurrence of the same-day over-restriction collapse).
 
 **Context.** Companion to the same-day emergency revert. The revert undid the damage; this entry redesigns the self-tuner so it can never re-create the failure mode.

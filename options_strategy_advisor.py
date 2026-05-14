@@ -83,19 +83,31 @@ PROTECTIVE_PUT_TARGET_DAYS_TO_EXPIRY = 45
 # advisor targets CANDIDATES the screener has surfaced. Distinct
 # constants so they can be tuned independently.
 #
-# IV regime thresholds — same definition (above 60 = rich, below 50 =
-# cheap) as the single-leg advisor. The "neutral" 50-60 band falls
-# through with no recommendation (not enough edge in either direction).
-# 2026-05-12 — IV-rich/cheap thresholds. Old defaults 60/50 left a
-# 10-point dead zone (IV 50-60) where no option proposals fired.
-# Audit showed option pipeline win rate is 61% on resolved trades;
-# closing the dead zone roughly doubles the proposal funnel without
-# changing what's actually proposed (just enables ONE branch in the
-# 50-60 band based on which is closer). Tunable per profile via
-# ctx (`option_iv_rich_threshold`, `option_iv_cheap_threshold`);
-# self-tuner adjusts based on option win rate.
-MULTILEG_IV_RICH_THRESHOLD = 55.0    # was 60.0
-MULTILEG_IV_CHEAP_THRESHOLD = 55.0   # was 50.0
+# IV regime thresholds with a deliberate NEUTRAL DEAD ZONE. When IV
+# rank falls into the 45-60 band, no multileg recommendation is
+# generated for the candidate — the AI must then evaluate the
+# candidate as a stock opportunity (or skip).
+#
+# 2026-05-14 — restored the dead zone (was 55/55 / no dead zone since
+# 2026-05-12). The no-dead-zone configuration caused EVERY candidate
+# with IV data to receive a pre-built multileg recommendation. The AI,
+# faced with a pre-analyzed options strategy next to a bare stock
+# candidate, picked the options strategy nearly every time. Result:
+# stock BUY signals collapsed from ~24/day (Apr 30) to 0/day (May 13)
+# while multileg proposals grew. Confirmed via the 14-day audit.
+#
+# Important caveat: this is a band-aid. The proper fix is to evaluate
+# stock-action and options-action as INDEPENDENT opportunity streams
+# rather than competing alternatives for a single candidate slot. The
+# dead zone reduces but doesn't eliminate the asymmetry. Tracked as
+# Phase 2 self-tuner architecture work.
+#
+# Tunable per profile via ctx (`option_iv_rich_threshold`,
+# `option_iv_cheap_threshold`); self-tuner can adjust but must maintain
+# a ≥10-point dead zone — enforced by
+# `tests/test_multileg_iv_dead_zone.py`.
+MULTILEG_IV_RICH_THRESHOLD = 60.0
+MULTILEG_IV_CHEAP_THRESHOLD = 45.0
 MULTILEG_VERTICAL_STRIKE_PCT_OTM = 5.0  # short leg sits this far OTM
 MULTILEG_VERTICAL_WIDTH_PCT = 5.0       # long leg this far past short
 MULTILEG_TARGET_DAYS_TO_EXPIRY = 35     # sweet spot: theta capture + liquid

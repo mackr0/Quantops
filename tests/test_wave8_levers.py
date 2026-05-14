@@ -259,16 +259,21 @@ class TestFastLaneRetirement:
 # ---------------------------------------------------------------------------
 
 class TestOptionIvThresholdsCtxAware:
-    def test_default_closes_dead_zone(self):
-        """Without ctx, defaults are 55/55 — every IV value triggers
-        exactly one branch. No IV produces zero proposals."""
+    def test_default_dead_zone_blocks_neutral_iv(self):
+        """2026-05-14: dead zone restored (rich=60, cheap=45). IV 55
+        is inside the neutral band — no multileg rec is produced so
+        the AI evaluates the candidate as a stock opportunity. See
+        the 2026-05-14 CHANGELOG for the closed-dead-zone bug."""
         from options_strategy_advisor import evaluate_candidate_for_multileg
-        # IV 55 — was in the old 50-60 dead zone
         recs = evaluate_candidate_for_multileg(
             {"symbol": "AAPL", "signal": "STRONG_BUY", "price": 180.0},
             iv_rank_pct=55.0, ctx=None,
         )
-        assert len(recs) >= 1, "IV 55 should fire at least one branch"
+        assert recs == [], (
+            f"IV 55 (neutral) must produce no multileg rec; got {recs}. "
+            f"The dead zone keeps stock-action available for mid-IV "
+            f"candidates."
+        )
 
     def test_iv_below_old_cheap_threshold_works(self):
         """IV 45 — was below old CHEAP threshold (50), should fire

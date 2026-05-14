@@ -237,17 +237,25 @@ class TestEvaluateCandidateForMultileg:
         names = [r["strategy"] for r in recs]
         assert "bear_put_spread" in names
 
-    def test_neutral_iv_default_fires_branch(self):
-        """2026-05-12: IV-rich/cheap thresholds collapsed to 55/55
-        (no dead zone). IV 55 fires the credit-spread branch (≥55).
-        Per-profile ctx can re-open a dead zone via
-        option_iv_rich_threshold / option_iv_cheap_threshold."""
+    def test_neutral_iv_default_emits_no_rec(self):
+        """2026-05-14: dead zone restored (rich=60, cheap=45). IV 55
+        is squarely inside the neutral band and must produce NO
+        multileg recommendation. This is the design contract: the AI
+        should evaluate the candidate as a stock opportunity (or skip)
+        when IV is in the neutral band.
+
+        Reversal of the 2026-05-12 change that closed the dead zone.
+        That change caused stock BUY signals to collapse because every
+        candidate received a pre-built options recommendation."""
         from options_strategy_advisor import evaluate_candidate_for_multileg
         recs = evaluate_candidate_for_multileg(
             _candidate(signal="BUY"), iv_rank_pct=55,
         )
-        # At default 55/55, IV=55 is "rich" → bull_put_spread
-        assert any(r["strategy"] == "bull_put_spread" for r in recs)
+        assert recs == [], (
+            f"Bullish candidate with neutral IV (55) produced "
+            f"multileg recommendations: {recs}. The dead zone "
+            f"(rich=60, cheap=45) must keep IV 55 neutral."
+        )
 
     def test_neutral_iv_with_tuned_dead_zone(self):
         """When ctx widens the rich/cheap thresholds, the dead zone
