@@ -32,9 +32,13 @@ def _ensure_table():
                 )
             """)
             conn.commit()
-    # SILENT_OK: cache schema init; cache writes that fail leave callers in non-cached path
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _ci_exc:
+        # Cache schema init; cache writes that fail leave callers
+        # in non-cached path. Surface for follow-up.
+        logger.warning(
+            "earnings cache schema init failed: %s: %s",
+            type(_ci_exc).__name__, _ci_exc,
+        )
 
 
 def _fetch_and_store(symbol: str) -> Optional[str]:
@@ -69,9 +73,13 @@ def _fetch_and_store(symbol: str) -> Optional[str]:
                         earnings_date = ed.iloc[0]
                     else:
                         earnings_date = ed
-            # SILENT_OK: yfinance calendar parse fallback; falls through to other date sources
-            except Exception:
-                pass
+            except (KeyError, ValueError, AttributeError, TypeError, IndexError) as _yc_exc:
+                # yfinance calendar parse fallback; falls through to
+                # other date sources below. Surface for follow-up.
+                logger.debug(
+                    "yfinance calendar parse failed for %s: %s: %s",
+                    symbol, type(_yc_exc).__name__, _yc_exc,
+                )
 
         if earnings_date is None:
             _store(symbol, None)
@@ -104,9 +112,13 @@ def _store(symbol: str, earnings_date: Optional[str]):
                 (symbol, earnings_date),
             )
             conn.commit()
-    # SILENT_OK: cache write fallback; cache miss is acceptable next time
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _cw_exc:
+        # Cache write fallback; cache miss is acceptable next time.
+        # Surface for follow-up.
+        logger.debug(
+            "earnings cache write failed: %s: %s",
+            type(_cw_exc).__name__, _cw_exc,
+        )
 
 
 def _get_cached(symbol: str) -> tuple:
@@ -137,9 +149,13 @@ def _get_cached(symbol: str) -> tuple:
                 ed = datetime.strptime(earnings_date_str[:10], "%Y-%m-%d").date()
                 if ed >= today_et:
                     return earnings_date_str, True
-            # SILENT_OK: ET date parse fallback; falls through to staleness check below
-            except Exception:
-                pass
+            except (ValueError, TypeError, AttributeError) as _et_exc:
+                # ET date parse fallback; falls through to
+                # staleness check below. Surface for follow-up.
+                logger.debug(
+                    "earnings ET date parse failed: %s: %s",
+                    type(_et_exc).__name__, _et_exc,
+                )
 
         # No future date — check if the fetch itself is recent enough
         try:
@@ -170,9 +186,13 @@ def _reset_yf_crumb():
             path = os.path.join(cache_dir, fname)
             if os.path.exists(path):
                 os.remove(path)
-    # SILENT_OK: yfinance cookie cleanup; failure has no functional impact
-    except Exception:
-        pass
+    except (OSError, AttributeError) as _cc_exc:
+        # yfinance cookie cleanup; failure has no functional
+        # impact. Surface for follow-up.
+        logger.debug(
+            "yfinance cookie cleanup failed: %s: %s",
+            type(_cc_exc).__name__, _cc_exc,
+        )
 
 
 def check_earnings(symbol: str) -> Optional[Dict]:

@@ -589,9 +589,13 @@ def monitor_symbol(symbol: str, db_path: str, ctx: Any = None,
                 (symbol.upper(),),
             ).fetchall()
         existing = {r[0] for r in rows}
-    # SILENT_OK: existing-accession set load; falls through with empty set (all filings re-evaluated)
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _ea_exc:
+        # Existing-accession set load; falls through with empty
+        # set (all filings re-evaluated). Surface for follow-up.
+        logger.debug(
+            "sec_filings existing-accession load failed: %s: %s",
+            type(_ea_exc).__name__, _ea_exc,
+        )
 
     for filing in filings:
         if filing["accession_number"] in existing:

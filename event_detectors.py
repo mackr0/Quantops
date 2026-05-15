@@ -102,8 +102,14 @@ def detect_earnings_imminent(ctx: Any) -> int:
         try:
             info = check_earnings(sym) or {}
             days = info.get("days_until")
-        # SILENT_OK: per-symbol earnings lookup; skip symbols where lookup fails
-        except Exception:
+        except (KeyError, ValueError, AttributeError, TypeError,
+                ImportError, OSError) as _ev_exc:
+            # Per-symbol earnings lookup loop; skip symbols where
+            # lookup fails. Surface for follow-up.
+            logger.debug(
+                "event_detectors earnings lookup failed: %s: %s",
+                type(_ev_exc).__name__, _ev_exc,
+            )
             continue
         if days is None or days < 0 or days > 1:
             continue
@@ -148,8 +154,14 @@ def detect_price_shocks(ctx: Any, threshold_pct: float = 5.0,
             move_pct = (today_close - yday_close) / yday_close * 100
             vol = float(df["volume"].iloc[-1])
             avg_vol = float(df["volume"].iloc[-21:-1].mean()) if len(df) >= 21 else 0
-        # SILENT_OK: per-symbol move/volume calc; skip symbols where bar data is malformed
-        except Exception:
+        except (KeyError, ValueError, AttributeError, TypeError,
+                IndexError, ZeroDivisionError, OSError) as _mv_exc:
+            # Per-symbol move/volume calc loop; skip symbols where
+            # bar data is malformed. Surface for follow-up.
+            logger.debug(
+                "event_detectors move/volume calc failed: %s: %s",
+                type(_mv_exc).__name__, _mv_exc,
+            )
             continue
 
         if abs(move_pct) < threshold_pct:

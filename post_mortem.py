@@ -231,8 +231,13 @@ def analyze_recent_week(db_path: str) -> Optional[Dict[str, Any]]:
         for r in loss_rows:
             try:
                 losing_features.append(json.loads(r["features_json"]))
-            # SILENT_OK: per-row features-json parse; skip malformed feature blobs
-            except Exception:
+            except (json.JSONDecodeError, TypeError, ValueError) as _fp_exc:
+                # Per-row features-json parse loop; skip malformed
+                # feature blobs. Surface for follow-up.
+                logger.debug(
+                    "post_mortem features-json parse failed: %s: %s",
+                    type(_fp_exc).__name__, _fp_exc,
+                )
                 continue
 
         losing_count = len(losing_features)

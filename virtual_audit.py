@@ -25,6 +25,7 @@ shows up in the dashboard immediately.
 from __future__ import annotations
 
 import logging
+import sqlite3
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -95,9 +96,14 @@ def audit_virtual_profile(db_path: str, initial_capital: float,
                 "Position computation not deterministic — two consecutive "
                 "calls returned different results"
             )
-    # SILENT_OK: determinism check is best-effort; audit reports continue without it
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            ImportError, KeyError, ValueError, OSError) as _det_exc:
+        # Determinism check is best-effort; audit reports continue
+        # without it. Surface for follow-up.
+        logger.debug(
+            "virtual audit determinism check failed: %s: %s",
+            type(_det_exc).__name__, _det_exc,
+        )
 
     # 5. Trade count sanity — log if no trades at all (profile may be misconfigured)
     try:
@@ -107,9 +113,14 @@ def audit_virtual_profile(db_path: str, initial_capital: float,
             count = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
         if count == 0:
             problems.append("No trades recorded — profile may not be executing")
-    # SILENT_OK: trade-count sanity check is best-effort; audit reports continue without it
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            ImportError, KeyError, ValueError, OSError) as _tc_exc:
+        # Trade-count sanity check is best-effort; audit reports
+        # continue without it. Surface for follow-up.
+        logger.debug(
+            "virtual audit trade-count check failed: %s: %s",
+            type(_tc_exc).__name__, _tc_exc,
+        )
 
     if problems:
         label = profile_name or db_path

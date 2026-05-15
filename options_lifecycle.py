@@ -102,8 +102,13 @@ def _underlying_close_at_expiry(symbol: str,
         for ts, row in bars.iterrows():
             try:
                 ts_date = ts.date()
-            # SILENT_OK: per-bar timestamp parse; skip rows with malformed index
-            except Exception:
+            except (KeyError, ValueError, AttributeError, TypeError) as _bt_exc:
+                # Per-bar timestamp parse loop; skip rows with
+                # malformed index. Surface for follow-up.
+                logger.debug(
+                    "options_lifecycle bar timestamp parse failed: %s: %s",
+                    type(_bt_exc).__name__, _bt_exc,
+                )
                 continue
             if ts_date == expiry:
                 return float(row["close"])

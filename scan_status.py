@@ -21,9 +21,13 @@ def update_status(profile_id, step, detail=""):
                 "detail": detail,
                 "timestamp": time.time(),
             }, f)
-    # SILENT_OK: scan-status file write; status display is informational, never blocks scan
-    except Exception:
-        pass
+    except (OSError, TypeError, ValueError) as _sw_exc:
+        # Scan-status file write; status display is informational,
+        # never blocks scan. Surface for follow-up.
+        logger.debug(
+            "scan_status file write failed: %s: %s",
+            type(_sw_exc).__name__, _sw_exc,
+        )
 
 
 def get_status(profile_id):
@@ -45,6 +49,10 @@ def clear_status(profile_id):
     try:
         import os
         os.remove("scan_status_%d.json" % profile_id)
-    # SILENT_OK: scan-status file removal; missing file is the desired post-condition anyway
-    except Exception:
-        pass
+    except (OSError, FileNotFoundError) as _sr_exc:
+        # Scan-status file removal; missing file is the desired
+        # post-condition anyway. Surface for follow-up.
+        logger.debug(
+            "scan_status file removal failed: %s: %s",
+            type(_sr_exc).__name__, _sr_exc,
+        )

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from contextlib import closing
 from typing import Any, Dict, Optional, Set
 
@@ -67,8 +68,13 @@ def parse_overrides(raw_json: Optional[str]) -> Dict[str, Dict[str, Any]]:
                 continue
             try:
                 clean_map[regime] = clamp(param_name, value)
-            # SILENT_OK: per-regime value clamp; skip values that don't pass bounds
-            except Exception:
+            except (ValueError, TypeError, KeyError) as _cl_exc:
+                # Per-regime value clamp loop; skip values that
+                # don't pass bounds. Surface for follow-up.
+                logger.debug(
+                    "regime override clamp failed: %s: %s",
+                    type(_cl_exc).__name__, _cl_exc,
+                )
                 continue
         if clean_map:
             out[param_name] = clean_map
@@ -195,9 +201,14 @@ def resolve_for_current_regime(profile_or_dict: Any, param_name: str,
                                      default=None)
             if sym_value is not None and sym_value != global_value:
                 return sym_value
-        # SILENT_OK: per-symbol override lookup; falls through to per-regime layer below
-        except Exception:
-            pass
+        except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                KeyError, ValueError, TypeError, OSError) as _so_exc:
+            # Per-symbol override lookup; falls through to
+            # per-regime layer below. Surface for follow-up.
+            logger.debug(
+                "per-symbol override lookup failed: %s: %s",
+                type(_so_exc).__name__, _so_exc,
+            )
 
     # Layer 3 — per-regime
     regime = _current_regime()

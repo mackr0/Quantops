@@ -5,6 +5,7 @@ yfinance is used only for crypto (Alpaca doesn't serve crypto via the
 equity endpoint) and as a last-resort fallback in the dynamic screener.
 """
 
+import logging
 import sys
 from datetime import datetime
 
@@ -13,6 +14,8 @@ import yfinance as yf
 import yf_lock
 
 from market_data import get_bars
+
+logger = logging.getLogger(__name__)
 
 
 def _get_bars_for_symbols(symbols, limit=30):
@@ -27,9 +30,14 @@ def _get_bars_for_symbols(symbols, limit=30):
             df = get_bars(sym, limit=limit)
             if df is not None and not df.empty and len(df) >= 2:
                 result[sym] = df
-        # SILENT_OK: per-symbol bar fetch; one bad symbol shouldn't kill the screener
-        except Exception:
-            pass
+        except (KeyError, ValueError, AttributeError, TypeError,
+                OSError) as _bf_exc:
+            # Per-symbol bar fetch loop; one bad symbol shouldn't
+            # kill the screener. Surface for follow-up.
+            logger.debug(
+                "screener bar fetch failed for %s: %s: %s",
+                sym, type(_bf_exc).__name__, _bf_exc,
+            )
     return result
 
 
@@ -162,9 +170,14 @@ def screen_by_price_range(min_price=1.0, max_price=20.0, min_volume=500_000,
                     "price_change_pct": round(change_pct, 2),
                     "reason": f"${price:.2f} | vol: {volume:,} | chg: {change_pct:+.1f}%",
                 })
-        # SILENT_OK: per-symbol price/volume scoring; one bad symbol shouldn't kill the screener
-        except Exception:
-            pass
+        except (KeyError, ValueError, AttributeError, TypeError,
+                IndexError, ZeroDivisionError) as _pv_exc:
+            # Per-symbol price/volume scoring loop; one bad symbol
+            # shouldn't kill the screener. Surface for follow-up.
+            logger.debug(
+                "screener price/volume scoring failed for %s: %s: %s",
+                sym, type(_pv_exc).__name__, _pv_exc,
+            )
 
     print(f"  Found {len(results)} stocks in ${min_price}-${max_price} with {min_volume:,}+ volume")
 
@@ -206,9 +219,14 @@ def find_volume_surges(candidates, volume_multiplier=2.0, api=None):
                         "avg_vol": int(avg_vol),
                         "reason": f"Volume {ratio:.1f}x average ({int(today_vol):,} vs {int(avg_vol):,})",
                     })
-        # SILENT_OK: per-symbol volume-surge scoring; one bad symbol shouldn't kill the screener
-        except Exception:
-            pass
+        except (KeyError, ValueError, AttributeError, TypeError,
+                IndexError, ZeroDivisionError) as _vs_exc:
+            # Per-symbol volume-surge scoring loop; one bad symbol
+            # shouldn't kill the screener. Surface for follow-up.
+            logger.debug(
+                "screener volume-surge scoring failed for %s: %s: %s",
+                sym, type(_vs_exc).__name__, _vs_exc,
+            )
 
     print(f"\n  Found {len(surges)} volume surges")
     surges.sort(key=lambda x: x["volume_ratio"], reverse=True)
@@ -246,9 +264,14 @@ def find_momentum_stocks(candidates, min_gain_5d=3.0, min_gain_20d=5.0, api=None
                     "gain_20d": round(gain_20d, 1),
                     "reason": f"5d: +{gain_5d:.1f}% | 20d: +{gain_20d:.1f}%",
                 })
-        # SILENT_OK: per-symbol momentum scoring; one bad symbol shouldn't kill the screener
-        except Exception:
-            pass
+        except (KeyError, ValueError, AttributeError, TypeError,
+                IndexError, ZeroDivisionError) as _mo_exc:
+            # Per-symbol momentum scoring loop; one bad symbol
+            # shouldn't kill the screener. Surface for follow-up.
+            logger.debug(
+                "screener momentum scoring failed for %s: %s: %s",
+                sym, type(_mo_exc).__name__, _mo_exc,
+            )
 
     print(f"\n  Found {len(momentum)} momentum stocks")
     momentum.sort(key=lambda x: x["gain_20d"], reverse=True)
@@ -288,9 +311,14 @@ def find_breakouts(candidates, api=None):
                     "volume_ratio": round(vol_ratio, 1),
                     "reason": f"Broke ${high_20d:.2f} by +{breakout_pct:.1f}% on {vol_ratio:.1f}x volume",
                 })
-        # SILENT_OK: per-symbol breakout scoring; one bad symbol shouldn't kill the screener
-        except Exception:
-            pass
+        except (KeyError, ValueError, AttributeError, TypeError,
+                IndexError, ZeroDivisionError) as _bk_exc:
+            # Per-symbol breakout scoring loop; one bad symbol
+            # shouldn't kill the screener. Surface for follow-up.
+            logger.debug(
+                "screener breakout scoring failed for %s: %s: %s",
+                sym, type(_bk_exc).__name__, _bk_exc,
+            )
 
     print(f"\n  Found {len(breakouts)} breakout candidates")
     breakouts.sort(key=lambda x: x["breakout_pct"], reverse=True)
@@ -555,9 +583,13 @@ def _load_disk_cache():
             raw = _json.load(f)
         # Format: {cache_key: [timestamp, [symbols]]}
         _dynamic_cache = {k: (float(v[0]), list(v[1])) for k, v in raw.items()}
-    # SILENT_OK: disk cache load fallback; cold cache rebuilt from in-memory state
-    except Exception:
-        pass
+    except (OSError, _json.JSONDecodeError, KeyError, TypeError, ValueError) as _dl_exc:
+        # Disk-cache load fallback; cold cache rebuilt from
+        # in-memory state. Surface for follow-up.
+        logger.debug(
+            "dynamic_screener_cache.json load failed: %s: %s",
+            type(_dl_exc).__name__, _dl_exc,
+        )
 
 
 def _save_disk_cache():
@@ -566,9 +598,13 @@ def _save_disk_cache():
         import json as _json
         with open(_DYNAMIC_CACHE_FILE, "w") as f:
             _json.dump({k: [v[0], v[1]] for k, v in _dynamic_cache.items()}, f)
-    # SILENT_OK: disk cache write fallback; in-memory cache survives restart loss
-    except Exception:
-        pass
+    except (OSError, TypeError, ValueError) as _dw_exc:
+        # Disk-cache write fallback; in-memory cache survives
+        # restart loss. Surface for follow-up.
+        logger.debug(
+            "dynamic_screener_cache.json write failed: %s: %s",
+            type(_dw_exc).__name__, _dw_exc,
+        )
 
 
 # Warm the cache at module import so the first scan after a restart
@@ -795,8 +831,15 @@ def screen_dynamic_universe(min_price=1.0, max_price=20.0, min_volume=500_000,
                     avg_volume = float(vol_data.mean())
                     if min_price <= last_price <= max_price and avg_volume >= min_volume:
                         results.append((sym, avg_volume))
-                # SILENT_OK: per-symbol price/volume eligibility; one bad symbol shouldn't kill universe scan
-                except Exception:
+                except (KeyError, ValueError, AttributeError, TypeError,
+                        IndexError) as _ue_exc:
+                    # Per-symbol price/volume eligibility loop in
+                    # dynamic universe scan; one bad symbol shouldn't
+                    # kill the scan. Surface for follow-up.
+                    logger.debug(
+                        "dynamic universe scan eligibility failed for %s: %s: %s",
+                        sym, type(_ue_exc).__name__, _ue_exc,
+                    )
                     continue
 
         # Sort by volume (most active first), take top N

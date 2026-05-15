@@ -685,8 +685,14 @@ def render_pair_book_for_prompt(
         try:
             ph_a = price_history(pair.symbol_a)
             ph_b = price_history(pair.symbol_b)
-        # SILENT_OK: per-pair price-history fetch; one bad pair shouldn't kill the book scan
-        except Exception:
+        except (KeyError, ValueError, AttributeError, TypeError,
+                OSError) as _ph_exc:
+            # Per-pair price-history fetch loop; one bad pair
+            # shouldn't kill the book scan. Surface for follow-up.
+            logger.debug(
+                "stat-arb pair price-history fetch failed: %s: %s",
+                type(_ph_exc).__name__, _ph_exc,
+            )
             continue
         if ph_a is None or ph_b is None:
             continue

@@ -1152,9 +1152,13 @@ def _parse_wheel_symbols(raw):
         parsed = json.loads(raw)
         if isinstance(parsed, list):
             return [str(s).upper() for s in parsed if s]
-    # SILENT_OK: JSON list-of-symbols parse fallback; returns [] on malformed input
-    except Exception:
-        pass
+    except (json.JSONDecodeError, TypeError, ValueError) as _js_exc:
+        # JSON list-of-symbols parse fallback; returns [] on
+        # malformed input. Surface for follow-up.
+        logger.debug(
+            "models JSON list-of-symbols parse failed: %s: %s",
+            type(_js_exc).__name__, _js_exc,
+        )
     return []
 
 

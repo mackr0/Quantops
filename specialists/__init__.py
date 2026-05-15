@@ -24,7 +24,10 @@ response parsing. This keeps cost and retry logic in one place.
 from __future__ import annotations
 
 import importlib
+import logging
 from typing import Any, List
+
+logger = logging.getLogger(__name__)
 
 
 SPECIALIST_MODULES = [
@@ -51,8 +54,14 @@ def discover_specialists() -> List[Any]:
     for mod_path in SPECIALIST_MODULES:
         try:
             mod = importlib.import_module(mod_path)
-        # SILENT_OK: per-module specialist import; one bad specialist shouldn't kill registry load
-        except Exception:
+        except (ImportError, AttributeError, SyntaxError) as _imp_exc:
+            # Per-module specialist import loop; one bad specialist
+            # shouldn't kill registry load. Surface for follow-up so
+            # a broken specialist file doesn't quietly disappear.
+            logger.warning(
+                "specialist module failed to import: %s: %s",
+                type(_imp_exc).__name__, _imp_exc,
+            )
             continue
         if callable(getattr(mod, "build_prompt", None)) and callable(
             getattr(mod, "parse_response", None)

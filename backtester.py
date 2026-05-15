@@ -439,9 +439,13 @@ def _fetch_yf_history_range(
     try:
         if df.index.tz is not None:
             df = df.tz_localize(None)
-    # SILENT_OK: tz-strip on warm-start df; downstream comparison handles either tz state
-    except Exception:
-        pass
+    except (AttributeError, TypeError, ValueError) as _tz_exc:
+        # tz-strip on warm-start df; downstream comparison handles
+        # either tz state. Surface for follow-up.
+        logger.debug(
+            "warm-start tz strip failed: %s: %s",
+            type(_tz_exc).__name__, _tz_exc,
+        )
     if warm_start.tz is not None:
         warm_start = warm_start.tz_localize(None)
     if end_ts.tz is not None:
@@ -612,9 +616,13 @@ def backtest_strategy(
             try:
                 if df.index.tz is not None:
                     start_ts = start_ts.tz_localize(df.index.tz) if start_ts.tz is None else start_ts
-            # SILENT_OK: tz-localize start_ts; mask filter still applied
-            except Exception:
-                pass
+            except (AttributeError, TypeError, ValueError) as _tl_exc:
+                # tz-localize start_ts; mask filter still applied
+                # below. Surface for follow-up.
+                logger.debug(
+                    "start_ts tz-localize failed: %s: %s",
+                    type(_tl_exc).__name__, _tl_exc,
+                )
             mask = df.index >= start_ts
             sim_start_idx = int(mask.argmax()) if mask.any() else len(df)
             # Guarantee enough warmup history exists before sim_start_idx;
@@ -693,9 +701,14 @@ def backtest_strategy(
                             # Fallback: fixed 3%/6% stops
                             stop_loss = entry_price * 0.97
                             take_profit = entry_price * 1.06
-                # SILENT_OK: per-bar strategy invocation; one bad bar shouldn't kill the simulation
-                except Exception:
-                    pass  # Strategy error -- skip this bar
+                except (KeyError, ValueError, AttributeError, TypeError,
+                        IndexError, ZeroDivisionError) as _ps_exc:
+                    # Per-bar strategy invocation loop; one bad bar
+                    # shouldn't kill the simulation. Surface for follow-up.
+                    logger.debug(
+                        "backtester per-bar strategy invocation failed: %s: %s",
+                        type(_ps_exc).__name__, _ps_exc,
+                    )
 
             daily_equity.append(equity)
 
@@ -893,8 +906,14 @@ def _fetch_universe_batch(market_type: str, days: int) -> Optional[pd.DataFrame]
                     # Capitalize columns for MultiIndex compat with _extract_symbol_df
                     df.columns = [c.capitalize() for c in df.columns]
                     frames[sym] = df
-            # SILENT_OK: per-symbol bars fetch; one bad symbol shouldn't kill the multi-symbol backtest
-            except Exception:
+            except (KeyError, ValueError, AttributeError, TypeError,
+                    OSError) as _ms_exc:
+                # Per-symbol bars fetch loop in multi-symbol
+                # backtest; one bad symbol shouldn't kill the run.
+                logger.debug(
+                    "multi-symbol backtest bars fetch failed: %s: %s",
+                    type(_ms_exc).__name__, _ms_exc,
+                )
                 continue
 
         if not frames:
@@ -1159,9 +1178,14 @@ def backtest_with_params(market_type: str, params: dict, days: int = 90,
                         else:
                             stop_loss = entry_price * (1 - fixed_sl_pct)
                             take_profit = entry_price * (1 + fixed_tp_pct)
-                # SILENT_OK: per-bar stop/target compute; bar processed without stops on failure
-                except Exception:
-                    pass
+                except (KeyError, ValueError, AttributeError, TypeError,
+                        IndexError, ZeroDivisionError) as _st_exc:
+                    # Per-bar stop/target compute; bar processed
+                    # without stops on failure. Surface for follow-up.
+                    logger.debug(
+                        "backtester stop/target compute failed: %s: %s",
+                        type(_st_exc).__name__, _st_exc,
+                    )
 
                 daily_equity.append(equity)
 

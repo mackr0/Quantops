@@ -131,9 +131,14 @@ def _run_validation(spec: Dict[str, Any], market_type: str,
             results = module.find_candidates(_Ctx(), [symbol]) or []
             if results:
                 return results[0]
-        # SILENT_OK: per-strategy probe call; falls back to HOLD when strategy errors
-        except Exception:
-            pass
+        except (KeyError, ValueError, AttributeError, TypeError,
+                IndexError, OSError) as _sp_exc:
+            # Per-strategy probe call; falls back to HOLD when the
+            # strategy errors. Surface for follow-up.
+            logger.debug(
+                "strategy_lifecycle probe call failed: %s: %s",
+                type(_sp_exc).__name__, _sp_exc,
+            )
         return {"signal": "HOLD"}
 
     from rigorous_backtest import validate_strategy

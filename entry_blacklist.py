@@ -61,8 +61,13 @@ def parse_blacklist(raw_json: Optional[str]) -> Dict[str, str]:
             dt = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
             if dt.tzinfo is not None:
                 dt = dt.replace(tzinfo=None)
-        # SILENT_OK: per-entry expiry parse; skip rows with malformed expiry timestamps
-        except Exception:
+        except (ValueError, TypeError, AttributeError) as _ex_exc:
+            # Per-entry expiry parse loop; skip rows with malformed
+            # expiry timestamps. Surface for follow-up.
+            logger.debug(
+                "entry_blacklist expiry parse failed: %s: %s",
+                type(_ex_exc).__name__, _ex_exc,
+            )
             continue
         if dt > now:
             out[sym.upper()] = dt.isoformat()

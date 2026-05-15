@@ -413,8 +413,14 @@ def get_sector_rotation():
                     "return_20d": round(ret_20d, 2),
                     "trend": trend,
                 }
-            # SILENT_OK: per-sector return calc; one bad ETF shouldn't kill the rotation snapshot
-            except Exception:
+            except (KeyError, ValueError, AttributeError, TypeError,
+                    IndexError, ZeroDivisionError, OSError) as _sr_exc:
+                # Per-sector return calc loop; one bad ETF shouldn't
+                # kill the rotation snapshot. Surface for follow-up.
+                logger.debug(
+                    "sector return calc failed: %s: %s",
+                    type(_sr_exc).__name__, _sr_exc,
+                )
                 continue
 
         _sector_cache["data"] = result
@@ -495,9 +501,14 @@ def get_snapshot(symbol, api=None):
                     "daily_bar_close": prev_close,
                     "daily_bar_volume": daily_volume,
                 }
-            # SILENT_OK: per-symbol latest-trade enrichment; falls through to yfinance fallback
-            except Exception:
-                pass
+            except (AttributeError, ValueError, TypeError, OSError,
+                    ConnectionError, TimeoutError) as _lt_exc:
+                # Per-symbol latest-trade enrichment; falls through
+                # to yfinance fallback. Surface for follow-up.
+                logger.debug(
+                    "latest-trade enrichment failed: %s: %s",
+                    type(_lt_exc).__name__, _lt_exc,
+                )
 
     # Fallback: yfinance (crypto or Alpaca failure)
     yf_symbol = symbol.replace("/", "-") if is_crypto else symbol

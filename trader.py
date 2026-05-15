@@ -2,6 +2,8 @@
 
 import logging
 
+logger = logging.getLogger(__name__)
+
 from client import get_api, get_account_info, get_positions
 from portfolio_manager import (
     calculate_position_size,
@@ -56,9 +58,14 @@ def execute_trade(symbol, signal, ctx=None, strategy_name="combined", log=True):
             if bars is not None and not bars.empty:
                 price = float(bars.iloc[-1]["close"])
                 signal["price"] = price
-        # SILENT_OK: best-effort price re-fetch when signal lacks price; downstream handles 0
-        except Exception:
-            pass
+        except (KeyError, ValueError, AttributeError, TypeError,
+                ImportError, OSError) as _rf_exc:
+            # Best-effort price re-fetch when signal lacks price;
+            # downstream handles 0. Surface for follow-up.
+            logger.debug(
+                "trader price re-fetch failed: %s: %s",
+                type(_rf_exc).__name__, _rf_exc,
+            )
 
     result = {
         "symbol": symbol,
@@ -245,8 +252,13 @@ def _entry_order_filled_at_broker(api, db_path, broker_symbol, is_short):
             continue
         try:
             qty = float(getattr(p, "qty", 0) or 0)
-        # SILENT_OK: per-position qty parse; skip rows with malformed qty
-        except Exception:
+        except (ValueError, TypeError, AttributeError, KeyError) as _pq_exc:
+            # Per-position qty parse loop; skip rows with malformed
+            # qty. Surface for follow-up.
+            logger.debug(
+                "trader per-position qty parse failed: %s: %s",
+                type(_pq_exc).__name__, _pq_exc,
+            )
             continue
         if is_short and qty < 0:
             return True

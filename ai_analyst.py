@@ -310,11 +310,17 @@ def analyze_symbol_consensus(symbol, ctx=None, api=None, political_context=None)
         # Track secondary API usage
         if ctx is not None:
             try:
+                import sqlite3 as _sq
                 from models import increment_api_usage
                 increment_api_usage(ctx.user_id)
-            # SILENT_OK: API-usage counter is telemetry; secondary AI call already succeeded.
-            except Exception:
-                pass
+            except (_sq.OperationalError, _sq.DatabaseError,
+                    ImportError, AttributeError, OSError) as _u_exc:
+                # API-usage counter is telemetry; secondary AI call
+                # already succeeded. Surface for follow-up.
+                logger.debug(
+                    "consensus increment_api_usage failed: %s: %s",
+                    type(_u_exc).__name__, _u_exc,
+                )
 
         secondary_result = json.loads(secondary_text)
         secondary_signal = secondary_result.get("signal", "HOLD").upper()
@@ -407,11 +413,17 @@ def analyze_portfolio_risk(positions, account_info, ctx=None):
 
         if ctx is not None:
             try:
+                import sqlite3 as _sq
                 from models import increment_api_usage
                 increment_api_usage(ctx.user_id)
-            # SILENT_OK: API-usage counter is telemetry; portfolio-review AI call already succeeded.
-            except Exception:
-                pass
+            except (_sq.OperationalError, _sq.DatabaseError,
+                    ImportError, AttributeError, OSError) as _u_exc:
+                # API-usage counter is telemetry; portfolio-review
+                # AI call already succeeded. Surface for follow-up.
+                logger.debug(
+                    "portfolio-review increment_api_usage failed: %s: %s",
+                    type(_u_exc).__name__, _u_exc,
+                )
 
         return json.loads(response_text)
 
@@ -706,9 +718,14 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         try:
             from portfolio_exposure import render_for_prompt
             exposure_block = "\nEXPOSURE BREAKDOWN:\n" + render_for_prompt(exp)
-        # SILENT_OK: exposure-block is AI-prompt enrichment; prompt continues without it.
-        except Exception:
-            pass
+        except (ImportError, KeyError, ValueError, AttributeError,
+                TypeError) as _exp_exc:
+            # AI-prompt enrichment; prompt continues without exposure
+            # block. Surface for follow-up.
+            logger.debug(
+                "exposure-block render failed: %s: %s",
+                type(_exp_exc).__name__, _exp_exc,
+            )
 
     # Fix 1 — MFE capture ratio. Tells the AI how much of available
     # favorable excursion the exit logic actually realizes. When low
@@ -719,12 +736,18 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     db_path_for_capture = getattr(ctx, "db_path", None) if ctx else None
     if db_path_for_capture:
         try:
+            import sqlite3 as _sq
             from mfe_capture import compute_capture_ratio, render_for_prompt as _cap_render
             cap = compute_capture_ratio(db_path_for_capture)
             mfe_capture_block = _cap_render(cap)
-        # SILENT_OK: MFE-capture block is AI-prompt enrichment; prompt continues without it.
-        except Exception:
-            pass
+        except (_sq.OperationalError, _sq.DatabaseError, ImportError,
+                KeyError, ValueError, AttributeError, TypeError, OSError) as _mc_exc:
+            # AI-prompt enrichment; prompt continues without MFE
+            # capture block. Surface for follow-up.
+            logger.debug(
+                "MFE-capture block render failed: %s: %s",
+                type(_mc_exc).__name__, _mc_exc,
+            )
 
     # P4.4 of LONG_SHORT_PLAN.md — risk-budget (risk-parity) sizing.
     # For the existing book, flags positions whose risk contribution
@@ -741,9 +764,14 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         equity_for_risk = float(portfolio_state.get("equity") or 0)
         analysis = analyze_position_risk(positions_for_risk, equity_for_risk)
         risk_budget_block = risk_render(analysis)
-    # SILENT_OK: risk-budget block is AI-prompt enrichment; prompt continues without it.
-    except Exception:
-        pass
+    except (ImportError, KeyError, ValueError, AttributeError,
+            TypeError) as _rb_exc:
+        # AI-prompt enrichment; prompt continues without risk-budget
+        # block. Surface for follow-up.
+        logger.debug(
+            "risk-budget block render failed: %s: %s",
+            type(_rb_exc).__name__, _rb_exc,
+        )
 
     # Item 1a of COMPETITIVE_GAP_PLAN.md — options strategy advisor.
     # Surfaces covered-call / protective-put opportunities on existing
@@ -762,16 +790,27 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                 oracle = get_options_oracle(sym)
                 if oracle and oracle.get("has_options"):
                     return oracle.get("iv_rank", {}).get("rank_pct")
-            # SILENT_OK: per-symbol IV-rank lookup; advisor falls back to no-IV path.
-            except Exception:
+            except (KeyError, ValueError, AttributeError, TypeError,
+                    OSError) as _iv_exc:
+                # Per-symbol IV-rank lookup; advisor falls back to
+                # no-IV path. Surface for follow-up.
+                logger.debug(
+                    "options-advisor IV-rank lookup failed for %s: %s: %s",
+                    sym, type(_iv_exc).__name__, _iv_exc,
+                )
                 return None
             return None
         options_strategy_block = opt_render(
             positions_for_opts, iv_rank_lookup=_iv_rank_lookup,
         )
-    # SILENT_OK: options-advisor block is AI-prompt enrichment; prompt continues without it.
-    except Exception:
-        pass
+    except (ImportError, KeyError, ValueError, AttributeError,
+            TypeError) as _oa_exc:
+        # AI-prompt enrichment; prompt continues without options
+        # advisor block. Surface for follow-up.
+        logger.debug(
+            "options-advisor block render failed: %s: %s",
+            type(_oa_exc).__name__, _oa_exc,
+        )
 
     # Item 6b — strategy-level capital weights surfaced to the AI so
     # it can see which strategies are currently scaled UP/DOWN. The
@@ -794,9 +833,14 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                     db_path_for_weights, sorted(strategies_in_play),
                 )
                 strategy_weights_block = render_weights_for_prompt(weights)
-    # SILENT_OK: strategy-weights block is AI-prompt enrichment; prompt continues without it.
-    except Exception:
-        pass
+    except (ImportError, KeyError, ValueError, AttributeError,
+            TypeError, OSError) as _sw_exc:
+        # AI-prompt enrichment; prompt continues without
+        # strategy-weights block. Surface for follow-up.
+        logger.debug(
+            "strategy-weights block render failed: %s: %s",
+            type(_sw_exc).__name__, _sw_exc,
+        )
 
     # Phase C3 — wheel state + next-step recommendations per opted-in
     # symbol. Empty when ctx.wheel_symbols is empty or no price avail.
@@ -813,18 +857,28 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                     bars = get_bars(sym, limit=2)
                     if bars is not None and len(bars) > 0:
                         return float(bars["close"].iloc[-1])
-                # SILENT_OK: per-symbol price fetch fallback; wheel block uses None price.
-                except Exception:
-                    pass
+                except (KeyError, ValueError, AttributeError, TypeError,
+                        ImportError, OSError) as _wp_exc:
+                    # Per-symbol price-fetch fallback for the wheel
+                    # block; renderer treats None as missing price.
+                    logger.debug(
+                        "wheel block price-fetch failed for %s: %s: %s",
+                        sym, type(_wp_exc).__name__, _wp_exc,
+                    )
                 return None
             wheel_block = render_wheel_block_for_prompt(
                 db_path_for_wheel, positions_for_wheel,
                 wheel_symbols=wheel_syms,
                 price_lookup=_wheel_price,
             )
-    # SILENT_OK: wheel block is AI-prompt enrichment; prompt continues without it.
-    except Exception:
-        pass
+    except (ImportError, KeyError, ValueError, AttributeError,
+            TypeError, OSError) as _wb_exc:
+        # AI-prompt enrichment; prompt continues without wheel
+        # block. Surface for follow-up.
+        logger.debug(
+            "wheel block render failed: %s: %s",
+            type(_wb_exc).__name__, _wb_exc,
+        )
 
     # Phase C1 — roll-recommendations on near-expiry option positions.
     # Surfaces ROLL_RECOMMEND lines (auto-closes happen via the
@@ -841,15 +895,26 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                     api = _ga(ctx)
                     pos = api.get_position(occ)
                     return float(getattr(pos, "current_price", 0) or 0) or None
-                # SILENT_OK: per-position broker quote fallback; roll-block uses None quote.
-                except Exception:
+                except (ImportError, AttributeError, ValueError,
+                        TypeError, OSError) as _oq_exc:
+                    # Per-position broker quote fallback for the roll
+                    # block; renderer treats None as missing quote.
+                    logger.debug(
+                        "roll block quote lookup failed for %s: %s: %s",
+                        occ, type(_oq_exc).__name__, _oq_exc,
+                    )
                     return None
             roll_block = render_roll_recommendations_for_prompt(
                 db_path_for_roll, quote_lookup=_option_quote,
             )
-    # SILENT_OK: roll-recommendations block is AI-prompt enrichment; prompt continues without it.
-    except Exception:
-        pass
+    except (ImportError, KeyError, ValueError, AttributeError,
+            TypeError, OSError) as _rl_exc:
+        # AI-prompt enrichment; prompt continues without roll
+        # recommendations. Surface for follow-up.
+        logger.debug(
+            "roll-recommendations block render failed: %s: %s",
+            type(_rl_exc).__name__, _rl_exc,
+        )
 
     # Phase F — earnings/event opportunism. Surfaces IV-crush capture
     # plays around upcoming earnings. Replaces the blanket avoid-
@@ -861,8 +926,14 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         def _earn_lookup(sym):
             try:
                 return _check_earn(sym)
-            # SILENT_OK: per-symbol earnings lookup; play renderer uses None earnings.
-            except Exception:
+            except (KeyError, ValueError, AttributeError, TypeError,
+                    OSError) as _el_exc:
+                # Per-symbol earnings lookup for the earnings-plays
+                # renderer; falls back to None.
+                logger.debug(
+                    "earnings-plays earnings lookup failed for %s: %s: %s",
+                    sym, type(_el_exc).__name__, _el_exc,
+                )
                 return None
         # iv lookup defined below — define early for both blocks.
         def _iv_rank_lookup_2(sym):
@@ -871,8 +942,13 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                 oracle = get_options_oracle(sym)
                 if oracle and oracle.get("has_options"):
                     return oracle.get("iv_rank", {}).get("rank_pct")
-            # SILENT_OK: per-symbol IV-rank lookup; play renderer uses None IV.
-            except Exception:
+            except (ImportError, KeyError, ValueError, AttributeError,
+                    TypeError, OSError) as _iv_exc:
+                # Per-symbol IV-rank lookup; renderer falls back to None.
+                logger.debug(
+                    "earnings-plays IV-rank lookup failed for %s: %s: %s",
+                    sym, type(_iv_exc).__name__, _iv_exc,
+                )
                 return None
             return None
         earnings_plays_block = render_earnings_plays_for_prompt(
@@ -880,9 +956,14 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             earnings_lookup=_earn_lookup,
             iv_rank_lookup=_iv_rank_lookup_2,
         )
-    # SILENT_OK: earnings-plays block is AI-prompt enrichment; prompt continues without it.
-    except Exception:
-        pass
+    except (ImportError, KeyError, ValueError, AttributeError,
+            TypeError, OSError) as _ep_exc:
+        # AI-prompt enrichment; prompt continues without earnings
+        # plays block. Surface for follow-up.
+        logger.debug(
+            "earnings-plays block render failed: %s: %s",
+            type(_ep_exc).__name__, _ep_exc,
+        )
 
     # Phase E — vol regime gate. Translates per-symbol oracle signals
     # (IV rank, skew, term structure) into actionable strategy
@@ -895,15 +976,26 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         def _oracle_lookup(sym):
             try:
                 return get_options_oracle(sym)
-            # SILENT_OK: per-symbol oracle lookup; vol-regime renderer uses None oracle.
-            except Exception:
+            except (KeyError, ValueError, AttributeError, TypeError,
+                    OSError) as _ol_exc:
+                # Per-symbol oracle lookup for vol-regime renderer;
+                # renderer falls back to None oracle.
+                logger.debug(
+                    "vol-regime oracle lookup failed for %s: %s: %s",
+                    sym, type(_ol_exc).__name__, _ol_exc,
+                )
                 return None
         vol_regime_block = render_vol_regime_for_prompt(
             candidates_data or [], oracle_lookup=_oracle_lookup,
         )
-    # SILENT_OK: vol-regime block is AI-prompt enrichment; prompt continues without it.
-    except Exception:
-        pass
+    except (ImportError, KeyError, ValueError, AttributeError,
+            TypeError, OSError) as _vr_exc:
+        # AI-prompt enrichment; prompt continues without vol-regime
+        # block. Surface for follow-up.
+        logger.debug(
+            "vol-regime block render failed: %s: %s",
+            type(_vr_exc).__name__, _vr_exc,
+        )
 
     # Phase B4 of OPTIONS_PROGRAM_PLAN — multi-leg recommendations on
     # CANDIDATES (the screener's shortlist), distinct from the per-
@@ -918,9 +1010,14 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             regime=regime,
             ctx=ctx,  # 2026-05-12 — ctx-tuned IV thresholds
         )
-    # SILENT_OK: multileg recs block is AI-prompt enrichment; prompt continues without it.
-    except Exception:
-        pass
+    except (ImportError, KeyError, ValueError, AttributeError,
+            TypeError, OSError) as _ml_exc:
+        # AI-prompt enrichment; prompt continues without multileg
+        # recs block. Surface for follow-up.
+        logger.debug(
+            "multileg recs block render failed: %s: %s",
+            type(_ml_exc).__name__, _ml_exc,
+        )
 
     # 2026-05-14 — symmetric stock-action recommendations. Mirror of
     # multileg_block: same level of pre-computed analysis (size /
@@ -935,9 +1032,14 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         stock_recs_block = render_stock_recs_for_prompt(
             candidates_data or [], ctx=ctx,
         )
-    # SILENT_OK: stock recs block is AI-prompt enrichment; prompt continues without it.
-    except Exception:
-        pass
+    except (ImportError, KeyError, ValueError, AttributeError,
+            TypeError, OSError) as _sr_exc:
+        # AI-prompt enrichment; prompt continues without stock-recs
+        # block. Surface for follow-up.
+        logger.debug(
+            "stock-recs block render failed: %s: %s",
+            type(_sr_exc).__name__, _sr_exc,
+        )
 
     # P4.3 of LONG_SHORT_PLAN.md — drawdown-aware capital scaling.
     # Continuous size modifier (vs the discrete normal/reduce/pause
@@ -951,9 +1053,14 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             "peak_equity": portfolio_state.get("peak_equity"),
             "current_equity": portfolio_state.get("equity"),
         })
-    # SILENT_OK: drawdown-scaling block is AI-prompt enrichment; prompt continues without it.
-    except Exception:
-        pass
+    except (ImportError, KeyError, ValueError, AttributeError,
+            TypeError) as _dd_exc:
+        # AI-prompt enrichment; prompt continues without
+        # drawdown-scaling block. Surface for follow-up.
+        logger.debug(
+            "drawdown-scaling block render failed: %s: %s",
+            type(_dd_exc).__name__, _dd_exc,
+        )
 
     # P4.2 of LONG_SHORT_PLAN.md — Kelly position sizing block.
     # Reads per-direction edge stats from ai_predictions and surfaces
@@ -971,9 +1078,14 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             rec_short = (compute_kelly_recommendation(db_path_for_kelly, "short")
                           if enable_shorts else None)
             kelly_block = kelly_render(rec_long, rec_short)
-        # SILENT_OK: Kelly-sizing block is AI-prompt enrichment; prompt continues without it.
-        except Exception:
-            pass
+        except (ImportError, KeyError, ValueError, AttributeError,
+                TypeError, OSError) as _kl_exc:
+            # AI-prompt enrichment; prompt continues without
+            # Kelly-sizing block. Surface for follow-up.
+            logger.debug(
+                "Kelly-sizing block render failed: %s: %s",
+                type(_kl_exc).__name__, _kl_exc,
+            )
 
     # P4.1 of LONG_SHORT_PLAN.md — book-beta target directive.
     # When ctx.target_book_beta is set and the book has measurable
@@ -1606,9 +1718,14 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             pair_block = render_pairs_for_prompt(pairs)
             if pair_block:
                 sections.append(pair_block)
-        # SILENT_OK: pair-trade block is AI-prompt enrichment; prompt continues without it.
-        except Exception:
-            pass
+        except (ImportError, KeyError, ValueError, AttributeError,
+                TypeError) as _pt_exc:
+            # AI-prompt enrichment; prompt continues without
+            # pair-trade block. Surface for follow-up.
+            logger.debug(
+                "pair-trade block render failed: %s: %s",
+                type(_pt_exc).__name__, _pt_exc,
+            )
 
         # Item 1b of COMPETITIVE_GAP_PLAN.md — stat-arb pair book.
         # Surfaces cointegrated pairs with current z-scores, so the AI
@@ -1640,8 +1757,14 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                         if bars is None or len(bars) < 30:
                             return None
                         return bars["close"].tolist()
-                    # SILENT_OK: per-symbol price history fallback; pair book uses None history.
-                    except Exception:
+                    except (ImportError, KeyError, ValueError, AttributeError,
+                            TypeError, OSError) as _ph_exc:
+                        # Per-symbol price-history fallback for the
+                        # pair book; renderer treats None as missing.
+                        logger.debug(
+                            "pair book price-history failed for %s: %s: %s",
+                            symbol, type(_ph_exc).__name__, _ph_exc,
+                        )
                         return None
 
                 book_block = render_pair_book_for_prompt(
@@ -1651,9 +1774,14 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                 if book_block:
                     sections.append(book_block)
                     pair_book_rendered = True
-        # SILENT_OK: stat-arb pair-book block is AI-prompt enrichment; prompt continues without it.
-        except Exception:
-            pass
+        except (ImportError, KeyError, ValueError, AttributeError,
+                TypeError, OSError) as _sb_exc:
+            # AI-prompt enrichment; prompt continues without stat-arb
+            # pair-book block. Surface for follow-up.
+            logger.debug(
+                "stat-arb pair-book block render failed: %s: %s",
+                type(_sb_exc).__name__, _sb_exc,
+            )
 
         candidates_section = "\n\n".join(sections)
     else:
@@ -1868,9 +1996,14 @@ def _validate_ai_trades(result, candidates_data, ctx=None,
                 target_short_pct=getattr(ctx, "target_short_pct", 0.0) or 0.0,
                 current_exposure=portfolio_state.get("exposure"),
             )
-        # SILENT_OK: balance-gate is advisory; defaults to "pass" on lookup failure.
-        except Exception:
-            pass
+        except (ImportError, KeyError, ValueError, AttributeError,
+                TypeError) as _bg_exc:
+            # Balance-gate is advisory; defaults to "pass" on lookup
+            # failure. Surface for follow-up.
+            logger.debug(
+                "balance-gate lookup failed, defaulting to pass: %s: %s",
+                type(_bg_exc).__name__, _bg_exc,
+            )
 
     # P1.14 — borrow-cost sizing penalty: HTB names eat real money
     # over the typical hold. Halve again on top of the asymmetric cap.

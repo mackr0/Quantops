@@ -297,9 +297,13 @@ def _pos_is_option(pos) -> bool:
     if hasattr(pos, "is_option"):
         try:
             return bool(pos.is_option)
-        # SILENT_OK: duck-typed is_option attribute access; falls through to OCC heuristic
-        except Exception:
-            pass
+        except AttributeError as _io_exc:
+            # Duck-typed is_option attribute access; falls through
+            # to OCC heuristic. Surface for follow-up.
+            logger.debug(
+                "is_option attribute access failed: %s: %s",
+                type(_io_exc).__name__, _io_exc,
+            )
     occ = _pos_occ(pos)
     return bool(occ) and len(occ) >= 15
 
@@ -321,9 +325,13 @@ def _pos_get(pos, key, default=None):
     if hasattr(pos, key):
         try:
             return getattr(pos, key)
-        # SILENT_OK: duck-typed attribute access; falls through to dict-style lookup
-        except Exception:
-            pass
+        except AttributeError as _dt_exc:
+            # Duck-typed attribute access; falls through to
+            # dict-style lookup. Surface for follow-up.
+            logger.debug(
+                "duck-typed attribute access failed: %s: %s",
+                type(_dt_exc).__name__, _dt_exc,
+            )
     if isinstance(pos, dict):
         return pos.get(key, default)
     try:

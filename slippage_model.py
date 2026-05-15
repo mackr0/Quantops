@@ -207,8 +207,14 @@ def calibrate_from_history(
                 participation = notional / 50_000_000
             participation = max(participation, 1e-6)
             samples.append((participation, bps, notional))
-        # SILENT_OK: per-trade slippage sample build; one bad trade shouldn't kill the calibration
-        except Exception:
+        except (KeyError, ValueError, AttributeError, TypeError,
+                ZeroDivisionError) as _ss_exc:
+            # Per-trade slippage sample build loop; one bad trade
+            # shouldn't kill the calibration. Surface for follow-up.
+            logger.debug(
+                "slippage sample build failed: %s: %s",
+                type(_ss_exc).__name__, _ss_exc,
+            )
             continue
 
     if len(samples) < min_trades:

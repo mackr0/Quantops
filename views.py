@@ -2290,8 +2290,14 @@ def performance_dashboard():
                     all_positions.extend(positions)
                 if positions or account:
                     n_profiles_with_data += 1
-            # SILENT_OK: per-profile broker fetch in dashboard rollup; one bad profile shouldn't kill the page
-            except Exception:
+            except (KeyError, ValueError, AttributeError, TypeError,
+                    OSError, ConnectionError, TimeoutError, ImportError) as _bp_exc:
+                # Per-profile broker fetch in dashboard rollup; one
+                # bad profile shouldn't kill the page. Surface for follow-up.
+                logger.debug(
+                    "dashboard rollup per-profile broker fetch failed: %s: %s",
+                    type(_bp_exc).__name__, _bp_exc,
+                )
                 continue
 
         if n_profiles_with_data and equity_sum > 0:

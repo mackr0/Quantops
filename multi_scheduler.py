@@ -20,6 +20,7 @@ Usage:
 import time
 import logging
 import signal
+import sqlite3
 import sys
 import os
 import json as _json
@@ -27,6 +28,8 @@ from contextlib import closing
 from datetime import datetime, timedelta
 from typing import Dict, Tuple
 from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
 
 # Load .env BEFORE any module that reads env vars (e.g. market_data uses
 # ALPACA_API_KEY for the shared data client). Without this, the scheduler
@@ -94,9 +97,14 @@ def _build_ctx(segment_name):
     try:
         from models import build_user_context
         return build_user_context(1, segment_name)
-    # SILENT_OK: primary user-context path; falls through to env-var-based fallback below.
-    except Exception:
-        pass
+    except (ImportError, sqlite3.OperationalError, sqlite3.DatabaseError,
+            AttributeError, KeyError, ValueError, OSError) as _ctx_exc:
+        # Primary DB user-context path — falls through to env-var-
+        # based fallback below. Surface for follow-up.
+        logger.debug(
+            "primary user-context path failed for %s, falling back to env: %s: %s",
+            segment_name, type(_ctx_exc).__name__, _ctx_exc,
+        )
 
     from user_context import build_context_from_segment
     return build_context_from_segment(segment_name)
@@ -129,18 +137,28 @@ def run_task(name, func, db_path=None):
         if tracker:
             try:
                 tracker.__exit__(None, None, None)
-            # SILENT_OK: tracker-cleanup on success path; failure must not affect task outcome.
-            except Exception:
-                pass
+            except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                    AttributeError, OSError) as _tc_exc:
+                # Tracker cleanup on success path; failure must not
+                # affect task outcome. Surface for follow-up.
+                logger.debug(
+                    "task_watchdog tracker close (success) failed: %s: %s",
+                    type(_tc_exc).__name__, _tc_exc,
+                )
     except Exception as exc:
         elapsed = time.time() - start
         logging.exception(f"[TASK FAIL]  {name} ({elapsed:.1f}s)")
         if tracker:
             try:
                 tracker.__exit__(type(exc), exc, exc.__traceback__)
-            # SILENT_OK: tracker-cleanup on failure path; original task error already logged.
-            except Exception:
-                pass
+            except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                    AttributeError, OSError) as _tc_exc:
+                # Tracker cleanup on failure path; original task
+                # error already logged. Surface for follow-up.
+                logger.debug(
+                    "task_watchdog tracker close (failure) failed: %s: %s",
+                    type(_tc_exc).__name__, _tc_exc,
+                )
 
 
 # ── Segment Cycle ────────────────────────────────────────────────────
@@ -678,8 +696,14 @@ def _build_scan_summary(ctx, candidates, summary):
                 "vol_ratio": vol_ratio, "vol_label": vol_label,
                 "pct_from_high": pct_from_high,
             })
-        # SILENT_OK: per-symbol enrichment loop; one bad symbol shouldn't kill the report.
-        except Exception:
+        except (KeyError, ValueError, AttributeError, TypeError,
+                IndexError, OSError) as _ar_exc:
+            # Per-symbol enrichment loop; one bad symbol shouldn't
+            # kill the report. Surface for follow-up.
+            logger.debug(
+                "scan-report enrichment failed for %s: %s: %s",
+                sym, type(_ar_exc).__name__, _ar_exc,
+            )
             continue
 
     # Build the detail text — clean structured format
@@ -812,8 +836,14 @@ def _get_shared_candidates(ctx, seg, is_crypto):
                 if latest_rsi < ctx.rsi_oversold:
                     symbols.add(sym)
                     maga_added += 1
-            # SILENT_OK: per-symbol oversold scan; one bad symbol shouldn't kill the loop.
-            except Exception:
+            except (KeyError, ValueError, AttributeError, TypeError,
+                    IndexError, OSError) as _ms_exc:
+                # Per-symbol MAGA oversold scan; one bad symbol
+                # shouldn't kill the loop. Surface for follow-up.
+                logger.debug(
+                    "MAGA oversold scan failed for %s: %s: %s",
+                    sym, type(_ms_exc).__name__, _ms_exc,
+                )
                 continue
         logging.info(f"[{ctx.display_name}] MAGA oversold scan: added {maga_added}, {len(symbols)} total")
 
@@ -1416,9 +1446,16 @@ def _task_cost_check(ctx):
                     "Consider reducing scan frequency or disabling "
                     "specialist ensemble on test profiles." % _DAILY_COST_ALERT_THRESHOLD,
                 )
-    # SILENT_OK: cost-alert notify is best-effort; alert delivery failure must not break scheduler.
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            ImportError, KeyError, ValueError, AttributeError,
+            TypeError, OSError) as _cost_exc:
+        # Cost-alert notify is best-effort; delivery failure must
+        # not break scheduler. Surface for follow-up so we don't
+        # silently lose spend visibility.
+        logger.warning(
+            "cost-alert check failed for profile %s: %s: %s",
+            pid, type(_cost_exc).__name__, _cost_exc,
+        )
 
 
 def _task_stat_arb_universe_scan(ctx):
@@ -1670,9 +1707,14 @@ def _task_intraday_risk_check(ctx):
                 if ranges:
                     avg_20d_hourly_vol = sum(ranges) / len(ranges)
                     current_hourly_vol = ranges[-1] if ranges else 0
-        # SILENT_OK: ATR vol calc is enrichment for the brief; report continues without it.
-        except Exception:
-            pass
+        except (KeyError, ValueError, AttributeError, TypeError,
+                ZeroDivisionError, OSError) as _atr_exc:
+            # ATR vol calc is enrichment for the brief; report
+            # continues without it. Surface for follow-up.
+            logger.debug(
+                "intraday-risk ATR vol calc failed: %s: %s",
+                type(_atr_exc).__name__, _atr_exc,
+            )
 
         sector_moves = _compute_sector_moves()
         halted_held_symbols = _compute_halted_held_symbols(ctx)
@@ -1719,9 +1761,14 @@ def _task_options_delta_hedger(ctx):
                 bars = get_bars(sym, limit=2)
                 if bars is not None and len(bars) > 0:
                     return float(bars["close"].iloc[-1])
-            # SILENT_OK: per-symbol price fetch fallback; caller handles None price.
-            except Exception:
-                pass
+            except (KeyError, ValueError, AttributeError, TypeError,
+                    IndexError, OSError) as _pp_exc:
+                # Per-symbol price fetch fallback for delta hedger;
+                # caller handles None price.
+                logger.debug(
+                    "delta-hedger price fetch failed for %s: %s: %s",
+                    sym, type(_pp_exc).__name__, _pp_exc,
+                )
             return None
 
         result = rebalance_hedges(
@@ -1831,9 +1878,13 @@ def _task_manage_long_vol_hedge(ctx):
                         (close_premium - float(active_row["entry_premium"]))
                         * 100 * int(active_row["contracts"])
                     )
-            # SILENT_OK: close-pnl annotation; record_hedge_closed below proceeds without it.
-            except Exception:
-                pass
+            except (AttributeError, ValueError, TypeError, OSError) as _cp_exc:
+                # close-pnl annotation; record_hedge_closed below
+                # proceeds without it. Surface for follow-up.
+                logger.debug(
+                    "long-vol hedge close-pnl annotation failed: %s: %s",
+                    type(_cp_exc).__name__, _cp_exc,
+                )
             lvh.record_hedge_closed(
                 ctx.db_path, int(active_row["id"]), reason,
                 close_premium=close_premium,
@@ -2003,9 +2054,13 @@ def _task_options_roll_manager(ctx):
                 cur = float(getattr(pos, "current_price", 0) or 0)
                 if cur > 0:
                     return cur
-            # SILENT_OK: per-position broker fetch fallback; caller handles None price.
-            except Exception:
-                pass
+            except (AttributeError, ValueError, TypeError, OSError) as _ql_exc:
+                # Per-position broker fetch fallback; caller handles
+                # None price. Surface for follow-up.
+                logger.debug(
+                    "options-roll quote lookup failed for %s: %s: %s",
+                    occ_symbol, type(_ql_exc).__name__, _ql_exc,
+                )
             return None
 
         result = auto_close_high_profit_credits(
@@ -2122,9 +2177,14 @@ def _task_reconcile_trade_statuses(ctx):
                         error_msg=format_drift_summary(audit),
                         context="aggregate journal-vs-broker drift",
                     )
-                # SILENT_OK: drift-alert notify is best-effort; alert delivery failure must not break audit.
-                except Exception:
-                    pass
+                except (ImportError, AttributeError, OSError) as _ne_exc:
+                    # Drift-alert notify is best-effort; alert
+                    # delivery failure must not break audit. Surface
+                    # for follow-up so we don't quietly lose alerts.
+                    logger.warning(
+                        "drift-alert notify_error delivery failed: %s: %s",
+                        type(_ne_exc).__name__, _ne_exc,
+                    )
         except Exception:
             logging.exception("Aggregate audit failed")
 
@@ -2481,9 +2541,14 @@ def _task_self_tune(ctx):
                     (row_id,),
                 )
                 mc.commit()
-        # SILENT_OK: tuning-history "no change" log is informational; tuner state already correct.
-        except Exception:
-            pass
+        except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                ImportError, AttributeError, OSError) as _th_exc:
+            # Tuning-history "no change" log is informational;
+            # tuner state already correct. Surface for follow-up.
+            logger.debug(
+                "tuning-history 'no change' log failed: %s: %s",
+                type(_th_exc).__name__, _th_exc,
+            )
 
 
 def _task_retrain_meta_model(ctx):
@@ -2843,9 +2908,13 @@ def _task_universe_audit(ctx):
             )
             conn.commit()
             conn.close()
-        # SILENT_OK: idempotency-marker write; next-day retry handles missing row.
-        except Exception:
-            pass
+        except (_sq.OperationalError, _sq.DatabaseError, OSError) as _im_exc:
+            # Idempotency-marker write; next-day retry handles
+            # missing row. Surface for follow-up.
+            logger.warning(
+                "universe-audit idempotency marker write failed: %s: %s",
+                type(_im_exc).__name__, _im_exc,
+            )
         logging.info(
             f"[{seg_label}] Universe audit: {recorded} active symbols "
             f"snapshotted; {new_departures} new departures recorded."
@@ -3076,9 +3145,13 @@ def _task_sec_filings(ctx):
                 # Equity symbols only (no slashes)
                 if "/" not in p.get("symbol", ""):
                     symbols.add(p["symbol"])
-        # SILENT_OK: positions seed for SEC watchlist; falls through to shortlist seed.
-        except Exception:
-            pass
+        except (KeyError, AttributeError, TypeError, OSError) as _ps_exc:
+            # Positions seed for SEC watchlist; falls through to
+            # shortlist seed below. Surface for follow-up.
+            logger.debug(
+                "SEC watchlist positions seed failed: %s: %s",
+                type(_ps_exc).__name__, _ps_exc,
+            )
 
         # Add recent shortlist symbols from cycle_data if available
         try:
@@ -3092,9 +3165,14 @@ def _task_sec_filings(ctx):
                     sym = c.get("symbol", "")
                     if sym and "/" not in sym:
                         symbols.add(sym)
-        # SILENT_OK: shortlist seed for SEC watchlist; positions seed above is sufficient.
-        except Exception:
-            pass
+        except (OSError, _json.JSONDecodeError, KeyError, AttributeError,
+                TypeError) as _ss_exc:
+            # Shortlist seed for SEC watchlist; positions seed above
+            # is sufficient. Surface for follow-up.
+            logger.debug(
+                "SEC watchlist shortlist seed failed: %s: %s",
+                type(_ss_exc).__name__, _ss_exc,
+            )
 
         if not symbols:
             logging.info(f"[{seg_label}] SEC filings: no symbols to check")
@@ -3187,9 +3265,15 @@ def _task_run_watchdog(ctx):
                     },
                     dedup_key=f"task_stalled:{row['id']}",
                 )
-            # SILENT_OK: event-bus emit for stalled task is best-effort; notify_error below is the redundant alert.
-            except Exception:
-                pass
+            except (ImportError, sqlite3.OperationalError, sqlite3.DatabaseError,
+                    AttributeError, OSError) as _eb_exc:
+                # Event-bus emit for stalled task is best-effort;
+                # notify_error below is the redundant alert. Surface
+                # for follow-up.
+                logger.debug(
+                    "task_stalled event-bus emit failed: %s: %s",
+                    type(_eb_exc).__name__, _eb_exc,
+                )
             try:
                 from notifications import notify_error
                 # `context` is used for the email subject — keep it short
@@ -3741,9 +3825,13 @@ def main_loop(active_segments=None, legacy_mode=False):
                     ),
                     context="DB corruption detected (non-critical)",
                 )
-            # SILENT_OK: notify_error is best-effort; corruption already logged above.
-            except Exception:
-                pass
+            except (ImportError, AttributeError, OSError) as _ne_exc:
+                # notify_error is best-effort; corruption already
+                # logged above. Surface for follow-up.
+                logger.warning(
+                    "non-critical DB corruption notify_error failed: %s: %s",
+                    type(_ne_exc).__name__, _ne_exc,
+                )
         # Critical corruption: halt as before.
         if critical:
             for bad in critical:
@@ -3763,9 +3851,13 @@ def main_loop(active_segments=None, legacy_mode=False):
                     ),
                     context="DB corruption detected",
                 )
-            # SILENT_OK: notify_error is best-effort; scheduler still exits 1 below regardless.
-            except Exception:
-                pass
+            except (ImportError, AttributeError, OSError) as _ne_exc:
+                # notify_error is best-effort; scheduler still exits
+                # 1 below regardless. Surface for follow-up.
+                logger.warning(
+                    "critical DB corruption notify_error failed: %s: %s",
+                    type(_ne_exc).__name__, _ne_exc,
+                )
             logging.error(
                 "Scheduler refusing to start with critical DB corruption — exit 1"
             )
@@ -4056,9 +4148,13 @@ def main_loop(active_segments=None, legacy_mode=False):
                 }
                 with open("scheduler_status.json", "w") as f:
                     _json.dump(status, f)
-            # SILENT_OK: status-file write is for the web UI countdown; never break the scheduler.
-            except Exception:
-                pass  # Never break the scheduler for a status file
+            except (OSError, TypeError, ValueError) as _sf_exc:
+                # Status-file write is for the web UI countdown;
+                # never break the scheduler. Surface for follow-up.
+                logger.debug(
+                    "scheduler_status.json write failed: %s: %s",
+                    type(_sf_exc).__name__, _sf_exc,
+                )
 
         if not market_open and not has_crypto:
             # No crypto and market closed — sleep until next open

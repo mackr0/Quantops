@@ -6,12 +6,15 @@ layer. When a profile has `is_virtual=True`, `get_positions()` and
 instead of Alpaca. Orders still go through Alpaca normally.
 """
 
+import logging
 import threading
 import time
 from typing import Dict, Tuple
 
 import alpaca_trade_api as tradeapi
 import config
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Process-wide price cache shared across web workers.
@@ -81,10 +84,15 @@ def _prefetch_prices(symbols):
             chunk = needed[i:i + 200]
             try:
                 snaps.update(data_client.get_snapshots(chunk))
-            # SILENT_OK: per-chunk snapshot fetch fallback; covered by inline comment
-            except Exception:
-                # Per-chunk failure is non-fatal; we'll fall back to
-                # last-known cached price (stale ok) for those symbols.
+            except (AttributeError, ValueError, TypeError, OSError,
+                    ConnectionError, TimeoutError) as _ch_exc:
+                # Per-chunk snapshot fetch loop; non-fatal per-chunk
+                # — caller falls back to last-known cached price
+                # (stale ok). Surface for follow-up.
+                logger.debug(
+                    "snapshot fetch failed for chunk (%d syms): %s: %s",
+                    len(chunk), type(_ch_exc).__name__, _ch_exc,
+                )
                 continue
         with _price_cache_lock:
             for sym, snap in snaps.items():
@@ -99,11 +107,16 @@ def _prefetch_prices(symbols):
                     continue
                 if price > 0:
                     _price_cache[sym] = (now, price)
-    # SILENT_OK: data-client wedge fallback; covered by inline comment (callers use stale prices)
-    except Exception:
-        # If the data client is wedged, leave the cache untouched —
-        # callers will fall back to stale prices, not break the page.
-        pass
+    except (AttributeError, ValueError, TypeError, OSError,
+            ConnectionError, TimeoutError) as _dc_exc:
+        # Data-client wedge fallback. If wedged, leave the cache
+        # untouched — callers fall back to stale prices, not break
+        # the page. Surface for follow-up.
+        logger.warning(
+            "price-cache refresh wedged: %s: %s "
+            "(callers will use stale cached prices)",
+            type(_dc_exc).__name__, _dc_exc,
+        )
 
 
 def _is_occ_symbol(s):
@@ -267,11 +280,15 @@ def _make_price_fetcher(api):
                     with _price_cache_lock:
                         _price_cache[symbol] = (now, price)
                     return price
-        # SILENT_OK: live-trade price fetch fallback; warning logged below before stale fallback
-        except Exception:
-            pass
-        import logging
-        logging.warning("Price fetch failed for %s — position will show stale price", symbol)
+        except (AttributeError, ValueError, TypeError, OSError,
+                ConnectionError, TimeoutError) as _lt_exc:
+            # Live-trade price fetch fallback; warning logged below
+            # before the stale-price fallback. Surface for follow-up.
+            logger.debug(
+                "live-trade price fetch failed for %s: %s: %s",
+                symbol, type(_lt_exc).__name__, _lt_exc,
+            )
+        logger.warning("Price fetch failed for %s — position will show stale price", symbol)
         return 0.0
     return fetch
 

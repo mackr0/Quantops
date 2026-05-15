@@ -1,11 +1,14 @@
 """SQLite trade journal for logging trades, signals, and portfolio snapshots."""
 
+import logging
 import sqlite3
 import json
 from contextlib import closing
 from datetime import datetime, date
 
 import config
+
+logger = logging.getLogger(__name__)
 
 
 def _get_conn(db_path=None):
@@ -380,9 +383,13 @@ def record_wash_cooldown(db_path: str, symbol: str) -> None:
                 (symbol,),
             )
             conn.commit()
-    # SILENT_OK: wash-cooldown marker write; cooldown is best-effort and self-heals on next exit
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _wc_exc:
+        # Wash-cooldown marker write; cooldown is best-effort and
+        # self-heals on next exit. Surface for follow-up.
+        logger.debug(
+            "wash_cooldown marker write failed for %s: %s: %s",
+            symbol, type(_wc_exc).__name__, _wc_exc,
+        )
 
 
 def get_wash_cooldown_symbols(db_path: str, days: int = 30) -> set:
@@ -568,9 +575,13 @@ def _migrate_all_columns(conn):
                     conn.execute(
                         f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"
                     )
-        # SILENT_OK: per-table column ALTER; column may already exist on later schema
-        except Exception:
-            pass
+        except sqlite3.OperationalError as _alt_exc:
+            # Per-table column ALTER loop; column may already exist
+            # on a later schema. Surface for follow-up.
+            logger.debug(
+                "schema migration ALTER on %s: %s: %s",
+                table, type(_alt_exc).__name__, _alt_exc,
+            )
 
     # Phase 5 of pipeline refactor: backfill pipeline_kind for any
     # ai_predictions row that's still NULL after the column was
@@ -612,9 +623,13 @@ def _migrate_all_columns(conn):
                 f"AND predicted_signal IN ({op})",
                 option_signals,
             )
-    # SILENT_OK: pipeline_kind backfill UPDATE; idempotent — next call retries
-    except Exception:
-        pass
+    except sqlite3.OperationalError as _bf_exc:
+        # pipeline_kind backfill UPDATE; idempotent — next call
+        # retries. Surface for follow-up.
+        logger.debug(
+            "pipeline_kind backfill failed: %s: %s",
+            type(_bf_exc).__name__, _bf_exc,
+        )
 
     # Phase 5e tcols lookup — used by both phantom_stop tagging
     # blocks below. Done once to avoid duplicate PRAGMA calls.
@@ -653,9 +668,13 @@ def _migrate_all_columns(conn):
                 "AND pnl IS NOT NULL AND price > 0 AND qty > 0 "
                 "AND ABS((price * qty) - pnl) < 1.0"
             )
-    # SILENT_OK: phantom-stop reconcile data_quality tag; idempotent UPDATE retries next call
-    except Exception:
-        pass
+    except sqlite3.OperationalError as _ph_exc:
+        # phantom-stop reconcile data_quality tag; idempotent
+        # UPDATE retries next call. Surface for follow-up.
+        logger.debug(
+            "phantom-stop reconcile tag UPDATE failed: %s: %s",
+            type(_ph_exc).__name__, _ph_exc,
+        )
 
     # Phase 5e (2026-05-12) — tag the phantom_stop_2026_05_11 incident
     # rows so analytics aggregates exclude them. Pattern: STOCK-tagged
@@ -688,9 +707,13 @@ def _migrate_all_columns(conn):
                 "AND ABS(slippage_pct) > 50 "
                 "AND timestamp < '2026-05-12T00:00:00'"
             )
-    # SILENT_OK: phantom-stop 2026-05-11 data_quality tag; idempotent UPDATE retries next call
-    except Exception:
-        pass
+    except sqlite3.OperationalError as _ph_exc:
+        # phantom-stop 2026-05-11 data_quality tag; idempotent
+        # UPDATE retries next call. Surface for follow-up.
+        logger.debug(
+            "phantom-stop 2026-05-11 tag UPDATE failed: %s: %s",
+            type(_ph_exc).__name__, _ph_exc,
+        )
 
 
 def _migrate_daily_snapshots_unique(conn):
@@ -1169,9 +1192,17 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
                     )
                 except TypeError:
                     current_price = float(price_fetcher(key) or 0)
-            # SILENT_OK: side-aware price-fetcher fallback; current_price falls through to entry-price assumption
-            except Exception:
-                pass
+            except (ValueError, AttributeError, OSError, RuntimeError,
+                    ConnectionError, TimeoutError) as _pf_exc:
+                # Side-aware price-fetcher fallback; current_price
+                # falls through to entry-price assumption below.
+                # Pluggable fetcher contract — broker errors surface
+                # as arbitrary exceptions; broaden to keep callers
+                # whole.
+                logger.debug(
+                    "price_fetcher fallback for %s: %s: %s",
+                    key, type(_pf_exc).__name__, _pf_exc,
+                )
         if current_price <= 0:
             current_price = avg_entry  # fallback: no price change assumed
 
@@ -1949,8 +1980,14 @@ def get_specialist_veto_stats(db_paths, days=7):
                        GROUP BY specialist_name, verdict""",
                     (days,),
                 ).fetchall()
-        # SILENT_OK: per-DB specialist outcomes aggregation; one bad DB shouldn't kill cross-profile reporting
-        except Exception:
+        except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _so_exc:
+            # Per-DB specialist outcomes aggregation loop; one bad
+            # DB shouldn't kill cross-profile reporting. Surface
+            # for follow-up.
+            logger.debug(
+                "specialist_outcomes aggregation failed for %s: %s: %s",
+                db_path, type(_so_exc).__name__, _so_exc,
+            )
             continue
         for row in rows:
             name = row[0]

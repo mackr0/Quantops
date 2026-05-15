@@ -53,9 +53,13 @@ def _ensure_cache_table():
                 )
             """)
             conn.commit()
-    # SILENT_OK: cache schema init; cache writes that fail leave callers in non-cached path
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _ci_exc:
+        # Cache schema init; cache writes that fail leave callers
+        # in non-cached path. Surface for follow-up.
+        logger.warning(
+            "macro_data cache schema init failed: %s: %s",
+            type(_ci_exc).__name__, _ci_exc,
+        )
 
 
 def _get_cached(key, ttl_type):
@@ -71,9 +75,14 @@ def _get_cached(key, ttl_type):
             ).fetchone()
         if row and (time.time() - row[1]) < _CACHE_TTL.get(ttl_type, 3600):
             return json.loads(row[0])
-    # SILENT_OK: cache read fallback; caller fetches from source on miss
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            json.JSONDecodeError, TypeError, ValueError, OSError) as _cr_exc:
+        # Cache read fallback; caller fetches from source on miss.
+        # Surface for follow-up.
+        logger.debug(
+            "macro_data cache read failed for %s: %s: %s",
+            key, type(_cr_exc).__name__, _cr_exc,
+        )
     return None
 
 
@@ -90,9 +99,14 @@ def _set_cached(key, value):
                 (key, json.dumps(value, default=str), time.time())
             )
             conn.commit()
-    # SILENT_OK: cache write fallback; cache miss is acceptable next time
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            TypeError, ValueError, OSError) as _cw_exc:
+        # Cache write fallback; cache miss is acceptable next time.
+        # Surface for follow-up.
+        logger.debug(
+            "macro_data cache write failed for %s: %s: %s",
+            key, type(_cw_exc).__name__, _cw_exc,
+        )
 
 
 def _fred_fetch(series_id, limit=5):
@@ -157,9 +171,14 @@ def get_yield_curve() -> Dict[str, Any]:
                 vals = _fred_fetch(sid, limit=1)
                 if vals:
                     result[key] = round(vals[0], 2)
-            # SILENT_OK: per-series FRED fetch; one bad series shouldn't kill the loop
-            except Exception:
-                pass
+            except (URLError, json.JSONDecodeError, KeyError, ValueError,
+                    TypeError, OSError) as _yf_exc:
+                # Per-series FRED fetch loop; one bad series
+                # shouldn't kill the loop. Surface for follow-up.
+                logger.debug(
+                    "FRED yield-curve fetch failed for series %s: %s: %s",
+                    sid, type(_yf_exc).__name__, _yf_exc,
+                )
 
         if result["rate_10y"] > 0 and result["rate_2y"] > 0:
             spread = result["rate_10y"] - result["rate_2y"]
@@ -226,8 +245,14 @@ def get_etf_flows() -> Dict[str, Dict[str, Any]]:
                     "flow_direction": "inflow" if weekly_flow > 0 else "outflow",
                     "magnitude": magnitude,
                 }
-            # SILENT_OK: per-sector ETF flow; one bad sector shouldn't kill the loop
-            except Exception:
+            except (KeyError, ValueError, AttributeError, TypeError,
+                    IndexError, OSError) as _ef_exc:
+                # Per-sector ETF flow loop; one bad sector shouldn't
+                # kill the loop. Surface for follow-up.
+                logger.debug(
+                    "ETF-flow fetch failed for sector %s (%s): %s: %s",
+                    sector, etf, type(_ef_exc).__name__, _ef_exc,
+                )
                 continue
     except Exception as exc:
         logger.debug("ETF flows fetch failed: %s", exc)
@@ -322,18 +347,28 @@ def get_fred_macro() -> Dict[str, Any]:
                         result["unemployment_trend"] = "rising"
                     elif vals[0] < vals[-1] - 0.2:
                         result["unemployment_trend"] = "falling"
-        # SILENT_OK: unemployment annotation; rest of macro dict still returned
-        except Exception:
-            pass
+        except (URLError, json.JSONDecodeError, KeyError, ValueError,
+                TypeError, IndexError, OSError) as _ur_exc:
+            # Unemployment annotation; rest of macro dict still
+            # returned. Surface for follow-up.
+            logger.debug(
+                "FRED unemployment annotation failed: %s: %s",
+                type(_ur_exc).__name__, _ur_exc,
+            )
 
         # CPI (CPIAUCSL) — compute YoY from 13-month span
         try:
             vals = _fred_fetch("CPIAUCSL", limit=13)
             if vals and len(vals) >= 13:
                 result["cpi_yoy"] = round((vals[0] / vals[12] - 1) * 100, 1)
-        # SILENT_OK: CPI annotation; rest of macro dict still returned
-        except Exception:
-            pass
+        except (URLError, json.JSONDecodeError, KeyError, ValueError,
+                TypeError, IndexError, ZeroDivisionError, OSError) as _cpi_exc:
+            # CPI annotation; rest of macro dict still returned.
+            # Surface for follow-up.
+            logger.debug(
+                "FRED CPI annotation failed: %s: %s",
+                type(_cpi_exc).__name__, _cpi_exc,
+            )
 
         # Consumer Sentiment (UMCSENT) — latest 3
         try:
@@ -345,18 +380,28 @@ def get_fred_macro() -> Dict[str, Any]:
                         result["consumer_sentiment_trend"] = "rising"
                     elif vals[0] < vals[-1] - 2:
                         result["consumer_sentiment_trend"] = "falling"
-        # SILENT_OK: consumer-sentiment annotation; rest of macro dict still returned
-        except Exception:
-            pass
+        except (URLError, json.JSONDecodeError, KeyError, ValueError,
+                TypeError, IndexError, OSError) as _cs_exc:
+            # Consumer-sentiment annotation; rest of macro dict
+            # still returned. Surface for follow-up.
+            logger.debug(
+                "FRED consumer-sentiment annotation failed: %s: %s",
+                type(_cs_exc).__name__, _cs_exc,
+            )
 
         # Initial Jobless Claims (ICSA) — 4-week avg
         try:
             vals = _fred_fetch("ICSA", limit=4)
             if vals:
                 result["initial_claims_4wk_avg"] = round(sum(vals) / len(vals))
-        # SILENT_OK: claims annotation; rest of macro dict still returned
-        except Exception:
-            pass
+        except (URLError, json.JSONDecodeError, KeyError, ValueError,
+                TypeError, IndexError, ZeroDivisionError, OSError) as _cl_exc:
+            # Claims annotation; rest of macro dict still returned.
+            # Surface for follow-up.
+            logger.debug(
+                "FRED initial-claims annotation failed: %s: %s",
+                type(_cl_exc).__name__, _cl_exc,
+            )
 
     except Exception as exc:
         logger.debug("FRED macro fetch failed: %s", exc)
@@ -512,8 +557,13 @@ def get_market_gex_aggregate() -> Dict[str, Any]:
                                     positive_count += 1
                     except (json.JSONDecodeError, TypeError):
                         continue
-            # SILENT_OK: per-symbol GEX aggregation; one bad symbol shouldn't kill the loop
-            except Exception:
+            except (_sq.OperationalError, _sq.DatabaseError, OSError) as _gex_exc:
+                # Per-DB GEX aggregation loop; one bad DB shouldn't
+                # kill the loop. Surface for follow-up.
+                logger.debug(
+                    "GEX aggregation failed for %s: %s: %s",
+                    db_path, type(_gex_exc).__name__, _gex_exc,
+                )
                 continue
 
         if total_count >= 5:

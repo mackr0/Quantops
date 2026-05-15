@@ -128,8 +128,13 @@ def _find_matching_exit_fill(api, symbol: str, qty: float, after_ts: datetime,
             continue
         try:
             filled_qty = float(getattr(o, "filled_qty", 0) or 0)
-        # SILENT_OK: per-order qty parse; skip orders with malformed filled_qty
-        except Exception:
+        except (ValueError, TypeError, AttributeError) as _q_exc:
+            # Per-order filled_qty parse loop; skip orders with
+            # malformed broker response. Surface for follow-up.
+            logger.debug(
+                "reconcile filled_qty parse failed: %s: %s",
+                type(_q_exc).__name__, _q_exc,
+            )
             continue
         if abs(filled_qty - qty) > 0.001:
             continue
@@ -280,8 +285,13 @@ def _all_journal_sell_order_ids(profile_ids: Iterable[int]) -> set:
                 if r[0]:
                     used.add(r[0])
             conn.close()
-        # SILENT_OK: per-DB used-order-id aggregation; one bad DB shouldn't kill cross-profile reconcile
-        except Exception:
+        except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _db_exc:
+            # Per-DB used-order-id aggregation loop; one bad DB
+            # shouldn't kill cross-profile reconcile. Surface for follow-up.
+            logger.debug(
+                "used-order-id aggregation failed for %s: %s: %s",
+                db_path, type(_db_exc).__name__, _db_exc,
+            )
             continue
     return used
 
@@ -338,15 +348,25 @@ def _detect_protective_fill(api, row, used_sell_ids):
             continue
         try:
             filled_qty = float(getattr(order, "filled_qty", 0) or 0)
-        # SILENT_OK: per-order qty parse; skip orders with malformed filled_qty
-        except Exception:
+        except (ValueError, TypeError, AttributeError) as _q_exc:
+            # Per-order filled_qty parse loop; skip orders with
+            # malformed broker response. Surface for follow-up.
+            logger.debug(
+                "reconcile filled_qty parse failed: %s: %s",
+                type(_q_exc).__name__, _q_exc,
+            )
             continue
         if filled_qty <= 0:
             continue
         try:
             fill_price = float(getattr(order, "filled_avg_price", 0) or 0)
-        # SILENT_OK: per-order price parse; skip orders with malformed filled_avg_price
-        except Exception:
+        except (ValueError, TypeError, AttributeError) as _p_exc:
+            # Per-order filled_avg_price parse loop; skip orders
+            # with malformed broker response. Surface for follow-up.
+            logger.debug(
+                "reconcile filled_avg_price parse failed: %s: %s",
+                type(_p_exc).__name__, _p_exc,
+            )
             continue
         if fill_price <= 0:
             continue
@@ -522,8 +542,13 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
             continue
         try:
             broker_filled = float(getattr(order, "filled_qty", 0) or 0)
-        # SILENT_OK: per-row broker filled-qty parse; skip rows with malformed broker response
-        except Exception:
+        except (ValueError, TypeError, AttributeError) as _bq_exc:
+            # Per-row broker filled-qty parse loop; skip rows with
+            # malformed broker response. Surface for follow-up.
+            logger.debug(
+                "broker filled-qty parse failed: %s: %s",
+                type(_bq_exc).__name__, _bq_exc,
+            )
             continue
         broker_status = getattr(order, "status", "")
         journal_qty = float(qty or 0)

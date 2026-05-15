@@ -216,9 +216,14 @@ def analyze_political_climate(ctx=None) -> Dict[str, Any]:
             try:
                 from models import increment_api_usage
                 increment_api_usage(ctx.user_id)
-            # SILENT_OK: API-usage counter is telemetry; political-context AI call already succeeded
-            except Exception:
-                pass
+            except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                    ImportError, AttributeError, OSError) as _u_exc:
+                # API-usage counter is telemetry; political-context
+                # AI call already succeeded. Surface for follow-up.
+                logger.debug(
+                    "political-context increment_api_usage failed: %s: %s",
+                    type(_u_exc).__name__, _u_exc,
+                )
 
         result = json.loads(response_text)
         _set_cache("political_climate", result)

@@ -10,6 +10,11 @@ expiration windows.
 
 from __future__ import annotations
 
+
+import logging
+
+logger = logging.getLogger(__name__)
+
 from typing import Any, Dict, List
 
 
@@ -55,7 +60,13 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
                     f"price {distance:+.1f}% from ${max_pain_strike:.2f} pain strike"
                 ),
             })
-        # SILENT_OK: per-symbol strategy scoring; one bad symbol shouldn't kill the strategy loop
-        except Exception:
+        except (KeyError, ValueError, AttributeError, TypeError,
+                IndexError, ZeroDivisionError, OSError) as _ss_exc:
+            # Per-symbol strategy scoring loop; one bad symbol
+            # shouldn't kill the strategy loop. Surface for follow-up.
+            logger.debug(
+                "%s scoring failed for %s: %s: %s",
+                NAME, symbol, type(_ss_exc).__name__, _ss_exc,
+            )
             continue
     return out

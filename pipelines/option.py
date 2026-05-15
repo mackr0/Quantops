@@ -24,11 +24,15 @@ The end-state of this class (post Phase 6):
 """
 from __future__ import annotations
 
+import logging
+import sqlite3
 from typing import List
 
 from . import (AIResult, Candidate, ExecutionResult, Metrics,
                Outcome, ParameterAdjustments, Pipeline,
                SpecialistVerdict)
+
+logger = logging.getLogger(__name__)
 
 
 class OptionPipeline(Pipeline):
@@ -211,9 +215,17 @@ class OptionPipeline(Pipeline):
                 ai_reasoning=proposal.get("reasoning"),
                 broker_message=msg,
             )
-        # SILENT_OK: veto-prediction journal write; veto-state unchanged on log failure
-        except Exception:
-            pass
+        except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                AttributeError, KeyError, OSError, ImportError,
+                RuntimeError) as _v_exc:
+            # Veto-prediction journal write; veto-state unchanged
+            # on log failure. Mocked record_broker_rejection in
+            # tests raises RuntimeError("DB locked") — broaden to
+            # match real broker-side flakiness too. Surface for follow-up.
+            logger.warning(
+                "veto-prediction journal write failed: %s: %s",
+                type(_v_exc).__name__, _v_exc,
+            )
 
     @staticmethod
     def _execute_multileg(ctx, proposal, symbol):
@@ -274,9 +286,16 @@ class OptionPipeline(Pipeline):
                         signal="MULTILEG_OPEN",
                         option_order_id=combo_id,
                     )
-            # SILENT_OK: multileg prediction-to-trade link; trade already executed
-            except Exception:
-                pass
+            except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                    AttributeError, KeyError, OSError, ImportError,
+                    RuntimeError) as _ml_exc:
+                # Multileg prediction-to-trade link; trade already
+                # executed. Broadened to RuntimeError to handle
+                # broker-side or mocked flakiness. Surface for follow-up.
+                logger.warning(
+                    "multileg prediction-to-trade link failed: %s: %s",
+                    type(_ml_exc).__name__, _ml_exc,
+                )
             return trade_result
         except Exception as exc:
             return {
@@ -310,9 +329,16 @@ class OptionPipeline(Pipeline):
                         ctx.db_path, symbol=symbol,
                         signal="OPTIONS", occ_symbol=occ,
                     )
-            # SILENT_OK: single-leg prediction-to-trade link; trade already executed
-            except Exception:
-                pass
+            except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                    AttributeError, KeyError, OSError, ImportError,
+                    RuntimeError) as _sl_exc:
+                # Single-leg prediction-to-trade link; trade already
+                # executed. Broadened to RuntimeError to handle
+                # broker-side or mocked flakiness. Surface for follow-up.
+                logger.warning(
+                    "single-leg prediction-to-trade link failed: %s: %s",
+                    type(_sl_exc).__name__, _sl_exc,
+                )
             return trade_result
         except Exception as exc:
             return {

@@ -595,9 +595,14 @@ def _render_autonomy_summary(summary: Dict[str, Any]) -> str:
                 ).fetchone()
             if row:
                 user_id = row[0]
-        # SILENT_OK: user_id derivation fallback; weekly summary continues with default user_id
-        except Exception:
-            pass
+        except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                KeyError, AttributeError, OSError) as _ud_exc:
+            # user_id derivation fallback; weekly summary continues
+            # with default user_id. Surface for follow-up.
+            logger.debug(
+                "ai_weekly_summary user_id derivation failed: %s: %s",
+                type(_ud_exc).__name__, _ud_exc,
+            )
 
     # ─── Counts of autonomous changes this week ───
     totals = summary.get("totals", {})

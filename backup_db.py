@@ -62,9 +62,13 @@ def backup_one(src_path: str, dest_path: str) -> bool:
         try:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
-        # SILENT_OK: tmp-file cleanup after backup failure; tmp will be overwritten next attempt
-        except Exception:
-            pass
+        except (OSError, FileNotFoundError) as _tf_exc:
+            # Tmp-file cleanup after backup failure; tmp will be
+            # overwritten next attempt. Surface for follow-up.
+            logger.debug(
+                "backup tmp-file cleanup failed: %s: %s",
+                type(_tf_exc).__name__, _tf_exc,
+            )
         return False
 
 

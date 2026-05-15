@@ -116,12 +116,17 @@ def _any_candidate_has_upcoming_earnings(candidates: List[Dict[str, Any]],
             continue
         try:
             result = check_earnings(sym)
-        # SILENT_OK: per-symbol earnings lookup; covered by inline comment (gate stays open per-symbol)
-        except Exception:
-            # Per-symbol failure shouldn't disable the gate for everyone —
-            # skip this symbol and keep checking. If ALL symbols error,
-            # we return False (gate fires). That's fine: the specialist
-            # had nothing to work with anyway.
+        except (KeyError, ValueError, AttributeError, TypeError,
+                ImportError, OSError, RuntimeError, ConnectionError,
+                TimeoutError) as _en_exc:
+            # Per-symbol earnings lookup; gate stays open per-symbol
+            # on failure (skip this symbol, keep checking). yfinance
+            # rate-limit / network blips surface as RuntimeError /
+            # ConnectionError. Surface for follow-up.
+            logger.debug(
+                "ensemble per-symbol earnings lookup failed for %s: %s: %s",
+                sym, type(_en_exc).__name__, _en_exc,
+            )
             continue
         if result and 0 <= result.get("days_until", 999) <= window_days:
             return True

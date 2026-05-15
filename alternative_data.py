@@ -22,6 +22,7 @@ import time
 import threading
 from contextlib import closing
 from typing import Any, Dict
+from urllib.error import URLError
 from urllib.request import urlopen, Request
 import urllib.parse
 import urllib.request
@@ -67,9 +68,13 @@ def _ensure_cache_table():
                 )
             """)
             conn.commit()
-    # SILENT_OK: cache schema init; cache writes that fail leave callers in non-cached path
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _ci_exc:
+        # Cache schema init; cache writes that fail leave callers
+        # in the non-cached path. Surface for follow-up.
+        logger.warning(
+            "alt_data_cache schema init failed: %s: %s",
+            type(_ci_exc).__name__, _ci_exc,
+        )
 
 
 _table_ensured = False
@@ -88,9 +93,14 @@ def _get_cached(key, ttl_type="insider"):
             ).fetchone()
         if row and (time.time() - row[1]) < _CACHE_TTL.get(ttl_type, 3600):
             return json.loads(row[0])
-    # SILENT_OK: cache read fallback; caller fetches from source on miss
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            json.JSONDecodeError, TypeError, ValueError, OSError) as _cr_exc:
+        # Cache read fallback; caller fetches from source on miss.
+        # Surface for follow-up.
+        logger.debug(
+            "alt_data cache read failed for %s: %s: %s",
+            key, type(_cr_exc).__name__, _cr_exc,
+        )
     return None
 
 
@@ -107,9 +117,14 @@ def _set_cached(key, value):
                 (key, json.dumps(value, default=str), time.time())
             )
             conn.commit()
-    # SILENT_OK: cache write fallback; cache miss is acceptable next time
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            TypeError, ValueError, OSError) as _cw_exc:
+        # Cache write fallback; cache miss is acceptable next time.
+        # Surface for follow-up.
+        logger.debug(
+            "alt_data cache write failed for %s: %s: %s",
+            key, type(_cw_exc).__name__, _cw_exc,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -615,8 +630,14 @@ def get_finra_short_volume(symbol):
                         break
                 if result["date"]:
                     break
-            # SILENT_OK: per-date FINRA short-volume row parse; skip malformed rows
-            except Exception:
+            except (ValueError, IndexError, AttributeError, TypeError,
+                    OSError) as _fr_exc:
+                # Per-date FINRA short-volume row parse loop; skip
+                # malformed rows but surface for follow-up.
+                logger.debug(
+                    "FINRA short-volume row parse failed for %s on %s: %s: %s",
+                    symbol, dt, type(_fr_exc).__name__, _fr_exc,
+                )
                 continue
 
     except Exception as exc:
@@ -692,9 +713,14 @@ def get_dark_pool_volume(symbol):
                 result["ats_trade_count"] = total_trades
                 result["num_venues"] = len(data)
                 result["week_start"] = data[0].get("weekStartDate")
-        # SILENT_OK: ATS volume enrichment; per-symbol info still returned
-        except Exception:
-            pass
+        except (URLError, _json.JSONDecodeError, KeyError, ValueError,
+                TypeError, AttributeError, OSError) as _ats_exc:
+            # ATS volume enrichment; per-symbol info still returned.
+            # Surface for follow-up.
+            logger.debug(
+                "FINRA dark-pool fetch failed for %s: %s: %s",
+                symbol, type(_ats_exc).__name__, _ats_exc,
+            )
 
     except Exception as exc:
         logger.debug("Dark pool volume failed for %s: %s", symbol, exc)
@@ -767,8 +793,13 @@ def get_insider_cluster(symbol):
                 buy_dates.append(date_val)
                 buy_names.add(name)
                 buy_value += value
-            # SILENT_OK: per-row insider-trade parse; skip malformed rows
-            except Exception:
+            except (KeyError, ValueError, AttributeError, TypeError) as _it_exc:
+                # Per-row insider-trade parse loop; skip malformed
+                # rows but surface for follow-up.
+                logger.debug(
+                    "insider-cluster row parse failed for %s: %s: %s",
+                    symbol, type(_it_exc).__name__, _it_exc,
+                )
                 continue
 
         # Check for cluster: 3+ distinct insiders buying within any 14-day window
@@ -839,9 +870,14 @@ def get_analyst_estimates(symbol):
                                 result["eps_revision_direction"] = "up"
                             elif diff_pct < -2:
                                 result["eps_revision_direction"] = "down"
-            # SILENT_OK: EPS-revision enrichment; rest of fundamentals dict still returned
-            except Exception:
-                pass
+            except (KeyError, ValueError, AttributeError, TypeError,
+                    IndexError, ZeroDivisionError) as _eps_exc:
+                # EPS-revision enrichment; rest of fundamentals dict
+                # still returned. Surface for follow-up.
+                logger.debug(
+                    "EPS-revision parse failed for %s: %s: %s",
+                    symbol, type(_eps_exc).__name__, _eps_exc,
+                )
 
         # Revenue estimates
         if revenue_est is not None and hasattr(revenue_est, "empty") and not revenue_est.empty:
@@ -857,9 +893,14 @@ def get_analyst_estimates(symbol):
                             result["revenue_revision_direction"] = "up"
                         elif diff_pct < -2:
                             result["revenue_revision_direction"] = "down"
-            # SILENT_OK: revenue-revision enrichment; rest of fundamentals dict still returned
-            except Exception:
-                pass
+            except (KeyError, ValueError, AttributeError, TypeError,
+                    IndexError, ZeroDivisionError) as _rev_exc:
+                # Revenue-revision enrichment; rest of fundamentals
+                # dict still returned. Surface for follow-up.
+                logger.debug(
+                    "revenue-revision parse failed for %s: %s: %s",
+                    symbol, type(_rev_exc).__name__, _rev_exc,
+                )
 
     except Exception as exc:
         logger.debug("Analyst estimates failed for %s: %s", symbol, exc)
@@ -1049,9 +1090,13 @@ def get_patent_activity(symbol):
                 ticker = yf.Ticker(symbol)
                 info = getattr(ticker, "info", {}) or {}
             company_name = info.get("shortName") or info.get("longName")
-        # SILENT_OK: company-name lookup fallback; symbol-only lookup proceeds without name
-        except Exception:
-            pass
+        except (KeyError, ValueError, AttributeError, TypeError, OSError) as _cn_exc:
+            # Company-name lookup fallback; symbol-only lookup
+            # proceeds without name. Surface for follow-up.
+            logger.debug(
+                "patent company-name lookup failed for %s: %s: %s",
+                symbol, type(_cn_exc).__name__, _cn_exc,
+            )
 
         if not company_name:
             _set_cached(cache_key, result)
@@ -1102,9 +1147,14 @@ def get_patent_activity(symbol):
                     result["velocity_trend"] = "accelerating"
                 elif avg_prior_q > 0 and result["recent_filings_90d"] < avg_prior_q * 0.5:
                     result["velocity_trend"] = "declining"
-        # SILENT_OK: filing-velocity trend annotation; rest of result dict still returned
-        except Exception:
-            pass
+        except (URLError, _json.JSONDecodeError, KeyError, ValueError,
+                AttributeError, TypeError, OSError) as _pf_exc:
+            # Filing-velocity trend annotation; rest of result dict
+            # still returned. Surface for follow-up.
+            logger.debug(
+                "patent filing-velocity lookup failed for %s: %s: %s",
+                symbol, type(_pf_exc).__name__, _pf_exc,
+            )
 
     except Exception as exc:
         logger.debug("Patent activity failed for %s: %s", symbol, exc)
@@ -1431,9 +1481,13 @@ def get_biotech_milestones(symbol: str) -> Dict[str, Any]:
             d = datetime.strptime(pdufa_date, "%Y-%m-%d").date()
             today_et = datetime.now(ZoneInfo("America/New_York")).date()
             result["days_to_pdufa"] = (d - today_et).days
-        # SILENT_OK: PDUFA days-to-event annotation; result still has the date
-        except Exception:
-            pass
+        except (ValueError, TypeError, AttributeError) as _pd_exc:
+            # PDUFA days-to-event annotation; result still has the
+            # date. Surface for follow-up.
+            logger.debug(
+                "PDUFA days-to-event annotation failed for %s: %s: %s",
+                symbol, type(_pd_exc).__name__, _pd_exc,
+            )
 
     if recent_change_rows:
         rc = recent_change_rows[0]
@@ -1456,9 +1510,13 @@ def get_biotech_milestones(symbol: str) -> Dict[str, Any]:
             d = datetime.strptime(adcomm_date, "%Y-%m-%d").date()
             today_et = datetime.now(ZoneInfo("America/New_York")).date()
             result["days_to_adcomm"] = (d - today_et).days
-        # SILENT_OK: AdComm days-to-event annotation; result still has the date
-        except Exception:
-            pass
+        except (ValueError, TypeError, AttributeError) as _ac_exc:
+            # AdComm days-to-event annotation; result still has the
+            # date. Surface for follow-up.
+            logger.debug(
+                "AdComm days-to-event annotation failed for %s: %s: %s",
+                symbol, type(_ac_exc).__name__, _ac_exc,
+            )
 
     _set_cached(cache_key, result)
     return result
@@ -1775,9 +1833,14 @@ def _resolve_wikipedia_article(symbol: str):
         # Response shape: [query, [titles], [descs], [urls]]
         if isinstance(data, list) and len(data) >= 2 and data[1]:
             return data[1][0].replace(" ", "_")
-    # SILENT_OK: Wikipedia title resolution fallback; caller handles None title
-    except Exception:
-        pass
+    except (URLError, json.JSONDecodeError, ValueError, TypeError,
+            AttributeError, OSError) as _wt_exc:
+        # Wikipedia title resolution fallback; caller handles None
+        # title. Surface for follow-up.
+        logger.debug(
+            "Wikipedia title resolution failed for %s: %s: %s",
+            sym, type(_wt_exc).__name__, _wt_exc,
+        )
     return None
 
 
@@ -1959,8 +2022,13 @@ def _fetch_apple_chart(chart_kind: str = "topgrossingapplications",
                 app_id = int(e.get("id", {}).get("attributes", {}).get("im:id") or 0)
                 if app_id:
                     out.append({"rank": i, "name": name, "app_id": app_id})
-            # SILENT_OK: per-entry RSS parse; skip malformed entries
-            except Exception:
+            except (KeyError, ValueError, TypeError, AttributeError) as _ae_exc:
+                # Per-entry RSS parse loop; skip malformed entries
+                # but surface for follow-up.
+                logger.debug(
+                    "Apple RSS entry parse failed (%s): %s: %s",
+                    chart_kind, type(_ae_exc).__name__, _ae_exc,
+                )
                 continue
     except Exception as exc:
         logging.debug("Apple RSS fetch failed (%s): %s", chart_kind, exc)
@@ -1985,9 +2053,13 @@ def _ensure_app_store_history_table():
                 )
             """)
             conn.commit()
-    # SILENT_OK: snapshot-table schema init; writes that fail leave snapshot empty (cron retries)
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _si_exc:
+        # Snapshot-table schema init; writes that fail leave
+        # snapshot empty (cron retries). Surface for follow-up.
+        logger.warning(
+            "app_store_history schema init failed: %s: %s",
+            type(_si_exc).__name__, _si_exc,
+        )
 
 
 def snapshot_app_store_rankings_for_all_tickers() -> int:
@@ -2017,8 +2089,13 @@ def snapshot_app_store_rankings_for_all_tickers() -> int:
                          primary),
                     )
                     written += 1
-                # SILENT_OK: per-row snapshot write; one bad row shouldn't kill the loop
-                except Exception:
+                except (sqlite3.OperationalError, sqlite3.DatabaseError) as _sw_exc:
+                    # Per-row snapshot write loop; one bad row
+                    # shouldn't kill the loop. Surface for follow-up.
+                    logger.debug(
+                        "app_store snapshot row write failed for %s: %s: %s",
+                        ticker, type(_sw_exc).__name__, _sw_exc,
+                    )
                     continue
             conn.commit()
     except Exception as exc:

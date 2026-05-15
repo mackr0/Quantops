@@ -132,8 +132,13 @@ def record_outcomes_for_prediction(
                         "VALUES (?, ?, ?, ?)",
                         (prediction_id, name, verdict, int(raw_conf)),
                     )
-                # SILENT_OK: per-specialist outcome insert; one bad specialist shouldn't kill the loop
-                except Exception:
+                except (sqlite3.OperationalError, sqlite3.DatabaseError) as _so_exc:
+                    # Per-specialist outcome insert loop; one bad
+                    # specialist shouldn't kill the loop. Surface for follow-up.
+                    logger.debug(
+                        "specialist outcome insert failed: %s: %s",
+                        type(_so_exc).__name__, _so_exc,
+                    )
                     continue
             conn.commit()
     except Exception as exc:
@@ -478,8 +483,13 @@ def backfill_from_resolved_predictions(db_path: str) -> int:
             for pred_id, fjson, outcome in rows:
                 try:
                     features = _json.loads(fjson)
-                # SILENT_OK: per-prediction features-json parse; skip malformed feature blobs
-                except Exception:
+                except (json.JSONDecodeError, TypeError, ValueError) as _fp_exc:
+                    # Per-prediction features-json parse loop; skip
+                    # malformed feature blobs. Surface for follow-up.
+                    logger.debug(
+                        "specialist calibration features parse failed: %s: %s",
+                        type(_fp_exc).__name__, _fp_exc,
+                    )
                     continue
                 summary = features.get("ensemble_summary", "")
                 if not summary:
@@ -502,8 +512,13 @@ def backfill_from_resolved_predictions(db_path: str) -> int:
                         )
                         if cur.rowcount > 0:
                             inserted += 1
-                    # SILENT_OK: per-specialist backfill insert; one bad row shouldn't kill the loop
-                    except Exception:
+                    except (sqlite3.OperationalError, sqlite3.DatabaseError) as _bf_exc:
+                        # Per-specialist backfill insert loop; one
+                        # bad row shouldn't kill the loop. Surface for follow-up.
+                        logger.debug(
+                            "specialist backfill insert failed: %s: %s",
+                            type(_bf_exc).__name__, _bf_exc,
+                        )
                         continue
             conn.commit()
     except Exception as exc:

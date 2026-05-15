@@ -153,9 +153,13 @@ def _gather_trades(db_paths) -> List[Dict]:
                 ).fetchall()
                 for r in rows:
                     all_trades.append(dict(r))
-        # SILENT_OK: per-DB trade aggregation; one bad DB shouldn't kill cross-profile metrics
-        except Exception:
-            pass
+        except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _ag_exc:
+            # Per-DB trade aggregation loop; one bad DB shouldn't
+            # kill cross-profile metrics. Surface for follow-up.
+            logger.debug(
+                "trade aggregation failed for %s: %s: %s",
+                db_path, type(_ag_exc).__name__, _ag_exc,
+            )
     all_trades.sort(key=lambda t: t.get("timestamp") or "")
     return all_trades
 
@@ -178,9 +182,13 @@ def _count_open_trades(db_paths) -> int:
                 ).fetchone()
                 if rows:
                     total += int(rows[0] or 0)
-        # SILENT_OK: per-DB open-position count; one bad DB shouldn't kill cross-profile metrics
-        except Exception:
-            pass
+        except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _op_exc:
+            # Per-DB open-position count loop; one bad DB shouldn't
+            # kill cross-profile metrics. Surface for follow-up.
+            logger.debug(
+                "open-position count failed for %s: %s: %s",
+                db_path, type(_op_exc).__name__, _op_exc,
+            )
     return total
 
 
@@ -759,8 +767,13 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
                 for s in snapshots:
                     try:
                         sd = datetime.strptime(s.get("date", ""), "%Y-%m-%d")
-                    # SILENT_OK: per-snapshot date parse; skip malformed snapshot rows
-                    except Exception:
+                    except (ValueError, TypeError) as _sd_exc:
+                        # Per-snapshot date parse loop; skip malformed
+                        # rows but surface for follow-up.
+                        logger.debug(
+                            "drawdown snapshot date parse failed: %s: %s",
+                            type(_sd_exc).__name__, _sd_exc,
+                        )
                         continue
                     if sd > tr and (s.get("equity", 0) or 0) >= peak:
                         max_dd_duration = (sd - pk).days
@@ -769,9 +782,13 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
                 if not recovered:
                     last_d = datetime.strptime(snapshots[-1].get("date", dd_trough_date), "%Y-%m-%d")
                     max_dd_duration = (last_d - pk).days
-            # SILENT_OK: drawdown-duration calc; metric stays None on parse failure
-            except Exception:
-                pass
+            except (ValueError, TypeError, IndexError) as _dd_exc:
+                # Drawdown-duration calc; metric stays None on
+                # parse failure. Surface for follow-up.
+                logger.debug(
+                    "drawdown-duration calc failed: %s: %s",
+                    type(_dd_exc).__name__, _dd_exc,
+                )
 
     result["max_drawdown_pct"] = max_dd_pct
     result["max_drawdown_duration_days"] = max_dd_duration
@@ -1012,9 +1029,13 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
                     "SELECT timestamp, symbol, side FROM trades ORDER BY timestamp ASC"
                 ).fetchall()
                 all_rows.extend(dict(r) for r in rows)
-        # SILENT_OK: per-DB trade-list aggregation; one bad DB shouldn't kill cross-profile metrics
-        except Exception:
-            pass
+        except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _tl_exc:
+            # Per-DB trade-list aggregation loop; one bad DB
+            # shouldn't kill cross-profile metrics. Surface for follow-up.
+            logger.debug(
+                "trade-list aggregation failed for %s: %s: %s",
+                db_path, type(_tl_exc).__name__, _tl_exc,
+            )
     open_positions: Dict[str, str] = {}  # symbol -> timestamp of buy
     for t in all_rows:
         sym = t.get("symbol", "")
@@ -1027,9 +1048,13 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
                 d1 = datetime.strptime(open_positions[sym], "%Y-%m-%d")
                 d2 = datetime.strptime(ts, "%Y-%m-%d")
                 hold_days_list.append(max((d2 - d1).days, 0))
-            # SILENT_OK: per-trade hold-days parse; skip rows with malformed timestamps
-            except Exception:
-                pass
+            except (ValueError, TypeError, KeyError) as _hd_exc:
+                # Per-trade hold-days parse loop; skip rows with
+                # malformed timestamps but surface for follow-up.
+                logger.debug(
+                    "hold-days parse failed for %s: %s: %s",
+                    sym, type(_hd_exc).__name__, _hd_exc,
+                )
             del open_positions[sym]
     result["avg_hold_days"] = round(_mean(hold_days_list), 1) if hold_days_list else 0.0
 
@@ -1206,16 +1231,26 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
         for i in range(len(sorted_days)):
             try:
                 start_d = datetime.strptime(sorted_days[i], "%Y-%m-%d")
-            # SILENT_OK: per-day rolling-window parse; skip malformed timestamp rows
-            except Exception:
+            except (ValueError, TypeError) as _sp_exc:
+                # Per-day rolling-window outer parse loop; skip
+                # malformed rows but surface for follow-up.
+                logger.debug(
+                    "rolling-window outer parse failed for %s: %s: %s",
+                    sorted_days[i], type(_sp_exc).__name__, _sp_exc,
+                )
                 continue
             window_pnl = 0
             end_d_str = sorted_days[i]
             for j in range(i, len(sorted_days)):
                 try:
                     cur_d = datetime.strptime(sorted_days[j], "%Y-%m-%d")
-                # SILENT_OK: per-day window inner parse; skip malformed timestamp rows
-                except Exception:
+                except (ValueError, TypeError) as _ip_exc:
+                    # Per-day rolling-window inner parse loop; skip
+                    # malformed rows but surface for follow-up.
+                    logger.debug(
+                        "rolling-window inner parse failed for %s: %s: %s",
+                        sorted_days[j], type(_ip_exc).__name__, _ip_exc,
+                    )
                     continue
                 if (cur_d - start_d).days > n_days:
                     break
@@ -1392,9 +1427,14 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
                     all_fills_magnitude += (
                         s.get("total_slippage_magnitude", 0) or 0
                     )
-        # SILENT_OK: per-symbol slippage-fill aggregation; one bad symbol shouldn't kill totals
-        except Exception:
-            pass
+        except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                KeyError, TypeError, ValueError, OSError) as _sl_exc:
+            # Per-DB slippage aggregation loop; one bad DB shouldn't
+            # kill totals. Surface for follow-up.
+            logger.debug(
+                "slippage-fill aggregation failed for %s: %s: %s",
+                db_path, type(_sl_exc).__name__, _sl_exc,
+            )
 
     result["slippage_avg_pct"] = (
         round(weighted_pct_sum / all_fills_count, 4) if all_fills_count > 0 else 0.0

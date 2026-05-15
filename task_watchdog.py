@@ -183,7 +183,11 @@ def summary(db_path: str, hours: int = 24) -> Dict[str, int]:
             ).fetchall()
         for status, n in rows:
             counts[status] = int(n)
-    # SILENT_OK: task-status counts read; counts dict stays empty (caller treats as no data)
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _ts_exc:
+        # Task-status counts read; counts dict stays empty (caller
+        # treats as no data). Surface for follow-up.
+        logger.debug(
+            "task_watchdog status counts read failed: %s: %s",
+            type(_ts_exc).__name__, _ts_exc,
+        )
     return counts

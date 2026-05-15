@@ -115,8 +115,13 @@ def _get_recent_adjustment(profile_id, parameter_name, days=3):
             ts = datetime.fromisoformat(entry["timestamp"])
             if ts >= cutoff and entry["parameter_name"] == parameter_name:
                 return entry
-        # SILENT_OK: per-entry timestamp parse; skip malformed history rows.
-        except Exception:
+        except (KeyError, ValueError, TypeError) as _ts_exc:
+            # Per-entry parse over a history list; skip malformed
+            # rows but surface the data-quality issue at DEBUG.
+            logger.debug(
+                "tuning history row skipped (bad timestamp): %s: %s",
+                type(_ts_exc).__name__, _ts_exc,
+            )
             continue
     return None
 
@@ -167,8 +172,14 @@ def _build_cross_profile_insights(user_id, current_profile_id, current_db_path):
 
         try:
             conn = _get_conn(db)
-        # SILENT_OK: per-profile DB open; skip the profile if its DB is unavailable.
-        except Exception:
+        except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                OSError) as _db_exc:
+            # Per-profile DB open; skip the profile if its DB is
+            # unavailable but surface for follow-up.
+            logger.debug(
+                "skipping profile %s in cross-profile insights, DB open failed: %s: %s",
+                pid, type(_db_exc).__name__, _db_exc,
+            )
             continue
 
         try:
@@ -236,9 +247,12 @@ def _build_cross_profile_insights(user_id, current_profile_id, current_db_path):
         finally:
             try:
                 conn.close()
-            # SILENT_OK: cleanup close; conn may already be closed.
-            except Exception:
-                pass
+            except sqlite3.ProgrammingError as _cl_exc:
+                # Cleanup close — conn may already be closed.
+                logger.debug(
+                    "cross-profile insights conn close: %s: %s",
+                    type(_cl_exc).__name__, _cl_exc,
+                )
 
     # Need 2+ profiles with enough data
     if len(profile_stats) < 2:
@@ -387,9 +401,12 @@ def get_symbol_reputation(db_path, min_predictions=3):
     finally:
         try:
             conn.close()
-        # SILENT_OK: cleanup close; conn may already be closed.
-        except Exception:
-            pass
+        except sqlite3.ProgrammingError as _cl_exc:
+            # Cleanup close — conn may already be closed.
+            logger.debug(
+                "self_tuning conn close: %s: %s",
+                type(_cl_exc).__name__, _cl_exc,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -487,9 +504,12 @@ def _build_trade_performance_context(db_path):
     finally:
         try:
             conn.close()
-        # SILENT_OK: cleanup close; conn may already be closed.
-        except Exception:
-            pass
+        except sqlite3.ProgrammingError as _cl_exc:
+            # Cleanup close — conn may already be closed.
+            logger.debug(
+                "self_tuning conn close: %s: %s",
+                type(_cl_exc).__name__, _cl_exc,
+            )
 
 
 def _get_track_record_by_direction(conn):
@@ -525,9 +545,14 @@ def _get_track_record_by_direction(conn):
             wr = (wins / total * 100) if total > 0 else 0.0
             out[ptype] = {"wins": wins, "losses": losses,
                           "total": total, "win_rate": wr}
-    # SILENT_OK: per-direction breakdown is enrichment; aggregate stats still surface.
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            KeyError, ValueError, TypeError) as _br_exc:
+        # Per-direction breakdown is enrichment; aggregate stats
+        # still surface. Surface for follow-up.
+        logger.debug(
+            "per-direction breakdown failed: %s: %s",
+            type(_br_exc).__name__, _br_exc,
+        )
     return out
 
 
@@ -553,9 +578,13 @@ def build_concise_context(ctx, symbol=None):
         if regime and regime.get("regime", "unknown") != "unknown":
             vix = regime.get("vix", 0)
             lines.append(f"MARKET: {regime['regime'].upper()} (VIX {vix:.0f})")
-    # SILENT_OK: market regime is enrichment; concise context skips line on failure.
-    except Exception:
-        pass
+    except (ImportError, KeyError, ValueError, AttributeError,
+            TypeError, OSError) as _reg_exc:
+        # Concise context skips line on failure. Surface for follow-up.
+        logger.debug(
+            "market regime line skipped in concise context: %s: %s",
+            type(_reg_exc).__name__, _reg_exc,
+        )
 
     # 2. Stock-specific history (1 line)
     if symbol and db:
@@ -568,9 +597,13 @@ def build_concise_context(ctx, symbol=None):
                     f"{r['wins']}W/{r['losses']}L "
                     f"({r['win_rate']:.0f}% win rate)"
                 )
-        # SILENT_OK: per-symbol reputation is enrichment; concise context skips line on failure.
-        except Exception:
-            pass
+        except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                KeyError, ValueError, TypeError) as _rep_exc:
+            # Concise context skips line on failure. Surface for follow-up.
+            logger.debug(
+                "per-symbol reputation line skipped in concise context: %s: %s",
+                type(_rep_exc).__name__, _rep_exc,
+            )
 
     # 3. Overall win rate (1 line)
     if db:
@@ -619,9 +652,13 @@ def build_concise_context(ctx, symbol=None):
                                 )
                         if parts:
                             lines.append("BY DIRECTION: " + " | ".join(parts))
-        # SILENT_OK: overall WR enrichment for concise context; AI prompt continues without it.
-        except Exception:
-            pass
+        except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                ImportError, KeyError, ValueError, TypeError) as _wr_exc:
+            # AI prompt continues without overall WR. Surface for follow-up.
+            logger.debug(
+                "overall WR line skipped in concise context: %s: %s",
+                type(_wr_exc).__name__, _wr_exc,
+            )
 
     # 4. Earnings warning (1 line, only if imminent)
     if symbol:
@@ -632,9 +669,13 @@ def build_concise_context(ctx, symbol=None):
                 lines.append(
                     f"EARNINGS: {symbol} reports in {e['days_until']} days. High uncertainty."
                 )
-        # SILENT_OK: earnings warning is enrichment; concise context skips line on failure.
-        except Exception:
-            pass
+        except (ImportError, KeyError, ValueError, AttributeError,
+                TypeError, OSError) as _ew_exc:
+            # Concise context skips line on failure. Surface for follow-up.
+            logger.debug(
+                "earnings line skipped in concise context: %s: %s",
+                type(_ew_exc).__name__, _ew_exc,
+            )
 
     return "\n".join(lines)
 
@@ -952,9 +993,12 @@ def build_performance_context(ctx, symbol=None, db_path=None):
     finally:
         try:
             conn.close()
-        # SILENT_OK: cleanup close; conn may already be closed.
-        except Exception:
-            pass
+        except sqlite3.ProgrammingError as _cl_exc:
+            # Cleanup close — conn may already be closed.
+            logger.debug(
+                "self_tuning conn close: %s: %s",
+                type(_cl_exc).__name__, _cl_exc,
+            )
 
 
 def _build_time_context(db_path):
@@ -1018,8 +1062,13 @@ def _build_time_context(db_path):
                 buckets[bucket]["total"] += 1
                 if r["actual_outcome"] == "win":
                     buckets[bucket]["wins"] += 1
-            # SILENT_OK: per-row timestamp parse; skip malformed prediction rows.
-            except Exception:
+            except (KeyError, ValueError, TypeError) as _ts_exc:
+                # Per-row parse over a prediction list; skip
+                # malformed rows but surface data quality at DEBUG.
+                logger.debug(
+                    "TOD perf bucket skipped row (bad timestamp): %s: %s",
+                    type(_ts_exc).__name__, _ts_exc,
+                )
                 continue
 
         # Check if we have enough data: 5+ predictions in at least 2 buckets
@@ -1055,9 +1104,12 @@ def _build_time_context(db_path):
     finally:
         try:
             conn.close()
-        # SILENT_OK: cleanup close; conn may already be closed.
-        except Exception:
-            pass
+        except sqlite3.ProgrammingError as _cl_exc:
+            # Cleanup close — conn may already be closed.
+            logger.debug(
+                "self_tuning conn close: %s: %s",
+                type(_cl_exc).__name__, _cl_exc,
+            )
 
 
 def _build_lessons_learned(profile_id):
@@ -1364,9 +1416,12 @@ def get_auto_adjustments(ctx, db_path=None):
     finally:
         try:
             conn.close()
-        # SILENT_OK: cleanup close; conn may already be closed.
-        except Exception:
-            pass
+        except sqlite3.ProgrammingError as _cl_exc:
+            # Cleanup close — conn may already be closed.
+            logger.debug(
+                "self_tuning conn close: %s: %s",
+                type(_cl_exc).__name__, _cl_exc,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1837,9 +1892,12 @@ def apply_auto_adjustments(ctx, db_path=None):
     finally:
         try:
             conn.close()
-        # SILENT_OK: cleanup close; conn may already be closed.
-        except Exception:
-            pass
+        except sqlite3.ProgrammingError as _cl_exc:
+            # Cleanup close — conn may already be closed.
+            logger.debug(
+                "self_tuning conn close: %s: %s",
+                type(_cl_exc).__name__, _cl_exc,
+            )
 
 
 def _cast_param_value(param_name, value_str):
@@ -2848,8 +2906,13 @@ def _optimize_avoid_earnings_days(conn, ctx, profile_id, user_id,
     for fjson, outcome in rows:
         try:
             f = _json.loads(fjson)
-        # SILENT_OK: per-row JSON parse; skip malformed feature blobs.
-        except Exception:
+        except (TypeError, ValueError, _json.JSONDecodeError) as _jp_exc:
+            # Per-row parse over a feature-blob list; skip malformed
+            # rows but surface data-quality issue at DEBUG.
+            logger.debug(
+                "earnings-window scan skipped row, bad features_json: %s: %s",
+                type(_jp_exc).__name__, _jp_exc,
+            )
             continue
         d2e = f.get("days_to_earnings")
         if d2e is None or d2e < 0:
@@ -2955,8 +3018,13 @@ def _optimize_skip_first_minutes(conn, ctx, profile_id, user_id,
             ts = _dt.fromisoformat(ts_iso.replace("Z", "+00:00"))
             if ts.tzinfo is not None:
                 ts = ts.replace(tzinfo=None)
-        # SILENT_OK: per-row timestamp parse; skip malformed prediction rows.
-        except Exception:
+        except (AttributeError, ValueError, TypeError) as _ts_exc:
+            # Per-row parse over a prediction list; skip malformed
+            # rows but surface data quality issue at DEBUG.
+            logger.debug(
+                "early-close window scan skipped row (bad ts): %s: %s",
+                type(_ts_exc).__name__, _ts_exc,
+            )
             continue
         # Market open in UTC = 13:30 (during DST; 14:30 in winter).
         # Use 13:30 as the canonical anchor — drift of 1 hour over
@@ -3053,8 +3121,13 @@ def _bucket_by_feature(conn, feature_name):
     for r in rows:
         try:
             f = _j.loads(r["features_json"])
-        # SILENT_OK: per-row JSON parse; skip malformed feature blobs.
-        except Exception:
+        except (TypeError, ValueError, _j.JSONDecodeError) as _jp_exc:
+            # Per-row parse over a feature-blob list; skip malformed
+            # rows but surface data-quality issue at DEBUG.
+            logger.debug(
+                "feature-iter skipped row, bad features_json: %s: %s",
+                type(_jp_exc).__name__, _jp_exc,
+            )
             continue
         v = f.get(feature_name)
         if v is None:
@@ -4147,8 +4220,14 @@ def _optimize_fast_lane_retirement(conn, ctx, profile_id, user_id,
                 predictions_resolved=resolved,
             )
             actions.append(f"Restored {st} (14d aged)")
-        # SILENT_OK: per-strategy restore; one failed restore shouldn't kill the loop.
-        except Exception:
+        except (ImportError, sqlite3.OperationalError, sqlite3.DatabaseError,
+                AttributeError, KeyError, OSError) as _rs_exc:
+            # Per-strategy restore loop; one failed restore shouldn't
+            # kill the loop. Surface for follow-up.
+            logger.debug(
+                "fast_lane restore failed for %s: %s: %s",
+                st, type(_rs_exc).__name__, _rs_exc,
+            )
             continue
 
     # --- DEPRECATE strategies with rolling 10-trade wr < 25%
@@ -4197,8 +4276,13 @@ def _optimize_fast_lane_retirement(conn, ctx, profile_id, user_id,
                 "ORDER BY resolved_at DESC, id DESC LIMIT 10",
                 (st,),
             ).fetchall()
-        # SILENT_OK: per-strategy lookup; one bad query shouldn't kill the loop.
-        except Exception:
+        except (sqlite3.OperationalError, sqlite3.DatabaseError) as _ls_exc:
+            # Per-strategy last-10 lookup loop; one bad query
+            # shouldn't kill the loop. Surface for follow-up.
+            logger.debug(
+                "fast_lane last10 lookup failed for %s: %s: %s",
+                st, type(_ls_exc).__name__, _ls_exc,
+            )
             continue
         if len(last10) < 10:
             continue
@@ -4227,8 +4311,14 @@ def _optimize_fast_lane_retirement(conn, ctx, profile_id, user_id,
                 predictions_resolved=resolved,
             )
             actions.append(f"Deprecated {st} (rolling-10 wr {wr:.0f}%)")
-        # SILENT_OK: per-strategy deprecation; one failed call shouldn't kill the loop.
-        except Exception:
+        except (ImportError, sqlite3.OperationalError, sqlite3.DatabaseError,
+                AttributeError, KeyError, OSError) as _dp_exc:
+            # Per-strategy deprecation loop; one failed call
+            # shouldn't kill the loop. Surface for follow-up.
+            logger.debug(
+                "fast_lane deprecation failed for %s: %s: %s",
+                st, type(_dp_exc).__name__, _dp_exc,
+            )
             continue
 
     if not actions:
@@ -4333,8 +4423,14 @@ def _optimize_stop_out_blacklist(conn, ctx, profile_id, user_id,
                     win_rate_at_change=overall_wr,
                     predictions_resolved=resolved,
                 )
-            # SILENT_OK: per-symbol audit log; one failed write shouldn't kill the loop.
-            except Exception:
+            except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                    OSError) as _au_exc:
+                # Per-symbol audit-log loop; one failed write
+                # shouldn't kill the loop. Surface for follow-up.
+                logger.debug(
+                    "stop_out_blacklist audit log write failed for %s: %s: %s",
+                    sym_u, type(_au_exc).__name__, _au_exc,
+                )
                 continue
     except Exception:
         return None
@@ -4504,8 +4600,13 @@ def _optimize_skip_first_minutes_slippage(conn, ctx, profile_id, user_id,
         try:
             hh, mm = int(tod[:2]), int(tod[3:5])
             minute_of_day = hh * 60 + mm
-        # SILENT_OK: per-row tod parse; skip malformed timestamp rows.
-        except Exception:
+        except (ValueError, TypeError, IndexError) as _td_exc:
+            # Per-row TOD parse loop; skip malformed timestamps but
+            # surface data-quality issue at DEBUG.
+            logger.debug(
+                "first-minutes-slip scan skipped row (bad ts): %s: %s",
+                type(_td_exc).__name__, _td_exc,
+            )
             continue
         if 9 * 60 + 30 <= minute_of_day <= 9 * 60 + 45:
             first_15.append(abs(float(slip)))
@@ -4769,8 +4870,13 @@ def _optimize_tod_overrides(conn, ctx, profile_id, user_id,
                 continue
             minutes = dt_et.hour * 60 + dt_et.minute
             bucket = _bucket_for_minute(minutes)
-        # SILENT_OK: per-row timestamp parse; skip malformed prediction rows.
-        except Exception:
+        except (AttributeError, ValueError, TypeError) as _ts_exc:
+            # Per-row TOD bucketing loop; skip malformed timestamps
+            # but surface data quality issue at DEBUG.
+            logger.debug(
+                "TOD override scan skipped row (bad ts): %s: %s",
+                type(_ts_exc).__name__, _ts_exc,
+            )
             continue
         if not bucket:
             continue
@@ -5098,9 +5204,14 @@ def _optimize_commission_strategy(conn, ctx, profile_id, user_id,
                 f"(detected {len(gap_rows)} no-strategy winners in last 30d)",
                 user_id, _COMMISSION_EST_USD,
             )
-    # SILENT_OK: cost-gate import failure falls open — strategy generation proceeds.
-    except Exception:
-        pass
+    except (ImportError, AttributeError, TypeError) as _cg_exc:
+        # Cost-gate import failure falls open — strategy generation
+        # proceeds. Surface for follow-up so we don't quietly lose
+        # spend visibility.
+        logger.warning(
+            "cost-gate check failed for commission_strategy, falling open: %s: %s",
+            type(_cg_exc).__name__, _cg_exc,
+        )
 
     # Build a focused brief describing the gap.
     sample_symbols = [r["symbol"] for r in gap_rows[:5]]
@@ -5252,9 +5363,14 @@ def _optimize_prompt_layout(conn, ctx, profile_id, user_id,
                     f"{current} to {new}",
                     user_id, cost_delta,
                 )
-        # SILENT_OK: cost-gate import failure falls open — rotation proceeds.
-        except Exception:
-            pass
+        except (ImportError, AttributeError, TypeError) as _cg_exc:
+            # Cost-gate import failure falls open — rotation
+            # proceeds. Surface for follow-up so spend visibility
+            # isn't silently dropped.
+            logger.warning(
+                "cost-gate check failed for prompt-rotate, falling open: %s: %s",
+                type(_cg_exc).__name__, _cg_exc,
+            )
 
     set_verbosity(profile_id, section, new)
     from models import log_tuning_change
@@ -5307,8 +5423,13 @@ def _optimize_signal_weights(conn, ctx, profile_id, user_id,
     for r in rows:
         try:
             f = _j.loads(r["features_json"])
-        # SILENT_OK: per-row JSON parse; skip malformed feature blobs.
-        except Exception:
+        except (TypeError, ValueError, _j.JSONDecodeError) as _jp_exc:
+            # Per-row parse over a feature-blob list; skip malformed
+            # rows but surface data-quality issue at DEBUG.
+            logger.debug(
+                "weight-tuning skipped row, bad features_json: %s: %s",
+                type(_jp_exc).__name__, _jp_exc,
+            )
             continue
         feature_rows.append((f, r["actual_outcome"]))
 
@@ -5325,8 +5446,13 @@ def _optimize_signal_weights(conn, ctx, profile_id, user_id,
         for feats, outcome in feature_rows:
             try:
                 active = bool(predicate(feats))
-            # SILENT_OK: per-feature predicate eval; skip rows where the predicate doesn't apply.
-            except Exception:
+            except (KeyError, TypeError, ValueError, AttributeError) as _pred_exc:
+                # Per-feature predicate eval; skip rows where the
+                # predicate doesn't apply but surface for follow-up.
+                logger.debug(
+                    "weight-tuning predicate eval skipped row (%s): %s: %s",
+                    sig_name, type(_pred_exc).__name__, _pred_exc,
+                )
                 continue
             if active:
                 present += 1
@@ -5438,8 +5564,13 @@ def _optimize_maga_mode(conn, ctx, profile_id, user_id, overall_wr, resolved):
         try:
             import json as _j
             feats = _j.loads(r["features_json"]) if r["features_json"] else {}
-        # SILENT_OK: per-row JSON parse; skip malformed feature blobs.
-        except Exception:
+        except (TypeError, ValueError, _j.JSONDecodeError) as _jp_exc:
+            # Per-row parse over a feature-blob list; skip malformed
+            # rows but surface data-quality issue at DEBUG.
+            logger.debug(
+                "maga-mode scan skipped row, bad features_json: %s: %s",
+                type(_jp_exc).__name__, _jp_exc,
+            )
             continue
         if feats.get("political_context") or feats.get("maga_mode"):
             on_total += 1
@@ -5579,9 +5710,12 @@ def _analyze_failure_patterns(db_path):
     finally:
         try:
             conn.close()
-        # SILENT_OK: cleanup close; conn may already be closed.
-        except Exception:
-            pass
+        except sqlite3.ProgrammingError as _cl_exc:
+            # Cleanup close — conn may already be closed.
+            logger.debug(
+                "self_tuning conn close: %s: %s",
+                type(_cl_exc).__name__, _cl_exc,
+            )
 
 
 def get_batch_context_data(ctx, symbols=None):

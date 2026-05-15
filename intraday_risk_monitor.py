@@ -29,6 +29,7 @@ is active. Halts auto-clear after 60 minutes if no fresh alert.
 from __future__ import annotations
 
 import logging
+import sqlite3
 import time
 from contextlib import closing
 from dataclasses import dataclass
@@ -283,9 +284,13 @@ def get_active_risk_halt(db_path: str) -> Optional[Dict[str, Any]]:
             with closing(_get_conn(db_path)) as conn:
                 conn.execute("DELETE FROM intraday_risk_halt WHERE id=1")
                 conn.commit()
-        # SILENT_OK: stale-halt cleanup write; halt state will re-evaluate on next read
-        except Exception:
-            pass
+        except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _sh_exc:
+            # Stale-halt cleanup write; halt state will re-evaluate
+            # on next read. Surface for follow-up.
+            logger.warning(
+                "stale-halt cleanup write failed: %s: %s",
+                type(_sh_exc).__name__, _sh_exc,
+            )
         return None
 
     if row["action"] in ("pass", None):
@@ -314,6 +319,9 @@ def clear_risk_halt(db_path: str) -> None:
         with closing(_get_conn(db_path)) as conn:
             conn.execute("DELETE FROM intraday_risk_halt WHERE id=1")
             conn.commit()
-    # SILENT_OK: halt clear write; next read re-evaluates
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _hc_exc:
+        # Halt clear write; next read re-evaluates. Surface for follow-up.
+        logger.warning(
+            "halt clear write failed: %s: %s",
+            type(_hc_exc).__name__, _hc_exc,
+        )

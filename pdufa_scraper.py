@@ -296,8 +296,14 @@ def sync_pdufa_events_to_altdata_db(
                          e.get("parser_version", "edgar_8k_v1")),
                     )
                     written += 1
-                # SILENT_OK: per-event PDUFA insert; one bad event shouldn't kill the scrape loop
-                except Exception:
+                except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                        KeyError, ValueError, TypeError) as _pi_exc:
+                    # Per-event PDUFA insert loop; one bad event
+                    # shouldn't kill the scrape. Surface for follow-up.
+                    logger.debug(
+                        "PDUFA event insert failed: %s: %s",
+                        type(_pi_exc).__name__, _pi_exc,
+                    )
                     continue
             conn.commit()
     except Exception as exc:
@@ -904,8 +910,14 @@ def sync_adcomm_events_to_altdata_db(
                          e.get("source_url", ""), "edgar_8k_v1"),
                     )
                     written += 1
-                # SILENT_OK: per-event AdComm insert; one bad event shouldn't kill the scrape loop
-                except Exception:
+                except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                        KeyError, ValueError, TypeError) as _ai_exc:
+                    # Per-event AdComm insert loop; one bad event
+                    # shouldn't kill the scrape. Surface for follow-up.
+                    logger.debug(
+                        "AdComm event insert failed: %s: %s",
+                        type(_ai_exc).__name__, _ai_exc,
+                    )
                     continue
             conn.commit()
     except Exception as exc:

@@ -18,6 +18,7 @@ our cycle timing. Fills land at the stop price (or near it on gaps).
 from __future__ import annotations
 
 import logging
+import sqlite3
 from contextlib import closing
 from typing import Optional
 
@@ -348,9 +349,14 @@ def ensure_protective_stops(api, positions, ctx, db_path,
                                    if entry_price > 0 and cur_price > 0 else 0)
                     if conviction_tp_skip(symbol, pct_change):
                         continue
-                # SILENT_OK: conviction-TP skip eval; falls through to standard SL/TP placement
-                except Exception:
-                    pass
+                except (ImportError, AttributeError, KeyError, ValueError,
+                        TypeError) as _ct_exc:
+                    # Conviction-TP skip eval; falls through to
+                    # standard SL/TP placement. Surface for follow-up.
+                    logger.debug(
+                        "conviction-TP skip eval failed: %s: %s",
+                        type(_ct_exc).__name__, _ct_exc,
+                    )
 
             sl_pct = sl_pct_short if is_short else sl_pct_long
 
@@ -400,9 +406,13 @@ def ensure_protective_stops(api, positions, ctx, db_path,
     finally:
         try:
             conn.close()
-        # SILENT_OK: finally-block conn cleanup; conn may already be closed
-        except Exception:
-            pass
+        except sqlite3.ProgrammingError as _cl_exc:
+            # Finally-block conn cleanup; conn may already be
+            # closed. Surface for follow-up.
+            logger.debug(
+                "bracket_orders conn close: %s: %s",
+                type(_cl_exc).__name__, _cl_exc,
+            )
 
 
 def _cancel_stale_other_orders(api, conn, row, kinds):

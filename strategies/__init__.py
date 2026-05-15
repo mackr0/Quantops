@@ -22,8 +22,11 @@ and are picked up by `discover_strategies()` without any edit to this file.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Callable, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # Importable strategy modules. Each module must define:
@@ -86,8 +89,14 @@ def discover_strategies(market_type: str) -> List[Any]:
     for mod_path in STRATEGY_MODULES + _auto_strategy_modules():
         try:
             mod = importlib.import_module(mod_path)
-        # SILENT_OK: per-module import; one bad strategy module shouldn't kill registry load
-        except Exception:
+        except (ImportError, AttributeError, SyntaxError) as _imp_exc:
+            # Per-module import loop; one bad strategy module
+            # shouldn't kill registry load. Surface for follow-up
+            # so a broken strategy file doesn't quietly disappear.
+            logger.warning(
+                "strategy module %s failed to import: %s: %s",
+                mod_path, type(_imp_exc).__name__, _imp_exc,
+            )
             continue
         applicable = getattr(mod, "APPLICABLE_MARKETS", [])
         if "*" in applicable or market_type in applicable:
@@ -120,9 +129,13 @@ def get_active_strategies(market_type: str, db_path: Optional[str] = None) -> Li
         try:
             from alpha_decay import list_deprecated
             deprecated = {d["strategy_type"] for d in list_deprecated(db_path)}
-        # SILENT_OK: deprecated-strategy lookup; auto_status step below proceeds with empty set
-        except Exception:
-            pass
+        except (ImportError, KeyError, AttributeError, OSError) as _dep_exc:
+            # Deprecated-strategy lookup; auto_status step below
+            # proceeds with empty set. Surface for follow-up.
+            logger.debug(
+                "deprecated-strategy lookup failed: %s: %s",
+                type(_dep_exc).__name__, _dep_exc,
+            )
         auto_status = _auto_strategy_statuses(db_path)
 
     active = []

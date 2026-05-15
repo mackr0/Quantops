@@ -30,10 +30,13 @@ Markets: equities only. Crypto has no comparable filings system.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
+
+logger = logging.getLogger(__name__)
 
 
 NAME = "catalyst_filing_short"
@@ -94,8 +97,13 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
             filed_date = r["filed_date"]
             try:
                 filing_dt = datetime.strptime(filed_date, "%Y-%m-%d").date()
-            # SILENT_OK: per-row date parse; skip rows with malformed filed_date
-            except Exception:
+            except (ValueError, TypeError) as _fd_exc:
+                # Per-row date parse loop; skip rows with malformed
+                # filed_date but surface for follow-up.
+                logger.debug(
+                    "%s filed_date parse failed for %s: %s: %s",
+                    NAME, symbol, type(_fd_exc).__name__, _fd_exc,
+                )
                 continue
 
             # Find the bar closest to filing date
@@ -112,9 +120,14 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
                                      <= filing_dt.isoformat()]
                     if len(matching) > 0:
                         ref_close = float(matching["close"].iloc[-1])
-            # SILENT_OK: per-row reference-bar lookup; falls through to 5-bar proxy
-            except Exception:
-                pass
+            except (KeyError, ValueError, AttributeError, TypeError,
+                    IndexError) as _rb_exc:
+                # Per-row reference-bar lookup; falls through to
+                # 5-bar proxy. Surface for follow-up.
+                logger.debug(
+                    "%s reference-bar lookup failed for %s: %s: %s",
+                    NAME, symbol, type(_rb_exc).__name__, _rb_exc,
+                )
             if ref_close is None:
                 # Fall back to "5 bars ago" as a rough proxy
                 ref_close = float(bars["close"].iloc[-5]) if len(bars) >= 5 else None
@@ -150,8 +163,14 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
                     f"(${ref_close:.2f}→${close_now:.2f})"
                 ),
             })
-        # SILENT_OK: per-row catalyst evaluation; one bad row shouldn't kill the strategy
-        except Exception:
+        except (KeyError, ValueError, AttributeError, TypeError,
+                IndexError, OSError) as _ce_exc:
+            # Per-row catalyst evaluation loop; one bad row
+            # shouldn't kill the strategy. Surface for follow-up.
+            logger.debug(
+                "%s catalyst evaluation failed: %s: %s",
+                NAME, type(_ce_exc).__name__, _ce_exc,
+            )
             continue
 
     return out

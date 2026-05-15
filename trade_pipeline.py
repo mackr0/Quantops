@@ -17,8 +17,11 @@ See ROADMAP.md for the broader quant fund evolution context.
 
 import json
 import logging
+import sqlite3
 from typing import Any, Dict, List, Tuple
 from client import get_api, get_account_info, get_positions
+
+logger = logging.getLogger(__name__)
 from portfolio_manager import check_portfolio_constraints, check_drawdown, calculate_atr_stops
 from journal import init_db, log_trade, log_signal
 from strategy_router import run_strategy
@@ -166,9 +169,13 @@ def _get_shared_political_context(ctx):
             try:
                 _cache_put("political", "global", result,
                            bucket_seconds=1800)
-            # SILENT_OK: cache-write failure is acceptable; in-memory L1 still has the result.
-            except Exception:
-                pass
+            except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                    TypeError, ValueError) as exc:
+                logger.warning(
+                    "political-context cache write failed: %s: %s "
+                    "(in-memory L1 still has the result)",
+                    type(exc).__name__, exc,
+                )
         return result
 
 
@@ -223,9 +230,13 @@ def _get_shared_ensemble(candidates_data, ctx):
             try:
                 _cache_put("ensemble", cache_key, result,
                            bucket_seconds=1800)
-            # SILENT_OK: cache-write failure is acceptable; in-memory L1 still has the result.
-            except Exception:
-                pass
+            except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                    TypeError, ValueError) as exc:
+                logger.warning(
+                    "ensemble cache write failed for %s: %s: %s "
+                    "(in-memory L1 still has the result)",
+                    cache_key, type(exc).__name__, exc,
+                )
         return result
 
 
@@ -542,10 +553,14 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                         "reason": f"Skipping {symbol}: earnings in {earnings['days_until']} day(s) (on {earnings['earnings_date']})",
                         "strategy": ctx.segment if ctx else "unknown",
                     }
-        # SILENT_OK: earnings lookup is enrichment; never block a trade on failure.
-        except Exception as _earn_exc:
-            # Never block a trade due to earnings lookup failure
-            pass
+        except (KeyError, ValueError, AttributeError, TypeError,
+                ImportError, OSError) as _earn_exc:
+            # Earnings lookup is enrichment; never block a trade on
+            # failure — surface the reason for operator follow-up.
+            logger.debug(
+                "earnings lookup failed for %s: %s: %s",
+                symbol, type(_earn_exc).__name__, _earn_exc,
+            )
 
     # Resolve parameters via the full override chain (per-symbol >
     # per-regime > per-TOD > global). A tuner-set per-symbol stop-loss
@@ -577,9 +592,13 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             cap_scale = float(getattr(ctx, "capital_scale", 1.0) or 1.0)
             if cap_scale != 1.0 and max_position_pct is not None:
                 max_position_pct = max_position_pct * cap_scale
-        # SILENT_OK: bad capital_scale value falls back to existing max_position_pct.
-        except Exception:
-            pass
+        except (TypeError, ValueError) as _cs_exc:
+            # Bad capital_scale value falls back to existing
+            # max_position_pct; surface the bad cast for follow-up.
+            logger.debug(
+                "capital_scale cast failed for %s: %s: %s",
+                symbol, type(_cs_exc).__name__, _cs_exc,
+            )
     else:
         if max_position_pct is None:
             max_position_pct = DEFAULT_MAX_POSITION_PCT
@@ -730,10 +749,14 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             if not corr_result.get("allowed", True):
                 correlation_reduce = True
                 print(f"    Correlation warning: {corr_result.get('reason', 'too correlated')} — reducing position size 50%")
-        # SILENT_OK: correlation check is advisory; never block a trade on lookup failure.
-        except Exception as _corr_exc:
-            # Never block a trade due to correlation check failure
-            pass
+        except (KeyError, ValueError, AttributeError, TypeError,
+                ImportError, OSError) as _corr_exc:
+            # Correlation check is advisory; never block a trade on
+            # lookup failure — surface for follow-up.
+            logger.debug(
+                "correlation check failed for %s: %s: %s",
+                symbol, type(_corr_exc).__name__, _corr_exc,
+            )
 
     positions = {p["symbol"]: p for p in positions_list}
 
@@ -754,9 +777,14 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 price = float(bars.iloc[-1]["close"])
                 signal["price"] = price
                 logging.info("Re-fetched price for %s: $%.2f (was missing from signal)", symbol, price)
-        # SILENT_OK: re-fetch is best-effort recovery; downstream price=0 guard handles failure.
-        except Exception:
-            pass
+        except (KeyError, ValueError, AttributeError, TypeError,
+                ImportError, OSError) as _rf_exc:
+            # Best-effort recovery; downstream price=0 guard handles
+            # the missing-price case below.
+            logger.debug(
+                "price re-fetch failed for %s: %s: %s",
+                symbol, type(_rf_exc).__name__, _rf_exc,
+            )
 
     # Extract AI info for logging
     ai_reasoning = None
@@ -800,9 +828,15 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                     f"last 30 days; auto-expires)"
                 )
                 return result
-        # SILENT_OK: blacklist check is best-effort; bug here must not block trades.
-        except Exception:
-            pass  # blacklist check is best-effort — don't block trades on bug
+        except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                KeyError, ValueError, AttributeError, ImportError,
+                OSError) as _bl_exc:
+            # Best-effort — don't block trades on a blacklist bug,
+            # but surface so we can fix the underlying lookup.
+            logger.debug(
+                "entry blacklist check failed for %s: %s: %s",
+                symbol, type(_bl_exc).__name__, _bl_exc,
+            )
         if action == "STRONG_BUY":
             alloc_pct = max_position_pct
         else:
@@ -935,9 +969,14 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 _bars = get_bars(symbol, limit=25)
                 if _bars is not None and len(_bars) >= 5:
                     adv_at_decision = float(_bars["volume"].tail(20).mean())
-            # SILENT_OK: ADV capture is calibration telemetry; trade proceeds without it.
-            except Exception:
-                pass
+            except (KeyError, ValueError, AttributeError, TypeError,
+                    ImportError, OSError) as _adv_exc:
+                # ADV capture is calibration telemetry; trade
+                # proceeds without it but surface for follow-up.
+                logger.debug(
+                    "ADV capture failed for %s on BUY: %s: %s",
+                    symbol, type(_adv_exc).__name__, _adv_exc,
+                )
             try:
                 from slippage_model import estimate_slippage
                 _est = estimate_slippage(
@@ -948,9 +987,14 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                     market_type=getattr(ctx, "market_type", None) if ctx else None,
                 )
                 predicted_slip = _est.get("total_bps")
-            # SILENT_OK: predicted-slippage capture is telemetry; trade proceeds without it.
-            except Exception:
-                pass
+            except (KeyError, ValueError, AttributeError, TypeError,
+                    ImportError, OSError, sqlite3.OperationalError) as _ps_exc:
+                # Predicted-slippage capture is telemetry; trade
+                # proceeds without it but surface the bug.
+                logger.debug(
+                    "predicted-slippage capture failed for %s on BUY: %s: %s",
+                    symbol, type(_ps_exc).__name__, _ps_exc,
+                )
             log_trade(
                 symbol=symbol,
                 side="buy",
@@ -1044,9 +1088,14 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 _bars = get_bars(symbol, limit=25)
                 if _bars is not None and len(_bars) >= 5:
                     adv_at_sell = float(_bars["volume"].tail(20).mean())
-            # SILENT_OK: ADV capture on exit is calibration telemetry; sell proceeds without it.
-            except Exception:
-                pass
+            except (KeyError, ValueError, AttributeError, TypeError,
+                    ImportError, OSError) as _adv_exc:
+                # ADV capture on exit is calibration telemetry;
+                # sell proceeds without it but surface for follow-up.
+                logger.debug(
+                    "ADV capture failed for %s on SELL: %s: %s",
+                    symbol, type(_adv_exc).__name__, _adv_exc,
+                )
             try:
                 from slippage_model import estimate_slippage
                 _est = estimate_slippage(
@@ -1057,9 +1106,14 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                     market_type=getattr(ctx, "market_type", None) if ctx else None,
                 )
                 predicted_slip_sell = _est.get("total_bps")
-            # SILENT_OK: predicted-slippage capture on exit is telemetry; sell proceeds without it.
-            except Exception:
-                pass
+            except (KeyError, ValueError, AttributeError, TypeError,
+                    ImportError, OSError, sqlite3.OperationalError) as _ps_exc:
+                # Predicted-slippage capture is telemetry; sell
+                # proceeds without it but surface for follow-up.
+                logger.debug(
+                    "predicted-slippage capture failed for %s on SELL: %s: %s",
+                    symbol, type(_ps_exc).__name__, _ps_exc,
+                )
             # NEW (2026-05-07): write status='pending_fill' instead of
             # 'closed' until the broker confirms the fill.
             # _task_update_fills flips 'pending_fill' -> 'closed' (and
@@ -1107,9 +1161,15 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                     f"last 30 days; auto-expires)"
                 )
                 return result
-        # SILENT_OK: short-side blacklist check is best-effort; bug here must not block trades.
-        except Exception:
-            pass
+        except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                KeyError, ValueError, AttributeError, ImportError,
+                OSError) as _bl_exc:
+            # Short-side blacklist check is best-effort — don't
+            # block trades on a bug, but surface for follow-up.
+            logger.debug(
+                "short-side entry blacklist check failed for %s: %s: %s",
+                symbol, type(_bl_exc).__name__, _bl_exc,
+            )
         # Only if short selling is enabled for this profile
         enable_shorts = ctx.enable_short_selling if ctx is not None else False
         if not enable_shorts:
@@ -1135,9 +1195,14 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                                 acted_on=False, db_path=db_path,
                             )
                         return result
-            # SILENT_OK: bounce-day check is advisory; if unavailable, proceed with short.
-            except Exception:
-                pass  # If we can't check, proceed
+            except (KeyError, ValueError, AttributeError, TypeError,
+                    ImportError, OSError, ZeroDivisionError) as _bd_exc:
+                # Bounce-day check is advisory; if unavailable
+                # proceed with short, but surface for follow-up.
+                logger.debug(
+                    "bounce-day check failed for %s: %s: %s",
+                    symbol, type(_bd_exc).__name__, _bd_exc,
+                )
             # Asymmetric short sizing (P1.6 of LONG_SHORT_PLAN.md):
             # cap shorts at short_max_position_pct, defaulting to half
             # the long cap when not explicitly set on the profile.
@@ -1387,9 +1452,14 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     e = _check_earnings(sym)
                     if e and e["days_until"] <= avoid_days:
                         earnings_blocklist.add(sym)
-                # SILENT_OK: per-symbol earnings lookup; one bad symbol shouldn't kill the loop.
-                except Exception:
-                    pass
+                except (KeyError, ValueError, AttributeError, TypeError,
+                        OSError) as _e_exc:
+                    # Per-symbol enrichment loop; surface at DEBUG so
+                    # one bad symbol doesn't spam normal-mode logs.
+                    logger.debug(
+                        "earnings lookup failed for %s during prefilter: %s: %s",
+                        sym, type(_e_exc).__name__, _e_exc,
+                    )
 
     filtered_candidates = []
     pre_filter_skips = []
@@ -1471,9 +1541,14 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                         f"Market regime: {regime_label} (VIX {vix_val:.1f})",
                         regime_info.get("summary", ""),
                     )
-                # SILENT_OK: activity log is informational; pipeline continues if write fails.
-                except Exception:
-                    pass
+                except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                        AttributeError, ImportError, OSError) as _al_exc:
+                    # Activity log is informational; pipeline continues
+                    # but surface the write failure for follow-up.
+                    logger.debug(
+                        "activity log write failed (market_regime): %s: %s",
+                        type(_al_exc).__name__, _al_exc,
+                    )
     except Exception as _regime_exc:
         logging.warning(f"Could not detect market regime: {_regime_exc}")
 
@@ -1560,9 +1635,14 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 _bars = _get_bars_for_price(c["symbol"], limit=1)
                 if _bars is not None and not _bars.empty:
                     c["price"] = float(_bars.iloc[-1]["close"])
-            # SILENT_OK: per-candidate price re-fetch; price=0 candidates filtered next line.
-            except Exception:
-                pass
+            except (KeyError, ValueError, AttributeError, TypeError,
+                    OSError) as _rp_exc:
+                # Per-candidate enrichment loop; price=0 candidates
+                # are filtered next line. Surface at DEBUG.
+                logger.debug(
+                    "shortlist price re-fetch failed for %s: %s: %s",
+                    c.get("symbol"), type(_rp_exc).__name__, _rp_exc,
+                )
     shortlist = [c for c in shortlist if c.get("price", 0) > 0]
 
     if not shortlist:
@@ -2020,9 +2100,14 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                             f"new predictions resolve.",
                             symbol=sym,
                         )
-                    # SILENT_OK: activity log is informational; gate decision already made above.
-                    except Exception:
-                        pass
+                    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                            AttributeError, ImportError, OSError) as _al_exc:
+                        # Activity log is informational; gate decision
+                        # already made above. Surface for follow-up.
+                        logger.debug(
+                            "activity log write failed (blacklist_block %s): %s: %s",
+                            sym, type(_al_exc).__name__, _al_exc,
+                        )
                 continue
             filtered.append(t)
         if blacklist_blocked:
@@ -2189,9 +2274,15 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                             signal="OPTIONS",
                             occ_symbol=_occ,
                         )
-                # SILENT_OK: prediction-to-trade linking is best-effort; trade already executed.
-                except Exception:
-                    pass
+                except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                        AttributeError, KeyError, ImportError, OSError) as _link_exc:
+                    # Linking is best-effort; trade already executed.
+                    # Surface for follow-up so resolver doesn't lose
+                    # visibility of the contract.
+                    logger.warning(
+                        "option prediction-to-trade link failed for %s: %s: %s",
+                        symbol, type(_link_exc).__name__, _link_exc,
+                    )
             # Phase 4c (2026-05-12): MULTILEG_OPEN proposals now flow
             # through OptionPipeline.execute() — the SAME entry point
             # the dispatcher will eventually use for full pipeline
@@ -2558,9 +2649,14 @@ def _classify_market_regime() -> str:
                 regime = "strong_bull"
             elif close_now < sma_200 and sma_20 < sma_50:
                 regime = "bear"
-    # SILENT_OK: regime classification falls back to "neutral" on data error.
-    except Exception:
-        pass
+    except (KeyError, ValueError, AttributeError, TypeError,
+            IndexError, ImportError, OSError) as _reg_exc:
+        # Falls back to "neutral" on data error so the short slate
+        # keeps flowing. Surface the underlying issue for follow-up.
+        logger.debug(
+            "market regime classification fell back to 'neutral': %s: %s",
+            type(_reg_exc).__name__, _reg_exc,
+        )
     _REGIME_CACHE["market"] = (time.time(), regime)
     return regime
 
@@ -2591,9 +2687,14 @@ def _squeeze_risk(symbol: str) -> str:
         risk = (info.get("squeeze_risk") or "low").upper()
         if risk == "MEDIUM":
             risk = "MED"
-    # SILENT_OK: conservative LOW fallback; documented intentional choice (see docstring).
-    except Exception:
-        pass
+    except (KeyError, ValueError, AttributeError, TypeError,
+            ImportError, OSError) as _sq_exc:
+        # Conservative LOW fallback (documented in docstring).
+        # Surface for follow-up — missing data should be diagnosed.
+        logger.debug(
+            "squeeze risk lookup failed for %s, using LOW: %s: %s",
+            symbol, type(_sq_exc).__name__, _sq_exc,
+        )
     _SQUEEZE_CACHE[symbol.upper()] = (time.time(), risk)
     return risk
 
@@ -2689,9 +2790,15 @@ def _rank_candidates(strategy_results, held_symbols, enable_shorts,
                 signal["_borrow_rate_str"] = render_borrow_rate_for_prompt(
                     symbol, easy_to_borrow=borrow.get("easy_to_borrow"),
                 )
-            # SILENT_OK: borrow-rate annotation is enrichment; AI still has easy_to_borrow flag.
-            except Exception:
-                pass
+            except (ImportError, AttributeError, KeyError, TypeError,
+                    OSError) as _br_exc:
+                # Borrow-rate annotation is enrichment; AI still
+                # has easy_to_borrow flag. Surface the rate-lookup
+                # bug so cost-of-carry data isn't quietly missing.
+                logger.debug(
+                    "borrow-rate annotation failed for %s: %s: %s",
+                    symbol, type(_br_exc).__name__, _br_exc,
+                )
             # 1.3 Squeeze risk — high short interest + low float
             risk = _squeeze_risk(symbol)
             if risk == "HIGH":
@@ -2828,9 +2935,14 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
                         "signal": a["alert_signal"],
                         "summary": a["alert_summary"],
                     }
-        # SILENT_OK: SEC alert prefetch is enrichment; per-symbol attach below stays empty.
-        except Exception:
-            pass
+        except (sqlite3.OperationalError, sqlite3.DatabaseError,
+                ImportError, AttributeError, KeyError, OSError) as _sec_exc:
+            # SEC alert prefetch is enrichment; per-symbol attach
+            # below stays empty. Surface for follow-up.
+            logger.debug(
+                "SEC alert prefetch failed: %s: %s",
+                type(_sec_exc).__name__, _sec_exc,
+            )
 
     candidates = []
     for signal in shortlist:
@@ -2920,9 +3032,14 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
             e = _check_earnings(symbol)
             if e and e.get("days_until", 999) <= 5:
                 entry["earnings_warning"] = f"EARNINGS in {e['days_until']} days"
-        # SILENT_OK: per-candidate earnings annotation; AI-prompt enrichment only.
-        except Exception:
-            pass
+        except (KeyError, ValueError, AttributeError, TypeError,
+                OSError) as _ew_exc:
+            # Per-candidate enrichment loop; AI prompt continues
+            # without earnings warning. Surface at DEBUG.
+            logger.debug(
+                "earnings annotation failed for %s: %s: %s",
+                symbol, type(_ew_exc).__name__, _ew_exc,
+            )
 
         # Item 5c — expected slippage estimate. Sized to a typical
         # max_position_pct order so the AI sees what a real entry
@@ -2942,9 +3059,13 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
                     from client import get_account_info as _gai
                     _acct = _gai(ctx=ctx) or {}
                     _equity = float(_acct.get("equity") or _equity)
-                # SILENT_OK: equity sizing for slippage estimate falls back to $100k default.
-                except Exception:
-                    pass
+                except (KeyError, ValueError, AttributeError, TypeError,
+                        ImportError, OSError) as _eq_exc:
+                    # Falls back to $100k default. Surface for follow-up.
+                    logger.debug(
+                        "equity lookup for slippage estimate failed: %s: %s",
+                        type(_eq_exc).__name__, _eq_exc,
+                    )
                 _max_pct = float(getattr(ctx, "max_position_pct", 0.10))
                 _qty = max(1, int((_equity * _max_pct) / _price))
                 # ADV proxy from indicator volume_ratio × current bar
@@ -2983,27 +3104,42 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
                 summary = summarize_for_ai(oracle)
                 if summary:
                     entry["options_oracle_summary"] = summary
-        # SILENT_OK: per-candidate options-oracle annotation; AI prompt continues without it.
-        except Exception:
-            pass
+        except (ImportError, KeyError, ValueError, AttributeError,
+                TypeError, OSError) as _oo_exc:
+            # Per-candidate enrichment loop; AI prompt continues
+            # without options oracle. Surface at DEBUG.
+            logger.debug(
+                "options-oracle annotation failed for %s: %s: %s",
+                symbol, type(_oo_exc).__name__, _oo_exc,
+            )
 
         # Recent news headlines (Alpaca news endpoint, no AI cost)
         try:
             headlines = fetch_news_alpaca(symbol, limit=3)
             if headlines:
                 entry["news"] = headlines
-        # SILENT_OK: per-candidate news annotation; AI prompt continues without it.
-        except Exception:
-            pass
+        except (KeyError, ValueError, AttributeError, TypeError,
+                OSError) as _nws_exc:
+            # Per-candidate enrichment loop; AI prompt continues
+            # without news block. Surface at DEBUG.
+            logger.debug(
+                "news annotation failed for %s: %s: %s",
+                symbol, type(_nws_exc).__name__, _nws_exc,
+            )
 
         # Relative strength vs sector (free)
         try:
             rs = get_relative_strength_vs_sector(symbol)
             if rs:
                 entry["rel_strength"] = rs
-        # SILENT_OK: per-candidate rel-strength annotation; AI prompt continues without it.
-        except Exception:
-            pass
+        except (KeyError, ValueError, AttributeError, TypeError,
+                OSError) as _rs_exc:
+            # Per-candidate enrichment loop; AI prompt continues
+            # without rel-strength block. Surface at DEBUG.
+            logger.debug(
+                "rel-strength annotation failed for %s: %s: %s",
+                symbol, type(_rs_exc).__name__, _rs_exc,
+            )
 
         # Alternative data: insider, short interest, options, fundamentals, intraday
         try:
@@ -3013,22 +3149,37 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
                 try:
                     from sec_filings import get_earnings_call_sentiment
                     alt["transcript_sentiment"] = get_earnings_call_sentiment(symbol, ctx=ctx)
-                # SILENT_OK: transcript-sentiment add-on; rest of alt_data still attached.
-                except Exception:
-                    pass
+                except (ImportError, KeyError, ValueError, AttributeError,
+                        TypeError, OSError) as _ts_exc:
+                    # Transcript-sentiment add-on; rest of alt_data
+                    # still attached. Surface at DEBUG.
+                    logger.debug(
+                        "transcript-sentiment annotation failed for %s: %s: %s",
+                        symbol, type(_ts_exc).__name__, _ts_exc,
+                    )
                 entry["alt_data"] = alt
-        # SILENT_OK: per-candidate alt-data annotation; AI prompt continues without it.
-        except Exception:
-            pass
+        except (KeyError, ValueError, AttributeError, TypeError,
+                OSError) as _ad_exc:
+            # Per-candidate enrichment loop; AI prompt continues
+            # without alt-data block. Surface at DEBUG.
+            logger.debug(
+                "alt-data annotation failed for %s: %s: %s",
+                symbol, type(_ad_exc).__name__, _ad_exc,
+            )
 
         # Social sentiment from Reddit (if configured)
         try:
             social = get_ticker_mentions(symbol)
             if social and social.get("mentions", 0) > 0:
                 entry["social"] = social
-        # SILENT_OK: per-candidate social annotation; AI prompt continues without it.
-        except Exception:
-            pass
+        except (KeyError, ValueError, AttributeError, TypeError,
+                OSError) as _soc_exc:
+            # Per-candidate enrichment loop; AI prompt continues
+            # without social block. Surface at DEBUG.
+            logger.debug(
+                "social annotation failed for %s: %s: %s",
+                symbol, type(_soc_exc).__name__, _soc_exc,
+            )
 
         candidates.append(entry)
     return candidates
@@ -3045,9 +3196,14 @@ def _build_portfolio_state(account, positions_list, dd, ctx):
         equity = float(account.get("equity", 0) or 0)
         if equity > 0 and positions_list:
             exposure = compute_exposure(positions_list, equity)
-    # SILENT_OK: portfolio-exposure annotation; AI prompt continues without sector-concentration block.
-    except Exception:
-        pass
+    except (ImportError, KeyError, ValueError, AttributeError,
+            TypeError, OSError) as _pe_exc:
+        # AI prompt continues without sector-concentration block.
+        # Surface for follow-up.
+        logger.debug(
+            "portfolio-exposure annotation failed: %s: %s",
+            type(_pe_exc).__name__, _pe_exc,
+        )
 
     return {
         "equity": account.get("equity", 0),
@@ -3083,9 +3239,14 @@ def _build_market_context(regime_info, political_context, ctx):
             batch_ctx = get_batch_context_data(ctx)
             profile_summary = batch_ctx.get("profile_summary")
             learned_patterns = batch_ctx.get("learned_patterns", [])
-        # SILENT_OK: self-tuning context is enrichment; AI prompt continues without it.
-        except Exception:
-            pass
+        except (ImportError, sqlite3.OperationalError, sqlite3.DatabaseError,
+                KeyError, AttributeError, OSError) as _st_exc:
+            # AI prompt continues without self-tuning context.
+            # Surface for follow-up.
+            logger.debug(
+                "self-tuning context annotation failed: %s: %s",
+                type(_st_exc).__name__, _st_exc,
+            )
         # Post-mortem patterns from losing-week analysis. Prepended so
         # the most recent post-mortem reads first in the AI prompt.
         try:
@@ -3093,18 +3254,28 @@ def _build_market_context(regime_info, political_context, ctx):
             pm_patterns = get_active_patterns(ctx.db_path)
             if pm_patterns:
                 learned_patterns = pm_patterns + list(learned_patterns)
-        # SILENT_OK: post-mortem patterns are enrichment; AI prompt continues without them.
-        except Exception:
-            pass
+        except (ImportError, sqlite3.OperationalError, sqlite3.DatabaseError,
+                KeyError, AttributeError, OSError) as _pm_exc:
+            # AI prompt continues without post-mortem patterns.
+            # Surface for follow-up.
+            logger.debug(
+                "post-mortem pattern annotation failed: %s: %s",
+                type(_pm_exc).__name__, _pm_exc,
+            )
 
     # Sector rotation (free, cached 30min)
     sector_rotation = {}
     try:
         from market_data import get_sector_rotation
         sector_rotation = get_sector_rotation()
-    # SILENT_OK: sector-rotation annotation; AI prompt continues without it.
-    except Exception:
-        pass
+    except (ImportError, KeyError, ValueError, AttributeError,
+            TypeError, OSError) as _sr_exc:
+        # AI prompt continues without sector-rotation block.
+        # Surface for follow-up.
+        logger.debug(
+            "sector-rotation annotation failed: %s: %s",
+            type(_sr_exc).__name__, _sr_exc,
+        )
 
     # Crisis level (Phase 10). If we're in an elevated/crisis state,
     # the AI should know and factor it into its reasoning.
@@ -3123,18 +3294,28 @@ def _build_market_context(regime_info, political_context, ctx):
                     f"Bias toward capital preservation; tighter stops; "
                     f"prefer exits over entries."
                 )
-        # SILENT_OK: crisis-state annotation; AI prompt continues without elevated-risk callout.
-        except Exception:
-            pass
+        except (ImportError, sqlite3.OperationalError, sqlite3.DatabaseError,
+                KeyError, AttributeError, OSError) as _cs_exc:
+            # AI prompt continues without elevated-risk callout.
+            # Surface for follow-up.
+            logger.debug(
+                "crisis-state annotation failed: %s: %s",
+                type(_cs_exc).__name__, _cs_exc,
+            )
 
     # Macro data (yield curve, CBOE skew, economic indicators, ETF flows)
     macro_context = {}
     try:
         from macro_data import get_all_macro_data
         macro_context = get_all_macro_data()
-    # SILENT_OK: macro-data annotation; AI prompt continues without macro context block.
-    except Exception:
-        pass
+    except (ImportError, KeyError, ValueError, AttributeError,
+            TypeError, OSError) as _mc_exc:
+        # AI prompt continues without macro context block.
+        # Surface for follow-up.
+        logger.debug(
+            "macro-data annotation failed: %s: %s",
+            type(_mc_exc).__name__, _mc_exc,
+        )
 
     # OPEN_ITEMS #9 — next scheduled macro event (FOMC/CPI/NFP).
     # Cheap one-line annotation; populated unconditionally because

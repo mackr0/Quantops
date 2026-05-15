@@ -71,9 +71,14 @@ def _get_cached(symbol: str, factor: str) -> Optional[float]:
             ).fetchone()
         if row and (time.time() - row[1]) < _FACTOR_TTL_SECONDS:
             return row[0]
-    # SILENT_OK: factor cache read fallback; caller fetches from source on miss
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            json.JSONDecodeError, TypeError, ValueError, OSError) as _cr_exc:
+        # Factor cache read fallback; caller fetches from source
+        # on miss. Surface for follow-up.
+        logger.debug(
+            "factor cache read failed: %s: %s",
+            type(_cr_exc).__name__, _cr_exc,
+        )
     return None
 
 
@@ -88,9 +93,14 @@ def _set_cached(symbol: str, factor: str, value: Optional[float]) -> None:
                 (symbol.upper(), factor, value, time.time()),
             )
             conn.commit()
-    # SILENT_OK: factor cache write fallback; cache miss is acceptable next time
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            TypeError, ValueError, OSError) as _cw_exc:
+        # Factor cache write fallback; cache miss is acceptable
+        # next time. Surface for follow-up.
+        logger.debug(
+            "factor cache write failed: %s: %s",
+            type(_cw_exc).__name__, _cw_exc,
+        )
 
 
 # ---------------------------------------------------------------------------

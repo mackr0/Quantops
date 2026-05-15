@@ -180,6 +180,10 @@ def clear_kind(cache_kind: str, db_path: Optional[str] = None) -> None:
                 (cache_kind,),
             )
             conn.commit()
-    # SILENT_OK: cache-purge by kind; cache miss is acceptable on next read
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _cp_exc:
+        # Cache-purge by kind; cache miss is acceptable on next
+        # read. Surface for follow-up.
+        logger.debug(
+            "shared_ai_cache purge failed: %s: %s",
+            type(_cp_exc).__name__, _cp_exc,
+        )

@@ -24,6 +24,7 @@ from __future__ import annotations
 import glob
 import logging
 import os
+import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -75,8 +76,13 @@ def trailing_avg_daily_spend(user_id: int, days: int = 7) -> float:
             key = "7d" if days == 7 else f"{days}d"
             window = s.get(key, {}) or {}
             total += float(window.get("usd", 0))
-        # SILENT_OK: per-DB spend aggregation; one bad DB shouldn't kill cross-profile cost trailing-avg
-        except Exception:
+        except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _sp_exc:
+            # Per-DB spend aggregation loop; one bad DB shouldn't
+            # kill cross-profile cost trailing-avg. Surface for follow-up.
+            logger.debug(
+                "cost_guard spend aggregation failed: %s: %s",
+                type(_sp_exc).__name__, _sp_exc,
+            )
             continue
     return total / max(days, 1)
 
@@ -94,9 +100,14 @@ def daily_ceiling_usd(user_id: int) -> float:
             ).fetchone()
         if row and row[0] is not None and float(row[0]) > 0:
             return float(row[0])
-    # SILENT_OK: user override read; falls through to auto-derived ceiling
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            KeyError, ValueError, TypeError, OSError) as _uo_exc:
+        # User-override read; falls through to auto-derived ceiling.
+        # Surface for follow-up.
+        logger.debug(
+            "cost_guard user-override ceiling read failed: %s: %s",
+            type(_uo_exc).__name__, _uo_exc,
+        )
     avg = trailing_avg_daily_spend(user_id, days=7)
     return max(_FLOOR_DAILY_USD, avg * _DEFAULT_CEILING_MULTIPLIER)
 
@@ -113,9 +124,14 @@ def ceiling_source(user_id: int) -> str:
             ).fetchone()
         if row and row[0] is not None and float(row[0]) > 0:
             return "user"
-    # SILENT_OK: user override read; falls through to auto attribution
-    except Exception:
-        pass
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            KeyError, ValueError, TypeError, OSError) as _uo_exc:
+        # User-override read; falls through to auto attribution.
+        # Surface for follow-up.
+        logger.debug(
+            "cost_guard user-override attribution read failed: %s: %s",
+            type(_uo_exc).__name__, _uo_exc,
+        )
     return "auto"
 
 
@@ -127,8 +143,13 @@ def today_spend(user_id: int) -> float:
         try:
             s = spend_summary(db_path)
             total += float(s.get("today", {}).get("usd", 0))
-        # SILENT_OK: per-DB today-spend aggregation; one bad DB shouldn't kill cross-profile total
-        except Exception:
+        except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _ts_exc:
+            # Per-DB today-spend aggregation loop; one bad DB
+            # shouldn't kill cross-profile total. Surface for follow-up.
+            logger.debug(
+                "cost_guard today-spend aggregation failed: %s: %s",
+                type(_ts_exc).__name__, _ts_exc,
+            )
             continue
     return total
 
