@@ -176,6 +176,12 @@ The prompt structure is verbosity-tunable per profile via `prompt_layout.set_ver
 
 The LLM's response is parsed by `_parse_ai_response_strict_json`, which is a defensive parser tolerant of common malformations (markdown fences, single quotes, trailing commas). Strict-JSON parse failure logs the response and skips the cycle without any trades.
 
+### 7.6 Display-safe rendering of LLM-emitted text
+
+The LLM routinely echoes back the snake_case / UPPER_SNAKE_CASE identifiers from its prompt — `STRONG_BUY`, `bull_put_spread`, `max_position_pct`, etc. — in its `ai_reasoning` string and other free-text fields. The architectural contract is that the AI can keep emitting whatever it emits; the **display layer** sanitizes before the user sees anything. Every dynamic-content render goes through `display_names.humanize` (the `| humanize` Jinja filter, or the server-side `humanize(...)` call in `views.py`).
+
+The filter looks up canonical labels in `_DISPLAY_NAMES` and falls back to Title-Case for anything unknown — so a future identifier like `quantum_thresher_signal` renders as "Quantum Thresher Signal" without any code change. See `docs/13_QUALITY_RELIABILITY.md` §3.3 for the full contract and the structural test that enforces it.
+
 ## 8. Validation gates
 
 After the LLM returns trades, hard rules in `_validate_ai_trades` filter them. Each gate logs a reason; vetoed trades surface on the AI dashboard.

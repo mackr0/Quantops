@@ -17,6 +17,37 @@ Rules going forward:
 
 ---
 
+## 2026-05-15 — Display-safe rendering layer is now the architectural contract for snake_case leaks. Severity: high (recurring class-of-bug for two years finally has a structural fix).
+
+**The problem.** `STRONG_BUY` leaked into a user-visible AI Brain reasoning panel as "Ensemble STRONG_BUY (score 3/4)..." despite ten different test files (`test_no_snake_case_in_user_facing_ids.py`, `test_no_snake_case_in_api_responses.py`, `test_api_response_values_no_snake_case.py`, `test_no_raw_snake_case_in_templates.py`, `test_no_internal_leakage_in_templates.py`, `test_no_allcaps_snake_case_in_optimizer_strings.py`, `test_no_snake_case_in_optimizer_strings.py`, `test_no_allcaps_snake_case_in_api.py`, `test_humanize_filter.py`, `test_signal_humanization_structural.py`) targeting different facets of the same bug class. None of them rendered LLM-generated content; all were downstream of the wrong assumption (that snake_case could be caught at the source).
+
+**Root cause (architectural).** There was no mandatory sanitization layer between "AI / backend output" and "user-visible display". The `humanize` filter existed and was applied at SOME render sites; the leak happened wherever a render site forgot to apply it. The 2026-05-15 leak point was `templates/_trades_table.html:208` — `{{ t.ai_reasoning or t.reason or 'No reasoning recorded' }}` rendered raw because no `| humanize` was applied. Same bug class as every prior leak; same shape of fix.
+
+**The architecture (this commit).**
+
+1. **`display_names.humanize` is the contract.** Every dynamic-content render — every template interpolation of `ai_reasoning` / `reasoning` / `reason` / `narrative` / `summary` / `description` / `detail` / `message` / `title`, every server-side return of LLM-generated text — MUST go through `humanize`. The filter resolves known identifiers from `_DISPLAY_NAMES` and falls back to Title-Case for unknowns. Adding to `_DISPLAY_NAMES` is now OPTIONAL; the filter handles unknowns.
+
+2. **Filter strengthened** to handle digit-bearing identifiers (`roc_10`, `momentum_20d_gain`, `some_brand_new_2027_strategy`). The token regex was updated from `[a-z]+(?:_[a-z]+)+` to `[a-z][a-z0-9]*(?:_[a-z0-9]+)+` (and the same for the upper case). This closes the case where a future identifier carrying a year/horizon digit would not have triggered the filter at all.
+
+3. **Filter applied at every leak site.** Templates fixed: `_trades_table.html` (`t.ai_reasoning or t.reason`), `dashboard.html` (`kill_switch.reason`), `ai.html` (`s.description`, `d.reason`, `s.detail`, `v.reason`), `ai_performance.html` (`h.reason`).
+
+4. **One structural test replaces ten patchwork tests.** `tests/test_no_snake_case_in_rendered_output.py` has three layers: (1) filter behavioral pin — every shape of leak we've ever seen, including a synthetic future identifier; (2) static template audit — every dynamic-content interpolation MUST pipe through a humanizing filter, scanned across all `templates/*.html`; (3) end-to-end render simulation — renders the trades-table macro and the activity-feed handler with synthetic LLM-leaky data and asserts no raw tokens survive. Includes an inverse self-test (`TestRegressionDetection`) confirming the test catches a regression if the filter is removed.
+
+**Tests deleted (subsumed by the new structural test):** `test_no_snake_case_in_user_facing_ids.py`, `test_no_snake_case_in_api_responses.py`, `test_api_response_values_no_snake_case.py`, `test_no_raw_snake_case_in_templates.py`, `test_no_internal_leakage_in_templates.py`, `test_no_snake_case_in_optimizer_strings.py`, `test_no_allcaps_snake_case_in_api.py`, `test_humanize_filter.py`. **Kept:** `test_display_names.py` (mapping integrity), `test_signal_humanization_structural.py` (AST-discovery of new signal types — distinct from rendered-output enforcement).
+
+**Why this works where ten previous attempts failed.** The previous tests checked the SOURCE (does this static template / API string contain raw snake_case?). Dynamic LLM-generated content was invisible to all of them. The new test checks the SINK (does any rendered output contain a raw snake_case token?) AND enforces the contract structurally (every dynamic-content interpolation must pipe through a humanizing filter). The fix is at the display layer where it has to be — the AI can keep emitting whatever it emits.
+
+**Acceptance criteria met:**
+1. `STRONG_BUY` rendered through `{{ t.ai_reasoning | humanize }}` produces "Strong Buy".
+2. Made-up future identifier `quantum_thresher_signal` produces "Quantum Thresher Signal" via the Title-Case fallback.
+3. The new structural test FAILS clearly when the filter is omitted (verified by `TestRegressionDetection.test_unfiltered_render_is_caught`).
+4. The 10 previous tests reduced to 1 (plus 2 retained for adjacent concerns).
+5. Full test suite (3,065 tests) passes.
+
+**Docs:** `docs/13_QUALITY_RELIABILITY.md` §3.3 rewritten to describe the contract; `docs/02_AI_SYSTEM.md` §7.6 added with cross-reference.
+
+---
+
 ## 2026-05-15 — Phantom-stock-sells defensive guardrail + 2026-05-11 incident cleanup. Severity: high (37 broker orders fired against unintended stock symbols on 2026-05-11; bug class plugged at upstream + here).
 
 **Background**: On 2026-05-11 between 14:18-16:27 UTC, `check_stop_loss_take_profit` fired stock SELL orders against multileg option-leg positions whose `occ_symbol` field came through empty. Each order was journaled with `signal_type='SELL'`, `symbol=<underlying>`, `occ_symbol=NULL`, and a price equal to the OPTION PREMIUM ($0.15-$3.50) — not the stock price ($70-$290). 37 such SELLs were submitted to Alpaca across pid 4 (KO×6 + AAPL×5) and pid 11 (KO×13). Paper account so no real money loss; broker journal corrupted.

@@ -205,7 +205,18 @@
                             </small>
                             {% endif %}
                             <strong>AI Reasoning:</strong>
-                            <p style="margin:0.25rem 0;">{{ t.ai_reasoning or t.reason or 'No reasoning recorded' }}</p>
+                            {# `t.ai_reasoning` and `t.reason` are LLM-generated
+                               text and routinely contain raw snake_case /
+                               UPPER_SNAKE identifiers (STRONG_BUY, score 3/4,
+                               max_position_pct, bull_put_spread, etc.). The
+                               `| humanize` filter is the architectural
+                               contract: every dynamic-content render goes
+                               through it so unknown identifiers fall through
+                               to Title Case (e.g. STRONG_BUY → "Strong Buy")
+                               and known identifiers from display_names are
+                               replaced with their canonical labels. See
+                               docs/13_QUALITY_RELIABILITY.md for the rule. #}
+                            <p style="margin:0.25rem 0;">{{ (t.ai_reasoning or t.reason or 'No reasoning recorded') | humanize }}</p>
                             {% if t.stop_loss or t.take_profit %}
                             <small class="muted">
                                 Stop: {{ "${:,.2f}".format(t.stop_loss) if t.stop_loss else '--' }} |

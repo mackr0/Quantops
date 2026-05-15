@@ -9,7 +9,7 @@
 
 QuantOpsAI ships changes daily, often via AI-assisted edits. The threat model is not just "does the code compile" — it includes "did the assistant hallucinate a column name?", "did the assistant remove a guard while fixing something else?", "did the assistant claim a fix is done when it isn't?". The safety system has three layers, all enforced automatically:
 
-1. **Pre-commit / CI tests** (280 files, 3,092 tests, zero skipped) — must pass before merge.
+1. **Pre-commit / CI tests** (~273 files, ~3,065 tests, zero skipped) — must pass before merge.
 2. **Production-side controls** — defense-in-depth gates that catch what slips past tests.
 3. **Backups + rehearsed disaster recovery** — assume something will eventually break.
 
@@ -91,14 +91,30 @@ The user's standing rule: *"Every except: pass is a potential silent failure —
 
 ### 3.3 No `snake_case` leaks to the user
 
+**The architecture (2026-05-15 redesign).** For two years this bug class was chased with a patchwork of ten different tests — each one targeting one facet (template literals, API string values, optimizer return strings, sector codes, factor codes, etc.). Collectively they still let `STRONG_BUY` leak into the AI Brain reasoning panel because none of them rendered LLM-generated content. The architectural failure was that there was no mandatory sanitization layer between "AI / backend output" and "user-visible display"; every test was downstream of the wrong assumption (that snake_case could be caught at the source).
+
+**The contract:** every dynamic-content render goes through `display_names.humanize` — the `| humanize` Jinja filter in templates, or the `humanize(...)` function call in `views.py`. The filter:
+
+- Replaces known identifiers from `_DISPLAY_NAMES` with their canonical labels.
+- For UNKNOWN snake_case / UPPER_SNAKE_CASE patterns, falls back to Title-Casing (e.g. `STRONG_BUY` → "Strong Buy", `quantum_thresher_signal` → "Quantum Thresher Signal").
+- Is idempotent — running it twice gives the same result, so defensive double-application is safe.
+- Handles both lowercase and UPPER snake, including embedded digits (`roc_10`, `momentum_20d_gain`).
+
+**Adding a new identifier to `display_names._DISPLAY_NAMES` is now optional.** It's only needed when you want a specific canonical label that differs from the default Title-Case (e.g. "Insider Buying Cluster" instead of "Insider Cluster"). The filter handles unknowns automatically — a future identifier the LLM invents tomorrow renders readably without any code change.
+
 | Guard | Catches |
 |---|---|
-| `test_no_snake_case_in_user_facing_ids` | Templates rendering raw `snake_case` for sectors, factors, scenarios, or PARAM_BOUNDS keys. |
-| `test_no_snake_case_in_api_responses` | API responses leaking PARAM_BOUNDS keys to the JS layer. |
-| `test_api_response_values_no_snake_case` | **Broader.** Walks every `/api/<route>/1` GET response and fails on any string VALUE matching the snake_case pattern in a non-allowlisted field. Catches the case where an API returns a raw enum value (e.g., `"insufficient_history"`) that the JS renders directly. The labeled-list shape (`{name, label, ...}`) is recognized — `name` is the form-action key, `label` is what's rendered. Allowlist `INTERNAL_VALUE_FIELDS` covers fields whose values are switch/case codes for JS (`regime`, `prediction_type`, `side`, `status`, etc.). |
-| `test_no_internal_leakage_in_templates` | Blanket static scan over every `templates/*.html`. Fails on `(Item Nx)` / `(OPEN_ITEMS X)` internal-tracker references AND on raw snake_case in visible text. Allowlist starts EMPTY by design. |
+| `test_no_snake_case_in_rendered_output` | **The single test that owns the bug class.** Three layers: (1) filter behavioral pin — every shape of leak we've ever seen, including a synthetic "future" identifier; (2) static template audit — every `{{ ... }}` interpolation of a dynamic-content field (`ai_reasoning`, `reasoning`, `reason`, `narrative`, `summary`, `description`, `detail`, `message`, `title`) MUST pipe through `humanize` or `display_name`; (3) end-to-end render simulation — renders the trades-table macro and the activity-feed handler with synthetic LLM-leaky data and asserts no raw tokens survive. Includes an inverse self-test that confirms the test catches a regression if the filter is removed. |
+| `test_signal_humanization_structural` | AST-walks `strategies.py` and `signal_weights.py` to discover every signal type the strategy layer can emit, plus enumerated AI-emitted signals (STRONG_BUY, MULTILEG_OPEN, etc.). Asserts each humanizes to a clean form (no underscores, no run of all-caps tokens). Catches the case where the filter ITSELF starts producing ugly output for a new signal type — distinct from the rendered-output test because it checks the source set rather than waiting for the signal to appear in a render path. |
+| `test_display_names` | Mapping-dict integrity. Pins canonical labels for known identifiers (Mack-approved spellings like "Bond/Stock Divergence" with the slash, "Sentiment & Narrative" with the ampersand). |
 
-The repeated user complaint: *"never ship raw snake_case in the UI."* These tests make that the default-deny posture.
+**The fix when a leak surfaces** is always one of:
+1. Apply `| humanize` at the template render site.
+2. Apply `humanize(...)` to the field server-side in `views.py` before `jsonify`.
+
+The fix is **never** to add an entry to `_DISPLAY_NAMES` for the specific token, never to widen an allowlist, never to add a per-string `.replace()`, and never to "fix the AI" by tuning the prompt to avoid emitting snake_case. The display layer is the contract; the AI can keep emitting whatever it emits.
+
+The repeated user complaint: *"never ship raw snake_case in the UI."* The architecture makes that the default-safe posture.
 
 ### 3.4 No unrealistic mocks
 

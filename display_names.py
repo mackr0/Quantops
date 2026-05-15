@@ -554,8 +554,13 @@ def friendly_date(iso_str: str) -> str:
 
 
 _SNAKE_RE = __import__("re").compile(r"\b([a-z]+)(?:_([a-z]+))+\b")
-_TOKEN_RE = __import__("re").compile(r"\b[a-z]+(?:_[a-z]+)+\b")
-_UPPER_TOKEN_RE = __import__("re").compile(r"\b[A-Z]+(?:_[A-Z]+)+\b")
+# Allow digits inside tokens — the LLM and self-tuner emit identifiers
+# like `roc_10`, `rsi_14`, `momentum_20d_gain`, `some_brand_new_2027_strategy`
+# and these MUST be Title-Cased, not left raw. Tokens still must
+# START with a letter (so we don't gobble plain numbers like "30m"
+# or "2026" mid-sentence).
+_TOKEN_RE = __import__("re").compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
+_UPPER_TOKEN_RE = __import__("re").compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")
 
 
 def humanize(value):

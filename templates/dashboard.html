@@ -17,7 +17,7 @@
         <div>
             <strong style="color:#d32f2f;font-size:1.1rem;">⚠ KILL SWITCH ACTIVE — all new trade entries are blocked</strong>
             <div style="margin-top:0.25rem;color:#555;font-size:0.9rem;">
-                Reason: <em>{{ kill_switch.reason }}</em>
+                Reason: <em>{{ kill_switch.reason | humanize }}</em>
             </div>
         </div>
         {% if not current_user.is_viewer %}

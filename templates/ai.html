@@ -615,7 +615,7 @@
                             <td>{{ s.direction }}</td>
                             <td class="muted" style="font-size:0.8rem;">{{ s.markets | map('display_name') | join(', ') }}</td>
                             <td class="muted">g{{ s.generation }}</td>
-                            <td>{{ s.description }}</td>
+                            <td>{{ s.description | humanize }}</td>
                             <td class="muted" style="font-size:0.8rem;">
                                 {% if s.status == 'active' and s.promoted_at %}
                                 promoted {{ s.promoted_at[:10] }}
@@ -660,7 +660,7 @@
                         {% for d in prof_decay.deprecated %}
                         <li style="margin:0.25rem 0;">
                             <strong>{{ d.strategy_type | display_name }}</strong>
-                            <small class="muted">— deprecated {{ d.deprecated_at[:10] }}: {{ d.reason }}</small>
+                            <small class="muted">— deprecated {{ d.deprecated_at[:10] }}: {{ d.reason | humanize }}</small>
                             <form method="post" action="/ai/profile/{{ prof_decay.profile_id }}/restore-strategy/{{ d.strategy_type }}" style="display:inline;margin-left:0.5rem;" onsubmit="return confirm('Restore {{ d.strategy_type | display_name }} into the active strategy mix?');">
                                 <button type="submit" class="outline" style="padding:0.1rem 0.5rem;font-size:0.75rem;margin:0;">Restore</button>
                             </form>
@@ -919,7 +919,7 @@
                 {% for s in r.scenarios %}
                     <tr>
                         <td><strong>{{ s.scenario | display_name }}</strong>
-                            <br><small class="muted">{{ s.description }}</small></td>
+                            <br><small class="muted">{{ s.description | humanize }}</small></td>
                         <td style="font-family:monospace;text-align:right;color:#b00;">
                             {{ "%+.2f"|format(s.total_pnl_pct * 100) }}%
                             <br><small class="muted">${{ "{:,.0f}".format(s.total_pnl_dollars) }}</small>
@@ -1044,7 +1044,7 @@
                     <li>
                         <strong>{{ s.name | display_name }}</strong>
                         <span class="muted">({{ s.severity | title }})</span>
-                        — {{ s.detail }}
+                        — {{ s.detail | humanize }}
                     </li>
                     {% endfor %}
                 </ul>
@@ -1339,7 +1339,7 @@
                     <strong>Risk VETOs:</strong>
                     {% for v in prof.vetoed %}
                     <span style="color:#b00;font-family:monospace;">{{ v.symbol }}</span>
-                    <span class="muted" style="font-size:0.8rem;">({{ v.reason[:70] }})</span>{% if not loop.last %} · {% endif %}
+                    <span class="muted" style="font-size:0.8rem;">({{ v.reason[:70] | humanize }})</span>{% if not loop.last %} · {% endif %}
                     {% endfor %}
                 </p>
                 {% endif %}
