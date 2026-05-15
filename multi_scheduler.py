@@ -1386,7 +1386,14 @@ def _task_virtual_audit(ctx):
         logging.exception(f"[{seg_label}] Virtual audit failed")
 
 
-_DAILY_COST_ALERT_THRESHOLD = 3.00  # USD — alert if daily spend exceeds this
+# The advisory cost-alert fires at 80% of the user's actual daily
+# ceiling — gives a heads-up before the cost_guard HARD BLOCK
+# (`ai_providers._enforce_cost_cap`) starts rejecting AI calls.
+# Removed the hard-coded $3 threshold (2026-05-15): it predated the
+# user-settable cap on the settings page and contradicted whatever
+# the user actually configured. Now reads from cost_guard so the
+# advisory tracks the cap that's truly in effect.
+_COST_ALERT_THRESHOLD_RATIO = 0.80
 _cost_alerted_today = set()
 _cross_reconcile_checked = set()
 
@@ -1419,32 +1426,53 @@ def _task_cross_account_reconcile(ctx):
 
 
 def _task_cost_check(ctx):
-    """Check if daily AI spend is exceeding threshold."""
+    """Advisory: alert when daily AI spend reaches 80% of the user's
+    cap. The HARD block at $cap is in `ai_providers._enforce_cost_cap`
+    (raises `CostCapExceeded`); this is the early-warning so the user
+    sees it coming before AI calls start being rejected.
+
+    Threshold reads from `cost_guard.daily_ceiling_usd` so it tracks
+    whatever the user actually has set (or the auto-computed default).
+    """
     from ai_cost_ledger import spend_summary
+    from cost_guard import daily_ceiling_usd
     pid = getattr(ctx, "profile_id", 0)
     if pid in _cost_alerted_today:
         return
     try:
+        ceiling = daily_ceiling_usd(ctx.user_id)
+        alert_at = ceiling * _COST_ALERT_THRESHOLD_RATIO
         summary = spend_summary(ctx.db_path)
         today_cost = summary["today"]["usd"]
-        if today_cost > _DAILY_COST_ALERT_THRESHOLD / 10:
-            # Sum across ALL profiles for total daily cost
+        # Cheap pre-filter so we don't sum across every profile DB on
+        # every scheduler iteration when nothing's close to the cap.
+        if today_cost > alert_at / 10:
             import os, glob
             total = 0
             for f in glob.glob("quantopsai_profile_*.db"):
                 s = spend_summary(f)
                 total += s["today"]["usd"]
-            if total > _DAILY_COST_ALERT_THRESHOLD:
+            if total > alert_at:
                 _cost_alerted_today.add(pid)
                 logging.warning(
-                    "API cost alert: $%.2f today (threshold $%.2f)",
-                    total, _DAILY_COST_ALERT_THRESHOLD)
+                    "API cost alert: $%.2f today (%.0f%% of $%.2f cap)",
+                    total,
+                    (total / ceiling * 100) if ceiling > 0 else 0,
+                    ceiling,
+                )
                 _safe_log_activity(
                     pid, ctx.user_id, "cost_alert",
-                    "API Cost Alert: $%.2f today" % total,
-                    "Daily AI spend has exceeded the $%.2f threshold. "
-                    "Consider reducing scan frequency or disabling "
-                    "specialist ensemble on test profiles." % _DAILY_COST_ALERT_THRESHOLD,
+                    "API Cost Alert: $%.2f today (%.0f%% of cap)" % (
+                        total,
+                        (total / ceiling * 100) if ceiling > 0 else 0,
+                    ),
+                    "Daily AI spend has reached %.0f%% of your "
+                    "$%.2f daily cap. The hard cap will block new "
+                    "AI calls at $%.2f. Raise the ceiling on the "
+                    "settings page if this is intentional." % (
+                        (total / ceiling * 100) if ceiling > 0 else 0,
+                        ceiling, ceiling,
+                    ),
                 )
     except (sqlite3.OperationalError, sqlite3.DatabaseError,
             ImportError, KeyError, ValueError, AttributeError,

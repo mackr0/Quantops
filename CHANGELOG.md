@@ -17,6 +17,24 @@ Rules going forward:
 
 ---
 
+## 2026-05-15 — Cost alert now reads the user's ceiling instead of a hard-coded $3. Plus deploy.sh stops clobbering prod .env. Severity: medium (the spurious "$3.00 threshold" alert contradicted the user's $5 cap and looked like a bug).
+
+**Two issues, related:**
+
+(1) **Spurious cost alert at $3.00**: `multi_scheduler.py:1389` had a hard-coded `_DAILY_COST_ALERT_THRESHOLD = 3.00` predating the user-settable cap. With the user's cap explicitly set to $5.00, the alert still fired the moment spend crossed $3 — message read "Daily AI spend has exceeded the $3.00 threshold." The constant was never integrated with the `cost_guard.daily_ceiling_usd` user override. Fix: alert now fires at 80% of `cost_guard.daily_ceiling_usd(user_id)` — early-warning before the HARD block (`ai_providers._enforce_cost_cap`) starts rejecting AI calls.
+
+(2) **deploy.sh was rsyncing local .env over prod .env**: discovered while fixing the Alpaca master-key rotation. The `--include '.env'` line shipped my local stale `ALPACA_API_KEY` over prod's just-rotated working key, sending the bar fetcher right back to yfinance fallback within seconds of deploy. Fixed: `.env` and `.env.*` now in the rsync exclusion filter. Each environment manages its own secrets.
+
+**Tests preventing recurrence (NEW: `tests/test_cost_alert_uses_user_ceiling.py`, 3 tests):**
+
+- `test_no_hardcoded_alert_threshold_in_scheduler` — STRUCTURAL: greps `multi_scheduler.py` for `_DAILY_COST_ALERT_THRESHOLD`; fails if any future change re-introduces a hard-coded dollar threshold.
+- `test_alert_fires_at_80_percent_of_user_ceiling` — at $8.50 spent against $10 cap (85%), alert fires; body references the user's $10 cap, NEVER the old "$3" string.
+- `test_alert_does_NOT_fire_below_80_percent` — at $4 against $10 (40%), no alert.
+
+3346 tests pass.
+
+---
+
 ## 2026-05-15 — Strategy audit: 5 broken strategies fixed + Alpaca data layer recovered (was silently on yfinance system-wide). Severity: critical (the entire bar/quote pipeline was running on yfinance fallback while paying for Alpaca, AND ~70% of registered strategies were producing zero signals due to API contract mismatches).
 
 **The combined problem.**
