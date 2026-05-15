@@ -17,6 +17,12 @@ Rules going forward:
 
 ---
 
+## 2026-05-15 — Settings page: daily cost ceiling input renders as currency ("$5.00" not "5"). Severity: low (UX polish, no functional change).
+
+The "Daily cost ceiling (USD)" input on the Autonomy settings card was rendering its stored REAL value as "5" — browsers strip trailing zeros from `<input type="number">`. Switched to `<input type="text" inputmode="decimal" pattern="[0-9]*\.?[0-9]{0,2}">` with a `$` prefix span so the field reads as "$5.00". Mobile keyboards still get the decimal pad via `inputmode="decimal"`. Backend handler unchanged — already strips/parses any string the form returns.
+
+---
+
 ## 2026-05-15 — Virtual audit no longer false-flags legitimate stock shorts as data corruption. Severity: medium (noisy false-positive that erodes the audit's signal value).
 
 **The problem.** Pid 3 (Small Cap) opened a legitimate NU SHORT — 35 shares at $12.215 via `signal_type='STRONG_SELL'` and `side='short'`. The next scan's data-integrity audit fired:
