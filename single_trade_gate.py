@@ -27,8 +27,20 @@ RECENT_WINDOW = 50
 def recent_avg_position_value(
     db_path: str, window: int = RECENT_WINDOW,
 ) -> Optional[float]:
-    """Average $ value of the profile's last `window` trades. Returns
-    None when insufficient history (we can't gate against zero base)."""
+    """Average $ value of the profile's last `window` STOCK trades.
+    Returns None when insufficient history (we can't gate against
+    zero base).
+
+    2026-05-15 — exclude option-leg trades AND data_quality-tagged
+    rows from the baseline. The guard's job is to catch a stock
+    trade that's wildly oversized vs typical STOCK trades. Including
+    option legs (per-leg premiums of $1-$3) drags the average down
+    to options-premium dollars, which makes any normal $5-10k stock
+    BUY look "5× recent average" and triggers a false rejection.
+    Observed 2026-05-15: pid 11 BUYs (JPM, NOC, DHR) all blocked
+    because the baseline was poisoned by SBUX/LRCX/ANET/WMT
+    multileg legs.
+    """
     try:
         with closing(sqlite3.connect(db_path)) as conn:
             conn.row_factory = sqlite3.Row
@@ -36,6 +48,10 @@ def recent_avg_position_value(
                 "SELECT qty, price FROM trades "
                 "WHERE qty IS NOT NULL AND price IS NOT NULL "
                 "AND qty > 0 AND price > 0 "
+                "AND occ_symbol IS NULL "
+                "AND COALESCE(data_quality, '') != 'polluted' "
+                "AND COALESCE(signal_type, '') NOT IN "
+                "    ('MULTILEG', 'OPTIONS', 'reconcile_xprof') "
                 "ORDER BY id DESC LIMIT ?",
                 (window,),
             ).fetchall()
