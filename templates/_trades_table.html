@@ -209,7 +209,18 @@
                             {% if t.stop_loss or t.take_profit %}
                             <small class="muted">
                                 Stop: {{ "${:,.2f}".format(t.stop_loss) if t.stop_loss else '--' }} |
+                                {# 2026-05-15 — when conviction-TP override
+                                   is active, the trailing stop manages the
+                                   exit; the displayed target is informational
+                                   only. Without this distinction the
+                                   operator sees a position past target with
+                                   no exit and assumes a bug. #}
+                                {% if t.exit_logic and t.exit_logic.kind == 'conviction_trailing' %}
+                                Target: <span title="{{ t.exit_logic.tooltip }}" style="text-decoration: line-through; color: #888;">{{ "${:,.2f}".format(t.take_profit) if t.take_profit else '--' }}</span>
+                                <span style="display:inline-block; background:#1565c0; color:#fff; font-size:0.65rem; font-weight:600; padding:0.05rem 0.4rem; border-radius:3px; margin-left:0.4rem;" title="{{ t.exit_logic.tooltip }}">LET WINNERS RUN · trailing stop manages exit</span>
+                                {% else %}
                                 Target: {{ "${:,.2f}".format(t.take_profit) if t.take_profit else '--' }}
+                                {% endif %}
                                 {% if t.decision_price and t.fill_price %}
                                 | Slippage: {{ "{:.3f}%".format(t.slippage_pct) if t.slippage_pct else '--' }}
                                 {% endif %}

@@ -151,11 +151,22 @@ def _visible_text_segments(html: str) -> List[Tuple[int, str]]:
             segments.append((line_num, text))
     # Also pull the values of user-visible attributes from the
     # ORIGINAL html (before _strip_to_visible_text scrubs them).
+    # 2026-05-15: strip Jinja expressions from the attribute value
+    # before checking — `title="{{ t.foo_bar.tooltip }}"` renders
+    # at runtime to the VALUE of t.foo_bar.tooltip (a string),
+    # NOT the literal `foo_bar`. The literal Jinja access syntax
+    # is not user-visible. (Without this, every legitimate
+    # `title="{{ t.x }}"` interpolation false-flags whenever the
+    # attribute name contains an underscore.)
     for m in _USER_VISIBLE_ATTR_RE.finditer(html):
         text = (m.group(1) or m.group(2) or "").strip()
-        if text:
+        if not text:
+            continue
+        text_no_jinja = _JINJA_EXPR_RE.sub("", text)
+        text_no_jinja = _JINJA_TAG_RE.sub("", text_no_jinja).strip()
+        if text_no_jinja:
             line_num = html[:m.start()].count("\n") + 1
-            segments.append((line_num, text))
+            segments.append((line_num, text_no_jinja))
     return segments
 
 

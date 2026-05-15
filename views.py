@@ -150,6 +150,68 @@ def _safe_positions(ctx):
         return []
 
 
+def _resolve_exit_logic(ctx, meta):
+    """Return a structured description of which exit logic is
+    managing the position, so the UI can communicate it instead of
+    showing a stale fixed take-profit value.
+
+    Returns a dict like:
+        {"label": "Trailing stop (conviction override)",
+         "kind": "conviction_trailing",
+         "tooltip": "...",
+         "fixed_target_active": False}
+
+    The two main cases:
+      - Conviction-TP override active: profile has
+        use_conviction_tp_override=1 AND the entry's ai_confidence
+        was >= conviction_tp_min_confidence. Trailing stop manages
+        the exit; the displayed fixed target is informational only.
+      - Fixed TP active (default): the displayed take_profit is the
+        actual exit trigger; system will sell when reached.
+    """
+    if ctx is None:
+        return {"label": "Fixed target", "kind": "fixed",
+                "tooltip": "", "fixed_target_active": True}
+    use_override = bool(getattr(ctx, "use_conviction_tp_override", 0))
+    if not use_override:
+        return {"label": "Fixed target", "kind": "fixed",
+                "tooltip": (
+                    "Profile sells at the displayed Target price "
+                    "when reached."),
+                "fixed_target_active": True}
+    min_conf = float(
+        getattr(ctx, "conviction_tp_min_confidence", 70.0) or 70.0
+    )
+    entry_conf = meta.get("ai_confidence")
+    try:
+        entry_conf = float(entry_conf) if entry_conf is not None else 0.0
+    except (TypeError, ValueError):
+        entry_conf = 0.0
+    if entry_conf >= min_conf:
+        return {
+            "label": "Trailing stop (conviction override)",
+            "kind": "conviction_trailing",
+            "tooltip": (
+                f"AI confidence at entry was {entry_conf:.0f}% "
+                f"(>= {min_conf:.0f}% threshold). The conviction-TP "
+                f"override is letting the trailing stop manage the "
+                f"exit — the position can run past the displayed "
+                f"target. The trailing stop will sell when price "
+                f"pulls back from its high."
+            ),
+            "fixed_target_active": False,
+        }
+    return {
+        "label": "Fixed target",
+        "kind": "fixed",
+        "tooltip": (
+            f"AI confidence at entry was {entry_conf:.0f}% "
+            f"(< {min_conf:.0f}% threshold). Conviction-TP override "
+            f"NOT active for this position — fixed target applies."),
+        "fixed_target_active": True,
+    }
+
+
 def _enriched_positions(ctx, profile_id):
     """Alpaca live positions + the AI metadata (reasoning, confidence,
     stop, target, slippage) from the most recent matching trade in the
@@ -232,6 +294,14 @@ def _enriched_positions(ctx, profile_id):
             "pnl": None,
             "unrealized_pl": p["unrealized_pl"],
             "unrealized_plpc": p["unrealized_plpc"],
+            # 2026-05-15 — surface conviction-TP override so the UI
+            # can communicate WHICH exit logic is managing this
+            # position. When the override is active for a position
+            # the trailing stop manages the exit, NOT the fixed TP
+            # shown above. Without this flag the UI displays a
+            # stale fixed target and the operator sees a position
+            # past its target with no exit and assumes a bug.
+            "exit_logic": _resolve_exit_logic(ctx, meta),
         })
     # Phase 4 of Position class refactor: group multileg legs into
     # Spread objects so the macro can render per-spread P&L capped

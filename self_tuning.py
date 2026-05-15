@@ -1931,6 +1931,86 @@ def _cast_param_value(param_name, value_str):
 # ---------------------------------------------------------------------------
 # Upward optimization — actively improve win rate, not just prevent disaster
 # ---------------------------------------------------------------------------
+#
+# Phase 2 architecture (2026-05-15): every optimizer carries a direction
+# tag. The registry uses the tags to enforce that LOOSENING rules fire
+# FIRST in every cycle, BIDIRECTIONAL next, STRUCTURAL after that, and
+# TIGHTENING last. The system structurally drifts toward confident
+# trading: when there's a viable loosening adjustment, we take it
+# before considering any tightening. Pre-2026-05-15 the registry was
+# tightening-dominant by file order, with the volume-floor signal as
+# the only trigger that re-prioritized loosening — that left a hole
+# where moderate under-trading wouldn't trigger the floor but the
+# tuner would still tighten further.
+#
+# Direction tags:
+#   LOOSEN        — action-creating (lower bars, more trades, more
+#                   confidence in existing patterns, larger sizes,
+#                   new strategies commissioned).
+#   TIGHTEN       — action-restricting (raise bars, deprecate
+#                   strategies, narrow regime sizing, blacklists).
+#   BIDIRECTIONAL — fires either way based on data; not structurally
+#                   biased by the volume-floor signal alone.
+#   STRUCTURAL    — doesn't directly affect trade volume (per-regime
+#                   overrides, per-symbol tuning, prompt layout).
+#
+# Each tag MUST be present for every optimizer in the registry —
+# enforced by tests/test_self_tuner_optimizer_directions.py.
+
+_OPTIMIZER_DIRECTION = {
+    # Loosening (action-creating)
+    "_optimize_false_negatives": "LOOSEN",
+    "_optimize_position_size_upward": "LOOSEN",
+    "_optimize_commission_strategy": "LOOSEN",
+    # Bidirectional (data-driven, no inherent bias)
+    "_optimize_meta_pregate_threshold": "BIDIRECTIONAL",
+    "_optimize_short_selling_toggle": "BIDIRECTIONAL",
+    "_optimize_conviction_tp_override": "BIDIRECTIONAL",
+    "_optimize_signal_weights": "BIDIRECTIONAL",
+    "_optimize_stop_to_tp_ratio": "BIDIRECTIONAL",
+    "_optimize_stop_take_profit": "BIDIRECTIONAL",
+    "_optimize_regime_position_sizing": "BIDIRECTIONAL",
+    "_optimize_short_take_profit": "BIDIRECTIONAL",
+    "_optimize_atr_multiplier_sl": "BIDIRECTIONAL",
+    "_optimize_atr_multiplier_tp": "BIDIRECTIONAL",
+    "_optimize_trailing_atr_multiplier": "BIDIRECTIONAL",
+    # Structural (parameter-shape changes, not volume-direction)
+    "_optimize_regime_overrides": "STRUCTURAL",
+    "_optimize_tod_overrides": "STRUCTURAL",
+    "_optimize_symbol_overrides": "STRUCTURAL",
+    "_optimize_prompt_layout": "STRUCTURAL",
+    "_optimize_price_band": "STRUCTURAL",
+    "_optimize_maga_mode": "STRUCTURAL",
+    "_optimize_short_max_position_pct": "STRUCTURAL",
+    "_optimize_short_max_hold_days": "STRUCTURAL",
+    # Tightening (action-restricting — fire LAST in the registry)
+    "_optimize_confidence_threshold_upward": "TIGHTEN",
+    "_optimize_strategy_toggles": "TIGHTEN",
+    "_optimize_max_total_positions": "TIGHTEN",
+    "_optimize_max_correlation": "TIGHTEN",
+    "_optimize_max_sector_positions": "TIGHTEN",
+    "_optimize_drawdown_thresholds": "TIGHTEN",
+    "_optimize_drawdown_reduce": "TIGHTEN",
+    "_optimize_avoid_earnings_days": "TIGHTEN",
+    "_optimize_skip_first_minutes": "TIGHTEN",
+    "_optimize_skip_first_minutes_slippage": "TIGHTEN",
+    "_optimize_min_volume": "TIGHTEN",
+    "_optimize_volume_surge_multiplier": "TIGHTEN",
+    "_optimize_breakout_volume_threshold": "TIGHTEN",
+    "_optimize_gap_pct_threshold": "TIGHTEN",
+    "_optimize_momentum_5d": "TIGHTEN",
+    "_optimize_momentum_20d": "TIGHTEN",
+    "_optimize_rsi_overbought": "TIGHTEN",
+    "_optimize_rsi_oversold": "TIGHTEN",
+    "_optimize_short_stop_loss": "TIGHTEN",
+    "_optimize_fast_lane_retirement": "TIGHTEN",
+    "_optimize_stop_out_blacklist": "TIGHTEN",
+}
+
+# Display order for direction tags; controls the running sequence
+# so loosening fires first, tightening last.
+_DIRECTION_PRIORITY = ("LOOSEN", "BIDIRECTIONAL", "STRUCTURAL", "TIGHTEN")
+
 
 def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, resolved):
     """Run upward optimization strategies on a healthy profile.
@@ -1942,24 +2022,21 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
     """
     from models import update_trading_profile, log_tuning_change
 
-    optimizers = [
+    # All registered optimizers, in any source order. The actual
+    # running sequence is determined by _OPTIMIZER_DIRECTION below
+    # so the file order doesn't accidentally bias the system.
+    all_optimizers = [
+        # Tightening (will fire LAST per the direction-priority sort)
         _optimize_confidence_threshold_upward,
-        _optimize_regime_position_sizing,
         _optimize_strategy_toggles,
-        _optimize_stop_take_profit,
-        _optimize_position_size_upward,
-        # Wave 1 — Group A (concentration / risk)
         _optimize_max_total_positions,
         _optimize_max_correlation,
         _optimize_max_sector_positions,
         _optimize_drawdown_thresholds,
         _optimize_drawdown_reduce,
-        _optimize_price_band,
-        # Wave 1 — Group D (timing + flag)
         _optimize_avoid_earnings_days,
         _optimize_skip_first_minutes,
-        _optimize_maga_mode,
-        # Wave 2 — Group C (entry filters)
+        _optimize_skip_first_minutes_slippage,
         _optimize_min_volume,
         _optimize_volume_surge_multiplier,
         _optimize_breakout_volume_threshold,
@@ -1968,104 +2045,81 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_momentum_20d,
         _optimize_rsi_overbought,
         _optimize_rsi_oversold,
-        # Wave 3 — Group B (exits — booleans roll into Layer 2 weights)
-        _optimize_short_take_profit,
-        # P1.9b of LONG_SHORT_PLAN.md — full per-direction tuning.
-        # Each reads short-side trades only; adjusts the matching
-        # short_* parameter independently of long-side performance.
         _optimize_short_stop_loss,
-        _optimize_short_max_position_pct,
-        _optimize_short_max_hold_days,
+        _optimize_fast_lane_retirement,
+        _optimize_stop_out_blacklist,
+        # Bidirectional (data-driven, runs after looseners)
+        _optimize_regime_position_sizing,
+        _optimize_stop_take_profit,
+        _optimize_short_take_profit,
         _optimize_atr_multiplier_sl,
         _optimize_atr_multiplier_tp,
         _optimize_trailing_atr_multiplier,
-        # 2026-05-12 — stop-to-TP ratio rebalance. Reads the exit
-        # strategy distribution (stop_loss / trailing_stop vs
-        # take_profit); when stops fire >3× as often as TPs, the
-        # reward/risk asymmetry is inverted (losers run to the stop,
-        # winners get cut short). Widens ATR-SL multiplier AND
-        # tightens ATR-TP multiplier in one pass. Closes the
-        # 4.5:1 stop-to-tp gap observed across 11 profiles.
         _optimize_stop_to_tp_ratio,
-        # 2026-05-12 — conviction-TP override toggle. Reads MFE
-        # capture ratio + stop-to-TP ratio; flips the override ON
-        # when winners are getting capped by fixed TPs, OFF when
-        # the profile is already capturing well and disciplined TP
-        # locking is winning. AI-tunable; matches "system figures
-        # it out" thesis instead of operator-set toggle.
         _optimize_conviction_tp_override,
-        # 2026-05-12 — short-selling toggle. Flips OFF for profiles
-        # where the 30-day short-side avg return is negative (and
-        # sample-size sufficient). Mirror of the conviction-TP
-        # tuner pattern.
         _optimize_short_selling_toggle,
-        # 2026-05-12 — fast-lane strategy retirement. Reads
-        # rolling 10-trade win rate per strategy_type; auto-deprecates
-        # strategies with wr < 25% (and ≥10 samples). Existing
-        # alpha_decay deprecates on 30-day Sharpe degradation —
-        # way too slow for a strategy stuck at 0% (mean_reversion
-        # right now). This rule runs daily and catches them within
-        # 10 trades.
-        _optimize_fast_lane_retirement,
-        # 2026-05-12 — per-symbol stop-out blacklist (Wave 8c).
-        # Symbols with 3+ stop-outs in 30 days get a 14-day entry
-        # blacklist. Stops the AI from re-picking names that aren't
-        # working in the current regime and paying spread + slip
-        # to relearn it.
-        _optimize_stop_out_blacklist,
-        # 2026-05-13 — meta_pregate_threshold (Wave 9a). Audit
-        # found the 0.5 default filtering 68% of candidates before
-        # AI evaluation across 139 cycles. Tunes per profile based
-        # on observed actionable-signal ratio over the last 5 days.
         _optimize_meta_pregate_threshold,
-        # 2026-05-12 — skip_first_minutes (slippage-based signal).
-        # Adjusts the open-window skip based on observed first-15-min
-        # slippage vs rest-of-day slippage. Complements the existing
-        # win-rate-based skip_first_minutes rule (already in the
-        # registry above) — slippage and win-rate are independent
-        # signals; the cooldown guard prevents both firing on the
-        # same param in the same week.
-        _optimize_skip_first_minutes_slippage,
-        # Wave 4 — Layer 2 weighted signal intensity
         _optimize_signal_weights,
-        # Wave 5 — Layer 3 per-regime parameter overrides
+        # Structural (parameter-shape changes; not volume-direction)
+        _optimize_price_band,
+        _optimize_maga_mode,
+        _optimize_short_max_position_pct,
+        _optimize_short_max_hold_days,
         _optimize_regime_overrides,
-        # Wave 6 — Layer 4 per-time-of-day parameter overrides
         _optimize_tod_overrides,
-        # Wave 8 — Layer 7 per-symbol parameter overrides (most-specific tier)
         _optimize_symbol_overrides,
-        # Wave 10 — Layer 6 adaptive AI prompt structure (cost-gated)
         _optimize_prompt_layout,
-        # Wave 11 — Layer 8 self-commissioned new strategies (cost-gated)
+        # Loosening (action-creating — fire FIRST)
+        _optimize_position_size_upward,
         _optimize_commission_strategy,
-        # Post-W13 — false-negative loosening (rejected trades that
-        # would have won → AI confidence threshold too tight)
         _optimize_false_negatives,
     ]
 
-    # 2026-05-14 — when the profile is below the trade-volume floor,
-    # try the LOOSENING optimizer first. Goal: drift toward confident
-    # trading. If a loosening adjustment is available, take it before
-    # we even consider the tightening rules. Tightening still runs
-    # after if no loosener fired (with raised evidence bars per the
-    # _runtime_under_volume_floor flag plumbed into individual
-    # optimizers).
-    LOOSENING_OPTIMIZERS = {
-        "_optimize_false_negatives",
-    }
-    if getattr(ctx, "_runtime_under_volume_floor", False):
-        looseners = [o for o in optimizers
-                     if o.__name__ in LOOSENING_OPTIMIZERS]
-        rest = [o for o in optimizers
-                if o.__name__ not in LOOSENING_OPTIMIZERS]
-        optimizers = looseners + rest
+    # Phase 2 architecture (2026-05-15): structurally favor action.
+    # Sort the registry so loosening fires first, bidirectional next,
+    # structural after, tightening last. Within each direction band
+    # the source order above is preserved (stable sort).
+    #
+    # When the profile is also under the volume floor, we additionally
+    # require that a loosener get a chance before any tightener can
+    # fire. Bidirectional/structural rules can still run between them.
+    #
+    # Result: even in normal conditions, the system always asks
+    # "is there something to loosen?" before asking "what should I
+    # tighten?" — the architecture itself drifts toward action.
+    optimizers = sorted(
+        all_optimizers,
+        key=lambda fn: _DIRECTION_PRIORITY.index(
+            _OPTIMIZER_DIRECTION.get(fn.__name__, "TIGHTEN")
+        ),
+    )
 
     results = []
+    saw_loosener_fire = False
     for optimizer in optimizers:
+        direction = _OPTIMIZER_DIRECTION.get(optimizer.__name__, "TIGHTEN")
+        # Under volume floor, hold off on tightening until at least
+        # one loosener / bidirectional / structural rule was tried
+        # without firing. Without volume floor, run normally — the
+        # priority-sort already biases toward action.
+        if (
+            direction == "TIGHTEN"
+            and getattr(ctx, "_runtime_under_volume_floor", False)
+            and not saw_loosener_fire
+        ):
+            # Earlier passes ran but none fired; under floor we still
+            # apply the existing per-optimizer "raise the bar" gates
+            # rather than skipping tightening entirely. The
+            # _runtime_under_volume_floor flag plumbed into individual
+            # optimizers raises sample-size minimums (typically
+            # 30 → 60) before they fire.
+            pass
         try:
             result = optimizer(conn, ctx, profile_id, user_id, overall_wr, resolved)
             if result:
                 results.append(result)
+                if direction in ("LOOSEN", "BIDIRECTIONAL", "STRUCTURAL"):
+                    saw_loosener_fire = True
                 break  # One change per run
         except Exception as exc:
             logger.warning("Upward optimizer %s failed: %s", optimizer.__name__, exc)
