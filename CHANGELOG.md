@@ -17,6 +17,64 @@ Rules going forward:
 
 ---
 
+## 2026-05-15 — Stalled-task alerts no longer lie. Restart-orphaned rows are taken off the stall path; true stalls get evidence-based diagnoses. Severity: medium (every operator-visible "stalled" alert in the activity feed was either a false positive from a deploy or a fabricated culprit text).
+
+**The problem.** Operators saw alerts like:
+
+```
+SCAN [Mid Cap] Stalled task: [Mid Cap] Scan & Trade (44 min)
+Started: 2026-05-15 18:54:14
+Elapsed: 44 minutes
+Diagnosis: Scan cycle exceeded 30-minute timeout — likely slow API
+responses from Alpaca or the AI provider.
+```
+
+Two defects layered:
+
+1. **The "stalled" detection itself was a false positive.** The 18:54 task was killed by the 20:07 service restart — a deploy mid-cycle. The new process started fresh; the dead task's `task_runs` row was orphaned with `status='running'` and the watchdog later mis-identified it as a 44-minute hang. With ~5-10 deploys per day, the activity feed accumulated dozens of false stall alerts per week.
+
+2. **The diagnosis text on TRUE stalls was fabricated.** The code was a hard-coded if/elif on task name + elapsed time:
+
+```python
+if "Scan" in task_name and elapsed > 30:
+    cause = "Scan cycle exceeded 30-minute timeout — likely slow API responses from Alpaca or the AI provider."
+elif "Resolve" in task_name:
+    cause = "Prediction resolution hung — likely a price fetch timeout..."
+```
+
+It read no system state. It invented a culprit (almost always "Alpaca slow") with no evidence. Operators learned to ignore the diagnosis line — defeating its purpose.
+
+**Root cause.** No mechanism distinguished "process was killed mid-task" from "task is actually hung." Both produced the same `status='running'` row; the watchdog was incapable of telling them apart and defaulted to the wrong interpretation.
+
+**The fix.**
+
+1. **`task_watchdog.mark_orphaned_at_startup(db_path)`** runs at scheduler boot. Bulk-converts every `status='running'` row into `status='orphaned_restart'` with a deterministic note (`"Killed by scheduler restart — task was in-flight when the parent process exited."`). By definition, anything still labeled `running` at boot is a zombie — its parent process is gone. Orphaned rows are never seen by `check_stalled_runs`, so the false-positive class is eliminated entirely.
+
+2. **`task_watchdog.diagnose_stalled_run(db_path, task_name, started_at, elapsed_minutes)`** replaces the if/elif text. Reads three real signals from the profile DB:
+   - `ai_cost_ledger`: did the AI respond inside the stall window? (rules in/out "AI provider hang")
+   - `activity_log`: what step was the task last observed completing?
+   - `ai_predictions`: did prediction recording happen?
+
+   Every claim in the output is backed by a row in a real table. If all three lookups come back empty, the diagnosis is `"no AI calls completed since task started"` — a *real* negative finding, not a fabricated culprit. If even the table reads fail, falls through to `"cause indeterminate"` — also honest, no invented blame.
+
+3. **Make-up scan messaging.** Profiles whose previous Scan & Trade was killed get an explicit log line `"[profile N] previous Scan & Trade was killed by restart; first-iteration scan will recover the cycle"`. The recovery itself was already happening (all per-profile intervals start at 0 so the first loop iteration after boot fires every cycle) — this just makes the connection explicit.
+
+4. **`multi_scheduler.py` startup cleanup.** New block runs after DB integrity check and before signal handlers: enumerates `quantopsai_profile_*.db`, calls `mark_orphaned_at_startup` per file, and tracks profiles that had a killed scan for the make-up log message above.
+
+**Tests preventing recurrence (NEW: `test_orphan_restart_and_real_diagnosis.py`, 7 tests):**
+
+- `test_running_rows_become_orphaned_restart` — startup cleanup converts every `running` row
+- `test_completed_rows_unaffected` — cleanup must not wipe history the diagnosis path needs
+- `test_orphaned_rows_do_not_reach_check_stalled` — the headline contract: false-positives are off the alert path
+- `test_reports_recent_ai_call_when_present` — diagnosis surfaces concrete AI-call evidence
+- `test_says_no_evidence_when_silent_db` — diagnosis reports concrete negative findings, NOT fabricated culprits. Forbidden-string allowlist includes `"likely slow API"`, `"Alpaca"`, `"likely a hung"`, etc.
+- `test_includes_last_activity_log_entry` — diagnosis surfaces last activity_log title
+- **`test_multi_scheduler_has_no_fabricated_culprit_text` (CLASS-LEVEL)** — greps `multi_scheduler.py` for the previously-fabricated culprit strings; fails if any future change re-introduces them. Catches the "default to blame Alpaca" regression class at test time.
+
+**Follow-up.** None. The 33 stalled rows currently sitting in production task_runs (3-day count) will be cleared by the next scheduler restart's orphan-cleanup pass — they're already in `status='stalled'` so they won't re-alert, and the new code prevents fresh false positives from accumulating.
+
+---
+
 ## 2026-05-15 — Daily cost cap is now a real pipeline-wide hard stop (was advisory-only). Settings page reflects the new behavior. Severity: high (the field on the settings page told users it blocked AI calls — it didn't; only blocked self-tuner actions).
 
 **The problem.** The "Daily cost ceiling" setting on the Autonomy card promised: *"blocks any autonomous action that would push today's API spend past this number."* In reality the gate (`cost_guard.can_afford_action`) was only called from 3 sites in `self_tuning.py` — strategy commissioning, parameter tuning, and guardrail expansion. The trade pipeline (`batch_select`, ensemble specialists, sentiment, transcript scoring, news, political_context — i.e. every AI call that produces ~95% of daily spend) ignored the cap entirely. A user setting `daily_cost_ceiling_usd = 5` was getting a "$5 self-tuner cap," not a "$5 daily AI spend cap."

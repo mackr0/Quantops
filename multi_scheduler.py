@@ -3228,17 +3228,18 @@ def _task_run_watchdog(ctx):
             task_name = row["task_name"]
             started_at = row["started_at"]
 
-            # Diagnose probable cause
-            if elapsed > 120:
-                cause = "Service was restarted while this task was running (task survived restart as orphaned 'running' row)."
-            elif "Scan" in task_name and elapsed > 30:
-                cause = "Scan cycle exceeded 30-minute timeout — likely slow API responses from Alpaca or the AI provider."
-            elif "Resolve" in task_name:
-                cause = "Prediction resolution hung — likely a price fetch timeout for one or more symbols."
-            elif "Snapshot" in task_name:
-                cause = "Daily snapshot hung — likely a slow position/account fetch from the broker."
-            else:
-                cause = "Task did not complete within 30 minutes. Could be a hung API call, a crash, or a service restart."
+            # Evidence-based diagnosis. Reads ai_cost_ledger,
+            # activity_log, and ai_predictions to report what the
+            # task was actually doing — replaces the previous
+            # if/elif on task name + elapsed time which fabricated
+            # culprits ("likely Alpaca slow") with no evidence.
+            # Orphaned-restart rows never reach this code path —
+            # they're filtered out at scheduler startup by
+            # `mark_orphaned_at_startup` before the watchdog runs.
+            from task_watchdog import diagnose_stalled_run
+            cause = diagnose_stalled_run(
+                ctx.db_path, task_name, started_at, elapsed,
+            )
 
             logging.warning(
                 f"  STALLED: {task_name} "
@@ -3871,6 +3872,48 @@ def main_loop(active_segments=None, legacy_mode=False):
             "DB integrity check failed to run (continuing): %s", exc,
         )
 
+    # ── Orphan-restart cleanup ──────────────────────────────────────
+    # Any task_runs row still labeled `running` in any profile DB at
+    # this point is by definition a zombie — its parent process was
+    # killed by the previous shutdown / deploy. Bulk-mark them as
+    # `orphaned_restart` BEFORE the watchdog can later mis-diagnose
+    # them as "API hang." For each profile that had an orphaned Scan
+    # & Trade, remember to fire a make-up scan as soon as the main
+    # loop starts (zeroes the per-profile last-scan time below).
+    _profiles_needing_makeup_scan: set = set()
+    try:
+        from task_watchdog import mark_orphaned_at_startup
+        from glob import glob as _glob
+        for _pdb in _glob("quantopsai_profile_*.db"):
+            try:
+                _orphans = mark_orphaned_at_startup(_pdb)
+            except Exception as _exc:
+                logging.warning(
+                    "orphan cleanup failed for %s: %s", _pdb, _exc,
+                )
+                continue
+            if not _orphans:
+                continue
+            # Extract profile id from filename for make-up scheduling.
+            import re as _re
+            _m = _re.search(r"profile_(\d+)\.db$", _pdb)
+            if not _m:
+                continue
+            _pid = int(_m.group(1))
+            _had_scan = any(
+                "Scan" in (r.get("task_name") or "")
+                for r in _orphans
+            )
+            if _had_scan:
+                _profiles_needing_makeup_scan.add(_pid)
+            logging.info(
+                "Cleaned %d orphaned task(s) from %s%s",
+                len(_orphans), _pdb,
+                " — make-up Scan & Trade scheduled" if _had_scan else "",
+            )
+    except ImportError as _exc:
+        logging.warning("orphan cleanup module unavailable: %s", _exc)
+
     # ── Signal handlers ──────────────────────────────────────────────
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
@@ -3913,13 +3956,27 @@ def main_loop(active_segments=None, legacy_mode=False):
             logging.warning("Could not persist snapshot marker: %s", exc)
 
     def _get_profile_runs(pid: int) -> Dict[str, float]:
-        """Return per-profile last-run dict, initializing on first access."""
+        """Return per-profile last-run dict, initializing on first access.
+
+        All intervals start at 0.0 so the first loop iteration after
+        a (re)start always fires a fresh scan / exits-check / resolve
+        cycle — no work is "lost" by a restart, the cycle just
+        re-runs immediately under the new process. (This is also the
+        de facto make-up-scan mechanism: a cycle killed mid-flight
+        gets re-attempted within seconds of the new process booting.)
+        """
         if pid not in profile_runs:
             profile_runs[pid] = {
                 "scan": 0.0,
                 "check_exits": 0.0,
                 "resolve_predictions": 0.0,
             }
+            if pid in _profiles_needing_makeup_scan:
+                logging.info(
+                    "[profile %d] previous Scan & Trade was killed by "
+                    "restart; first-iteration scan will recover the cycle",
+                    pid,
+                )
         return profile_runs[pid]
 
     INTERVAL_SCAN = 15 * 60   # 15 minutes
