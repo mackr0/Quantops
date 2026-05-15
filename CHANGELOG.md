@@ -17,6 +17,54 @@ Rules going forward:
 
 ---
 
+## 2026-05-15 — Virtual audit no longer false-flags legitimate stock shorts as data corruption. Severity: medium (noisy false-positive that erodes the audit's signal value).
+
+**The problem.** Pid 3 (Small Cap) opened a legitimate NU SHORT — 35 shares at $12.215 via `signal_type='STRONG_SELL'` and `side='short'`. The next scan's data-integrity audit fired:
+
+```
+SCAN [Small Cap] Data Integrity Warning: 1 issue(s)
+- Negative position: NU qty=-35.0
+```
+
+This is wrong. The position is correctly negative because we're short — the journal has a real `side='short'` entry backing it.
+
+**Root cause.** The audit's negative-position check (`virtual_audit.py`) only excluded option shorts (`is_option` / `occ_symbol` set). It treated ANY stock position with qty<0 as data corruption, which conflated:
+
+- (a) genuine corruption (qty<0 with no entry to back it — hypothetical)
+- (b) legitimate stock shorts (qty<0 backed by a `side='short'` journal entry — the NU case)
+
+The check was written when stock-shorting wasn't enabled on any profile. Pid 3's strategy now opens stock shorts as a routine activity, so the check became a false-positive generator the moment a short opened.
+
+**The fix.** Before flagging a negative stock position, the audit now queries the journal for an actual non-canceled `side='short'` entry on the same symbol. If one exists, the position is legitimate and is skipped. If none exists, the warning still fires (preserving the corruption-detection intent).
+
+```python
+symbols_with_short_entry = {row[0] for row in conn.execute(
+    "SELECT DISTINCT symbol FROM trades WHERE side = 'short' "
+    "AND COALESCE(status, 'open') != 'canceled'"
+)}
+for p in positions:
+    if p["qty"] >= 0 or p.get("is_option"):
+        continue
+    if p["symbol"] in symbols_with_short_entry:
+        continue  # legitimate short — backed by 'short' entry
+    problems.append(f"Negative position: {p['symbol']} qty={p['qty']}...")
+```
+
+A redundant local `import sqlite3` inside the same function was also removed — it shadowed the module-level import and would have crashed any branch reaching the new short-entry lookup before its line.
+
+**Why prior tests didn't catch it.** `tests/test_phase3_display_audit_position.py::test_negative_qty_on_stock_still_flagged` actively asserted the WRONG contract — that stock shorts SHOULD be flagged. The test pinned the false-positive in place. That assertion has been removed; the file's docstring now points at the new correct contract.
+
+**Tests preventing recurrence.**
+
+- `tests/test_virtual_audit_distinguishes_legitimate_shorts.py` (NEW, 3 tests):
+  - `test_legitimate_stock_short_does_not_warn` — the actual NU shape: `side='short'` on a stock must NOT trigger the warning
+  - `test_option_short_does_not_warn` — preserves the existing option-short exclusion
+  - `test_canceled_short_entry_does_not_legitimize` — pins the COALESCE-status filter; a canceled short row doesn't legitimize anything
+
+**Follow-up.** None. The change is fully covered by the new tests, no production data needed remediation (the warning was advisory, not blocking).
+
+---
+
 ## 2026-05-15 — Display-safe rendering layer is now the architectural contract for snake_case leaks. Severity: high (recurring class-of-bug for two years finally has a structural fix).
 
 **The problem.** `STRONG_BUY` leaked into a user-visible AI Brain reasoning panel as "Ensemble STRONG_BUY (score 3/4)..." despite ten different test files (`test_no_snake_case_in_user_facing_ids.py`, `test_no_snake_case_in_api_responses.py`, `test_api_response_values_no_snake_case.py`, `test_no_raw_snake_case_in_templates.py`, `test_no_internal_leakage_in_templates.py`, `test_no_allcaps_snake_case_in_optimizer_strings.py`, `test_no_snake_case_in_optimizer_strings.py`, `test_no_allcaps_snake_case_in_api.py`, `test_humanize_filter.py`, `test_signal_humanization_structural.py`) targeting different facets of the same bug class. None of them rendered LLM-generated content; all were downstream of the wrong assumption (that snake_case could be caught at the source).

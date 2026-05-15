@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from contextlib import closing
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -57,24 +58,51 @@ def audit_virtual_profile(db_path: str, initial_capital: float,
         return problems
 
     # 2. No negative position quantities — but option SHORT legs
-    # (multileg short legs, naked shorts) are LEGITIMATELY negative.
-    # Phase 3 of Position class refactor: uses pos.is_option /
-    # pos.is_short attributes. Only stock positions with qty<0
-    # without an explicit 'short' side entry are flagged. Caught
+    # (multileg short legs, naked shorts) AND legitimate stock
+    # SHORTS opened via a 'short' side entry are LEGITIMATELY
+    # negative. Only flag stock positions with qty<0 that have NO
+    # 'short' side entry in the journal — that's the corruption
+    # shape (excess SELLs against a long position without an
+    # explicit short open).
+    #
     # 2026-05-11: after the multileg sell-to-open fix made short
     # option legs visible in get_virtual_positions, this audit
-    # started flagging every legitimate short option leg as a
-    # data integrity warning — the audit was wrong, not the data.
+    # started flagging every legitimate short option leg.
+    # 2026-05-15: same false positive on legitimate STOCK shorts
+    # (NU on pid 3 opened via a STRONG_SELL → 'short' side row).
+    # Now actually checks the journal for a 'short' side entry
+    # before flagging.
     try:
         positions = get_virtual_positions(db_path=db_path)
+        # Pre-compute the set of symbols with at least one open
+        # 'short' side row in this profile's journal — those are
+        # legitimate short positions, not data corruption.
+        symbols_with_short_entry = set()
+        try:
+            with closing(sqlite3.connect(db_path)) as conn:
+                rows = conn.execute(
+                    "SELECT DISTINCT symbol FROM trades "
+                    "WHERE side = 'short' "
+                    "AND COALESCE(status, 'open') != 'canceled'"
+                ).fetchall()
+                symbols_with_short_entry = {r[0] for r in rows}
+        except sqlite3.OperationalError as exc:
+            logger.debug("short-entry lookup failed: %s", exc)
         for p in positions:
             is_option = getattr(p, "is_option", False) or bool(
                 p.get("occ_symbol")
             )
-            if p["qty"] < 0 and not is_option:
-                problems.append(
-                    f"Negative position: {p['symbol']} qty={p['qty']}"
-                )
+            if p["qty"] >= 0 or is_option:
+                continue
+            if p["symbol"] in symbols_with_short_entry:
+                # Legitimate short — has an explicit short-side
+                # entry in the journal.
+                continue
+            problems.append(
+                f"Negative position: {p['symbol']} qty={p['qty']} "
+                f"(no 'short' side entry — likely excess SELLs "
+                f"against a long that's already closed)"
+            )
     except Exception as exc:
         problems.append(f"Could not compute positions: {exc}")
 
@@ -107,8 +135,6 @@ def audit_virtual_profile(db_path: str, initial_capital: float,
 
     # 5. Trade count sanity — log if no trades at all (profile may be misconfigured)
     try:
-        import sqlite3
-        from contextlib import closing
         with closing(sqlite3.connect(db_path)) as conn:
             count = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
         if count == 0:

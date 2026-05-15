@@ -488,7 +488,7 @@ Source: `multi_scheduler.py` `_task_*` functions. 37 tasks total. Each is either
 | `_task_db_backup` | once/day | Per-profile DB backup. |
 | `_task_cost_check` | once/day | Daily AI spend audit. |
 | `_task_cross_account_reconcile` | once/day | Virtual ↔ broker position sync. |
-| `_task_virtual_audit` | once/day | Virtual position FIFO consistency. |
+| `_task_virtual_audit` | once/day | Virtual position FIFO consistency. Negative-stock-position warnings are suppressed when a `side='short'` journal entry exists for the symbol (legitimate stock short, not corruption). |
 | `_task_post_mortem` | weekly | Sunday losing-week analysis. |
 | `_task_auto_strategy_lifecycle` | once/day | Auto-deprecate poor strategies. |
 | `_task_auto_strategy_generation` | weekly | Commission new strategies. |

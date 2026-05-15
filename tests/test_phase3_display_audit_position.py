@@ -5,7 +5,12 @@ Position attributes (2026-05-11).
   for OCC-vs-underlying decisions.
 - `virtual_audit` recognizes legitimate short option legs (option
   positions with qty<0) and does NOT flag them as data integrity
-  issues. Stock shorts (no occ_symbol) still get flagged.
+  issues.
+
+2026-05-15 — extended to also recognize legitimate STOCK shorts
+(qty<0 backed by a 'short' side entry in the journal). The
+correct stock-short contract is pinned in
+test_virtual_audit_distinguishes_legitimate_shorts.py.
 """
 import os
 import sqlite3
@@ -128,34 +133,6 @@ class TestVirtualAuditAcceptsShortOptionLegs:
             f"Audit incorrectly flagged short option leg: {problems}"
         )
 
-    def test_negative_qty_on_stock_still_flagged(self, tmp_path):
-        """Regression: stock shorts (no occ_symbol) DO get flagged.
-        get_virtual_positions returns short stock positions with
-        qty<0 when side='short' is used, and we want the audit to
-        keep catching genuine bad-state stock data."""
-        db_path = str(tmp_path / "p.db")
-        from journal import init_db
-        init_db(db_path)
-        conn = sqlite3.connect(db_path)
-        conn.execute(
-            "INSERT INTO trades (timestamp, symbol, side, qty, "
-            "price, fill_price, status) "
-            "VALUES (?,?,?,?,?,?,?)",
-            ("2026-05-11T10:00:00", "AAPL", "short", 100, 150.0,
-             150.0, "open"),
-        )
-        conn.commit()
-        conn.close()
-
-        from virtual_audit import audit_virtual_profile
-        with patch("journal.get_virtual_account_info",
-                   return_value={"equity": 10000, "cash": 25000,
-                                 "portfolio_value": -15000}):
-            problems = audit_virtual_profile(
-                db_path, initial_capital=10000, profile_name="t",
-            )
-        assert any("Negative position" in p and "AAPL" in p
-                   for p in problems), (
-            f"Audit failed to flag stock short (regression): "
-            f"{problems}"
-        )
+    # The correct stock-short audit contract (legitimate stock
+    # shorts must NOT be flagged) is pinned in
+    # test_virtual_audit_distinguishes_legitimate_shorts.py.
