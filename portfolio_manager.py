@@ -358,6 +358,46 @@ def check_stop_loss_take_profit(positions, stop_loss_pct=None, take_profit_pct=N
         if entry_price <= 0 or current_price <= 0:
             continue
 
+        # 2026-05-15 — defensive guardrail against the bug class that
+        # produced 37 corrupt SELL rows on 2026-05-11. A multileg
+        # option leg with `occ_symbol` accidentally null fell through
+        # the option-skip above, then this function calculated a
+        # massive pct_change against the option premium and fired a
+        # stop-loss "stock SELL" on the underlying. The orders went
+        # to the broker. The Phase 5e commits later that day fixed
+        # the upstream propagation, but if a future regression
+        # produces the same shape we want to catch it here too.
+        #
+        # Heuristic: a position with BOTH prices under $2 AND a >5%
+        # drop is almost certainly an option premium evaporating,
+        # not a stock. Real stocks above $1 (the system's min_price
+        # default) rarely sit at $0.20 entry. The system's screener
+        # is configured to filter them out at intake, so any
+        # position that survives there with sub-$2 pricing is much
+        # more likely to be a stranded option leg than a real
+        # penny-stock holding. Operator can review the warning log
+        # and manually exit if the bug class re-emerges.
+        _suspect_option_leg = (
+            current_price < 2.0
+            and entry_price < 2.0
+            and (current_price - entry_price) / entry_price < -0.05
+        )
+        if _suspect_option_leg:
+            logger.warning(
+                "check_stop_loss_take_profit: skipping suspected "
+                "option leg masquerading as stock — symbol=%s, "
+                "entry=$%.4f, current=$%.4f, drop=%.1f%%. The "
+                "occ_symbol field on the upstream position dict was "
+                "missing; treating as option to prevent the "
+                "2026-05-11 bug class from firing real stock orders. "
+                "If %s is a legitimate penny-stock crash, manually "
+                "trigger the exit.",
+                symbol, entry_price, current_price,
+                ((current_price - entry_price) / entry_price) * 100,
+                symbol,
+            )
+            continue
+
         pct_change = (current_price - entry_price) / entry_price
 
         # 2026-05-12 — per-trade PRICE thresholds win over profile

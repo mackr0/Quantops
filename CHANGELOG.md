@@ -17,6 +17,98 @@ Rules going forward:
 
 ---
 
+## 2026-05-15 — Phantom-stock-sells defensive guardrail + 2026-05-11 incident cleanup. Severity: high (37 broker orders fired against unintended stock symbols on 2026-05-11; bug class plugged at upstream + here).
+
+**Background**: On 2026-05-11 between 14:18-16:27 UTC, `check_stop_loss_take_profit` fired stock SELL orders against multileg option-leg positions whose `occ_symbol` field came through empty. Each order was journaled with `signal_type='SELL'`, `symbol=<underlying>`, `occ_symbol=NULL`, and a price equal to the OPTION PREMIUM ($0.15-$3.50) — not the stock price ($70-$290). 37 such SELLs were submitted to Alpaca across pid 4 (KO×6 + AAPL×5) and pid 11 (KO×13). Paper account so no real money loss; broker journal corrupted.
+
+**Upstream fix landed 2026-05-11/12** (Phase 5e commits) — the propagation hole that let multileg legs reach `check_stop_loss_take_profit` with a missing `occ_symbol` was closed at the position-fetcher layer.
+
+**Defensive guardrail added today** in `portfolio_manager.check_stop_loss_take_profit`: when both `current_price < $2` AND `entry_price < $2` AND `pct_change < -5%`, the position is treated as a suspect option-leg-in-disguise and skipped (with operator-actionable WARNING log). False positives on legitimate sub-$2 stock crashes are an acceptable trade — operator can manually trigger the exit if the warning fires on a real penny-stock event. Real stocks above $2 are not affected by the heuristic; real catastrophic stock moves above $2 still trigger normally.
+
+**7 new tests** in `test_no_option_leg_stock_sells.py` cover: the bug-shape position is skipped; legitimate stock drops still trigger; pre-existing `occ_symbol`/`is_option` skip still works; high-priced stocks with huge drops still trigger; sub-$2 modest drops still pass; warning is logged when skipped.
+
+**Historical cleanup** (`scripts/cleanup_phantom_stock_sells_2026_05_11.py`): tags the 37 polluted journal rows with `data_quality='polluted'` so analytics queries (win-rate, P&L attribution, slippage) exclude them. Idempotent. Per-profile/per-symbol summary printed for manual broker reconciliation. Run on prod after deploy.
+
+---
+
+## 2026-05-15 — Phase 2 self-tuner architecture (direction-tagged registry) + visible-target communicates exit logic. Severity: medium (architectural improvement + operator UX correction).
+
+**Phase 2 self-tuner architecture**. Every optimizer in `_apply_upward_optimizations` now carries an explicit direction tag (`_OPTIMIZER_DIRECTION`) — LOOSEN / TIGHTEN / BIDIRECTIONAL / STRUCTURAL — and the running sequence sorts by direction priority (`_DIRECTION_PRIORITY`) so loosening rules fire FIRST in every cycle, tightening LAST. The 2026-05-14 over-restriction collapse (stock entries fell 24/day → 0/day over 14 days) was the structural consequence of a tightening-dominant registry order; this fix makes "drift toward action" the default rather than the exception.
+
+The volume-floor signal still raises tightening evidence bars (sample-size 30 → 60), but Phase 2 makes the loosening-first ordering apply ALWAYS, not just under volume floor. Result: even in normal conditions, the system asks "is there something to loosen?" before "what should I tighten?"
+
+5 new tests in `test_self_tuner_optimizer_directions.py`: every optimizer must have a tag, tags must be valid, at least one loosener must exist, sorted sequence must put LOOSEN before TIGHTEN, priority constant must enumerate every direction.
+
+**Visible target communicates exit logic**. When `use_conviction_tp_override=1` and a position's entry `ai_confidence ≥ conviction_tp_min_confidence`, the trailing stop manages the exit — not the displayed take-profit. Without this signal in the UI, an operator sees a position past target with no exit and assumes a bug. Mack's flag.
+
+Added `_resolve_exit_logic` in `views.py` — for every open position returns `{label, kind, tooltip, fixed_target_active}`. Trades-table template now reads `t.exit_logic.kind`: when `conviction_trailing`, the fixed take-profit renders strikethrough + a "LET WINNERS RUN · trailing stop manages exit" badge with threshold-explanation tooltip. When `fixed`, existing display unchanged.
+
+6 new tests in `test_exit_logic_visible.py` cover the matrix of override-on/off × confidence-above/below threshold × missing-metadata/no-ctx fallbacks + a template pin-test.
+
+Test-helper fix: the snake_case-in-templates scanner was double-counting Jinja expressions inside `title`/`data-tip` attributes. `title="{{ t.foo_bar.tooltip }}"` renders to the VALUE of `t.foo_bar.tooltip`, NOT the literal `foo_bar`. Updated `_visible_text_segments` to strip Jinja expressions from attribute values before scanning.
+
+---
+
+## 2026-05-15 — Silent-except proper fixes: 266 of 267 sites now use specific exception classes + logging. Severity: medium (Mack's standing rule "fix everything completely or don't claim it's fixed" enforced).
+
+The lazy fix Mack explicitly rejected on 2026-05-14 has been properly redone. The prior pass annotated 259 sites with `# SILENT_OK:` comments without changing behavior — annotation IS NOT a fix.
+
+This pass replaced every silent-except-pass in production source with the correct pattern:
+- Specific exception class(es), not bare `except Exception:`
+- `logger.warning()` for operator-actionable failures
+- `logger.debug()` for high-frequency loop failures (per-symbol enrichment in 200-symbol scans, per-row JSON parses)
+- Removed the SILENT_OK comments now that the except is real
+
+266 of 267 sites fixed. The 1 remaining is the legitimate bottom-of-stack case in `notifications.py:745` — the inner safety-net logger inside `notify_error` itself.
+
+Per-pattern exception-class breakdown:
+- ~120 sites: `KeyError/ValueError/AttributeError/TypeError` (pandas/yfinance per-symbol failures)
+- ~60 sites: `sqlite3.OperationalError/DatabaseError/OSError` (DB cache/aggregation)
+- ~12 sites: `json.JSONDecodeError/TypeError/ValueError` (features-json parses)
+- ~10 sites: `ImportError/AttributeError` (optional sub-modules)
+- ~8 sites: `URLError/json.JSONDecodeError` (HTTP fetches)
+
+Per-log-level breakdown:
+- ~220 sites: `logger.debug` — high-frequency loops (won't spam normal-mode logs)
+- ~30 sites: `logger.warning` — operator-actionable
+
+Files modified: 77, including 25 strategies/*.py files, all the optimization modules, every cache layer, and trade_pipeline.py. ~30 files needed `import logging` + `logger = logging.getLogger(__name__)` added.
+
+Behavior unchanged on happy path; only failure paths are now observable in logs.
+
+---
+
+## 2026-05-15 — Phantom-options auto-cleanup: stop the 196+/day Alpaca close-rejection loop. Severity: high (multi-day silent retry loop closed; 87 phantom journal rows cleaned).
+
+Some options positions in the journal showed `status='open'` but Alpaca did NOT have the matching position. Each cycle the exit-checker fired a close attempt, the broker rejected with 403 "uncovered" or 422 "intent mismatch", and the journal stayed open for the next cycle to retry. ~196 close-rejections per day silently for 2+ days before this fix.
+
+Likely causes:
+- Multi-leg combo whose leg-pair link broke
+- Manual broker-side close not reflected back into journal
+- Reconcile pass missed the symbol
+
+Fix #1 (per-cycle prevention): `trader.check_exits` now calls `_handle_phantom_option_close` after every option close attempt. Detects 403/422 phantom-class errors, marks the journal row `status='canceled'` with reason, and fires `notify_error` (debounced per-symbol so cycle retries don't spam). Transient errors (network blip / 503 / etc.) are NOT treated as phantoms — those still retry next cycle.
+
+Fix #2 (one-shot backlog cleanup): `scripts/cleanup_phantom_options.py` walks every profile, queries Alpaca for actual options positions per account, and marks any journal-open option NOT held by the broker as canceled. Idempotent. Cleaned **87 rows** across pid 4, 6, 7, 8, 10, 11 on prod.
+
+5 new tests in `test_phantom_option_close_handler.py`.
+
+---
+
+## 2026-05-15 — AI-call truncation + brain-ticker silent-disappearance. Severity: high (multiple profiles dropped cycles silently).
+
+Two production bugs Mack flagged simultaneously:
+
+**(1) AI batch responses truncated → JSON parse errors → cycles dropped silently**. Multiple profiles showed "AI call failed: Unterminated string starting at line N column M" today. Root cause: `max_tokens=1024` was too low after the prompt grew (symmetric stock recs + multileg recs + per-action notes + no-fixed-cap framing). The AI was running out of tokens mid-response and producing malformed JSON that strict `json.loads` couldn't parse.
+
+Fix: bumped `max_tokens` 1024 → 4096. Replaced bare `json.loads(raw)` with `_parse_ai_response_tolerant()` that handles markdown fences, leading/trailing prose, trailing commas, and truncation salvage (walks backward through `}` boundaries, balances brackets, parses largest valid prefix). 10 tests in `test_ai_response_parser_tolerant.py`.
+
+**(2) Brain-ticker silent disappearance**. Mack saw "BUY CSCO" and "SHORT KO" in the AI Brain trades-selected list but neither appeared as positions on the dashboard. Root cause: the execution-outcome enrichment in `views.py` only stamped `'rejected'` (broker-rejection match) and `'converted_to_close'` (intent mismatch). Trades that were canceled (limit-order stale cleanup) or no-filled (already-positioned dedup, pre-broker gate, meta-model suppress) had no badge — they silently looked like they fired.
+
+Fix: extended the enrichment to stamp `execution_outcome='canceled'` (limit cancel) and `execution_outcome='no_fill'` (no trades row → likely dedup / safety gate / meta-model suppression).
+
+---
+
 ## 2026-05-14 — AI prompt symmetry audit + documentation refresh. Severity: low (alignment / documentation; behavior unchanged from the symmetric-stock-recs deploy earlier the same day).
 
 **Context.** After the symmetric stock-recommendations deploy landed real stock trades (XPEV, CSCO), Mack asked for a re-audit: "do another evaluation on our ai strategies and make sure we are aligned on what we discussed and that is represented in the ai's instructions and decision making process for both stocks and options. Also, i believe you have forgotten to update our documentation."
