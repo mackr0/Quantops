@@ -836,12 +836,23 @@ def dashboard():
     except Exception:
         kill_switch_state = {"enabled": False, "reason": ""}
 
+    # Cost cap status — surfaces a banner when today's spend reaches
+    # the daily ceiling (AI calls now hard-block; the banner explains
+    # why no new entries are landing).
+    try:
+        from cost_guard import status as _cost_status
+        cost_status = _cost_status(current_user.effective_user_id)
+    except Exception as _cs_exc:
+        logger.warning("dashboard: cost_status build failed: %s", _cs_exc)
+        cost_status = None
+
     return render_template("dashboard.html",
                            profiles_data=profiles_data,
                            any_profile_active=any_profile_active,
                            profile_schedules=profile_schedules,
                            scan_failures=scan_failures,
-                           kill_switch=kill_switch_state)
+                           kill_switch=kill_switch_state,
+                           cost_status=cost_status)
 
 
 @views_bp.route("/settings")

@@ -133,7 +133,7 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | `drawdown_scaling.py` | Continuous size modifier on drawdown. |
 | `mfe_capture.py` | MFE-vs-realized P&L analysis. |
 | `correlation.py` | Rolling correlation between positions. |
-| `cost_guard.py` | Daily AI-spend ceiling enforcement. |
+| `cost_guard.py` | Per-user daily AI-spend ceiling. Two enforcement paths: (1) hard block at `ai_providers.call_ai` / `call_ai_structured` — every AI call is gated against a worst-case cost estimate before the provider is invoked; raises `CostCapExceeded` when over budget. (2) advisory at three self-tuner sites (`self_tuning.py`) — over-budget tuner actions surface as `Recommendation: cost-gated` strings instead of auto-applying. Ceiling = user's `daily_cost_ceiling_usd` override or auto-computed `max($5, trailing_7d_avg × 1.5)`. Cap fires write `activity_type='cost_cap_blocked'` rows; dashboard renders a banner when `headroom_usd ≤ $0.05`. |
 | `short_borrow.py` | Short-borrow rate lookup + accrual on cover. |
 | `kill_switch.py` | Master kill switch — single boolean blocks every new entry across every profile. Auto-activates on book day-P&L floor breach (default −8%). Manual via `/api/kill-switch` + dashboard banner. State persists in master DB. |
 | `book_concentration.py` | Cross-profile single-name concentration cap. Sums $ exposure to a symbol across every profile DB; rejects entries that would push aggregate share past `max_book_exposure_pct_per_symbol` (default 25%). |

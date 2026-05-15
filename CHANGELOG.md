@@ -17,9 +17,40 @@ Rules going forward:
 
 ---
 
-## 2026-05-15 — Settings page: daily cost ceiling input renders as currency ("$5.00" not "5"). Severity: low (UX polish, no functional change).
+## 2026-05-15 — Daily cost cap is now a real pipeline-wide hard stop (was advisory-only). Settings page reflects the new behavior. Severity: high (the field on the settings page told users it blocked AI calls — it didn't; only blocked self-tuner actions).
 
-The "Daily cost ceiling (USD)" input on the Autonomy settings card was rendering its stored REAL value as "5" — browsers strip trailing zeros from `<input type="number">`. Switched to `<input type="text" inputmode="decimal" pattern="[0-9]*\.?[0-9]{0,2}">` with a `$` prefix span so the field reads as "$5.00". Mobile keyboards still get the decimal pad via `inputmode="decimal"`. Backend handler unchanged — already strips/parses any string the form returns.
+**The problem.** The "Daily cost ceiling" setting on the Autonomy card promised: *"blocks any autonomous action that would push today's API spend past this number."* In reality the gate (`cost_guard.can_afford_action`) was only called from 3 sites in `self_tuning.py` — strategy commissioning, parameter tuning, and guardrail expansion. The trade pipeline (`batch_select`, ensemble specialists, sentiment, transcript scoring, news, political_context — i.e. every AI call that produces ~95% of daily spend) ignored the cap entirely. A user setting `daily_cost_ceiling_usd = 5` was getting a "$5 self-tuner cap," not a "$5 daily AI spend cap."
+
+**Root cause (architectural).** Cost enforcement was added incrementally — each new self-tuner action remembered to call `can_afford_action`, but the pre-existing trade pipeline never had the gate added to it. The system's most expensive code paths were the LEAST gated. There was no structural test forcing every AI-call entry point to invoke the gate, so new entry points (e.g. the 5/14 `call_ai_structured` addition) automatically inherited the gap.
+
+**The fix.**
+
+1. **Gate added at the AI provider boundary.** `ai_providers._enforce_cost_cap()` is invoked by both `call_ai` and `call_ai_structured` BEFORE the provider call. Worst-case cost is estimated as `len(prompt) // 3` input tokens (intentionally conservative — overestimate over underestimate) plus `max_tokens` output tokens, priced via `ai_pricing.estimate_cost_usd`. If `can_afford_action(user_id, est_cost)` returns False, raises new `CostCapExceeded` exception. No provider call, no token spend, no ledger write.
+
+2. **`user_id_for_db_path()` helper** in `cost_guard.py` maps `quantopsai_profile_<N>.db` → `trading_profiles.user_id` so the gate can attribute spend correctly. Falls open (call proceeds) when db_path is missing or unrecognized — calls without a profile context (admin, startup) aren't blocked by a missing mapping.
+
+3. **Trade pipeline catches `CostCapExceeded` distinctly.** `ai_analyst.ai_select_trades` returns `{cost_capped: True, pass_this_cycle: True, trades: []}` when caught — distinguishes a legitimate cap fire from an "AI broken" failure in logs and downstream consumers.
+
+4. **Activity log entry on every cap fire.** `ai_providers._enforce_cost_cap` writes an `activity_type='cost_cap_blocked'` row to `activity_log` so the dashboard / activity feed can surface "no new trades because cap reached."
+
+5. **Dashboard banner.** `views.dashboard()` now passes `cost_status` to the template; `dashboard.html` renders a yellow warning banner when `headroom_usd <= 0.05` explaining the block and linking to the settings page.
+
+6. **Settings page label + body rewritten.** Old: "Daily cost ceiling (USD)" + "blocks any autonomous action…" New: "Maximum daily AI spend" + "Hard cap on today's total AI cost across all your profiles. When today's spend reaches this number, every AI call (trade selection, ensemble specialists, sentiment, self-tuner) is blocked for the rest of the day…" The previous text was technically misleading; it has been replaced with text that matches the new (real) enforcement.
+
+7. **Currency input fix.** "Daily cost ceiling" field was an `<input type="number">` which strips trailing zeros — a stored 5.0 displayed as "5". Switched to `<input type="text" inputmode="decimal" pattern="[0-9]*\.?[0-9]{0,2}">` with a `$` prefix span so it reads "$5.00".
+
+**Tests preventing recurrence.**
+
+- `tests/test_cost_cap_pipeline_enforcement.py` (NEW, 7 tests):
+  - `test_user_id_for_db_path_resolves_correctly` — the foundation mapping
+  - `test_user_id_for_unknown_path_returns_none` — fall-open for unattributable paths
+  - `test_call_ai_blocks_when_over_cap` — headline contract: provider NOT invoked when over budget
+  - `test_call_ai_proceeds_when_under_cap` — inverse: legitimate calls aren't broken
+  - `test_call_ai_falls_open_when_db_path_unattributable` — startup/admin calls without a profile context proceed
+  - `test_cost_cap_writes_to_activity_log` — silent failures forbidden
+  - **`test_every_public_call_function_invokes_cost_cap` (CLASS-LEVEL)** — AST-walks `ai_providers.py`, fails if any function whose name starts with `call_` does NOT invoke `_enforce_cost_cap`. Catches the next "someone added a new entry point and forgot the gate" regression at test time, not in production.
+
+**Follow-up.** None. Existing 3 self-tuning sites still call `can_afford_action` directly; that path is unchanged and remains advisory (returns False → action becomes a "Recommendation: cost-gated" string, per the no-recommendation-only guardrail). The new pipeline path is hard-block; the two paths coexist correctly.
 
 ---
 

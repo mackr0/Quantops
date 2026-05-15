@@ -102,9 +102,9 @@
         <hr style="margin:1rem 0;border:none;border-top:1px solid #ddd;">
 
         <label style="display:block;padding:0.5rem 0;">
-            <strong>Daily cost ceiling (USD)</strong>
+            <strong>Maximum daily AI spend</strong>
             <small class="muted" style="display:block;margin-top:0.25rem;">
-                The cost guard blocks any autonomous action that would push today's API spend past this number — over-budget changes surface as cost-gated recommendations instead of auto-applying.
+                Hard cap on today's total AI cost across all your profiles. When today's spend reaches this number, every AI call (trade selection, ensemble specialists, sentiment, self-tuner) is blocked for the rest of the day — a banner appears on the dashboard and scans skip the AI step until midnight ET. Existing positions and broker stops are not affected.
                 Leave blank to auto-compute as <em>trailing-7-day-average × 1.5</em> (floor $5/day).
                 {% if autonomy.cost_status %}
                 <br>Current ceiling:

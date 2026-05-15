@@ -538,7 +538,21 @@ def ai_select_trades(candidates_data, portfolio_state, market_context, ctx=None)
                        db_path=getattr(ctx, "db_path", None),
                        purpose="batch_select")
         result = _parse_ai_response_tolerant(raw)
-    except (json.JSONDecodeError, Exception) as exc:
+    except Exception as exc:
+        from cost_guard import CostCapExceeded
+        if isinstance(exc, CostCapExceeded):
+            # Distinct path so dashboard / logs don't mistake a
+            # legitimate cap fire for a "broken AI" failure.
+            logger.warning("Cost cap blocked batch_select: %s", exc)
+            return {
+                "trades": [],
+                "portfolio_reasoning": (
+                    "Cost cap reached — no new trades this cycle. "
+                    f"{exc}"
+                ),
+                "pass_this_cycle": True,
+                "cost_capped": True,
+            }
         logger.error("AI batch call failed: %s — raw[:300]=%r",
                      exc, (raw if 'raw' in locals() else '')[:300])
         return {

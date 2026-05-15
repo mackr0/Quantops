@@ -2,6 +2,7 @@
 
 import logging
 import re
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,73 @@ def _call_provider(provider, prompt, model, api_key, max_tokens):
     raise ValueError(f"Unknown AI provider: {provider!r}")
 
 
+def _enforce_cost_cap(prompt: str, model: Optional[str], max_tokens: int,
+                       db_path: Optional[str], purpose: Optional[str]) -> None:
+    """Pre-call gate: if `db_path` resolves to a user_id, and the
+    worst-case cost of this call would push today's spend past that
+    user's daily ceiling, raise CostCapExceeded so the call never hits
+    the provider.
+
+    Worst-case estimate: input ≈ len(prompt) // 3 chars-to-tokens
+    (overestimate vs the typical 3.5-4 ratio so we err on the side of
+    blocking, not letting through), output = max_tokens (the actual
+    upper bound we permitted). Priced via ai_pricing.estimate_cost_usd.
+
+    Falls open (call proceeds) if db_path is missing or doesn't map to
+    a known user — there's no way to attribute spend to a ceiling
+    without a user_id, and silently routing to the wrong user's cap
+    would be worse than no cap at all.
+    """
+    from cost_guard import (
+        user_id_for_db_path, can_afford_action, CostCapExceeded,
+    )
+    from ai_pricing import estimate_cost_usd
+
+    user_id = user_id_for_db_path(db_path) if db_path else None
+    if user_id is None:
+        return  # No user attribution → can't enforce per-user cap
+
+    est_input_tokens = max(1, len(prompt) // 3)
+    est_output_tokens = max(1, int(max_tokens or 0))
+    est_cost = estimate_cost_usd(model, est_input_tokens, est_output_tokens)
+
+    if not can_afford_action(user_id, est_cost):
+        # Surface to activity_log so it shows on the dashboard. Look
+        # up the profile_id from db_path so the log entry is scoped
+        # correctly. Fire-and-forget — a logging failure must NOT
+        # turn into a "cap fires but we ate the call anyway" bug.
+        m = re.search(r"profile_(\d+)\.db$", db_path or "")
+        if m:
+            try:
+                from models import log_activity
+                log_activity(
+                    profile_id=int(m.group(1)),
+                    user_id=user_id,
+                    activity_type="cost_cap_blocked",
+                    title="Daily cost cap reached — AI call blocked",
+                    detail=(
+                        f"{purpose or 'AI call'}: would add ${est_cost:.4f} "
+                        f"(est {est_input_tokens}+{est_output_tokens} tokens). "
+                        "Set a higher ceiling on the settings page if this "
+                        "is intentional."
+                    ),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "cost cap fired but activity_log write failed: %s: %s",
+                    type(exc).__name__, exc,
+                )
+        logger.warning(
+            "Cost cap blocked %s for user %d: est $%.4f would exceed ceiling",
+            purpose or "AI call", user_id, est_cost,
+        )
+        raise CostCapExceeded(
+            user_id, est_cost,
+            action_summary=f"{purpose or 'AI call'} (~{est_input_tokens}+"
+                            f"{est_output_tokens} tokens)",
+        )
+
+
 def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1024,
             db_path=None, purpose=None):
     """Send a prompt to the specified AI provider and return the response text.
@@ -158,7 +226,9 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
         api_key: API key for the provider
         max_tokens: Max response tokens
         db_path: Optional per-profile DB path. When provided, the call is
-            logged to that profile's ai_cost_ledger table.
+            logged to that profile's ai_cost_ledger table AND the daily
+            cost cap (from `cost_guard`) is enforced — callers without
+            a db_path bypass the cap (no way to attribute to a user).
         purpose: Optional short tag (e.g., "ensemble:earnings_analyst",
             "batch_select", "sec_diff") for the ledger — lets the dashboard
             break spend down by what the call was for.
@@ -185,6 +255,10 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
     Raises:
         ValueError: If provider is unknown or api_key is missing
         RuntimeError: If primary + every fallback raise transient failures
+        CostCapExceeded: If db_path resolves to a user whose daily
+            spend ceiling would be exceeded by this call's worst-case
+            cost. Caught by the pipeline's existing Exception handler
+            so the cycle skips this call instead of crashing.
     """
     if provider not in PROVIDERS:
         raise ValueError(f"Unknown AI provider: {provider!r}. "
@@ -195,6 +269,11 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
 
     if model is None:
         model = _DEFAULT_MODELS.get(provider)
+
+    # Cost cap (added 2026-05-15 — pipeline-wide hard stop). Raises
+    # CostCapExceeded when over budget; falls open when db_path can't
+    # be attributed to a user.
+    _enforce_cost_cap(prompt, model, max_tokens, db_path, purpose)
 
     # Build attempt order: primary first, then fallbacks. If primary
     # circuit is currently OPEN, primary is skipped — but we still
@@ -298,6 +377,10 @@ def call_ai_structured(prompt, schema, tool_name="emit",
         raise ValueError("api_key required")
     if model is None:
         model = _DEFAULT_MODELS.get("anthropic")
+
+    # Cost cap (added 2026-05-15 — pipeline-wide hard stop). Same gate
+    # as call_ai. Raises CostCapExceeded when over budget.
+    _enforce_cost_cap(prompt, model, max_tokens, db_path, purpose)
 
     try:
         import anthropic

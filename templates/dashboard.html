@@ -11,6 +11,25 @@
      the toggle endpoint is @admin-gated server-side AND the activate /
      deactivate buttons are hidden here for viewers. (Without both
      layers, a viewer could silently freeze the admin's book.) -->
+{# Cost cap banner — surfaces when today's AI spend has hit (or is
+   about to hit) the user's daily ceiling. AI calls hard-block on
+   the cap so this is the only signal explaining "no new trades
+   landing" when the system is otherwise healthy. #}
+{% if cost_status and cost_status.headroom_usd <= 0.05 %}
+<article style="background:#fff8e1;border:2px solid #f57c00;padding:0.85rem 1.1rem;margin-bottom:1rem;border-radius:6px;">
+    <div>
+        <strong style="color:#e65100;font-size:1.05rem;">⚠ Daily cost cap reached — AI calls are blocked for the rest of today</strong>
+        <div style="margin-top:0.35rem;color:#555;font-size:0.9rem;">
+            Today's AI spend: <strong>${{ "%.2f" % cost_status.today_usd }}</strong>
+            of <strong>${{ "%.2f" % cost_status.ceiling_usd }}</strong> ceiling
+            ({{ cost_status.ceiling_source }}-set).
+            New scans skip the AI step until the cap resets at midnight ET, or
+            <a href="/settings#autonomy">raise the ceiling</a>.
+        </div>
+    </div>
+</article>
+{% endif %}
+
 {% if kill_switch and kill_switch.enabled %}
 <article style="background:#fff5f5;border:2px solid #d32f2f;padding:0.85rem 1.1rem;margin-bottom:1rem;border-radius:6px;">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">

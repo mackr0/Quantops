@@ -1,22 +1,28 @@
 """Cost guard — cross-cutting daily-spend ceiling enforcement.
 
-Every autonomous action that could increase API spend (Layer 2 weight
-changes that re-include omitted signals, Layer 6 adaptive prompt
-verbosity, Layer 8 strategy generation, Layer 7 per-symbol overrides
-that turn signals back on) calls `can_afford_action(user_id,
-estimated_extra_cost_usd)` before proceeding. If False, the action is
-queued as a recommendation surfacing the cost estimate — the ONLY
-legitimate use of "Recommendation: cost-gated" allowed by the
-no-recommendation-only guardrail test.
+Two enforcement paths:
 
-The ceiling is a per-user dollar amount. Defaults to the user's
-trailing-7-day average spend × 1.5 — generous enough that normal
-operation is never blocked, tight enough that runaway autonomous
-expansion gets caught before it bills you for thousands.
+1. SELF-TUNER (advisory). Tuner actions (commission strategy, apply
+   parameter tuning, expand guardrails) call `can_afford_action(...)`
+   before proceeding; if False the action is queued as a
+   "Recommendation: cost-gated" instead of auto-applied. This is the
+   ONLY legitimate use of the "Recommendation:" prefix allowed by the
+   no-recommendation-only guardrail test.
 
-The user can configure their own ceiling via a per-user settings
-column (added in a later wave); for now the auto-computed default
-suffices.
+2. PIPELINE (hard block — added 2026-05-15). Every AI call routed
+   through `ai_providers.call_ai` / `call_ai_structured` is gated by
+   `can_afford_action(...)` against a worst-case cost estimate
+   (len(prompt)/3 input tokens + max_tokens output, priced via
+   ai_pricing). If the call would push today's spend past the
+   ceiling, the call raises `CostCapExceeded` instead of hitting the
+   provider — caught by the trade pipeline's existing exception
+   handler, logged to activity_log, and surfaced as a dashboard
+   banner. Today's running spend is recomputed every call so the
+   block fires at the boundary, not after.
+
+The ceiling is per-user. User can set an explicit override on the
+settings page (`users.daily_cost_ceiling_usd`); without one, the
+ceiling auto-computes as `max($5, trailing_7d_avg × 1.5)`.
 """
 
 from __future__ import annotations
@@ -192,6 +198,56 @@ def format_cost_recommendation(action_summary: str, user_id: int,
         f"${today_so_far:.2f} of ${ceiling:.2f} ceiling). "
         f"Manual approval required."
     )
+
+
+class CostCapExceeded(Exception):
+    """Raised when an AI call would push today's spend past the user's
+    daily ceiling. Caught by the trade pipeline's existing exception
+    handler so the cycle skips this call instead of crashing. Carries
+    a `recommendation` string suitable for the activity log / dashboard
+    banner."""
+
+    def __init__(self, user_id: int, estimated_cost_usd: float,
+                 action_summary: str = "AI call"):
+        self.user_id = user_id
+        self.estimated_cost_usd = estimated_cost_usd
+        self.action_summary = action_summary
+        self.recommendation = format_cost_recommendation(
+            action_summary, user_id, estimated_cost_usd,
+        )
+        super().__init__(self.recommendation)
+
+
+def user_id_for_db_path(db_path: str) -> Optional[int]:
+    """Map a profile DB path (e.g. 'quantopsai_profile_4.db') to the
+    owning user_id. Returns None if the path doesn't carry a numeric
+    profile id or the lookup fails — callers must treat None as
+    "cannot enforce per-user cap on this call."
+
+    The cap-enforcement path is the only caller; lookup failures fall
+    open (call proceeds without the cap check) rather than blocking
+    legitimate work on a path-parsing edge case."""
+    if not db_path:
+        return None
+    import re
+    m = re.search(r"profile_(\d+)\.db$", db_path)
+    if not m:
+        return None
+    pid = int(m.group(1))
+    try:
+        from models import _get_conn
+        with closing(_get_conn()) as conn:
+            row = conn.execute(
+                "SELECT user_id FROM trading_profiles WHERE id = ?", (pid,),
+            ).fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            ValueError, TypeError, OSError) as exc:
+        logger.debug(
+            "user_id_for_db_path lookup failed for %s: %s: %s",
+            db_path, type(exc).__name__, exc,
+        )
+        return None
 
 
 def status(user_id: int) -> Dict[str, Any]:
