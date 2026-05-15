@@ -38,6 +38,8 @@ rsync -avz --progress \
     --filter '- *.db-wal' \
     --filter '- *.pyc' \
     --filter '- .DS_Store' \
+    --filter '- .env' \
+    --filter '- .env.*' \
     --include '*.py' \
     --include '*.html' \
     --include '*.css' \
@@ -46,7 +48,6 @@ rsync -avz --progress \
     --include '*.txt' \
     --include '*.sh' \
     --include '*.png' \
-    --include '.env' \
     --include 'templates/' \
     --include 'templates/**' \
     --include 'static/' \
