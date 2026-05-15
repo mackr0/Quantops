@@ -29,10 +29,24 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
     for symbol in universe:
         try:
             sent = get_sentiment_signal(symbol) or {}
-            # Expected fields: direction ('bullish'|'bearish'|'neutral'), score (0-100)
-            direction = (sent.get("direction") or "").lower()
-            score = float(sent.get("score", 0) or 0)
-            if direction not in ("bullish", "bearish") or score < 70:
+            # Real contract from news_sentiment.get_sentiment_signal:
+            #   signal: 'BUY' | 'SELL' | 'HOLD'
+            #   sentiment_score: float in roughly [-1, +1]
+            #   label: 'BULLISH' | 'BEARISH' | 'NEUTRAL'
+            #   news_count: int
+            sig_signal = (sent.get("signal") or "").upper()
+            score = float(sent.get("sentiment_score", 0) or 0)
+            news_count = int(sent.get("news_count", 0) or 0)
+
+            # Need a real signal backed by enough news to be decisive.
+            if sig_signal not in ("BUY", "SELL"):
+                continue
+            # Magnitude floor: |score| >= 0.5 means the analyzer was
+            # decisive (the underlying call already requires |score|>0.3
+            # to emit BUY/SELL — we're stricter here to filter noise).
+            if abs(score) < 0.5:
+                continue
+            if news_count < 2:
                 continue
 
             df = get_bars(symbol, limit=5)
@@ -42,22 +56,22 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
             prev_close = float(df["close"].iloc[-2])
             move_pct = (price - prev_close) / prev_close * 100 if prev_close > 0 else 0
 
-            # Price must confirm the sentiment direction
-            if direction == "bullish" and move_pct < 1.0:
+            # Price must confirm the sentiment direction.
+            if sig_signal == "BUY" and move_pct < 1.0:
                 continue
-            if direction == "bearish" and move_pct > -1.0:
+            if sig_signal == "SELL" and move_pct > -1.0:
                 continue
 
-            signal = "BUY" if direction == "bullish" else "SELL"
             out.append({
                 "symbol": symbol,
-                "signal": signal,
+                "signal": sig_signal,
                 "score": 1,
-                "votes": {NAME: signal},
+                "votes": {NAME: sig_signal},
                 "price": price,
                 "reason": (
-                    f"News sentiment spike: {direction} signal (score {score:.0f}) "
-                    f"+ price confirming ({move_pct:+.1f}%)"
+                    f"News sentiment spike: {sig_signal} (sentiment "
+                    f"{score:+.2f}, {news_count} headlines) + price "
+                    f"confirming ({move_pct:+.1f}%)"
                 ),
             })
         except (KeyError, ValueError, AttributeError, TypeError,

@@ -17,6 +17,8 @@ enough resolved predictions.
 from __future__ import annotations
 
 import logging
+import sqlite3
+from contextlib import closing
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -232,13 +234,53 @@ def compute_capital_allocations(strategy_names: List[str], db_path: str,
 
 
 def get_allocation_summary(db_path: str, market_type: str) -> List[Dict[str, Any]]:
-    """Return per-strategy weight + rolling Sharpe + n_trades for the dashboard."""
+    """Return per-strategy weight + rolling Sharpe + n_trades for the dashboard.
+
+    2026-05-15 attribution fix: `market_engine` wraps the legacy
+    `strategy_router` which emits predictions tagged with the SUB-
+    strategy that produced the vote (`sector_momentum`,
+    `pullback_support`, `index_correlation`, `dividend_yield`,
+    `relative_strength`, `ma_alignment`, `macd_cross`, etc.) — NOT
+    with `market_engine` itself. Before this fix, summing by
+    registered file name showed `market_engine` as a zombie
+    (lifetime_n=0) while ~1,500 lifetime predictions were invisible
+    in the dashboard. Now: every distinct `strategy_type` value in
+    `ai_predictions` gets a row, registered or not. Unregistered
+    names are tagged `is_legacy=True` so the UI can group them.
+    """
     from strategies import get_active_strategies
     from alpha_decay import compute_rolling_metrics, compute_lifetime_metrics
 
     strategies = get_active_strategies(market_type, db_path=db_path)
-    names = [getattr(m, "NAME", "?") for m in strategies]
+    # Exclude `market_engine` from BOTH the displayed list AND the
+    # capital-allocation calculation. It's a wrapper around the legacy
+    # router; including it in capital weights would assign capital to
+    # a non-strategy and cause displayed weights to fail to sum to 1.
+    names = [getattr(m, "NAME", "?") for m in strategies
+             if getattr(m, "NAME", "") != "market_engine"]
     weights = compute_capital_allocations(names, db_path)
+
+    # Discover strategy_type values that have produced predictions but
+    # aren't in the registered strategies list (legacy router subs).
+    legacy_names: List[str] = []
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT strategy_type FROM ai_predictions "
+                "WHERE strategy_type IS NOT NULL "
+                "AND strategy_type != '' "
+                "AND strategy_type != 'batch_ai'"
+            ).fetchall()
+        seen = set(names)
+        for (st,) in rows:
+            if st not in seen:
+                legacy_names.append(st)
+                seen.add(st)
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as exc:
+        logger.debug(
+            "legacy strategy discovery failed for %s: %s: %s",
+            db_path, type(exc).__name__, exc,
+        )
 
     summary = []
     for name in names:
@@ -256,5 +298,24 @@ def get_allocation_summary(db_path: str, market_type: str) -> List[Dict[str, Any
             "rolling_n": rolling.get("n_predictions", 0),
             "lifetime_n": lifetime.get("n_predictions", 0),
             "rolling_win_rate": rolling.get("win_rate", 0),
+            "is_legacy": False,
+        })
+    # Append legacy router sub-strategies with their actual metrics.
+    for name in sorted(legacy_names):
+        try:
+            rolling = compute_rolling_metrics(db_path, name, window_days=30)
+            lifetime = compute_lifetime_metrics(db_path, name)
+        except Exception:
+            rolling = {"sharpe_ratio": 0, "n_predictions": 0, "win_rate": 0}
+            lifetime = {"sharpe_ratio": 0, "n_predictions": 0}
+        summary.append({
+            "name": name,
+            "weight": 0.0,  # legacy subs don't carry their own weight allocation
+            "rolling_sharpe": rolling.get("sharpe_ratio", 0),
+            "lifetime_sharpe": lifetime.get("sharpe_ratio", 0),
+            "rolling_n": rolling.get("n_predictions", 0),
+            "lifetime_n": lifetime.get("n_predictions", 0),
+            "rolling_win_rate": rolling.get("win_rate", 0),
+            "is_legacy": True,
         })
     return summary

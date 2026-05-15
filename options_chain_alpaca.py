@@ -134,10 +134,20 @@ _ALPACA_TRADING_BASE_PAPER = "https://paper-api.alpaca.markets"
 
 
 def _alpaca_headers() -> Dict[str, str]:
-    import config
+    """Return Alpaca auth headers using the env credentials, falling
+    back to any working `alpaca_accounts` row if env keys are absent
+    or fail authentication.
+
+    See `market_data._resolve_alpaca_credentials` for the rationale —
+    this module followed the same pattern (read config-only) and broke
+    in the same way when the master key was revoked. Sharing the
+    credential resolver keeps both modules self-healing in lockstep.
+    """
+    from market_data import _resolve_alpaca_credentials
+    key, secret, _ = _resolve_alpaca_credentials()
     return {
-        "APCA-API-KEY-ID": config.ALPACA_API_KEY,
-        "APCA-API-SECRET-KEY": config.ALPACA_SECRET_KEY,
+        "APCA-API-KEY-ID": key,
+        "APCA-API-SECRET-KEY": secret,
     }
 
 

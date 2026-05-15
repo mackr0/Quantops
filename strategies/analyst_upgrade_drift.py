@@ -1,12 +1,19 @@
-"""analyst_upgrade_drift — follow the 2–3 day drift after a recent upgrade.
+"""analyst_upgrade_drift — follow the 2–3 day drift after a fresh
+analyst-consensus shift.
 
-Sell-side analyst revisions are followed by predictable short-term drift
-in the direction of the revision (Womack 1996, Jegadeesh et al. 2004).
-The effect lives roughly 2–5 trading days before being absorbed.
+Sell-side analyst revisions are followed by predictable short-term
+drift in the direction of the revision (Womack 1996, Jegadeesh et al.
+2004). The effect lives roughly 2–5 trading days before being absorbed.
 
-We use yfinance's `recommendations` property as a proxy for the most
-recent rating change and trigger when a fresh upgrade or downgrade
-shows up alongside supporting price action.
+Original implementation (pre-2026-05-15) read individual `To Grade` /
+`From Grade` columns from yfinance. yfinance changed schema; those
+columns no longer exist. The endpoint now returns AGGREGATE
+distributions per period (`strongBuy`, `buy`, `hold`, `sell`,
+`strongSell` counts per month), so we detect a "revision" as a
+period-over-period shift in the weighted-mean rating. Implementation
+encapsulated in `analyst_data.recommendation_shift` (yfinance
+grandfathered there since no Alpaca / custom altdata source exists
+for this).
 """
 
 from __future__ import annotations
@@ -24,47 +31,18 @@ APPLICABLE_MARKETS = ["small", "midcap", "largecap"]
 
 
 def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
-    import yfinance as yf
+    from analyst_data import recommendation_shift
     from market_data import get_bars
-
-    import datetime as _dt
-    now = _dt.datetime.utcnow()
 
     out = []
     for symbol in universe:
         try:
-            recs = yf.Ticker(symbol).recommendations
-            if recs is None or len(recs) == 0:
+            shift = recommendation_shift(symbol)
+            if not shift or shift["direction"] == "flat":
                 continue
-
-            # Find the most recent action row (yfinance schema varies by
-            # version — `To Grade` / `From Grade` columns are the stable
-            # ones across versions).
-            latest = recs.tail(1).iloc[0]
-            to_grade = str(latest.get("To Grade", "")).lower()
-            from_grade = str(latest.get("From Grade", "")).lower()
-
-            # Date column is the index in most yfinance versions
-            try:
-                last_change = recs.index[-1]
-                if hasattr(last_change, "to_pydatetime"):
-                    last_change = last_change.to_pydatetime()
-                days_since = (now - last_change.replace(tzinfo=None)).days
-            except Exception:
-                days_since = 999
-            if days_since > 5:
-                continue
-
-            upgrade_terms = ("buy", "strong buy", "outperform", "overweight",
-                             "accumulate", "positive")
-            downgrade_terms = ("sell", "strong sell", "underperform",
-                               "underweight", "reduce", "negative")
-
-            is_upgrade = any(t in to_grade for t in upgrade_terms) and \
-                         not any(t in from_grade for t in upgrade_terms)
-            is_downgrade = any(t in to_grade for t in downgrade_terms) and \
-                           not any(t in from_grade for t in downgrade_terms)
-            if not (is_upgrade or is_downgrade):
+            # Need a meaningful base of analysts to consider the shift
+            # signal-worthy — small coverage = noisy.
+            if shift["total_analysts"] < 5:
                 continue
 
             df = get_bars(symbol, limit=5)
@@ -74,10 +52,11 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
             prior = float(df["close"].iloc[-2])
             move_pct = (price - prior) / prior * 100 if prior > 0 else 0
 
-            # Require price to confirm the revision direction
+            # Require price to confirm the revision direction.
+            is_upgrade = shift["direction"] == "bullish"
             if is_upgrade and move_pct < 0:
                 continue
-            if is_downgrade and move_pct > 0:
+            if not is_upgrade and move_pct > 0:
                 continue
 
             signal = "BUY" if is_upgrade else "SELL"
@@ -88,14 +67,15 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
                 "votes": {NAME: signal},
                 "price": price,
                 "reason": (
-                    f"Analyst revision: {from_grade or '?'} → {to_grade} "
-                    f"{days_since}d ago, price confirming ({move_pct:+.1f}%)"
+                    f"Analyst consensus shift {shift['direction']} "
+                    f"(score {shift['prior_score']:+.2f} → "
+                    f"{shift['current_score']:+.2f}, "
+                    f"{shift['total_analysts']} analysts), "
+                    f"price confirming ({move_pct:+.1f}%)"
                 ),
             })
         except (KeyError, ValueError, AttributeError, TypeError,
                 IndexError, ZeroDivisionError, OSError) as _ss_exc:
-            # Per-symbol strategy scoring loop; one bad symbol
-            # shouldn't kill the strategy loop. Surface for follow-up.
             logger.debug(
                 "%s scoring failed for %s: %s: %s",
                 NAME, symbol, type(_ss_exc).__name__, _ss_exc,

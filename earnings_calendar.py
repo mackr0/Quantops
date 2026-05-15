@@ -238,6 +238,131 @@ def check_earnings(symbol: str) -> Optional[Dict]:
         return None
 
 
+def _ensure_past_table():
+    """Create the earnings_history table for past earnings dates.
+
+    Separate from the future-dated `earnings_dates` table because the
+    semantics differ: future dates are SCHEDULED events that we re-check
+    if soon; past dates are HISTORICAL fact and never need re-checking
+    once observed.
+    """
+    try:
+        with closing(sqlite3.connect(_DB_PATH)) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS earnings_history (
+                    symbol TEXT NOT NULL,
+                    earnings_date TEXT NOT NULL,
+                    fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (symbol, earnings_date)
+                )
+            """)
+            conn.commit()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _ci_exc:
+        logger.warning(
+            "earnings_history schema init failed: %s: %s",
+            type(_ci_exc).__name__, _ci_exc,
+        )
+
+
+def _store_past_dates(symbol: str, dates: list) -> None:
+    """Insert observed past earnings dates. Idempotent via PRIMARY KEY."""
+    if not dates:
+        return
+    try:
+        with closing(sqlite3.connect(_DB_PATH)) as conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO earnings_history "
+                "(symbol, earnings_date) VALUES (?, ?)",
+                [(symbol, d) for d in dates],
+            )
+            conn.commit()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as exc:
+        logger.debug(
+            "earnings_history write failed for %s: %s: %s",
+            symbol, type(exc).__name__, exc,
+        )
+
+
+def days_since_last_earnings(symbol: str,
+                              max_lookback_days: int = 120) -> Optional[int]:
+    """Return calendar days since the most-recent past earnings
+    announcement for `symbol`, or None if not known and not findable.
+
+    Lookup order:
+      1. `earnings_history` cache (this module's persistent store).
+      2. yfinance `Ticker(sym).earnings_dates` — the only data source
+         we have today for past earnings (Alpaca has no earnings
+         calendar endpoint at all). Cached on first observation so
+         subsequent scans don't re-hit yfinance.
+
+    Per the project's Alpaca-first → custom-altdata → yfinance-last
+    rule, yfinance is grandfathered HERE because no Alpaca alternative
+    exists for earnings dates (same status as the existing FUTURE
+    earnings cache in this module). All yfinance-knowledge is
+    encapsulated inside this function — strategies never import
+    yfinance themselves.
+    """
+    if "/" in symbol:
+        return None
+    _ensure_past_table()
+    today = date.today()
+
+    # 1. Cache lookup.
+    try:
+        with closing(sqlite3.connect(_DB_PATH)) as conn:
+            row = conn.execute(
+                "SELECT earnings_date FROM earnings_history "
+                "WHERE symbol = ? AND date(earnings_date) <= date('now') "
+                "ORDER BY earnings_date DESC LIMIT 1",
+                (symbol,),
+            ).fetchone()
+        if row and row[0]:
+            ed = datetime.strptime(row[0][:10], "%Y-%m-%d").date()
+            days = (today - ed).days
+            if 0 <= days <= max_lookback_days:
+                return days
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as exc:
+        logger.debug(
+            "earnings_history read failed for %s: %s: %s",
+            symbol, type(exc).__name__, exc,
+        )
+
+    # 2. yfinance fetch (last resort, encapsulated here).
+    try:
+        import yfinance as yf
+        try:
+            import yf_lock as _yfl
+            with _yfl._lock:
+                df = yf.Ticker(symbol).earnings_dates
+        except Exception:
+            df = yf.Ticker(symbol).earnings_dates
+        if df is None or len(df) == 0:
+            return None
+        past_dates = []
+        for d in df.index:
+            dt = d.to_pydatetime() if hasattr(d, "to_pydatetime") else d
+            if hasattr(dt, "tzinfo") and dt.tzinfo is not None:
+                dt = dt.replace(tzinfo=None)
+            if dt.date() <= today:
+                past_dates.append(dt.date().isoformat())
+        if not past_dates:
+            return None
+        # Persist for next time.
+        _store_past_dates(symbol, past_dates)
+        most_recent = max(past_dates)
+        ed = datetime.strptime(most_recent, "%Y-%m-%d").date()
+        days = (today - ed).days
+        if 0 <= days <= max_lookback_days:
+            return days
+        return None
+    except Exception as exc:
+        logger.debug(
+            "yfinance past-earnings fetch failed for %s: %s: %s",
+            symbol, type(exc).__name__, exc,
+        )
+        return None
+
+
 def get_earnings_context(symbol: str, avoid_days: int = 2) -> str:
     """Return earnings context string for AI prompt injection."""
     result = check_earnings(symbol)

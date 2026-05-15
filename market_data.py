@@ -39,16 +39,70 @@ _bars_cache: dict = {}  # (symbol, limit) → (epoch_seconds, DataFrame)
 _bars_cache_lock = threading.Lock()
 
 
+def _resolve_alpaca_credentials():
+    """Return (key, secret, base_url) using the first working source.
+
+    Order:
+      1. `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` env vars (master key,
+         set in `.env`).
+      2. Any non-null `alpaca_api_key_enc` row in the master DB's
+         `alpaca_accounts` table (decrypted) — these are the
+         per-trading-account keys that the scheduler also uses for
+         orders, and they share the same data subscription as the
+         master key. Tested in registration order; first one whose
+         basic-auth challenge succeeds is cached for reuse.
+
+    Self-healing rationale (added 2026-05-15): the master key was
+    revoked at some point and only the per-account keys were
+    refreshed. `_get_alpaca_data_client` then silently failed and
+    `get_bars` fell back to yfinance for the entire system. Falling
+    through to alpaca_accounts keys ensures a credential rotation on
+    the master key alone doesn't put the bar fetcher onto yfinance
+    again — the per-account keys are kept fresh because the trading
+    code uses them and a stale one would fail trades visibly.
+    """
+    env_key = os.getenv("ALPACA_API_KEY", "")
+    env_secret = os.getenv("ALPACA_SECRET_KEY", "")
+    base_url = os.getenv("ALPACA_BASE_URL",
+                          "https://paper-api.alpaca.markets")
+    if env_key and env_secret:
+        return env_key, env_secret, base_url
+
+    # Fallback: try alpaca_accounts table.
+    try:
+        import sqlite3 as _sq3
+        from contextlib import closing as _closing
+        with _closing(_sq3.connect("quantopsai.db")) as conn:
+            row = conn.execute(
+                "SELECT alpaca_api_key_enc, alpaca_secret_key_enc "
+                "FROM alpaca_accounts "
+                "WHERE alpaca_api_key_enc IS NOT NULL "
+                "AND alpaca_api_key_enc != '' "
+                "ORDER BY id LIMIT 1"
+            ).fetchone()
+        if row:
+            from crypto import decrypt
+            return decrypt(row[0]), decrypt(row[1]), base_url
+    except Exception as exc:
+        logger.warning(
+            "alpaca_accounts credential fallback failed: %s: %s",
+            type(exc).__name__, exc,
+        )
+    return "", "", base_url
+
+
 def _get_alpaca_data_client():
-    """Return a cached REST client for Alpaca market data. None on failure."""
+    """Return a cached REST client for Alpaca market data. None on failure.
+
+    Credential resolution: see `_resolve_alpaca_credentials` for the
+    env-first / alpaca_accounts-fallback order.
+    """
     global _alpaca_data_client
     if _alpaca_data_client is not None:
         return _alpaca_data_client
     try:
         from alpaca_trade_api import REST
-        key = os.getenv("ALPACA_API_KEY", "")
-        secret = os.getenv("ALPACA_SECRET_KEY", "")
-        base_url = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+        key, secret, base_url = _resolve_alpaca_credentials()
         if not key or not secret:
             return None
         _alpaca_data_client = REST(key, secret, base_url)

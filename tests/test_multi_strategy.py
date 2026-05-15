@@ -298,24 +298,72 @@ class TestCapitalAllocations:
 
 class TestAllocationSummary:
     def test_returns_row_per_active_strategy(self, tmp_profile_db):
+        """Summary covers every active strategy EXCEPT `market_engine`,
+        which is a router-wrapper not a real strategy (its signals are
+        recorded under sub-strategy names like sector_momentum,
+        pullback_support, etc. — those appear as legacy entries instead)."""
         from multi_strategy import get_allocation_summary
         from strategies import get_active_strategies
 
         summary = get_allocation_summary(tmp_profile_db, "small")
-        active_names = {m.NAME for m in get_active_strategies("small", db_path=tmp_profile_db)}
-        summary_names = {row["name"] for row in summary}
+        active_names = {m.NAME for m in get_active_strategies("small", db_path=tmp_profile_db)
+                        if m.NAME != "market_engine"}
+        summary_names = {row["name"] for row in summary if not row.get("is_legacy")}
         assert summary_names == active_names
+
+    def test_market_engine_excluded_from_summary(self, tmp_profile_db):
+        """`market_engine` must NOT appear as its own row — it's a
+        wrapper, and showing it as a strategy with lifetime_n=0 was the
+        2026-05-15 misleading-zombie bug."""
+        from multi_strategy import get_allocation_summary
+        summary = get_allocation_summary(tmp_profile_db, "small")
+        for row in summary:
+            assert row["name"] != "market_engine", (
+                f"market_engine row leaked into allocation summary: {row}"
+            )
+
+    def test_legacy_strategies_appear_when_predictions_exist(self, tmp_profile_db):
+        """Predictions tagged with names not in the registry (legacy
+        router sub-strategies) must surface as is_legacy rows so the
+        dashboard shows ALL real signal-producing activity."""
+        import sqlite3
+        # Seed a prediction tagged with a legacy router sub-name.
+        conn = sqlite3.connect(tmp_profile_db)
+        conn.execute(
+            "INSERT INTO ai_predictions "
+            "(symbol, predicted_signal, price_at_prediction, status, "
+            " strategy_type, timestamp) "
+            "VALUES ('AAPL', 'BUY', 100.0, 'pending', "
+            " 'pullback_support', datetime('now'))",
+        )
+        conn.commit()
+        conn.close()
+
+        from multi_strategy import get_allocation_summary
+        summary = get_allocation_summary(tmp_profile_db, "small")
+        legacy = [r for r in summary if r.get("is_legacy")]
+        legacy_names = {r["name"] for r in legacy}
+        assert "pullback_support" in legacy_names, (
+            f"Legacy strategy 'pullback_support' missing from summary; "
+            f"got legacy names: {legacy_names}"
+        )
 
     def test_summary_rows_have_required_keys(self, tmp_profile_db):
         from multi_strategy import get_allocation_summary
         summary = get_allocation_summary(tmp_profile_db, "small")
         required = {"name", "weight", "rolling_sharpe", "lifetime_sharpe",
-                    "rolling_n", "lifetime_n", "rolling_win_rate"}
+                    "rolling_n", "lifetime_n", "rolling_win_rate", "is_legacy"}
         for row in summary:
             assert required.issubset(row.keys())
 
     def test_summary_weights_sum_to_one(self, tmp_profile_db):
+        """Weights of REGISTERED (non-legacy) rows should sum to ~1.0.
+        Legacy rows have weight=0 by design and don't participate in
+        capital allocation — they're surfaced for visibility, not
+        for sizing."""
         from multi_strategy import get_allocation_summary
         summary = get_allocation_summary(tmp_profile_db, "small")
-        if summary:
-            assert pytest.approx(sum(r["weight"] for r in summary), abs=1e-3) == 1.0
+        registered = [r for r in summary if not r.get("is_legacy")]
+        if registered:
+            total = sum(r["weight"] for r in registered)
+            assert pytest.approx(total, abs=1e-3) == 1.0

@@ -55,9 +55,15 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
     for symbol in universe:
         try:
             oracle = get_options_oracle(symbol) or {}
-            iv_rank = oracle.get("iv_rank")
-            if iv_rank is None or iv_rank < 70:
+            # `iv_rank` from get_options_oracle is a dict
+            # {rank_pct, signal, realized_vol}, NOT a number. The
+            # previous `iv_rank < 70` comparison silently raised
+            # TypeError → strategy never produced a candidate.
+            iv_rank_data = oracle.get("iv_rank") or {}
+            rank_pct = iv_rank_data.get("rank_pct")
+            if rank_pct is None or rank_pct < 70:
                 continue
+            iv_rank = float(rank_pct)
 
             df = get_bars(symbol, limit=30)
             if df is None or len(df) < 22:

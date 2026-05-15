@@ -274,7 +274,7 @@ class TestHighIvRankFade:
     def test_fade_sell_at_high_iv_and_overbought(self, monkeypatch):
         from strategies import high_iv_rank_fade as mod
         monkeypatch.setattr("options_oracle.get_options_oracle",
-                            lambda s: {"iv_rank": 90})
+                            lambda s: {"iv_rank": {"rank_pct": 90}})
         df = _bars([100.0] * 25)
         df.loc[df.index[-1], "rsi"] = 80.0
         monkeypatch.setattr("market_data.get_bars", lambda s, limit=40: df)
@@ -285,7 +285,7 @@ class TestHighIvRankFade:
     def test_fade_buy_at_high_iv_and_oversold(self, monkeypatch):
         from strategies import high_iv_rank_fade as mod
         monkeypatch.setattr("options_oracle.get_options_oracle",
-                            lambda s: {"iv_rank": 85})
+                            lambda s: {"iv_rank": {"rank_pct": 85}})
         df = _bars([100.0] * 25)
         df.loc[df.index[-1], "rsi"] = 20.0
         monkeypatch.setattr("market_data.get_bars", lambda s, limit=40: df)
@@ -296,7 +296,7 @@ class TestHighIvRankFade:
     def test_no_trigger_at_low_iv_rank(self, monkeypatch):
         from strategies import high_iv_rank_fade as mod
         monkeypatch.setattr("options_oracle.get_options_oracle",
-                            lambda s: {"iv_rank": 40})
+                            lambda s: {"iv_rank": {"rank_pct": 40}})
         df = _bars([100.0] * 25)
         df.loc[df.index[-1], "rsi"] = 80.0
         monkeypatch.setattr("market_data.get_bars", lambda s, limit=40: df)

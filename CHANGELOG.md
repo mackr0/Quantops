@@ -17,6 +17,74 @@ Rules going forward:
 
 ---
 
+## 2026-05-15 — Strategy audit: 5 broken strategies fixed + Alpaca data layer recovered (was silently on yfinance system-wide). Severity: critical (the entire bar/quote pipeline was running on yfinance fallback while paying for Alpaca, AND ~70% of registered strategies were producing zero signals due to API contract mismatches).
+
+**The combined problem.**
+
+Two independent issues compounded into a system that LOOKED like a sophisticated multi-strategy AI trader but was actually fusing signals from ~30% of its strategy registry, on yfinance bars instead of Alpaca:
+
+1. **Data-layer regression**: the master `ALPACA_API_KEY` in `.env` was revoked at some point. `market_data._get_alpaca_data_client` and `options_chain_alpaca._alpaca_headers` both read from the env key. Both started returning auth failures. `market_data.get_bars` has a yfinance fallback (`market_data.py:184-188`); `options_chain_alpaca` has none. Result: every bar fetch system-wide silently fell back to yfinance; every options chain fetch silently returned None. The 3 working `alpaca_accounts` rows (used by trading code) were never tried as a fallback.
+
+2. **Strategy contract drift**: 5 of 26 registered strategies had wrong API contracts vs the data sources they call.
+
+**Audit findings** (full per-strategy plan in `STRATEGY_AUDIT_PLAN.md`):
+
+| Strategy | Bug | Fix |
+|---|---|---|
+| `earnings_drift` | Read `days_since_last` from `check_earnings()` — that field doesn't exist; function returns FUTURE earnings only. Always fell to default `999`. | Added `earnings_calendar.days_since_last_earnings()` (uses yfinance grandfathered — no Alpaca alternative) with persistent cache in new `earnings_history` table. Strategy uses the new function; no direct yfinance import in the strategy file. |
+| `news_sentiment_spike` | Read fields `direction` (str) and `score` (0-100); `get_sentiment_signal` actually returns `signal` (BUY/SELL/HOLD), `sentiment_score` (-1..+1), `label`, `news_count`. Always fell through. | Rewritten to consume real fields. Already on Alpaca News API (no data-source change). |
+| `analyst_upgrade_drift` | Read `To Grade`/`From Grade` columns; yfinance schema changed to `{period, strongBuy, buy, hold, sell, strongSell}` aggregate counts per period. | New `analyst_data.py` module encapsulates the new yfinance schema; strategy detects period-over-period sentiment shift via weighted-rating delta. yfinance grandfathered (no Alpaca/altdata source for analyst data). |
+| `high_iv_rank_fade` | Compared `oracle["iv_rank"]` (a dict `{rank_pct, signal, realized_vol}`) to a number — silent TypeError. | Extract `iv_rank["rank_pct"]` first. |
+| `iv_regime_short` | Same dict-vs-number bug. | Same fix. |
+
+Plus **attribution fix**: `market_engine` (a wrapper for the legacy `strategy_router`) was being shown as a 0-prediction zombie in the dashboard while emitting ~1,500 lifetime predictions tagged with sub-strategy names (`sector_momentum`, `pullback_support`, `index_correlation`, `dividend_yield`, `relative_strength`, `ma_alignment`, `macd_cross`). `get_allocation_summary` now skips `market_engine` entirely (it's a wrapper, not a strategy) and surfaces the legacy router sub-strategies as `is_legacy=True` rows with their actual lifetime metrics. Dashboard now shows ALL real signal-producing activity instead of hiding ~1,500 predictions.
+
+**Data-layer fix** (CC-1): two-pronged.
+
+(a) **Operator action (immediate)**: `.env` master key rotated to a verified-working key from `alpaca_accounts.id=1` (confirmed 200 on `/v2/account`, `/v2/stocks/AAPL/bars/latest`, `/v1beta1/options/snapshots/AAPL`). Service restarted; bar fetches and options chain fetches both now hit real Alpaca.
+
+(b) **Code-level self-healing**: `market_data._resolve_alpaca_credentials()` (new) tries env keys first, then falls back to any non-null `alpaca_accounts.alpaca_api_key_enc` row decrypted from the master DB. Both `_get_alpaca_data_client` and `options_chain_alpaca._alpaca_headers` now use this resolver. Rationale: the per-account keys are kept fresh by trading code (a stale one would break orders visibly), so falling through to them prevents the next master-key rotation from silently dropping the data layer onto yfinance again.
+
+**Why the bug class wasn't caught earlier**:
+- Unit tests mocked `get_options_oracle` to return `{"iv_rank": 80}` (a number) — matching the strategy's broken expectation. Tests passed; production failed.
+- No production-data smoke test verified that registered strategies actually produced predictions over a window.
+- yfinance fallback was silent — no alert when Alpaca data fails.
+
+**Tests**:
+
+- 3 existing test files updated to match corrected contracts:
+  - `tests/test_iv_regime_short.py` — mock now returns `{"iv_rank": {"rank_pct": 80}}` matching real shape
+  - `tests/test_seed_strategies.py` — same fix for `high_iv_rank_fade` mocks
+  - `tests/test_multi_strategy.py` — allocation summary now excludes `market_engine`, surfaces legacy strategies; new tests pin the contract
+- 3 new test cases in `test_multi_strategy.py`:
+  - `test_market_engine_excluded_from_summary`
+  - `test_legacy_strategies_appear_when_predictions_exist`
+  - Updated `test_returns_row_per_active_strategy` and `test_summary_weights_sum_to_one` to reflect the new contract
+
+3343 tests pass.
+
+**Files**:
+
+- `strategies/earnings_drift.py` — refactored to use `earnings_calendar.days_since_last_earnings()`
+- `strategies/news_sentiment_spike.py` — corrected field names
+- `strategies/analyst_upgrade_drift.py` — rewritten for new yfinance schema via `analyst_data.recommendation_shift()`
+- `strategies/high_iv_rank_fade.py` — extract `iv_rank["rank_pct"]`
+- `strategies/iv_regime_short.py` — same
+- `analyst_data.py` (NEW) — encapsulates yfinance for analyst recommendations
+- `earnings_calendar.py` — added `days_since_last_earnings()` + `earnings_history` table for persistent past-event cache
+- `multi_strategy.py` — `get_allocation_summary` excludes `market_engine`, surfaces legacy router sub-strategies as `is_legacy=True` rows
+- `market_data.py` — `_resolve_alpaca_credentials()` self-healing; falls back from env to `alpaca_accounts` table
+- `options_chain_alpaca.py` — `_alpaca_headers()` uses the same resolver
+- `STRATEGY_AUDIT_PLAN.md` (NEW) — full 26-strategy audit + 6-phase remediation plan
+
+**Known follow-ups (intentionally deferred, tracked in `STRATEGY_AUDIT_PLAN.md`)**:
+
+- Phase 4: 7 strategies with code that looks correct but unreachable thresholds (`fifty_two_week_breakout`, `macd_cross_confirmation`, `volume_dryup_breakout`, `failed_breakout`, `parabolic_exhaustion`, `short_squeeze_setup`, `breakdown_support`) — needs threshold relaxation, strategy decision per-name.
+- Phase 5: structural test that flags any registered strategy with `lifetime_n=0` after >14 days of operation, plus the missing `feedback_alpaca_first_data.md` memory rule.
+- Phase 6: evaluate replacements for currently-working yfinance dependencies (`alternative_data.get_insider_activity`, `get_short_interest`, etc.) — only replace if a viable alternative exists; otherwise grandfather and document.
+
+---
+
 ## 2026-05-15 — Stalled-task alerts no longer lie. Restart-orphaned rows are taken off the stall path; true stalls get evidence-based diagnoses. Severity: medium (every operator-visible "stalled" alert in the activity feed was either a false positive from a deploy or a fabricated culprit text).
 
 **The problem.** Operators saw alerts like:

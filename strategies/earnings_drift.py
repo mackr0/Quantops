@@ -23,16 +23,13 @@ APPLICABLE_MARKETS = ["small", "midcap", "largecap"]
 
 
 def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
-    from earnings_calendar import check_earnings
+    from earnings_calendar import days_since_last_earnings
     from market_data import get_bars
 
     out = []
     for symbol in universe:
         try:
-            earn = check_earnings(symbol)
-            if not earn:
-                continue
-            days_since = earn.get("days_since_last", 999)
+            days_since = days_since_last_earnings(symbol)
             if days_since is None or days_since > 5 or days_since < 1:
                 continue
 

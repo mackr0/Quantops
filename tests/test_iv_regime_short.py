@@ -50,7 +50,7 @@ def test_NOT_in_catalyst_set():
 def test_no_candidate_when_iv_rank_low():
     from strategies.iv_regime_short import find_candidates
     with patch("options_oracle.get_options_oracle",
-                return_value={"iv_rank": 50}):
+                return_value={"iv_rank": {"rank_pct": 50}}):
         results = find_candidates(None, ["AAPL"])
     assert results == []
 
@@ -62,7 +62,7 @@ def test_no_candidate_when_above_sma():
     prices = [90 + (10 * i / 29) for i in range(30)]
     bars = _bars(prices)
     with patch("options_oracle.get_options_oracle",
-                return_value={"iv_rank": 80}), \
+                return_value={"iv_rank": {"rank_pct": 80}}), \
          patch("market_data.get_bars", return_value=bars):
         results = find_candidates(None, ["AAPL"])
     assert results == []
@@ -77,7 +77,7 @@ def test_candidate_emitted_in_iv_regime_downtrend():
     volumes = [1_000_000] * 29 + [2_500_000]
     bars = _bars(prices, volumes=volumes, rsi=45.0)
     with patch("options_oracle.get_options_oracle",
-                return_value={"iv_rank": 80}), \
+                return_value={"iv_rank": {"rank_pct": 80}}), \
          patch("market_data.get_bars", return_value=bars):
         results = find_candidates(None, ["TSLA"])
     assert len(results) == 1
@@ -93,7 +93,7 @@ def test_no_candidate_when_oversold():
     prices = [110 - (20 * i / 29) for i in range(30)]
     bars = _bars(prices, rsi=25.0)  # oversold
     with patch("options_oracle.get_options_oracle",
-                return_value={"iv_rank": 80}), \
+                return_value={"iv_rank": {"rank_pct": 80}}), \
          patch("market_data.get_bars", return_value=bars):
         results = find_candidates(None, ["TSLA"])
     assert results == []
@@ -106,7 +106,7 @@ def test_no_candidate_when_volume_thin():
     volumes = [1_000_000] * 30  # avg volume, no spike
     bars = _bars(prices, volumes=volumes, rsi=45.0)
     with patch("options_oracle.get_options_oracle",
-                return_value={"iv_rank": 80}), \
+                return_value={"iv_rank": {"rank_pct": 80}}), \
          patch("market_data.get_bars", return_value=bars):
         results = find_candidates(None, ["TSLA"])
     assert results == []
@@ -118,7 +118,7 @@ def test_no_candidate_when_sideways_under_sma():
     prices = [100, 99, 100, 99, 100] * 6  # sideways
     bars = _bars(prices)
     with patch("options_oracle.get_options_oracle",
-                return_value={"iv_rank": 80}), \
+                return_value={"iv_rank": {"rank_pct": 80}}), \
          patch("market_data.get_bars", return_value=bars):
         results = find_candidates(None, ["TSLA"])
     assert results == []
