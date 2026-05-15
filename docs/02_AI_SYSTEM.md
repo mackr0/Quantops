@@ -361,7 +361,7 @@ The system is engineered to operate on a $1.50-2.00/day AI budget across ten pro
 2. **Meta-model pre-gate** (§3) — drops low-prob candidates before specialist fan-out.
 3. **Per-profile specialist disable list** (§4) — anti-calibrated specialists skipped automatically.
 
-The cost guard (`cost_guard.py`) enforces a daily ceiling cross-cutting all autonomous actions.
+The cost guard (`cost_guard.py`) enforces a per-user daily AI-spend ceiling. Hard block at the `ai_providers.call_ai` / `call_ai_structured` boundary — every AI call is gated against a worst-case cost estimate before the provider is invoked; over-budget calls raise `CostCapExceeded` and the cycle skips the AI step. Three self-tuner sites also gate advisorily (over-budget tuner actions become `Recommendation: cost-gated` strings instead of auto-applying). Ceiling = user's `daily_cost_ceiling_usd` override or auto-computed `max($5, trailing_7d_avg × 1.5)`.
 
 ## 14. AI provider portability
 

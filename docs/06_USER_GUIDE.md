@@ -232,7 +232,7 @@ Per-profile performance breakdown.
 ### 7e. "Cost is too high"
 
 - Operations tab → Cost Guard: see the spend distribution.
-- Lower the daily cost ceiling (in the user-settings page).
+- Lower the **Maximum daily AI spend** on the settings page (Autonomy section). When today's spend reaches that number, every AI call hard-blocks for the rest of the day — a yellow banner appears on the dashboard explaining no new trades will land until midnight ET reset.
 - Switch profiles to Haiku / GPT-mini variants where Sonnet isn't needed.
 - Disable the most expensive specialists that aren't well-calibrated.
 

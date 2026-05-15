@@ -292,13 +292,21 @@ Deprecated strategies don't fire on the live engine but their historical contrib
 ## 9. Cost guard
 
 **Module:** `cost_guard.py`
-**Cadence:** every spend-affecting action.
+**Cadence:** every AI call (hard block) + every self-tuner action (advisory).
 
-Daily AI-spend ceiling per user. Default: trailing-7-day-avg × 1.5, floored at $5/day. User-configurable.
+Daily AI-spend ceiling per user. Default: `max($5, trailing_7d_avg × 1.5)`. User can override with an explicit value on the settings page (`Maximum daily AI spend`); when set, the override stays fixed regardless of historical drift.
 
-Spend-affecting autonomous actions (model upgrades, ensemble re-runs, AI A/B tests) check the cost guard before firing. Over-budget changes are surfaced as cost-gated recommendations rather than auto-applying.
+Two enforcement paths:
+
+1. **Pipeline-wide hard block** (added 2026-05-15). Every AI call routed through `ai_providers.call_ai` / `call_ai_structured` is gated against a worst-case cost estimate (`len(prompt)//3` input tokens + `max_tokens` output, priced via `ai_pricing.estimate_cost_usd`) before the provider is invoked. Over-budget calls raise `CostCapExceeded`; the trade pipeline catches it distinctly (returns `{cost_capped: True}` from `ai_select_trades`) so the cycle skips the AI step without crashing or being mistaken for a broken-AI failure. Each cap fire writes an `activity_type='cost_cap_blocked'` row to `activity_log`. The dashboard renders a yellow banner when `headroom_usd ≤ $0.05`.
+
+2. **Self-tuner advisory** (3 sites in `self_tuning.py`: strategy commissioning, parameter tuning, guardrail expansion). Over-budget tuner actions are surfaced as `Recommendation: cost-gated …` strings instead of auto-applying. This is the only legitimate use of the `Recommendation:` prefix allowed by the no-recommendation-only guardrail test.
+
+Existing positions and broker stops are NOT affected by a cap fire — only new AI-driven entry decisions stop. Cap resets at midnight ET.
 
 The cost ledger (`ai_cost_ledger`) persists per-call USD costs. Daily roll-up via `spend_summary` for monitoring.
+
+Class-level guardrail: `tests/test_cost_cap_pipeline_enforcement.py::test_every_public_call_function_invokes_cost_cap` AST-walks `ai_providers.py` and fails if any future `call_*` function forgets to invoke `_enforce_cost_cap`. New entry points inherit enforcement automatically; the test catches the gap at test time, not in production.
 
 ## 10. Honest limits
 
