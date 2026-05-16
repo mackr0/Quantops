@@ -131,8 +131,62 @@ def _set_cached(key, value):
 # Insider Transactions
 # ---------------------------------------------------------------------------
 
+def get_insider_form4(symbol):
+    """Read insider activity from the local edgar_form4 SQLite DB
+    (populated by the standalone `altdata/edgar_form4` scraper —
+    SEC Form 4 filings, the authoritative source).
+
+    Returns the same shape as `get_insider_activity` so callers can
+    use either, OR returns None if the local DB has no data for this
+    symbol yet — caller should fall back to the yfinance path.
+
+    Per the data-source priority rule (Alpaca first → custom altdata
+    second → yfinance last), this is the preferred source for insider
+    data. yfinance grandfathered fallback handles symbols not yet in
+    the local DB (cold-start) or until the daily scrape catches up."""
+    try:
+        import os
+        from pathlib import Path
+        # Try the prod-conventional path first, then a relative path
+        # for dev environments.
+        candidates = [
+            Path("/opt/quantopsai/altdata/edgar_form4/data/edgar_form4.db"),
+            Path(__file__).resolve().parent
+                / "altdata" / "edgar_form4" / "data" / "edgar_form4.db",
+        ]
+        db_path = next((str(p) for p in candidates if p.exists()), None)
+        if not db_path:
+            return None
+        import sys
+        ef4_pkg = str(Path(db_path).parent.parent)
+        if ef4_pkg not in sys.path:
+            sys.path.insert(0, ef4_pkg)
+        from edgar_form4.store import connect, get_recent_insider_activity
+        with connect(db_path) as conn:
+            data = get_recent_insider_activity(conn, symbol)
+        # Treat "no buys + no sells + no cluster" as "no data
+        # available for this symbol" so the caller falls back to
+        # yfinance instead of caching an empty result.
+        if (data["recent_buys"] == 0 and data["recent_sells"] == 0
+                and data["cluster_count"] == 0):
+            return None
+        return data
+    except Exception as exc:
+        logger.debug(
+            "edgar_form4 reader failed for %s: %s: %s",
+            symbol, type(exc).__name__, exc,
+        )
+        return None
+
+
 def get_insider_activity(symbol):
     """Get recent insider transactions for a symbol.
+
+    Source priority (per the Alpaca-first / custom-altdata / yfinance
+    rule):
+      1. Local edgar_form4 SQLite (SEC Form 4 filings — authoritative)
+      2. yfinance fallback (legacy; grandfathered until Form 4 daily
+         scrape catches up to the full active universe)
 
     Returns dict with:
         recent_buys: int (count in last 90 days)
@@ -146,6 +200,15 @@ def get_insider_activity(symbol):
     cached = _get_cached(cache_key, "insider")
     if cached is not None:
         return cached
+
+    # Source priority 1: custom altdata (SEC Form 4 direct).
+    form4 = get_insider_form4(symbol)
+    if form4 is not None:
+        _set_cached(cache_key, form4)
+        return form4
+
+    # Source priority 2: yfinance fallback (grandfathered).
+    # Falls through to the existing implementation below.
 
     result = {
         "recent_buys": 0, "recent_sells": 0,

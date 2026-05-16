@@ -17,6 +17,33 @@ Rules going forward:
 
 ---
 
+## 2026-05-16 — `altdata/edgar_form4/` — SEC Form 4 insider-transaction scraper replaces yfinance for `get_insider_activity`. Severity: medium (Phase 6 highest-priority altdata build from STRATEGY_AUDIT_PLAN.md).
+
+**Built**: `altdata/edgar_form4/` (4 modules + tests + CLI, ~900 lines following the existing `edgar13f` pattern):
+
+- `store.py` — SQLite schema (companies / form4_filings / insider_txns / raw_filings / scrape_runs). DB at `data/edgar_form4.db`.
+- `scrape.py` — SEC EDGAR fetch (submissions JSON for filings list, Form 4 XML for transactions). 1 req/sec polite throttle.
+- `normalize.py` — Form 4 XML parser extracting issuer, reporting owners, and non-derivative transactions with codes (P=Purchase, S=Sale, A=Award, M=Conversion, F=Tax, D=Disposition, G=Gift, etc.).
+- `cli.py` — refresh-tickers / refresh / daily / show / counts / runs.
+- 24 tests across `test_normalize.py` + `test_store.py`.
+
+**Wire-in**: `alternative_data.get_insider_activity(symbol)` now consults the local Form 4 DB FIRST (custom altdata, authoritative source) and falls back to yfinance only when the local DB has no data for the symbol (cold-start / daily scrape catch-up). Same return shape — zero callsite change required.
+
+**End-to-end verified live against real SEC data**: NVDA refresh returned 19 filings / 60 transactions / 37 recent sells / $163,640,959 total sell value. Real insider data from SEC's structured XML, not aggregated yfinance scrape.
+
+**Two parsing fixes discovered + tested during live verification**:
+
+- **xslF345X06 URL prefix**: SEC's submissions JSON returns the XSL-rendered document path (`xslF345X06/doc4.xml`) instead of the structured XML path (`doc4.xml`). My initial fetch hit the rendered version; structured form lives one directory up. `_build_xml_url` now strips `xsl*/` prefixes. Regression test pins the fix.
+- **Multiple share-class ticker entries per CIK**: SEC's `company_tickers.json` lists each preferred share class separately (JPMorgan CIK 0000019617 appears as JPM, JPM-PM, JPM-PC, JPM-PD). Naive upsert kept the LAST processed, ending up with `JPM-PM` mapped. `_prefer_ticker` heuristic now picks the cleanest variant (no hyphen, then shortest, then alphabetical). Regression test pins the JPM case.
+
+**Daily refresh integration**: `altdata/run-altdata-daily.sh` now runs edgar_form4 alongside the other altdata scrapers. The CLI auto-discovers active tickers via (1) `EDGAR_FORM4_TICKERS` env var, then (2) parent QuantOpsAI segment universes if available, then (3) explicit `--tickers` requirement.
+
+**Per the Phase 6 plan**: replacing yfinance for `get_insider_activity` (powers `insider_cluster` + `insider_selling_cluster` strategies with 1,341 combined lifetime predictions). yfinance remains as the cold-start fallback so the migration is gradual — as the daily scrape accumulates data per profile's active universe, more symbols get served from Form 4 directly.
+
+3413 tests in the main suite + 24 in `altdata/edgar_form4/tests/` (run via `pytest altdata/edgar_form4/tests/`).
+
+---
+
 ## 2026-05-16 — Auto-expiry on gate-tightening tuning changes — 4th of 4 permanent guardrails from 2026-05-14 over-restriction collapse. Severity: high (closes the original incident properly).
 
 **Core principle (Mack, 2026-05-16)**: "It shouldn't make it harder to trade — it should make it harder to make BAD trades." A gate-tightening with no measurable improvement in win rate is making it harder to trade WITHOUT making it harder to make bad trades. That's the case auto-expiry catches.

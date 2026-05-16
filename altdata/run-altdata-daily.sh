@@ -28,6 +28,7 @@ fi
 DEFAULT_PROJECTS=(
     "congresstrades"
     "edgar13f"
+    "edgar_form4"
     "biotechevents"
     "stocktwits"
 )
