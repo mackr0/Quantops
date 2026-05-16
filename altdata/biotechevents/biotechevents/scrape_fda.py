@@ -48,15 +48,19 @@ logger = logging.getLogger(__name__)
 
 
 def scrape_pdufa_calendar(db_conn: sqlite3.Connection) -> Dict[str, int]:
-    """STUB: not yet implemented. Returns immediately so the daily
-    pipeline doesn't fail."""
-    run_id = start_run(db_conn, "fda")
-    logger.warning(
-        "FDA scraper not implemented — see scrape_fda.py docstring for why."
-    )
-    finish_run(
-        db_conn, run_id, status="ok",
-        rows_inserted=0, rows_seen=0,
-        error="STUB: FDA PDUFA scraper not yet implemented",
+    """STUB: not yet implemented — FDA doesn't publish a structured
+    PDUFA calendar (see module docstring). Returns silently so the
+    daily pipeline doesn't fail. Pre-2026-05-16 this emitted a
+    `logger.warning` on every daily run, fabricating a 'no-progress'
+    alert on /issues. The fact that this is a stub is documented
+    in code, not surfaced as a daily WARN — when the scraper IS
+    implemented, the daily WARN goes away naturally.
+    """
+    # No scrape_runs row either — pre-fix we wrote one daily with
+    # error="STUB...", spamming the scrape_runs history. A function
+    # that does nothing shouldn't pretend to be a "run".
+    logger.debug(
+        "FDA PDUFA scraper stub called — no-op. See scrape_fda.py "
+        "docstring for the path forward."
     )
     return {"events_seen": 0, "events_inserted": 0, "note": "stub"}

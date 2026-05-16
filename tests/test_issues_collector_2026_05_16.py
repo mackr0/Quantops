@@ -245,6 +245,106 @@ class TestLiveAggregateDrift:
         )
 
 
+class TestLogTimestampExtraction:
+    """User caught (2026-05-16) that altdata log entries had blank
+    `last_seen` so /issues couldn't tell ancient errors from fresh
+    ones. Parse the timestamp prefix off each line."""
+
+    def test_python_logging_format_parsed(self):
+        from issues_collector import _extract_log_timestamp
+        line = "2026-05-16 06:08:37,844 [ERROR] yfinance: $BRK.B"
+        assert _extract_log_timestamp(line) == "2026-05-16T06:08:37"
+
+    def test_iso_z_format_parsed(self):
+        from issues_collector import _extract_log_timestamp
+        line = "2026-05-16T06:08:37Z [WARNING] something"
+        assert _extract_log_timestamp(line) == "2026-05-16T06:08:37"
+
+    def test_no_timestamp_returns_empty(self):
+        from issues_collector import _extract_log_timestamp
+        assert _extract_log_timestamp("[ERROR] no ts here") == ""
+        assert _extract_log_timestamp("") == ""
+
+    def test_collected_altdata_row_carries_timestamp(self, tmp_path):
+        """End-to-end: log file with a real timestamp, collector
+        extracts it into the row's `timestamp` field. Pre-2026-05-16
+        this was empty for every altdata row."""
+        from issues_collector import _collect_altdata_logs
+        # Build a small log fixture in a temp dir; point collector at it.
+        log = tmp_path / "altdata-20260516.log"
+        log.write_text(
+            "2026-05-16 06:08:37,844 [ERROR] yfinance: $BRK.B test\n"
+            "2026-05-16 06:09:12,001 [WARNING] something else\n"
+        )
+        import issues_collector
+        orig = issues_collector._altdata_log_paths
+        issues_collector._altdata_log_paths = lambda h: [str(log)]
+        try:
+            rows, err = _collect_altdata_logs(24)
+        finally:
+            issues_collector._altdata_log_paths = orig
+        assert err is None
+        assert len(rows) == 2
+        ts_values = sorted(r["timestamp"] for r in rows)
+        assert ts_values == ["2026-05-16T06:08:37", "2026-05-16T06:09:12"], (
+            "Each row must carry the per-line timestamp, not empty"
+        )
+
+
+class TestLiveDriftIsLiveSnapshot:
+    """Drift rows shouldn't fake a moment-in-time timestamp — they
+    represent persistent state, not new events. Carry an
+    `is_live_snapshot` flag so the template renders 'live snapshot'
+    instead of 'happened just now'."""
+
+    def setup_method(self):
+        import issues_collector
+        issues_collector._DRIFT_CACHE = {"ts": 0.0, "rows": [], "error": None}
+
+    def test_drift_row_marked_live_snapshot(self):
+        from issues_collector import _collect_aggregate_drift
+        fake_audit = {
+            "drift": [
+                {"alpaca_account_id": "acct1", "symbol": "NXPI",
+                 "journal_qty": 0.0, "broker_qty": -114.0,
+                 "drift": -114.0, "category": "broker_orphan"},
+            ],
+            "by_account": {},
+        }
+        with patch("aggregate_audit.audit_aggregate_drift",
+                   return_value=fake_audit):
+            rows, _ = _collect_aggregate_drift(24)
+        assert rows[0]["is_live_snapshot"] is True, (
+            "drift rows must be marked as live snapshots so the UI "
+            "can render 'live snapshot' rather than a fake timestamp"
+        )
+        assert rows[0]["timestamp"] == "", (
+            "drift rows must NOT carry a fake datetime.utcnow() — "
+            "the underlying state may have existed for days"
+        )
+
+    def test_grouping_preserves_live_snapshot_flag(self):
+        from issues_collector import collect_issues
+        fake_audit = {
+            "drift": [
+                {"alpaca_account_id": "acct1", "symbol": "NXPI",
+                 "journal_qty": 0.0, "broker_qty": -114.0,
+                 "drift": -114.0, "category": "broker_orphan"},
+            ],
+            "by_account": {},
+        }
+        with patch.multiple(
+            "issues_collector",
+            _collect_journald=MagicMock(return_value=([], None)),
+            _collect_altdata_logs=MagicMock(return_value=([], None)),
+            _collect_scrape_runs=MagicMock(return_value=([], None)),
+        ), patch("aggregate_audit.audit_aggregate_drift",
+                 return_value=fake_audit):
+            out = collect_issues()
+        assert out["total_groups"] == 1
+        assert out["groups"][0]["is_live_snapshot"] is True
+
+
 class TestScrapeRunsCollector:
     """Real DB integration for the scrape_runs source."""
 

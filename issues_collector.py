@@ -172,10 +172,40 @@ def _altdata_log_paths(since_hours: int) -> List[str]:
     return out[-12:]
 
 
+# Timestamp prefix patterns seen in altdata logs:
+#   1. Python logging default: "2026-05-16 06:08:37,844 [LEVEL] ..."
+#   2. ISO + Z: "2026-05-16T06:08:37Z [LEVEL] ..."
+#   3. Rich console wraps: any leading "[2026-05-16 06:08:37]"
+# Extract the first timestamp on the line so /issues can show when
+# the event actually happened rather than when the page was rendered.
+_LOG_TS_RE = re.compile(
+    r"\b(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})"
+)
+
+
+def _extract_log_timestamp(line: str) -> str:
+    """Return ISO timestamp 'YYYY-MM-DDTHH:MM:SS' if the line begins
+    with (or contains within first ~50 chars) a standard timestamp.
+    Returns '' when nothing parseable is found — caller renders '—'.
+    """
+    head = line[:80]
+    m = _LOG_TS_RE.search(head)
+    if not m:
+        return ""
+    return f"{m.group(1)}T{m.group(2)}"
+
+
 def _collect_altdata_logs(
     since_hours: int,
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    """Tail the most recent altdata logs for ERROR/WARNING lines."""
+    """Tail the most recent altdata logs for ERROR/WARNING lines.
+
+    Now (2026-05-16) extracts the per-line timestamp so /issues shows
+    when each event actually happened. Pre-fix every altdata-derived
+    row had an empty timestamp, making them indistinguishable from
+    just-fired events — user couldn't tell if an error was ancient
+    residue or live.
+    """
     paths = _altdata_log_paths(since_hours)
     if not paths:
         return [], None  # not an error — just no altdata logs here
@@ -198,7 +228,7 @@ def _collect_altdata_logs(
                         "source": os.path.basename(p),
                         "level": level,
                         "message": line.strip(),
-                        "timestamp": "",
+                        "timestamp": _extract_log_timestamp(line),
                     })
         except OSError as exc:
             errors.append(f"read {p}: {type(exc).__name__}: {exc}")
@@ -240,12 +270,15 @@ def _collect_aggregate_drift(
         from aggregate_audit import audit_aggregate_drift
         audit = audit_aggregate_drift(profile_ids=range(1, 12))
         for d in audit.get("drift", []):
-            acct = d.get("alpaca_account_id") or d.get("acct") or "?"
+            # aggregate_audit returns `account` + `kind`; tolerate
+            # alternate key names from older callers + tests.
+            acct = (d.get("account") or d.get("alpaca_account_id")
+                    or d.get("acct") or "?")
             sym = d.get("symbol", "?")
             j = d.get("journal_qty", 0)
             b = d.get("broker_qty", 0)
             delta = d.get("drift", 0)
-            cat = d.get("category", "drift")
+            cat = d.get("kind") or d.get("category") or "drift"
             level = "ERROR"
             rows.append({
                 "source": f"aggregate_audit.{acct}",
@@ -254,7 +287,14 @@ def _collect_aggregate_drift(
                     f"{cat}: {sym} journal={j:+.2f} broker={b:+.2f} "
                     f"drift={delta:+.2f}"
                 ),
-                "timestamp": datetime.utcnow().isoformat(timespec="seconds"),
+                # Drift is a LIVE snapshot, not a point-in-time
+                # event. The underlying state may have existed for
+                # days. Marked empty so the UI renders "—" with a
+                # "live snapshot" badge — pre-2026-05-16 this used
+                # `datetime.utcnow()` which made days-old residue
+                # look like a fresh event on every page load.
+                "timestamp": "",
+                "is_live_snapshot": True,
             })
     except ImportError as exc:
         err = f"aggregate_audit unavailable: {exc}"
@@ -415,6 +455,11 @@ def collect_issues(
                 "occurrences": 1,
                 "first_seen": r["timestamp"],
                 "last_seen": r["timestamp"],
+                # Carry the live-snapshot flag through grouping so
+                # the template can render "—" + "live snapshot"
+                # badge instead of pretending the row has a moment-
+                # in-time timestamp.
+                "is_live_snapshot": r.get("is_live_snapshot", False),
             }
         else:
             g["occurrences"] += 1

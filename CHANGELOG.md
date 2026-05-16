@@ -57,6 +57,16 @@ After the edgar_form4 `ok_with_errors` "silent failures count but don't expose w
 
 **All 14 audit issues closed across 5 deploys (c25a764, ab7ff42, febe6d9, 8b367f0, bdb83b8, plus this batch). 3251 main-suite tests pass.**
 
+**Batch 6 — clean up the actual residue on /issues (not just label it):**
+- `issues_collector` was telling lies about WHEN events happened: altdata log rows had blank `timestamp` (never parsed the line prefix) so the template showed nothing, and drift rows used `datetime.utcnow()` which faked a "just-now" moment for state that may have existed for days. Fix: `_extract_log_timestamp` parses the Python-logging prefix `YYYY-MM-DD HH:MM:SS,ms`; drift rows carry `timestamp=""` + `is_live_snapshot=True` so the template renders `live snapshot` instead.
+- `issues_collector._collect_aggregate_drift` was reading the wrong keys (`alpaca_account_id`/`category` instead of the actual `account`/`kind`) so the source label said `aggregate_audit.?` and the category text was always `drift`. Fixed.
+- `altdata/biotechevents/scrape_fda.scrape_pdufa_calendar` was a known-not-implemented stub that fired `logger.warning` daily for years — fabricating a /issues alert for a feature documented as deferred. Now `logger.debug` only; no spurious daily WARN.
+- `altdata/edgar13f/list_13f_filings_for_filer` accepts a `min_filed_date` parameter (default 2013-06-30, when SEC mandated structured-XML infotables). Pre-fix the scraper tried 300+/day pre-2013 filings that legitimately don't have XML, producing spurious `No infotable.xml` WARNs on /issues. Filtered at list-time so the WARN now only fires for genuine bugs (post-2013 filing somehow missing XML).
+- New `reconcile_aggregate_drift.py` — deterministic auto-reconciler for the 123 outstanding drift items. **broker_orphan**: insert a journal row in the lowest-id profile sharing the account, with `signal_type='AUTO_RECONCILE'` and a reason string naming the script + snapshot; uses current Alpaca mark as both entry + current (P&L tracking starts now). **journal_phantom**: mark every contributing open row `status='auto_reconciled_phantom_close'` with `pnl=0`. Dry-run by default; `--apply` actually writes. Refuses to write a price=0 row (would tip back to invisibility via `get_virtual_positions` filter).
+- Tests: 6 new for the reconciler (dry-run safety, broker_orphan backfill, profile attribution, journal_phantom close, no-mark skip), 4 new for log-timestamp extraction, 2 new for `is_live_snapshot` propagation.
+
+3263 main-suite tests pass.
+
 **Deploy race caught**: `deploy.sh` step 4b does `git reset --hard origin/main` on the droplet — local commits that aren't pushed to GitHub get clobbered. Now always `git push origin main` before `./deploy.sh`.
 
 3238 main-suite tests pass.

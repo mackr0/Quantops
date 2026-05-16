@@ -196,9 +196,15 @@ events, check that the collector itself isn't failing — see top of page.)</p>
             </td>
             <td class="occurrences">{{ g.occurrences }}</td>
             <td class="timestamp">
-                {{ g.last_seen[:19] if g.last_seen else '—' }}
+                {% if g.is_live_snapshot %}
+                <span class="muted" title="Live snapshot from the aggregate-audit live check — drift may have existed for days, this isn't a point-in-time event">live snapshot</span>
+                {% elif g.last_seen %}
+                {{ g.last_seen[:19] }}
                 {% if g.first_seen and g.first_seen != g.last_seen %}
                 <br><small class="muted">first {{ g.first_seen[:19] }}</small>
+                {% endif %}
+                {% else %}
+                <span class="muted" title="No timestamp parseable from the source — log line had no leading ISO timestamp">—</span>
                 {% endif %}
             </td>
         </tr>

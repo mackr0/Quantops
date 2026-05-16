@@ -126,12 +126,26 @@ class EdgarSession:
 # Filer filings list (via data.sec.gov submissions JSON)
 # ---------------------------------------------------------------------------
 
+# SEC mandated structured-XML infotables for 13F-HR effective
+# 2013-06-30 (Rule 13f-1 amendments). Filings before this date have
+# only HTML/text infotables, which our XML parser can't read. Skip
+# them at list-time so we don't generate ~300 "No infotable.xml"
+# WARNs per day on /issues for known-unscrapeable historical
+# filings. Caught 2026-05-16 zero-error audit.
+_INFOTABLE_XML_MIN_FILED_DATE = "2013-06-30"
+
+
 def list_13f_filings_for_filer(
     session: EdgarSession, cik: str,
+    min_filed_date: str = _INFOTABLE_XML_MIN_FILED_DATE,
 ) -> List[Dict[str, Any]]:
     """Return list of recent 13F-HR filings for a filer, newest first.
 
     Uses SEC's structured JSON endpoint which is stable and fast.
+    Filters out filings before `min_filed_date` (default 2013-06-30,
+    when SEC required structured-XML infotables) — older filings
+    legitimately don't have an XML infotable and were causing 300+/
+    day spurious WARNINGs on /issues.
     """
     url = f"{DATA_BASE}/submissions/CIK{cik}.json"
     r = session.get(url)
@@ -153,10 +167,13 @@ def list_13f_filings_for_filer(
     for i, form in enumerate(forms):
         if form != "13F-HR":
             continue
+        filed_date = _safe(filed, i)
+        if filed_date and filed_date < min_filed_date:
+            continue   # pre-2013 = no XML infotable, skip silently
         out.append({
             "accession_number": _safe(acc_nums, i),
             "period_of_report": _safe(periods, i),
-            "filed_date": _safe(filed, i),
+            "filed_date": filed_date,
             "primary_document": _safe(primary_docs, i),
         })
     return out

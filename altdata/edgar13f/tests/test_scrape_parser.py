@@ -74,6 +74,36 @@ class TestParseInformationTable:
         with pytest.raises(Exception):
             parse_information_table("<broken<<")
 
+    def test_pre_2013_filings_filtered_at_list_time(self):
+        """SEC mandated structured XML for 13F-HR effective 2013-06-30.
+        Filings before that date have only HTML/text infotables which
+        our XML parser can't read. The list function must filter them
+        out so we don't generate spurious 'No infotable.xml' WARNs
+        on /issues (300+/day pre-2026-05-16)."""
+        from unittest.mock import MagicMock
+        from edgar13f.scrape import list_13f_filings_for_filer
+        session = MagicMock()
+        session.get.return_value.json.return_value = {
+            "filings": {
+                "recent": {
+                    "form": ["13F-HR", "13F-HR", "13F-HR"],
+                    "accessionNumber": ["modern-1", "old-1", "ancient-1"],
+                    "periodOfReport": ["2024-09-30", "2010-09-30",
+                                       "2006-09-30"],
+                    "filingDate": ["2024-11-15", "2010-11-15",
+                                   "2006-11-15"],
+                    "primaryDocument": ["primary.xml", "primary.htm",
+                                        "primary.htm"],
+                }
+            }
+        }
+        out = list_13f_filings_for_filer(session, "0000123456")
+        assert len(out) == 1, (
+            "Only the 2024 filing should pass the date filter; "
+            "2010 and 2006 are pre-2013-06-30 and lack XML"
+        )
+        assert out[0]["accession_number"] == "modern-1"
+
     def test_namespaced_attributes_are_handled(self):
         """Pre-2026-05-16 the regex stripped tag prefixes (`<ns:foo>`)
         but NOT attribute prefixes (`<foo xsi:type="...">`). With the
