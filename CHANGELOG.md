@@ -17,6 +17,49 @@ Rules going forward:
 
 ---
 
+## 2026-05-15 — Monday-readiness: data-source health monitor + pre-market smoke test + final strategy sign-off + news_sentiment parser fix. Severity: high (closes the silent-fallback class of regression that was the backbone failure).
+
+**Why this exists:** the 2026-05-15 incident found that the master Alpaca API key had been revoked at some unknown earlier date, causing `market_data.get_bars` to silently fall back to yfinance for the entire system. Surface signals (process up, predictions recorded, trades fired) all looked green; the integrity signal (which API actually served this bar) was unchecked. This commit ships the structural prevention so the same regression class cannot recur silently.
+
+**Shipping:**
+
+1. **`data_source_health.py`** (NEW) — runs every scheduler cycle (10-min rate-limited). Probes Alpaca bars / options / news + advisory probes for earnings_calendar + sector_classifier. Critical failure → activity_log entry + email (deduped per source-set per process run). Wired into `multi_scheduler._task_data_source_health`.
+
+2. **`premarket_smoke_test.py`** (NEW) — CLI runnable. 11 end-to-end checks: Alpaca credentials resolve, `/v2/account` returns 200, SPY bars come from Alpaca (not yfinance), options chain loads, news fetch returns dicts, AI sentiment parses (catches the markdown-fence bug), full health probe passes, every strategy module imports, at-least-one-strategy fires on a synthetic universe, cost cap reads sensibly, scheduler service is active. Designed for pre-market cron (`--strict --notify`).
+
+3. **`tests/test_data_source_health.py`** (NEW, 6 tests) — pins the probe's contract: every probe runs even when some fail, crashes are caught + recorded, critical/advisory split respected, alert dedup is per-process-per-failure-set.
+
+4. **`news_sentiment.analyze_sentiment`** — Claude responses are wrapped in markdown code fences (`\`\`\`json ... \`\`\``); strict `json.loads` failed on every call. Switched to `_parse_ai_response_tolerant` (shared with `ai_analyst.ai_select_trades`). This was the bug behind every "Failed to parse sentiment response" warning + the reason `news_sentiment_spike` strategy and AI prompt-injection sites got empty sentiment for every symbol.
+
+5. **STRATEGY_VALIDATION.md** rewritten with hard evidence per strategy. NO "watched" status. Every strategy categorized as PROVEN_WORKING (has lifetime preds OR fires today — 20 strategies) or PROVEN_REACHABLE (zero lifetime, but filter-by-filter probe on 97-symbol universe confirms every individual gate is satisfied on real data — 6 strategies). Zero BROKEN.
+
+6. **Test allowlist update** — `_task_data_source_health` added to `INFRASTRUCTURE_TASKS` in `tests/test_scheduled_features_have_settings.py` (it's load-bearing infrastructure, not a user-gated feature).
+
+3355 tests pass.
+
+---
+
+## 2026-05-15 — Every registered strategy validated end-to-end with live evidence + sign-off. Severity: medium (audit closure — the project went from "system silently failing on 70% of strategies" to "26/26 strategies signed off").
+
+**STRATEGY_VALIDATION.md committed** with one-strategy-at-a-time walkthrough, including:
+- Live test results from prod (real Alpaca data, post-fix)
+- Per-strategy code review notes
+- Lifetime prediction counts
+- Fix history for the 5 strategies fixed this session
+- Specific reason documented for the 10 strategies WATCHED (code + data verified, conditions just rare today)
+
+**Final scorecard**:
+- 16 PASSED — produce candidates today
+- 10 WATCHED — code + data verified, no candidates today, on the 14-day zombie watch
+- 0 OPEN — every strategy signed off
+
+**One additional bug fixed in this session** (uncovered during validation):
+- `news_sentiment.analyze_sentiment` used strict `json.loads` on Claude responses; Claude sometimes wraps replies in markdown fences or has trailing prose, causing "Failed to parse sentiment response" warnings on every symbol with news. Switched to `_parse_ai_response_tolerant` (the same parser used by `ai_analyst.ai_select_trades`). Verified during the strategy probe.
+
+3349 tests pass.
+
+---
+
 ## 2026-05-15 — Strategy audit Phase 5 + 6 (partial): zombie test, memory rule, doc honesty, options_unusual migrated from yfinance to Alpaca. Severity: medium (preventive structural work + one yfinance reduction).
 
 **Phase 5 — DONE:**

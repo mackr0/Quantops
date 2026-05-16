@@ -89,7 +89,19 @@ def analyze_sentiment(symbol, news_items):
         )
 
         response_text = message.content[0].text.strip()
-        result = json.loads(response_text)
+        # Use the tolerant parser shared with ai_analyst — handles
+        # markdown fences (```json ... ```), trailing prose, and
+        # truncated arrays. The strict json.loads here was the source
+        # of "Failed to parse sentiment response" warnings on every
+        # symbol with news, leaving every consumer (news_sentiment_spike
+        # strategy + AI prompt-injection sites) with empty sentiment.
+        from ai_analyst import _parse_ai_response_tolerant
+        result = _parse_ai_response_tolerant(response_text)
+        if not isinstance(result, dict) or "overall_score" not in result:
+            raise json.JSONDecodeError(
+                "tolerant parser returned non-dict or missing overall_score",
+                response_text, 0,
+            )
         result["symbol"] = symbol
         return result
 

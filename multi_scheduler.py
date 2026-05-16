@@ -392,6 +392,14 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_cost_check(ctx),
             db_path=ctx.db_path,
         )
+        # Data-source health probe — alerts LOUDLY if a critical
+        # source (Alpaca bars / options / news) is silently failing.
+        # Internally rate-limited to every 10 min across all profiles.
+        run_task(
+            f"[{seg_label}] Data Source Health",
+            lambda: _task_data_source_health(ctx),
+            db_path=ctx.db_path,
+        )
         # Cross-account reconciliation (virtual profiles only)
         if getattr(ctx, "is_virtual", False):
             run_task(
@@ -1484,6 +1492,50 @@ def _task_cost_check(ctx):
             "cost-alert check failed for profile %s: %s: %s",
             pid, type(_cost_exc).__name__, _cost_exc,
         )
+
+
+_health_probe_last_run = 0.0
+_HEALTH_PROBE_INTERVAL_SEC = 600  # every 10 min
+
+
+def _task_data_source_health(ctx):
+    """Probe every critical data source against a known-liquid symbol
+    and alert if any source has silently degraded.
+
+    Added 2026-05-15 after the master Alpaca key was discovered to
+    have been revoked silently, causing every bar fetch system-wide
+    to fall back to yfinance for an unknown period. The bar fetcher
+    has a yfinance fallback by design; this probe ensures the
+    fallback firing is LOUDLY surfaced, not silently masked by
+    "predictions still get recorded, trades still fire" surface
+    metrics.
+
+    Runs every 10 minutes (cheap probes; the in-memory dedup in
+    `alert_on_critical_failure` prevents spam)."""
+    global _health_probe_last_run
+    import time as _t
+    now = _t.time()
+    if now - _health_probe_last_run < _HEALTH_PROBE_INTERVAL_SEC:
+        return
+    _health_probe_last_run = now
+
+    try:
+        from data_source_health import run_all_probes, alert_on_critical_failure
+        health = run_all_probes()
+        if not health["all_critical_ok"]:
+            alert_on_critical_failure(
+                health,
+                profile_id=getattr(ctx, "profile_id", 0),
+                user_id=getattr(ctx, "user_id", 1),
+            )
+        else:
+            logging.info(
+                "Data source health: all critical OK "
+                "(advisory failures: %s)",
+                health.get("advisory_failures") or "none",
+            )
+    except Exception as exc:
+        logging.warning("data_source_health probe crashed: %s", exc)
 
 
 def _task_stat_arb_universe_scan(ctx):
