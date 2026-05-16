@@ -295,6 +295,40 @@ class TestDispatchShadowCalls:
 # Cost cap
 # ---------------------------------------------------------------------------
 
+class TestShadowDailyCap:
+    """The per-user cap helpers: user override wins, else env-var
+    default. Mirrors cost_guard.daily_ceiling_usd."""
+
+    def test_user_override_wins(self, tmp_main_db, monkeypatch):
+        from models import create_user, _get_conn
+        import config
+        from contextlib import closing
+        monkeypatch.setattr(config, "SHADOW_DAILY_COST_CAP_USD", 1.0)
+
+        user_id = create_user("capuser@example.com", "pw", "Cap User")
+        with closing(_get_conn()) as conn:
+            conn.execute(
+                "UPDATE users SET shadow_daily_cost_cap_usd = ? WHERE id = ?",
+                (5.50, user_id),
+            )
+            conn.commit()
+
+        from shadow_eval import shadow_daily_cap, shadow_cap_source
+        assert shadow_daily_cap(user_id) == 5.50
+        assert shadow_cap_source(user_id) == "user"
+
+    def test_falls_back_to_env_when_null(self, tmp_main_db, monkeypatch):
+        from models import create_user
+        import config
+        monkeypatch.setattr(config, "SHADOW_DAILY_COST_CAP_USD", 2.25)
+
+        user_id = create_user("envuser@example.com", "pw", "Env User")
+        from shadow_eval import shadow_daily_cap, shadow_cap_source
+        # No override → env var default
+        assert shadow_daily_cap(user_id) == 2.25
+        assert shadow_cap_source(user_id) == "auto"
+
+
 class TestShadowCostCap:
     def test_cap_blocks_when_exceeded(self, monkeypatch, tmp_profile_db):
         """When cumulative shadow spend would exceed

@@ -361,6 +361,10 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             # Cost guard — user-configurable daily ceiling (NULL = auto-compute
             # via trailing-7-day-avg × 1.5, floored at $5/day).
             ("users", "daily_cost_ceiling_usd", "REAL"),
+            # Shadow eval — separate daily cap so shadow traffic can never
+            # blow out the operational AI budget. NULL = use the
+            # SHADOW_DAILY_COST_CAP_USD env var default ($1/day).
+            ("users", "shadow_daily_cost_cap_usd", "REAL"),
             # Per-profile opt-in: lets the tuner A/B test ai_provider/ai_model
             # within the cost guard. Default OFF so cost-conscious users
             # aren't surprised by Sonnet/Opus calls.

@@ -124,6 +124,31 @@
             </span>
         </label>
 
+        <hr style="margin:1rem 0;border:none;border-top:1px solid #ddd;">
+
+        <label style="display:block;padding:0.5rem 0;">
+            <strong>Shadow evaluation daily cap</strong>
+            <small class="muted" style="display:block;margin-top:0.25rem;">
+                Hard cap on today's <em>shadow-eval</em> AI spend (parallel candidate-model calls run alongside every primary AI decision). Separate from the operational cap above — shadow traffic can never exhaust the budget your live trading depends on. When the cap is reached, shadow calls are skipped for the rest of the day; primary AI calls keep running normally.
+                Leave blank to use the default ($1/day from <code>SHADOW_DAILY_COST_CAP_USD</code> env var).
+                {% if autonomy.shadow_status %}
+                <br>Current cap:
+                <strong>${{ "%.2f"|format(autonomy.shadow_status.cap_usd) }}/day</strong>
+                ({{ autonomy.shadow_status.cap_source }}-set);
+                today's shadow spend so far: ${{ "%.4f"|format(autonomy.shadow_status.today_usd) }};
+                7-day avg: ${{ "%.4f"|format(autonomy.shadow_status.trailing_7d_avg_usd) }}/day.
+                {% endif %}
+            </small>
+            <span style="display:inline-flex;align-items:center;margin-top:0.4rem;max-width:14rem;">
+                <span style="padding:0.5rem 0.5rem 0.5rem 0.6rem;background:#f5f5f5;border:1px solid #ccc;border-right:none;border-radius:4px 0 0 4px;color:#555;">$</span>
+                <input type="text" inputmode="decimal" pattern="[0-9]*\.?[0-9]{0,2}"
+                       name="shadow_daily_cost_cap_usd"
+                       value="{{ '%.2f' % autonomy.shadow_daily_cost_cap_usd if autonomy.shadow_daily_cost_cap_usd is not none else '' }}"
+                       placeholder="(blank = $1 default)"
+                       style="margin:0;border-radius:0 4px 4px 0;flex:1;min-width:0;">
+            </span>
+        </label>
+
         <button type="submit" style="margin-top:0.75rem;">Save</button>
     </form>
 </article>
@@ -405,35 +430,47 @@
                 <label style="display:flex;align-items:flex-start;gap:0.5rem;">
                     <input type="checkbox" name="enable_shadow_eval" value="1" style="flex-shrink:0;margin-top:0.2rem;"
                            {{ 'checked' if prof.get('enable_shadow_eval') else '' }}>
-                    <span><span class="tip" data-tip="Sends every AI call to additional candidate models in parallel for offline comparison. Never changes which trades fire.">Enable Shadow Evaluation</span><br><small style="color:#888;font-weight:normal;">Run cheaper or alternative models alongside every AI decision. Results land in a separate daily email — no UI changes, no impact on trades.</small></span>
+                    <span><span class="tip" data-tip="Sends every AI call to additional candidate models in parallel for offline comparison. Never changes which trades fire.">Enable Shadow Evaluation</span><br><small style="color:#888;font-weight:normal;">Run cheaper or alternative models alongside every AI decision. Results land in a separate daily email — no impact on trades. Daily cap is set on the Autonomy section above.</small></span>
                 </label>
             </fieldset>
+
             {% set _shadow_selected = (prof.get('shadow_models') or '[]') | from_json or [] %}
-            <div class="grid">
-                <label>
-                    Candidate Models (hold cmd/ctrl to select multiple)
-                    <select name="shadow_models" multiple size="6" style="min-height:140px">
-                        {% for pkey, pval in ai_providers.items() %}
-                        <optgroup label="{{ pval.name }}">
-                            {% for mkey, mname in pval.models.items() %}
-                            {% set _entry = pkey ~ ':' ~ mkey %}
-                            <option value="{{ _entry }}" {{ 'selected' if _entry in _shadow_selected else '' }}>{{ mname }}</option>
-                            {% endfor %}
-                        </optgroup>
+            <div style="margin-top:0.5rem;">
+                <strong>Candidate models</strong>
+                <small style="color:#888;display:block;margin-bottom:0.4rem;">Tick the models you want to run alongside the primary on every AI call. Each one fires in parallel.</small>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:0.25rem 1rem;">
+                    {% for pkey, pval in ai_providers.items() %}
+                    <fieldset style="border:1px solid #ddd;border-radius:6px;padding:0.5rem 0.75rem;margin:0;">
+                        <legend style="font-weight:bold;font-size:0.9rem;padding:0 0.25rem;">{{ pval.name }}</legend>
+                        {% for mkey, mname in pval.models.items() %}
+                        {% set _entry = pkey ~ ':' ~ mkey %}
+                        <label style="display:flex;align-items:center;gap:0.5rem;padding:0.15rem 0;font-weight:normal;">
+                            <input type="checkbox" name="shadow_models" value="{{ _entry }}"
+                                   style="flex-shrink:0;margin:0;"
+                                   {{ 'checked' if _entry in _shadow_selected else '' }}>
+                            <span style="font-size:0.9rem;">{{ mname }}</span>
+                        </label>
                         {% endfor %}
-                    </select>
-                </label>
+                    </fieldset>
+                    {% endfor %}
+                </div>
             </div>
+
             {% set _shadow_keys = (prof.get('shadow_api_keys_enc') or '{}') | from_json or {} %}
-            <div class="grid">
-                {% for pkey, pval in ai_providers.items() %}
-                <label>
-                    {{ pval.name }} API Key (for shadow eval)
-                    <input type="password" name="shadow_api_key_{{ pkey }}"
-                           placeholder="API key for {{ pval.name }} shadow calls">
-                    {% if _shadow_keys.get(pkey) %}<small>Key saved (enter new value to change)</small>{% endif %}
-                </label>
-                {% endfor %}
+            <div style="margin-top:0.75rem;">
+                <strong>Provider API keys for shadow eval</strong>
+                <small style="color:#888;display:block;margin-bottom:0.4rem;">Only the providers you ticked above need a key. Leave the others blank.</small>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:0.5rem 1rem;">
+                    {% for pkey, pval in ai_providers.items() %}
+                    <label style="display:block;margin:0;">
+                        <span style="font-size:0.9rem;">{{ pval.name }} API key</span>
+                        <input type="password" name="shadow_api_key_{{ pkey }}"
+                               placeholder="{% if _shadow_keys.get(pkey) %}•••••••• (saved){% else %}paste {{ pval.name }} key{% endif %}"
+                               style="margin:0;">
+                        {% if _shadow_keys.get(pkey) %}<small style="color:#888;">Key saved (enter new value to change)</small>{% endif %}
+                    </label>
+                    {% endfor %}
+                </div>
             </div>
 
             <!-- Risk Parameters -->

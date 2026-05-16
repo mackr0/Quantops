@@ -916,12 +916,35 @@ def settings():
     autonomy = {
         "auto_capital_allocation": bool(user.get("auto_capital_allocation", 0)),
         "daily_cost_ceiling_usd": user.get("daily_cost_ceiling_usd"),
+        "shadow_daily_cost_cap_usd": user.get("shadow_daily_cost_cap_usd"),
     }
     try:
         from cost_guard import status as _cost_status
         autonomy["cost_status"] = _cost_status(current_user.effective_user_id)
-    except Exception:
+    except Exception as exc:
+        # Cost status is rendered next to the spend ceiling field. If
+        # it fails to compute we still want the settings page to render
+        # the field itself — log so the failure shows up in the
+        # journal rather than silently rendering "--".
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "settings cost_status fetch failed: %s: %s",
+            type(exc).__name__, exc, exc_info=True,
+        )
         autonomy["cost_status"] = None
+    try:
+        from shadow_eval import shadow_status as _shadow_status
+        autonomy["shadow_status"] = _shadow_status(current_user.effective_user_id)
+    except Exception as exc:
+        # Same shape as cost_status above. Shadow eval is observational
+        # only — a failed status read must never block the settings
+        # page from rendering, but it must be discoverable.
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "settings shadow_status fetch failed: %s: %s",
+            type(exc).__name__, exc, exc_info=True,
+        )
+        autonomy["shadow_status"] = None
 
     return render_template("settings.html",
                            keys=keys,
@@ -958,11 +981,27 @@ def update_autonomy():
             flash(f"Invalid cost ceiling value: {raw_ceiling!r}", "error")
             return redirect(url_for("views.settings") + "#autonomy")
 
+    # Shadow eval daily cap — empty string clears the override (back
+    # to SHADOW_DAILY_COST_CAP_USD env-var default).
+    raw_shadow_cap = (request.form.get("shadow_daily_cost_cap_usd") or "").strip()
+    if raw_shadow_cap == "":
+        shadow_cap_value = None
+    else:
+        try:
+            shadow_cap_value = float(raw_shadow_cap)
+            if shadow_cap_value <= 0:
+                shadow_cap_value = None
+        except ValueError:
+            flash(f"Invalid shadow cost cap value: {raw_shadow_cap!r}", "error")
+            return redirect(url_for("views.settings") + "#autonomy")
+
     with closing(_get_conn()) as conn:
         conn.execute(
             "UPDATE users SET auto_capital_allocation = ?, "
-            " daily_cost_ceiling_usd = ? WHERE id = ?",
-            (enabled, ceiling_value, current_user.effective_user_id),
+            " daily_cost_ceiling_usd = ?, "
+            " shadow_daily_cost_cap_usd = ? WHERE id = ?",
+            (enabled, ceiling_value, shadow_cap_value,
+             current_user.effective_user_id),
         )
         conn.commit()
     msgs = ["Auto capital allocation " + ("enabled" if enabled else "disabled") + "."]
@@ -970,6 +1009,12 @@ def update_autonomy():
         msgs.append("Cost ceiling: auto-computed (trailing-7d-avg × 1.5).")
     else:
         msgs.append(f"Cost ceiling locked to ${ceiling_value:.2f}/day.")
+    if shadow_cap_value is None:
+        msgs.append("Shadow eval cap: env default ($1/day).")
+    else:
+        msgs.append(
+            f"Shadow eval cap locked to ${shadow_cap_value:.2f}/day."
+        )
     flash(" ".join(msgs), "success")
     return redirect(url_for("views.settings") + "#autonomy")
 

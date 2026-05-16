@@ -2,6 +2,7 @@
 
 import json
 import logging
+import sqlite3
 import threading
 import urllib.request
 import urllib.error
@@ -664,21 +665,33 @@ _VERDICT_COLORS = {
 def _render_verdict_for_shadow_row(row, primary_sig, shadow_sig, db_path):
     """Look up the matching prediction's outcome and render an
     inline verdict block. Returns "" when no resolved match is found
-    (very common for same-day rows). Never raises."""
+    (very common for same-day rows).
+
+    Email render path — one bad row must not break the whole digest.
+    Wrapped at the call site so unexpected exceptions are logged with
+    the row context, not silently swallowed."""
+    from shadow_eval import verdict_for_disagreement, _try_parse_json
+
+    primary_parsed = _try_parse_json(row.get("primary_response"))
+    if not isinstance(primary_parsed, dict):
+        return ""
+    symbol = (primary_parsed.get("symbol")
+              or primary_parsed.get("ticker"))
+    if not symbol:
+        return ""
+
     try:
-        import sqlite3 as _sql
-        from shadow_eval import verdict_for_disagreement, _try_parse_json
-
-        primary_parsed = _try_parse_json(row.get("primary_response"))
-        if not isinstance(primary_parsed, dict):
-            return ""
-        symbol = (primary_parsed.get("symbol")
-                  or primary_parsed.get("ticker"))
-        if not symbol:
-            return ""
-
-        conn = _sql.connect(db_path)
-        conn.row_factory = _sql.Row
+        conn = sqlite3.connect(db_path)
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            OSError) as exc:
+        logger.warning(
+            "shadow verdict: prediction-DB connect failed (%s) "
+            "for symbol=%s: %s: %s",
+            db_path, symbol, type(exc).__name__, exc,
+        )
+        return ""
+    try:
+        conn.row_factory = sqlite3.Row
         try:
             pred = conn.execute(
                 "SELECT actual_return_pct, days_held "
@@ -691,29 +704,32 @@ def _render_verdict_for_shadow_row(row, primary_sig, shadow_sig, db_path):
                 "LIMIT 1",
                 (symbol, row.get("timestamp"), row.get("timestamp")),
             ).fetchone()
-        except _sql.OperationalError:
+        except sqlite3.OperationalError as exc:
+            logger.warning(
+                "shadow verdict: prediction lookup failed for "
+                "symbol=%s ts=%s: %s: %s",
+                symbol, row.get("timestamp"),
+                type(exc).__name__, exc,
+            )
             return ""
-        finally:
-            conn.close()
+    finally:
+        conn.close()
 
-        if not pred or pred["actual_return_pct"] is None:
-            return ""
-
-        verdict = verdict_for_disagreement(
-            primary_sig, shadow_sig, pred["actual_return_pct"],
-        )
-        color = _VERDICT_COLORS.get(verdict["winner"], _MUTED)
-        days_part = (f" over {int(pred['days_held'])}d"
-                     if pred["days_held"] else "")
-        return (
-            f'<br><span style="color:{color};font-size:12px;'
-            f'font-weight:bold">▸ {verdict["headline"]}{days_part}</span>'
-            f' <span style="color:#666;font-size:12px">'
-            f'&mdash; {verdict["reason"]}</span>'
-        )
-    except Exception as exc:
-        logger.debug("verdict render skipped: %s", exc)
+    if not pred or pred["actual_return_pct"] is None:
         return ""
+
+    verdict = verdict_for_disagreement(
+        primary_sig, shadow_sig, pred["actual_return_pct"],
+    )
+    color = _VERDICT_COLORS.get(verdict["winner"], _MUTED)
+    days_part = (f" over {int(pred['days_held'])}d"
+                 if pred["days_held"] else "")
+    return (
+        f'<br><span style="color:{color};font-size:12px;'
+        f'font-weight:bold">▸ {verdict["headline"]}{days_part}</span>'
+        f' <span style="color:#666;font-size:12px">'
+        f'&mdash; {verdict["reason"]}</span>'
+    )
 
 
 def _shadow_resolved_section(db_path):
@@ -843,8 +859,16 @@ def _shadow_disagreement_detail(rows, primary_label="primary", db_path=None):
                     primary_sig = (pj.get("signal") or pj.get("action")
                                    or pj.get("recommendation")
                                    or pj.get("direction") or "—")
-            except (TypeError, ValueError):
-                pass
+            except (TypeError, ValueError) as exc:
+                # Primary parsed-signal extraction for the digest row.
+                # On a malformed primary_parsed payload the row still
+                # renders with primary_sig = "—". Logged at debug so
+                # the parse failure is discoverable in the journal.
+                logger.debug(
+                    "shadow eval: primary-parsed extraction failed for "
+                    "row id=%s purpose=%s: %s: %s",
+                    r.get("id"), purpose, type(exc).__name__, exc,
+                )
 
             diff_bits = []
             try:
@@ -868,14 +892,19 @@ def _shadow_disagreement_detail(rows, primary_label="primary", db_path=None):
                             f"reasoning: {primary_label} said \"{ra}\"; "
                             f"shadow said \"{rb}\""
                         )
-            # SILENT_OK: optional field-level diff for a digest row.
-            # If either response isn't valid JSON the row still
-            # renders with the top-line signal — the diff is a
-            # nice-to-have, not load-bearing. Logging would be
-            # noisy because every malformed shadow response trips
-            # this once per disagreement row.
-            except (TypeError, ValueError):
-                pass
+            except (TypeError, ValueError) as exc:
+                # Optional field-level diff for a digest row.
+                # If either response isn't valid JSON the row still
+                # renders with the top-line signal — the diff is a
+                # nice-to-have, not load-bearing. Logged so malformed
+                # shadow responses are still discoverable in the
+                # journal rather than swallowed.
+                logger.debug(
+                    "shadow eval: field-diff parse failed for purpose=%s "
+                    "shadow=%s: %s: %s",
+                    purpose, shadow_label,
+                    type(exc).__name__, exc,
+                )
 
             diff_text = "; ".join(diff_bits) if diff_bits else (
                 "fields match except for the top-level signal"
@@ -883,11 +912,22 @@ def _shadow_disagreement_detail(rows, primary_label="primary", db_path=None):
 
             # Verdict: only renders if the prediction has resolved
             # (rare for same-day rows — most resolve days later).
+            # Per-row guard so an unexpected exception in one row's
+            # verdict lookup doesn't take down the whole digest.
             verdict_html = ""
             if db_path:
-                verdict_html = _render_verdict_for_shadow_row(
-                    r, primary_sig, shadow_sig, db_path,
-                )
+                try:
+                    verdict_html = _render_verdict_for_shadow_row(
+                        r, primary_sig, shadow_sig, db_path,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "shadow verdict render unexpected error for "
+                        "row id=%s symbol=%s: %s: %s",
+                        r.get("id"),
+                        primary_sig, type(exc).__name__, exc,
+                        exc_info=True,
+                    )
 
             rows_html += (
                 f'<div style="padding:6px 0;border-bottom:1px solid #eee;font-size:13px">'

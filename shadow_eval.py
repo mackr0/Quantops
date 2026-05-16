@@ -62,14 +62,21 @@ def _load_shadow_config(profile_id: int) -> Optional[Dict[str, Any]]:
     try:
         from models import get_trading_profile
         from crypto import decrypt
-    except Exception as exc:
-        logger.debug("shadow eval: import failed: %s", exc)
+    except ImportError as exc:
+        logger.debug(
+            "shadow eval: import failed (models/crypto): %s: %s",
+            type(exc).__name__, exc,
+        )
         return None
 
     try:
         profile = get_trading_profile(profile_id)
-    except Exception as exc:
-        logger.debug("shadow eval: profile lookup failed: %s", exc)
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            KeyError, ValueError, TypeError, OSError) as exc:
+        logger.debug(
+            "shadow eval: profile lookup failed for %d: %s: %s",
+            profile_id, type(exc).__name__, exc,
+        )
         return None
 
     if not profile or not profile.get("enable_shadow_eval"):
@@ -82,7 +89,12 @@ def _load_shadow_config(profile_id: int) -> Optional[Dict[str, Any]]:
         model_list = json.loads(raw_models)
         if not isinstance(model_list, list):
             return None
-    except Exception:
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        logger.debug(
+            "shadow eval: shadow_models JSON parse failed for profile %d: "
+            "%s: %s",
+            profile_id, type(exc).__name__, exc,
+        )
         return None
 
     parsed_models: List[Dict[str, str]] = []
@@ -99,7 +111,12 @@ def _load_shadow_config(profile_id: int) -> Optional[Dict[str, Any]]:
         enc_keys = json.loads(raw_keys)
         if not isinstance(enc_keys, dict):
             enc_keys = {}
-    except Exception:
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        logger.debug(
+            "shadow eval: shadow_api_keys_enc JSON parse failed for "
+            "profile %d: %s: %s",
+            profile_id, type(exc).__name__, exc,
+        )
         enc_keys = {}
 
     api_keys: Dict[str, str] = {}
@@ -109,50 +126,161 @@ def _load_shadow_config(profile_id: int) -> Optional[Dict[str, Any]]:
         try:
             api_keys[provider] = decrypt(enc)
         except Exception as exc:
-            logger.debug("shadow eval: key decrypt failed for %s: %s",
-                         provider, exc)
+            logger.debug("shadow eval: key decrypt failed for %s: %s: %s",
+                         provider, type(exc).__name__, exc)
 
     return {"models": parsed_models, "api_keys": api_keys}
 
 
 # ---------------------------------------------------------------------------
-# Cost cap (separate from operational cap)
+# Cost cap (per-user, cross-profile, mirrors cost_guard pattern)
 # ---------------------------------------------------------------------------
 
 _COST_CAP_LOCK = threading.Lock()
 
 
-def _shadow_spend_today(db_path: str) -> float:
-    """Sum of estimated_cost_usd for shadow rows logged today (ET).
-
-    Read-only; uses the local profile DB. Returns 0.0 on any error
-    (table missing, db locked) so a stale read never blocks shadow
-    eval indefinitely.
-    """
+def _shadow_spend_in_db(db_path: str, since_clause: str) -> float:
+    """Sum of cost_usd for shadow rows in `db_path` matching the SQL
+    `since_clause` (e.g. "timestamp >= '2026-05-16'"). Returns 0.0 on a
+    per-DB read failure so one bad DB never blocks the cross-profile
+    aggregate — but logs at debug so the failure is discoverable."""
     try:
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        et_today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
         conn = sqlite3.connect(db_path)
         try:
             row = conn.execute(
-                "SELECT COALESCE(SUM(cost_usd), 0) FROM ai_shadow_calls "
-                "WHERE timestamp >= ?",
-                (et_today,),
+                f"SELECT COALESCE(SUM(cost_usd), 0) FROM ai_shadow_calls "
+                f"WHERE {since_clause}"
             ).fetchone()
             return float(row[0] or 0.0)
         finally:
             conn.close()
-    except Exception:
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            ValueError, TypeError, OSError) as exc:
+        logger.debug(
+            "shadow eval: per-DB spend read failed for %s: %s: %s",
+            db_path, type(exc).__name__, exc,
+        )
         return 0.0
 
 
+def shadow_today_spend(user_id: int) -> float:
+    """Sum of today's (ET) shadow-eval USD spend across this user's
+    profiles. Mirrors cost_guard.today_spend and reuses its
+    profile-DB enumeration helper for consistency."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from cost_guard import _user_profile_dbs
+    et_today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    total = 0.0
+    for db_path in _user_profile_dbs(user_id):
+        total += _shadow_spend_in_db(
+            db_path, f"timestamp >= '{et_today}'"
+        )
+    return total
+
+
+def shadow_trailing_avg(user_id: int, days: int = 7) -> float:
+    """Average daily shadow USD spend across this user's profiles
+    over the trailing N days. 0 if no history. Mirrors
+    cost_guard.trailing_avg_daily_spend."""
+    from cost_guard import _user_profile_dbs
+    total = 0.0
+    for db_path in _user_profile_dbs(user_id):
+        total += _shadow_spend_in_db(
+            db_path,
+            f"timestamp >= datetime('now', '-{int(days)} days')",
+        )
+    return total / max(days, 1)
+
+
+def _read_shadow_cap_override(user_id: int) -> Optional[float]:
+    """Read the user's `shadow_daily_cost_cap_usd` override. Returns
+    None when no override exists; raises only on programming errors —
+    expected DB read failures are caught, logged, and treated as "no
+    override" so callers fall back to the env-var default."""
+    try:
+        from models import _get_conn
+        from contextlib import closing
+        with closing(_get_conn()) as conn:
+            row = conn.execute(
+                "SELECT shadow_daily_cost_cap_usd FROM users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            KeyError, ValueError, TypeError, OSError) as exc:
+        logger.debug(
+            "shadow cap override read failed for user %d: %s: %s",
+            user_id, type(exc).__name__, exc,
+        )
+        return None
+    if not row or row[0] is None:
+        return None
+    try:
+        v = float(row[0])
+    except (TypeError, ValueError) as exc:
+        logger.debug(
+            "shadow cap override unparseable for user %d (value=%r): "
+            "%s: %s",
+            user_id, row[0], type(exc).__name__, exc,
+        )
+        return None
+    return v if v > 0 else None
+
+
+def shadow_daily_cap(user_id: int) -> float:
+    """Today's cap for shadow spend. User-set override wins; else
+    falls back to the SHADOW_DAILY_COST_CAP_USD env var (default $1/day).
+    Mirrors cost_guard.daily_ceiling_usd."""
+    override = _read_shadow_cap_override(user_id)
+    if override is not None:
+        return override
+    return float(getattr(config, "SHADOW_DAILY_COST_CAP_USD", 1.0) or 1.0)
+
+
+def shadow_cap_source(user_id: int) -> str:
+    """'user' if the cap is user-set, else 'auto' for the env-var
+    default."""
+    return "user" if _read_shadow_cap_override(user_id) is not None else "auto"
+
+
+def shadow_status(user_id: int) -> Dict[str, Any]:
+    """Snapshot for the settings page autonomy block. Same shape as
+    cost_guard.status so the template can render it the same way."""
+    today = shadow_today_spend(user_id)
+    cap = shadow_daily_cap(user_id)
+    avg = shadow_trailing_avg(user_id)
+    return {
+        "today_usd": round(today, 4),
+        "cap_usd": round(cap, 4),
+        "cap_source": shadow_cap_source(user_id),
+        "trailing_7d_avg_usd": round(avg, 4),
+    }
+
+
 def _shadow_cap_exceeded(db_path: str, est_cost: float) -> bool:
-    """True when running this shadow call would push today's shadow
-    spend over SHADOW_DAILY_COST_CAP_USD."""
-    cap = float(getattr(config, "SHADOW_DAILY_COST_CAP_USD", 1.0) or 1.0)
+    """True when running this shadow call would push today's cross-
+    profile shadow spend over the user's cap."""
+    from cost_guard import user_id_for_db_path
+    # user_id_for_db_path already wraps its DB read with specific
+    # exception handling and returns None on failure — we don't need
+    # to wrap the call ourselves.
+    user_id = user_id_for_db_path(db_path)
+    if user_id is None:
+        # No user attribution available — fall back to the env-var cap
+        # against this single profile's spend so the gate still bites.
+        cap = float(getattr(config, "SHADOW_DAILY_COST_CAP_USD", 1.0) or 1.0)
+        with _COST_CAP_LOCK:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            et_today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+            spent = _shadow_spend_in_db(
+                db_path, f"timestamp >= '{et_today}'"
+            )
+            return (spent + est_cost) > cap
+
     with _COST_CAP_LOCK:
-        spent = _shadow_spend_today(db_path)
+        cap = shadow_daily_cap(user_id)
+        spent = shadow_today_spend(user_id)
         return (spent + est_cost) > cap
 
 
@@ -180,12 +308,19 @@ def _extract_signal(parsed: Any) -> Optional[str]:
 def _try_parse_json(text: str) -> Optional[Any]:
     """Best-effort JSON parse of a model response. Returns None on
     failure — shadow eval still logs the raw text, just without a
-    structured comparison."""
+    structured comparison. Logs at debug because malformed responses
+    are expected (different models, different obedience to schema)
+    and we want them findable without spamming warnings."""
     if not text:
         return None
     try:
         return json.loads(text)
-    except Exception:
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        logger.debug(
+            "shadow eval: response JSON parse failed: %s: %s "
+            "(text head: %r)",
+            type(exc).__name__, exc, text[:80],
+        )
         return None
 
 
@@ -241,8 +376,14 @@ def _write_shadow_row(db_path: str, row: Dict[str, Any]) -> None:
             conn.commit()
         finally:
             conn.close()
-    except Exception as exc:
-        logger.debug("shadow eval: row write failed: %s", exc)
+    except (sqlite3.OperationalError, sqlite3.DatabaseError,
+            sqlite3.IntegrityError, OSError, TypeError, ValueError) as exc:
+        logger.debug(
+            "shadow eval: row write failed for call_id=%s provider=%s "
+            "model=%s: %s: %s",
+            row.get("call_id"), row.get("provider"), row.get("model"),
+            type(exc).__name__, exc,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +457,12 @@ def _run_one_shadow(
     try:
         from ai_providers import _strip_markdown_fences
         cleaned = _strip_markdown_fences(response_text)
-    except Exception:
+    except (AttributeError, TypeError, ValueError) as exc:
+        logger.debug(
+            "shadow eval: markdown-fence strip failed (provider=%s model=%s): "
+            "%s: %s",
+            provider, model, type(exc).__name__, exc,
+        )
         cleaned = response_text
 
     shadow_parsed = _try_parse_json(cleaned)
@@ -361,12 +507,14 @@ def dispatch_shadow_calls(
     if profile_id is None or not db_path:
         return None
 
-    try:
-        cfg = _load_shadow_config(profile_id)
-    except Exception as exc:
-        logger.debug("shadow eval: config load failed: %s", exc)
-        return None
-
+    # _load_shadow_config has its own per-step exception handling and
+    # returns None on any expected failure path (missing profile, bad
+    # JSON, decrypt failure, etc.). A propagating exception here would
+    # indicate a real programmer bug — let it crash a shadow call so
+    # tests catch it, never the production call_ai path. The caller
+    # (call_ai) wraps its dispatch_shadow_calls invocation in its own
+    # try/except for that outer guarantee.
+    cfg = _load_shadow_config(profile_id)
     if not cfg:
         return None
 
@@ -415,9 +563,13 @@ def dispatch_shadow_calls(
                 primary_response=primary_response,
                 primary_parsed=primary_parsed,
             )
-        except Exception as exc:
-            logger.debug("shadow eval: submit failed for %s/%s: %s",
-                         provider, model, exc)
+        except RuntimeError as exc:
+            # RuntimeError = ThreadPoolExecutor rejected the submission
+            # (pool shut down). Process exit window; nothing to do.
+            logger.debug(
+                "shadow eval: pool submit rejected for %s/%s: %s: %s",
+                provider, model, type(exc).__name__, exc,
+            )
 
     return call_id
 
@@ -432,7 +584,11 @@ def fetch_daily_rows(db_path: str, date_str: str) -> List[Dict[str, Any]]:
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
-    except Exception:
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as exc:
+        logger.debug(
+            "shadow eval: connect failed for daily rows (%s): %s: %s",
+            db_path, type(exc).__name__, exc,
+        )
         return []
     try:
         rows = conn.execute(
@@ -441,7 +597,12 @@ def fetch_daily_rows(db_path: str, date_str: str) -> List[Dict[str, Any]]:
             (f"{date_str}%",),
         ).fetchall()
         return [dict(r) for r in rows]
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        logger.debug(
+            "shadow eval: daily rows query failed for %s on date %s: "
+            "%s: %s",
+            db_path, date_str, type(exc).__name__, exc,
+        )
         return []
     finally:
         conn.close()
@@ -464,7 +625,12 @@ def fetch_recently_resolved_disagreements(
     """
     try:
         conn = sqlite3.connect(db_path)
-    except Exception:
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as exc:
+        logger.debug(
+            "shadow eval: connect failed for recently-resolved (%s): "
+            "%s: %s",
+            db_path, type(exc).__name__, exc,
+        )
         return []
     try:
         conn.row_factory = sqlite3.Row
@@ -476,7 +642,11 @@ def fetch_recently_resolved_disagreements(
                 "ORDER BY timestamp DESC",
                 (int(lookback_days),),
             ).fetchall()
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            logger.debug(
+                "shadow eval: disagreement query failed for %s: %s: %s",
+                db_path, type(exc).__name__, exc,
+            )
             return []
 
         enriched: List[Dict[str, Any]] = []
@@ -503,7 +673,13 @@ def fetch_recently_resolved_disagreements(
                     "LIMIT 1",
                     (symbol, d.get("timestamp"), d.get("timestamp")),
                 ).fetchone()
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as exc:
+                logger.debug(
+                    "shadow eval: ai_predictions lookup failed for "
+                    "%s on %s: %s: %s",
+                    symbol, d.get("timestamp"),
+                    type(exc).__name__, exc,
+                )
                 pred = None
 
             if not pred:
