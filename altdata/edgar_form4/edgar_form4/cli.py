@@ -123,10 +123,15 @@ def _discover_active_tickers() -> list:
         repo_root = Path(__file__).resolve().parent.parent.parent.parent
         if str(repo_root) not in sys.path:
             sys.path.insert(0, str(repo_root))
-        from segments import list_segments, get_segment_universe
+        from segments import list_segments, get_segment
         tickers = set()
-        for seg in list_segments():
-            tickers.update(get_segment_universe(seg))
+        for seg_name in list_segments():
+            seg = get_segment(seg_name)
+            for sym in seg.get("universe", []) or []:
+                # Filter crypto (BTC/USD style) — Form 4 is equities only.
+                if "/" in sym:
+                    continue
+                tickers.add(sym.upper())
         return sorted(tickers)
     except Exception:
         return []
