@@ -652,22 +652,67 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
     else:
         result["annualized_return_pct"] = 0.0
 
-    # Gross / Net return
-    gross_pnl = 0.0
-    slippage_impact = 0.0
-    for t in trades:
-        pnl = t.get("pnl", 0) or 0
-        gross_pnl += pnl
-        slip = t.get("slippage_pct", 0) or 0
-        price = t.get("price", 0) or 0
-        qty = t.get("qty", 0) or 0
-        if slip and price and qty:
-            slippage_impact += abs(slip / 100 * price * qty)
+    # Gross / Net return.
+    #
+    # `t.pnl` is POST-slippage — computed from fill_price (broker's
+    # actual execution). So:
+    #   net_pnl   = sum(pnl)   ← what actually hit the account
+    #   gross_pnl = net_pnl + signed_slippage_cost
+    #     ← what we'd have earned with zero slippage
+    #
+    # `signed_slippage_cost` must span ALL fills (BUY + SELL +
+    # sell_short + cover) — `trades` here only contains pnl-closed
+    # rows (SELLs in long-only flows), so iterating it would miss
+    # BUY-side slippage entirely. `journal.get_slippage_stats()`
+    # already sums across all fills with the correct side-aware
+    # signing (positive = adverse, negative = favorable).
+    #
+    # Pre-2026-05-16 this iterated trades and added |slippage_pct *
+    # price * qty| as positive in all cases, which (a) double-counted
+    # favorable slippage as cost, (b) missed BUY-side slippage
+    # entirely. The fix below uses the canonical aggregator.
+    net_pnl = sum((t.get("pnl", 0) or 0) for t in trades)
+    signed_slippage_cost = 0.0
+    try:
+        from journal import get_slippage_stats
+        for db_path in db_paths:
+            try:
+                s = get_slippage_stats(db_path=db_path)
+                if s:
+                    signed_slippage_cost += float(
+                        s.get("total_slippage_cost", 0) or 0,
+                    )
+            except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError):
+                continue
+    except ImportError:
+        # journal import path unavailable (legacy minimal env) —
+        # fall back to per-trade signed reconstruction. Will miss
+        # BUY-side fills but produces something rather than nothing.
+        for t in trades:
+            decision_price = t.get("decision_price")
+            fill_price = t.get("fill_price")
+            qty = t.get("qty", 0) or 0
+            side = (t.get("side", "") or "").lower()
+            if (decision_price and fill_price and qty
+                    and decision_price > 0 and fill_price > 0):
+                if side in ("buy", "sell_short"):
+                    signed_slippage_cost += (
+                        fill_price - decision_price
+                    ) * qty
+                elif side in ("sell", "cover", "short"):
+                    signed_slippage_cost += (
+                        decision_price - fill_price
+                    ) * qty
 
+    gross_pnl = net_pnl + signed_slippage_cost
+    result["net_pnl"] = round(net_pnl, 2)
     result["gross_pnl"] = round(gross_pnl, 2)
-    result["net_pnl"] = round(gross_pnl, 2)  # pnl already includes slippage from fills
-    result["gross_return_pct"] = round((gross_pnl + slippage_impact) / first_eq * 100, 2) if first_eq > 0 else 0.0
-    result["net_return_pct"] = round(gross_pnl / first_eq * 100, 2) if first_eq > 0 else 0.0
+    result["net_return_pct"] = (
+        round(net_pnl / first_eq * 100, 2) if first_eq > 0 else 0.0
+    )
+    result["gross_return_pct"] = (
+        round(gross_pnl / first_eq * 100, 2) if first_eq > 0 else 0.0
+    )
 
     # -----------------------------------------------------------------------
     # Daily returns (from snapshots or trades)
@@ -1016,47 +1061,84 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
         result["largest_loss"] = 0.0
         result["largest_loss_symbol"] = ""
 
-    # Avg hold days (match buys to sells — must use ALL trades, not the
-    # pnl-filtered list above, because buys never have pnl set until
-    # closed by a later sell).
-    hold_days_list = []
+    # Avg hold days — FIFO match of buys to sells per symbol, with
+    # quantity tracking so partial fills + re-opened positions are
+    # measured correctly.
+    #
+    # Pre-2026-05-16 this used a single `open_positions[sym] = ts`
+    # which overwrote any prior buy each time the same symbol was
+    # bought again. Effects:
+    #   1. Re-opened positions lost the original buy's hold time
+    #      entirely (Buy day 1, Buy day 3, Sell day 10 → measured
+    #      as 7 days from the second buy, missing the 9 days from
+    #      the first).
+    #   2. Partial fills broke (Buy 100, Sell 50, Sell 50 → second
+    #      sell had no matching buy, dropped silently).
+    #
+    # FIFO with qty handles both correctly: each BUY pushes a (ts,
+    # qty) lot onto a per-symbol queue; each SELL pops in FIFO order,
+    # crediting hold-days weighted by the qty consumed from each lot.
+    hold_days_list: List[float] = []
+    hold_days_qty_weights: List[float] = []
     all_rows: List[Dict] = []
     for db_path in db_paths:
         try:
             with closing(sqlite3.connect(db_path)) as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
-                    "SELECT timestamp, symbol, side FROM trades ORDER BY timestamp ASC"
+                    "SELECT timestamp, symbol, side, qty FROM trades "
+                    "ORDER BY timestamp ASC"
                 ).fetchall()
                 all_rows.extend(dict(r) for r in rows)
         except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as _tl_exc:
-            # Per-DB trade-list aggregation loop; one bad DB
-            # shouldn't kill cross-profile metrics. Surface for follow-up.
             logger.debug(
                 "trade-list aggregation failed for %s: %s: %s",
                 db_path, type(_tl_exc).__name__, _tl_exc,
             )
-    open_positions: Dict[str, str] = {}  # symbol -> timestamp of buy
+
+    # symbol → FIFO queue of [(date_obj, remaining_qty), ...]
+    open_lots: Dict[str, List[List[Any]]] = {}
     for t in all_rows:
         sym = t.get("symbol", "")
         side = (t.get("side") or "").lower()
-        ts = t.get("timestamp", "")[:10]
+        try:
+            ts_str = (t.get("timestamp") or "")[:10]
+            ts_date = datetime.strptime(ts_str, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            continue
+        try:
+            qty = float(t.get("qty") or 0)
+        except (ValueError, TypeError):
+            qty = 0.0
+        if qty <= 0:
+            continue
+
         if side == "buy":
-            open_positions[sym] = ts
-        elif side == "sell" and sym in open_positions:
-            try:
-                d1 = datetime.strptime(open_positions[sym], "%Y-%m-%d")
-                d2 = datetime.strptime(ts, "%Y-%m-%d")
-                hold_days_list.append(max((d2 - d1).days, 0))
-            except (ValueError, TypeError, KeyError) as _hd_exc:
-                # Per-trade hold-days parse loop; skip rows with
-                # malformed timestamps but surface for follow-up.
-                logger.debug(
-                    "hold-days parse failed for %s: %s: %s",
-                    sym, type(_hd_exc).__name__, _hd_exc,
-                )
-            del open_positions[sym]
-    result["avg_hold_days"] = round(_mean(hold_days_list), 1) if hold_days_list else 0.0
+            open_lots.setdefault(sym, []).append([ts_date, qty])
+        elif side == "sell":
+            queue = open_lots.get(sym) or []
+            remaining_to_sell = qty
+            while remaining_to_sell > 0 and queue:
+                lot_date, lot_qty = queue[0]
+                consumed = min(lot_qty, remaining_to_sell)
+                hold_days = max((ts_date - lot_date).days, 0)
+                hold_days_list.append(hold_days)
+                hold_days_qty_weights.append(consumed)
+                lot_qty -= consumed
+                remaining_to_sell -= consumed
+                if lot_qty <= 0:
+                    queue.pop(0)
+                else:
+                    queue[0] = [lot_date, lot_qty]
+
+    if hold_days_list and sum(hold_days_qty_weights) > 0:
+        # Qty-weighted mean so a 1000-share lot held 5 days counts more
+        # than a 100-share lot held 1 day.
+        weighted = sum(d * w for d, w in zip(hold_days_list, hold_days_qty_weights))
+        total_weight = sum(hold_days_qty_weights)
+        result["avg_hold_days"] = round(weighted / total_weight, 1)
+    else:
+        result["avg_hold_days"] = 0.0
 
     # Trades per month — only compute when we have at least 30 days of
     # data. Below that, the old formula floored months_active to 1.0,
@@ -1346,9 +1428,30 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
                             beta = cov / var_bench
                             result["beta_spy"] = round(beta, 3)
                             result["beta_spy_computable"] = True
-                            # Alpha: annualised
+                            # Alpha: annualised. Use GEOMETRIC
+                            # annualization for the benchmark to match
+                            # the portfolio side (`annualized_return_pct`
+                            # is geometric: `(1+r)^(365/days) - 1`). The
+                            # old `mean(r) * 252 * 100` arithmetic form
+                            # under/over-estimates volatile-benchmark
+                            # returns, biasing alpha. For a basket of
+                            # daily simple returns `r_i`, geometric
+                            # annualized return is:
+                            #   (prod(1 + r_i)) ^ (252 / n) - 1
+                            try:
+                                cum_growth = 1.0
+                                for r in aligned_bench:
+                                    cum_growth *= (1.0 + r)
+                                n = len(aligned_bench)
+                                if n > 0 and cum_growth > 0:
+                                    ann_bench = (
+                                        (cum_growth ** (252.0 / n)) - 1.0
+                                    ) * 100.0
+                                else:
+                                    ann_bench = 0.0
+                            except (OverflowError, ValueError):
+                                ann_bench = 0.0
                             ann_port = result["annualized_return_pct"]
-                            ann_bench = _mean(aligned_bench) * 252 * 100
                             result["alpha"] = round(ann_port - (beta * ann_bench), 2)
                             result["alpha_computable"] = True
 

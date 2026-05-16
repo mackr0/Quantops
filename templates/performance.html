@@ -191,7 +191,7 @@
             {% endif %}
         </article>
         <article style="text-align:center;">
-            <small class="muted"><span class="tip" data-tip="Value at Risk — 95% of the time, your worst trade won't be worse than this">VaR (95%)</span></small>
+            <small class="muted"><span class="tip" data-tip="Per-trade Value-at-Risk — the 5th-percentile single-trade return across your closed trades. 95% of trades have done better than this. NOTE: this is per-trade risk, not the textbook daily-portfolio VaR (which measures the worst expected 1-day book P&L). For a portfolio-level VaR, see the Risk Snapshot report.">Per-Trade VaR (95%)</span></small>
             {% if m.var_95_computable %}
             <strong style="font-size:2rem; display:block;" class="pnl-neg">{{ "%.1f"|format(m.var_95) }}%</strong>
             <small class="muted">95% of trades better than this</small>
@@ -201,7 +201,7 @@
             {% endif %}
         </article>
         <article style="text-align:center;">
-            <small class="muted"><span class="tip" data-tip="Average loss in the worst 5% of scenarios — measures how bad the really bad days get">CVaR (95%)</span></small>
+            <small class="muted"><span class="tip" data-tip="Per-trade Conditional VaR — the average return of the worst-5% of your closed trades. Tells you how bad the actually-bad trades get, on average. Per-trade scope (matches VaR card above).">Per-Trade CVaR (95%)</span></small>
             {% if m.cvar_95_computable %}
             <strong style="font-size:2rem; display:block;" class="pnl-neg">{{ "%.1f"|format(m.cvar_95) }}%</strong>
             <small class="muted">Avg loss in worst 5% of trades</small>
@@ -269,7 +269,7 @@
 
     <!-- Worst Periods -->
     <article>
-        <header><h3>Worst Periods</h3></header>
+        <header><h3><span class="tip" data-tip="The single 7-, 30-, and 90-CALENDAR-day window with the worst cumulative P&L. Weekends and market holidays count toward the window (zero P&L on non-trading days). Return % is normalized to the profile's initial capital so values are comparable across the history.">Worst Periods</span></h3></header>
         {% if m.num_daily_returns < 7 %}
         <p class="muted">Need 7+ daily returns. Currently have {{ m.num_daily_returns }}.</p>
         {% else %}
@@ -763,7 +763,7 @@
         {% if m.trades_with_slippage > 0 %}
         <div class="grid">
             <div class="stat-card" style="text-align:center;">
-                <small class="muted">Avg Slippage per Trade</small>
+                <small class="muted"><span class="tip" data-tip="Stocks only. Option premium %-moves (10-100% on a small underlying move) inflate the average to meaningless values when mixed in — the % metric only makes sense for stocks. Net dollar cost (next card) includes both.">Avg Slippage per Stock Trade</span></small>
                 <strong style="font-size:2rem;" class="{{ 'pnl-neg' if m.slippage_avg_pct > 0 else 'pnl-pos' }}">
                     {{ "{:+.4f}".format(m.slippage_avg_pct) }}%
                 </strong>

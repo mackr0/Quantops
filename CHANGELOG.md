@@ -17,6 +17,40 @@ Rules going forward:
 
 ---
 
+## 2026-05-16 — Performance dashboard math + clarity fixes from cross-tab audit. Severity: medium (3 silent math bugs that affected every profile; 4 wording/scoping fixes).
+
+After a 49-widget audit across all 5 performance-page tabs (`#summary`, `#risk`, `#trades`, `#market`, `#scale`), 36 widgets verified CORRECT, 7 SUSPICIOUS, 6 NEEDS_DEEPER_VERIFICATION. This commit ships fixes for the 7 suspicious ones.
+
+**Bug 1 (#summary — gross vs net return)**: `gross_return_pct` reconstructed slippage as `|slippage_pct| × price × qty` (always positive). Two failures: (a) double-counted FAVORABLE slippage as cost — a profile that got good fills showed an inflated gross_return instead of a deflated one; (b) iterated only closed trades (SELLs) so BUY-side slippage was missing entirely. Fix: use `journal.get_slippage_stats()` which already aggregates signed slippage across all fills (buy + sell + sell_short + cover) with the correct side-aware signing.
+
+**Bug 2 (#trades — avg hold days)**: `open_positions[sym] = ts` overwrote prior buys on the same symbol AND ignored qty. Re-opened positions lost the original hold time entirely; partial fills had unmatched sells that silently dropped. Fix: FIFO queue of `[date, remaining_qty]` lots per symbol; sells pop FIFO and credit qty-weighted hold days. Now correctly handles `Buy 100 d1, Buy 100 d3, Sell 200 d10 → 8.0d` (was 7.0d) and `Buy 100 d1, Sell 50 d5, Sell 50 d10 → 6.5d` (was 4.0d with second sell dropped).
+
+**Bug 5 (#market — alpha)**: benchmark annualized via `mean(r) × 252` (arithmetic) while portfolio side used `(1+r)^(365/days) - 1` (geometric). For volatile benchmarks (SPY during March 2020, etc.) the two diverge by several percentage points and alpha gets biased. Fix: switch benchmark to geometric: `(prod(1+r))^(252/n) - 1`.
+
+**Bug 3 (#scale — slippage % labeling)**: the "Avg Slippage per Trade" card shows a STOCKS-ONLY weighted average (option premium %-moves would otherwise inflate the metric — the 2026-05-11 1130% incident). Tooltip now says "Avg Slippage per Stock Trade" with explanation; net dollar cost (next card) continues to include both stocks and options.
+
+**Bug 6 (#risk — VaR semantics)**: card was labeled "VaR (95%)" with a tooltip implying daily portfolio VaR. The actual metric is the 5th-percentile single-trade return across closed trades — useful but conceptually different from textbook VaR. Relabeled to "Per-Trade VaR (95%)" + "Per-Trade CVaR (95%)" with tooltips that explicitly distinguish the scope. No math change.
+
+**Bug 7 (#risk — worst-period help text)**: "Worst Week / Month / Quarter" use 7- / 30- / 90-CALENDAR-day windows (not trading days). Header tooltip now clarifies this.
+
+**Tests**: `tests/test_performance_metrics_bugs_2026_05_16.py` (5 tests) pins each math fix with explicit boundary cases:
+- favorable-slippage trade: gross < net (was gross > net pre-fix)
+- adverse-slippage trade: gross > net (correct direction confirmed)
+- re-opened position FIFO match (8.0d vs the broken 7.0d)
+- partial-fills FIFO with two matched sells (6.5d vs the broken 4.0d)
+- arithmetic vs geometric annualization differ meaningfully on volatile data (meta-test ensures the fix isn't passing vacuously)
+
+**Still pending — deep-trace audits** of 6 widgets that depend on modules outside the headline math:
+- `compute_exposure()` (feeds 6 #market widgets) — factor / sector / size-band scoring
+- `compute_kelly_recommendation()` — Kelly formula correctness
+- `compute_capture_ratio()` — MFE definition
+- `per_profile_breakdown()` + `capacity_analysis()` — sqrt market-impact model assumptions
+- `_fetch_benchmark_returns()` — feeds beta + correlation; if it returns stale/gappy data, every market-context number is biased
+
+3418 main-suite tests pass.
+
+---
+
 ## 2026-05-16 — `altdata/edgar_form4/` — SEC Form 4 insider-transaction scraper replaces yfinance for `get_insider_activity`. Severity: medium (Phase 6 highest-priority altdata build from STRATEGY_AUDIT_PLAN.md).
 
 **Built**: `altdata/edgar_form4/` (4 modules + tests + CLI, ~900 lines following the existing `edgar13f` pattern):
