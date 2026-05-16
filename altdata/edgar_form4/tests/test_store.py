@@ -266,3 +266,75 @@ class TestAggregateReader:
         # Only the recent 100 counts.
         assert data["recent_buys"] == 1
         assert data["total_buy_value"] == 100.0
+
+
+class TestOrphanedRunSweep:
+    """2026-05-16: prod had a scrape_runs row stuck status='running'
+    since 19:17 because the process was killed mid-run. The sweep at
+    the top of start_run cleans up zombies older than 6h on each
+    fresh invocation."""
+
+    def test_old_running_row_gets_killed_on_next_start_run(self, tmp_db):
+        from edgar_form4.store import start_run
+        # Seed a zombie row dated 8 hours ago.
+        with connect(tmp_db) as conn:
+            conn.execute(
+                "INSERT INTO scrape_runs (source, started_at, status) "
+                "VALUES ('zombie', datetime('now', '-8 hours'), 'running')"
+            )
+            conn.commit()
+        # Next start_run should sweep it.
+        with connect(tmp_db) as conn:
+            new_id = start_run(conn, "fresh:test")
+            conn.commit()
+            zombie = conn.execute(
+                "SELECT status, finished_at, error FROM scrape_runs "
+                "WHERE source='zombie'"
+            ).fetchone()
+        assert zombie["status"] == "killed", (
+            f"old running row should have been swept to 'killed'; "
+            f"got status={zombie['status']!r}"
+        )
+        assert zombie["finished_at"], "killed row needs finished_at"
+        assert "auto-marked killed" in (zombie["error"] or ""), (
+            "killed row needs a diagnostic note explaining the sweep"
+        )
+        assert new_id > 0  # fresh run still got its own id
+
+    def test_recent_running_row_is_NOT_swept(self, tmp_db):
+        """A run that legitimately is still in progress (started <6h
+        ago) must not get killed by the sweep — that would prevent
+        legitimate long-running scrapes from ever finishing."""
+        from edgar_form4.store import start_run
+        with connect(tmp_db) as conn:
+            conn.execute(
+                "INSERT INTO scrape_runs (source, started_at, status) "
+                "VALUES ('in_progress', datetime('now', '-1 hours'), "
+                "        'running')"
+            )
+            conn.commit()
+        with connect(tmp_db) as conn:
+            start_run(conn, "another:test")
+            conn.commit()
+            still_running = conn.execute(
+                "SELECT status FROM scrape_runs WHERE source='in_progress'"
+            ).fetchone()
+        assert still_running["status"] == "running"
+
+    def test_ok_rows_never_touched_by_sweep(self, tmp_db):
+        from edgar_form4.store import start_run
+        with connect(tmp_db) as conn:
+            conn.execute(
+                "INSERT INTO scrape_runs (source, started_at, finished_at, "
+                "                          status, rows_inserted) "
+                "VALUES ('done', datetime('now', '-2 days'), "
+                "         datetime('now', '-2 days'), 'ok', 5)"
+            )
+            conn.commit()
+        with connect(tmp_db) as conn:
+            start_run(conn, "fresh:test")
+            conn.commit()
+            done = conn.execute(
+                "SELECT status FROM scrape_runs WHERE source='done'"
+            ).fetchone()
+        assert done["status"] == "ok"

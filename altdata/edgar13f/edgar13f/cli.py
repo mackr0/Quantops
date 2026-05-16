@@ -14,9 +14,15 @@ Individual:
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 import click
+
+
+def _utcnow():
+    """tz-aware UTC `now` — replaces `datetime.utcnow()` (Python 3.12
+    deprecated). Caller's `.strftime()` / `.year` work unchanged."""
+    return datetime.now(timezone.utc)
 from rich.console import Console
 from rich.table import Table
 
@@ -53,7 +59,7 @@ def cli(ctx, verbose):
 def daily_(max_filings):
     """One-button refresh: scrape all configured filers for any new 13F-HR filings."""
     console.print(f"[bold]Daily refresh — {len(FILERS)} configured filers[/bold]")
-    console.print(f"  Started at {datetime.utcnow().strftime('%H:%M UTC')}")
+    console.print(f"  Started at {_utcnow().strftime('%H:%M UTC')}")
 
     with connect() as conn:
         results = scrape_all_filers(conn, max_filings_per_filer=max_filings)

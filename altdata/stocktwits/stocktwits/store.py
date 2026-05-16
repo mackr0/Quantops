@@ -218,8 +218,18 @@ def upsert_daily_sentiment(
 def insert_trending_snapshot(
     conn: sqlite3.Connection, snapshot_at: str, ranked_tickers: List[str],
 ) -> int:
-    """Insert a trending snapshot — list of tickers in rank order."""
+    """Insert a trending snapshot — list of tickers in rank order.
+
+    `n` is the number of NEW rows inserted. Duplicate-rank collisions
+    at the same `snapshot_at` are unexpected (only the daily cron
+    writes here, once per snapshot) — pre-2026-05-16 they were
+    silently `pass`ed. Now logged at WARNING so a real dedup bug
+    can't hide.
+    """
+    import logging
+    log = logging.getLogger(__name__)
     n = 0
+    n_dupes = 0
     for rank, ticker in enumerate(ranked_tickers, 1):
         try:
             conn.execute(
@@ -228,8 +238,22 @@ def insert_trending_snapshot(
                 (snapshot_at, rank, ticker.upper()),
             )
             n += 1
-        except sqlite3.IntegrityError:
-            pass
+        except sqlite3.IntegrityError as exc:
+            # Unique violation on (snapshot_at, rank) — caller probably
+            # re-invoked at the same timestamp. Surface so the duplicate
+            # write is observable; don't swallow.
+            n_dupes += 1
+            log.warning(
+                "stocktwits trending_snapshots dupe (snapshot_at=%s "
+                "rank=%d ticker=%s): %s",
+                snapshot_at, rank, ticker, exc,
+            )
+    if n_dupes > 0:
+        log.warning(
+            "stocktwits trending_snapshots: %d duplicate row(s) skipped "
+            "at snapshot_at=%s — only %d new rows inserted",
+            n_dupes, snapshot_at, n,
+        )
     return n
 
 

@@ -416,7 +416,46 @@ def counts_by_date(
 
 # ── Scrape runs ──────────────────────────────────────────────────
 
+_ORPHAN_RUN_MAX_AGE_HOURS = 6
+
+
+def _sweep_orphaned_runs(conn: sqlite3.Connection) -> int:
+    """Mark any `status='running'` rows older than the orphan-age
+    threshold as `status='killed'` with a finished_at timestamp.
+
+    Pre-2026-05-16 the script had no protection against zombies:
+    a SIGKILL/OOM/disconnect mid-run left the row at `running`
+    forever, polluting the runs history and confusing the issues
+    page. This sweep runs at the top of every new `start_run` so
+    a fresh invocation cleans up its predecessors' wreckage.
+    """
+    note = (" [auto-marked killed by _sweep_orphaned_runs — "
+            "process likely SIGKILL/OOM/disconnect]")
+    age_clause = f"-{_ORPHAN_RUN_MAX_AGE_HOURS} hours"
+    cur = conn.execute(
+        "UPDATE scrape_runs SET status = 'killed', "
+        "finished_at = datetime('now'), "
+        "error = COALESCE(error, '') || ? "
+        "WHERE status = 'running' "
+        "  AND started_at < datetime('now', ?)",
+        (note, age_clause),
+    )
+    return cur.rowcount or 0
+
+
 def start_run(conn: sqlite3.Connection, source: str) -> int:
+    # Clean up zombies left by previous runs that died without
+    # calling finish_run (SIGKILL, OOM, network drop). Any row with
+    # status='running' older than 6h gets marked 'killed' with a
+    # diagnostic error note. Quiet on no-ops; logs INFO on any sweep.
+    n_swept = _sweep_orphaned_runs(conn)
+    if n_swept > 0:
+        import logging
+        logging.getLogger(__name__).info(
+            "edgar_form4: swept %d orphaned scrape_runs row(s) "
+            "(status='running' older than %dh)",
+            n_swept, _ORPHAN_RUN_MAX_AGE_HOURS,
+        )
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     cur = conn.execute(
         "INSERT INTO scrape_runs (source, started_at, status) "

@@ -18,8 +18,13 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _utcnow():
+    """tz-aware UTC `now` — replaces `datetime.utcnow()`."""
+    return datetime.now(timezone.utc)
 from typing import List
 
 import click
@@ -96,7 +101,7 @@ def daily_(max_tickers, skip_trending):
         watchlist = watchlist[:max_tickers]
 
     console.print(f"[bold]Daily refresh — {len(watchlist)} tickers[/bold]")
-    console.print(f"  Started at {datetime.utcnow().strftime('%H:%M UTC')}")
+    console.print(f"  Started at {_utcnow().strftime('%H:%M UTC')}")
 
     with connect() as conn:
         if not skip_trending:

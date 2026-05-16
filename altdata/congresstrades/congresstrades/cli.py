@@ -20,8 +20,15 @@ import csv
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _utcnow():
+    """tz-aware UTC `now` — replacement for the Python 3.12-deprecated
+    `_utcnow()`. Returns a tz-aware datetime; caller's
+    `.strftime()` / `.year` / `.date()` all work unchanged."""
+    return datetime.now(timezone.utc)
 
 import click
 from rich.console import Console
@@ -63,7 +70,7 @@ def cli(ctx, verbose):
 
 
 @cli.command()
-@click.option("--year", type=int, default=datetime.utcnow().year,
+@click.option("--year", type=int, default=_utcnow().year,
               help="Calendar year to scrape (default: current year)")
 @click.option("--house/--no-house", default=True,
               help="Scrape House (default on)")
@@ -443,7 +450,7 @@ def _print_member_detail(perf):
 
 
 @cli.command()
-@click.option("--year", type=int, default=datetime.utcnow().year,
+@click.option("--year", type=int, default=_utcnow().year,
               help="Restrict to tickers traded in this year (default: current)")
 @click.option("--chamber", type=click.Choice(["house", "senate"]),
               help="Restrict to one chamber")
@@ -493,7 +500,7 @@ def prices(year, chamber, period, force, all_tickers):
 
 
 @cli.command(name="daily")
-@click.option("--year", type=int, default=datetime.utcnow().year,
+@click.option("--year", type=int, default=_utcnow().year,
               help="Year to refresh (default: current calendar year)")
 @click.option("--skip-prices", is_flag=True,
               help="Skip the price-cache refresh step (faster, ~5 min)")
@@ -510,7 +517,7 @@ def daily_(year, skip_prices, force_prices):
     from .prices import refresh_prices, tickers_from_db
 
     console.print(f"[bold]Daily refresh — year {year}[/bold]")
-    console.print(f"  Started at {datetime.utcnow().strftime('%H:%M UTC')}")
+    console.print(f"  Started at {_utcnow().strftime('%H:%M UTC')}")
 
     summary = {}
 

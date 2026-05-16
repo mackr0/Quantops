@@ -341,8 +341,22 @@ _PDUFA_DATE_PATTERNS = [
 ]
 
 
+# Transient EDGAR errors that warrant a retry. SEC's full-text search
+# returns 500/502/503/504 several times per week — usually a backend
+# hiccup that clears within 1-5s. Pre-2026-05-16 a single 500 would
+# silently drop the entire PDUFA scan for the cycle (3+/day on prod).
+_EDGAR_TRANSIENT_HTTP = {500, 502, 503, 504}
+_EDGAR_RETRY_DELAYS = (1.0, 3.0, 7.0)   # 3 retries, ~11s worst-case
+
+
 def _fetch_edgar_search(query: str, lookback_days: int = 60) -> Dict:
-    """Query EDGAR full-text search. Returns parsed JSON or {}."""
+    """Query EDGAR full-text search. Returns parsed JSON or {}.
+
+    Retries transient errors (5xx, network) with exponential backoff
+    before giving up. Hard 4xx errors (404, 403) are NOT retried —
+    those are caller/auth bugs and a retry would just amplify them.
+    """
+    import time as _time
     today = datetime.utcnow().date()
     start = today - timedelta(days=lookback_days)
     params = {
@@ -353,14 +367,52 @@ def _fetch_edgar_search(query: str, lookback_days: int = 60) -> Dict:
         "enddt": today.isoformat(),
     }
     url = f"{EDGAR_SEARCH_URL}?{urllib.parse.urlencode(params)}"
-    req = urllib.request.Request(url, headers={"User-Agent": SEC_USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return json.loads(r.read().decode("utf-8", "ignore"))
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError,
-            json.JSONDecodeError) as exc:
-        logger.warning("EDGAR search failed: %s", exc)
-        return {}
+
+    last_exc: Optional[Exception] = None
+    # +1 for the initial attempt; the rest come from the delay tuple.
+    for attempt in range(len(_EDGAR_RETRY_DELAYS) + 1):
+        req = urllib.request.Request(
+            url, headers={"User-Agent": SEC_USER_AGENT},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return json.loads(r.read().decode("utf-8", "ignore"))
+        except urllib.error.HTTPError as exc:
+            last_exc = exc
+            if exc.code not in _EDGAR_TRANSIENT_HTTP:
+                # Non-transient HTTP error — don't retry, surface the
+                # real bug. Loud WARN with the URL so the response can
+                # be reproduced manually.
+                logger.warning(
+                    "EDGAR search failed with non-transient HTTP "
+                    "%d (no retry): %s — url=%s",
+                    exc.code, exc, url,
+                )
+                return {}
+        except (urllib.error.URLError, OSError,
+                json.JSONDecodeError) as exc:
+            last_exc = exc
+            # All other failures (timeout, DNS, malformed JSON) are
+            # transient enough to retry — exponential backoff below.
+
+        if attempt < len(_EDGAR_RETRY_DELAYS):
+            delay = _EDGAR_RETRY_DELAYS[attempt]
+            logger.info(
+                "EDGAR search transient error (attempt %d/%d): %s — "
+                "retrying in %.1fs",
+                attempt + 1, len(_EDGAR_RETRY_DELAYS) + 1, last_exc, delay,
+            )
+            _time.sleep(delay)
+
+    # Out of retries — loud WARN with attempt count so the failure
+    # mode is observable on the /issues page.
+    logger.warning(
+        "EDGAR search FAILED after %d attempts (final error: %s) — "
+        "PDUFA scan will miss any 8-K filings since the last cycle "
+        "for query=%r",
+        len(_EDGAR_RETRY_DELAYS) + 1, last_exc, query,
+    )
+    return {}
 
 
 def _extract_ticker_from_display(display_name: str) -> Optional[str]:

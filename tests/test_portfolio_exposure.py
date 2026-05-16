@@ -22,6 +22,58 @@ def test_empty_positions_returns_zero_exposure():
     assert out["concentration_flags"] == []
 
 
+# --- 2026-05-16 audit addition: shape contract ---
+
+_EXPOSURE_REQUIRED_KEYS = {
+    "net_pct", "gross_pct", "num_positions", "by_sector",
+    "concentration_flags", "book_beta", "factors",
+    "long_pct", "short_pct",
+}
+
+
+def test_empty_positions_return_has_full_key_set():
+    """The empty-positions path must return the SAME keys the
+    positions-present path returns. Pre-2026-05-13 it returned only
+    5 keys, so template references to missing keys produced Jinja
+    Undefined → format() crashes on /performance."""
+    out = compute_exposure([], equity=100_000)
+    assert set(out.keys()) >= _EXPOSURE_REQUIRED_KEYS, (
+        f"empty-positions return missing keys: "
+        f"{_EXPOSURE_REQUIRED_KEYS - set(out.keys())}"
+    )
+
+
+def test_positions_present_return_has_full_key_set():
+    """And the positions-present path must too — pre-2026-05-16 it
+    was missing `long_pct` and `short_pct`, so a future template
+    reference to `exposure.long_pct` on a non-empty portfolio
+    would have hit the same Jinja Undefined.__format__ class."""
+    out = compute_exposure(
+        [{"symbol": "AAPL", "qty": 100, "market_value": 20_000}],
+        equity=100_000,
+        sector_lookup=_stub_lookup({"AAPL": "Technology"}),
+    )
+    assert set(out.keys()) >= _EXPOSURE_REQUIRED_KEYS, (
+        f"positions-present return missing keys: "
+        f"{_EXPOSURE_REQUIRED_KEYS - set(out.keys())}"
+    )
+
+
+def test_long_short_pct_computed_when_positions_present():
+    """long_pct and short_pct must be REAL numbers when positions
+    exist (not zeros from the empty-path fallback)."""
+    out = compute_exposure(
+        [
+            {"symbol": "AAPL", "qty": 100, "market_value": 20_000},
+            {"symbol": "MSFT", "qty": -50, "market_value": -10_000},
+        ],
+        equity=100_000,
+        sector_lookup=_stub_lookup({"AAPL": "Tech", "MSFT": "Tech"}),
+    )
+    assert out["long_pct"] == 20.0   # $20k / $100k = 20%
+    assert out["short_pct"] == 10.0  # $10k / $100k = 10%
+
+
 def test_zero_equity_returns_zeros():
     out = compute_exposure(
         [{"symbol": "AAPL", "qty": 10, "market_value": 2000}],

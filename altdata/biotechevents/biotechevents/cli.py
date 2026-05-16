@@ -15,7 +15,13 @@ Individual:
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow():
+    """tz-aware UTC `now` — replaces `datetime.utcnow()`."""
+    return datetime.now(timezone.utc)
+
 
 import click
 from rich.console import Console
@@ -60,7 +66,7 @@ def cli(ctx, verbose):
 def daily_(days, max_pages):
     """One-button daily refresh — recently-updated trials + (stubbed) FDA."""
     console.print(f"[bold]Daily refresh — last {days} days of trial updates[/bold]")
-    console.print(f"  Started at {datetime.utcnow().strftime('%H:%M UTC')}")
+    console.print(f"  Started at {_utcnow().strftime('%H:%M UTC')}")
 
     with connect() as conn:
         try:

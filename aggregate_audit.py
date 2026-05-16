@@ -142,11 +142,16 @@ def _broker_qty_per_symbol(api) -> Dict[str, float]:
         try:
             out[sym] = float(getattr(p, "qty", 0) or 0)
         except (ValueError, TypeError, AttributeError, KeyError) as _aq_exc:
-            # Per-position qty parse loop; skip rows with malformed
-            # qty. Surface for follow-up.
-            logger.debug(
-                "aggregate_audit per-position qty parse failed: %s: %s",
-                type(_aq_exc).__name__, _aq_exc,
+            # Per-position qty parse fail — the row gets silently
+            # dropped from the broker side of the drift comparison.
+            # A malformed Alpaca position field is unusual and likely
+            # indicates schema drift; WARN so the bug surfaces.
+            logger.warning(
+                "aggregate_audit per-position qty parse failed "
+                "(symbol=%s): %s: %s — this position will be MISSING "
+                "from the drift comparison, possibly causing false "
+                "drift alerts",
+                sym, type(_aq_exc).__name__, _aq_exc,
             )
             continue
     return out

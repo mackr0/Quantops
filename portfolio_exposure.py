@@ -153,6 +153,13 @@ def compute_exposure(
     # scalar. None when no positions or no beta data available.
     book_beta = compute_book_beta(positions, equity)
 
+    # Shape contract: must match the empty-positions return shape
+    # above. Pre-2026-05-16 the positions-present return was missing
+    # `long_pct` and `short_pct`, so a future template that referenced
+    # `exposure.long_pct` on a non-empty portfolio would have hit
+    # Jinja Undefined.__format__ — the exact bug class the May 13
+    # fix to the empty-path was supposed to close. test_portfolio_
+    # exposure_shape_contract pins both paths to the same key set.
     return {
         "net_pct": round((long_val - short_val) / equity * 100, 1),
         "gross_pct": round((long_val + short_val) / equity * 100, 1),
@@ -161,6 +168,8 @@ def compute_exposure(
         "concentration_flags": concentration_flags,
         "factors": factors,
         "book_beta": (round(book_beta, 3) if book_beta is not None else None),
+        "long_pct": round(long_val / equity * 100, 1),
+        "short_pct": round(short_val / equity * 100, 1),
     }
 
 

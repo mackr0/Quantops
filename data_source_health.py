@@ -279,7 +279,14 @@ def alert_on_critical_failure(health: Dict[str, Any],
             context=f"Data-source health failure: {', '.join(failures)}",
         )
     except Exception as exc:
-        logger.debug("notify_error skipped: %s", exc)
+        # notify_error failure means a data-source health alert
+        # got DETECTED but the operator never got pinged. This is
+        # an alerting gap — surface so /issues catches it.
+        logger.warning(
+            "notify_error FAILED on data-source health alert "
+            "(failures=%s): %s: %s — operator NOT notified",
+            ",".join(failures), type(exc).__name__, exc,
+        )
 
     if profile_id:
         try:

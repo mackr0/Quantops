@@ -3501,9 +3501,28 @@ def _task_run_watchdog(ctx):
                     ctx=ctx,
                 )
             except Exception as exc:
-                logging.debug(f"Watchdog notification failed: {exc}")
+                # Pre-2026-05-16 this was debug-level — meaning a
+                # watchdog that detected a stall but FAILED to notify
+                # was completely invisible. Now WARNING so the gap in
+                # alerting surfaces on /issues. (The stall itself
+                # already got the log.warning above; this covers the
+                # email/notification leg.)
+                logging.warning(
+                    "Watchdog DETECTED stall but FAILED to send "
+                    "notification: %s: %s — stall is logged but the "
+                    "operator alert was lost",
+                    type(exc).__name__, exc,
+                )
     except Exception as exc:
-        logging.warning(f"Watchdog task failed: {exc}")
+        # The watchdog itself crashing means stalls go undetected for
+        # the whole next cycle. Bump to ERROR — this is operational
+        # blindness.
+        logging.error(
+            "Watchdog task itself CRASHED: %s: %s — stall detection "
+            "is DOWN until the next watchdog cycle; investigate "
+            "immediately",
+            type(exc).__name__, exc,
+        )
 
 
 def _task_db_backup(ctx):
