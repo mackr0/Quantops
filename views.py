@@ -651,6 +651,77 @@ def _format_param_value(name, value):
     return format_param_value(name, value)
 
 
+# ── Tuning-adjustment categorization ───────────────────────────────
+# Distinguish what kind of change each adjustment_type represents.
+#
+# - gate_tighten: restricts trade volume or scope (correlation caps,
+#   strategy deprecation, drawdown gates, opening-minute filters,
+#   raised price floors, etc.). These are the changes that need to
+#   be watched — accumulating gate-tightenings was the shape of the
+#   2026-05-14 over-restriction collapse.
+#
+# - refinement: changes HOW a threshold computes, NOT whether to
+#   trade. Examples: ATR multipliers (where take-profit fires),
+#   RSI threshold adjustments, signal-weight intensity changes
+#   (Layer 2 weights 0.0–1.0 are intensity, not gates).
+#
+# - loosen: explicit easing — lowered confidence threshold, opening
+#   filter shortened, blacklisted symbols restored.
+#
+# - neutral: evaluations with no change, manual rollbacks, phantom-
+#   stop cleanups, auto-reversals of prior changes.
+
+_TUNING_CATEGORY_RULES = (
+    # exact-match overrides come first
+    ("evaluation",              "neutral"),
+    ("manual_revert",           "neutral"),
+    ("auto_reversal",           "neutral"),
+    ("rollback_phantom_stop",   "neutral"),
+    # signal-weight changes are Layer-2 intensity refinements, NOT gates
+    ("signal_weight_down",      "refinement"),
+    ("signal_weight_up",        "refinement"),
+    # ATR / RSI threshold tunings are how-it-computes refinements
+    ("atr_tp_tighten",          "refinement"),
+    ("atr_tp_loosen",           "refinement"),
+    ("atr_sl_tighten",          "refinement"),
+    ("atr_sl_loosen",           "refinement"),
+    ("rsi_oversold_lower",      "refinement"),
+    ("rsi_oversold_raise",      "refinement"),
+    ("rsi_overbought_lower",    "refinement"),
+    ("rsi_overbought_raise",    "refinement"),
+    ("stop_take_profit",        "refinement"),
+    ("trailing_atr_multiplier", "refinement"),
+)
+
+
+def _categorize_tuning_adjustment(adjustment_type: str) -> str:
+    """Return one of: 'gate_tighten', 'refinement', 'loosen', 'neutral'.
+
+    Uses an exact-match allowlist for refinements / neutrals; everything
+    else falls back to suffix-based detection: '*_tighten' / '_reduce' /
+    '_raise' / 'deprecate' → gate_tighten; '*_loosen' / '_lower' (when
+    not in the refinement list) → loosen.
+    """
+    if not adjustment_type:
+        return "neutral"
+    at = str(adjustment_type).lower()
+    for needle, category in _TUNING_CATEGORY_RULES:
+        if at == needle:
+            return category
+    # Suffix detection for the long tail of optimizers.
+    if (at.endswith("_tighten") or at.endswith("_reduce")
+            or at.endswith("_raise") or at.endswith("_upward")
+            or at == "strategy_deprecate" or at == "concentration_reduce"
+            or at == "correlation_tighten" or at == "fast_lane_retirement"
+            or at == "stop_out_blacklist"):
+        return "gate_tighten"
+    if at.endswith("_loosen") or at.endswith("_lower"):
+        return "loosen"
+    # confidence_threshold_optimization could be either direction
+    # depending on the actual values — caller can inspect old/new.
+    return "neutral"
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -5900,6 +5971,9 @@ def api_tuning_history():
                 # know about percentage-vs-int parameter conventions.
                 h["old_value_label"] = _format_param_value(pname, h.get("old_value"))
                 h["new_value_label"] = _format_param_value(pname, h.get("new_value"))
+                h["category"] = _categorize_tuning_adjustment(
+                    h.get("adjustment_type"),
+                )
             all_history.extend(history)
         except Exception as exc:
             logger.warning(
@@ -5908,10 +5982,24 @@ def api_tuning_history():
             )
     all_history.sort(key=lambda h: h.get("timestamp", ""), reverse=True)
 
+    # 7-day rollup by category (so the dashboard can show counts
+    # without the user having to flip through history pages).
+    from datetime import datetime as _dt, timedelta as _td
+    cutoff = (_dt.utcnow() - _td(days=7)).isoformat()
+    summary = {"gate_tighten": 0, "refinement": 0,
+                "loosen": 0, "neutral": 0}
+    for h in all_history:
+        if (h.get("timestamp") or "") < cutoff:
+            continue
+        summary[h.get("category", "neutral")] = summary.get(
+            h.get("category", "neutral"), 0,
+        ) + 1
+
     total = len(all_history)
     start = (page - 1) * per_page
     return jsonify({"items": all_history[start:start + per_page], "total": total,
-                     "page": page, "pages": -(-total // per_page)})
+                     "page": page, "pages": -(-total // per_page),
+                     "summary_7d": summary})
 
 
 @views_bp.route("/api/learned-patterns")

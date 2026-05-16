@@ -17,6 +17,30 @@ Rules going forward:
 
 ---
 
+## 2026-05-16 — Tuning history: gate-tighten vs refinement vs loosen badge, 7-day rollup, signal-weights matrix no longer leaks snake_case. Severity: medium (UX clarity + new structural test for the snake-case-via-API leak class).
+
+**1. Tuning-adjustment categorization** added in `views._categorize_tuning_adjustment`:
+- `gate_tighten` (restricts trade volume / scope — correlation caps, strategy deprecation, drawdown gates, raised filters). The bucket that needs watching (the 2026-05-14 over-restriction collapse was caused by accumulating gate tightens).
+- `refinement` (changes HOW a threshold computes — ATR multipliers, RSI thresholds, Layer-2 signal-weight intensity 0.0–1.0). Does NOT restrict trade volume.
+- `loosen` (explicit easing).
+- `neutral` (evaluations, manual reverts, auto-reversals, rollbacks).
+
+Tuning-history widget on the AI page (`#operations`) now renders a category badge on every row and a 7-day rollup at the top: `X gate tightens · Y refinements · Z loosenings · N evaluations/rollbacks`. Distinguishes the 2026-05-14 incident shape (persistent gate-tighten skew with no auto-expiry) from healthy refinement activity (ATR multiplier adjustments, signal-weight tuning). Tooltip on each badge explains what category means.
+
+**2. Snake_case leak fix in JS-rendered tables.** The signal-weights matrix view I shipped earlier this session rendered `esc(row.name)` (raw snake_case signal name) under every row label — 28 signals × snake_case visible = "table fucking full of snake case" per the user. The original single-profile signal-weights table had the same leak. Both fixed: the raw name moves to a `title=` tooltip; only the humanized `label` field is in the visible UI text.
+
+**3. New structural test class catches this regression shape going forward.**
+`tests/test_no_snake_case_in_api_responses.py` (4 tests) — the existing `test_no_snake_case_in_rendered_output.py` catches snake_case in JINJA TEMPLATE source. It does NOT catch snake_case that arrives via API JSON and gets rendered at runtime by JS. The new test:
+- Scans API JSON payloads recursively for snake_case in display-text fields (skips documented raw-identifier fields like `name`, `parameter_name`, `category` — those are machine-readable IDs the JS humanizes via a label sibling field).
+- Asserts every API row carries a humanized `label` companion so JS never has to fall through to the raw identifier.
+- Meta-test verifies the scanner WOULD catch a leak (so it can't pass vacuously).
+
+**4. Tuning categorization tests** (`tests/test_tuning_adjustment_categorization.py`, 33 tests) — parametrized over every adjustment_type type the system emits, with explicit regression test for `signal_weight_down` being a refinement (NOT a gate-tighten — that misclassification was the conceptual bug behind my misleading "32:3 tighten:loosen" framing earlier).
+
+3396 tests pass (3 new test files contributing 37+ new tests).
+
+---
+
 ## 2026-05-15 — Monday-readiness: data-source health monitor + pre-market smoke test + final strategy sign-off + news_sentiment parser fix. Severity: high (closes the silent-fallback class of regression that was the backbone failure).
 
 **Why this exists:** the 2026-05-15 incident found that the master Alpaca API key had been revoked at some unknown earlier date, causing `market_data.get_bars` to silently fall back to yfinance for the entire system. Surface signals (process up, predictions recorded, trades fired) all looked green; the integrity signal (which API actually served this bar) was unchecked. This commit ships the structural prevention so the same regression class cannot recur silently.

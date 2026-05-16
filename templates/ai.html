@@ -2390,8 +2390,11 @@
                 h += '</tr></thead><tbody>';
                 d.rows.forEach(function(row) {
                     h += '<tr>';
-                    h += '<td><strong>' + esc(row.label || row.name) + '</strong>'
-                        + '<br><small class="muted">' + esc(row.name) + '</small></td>';
+                    // Render the humanized label only. The raw snake_case
+                    // name lives in the title= tooltip for devs who need
+                    // it; never in the visible UI text.
+                    h += '<td><strong title="' + esc(row.name) + '">'
+                        + esc(row.label || row.name) + '</strong></td>';
                     var cntCls = row.n_overridden > 0 ? 'pnl-neg' : 'muted';
                     h += '<td style="text-align:center;font-family:monospace;" class="' + cntCls + '">'
                         + row.n_overridden + '</td>';
@@ -2441,7 +2444,10 @@
                     else if (row.is_overridden) status = '<span style="color:#b87333;">overridden</span>';
                     else status = '<span class="muted">default</span>';
                     h += '<tr>';
-                    h += '<td>' + esc(row.label || row.name) + ' <small class="muted">(' + esc(row.name) + ')</small></td>';
+                    // Humanized label only — raw snake_case name in
+                    // title= tooltip, never visible in UI text.
+                    h += '<td><span title="' + esc(row.name) + '">'
+                        + esc(row.label || row.name) + '</span></td>';
                     h += '<td style="text-align:right;font-family:monospace;" class="' + weightCls + '">' + weight.toFixed(2) + '</td>';
                     h += '<td>' + status + '</td>';
                     h += '</tr>';
@@ -2565,16 +2571,51 @@
     }
 
     // --- Tuning History ---
+    // Category badges distinguish the THREE different kinds of
+    // self-tuning change. Conflating them is the bug this fixes:
+    //
+    //   gate_tighten = restricts trade volume / scope (correlation
+    //     caps, strategy deprecation, drawdown gates, raised price
+    //     floors). Accumulating gate-tightenings was the shape of the
+    //     2026-05-14 over-restriction collapse; this is the bucket
+    //     that needs watching.
+    //   refinement = changes HOW a threshold computes, not WHETHER
+    //     to trade. ATR multipliers, RSI thresholds, signal-weight
+    //     intensity (Layer 2 weights 0.0–1.0).
+    //   loosen = explicit easing.
+    //   neutral = evaluations, manual rollbacks, auto-reversals.
+    function categoryBadge(cat) {
+        if (cat === 'gate_tighten') {
+            return '<span style="background:#fff3e0;color:#b87333;padding:1px 6px;border-radius:3px;font-size:0.7rem;font-weight:600;" title="Restricts trade volume or scope (correlation cap, strategy disable, drawdown gate, raised filter, etc). Watch this bucket — accumulating gate-tightenings caused the 2026-05-14 over-restriction collapse.">GATE TIGHTEN</span>';
+        }
+        if (cat === 'refinement') {
+            return '<span style="background:#e3f2fd;color:#1565c0;padding:1px 6px;border-radius:3px;font-size:0.7rem;font-weight:600;" title="Refines HOW a threshold computes (ATR multiplier, RSI threshold, signal-weight intensity). Does NOT restrict trade volume.">REFINEMENT</span>';
+        }
+        if (cat === 'loosen') {
+            return '<span style="background:#e8f5e9;color:#2e7d32;padding:1px 6px;border-radius:3px;font-size:0.7rem;font-weight:600;" title="Explicit easing — wider opening filter, restored blacklist, lower confidence threshold.">LOOSEN</span>';
+        }
+        return '<span class="muted" style="font-size:0.7rem;">—</span>';
+    }
     function loadTuningHistory(page) {
         var w = document.getElementById('tuning-history-widget');
         fetch('/api/tuning-history?page=' + page + '&per_page=5' + pfParam)
             .then(function(r) { return r.json(); })
             .then(function(d) {
                 if (!d.items || !d.items.length) { w.innerHTML = '<p class="muted">No self-tuning history yet.</p>'; return; }
-                var h = '<div class="overflow-auto"><table><thead><tr><th>Date</th><th>Profile</th><th>Change</th><th>Reason</th><th>Win Rate</th><th>Outcome</th></tr></thead><tbody>';
+                var s = d.summary_7d || {};
+                var h = '<div style="margin-bottom:0.75rem;padding:0.55rem 0.75rem;background:#fafafa;border-left:3px solid #ccc;font-size:0.85rem;">';
+                h += '<strong>Last 7 days:</strong> ';
+                h += '<span style="color:#b87333;font-weight:600;">' + (s.gate_tighten || 0) + ' gate tightens</span>';
+                h += ' · <span style="color:#1565c0;">' + (s.refinement || 0) + ' refinements</span>';
+                h += ' · <span style="color:#2e7d32;">' + (s.loosen || 0) + ' loosenings</span>';
+                h += ' · <span class="muted">' + (s.neutral || 0) + ' evaluations/rollbacks</span>';
+                h += '<br><small class="muted">Gate tightens RESTRICT trades; refinements (ATR / RSI / signal-weight intensity) only change how thresholds compute. A persistent skew toward gate tightens with no auto-expiry is the 2026-05-14 incident shape.</small>';
+                h += '</div>';
+                h += '<div class="overflow-auto"><table><thead><tr><th>Date</th><th>Profile</th><th>Category</th><th>Change</th><th>Reason</th><th>Win Rate</th><th>Outcome</th></tr></thead><tbody>';
                 d.items.forEach(function(r) {
                     h += '<tr><td>' + esc((r.timestamp||'').substring(0,10)) + '</td>';
                     h += '<td>' + esc(r.profile_name||'') + '</td>';
+                    h += '<td>' + categoryBadge(r.category) + '</td>';
                     if (r.adjustment_type === 'evaluation') {
                         h += '<td colspan="2" class="muted" style="font-size:0.85rem;">' + esc(r.reason||'') + '</td>';
                     } else {
