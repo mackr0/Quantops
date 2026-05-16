@@ -42,11 +42,11 @@ What the AI's "brain state" looks like.
 | **Performance summary** | Per-profile win rate, profit factor, AI prediction count, win rate by direction (long/short/exits). |
 | **Win-Rate History Chart** | 30-day rolling win rate per profile. Drift up = improving, drift down = check what changed. |
 | **Meta-Model** | Per-profile: GBM AUC, accuracy, training samples, top predictive features. SGD freshness layer: n_updates, n_features, last update timestamp. |
-| **Slippage Model** | Calibrated K, sample count, mean residual, bucket sample counts, sample estimate component breakdown (half-spread + impact + vol + bootstrap = total bps). |
-| **Slippage Calibration Drift** | Predicted vs realized for last 200 fills. Mean delta near zero = well-calibrated. Persistent positive delta = K under-predicting (your fills are worse than expected; bump K). Persistent negative = over-predicting. |
+| **Slippage Model** | Calibrated K, sample count, mean residual, bucket sample counts, sample estimate component breakdown (half-spread + impact + vol + bootstrap = total bps). _Per-profile only: select a single profile to see its K and residuals — cross-profile aggregation isn't meaningful (different market_type and ADV mix)._ |
+| **Slippage Calibration Drift** | Predicted vs realized for last 200 fills. Mean delta near zero = well-calibrated. Persistent positive delta = K under-predicting (your fills are worse than expected; bump K). Persistent negative = over-predicting. _Per-profile only._ |
 | **Synthetic Options Backtester** | Pick a symbol + strategy + lookback + OTM% + DTE + cycle days, click Run. Returns equity curve + win rate + profit factor over the historical window. |
-| **Monte Carlo Backtest** | Run 1,000 MC sims on the profile's recent closed trades. Returns 5/25/50/75/95th percentile P&L distribution + P(loss). Wide [5%, 95%] band = strategy P&L is execution-variance-sensitive. |
-| **Per-Strategy Monte Carlo** | Same MC engine, grouped by strategy. Shows which strategies have ROBUST edge vs apparent edge that vanishes under realistic slippage. |
+| **Monte Carlo Backtest** | Run 1,000 MC sims on the profile's recent closed trades. Returns 5/25/50/75/95th percentile P&L distribution + P(loss). Wide [5%, 95%] band = strategy P&L is execution-variance-sensitive. _Per-profile only._ |
+| **Per-Strategy Monte Carlo** | Same MC engine, grouped by strategy. Shows which strategies have ROBUST edge vs apparent edge that vanishes under realistic slippage. _Per-profile only._ |
 | **AI Cost** | Today's spend, headroom vs ceiling, recent calls. |
 | **Pair Book** | (Long/short profiles only.) Active cointegrated pairs with current Z-score + actionability flags. |
 | **Greeks** | (Options profiles only.) Net delta / gamma / vega / theta across the book. |
@@ -76,7 +76,9 @@ What the AI sees right now, on this cycle.
 | **Crisis Monitor** | Cross-asset crisis state (normal / elevated / crisis / severe). When elevated: signals firing + size multiplier + readings + transition history. |
 | **Event Stream** | Recent events (SEC, earnings, price shocks, halts) handled by the event bus. |
 | **Specialist Ensemble** | Each candidate's per-specialist verdicts (earnings, pattern, sentiment, risk, adversarial). Vetoes highlighted. |
-| **Attention Signals** | Per held position: Google Trends z-score + direction, Wikipedia 7d/90d z-score + spike flag, App Store ranks. |
+| **Attention Signals** | Per held position: Google Trends z-score + direction, Wikipedia 7d/90d z-score + spike flag, App Store ranks. _Per-profile only — keyed to the selected profile's held positions._ |
+| **Specialist Veto Activity** | Per-specialist verdict counts over the last 7 days. Distinguishes "claimed" vetoes (any specialist that wrote VETO) from "effective" vetoes (specialists in `VETO_AUTHORIZED` that actually blocked a trade). Scope follows the page profile filter — single profile = that profile's vetoes; All Profiles = cross-profile aggregate. |
+| **Strategy Validations** | Recent backtest gauntlet runs from `strategy_validations.db`. Scope follows the page profile filter — single profile = rows for that profile's `market_type` only; All Profiles = cross-market rollup of the 30 newest. |
 
 ### 3d. Operations tab
 
@@ -85,7 +87,7 @@ How the system is tuning itself.
 | Panel | What it shows |
 |---|---|
 | **Self-Tuning** | Status pill per profile (resolved samples, can_tune, message), recent tuning history, parameter changes + reason. |
-| **Cost Guard** | Daily spend tracking + headroom + ceiling. |
+| **Cost Guard** | Daily spend tracking + headroom + ceiling. _Per-user (cross-profile): the ceiling caps TOTAL AI spend across every profile you own — it is NOT per-profile._ |
 | **Active Lessons** | Post-mortem patterns + tuner-detected failure patterns being injected into the AI prompt. |
 | **Tunable Signal Weights (Layer 2)** | Every weightable signal + current weight + override status. |
 | **Autonomy Timeline** | Per-profile timeline of autonomous changes the system has made. |

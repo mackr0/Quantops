@@ -2474,6 +2474,17 @@ def performance_dashboard():
             ai_perf["hold_resolved"] += p.get("hold_resolved", 0)
             hr = p.get("hold_resolved", 0)
             hpr = p.get("hold_pass_rate", 0.0) or 0.0
+            # Contract: ai_tracker.get_ai_performance returns
+            # hold_pass_rate as a percent in [0, 100]. The aggregation
+            # math below divides by 100 — a fraction (0..1) here would
+            # silently undercount HOLD wins ~100x in the rollup. Assert
+            # the contract so a future change to ai_tracker fails loud.
+            if not isinstance(hpr, (int, float)) or hpr < 0.0 or hpr > 100.0:
+                raise ValueError(
+                    f"hold_pass_rate from {db_path} is {hpr!r} (type "
+                    f"{type(hpr).__name__}); must be a number in "
+                    "[0, 100] — see ai_tracker.get_ai_performance."
+                )
             if hr > 0:
                 ai_perf.setdefault("_hold_wins_running", 0)
                 ai_perf["_hold_wins_running"] += round(hr * hpr / 100.0)
@@ -2652,7 +2663,21 @@ def performance_dashboard():
     # Strategy validations (Phase 2). JSON parses on stored gate-arrays
     # narrowly catch malformed-JSON (legacy rows may have empty strings).
     validations = []
-    raw = get_recent_validations(limit=30)
+    # Pull a wider window than we display so the post-filter trim
+    # to the active market_type still has enough rows to fill the
+    # 30-row view. Pre-2026-05-16 this fetched limit=30 directly
+    # and ignored the page's profile filter — a Mid Cap user saw
+    # crypto / largecap / micro validations mixed in.
+    raw = get_recent_validations(limit=200)
+    selected_market_type = None
+    if selected_profile_int:
+        for p in profiles:
+            if p["id"] == selected_profile_int:
+                selected_market_type = p.get("market_type")
+                break
+    if selected_market_type:
+        raw = [v for v in raw if v.get("market_type") == selected_market_type]
+    raw = raw[:30]
     for v in raw:
         try:
             passed = json.loads(v.get("passed_gates", "[]"))
@@ -3256,6 +3281,17 @@ def ai_dashboard():
             ai_perf["hold_resolved"] += p.get("hold_resolved", 0)
             hr = p.get("hold_resolved", 0)
             hpr = p.get("hold_pass_rate", 0.0) or 0.0
+            # Contract: ai_tracker.get_ai_performance returns
+            # hold_pass_rate as a percent in [0, 100]. The aggregation
+            # math below divides by 100 — a fraction (0..1) here would
+            # silently undercount HOLD wins ~100x in the rollup. Assert
+            # the contract so a future change to ai_tracker fails loud.
+            if not isinstance(hpr, (int, float)) or hpr < 0.0 or hpr > 100.0:
+                raise ValueError(
+                    f"hold_pass_rate from {db_path} is {hpr!r} (type "
+                    f"{type(hpr).__name__}); must be a number in "
+                    "[0, 100] — see ai_tracker.get_ai_performance."
+                )
             if hr > 0:
                 ai_perf.setdefault("_hold_wins_running", 0)
                 ai_perf["_hold_wins_running"] += round(hr * hpr / 100.0)
@@ -3436,7 +3472,21 @@ def ai_dashboard():
             })
 
     validations = []
-    raw = get_recent_validations(limit=30)
+    # Pull a wider window than we display so the post-filter trim
+    # to the active market_type still has enough rows to fill the
+    # 30-row view. Pre-2026-05-16 this fetched limit=30 directly
+    # and ignored the page's profile filter — a Mid Cap user saw
+    # crypto / largecap / micro validations mixed in.
+    raw = get_recent_validations(limit=200)
+    selected_market_type = None
+    if selected_profile_int:
+        for p in profiles:
+            if p["id"] == selected_profile_int:
+                selected_market_type = p.get("market_type")
+                break
+    if selected_market_type:
+        raw = [v for v in raw if v.get("market_type") == selected_market_type]
+    raw = raw[:30]
     for v in raw:
         try:
             passed = json.loads(v.get("passed_gates", "[]"))
@@ -3568,14 +3618,25 @@ def ai_dashboard():
             "timestamp": cycle.get("timestamp"),
         })
 
-    # Per-specialist veto activity across all profiles, last 7 days.
-    # Surfaces silent-no-op vetoes (specialists w/o VETO authority that
-    # nonetheless wrote VETO into specialist_outcomes).
+    # Per-specialist veto activity, last 7 days. Scope: matches the
+    # active profile filter — when a single profile is selected the
+    # widget shows only that profile's vetoes; when "All Profiles"
+    # is active it aggregates across every profile DB. Pre-2026-05-16
+    # this always passed `db_paths` (full list), so a single-profile
+    # view silently showed cross-profile aggregates.
     try:
         from journal import get_specialist_veto_stats
+        veto_db_paths = db_paths
+        if selected_profile_int:
+            scoped = f"quantopsai_profile_{selected_profile_int}.db"
+            veto_db_paths = [d for d in db_paths if d.endswith(scoped)]
         ensemble_info["veto_stats"] = get_specialist_veto_stats(
-            db_paths, days=7,
+            veto_db_paths, days=7,
         )
+        if ensemble_info["veto_stats"]:
+            ensemble_info["veto_stats"]["scope"] = (
+                "single_profile" if selected_profile_int else "all_profiles"
+            )
     except Exception:
         ensemble_info["veto_stats"] = None
 
@@ -4363,8 +4424,12 @@ def api_options_backtest():
             "trade_pnl": round(pnl, 2),
         })
     out["equity_curve"] = curve
+    # Humanize the strategy identifier alongside the raw value so the
+    # dashboard renders "Iron Condor" instead of `iron_condor`.
+    from display_names import display_name as _dn_opts
     out["params"] = {
         "symbol": symbol, "strategy": strategy,
+        "strategy_label": _dn_opts(strategy),
         "lookback_days": lookback_days, "otm_pct": otm_pct,
         "target_dte": target_dte, "cycle_days": cycle_days,
     }

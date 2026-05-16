@@ -17,6 +17,39 @@ Rules going forward:
 
 ---
 
+## 2026-05-16 — /ai page audit: per-profile scoping + snake_case humanization fixes. Severity: medium (6 silent display/scope bugs across Brain/Strategy/Awareness/Operations tabs).
+
+Full 32-widget audit across the /ai page (analogous to the 49-widget perf audit shipped earlier today): 24 verified CORRECT, 4 suspicious, 4 needed deeper verification, 6 snake_case risk sites. Deep-trace confirmed 3 of the 4 flagged functions were actually correct (`_build_long_short_awareness`, `_build_portfolio_risk_awareness`, `_analyze_failure_patterns`'s db_path scope) — only 1 was buggy. This commit ships fixes for the 6 confirmed bugs + extends the snake_case API guardrail.
+
+**Bug B — Veto Activity scoped to "All Profiles" regardless of filter** (`views.py:3576`): `_ai_common` called `get_specialist_veto_stats(db_paths, days=7)` with the full per-user db_paths list even when a single profile was selected. A Mid Cap user viewing the Brain tab saw vetoes aggregated across all 11 profiles, labelled as their own. Fix: filter `db_paths` to the selected profile's DB suffix (`quantopsai_profile_<N>.db`) when `selected_profile_int` is set; pass through unfiltered for the All Profiles view. Also added `scope` field to the payload so a future widget can show "single_profile" vs "all_profiles" badging.
+
+**Bug E — Strategy Validations ignored the profile filter** (`views.py:3438-3456`, `views.py:2655`): `get_recent_validations(limit=30)` returned the 30 globally-newest rows from the shared `strategy_validations.db`, regardless of profile. A Mid Cap user saw crypto / largecap / smallcap / micro rows mixed in. The function takes no market_type filter; per-call filtering is the right layer. Fix: widen the fetch to limit=200 and apply `[v for v in raw if v["market_type"] == selected_market_type]` before trimming to the displayed 30. All Profiles view continues to show the cross-market rollup (intentional for that scope).
+
+**Bug C — Cost Guard widget labeled per-profile but is per-user** (`templates/ai.html:1918-1923`): the Daily API-spend ceiling is enforced globally per user (cross-profile), but the widget was nested in profile-filtered context with no scoping note. Users assumed each profile had its own ceiling. Relabeled with "(cross-profile)" subtitle + tooltip explaining the per-user scope. No math change — the underlying ceiling logic was already correct.
+
+**Bug D — `hold_pass_rate` aggregation had no type/units guard** (`views.py:2476`, `views.py:3272`): the rollup back-computes HOLD wins as `round(hr * hpr / 100.0)`, assuming `hpr` is a percent in [0, 100]. If a future change to `ai_tracker.get_ai_performance` returned a fraction (0..1) without updating both call sites, the rollup would silently undercount wins ~100x. Added defensive `isinstance + 0 <= hpr <= 100` assertion that raises with the offending DB path and value.
+
+**Bug A — Slippage Model / Slippage History / MC Backtest / Per-Strategy MC / Attention Signals silently fell back to pid=1 on All Profiles view** (`templates/ai.html:1552, 1623, 1674, 1727, 1852`): all 5 widgets used `var pid = profileFilter || '1';`, so a user viewing All Profiles saw profile 1's calibrated K, fills, MC distribution, and held-position attention signals presented as if they were a cross-profile rollup. None of these metrics are meaningfully aggregable across profiles (different market_type, ADV mix, K-coefficient, held positions). Fix: detect `!profileFilter` and render explicit empty-state copy directing the user to select a single profile. Note: the original audit flagged 4 sites; per the "map the WHOLE landscape" rule, grep found a 5th (`attention-signals` at line 1552) with the same pattern — fixed in the same pass.
+
+**Snake_case audit — `_analyze_failure_patterns` Pattern 1 leaked raw regime identifiers** (`self_tuning.py:5688-5714`): Pattern 1 substituted the raw `regime_at_prediction` DB value into the displayed pattern string ("Predictions in strong_bull markets: ..."). Pattern 2 already used `display_name()` but Pattern 1 didn't. Fix: humanize via `display_name(regime)` so the API ships "Strong Bull" instead of `strong_bull`. Also fixed the Parameter Resolver header (`templates/ai.html:2584-2594`) to use the API's existing `_label` companions (`param_label`, `current_regime_label`, `current_tod_label`, `final_source_label`) instead of the raw identifiers — these were already returned by `/api/resolve-param` but the JS rendered the raw fields. Added `strategy_label` to `/api/options-backtest` params payload so the footer renders "Iron Condor" instead of `iron_condor`.
+
+**Tests added** (`tests/test_ai_page_scoping_2026_05_16.py` — 9 tests):
+- `TestVetoStatsScoping` (2 tests) — pins helper contract + the views.py filter expression
+- `TestValidationsScoping` (2 tests) — pins the post-fetch market_type filter behavior
+- `TestHoldPassRateTypeAssert` (5 tests) — pins range/type guard + live `get_ai_performance` contract against a seeded DB
+
+**Snake_case guardrail extension** (`tests/test_no_snake_case_in_api_responses.py` — 6 new tests, 10 total):
+- `test_learned_patterns_items_have_no_raw_regime` — exercises `_analyze_failure_patterns` against a seeded DB with `regime='strong_bull'`, asserts pattern strings have no snake_case
+- `test_options_backtest_params_has_strategy_label` — pins `params.strategy_label` contract
+- `test_resolver_payload_has_label_companions` — pins all 4 `<field>_label` companions
+- `test_slippage_model_source_is_humanized` — pins that `source` is humanized + raw lives under `source_raw`
+- `test_weightable_signals_label_companions_for_raw_name` — pins `label` is always present
+- `test_raw_identifier_fields_set_is_complete_for_ai_page` — meta-assertion that the whitelist covers every raw-id field the AI page ships, so silent expansion is caught
+
+3167 main-suite tests pass. The 6 fixes + 9 + 6 new tests cover the class of "silent fall-back to pid=1" and "raw identifier rendered as label" bugs across the /ai page.
+
+---
+
 ## 2026-05-16 — Bug 8 — correlation + beta use sample covariance (ddof=1), matching the sample std deviations. Severity: medium (silent downward bias on every profile's beta + correlation widgets).
 
 Deep-trace audit of 5 perf-dashboard dependent modules (kelly_sizing, mfe_capture, scaling_projection, portfolio_exposure, _fetch_benchmark_returns + the correlation calc) found **one real bug + one false positive**.

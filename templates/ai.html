@@ -1546,10 +1546,19 @@
     loadMacroData();
 
     // --- Item 3a: Attention signals (held positions) ---
+    // Attention signals are keyed to a single profile's held
+    // positions. Pre-2026-05-16 this silently fell back to pid=1 on
+    // "All Profiles", so users saw signals for symbols they didn't
+    // actually hold in the selected view. Empty-state on All
+    // Profiles instead.
     function loadAttentionSignals() {
         var w = document.getElementById('attention-signals-widget');
         if (!w) return;
-        var pid = profileFilter || '1';
+        if (!profileFilter) {
+            w.innerHTML = '<p class="muted">Attention signals show news/social activity for symbols you currently hold. Select a single profile from the filter above to see its held positions.</p>';
+            return;
+        }
+        var pid = profileFilter;
         fetch('/api/attention-signals/' + pid)
             .then(function(r) { return r.json(); })
             .then(function(d) {
@@ -1617,10 +1626,20 @@
     loadAttentionSignals();
 
     // --- Item 5c: Slippage model panel ---
+    // Pre-2026-05-16 this silently fell back to pid=1 when no profile
+    // was selected, so the "All Profiles" view showed profile 1's
+    // calibrated K as if it were a global value. The slippage model
+    // is per-profile by construction (different market_type, ADV mix,
+    // K-coefficient), so aggregation across profiles is not
+    // meaningful — render an explicit empty-state instead.
     function loadSlippageModel() {
         var w = document.getElementById('slippage-model-widget');
         if (!w) return;
-        var pid = profileFilter || '1';
+        if (!profileFilter) {
+            w.innerHTML = '<p class="muted">Slippage model is calibrated per profile (each profile has its own K-coefficient and fill history). Select a single profile from the filter above to view its calibration.</p>';
+            return;
+        }
+        var pid = profileFilter;
         fetch('/api/slippage-model/' + pid)
             .then(function(r) { return r.json(); })
             .then(function(d) {
@@ -1668,10 +1687,18 @@
     loadSlippageModel();
 
     // --- Item 5c: Slippage history (predicted vs realized) ---
+    // Same per-profile rationale as the slippage model widget:
+    // predicted-vs-realized samples are keyed to a single profile's
+    // fills and calibration, so a cross-profile aggregate would
+    // average across heterogeneous markets. Render empty-state.
     function loadSlippageHistory() {
         var w = document.getElementById('slippage-history-widget');
         if (!w) return;
-        var pid = profileFilter || '1';
+        if (!profileFilter) {
+            w.innerHTML = '<p class="muted">Predicted-vs-realized slippage is tracked per profile. Select a single profile from the filter above to view its samples.</p>';
+            return;
+        }
+        var pid = profileFilter;
         fetch('/api/slippage-history/' + pid)
             .then(function(r) { return r.json(); })
             .then(function(d) {
@@ -1720,11 +1747,21 @@
     loadSlippageHistory();
 
     // --- Item 5c: Monte Carlo backtest panel ---
+    // Each profile has its own trade list and slippage residual
+    // distribution, so an aggregated MC run across all profiles
+    // would mix incompatible execution regimes. Block the run when
+    // no single profile is selected — pre-2026-05-16 we silently
+    // fell back to pid=1, so "Run" on All Profiles silently
+    // simulated profile 1's book.
     var mcBtn = document.getElementById('mc-run-btn');
     if (mcBtn) {
         mcBtn.addEventListener('click', function() {
             var w = document.getElementById('mc-backtest-widget');
-            var pid = profileFilter || '1';
+            if (!profileFilter) {
+                w.innerHTML = '<p class="muted">Monte Carlo replay simulates a single profile\'s trade list against its own slippage residual distribution. Select a profile from the filter above and re-run.</p>';
+                return;
+            }
+            var pid = profileFilter;
             w.innerHTML = '<p class="muted">Running 1000 simulations…</p>';
             mcBtn.disabled = true;
             fetch('/api/mc-backtest/' + pid, {
@@ -1817,7 +1854,7 @@
                     h += '<div class="stat-card"><small class="muted">Best / worst</small><strong>$' + d.best_trade_pnl.toFixed(0) + ' / $' + d.worst_trade_pnl.toFixed(0) + '</strong></div>';
                     h += '<div class="stat-card"><small class="muted">Sharpe proxy</small><strong>' + d.sharpe_proxy.toFixed(2) + '</strong></div>';
                     h += '</div>';
-                    h += '<p style="font-size:0.8rem;color:#888;margin-top:0.5rem;">' + esc(d.params.symbol) + ' / ' + esc(d.params.strategy) + ' over ' + d.params.lookback_days + 'd, ' + d.params.target_dte + 'd to expiry, every ' + d.params.cycle_days + 'd, ' + (d.params.otm_pct * 100).toFixed(1) + '% OTM</p>';
+                    h += '<p style="font-size:0.8rem;color:#888;margin-top:0.5rem;">' + esc(d.params.symbol) + ' / ' + esc(d.params.strategy_label || d.params.strategy) + ' over ' + d.params.lookback_days + 'd, ' + d.params.target_dte + 'd to expiry, every ' + d.params.cycle_days + 'd, ' + (d.params.otm_pct * 100).toFixed(1) + '% OTM</p>';
                     if (d.equity_curve && d.equity_curve.length) {
                         h += '<h5 style="margin-top:1rem;">Cumulative P&amp;L (per-trade)</h5>';
                         h += '<div class="overflow-auto"><table style="font-size:0.8rem;"><thead><tr><th>Date</th><th style="text-align:right;">Trade P&amp;L</th><th style="text-align:right;">Cumulative</th></tr></thead><tbody>';
@@ -1845,11 +1882,19 @@
     }
 
     // --- Item 5c: Per-strategy MC tiles ---
+    // Per-strategy MC runs against a single profile's trade list +
+    // slippage distribution. Same per-profile constraint as the
+    // book-wide MC above — block on All Profiles instead of
+    // silently simulating profile 1.
     var mcByStratBtn = document.getElementById('mc-by-strategy-btn');
     if (mcByStratBtn) {
         mcByStratBtn.addEventListener('click', function() {
             var w = document.getElementById('mc-by-strategy-widget');
-            var pid = profileFilter || '1';
+            if (!profileFilter) {
+                w.innerHTML = '<p class="muted">Per-strategy MC simulates one profile\'s strategy trade lists against its own slippage residuals. Select a profile from the filter above and re-run.</p>';
+                return;
+            }
+            var pid = profileFilter;
             w.innerHTML = '<p class="muted">Running per-strategy simulations…</p>';
             mcByStratBtn.disabled = true;
             fetch('/api/mc-backtest-by-strategy/' + pid, {
@@ -1917,8 +1962,8 @@
 
     <!-- Cost Guard Daily Status — spend tracking + headroom -->
     <article>
-        <header><h3>Cost Guard</h3></header>
-        <p class="muted" style="margin-top:-0.5rem;">Daily API-spend ceiling. Every spend-affecting autonomous action checks this before firing — over-budget changes surface as cost-gated recommendations instead of auto-applying.</p>
+        <header><h3><span class="tip" data-tip="This ceiling is GLOBAL (cross-profile, per-user). Set on the settings page under Autonomy → Maximum daily AI spend. Today's spend and headroom shown here aggregate spend across ALL your profiles — the cap applies to total usage, not per-profile. So selecting an individual profile in the page filter doesn't change this widget's numbers.">Cost Guard <small class="muted">(cross-profile)</small></span></h3></header>
+        <p class="muted" style="margin-top:-0.5rem;">Daily API-spend ceiling — applies to TOTAL usage across all your profiles, not per-profile. Every AI call gates on this before the provider is invoked; over-budget calls hard-block and the dashboard shows a banner. Configure via Settings → Autonomy → Maximum daily AI spend.</p>
         <div id="cost-guard-widget"><p class="muted">Loading...</p></div>
     </article>
 
@@ -2536,17 +2581,23 @@
                         resultEl.innerHTML = '<p class="muted">' + esc(d.error) + '</p>';
                         return;
                     }
+                    // Use the API's humanized companions
+                    // (param_label / current_regime_label /
+                    // current_tod_label / final_source_label) rather
+                    // than the raw identifiers. Pre-2026-05-16 the
+                    // resolver header rendered `atr_multiplier_tp`,
+                    // `strong_bull`, `intraday_open`, etc. directly.
                     var h = '<div style="font-size:0.9rem;">';
                     h += '<div style="margin-bottom:0.5rem;">';
                     h += '<strong>' + esc(d.profile_name) + '</strong> · ';
-                    h += esc(pname);
+                    h += esc(d.param_label || pname);
                     if (d.symbol) h += ' · symbol <strong>' + esc(d.symbol) + '</strong>';
-                    h += ' · regime <strong>' + esc(d.current_regime || 'unknown') + '</strong>';
-                    if (d.current_tod) h += ' · TOD <strong>' + esc(d.current_tod) + '</strong>';
+                    h += ' · regime <strong>' + esc(d.current_regime_label || d.current_regime || 'unknown') + '</strong>';
+                    if (d.current_tod) h += ' · TOD <strong>' + esc(d.current_tod_label || d.current_tod) + '</strong>';
                     h += '</div>';
                     h += '<div style="margin-bottom:0.5rem;padding:0.5rem 0.75rem;background:#e8f5e9;border-left:3px solid #00c853;border-radius:0 4px 4px 0;">';
                     h += '<strong>Final value: ' + d.final_value + '</strong>';
-                    h += ' <small class="muted">(from ' + esc(d.final_source) + ')</small>';
+                    h += ' <small class="muted">(from ' + esc(d.final_source_label || d.final_source) + ')</small>';
                     if (d.capital_scale !== 1.0) {
                         h += '<br><small>Position-size parameters then × <strong>' + d.capital_scale.toFixed(2) + '</strong> capital scale at execution.</small>';
                     }

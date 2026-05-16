@@ -5685,6 +5685,11 @@ def _analyze_failure_patterns(db_path):
         # Pattern 1: Win rate by regime
         # DISPLAY_ONLY: builds AI-prompt context strings (patterns
         # are surfaced to the AI, not used to mechanically tighten).
+        # Humanize the raw regime identifier (e.g. `strong_bull` ->
+        # `Strong Bull`) before substituting into the displayed
+        # pattern string — pre-2026-05-16 we leaked snake_case
+        # straight from the DB into the learned-patterns API payload.
+        from display_names import display_name as _dn
         if has_regime:
             rows = conn.execute(
                 "SELECT regime_at_prediction, COUNT(*) as total, "
@@ -5699,7 +5704,7 @@ def _analyze_failure_patterns(db_path):
             overall_wr = (overall[1] / overall[0] * 100) if overall[0] > 0 else 50
 
             for r in rows:
-                regime = r[0]
+                regime = _dn(r[0])
                 total = r[1]
                 wr = r[2] / total * 100
                 if wr < overall_wr - 15:  # Significantly worse than average
