@@ -219,6 +219,117 @@ class TestAlphaUsesGeometricBenchmarkAnnualization:
     EXACTLY equal beta * benchmark, alpha should be ~0 under
     geometric — under arithmetic it's biased."""
 
+    def test_correlation_uses_sample_covariance_ddof1(self, temp_profile_db):
+        """Bug 8 (deep-trace audit, 2026-05-16). Pre-fix the
+        correlation/beta calc used `_mean(...)` for covariance
+        (population, ddof=0) while `_std()` used sample ddof=1. That
+        inconsistency biased correlation and beta downward by
+        (n-1)/n. For n=30, ~3.3% bias.
+
+        Direct math test: a correlation of perfectly-correlated
+        series must equal 1.0 exactly when both cov and std use
+        consistent ddof — otherwise it's exactly (n-1)/n."""
+        # Two perfectly-correlated series, n=30
+        port = [0.01 * i for i in range(30)]
+        bench = [0.02 * i for i in range(30)]  # = 2 * port, perfectly correlated
+        n = len(port)
+        m_p = sum(port) / n
+        m_b = sum(bench) / n
+        # Sample cov (ddof=1) — what the fix uses
+        sample_cov = sum(
+            (p - m_p) * (b - m_b)
+            for p, b in zip(port, bench)
+        ) / (n - 1)
+        # Population cov (ddof=0) — what the bug used
+        pop_cov = sum(
+            (p - m_p) * (b - m_b)
+            for p, b in zip(port, bench)
+        ) / n
+        # Sample std (ddof=1)
+        var_p = sum((p - m_p) ** 2 for p in port) / (n - 1)
+        var_b = sum((b - m_b) ** 2 for b in bench) / (n - 1)
+        import math
+        s_p = math.sqrt(var_p)
+        s_b = math.sqrt(var_b)
+        # Correct correlation = 1.0 (perfectly correlated)
+        corr_sample = sample_cov / (s_p * s_b)
+        # Bugged correlation = (n-1)/n ≈ 0.967 for n=30
+        corr_buggy = pop_cov / (s_p * s_b)
+        assert abs(corr_sample - 1.0) < 1e-9, (
+            f"Sample-ddof correlation should be exactly 1.0 for "
+            f"perfectly correlated series; got {corr_sample}"
+        )
+        assert abs(corr_buggy - (n - 1) / n) < 1e-9, (
+            f"Bugged correlation should be exactly (n-1)/n = "
+            f"{(n-1)/n}; got {corr_buggy}"
+        )
+        # The bug bias is real and material:
+        assert abs(corr_sample - corr_buggy) > 0.03, (
+            f"Bias should be ~3.3% for n=30; got "
+            f"{corr_sample - corr_buggy}"
+        )
+
+    def test_book_beta_equity_denominated_when_cash_present(self):
+        """Pin the SEMANTIC choice (not a bug, a deliberate design):
+        book_beta is equity-denominated, so a portfolio with 50%
+        cash holdings reads as half the beta of a fully-deployed
+        portfolio with the same holdings. The docstring says 'sums
+        to book-level — gross_weight is fraction', meaning the
+        weighted sum is the book's exposure relative to equity.
+
+        If this test ever fails because someone changed compute_book_beta
+        to gross-normalize, that's a real semantic shift that needs
+        explicit decision — not a silent change."""
+        from portfolio_exposure import compute_book_beta
+        # 50% of equity in a beta=1 long position, 50% in cash.
+        positions = [
+            {"symbol": "AAPL", "qty": 100, "market_value": 5_000.0},
+        ]
+        equity = 10_000.0
+        beta_lookup = lambda sym: 1.0 if sym == "AAPL" else None
+        book_beta = compute_book_beta(positions, equity, beta_lookup)
+        # Equity-denominated: 5000/10000 * 1.0 = 0.5
+        assert book_beta == pytest.approx(0.5), (
+            f"Book beta is equity-denominated: 50% deployed × "
+            f"beta=1 → 0.5. Got {book_beta}. If this changed, the "
+            f"simulate_book_beta_with_entry must also be updated to "
+            f"match the new convention."
+        )
+
+    def test_simulate_book_beta_matches_actual_after_entry(self):
+        """End-to-end: simulate_book_beta_with_entry should agree
+        with what compute_book_beta returns AFTER the entry actually
+        happens. Different equity-vs-gross conventions between the
+        two functions would surface as a mismatch here."""
+        from portfolio_exposure import (
+            compute_book_beta, simulate_book_beta_with_entry,
+        )
+        # Existing: $5K long AAPL beta=1.0
+        positions = [
+            {"symbol": "AAPL", "qty": 100, "market_value": 5_000.0},
+        ]
+        equity = 10_000.0
+        beta_lookup = lambda sym: {"AAPL": 1.0, "MSFT": 1.2}.get(sym)
+
+        before = compute_book_beta(positions, equity, beta_lookup)
+        # Simulate adding $1K long MSFT (beta=1.2, size_pct=10).
+        projected = simulate_book_beta_with_entry(
+            positions, equity,
+            candidate_symbol="MSFT", candidate_size_pct=10.0,
+            candidate_action="BUY", beta_lookup=beta_lookup,
+        )
+        # Actually add it and re-compute.
+        after_positions = positions + [
+            {"symbol": "MSFT", "qty": 10, "market_value": 1_000.0},
+        ]
+        actual_after = compute_book_beta(
+            after_positions, equity, beta_lookup,
+        )
+        assert projected == pytest.approx(actual_after, abs=1e-6), (
+            f"simulate_book_beta_with_entry ({projected}) should "
+            f"match compute_book_beta of the actual book ({actual_after})"
+        )
+
     def test_arithmetic_vs_geometric_differ_under_volatility(self):
         """Cross-check: for a synthetic benchmark with high vol, the
         two annualization methods give meaningfully different values.

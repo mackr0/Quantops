@@ -1410,14 +1410,28 @@ def calculate_all_metrics(db_paths, initial_capital: float = 10000,
                 if len(aligned_port) < 10:
                     continue
 
-                # Correlation
+                # Correlation. CRITICAL: covariance must use the SAME
+                # ddof as _std (which defaults to ddof=1, sample std).
+                # Pre-2026-05-16 this used `_mean(...)` (= population
+                # ddof=0) for cov while _std used sample ddof=1 — that
+                # inconsistency biased correlation and beta DOWNWARD
+                # by a factor of (n-1)/n. For n=30, ~3.3% bias; for
+                # n=100, ~1%. Using sum/(n-1) for cov matches std.
                 m_p = _mean(aligned_port)
                 m_b = _mean(aligned_bench)
                 s_p = _std(aligned_port)
                 s_b = _std(aligned_bench)
 
                 if s_p > 0 and s_b > 0:
-                    cov = _mean([(p - m_p) * (b - m_b) for p, b in zip(aligned_port, aligned_bench)])
+                    n_aligned = len(aligned_port)
+                    if n_aligned >= 2:
+                        cov_sum = sum(
+                            (p - m_p) * (b - m_b)
+                            for p, b in zip(aligned_port, aligned_bench)
+                        )
+                        cov = cov_sum / (n_aligned - 1)  # sample cov, ddof=1
+                    else:
+                        cov = 0.0
                     corr = cov / (s_p * s_b)
                     result[f"correlation_{key}"] = round(corr, 3)
                     result[f"correlation_{key}_computable"] = True

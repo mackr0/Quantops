@@ -17,6 +17,25 @@ Rules going forward:
 
 ---
 
+## 2026-05-16 — Bug 8 — correlation + beta use sample covariance (ddof=1), matching the sample std deviations. Severity: medium (silent downward bias on every profile's beta + correlation widgets).
+
+Deep-trace audit of 5 perf-dashboard dependent modules (kelly_sizing, mfe_capture, scaling_projection, portfolio_exposure, _fetch_benchmark_returns + the correlation calc) found **one real bug + one false positive**.
+
+**Real bug — `metrics/legacy.py:1420` (pre-fix line)**: covariance computed via `_mean([(p - m_p) × (b - m_b) for ...])` which uses ddof=0 (population covariance), while standard deviations used `_std()` which defaults to ddof=1 (sample standard deviation). The mismatch biased correlation and beta DOWNWARD by exactly `(n-1)/n` — 3.3% for n=30, 1% for n=100. Fix: compute sample covariance with the same `(n-1)` denominator: `sum(...) / (n - 1)`. Test `test_correlation_uses_sample_covariance_ddof1` pins this with a perfectly-correlated synthetic series (must return exactly 1.0 sample, exactly `(n-1)/n` population).
+
+**False positive — `portfolio_exposure.simulate_book_beta_with_entry`**: deep-trace flagged it as not renormalizing when adding a position. On closer reading, `compute_book_beta` itself uses EQUITY-denominated weights (so a portfolio with 50% cash shows half the beta of a fully-deployed book) — this is a deliberate semantic choice ("how much of your equity is market-exposed"). The simulator matches this convention. No fix needed; added 2 tests pinning the semantic so a future "fix" attempt won't silently change the meaning of book_beta across the system.
+
+3 of 5 deep-trace modules CLEAN: `kelly_sizing.py` (Kelly formula correct), `mfe_capture.py` (capture ratio + median sound), `scaling_projection.py` (Almgren-Chriss √(scale) market-impact + tier-migration correct).
+
+**Tests added**: 3 new tests in `test_performance_metrics_bugs_2026_05_16.py`:
+- `test_correlation_uses_sample_covariance_ddof1` — pins the cov/std ddof consistency
+- `test_book_beta_equity_denominated_when_cash_present` — pins the equity-denom semantic
+- `test_simulate_book_beta_matches_actual_after_entry` — pins that simulate agrees with compute_book_beta of the actual book after a hypothetical entry
+
+3421 main-suite tests pass.
+
+---
+
 ## 2026-05-16 — Performance dashboard math + clarity fixes from cross-tab audit. Severity: medium (3 silent math bugs that affected every profile; 4 wording/scoping fixes).
 
 After a 49-widget audit across all 5 performance-page tabs (`#summary`, `#risk`, `#trades`, `#market`, `#scale`), 36 widgets verified CORRECT, 7 SUSPICIOUS, 6 NEEDS_DEEPER_VERIFICATION. This commit ships fixes for the 7 suspicious ones.
