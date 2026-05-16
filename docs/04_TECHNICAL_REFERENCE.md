@@ -41,7 +41,9 @@
                     SEC EDGAR · Wikimedia · pytrends · iTunes RSS ·
                     Reddit (PRAW) · StockTwits · ClinicalTrials.gov ·
                     Senate eFD · House Clerk · Ken French CSV ·
-                    yfinance (sector classifier + factor data only)
+                    yfinance (grandfathered for 10 unique data
+                      types Alpaca/altdata don't cover — see §15
+                      for the full list)
 ```
 
 ## 2. Top-level processes
@@ -436,6 +438,39 @@ Major API endpoints in `views.py` (~50 routes). Documented inline; selected endp
 ## 14. Adding a new module
 
 Follow the conventions in `docs/10_METHODOLOGY.md` §4 and `docs/11_INTEGRATION_GUIDE.md`.
+
+## 15. Data-source policy and yfinance grandfathered uses
+
+Data-source priority (enforced by the `feedback_alpaca_first_data` memory rule):
+
+1. **Alpaca first** — use Alpaca for bars (any timeframe), quotes, trades, snapshots, options chains, news (`/v1beta1/news`), corporate actions, positions, orders, account state. Credentials resolved via `market_data._resolve_alpaca_credentials()` (env vars first, then any working row from the `alpaca_accounts` master DB table — self-healing for credential rotation).
+2. **Custom altdata second** — `altdata/<name>/` modules. Currently built: `congresstrades` (House STOCK Act), `edgar13f` (institutional 13F-HR), `biotechevents` (clinical trials + PDUFA stub), `stocktwits` (retail sentiment).
+3. **yfinance last** — grandfathered for data types neither Alpaca nor a custom altdata module covers. Each yfinance use must live in a single dedicated module — strategies must never `import yfinance` directly.
+
+### Current yfinance dependencies (grandfathered exceptions)
+
+| Module | Function | Data | Why grandfathered |
+|---|---|---|---|
+| `earnings_calendar.py` | `check_earnings()`, `days_since_last_earnings()` | Future + past earnings announcement dates | Alpaca has no earnings calendar endpoint at all |
+| `analyst_data.py` | `recommendation_shift()` | Aggregate analyst rating distributions per period | Alpaca has no analyst recommendations API; Polygon/Finnhub paid tiers exist but not free |
+| `sector_classifier.py` | `get_sector()` | GICS sector classification | Alpaca asset endpoint has no sector field |
+| `factor_data.py` | `get_book_to_market()` | Book value, market cap, shares outstanding | Alpaca doesn't expose fundamentals |
+| `macro_data.py` | `get_cboe_skew()` | CBOE ^SKEW index value | Alpaca doesn't serve equity volatility indices |
+| `alternative_data.get_insider_activity()` | Recent insider buys/sells per symbol | Form 4 disclosures | No Alpaca endpoint. **Phase 6 candidate** — replace with `altdata/edgar_form4` module (SEC EDGAR Form 4 XML, free public source). |
+| `alternative_data.get_short_interest()` | Short % of float, short ratio | FINRA short interest reports | No Alpaca endpoint. **Phase 6 candidate** — replace with `altdata/finra_short` module. |
+| `alternative_data.get_fundamentals()` | P/E, dividends, ownership %, institution % | Fundamentals from Yahoo Finance | No equivalent |
+| `alternative_data.get_options_unusual()` | Options unusual activity (chains) | yfinance option chains | **Phase 6 quick-win** — Alpaca now has options chains (already used by `options_chain_alpaca.py`); migrate `get_options_unusual` to use the existing Alpaca wrapper. |
+| `alternative_data.get_analyst_estimates()` | EPS / revenue forecasts | yfinance analyst estimates | No equivalent free source |
+| `alternative_data.get_earnings_surprise()` | Beat/miss history per quarter | yfinance earnings history | No equivalent free source |
+| `alternative_data.get_patent_activity()` | Company name lookup for USPTO query | yfinance ticker info | Trivial name lookup; not worth migrating |
+| `market_data.py` | `_fetch_via_yfinance()` (FALLBACK) | OHLCV bars | Primary is Alpaca; yfinance only fires when (a) crypto symbol (`/` in name) or (b) Alpaca returns empty/error. Healthy. |
+
+### What's been migrated AWAY from yfinance
+
+- Daily bars + intraday 5-min bars → Alpaca `/v2/stocks/{sym}/bars` (primary; yfinance fallback retained for crypto + outage resilience)
+- Latest trade snapshot → Alpaca `/v2/stocks/{sym}/latest/trade`
+- Options chain fetch → Alpaca options-chain endpoint via `options_chain_alpaca.py`
+- News → Alpaca `/v1beta1/news` via `news_sentiment.py`
 
 ## See also
 

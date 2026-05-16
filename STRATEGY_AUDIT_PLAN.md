@@ -144,12 +144,61 @@ The system is now fusing signals from 17 verified-working strategies + 7 strateg
 
 ---
 
-## Decisions for review
+## Phase 5 — DONE 2026-05-15 evening
 
-1. **Phase 4 (threshold audits)**: defer 14 days for data, then revisit? Or look at the rarest one (`parabolic_exhaustion` — restrict to micro-only, currently small/mid) now?
+- ✅ `feedback_alpaca_first_data.md` memory rule created (was referenced in `docs/07_OPERATIONS.md:413` but file didn't exist)
+- ✅ `tests/test_no_strategy_zombies.py` (3 tests): catches any registered strategy with 0 lifetime preds across all profiles after >14 days. Class-level (reads the registry; new strategies auto-included). Skips on CI without prod DBs; catches regressions during local dev.
+- ✅ `docs/04_TECHNICAL_REFERENCE.md` to be updated in next commit with the actual yfinance usage map (see Phase 6 audit below)
 
-2. **Phase 5 (class-level zombie test + docs)**: do next session? It's the structural prevention that keeps this audit from being needed again in 6 months.
+## Phase 4 — VERIFIED, no changes needed 2026-05-15 evening
 
-3. **Phase 6 ordering**: SEC EDGAR Form 4 first (replaces yfinance for the two highest-volume strategies), then per-call audit of the rest? Or different priority?
+After re-reading each "rare" strategy file:
 
-4. **Anything I should re-test now** before considering this done?
+- `parabolic_exhaustion`: docstring says "small/mid", code matches (`APPLICABLE_MARKETS = ["small", "midcap"]`). My original Phase-4 plan said "restrict to micro/small" — that was wrong; the design intent is small/mid. No change.
+- `fifty_two_week_breakout`, `volume_dryup_breakout`, `failed_breakout`, `macd_cross_confirmation`, `short_squeeze_setup`, `breakdown_support`, `distribution_at_highs`: code is correct, conditions are genuinely rare. Per the "wait 14 days, then revisit" plan — defer until accumulated data shows whether they're firing now that data layer + code bugs are fixed.
+
+Right action for Phase 4: let the zombie test from Phase 5 watch these for 14 days; if any are still 0 after that, do a per-strategy threshold review.
+
+## Phase 6 — Inventory complete; build plan documented
+
+Audit confirmed: yfinance is GENUINELY needed for 10 unique data types that Alpaca doesn't provide (earnings dates, analyst ratings, sector classification, fundamentals, insider transactions, short interest, ^SKEW index, analyst estimates, earnings surprise history, patent name lookup). 4 of those have free public-source alternatives that could be built as custom altdata modules:
+
+### Phase 6 build candidates (priority order)
+
+| New altdata module | Replaces | Free source | Lifetime preds impact | Effort | Priority |
+|---|---|---|---|---|---|
+| **`altdata/edgar_form4`** | `alternative_data.get_insider_activity` + `get_insider_cluster` (yfinance) | SEC EDGAR Form 4 XML filings | `insider_cluster` (402) + `insider_selling_cluster` (939) = **~1,341 preds** | ~1 day (mirror edgar13f pattern) | **HIGH** |
+| **`altdata/finra_short`** | `alternative_data.get_short_interest` (yfinance) | FINRA short interest bi-monthly CSV reports | `short_squeeze_setup` (0 preds currently — but Phase 4 may un-stick it) | ~half day | MEDIUM |
+| **`altdata/fda_pdufa`** | Currently a stub inside `altdata/biotechevents` | FDA calendar (scraping required) OR third-party (Timmermann Group, BiopharmGuy) | Binary catalyst signal — high $ impact when fires | ~1 day | MEDIUM |
+| **`altdata/senate_trades`** | `altdata/congresstrades` Senate stub | Senate eFD (JS-gated; tougher scrape) | Lower volume than House; ~1/4 of `congressional_recent` signal | ~1 day | LOW |
+
+### Why this session does NOT include the Form 4 build
+
+Building a production-quality SEC EDGAR Form 4 scraper following the `edgar13f` pattern is ~1000 lines across 4-5 files (scrape/parse/store/cli/tests). Doing it in a hurried session would either ship broken code or leave the existing yfinance path silently active. The right move:
+
+1. Treat this as a focused next-session task
+2. The HIGH-priority `edgar_form4` build is the right starting point — biggest yfinance reduction, replaces the data behind two strategies that produce 1,341 combined lifetime predictions
+
+### Phase 6 — items that are NOT migration candidates
+
+These yfinance dependencies have NO viable replacement and stay grandfathered:
+- `earnings_calendar` (earnings dates) — Alpaca has no earnings calendar, no free altdata source we'd want to maintain
+- `analyst_data` (analyst ratings) — same; Polygon/Finnhub paid tiers exist but no free option
+- `sector_classifier` (GICS sector) — same; explicit allowed-yfinance per docs
+- `factor_data` (book value, marketCap) — same; Alpaca doesn't serve fundamentals
+- `macro_data` (^SKEW index) — same; Alpaca doesn't serve indices
+- `alternative_data.get_fundamentals` (P/E, dividends, etc.) — same
+- `alternative_data.get_analyst_estimates` / `get_earnings_surprise` — same
+- `alternative_data.get_patent_activity` (company name lookup only) — trivial, not worth migrating
+
+### One easy Phase 6 win available right now
+
+`alternative_data.get_options_unusual` calls yfinance for options chains. Alpaca added options chain endpoints (already migrated in `options_chain_alpaca.py`). Migrating `get_options_unusual` to use `options_chain_alpaca.fetch_chain_alpaca` would eliminate one yfinance call site for free. Low risk, low effort — could land in a small targeted commit.
+
+---
+
+## Outstanding decisions for review
+
+1. **Phase 6 — Form 4 build**: focused next session, or break into smaller chunks across multiple sessions? Recommend focused (the module structure is best built coherently).
+2. **`get_options_unusual` quick migration**: do this now as a small Phase 6 quick win? It's the easiest win available.
+3. **Anything else to re-test** before this audit is closed?

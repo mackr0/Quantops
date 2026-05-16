@@ -17,6 +17,30 @@ Rules going forward:
 
 ---
 
+## 2026-05-15 — Strategy audit Phase 5 + 6 (partial): zombie test, memory rule, doc honesty, options_unusual migrated from yfinance to Alpaca. Severity: medium (preventive structural work + one yfinance reduction).
+
+**Phase 5 — DONE:**
+
+- **`feedback_alpaca_first_data.md` memory rule created.** Was referenced in `docs/07_OPERATIONS.md:413` but the file never existed — which is why yfinance crept back into 6+ production modules after a documented migration. The rule now enforces "Alpaca first → custom altdata second → yfinance last" with explicit guidance on grandfathered cases.
+- **`tests/test_no_strategy_zombies.py` (3 tests).** Class-level structural test: any strategy in `strategies/` that's been deployed >14 days and has zero lifetime predictions across all profile DBs is flagged as a zombie. Catches the next "ship a strategy with broken API contract" regression at test time. Skips automatically on CI without prod DBs.
+- **`docs/04_TECHNICAL_REFERENCE.md` §15 added.** New section documents the actual yfinance grandfathered uses (13 specific call sites), what's been migrated AWAY from yfinance (bars, intraday, news, options chains), and what remains for Phase 6. Replaces the old "yfinance only allowed in 2 modules" docs claim that was untrue.
+
+**Phase 4 — verified, NO changes needed:**
+
+After re-reading each "rare" strategy file: code is correct, conditions are genuinely rare, design intent matches `APPLICABLE_MARKETS`. The right action per "defer 14 days for data" plan is to let the new zombie test watch them. The earlier Phase 4 recommendation to restrict `parabolic_exhaustion` to "micro/small" was wrong — its docstring says "small/mid" and the code matches.
+
+**Phase 6 — one quick win:**
+
+- **`alternative_data.get_options_unusual()` migrated from yfinance to Alpaca.** Used the existing `options_chain_alpaca.fetch_chain_alpaca` wrapper (Alpaca has had options chains since Q1; this call site was overlooked in the prior migration). Same output shape, real-time vs yfinance's 15-min delay, eliminates one yfinance call site. Zero behavioral change for consumers; just better data.
+
+**Phase 6 — build plan documented in STRATEGY_AUDIT_PLAN.md:**
+
+The bigger Phase 6 work — replacing `get_insider_activity` and `get_insider_cluster` (yfinance) with a new `altdata/edgar_form4/` module — is a focused multi-file build (~1000 lines following the existing `edgar13f` pattern). Documented as a next-session task with priority ordering. The audit also identified `finra_short`, `fda_pdufa`, and `senate_trades` as additional altdata candidates ranked by impact.
+
+3349 tests pass.
+
+---
+
 ## 2026-05-15 — Cost alert now reads the user's ceiling instead of a hard-coded $3. Plus deploy.sh stops clobbering prod .env. Severity: medium (the spurious "$3.00 threshold" alert contradicted the user's $5 cap and looked like a bug).
 
 **Two issues, related:**

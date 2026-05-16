@@ -311,25 +311,30 @@ def get_options_unusual(symbol):
         "signal": "neutral", "notable": None,
     }
 
+    # 2026-05-15: migrated from yfinance to Alpaca via
+    # options_chain_alpaca (the existing wrapper already used by
+    # get_options_oracle). Eliminates one yfinance call site at zero
+    # cost — Alpaca chains have the same volume / open_interest
+    # columns and are real-time vs yfinance's 15-min delay.
     try:
-        yf_sym = symbol.replace("/", "-") if "/" in symbol else symbol
-        with _yf_lock:
-            ticker = yf.Ticker(yf_sym)
-
-        # Get nearest expiration
-        expirations = ticker.options
-        if not expirations:
+        from options_chain_alpaca import fetch_chain_alpaca
+        chain_data = fetch_chain_alpaca(symbol)
+        if not chain_data or "near_term" not in chain_data:
             _set_cached(cache_key, result)
             return result
 
         result["has_options"] = True
-        chain = ticker.option_chain(expirations[0])
+        near = chain_data["near_term"]
+        calls = near.get("calls")
+        puts = near.get("puts")
+        if calls is None or puts is None:
+            _set_cached(cache_key, result)
+            return result
 
-        # Sum up call and put volumes
-        call_vol = int(chain.calls["volume"].sum()) if "volume" in chain.calls else 0
-        put_vol = int(chain.puts["volume"].sum()) if "volume" in chain.puts else 0
-        call_oi = int(chain.calls["openInterest"].sum()) if "openInterest" in chain.calls else 1
-        put_oi = int(chain.puts["openInterest"].sum()) if "openInterest" in chain.puts else 1
+        call_vol = int(calls["volume"].sum()) if "volume" in calls else 0
+        put_vol = int(puts["volume"].sum()) if "volume" in puts else 0
+        call_oi = int(calls["open_interest"].sum()) if "open_interest" in calls else 1
+        put_oi = int(puts["open_interest"].sum()) if "open_interest" in puts else 1
 
         result["total_call_volume"] = call_vol
         result["total_put_volume"] = put_vol
