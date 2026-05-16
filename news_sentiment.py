@@ -175,8 +175,15 @@ def fetch_news_alpaca(symbol, limit=3):
     works with our existing paper-account API keys. Real-time, free
     with our subscription.
 
-    Returns list of headline strings. Cached for 30 minutes per symbol.
-    Falls back to yfinance only on hard failure.
+    Returns list of dicts with keys {source, headline, summary,
+    created_at}. The dict shape matches what `analyze_sentiment`
+    expects — pre-2026-05-15 this returned plain strings, which
+    crashed `analyze_sentiment` with TypeError on `item['source']`
+    every time a symbol had news. Caught by strategies' broad
+    except blocks at debug level → entire `news_sentiment_spike`
+    strategy silently never fired. Cached for 30 minutes per symbol.
+    Uses the `_resolve_alpaca_credentials` self-healing resolver so
+    a stale master key doesn't drop us to a no-fallback path.
     """
     now = time.time()
     cached = _news_cache.get(symbol)
@@ -191,12 +198,13 @@ def fetch_news_alpaca(symbol, limit=3):
 
     try:
         import requests
-        import config
+        from market_data import _resolve_alpaca_credentials
+        key, secret, _ = _resolve_alpaca_credentials()
         r = requests.get(
             "https://data.alpaca.markets/v1beta1/news",
             headers={
-                "APCA-API-KEY-ID": config.ALPACA_API_KEY,
-                "APCA-API-SECRET-KEY": config.ALPACA_SECRET_KEY,
+                "APCA-API-KEY-ID": key,
+                "APCA-API-SECRET-KEY": secret,
             },
             params={
                 "symbols": symbol.upper(),
@@ -210,13 +218,19 @@ def fetch_news_alpaca(symbol, limit=3):
             _news_cache[symbol] = (now, [])
             return []
         data = r.json()
-        headlines = []
+        items = []
         for item in (data.get("news") or [])[:limit]:
             h = item.get("headline", "")
-            if h:
-                headlines.append(h)
-        _news_cache[symbol] = (now, headlines)
-        return headlines
+            if not h:
+                continue
+            items.append({
+                "headline": h,
+                "summary": item.get("summary", ""),
+                "source": item.get("source", "alpaca"),
+                "created_at": item.get("created_at", ""),
+            })
+        _news_cache[symbol] = (now, items)
+        return items
     except Exception as exc:
         logger.debug("Alpaca news fetch failed for %s: %s", symbol, exc)
         _news_cache[symbol] = (now, [])

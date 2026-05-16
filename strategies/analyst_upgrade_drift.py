@@ -68,8 +68,9 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
                 "price": price,
                 "reason": (
                     f"Analyst consensus shift {shift['direction']} "
-                    f"(score {shift['prior_score']:+.2f} → "
+                    f"(score {shift['oldest_score']:+.2f} → "
                     f"{shift['current_score']:+.2f}, "
+                    f"count_shift {shift['count_shift']:+d}, "
                     f"{shift['total_analysts']} analysts), "
                     f"price confirming ({move_pct:+.1f}%)"
                 ),
