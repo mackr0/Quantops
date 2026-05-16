@@ -54,6 +54,16 @@ MANUAL_PARAMETERS = {
     "enable_consensus": "Architectural choice (multi-model)",
     "consensus_model":  "Architectural choice (consensus AI)",
 
+    # Shadow model evaluation — observational only; never affects
+    # operational behavior. Operator decides which candidate models
+    # to test and is the only one who knows what they want to compare,
+    # so tuning is the operator's domain. The shadow_models list and
+    # shadow_api_keys_enc dict are pure config; enable_shadow_eval is
+    # the on/off switch.
+    "enable_shadow_eval":   "Architectural choice (operator picks candidate models to A/B)",
+    "shadow_models":        "User-curated candidate-model list",
+    "shadow_api_keys_enc":  "Secret",
+
     # Schedule / lifestyle — when the user wants trading active
     "schedule_type": "User lifestyle (when to trade)",
     "custom_start":  "User lifestyle",

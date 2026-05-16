@@ -30,9 +30,14 @@ def log_ai_call(
     input_tokens: int,
     output_tokens: int,
     purpose: str = "",
+    call_id: Optional[str] = None,
 ) -> None:
     """Persist a single AI call. Non-raising — a ledger failure must never
-    break the calling pipeline."""
+    break the calling pipeline.
+
+    `call_id` joins this row to any ai_shadow_calls rows produced by
+    the shadow dispatcher for the same primary invocation.
+    """
     if not db_path:
         return
     try:
@@ -42,10 +47,10 @@ def log_ai_call(
             conn.execute(
                 """INSERT INTO ai_cost_ledger
                      (provider, model, input_tokens, output_tokens,
-                      purpose, estimated_cost_usd)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                      purpose, estimated_cost_usd, call_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (provider, model, int(input_tokens or 0),
-                 int(output_tokens or 0), purpose, cost),
+                 int(output_tokens or 0), purpose, cost, call_id),
             )
             conn.commit()
         finally:

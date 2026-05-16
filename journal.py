@@ -216,6 +216,10 @@ def init_db(db_path=None):
             -- AI cost ledger: one row per call_ai invocation. Token counts
             -- are stored separately from USD so re-pricing history is a
             -- single-file change in ai_pricing.py.
+            --
+            -- `call_id` is added via _migrate_all_columns for existing
+            -- DBs, so the corresponding index is created post-migration
+            -- (idx_ai_cost_call_id is built in _post_migration_indexes).
             CREATE TABLE IF NOT EXISTS ai_cost_ledger (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT NOT NULL DEFAULT (datetime('now')),
@@ -224,10 +228,44 @@ def init_db(db_path=None):
                 input_tokens INTEGER NOT NULL DEFAULT 0,
                 output_tokens INTEGER NOT NULL DEFAULT 0,
                 purpose TEXT,
-                estimated_cost_usd REAL NOT NULL DEFAULT 0
+                estimated_cost_usd REAL NOT NULL DEFAULT 0,
+                call_id TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_ai_cost_ts
                 ON ai_cost_ledger(timestamp DESC);
+
+            -- Shadow model evaluation: parallel candidate-model calls
+            -- captured for offline comparison. The primary Haiku call
+            -- writes one row to ai_cost_ledger; each shadow call writes
+            -- one row here, joinable on call_id.
+            CREATE TABLE IF NOT EXISTS ai_shadow_calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                call_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                purpose TEXT,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                prompt_hash TEXT,
+                prompt_text TEXT,
+                raw_response TEXT,
+                parsed_signal TEXT,
+                latency_ms INTEGER,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cost_usd REAL NOT NULL DEFAULT 0,
+                error TEXT,
+                agreement INTEGER,
+                primary_provider TEXT,
+                primary_model TEXT,
+                primary_response TEXT,
+                primary_parsed TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_shadow_ts
+                ON ai_shadow_calls(timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_ai_shadow_call_id
+                ON ai_shadow_calls(call_id);
+            CREATE INDEX IF NOT EXISTS idx_ai_shadow_purpose
+                ON ai_shadow_calls(purpose);
 
             -- Phase 10: cross-asset crisis state transitions. One row per
             -- transition (normal → elevated → crisis → severe). The trade
@@ -335,6 +373,24 @@ def init_db(db_path=None):
         # any column added to the schema that wasn't present when the DB
         # was first created. Replaces the old per-column migration functions.
         _migrate_all_columns(conn)
+
+        # Post-migration indexes. Any index referencing a column that
+        # only exists after migration must be built here, AFTER
+        # _migrate_all_columns has done its ALTER TABLE pass. Building
+        # them inside the executescript above would fail with "no such
+        # column" on pre-existing DBs that haven't picked up the
+        # column yet.
+        for stmt in (
+            "CREATE INDEX IF NOT EXISTS idx_ai_cost_call_id "
+            "ON ai_cost_ledger(call_id)",
+        ):
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError as _idx_exc:
+                logger.debug(
+                    "post-migration index skipped: %s: %s",
+                    type(_idx_exc).__name__, _idx_exc,
+                )
 
         # daily_snapshots: dedupe + add UNIQUE(date) constraint.
         # Existing DBs created before 2026-04-28 had no UNIQUE constraint
@@ -560,6 +616,13 @@ def _migrate_all_columns(conn):
             # filter pattern uniformly across both tables, killing
             # the bug class structurally.
             ("data_quality", "TEXT"),
+        ],
+        # `call_id` joins primary cost-ledger rows to the
+        # ai_shadow_calls rows produced by the shadow dispatcher for
+        # the same primary invocation. NULL on rows logged before the
+        # shadow eval feature shipped.
+        "ai_cost_ledger": [
+            ("call_id", "TEXT"),
         ],
     }
 
@@ -1028,14 +1091,70 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
                 rows = conn.execute(
                     "SELECT symbol, side, qty, price, timestamp, occ_symbol "
                     "FROM trades "
-                    "WHERE COALESCE(status, 'open') != 'canceled' "
+                    # Status-aware filter. Pre-2026-05-16 only
+                    # 'canceled' was excluded, which left two leaks:
+                    # (a) expired/rejected multileg legs (price=0,
+                    #     never opened a position) leaked in and
+                    #     tripped the "qty>0 but price<=0" warning
+                    #     ~170x/day.
+                    # (b) status='closed' BUY rows whose CLOSE was
+                    #     recorded as a status flip (lifecycle sweep,
+                    #     reconciliation) without a matching SELL
+                    #     row stayed in FIFO accounting as phantom
+                    #     lots — causing the price_fetcher to poll
+                    #     5 already-closed OCCs ~1000x/day.
+                    # ENTRY rows (buy/short) with status='closed'
+                    # are excluded because their lot is gone; EXIT
+                    # rows (sell/cover) with status='closed' are KEPT
+                    # because that's the real close (partial-close
+                    # accounting depends on the closed SELL still
+                    # consuming the open BUY lot).
+                    "WHERE ("
+                    "    (side IN ('buy', 'short') AND "
+                    "     COALESCE(status, 'open') NOT IN "
+                    "     ('canceled', 'expired', 'rejected', "
+                    "      'done_for_day', 'closed'))"
+                    "    OR "
+                    "    (side IN ('sell', 'cover') AND "
+                    "     COALESCE(status, 'open') NOT IN "
+                    "     ('canceled', 'expired', 'rejected', "
+                    "      'done_for_day'))"
+                    ") "
                     "ORDER BY timestamp ASC, id ASC"
                 ).fetchall()
             except sqlite3.OperationalError:
                 rows = conn.execute(
                     "SELECT symbol, side, qty, price, timestamp "
                     "FROM trades "
-                    "WHERE COALESCE(status, 'open') != 'canceled' "
+                    # Status-aware filter. Pre-2026-05-16 only
+                    # 'canceled' was excluded, which left two leaks:
+                    # (a) expired/rejected multileg legs (price=0,
+                    #     never opened a position) leaked in and
+                    #     tripped the "qty>0 but price<=0" warning
+                    #     ~170x/day.
+                    # (b) status='closed' BUY rows whose CLOSE was
+                    #     recorded as a status flip (lifecycle sweep,
+                    #     reconciliation) without a matching SELL
+                    #     row stayed in FIFO accounting as phantom
+                    #     lots — causing the price_fetcher to poll
+                    #     5 already-closed OCCs ~1000x/day.
+                    # ENTRY rows (buy/short) with status='closed'
+                    # are excluded because their lot is gone; EXIT
+                    # rows (sell/cover) with status='closed' are KEPT
+                    # because that's the real close (partial-close
+                    # accounting depends on the closed SELL still
+                    # consuming the open BUY lot).
+                    "WHERE ("
+                    "    (side IN ('buy', 'short') AND "
+                    "     COALESCE(status, 'open') NOT IN "
+                    "     ('canceled', 'expired', 'rejected', "
+                    "      'done_for_day', 'closed'))"
+                    "    OR "
+                    "    (side IN ('sell', 'cover') AND "
+                    "     COALESCE(status, 'open') NOT IN "
+                    "     ('canceled', 'expired', 'rejected', "
+                    "      'done_for_day'))"
+                    ") "
                     "ORDER BY timestamp ASC, id ASC"
                 ).fetchall()
             # 2026-05-12 — per-trade TP/SL price lookup. UNH bug: the AI

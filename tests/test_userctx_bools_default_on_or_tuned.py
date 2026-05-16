@@ -61,6 +61,13 @@ KNOWN_OFF_BY_DESIGN = {
         "Second-opinion AI on borderline trades. Costs 2x AI "
         "calls per trade. Could become tunable in a future wave "
         "if data justifies it (currently insufficient signal).",
+    "enable_shadow_eval":
+        "Observational evaluation of candidate cheaper models "
+        "alongside the primary. Operator-domain: only the operator "
+        "knows which candidates they want to compare and how much "
+        "they're willing to spend on shadow traffic. Has its own "
+        "daily cost cap (SHADOW_DAILY_COST_CAP_USD) and a separate "
+        "daily digest email. Never affects operational behavior.",
     "enable_long_vol_hedge":
         "SPY puts as portfolio tail-risk hedge. Costs real put "
         "premium ($/day theta burn). Operator opt-in matches the "

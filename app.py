@@ -74,6 +74,20 @@ def create_app():
     from display_names import register as register_display_names
     register_display_names(app)
 
+    # `from_json`: parse a JSON string stored as a TEXT column so the
+    # template can iterate it. Falls open to an empty value on parse
+    # failure so a corrupt cell never crashes the settings page.
+    import json as _json
+
+    @app.template_filter("from_json")
+    def _from_json(value):
+        if value is None or value == "":
+            return None
+        try:
+            return _json.loads(value)
+        except (TypeError, ValueError):
+            return None
+
     # Init DB
     init_user_db()
 

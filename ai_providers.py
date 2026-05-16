@@ -18,7 +18,8 @@ PROVIDERS = {
     "openai": {
         "name": "OpenAI (GPT)",
         "models": {
-            "gpt-4o-mini": "GPT-4o Mini (cheapest)",
+            "gpt-4.1-nano": "GPT-4.1 Nano (cheapest)",
+            "gpt-4o-mini": "GPT-4o Mini (cheap)",
             "gpt-4o": "GPT-4o (balanced)",
             "o3-mini": "o3-mini (reasoning)",
         },
@@ -26,8 +27,17 @@ PROVIDERS = {
     "google": {
         "name": "Google (Gemini)",
         "models": {
-            "gemini-2.0-flash": "Gemini 2.0 Flash (cheapest)",
+            "gemini-2.5-flash-lite": "Gemini 2.5 Flash-Lite (cheapest)",
+            "gemini-3.1-flash-lite": "Gemini 3.1 Flash-Lite (newer cheap tier)",
+            "gemini-2.0-flash": "Gemini 2.0 Flash",
             "gemini-2.5-pro-preview-03-25": "Gemini 2.5 Pro (most capable)",
+        },
+    },
+    "deepseek": {
+        "name": "DeepSeek",
+        "models": {
+            "deepseek-chat": "DeepSeek V3.2 (cheap reasoning)",
+            "deepseek-reasoner": "DeepSeek R1 (reasoning-heavy)",
         },
     },
 }
@@ -35,8 +45,9 @@ PROVIDERS = {
 # Default (cheapest) model per provider
 _DEFAULT_MODELS = {
     "anthropic": "claude-haiku-4-5-20251001",
-    "openai": "gpt-4o-mini",
-    "google": "gemini-2.0-flash",
+    "openai": "gpt-4.1-nano",
+    "google": "gemini-2.5-flash-lite",
+    "deepseek": "deepseek-chat",
 }
 
 # Regex to strip markdown code fences (```json ... ``` or ``` ... ```)
@@ -145,6 +156,8 @@ def _call_provider(provider, prompt, model, api_key, max_tokens):
         return _call_openai(prompt, model, api_key, max_tokens)
     if provider == "google":
         return _call_google(prompt, model, api_key, max_tokens)
+    if provider == "deepseek":
+        return _call_deepseek(prompt, model, api_key, max_tokens)
     raise ValueError(f"Unknown AI provider: {provider!r}")
 
 
@@ -327,15 +340,39 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
                 "AI failover: primary %s circuit open, served by %s",
                 provider, attempt_provider,
             )
+        cleaned_response = _strip_markdown_fences(response_text)
+
+        # Shadow model evaluation — fire candidate models in parallel.
+        # Returns the call_id used to join shadow rows to this primary
+        # call's ledger entry, or None when shadow eval is disabled /
+        # not configured for this profile. Operational behavior is
+        # unchanged: we return cleaned_response regardless of what
+        # shadow eval does (or fails to do).
+        call_id = None
+        try:
+            from shadow_eval import dispatch_shadow_calls
+            call_id = dispatch_shadow_calls(
+                db_path=db_path,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                purpose=purpose,
+                primary_provider=attempt_provider,
+                primary_model=attempt_model or "?",
+                primary_response=cleaned_response,
+            )
+        except Exception as exc:
+            logger.debug("shadow eval dispatch skipped: %s", exc)
+
         # Fire-and-forget cost logging — never raise from here
         if db_path:
             try:
                 from ai_cost_ledger import log_ai_call
                 log_ai_call(db_path, attempt_provider, attempt_model or "?",
-                            in_tok, out_tok, purpose or "")
+                            in_tok, out_tok, purpose or "",
+                            call_id=call_id)
             except Exception as exc:
                 logger.debug("cost ledger skipped: %s", exc)
-        return _strip_markdown_fences(response_text)
+        return cleaned_response
 
     # Every attempt either had its circuit open or raised transient.
     raise RuntimeError(
@@ -461,6 +498,38 @@ def _call_openai(prompt, model, api_key, max_tokens):
         )
 
     client = OpenAI(api_key=api_key)
+    response = client.chat.completions.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    usage = getattr(response, "usage", None)
+    in_tok = getattr(usage, "prompt_tokens", 0) if usage else 0
+    out_tok = getattr(usage, "completion_tokens", 0) if usage else 0
+    return response.choices[0].message.content, in_tok, out_tok
+
+
+def _call_deepseek(prompt, model, api_key, max_tokens):
+    """Call DeepSeek API via the OpenAI-compatible endpoint.
+
+    DeepSeek exposes a Chat Completions endpoint at
+    https://api.deepseek.com — the official OpenAI Python SDK works
+    against it by overriding `base_url`. No separate dependency
+    needed; reuses the `openai` package the OpenAI provider already
+    requires.
+
+    Returns (text, input_tokens, output_tokens).
+    """
+    try:
+        from openai import OpenAI
+    except ImportError:
+        raise ImportError(
+            "The 'openai' package is required for the DeepSeek provider "
+            "(DeepSeek uses an OpenAI-compatible endpoint). "
+            "Install it with: pip install openai"
+        )
+
+    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
     response = client.chat.completions.create(
         model=model,
         max_tokens=max_tokens,

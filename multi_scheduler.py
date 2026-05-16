@@ -572,6 +572,12 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_daily_summary_email(ctx),
             db_path=ctx.db_path,
         )
+        if getattr(ctx, "enable_shadow_eval", False):
+            run_task(
+                f"[{seg_label}] Shadow Eval Digest Email",
+                lambda: _task_shadow_eval_daily_email(ctx),
+                db_path=ctx.db_path,
+            )
 
     logging.info(f"--- [{seg_label.upper()}] segment cycle end ---")
 
@@ -1096,12 +1102,21 @@ def _task_update_fills(ctx):
         # decision_price so we can't filter on it. Status filter
         # excludes rows already marked terminal-unfilled so we don't
         # re-poll Alpaca for the same expired order forever.
+        # Additionally re-process MULTILEG rows where the per-leg
+        # `price` was poisoned with the combo's signed net (negative)
+        # — see the MULTILEG branch below. This makes the bug
+        # self-heal on the next cycle once the per-leg fix ships,
+        # rather than needing a one-shot backfill script.
         unfilled = conn.execute(
             "SELECT id, order_id, price, decision_price, side, "
             "       symbol, status, signal_type, option_strategy, "
             "       occ_symbol, qty, timestamp "
             "FROM trades "
-            "WHERE fill_price IS NULL AND order_id IS NOT NULL "
+            "WHERE ("
+            "      fill_price IS NULL"
+            "      OR (signal_type = 'MULTILEG' AND fill_price <= 0)"
+            ") "
+            "  AND order_id IS NOT NULL "
             "  AND COALESCE(status, 'open') NOT IN "
             "      ('expired', 'canceled', 'rejected', 'done_for_day')"
         ).fetchall()
@@ -1175,7 +1190,55 @@ def _task_update_fills(ctx):
                 continue
             if not order.filled_avg_price:
                 continue
-            fill = float(order.filled_avg_price)
+            # MULTILEG: if `order.legs[]` has a matching OCC, this is
+            # the COMBO path — `order.filled_avg_price` is the SIGNED
+            # NET PREMIUM (negative for credit spreads); per-leg
+            # fills live on `combo.legs[i].filled_avg_price`
+            # (positive). The May 11 `_log_strategy_legs` fix
+            # correctly used `combo.legs[]` at entry-write time, but
+            # THIS backfill path was missed and silently overwrote
+            # the correctly-NULL'd per-leg prices with the combo's
+            # negative net on the next cycle (caught 2026-05-16, 7+
+            # rows on prod with price=-0.64 etc., invisible to
+            # `get_virtual_positions`). If `order.legs[]` is empty,
+            # this is the SEQUENTIAL path (each leg has its own
+            # order) and `order.filled_avg_price` IS the per-leg
+            # price — use it directly.
+            if (trade["signal_type"] == "MULTILEG"
+                    and trade["occ_symbol"]):
+                leg_price = None
+                combo_legs = list(getattr(order, "legs", None) or [])
+                if combo_legs:
+                    for cl in combo_legs:
+                        if getattr(cl, "symbol", None) == trade["occ_symbol"]:
+                            cl_fap = getattr(cl, "filled_avg_price", None)
+                            if cl_fap is not None and float(cl_fap) > 0:
+                                leg_price = float(cl_fap)
+                            break
+                    if leg_price is None:
+                        # COMBO with no matching positive per-leg
+                        # fill — skip; NEVER fall back to combo
+                        # net for a per-leg write.
+                        continue
+                    fill = leg_price
+                else:
+                    # SEQUENTIAL path: order is for this leg only.
+                    fill = float(order.filled_avg_price)
+            else:
+                fill = float(order.filled_avg_price)
+            # Defense-in-depth: refuse to write a non-positive price
+            # for any row. If we got here with a bad value, leaving
+            # the column NULL preserves the recovery path.
+            if fill <= 0:
+                logging.warning(
+                    "[%s] update_fills: refusing non-positive fill "
+                    "%s on trade #%d (%s %s order=%s) — leaving NULL "
+                    "for next cycle to backfill",
+                    seg_label, fill, trade["id"], trade["signal_type"],
+                    trade.get("occ_symbol") or trade["symbol"],
+                    trade["order_id"],
+                )
+                continue
             dec = trade["decision_price"]
             if dec is not None and dec > 0:
                 slip = round((fill - dec) / dec * 100, 4)
@@ -1183,7 +1246,9 @@ def _task_update_fills(ctx):
                 slip = None
             # Populate `price` when missing so dashboards reading
             # `t.price` (e.g. trades ledger) stop showing "$--".
-            if trade["price"] is None:
+            if trade["price"] is None or trade["price"] <= 0:
+                # Also overwrite an earlier non-positive `price` write
+                # (the pre-2026-05-16 combo-net bug left -0.64 etc.).
                 conn.execute(
                     "UPDATE trades "
                     "SET price = ?, fill_price = ?, slippage_pct = ? "
@@ -3867,6 +3932,42 @@ def _task_daily_summary_email(ctx):
     except OSError as exc:
         logging.warning(f"Could not write daily-summary marker: {exc}")
     logging.info(f"Daily summary email sent for profile {profile_id}.")
+
+
+def _task_shadow_eval_daily_email(ctx):
+    """Send the shadow-eval daily digest — separate email from the
+    main daily summary so it can be muted independently. Marker-file
+    idempotent, same pattern as _task_daily_summary_email. Skips
+    silently when shadow eval is disabled or produced no rows."""
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZI
+    from notifications import notify_shadow_eval_daily
+
+    profile_id = getattr(ctx, "profile_id", 0)
+    today_et = _dt.now(_ZI("America/New_York")).strftime("%Y-%m-%d")
+    marker_path = f".shadow_eval_sent_p{profile_id}.marker"
+
+    try:
+        with open(marker_path) as f:
+            last_sent = f.read().strip()
+        if last_sent == today_et:
+            logging.info(
+                f"Shadow-eval digest already sent for profile {profile_id} "
+                f"today ({today_et}) — skipping.")
+            return
+    except FileNotFoundError:
+        pass
+
+    sent = notify_shadow_eval_daily(ctx=ctx)
+    if sent:
+        try:
+            with open(marker_path, "w") as f:
+                f.write(today_et)
+        except OSError as exc:
+            logging.warning(
+                f"Could not write shadow-eval marker: {exc}")
+        logging.info(
+            f"Shadow-eval digest sent for profile {profile_id}.")
 
 
 # ── Profile-based Main Loop ──────────────────────────────────────────

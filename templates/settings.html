@@ -399,6 +399,43 @@
                 </label>
             </div>
 
+            <!-- Shadow Model Evaluation -->
+            <h4>Shadow Model Evaluation</h4>
+            <fieldset>
+                <label style="display:flex;align-items:flex-start;gap:0.5rem;">
+                    <input type="checkbox" name="enable_shadow_eval" value="1" style="flex-shrink:0;margin-top:0.2rem;"
+                           {{ 'checked' if prof.get('enable_shadow_eval') else '' }}>
+                    <span><span class="tip" data-tip="Sends every AI call to additional candidate models in parallel for offline comparison. Never changes which trades fire.">Enable Shadow Evaluation</span><br><small style="color:#888;font-weight:normal;">Run cheaper or alternative models alongside every AI decision. Results land in a separate daily email — no UI changes, no impact on trades.</small></span>
+                </label>
+            </fieldset>
+            {% set _shadow_selected = (prof.get('shadow_models') or '[]') | from_json or [] %}
+            <div class="grid">
+                <label>
+                    Candidate Models (hold cmd/ctrl to select multiple)
+                    <select name="shadow_models" multiple size="6" style="min-height:140px">
+                        {% for pkey, pval in ai_providers.items() %}
+                        <optgroup label="{{ pval.name }}">
+                            {% for mkey, mname in pval.models.items() %}
+                            {% set _entry = pkey ~ ':' ~ mkey %}
+                            <option value="{{ _entry }}" {{ 'selected' if _entry in _shadow_selected else '' }}>{{ mname }}</option>
+                            {% endfor %}
+                        </optgroup>
+                        {% endfor %}
+                    </select>
+                </label>
+            </div>
+            {% set _shadow_keys = (prof.get('shadow_api_keys_enc') or '{}') | from_json or {} %}
+            <div class="grid">
+                {% for pkey, pval in ai_providers.items() %}
+                <label>
+                    {{ pval.name }} API Key (for shadow eval)
+                    <input type="password" name="shadow_api_key_{{ pkey }}"
+                           placeholder="API key for {{ pval.name }} shadow calls">
+                    {% if _shadow_keys.get(pkey) %}<small>Key saved (enter new value to change)</small>{% endif %}
+                </label>
+                {% endfor %}
+            </div>
+
             <!-- Risk Parameters -->
             <h4>Risk Parameters</h4>
             <div class="grid">

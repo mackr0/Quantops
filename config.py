@@ -38,6 +38,12 @@ WATCHLIST = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "SPY", "QQ
 RESEND_API_KEY = os.getenv("RESEND_API_KEY")
 NOTIFICATION_EMAIL = os.getenv("NOTIFICATION_EMAIL", "mack@mackenziesmith.com")
 
+# Shadow model evaluation — separate daily cost cap (USD) so shadow
+# traffic can never blow out the operational AI budget. Enforced per
+# shadow call. Default is intentionally tiny since shadow models are
+# the cheap tier (Gemini Flash-Lite, DeepSeek, GPT-4.1 Nano).
+SHADOW_DAILY_COST_CAP_USD = float(os.getenv("SHADOW_DAILY_COST_CAP_USD", "1.0"))
+
 # Default trading parameters (overridden per-profile via UserContext)
 DEFAULT_MAX_POSITION_PCT = 0.10
 DEFAULT_STOP_LOSS_PCT = 0.03

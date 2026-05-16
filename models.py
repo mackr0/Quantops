@@ -211,6 +211,9 @@ def init_user_db(db_path: Optional[str] = None) -> None:
                 enable_consensus INTEGER NOT NULL DEFAULT 0,
                 consensus_model TEXT NOT NULL DEFAULT '',
                 consensus_api_key_enc TEXT NOT NULL DEFAULT '',
+                enable_shadow_eval INTEGER NOT NULL DEFAULT 0,
+                shadow_models TEXT NOT NULL DEFAULT '[]',
+                shadow_api_keys_enc TEXT NOT NULL DEFAULT '{}',
                 use_atr_stops INTEGER NOT NULL DEFAULT 1,
                 atr_multiplier_sl REAL NOT NULL DEFAULT 2.0,
                 atr_multiplier_tp REAL NOT NULL DEFAULT 3.0,
@@ -490,6 +493,17 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             # 2026-05-12 — per-symbol entry blacklist (Wave 8c).
             # See entry_blacklist.py for semantics.
             ("trading_profiles", "entry_blacklist",
+                "TEXT NOT NULL DEFAULT '{}'"),
+            # Shadow model evaluation — fire N candidate models in
+            # parallel with the primary on every AI call. Operational
+            # behavior unchanged; results land in ai_shadow_calls and
+            # are summarized in a daily email. See ai_providers.py
+            # shadow dispatcher + notifications.notify_shadow_eval_daily.
+            ("trading_profiles", "enable_shadow_eval",
+                "INTEGER NOT NULL DEFAULT 0"),
+            ("trading_profiles", "shadow_models",
+                "TEXT NOT NULL DEFAULT '[]'"),
+            ("trading_profiles", "shadow_api_keys_enc",
                 "TEXT NOT NULL DEFAULT '{}'"),
         ]
         for table, col, col_def in _migrations:
@@ -1100,6 +1114,10 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         # filtered out (same bug class as the disabled_specialists/
         # meta_pregate_threshold gap from 2026-04-28).
         "signal_weights",
+        # Shadow model evaluation — toggle + selected candidates +
+        # encrypted per-provider API keys. Edited from the settings
+        # page and consumed by ai_providers.call_ai shadow dispatch.
+        "enable_shadow_eval", "shadow_models", "shadow_api_keys_enc",
     }
     updates = {}
     rejected = []
@@ -1290,6 +1308,8 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         enable_consensus=bool(profile.get("enable_consensus", 0)),
         consensus_model=profile.get("consensus_model", ""),
         consensus_api_key=decrypt(profile.get("consensus_api_key_enc", "")),
+        # Shadow model evaluation toggle (observational only)
+        enable_shadow_eval=bool(profile.get("enable_shadow_eval", 0)),
         # ATR-based stops
         use_atr_stops=bool(profile.get("use_atr_stops", 1)),
         atr_multiplier_sl=profile.get("atr_multiplier_sl", 2.0),

@@ -318,6 +318,14 @@ class UserContext:
     consensus_model: str = ""  # model ID for secondary opinion, e.g. "gpt-4o-mini"
     consensus_api_key: str = ""  # API key for the secondary model's provider, if different
 
+    # Shadow model evaluation — observational only. When True, every
+    # call_ai() fires the configured candidate models in parallel and
+    # records the comparison in ai_shadow_calls. Never affects trade
+    # decisions. The encrypted-key dict lives in the trading_profiles
+    # row; the dispatcher reads it directly from the DB rather than
+    # plumbing it through ctx (keys aren't needed by the trade pipeline).
+    enable_shadow_eval: bool = False
+
     # Trading schedule
     schedule_type: str = "market_hours"  # "market_hours", "extended_hours", "24_7", "custom"
     custom_start: str = "09:30"  # HH:MM in ET, only used if schedule_type == "custom"

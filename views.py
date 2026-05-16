@@ -1245,6 +1245,37 @@ def save_profile(profile_id):
     if consensus_api_key:
         config_updates["consensus_api_key_enc"] = encrypt(consensus_api_key)
 
+    # Shadow model evaluation — parallel candidate-model calls. Stored
+    # as JSON: shadow_models is a list of "provider:model" strings,
+    # shadow_api_keys_enc is a dict keyed by provider with each value
+    # encrypted via crypto.encrypt. Empty submissions clear the list
+    # but preserve already-saved keys (the password input is blank
+    # unless the user is changing it).
+    config_updates["enable_shadow_eval"] = (
+        1 if form.get("enable_shadow_eval") else 0
+    )
+    shadow_models_raw = form.getlist("shadow_models")
+    shadow_models_clean = [
+        s.strip() for s in shadow_models_raw
+        if s and ":" in s
+    ]
+    config_updates["shadow_models"] = json.dumps(shadow_models_clean)
+
+    # Merge new keys into the existing encrypted dict so unfilled
+    # providers don't lose their saved keys on submit.
+    try:
+        existing_keys = json.loads(profile.get("shadow_api_keys_enc") or "{}")
+        if not isinstance(existing_keys, dict):
+            existing_keys = {}
+    except (TypeError, ValueError):
+        existing_keys = {}
+    from ai_providers import get_providers as _get_providers
+    for provider_key in _get_providers().keys():
+        new_val = form.get(f"shadow_api_key_{provider_key}", "").strip()
+        if new_val:
+            existing_keys[provider_key] = encrypt(new_val)
+    config_updates["shadow_api_keys_enc"] = json.dumps(existing_keys)
+
     # Custom watchlist: parse comma-separated text into a JSON list
     watchlist_raw = form.get("custom_watchlist", "").strip()
     if watchlist_raw:

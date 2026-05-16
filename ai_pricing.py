@@ -27,9 +27,20 @@ PRICING: Dict[str, Dict[str, float]] = {
     # OpenAI (typical 2025/2026 tiers)
     "gpt-5-mini":                   {"input":  0.40, "output":  1.60},
     "gpt-5":                        {"input":  2.00, "output": 10.00},
+    "gpt-4.1-nano":                 {"input":  0.10, "output":  0.40},
+    "gpt-4o-mini":                  {"input":  0.15, "output":  0.60},
+    "gpt-4o":                       {"input":  2.50, "output": 10.00},
+    "o3-mini":                      {"input":  1.10, "output":  4.40},
     # Google
+    "gemini-2.0-flash":             {"input":  0.15, "output":  0.60},
     "gemini-2.5-flash":             {"input":  0.35, "output":  0.70},
+    "gemini-2.5-flash-lite":        {"input":  0.10, "output":  0.40},
+    "gemini-3.1-flash-lite":        {"input":  0.25, "output":  1.50},
     "gemini-2.5-pro":               {"input":  1.25, "output":  5.00},
+    "gemini-2.5-pro-preview-03-25": {"input":  1.25, "output":  5.00},
+    # DeepSeek
+    "deepseek-chat":                {"input":  0.14, "output":  0.28},
+    "deepseek-reasoner":            {"input":  0.55, "output":  2.19},
 }
 
 # Fallback used when model is unknown. Conservative (mid-tier) so unknown-

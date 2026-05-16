@@ -649,6 +649,381 @@ def notify_daily_summary(ctx=None):
 
 
 # ---------------------------------------------------------------------------
+# 5b. Shadow model evaluation daily digest
+# ---------------------------------------------------------------------------
+
+_VERDICT_COLORS = {
+    "primary": "#1976d2",       # blue
+    "shadow": "#ff8f00",        # orange
+    "tie": "#8a8a9a",
+    "both_wrong": "#b00020",    # dark red
+    "unknown": "#8a8a9a",
+}
+
+
+def _render_verdict_for_shadow_row(row, primary_sig, shadow_sig, db_path):
+    """Look up the matching prediction's outcome and render an
+    inline verdict block. Returns "" when no resolved match is found
+    (very common for same-day rows). Never raises."""
+    try:
+        import sqlite3 as _sql
+        from shadow_eval import verdict_for_disagreement, _try_parse_json
+
+        primary_parsed = _try_parse_json(row.get("primary_response"))
+        if not isinstance(primary_parsed, dict):
+            return ""
+        symbol = (primary_parsed.get("symbol")
+                  or primary_parsed.get("ticker"))
+        if not symbol:
+            return ""
+
+        conn = _sql.connect(db_path)
+        conn.row_factory = _sql.Row
+        try:
+            pred = conn.execute(
+                "SELECT actual_return_pct, days_held "
+                "FROM ai_predictions "
+                "WHERE symbol = ? "
+                "AND status = 'resolved' "
+                "AND actual_return_pct IS NOT NULL "
+                "AND ABS(strftime('%s', timestamp) - strftime('%s', ?)) <= 300 "
+                "ORDER BY ABS(strftime('%s', timestamp) - strftime('%s', ?)) "
+                "LIMIT 1",
+                (symbol, row.get("timestamp"), row.get("timestamp")),
+            ).fetchone()
+        except _sql.OperationalError:
+            return ""
+        finally:
+            conn.close()
+
+        if not pred or pred["actual_return_pct"] is None:
+            return ""
+
+        verdict = verdict_for_disagreement(
+            primary_sig, shadow_sig, pred["actual_return_pct"],
+        )
+        color = _VERDICT_COLORS.get(verdict["winner"], _MUTED)
+        days_part = (f" over {int(pred['days_held'])}d"
+                     if pred["days_held"] else "")
+        return (
+            f'<br><span style="color:{color};font-size:12px;'
+            f'font-weight:bold">▸ {verdict["headline"]}{days_part}</span>'
+            f' <span style="color:#666;font-size:12px">'
+            f'&mdash; {verdict["reason"]}</span>'
+        )
+    except Exception as exc:
+        logger.debug("verdict render skipped: %s", exc)
+        return ""
+
+
+def _shadow_resolved_section(db_path):
+    """Render the 'Recently Resolved Disagreements' section. Walks
+    disagreement rows from the past 7 days whose outcomes are now
+    known and tallies winner / reasoning per row.
+
+    Returns "" when no resolved disagreements exist."""
+    try:
+        from shadow_eval import (
+            fetch_recently_resolved_disagreements,
+            verdict_for_disagreement, _try_parse_json,
+        )
+    except Exception:
+        return ""
+
+    rows = fetch_recently_resolved_disagreements(db_path, lookback_days=7)
+    if not rows:
+        return ""
+
+    # Tally by shadow model: who's been winning the recent
+    # disagreements?
+    from collections import defaultdict
+    tally = defaultdict(lambda: {
+        "primary_wins": 0, "shadow_wins": 0, "tie": 0, "both_wrong": 0,
+    })
+
+    row_blocks = []
+    for r in rows:
+        primary_parsed = _try_parse_json(r.get("primary_response")) or {}
+        primary_sig = (primary_parsed.get("signal")
+                       or primary_parsed.get("action")
+                       or primary_parsed.get("recommendation") or "—")
+        shadow_sig = r.get("parsed_signal") or "—"
+        ret = r.get("outcome_return_pct")
+        verdict = verdict_for_disagreement(primary_sig, shadow_sig, ret)
+
+        label = f"{r.get('provider', '?')}:{r.get('model', '?')}"
+        if verdict["winner"] == "primary":
+            tally[label]["primary_wins"] += 1
+        elif verdict["winner"] == "shadow":
+            tally[label]["shadow_wins"] += 1
+        elif verdict["winner"] == "tie":
+            tally[label]["tie"] += 1
+        elif verdict["winner"] == "both_wrong":
+            tally[label]["both_wrong"] += 1
+
+        color = _VERDICT_COLORS.get(verdict["winner"], _MUTED)
+        symbol = r.get("outcome_symbol") or "?"
+        purpose = r.get("purpose") or "?"
+        date_part = (r.get("timestamp") or "")[:10]
+        row_blocks.append(
+            f'<div style="padding:6px 0;border-bottom:1px solid #eee;font-size:13px">'
+            f'<span style="color:{_MUTED};font-size:11px">{date_part}</span> '
+            f'<strong>{symbol}</strong> '
+            f'<span style="color:{_MUTED};font-size:11px">({purpose})</span> '
+            f'&mdash; {label}: <strong>{shadow_sig}</strong> vs '
+            f'primary <strong>{primary_sig}</strong>'
+            f'<br><span style="color:{color};font-size:12px;font-weight:bold">'
+            f'▸ {verdict["headline"]}</span> '
+            f'<span style="color:#666;font-size:12px">&mdash; {verdict["reason"]}</span>'
+            f'</div>'
+        )
+
+    # Tally summary table
+    tally_rows = []
+    for label, t in sorted(tally.items()):
+        scored = t["primary_wins"] + t["shadow_wins"]
+        scoreboard = (
+            f"{t['primary_wins']} - {t['shadow_wins']}"
+            if scored or t["tie"] or t["both_wrong"] else "—"
+        )
+        tally_rows.append([
+            label, scoreboard,
+            str(t["tie"]), str(t["both_wrong"]),
+        ])
+
+    block = ""
+    if tally_rows:
+        block += _section(
+            "Disagreement Scoreboard (last 7d)",
+            _table(
+                ["Shadow Model", "Primary - Shadow",
+                 "Ties", "Both Wrong"],
+                tally_rows,
+            ),
+        )
+    block += _section(
+        "Recently Resolved Disagreements (last 7d)",
+        "".join(row_blocks),
+    )
+    return block
+
+
+def _shadow_disagreement_detail(rows, primary_label="primary", db_path=None):
+    """Render an HTML block listing each disagreement, grouped by
+    purpose, with field-level diff. `rows` is a list of ai_shadow_calls
+    dicts as returned by shadow_eval.fetch_daily_rows.
+
+    When `db_path` is provided, each row is also looked up against
+    ai_predictions for an outcome verdict. Most rows in the "today"
+    digest will not yet have a resolved outcome, so the verdict block
+    only renders for the subset that do.
+    """
+    from collections import defaultdict
+    grouped = defaultdict(list)
+    for r in rows:
+        # Surface only rows where the comparison was actually scored
+        # AND disagreed. Rows with agreement=NULL had no recognisable
+        # signal on either side — they go in the "Unscored" bucket.
+        if r.get("agreement") == 0:
+            grouped[r.get("purpose") or "uncategorized"].append(r)
+
+    if not grouped:
+        return '<span style="color:#8a8a9a">No disagreements logged today.</span>'
+
+    parts = []
+    for purpose, items in sorted(grouped.items()):
+        rows_html = ""
+        for r in items:
+            shadow_label = f"{r.get('provider', '?')}:{r.get('model', '?')}"
+            primary_sig = "—"
+            shadow_sig = r.get("parsed_signal") or "—"
+            try:
+                pj = json.loads(r.get("primary_parsed") or "null")
+                if isinstance(pj, dict):
+                    primary_sig = (pj.get("signal") or pj.get("action")
+                                   or pj.get("recommendation")
+                                   or pj.get("direction") or "—")
+            except (TypeError, ValueError):
+                pass
+
+            diff_bits = []
+            try:
+                pj_full = json.loads(r.get("primary_response") or "null")
+                sj_full = json.loads(r.get("raw_response") or "null")
+                if isinstance(pj_full, dict) and isinstance(sj_full, dict):
+                    for field in ("confidence", "target_entry",
+                                  "target_stop_loss", "target_take_profit"):
+                        a = pj_full.get(field)
+                        b = sj_full.get(field)
+                        if a is None and b is None:
+                            continue
+                        if a == b:
+                            continue
+                        diff_bits.append(f"{field}: {a} vs {b}")
+                    # Reasoning head — first 80 chars when different
+                    ra = (pj_full.get("reasoning") or "")[:80]
+                    rb = (sj_full.get("reasoning") or "")[:80]
+                    if ra and rb and ra != rb:
+                        diff_bits.append(
+                            f"reasoning: {primary_label} said \"{ra}\"; "
+                            f"shadow said \"{rb}\""
+                        )
+            # SILENT_OK: optional field-level diff for a digest row.
+            # If either response isn't valid JSON the row still
+            # renders with the top-line signal — the diff is a
+            # nice-to-have, not load-bearing. Logging would be
+            # noisy because every malformed shadow response trips
+            # this once per disagreement row.
+            except (TypeError, ValueError):
+                pass
+
+            diff_text = "; ".join(diff_bits) if diff_bits else (
+                "fields match except for the top-level signal"
+            )
+
+            # Verdict: only renders if the prediction has resolved
+            # (rare for same-day rows — most resolve days later).
+            verdict_html = ""
+            if db_path:
+                verdict_html = _render_verdict_for_shadow_row(
+                    r, primary_sig, shadow_sig, db_path,
+                )
+
+            rows_html += (
+                f'<div style="padding:6px 0;border-bottom:1px solid #eee;font-size:13px">'
+                f'<strong>{shadow_label}</strong> &mdash; '
+                f'{primary_label}: <strong>{primary_sig}</strong> / '
+                f'shadow: <strong>{shadow_sig}</strong>'
+                f'<br><span style="color:#666;font-size:12px">{diff_text}</span>'
+                f'{verdict_html}'
+                f'</div>'
+            )
+        parts.append(_section(
+            f"Disagreements &mdash; {purpose}",
+            rows_html,
+        ))
+    return "".join(parts)
+
+
+def notify_shadow_eval_daily(ctx=None):
+    """Send the shadow-eval daily digest. Separate from the main daily
+    summary so the user can mute it independently.
+
+    Skips sending entirely when no shadow_eval rows were logged today.
+    """
+    db_path = ctx.db_path if ctx is not None else None
+    if not db_path:
+        return False
+
+    from zoneinfo import ZoneInfo
+    today_str = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+
+    try:
+        from shadow_eval import fetch_daily_rows
+        rows = fetch_daily_rows(db_path, today_str)
+    except Exception as exc:
+        logger.warning("shadow eval fetch failed: %s", exc)
+        return False
+
+    if not rows:
+        logger.info("Shadow eval digest skipped — no rows for %s", today_str)
+        return False
+
+    profile_label = getattr(ctx, "profile_name", "") or ""
+    subject_suffix = f" — {profile_label}" if profile_label else ""
+    subject = (
+        f"QuantOpsAI Shadow Eval — {today_str}{subject_suffix}"
+    )
+
+    # Per-model summary
+    from collections import defaultdict
+    per_model = defaultdict(lambda: {
+        "calls": 0, "agree": 0, "disagree": 0, "unscored": 0,
+        "errors": 0, "cost": 0.0, "latency_ms": 0,
+    })
+    primary_total = 0
+    for r in rows:
+        key = f"{r.get('provider', '?')}:{r.get('model', '?')}"
+        agg = per_model[key]
+        agg["calls"] += 1
+        agg["cost"] += float(r.get("cost_usd") or 0.0)
+        agg["latency_ms"] += int(r.get("latency_ms") or 0)
+        if r.get("error"):
+            agg["errors"] += 1
+        elif r.get("agreement") == 1:
+            agg["agree"] += 1
+        elif r.get("agreement") == 0:
+            agg["disagree"] += 1
+        else:
+            agg["unscored"] += 1
+    primary_total = len(set(r.get("call_id") for r in rows
+                            if r.get("call_id")))
+
+    summary_rows = []
+    for label, agg in sorted(per_model.items()):
+        scored = agg["agree"] + agg["disagree"]
+        agreement_pct = (
+            f"{(agg['agree'] / scored * 100):.0f}%" if scored else "—"
+        )
+        avg_lat = (
+            f"{agg['latency_ms'] // max(1, agg['calls'])} ms"
+        )
+        summary_rows.append([
+            label,
+            f"{agg['calls']}",
+            agreement_pct,
+            f"{agg['disagree']}",
+            f"{agg['errors']}",
+            f"${agg['cost']:.4f}",
+            avg_lat,
+        ])
+
+    body = ""
+    intro = (
+        f'<div style="color:#666;font-size:13px;padding-bottom:10px">'
+        f'{primary_total} primary AI calls had shadow evaluation enabled '
+        f'today. Operational behavior is unchanged &mdash; this digest '
+        f'is observational only.</div>'
+    )
+    body += intro
+
+    if summary_rows:
+        body += _section(
+            "Per-Model Summary",
+            _table(
+                ["Model", "Calls", "Agreement",
+                 "Disagree", "Errors", "Cost", "Avg Latency"],
+                summary_rows,
+            ),
+        )
+
+    primary_label = "primary"
+    sample_primary = next(
+        (r for r in rows
+         if r.get("primary_provider") and r.get("primary_model")),
+        None,
+    )
+    if sample_primary:
+        primary_label = (
+            f"{sample_primary['primary_provider']}"
+            f":{sample_primary['primary_model']}"
+        )
+
+    body += _shadow_disagreement_detail(
+        rows, primary_label=primary_label, db_path=db_path,
+    )
+
+    # Recently resolved disagreements — yesterday's and older calls
+    # whose outcomes are now known. This is where most of the
+    # "which was right" signal will land, because same-day
+    # predictions are rarely resolved by EOD.
+    body += _shadow_resolved_section(db_path)
+
+    html = _wrap_html("Shadow Model Evaluation", body)
+    return send_email(subject, html, ctx=ctx)
+
+
+# ---------------------------------------------------------------------------
 # 6. Error notification
 # ---------------------------------------------------------------------------
 

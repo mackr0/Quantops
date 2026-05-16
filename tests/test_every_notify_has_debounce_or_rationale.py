@@ -46,6 +46,13 @@ KNOWN_NO_DEBOUNCE_NEEDED = {
         "Currently a no-op stub. Same as notify_trade.",
     "notify_exit":
         "Currently a no-op stub. Same as notify_trade.",
+    "notify_shadow_eval_daily":
+        "Fires once per profile per day, gated by a marker file "
+        "(.shadow_eval_sent_p<id>.marker) in "
+        "multi_scheduler._task_shadow_eval_daily_email. Same pattern "
+        "as notify_daily_summary — the scheduler writes the marker "
+        "only when the email actually sent, so retries inside a "
+        "single calendar day are blocked.",
 }
 
 
