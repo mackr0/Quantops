@@ -207,6 +207,67 @@ def _collect_altdata_logs(
 
 
 # ---------------------------------------------------------------------------
+# Aggregate journal-vs-broker drift (live)
+# ---------------------------------------------------------------------------
+
+# 1h in-process cache so the /issues page isn't slow + doesn't
+# hammer Alpaca's list_positions on every reload.
+_DRIFT_CACHE: Dict[str, Any] = {"ts": 0.0, "rows": [], "error": None}
+_DRIFT_CACHE_TTL_SEC = 3600
+
+
+def _collect_aggregate_drift(
+    since_hours: int,
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Live snapshot of aggregate journal-vs-broker drift.
+
+    Pre-2026-05-16 the only way to surface drift on /issues was the
+    journald ERROR emitted by the gated profile-1 reconcile task —
+    which only fires during market-hours scan cycles. On weekends
+    the 123 outstanding drift items were invisible. This adds a
+    live check so drift is surfaced whenever /issues is rendered,
+    1h cached to keep the page fast and within Alpaca rate limits.
+    """
+    import time as _time
+    now = _time.time()
+    if (now - _DRIFT_CACHE["ts"] < _DRIFT_CACHE_TTL_SEC
+            and _DRIFT_CACHE["rows"] is not None):
+        return _DRIFT_CACHE["rows"], _DRIFT_CACHE["error"]
+
+    rows: List[Dict[str, Any]] = []
+    err: Optional[str] = None
+    try:
+        from aggregate_audit import audit_aggregate_drift
+        audit = audit_aggregate_drift(profile_ids=range(1, 12))
+        for d in audit.get("drift", []):
+            acct = d.get("alpaca_account_id") or d.get("acct") or "?"
+            sym = d.get("symbol", "?")
+            j = d.get("journal_qty", 0)
+            b = d.get("broker_qty", 0)
+            delta = d.get("drift", 0)
+            cat = d.get("category", "drift")
+            level = "ERROR"
+            rows.append({
+                "source": f"aggregate_audit.{acct}",
+                "level": level,
+                "message": (
+                    f"{cat}: {sym} journal={j:+.2f} broker={b:+.2f} "
+                    f"drift={delta:+.2f}"
+                ),
+                "timestamp": datetime.utcnow().isoformat(timespec="seconds"),
+            })
+    except ImportError as exc:
+        err = f"aggregate_audit unavailable: {exc}"
+    except Exception as exc:
+        err = f"aggregate_audit raised: {type(exc).__name__}: {exc}"
+
+    _DRIFT_CACHE["ts"] = now
+    _DRIFT_CACHE["rows"] = rows
+    _DRIFT_CACHE["error"] = err
+    return rows, err
+
+
+# ---------------------------------------------------------------------------
 # scrape_runs from each altdata DB
 # ---------------------------------------------------------------------------
 
@@ -247,16 +308,50 @@ def _collect_scrape_runs(
                     (since_hours,),
                 ).fetchall()
                 for r in cur:
+                    level = ("ERROR" if r["status"] == "failed"
+                             else "WARNING")
+                    base_ts = r["started_at"] or ""
+                    err_raw = r["error"]
+                    # Backward-compatible: try JSON decode for the
+                    # per-item shape added 2026-05-16. Falls back to
+                    # plain text for old runs / scrapers that haven't
+                    # adopted the JSON format yet.
+                    items = None
+                    summary = err_raw
+                    if err_raw and err_raw.startswith("{"):
+                        try:
+                            obj = json.loads(err_raw)
+                            summary = obj.get("summary", err_raw)
+                            items = obj.get("items")
+                        except (json.JSONDecodeError, TypeError):
+                            pass
                     rows.append({
                         "source": f"{name}.scrape_runs",
-                        "level": ("ERROR" if r["status"] == "failed"
-                                  else "WARNING"),
+                        "level": level,
                         "message": (
                             f"{r['source']}: status={r['status']}"
-                            + (f" — {r['error']}" if r['error'] else "")
+                            + (f" — {summary}" if summary else "")
                         ),
-                        "timestamp": r["started_at"] or "",
+                        "timestamp": base_ts,
                     })
+                    # If JSON per-item detail is present, surface each
+                    # failed item as its own row so the /issues page
+                    # shows EXACTLY which ticker failed and why. Cap
+                    # at 50 items per run to bound output for huge
+                    # error lists.
+                    if items:
+                        for item in items[:50]:
+                            label = item.get("label", "?")
+                            reason = item.get("reason", "?")
+                            rows.append({
+                                "source": f"{name}.scrape_runs/{label}",
+                                "level": level,
+                                "message": (
+                                    f"{name} {r['source']}: "
+                                    f"{label} — {reason}"
+                                ),
+                                "timestamp": base_ts,
+                            })
             finally:
                 conn.close()
         except (sqlite3.OperationalError, sqlite3.DatabaseError,
@@ -298,8 +393,9 @@ def collect_issues(
     )
     altdata_rows, a_err = _collect_altdata_logs(since_hours)
     scrape_rows, s_err = _collect_scrape_runs(since_hours)
+    drift_rows, d_err = _collect_aggregate_drift(since_hours)
 
-    all_rows = journald_rows + altdata_rows + scrape_rows
+    all_rows = journald_rows + altdata_rows + scrape_rows + drift_rows
     if level_filter:
         wanted = {x.upper() for x in level_filter.split(",")}
         all_rows = [r for r in all_rows if r["level"] in wanted]
@@ -351,6 +447,7 @@ def collect_issues(
                 f"journald: {j_err}" if j_err else None,
                 f"altdata logs: {a_err}" if a_err else None,
                 f"scrape_runs: {s_err}" if s_err else None,
+                f"aggregate_audit: {d_err}" if d_err else None,
             ] if e
         ],
     }

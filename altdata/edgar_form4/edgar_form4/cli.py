@@ -170,12 +170,32 @@ def daily(tickers, max_age_days, verbose):
             total_filings = sum(r.get("filings_seen", 0) for r in results)
             total_txns = sum(r.get("txns_inserted", 0) for r in results)
             errors = [r for r in results if r.get("error")]
+            # Persist per-item error detail as JSON in the error
+            # column so the /issues page (and `runs` CLI) can show
+            # WHICH tickers failed and WHY. Pre-2026-05-16 only a
+            # count was stored ("63 ticker error(s)") — the per-item
+            # text was printed to stderr (lost when cron captures
+            # only stdout). Format is backward-compatible: readers
+            # that expect plain text still see the leading summary
+            # via the `summary` field; readers that decode JSON
+            # get the full list in `items`.
+            import json
+            error_payload = None
+            if errors:
+                error_payload = json.dumps({
+                    "summary": f"{len(errors)} ticker error(s)",
+                    "items": [
+                        {"label": r.get("ticker", "?"),
+                         "reason": r.get("error", "?")}
+                        for r in errors
+                    ],
+                })
             finish_run(
                 conn, run_id,
                 "ok" if not errors else "ok_with_errors",
                 rows_inserted=total_txns,
                 rows_seen=total_filings,
-                error=f"{len(errors)} ticker error(s)" if errors else None,
+                error=error_payload,
             )
             click.echo(
                 f"✓ Daily refresh: {len(ticker_list)} tickers, "

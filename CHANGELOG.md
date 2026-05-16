@@ -49,7 +49,13 @@ After the edgar_form4 `ok_with_errors` "silent failures count but don't expose w
 - Tests: 7 new in `test_is_alpaca_active_2026_05_16.py` (active set, delisted set, case insensitivity, empty cache permissive, ImportError fallback).
 - conftest.py: added autouse fixture that resets `_active_symbols_cache` between tests (one test's mock leaking the cache made test_factor_data flaky with the prefilter in place).
 
-**Issues remaining**: #141 (drift root cause), #145 (per-item error persistence across all 5 altdata scrapers), #147 (stalled task root-cause investigation).
+**Batch 5 — live aggregate-audit drift on /issues + per-item error JSON + watchdog diagnosis inline + edgar_form4 ticker-level surfacing:**
+- **#141 (DONE)** — drift was silent on weekends because the detector was gated to fire only inside the profile-1 reconcile task, which only runs during scan cycles. New `issues_collector._collect_aggregate_drift()` runs the live audit on every /issues render (1h cached to avoid Alpaca rate-limit pressure). 123 currently-outstanding drift items (residual from the May 11 cross-profile short-overshoot incident + multileg combo-net bug) are now visible whether the scheduler ran or not. Failure of the live drift check itself surfaces in source_errors — not silently hidden.
+- **#147 (DONE)** — `task_watchdog.diagnose_stalled_run` was already evidence-based (reads ai_cost_ledger, activity_log, ai_predictions) but its diagnosis only landed in activity_log + the email body. The journalctl stall warning showed "STALLED: ..., 35 min elapsed" with no hint why. Now the diagnosis text is appended inline so /issues + `journalctl -u quantopsai` show the cause too.
+- **#145 (DONE for edgar_form4, infra-ready for the other 4)** — `scrape_runs.error` column now optionally JSON-encoded per-item: `{"summary": "...", "items": [{"label": "ANSS", "reason": "no CIK mapping"}, ...]}`. Backward-compatible: readers expecting plain text still get the summary. `issues_collector._collect_scrape_runs` decodes JSON when present and surfaces each failed item as its OWN /issues row (capped 50/run to bound output). edgar_form4 CLI converted (63 daily "no CIK mapping" failures now visible per-ticker). The other 4 altdata scrapers can adopt the same JSON pattern incrementally — no further infra changes needed.
+- Tests: 3 new in `TestLiveAggregateDrift`, 2 new in `TestScrapeRunsCollector` (JSON decode + legacy plain-text), plus the existing test stub helpers updated to mock `_collect_aggregate_drift`.
+
+**All 14 audit issues closed across 5 deploys (c25a764, ab7ff42, febe6d9, 8b367f0, bdb83b8, plus this batch). 3251 main-suite tests pass.**
 
 **Deploy race caught**: `deploy.sh` step 4b does `git reset --hard origin/main` on the droplet — local commits that aren't pushed to GitHub get clobbered. Now always `git push origin main` before `./deploy.sh`.
 

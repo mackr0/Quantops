@@ -3445,9 +3445,15 @@ def _task_run_watchdog(ctx):
                 ctx.db_path, task_name, started_at, elapsed,
             )
 
+            # Log the diagnosis inline with the stall warning so the
+            # evidence makes it into journald + the /issues page. Pre-
+            # 2026-05-16 the diagnosis only landed in activity_log and
+            # the email body — the operator scanning journalctl saw
+            # "stalled, 35 min elapsed" with no hint why.
             logging.warning(
                 f"  STALLED: {task_name} "
-                f"(started {started_at}, {elapsed:.0f} min elapsed)"
+                f"(started {started_at}, {elapsed:.0f} min elapsed) "
+                f"— {cause}"
             )
             _safe_log_activity(
                 getattr(ctx, "profile_id", 0), ctx.user_id,

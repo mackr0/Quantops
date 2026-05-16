@@ -67,12 +67,16 @@ class TestCollectorReturnShape:
     """Run the collector with all source-collectors stubbed; pin the
     grouping + sort behavior."""
 
-    def _stub_collectors(self, journald_rows, altdata_rows, scrape_rows):
+    def _stub_collectors(self, journald_rows, altdata_rows, scrape_rows,
+                          drift_rows=None):
         return patch.multiple(
             "issues_collector",
             _collect_journald=MagicMock(return_value=(journald_rows, None)),
             _collect_altdata_logs=MagicMock(return_value=(altdata_rows, None)),
             _collect_scrape_runs=MagicMock(return_value=(scrape_rows, None)),
+            _collect_aggregate_drift=MagicMock(
+                return_value=(drift_rows or [], None),
+            ),
         )
 
     def test_groups_spam_events_into_one_row(self):
@@ -139,6 +143,9 @@ class TestCollectorReturnShape:
             "issues_collector._collect_altdata_logs", return_value=([], None),
         ), patch(
             "issues_collector._collect_scrape_runs", return_value=([], None),
+        ), patch(
+            "issues_collector._collect_aggregate_drift",
+            return_value=([], None),
         ):
             out = collect_issues()
         assert any(
@@ -169,11 +176,73 @@ class TestIssuesCount:
             _collect_journald=MagicMock(return_value=(rows, None)),
             _collect_altdata_logs=MagicMock(return_value=([], None)),
             _collect_scrape_runs=MagicMock(return_value=([], None)),
+            _collect_aggregate_drift=MagicMock(return_value=([], None)),
         ):
             c = issues_count()
         assert c["errors"] == 2
         assert c["warnings"] == 3
         assert c["total"] == 5
+
+
+class TestLiveAggregateDrift:
+    """2026-05-16: 123 outstanding drift items only surfaced when the
+    profile-1 reconcile task fired during a scan cycle. Weekends were
+    silent. Live drift check on /issues makes them visible always."""
+
+    def setup_method(self):
+        """Reset the 1h drift cache before each test so we re-fetch."""
+        import issues_collector
+        issues_collector._DRIFT_CACHE = {"ts": 0.0, "rows": [], "error": None}
+
+    def test_drift_items_surface_as_error_rows(self):
+        from issues_collector import _collect_aggregate_drift
+        fake_audit = {
+            "drift": [
+                {"alpaca_account_id": "acct1", "symbol": "NXPI",
+                 "journal_qty": 0.0, "broker_qty": -114.0,
+                 "drift": -114.0, "category": "broker_orphan"},
+                {"alpaca_account_id": "acct2", "symbol": "SM260618P00027500",
+                 "journal_qty": 1.0, "broker_qty": 0.0,
+                 "drift": -1.0, "category": "journal_phantom"},
+            ],
+            "by_account": {},
+        }
+        with patch("aggregate_audit.audit_aggregate_drift",
+                   return_value=fake_audit):
+            rows, err = _collect_aggregate_drift(24)
+        assert err is None
+        assert len(rows) == 2
+        assert all(r["level"] == "ERROR" for r in rows)
+        assert "broker_orphan" in rows[0]["message"]
+        assert "NXPI" in rows[0]["message"]
+
+    def test_drift_call_failure_surfaces_in_source_errors(self):
+        """If aggregate_audit raises (Alpaca down, etc.), the failure
+        of the live check itself must be visible — not silently hide
+        the drift status. Returns empty rows + populated error."""
+        from issues_collector import _collect_aggregate_drift
+        with patch(
+            "aggregate_audit.audit_aggregate_drift",
+            side_effect=RuntimeError("Alpaca rate limit"),
+        ):
+            rows, err = _collect_aggregate_drift(24)
+        assert rows == []
+        assert err is not None
+        assert "RuntimeError" in err and "Alpaca rate limit" in err
+
+    def test_drift_cache_avoids_repeated_alpaca_calls(self):
+        """1h cache: second call within window should NOT re-invoke
+        aggregate_audit (Alpaca rate-limit pressure on /issues
+        reloads)."""
+        from issues_collector import _collect_aggregate_drift
+        fake_audit = {"drift": [], "by_account": {}}
+        with patch("aggregate_audit.audit_aggregate_drift",
+                   return_value=fake_audit) as m:
+            _collect_aggregate_drift(24)
+            _collect_aggregate_drift(24)
+        assert m.call_count == 1, (
+            "Second call within 1h cache window must NOT re-invoke"
+        )
 
 
 class TestScrapeRunsCollector:
@@ -206,16 +275,98 @@ class TestScrapeRunsCollector:
         conn.commit()
         conn.close()
 
-        # Point the collector at our fixture instead of /opt/...
+        # Point the collector at this fixture instead of /opt/...
         monkeypatch.setattr(
             "issues_collector._ALTDATA_DBS",
             [("edgar_form4", str(db_path))],
         )
         rows, err = _collect_scrape_runs(since_hours=24)
         assert err is None
-        assert len(rows) == 2, (
-            "Both 'failed' and 'ok_with_errors' must surface; 'ok' must not"
-        )
+        assert len(rows) == 2  # ok row excluded
         levels = {r["level"] for r in rows}
-        assert "ERROR" in levels  # the failed row
-        assert "WARNING" in levels  # the ok_with_errors row
+        assert "ERROR" in levels  # failed
+        assert "WARNING" in levels  # ok_with_errors
+
+    def test_json_error_format_surfaces_per_item_detail(
+        self, tmp_path, monkeypatch,
+    ):
+        """2026-05-16 addition: when scrape_runs.error is a JSON
+        blob (per-item error persistence), each failed item should
+        surface as its OWN /issues row so the operator sees WHICH
+        ticker failed and WHY."""
+        import json as _json
+        from issues_collector import _collect_scrape_runs
+        db_path = tmp_path / "edgar_form4.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE scrape_runs ("
+            " id INTEGER PRIMARY KEY,"
+            " source TEXT, started_at TEXT, finished_at TEXT,"
+            " status TEXT, rows_inserted INTEGER, rows_seen INTEGER,"
+            " error TEXT)"
+        )
+        err_json = _json.dumps({
+            "summary": "3 ticker error(s)",
+            "items": [
+                {"label": "ANSS", "reason": "no CIK mapping"},
+                {"label": "BITF", "reason": "no CIK mapping"},
+                {"label": "CEIX", "reason": "no CIK mapping"},
+            ],
+        })
+        conn.execute(
+            "INSERT INTO scrape_runs (source, started_at, status, error) "
+            "VALUES ('daily:525', datetime('now'), 'ok_with_errors', ?)",
+            (err_json,),
+        )
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr(
+            "issues_collector._ALTDATA_DBS",
+            [("edgar_form4", str(db_path))],
+        )
+        rows, err = _collect_scrape_runs(since_hours=24)
+        assert err is None
+        # 1 summary row + 3 per-item rows
+        assert len(rows) == 4
+        per_item = [r for r in rows if "ANSS" in r["message"]
+                    or "BITF" in r["message"] or "CEIX" in r["message"]]
+        assert len(per_item) == 3
+        assert all("no CIK mapping" in r["message"] for r in per_item)
+
+    def test_legacy_plain_text_error_still_works(
+        self, tmp_path, monkeypatch,
+    ):
+        """Pre-2026-05-16 scrape_runs.error was a plain string like
+        '63 ticker error(s)'. Must still render correctly — the JSON
+        decode is opt-in, plain text is the default."""
+        from issues_collector import _collect_scrape_runs
+        db_path = tmp_path / "edgar_form4.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE scrape_runs ("
+            " id INTEGER PRIMARY KEY,"
+            " source TEXT, started_at TEXT, finished_at TEXT,"
+            " status TEXT, rows_inserted INTEGER, rows_seen INTEGER,"
+            " error TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO scrape_runs (source, started_at, status, error) "
+            "VALUES ('daily:525', datetime('now'), 'ok_with_errors', "
+            "        '63 ticker error(s)')"
+        )
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr(
+            "issues_collector._ALTDATA_DBS",
+            [("edgar_form4", str(db_path))],
+        )
+        rows, err = _collect_scrape_runs(since_hours=24)
+        assert err is None
+        assert len(rows) == 1, (
+            "Plain-text legacy error: ONE summary row, NO per-item "
+            "breakdown (decode opt-in via JSON)"
+        )
+        assert rows[0]["level"] == "WARNING"
+        assert "63 ticker error(s)" in rows[0]["message"]
