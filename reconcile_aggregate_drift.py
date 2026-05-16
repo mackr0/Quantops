@@ -82,25 +82,63 @@ def _find_opening_orders_for_position(
     """
     if api is None:
         return []
-    try:
-        # Pull broadly; filter client-side. limit=500 covers ~6 months
-        # of typical trade frequency.
-        all_orders = api.list_orders(
-            status="all", symbols=[symbol], limit=500, nested=True,
-        )
-    except Exception as exc:
-        log.warning(
-            "  list_orders(%s) failed: %s: %s — falling back to "
-            "synthetic-history reconcile for this position",
-            symbol, type(exc).__name__, exc,
-        )
-        return []
-
+    # Paginate. Alpaca's list_orders caps at limit=500/call; for a
+    # trader that submits ~20 orders/day, that's ~3 weeks of history
+    # per page. Walk back in 500-order pages using `until=<earliest
+    # submitted_at so far>` until we cover the position OR exhaust
+    # available history. Cap total pages at 8 (= 4000 orders) so we
+    # don't spin forever on a degenerate symbol.
     is_long = broker_qty > 0
     need_qty = abs(broker_qty)
     is_occ = (len(symbol) > 6 and any(c.isdigit() for c in symbol[1:7]))
     opening_sides = (("buy",) if is_long
                      else ("sell", "sell_short"))
+
+    all_orders: List = []
+    until_param: Optional[str] = None
+    MAX_PAGES = 8
+    PAGE_SIZE = 500
+    for _page in range(MAX_PAGES):
+        try:
+            kwargs = {"status": "all", "symbols": [symbol],
+                      "limit": PAGE_SIZE, "nested": True,
+                      "direction": "desc"}
+            if until_param:
+                kwargs["until"] = until_param
+            page = api.list_orders(**kwargs)
+        except Exception as exc:
+            log.warning(
+                "  list_orders(%s, page=%d) failed: %s: %s — using "
+                "whatever %d orders we already pulled",
+                symbol, _page, type(exc).__name__, exc, len(all_orders),
+            )
+            break
+        if not page:
+            break
+        all_orders.extend(page)
+        # Heuristic short-circuit: if we already have enough opening-
+        # side filled qty to cover the position, stop paginating.
+        opening_filled_qty = sum(
+            float(getattr(o, "filled_qty", 0) or 0)
+            for o in all_orders
+            if (getattr(o, "side", "") in opening_sides
+                and float(getattr(o, "filled_qty", 0) or 0) > 0)
+        )
+        if opening_filled_qty >= need_qty - 0.001:
+            break
+        # Last page returned full PAGE_SIZE → more history may exist.
+        # Next iteration pulls everything submitted BEFORE the oldest
+        # in this page.
+        if len(page) < PAGE_SIZE:
+            break
+        oldest = min(
+            (getattr(o, "submitted_at", None) for o in page
+             if getattr(o, "submitted_at", None)),
+            default=None,
+        )
+        if not oldest:
+            break
+        until_param = str(oldest)
 
     # Sort newest fills first — most recent opens are most likely to
     # be the live position (older fills may have been closed and
