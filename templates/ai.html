@@ -2340,10 +2340,80 @@
     loadLearnedPatterns();
 
     // --- Tunable signal weights (Layer 2) ---
+    //
+    // Two render modes:
+    //   - All profiles  → matrix (rows = signals, columns = profiles).
+    //     Shows where the tuner has demoted each signal AND which
+    //     profiles agree. Critical UX: the prior all-profiles view
+    //     defaulted to pid 1 and looked like "0 overridden" even
+    //     though 7 of 10 profiles had real overrides.
+    //   - Single profile → simple list (signal / weight / status).
     function loadWeightableSignals() {
         var w = document.getElementById('weightable-signals-widget');
         if (!w) return;
-        var pid = profileFilter || '1';
+        if (profileFilter) {
+            return loadWeightableSignalsForProfile(w, profileFilter);
+        }
+        return loadWeightableSignalsMatrix(w);
+    }
+
+    function loadWeightableSignalsMatrix(w) {
+        fetch('/api/weightable-signals-matrix')
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (d.error || !d.rows || !d.profiles) {
+                    w.innerHTML = '<p class="muted">' + esc(d.error || 'No data.') + '</p>';
+                    return;
+                }
+                var profCount = d.profiles.length;
+                var h = '<p style="font-size:0.85rem;margin:0 0 0.5rem 0;">';
+                h += '<strong>' + d.n_signals + '</strong> tunable signals across <strong>'
+                    + profCount + '</strong> profiles · ';
+                h += '<strong>' + d.n_total_overrides + '</strong> total overrides from default 1.0';
+                if (d.n_total_overrides > 0) {
+                    h += ' <small class="muted">(orange = below 1.0; rows sorted by most-overridden signals first)</small>';
+                }
+                h += '</p>';
+                h += '<div class="overflow-auto"><table class="striped" style="font-size:0.8rem;"><thead><tr>';
+                h += '<th style="text-align:left;">Signal</th>';
+                h += '<th style="text-align:center;" title="Number of profiles where this signal is below 1.0">×</th>';
+                d.profiles.forEach(function(p) {
+                    h += '<th style="text-align:center;font-weight:normal;" title="' + esc(p.name) + '">'
+                        + esc(p.name.length > 12 ? p.name.substring(0, 11) + '…' : p.name)
+                        + '</th>';
+                });
+                h += '</tr></thead><tbody>';
+                d.rows.forEach(function(row) {
+                    h += '<tr>';
+                    h += '<td><strong>' + esc(row.label || row.name) + '</strong>'
+                        + '<br><small class="muted">' + esc(row.name) + '</small></td>';
+                    var cntCls = row.n_overridden > 0 ? 'pnl-neg' : 'muted';
+                    h += '<td style="text-align:center;font-family:monospace;" class="' + cntCls + '">'
+                        + row.n_overridden + '</td>';
+                    row.cells.forEach(function(cell) {
+                        var cellStyle = 'text-align:center;font-family:monospace;';
+                        var cellContent;
+                        if (cell.is_overridden) {
+                            cellStyle += 'background:#fff3e0;color:#b87333;font-weight:600;';
+                            cellContent = cell.weight.toFixed(2);
+                        } else {
+                            cellStyle += 'color:#999;';
+                            cellContent = '1.0';
+                        }
+                        h += '<td style="' + cellStyle + '">' + cellContent + '</td>';
+                    });
+                    h += '</tr>';
+                });
+                h += '</tbody></table></div>';
+                w.innerHTML = h;
+            })
+            .catch(function(e) {
+                w.innerHTML = '<p class="muted">Failed to load tunable signals matrix: '
+                    + esc(e.message || '') + '</p>';
+            });
+    }
+
+    function loadWeightableSignalsForProfile(w, pid) {
         fetch('/api/weightable-signals/' + pid)
             .then(function(r) { return r.json(); })
             .then(function(d) {

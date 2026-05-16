@@ -4546,6 +4546,68 @@ def api_slippage_history(profile_id):
     })
 
 
+@views_bp.route("/api/weightable-signals-matrix")
+@login_required
+def api_weightable_signals_matrix():
+    """Cross-profile matrix view of every weightable signal.
+
+    Returns rows = signals, columns = profiles, cells = weight.
+    Solves the "all-profiles view looked untuned" UX gap (2026-05-15):
+    when no profile was selected, the per-profile endpoint defaulted
+    to pid 1 and showed all 1.0 defaults, making the system look like
+    it had never tuned a signal — when in reality 7 of 10 profiles
+    had at least one override.
+    """
+    from signal_weights import (
+        WEIGHTABLE_SIGNALS, get_all_weights, display_label,
+    )
+    user_id = current_user.effective_user_id
+    profiles = get_user_profiles(user_id)
+    enabled = [p for p in profiles if p.get("enabled")]
+    # Preload each profile's overrides once.
+    overrides_by_pid = {
+        p["id"]: get_all_weights(p) for p in enabled
+    }
+    rows = []
+    for entry in WEIGHTABLE_SIGNALS:
+        if isinstance(entry, tuple) and len(entry) >= 2:
+            name = entry[0]
+            label = entry[1]
+        else:
+            name = entry if isinstance(entry, str) else str(entry)
+            label = display_label(name)
+        cells = []
+        n_overridden_for_this_signal = 0
+        for p in enabled:
+            ov = overrides_by_pid[p["id"]]
+            weight = ov.get(name, 1.0)
+            is_ov = name in ov
+            if is_ov:
+                n_overridden_for_this_signal += 1
+            cells.append({
+                "profile_id": p["id"],
+                "weight": float(weight),
+                "is_overridden": is_ov,
+            })
+        rows.append({
+            "name": name,
+            "label": label,
+            "cells": cells,
+            "n_overridden": n_overridden_for_this_signal,
+        })
+    # Sort: most-overridden signals first (most-interesting to see),
+    # then alphabetical for stable secondary order.
+    rows.sort(key=lambda r: (-r["n_overridden"], r["name"]))
+    return jsonify({
+        "profiles": [
+            {"id": p["id"], "name": p["name"]} for p in enabled
+        ],
+        "n_signals": len(rows),
+        "n_total_overrides": sum(r["n_overridden"] for r in rows),
+        "rows": rows,
+    })
+
+
 @views_bp.route("/api/weightable-signals/<int:profile_id>")
 @login_required
 def api_weightable_signals(profile_id):
