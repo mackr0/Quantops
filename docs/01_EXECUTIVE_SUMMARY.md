@@ -93,7 +93,7 @@ The full open-items list, including paid-data upgrades that would close specific
 
 Three things distinguish this codebase from typical retail-trading projects:
 
-1. **Test discipline.** 3,068 tests pass, zero skipped. Test skips were systematically removed; new skips are blocked at code review.
+1. **Test discipline.** 3,413 tests pass, zero skipped. Test skips were systematically removed; new skips are blocked at code review.
 
 2. **Anti-drift guardrails.** Static-analysis tests prevent the failure modes that retail-trading systems silently suffer from: hidden levers (every per-profile scheduled feature must have a settings toggle); meta-features without UI surfaces; snake_case identifiers leaking into rendered HTML; columns added to the schema that aren't either auto-tuned or explicitly enumerated as user-set; new modules that ship without changelog entries.
 

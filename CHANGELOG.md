@@ -17,6 +17,44 @@ Rules going forward:
 
 ---
 
+## 2026-05-16 — Auto-expiry on gate-tightening tuning changes — 4th of 4 permanent guardrails from 2026-05-14 over-restriction collapse. Severity: high (closes the original incident properly).
+
+**Core principle (Mack, 2026-05-16)**: "It shouldn't make it harder to trade — it should make it harder to make BAD trades." A gate-tightening with no measurable improvement in win rate is making it harder to trade WITHOUT making it harder to make bad trades. That's the case auto-expiry catches.
+
+**New: `tuning_auto_expiry.py`** — evidence-based revert of gate-tightening tuning changes. Decision rule:
+
+```
+For each tuning_history row where:
+    category(adjustment_type) == 'gate_tighten'
+    AND timestamp >= 7 days ago
+    AND no subsequent change has already moved the parameter
+    AND >= 20 predictions resolved since the change
+    AND outcome_after != 'improved'
+→ revert + log new tuning_history row tagged 'auto_expiry_revert'
+→ mark original row outcome_after='auto_expired' (idempotent)
+```
+
+The **20-sample minimum is the evidence gate**. Time alone is not sufficient — a tightening that hasn't accumulated samples doesn't HAVE evidence yet; the next pass will revisit when samples accrue. Without this gate auto-expiry would itself become the kind of mechanical-over-time restriction the system is trying to escape. Per Mack: "evidence based is a necessity, the AI will be in charge so it will need to make decisions based on evidence not just 'time has passed'."
+
+Refinements (ATR multipliers, RSI thresholds, Layer-2 signal-weight intensity 0.0-1.0) are explicitly EXEMPT — they're refinements of HOW thresholds compute, not gates that restrict trading. Reverting them would undo legitimate learning.
+
+**Three revert shapes handled**:
+- Numeric trading_profiles column (most cases) — cast old_value, `update_trading_profile(pid, **{col: val})`
+- `deprecate:<strategy>` — un-deprecate via per-profile `deprecated_strategies.restored_at`
+- `weight:<signal>` — remove key from `signal_weights` JSON column on trading_profiles. Required allowlisting `signal_weights` in `update_trading_profile.allowed_cols` (was missing — silent-filter bug, same class as the 2026-04-28 `disabled_specialists` incident).
+
+**Refactor: `tuning_categories.py` (NEW)** — single source of truth for the gate_tighten/refinement/loosen/neutral categorizer. Both `views.py` (tuning history badges) and `tuning_auto_expiry.py` (revert decisions) import from this module so the categorization can't drift between web layer and scheduler.
+
+**Scheduler wiring**: new `_task_auto_expire_gate_tightens` task runs once per profile per calendar day. Added to `INFRASTRUCTURE_TASKS` allowlist.
+
+**Pre-market smoke test cron**: also installed today. `0 13 * * 1-5` on prod (9:00 ET, 30 min before market open) — runs `premarket_smoke_test.py --strict --notify`. Logs to dated file under `logs/smoke-YYYYMMDD.log`. So a silent regression any morning before market open gets surfaced as an email, not discovered hours later.
+
+**Tests**: `tests/test_tuning_auto_expiry.py` (17 tests) — pins every eligibility rule with explicit boundary tests for the refinement-vs-gate distinction (signal_weight_down + atr_tp_tighten MUST NOT be auto-expired) and the evidence gate (insufficient samples → defer, never revert prematurely).
+
+3413 tests pass.
+
+---
+
 ## 2026-05-16 — Tuning history: gate-tighten vs refinement vs loosen badge, 7-day rollup, signal-weights matrix no longer leaks snake_case. Severity: medium (UX clarity + new structural test for the snake-case-via-API leak class).
 
 **1. Tuning-adjustment categorization** added in `views._categorize_tuning_adjustment`:

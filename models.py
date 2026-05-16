@@ -1094,6 +1094,12 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "option_iv_cheap_threshold",
         # 2026-05-12 — per-symbol entry blacklist (Wave 8c).
         "entry_blacklist",
+        # 2026-05-16 — Layer-2 signal-weight JSON, written by
+        # auto_expiry revert path when removing a weight override.
+        # Was missing from the allowlist so the update was silently
+        # filtered out (same bug class as the disabled_specialists/
+        # meta_pregate_threshold gap from 2026-04-28).
+        "signal_weights",
     }
     updates = {}
     rejected = []

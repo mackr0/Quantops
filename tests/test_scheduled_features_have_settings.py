@@ -44,6 +44,7 @@ INFRASTRUCTURE_TASKS = {
     "_task_daily_snapshot",            # equity / pnl tracking
     "_task_cost_check",                # AI spend guard
     "_task_data_source_health",        # silent-fallback detector (2026-05-15 incident response)
+    "_task_auto_expire_gate_tightens", # 4th guardrail from 2026-05-14 (auto-revert old unhelpful gate-tightens)
     "_task_cross_account_reconcile",   # virtual account ledger sync
     "_task_self_tune",                 # autonomous parameter tuning
     "_task_retrain_meta_model",        # daily GBM + SGD bootstrap

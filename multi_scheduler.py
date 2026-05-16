@@ -400,6 +400,14 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_data_source_health(ctx),
             db_path=ctx.db_path,
         )
+        # Auto-expiry of gate-tightening tuning changes that haven't
+        # shown evidence of improving win rate. Daily — internally
+        # rate-limited via _auto_expiry_last_run_date.
+        run_task(
+            f"[{seg_label}] Auto-Expire Gate Tightens",
+            lambda: _task_auto_expire_gate_tightens(ctx),
+            db_path=ctx.db_path,
+        )
         # Cross-account reconciliation (virtual profiles only)
         if getattr(ctx, "is_virtual", False):
             run_task(
@@ -1496,6 +1504,57 @@ def _task_cost_check(ctx):
 
 _health_probe_last_run = 0.0
 _HEALTH_PROBE_INTERVAL_SEC = 600  # every 10 min
+
+
+_auto_expiry_last_run_date = None
+
+
+def _task_auto_expire_gate_tightens(ctx):
+    """Daily auto-expiry of gate-tightening tuning changes.
+
+    Rule (evidence-based, per Mack 2026-05-16):
+      For each gate_tighten change >= 7 days old where no later
+      change has already moved the parameter AND >= 20 predictions
+      have resolved since the change AND outcome_after != 'improved'
+      → revert the parameter and log an 'auto_expiry_revert' row.
+
+    The fourth permanent guardrail from the 2026-05-14 over-
+    restriction collapse memo. Prevents the slow-accumulation
+    pattern (30+ 'unchanged' tightenings compounding to zero stock
+    entries) that the existing auto_reversal can't catch (it only
+    catches outright worseners).
+
+    Runs once per profile per calendar day.
+    """
+    global _auto_expiry_last_run_date
+    import datetime as _dt
+    today = _dt.date.today().isoformat()
+    pid = getattr(ctx, "profile_id", 0)
+    state_key = f"{today}:{pid}"
+    if _auto_expiry_last_run_date == state_key:
+        return
+    _auto_expiry_last_run_date = state_key
+
+    try:
+        from tuning_auto_expiry import revert_expired_gate_tightens
+        actions = revert_expired_gate_tightens(
+            profile_id=pid,
+            user_id=getattr(ctx, "user_id", 1),
+            profile_db_path=ctx.db_path,
+        )
+        reverted = [a for a in actions if a.get("action") == "reverted"]
+        if reverted:
+            seg_label = ctx.display_name or ctx.segment
+            logging.info(
+                "[%s] Auto-expiry reverted %d gate-tightening(s): %s",
+                seg_label, len(reverted),
+                ", ".join(r.get("parameter_name", "?") for r in reverted),
+            )
+    except Exception as exc:
+        logging.warning(
+            "auto_expiry task failed for profile %s: %s: %s",
+            pid, type(exc).__name__, exc,
+        )
 
 
 def _task_data_source_health(ctx):
