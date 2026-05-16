@@ -213,3 +213,117 @@ class TestOvershootGuard:
         api = self._api([self._pos("aapl", "50")])
         qty, _ = allowable_sell_qty(api, "AAPL", 30)
         assert qty == 30
+
+
+# --- 2026-05-16 audit: pre-submit buy-qty sanity guard ---
+
+
+class TestAllowableBuyQty:
+    """Caught 2026-05: NU 60×, KNX 28.5×, LEVI 129×, CSX 82× median —
+    sizing-arithmetic bugs that the post-fact `position_runaway`
+    detector flagged AFTER the trade had already filled. New
+    pre-submit guard refuses qty > 20× profile-recent median.
+    """
+
+    def _seed_db(self, tmp_path, qtys):
+        """Create a tmp DB with the trades schema + seeded BUY rows."""
+        import sqlite3
+        db = str(tmp_path / "trades.db")
+        conn = sqlite3.connect(db)
+        conn.execute("""
+            CREATE TABLE trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT DEFAULT (datetime('now')),
+                symbol TEXT, side TEXT, qty REAL, price REAL,
+                status TEXT DEFAULT 'open'
+            )
+        """)
+        for q in qtys:
+            conn.execute(
+                "INSERT INTO trades (symbol, side, qty, price) "
+                "VALUES (?, 'buy', ?, 100.0)",
+                ("AAPL", q),
+            )
+        conn.commit()
+        conn.close()
+        return db
+
+    def test_normal_qty_passes(self, tmp_path):
+        """Qty close to the median goes through cleanly."""
+        from order_guard import allowable_buy_qty
+        # Median 10, request 15 — well under 20× threshold.
+        db = self._seed_db(tmp_path, [10] * 15)
+        allowed, reason = allowable_buy_qty(db, "AAPL", 15)
+        assert allowed == 15
+        assert reason == "ok"
+
+    def test_qty_just_under_threshold_passes(self, tmp_path):
+        """19× median should still pass (threshold is >20×)."""
+        from order_guard import allowable_buy_qty
+        db = self._seed_db(tmp_path, [10] * 15)   # median = 10
+        allowed, _ = allowable_buy_qty(db, "AAPL", 190)
+        assert allowed == 190
+
+    def test_qty_at_threshold_passes(self, tmp_path):
+        """Exactly 20× median passes (strict >, not >=)."""
+        from order_guard import allowable_buy_qty
+        db = self._seed_db(tmp_path, [10] * 15)
+        allowed, _ = allowable_buy_qty(db, "AAPL", 200)
+        assert allowed == 200
+
+    def test_excessive_qty_blocked(self, tmp_path):
+        """The exact failure mode that motivated this guard:
+        KNX-style 28.5× = sizing bug. Must block, not alert."""
+        from order_guard import allowable_buy_qty
+        db = self._seed_db(tmp_path, [10] * 15)
+        allowed, reason = allowable_buy_qty(db, "AAPL", 285)
+        assert allowed == 0
+        assert "blocked" in reason.lower()
+        assert "28.5x median" in reason
+
+    def test_extreme_qty_blocked(self, tmp_path):
+        """LEVI-style 129× — well into bug territory."""
+        from order_guard import allowable_buy_qty
+        db = self._seed_db(tmp_path, [10] * 15)
+        allowed, _ = allowable_buy_qty(db, "AAPL", 1290)
+        assert allowed == 0
+
+    def test_insufficient_history_permissive(self, tmp_path):
+        """Profiles with <10 BUY rows shouldn't get throttled — let
+        them through and rely on the post-fact alert during ramp-up."""
+        from order_guard import allowable_buy_qty
+        db = self._seed_db(tmp_path, [10] * 3)   # only 3 rows
+        allowed, reason = allowable_buy_qty(db, "AAPL", 10_000)
+        assert allowed == 10_000
+        assert "permissive" in reason.lower()
+
+    def test_db_read_failure_permissive(self):
+        """Bogus db_path = DB read fails = permissive (fall through to
+        the post-fact alert)."""
+        from order_guard import allowable_buy_qty
+        allowed, reason = allowable_buy_qty(
+            "/nonexistent/path.db", "AAPL", 100,
+        )
+        assert allowed == 100
+        assert "permissive" in reason.lower()
+
+    def test_no_db_path_permissive(self):
+        from order_guard import allowable_buy_qty
+        allowed, reason = allowable_buy_qty(None, "AAPL", 100)
+        assert allowed == 100
+        assert "no db_path" in reason.lower()
+
+    def test_non_positive_qty_refused(self):
+        from order_guard import allowable_buy_qty
+        allowed, reason = allowable_buy_qty("/tmp/x.db", "AAPL", 0)
+        assert allowed == 0
+        assert "refused" in reason.lower()
+
+    def test_options_contract_bypasses_buy_guard(self, tmp_path):
+        """OCC-format symbols use a different qty convention (1
+        contract = 100 shares). Skip the median comparison."""
+        from order_guard import allowable_buy_qty
+        db = self._seed_db(tmp_path, [10] * 15)
+        allowed, reason = allowable_buy_qty(db, "MSFT260612P00375000", 1)
+        assert allowed == 1
+        assert "option" in reason.lower()

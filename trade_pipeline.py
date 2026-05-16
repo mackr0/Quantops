@@ -923,10 +923,22 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                       f"TP ${atr_tp:.2f} ({actual_tp_pct:.1%}), ATR ${atr_val:.2f}")
 
         # Schedule guard: reject if pipeline overran the trading window
-        from order_guard import check_can_submit
+        from order_guard import check_can_submit, allowable_buy_qty
         if not check_can_submit(ctx, symbol, "buy"):
             result["action"] = "SKIP"
             result["reason"] = f"Order blocked: outside {ctx.schedule_type} window"
+            return result
+
+        # Qty sanity guard — blocks sizing-arithmetic bugs BEFORE
+        # submit. Pre-2026-05-16 `position_runaway` only ALERTED
+        # after fill (NU 60×, KNX 28.5×, LEVI 129×, CSX 82× all
+        # leaked through). Now we check requested qty against
+        # profile-recent median and refuse if >20×.
+        db_path = getattr(ctx, "db_path", None)
+        allowed_qty, qty_reason = allowable_buy_qty(db_path, symbol, qty)
+        if allowed_qty <= 0:
+            result["action"] = "SKIP"
+            result["reason"] = f"Order blocked: {qty_reason}"
             return result
 
         # Limit orders: use limit price at current price for better fills

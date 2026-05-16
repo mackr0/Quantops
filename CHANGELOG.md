@@ -17,6 +17,40 @@ Rules going forward:
 
 ---
 
+## 2026-05-16 — Zero-error audit, batches 1-3. Severity: critical (multi-day blind spots across production logs).
+
+After the edgar_form4 `ok_with_errors` "silent failures count but don't expose what failed" surfaced one instance of a broader pattern, the user mandated zero tolerance — every WARN/ERROR/CRITICAL gets surfaced and fixed. The audit catalogued 14 issues across the codebase + production logs; 12 closed across 3 deploys.
+
+**Batch 1 — `c25a764` — VIX yfinance fallback + edgar13f attr-prefix parser:**
+- `market_regime.detect_regime` silently substituted `vix=20.0` ("moderate") whenever the Alpaca SPY-options path returned None (3+/day silent false-VIX events feeding AI prompt + downstream consumers). Fix: tier-2 fallback to yfinance `^VIX`; when BOTH fail, `vix=None`/`vix_level='unknown'`/`vix_source='unknown'` with downstream tolerating None.
+- `altdata/edgar13f` namespace stripper missed ATTRIBUTE prefixes (`<foo xsi:type="...">`), producing 17+/day silent `parse_error` rows for one filer since 2018. Fix: third regex pass for attribute prefixes.
+- Tests: 4 new in `test_vix_fallback_2026_05_16.py` (alpaca→yfinance fallback chain, never-substitute-20 contract), 7 new in `test_virtual_positions.py` (status-aware filter), 5 new in `test_update_fills_multileg.py` (combo per-leg fills, self-healing), 1 new in `altdata/edgar13f/tests/test_scrape_parser.py` (namespaced attrs).
+
+**Batch 2a — `ab7ff42` — issues page + shadow_eval log levels:**
+- `shadow_eval.py` audit: prior cleanup claimed "log every swallow" but used `logger.debug` for every exception — invisible at default INFO level, functionally silent. Reclassified 13 of 17 swallows: 3 ERRORs (module import dead, key decrypt fail, row INSERT data loss), 8 WARNINGs (profile lookup, JSON parses, cap reads, daily-email reads, markdown strip), 3 debugs kept where the inline comment legitimately justified it.
+- New `/issues` page (nav link between AI and Settings, async red/orange badge) aggregates every WARN/ERROR/CRITICAL from journald (quantopsai + quantopsai-web), `/opt/quantopsai/logs/altdata-*.log`, and `scrape_runs.status != 'ok'` across all 5 altdata DBs. Identical-signature messages grouped (UUID/OCC/timestamp/profile-id normalized) so 1000 spam events from one root cause collapse to one row with `occurrences=1000`. ERROR/CRITICAL sort above WARNING. Collector self-failures surface in their own block. Window filters 1h/6h/24h/7d, level filters all/errors-only/warnings-only.
+- Tests: 11 in `test_issues_collector_2026_05_16.py`.
+
+**Batch 2b — `febe6d9` — Jinja shape contract + orphan sweep + EDGAR retry + silent-swallow upgrades + deprecation:**
+- `portfolio_exposure.compute_exposure` positions-present return was missing `long_pct`/`short_pct` (empty-positions return had them) — shape contract violation that future templates could trip into Jinja Undefined. Added both keys; test pins parity.
+- `altdata/edgar_form4.store.start_run` now calls `_sweep_orphaned_runs()` first — any row stuck `status='running'` older than 6h gets marked `killed` with diagnostic note. Prod had a zombie row from 19:17 (killed SSH session); cleaned manually.
+- `pdufa_scraper._fetch_edgar_search` added 3-retry exponential backoff (1s/3s/7s) for 5xx + network errors; 4xx not retried (caller bug, retry amplifies). Pre-fix a single EDGAR 500 silently dropped the PDUFA scan; 3+/day on prod.
+- Silent swallow upgrades: `stocktwits.insert_trending_snapshot` dupe-rank now WARN+counted (was bare `pass`); watchdog notify-fail debug → WARNING; watchdog crash warning → ERROR; aggregate_audit per-position parse debug → WARNING; data_source_health notify_error fail debug → WARNING.
+- `datetime.utcnow()` → tz-aware `_utcnow()` helper in the 4 altdata CLI files producing the daily cron's DeprecationWarning noise.
+- Tests: 3 new in `test_store.py` (orphan sweep), 7 new in `test_edgar_retry_2026_05_16.py`, 3 new in `test_portfolio_exposure.py`.
+
+**Batch 3 — pending commit — pre-submit excessive-qty guard:**
+- New `order_guard.allowable_buy_qty(db_path, symbol, qty)` blocks any BUY where requested qty > 20× profile's recent 50-row median BUY qty. Pre-fix `position_runaway` only ALERTED after fill (NU 60×, KNX 28.5×, LEVI 129×, CSX 82× all leaked through). Wired into `trade_pipeline.execute_trade` after the existing schedule guard. Permissive on <10 BUY history or DB read failure (don't throttle new profiles). Skips OCC option contracts (different qty semantics).
+- Tests: 10 new in `test_order_guard.py` (normal qty passes, threshold edge cases, KNX-style 28.5× blocked, LEVI-style 129× blocked, insufficient history permissive, OCC bypass).
+
+**Issues remaining**: #141 (drift root cause), #145 (per-item error persistence across all 5 altdata scrapers), #147 (stalled task root-cause investigation), #150 (yfinance Alpaca-first prefilter at 8 sites).
+
+**Deploy race caught**: `deploy.sh` step 4b does `git reset --hard origin/main` on the droplet — local commits that aren't pushed to GitHub get clobbered. Now always `git push origin main` before `./deploy.sh`.
+
+3238 main-suite tests pass.
+
+---
+
 ## 2026-05-16 — /ai page audit: per-profile scoping + snake_case humanization fixes. Severity: medium (6 silent display/scope bugs across Brain/Strategy/Awareness/Operations tabs).
 
 Full 32-widget audit across the /ai page (analogous to the 49-widget perf audit shipped earlier today): 24 verified CORRECT, 4 suspicious, 4 needed deeper verification, 6 snake_case risk sites. Deep-trace confirmed 3 of the 4 flagged functions were actually correct (`_build_long_short_awareness`, `_build_portfolio_risk_awareness`, `_analyze_failure_patterns`'s db_path scope) — only 1 was buggy. This commit ships fixes for the 6 confirmed bugs + extends the snake_case API guardrail.
