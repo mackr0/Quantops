@@ -299,6 +299,12 @@ def scrape_company(
                 type(exc).__name__, exc,
             )
     update_last_filings_check(conn, cik)
+    # Commit per-company so a long universe run is durable —
+    # if the process is killed at ticker N, tickers 0..N-1 are
+    # already persisted. Without this, the whole 525-ticker daily
+    # run was a single transaction that committed only at the end
+    # (writes invisible mid-run + lost entirely on crash).
+    conn.commit()
     return result
 
 
