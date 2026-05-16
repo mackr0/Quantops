@@ -228,6 +228,161 @@ class TestUpdateFillsMultileg(unittest.TestCase):
         self._run_task(fake_api)
         fake_api.get_order.assert_not_called()
 
+    # --- 2026-05-16 audit additions ---
+
+    def test_combo_multileg_uses_per_leg_price_not_combo_net(self):
+        """Caught 2026-05-16: `_task_update_fills` was reading
+        `order.filled_avg_price` for MULTILEG rows. For a COMBO
+        order that's the SIGNED NET PREMIUM (negative for credit
+        spreads), not per-leg prices. 7+ rows on prod ended up with
+        `price=-0.64` etc., invisible to `get_virtual_positions`.
+        Fix: when `order.legs[]` is non-empty, match by OCC and use
+        the per-leg `filled_avg_price` (positive)."""
+        # Both legs of a credit spread share the SAME combo order id.
+        short_id = _insert_trade(
+            self.db,
+            symbol="EQT", side="sell", qty=1.0,
+            order_id="combo-1",
+            signal_type="MULTILEG", strategy="bull_put_spread",
+            occ_symbol="EQT260618C00057500",
+        )
+        long_id = _insert_trade(
+            self.db,
+            symbol="EQT", side="buy", qty=1.0,
+            order_id="combo-1",
+            signal_type="MULTILEG", strategy="bull_put_spread",
+            occ_symbol="EQT260618C00060000",
+        )
+
+        # Combo order: net premium is NEGATIVE (credit). Per-leg
+        # filled_avg_price on `legs[]` is POSITIVE.
+        combo = MagicMock()
+        combo.filled_avg_price = "-0.64"   # SIGNED NET (the trap)
+        short_leg = MagicMock()
+        short_leg.symbol = "EQT260618C00057500"
+        short_leg.filled_avg_price = "1.50"
+        long_leg = MagicMock()
+        long_leg.symbol = "EQT260618C00060000"
+        long_leg.filled_avg_price = "0.86"
+        combo.legs = [short_leg, long_leg]
+
+        fake_api = MagicMock()
+        fake_api.get_order.return_value = combo
+
+        self._run_task(fake_api)
+
+        self.assertEqual(_row(self.db, short_id)["fill_price"], 1.50)
+        self.assertEqual(_row(self.db, short_id)["price"], 1.50)
+        self.assertEqual(_row(self.db, long_id)["fill_price"], 0.86)
+        self.assertEqual(_row(self.db, long_id)["price"], 0.86)
+        # And: combo net must NEVER appear as a leg price.
+        for rid in (short_id, long_id):
+            self.assertNotEqual(_row(self.db, rid)["fill_price"], -0.64)
+            self.assertNotEqual(_row(self.db, rid)["price"], -0.64)
+
+    def test_combo_with_no_matching_leg_skips_and_does_not_write_combo_net(self):
+        """Defense-in-depth: if `order.legs[]` exists but no leg
+        matches our OCC (e.g. combo is for a different spread),
+        skip the row — never fall back to writing the combo's
+        signed net premium."""
+        rid = _insert_trade(
+            self.db,
+            symbol="EQT", side="sell", qty=1.0,
+            order_id="combo-2",
+            signal_type="MULTILEG", strategy="bull_put_spread",
+            occ_symbol="EQT260618C00057500",
+        )
+        combo = MagicMock()
+        combo.filled_avg_price = "-0.64"
+        wrong_leg = MagicMock()
+        wrong_leg.symbol = "SOMETHING_ELSE"
+        wrong_leg.filled_avg_price = "1.00"
+        combo.legs = [wrong_leg]
+        fake_api = MagicMock()
+        fake_api.get_order.return_value = combo
+
+        self._run_task(fake_api)
+
+        r = _row(self.db, rid)
+        self.assertIsNone(r["fill_price"])
+        self.assertIsNone(r["price"])
+
+    def test_combo_self_heals_pre_existing_negative_price_rows(self):
+        """Pre-fix rows on prod have `fill_price=-0.64` (the bug).
+        After the fix, the next `_task_update_fills` cycle must
+        re-process these rows (they're excluded by the old
+        `fill_price IS NULL` filter). The new query also matches
+        `signal_type='MULTILEG' AND fill_price <= 0`."""
+        rid = _insert_trade(
+            self.db,
+            symbol="WMT", side="sell", qty=1.0,
+            order_id="combo-3",
+            signal_type="MULTILEG", strategy="bull_put_spread",
+            occ_symbol="WMT260618P00125000",
+            price=-0.9, fill_price=-0.9,   # the bug's signature
+            status="open",
+        )
+        combo = MagicMock()
+        combo.filled_avg_price = "-0.9"
+        leg = MagicMock()
+        leg.symbol = "WMT260618P00125000"
+        leg.filled_avg_price = "1.80"
+        combo.legs = [leg]
+        fake_api = MagicMock()
+        fake_api.get_order.return_value = combo
+
+        self._run_task(fake_api)
+
+        r = _row(self.db, rid)
+        self.assertEqual(r["fill_price"], 1.80)
+        # `price` was non-positive (-0.9) — must also be overwritten.
+        self.assertEqual(r["price"], 1.80)
+
+    def test_sequential_multileg_uses_order_filled_avg_directly(self):
+        """SEQUENTIAL path: each leg has its OWN order_id (not the
+        combo's). `order.legs[]` is empty (single-leg order), so
+        `order.filled_avg_price` IS the per-leg price. Don't break
+        the sequential path with the combo fix."""
+        rid = _insert_trade(
+            self.db,
+            symbol="TECK", side="sell", qty=2.0,
+            order_id="seq-leg-1",
+            signal_type="MULTILEG", strategy="bull_put_spread",
+            occ_symbol="TECK260612P00060000",
+        )
+        order = MagicMock()
+        order.filled_avg_price = "0.50"
+        order.legs = []   # single-leg order: no legs[]
+        fake_api = MagicMock()
+        fake_api.get_order.return_value = order
+
+        self._run_task(fake_api)
+
+        r = _row(self.db, rid)
+        self.assertEqual(r["fill_price"], 0.50)
+        self.assertEqual(r["price"], 0.50)
+
+    def test_refuses_to_write_non_positive_price_on_any_row(self):
+        """Defense-in-depth: even a STOCK row whose broker reply
+        somehow has a non-positive `filled_avg_price` must NOT be
+        written. Leave NULL for the next cycle."""
+        rid = _insert_trade(
+            self.db,
+            symbol="AAPL", side="buy", qty=10,
+            order_id="aapl-bad",
+            signal_type="BUY",
+        )
+        order = MagicMock()
+        order.filled_avg_price = "0.0"
+        fake_api = MagicMock()
+        fake_api.get_order.return_value = order
+
+        self._run_task(fake_api)
+
+        r = _row(self.db, rid)
+        self.assertIsNone(r["fill_price"])
+        self.assertIsNone(r["price"])
+
 
 if __name__ == "__main__":
     unittest.main()

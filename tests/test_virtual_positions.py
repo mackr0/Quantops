@@ -170,6 +170,108 @@ class TestUnrealizedPnL:
         assert pos[0]["unrealized_plpc"] < 0
 
 
+# --- 2026-05-16 audit additions: status-aware filtering ---
+
+
+def _buy_with_status(db, symbol, qty, price, status, ts="2026-04-15T10:00:00"):
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO trades (timestamp, symbol, side, qty, price, status) "
+        "VALUES (?,?,?,?,?,?)",
+        (ts, symbol, "buy", qty, price, status),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _sell_with_status(db, symbol, qty, price, status, ts="2026-04-15T14:00:00"):
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "INSERT INTO trades (timestamp, symbol, side, qty, price, status) "
+        "VALUES (?,?,?,?,?,?)",
+        (ts, symbol, "sell", qty, price, status),
+    )
+    conn.commit()
+    conn.close()
+
+
+class TestStatusAwareFiltering:
+    """Pre-2026-05-16 only `status='canceled'` was excluded from FIFO
+    accounting. This left two leaks:
+      - status='expired'/'rejected'/'done_for_day' rows (broker order
+        never filled) leaked in as `qty>0 price<=0`, tripping the
+        "skipped row" warning ~170x/day on prod.
+      - status='closed' BUY rows whose CLOSE was a status flip (not a
+        matching SELL row) stayed in FIFO as phantom lots, causing
+        the price_fetcher to poll 5 already-closed OCCs ~1000x/day.
+
+    Filter now: BUY/SHORT entries are excluded for any terminal
+    status (incl. 'closed'); SELL/COVER exits are excluded only for
+    pre-fill terminal statuses (closed SELL is a real close —
+    partial-close accounting still needs it)."""
+
+    def test_canceled_buy_excluded(self, vdb):
+        from journal import get_virtual_positions
+        _buy_with_status(vdb, "AAPL", 10, 100.0, status="canceled")
+        pos = get_virtual_positions(db_path=vdb)
+        assert pos == [], "canceled BUY must not appear as a position"
+
+    def test_expired_buy_excluded(self, vdb):
+        from journal import get_virtual_positions
+        _buy_with_status(vdb, "AAPL", 10, 0.0, status="expired")
+        pos = get_virtual_positions(db_path=vdb)
+        assert pos == [], "expired BUY (order never filled) must not appear"
+
+    def test_rejected_buy_excluded(self, vdb):
+        from journal import get_virtual_positions
+        _buy_with_status(vdb, "AAPL", 10, 0.0, status="rejected")
+        pos = get_virtual_positions(db_path=vdb)
+        assert pos == [], "rejected BUY must not appear as a position"
+
+    def test_done_for_day_buy_excluded(self, vdb):
+        from journal import get_virtual_positions
+        _buy_with_status(vdb, "AAPL", 10, 0.0, status="done_for_day")
+        pos = get_virtual_positions(db_path=vdb)
+        assert pos == [], "done_for_day BUY must not appear"
+
+    def test_closed_buy_excluded(self, vdb):
+        """A BUY whose CLOSE was recorded as a status flip (not a
+        matching SELL row) must NOT linger as a phantom long lot.
+        Prod symptom: price_fetcher polled 5 OCCs ~1000x/day for
+        positions that were closed days ago."""
+        from journal import get_virtual_positions
+        _buy_with_status(vdb, "AAPL", 10, 100.0, status="closed")
+        pos = get_virtual_positions(db_path=vdb)
+        assert pos == [], (
+            "status='closed' BUY must not linger as a phantom position; "
+            "got a position back which proves the FIFO bug isn't fixed"
+        )
+
+    def test_open_buy_with_partial_closed_sell_keeps_remainder(self, vdb):
+        """Partial-close accounting: closed SELL row must still
+        consume from the open BUY lot. (This is why we DON'T blanket-
+        exclude status='closed' on SELL rows.)"""
+        from journal import get_virtual_positions
+        _buy_with_status(vdb, "AAPL", 100, 50.0, status="open",
+                         ts="2026-04-15T10:00:00")
+        _sell_with_status(vdb, "AAPL", 30, 55.0, status="closed",
+                          ts="2026-04-15T14:00:00")
+        pos = get_virtual_positions(db_path=vdb)
+        assert len(pos) == 1
+        assert pos[0]["qty"] == 70, (
+            "Partial close: should hold 70 of 100; the closed SELL must "
+            "still consume from the open BUY lot"
+        )
+
+    def test_open_buy_visible(self, vdb):
+        """Sanity: a plain open BUY still produces a position."""
+        from journal import get_virtual_positions
+        _buy_with_status(vdb, "AAPL", 10, 100.0, status="open")
+        pos = get_virtual_positions(db_path=vdb)
+        assert len(pos) == 1
+        assert pos[0]["qty"] == 10
+
+
 class TestOutputShape:
     def test_matches_client_get_positions_shape(self, vdb):
         """Virtual and Alpaca producers must expose the same keys so

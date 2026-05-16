@@ -3462,9 +3462,14 @@ def _build_market_context(regime_info, political_context, ctx):
                 "portfolio_risk context lookup failed: %s", exc,
             )
 
+    # vix may be None when both Alpaca-options and yfinance VIX
+    # sources fail (post-2026-05-16 — preferred over the old silent
+    # default to 20.0). Propagate None so downstream sees "unknown"
+    # rather than a fake "VIX=0".
     return {
         "regime": regime.get("regime", "unknown"),
-        "vix": regime.get("vix", 0),
+        "vix": regime.get("vix"),
+        "vix_source": regime.get("vix_source", "unknown"),
         "spy_trend": regime.get("spy_trend", "unknown"),
         "political_context": political_context,
         "profile_summary": profile_summary,

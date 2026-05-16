@@ -229,8 +229,19 @@ def parse_information_table(xml_text: str) -> List[Dict[str, Any]]:
     # 13F XML has both `xmlns:xsi=...` and `xmlns="..."` at the root;
     # missing either leaves ET unable to locate elements without
     # fully-qualified namespace paths.
+    #
+    # Three regex passes (added the attribute-prefix one 2026-05-16):
+    #  1. Strip xmlns declarations: `xmlns="..."` and `xmlns:foo="..."`
+    #  2. Strip tag prefixes: `<ns:foo>` → `<foo>`, `</ns:foo>` → `</foo>`
+    #  3. Strip ATTRIBUTE prefixes: `<foo ns:bar="x">` → `<foo bar="x">`
+    #
+    # Without pass 3, a filer whose XML uses `xsi:type="..."` or any
+    # other namespaced attribute would fail with `unbound prefix:
+    # line 2, column 0` — 17+/day on prod from one specific filer
+    # since 2018, silently skipped (parse_error, no surfacing).
     xml_no_ns = re.sub(r'\sxmlns(:\w+)?="[^"]+"', "", xml_text)
     xml_no_ns = re.sub(r"<(/?)(\w+:)", r"<\1", xml_no_ns)
+    xml_no_ns = re.sub(r"\s(\w+):(\w+)=", r" \2=", xml_no_ns)
 
     root = ET.fromstring(xml_no_ns)
     out = []

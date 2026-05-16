@@ -8,6 +8,33 @@ from typing import Dict, Any, Optional
 logger = logging.getLogger(__name__)
 
 
+def _vix_from_yfinance() -> Optional[float]:
+    """Tier-2 fallback: pull ^VIX from yfinance directly.
+
+    Used only when the Alpaca SPY-options path returns None. Per the
+    Alpaca-first / custom-altdata / yfinance-last data-source rule,
+    yfinance is the last resort but still vastly better than the old
+    hardcoded VIX=20 fallback (which silently fed false data to the
+    AI prompt every time the options chain hiccupped — caught
+    2026-05-16 zero-error audit).
+    """
+    try:
+        import yfinance as yf
+        v = yf.Ticker("^VIX").history(period="1d", interval="1d")
+        if v is None or v.empty:
+            return None
+        close = float(v["Close"].iloc[-1])
+        if close <= 0:
+            return None
+        return close
+    except Exception as exc:
+        logger.warning(
+            "VIX yfinance fallback also failed: %s: %s",
+            type(exc).__name__, exc,
+        )
+        return None
+
+
 def _vix_from_spy_options() -> Optional[float]:
     """Compute VIX-equivalent from SPY options chain.
 
@@ -74,7 +101,13 @@ def _vix_from_spy_options() -> Optional[float]:
         # Convert decimal (0.18) to percentage (18.0) — VIX convention
         return atm_iv * 100
     except Exception as exc:
-        logger.debug("VIX computation from SPY options failed: %s", exc)
+        # Pre-2026-05-16 this was logger.debug — invisible by default,
+        # so every failure looked the same as "no chain available".
+        # Surface the specific cause so the failure mode is observable.
+        logger.warning(
+            "VIX computation from SPY options failed: %s: %s",
+            type(exc).__name__, exc,
+        )
         return None
 
 # Cache for 30 minutes
@@ -134,26 +167,53 @@ def detect_regime() -> Dict[str, Any]:
         else:
             result["spy_trend"] = "flat"
 
-        # VIX — computed from SPY 30-day ATM IV via Alpaca real-time
-        # options chain (replaces yfinance ^VIX). VIX is by definition
-        # the 30-day ATM IV of SPX/SPY, so this is the same number,
-        # just computed locally from real-time data instead of
-        # delayed yfinance feed.
+        # VIX priority: Alpaca SPY options ATM IV → yfinance ^VIX →
+        # explicit unknown. Pre-2026-05-16 a missing Alpaca chain
+        # silently defaulted to VIX=20 (vix_level='moderate', "normal
+        # market" classification fed to AI prompt + every downstream
+        # consumer). Caught in the zero-error audit: 3+/day silent
+        # false-VIX events. Two real sources beat one hardcoded
+        # fake — per the Alpaca-first / custom-altdata / yfinance-last
+        # data-source rule, yfinance ^VIX is the right tier-2 here.
         vix_val = _vix_from_spy_options()
+        vix_source = "alpaca_spy_options"
         if vix_val is None:
-            logger.warning("VIX from SPY options unavailable; defaulting to 20")
-            vix_val = 20.0
-        result["vix"] = round(vix_val, 2)
-
-        # VIX level classification
-        if vix_val < 15:
-            result["vix_level"] = "low"
-        elif vix_val < 25:
-            result["vix_level"] = "moderate"
-        elif vix_val < 35:
-            result["vix_level"] = "high"
+            logger.warning(
+                "VIX from SPY options unavailable; trying yfinance ^VIX"
+            )
+            vix_val = _vix_from_yfinance()
+            vix_source = "yfinance_vix"
+        if vix_val is None:
+            # Both tiers failed. Mark UNKNOWN — never silently
+            # substitute a fake VIX. Downstream consumers must
+            # check `vix_source` and degrade gracefully (skip the
+            # VIX-derived regime classification, AI prompt shows
+            # "VIX unavailable").
+            logger.error(
+                "VIX unavailable from BOTH Alpaca SPY options AND "
+                "yfinance ^VIX — marking source='unknown'. AI prompt "
+                "will receive 'VIX unavailable' instead of a fake "
+                "default."
+            )
+            result["vix"] = None
+            result["vix_level"] = "unknown"
+            result["vix_source"] = "unknown"
         else:
-            result["vix_level"] = "extreme"
+            result["vix"] = round(vix_val, 2)
+            result["vix_source"] = vix_source
+
+        # VIX level classification — only when VIX is real. When the
+        # source is "unknown" leave vix_level as already-set to
+        # "unknown" (the else-branch above did that).
+        if vix_val is not None:
+            if vix_val < 15:
+                result["vix_level"] = "low"
+            elif vix_val < 25:
+                result["vix_level"] = "moderate"
+            elif vix_val < 35:
+                result["vix_level"] = "high"
+            else:
+                result["vix_level"] = "extreme"
 
         # Calculate 14-day ATR for volatility
         high = spy_hist["high"].tail(15)
@@ -189,8 +249,10 @@ def detect_regime() -> Dict[str, Any]:
             breadth = 0.5
         result["breadth"] = round(breadth, 2)
 
-        # Determine regime
-        if vix_val > 30 and result["volatility"] == "high":
+        # Determine regime. Volatile classification needs a real VIX;
+        # if VIX is unknown, fall through to the trend-based logic
+        # rather than silently misclassifying.
+        if vix_val is not None and vix_val > 30 and result["volatility"] == "high":
             regime = "volatile"
         elif result["spy_trend"] == "up" and spy_price > sma50:
             regime = "bull"
@@ -212,19 +274,28 @@ def detect_regime() -> Dict[str, Any]:
         # Summary
         trend_word = {"up": "rising", "down": "falling", "flat": "flat"}.get(result["spy_trend"], "flat")
         above_below = "above" if spy_price > sma50 else "below"
-        vix_desc = {"low": "low complacency", "moderate": "moderate", "high": "elevated fear", "extreme": "extreme fear/panic"}.get(result["vix_level"], "")
+        vix_desc = {"low": "low complacency", "moderate": "moderate", "high": "elevated fear", "extreme": "extreme fear/panic", "unknown": "unavailable"}.get(result["vix_level"], "")
+        vix_str = (
+            f"VIX {vix_val:.1f} ({vix_desc})"
+            if vix_val is not None else
+            "VIX unavailable"
+        )
         result["summary"] = (
             f"{regime.upper()} market with {result['volatility']} volatility. "
             f"SPY ${spy_price:.2f} {above_below} SMA50 ${sma50:.2f} (trend {trend_word}), "
-            f"VIX {vix_val:.1f} ({vix_desc})."
+            f"{vix_str}."
         )
 
         # Cache result
         _cache["regime"] = result
         _cache["regime_ts"] = time.time()
 
-        logger.info("Market regime detected: %s (VIX %.1f, SPY trend %s)",
-                     regime, vix_val, result["spy_trend"])
+        logger.info(
+            "Market regime detected: %s (VIX %s, SPY trend %s)",
+            regime,
+            f"{vix_val:.1f}" if vix_val is not None else "unavailable",
+            result["spy_trend"],
+        )
         return result
 
     except Exception as exc:

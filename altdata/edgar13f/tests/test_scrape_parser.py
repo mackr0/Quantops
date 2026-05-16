@@ -73,3 +73,38 @@ class TestParseInformationTable:
         import pytest
         with pytest.raises(Exception):
             parse_information_table("<broken<<")
+
+    def test_namespaced_attributes_are_handled(self):
+        """Pre-2026-05-16 the regex stripped tag prefixes (`<ns:foo>`)
+        but NOT attribute prefixes (`<foo xsi:type="...">`). With the
+        xmlns declaration already removed, an attribute like
+        `xsi:type="ns1:USD"` raised "unbound prefix: line 2, column 0".
+        Result: 17+/day silent parse_error rows for one specific
+        filer since 2018."""
+        xml = '''<?xml version="1.0"?>
+<informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  xmlns:ns1="http://www.sec.gov/edgar/common">
+  <infoTable>
+    <nameOfIssuer>APPLE INC</nameOfIssuer>
+    <titleOfClass xsi:type="ns1:STRING">COM</titleOfClass>
+    <cusip>037833100</cusip>
+    <value>1000</value>
+    <shrsOrPrnAmt>
+      <sshPrnamt>100</sshPrnamt>
+      <sshPrnamtType xsi:type="ns1:STRING">SH</sshPrnamtType>
+    </shrsOrPrnAmt>
+    <investmentDiscretion xsi:type="ns1:STRING">SOLE</investmentDiscretion>
+  </infoTable>
+</informationTable>'''
+        # Pre-fix this raised
+        # `xml.etree.ElementTree.ParseError: unbound prefix:
+        #  line 2, column 0`.
+        rows = parse_information_table(xml)
+        assert len(rows) == 1, (
+            "Namespaced attributes (xsi:type) broke the parser "
+            "pre-2026-05-16. Expected 1 row from the fixture; got "
+            f"{len(rows)}."
+        )
+        assert rows[0]["cusip"] == "037833100"
+        assert rows[0]["company_name"] == "APPLE INC"
