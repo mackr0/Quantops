@@ -43,8 +43,20 @@ def _ensure_table():
 
 def _fetch_and_store(symbol: str) -> Optional[str]:
     """Fetch earnings date from yfinance and store in DB.
-    Returns the earnings_date string or None."""
+    Returns the earnings_date string or None.
+
+    Skip yfinance for symbols Alpaca doesn't carry (delisted/acquired)
+    — they pollute the logs with "possibly delisted" errors and the
+    answer wouldn't be tradable anyway.
+    """
     import yfinance as yf
+    try:
+        from screener import is_alpaca_active
+        if not is_alpaca_active(symbol):
+            _store(symbol, None)
+            return None
+    except ImportError:
+        pass
 
     try:
         import yf_lock as _yfl
@@ -327,7 +339,15 @@ def days_since_last_earnings(symbol: str,
             symbol, type(exc).__name__, exc,
         )
 
-    # 2. yfinance fetch (last resort, encapsulated here).
+    # 2. yfinance fetch (last resort, encapsulated here). Skip if
+    # Alpaca doesn't carry the symbol — yfinance "possibly delisted"
+    # errors don't help anyone if we can't trade it anyway.
+    try:
+        from screener import is_alpaca_active
+        if not is_alpaca_active(symbol):
+            return None
+    except ImportError:
+        pass
     try:
         import yfinance as yf
         try:

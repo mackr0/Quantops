@@ -43,7 +43,13 @@ After the edgar_form4 `ok_with_errors` "silent failures count but don't expose w
 - New `order_guard.allowable_buy_qty(db_path, symbol, qty)` blocks any BUY where requested qty > 20× profile's recent 50-row median BUY qty. Pre-fix `position_runaway` only ALERTED after fill (NU 60×, KNX 28.5×, LEVI 129×, CSX 82× all leaked through). Wired into `trade_pipeline.execute_trade` after the existing schedule guard. Permissive on <10 BUY history or DB read failure (don't throttle new profiles). Skips OCC option contracts (different qty semantics).
 - Tests: 10 new in `test_order_guard.py` (normal qty passes, threshold edge cases, KNX-style 28.5× blocked, LEVI-style 129× blocked, insufficient history permissive, OCC bypass).
 
-**Issues remaining**: #141 (drift root cause), #145 (per-item error persistence across all 5 altdata scrapers), #147 (stalled task root-cause investigation), #150 (yfinance Alpaca-first prefilter at 8 sites).
+**Batch 4 — yfinance Alpaca-first prefilter:**
+- New `screener.is_alpaca_active(symbol)` — O(1) check (backed by the existing 24h `_active_symbols_cache`) gating whether a symbol is on Alpaca's tradable list. Permissive on empty cache so cold-start / Alpaca outage doesn't falsely block.
+- Wired into 8 yfinance call sites: `alternative_data._skip_yf` helper used at 4 sites (insider, short_interest, fundamentals, insider cluster, analyst estimates, earnings surprise, patents — 7 total) + `factor_data.get_book_to_market` + `sector_classifier._yfinance_sector` + 2 sites in `earnings_calendar`. Pre-fix every cron run hit yfinance for ~10 known-delisted tickers (BRK.B, CS, CT, HN, NJ, OL, REV, SPYB, SQ, VA) and ate "possibly delisted" ERROR log spam.
+- Tests: 7 new in `test_is_alpaca_active_2026_05_16.py` (active set, delisted set, case insensitivity, empty cache permissive, ImportError fallback).
+- conftest.py: added autouse fixture that resets `_active_symbols_cache` between tests (one test's mock leaking the cache made test_factor_data flaky with the prefilter in place).
+
+**Issues remaining**: #141 (drift root cause), #145 (per-item error persistence across all 5 altdata scrapers), #147 (stalled task root-cause investigation).
 
 **Deploy race caught**: `deploy.sh` step 4b does `git reset --hard origin/main` on the droplet — local commits that aren't pushed to GitHub get clobbered. Now always `git push origin main` before `./deploy.sh`.
 

@@ -127,6 +127,14 @@ def get_book_to_market(symbol: str) -> Optional[float]:
     cached = _get_cached(symbol, "btm")
     if cached is not None:
         return cached
+    # Skip yfinance for symbols Alpaca can't trade (delisted/acquired)
+    # — they only produce "possibly delisted" log spam.
+    try:
+        from screener import is_alpaca_active
+        if not is_alpaca_active(symbol):
+            return None
+    except ImportError:
+        pass
     try:
         import yfinance as yf
         ticker = yf.Ticker(symbol)

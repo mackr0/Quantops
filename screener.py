@@ -626,6 +626,33 @@ _ACTIVE_SYMBOLS_TTL = 86400  # 24h — Alpaca's asset list rarely changes
 _active_symbols_cache = {"timestamp": 0.0, "symbols": set()}
 
 
+def is_alpaca_active(symbol: str, ctx=None) -> bool:
+    """O(1) check: is `symbol` on Alpaca's current tradable list?
+
+    Backed by the same 24h cache as `get_active_alpaca_symbols` —
+    each call after the first cache fill is a set membership check.
+
+    Used by code paths that fall back to yfinance to AVOID hitting
+    yfinance for symbols Alpaca no longer carries (delisted /
+    acquired / renamed). Per the Alpaca-first data-source rule,
+    yfinance is the last resort and shouldn't be queried for symbols
+    the broker can't trade anyway.
+
+    Permissive on empty cache (returns True) so a cold-start or
+    Alpaca-outage doesn't falsely block every yfinance lookup.
+    Pre-2026-05-16 every cron run pinged yfinance for ~10 known-
+    delisted tickers (BRK.B, CS, CT, HN, NJ, OL, REV, SPYB, SQ, VA)
+    and ate the "possibly delisted" ERROR log spam.
+    """
+    if not symbol:
+        return False
+    actives = get_active_alpaca_symbols(ctx)
+    if not actives:
+        # Cache empty (Alpaca outage / cold start) — be permissive.
+        return True
+    return symbol.upper() in actives
+
+
 def get_active_alpaca_symbols(ctx=None, ttl=_ACTIVE_SYMBOLS_TTL):
     """Return the set of Alpaca-active, tradable US equity symbols.
 

@@ -213,8 +213,16 @@ def _write_cache(symbol: str, sector: str, db_path: str = MASTER_DB) -> None:
 
 def _yfinance_sector(symbol: str) -> Optional[str]:
     """Return the internal sector key from yfinance's GICS string, or
-    None on any failure / unmappable result."""
+    None on any failure / unmappable result.
+
+    Skip yfinance entirely for symbols Alpaca doesn't carry — they
+    will return "possibly delisted" errors and pollute the logs.
+    Per the Alpaca-first data-source rule.
+    """
     try:
+        from screener import is_alpaca_active
+        if not is_alpaca_active(symbol):
+            return None
         import yfinance as yf
         info = yf.Ticker(symbol).info or {}
         gics = info.get("sector")

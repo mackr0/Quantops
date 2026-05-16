@@ -34,6 +34,20 @@ logger = logging.getLogger(__name__)
 _DB_PATH = "quantopsai.db"
 _yf_lock = threading.Lock()
 
+
+def _skip_yf(symbol: str) -> bool:
+    """Return True when the symbol shouldn't be sent to yfinance —
+    Alpaca doesn't carry it (delisted/acquired/non-US). Per the
+    Alpaca-first data-source rule. Pre-2026-05-16 every cron run hit
+    yfinance for ~10 known-delisted tickers and ate "possibly
+    delisted" ERROR log spam (BRK.B, CS, CT, HN, NJ, OL, REV, SPYB,
+    SQ, VA). Permissive on cache-miss so cold start doesn't block."""
+    try:
+        from screener import is_alpaca_active
+        return not is_alpaca_active(symbol)
+    except ImportError:
+        return False
+
 _CACHE_TTL = {
     "insider": 86400,
     "fundamentals": 86400,
@@ -218,6 +232,9 @@ def get_insider_activity(symbol):
 
     try:
         yf_sym = symbol.replace("/", "-") if "/" in symbol else symbol
+        if _skip_yf(yf_sym):
+            _set_cached(cache_key, result)
+            return result
         with _yf_lock:
             ticker = yf.Ticker(yf_sym)
 
@@ -284,6 +301,9 @@ def get_short_interest(symbol):
 
     try:
         yf_sym = symbol.replace("/", "-") if "/" in symbol else symbol
+        if _skip_yf(yf_sym):
+            _set_cached(cache_key, result)
+            return result
         with _yf_lock:
             info = yf.Ticker(yf_sym).info or {}
 
@@ -326,6 +346,9 @@ def get_fundamentals(symbol):
 
     try:
         yf_sym = symbol.replace("/", "-") if "/" in symbol else symbol
+        if _skip_yf(yf_sym):
+            _set_cached(cache_key, result)
+            return result
         with _yf_lock:
             info = yf.Ticker(yf_sym).info or {}
 
@@ -823,6 +846,9 @@ def get_insider_cluster(symbol):
     }
 
     try:
+        if _skip_yf(symbol):
+            _set_cached(cache_key, result)
+            return result
         with _yf_lock:
             ticker = yf.Ticker(symbol)
             txns = getattr(ticker, "insider_transactions", None)
@@ -910,6 +936,9 @@ def get_analyst_estimates(symbol):
     }
 
     try:
+        if _skip_yf(symbol):
+            _set_cached(cache_key, result)
+            return result
         with _yf_lock:
             ticker = yf.Ticker(symbol)
             earnings_est = getattr(ticker, "earnings_estimate", None)
@@ -1009,6 +1038,9 @@ def get_earnings_surprise(symbol):
     }
 
     try:
+        if _skip_yf(symbol):
+            _set_cached(cache_key, result)
+            return result
         with _yf_lock:
             ticker = yf.Ticker(symbol)
             # Try earnings_history first (has actual vs estimate)
@@ -1151,12 +1183,15 @@ def get_patent_activity(symbol):
         import os
         import re
 
-        # Get company name from yfinance
+        # Get company name from yfinance (skip if Alpaca doesn't carry).
         company_name = None
         try:
-            with _yf_lock:
-                ticker = yf.Ticker(symbol)
-                info = getattr(ticker, "info", {}) or {}
+            if _skip_yf(symbol):
+                info = {}
+            else:
+                with _yf_lock:
+                    ticker = yf.Ticker(symbol)
+                    info = getattr(ticker, "info", {}) or {}
             company_name = info.get("shortName") or info.get("longName")
         except (KeyError, ValueError, AttributeError, TypeError, OSError) as _cn_exc:
             # Company-name lookup fallback; symbol-only lookup

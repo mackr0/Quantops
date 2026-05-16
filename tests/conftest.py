@@ -17,6 +17,19 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test")
 os.environ.setdefault("DB_PATH", ":memory:")
 
 
+@pytest.fixture(autouse=True)
+def _reset_alpaca_active_symbols_cache():
+    """Reset the in-process `_active_symbols_cache` between tests so
+    one test's mock/populate doesn't leak into another. Without this,
+    the 2026-05-16 `is_alpaca_active` prefilter added at yfinance call
+    sites can spuriously block a test (e.g., test_factor_data was
+    blocked when an earlier test left a small set in the cache that
+    didn't include AAPL)."""
+    import screener
+    screener._active_symbols_cache = {"timestamp": 0.0, "symbols": set()}
+    yield
+
+
 @pytest.fixture
 def tmp_db(tmp_path):
     """Create a temporary SQLite database path."""
