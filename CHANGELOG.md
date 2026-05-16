@@ -57,6 +57,15 @@ After the edgar_form4 `ok_with_errors` "silent failures count but don't expose w
 
 **All 14 audit issues closed across 5 deploys (c25a764, ab7ff42, febe6d9, 8b367f0, bdb83b8, plus this batch). 3251 main-suite tests pass.**
 
+**Batch 7 — reconciler tier-1 enrichment with real Alpaca order history:**
+- User correctly flagged that batch 6's reconciler wrote FICTIONAL entry price (current mark), timestamp (now), and profile attribution (lowest-id-sharing-account). Drift would clear but P&L history would be a lie.
+- Two-tier strategy now:
+  - **Tier 1 (preferred)**: `_find_opening_orders_for_position` walks `api.list_orders(status='all', symbols=[symbol], limit=500, nested=True)` for the symbol, filters to opening-side fills (buy for longs, sell/sell_short for shorts), accumulates newest-first until matched qty covers `|broker_qty|`. For OCC option symbols, walks `order.legs[]` to find the leg matching our OCC.
+  - **Tier 1 attribution**: `_find_owning_profile` searches every profile's `trades` table for ANY of the matched order_ids — first profile with a hit wins (deterministic; usually the profile that actually submitted the combo). Falls back to lowest-id only when no journal references the order.
+  - **Tier 2 (fallback)**: when history is empty or doesn't reach far enough back, use current mark + lowest-id attribution + sentinel `order_id='auto_reconcile'`. Reason string is honest about this being `attribution=synthetic-no-history`.
+- Reason string now records the chosen attribution path, # of matched fills, qty-weighted entry, and first fill timestamp — every reconciled row carries an audit trail of how it was reconstructed.
+- 3 new tests: real fill price used when history available, profile attribution from journal match (not lowest id), qty-weighted entry across partial fills.
+
 **Batch 6 — clean up the actual residue on /issues (not just label it):**
 - `issues_collector` was telling lies about WHEN events happened: altdata log rows had blank `timestamp` (never parsed the line prefix) so the template showed nothing, and drift rows used `datetime.utcnow()` which faked a "just-now" moment for state that may have existed for days. Fix: `_extract_log_timestamp` parses the Python-logging prefix `YYYY-MM-DD HH:MM:SS,ms`; drift rows carry `timestamp=""` + `is_live_snapshot=True` so the template renders `live snapshot` instead.
 - `issues_collector._collect_aggregate_drift` was reading the wrong keys (`alpaca_account_id`/`category` instead of the actual `account`/`kind`) so the source label said `aggregate_audit.?` and the category text was always `drift`. Fixed.

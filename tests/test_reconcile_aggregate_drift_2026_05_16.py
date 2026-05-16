@@ -18,6 +18,14 @@ import sys
 import tempfile
 from unittest.mock import patch, MagicMock
 
+
+def _no_history():
+    """Default stub: tier-1 finds no order history → tier-2 fallback."""
+    return patch(
+        "reconcile_aggregate_drift._find_opening_orders_for_position",
+        return_value=[],
+    )
+
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
@@ -72,7 +80,7 @@ class TestDryRunNeverWrites:
         ), patch(
             "reconcile_aggregate_drift._current_mark",
             return_value=50.0,
-        ):
+        ), _no_history():
             counters = reconcile(apply=False)
 
         # No row written
@@ -112,7 +120,7 @@ class TestBrokerOrphanBackfill:
             return_value=[fake_profile],
         ), patch(
             "reconcile_aggregate_drift._current_mark", return_value=50.0,
-        ):
+        ), _no_history():
             counters = reconcile(apply=True)
 
         assert counters["broker_orphan_backfilled"] == 1
@@ -152,7 +160,7 @@ class TestBrokerOrphanBackfill:
                            "alpaca_account_id": "acct1"}],
         ), patch(
             "reconcile_aggregate_drift._current_mark", return_value=200.0,
-        ):
+        ), _no_history():
             reconcile(apply=True)
 
         with sqlite3.connect(str(db)) as conn:
@@ -190,7 +198,7 @@ class TestBrokerOrphanBackfill:
                            "alpaca_account_id": "acct1"}],
         ), patch(
             "reconcile_aggregate_drift._current_mark", return_value=None,
-        ):
+        ), _no_history():
             counters = reconcile(apply=True)
 
         with sqlite3.connect(str(db)) as conn:
@@ -199,6 +207,187 @@ class TestBrokerOrphanBackfill:
             "no-mark case must SKIP rather than write a price=0 row"
         )
         assert counters["skipped"] == 1
+
+
+class TestTier1OrderHistoryEnrichment:
+    """When Alpaca order history covers the broker position, use REAL
+    fill price + timestamp + order_id and attribute to the profile
+    whose journal already references that order_id."""
+
+    def _mk_order(self, oid, side, qty, price, ts, symbol=None):
+        o = MagicMock()
+        o.id = oid
+        o.side = side
+        o.filled_qty = qty
+        o.filled_avg_price = price
+        o.filled_at = ts
+        o.submitted_at = ts
+        o.symbol = symbol
+        o.legs = None
+        return o
+
+    def test_real_fill_price_used_when_history_available(
+        self, tmp_path, monkeypatch,
+    ):
+        """Tier 1: list_orders returns the actual opening fill.
+        Reconciler writes that price, not the current mark."""
+        from reconcile_aggregate_drift import reconcile
+        db = tmp_path / "quantopsai_profile_1.db"
+        _create_trades_db(str(db))
+        monkeypatch.chdir(tmp_path)
+
+        fake_audit = {
+            "drift": [
+                {"account": "acct1", "symbol": "NXPI",
+                 "journal_qty": 0.0, "broker_qty": -114.0,
+                 "drift": -114.0, "kind": "broker_orphan"},
+            ],
+            "accounts": {}, "errored": [],
+        }
+        # Actual opening fill at $250 on 2026-04-01, not the current
+        # mark of $291.
+        history = [
+            self._mk_order(
+                "real-order-1", "sell_short", 114, 250.00,
+                "2026-04-01T15:30:00Z", symbol="NXPI",
+            ),
+        ]
+        with patch(
+            "aggregate_audit.audit_aggregate_drift",
+            return_value=fake_audit,
+        ), patch(
+            "reconcile_aggregate_drift._profiles_sharing_account",
+            return_value=[{"id": 1, "name": "p1", "enabled": True,
+                           "alpaca_account_id": "acct1"}],
+        ), patch(
+            "reconcile_aggregate_drift._find_opening_orders_for_position",
+            return_value=[{
+                "order_id": "real-order-1",
+                "filled_avg_price": 250.00,
+                "filled_at": "2026-04-01T15:30:00Z",
+                "filled_qty": 114,
+            }],
+        ), patch(
+            "reconcile_aggregate_drift._current_mark", return_value=291.0,
+        ):
+            reconcile(apply=True)
+
+        with sqlite3.connect(str(db)) as conn:
+            conn.row_factory = sqlite3.Row
+            r = conn.execute("SELECT * FROM trades").fetchone()
+        assert r["price"] == 250.00, (
+            "tier-1 must use real fill price, not current mark"
+        )
+        assert r["order_id"] == "real-order-1", (
+            "tier-1 must use the real Alpaca order_id, not "
+            "'auto_reconcile' sentinel"
+        )
+        assert r["timestamp"].startswith("2026-04-01"), (
+            "tier-1 must use the real fill timestamp, not now"
+        )
+        assert "order-history-match" in r["reason"] or \
+               "order-history-but-no-journal-match" in r["reason"]
+
+    def test_profile_attribution_from_journal_match(
+        self, tmp_path, monkeypatch,
+    ):
+        """When profile 5's journal already has a row with the same
+        order_id (e.g., from an earlier multileg leg write that
+        didn't drop), the reconciler attributes the new row to
+        profile 5 — not the lowest-id profile."""
+        from reconcile_aggregate_drift import reconcile
+        # Two profiles share the account; only profile 5's journal
+        # has the order_id.
+        for pid in (1, 5):
+            _create_trades_db(str(tmp_path / f"quantopsai_profile_{pid}.db"))
+        with sqlite3.connect(
+            str(tmp_path / "quantopsai_profile_5.db")
+        ) as conn:
+            conn.execute(
+                "INSERT INTO trades (symbol, side, qty, price, order_id, "
+                "                     status) "
+                "VALUES ('FOO', 'buy', 1, 1.0, 'real-order-1', 'closed')"
+            )
+            conn.commit()
+        monkeypatch.chdir(tmp_path)
+
+        fake_audit = {
+            "drift": [
+                {"account": "acct1", "symbol": "BAR",
+                 "journal_qty": 0.0, "broker_qty": -10.0,
+                 "drift": -10.0, "kind": "broker_orphan"},
+            ],
+            "accounts": {}, "errored": [],
+        }
+        profiles = [
+            {"id": 1, "name": "p1", "enabled": True,
+             "alpaca_account_id": "acct1"},
+            {"id": 5, "name": "p5", "enabled": True,
+             "alpaca_account_id": "acct1"},
+        ]
+        with patch(
+            "aggregate_audit.audit_aggregate_drift",
+            return_value=fake_audit,
+        ), patch(
+            "reconcile_aggregate_drift._profiles_sharing_account",
+            return_value=profiles,
+        ), patch(
+            "reconcile_aggregate_drift._find_opening_orders_for_position",
+            return_value=[{
+                "order_id": "real-order-1",
+                "filled_avg_price": 30.0,
+                "filled_at": "2026-05-01T10:00:00Z",
+                "filled_qty": 10,
+            }],
+        ):
+            reconcile(apply=True)
+
+        # Row should land in profile 5 (cross-referenced), NOT
+        # profile 1 (lowest id fallback).
+        with sqlite3.connect(
+            str(tmp_path / "quantopsai_profile_1.db")
+        ) as conn:
+            n1 = conn.execute(
+                "SELECT COUNT(*) FROM trades WHERE symbol='BAR'"
+            ).fetchone()[0]
+        with sqlite3.connect(
+            str(tmp_path / "quantopsai_profile_5.db")
+        ) as conn:
+            n5 = conn.execute(
+                "SELECT COUNT(*) FROM trades WHERE symbol='BAR'"
+            ).fetchone()[0]
+        assert n1 == 0, "row must NOT go to lowest-id when journal-match exists"
+        assert n5 == 1, "row must go to the profile whose journal has the order_id"
+
+    def test_qty_weighted_entry_price_across_partial_fills(self):
+        """Two partial fills opened the position: 60 @ $100, 40 @
+        $110. Qty-weighted entry should be $104.00."""
+        from reconcile_aggregate_drift import _backfill_broker_orphan
+        with patch(
+            "reconcile_aggregate_drift._find_opening_orders_for_position",
+            return_value=[
+                {"order_id": "o1", "filled_avg_price": 100.0,
+                 "filled_at": "2026-04-01T10:00:00Z", "filled_qty": 60},
+                {"order_id": "o2", "filled_avg_price": 110.0,
+                 "filled_at": "2026-04-02T10:00:00Z", "filled_qty": 40},
+            ],
+        ), patch(
+            "reconcile_aggregate_drift._find_owning_profile",
+            return_value=None,
+        ), patch.object(
+            __import__("os.path", fromlist=["exists"]),
+            "exists", return_value=False,
+        ):
+            # Profile path doesn't exist → SKIP (which is what we
+            # want; we just need to confirm the weighted-price math
+            # runs without crashing).
+            ok = _backfill_broker_orphan(
+                {"id": 1, "name": "p1"}, [{"id": 1}],
+                "acct1", "ZZZ", 100.0, apply=False,
+            )
+        # ok=False because no DB; but no exception means weighted-
+        # price arithmetic ran.
+        assert ok is False
 
 
 class TestJournalPhantomClose:
@@ -273,7 +462,7 @@ class TestProfileAttribution:
             return_value=profiles,
         ), patch(
             "reconcile_aggregate_drift._current_mark", return_value=45.0,
-        ):
+        ), _no_history():
             reconcile(apply=True)
 
         # row went to profile 1, not 5

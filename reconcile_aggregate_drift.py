@@ -61,6 +61,143 @@ def _profiles_sharing_account(
     return sorted(profs, key=lambda p: p["id"])
 
 
+def _find_opening_orders_for_position(
+    api, symbol: str, broker_qty: float,
+) -> List[Dict]:
+    """Return Alpaca orders that opened the current broker position.
+
+    Strategy: pull recent filled orders for `symbol`, filter to the
+    side that opens (buy for long, sell/sell_short for short), order
+    newest-first, accumulate filled_qty until it reaches |broker_qty|.
+    Returns a list of dicts with keys:
+        order_id, filled_avg_price, filled_at, filled_qty
+
+    For OCC option symbols where the order is a combo (Alpaca returns
+    the combo id; per-leg fills live on order.legs[i]), walks the legs
+    to find the one matching our OCC.
+
+    Returns [] when Alpaca's order history doesn't go far enough back
+    or the orders can't be reconstructed — caller falls back to the
+    synthetic "use current mark + lowest-id profile" path.
+    """
+    if api is None:
+        return []
+    try:
+        # Pull broadly; filter client-side. limit=500 covers ~6 months
+        # of typical trade frequency.
+        all_orders = api.list_orders(
+            status="all", symbols=[symbol], limit=500, nested=True,
+        )
+    except Exception as exc:
+        log.warning(
+            "  list_orders(%s) failed: %s: %s — falling back to "
+            "synthetic-history reconcile for this position",
+            symbol, type(exc).__name__, exc,
+        )
+        return []
+
+    is_long = broker_qty > 0
+    need_qty = abs(broker_qty)
+    is_occ = (len(symbol) > 6 and any(c.isdigit() for c in symbol[1:7]))
+    opening_sides = (("buy",) if is_long
+                     else ("sell", "sell_short"))
+
+    # Sort newest fills first — most recent opens are most likely to
+    # be the live position (older fills may have been closed and
+    # re-opened).
+    def _ts_of(o):
+        ts = (getattr(o, "filled_at", None)
+              or getattr(o, "submitted_at", None) or "")
+        return str(ts)
+
+    candidates = [
+        o for o in all_orders
+        if (getattr(o, "side", "") in opening_sides
+            and float(getattr(o, "filled_qty", 0) or 0) > 0)
+    ]
+    candidates.sort(key=_ts_of, reverse=True)
+
+    matched: List[Dict] = []
+    accumulated = 0.0
+    for o in candidates:
+        if accumulated >= need_qty - 0.001:
+            break
+        fq = float(getattr(o, "filled_qty", 0) or 0)
+        if fq <= 0:
+            continue
+        # For OCC option orders, the order's symbol may be the OCC
+        # itself OR the combo wrapper; find the leg matching ours.
+        leg_price = None
+        if is_occ:
+            for leg in (getattr(o, "legs", None) or []):
+                if getattr(leg, "symbol", "") == symbol:
+                    lap = getattr(leg, "filled_avg_price", None)
+                    if lap is not None and float(lap) > 0:
+                        leg_price = float(lap)
+                    break
+            # If no leg matched, the order itself IS for this OCC
+            if leg_price is None and getattr(o, "symbol", "") == symbol:
+                fap = getattr(o, "filled_avg_price", None)
+                if fap is not None and float(fap) > 0:
+                    leg_price = float(fap)
+        else:
+            fap = getattr(o, "filled_avg_price", None)
+            if fap is not None and float(fap) > 0:
+                leg_price = float(fap)
+
+        if leg_price is None or leg_price <= 0:
+            continue
+        matched.append({
+            "order_id": getattr(o, "id", "?"),
+            "filled_avg_price": leg_price,
+            "filled_at": getattr(o, "filled_at", None) or "",
+            "filled_qty": fq,
+        })
+        accumulated += fq
+
+    if accumulated < need_qty - 0.001:
+        # Didn't find enough history to cover the broker position.
+        # Caller can decide whether to use what we found or fall
+        # back to synthetic.
+        log.warning(
+            "  order-history for %s covers only %.2f of %.2f qty "
+            "(needed by broker) — partial reconstruction",
+            symbol, accumulated, need_qty,
+        )
+    return matched
+
+
+def _find_owning_profile(
+    order_ids: List[str], profiles: List[Dict],
+) -> Optional[Dict]:
+    """Search every profile's trades table for any of `order_ids`.
+    Returns the FIRST profile (by id) that has a matching journal
+    row — that profile most likely owns the position.
+
+    Returns None when no profile DB has any matching row; caller
+    falls back to the lowest-id-profile synthetic attribution.
+    """
+    if not order_ids:
+        return None
+    placeholders = ",".join(["?"] * len(order_ids))
+    for profile in sorted(profiles, key=lambda p: p["id"]):
+        db_path = f"quantopsai_profile_{profile['id']}.db"
+        if not os.path.exists(db_path):
+            continue
+        try:
+            with closing(sqlite3.connect(db_path)) as conn:
+                row = conn.execute(
+                    f"SELECT COUNT(*) FROM trades WHERE order_id IN "
+                    f"({placeholders})",
+                    order_ids,
+                ).fetchone()
+                if row and row[0] > 0:
+                    return profile
+        except sqlite3.Error:
+            continue
+    return None
+
+
 def _current_mark(api, symbol: str, qty: float) -> Optional[float]:
     """Best-effort current price for the symbol. Returns None when
     Alpaca can't price it (delisted, off-hours stale, etc.)."""
@@ -83,66 +220,126 @@ def _current_mark(api, symbol: str, qty: float) -> Optional[float]:
 
 
 def _backfill_broker_orphan(
-    profile: Dict, account_id, symbol: str, broker_qty: float,
-    apply: bool,
+    fallback_profile: Dict, all_profiles_in_acct: List[Dict],
+    account_id, symbol: str, broker_qty: float, apply: bool,
 ) -> bool:
-    """Insert a journal row in `profile` reflecting the existing
-    broker position. Returns True iff a write would happen."""
+    """Insert a journal row reflecting the existing broker position.
+
+    Two-tier strategy for HISTORY accuracy:
+      Tier 1 (preferred): walk Alpaca order history for `symbol`,
+        find the actual opening fill(s) — real entry price, real
+        fill timestamp, real order_id. Then cross-reference all
+        profile DBs by order_id to attribute correctly.
+      Tier 2 (fallback): if order history is empty or doesn't reach
+        far enough back, use the current Alpaca mark as entry +
+        attribute to `fallback_profile` (lowest-id profile sharing
+        the account). Mark the row with `attribution='synthetic'`
+        in the reason string so the audit trail is honest about
+        what was guessed.
+
+    Returns True iff a write would happen (under dry-run or apply).
+    """
     side = "buy" if broker_qty > 0 else "short"
     qty = abs(broker_qty)
-    db_path = f"quantopsai_profile_{profile['id']}.db"
-    if not os.path.exists(db_path):
-        log.warning(
-            "  SKIP broker_orphan %s acct%s: profile %d db missing (%s)",
-            symbol, account_id, profile["id"], db_path,
-        )
-        return False
 
+    # Build api / ctx once. Fall back to None if test/broken.
     try:
         from client import get_api
         from models import build_user_context_from_profile
-        ctx = build_user_context_from_profile(profile["id"])
+        ctx = build_user_context_from_profile(fallback_profile["id"])
         api = get_api(ctx)
     except Exception as exc:
-        # Test contexts or broken installs — let _current_mark
-        # see api=None and decide what to do (it's already
-        # exception-tolerant; will return None and we'll skip).
         log.warning(
             "  ctx/api build failed for profile %d (%s: %s) — "
-            "_current_mark will run with api=None",
-            profile["id"], type(exc).__name__, exc,
+            "running with api=None (tier-2 mark fallback only)",
+            fallback_profile["id"], type(exc).__name__, exc,
         )
         api = None
-    price = _current_mark(api, symbol, broker_qty)
-    if price is None or price <= 0:
+
+    # Tier 1: try real history first.
+    orders = _find_opening_orders_for_position(api, symbol, broker_qty)
+    if orders:
+        # Compute qty-weighted entry price from the matched fills.
+        total_qty = sum(o["filled_qty"] for o in orders)
+        weighted_px = (
+            sum(o["filled_qty"] * o["filled_avg_price"] for o in orders)
+            / total_qty
+        ) if total_qty > 0 else 0.0
+        # Earliest fill timestamp = position's "opened at"
+        first_filled = sorted(
+            (o["filled_at"] for o in orders if o["filled_at"]),
+            key=str,
+        )
+        first_ts = first_filled[0] if first_filled else None
+
+        # Cross-reference to find owning profile
+        owning = _find_owning_profile(
+            [o["order_id"] for o in orders],
+            all_profiles_in_acct,
+        )
+        target_profile = owning or fallback_profile
+        attribution = ("order-history-match" if owning
+                       else "order-history-but-no-journal-match")
+        entry_price = weighted_px
+        entry_ts = (str(first_ts) if first_ts
+                    else datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        first_order_id = orders[0]["order_id"]
+        history_note = (
+            f"matched {len(orders)} Alpaca opening fill(s); "
+            f"qty-weighted entry ${entry_price:.4f}, "
+            f"first fill {entry_ts}"
+        )
+    else:
+        # Tier 2: synthetic. Use current mark + fallback profile.
+        target_profile = fallback_profile
+        entry_price = _current_mark(api, symbol, broker_qty) or 0.0
+        entry_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        first_order_id = "auto_reconcile"
+        attribution = "synthetic-no-history"
+        history_note = (
+            "no Alpaca order history found within the 500-order "
+            "lookback window; entry price = current mark; "
+            "attribution = lowest-id profile sharing the account"
+        )
+
+    db_path = f"quantopsai_profile_{target_profile['id']}.db"
+    if not os.path.exists(db_path):
         log.warning(
-            "  SKIP broker_orphan %s acct%s profile %d: cannot get "
-            "current mark — leave drift in place rather than writing "
-            "an unpriced row (would tip back to invisibility)",
-            symbol, account_id, profile["id"],
+            "  SKIP broker_orphan %s acct%s: profile %d db missing (%s)",
+            symbol, account_id, target_profile["id"], db_path,
+        )
+        return False
+    if entry_price <= 0:
+        log.warning(
+            "  SKIP broker_orphan %s acct%s profile %d: cannot price "
+            "(history empty AND current mark unavailable) — leaving "
+            "drift in place rather than writing price=0",
+            symbol, account_id, target_profile["id"],
         )
         return False
 
-    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     reason = (
-        f"AUTO_RECONCILE backfill of broker_orphan {symbol} qty={broker_qty:+.4f} "
-        f"into profile {profile['id']} ({profile.get('name','?')}). "
-        f"Detected by reconcile_aggregate_drift on {ts}. "
-        f"The position exists on Alpaca acct {account_id} but was "
-        f"missing from any profile's journal — likely residue from "
-        f"the May 11 cross-profile short-overshoot incident or a "
-        f"pre-fix multileg combo-net write. Mark price ${price:.4f} "
-        f"used as both entry and current; P&L tracking starts now."
+        f"AUTO_RECONCILE backfill of broker_orphan {symbol} "
+        f"qty={broker_qty:+.4f} into profile {target_profile['id']} "
+        f"({target_profile.get('name','?')}). "
+        f"Source: reconcile_aggregate_drift on "
+        f"{datetime.now(timezone.utc).isoformat(timespec='seconds')}. "
+        f"Attribution: {attribution}. "
+        f"History: {history_note}. "
+        f"Original drift root cause: residue from May 11 cross-"
+        f"profile short-overshoot or a pre-fix multileg combo-net "
+        f"write."
     )
-
     occ = symbol if (len(symbol) > 6
                      and any(c.isdigit() for c in symbol[1:7])) else None
 
     log.info(
-        "  %s broker_orphan: profile %d (%s) ← %s %s qty=%.4f @ $%.4f",
+        "  %s broker_orphan: profile %d (%s) ← %s %s qty=%.4f @ "
+        "$%.4f [%s, order_id=%s]",
         "WRITE" if apply else "DRY",
-        profile["id"], profile.get("name", "?"),
-        side.upper(), symbol, qty, price,
+        target_profile["id"], target_profile.get("name", "?"),
+        side.upper(), symbol, qty, entry_price, attribution,
+        first_order_id,
     )
     if not apply:
         return True
@@ -153,15 +350,15 @@ def _backfill_broker_orphan(
                 "INSERT INTO trades (timestamp, symbol, side, qty, price, "
                 "                     fill_price, signal_type, reason, "
                 "                     status, occ_symbol, order_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'AUTO_RECONCILE', ?, 'open', ?, "
-                "        'auto_reconcile')",
-                (ts, symbol, side, qty, price, price, reason, occ),
+                "VALUES (?, ?, ?, ?, ?, ?, 'AUTO_RECONCILE', ?, 'open', ?, ?)",
+                (entry_ts, symbol, side, qty, entry_price, entry_price,
+                 reason, occ, first_order_id),
             )
             conn.commit()
     except sqlite3.Error as exc:
         log.error(
             "  WRITE FAILED for broker_orphan %s profile %d: %s: %s",
-            symbol, profile["id"], type(exc).__name__, exc,
+            symbol, target_profile["id"], type(exc).__name__, exc,
         )
         return False
     return True
@@ -249,7 +446,7 @@ def reconcile(apply: bool = False, user_id: int = 1) -> Dict[str, int]:
 
         if kind == "broker_orphan":
             ok = _backfill_broker_orphan(
-                profiles[0], acct, sym, d["broker_qty"], apply,
+                profiles[0], profiles, acct, sym, d["broker_qty"], apply,
             )
             if ok:
                 counters["broker_orphan_backfilled"] += 1
