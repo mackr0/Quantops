@@ -668,6 +668,42 @@ def index():
     return redirect(url_for("auth.login"))
 
 
+@views_bp.route("/issues")
+@login_required
+def issues_page():
+    """Surface every WARNING/ERROR/CRITICAL from journald, altdata
+    cron logs, and scrape_runs in one place. No more hiding silent
+    failures behind logger.debug or buried log files.
+
+    Time window + level filter via query params:
+      ?hours=24  (default; supports 1, 6, 24, 168)
+      ?level=ERROR,CRITICAL  (default: all of WARN/ERR/CRIT)
+    """
+    from issues_collector import collect_issues
+    try:
+        hours = int(request.args.get("hours", 24))
+    except (TypeError, ValueError):
+        hours = 24
+    hours = max(1, min(hours, 168))   # cap at one week
+    level_filter = request.args.get("level")
+    summary = collect_issues(since_hours=hours, level_filter=level_filter)
+    return render_template(
+        "issues.html",
+        summary=summary,
+        hours=hours,
+        level_filter=level_filter or "",
+    )
+
+
+@views_bp.route("/api/issues-count")
+@login_required
+def api_issues_count():
+    """Lightweight count for the nav badge — fetched async by JS so
+    it doesn't add latency to every page render."""
+    from issues_collector import issues_count
+    return jsonify(issues_count(since_hours=24))
+
+
 @views_bp.route("/dashboard")
 @login_required
 def dashboard():

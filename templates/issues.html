@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+.issues-summary {
+    display: flex;
+    gap: 1rem;
+    margin: 1rem 0;
+    flex-wrap: wrap;
+}
+.issues-summary .card {
+    padding: 0.75rem 1rem;
+    border-radius: 6px;
+    min-width: 130px;
+    text-align: center;
+}
+.issues-summary .card.errors    { background: #ffebee; color: #b71c1c; }
+.issues-summary .card.warnings  { background: #fff3e0; color: #b87333; }
+.issues-summary .card.groups    { background: #e8f5e9; color: #1b5e20; }
+.issues-summary .card.events    { background: #e3f2fd; color: #0d47a1; }
+
+.issues-filter {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    margin: 1rem 0;
+    flex-wrap: wrap;
+    font-size: 0.85rem;
+}
+.issues-filter a {
+    padding: 0.3rem 0.7rem;
+    border-radius: 4px;
+    text-decoration: none;
+    border: 1px solid #ccc;
+    color: #333;
+}
+.issues-filter a.active {
+    background: #1976d2;
+    color: #fff;
+    border-color: #1976d2;
+}
+
+table.issues {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+table.issues th, table.issues td {
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid #eee;
+    vertical-align: top;
+    text-align: left;
+}
+table.issues th {
+    background: #fafafa;
+    font-weight: 600;
+    font-size: 0.78rem;
+    color: #555;
+}
+.level-badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 3px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: #fff;
+}
+.level-badge.CRITICAL { background: #6a1b9a; }
+.level-badge.ERROR    { background: #c62828; }
+.level-badge.WARNING  { background: #ef6c00; }
+
+.signature {
+    font-family: monospace;
+    font-size: 0.78rem;
+    color: #777;
+    background: #fafafa;
+    padding: 0.2rem 0.4rem;
+    border-radius: 3px;
+    margin-top: 0.25rem;
+    display: inline-block;
+}
+.occurrences {
+    text-align: right;
+    font-family: monospace;
+    font-weight: 600;
+}
+.timestamp {
+    font-family: monospace;
+    font-size: 0.78rem;
+    color: #999;
+    white-space: nowrap;
+}
+.source {
+    font-family: monospace;
+    font-size: 0.78rem;
+    color: #666;
+}
+.muted-row { color: #999; font-style: italic; }
+
+.collector-errors {
+    background: #fff3e0;
+    border-left: 4px solid #ef6c00;
+    padding: 0.75rem 1rem;
+    margin: 1rem 0;
+    font-size: 0.85rem;
+}
+.collector-errors strong { color: #b87333; }
+</style>
+
+<h2>Issues — Warnings & Errors</h2>
+<p class="muted" style="font-size: 0.85rem;">
+    Every WARNING/ERROR/CRITICAL from the scheduler service, web service,
+    altdata cron logs, and altdata scrape_runs in the last
+    <strong>{{ hours }}</strong> hour(s). Identical messages within the
+    same source are grouped so spam can't drown out a real issue.
+</p>
+
+{% set errs = summary.groups | selectattr('level', 'in', ['ERROR', 'CRITICAL']) | list %}
+{% set warns = summary.groups | selectattr('level', 'equalto', 'WARNING') | list %}
+{% set n_err_events = errs | sum(attribute='occurrences') %}
+{% set n_warn_events = warns | sum(attribute='occurrences') %}
+
+<div class="issues-summary">
+    <div class="card errors">
+        <strong style="font-size: 1.4rem;">{{ n_err_events }}</strong><br>
+        <small>ERROR events</small>
+    </div>
+    <div class="card warnings">
+        <strong style="font-size: 1.4rem;">{{ n_warn_events }}</strong><br>
+        <small>WARNING events</small>
+    </div>
+    <div class="card groups">
+        <strong style="font-size: 1.4rem;">{{ summary.total_groups }}</strong><br>
+        <small>distinct groups</small>
+    </div>
+    <div class="card events">
+        <strong style="font-size: 1.4rem;">{{ summary.total_events }}</strong><br>
+        <small>total events</small>
+    </div>
+</div>
+
+{% if summary.source_errors %}
+<div class="collector-errors">
+    <strong>Collector itself had problems:</strong>
+    <ul style="margin: 0.4rem 0 0 1.2rem;">
+        {% for err in summary.source_errors %}
+        <li>{{ err }}</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+<div class="issues-filter">
+    <span class="muted">Window:</span>
+    <a href="?hours=1{% if level_filter %}&level={{ level_filter }}{% endif %}"
+       class="{% if hours == 1 %}active{% endif %}">1h</a>
+    <a href="?hours=6{% if level_filter %}&level={{ level_filter }}{% endif %}"
+       class="{% if hours == 6 %}active{% endif %}">6h</a>
+    <a href="?hours=24{% if level_filter %}&level={{ level_filter }}{% endif %}"
+       class="{% if hours == 24 %}active{% endif %}">24h</a>
+    <a href="?hours=168{% if level_filter %}&level={{ level_filter }}{% endif %}"
+       class="{% if hours == 168 %}active{% endif %}">7d</a>
+    <span style="margin-left: 1rem;" class="muted">Level:</span>
+    <a href="?hours={{ hours }}"
+       class="{% if not level_filter %}active{% endif %}">All</a>
+    <a href="?hours={{ hours }}&level=ERROR,CRITICAL"
+       class="{% if level_filter == 'ERROR,CRITICAL' %}active{% endif %}">Errors only</a>
+    <a href="?hours={{ hours }}&level=WARNING"
+       class="{% if level_filter == 'WARNING' %}active{% endif %}">Warnings only</a>
+</div>
+
+{% if not summary.groups %}
+<p class="muted">No matching events in the selected window. (If you expect
+events, check that the collector itself isn't failing — see top of page.)</p>
+{% else %}
+<table class="issues">
+    <thead>
+        <tr>
+            <th style="width:90px;">Level</th>
+            <th style="width:18%;">Source</th>
+            <th>Message</th>
+            <th style="width:80px;">Count</th>
+            <th style="width:170px;">Last seen</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for g in summary.groups %}
+        <tr>
+            <td><span class="level-badge {{ g.level }}">{{ g.level }}</span></td>
+            <td class="source">{{ g.source }}</td>
+            <td>
+                <div>{{ g.sample_message }}</div>
+                {% if g.signature != g.sample_message %}
+                <div class="signature">pattern: {{ g.signature }}</div>
+                {% endif %}
+            </td>
+            <td class="occurrences">{{ g.occurrences }}</td>
+            <td class="timestamp">
+                {{ g.last_seen[:19] if g.last_seen else '—' }}
+                {% if g.first_seen and g.first_seen != g.last_seen %}
+                <br><small class="muted">first {{ g.first_seen[:19] }}</small>
+                {% endif %}
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+{% endblock %}

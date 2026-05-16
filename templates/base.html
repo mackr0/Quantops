@@ -20,6 +20,7 @@
             <li><a href="/trades">Trades</a></li>
             <li><a href="/performance">Performance</a></li>
             <li><a href="/ai">AI</a></li>
+            <li><a href="/issues" id="nav-issues-link">Issues<span id="nav-issues-badge" style="display:none;margin-left:0.35rem;padding:0.05rem 0.4rem;border-radius:10px;font-size:0.7rem;font-weight:700;background:#c62828;color:#fff;"></span></a></li>
             <li><a href="/settings">Settings</a></li>
             <li><a href="/docs">Docs</a></li>
             {% if current_user.is_admin %}<li><a href="/admin">Admin</a></li>{% endif %}
@@ -85,6 +86,29 @@
         });
         // Hide on scroll so it doesn't stay floating
         window.addEventListener('scroll', hide, true);
+    })();
+    </script>
+    <script>
+    // Issues badge — async-loaded so it never blocks page render.
+    // Shows the most-urgent count: errors when any exist, else warnings.
+    (function() {
+        var badge = document.getElementById('nav-issues-badge');
+        if (!badge) return;
+        fetch('/api/issues-count', {credentials: 'same-origin'})
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(d) {
+                if (!d) return;
+                if (d.errors > 0) {
+                    badge.textContent = d.errors;
+                    badge.style.background = '#c62828';
+                    badge.style.display = 'inline-block';
+                } else if (d.warnings > 0) {
+                    badge.textContent = d.warnings;
+                    badge.style.background = '#ef6c00';
+                    badge.style.display = 'inline-block';
+                }
+            })
+            .catch(function() { /* silent — badge just stays hidden */ });
     })();
     </script>
     {% block scripts %}{% endblock %}

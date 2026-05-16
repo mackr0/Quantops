@@ -63,8 +63,13 @@ def _load_shadow_config(profile_id: int) -> Optional[Dict[str, Any]]:
         from models import get_trading_profile
         from crypto import decrypt
     except ImportError as exc:
-        logger.debug(
-            "shadow eval: import failed (models/crypto): %s: %s",
+        # Module-load failure — shadow eval is entirely dead until the
+        # deployment is fixed. ERROR-level because no row will ever be
+        # written for this profile until the import is resolved.
+        logger.error(
+            "shadow eval DISABLED: import failed (models/crypto): %s: %s "
+            "— check deployment integrity; every shadow call will be "
+            "a no-op until resolved",
             type(exc).__name__, exc,
         )
         return None
@@ -73,8 +78,12 @@ def _load_shadow_config(profile_id: int) -> Optional[Dict[str, Any]]:
         profile = get_trading_profile(profile_id)
     except (sqlite3.OperationalError, sqlite3.DatabaseError,
             KeyError, ValueError, TypeError, OSError) as exc:
-        logger.debug(
-            "shadow eval: profile lookup failed for %d: %s: %s",
+        # Per-call profile lookup failure — shadow eval is silently
+        # skipped for this call. WARNING so the failure is visible
+        # in journald + the Warnings & Errors page.
+        logger.warning(
+            "shadow eval: profile lookup failed for %d: %s: %s — "
+            "shadow disabled for this call",
             profile_id, type(exc).__name__, exc,
         )
         return None
@@ -90,9 +99,12 @@ def _load_shadow_config(profile_id: int) -> Optional[Dict[str, Any]]:
         if not isinstance(model_list, list):
             return None
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
-        logger.debug(
+        # Stored shadow_models JSON is corrupt — the settings UI saved
+        # something it shouldn't have, OR a manual DB edit broke the
+        # column. Shadow eval is dead for this profile until fixed.
+        logger.warning(
             "shadow eval: shadow_models JSON parse failed for profile %d: "
-            "%s: %s",
+            "%s: %s — shadow disabled until the settings JSON is repaired",
             profile_id, type(exc).__name__, exc,
         )
         return None
@@ -112,9 +124,11 @@ def _load_shadow_config(profile_id: int) -> Optional[Dict[str, Any]]:
         if not isinstance(enc_keys, dict):
             enc_keys = {}
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
-        logger.debug(
+        # Stored encrypted-keys JSON is corrupt; user-supplied keys
+        # are unrecoverable until they re-save in settings.
+        logger.warning(
             "shadow eval: shadow_api_keys_enc JSON parse failed for "
-            "profile %d: %s: %s",
+            "profile %d: %s: %s — user must re-save shadow API keys",
             profile_id, type(exc).__name__, exc,
         )
         enc_keys = {}
@@ -126,8 +140,17 @@ def _load_shadow_config(profile_id: int) -> Optional[Dict[str, Any]]:
         try:
             api_keys[provider] = decrypt(enc)
         except Exception as exc:
-            logger.debug("shadow eval: key decrypt failed for %s: %s: %s",
-                         provider, type(exc).__name__, exc)
+            # Key decrypt failed — encryption key was rotated, or the
+            # encrypted blob is corrupted. The shadow call for THIS
+            # provider can't run until the user re-saves the key.
+            # ERROR because user money is being burned on a misconfig
+            # without their knowledge.
+            logger.error(
+                "shadow eval: key decrypt FAILED for provider=%s "
+                "(profile %d): %s: %s — user must re-save this API key "
+                "in settings or shadow eval will skip this provider",
+                provider, profile_id, type(exc).__name__, exc,
+            )
 
     return {"models": parsed_models, "api_keys": api_keys}
 
@@ -156,8 +179,12 @@ def _shadow_spend_in_db(db_path: str, since_clause: str) -> float:
             conn.close()
     except (sqlite3.OperationalError, sqlite3.DatabaseError,
             ValueError, TypeError, OSError) as exc:
-        logger.debug(
-            "shadow eval: per-DB spend read failed for %s: %s: %s",
+        # Per-DB spend read failed. Cap math silently undercounts —
+        # user could blow past their cap because this profile's
+        # contribution is missing. WARN so the misconfig surfaces.
+        logger.warning(
+            "shadow eval: per-DB spend read failed for %s: %s: %s — "
+            "cap math will undercount until this DB is readable",
             db_path, type(exc).__name__, exc,
         )
         return 0.0
@@ -208,8 +235,12 @@ def _read_shadow_cap_override(user_id: int) -> Optional[float]:
             ).fetchone()
     except (sqlite3.OperationalError, sqlite3.DatabaseError,
             KeyError, ValueError, TypeError, OSError) as exc:
-        logger.debug(
-            "shadow cap override read failed for user %d: %s: %s",
+        # Cap override read failed — user's setting is invisible to
+        # the cap check. Falls back to env-var default, but the user
+        # set the override for a reason. WARN so it's findable.
+        logger.warning(
+            "shadow cap override read failed for user %d: %s: %s — "
+            "falling back to env-var default; user override invisible",
             user_id, type(exc).__name__, exc,
         )
         return None
@@ -218,9 +249,11 @@ def _read_shadow_cap_override(user_id: int) -> Optional[float]:
     try:
         v = float(row[0])
     except (TypeError, ValueError) as exc:
-        logger.debug(
+        # Stored cap value isn't parseable as float — corrupted DB or
+        # bad UI write. User-set cap won't be honored.
+        logger.warning(
             "shadow cap override unparseable for user %d (value=%r): "
-            "%s: %s",
+            "%s: %s — user cap not honored; env default used instead",
             user_id, row[0], type(exc).__name__, exc,
         )
         return None
@@ -378,9 +411,15 @@ def _write_shadow_row(db_path: str, row: Dict[str, Any]) -> None:
             conn.close()
     except (sqlite3.OperationalError, sqlite3.DatabaseError,
             sqlite3.IntegrityError, OSError, TypeError, ValueError) as exc:
-        logger.debug(
-            "shadow eval: row write failed for call_id=%s provider=%s "
-            "model=%s: %s: %s",
+        # The whole point of shadow eval is to write these rows for
+        # later analysis. A failed INSERT is DATA LOSS — the model
+        # cost has been spent but the comparison evidence is gone.
+        # ERROR so this surfaces immediately, not on the daily email
+        # when someone notices empty digest sections.
+        logger.error(
+            "shadow eval: row INSERT FAILED (data loss) for call_id=%s "
+            "provider=%s model=%s: %s: %s — model cost was spent but "
+            "the evidence row could not be persisted",
             row.get("call_id"), row.get("provider"), row.get("model"),
             type(exc).__name__, exc,
         )
@@ -458,9 +497,13 @@ def _run_one_shadow(
         from ai_providers import _strip_markdown_fences
         cleaned = _strip_markdown_fences(response_text)
     except (AttributeError, TypeError, ValueError) as exc:
-        logger.debug(
+        # The shared strip helper raised on a model response — unusual,
+        # since it's plain string manipulation. Falls back to raw text;
+        # the parse-JSON step downstream may then fail and produce no
+        # signal. WARN so the regression in the strip helper surfaces.
+        logger.warning(
             "shadow eval: markdown-fence strip failed (provider=%s model=%s): "
-            "%s: %s",
+            "%s: %s — falling back to raw response",
             provider, model, type(exc).__name__, exc,
         )
         cleaned = response_text
@@ -585,8 +628,12 @@ def fetch_daily_rows(db_path: str, date_str: str) -> List[Dict[str, Any]]:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
     except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as exc:
-        logger.debug(
-            "shadow eval: connect failed for daily rows (%s): %s: %s",
+        # Per-profile daily-email read failed — the user's digest will
+        # silently miss this profile's rows. WARN so empty sections
+        # in the email have a discoverable cause.
+        logger.warning(
+            "shadow eval: connect failed for daily rows (%s): %s: %s — "
+            "this profile will be missing from the daily digest",
             db_path, type(exc).__name__, exc,
         )
         return []
@@ -598,9 +645,11 @@ def fetch_daily_rows(db_path: str, date_str: str) -> List[Dict[str, Any]]:
         ).fetchall()
         return [dict(r) for r in rows]
     except sqlite3.OperationalError as exc:
-        logger.debug(
+        # Same as the connect-fail case — silently empty digest section
+        # is the symptom; WARN so the cause surfaces.
+        logger.warning(
             "shadow eval: daily rows query failed for %s on date %s: "
-            "%s: %s",
+            "%s: %s — this profile missing from digest",
             db_path, date_str, type(exc).__name__, exc,
         )
         return []
@@ -626,9 +675,11 @@ def fetch_recently_resolved_disagreements(
     try:
         conn = sqlite3.connect(db_path)
     except (sqlite3.OperationalError, sqlite3.DatabaseError, OSError) as exc:
-        logger.debug(
+        # Resolved-disagreements section silently missing from email.
+        logger.warning(
             "shadow eval: connect failed for recently-resolved (%s): "
-            "%s: %s",
+            "%s: %s — 'Recently Resolved' section will be empty for "
+            "this profile",
             db_path, type(exc).__name__, exc,
         )
         return []
@@ -643,8 +694,11 @@ def fetch_recently_resolved_disagreements(
                 (int(lookback_days),),
             ).fetchall()
         except sqlite3.OperationalError as exc:
-            logger.debug(
-                "shadow eval: disagreement query failed for %s: %s: %s",
+            # Disagreement query failed (schema drift or DB lock) —
+            # 'Recently Resolved' section silently empty.
+            logger.warning(
+                "shadow eval: disagreement query failed for %s: %s: %s "
+                "— 'Recently Resolved' section will be empty",
                 db_path, type(exc).__name__, exc,
             )
             return []
