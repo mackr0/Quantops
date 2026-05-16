@@ -2071,29 +2071,29 @@
         </div>
         <div class="grid">
             <div><h5>Price Context</h5><small>% from 52-week high, % from 52-week low, nearest Fibonacci distance, Gap %</small></div>
-            <div><h5>Strategy Votes</h5><small>Which of the 16 strategies voted BUY/SELL/HOLD, combined score</small></div>
-            <div><h5>News Headlines</h5><small>Up to 3 recent headlines per stock</small></div>
+            <div><h5>Strategy Votes</h5><small>26 registered strategies + ~7 legacy router sub-strategies (sector_momentum, pullback_support, etc.) — each can vote BUY/SELL/HOLD; combined score per candidate</small></div>
+            <div><h5>News Headlines</h5><small>Up to 3 recent headlines per stock from Alpaca News API (Benzinga feed)</small></div>
         </div>
 
-        <h4>Per-Candidate Alternative Data (19 sources)</h4>
+        <h4>Per-Candidate Alternative Data (22 sources)</h4>
         <div class="grid">
-            <div><h5>Insider Transactions</h5><small>Recent buys/sells count + dollar volume from SEC Form 4 filings</small></div>
+            <div><h5>Insider Transactions</h5><small>Recent buys/sells count + dollar volume per symbol. Currently sourced from yfinance; SEC EDGAR Form 4 direct integration is on the roadmap.</small></div>
             <div><h5>Insider Clusters</h5><small>3+ insiders buying the same stock within 90 days = cluster signal</small></div>
             <div><h5>Insider vs Earnings Timing</h5><small>Insiders buying/selling within 14 days of earnings = directional signal</small></div>
         </div>
         <div class="grid">
-            <div><h5>Short Interest</h5><small>Short % of float, days to cover, squeeze risk</small></div>
+            <div><h5>Short Interest</h5><small>Short % of float, days to cover, squeeze risk (via yfinance — FINRA bi-monthly direct is a future altdata candidate)</small></div>
             <div><h5>FINRA Short Volume</h5><small>Daily short volume ratio — elevated when > 50% of volume is short selling</small></div>
             <div><h5>Dark Pool (ATS) Volume</h5><small>Weekly dark pool trading volume across all ATS venues (FINRA)</small></div>
         </div>
         <div class="grid">
-            <div><h5>Options Flow</h5><small>Put/call ratio, bullish/bearish flow detection, unusual volume</small></div>
-            <div><h5>Options Chain Oracle</h5><small>IV skew, term structure, implied move, gamma exposure, max pain, IV rank</small></div>
+            <div><h5>Options Flow</h5><small>Put/call ratio, bullish/bearish flow detection, unusual volume (Alpaca options chains)</small></div>
+            <div><h5>Options Chain Oracle</h5><small>IV skew, term structure, implied move, gamma exposure, max pain, IV rank (Alpaca options chains, real-time)</small></div>
             <div><h5>Analyst Estimate Revisions</h5><small>EPS/revenue estimate direction (up/down/flat) and magnitude</small></div>
         </div>
         <div class="grid">
             <div><h5>Earnings Surprise History</h5><small>Beat/miss track record over last 4-8 quarters, consecutive streak</small></div>
-            <div><h5>Earnings Call Sentiment</h5><small>AI-analyzed management tone from most recent 8-K press release (SEC EDGAR)</small></div>
+            <div><h5>Earnings Call Sentiment</h5><small>AI-analyzed management tone from most recent earnings call transcript (SEC EDGAR 8-K + transcript when available)</small></div>
             <div><h5>Fundamentals</h5><small>PE ratio, beta, market cap, sector, institutional/insider ownership %</small></div>
         </div>
         <div class="grid">
@@ -2108,6 +2108,11 @@
         </div>
         <div class="grid">
             <div><h5>StockTwits Sentiment</h5><small>7-day net sentiment + message volume + currently-trending flag from the StockTwits trader feed.</small></div>
+            <div><h5>Google Trends Attention</h5><small>Search-interest z-score and direction (rising / falling / flat) per ticker. Material when |z| ≥ 1.</small></div>
+            <div><h5>Wikipedia Page-Views</h5><small>Daily page-view z-score per ticker's Wikipedia article. Material on ≥ 2σ surges (retail-attention proxy).</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>App Store Ranking</h5><small>Best free + grossing-rank for tickers with consumer apps (iTunes RSS). Material when top-100 grossing or top-50 free.</small></div>
         </div>
 
         <h4 style="margin-top:0.5rem;">Pending External APIs <small class="muted">(not yet feeding the AI)</small></h4>
@@ -2120,10 +2125,10 @@
         <div class="grid">
             <div><h5>Track Record</h5><small>Win/loss history for this specific symbol. Auto-blacklists chronic losers.</small></div>
             <div><h5>Last Prediction</h5><small>The AI's previous reasoning + outcome — remembers what it said and whether it was right.</small></div>
-            <div><h5>Specialist Ensemble Verdict</h5><small>Four specialist AIs' confidence-weighted consensus + risk VETO status</small></div>
+            <div><h5>Specialist Ensemble Verdict</h5><small>8 specialist AIs (earnings_analyst, pattern_recognizer, sentiment_narrative, risk_assessor, adversarial_reviewer for stocks + iv_skew_specialist, gamma_pin_specialist, option_spread_risk for options) — confidence-weighted consensus + risk VETO status</small></div>
         </div>
 
-        <h4 style="margin-top:0.5rem;">Market-Wide Context (12 sources, shared across all candidates)</h4>
+        <h4 style="margin-top:0.5rem;">Market-Wide Context (13 sources, shared across all candidates)</h4>
         <div class="grid">
             <div><h5>Portfolio State</h5><small>Current equity, cash, buying power, all held positions with unrealized P&L, drawdown level</small></div>
             <div><h5>Market Regime</h5><small>VIX level, SPY trend direction, crisis state (normal/elevated/crisis/severe)</small></div>
