@@ -4316,6 +4316,12 @@ def main_loop(active_segments=None, legacy_mode=False):
     # the 15-min scan happens to complete).
     INTERVAL_CHECK_EXITS = 5 * 60
     INTERVAL_RESOLVE_PREDICTIONS = 60 * 60  # 60 minutes
+    # 2026-05-17 (#169): cross-profile integrity audit + first-detection
+    # alerter. 10 min cadence — fast enough that drift is caught quickly,
+    # slow enough that the five audits + the email path don't dominate
+    # the scheduler loop.
+    INTERVAL_AUDIT_RUNNER = 10 * 60
+    last_audit_run = 0.0
 
     while not _shutdown:
         now = datetime.now(ET)
@@ -4505,6 +4511,29 @@ def main_loop(active_segments=None, legacy_mode=False):
                         except Exception:
                             logging.exception(f"Profile {name} failed")
                 ran_something = True
+
+        # Audit runner (#169) — once per cycle, gated by its own
+        # interval. Cross-profile so it lives outside the per-profile
+        # task loop. Emails on first detection of any new drift
+        # signature; idempotent across re-runs.
+        if (time.time() - last_audit_run) >= INTERVAL_AUDIT_RUNNER:
+            try:
+                from audit_runner import detect_and_alert_new_drift
+                summary = detect_and_alert_new_drift()
+                if summary["new"]:
+                    logging.warning(
+                        "audit_runner: %d new drift item(s) (signatures: %s)",
+                        summary["new"],
+                        [it["signature"] for it in summary["new_items"]],
+                    )
+                if summary["resolved"]:
+                    logging.info(
+                        "audit_runner: %d drift item(s) resolved",
+                        summary["resolved"],
+                    )
+            except Exception:
+                logging.exception("audit_runner: cycle failed")
+            last_audit_run = time.time()
 
         # Update global timestamps (legacy mode + snapshot dedup)
         if ran_something:

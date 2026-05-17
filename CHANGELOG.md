@@ -17,6 +17,43 @@ Rules going forward:
 
 ---
 
+## 2026-05-17 — Scheduled audits + first-detection alert + reconciler heartbeat (#169, #170). Severity: high (audits now defensive, not reactive).
+
+The six integrity audits all worked correctly — but they only ran when someone loaded `/issues`. Drift could exist for days before anyone happened to look. Same for the reconciler itself: if cron silently failed, the audits would read frozen state forever.
+
+**Batch I — Scheduled audit runner (#169):**
+
+New `audit_runner.py`:
+- `run_all_audits(profile_ids)` invokes every integrity audit (qty, value, cash, basis, equity_identity, reconciler_heartbeat) and returns drift items tagged with `audit_type` + stable `signature`.
+- `detect_and_alert_new_drift(profile_ids, notify_fn)` runs all audits, persists signatures to a new `audit_alerts` table in `quantopsai.db`, emails the operator on FIRST detection of each new signature, and logs (without re-alerting) when signatures stop appearing.
+- Reappearance edge: a signature that was resolved and comes back triggers a new alert.
+- Notify failure leaves `alert_sent=0` so the next cycle retries.
+
+Scheduled in `multi_scheduler.main_loop` with `INTERVAL_AUDIT_RUNNER = 10 * 60` — 10 minute cadence. Cross-profile (runs once per cycle, not per profile) so it lives outside the per-profile task loop.
+
+**Batch J — Reconciler heartbeat (#170):**
+
+New `integrity_audit.audit_reconciler_heartbeat(profile_id)`:
+- Scans the profile's `task_runs` table for the latest `Reconcile Trade Statuses` row.
+- If older than `_RECONCILER_MAX_AGE_MINUTES = 60` (12 missed 5-minute cycles), flags drift.
+- Profiles with no `task_runs` table OR no reconciler row are also flagged stale (fresh DB = scheduler never ran here, real problem).
+- Wired into both `audit_runner.run_all_audits` and `issues_collector` so stale reconciler surfaces on `/issues` AND triggers the first-detection email.
+
+**Seven-tier integrity contract:**
+1. `order_id` pairing (#157)
+2. qty parity (aggregate_audit)
+3. value parity (#165)
+4. cash parity (#167a)
+5. basis parity (#167b)
+6. equity identity (#166)
+7. reconciler heartbeat (#170)
+
+All seven run every 10 minutes via `audit_runner`. First detection of any drift emails immediately.
+
+**Tests**: 10 new in `test_audit_runner_2026_05_17.py` (signatures, first-detection, persistent-no-spam, resolve, reappear, individual audit exception isolation, no-main-db skip, notify-failure-retry), 8 new in `test_reconciler_heartbeat_2026_05_17.py` (healthy, stale, never-ran, no-task-runs-table, batch sorting, runner + collector wiring). Full suite: 3384 passed. Initial commit tripped `test_no_file_exceeds_baseline_silent_swallow_count` on a candidate-path-scanning `except Exception: continue` in `_resolve_main_db`; resolved by adding the required `# SILENT_OK:` annotation directly above the except (loop's purpose IS to try the next candidate when one path is unreachable).
+
+---
+
 ## 2026-05-17 — Broker activity capture (#168). Severity: high (dividends + option assignments were silently widening broker/journal drift).
 
 After the five-tier integrity contract landed, the audits would now correctly flag any dividend credit or option assignment as drift — because the broker books those events and the journal doesn't. Two solutions: (a) silence the drift with allow-listed exceptions (bad — hides real issues), (b) capture the events into the journal (right — closes the loop). This batch does (b).

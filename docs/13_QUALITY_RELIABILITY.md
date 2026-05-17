@@ -176,16 +176,19 @@ These run at trade time, in addition to the pre-commit tests. Each is independen
 - **`aggregate_audit.audit_account_cash_parity`** — per Alpaca account, `broker_cash` should equal `sum(virtual_cash)` across profiles routing to it. Catches hidden broker cash flow (dividend, fee, manual deposit) and trades that hit broker but not journal. Tolerance: `max($50, 0.1% × broker_cash)`.
 - **`aggregate_audit.audit_account_basis_parity`** — per `(account, symbol)` where both sides hold the position, broker `avg_entry_price` should match the qty-weighted virtual `avg_entry_price` across all profiles holding that symbol. Catches wrong-price fills, broken FIFO basis adjustment, multileg cost-allocation drift. Tolerance per-share: `max($0.05, 0.5% × broker_avg)`.
 - **`integrity_audit.audit_equity_identity`** — per-profile self-consistency: `equity == initial_capital + Σ(realized) + Σ(unrealized)`. The journal's own algebra. Catches FIFO mismatches, hidden cash flows, market_value/unrealized_pl divergence — bugs that don't appear in broker comparisons because the broker is fine; the journal is internally inconsistent. Tolerance: $1.
+- **`integrity_audit.audit_reconciler_heartbeat`** — verifies the per-profile reconciler ran in the last 60 minutes. Without this, silent cron failure would let all the other audits read stale state forever.
+- **`audit_runner.detect_and_alert_new_drift`** — scheduled every 10 minutes by `multi_scheduler`. Runs every integrity audit, persists a signature per drift item to `quantopsai.db.audit_alerts`, emails the operator on FIRST detection of each new signature, logs (without re-alerting) when items resolve, re-alerts if a resolved item reappears. Makes the audits defensive instead of reactive — drift surfaces within 10 minutes regardless of whether anyone loads `/issues`.
 
-**Six-tier integrity contract**:
+**Seven-tier integrity contract**:
 1. Every trade carries a broker `order_id` (#157 perfect-matching invariant)
 2. Quantities sum correctly per account (aggregate_audit)
 3. Values sum correctly per account (account_value_parity, #165)
 4. Cash sums correctly per account (account_cash_parity, #167a)
 5. Per-share cost basis matches per (account, symbol) (account_basis_parity, #167b)
 6. Each profile's own algebra balances (equity_identity, #166)
+7. Reconciler ran within the last 60 minutes (reconciler_heartbeat, #170)
 
-Together these make any silent broker/journal divergence OR self-inconsistency impossible to hide.
+All seven run every 10 minutes via the `audit_runner` cron; the first detection of any new drift signature emails the operator. Together these make any silent broker/journal divergence OR self-inconsistency impossible to hide.
 
 ### 4.4 The `pending_fill` state machine
 SELL / COVER / option-close rows write `status='pending_fill'` on submit, NOT `closed`. `_task_update_fills` flips to `closed` once `filled_avg_price` arrives. Eliminates the phantom-close window where the journal would otherwise claim realized P&L the broker had async-canceled.

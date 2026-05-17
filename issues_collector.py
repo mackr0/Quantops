@@ -407,6 +407,35 @@ def _collect_aggregate_drift(
         ce = f"cash_parity audit raised: {type(exc).__name__}: {exc}"
         err = ce if not err else (err + " | " + ce)
 
+    # Reconciler heartbeat (#170, 2026-05-17). All audits are useless
+    # if the reconciler isn't running. Stale (>60min) per profile = error.
+    try:
+        from integrity_audit import audit_reconciler_heartbeat_all
+        hb_audit = audit_reconciler_heartbeat_all(profile_ids=range(1, 12))
+        for d in hb_audit.get("drift", []):
+            pid = d.get("profile_id", "?")
+            age = d.get("age_minutes")
+            age_str = f"{age:.0f} min" if age is not None else "never"
+            rows.append({
+                "source": f"reconciler_heartbeat.profile_{pid}",
+                "level": "ERROR",
+                "message": (
+                    f"reconciler stale for profile {pid}: last run "
+                    f"{age_str} ago "
+                    f"(threshold={d.get('max_age_minutes')} min). "
+                    "All integrity audits are reading stale state — "
+                    "check the scheduler / cron / host."
+                ),
+                "timestamp": "",
+                "is_live_snapshot": True,
+            })
+    except ImportError as exc:
+        he = f"reconciler_heartbeat audit unavailable: {exc}"
+        err = he if not err else (err + " | " + he)
+    except Exception as exc:
+        he = f"reconciler_heartbeat raised: {type(exc).__name__}: {exc}"
+        err = he if not err else (err + " | " + he)
+
     # Basis-parity audit (#167, 2026-05-17). Per (account, symbol):
     # broker avg_entry_price should match the qty-weighted virtual
     # avg_entry across all profiles holding that symbol. Catches

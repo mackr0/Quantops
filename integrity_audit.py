@@ -169,6 +169,112 @@ def audit_equity_identity_all(profile_ids: Iterable[int]) -> Dict[str, Any]:
     return {"profiles": profiles, "drift": drift, "errored": errored}
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Reconciler heartbeat (#170, 2026-05-17)
+# ─────────────────────────────────────────────────────────────────────
+#
+# All six integrity audits are useless if the reconciler isn't
+# actually running. A silent cron failure (deploy broke crontab,
+# scheduler crashed, host went down) would let drift accumulate
+# unbounded.
+#
+# This check scans each profile's task_runs table for the latest
+# successful "Reconcile Trade Statuses" run. If older than
+# _RECONCILER_MAX_AGE_MINUTES, the reconciler is considered stale.
+
+# Reconciler runs every exit-check cycle (5 min). 60 minutes is
+# 12 missed cycles — a real outage, not just a single slow cycle.
+_RECONCILER_MAX_AGE_MINUTES = 60
+# Task name written by multi_scheduler when scheduling the reconciler.
+# Match the literal label string used in run_task().
+_RECONCILER_TASK_NAME_FRAGMENTS = ("Reconcile Trade Statuses",)
+
+
+def audit_reconciler_heartbeat(
+    profile_id: int,
+    max_age_minutes: int = _RECONCILER_MAX_AGE_MINUTES,
+) -> Dict[str, Any]:
+    """Verify the per-profile reconciler ran recently. Returns:
+      {
+        'profile_id': int,
+        'latest_run_at': str | None,    # ISO timestamp, None if never ran
+        'age_minutes': float | None,
+        'max_age_minutes': int,
+        'has_drift': bool,              # True if stale
+        'errored': str | None,
+      }
+    """
+    from models import build_user_context_from_profile
+    out: Dict[str, Any] = {
+        "profile_id": profile_id,
+        "latest_run_at": None,
+        "age_minutes": None,
+        "max_age_minutes": max_age_minutes,
+        "has_drift": False,
+        "errored": None,
+    }
+    try:
+        ctx = build_user_context_from_profile(profile_id)
+    except Exception as exc:
+        out["errored"] = f"build_user_context: {type(exc).__name__}: {exc}"
+        return out
+
+    try:
+        with sqlite3.connect(ctx.db_path) as conn:
+            row = conn.execute(
+                "SELECT MAX(started_at) FROM task_runs "
+                "WHERE task_name LIKE ?",
+                (f"%{_RECONCILER_TASK_NAME_FRAGMENTS[0]}%",),
+            ).fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            # Fresh DB, no task has ever run — this IS stale.
+            out["has_drift"] = True
+            return out
+        out["errored"] = f"task_runs read: {exc}"
+        return out
+
+    if row is None or row[0] is None:
+        out["has_drift"] = True
+        return out
+
+    out["latest_run_at"] = row[0]
+    from datetime import datetime as _dt
+    try:
+        latest = _dt.fromisoformat(row[0].replace("Z", "+00:00"))
+        # Handle naive timestamps as UTC
+        if latest.tzinfo is None:
+            from datetime import timezone as _tz
+            latest = latest.replace(tzinfo=_tz.utc)
+    except (ValueError, TypeError, AttributeError) as exc:
+        out["errored"] = f"timestamp parse: {exc}"
+        return out
+    from datetime import timezone as _tz
+    age = (_dt.now(tz=_tz.utc) - latest).total_seconds() / 60.0
+    out["age_minutes"] = round(age, 1)
+    if age > max_age_minutes:
+        out["has_drift"] = True
+    return out
+
+
+def audit_reconciler_heartbeat_all(
+    profile_ids: Iterable[int],
+    max_age_minutes: int = _RECONCILER_MAX_AGE_MINUTES,
+) -> Dict[str, Any]:
+    profiles: List[Dict[str, Any]] = []
+    drift: List[Dict[str, Any]] = []
+    errored: List[int] = []
+    for pid in profile_ids:
+        row = audit_reconciler_heartbeat(pid, max_age_minutes)
+        profiles.append(row)
+        if row["errored"]:
+            errored.append(pid)
+            continue
+        if row["has_drift"]:
+            drift.append(row)
+    return {"profiles": profiles, "drift": drift, "errored": errored}
+
+
 def format_identity_drift_summary(audit: Dict[str, Any]) -> str:
     drift = audit.get("drift", [])
     if not drift:
