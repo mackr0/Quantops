@@ -17,6 +17,32 @@ Rules going forward:
 
 ---
 
+## 2026-05-17 — Broker activity capture (#168). Severity: high (dividends + option assignments were silently widening broker/journal drift).
+
+After the five-tier integrity contract landed, the audits would now correctly flag any dividend credit or option assignment as drift — because the broker books those events and the journal doesn't. Two solutions: (a) silence the drift with allow-listed exceptions (bad — hides real issues), (b) capture the events into the journal (right — closes the loop). This batch does (b).
+
+**New module `activities_capture.py`:**
+- `capture_activities_for_profile(ctx)` pulls `DIV / OPEXP / OPASN / OPXRC` from `api.get_activities()` for the last 7 days and writes matching journal rows.
+- Idempotency via Alpaca activity `id` written to `trades.order_id` — re-running the capture never double-writes.
+- `capture_activities_for_all_profiles(profile_ids)` batch wrapper.
+
+**Per activity type:**
+- `DIV` — writes `side='dividend'`, `qty=1`, `price=amount` with `signal_type='DIVIDEND'`. The dividend amount also gets stored in `pnl` so it counts toward realized P&L for the equity-identity audit.
+- `OPEXP / OPASN / OPXRC` — writes a SELL row closing the option position at the realized intrinsic value (or $0 for OTM expiry). `occ_symbol` populated so `get_virtual_positions`' FIFO closes the option leg cleanly.
+
+**Journal extension (`journal.py`):**
+- `get_virtual_account_info`'s credit branch now includes `side='dividend'`. The dividend row's notional flows into cash exactly like a sell.
+- `get_virtual_positions` is unchanged — its SQL filter only includes `side IN ('buy', 'short', 'sell', 'cover')` so dividend rows are naturally excluded from position computation.
+
+**Scheduled (`multi_scheduler._task_capture_broker_activities`):**
+Runs alongside the existing exit-check tasks (`_task_update_fills`, `_task_reconcile_trade_statuses`) so capture happens within the same window the audits later run. No-op when there are no new activities.
+
+**Tests**: 9 new in `test_activities_capture_2026_05_17.py` (dividend write, dividend idempotency, end-to-end credit into virtual cash, OPASN close, OPEXP at $0, API failure handling, no-id skip, unhandled-type pass-through, batch wrapper with load failure). Initial commit tripped `test_every_per_profile_task_is_infrastructure_or_gated` because the new scheduled task had no enable_X gate; resolved by adding `_task_capture_broker_activities` to INFRASTRUCTURE_TASKS (it's data-integrity plumbing like the reconciler; a toggle would immediately defeat its purpose since the five audits would fire when capture is off). Full suite: 3366 passed.
+
+**Why this wasn't done sooner**: nothing previously read the activity stream — the journal was built around order fills, which are caught at submit time. Non-trade broker events (dividends, assignments) had no entry path until now.
+
+---
+
 ## 2026-05-17 — Cash-parity + basis-parity audits (#167). Severity: high (closes the last two cross-system visibility gaps).
 
 After #165 (position dollar values) and #166 (equity identity), two cross-system surfaces remain where bugs could hide: broker cash flows the journal doesn't know about, and per-share cost bases that disagree even when quantities and current values match.

@@ -58,6 +58,15 @@ INFRASTRUCTURE_TASKS = {
     "_task_cancel_stale_orders",       # order hygiene
     "_task_update_fills",              # broker fill sync
     "_task_reconcile_trade_statuses",  # DB consistency sweep
+    "_task_capture_broker_activities", # 2026-05-17 #168: capture
+                                         # DIV/OPEXP/OPASN/OPXRC from
+                                         # Alpaca into journal. Like
+                                         # reconciler, this is data-
+                                         # integrity infrastructure; a
+                                         # toggle would defeat its
+                                         # purpose (the audits would
+                                         # immediately fire when the
+                                         # capture is off).
 
     # ── Options lifecycle — no-op when profile holds no options ─────
     "_task_options_roll_manager",      # auto-roll credit at 80% max profit

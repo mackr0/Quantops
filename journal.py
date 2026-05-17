@@ -1494,7 +1494,11 @@ def get_virtual_account_info(db_path=None, initial_capital=100000.0,
         #   - 'short' = stock short open (proceeds received)
         if side == "buy":
             total_buys += notional
-        elif side in ("sell", "cover", "short"):
+        elif side in ("sell", "cover", "short", "dividend"):
+            # 'dividend' added 2026-05-17 (#168): non-trade cash credits
+            # captured via activities_capture.py. Stored as a trades row
+            # with side='dividend', qty=1, price=dividend_amount so the
+            # row participates in cash math identically to a sell.
             total_sells += notional
 
     cash = initial_capital - total_buys + total_sells

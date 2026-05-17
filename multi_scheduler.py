@@ -262,6 +262,17 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_reconcile_trade_statuses(ctx),
             db_path=ctx.db_path,
         )
+        # Activities capture (#168, 2026-05-17) — pull DIV / OPEXP /
+        # OPASN / OPXRC events from Alpaca and write matching journal
+        # rows. Idempotent via Alpaca activity id == trades.order_id.
+        # Without this, dividend credits and option assignments
+        # silently drift broker_cash and broker_value from the
+        # journal — exactly what the five integrity audits then flag.
+        run_task(
+            f"[{seg_label}] Capture Broker Activities",
+            lambda: _task_capture_broker_activities(ctx),
+            db_path=ctx.db_path,
+        )
         # Options lifecycle — sweep expired contracts. No-op when the
         # journal has no open option rows. Cheap query.
         run_task(
@@ -2343,6 +2354,27 @@ def _task_options_lifecycle(ctx):
             )
     except Exception:
         logging.exception(f"[{seg_label}] Options lifecycle sweep failed")
+
+
+def _task_capture_broker_activities(ctx):
+    """Pull DIV/OPEXP/OPASN/OPXRC activities from Alpaca and write
+    matching journal rows (#168). Idempotent via Alpaca activity
+    id == trades.order_id."""
+    seg_label = ctx.display_name or ctx.segment
+    try:
+        from activities_capture import capture_activities_for_profile
+        summary = capture_activities_for_profile(ctx)
+        wrote = sum(summary.values())
+        if wrote:
+            logging.info(
+                "[%s] activities captured: %s",
+                seg_label,
+                ", ".join(f"{k}={v}" for k, v in summary.items() if v),
+            )
+    except Exception:
+        logging.exception(
+            "[%s] capture_broker_activities failed", seg_label,
+        )
 
 
 def _task_reconcile_trade_statuses(ctx):
