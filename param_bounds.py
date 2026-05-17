@@ -77,6 +77,10 @@ PARAM_BOUNDS: Dict[str, Tuple[Number, Number]] = {
     # _optimize_short_selling_toggle based on 30-day short-side
     # avg return. (0=disable shorts, 1=enable.)
     "enable_short_selling":          (0, 1),
+    # 2026-05-17 (#171) — boolean toggle tuned by
+    # _optimize_options_pnl_cutoff based on 30-day options-bucket
+    # realized P&L. (0=disable new options entries, 1=enable.)
+    "enable_options":                (0, 1),
 
     # ── Entry filters ─────────────────────────────────────────────
     "min_volume":                    (100_000, 5_000_000),

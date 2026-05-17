@@ -17,6 +17,41 @@ Rules going forward:
 
 ---
 
+## 2026-05-17 — Options P&L auto-cutoff (#171). Severity: high (direct $200K-loss prevention; closes the visibility→action loop).
+
+The user's framing — "no hidden losses → AI can take action" — held one final gap. Visibility was now complete (seven integrity audits running every 10 min with email alerts) but no automated *action* existed for the specific failure mode that cost $200K: the AI kept trading options while options were losing money. Nothing made the AI stop.
+
+**New self-tuner optimizer (`self_tuning._optimize_options_pnl_cutoff`):**
+
+Disable path:
+- Read 30-day realized P&L from `trades` where `occ_symbol IS NOT NULL` AND `status='closed'`.
+- Require ≥10 closed options trades for sample size.
+- If total P&L < `-3% × initial_capital` → flip `enable_options=0`.
+- Honors the 3-day cooldown + outcome-effectiveness guards used by every other tightening optimizer.
+
+Re-enable path (per the "self-tuner must drift toward confident trading" memory — no permanent off-state):
+- If `enable_options=0` AND no adjustment in the last 14 days → flip back ON with an audit-trail reason.
+- The system tries again with options every 14 days; if bleeding resumes, the disable branch re-fires.
+
+Registered as BIDIRECTIONAL in `_OPTIMIZER_DIRECTION` so it can fire either direction depending on data. Skips crypto profiles (Alpaca crypto has no options).
+
+**Closes the loop**:
+1. Capture (#168): broker activities flow into the journal.
+2. Audit (#157, qty, value, cash, basis, identity, heartbeat): drift surfaces immediately.
+3. Alert (#169): first-detection email so the operator knows.
+4. **Act (#171): the self-tuner auto-disables the losing bucket.**
+
+The bug the 2026-05-13 episode revealed wasn't just "the journal hid losses" — it was "even if the journal had shown them, nothing converted that signal into action." This optimizer is that converter for the options bucket.
+
+**Tests**: 11 new in `test_options_pnl_cutoff_2026_05_17.py` (bleeding-triggers-disable, insufficient-trades-no-change, within-tolerance-no-change, profitable-options-no-change, stock-trades-don't-pollute-options-pnl, old-losses-excluded-by-30d-window, re-enable-after-14-days, no-re-enable-within-14-days, crypto-skipped, cooldown-blocks-flip-flop, registry-wiring). Initial commit tripped two existing guardrails: (1) `test_every_tuned_param_in_param_bounds` because `enable_options` was being written via `update_trading_profile` without a `PARAM_BOUNDS` entry — added `enable_options: (0, 1)` to `param_bounds.PARAM_BOUNDS`; (2) `test_every_analytics_query_filters_data_quality` because the rolling-P&L SQL aggregated `trades.pnl` without the data_quality clause — wrapped with `data_quality_clause(conn, table="trades")` so corrupt rows can't bias the cutoff signal. Full suite: 3395 passed.
+
+**Follow-up candidates** (similar pattern, different bucket):
+- `_optimize_meta_model_pnl_cutoff` — auto-disable `enable_meta_model` if calibrated predictions consistently underperform raw AI
+- `_optimize_alt_data_pnl_cutoff` — auto-disable `enable_alt_data` if alt-data-informed trades consistently underperform price-only trades
+- Both will read from the experiment data once the ablation arms have meaningful sample sizes
+
+---
+
 ## 2026-05-17 — Scheduled audits + first-detection alert + reconciler heartbeat (#169, #170). Severity: high (audits now defensive, not reactive).
 
 The six integrity audits all worked correctly — but they only ran when someone loaded `/issues`. Drift could exist for days before anyone happened to look. Same for the reconciler itself: if cron silently failed, the audits would read frozen state forever.

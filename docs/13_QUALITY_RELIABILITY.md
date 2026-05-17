@@ -190,6 +190,14 @@ These run at trade time, in addition to the pre-commit tests. Each is independen
 
 All seven run every 10 minutes via the `audit_runner` cron; the first detection of any new drift signature emails the operator. Together these make any silent broker/journal divergence OR self-inconsistency impossible to hide.
 
+### 4.7 Per-bucket P&L auto-cutoffs
+
+Visibility (the seven-tier contract) is the precondition for action, not action itself. The self-tuner is what converts visibility signals into automated parameter changes.
+
+- **`_optimize_options_pnl_cutoff`** (#171) — reads 30-day realized P&L on rows where `occ_symbol IS NOT NULL`. If ≥10 closed options trades sum to less than `-3% × initial_capital`, flips `enable_options=0` on the profile. Auto-re-enables after 14 days (per the "self-tuner must drift toward confident trading" memory — no permanent off-state; if bleeding resumes, disable re-fires). The direct fix for the 2026-05-13 episode where options lost $200K with no auto-stop.
+
+The pattern generalizes: every bucket with an `enable_X` flag can have a P&L-driven optimizer that watches its slice of `trades.pnl` and auto-flips the flag when the bucket consistently destroys value. Future expansions tracked as follow-ups in CHANGELOG.
+
 ### 4.4 The `pending_fill` state machine
 SELL / COVER / option-close rows write `status='pending_fill'` on submit, NOT `closed`. `_task_update_fills` flips to `closed` once `filled_avg_price` arrives. Eliminates the phantom-close window where the journal would otherwise claim realized P&L the broker had async-canceled.
 

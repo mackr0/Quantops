@@ -1965,6 +1965,7 @@ _OPTIMIZER_DIRECTION = {
     # Bidirectional (data-driven, no inherent bias)
     "_optimize_meta_pregate_threshold": "BIDIRECTIONAL",
     "_optimize_short_selling_toggle": "BIDIRECTIONAL",
+    "_optimize_options_pnl_cutoff": "BIDIRECTIONAL",
     "_optimize_conviction_tp_override": "BIDIRECTIONAL",
     "_optimize_signal_weights": "BIDIRECTIONAL",
     "_optimize_stop_to_tp_ratio": "BIDIRECTIONAL",
@@ -2058,6 +2059,7 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_stop_to_tp_ratio,
         _optimize_conviction_tp_override,
         _optimize_short_selling_toggle,
+        _optimize_options_pnl_cutoff,
         _optimize_meta_pregate_threshold,
         _optimize_signal_weights,
         # Structural (parameter-shape changes; not volume-direction)
@@ -4116,6 +4118,114 @@ def _optimize_conviction_tp_override(conn, ctx, profile_id, user_id,
         )
 
     return None
+
+
+def _optimize_options_pnl_cutoff(conn, ctx, profile_id, user_id,
+                                   overall_wr, resolved):
+    """Auto-flip `enable_options` based on rolling options-bucket P&L.
+
+    Direct response to the 2026-05-13 episode where the system lost
+    $200K+ on options because nothing made the bleeding visible to
+    the AI; without a cutoff, options trading just kept running.
+
+    Decision rule:
+      DISABLE: ≥10 closed options trades in the last 30 days AND
+               total realized P&L < -3% of initial_capital
+      ENABLE:  enable_options has been OFF for ≥14 days
+               (auto-expiry per the "self-tuner must drift toward
+                confident trading" memory — no permanent off-state)
+      Otherwise: no change.
+
+    Skips when profile.is_virtual is False (broker-direct profiles
+    have separate options governance) OR profile is crypto.
+    """
+    if not _safe_change_guarded(profile_id, "enable_options"):
+        return None
+    segment = (getattr(ctx, "segment", "") or "").lower()
+    if "crypto" in segment:
+        return None
+
+    current = bool(getattr(ctx, "enable_options", True))
+    initial_capital = float(getattr(ctx, "initial_capital", 100_000.0) or 100_000.0)
+    if initial_capital <= 0:
+        return None
+
+    # Auto-re-enable branch: if it's been off for ≥14 days, flip
+    # back on so the system can prove options are tradeable again.
+    if not current:
+        last_off = _get_recent_adjustment(
+            profile_id, "enable_options", days=14,
+        )
+        if last_off is None:
+            from models import update_trading_profile, log_tuning_change
+            update_trading_profile(profile_id, enable_options=1)
+            reason = (
+                "Auto-re-enabling options: been disabled ≥14 days, "
+                "drifting back to trading per the self-tuner's "
+                "confident-trading bias. Will re-disable if rolling "
+                "options P&L bleeds again."
+            )
+            log_tuning_change(
+                profile_id, user_id, "options_re_enable",
+                "enable_options", "0", "1", reason,
+                win_rate_at_change=overall_wr,
+                predictions_resolved=resolved,
+            )
+            return reason
+        return None
+
+    # Disable branch — need data. Filter data_quality-tagged rows
+    # so a phantom-stop-class incident can't bias the cutoff
+    # signal (the standing rule: corrupt rows never pool into
+    # decision-driving aggregations).
+    from journal import data_quality_clause
+    _dq = data_quality_clause(conn, table="trades")
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(pnl), 0), COUNT(*) FROM trades "
+            "WHERE status = 'closed' "
+            "  AND occ_symbol IS NOT NULL "
+            "  AND pnl IS NOT NULL "
+            f"  AND timestamp >= datetime('now', '-30 days'){_dq}"
+        ).fetchone()
+    except Exception as exc:
+        logger.warning(
+            "options_pnl_cutoff: query failed for profile %s: %s",
+            profile_id, exc,
+        )
+        return None
+
+    if not row:
+        return None
+    options_pnl = float(row[0] or 0)
+    options_count = int(row[1] or 0)
+    if options_count < 10:
+        return None  # insufficient data
+    threshold_dollars = -0.03 * initial_capital
+    if options_pnl >= threshold_dollars:
+        return None  # within tolerance
+
+    # Cooldown / prior-outcome guards (shared with other optimizers)
+    if _get_recent_adjustment(profile_id, "enable_options", days=3):
+        return None
+    if _was_adjustment_effective(profile_id, "enable_options") == "worsened":
+        return None
+
+    from models import update_trading_profile, log_tuning_change
+    update_trading_profile(profile_id, enable_options=0)
+    pct_of_cap = (options_pnl / initial_capital) * 100.0
+    reason = (
+        f"30-day options realized P&L ${options_pnl:+,.2f} "
+        f"({pct_of_cap:+.2f}% of capital) over {options_count} "
+        f"closed contracts — below -3% threshold. Disabling new "
+        f"options entries; will auto-re-enable in 14 days."
+    )
+    log_tuning_change(
+        profile_id, user_id, "options_pnl_cutoff",
+        "enable_options", "1", "0", reason,
+        win_rate_at_change=overall_wr, predictions_resolved=resolved,
+    )
+    return reason
 
 
 def _optimize_short_selling_toggle(conn, ctx, profile_id, user_id,
