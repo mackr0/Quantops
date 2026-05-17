@@ -2299,16 +2299,89 @@ def get_app_store_ranking(symbol: str):
     return result
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Macro-context cache (2026-05-17 unification)
+# ─────────────────────────────────────────────────────────────────────
+# Macro signals (yield curve, FRED, CBOE skew, ETF flows, MOVE/OVX/GVZ
+# vol indices) are SYMBOL-AGNOSTIC — fetching them per-symbol would
+# waste API calls. Cache at module level so a 30-symbol cycle fetches
+# them ONCE, then reads the same snapshot for every candidate.
+#
+# This module is the SINGLE canonical entry point for all alt-data.
+# If a signal isn't reachable from get_all_alternative_data, it's not
+# in the system. Before this consolidation (pre-2026-05-17) macro
+# data lived in a separate `macro_data` module wired directly into
+# the prompt builder — that bifurcation made it possible to forget
+# macro existed when answering "what alt-data do we have?". Don't
+# reintroduce a second bucket.
+
+import time as _time
+
+_MACRO_CACHE = {"ts": 0.0, "data": {}}
+_MACRO_TTL_SEC = 600  # 10 min — macro series update at weekly/monthly cadence
+
+
+def _get_cached_macro():
+    """Single source of truth for macro context. Cached for 10 min
+    so a 30-symbol scan fetches it once. Returns {} on import or
+    fetch failure (the prompt builder tolerates empty macro)."""
+    now = _time.time()
+    if now - _MACRO_CACHE["ts"] < _MACRO_TTL_SEC and _MACRO_CACHE["data"]:
+        return _MACRO_CACHE["data"]
+    try:
+        from macro_data import get_all_macro_data
+        data = get_all_macro_data() or {}
+    except (ImportError, KeyError, ValueError, AttributeError,
+            TypeError, OSError) as exc:
+        # macro fetch failure is non-fatal — log so it surfaces.
+        import logging
+        logging.getLogger(__name__).warning(
+            "alternative_data macro cache: get_all_macro_data failed: "
+            "%s: %s", type(exc).__name__, exc,
+        )
+        data = {}
+    _MACRO_CACHE["ts"] = now
+    _MACRO_CACHE["data"] = data
+    return data
+
+
 def get_all_alternative_data(symbol):
     """Fetch all alternative data for a symbol in one call.
 
-    Returns dict combining insider, short interest, fundamentals,
-    options flow, intraday patterns, congressional trades, FINRA short
-    volume, insider clusters, and analyst estimate revisions.
+    SINGLE canonical entry point for every alt-data signal the AI
+    prompt receives. Two scopes in one return dict:
+
+      Per-symbol signals (one API call per symbol per cycle):
+        - insider activity (Form 4)
+        - short interest
+        - fundamentals
+        - options unusual activity
+        - intraday patterns
+        - FINRA short volume
+        - insider cluster
+        - analyst estimates
+        - insider-earnings signal
+        - dark pool volume
+        - earnings surprise
+        - congressional trading (recent)
+        - 13F institutional holdings
+        - biotech milestones (PDUFA / AdComm)
+        - StockTwits sentiment
+        - Google Trends
+        - Wikipedia pageviews
+        - App Store ranking
+
+      Symbol-agnostic macro signals (cached, fetched once per cycle):
+        - yield curve, FRED indicators, CBOE Skew, ETF flows
+          (delivered under the `"macro"` key)
+
+    Returns:
+      {is_crypto: True} when called for a crypto symbol — those
+      don't have insider/options/SEC data.
     """
-    # Skip for crypto (no insider/options data)
+    # Skip for crypto (no insider/options/SEC data)
     if "/" in symbol:
-        return {"is_crypto": True}
+        return {"is_crypto": True, "macro": _get_cached_macro()}
 
     return {
         "insider": get_insider_activity(symbol),
@@ -2335,5 +2408,9 @@ def get_all_alternative_data(symbol):
         "google_trends": get_google_trends_signal(symbol),
         "wikipedia_pageviews": get_wikipedia_pageviews_signal(symbol),
         "app_store_ranking": get_app_store_ranking(symbol),
+        # Symbol-agnostic macro context (cached, fetched once per cycle).
+        # Includes yield curve, FRED indicators, CBOE skew, ETF flows
+        # (and post-2026-05-17 the MOVE/OVX/GVZ vol indices).
+        "macro": _get_cached_macro(),
         # patent_activity: DISABLED — PatentsView v1 API deprecated
     }

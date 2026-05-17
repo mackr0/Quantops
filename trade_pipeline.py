@@ -3332,17 +3332,19 @@ def _build_market_context(regime_info, political_context, ctx):
                 type(_cs_exc).__name__, _cs_exc,
             )
 
-    # Macro data (yield curve, CBOE skew, economic indicators, ETF flows)
+    # Macro data — read from the canonical alternative_data cache
+    # (2026-05-17 unification: macro lives in alternative_data along
+    # with every other alt-data signal so there's ONE bucket to
+    # inventory and audit). The cache means this call is free after
+    # the first symbol's get_all_alternative_data hits it this cycle.
     macro_context = {}
     try:
-        from macro_data import get_all_macro_data
-        macro_context = get_all_macro_data()
+        from alternative_data import _get_cached_macro
+        macro_context = _get_cached_macro()
     except (ImportError, KeyError, ValueError, AttributeError,
             TypeError, OSError) as _mc_exc:
-        # AI prompt continues without macro context block.
-        # Surface for follow-up.
         logger.debug(
-            "macro-data annotation failed: %s: %s",
+            "macro-context fetch failed: %s: %s",
             type(_mc_exc).__name__, _mc_exc,
         )
 
