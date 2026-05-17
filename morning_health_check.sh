@@ -339,22 +339,22 @@ echo "  Cumulative across $ACTIVE_COUNT profiles: \$$(printf '%.2f' $TOTAL)"
 # =============================================================================
 hdr "H. Alt-data DBs refreshed within 30h"
 
+# Auto-discover every altdata DB by glob rather than hardcoding the
+# (project, filename) pairs. Hardcoding broke this section once when
+# edgar_form4's filename was guessed as 'form4.db' (the actual file
+# is 'edgar_form4.db'); discovery eliminates the guessing surface
+# entirely and survives any future altdata module being added.
 STALE=""
 NOW_EPOCH=$(date -u +%s)
-for proj in congresstrades stocktwits biotechevents edgar13f edgar_form4; do
-    case $proj in
-        congresstrades) db="congress.db" ;;
-        stocktwits)     db="stocktwits.db" ;;
-        biotechevents)  db="biotechevents.db" ;;
-        edgar13f)       db="edgar13f.db" ;;
-        edgar_form4)    db="edgar_form4.db" ;;
-    esac
-    MTIME=$(ssh root@$DROPLET \
-        "stat -c %Y /opt/quantopsai/altdata/$proj/data/$db 2>/dev/null" \
+DBS=$(ssh root@$DROPLET "ls /opt/quantopsai/altdata/*/data/*.db 2>/dev/null")
+for db_path in $DBS; do
+    proj=$(basename "$(dirname "$(dirname "$db_path")")")
+    db_name=$(basename "$db_path")
+    MTIME=$(ssh root@$DROPLET "stat -c %Y $db_path 2>/dev/null" \
         || echo 0)
     AGE_HOURS=$(( (NOW_EPOCH - MTIME) / 3600 ))
     if [ "$AGE_HOURS" -gt 30 ]; then
-        STALE="$STALE $proj(${AGE_HOURS}h)"
+        STALE="$STALE $proj/$db_name(${AGE_HOURS}h)"
     fi
 done
 if [ -z "$STALE" ]; then

@@ -17,11 +17,11 @@ Rules going forward:
 
 ---
 
-## 2026-05-17 — morning_health_check.sh edgar_form4 filename fix. Severity: low (script-only bug, no prod impact).
+## 2026-05-17 — morning_health_check.sh: replace hardcoded altdata DB names with glob discovery. Severity: low (script-only, but a discipline failure worth documenting).
 
-Pre-experiment morning_health_check.sh dry-run surfaced a false-positive: "stale alt-data DBs: edgar_form4(494179h)". The 494,179-hour age = `(stat returning 0 because file not found) - now / 3600`. Root cause: the §H alt-data loop mapped `edgar_form4` → `form4.db` but the actual filename on disk is `edgar_form4.db`. Verified the file is fresh (last modified within the cron window). My filename guess in the case statement was wrong — never read the actual path before writing it.
+Pre-experiment morning_health_check.sh dry-run surfaced a false-positive: "stale alt-data DBs: edgar_form4(494179h)". The 494,179-hour age = `(stat returning 0 because file not found) - now / 3600`. Root cause: the §H alt-data loop hardcoded a `case proj in ...` mapping of project → filename, and `edgar_form4 → form4.db` was wrong (actual filename is `edgar_form4.db`). 4 of 5 mappings happened to be right by coincidence, but the principle was violated: never guess names. The script was written without ever running `ls /opt/quantopsai/altdata/*/data/*.db` to verify.
 
-Fix: 1-char change in the case statement. Re-run shows alt-data §H green.
+Fix: eliminate the case statement entirely. Auto-discover every altdata DB via `ls /opt/quantopsai/altdata/*/data/*.db`. Removes the guessing surface AND survives any future altdata module being added with a non-matching project/filename pair.
 
 ---
 
