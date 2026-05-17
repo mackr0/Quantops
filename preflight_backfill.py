@@ -79,10 +79,12 @@ def main() -> int:
     # so this stays in sync if mappings expand.
     from altdata_tier2_corporate import (
         _TICKER_TO_GITHUB_ORG, _TICKER_TO_FDA_NAME,
-        _TICKER_TO_NHTSA_MAKE, _TICKER_TO_USA_SPENDING_NAME,
+        _TICKER_TO_NHTSA, _TICKER_TO_USA_SPENDING_NAME,
         get_github_activity, get_fda_inspections,
         get_nhtsa_recalls, get_sam_gov_contracts,
     )
+    # NHTSA map is now (make, [models]) — keep just keys (tickers)
+    _TICKER_TO_NHTSA_MAKE = _TICKER_TO_NHTSA
     from altdata_tier3 import (
         get_wikipedia_edits, get_uspto_patents,
         _TICKER_TO_USPTO_ASSIGNEE,
