@@ -77,25 +77,18 @@ def _journal_open_qty_per_symbol(db_path: str) -> Dict[str, float]:
             select_cols = "COALESCE(occ_symbol, symbol) as eff_symbol, " + select_cols
         else:
             select_cols = "symbol as eff_symbol, " + select_cols
-        # Status-aware filter mirroring journal.get_virtual_positions
-        # (added 2026-05-16). Pre-fix, aggregate_audit included
-        # 'closed' BUY rows in FIFO — they leaked as phantom long
-        # lots and fired spurious journal_phantom drift alerts even
-        # after the lifecycle sweep flipped status='closed'. Closed
-        # SELL/COVER rows are KEPT (partial-close accounting still
-        # needs them to consume their open BUY lot).
+        # Live-state filter (2026-05-16 + 2026-05-17 refinement):
+        # only LIVE rows (status='open' / 'pending_fill') contribute
+        # to current journal position. Closed rows are HISTORY; they
+        # already netted to zero in their lifetime and re-including
+        # them in FIFO would cause stale SELLs to consume unrelated
+        # newer BUYs (caught when the AUTO_RECONCILE backfill of
+        # STRC was being eaten by a closed-but-still-included SELL
+        # from an earlier round-trip).
+        _LIVE_STATUSES = ("open", "pending_fill")
         rows = conn.execute(
             f"SELECT {select_cols} FROM trades "
-            "WHERE ("
-            "    (side IN ('buy', 'short') AND "
-            "     COALESCE(status, 'open') NOT IN "
-            "     ('canceled', 'expired', 'rejected', 'done_for_day', "
-            "      'closed', 'auto_reconciled_phantom_close'))"
-            "    OR "
-            "    (side IN ('sell', 'cover') AND "
-            "     COALESCE(status, 'open') NOT IN "
-            "     ('canceled', 'expired', 'rejected', 'done_for_day'))"
-            ") "
+            "WHERE COALESCE(status, 'open') IN ('open', 'pending_fill') "
             "ORDER BY timestamp ASC, id ASC"
         ).fetchall()
         conn.close()
