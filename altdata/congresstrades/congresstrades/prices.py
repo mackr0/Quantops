@@ -45,7 +45,30 @@ def _default_fetcher(ticker: str, period: str):
 
     Isolated so tests can monkeypatch it without pulling yfinance into
     every test module.
+
+    Skips yfinance for tickers Alpaca doesn't carry (delisted /
+    acquired / non-US) so we don't generate "possibly delisted"
+    ERROR log spam on the daily cron for known-untradable tickers
+    (BRK.B, CS, CT, HN, NJ, OL, REV, SPYB, SQ, VA — caught
+    2026-05-17). Same Alpaca-first prefilter pattern already used
+    in alternative_data, factor_data, earnings_calendar,
+    sector_classifier.
     """
+    # Lazy-import via the parent QuantOpsAI repo so this altdata
+    # subproject stays usable as a standalone tool. If the parent
+    # screener module isn't on the path, fall back to permissive
+    # (let yfinance try — same behavior as before).
+    try:
+        import sys
+        from pathlib import Path
+        repo_root = Path(__file__).resolve().parent.parent.parent.parent
+        if str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+        from screener import is_alpaca_active
+        if not is_alpaca_active(ticker):
+            return None
+    except ImportError:
+        pass
     try:
         import yfinance as yf
         df = yf.download(
