@@ -23,8 +23,14 @@ PRESERVED:
   - The backups (recoverable for 30 days minimum)
 
 OPTIONAL FLAGS:
-  --apply    Actually perform the wipe (default: dry-run)
-  --user-id  Which user's profiles to scan (default 1)
+  --apply               Actually perform the wipe (default: dry-run)
+  --user-id             Which user's profiles to scan (default 1)
+  --clear-audit-alerts  After cleanup, TRUNCATE the audit_alerts table.
+                        Use this during the fresh-start reset so the
+                        /issues page doesn't show stale drift items
+                        from the now-deleted profiles. Default OFF —
+                        re-running this script on a healthy system
+                        should NOT wipe legitimate accumulated alerts.
 
 Run on prod:
     cd /opt/quantopsai && source .env
@@ -160,22 +166,61 @@ def _delete_orphan(main_db: str, orphan: Dict, backup_dir: str,
     return result
 
 
+def _clear_audit_alerts(main_db: str, apply: bool) -> int:
+    """TRUNCATE the audit_alerts table so /issues starts truly clean
+    after the fresh-start reset. Returns rowcount removed."""
+    try:
+        with sqlite3.connect(main_db) as conn:
+            # Pre-count for the dry-run preview AND the apply summary.
+            row = conn.execute(
+                "SELECT COUNT(*) FROM audit_alerts"
+            ).fetchone()
+            count = int(row[0] or 0) if row else 0
+            if apply and count > 0:
+                conn.execute("DELETE FROM audit_alerts")
+                conn.commit()
+                log.info("    cleared %d audit_alerts row(s)", count)
+            elif not apply:
+                log.info(
+                    "    DRY: would DELETE %d audit_alerts row(s)",
+                    count,
+                )
+            else:
+                log.info("    audit_alerts already empty")
+            return count
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            log.info("    audit_alerts table doesn't exist yet "
+                     "(audit_runner hasn't run) — nothing to clear")
+            return 0
+        log.error("    audit_alerts wipe failed: %s", exc)
+        return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true",
                     help="Actually perform the cleanup (default: dry-run)")
     ap.add_argument("--user-id", type=int, default=1)
+    ap.add_argument(
+        "--clear-audit-alerts", action="store_true",
+        help="After cleanup, TRUNCATE the audit_alerts table so "
+             "stale drift items from deleted profiles don't show "
+             "on /issues. Default OFF.",
+    )
     args = ap.parse_args()
 
     log.info("=" * 70)
-    log.info("ORPHAN CLEANUP (apply=%s, user=%d)", args.apply, args.user_id)
+    log.info("ORPHAN CLEANUP (apply=%s, user=%d, clear_audit_alerts=%s)",
+             args.apply, args.user_id, args.clear_audit_alerts)
     log.info("=" * 70)
 
     main_db = _resolve_main_db()
     log.info("main db: %s", main_db)
     orphans = _find_orphans(main_db, args.user_id)
-    if not orphans:
-        log.info("No orphaned profiles found — nothing to do.")
+    if not orphans and not args.clear_audit_alerts:
+        log.info("No orphaned profiles found and --clear-audit-alerts "
+                 "not set — nothing to do.")
         return 0
     log.info("Orphaned profiles: %d", len(orphans))
 
@@ -195,17 +240,26 @@ def main():
         if r["row_removed"]:
             removed_rows += 1
 
+    cleared_alerts = 0
+    if args.clear_audit_alerts:
+        log.info("clearing audit_alerts table...")
+        cleared_alerts = _clear_audit_alerts(main_db, args.apply)
+
     log.info("=" * 70)
     if args.apply:
-        log.info("DONE: removed %d db file(s), %d profile row(s)",
-                 removed_files, removed_rows)
+        log.info("DONE: removed %d db file(s), %d profile row(s)%s",
+                 removed_files, removed_rows,
+                 f", cleared {cleared_alerts} audit_alerts row(s)"
+                 if args.clear_audit_alerts else "")
         log.info(
             "Next steps:\n"
             "  - Restart services so caches drop: systemctl restart "
             "quantopsai quantopsai-web\n"
             "  - Verify /issues page is empty\n"
-            "  - Create fresh Alpaca accounts in the UI, then create "
-            "the 13 experiment profiles per docs/15"
+            "  - Create the 13 experiment profiles: "
+            "python3 create_experiment_profiles.py --apply\n"
+            "  - Then create fresh Alpaca accounts in the UI and "
+            "wire alpaca_account_id on each profile"
         )
     else:
         log.info("DRY-RUN preview. Re-run with --apply to execute.")

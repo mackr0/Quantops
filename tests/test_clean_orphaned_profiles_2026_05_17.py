@@ -172,6 +172,69 @@ class TestApply:
         assert len(backup_subdirs) == 1
         assert (backup_subdirs[0] / "quantopsai_profile_2.db").exists()
 
+    def test_clear_audit_alerts_flag_truncates_table(
+        self, fake_world, monkeypatch,
+    ):
+        """--clear-audit-alerts wipes audit_alerts even when no
+        orphans exist. Use case: fresh-start reset after a previous
+        run already removed the orphans."""
+        import sqlite3
+        # Seed an audit_alerts row
+        with sqlite3.connect(fake_world["main_db"]) as conn:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS audit_alerts (
+                    signature TEXT PRIMARY KEY,
+                    audit_type TEXT NOT NULL,
+                    first_seen TEXT NOT NULL,
+                    last_seen TEXT NOT NULL,
+                    resolved_at TEXT,
+                    details_json TEXT,
+                    alert_sent INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO audit_alerts (signature, audit_type,
+                    first_seen, last_seen, alert_sent) VALUES
+                    ('qty_parity:10:AAPL', 'qty_parity',
+                     '2026-05-17T00:00:00Z', '2026-05-17T00:00:00Z', 1);
+            """)
+        rc = _run_main(monkeypatch, fake_world,
+                       ["--apply", "--clear-audit-alerts"])
+        assert rc == 0
+        with sqlite3.connect(fake_world["main_db"]) as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM audit_alerts"
+            ).fetchone()[0]
+        assert count == 0
+
+    def test_clear_audit_alerts_dry_run_doesnt_wipe(
+        self, fake_world, monkeypatch,
+    ):
+        """Without --apply, audit_alerts must NOT be cleared."""
+        import sqlite3
+        with sqlite3.connect(fake_world["main_db"]) as conn:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS audit_alerts (
+                    signature TEXT PRIMARY KEY,
+                    audit_type TEXT NOT NULL,
+                    first_seen TEXT NOT NULL,
+                    last_seen TEXT NOT NULL,
+                    resolved_at TEXT,
+                    details_json TEXT,
+                    alert_sent INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO audit_alerts (signature, audit_type,
+                    first_seen, last_seen, alert_sent) VALUES
+                    ('value_parity:10', 'value_parity',
+                     '2026-05-17T00:00:00Z', '2026-05-17T00:00:00Z', 0);
+            """)
+        # No --apply
+        rc = _run_main(monkeypatch, fake_world, ["--clear-audit-alerts"])
+        assert rc == 0
+        with sqlite3.connect(fake_world["main_db"]) as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM audit_alerts"
+            ).fetchone()[0]
+        assert count == 1  # still there
+
     def test_apply_no_orphans_is_noop(self, tmp_path, monkeypatch):
         """If there are no orphans, --apply returns 0 and changes nothing."""
         import clean_orphaned_profiles
