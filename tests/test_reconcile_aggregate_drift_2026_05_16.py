@@ -390,6 +390,108 @@ class TestTier1OrderHistoryEnrichment:
         assert ok is False
 
 
+class TestBrokerAvgEntryPrimary:
+    """2026-05-17 update: `list_positions.avg_entry_price` is the
+    AUTHORITATIVE entry-price source (Alpaca tracks it independently
+    of order history). Use it whenever available — even when
+    list_orders returns empty."""
+
+    def test_uses_broker_avg_entry_when_no_order_history(
+        self, tmp_path, monkeypatch,
+    ):
+        """The 75 'no order history' positions in prod still have a
+        real avg_entry_price from list_positions. Use it."""
+        from reconcile_aggregate_drift import reconcile
+        db = tmp_path / "quantopsai_profile_1.db"
+        _create_trades_db(str(db))
+        monkeypatch.chdir(tmp_path)
+
+        fake_audit = {
+            "drift": [
+                {"account": "acct1", "symbol": "FRO",
+                 "journal_qty": 0.0, "broker_qty": -11.0,
+                 "drift": -11.0, "kind": "broker_orphan"},
+            ],
+            "accounts": {}, "errored": [],
+        }
+        with patch(
+            "aggregate_audit.audit_aggregate_drift",
+            return_value=fake_audit,
+        ), patch(
+            "reconcile_aggregate_drift._profiles_sharing_account",
+            return_value=[{"id": 1, "name": "p1", "enabled": True,
+                           "alpaca_account_id": "acct1"}],
+        ), patch(
+            "reconcile_aggregate_drift._find_opening_orders_for_position",
+            return_value=[],  # NO order history
+        ), patch(
+            "reconcile_aggregate_drift._broker_position_lookup",
+            return_value={"FRO": {"qty": -11.0, "avg_entry_price": 36.53,
+                                   "market_value": -403.26, "side": "short"}},
+        ):
+            reconcile(apply=True)
+
+        with sqlite3.connect(str(db)) as conn:
+            conn.row_factory = sqlite3.Row
+            r = conn.execute("SELECT * FROM trades").fetchone()
+        assert r is not None
+        assert r["price"] == 36.53, (
+            "Must use broker's avg_entry_price (36.53) — NOT current "
+            "mark or a synthetic value"
+        )
+        assert "broker-avg-entry" in r["reason"], (
+            "Reason string must record that broker avg_entry was used"
+        )
+
+    def test_broker_avg_entry_beats_order_history_price(
+        self, tmp_path, monkeypatch,
+    ):
+        """When BOTH are available, broker avg_entry wins (it's the
+        position-lifetime cost basis; order history may show a single
+        slice of it)."""
+        from reconcile_aggregate_drift import reconcile
+        db = tmp_path / "quantopsai_profile_1.db"
+        _create_trades_db(str(db))
+        monkeypatch.chdir(tmp_path)
+
+        fake_audit = {
+            "drift": [
+                {"account": "acct1", "symbol": "BAR",
+                 "journal_qty": 0.0, "broker_qty": -10.0,
+                 "drift": -10.0, "kind": "broker_orphan"},
+            ],
+            "accounts": {}, "errored": [],
+        }
+        with patch(
+            "aggregate_audit.audit_aggregate_drift",
+            return_value=fake_audit,
+        ), patch(
+            "reconcile_aggregate_drift._profiles_sharing_account",
+            return_value=[{"id": 1, "name": "p1", "enabled": True,
+                           "alpaca_account_id": "acct1"}],
+        ), patch(
+            "reconcile_aggregate_drift._find_opening_orders_for_position",
+            return_value=[{
+                "order_id": "real-1",
+                "filled_avg_price": 99.99,  # order says 99.99
+                "filled_at": "2026-04-01T10:00:00Z",
+                "filled_qty": 10,
+            }],
+        ), patch(
+            "reconcile_aggregate_drift._broker_position_lookup",
+            return_value={"BAR": {"qty": -10.0, "avg_entry_price": 50.00,
+                                   "market_value": -500.0, "side": "short"}},
+        ):
+            reconcile(apply=True)
+
+        with sqlite3.connect(str(db)) as conn:
+            r = conn.execute("SELECT price FROM trades").fetchone()
+        assert r[0] == 50.00, (
+            "broker avg_entry_price (50.00) must win over single-order "
+            "history fill price (99.99) — broker is authoritative"
+        )
+
+
 class TestJournalPhantomClose:
     def test_existing_open_row_gets_closed(self, tmp_path, monkeypatch):
         from reconcile_aggregate_drift import reconcile

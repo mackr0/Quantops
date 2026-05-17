@@ -236,6 +236,52 @@ def _find_owning_profile(
     return None
 
 
+_BROKER_POSITIONS_CACHE: Dict[str, Dict[str, Dict]] = {}
+
+
+def _broker_position_lookup(api, acct_id) -> Dict[str, Dict]:
+    """Return {symbol: {'qty': float, 'avg_entry_price': float,
+    'market_value': float, 'side': str}} for every position the
+    broker shows on this account. Cached per-account so we don't
+    re-list_positions for every drift item.
+
+    The `avg_entry_price` from `list_positions` is the
+    AUTHORITATIVE source for entry price — Alpaca tracks it
+    independently of order history. Better than walking
+    `list_orders` (which may not reach back far enough).
+    """
+    if acct_id in _BROKER_POSITIONS_CACHE:
+        return _BROKER_POSITIONS_CACHE[acct_id]
+    out: Dict[str, Dict] = {}
+    if api is None:
+        return out
+    try:
+        positions = api.list_positions()
+    except Exception as exc:
+        log.warning(
+            "  list_positions(acct=%s) failed: %s: %s — entry-price "
+            "lookup will fall back to current mark",
+            acct_id, type(exc).__name__, exc,
+        )
+        return out
+    for p in positions:
+        sym = (getattr(p, "symbol", "") or "").upper()
+        if not sym:
+            continue
+        try:
+            aep = getattr(p, "avg_entry_price", None)
+            out[sym] = {
+                "qty": float(getattr(p, "qty", 0) or 0),
+                "avg_entry_price": float(aep) if aep is not None else None,
+                "market_value": float(getattr(p, "market_value", 0) or 0),
+                "side": getattr(p, "side", "") or "",
+            }
+        except (ValueError, TypeError, AttributeError):
+            continue
+    _BROKER_POSITIONS_CACHE[acct_id] = out
+    return out
+
+
 def _current_mark(api, symbol: str, qty: float) -> Optional[float]:
     """Best-effort current price for the symbol. Returns None when
     Alpaca can't price it (delisted, off-hours stale, etc.)."""
@@ -294,50 +340,78 @@ def _backfill_broker_orphan(
         )
         api = None
 
-    # Tier 1: try real history first.
+    # PRIMARY: real entry price from `list_positions.avg_entry_price`
+    # — authoritative, set by Alpaca, doesn't depend on order history
+    # being intact. This is what makes the reconciled rows TRULY
+    # accurate for entry price.
+    broker_positions = _broker_position_lookup(api, account_id)
+    broker_row = broker_positions.get(symbol.upper(), {})
+    avg_entry = broker_row.get("avg_entry_price")
+
+    # SECONDARY: walk list_orders for order_id (cross-profile
+    # attribution) + actual fill timestamp.
     orders = _find_opening_orders_for_position(api, symbol, broker_qty)
     if orders:
-        # Compute qty-weighted entry price from the matched fills.
-        total_qty = sum(o["filled_qty"] for o in orders)
-        weighted_px = (
-            sum(o["filled_qty"] * o["filled_avg_price"] for o in orders)
-            / total_qty
-        ) if total_qty > 0 else 0.0
-        # Earliest fill timestamp = position's "opened at"
         first_filled = sorted(
             (o["filled_at"] for o in orders if o["filled_at"]),
             key=str,
         )
         first_ts = first_filled[0] if first_filled else None
-
-        # Cross-reference to find owning profile
         owning = _find_owning_profile(
             [o["order_id"] for o in orders],
             all_profiles_in_acct,
         )
         target_profile = owning or fallback_profile
-        attribution = ("order-history-match" if owning
-                       else "order-history-but-no-journal-match")
-        entry_price = weighted_px
+        if owning and avg_entry is not None:
+            attribution = "broker-avg-entry+journal-match"
+        elif owning:
+            # We have journal match but no broker avg_entry; use
+            # order weighted price.
+            attribution = "order-history+journal-match"
+        elif avg_entry is not None:
+            attribution = "broker-avg-entry+lowest-id-fallback"
+        else:
+            attribution = "order-history-but-no-journal-match"
+        if avg_entry is not None:
+            entry_price = avg_entry
+        else:
+            # Compute weighted from order fills
+            total_qty = sum(o["filled_qty"] for o in orders)
+            entry_price = (
+                sum(o["filled_qty"] * o["filled_avg_price"] for o in orders)
+                / total_qty
+            ) if total_qty > 0 else 0.0
         entry_ts = (str(first_ts) if first_ts
                     else datetime.now(timezone.utc).isoformat(timespec="seconds"))
         first_order_id = orders[0]["order_id"]
         history_note = (
-            f"matched {len(orders)} Alpaca opening fill(s); "
-            f"qty-weighted entry ${entry_price:.4f}, "
-            f"first fill {entry_ts}"
+            f"avg_entry_from_broker={avg_entry}; "
+            f"orders_matched={len(orders)}; first_fill={entry_ts}"
+        )
+    elif avg_entry is not None:
+        # No order history but broker DOES have an avg_entry_price.
+        # Use it as the truth. Attribution falls back to lowest-id.
+        target_profile = fallback_profile
+        entry_price = avg_entry
+        entry_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        first_order_id = "auto_reconcile"
+        attribution = "broker-avg-entry+lowest-id-no-orders"
+        history_note = (
+            f"no list_orders history but broker tracks "
+            f"avg_entry_price=${avg_entry:.4f}; using that as the "
+            f"authoritative entry. Attribution = lowest-id profile."
         )
     else:
-        # Tier 2: synthetic. Use current mark + fallback profile.
+        # No history AND no broker avg_entry — last-resort current mark.
         target_profile = fallback_profile
         entry_price = _current_mark(api, symbol, broker_qty) or 0.0
         entry_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
         first_order_id = "auto_reconcile"
         attribution = "synthetic-no-history"
         history_note = (
-            "no Alpaca order history found within the 500-order "
-            "lookback window; entry price = current mark; "
-            "attribution = lowest-id profile sharing the account"
+            "no Alpaca order history AND no broker avg_entry_price "
+            "available; entry price = current mark; attribution = "
+            "lowest-id profile sharing the account"
         )
 
     db_path = f"quantopsai_profile_{target_profile['id']}.db"
