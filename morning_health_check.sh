@@ -396,6 +396,13 @@ EXPECTED = [
     \"google_trends\", \"wikipedia_pageviews\", \"app_store_ranking\",
     # 2026-05-17 Tier-1 additions
     \"recent_8k_events\", \"activist_13dg\", \"macro\",
+    # 2026-05-17 Tier-2 additions (corporate-mapped)
+    \"github_activity\", \"fda_inspections\", \"nhtsa_recalls\",
+    \"sam_gov_contracts\",
+    # 2026-05-17 Tier-3 additions
+    \"risk_factor_diff\", \"epa_osha_violations\", \"faa_accidents\",
+    \"bls_jobless_claims\", \"wikipedia_edits\", \"uspto_patents\",
+    \"job_postings\", \"insider_track_records\", \"star_manager_holdings\",
 ]
 ok, empty, missing = 0, 0, 0
 for key in EXPECTED:
@@ -424,12 +431,16 @@ H2_EMPTY=$(echo "$H2_TOTALS" | grep -oE 'empty=[0-9]+' | cut -d= -f2)
 H2_MISSING=$(echo "$H2_TOTALS" | grep -oE 'missing=[0-9]+' | cut -d= -f2)
 if [ "${H2_MISSING:-0}" -gt 0 ]; then
     bad "${H2_MISSING} alt-data signal(s) MISSING from response — code path broken"
-elif [ "${H2_OK:-0}" -ge 17 ]; then
-    ok "${H2_OK}/21 live-API signals returned data (${H2_EMPTY:-0} empty — within normal range)"
-elif [ "${H2_OK:-0}" -ge 12 ]; then
-    warn "${H2_OK}/21 live-API signals returned data (${H2_EMPTY:-0} empty — partial coverage)"
+elif [ "${H2_OK:-0}" -ge 20 ]; then
+    # Many Tier-2/3 sources are sector-mapped (return {} for tickers
+    # outside the mapped sector — normal for any one ticker like AAPL).
+    # AAPL hits ~20 active sources (the 18 broad + macro + recent_8k +
+    # github + wikipedia_edits + insider_track + risk_factor_diff).
+    ok "${H2_OK}/34 live-API signals returned data (${H2_EMPTY:-0} empty — sector-mapped sources empty for AAPL is expected)"
+elif [ "${H2_OK:-0}" -ge 14 ]; then
+    warn "${H2_OK}/34 live-API signals returned data (${H2_EMPTY:-0} empty — partial coverage)"
 else
-    bad "only ${H2_OK:-0}/21 live-API signals returned data — broad rate-limit or outage"
+    bad "only ${H2_OK:-0}/34 live-API signals returned data — broad rate-limit or outage"
 fi
 
 # =============================================================================

@@ -603,7 +603,52 @@ def get_all_macro_data() -> Dict[str, Any]:
         # (gold vol). Differentiates equity-only stress from broad
         # cross-asset stress. Each carries 30d percentile rank.
         "cross_asset_vol": get_cross_asset_vol(),
+        # 2026-05-17 Tier-2 macro sources. All symbol-agnostic;
+        # cached for 24h via the tier2_macro module's own cache.
+        # Picked up by alternative_data._get_cached_macro
+        # automatically (single inventory).
+        "usda_crops": _safe_macro("usda_crops",
+                                   lambda: _get_usda_module().get_usda_crop_reports()),
+        "eia_energy": _safe_macro("eia_energy",
+                                   lambda: _get_eia_module().get_eia_energy_inventories()),
+        "cftc_cot": _safe_macro("cftc_cot",
+                                 lambda: _get_cftc_module().get_cftc_cot_positioning()),
+        "sector_flow_diff": _safe_macro("sector_flow_diff",
+                                          lambda: _get_sfd_module().get_sector_flow_differentials()),
     }
+
+
+def _safe_macro(name, callable_):
+    """Guard each Tier-2 macro fetch so one source's failure can't
+    break get_all_macro_data."""
+    try:
+        return callable_() or {}
+    except Exception as exc:
+        logger.debug("macro source %s failed: %s", name, exc)
+        return {}
+
+
+# Lazy-import helpers so a missing optional module doesn't break
+# macro_data import. Each returns the module instance; called by
+# _safe_macro's lambda.
+def _get_usda_module():
+    import altdata_tier2_macro as m
+    return m
+
+
+def _get_eia_module():
+    import altdata_tier2_macro as m
+    return m
+
+
+def _get_cftc_module():
+    import altdata_tier2_macro as m
+    return m
+
+
+def _get_sfd_module():
+    import altdata_tier2_macro as m
+    return m
 
 
 # ---------------------------------------------------------------------------

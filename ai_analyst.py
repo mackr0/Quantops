@@ -1702,6 +1702,95 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                 if txt:
                     alt_parts.append(txt)
 
+            # 2026-05-17 Tier-2 GitHub repo activity (tech tickers)
+            gh = alt.get("github_activity") or {}
+            if gh.get("has_data"):
+                txt = _weighted_signal_text(
+                    "github_activity",
+                    f"GitHub: {gh.get('public_repos', 0)} repos, "
+                    f"{gh.get('stars_top30', 0):,} stars (top-30), "
+                    f"{gh.get('active_repos_30d', 0)} active 30d",
+                )
+                if txt: alt_parts.append(txt)
+
+            # 2026-05-17 Tier-2 FDA inspections (pharma tickers)
+            fda = alt.get("fda_inspections") or {}
+            if fda.get("has_data"):
+                txt = _weighted_signal_text(
+                    "fda_inspections",
+                    f"FDA: {fda.get('recent_citations_count', 0)} "
+                    f"recent citation(s) for {fda.get('fda_name', '?')}"
+                    + (f" (latest {fda['most_recent_date']})"
+                       if fda.get("most_recent_date") else ""),
+                )
+                if txt: alt_parts.append(txt)
+
+            # 2026-05-17 Tier-2 NHTSA recalls (auto tickers)
+            nh = alt.get("nhtsa_recalls") or {}
+            if nh.get("has_data"):
+                txt = _weighted_signal_text(
+                    "nhtsa_recalls",
+                    f"NHTSA: {nh.get('recalls_recent_years', 0)} "
+                    f"recall(s) recent model years",
+                )
+                if txt: alt_parts.append(txt)
+
+            # 2026-05-17 Tier-2 SAM.gov contracts (defense tickers)
+            sg = alt.get("sam_gov_contracts") or {}
+            if sg.get("has_data"):
+                amt = sg.get("recent_awards_total_usd", 0)
+                txt = _weighted_signal_text(
+                    "sam_gov_contracts",
+                    f"Federal: {sg.get('recent_awards_count', 0)} prime "
+                    f"awards, ${amt/1e6:,.0f}M YTD",
+                )
+                if txt: alt_parts.append(txt)
+
+            # 2026-05-17 Tier-3 risk factor diff (10-K YoY)
+            rfd = alt.get("risk_factor_diff") or {}
+            if rfd.get("has_new_risks"):
+                txt = _weighted_signal_text(
+                    "risk_factor_diff",
+                    f"10-K: {rfd.get('added_risk_count', 0)} NEW risk "
+                    f"factor(s) vs prior year"
+                    + (f" (filed {rfd['latest_filing_date']})"
+                       if rfd.get("latest_filing_date") else ""),
+                )
+                if txt: alt_parts.append(txt)
+
+            # 2026-05-17 Tier-3 Wikipedia edits
+            we = alt.get("wikipedia_edits") or {}
+            if we.get("has_data") and we.get("edits_30d", 0) > 5:
+                # Threshold avoids surfacing low-noise edit activity
+                txt = _weighted_signal_text(
+                    "wikipedia_edits",
+                    f"Wiki edits: {we.get('edits_30d', 0)} in 30d "
+                    f"({we.get('edits_7d', 0)} in last 7d)",
+                )
+                if txt: alt_parts.append(txt)
+
+            # 2026-05-17 Tier-3 insider track records
+            itr = alt.get("insider_track_records") or {}
+            top_ins = itr.get("top_insiders") or []
+            if top_ins:
+                bits = [f"{i['name']} ({i['buys']}B/{i['sells']}S)"
+                        for i in top_ins[:2]]
+                txt = _weighted_signal_text(
+                    "insider_track_records",
+                    f"Top insiders: {' | '.join(bits)}",
+                )
+                if txt: alt_parts.append(txt)
+
+            # 2026-05-17 Tier-3 star manager holdings
+            smh = alt.get("star_manager_holdings") or {}
+            if smh.get("has_data"):
+                names = [h["manager"] for h in (smh.get("holders") or [])]
+                txt = _weighted_signal_text(
+                    "star_manager_holdings",
+                    f"Star holders: {', '.join(names[:3])}",
+                )
+                if txt: alt_parts.append(txt)
+
             if alt_parts:
                 # Layer 6 verbosity: brief = show only top 3 signals;
                 # normal = show all; detailed = show all + a "(X more)"

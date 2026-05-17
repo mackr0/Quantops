@@ -41,6 +41,41 @@ Fix: eliminate the case statement entirely. Auto-discover every altdata DB via `
 
 ---
 
+## 2026-05-17 — Tier-2 + Tier-3 alt-data expansion (11 new signals). Severity: medium (broad coverage push; sector-mapped sources return empty for tickers outside their map — quiet by design).
+
+After the user pushed back that I'd documented 21 candidates and only built 3, finished the remaining 11 (Tier 1's Reddit is still blocked on API access). All flow through the same unified `get_all_alternative_data` bucket — one canonical inventory.
+
+**Tier 2 — 7 sector-specific signals**:
+- `github_activity` — GitHub org repos + stars + active-30d (tech tickers; 26 mapped). `altdata_tier2_corporate.get_github_activity`.
+- `fda_inspections` — openFDA enforcement actions per pharma company (17 mapped). Same module.
+- `nhtsa_recalls` — NHTSA recall API per auto manufacturer (12 mapped).
+- `sam_gov_contracts` — USASpending.gov prime contract awards for defense / govtech (11 mapped).
+- `usda_crops` — USDA QuickStats corn/soy condition (macro-level; requires `USDA_API_KEY`, graceful no-op without).
+- `eia_energy` — EIA weekly oil + gas inventories (macro-level; requires `EIA_API_KEY`).
+- `cftc_cot` — CFTC Commitments of Traders most-recent report date (public Socrata endpoint, no auth).
+
+**Tier 3 — 4 derived + 6 specialized signals**:
+- `risk_factor_diff` — diffs current 10-K's Item 1A vs prior year; counts NEW risk sentences. Uses existing `sec_filings.get_company_filings`.
+- `sector_flow_diff` — strongest vs weakest sector ETF flow spread (rotation regime indicator). Derived from existing `macro_data.get_etf_flows`.
+- `insider_track_records` — top 3 insiders by lifetime activity per symbol. Derived from existing `altdata/edgar_form4/data/edgar_form4.db`.
+- `star_manager_holdings` — which named star managers (Berkshire, Pershing Square, Greenlight, Third Point) currently hold the symbol. Derived from existing `altdata/edgar13f/data/edgar13f.db`.
+- `wikipedia_edits` — recent-edit count via Wikipedia's revisions API. Edits ≠ pageviews — controversy precursor distinct from attention.
+- `bls_jobless_claims` — symbol-agnostic; reuses FRED ICSA series.
+- `epa_osha_violations`, `faa_accidents`, `uspto_patents`, `job_postings` — placeholder shapes that return `has_data=False` until full integration. Slots exist in the canonical dict so future build-out doesn't require schema work; AI prompt simply skips them.
+
+**AI prompt rendering**: added compact one-line renderers for every new signal that produces data (GitHub repo counts, FDA citation counts, NHTSA recall counts, SAM.gov contract totals, new risk-factor counts, Wikipedia edits, insider track records, star-manager holders). Each gated through the existing `signal_weights` mechanism so the self-tuner can amplify/suppress per profile over time.
+
+**morning_health_check.sh §H2** EXPECTED list extended to 34 signals (was 21). Sector-mapped sources return `{}` for tickers outside their map — that's normal, not a regression. Thresholds adjusted: ≥20 green, ≥14 warn.
+
+**Tests**: 10 new in `test_tier2_tier3_alt_data_2026_05_17.py` (per-source graceful-skip + unified-dict contract + macro-aggregator wiring). Full suite: 3469 passed.
+
+**Honest scope notes**:
+- 4 placeholder sources (`epa_osha`, `faa_accidents`, `uspto_patents`, `job_postings`) have the dict slot wired but the underlying data fetcher is stub. Reasons documented per-function: EPA/OSHA need ticker→FRS-ID mapping that doesn't exist as a clean free table; FAA's API requires heavy parsing; USPTO PatentsView changed auth in Q4 2024 to require a key not currently set; LinkedIn/Indeed actively block scrapers and require paid data sources. Each is a follow-up; the slot existing means a future fix doesn't need additional plumbing.
+
+Follow-up (task #175): Layer 4 specialist coverage audit for the 14 new signals — many existing specialists (`pattern_recognizer`, `risk_assessor`, `political_context`) likely consume related signals already; gap-fill rather than parallel-build.
+
+---
+
 ## 2026-05-17 — Tier-1 alt-data expansion: SEC 8-K + SEC 13D/G + MOVE/OVX/GVZ. Severity: medium (3 new high-signal feeds, all into the unified bucket).
 
 User audit caught me underselling alt-data coverage and asked for the Tier-1 candidates to be built before the experiment goes live. All three landed:

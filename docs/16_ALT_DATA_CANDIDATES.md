@@ -62,32 +62,32 @@ Symbol-targeted SEC filings (10-K, 10-Q, 8-K diffs for held + shortlist symbols 
 | 3 | **MOVE / OVX / GVZ vol indices** | ✅ yfinance | Bond / oil / gold volatility (extends VIX). Differentiates "equity vol spike" from cross-asset stress. | ~30 min |
 | 4 | **Reddit /r/wallstreetbets sentiment** | ✅ Reddit JSON API | Retail-driven name detection (NVDA, TSLA, PLTR, GME-class). Distinct from StockTwits. **Awaiting Reddit API access.** | ~1 day after access |
 
-### Tier 2 — Sector-specific (build when the universe needs them)
+### Tier 2 — Sector-specific (✅ ALL BUILT 2026-05-17)
 
-| # | Source | Useful for | Effort |
+| # | Source | Status | Module |
 |---|---|---|---|
-| 5 | GitHub repo activity (commits/stars/contributors) | Tech stocks | ~half day |
-| 6 | FDA inspection citations (beyond PDUFA) | Pharma/biotech | ~half day |
-| 7 | NHTSA recall database | Auto / EV | ~half day |
-| 8 | USDA crop reports | Agri (DE, AGCO, ADM, MOS) | ~half day |
-| 9 | EIA energy data (nat gas storage, oil inventories) | Energy | ~half day |
-| 10 | CFTC Commitments of Traders (weekly) | Commodities-adjacent equities | ~half day |
-| 11 | SAM.gov / USASpending.gov gov contracts | Defense / govtech | ~1 day |
+| 5 | GitHub repo activity (commits/stars/active-30d) | ✅ Built | `altdata_tier2_corporate.get_github_activity` — 26 tech tickers mapped |
+| 6 | FDA inspection citations | ✅ Built | `get_fda_inspections` — 17 pharma tickers mapped |
+| 7 | NHTSA recall database | ✅ Built | `get_nhtsa_recalls` — 12 auto/EV tickers mapped |
+| 8 | USDA crop reports | ✅ Built (requires `USDA_API_KEY` env var; graceful no-op without) | `altdata_tier2_macro.get_usda_crop_reports` |
+| 9 | EIA energy data | ✅ Built (requires `EIA_API_KEY`; graceful no-op without) | `get_eia_energy_inventories` |
+| 10 | CFTC Commitments of Traders | ✅ Built — Socrata public endpoint, no auth | `get_cftc_cot_positioning` |
+| 11 | SAM.gov / USASpending gov contracts | ✅ Built — 11 defense/govtech tickers mapped | `get_sam_gov_contracts` |
 
-### Tier 3 — Specialized / lower frequency / harder
+### Tier 3 — Specialized / lower frequency / harder (✅ ALL SLOTS WIRED 2026-05-17; 6 fully functional, 4 placeholder)
 
-| # | Source | Useful for | Notes |
+| # | Source | Status | Notes |
 |---|---|---|---|
-| 12 | SEC 10-K/10-Q year-over-year risk-factor NLP diff | All | Requires LLM call per filing — expensive |
-| 13 | EPA / OSHA violations | Industrial / manufacturing | Low base rate |
-| 14 | FAA accident database | Aviation / transport | Low base rate |
-| 15 | BLS weekly jobless claims | Macro rotation | Adds to FRED already in place |
-| 16 | Wikipedia article EDITS (vs pageviews) | All | Controversy = volatility precursor |
-| 17 | USPTO bulk data (re-implement patents) | Biotech / tech | Previously had via PatentsView v1 (deprecated) |
-| 18 | Public-company job postings (LinkedIn / Indeed scrape) | All | Brittle — scraping public sites |
-| 19 | Sector ETF flow differentials | Macro rotation | Partially covered by existing `etf_flows` |
-| 20 | CEO/insider personal track records (Form 4 cross-ref) | All | Requires building a per-insider stats table |
-| 21 | Holdings of named star managers (Berkshire, Pershing) | All | Filter on existing 13F data |
+| 12 | SEC 10-K YoY risk-factor diff | ✅ Built | `altdata_tier3.get_risk_factor_diff` — counts NEW risk sentences vs prior year |
+| 13 | EPA / OSHA violations | 🟡 Placeholder | Slot wired; needs ticker→FRS-ID mapping table (not free) |
+| 14 | FAA accident database | 🟡 Placeholder | Slot wired; FAA query API is heavy, deferred |
+| 15 | BLS weekly jobless claims | ✅ Built | Reuses FRED ICSA series (`altdata_tier3.get_bls_jobless_claims`) |
+| 16 | Wikipedia article EDITS | ✅ Built | `get_wikipedia_edits` — controversy precursor distinct from pageviews |
+| 17 | USPTO bulk patents (re-implement) | 🟡 Placeholder | Slot wired; PatentsView v2 auth model changed Q4 2024, needs key |
+| 18 | Job postings (LinkedIn/Indeed scrape) | 🟡 Placeholder | LinkedIn + Indeed actively block scrapers; would need paid data source |
+| 19 | Sector ETF flow differentials | ✅ Built | Derived from existing `etf_flows`; lives in `altdata_tier2_macro.get_sector_flow_differentials` |
+| 20 | CEO/insider personal track records | ✅ Built | Derived from existing `altdata/edgar_form4/data/edgar_form4.db` |
+| 21 | Holdings of named star managers | ✅ Built | Derived from existing `altdata/edgar13f/data/edgar13f.db` — Berkshire / Pershing Square / Greenlight / Third Point hand-curated |
 
 ---
 
@@ -102,13 +102,17 @@ Symbol-targeted SEC filings (10-K, 10-Q, 8-K diffs for held + shortlist symbols 
 
 ---
 
-## Order to build
+## Build history
 
-Tier 1 in expected-signal order (most important first per operator request — biggest signal-per-trade-decision wins, ship size doesn't):
+All 20 of 21 candidates landed 2026-05-17 (Reddit/WSB still blocked on API access). Tier 1 most-important first per operator request, then Tier 2 and Tier 3 in tier order:
 
-1. **SEC 8-K broad discovery** — new altdata module (`altdata/edgar_8k/`). Daily scan of all new 8-Ks, parse Item type, store. New `get_recent_8k_events(symbol)` returns events of the requested types in the last N days. **The single highest-signal SEC filing type** — 8-Ks announce M&A, earnings, executive changes, lawsuits, restatements in real time. Universe-wide scan surfaces opportunities the screener wouldn't otherwise see.
-2. **SEC 13D/G** — new altdata module (`altdata/edgar_13dg/`), similar shape to `altdata/edgar_form4/`. New `get_13dg_activist(symbol)` returns recent activist filings on the symbol. Real-time (filed within 10 days of crossing 5% ownership) — much fresher than quarterly 13F.
-3. **MOVE / OVX / GVZ** — small extension of `macro_data.py` (3 yfinance pulls + 30d percentile), wired through the new unified cache. Cross-asset vol context — improves regime classification but doesn't directly add per-trade signals like 8-K and 13D/G do.
+1. ✅ **SEC 8-K broad discovery** — `sec_8k_broad.py` + `altdata/edgar_8k/` cron shim
+2. ✅ **SEC 13D/G** — `sec_13dg_activist.py` + `altdata/edgar_13dg/` cron shim
+3. ✅ **MOVE / OVX / GVZ** — `macro_data.get_cross_asset_vol`
+4. ⏸ **Reddit /r/wallstreetbets** — awaiting Reddit API access
+5-7. ✅ **GitHub / FDA / NHTSA / SAM.gov** — `altdata_tier2_corporate.py`
+8-11. ✅ **USDA / EIA / CFTC / sector_flow_diff** — `altdata_tier2_macro.py`
+12-21. ✅ **All Tier 3 slots wired** — `altdata_tier3.py` (6 fully functional, 4 placeholder with documented reason)
 
 Reddit/WSB blocked on API access; revisit when access granted.
 

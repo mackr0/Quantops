@@ -2421,6 +2421,31 @@ def get_all_alternative_data(symbol):
         # trigger date (much fresher than quarterly 13F). Reads
         # from altdata/edgar_13dg/data/edgar_13dg.db.
         "activist_13dg": _get_recent_13dg_safe(symbol),
+        # 2026-05-17 Tier-2 corporate-mapped sources. Each maps the
+        # ticker to a corporate ID (GitHub org / FDA company name /
+        # NHTSA manufacturer) and fetches via free public API.
+        # Returns {} for tickers outside the mapped sector — no
+        # per-ticker noise.
+        "github_activity": _safe(_get_github, symbol),
+        "fda_inspections": _safe(_get_fda, symbol),
+        "nhtsa_recalls": _safe(_get_nhtsa, symbol),
+        "sam_gov_contracts": _safe(_get_sam_contracts, symbol),
+        # 2026-05-17 Tier-3 alt-data — 9 lower-frequency / derived /
+        # specialized sources. Each returns {} when irrelevant to
+        # the ticker's sector OR when the data layer is empty.
+        "risk_factor_diff": _safe(_get_risk_diff, symbol),
+        "epa_osha_violations": _safe(_get_epa_osha, symbol),
+        "faa_accidents": _safe(_get_faa, symbol),
+        "bls_jobless_claims": _safe(_get_bls_claims_kw),
+        "wikipedia_edits": _safe(_get_wiki_edits, symbol),
+        "uspto_patents": _safe(_get_uspto, symbol),
+        "job_postings": _safe(_get_job_postings, symbol),
+        "insider_track_records": _safe(_get_insider_track, symbol),
+        "star_manager_holdings": _safe(_get_star_holdings, symbol),
+        # #8 (sector_flow_diff) is symbol-agnostic and lives in the
+        # macro cache (altdata_tier2_macro.get_sector_flow_differentials);
+        # surfaced under alt_data["macro"]["sector_flow_diff"]
+        # automatically — no separate per-symbol key needed.
         # Symbol-agnostic macro context (cached, fetched once per cycle).
         # Includes yield curve, FRED indicators, CBOE skew, ETF flows
         # (and post-2026-05-17 the MOVE/OVX/GVZ vol indices).
@@ -2457,3 +2482,88 @@ def _get_recent_13dg_safe(symbol):
             symbol, type(exc).__name__, exc,
         )
         return {"events": [], "count": 0, "has_13d": False}
+
+
+# 2026-05-17 Tier-2 helper: generic try/except wrapper for any
+# per-symbol fetcher that should never raise into the prompt
+# pipeline. Returns {} on any failure with a warning logged.
+def _safe(fetcher_callable, *args, **kwargs):
+    try:
+        return fetcher_callable(*args, **kwargs)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "alt-data fetcher %s failed: %s: %s",
+            getattr(fetcher_callable, "__name__", "?"),
+            type(exc).__name__, exc,
+        )
+        return {}
+
+
+def _get_github(symbol):
+    from altdata_tier2_corporate import get_github_activity
+    return get_github_activity(symbol)
+
+
+def _get_fda(symbol):
+    from altdata_tier2_corporate import get_fda_inspections
+    return get_fda_inspections(symbol)
+
+
+def _get_nhtsa(symbol):
+    from altdata_tier2_corporate import get_nhtsa_recalls
+    return get_nhtsa_recalls(symbol)
+
+
+def _get_sam_contracts(symbol):
+    from altdata_tier2_corporate import get_sam_gov_contracts
+    return get_sam_gov_contracts(symbol)
+
+
+# Tier-3 helpers. Each is a thin alias so the get_all_alternative_data
+# return-dict stays readable.
+def _get_risk_diff(symbol):
+    from altdata_tier3 import get_risk_factor_diff
+    return get_risk_factor_diff(symbol)
+
+
+def _get_epa_osha(symbol):
+    from altdata_tier3 import get_epa_osha_violations
+    return get_epa_osha_violations(symbol)
+
+
+def _get_faa(symbol):
+    from altdata_tier3 import get_faa_accidents
+    return get_faa_accidents(symbol)
+
+
+def _get_bls_claims_kw(*_args, **_kwargs):
+    # BLS claims is symbol-agnostic — accept and discard the symbol
+    # arg so the standard _safe(fn, symbol) call site works.
+    from altdata_tier3 import get_bls_jobless_claims
+    return get_bls_jobless_claims()
+
+
+def _get_wiki_edits(symbol):
+    from altdata_tier3 import get_wikipedia_edits
+    return get_wikipedia_edits(symbol)
+
+
+def _get_uspto(symbol):
+    from altdata_tier3 import get_uspto_patents
+    return get_uspto_patents(symbol)
+
+
+def _get_job_postings(symbol):
+    from altdata_tier3 import get_job_postings_count
+    return get_job_postings_count(symbol)
+
+
+def _get_insider_track(symbol):
+    from altdata_tier3 import get_insider_track_records
+    return get_insider_track_records(symbol)
+
+
+def _get_star_holdings(symbol):
+    from altdata_tier3 import get_star_manager_holdings
+    return get_star_manager_holdings(symbol)
