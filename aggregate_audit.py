@@ -77,9 +77,25 @@ def _journal_open_qty_per_symbol(db_path: str) -> Dict[str, float]:
             select_cols = "COALESCE(occ_symbol, symbol) as eff_symbol, " + select_cols
         else:
             select_cols = "symbol as eff_symbol, " + select_cols
+        # Status-aware filter mirroring journal.get_virtual_positions
+        # (added 2026-05-16). Pre-fix, aggregate_audit included
+        # 'closed' BUY rows in FIFO — they leaked as phantom long
+        # lots and fired spurious journal_phantom drift alerts even
+        # after the lifecycle sweep flipped status='closed'. Closed
+        # SELL/COVER rows are KEPT (partial-close accounting still
+        # needs them to consume their open BUY lot).
         rows = conn.execute(
             f"SELECT {select_cols} FROM trades "
-            "WHERE COALESCE(status, 'open') != 'canceled' "
+            "WHERE ("
+            "    (side IN ('buy', 'short') AND "
+            "     COALESCE(status, 'open') NOT IN "
+            "     ('canceled', 'expired', 'rejected', 'done_for_day', "
+            "      'closed', 'auto_reconciled_phantom_close'))"
+            "    OR "
+            "    (side IN ('sell', 'cover') AND "
+            "     COALESCE(status, 'open') NOT IN "
+            "     ('canceled', 'expired', 'rejected', 'done_for_day'))"
+            ") "
             "ORDER BY timestamp ASC, id ASC"
         ).fetchall()
         conn.close()
