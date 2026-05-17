@@ -347,7 +347,7 @@ for proj in congresstrades stocktwits biotechevents edgar13f edgar_form4; do
         stocktwits)     db="stocktwits.db" ;;
         biotechevents)  db="biotechevents.db" ;;
         edgar13f)       db="edgar13f.db" ;;
-        edgar_form4)    db="form4.db" ;;
+        edgar_form4)    db="edgar_form4.db" ;;
     esac
     MTIME=$(ssh root@$DROPLET \
         "stat -c %Y /opt/quantopsai/altdata/$proj/data/$db 2>/dev/null" \

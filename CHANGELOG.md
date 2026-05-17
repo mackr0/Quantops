@@ -17,6 +17,14 @@ Rules going forward:
 
 ---
 
+## 2026-05-17 — morning_health_check.sh edgar_form4 filename fix. Severity: low (script-only bug, no prod impact).
+
+Pre-experiment morning_health_check.sh dry-run surfaced a false-positive: "stale alt-data DBs: edgar_form4(494179h)". The 494,179-hour age = `(stat returning 0 because file not found) - now / 3600`. Root cause: the §H alt-data loop mapped `edgar_form4` → `form4.db` but the actual filename on disk is `edgar_form4.db`. Verified the file is fresh (last modified within the cron window). My filename guess in the case statement was wrong — never read the actual path before writing it.
+
+Fix: 1-char change in the case statement. Re-run shows alt-data §H green.
+
+---
+
 ## 2026-05-17 — Google Gemini SDK migration (`google-generativeai` → `google-genai`). Severity: low (deprecation cleanup, no behavior change).
 
 After switching all 13 experiment profiles to Google Gemini 2.5 Flash Lite, the verify_ai_provider_per_profile.py output surfaced a deprecation warning from `google-generativeai` (Google's old Python SDK, now replaced by `google-genai`). Window to migrate: BEFORE the experiment starts collecting data, while there's no risk of breaking active trading.
