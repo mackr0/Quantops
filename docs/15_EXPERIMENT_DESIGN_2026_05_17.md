@@ -110,8 +110,8 @@ If all three of those win conditions hit → real $25K deployed.
 
 | Arm | Status | What's missing |
 |---|---|---|
-| Buy & Hold SPY | 🟡 Column exists | `strategy_type='buy_hold'` column added 2026-05-17; dispatch code (~150 LOC in trade_pipeline strategy router) pending batch B. |
-| Random Stock-of-Day | 🟡 Column exists | `strategy_type='random'` column added 2026-05-17; dispatch code pending batch B. |
+| Buy & Hold SPY | ✅ Implemented | `simple_strategies.run_buy_hold_spy` + multi_scheduler dispatch (2026-05-17). |
+| Random Stock-of-Day | ✅ Implemented | `simple_strategies.run_random_stock_of_day` — deterministic per (profile, date) pick from LARGE_CAP_UNIVERSE (2026-05-17). |
 | Full System | ✅ Default | Works with current code (all flags ON). |
 | No Alt-Data | ✅ Implemented | `enable_alt_data` column added + gate in `trade_pipeline._get_universe_context` (2026-05-17). |
 | No Meta-Model | ✅ Implemented | `enable_meta_model` column added + gates in `_meta_pregate_candidates` and main meta-model load (2026-05-17). |
@@ -122,9 +122,11 @@ If all three of those win conditions hit → real $25K deployed.
 | $25K Replicas | ✅ Exists | Same config × N profiles works today. |
 | Capital-scaling profiles | ✅ Exists | `initial_capital = 250000 / 1000000` already supported. |
 
-**9 of 11 arms work today (batch A complete 2026-05-17). 2 still
-require strategy_type dispatch code (batch B). Estimated effort:
-~1 day.**
+**All 11 arms work today (batches A + B complete 2026-05-17).
+Remaining experiment work is operational: clean orphaned profiles
+(batch C, `clean_orphaned_profiles.py`), create fresh Alpaca
+accounts in the UI, create the 13 experiment profiles via the
+profile-edit form.**
 
 ---
 

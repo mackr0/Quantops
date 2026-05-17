@@ -17,6 +17,49 @@ Rules going forward:
 
 ---
 
+## 2026-05-17 — Strategy dispatch + orphan cleanup (batches B + C of fresh-start experiment build). Severity: medium (new feature + new ops script).
+
+**Batch B — non-AI baseline strategies (`simple_strategies.py`):**
+
+New `simple_strategies` module containing two strategy implementations the experiment ablation arms require:
+- `run_buy_hold_spy(ctx)` — null floor. Day 1 buys ~95% of equity in SPY; later cycles only act when SPY weight drifts >5% from 100% (covers accumulated dividends as cash). Never sells.
+- `run_random_stock_of_day(ctx)` — random benchmark. Each cycle deterministically picks 5 large-cap symbols (seed = `hash((profile_id, today_iso))`), closes any held position not in today's pick, opens new picks equal-weighted. Determinism prevents churn within a single trading day even across multiple scheduler cycles.
+
+Both write through `journal.log_trade` with the broker `order_id` (preserves the #157 perfect-matching invariant). Both bypass the AI pipeline entirely (no ensemble, no meta-model, no specialists, no options) — that is the point.
+
+`multi_scheduler._task_scan_and_trade` now calls `simple_strategies.dispatch(ctx)` BEFORE the screener. If the profile's `strategy_type` is `buy_hold` or `random`, the simple strategy runs and the screener + `run_trade_cycle` are skipped. If `strategy_type='ai'` (default), dispatch returns None and the original AI path runs unchanged. Unknown strategy_type values log an error and fall back to the AI pipeline.
+
+**Batch C — orphaned-profile cleanup (`clean_orphaned_profiles.py`):**
+
+User deleted the old Alpaca paper accounts via the UI before creating the new ones for the 13-profile experiment. Profiles whose `alpaca_account_id` references a now-deleted `alpaca_accounts` row are broken: dashboard can't connect, broker/journal reconciler can't run, and their per-profile DB files still hold stale trade data on disk.
+
+New script `clean_orphaned_profiles.py` follows the same dry-run-by-default + `--apply` ergonomic as `reset_for_clean_experiment.py`:
+1. Scans `quantopsai.db` for profiles whose `alpaca_account_id` is NOT NULL and not in `alpaca_accounts`.
+2. For each orphan: backs up `quantopsai_profile_<id>.db` to a timestamped folder, deletes the file, removes the `trading_profiles` row.
+
+Profiles with `alpaca_account_id=NULL` (legacy user-level-key path) are NOT touched — they're still valid.
+
+**Tests**: 15 new in `test_simple_strategies_2026_05_17.py` (dispatch, buy_hold all paths, random determinism + close-and-rebuy, multi_scheduler short-circuit), 5 new in `test_clean_orphaned_profiles_2026_05_17.py` (orphan detection, dry-run, --apply, no-op case). Full suite: 3338 passed.
+
+**Docs**: `15_EXPERIMENT_DESIGN_2026_05_17.md` implementation-status table updated — all 11 arms now ✅. `05_DATA_DICTIONARY.md` covers strategy_type semantics.
+
+**Operator notes — running on prod after old accounts are gone:**
+```
+# 1. Dry-run the orphan cleanup first
+/opt/quantopsai/venv/bin/python clean_orphaned_profiles.py
+# 2. If the list is what you expect:
+/opt/quantopsai/venv/bin/python clean_orphaned_profiles.py --apply
+# 3. Create the 3 new Alpaca accounts in the UI
+# 4. Create the 13 experiment profiles per docs/15 (strategy_type
+#    column lets you pick ai / buy_hold / random)
+# 5. Run reset_for_clean_experiment.py --apply if any leftover
+#    data needs wiping from the kept profiles
+```
+
+**Follow-ups**: comparative-returns chart (#164) — defer until experiment profiles exist and have a few weeks of data.
+
+---
+
 ## 2026-05-17 — Ablation flags (batch A of fresh-start experiment build). Severity: medium (new feature, default-on preserves existing behavior).
 
 The 13-profile fresh-start experiment (docs/15_EXPERIMENT_DESIGN_2026_05_17.md) requires ablation arms that disable specific subsystems so alpha attribution per component is measurable. Three columns + one strategy-mode column added to `trading_profiles`. All default ON / "ai" so no existing profile changes behavior.

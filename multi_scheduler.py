@@ -875,7 +875,12 @@ def _get_shared_candidates(ctx, seg, is_crypto):
 
 
 def _task_scan_and_trade(ctx):
-    """Screen the segment's universe and auto-trade via the AI-first pipeline."""
+    """Screen the segment's universe and auto-trade via the AI-first pipeline.
+
+    For profiles with `strategy_type` ∈ {buy_hold, random}, dispatch
+    to simple_strategies (non-AI baselines) instead. See
+    docs/15_EXPERIMENT_DESIGN_2026_05_17.md.
+    """
     from trade_pipeline import run_trade_cycle
     from notifications import notify_trade, notify_veto
     from scan_status import update_status, clear_status
@@ -884,6 +889,35 @@ def _task_scan_and_trade(ctx):
     seg = get_segment(ctx.segment)
     is_crypto = seg.get("is_crypto", False)
     _pid = getattr(ctx, "profile_id", 0)
+
+    # Strategy dispatch: non-AI baselines short-circuit the screener
+    # + AI pipeline entirely.
+    from simple_strategies import dispatch as _simple_dispatch
+    _simple_summary = _simple_dispatch(ctx)
+    if _simple_summary is not None:
+        clear_status(_pid)
+        logger.info(
+            "[%s %s] summary: buys=%d sells=%d holds=%d errors=%d",
+            seg_label, _simple_summary.get("strategy", "?"),
+            _simple_summary.get("buys", 0),
+            _simple_summary.get("sells", 0),
+            _simple_summary.get("holds", 0),
+            _simple_summary.get("errors", 0),
+        )
+        try:
+            _safe_log_activity(
+                _pid, ctx.user_id, "scan_summary",
+                "%s %s cycle" % (seg_label, _simple_summary.get("strategy", "?")),
+                "buys=%d sells=%d holds=%d errors=%d" % (
+                    _simple_summary.get("buys", 0),
+                    _simple_summary.get("sells", 0),
+                    _simple_summary.get("holds", 0),
+                    _simple_summary.get("errors", 0),
+                ),
+            )
+        except Exception:
+            logger.exception("Failed to log simple-strategy activity")
+        return
 
     update_status(_pid, "Screening universe", seg_label)
 
