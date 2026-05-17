@@ -235,6 +235,49 @@ class TestApply:
             ).fetchone()[0]
         assert count == 1  # still there
 
+    def test_remove_all_flag_removes_every_profile_and_alpaca_account(
+        self, fake_world, monkeypatch,
+    ):
+        """--remove-all-alpaca-accounts: every trading_profile AND
+        every alpaca_account for the user is removed, regardless of
+        whether the profiles' alpaca_account_id is null or pointing
+        to a live row. Use case: user deleted Alpaca accounts at
+        Alpaca.com but QuantOps rows still exist with stale keys."""
+        import sqlite3
+        rc = _run_main(monkeypatch, fake_world,
+                       ["--apply", "--remove-all-alpaca-accounts"])
+        assert rc == 0
+        with sqlite3.connect(fake_world["main_db"]) as conn:
+            prof_count = conn.execute(
+                "SELECT COUNT(*) FROM trading_profiles"
+            ).fetchone()[0]
+            acct_count = conn.execute(
+                "SELECT COUNT(*) FROM alpaca_accounts"
+            ).fetchone()[0]
+        # All 3 profiles (pid=1 live, pid=2 orphan, pid=3 legacy) gone
+        assert prof_count == 0
+        # All alpaca_accounts for user_id=1 gone (fake_world has 1)
+        assert acct_count == 0
+        # Per-profile DB files removed
+        for pid in (1, 2):
+            assert not (
+                fake_world["tmp_path"] / f"quantopsai_profile_{pid}.db"
+            ).exists()
+
+    def test_remove_all_dry_run_doesnt_touch_alpaca_accounts(
+        self, fake_world, monkeypatch,
+    ):
+        """Without --apply, --remove-all-alpaca-accounts is a no-op."""
+        import sqlite3
+        rc = _run_main(monkeypatch, fake_world,
+                       ["--remove-all-alpaca-accounts"])
+        assert rc == 0
+        with sqlite3.connect(fake_world["main_db"]) as conn:
+            acct_count = conn.execute(
+                "SELECT COUNT(*) FROM alpaca_accounts"
+            ).fetchone()[0]
+        assert acct_count == 1  # unchanged
+
     def test_apply_no_orphans_is_noop(self, tmp_path, monkeypatch):
         """If there are no orphans, --apply returns 0 and changes nothing."""
         import clean_orphaned_profiles

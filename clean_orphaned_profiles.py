@@ -31,6 +31,15 @@ OPTIONAL FLAGS:
                         from the now-deleted profiles. Default OFF —
                         re-running this script on a healthy system
                         should NOT wipe legitimate accumulated alerts.
+  --remove-all-alpaca-accounts
+                        Treat EVERY trading_profile as an orphan AND
+                        remove every alpaca_accounts row for the user.
+                        Use when the user has deleted their Alpaca
+                        accounts at Alpaca.com but the QuantOps
+                        alpaca_accounts rows still exist with stale
+                        API keys — the fresh-start case where the
+                        default orphan detector counts zero because
+                        nothing is technically "orphaned" yet.
 
 Run on prod:
     cd /opt/quantopsai && source .env
@@ -81,9 +90,19 @@ def _per_profile_db_path(profile_id: int) -> str:
     return f"quantopsai_profile_{profile_id}.db"
 
 
-def _find_orphans(main_db: str, user_id: int) -> List[Dict]:
-    """Return profiles whose alpaca_account_id is set but doesn't
-    resolve in alpaca_accounts."""
+def _find_orphans(main_db: str, user_id: int,
+                  remove_all: bool = False) -> List[Dict]:
+    """Return profiles to remove.
+
+    Default behavior: only profiles whose alpaca_account_id is set
+    but doesn't resolve in alpaca_accounts.
+
+    When `remove_all=True` (--remove-all-alpaca-accounts): every
+    trading_profile for the user, regardless of alpaca_account_id
+    state. Used during the fresh-start reset where the user has
+    deleted their Alpaca accounts at Alpaca.com but the QuantOps
+    alpaca_accounts rows still exist with stale API keys.
+    """
     conn = sqlite3.connect(main_db)
     conn.row_factory = sqlite3.Row
     try:
@@ -104,8 +123,16 @@ def _find_orphans(main_db: str, user_id: int) -> List[Dict]:
     orphans = []
     for p in profiles:
         ac = p["alpaca_account_id"]
-        # A profile with alpaca_account_id=NULL falls back to user-
-        # level encrypted keys — it's not orphaned, just legacy.
+        if remove_all:
+            # Take everything — fresh-start mode.
+            orphans.append({
+                "id": p["id"], "name": p["name"],
+                "alpaca_account_id": ac,
+                "enabled": p["enabled"],
+                "db_path": _per_profile_db_path(p["id"]),
+            })
+            continue
+        # Default-mode: skip null-fallback + still-valid pointers.
         if ac is None:
             continue
         if ac in live_accounts:
@@ -118,6 +145,34 @@ def _find_orphans(main_db: str, user_id: int) -> List[Dict]:
             "db_path": _per_profile_db_path(p["id"]),
         })
     return orphans
+
+
+def _remove_all_alpaca_accounts(main_db: str, user_id: int,
+                                apply: bool) -> int:
+    """Wipe every alpaca_accounts row for the user. Returns rowcount.
+
+    Backed by the script's broader --apply gate; pre-flight count
+    is shown on dry-run."""
+    with sqlite3.connect(main_db) as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM alpaca_accounts WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0]
+        if apply and count > 0:
+            conn.execute(
+                "DELETE FROM alpaca_accounts WHERE user_id = ?",
+                (user_id,),
+            )
+            conn.commit()
+            log.info("    removed %d alpaca_accounts row(s)", count)
+        elif not apply:
+            log.info(
+                "    DRY: would DELETE %d alpaca_accounts row(s) "
+                "for user %d", count, user_id,
+            )
+        else:
+            log.info("    no alpaca_accounts rows for user %d", user_id)
+    return int(count or 0)
 
 
 def _backup_db_file(db_path: str, backup_dir: str) -> str:
@@ -208,21 +263,36 @@ def main():
              "stale drift items from deleted profiles don't show "
              "on /issues. Default OFF.",
     )
+    ap.add_argument(
+        "--remove-all-alpaca-accounts", action="store_true",
+        help="Treat EVERY trading_profile as an orphan AND remove "
+             "every alpaca_accounts row for the user. Fresh-start "
+             "mode. Default OFF.",
+    )
     args = ap.parse_args()
 
     log.info("=" * 70)
-    log.info("ORPHAN CLEANUP (apply=%s, user=%d, clear_audit_alerts=%s)",
-             args.apply, args.user_id, args.clear_audit_alerts)
+    log.info(
+        "ORPHAN CLEANUP (apply=%s, user=%d, clear_audit_alerts=%s, "
+        "remove_all_alpaca_accounts=%s)",
+        args.apply, args.user_id, args.clear_audit_alerts,
+        args.remove_all_alpaca_accounts,
+    )
     log.info("=" * 70)
 
     main_db = _resolve_main_db()
     log.info("main db: %s", main_db)
-    orphans = _find_orphans(main_db, args.user_id)
-    if not orphans and not args.clear_audit_alerts:
-        log.info("No orphaned profiles found and --clear-audit-alerts "
-                 "not set — nothing to do.")
+    orphans = _find_orphans(
+        main_db, args.user_id,
+        remove_all=args.remove_all_alpaca_accounts,
+    )
+    if (not orphans
+            and not args.clear_audit_alerts
+            and not args.remove_all_alpaca_accounts):
+        log.info("No orphaned profiles found and no other flags set "
+                 "— nothing to do.")
         return 0
-    log.info("Orphaned profiles: %d", len(orphans))
+    log.info("Profiles to remove: %d", len(orphans))
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup_dir = (
@@ -240,6 +310,16 @@ def main():
         if r["row_removed"]:
             removed_rows += 1
 
+    # Order matters: remove profiles FIRST (so foreign references
+    # are gone), THEN remove alpaca_accounts. Otherwise SQLite
+    # foreign-key constraints (if enabled) would block the wipe.
+    removed_accounts = 0
+    if args.remove_all_alpaca_accounts:
+        log.info("removing alpaca_accounts for user %d...", args.user_id)
+        removed_accounts = _remove_all_alpaca_accounts(
+            main_db, args.user_id, args.apply,
+        )
+
     cleared_alerts = 0
     if args.clear_audit_alerts:
         log.info("clearing audit_alerts table...")
@@ -247,10 +327,14 @@ def main():
 
     log.info("=" * 70)
     if args.apply:
-        log.info("DONE: removed %d db file(s), %d profile row(s)%s",
-                 removed_files, removed_rows,
-                 f", cleared {cleared_alerts} audit_alerts row(s)"
-                 if args.clear_audit_alerts else "")
+        log.info(
+            "DONE: removed %d db file(s), %d profile row(s)%s%s",
+            removed_files, removed_rows,
+            (f", {removed_accounts} alpaca_accounts row(s)"
+             if args.remove_all_alpaca_accounts else ""),
+            (f", cleared {cleared_alerts} audit_alerts row(s)"
+             if args.clear_audit_alerts else ""),
+        )
         log.info(
             "Next steps:\n"
             "  - Restart services so caches drop: systemctl restart "
