@@ -142,14 +142,18 @@ def get_fda_inspections(symbol: str) -> Dict[str, Any]:
     if cached is not None:
         return cached
 
-    # openFDA inspections-citations endpoint
+    # openFDA drug/enforcement endpoint — recalls + enforcement
+    # actions on the company's drug products. (Was previously hitting
+    # food/enforcement which is the wrong endpoint for pharma. Caught
+    # by preflight backfill returning 0 for all 17 mapped pharma
+    # tickers 2026-05-17.)
+    import urllib.parse
     url = (
-        "https://api.fda.gov/food/enforcement.json?"
+        "https://api.fda.gov/drug/enforcement.json?"
         f"search=recalling_firm:%22{urllib.parse.quote(name)}%22"
         "&limit=20"
     )
     try:
-        import urllib.parse
         data = _http_get_json(url) or {}
     except Exception:
         data = {}
@@ -170,43 +174,57 @@ def get_fda_inspections(symbol: str) -> Dict[str, Any]:
 # NHTSA recalls (auto / EV)
 # ─────────────────────────────────────────────────────────────────────
 
-# Ticker → NHTSA manufacturer name (substring match accepted)
-_TICKER_TO_NHTSA_MAKE = {
-    "TSLA": "TESLA",      "F": "FORD",         "GM": "GENERAL MOTORS",
-    "TM": "TOYOTA",       "HMC": "HONDA",      "STLA": "STELLANTIS",
-    "RIVN": "RIVIAN",     "LCID": "LUCID",     "NIO": "NIO",
-    "XPEV": "XPENG",      "LI": "LI AUTO",     "FSR": "FISKER",
+# Ticker → (NHTSA manufacturer name, list of top model names).
+# NHTSA's /recallsByVehicle endpoint REQUIRES make+model+modelYear
+# (not just make+year — verified 2026-05-17 after preflight returned
+# 0 for all auto tickers). So we iterate top models per make.
+_TICKER_TO_NHTSA = {
+    "TSLA": ("TESLA",          ["Model 3", "Model Y", "Model S", "Model X"]),
+    "F":    ("FORD",           ["F-150", "Mustang", "Bronco", "Explorer"]),
+    "GM":   ("CHEVROLET",      ["Silverado", "Equinox", "Tahoe", "Malibu"]),
+    "TM":   ("TOYOTA",         ["Camry", "RAV4", "Tacoma", "Highlander"]),
+    "HMC":  ("HONDA",          ["Civic", "CR-V", "Accord", "Pilot"]),
+    "STLA": ("JEEP",           ["Grand Cherokee", "Wrangler", "Cherokee"]),
+    "RIVN": ("RIVIAN",         ["R1T", "R1S"]),
+    "LCID": ("LUCID",          ["Air"]),
+    "NIO":  ("NIO",            ["ES6", "ES8", "EC6"]),
+    "XPEV": ("XPENG",          ["P7", "G3"]),
+    "LI":   ("LI AUTO",        ["L7", "L8", "L9"]),
+    "FSR":  ("FISKER",         ["Ocean"]),
 }
 
 
 def get_nhtsa_recalls(symbol: str) -> Dict[str, Any]:
-    """NHTSA recall count for the manufacturer behind this ticker.
+    """NHTSA recall count for the manufacturer + top models behind
+    this ticker. NHTSA's recallsByVehicle endpoint requires all three
+    of make+model+modelYear, so we iterate the top 2-4 models per
+    make for the last 2 model years.
     Returns {} for non-auto tickers."""
-    make = _TICKER_TO_NHTSA_MAKE.get(symbol.upper())
-    if not make:
+    pair = _TICKER_TO_NHTSA.get(symbol.upper())
+    if not pair:
         return {}
+    make, models = pair
     ck = f"nhtsa:{make}"
     cached = _cached(ck)
     if cached is not None:
         return cached
 
-    # NHTSA recall API — modelYear left open, manufacturer=make
     import datetime
-    # Use last 12 months of model years to keep it bounded
     this_year = datetime.date.today().year
-    counts = []
-    for yr in range(this_year - 1, this_year + 1):
-        url = (
-            "https://api.nhtsa.gov/recalls/recallsByVehicle?"
-            f"make={urllib.parse.quote(make)}&modelYear={yr}"
-        )
-        try:
-            import urllib.parse  # noqa: F811 — used above too
-            data = _http_get_json(url) or {}
-        except Exception:
-            data = {}
-        counts.append(len(data.get("results") or []))
-    total = sum(counts)
+    total = 0
+    for model in models:
+        for yr in range(this_year - 1, this_year + 1):
+            url = (
+                "https://api.nhtsa.gov/recalls/recallsByVehicle?"
+                f"make={urllib.parse.quote(make)}"
+                f"&model={urllib.parse.quote(model)}"
+                f"&modelYear={yr}"
+            )
+            try:
+                data = _http_get_json(url) or {}
+            except Exception:
+                data = {}
+            total += len(data.get("results") or [])
     result = {
         "nhtsa_make": make,
         "recalls_recent_years": int(total),
