@@ -162,10 +162,55 @@ def daily(tickers, max_age_days, verbose):
     click.echo(f"Daily refresh on {len(ticker_list)} tickers…")
     session = EdgarSession()
     with connect() as conn:
-        run_id = start_run(conn, f"daily:{len(ticker_list)} tickers")
+        # Pre-filter known-no-CIK tickers (ETFs, delisted, foreign).
+        # Pre-2026-05-17 these were 63/525 "ticker error(s)" every
+        # day for a stable population. Now we recompute the no-CIK
+        # set against the current SEC mapping and skip them quietly.
+        # If any previously-no-CIK ticker NOW has a CIK (rare but
+        # possible — re-listing, SEC catalog update), it's removed
+        # from no_cik_tickers so it gets included.
+        from .store import (
+            cik_for_ticker, mark_no_cik, is_known_no_cik,
+            clear_known_no_cik,
+        )
+        tickers_to_scrape = []
+        newly_no_cik = []
+        for tk in ticker_list:
+            cik = cik_for_ticker(conn, tk)
+            if cik:
+                # Has CIK — if it was previously no-CIK, clear that.
+                if is_known_no_cik(conn, tk):
+                    clear_known_no_cik(conn, tk)
+                tickers_to_scrape.append(tk)
+            else:
+                if not is_known_no_cik(conn, tk):
+                    newly_no_cik.append(tk)
+                mark_no_cik(
+                    conn, tk,
+                    reason="not in SEC company_tickers.json",
+                )
+        conn.commit()
+        n_skipped = len(ticker_list) - len(tickers_to_scrape)
+        if n_skipped:
+            click.echo(
+                f"  Skipping {n_skipped} known-no-CIK tickers "
+                f"(ETFs, delisted, foreign). See `runs` for the "
+                f"full list."
+            )
+        if newly_no_cik:
+            click.echo(
+                f"  NEW no-CIK tickers this run ({len(newly_no_cik)}): "
+                f"{', '.join(newly_no_cik[:10])}"
+                + (f", +{len(newly_no_cik)-10} more" if len(newly_no_cik) > 10 else "")
+            )
+        run_id = start_run(
+            conn, f"daily:{len(tickers_to_scrape)} of "
+                  f"{len(ticker_list)} tickers ({n_skipped} no-CIK)",
+        )
         try:
             results = scrape_universe(
-                session, conn, ticker_list, max_age_days=max_age_days,
+                session, conn, tickers_to_scrape,
+                max_age_days=max_age_days,
             )
             total_filings = sum(r.get("filings_seen", 0) for r in results)
             total_txns = sum(r.get("txns_inserted", 0) for r in results)
@@ -258,6 +303,26 @@ def runs(limit):
             f"{r['status']:18} inserted={r['rows_inserted']}  "
             f"seen={r['rows_seen']}"
             + (f"  ERR={r['error']}" if r.get("error") else "")
+        )
+
+
+@cli.command(name="no-cik")
+def no_cik():
+    """Show all tickers in the no_cik_tickers table (ETFs, delisted,
+    foreign listings). The daily refresh skips these quietly instead
+    of generating a 'ticker error' every day."""
+    from .store import list_known_no_cik
+    with connect() as conn:
+        rows = list_known_no_cik(conn)
+    if not rows:
+        click.echo("(no tickers flagged no-CIK)")
+        return
+    click.echo(f"{len(rows)} tickers with no SEC CIK mapping:")
+    for r in rows:
+        click.echo(
+            f"  {r['ticker']:8}  first_seen={r['first_seen_at']}  "
+            f"last_checked={r['last_checked_at']}  "
+            f"reason={r.get('reason') or '(unspecified)'}"
         )
 
 

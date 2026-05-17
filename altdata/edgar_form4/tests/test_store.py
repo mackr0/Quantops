@@ -268,6 +268,56 @@ class TestAggregateReader:
         assert data["total_buy_value"] == 100.0
 
 
+class TestNoCikTickers:
+    """2026-05-17: persist tickers known to have no CIK so daily
+    scrape skips them quietly instead of generating 'ticker error'
+    every day for a stable population (ETFs, delisted, foreign)."""
+
+    def test_mark_and_lookup(self, tmp_db):
+        from edgar_form4.store import mark_no_cik, is_known_no_cik
+        with connect(tmp_db) as conn:
+            assert is_known_no_cik(conn, "ANSS") is False
+            mark_no_cik(conn, "ANSS", reason="acquired by Synopsys")
+            conn.commit()
+            assert is_known_no_cik(conn, "ANSS") is True
+            assert is_known_no_cik(conn, "anss") is True  # case-insensitive
+
+    def test_clear_removes(self, tmp_db):
+        from edgar_form4.store import (
+            mark_no_cik, is_known_no_cik, clear_known_no_cik,
+        )
+        with connect(tmp_db) as conn:
+            mark_no_cik(conn, "ANSS")
+            conn.commit()
+            clear_known_no_cik(conn, "ANSS")
+            conn.commit()
+            assert is_known_no_cik(conn, "ANSS") is False
+
+    def test_mark_is_idempotent(self, tmp_db):
+        """Re-marking an existing ticker updates last_checked_at,
+        doesn't error or duplicate."""
+        from edgar_form4.store import (
+            mark_no_cik, list_known_no_cik,
+        )
+        with connect(tmp_db) as conn:
+            mark_no_cik(conn, "ANSS")
+            mark_no_cik(conn, "ANSS")
+            mark_no_cik(conn, "ANSS")
+            conn.commit()
+            rows = list_known_no_cik(conn)
+        assert len(rows) == 1
+        assert rows[0]["ticker"] == "ANSS"
+
+    def test_list_returns_all_in_alpha_order(self, tmp_db):
+        from edgar_form4.store import mark_no_cik, list_known_no_cik
+        with connect(tmp_db) as conn:
+            for tk in ("CEIX", "ANSS", "BITF"):
+                mark_no_cik(conn, tk)
+            conn.commit()
+            rows = list_known_no_cik(conn)
+        assert [r["ticker"] for r in rows] == ["ANSS", "BITF", "CEIX"]
+
+
 class TestOrphanedRunSweep:
     """2026-05-16: prod had a scrape_runs row stuck status='running'
     since 19:17 because the process was killed mid-run. The sweep at

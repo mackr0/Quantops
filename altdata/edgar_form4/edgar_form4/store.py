@@ -126,6 +126,19 @@ CREATE TABLE IF NOT EXISTS scrape_runs (
 
 CREATE INDEX IF NOT EXISTS idx_runs_started
     ON scrape_runs(started_at DESC);
+
+-- Tickers we've determined have no SEC CIK mapping (delisted /
+-- acquired / non-US / ETF). Pre-2026-05-17 these were ERRORS on
+-- every daily run ("63 ticker error(s)") even though they're a
+-- known-stable population — SEC doesn't issue CIKs to ETFs and
+-- delisted tickers stay delisted. Now persisted so the daily
+-- scrape can skip them quietly.
+CREATE TABLE IF NOT EXISTS no_cik_tickers (
+    ticker          TEXT    PRIMARY KEY,
+    first_seen_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    last_checked_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    reason          TEXT
+);
 """
 
 
@@ -216,6 +229,65 @@ def cik_for_ticker(
         (ticker,),
     ).fetchone()
     return row[0] if row else None
+
+
+# ── no_cik_tickers helpers (2026-05-17) ──────────────────────────
+#
+# Tickers known to have no SEC CIK mapping (ETFs, delisted, foreign
+# listings, etc.). Persisted so the daily scrape can skip them
+# quietly instead of generating "63 ticker error(s)" every day for
+# a stable population. After each refresh-tickers run, we recompute:
+# any previously-no-CIK ticker that NOW has a CIK gets removed
+# (rare but possible — a re-listed ticker, or a previously-omitted
+# entry SEC added). Any current-universe ticker still without a
+# CIK gets its row updated with the new last_checked_at.
+
+
+def mark_no_cik(
+    conn: sqlite3.Connection, ticker: str, reason: Optional[str] = None,
+) -> None:
+    """Record that `ticker` has no CIK mapping. Upserts on ticker."""
+    conn.execute(
+        "INSERT INTO no_cik_tickers (ticker, reason) VALUES (?, ?) "
+        "ON CONFLICT(ticker) DO UPDATE SET "
+        "last_checked_at = datetime('now'), "
+        "reason = COALESCE(excluded.reason, no_cik_tickers.reason)",
+        (ticker.upper(), reason),
+    )
+
+
+def is_known_no_cik(
+    conn: sqlite3.Connection, ticker: str,
+) -> bool:
+    """True if the ticker is in the no_cik_tickers table."""
+    row = conn.execute(
+        "SELECT 1 FROM no_cik_tickers WHERE ticker = upper(?) LIMIT 1",
+        (ticker,),
+    ).fetchone()
+    return row is not None
+
+
+def clear_known_no_cik(
+    conn: sqlite3.Connection, ticker: str,
+) -> None:
+    """Remove a ticker from no_cik_tickers (called when refresh-
+    tickers discovers the ticker NOW has a CIK)."""
+    conn.execute(
+        "DELETE FROM no_cik_tickers WHERE ticker = upper(?)",
+        (ticker,),
+    )
+
+
+def list_known_no_cik(
+    conn: sqlite3.Connection,
+) -> List[Dict[str, Any]]:
+    """All ticker rows currently flagged no-CIK. Used by the
+    `runs` command to surface the persistent population."""
+    rows = conn.execute(
+        "SELECT ticker, first_seen_at, last_checked_at, reason "
+        "FROM no_cik_tickers ORDER BY ticker"
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def update_last_filings_check(
