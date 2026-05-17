@@ -212,6 +212,84 @@ class TestOptionEventCapture:
 # Error handling / API failures
 # ─────────────────────────────────────────────────────────────────────
 
+class TestAlpacaFieldContract:
+    """Pin the Alpaca NonTradeActivity field-name contract so the
+    speculative `amount` fallback (or any other guess) can't recur.
+
+    Verified 2026-05-17 against Alpaca's docs at
+    https://docs.alpaca.markets/docs/account-activities :
+      DIV   uses `net_amount` (NOT `amount`)
+      OPEXP/OPASN/OPXRC use `symbol` (carrying OCC) + `qty`
+      `price` is NOT documented for NonTradeActivity — code must
+            tolerate it being absent.
+    """
+
+    def test_dividend_requires_net_amount_field(self, tmp_path):
+        """DIV without `net_amount` → skip + WARN, do NOT silently
+        fall back to a guessed field name. The cash-parity audit
+        catches the resulting drift."""
+        from activities_capture import capture_activities_for_profile
+        db = _make_profile_db(tmp_path, 1)
+        api = MagicMock()
+        # Activity with `amount` set but NO `net_amount` — earlier
+        # speculative fallback would have read this; current code
+        # must skip + warn.
+        no_net_amount = SimpleNamespace(
+            id="div-noamount-1", activity_type="DIV",
+            symbol="AAPL", amount=50.0,  # NOT net_amount
+            date="2026-05-17",
+        )
+        api.get_activities.return_value = [no_net_amount]
+        ctx = _ctx(1, db, api)
+        with patch("activities_capture.logger") as fake_log:
+            summary = capture_activities_for_profile(ctx)
+        assert summary["DIV"] == 0
+        # Must have warned (loud, not silent)
+        fake_log.warning.assert_called()
+
+    def test_option_event_missing_symbol_field_warns(self, tmp_path):
+        """OPEXP without `symbol` → skip + WARN. Without the OCC
+        symbol we can't write a meaningful close row."""
+        from activities_capture import capture_activities_for_profile
+        db = _make_profile_db(tmp_path, 1)
+        api = MagicMock()
+        no_symbol = SimpleNamespace(
+            id="opexp-nosym-1", activity_type="OPEXP",
+            symbol="", qty=5, date="2026-05-17",
+        )
+        api.get_activities.return_value = [no_symbol]
+        ctx = _ctx(1, db, api)
+        with patch("activities_capture.logger") as fake_log:
+            summary = capture_activities_for_profile(ctx)
+        assert summary["OPEXP"] == 0
+        fake_log.warning.assert_called()
+
+    def test_option_event_with_no_price_field_uses_zero(self, tmp_path):
+        """`price` is NOT a documented NTA field. When absent, code
+        must default to 0 — which is the correct close-out price
+        for OPEXP (worthless) and harmless for OPASN/OPXRC (cash
+        movement comes via the separate FILL activity)."""
+        from activities_capture import capture_activities_for_profile
+        db = _make_profile_db(tmp_path, 1)
+        api = MagicMock()
+        # OPASN with NO `price` field at all
+        no_price = SimpleNamespace(
+            id="opasn-noprice-1", activity_type="OPASN",
+            symbol="AAPL260618C00200000", qty=5, date="2026-05-17",
+        )
+        api.get_activities.return_value = [no_price]
+        ctx = _ctx(1, db, api)
+        summary = capture_activities_for_profile(ctx)
+        assert summary["OPASN"] == 1
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT price, occ_symbol FROM trades "
+                "WHERE order_id = ?", ("opasn-noprice-1",)
+            ).fetchone()
+        assert row[0] == 0.0  # price defaulted to 0
+        assert row[1] == "AAPL260618C00200000"
+
+
 class TestErrorHandling:
     def test_api_failure_returns_empty_summary(self, tmp_path):
         from activities_capture import capture_activities_for_profile

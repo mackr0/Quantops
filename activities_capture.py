@@ -63,7 +63,14 @@ def _has_activity(db_path: str, activity_id: str) -> bool:
 def _write_dividend(ctx, activity: Any) -> bool:
     """Dividend cash credit → trades row with side='dividend',
     qty=1, price=dividend_amount. Adds 'dividend' to the credit
-    branch of get_virtual_account_info (see journal.py)."""
+    branch of get_virtual_account_info (see journal.py).
+
+    Field names per Alpaca's NonTradeActivity entity docs
+    (verified 2026-05-17): `id`, `activity_type='DIV'`, `symbol`,
+    `date`, `qty`, `per_share_amount`, **`net_amount`** (the
+    canonical dollar-amount field). No `amount` fallback — that was
+    speculative and isn't a documented field.
+    """
     from journal import log_trade
     activity_id = str(getattr(activity, "id", ""))
     if not activity_id:
@@ -72,12 +79,22 @@ def _write_dividend(ctx, activity: Any) -> bool:
     if _has_activity(ctx.db_path, activity_id):
         return False
     symbol = (getattr(activity, "symbol", "") or "").upper()
+    raw_amount = getattr(activity, "net_amount", None)
+    if raw_amount is None:
+        logger.warning(
+            "activities_capture: DIV %s has no net_amount field — "
+            "Alpaca response shape differs from documented "
+            "NonTradeActivity. Skipping row; cash-parity audit will "
+            "detect the resulting drift within 10 min.",
+            activity_id,
+        )
+        return False
     try:
-        amount = float(getattr(activity, "net_amount", None) or
-                       getattr(activity, "amount", 0) or 0)
+        amount = float(raw_amount)
     except (ValueError, TypeError):
         logger.warning(
-            "activities_capture: DIV %s has unparseable amount", activity_id,
+            "activities_capture: DIV %s net_amount=%r is not numeric",
+            activity_id, raw_amount,
         )
         return False
     if amount == 0:
@@ -114,13 +131,26 @@ def _write_dividend(ctx, activity: Any) -> bool:
 
 def _write_option_expiry_or_exercise(ctx, activity: Any) -> bool:
     """OPEXP/OPASN/OPXRC: close the option position by writing a
-    SELL row at the intrinsic value (or $0 for OTM expiry).
+    SELL row at price=0. The FIFO matcher then attributes the full
+    premium-paid (or premium-received) as realized P&L when it
+    matches this SELL against the open BUY/SHORT entry.
 
-    The resulting STOCK position from assignment/exercise arrives
-    as a separate FILL activity — Alpaca splits the events. We
-    handle the option-leg close here; the stock-leg fill goes
-    through the normal order path via FILL capture (or via the
-    aggregate_audit cycle picking up the new broker position).
+    Why price=0 is correct (not a placeholder):
+    - OPEXP: option expired worthless OTM. No cash proceeds. The
+      $0 close exactly reflects what happened.
+    - OPASN (short option assigned): the option is GONE. The cash
+      movement (strike × 100 × qty) and resulting share position
+      arrive as a SEPARATE FILL activity — the existing order-id
+      reconciler captures that. Closing the option leg at $0 here
+      doesn't double-count; the strike-price math lives in the FILL.
+    - OPXRC (we exercised a long option): symmetric to OPASN.
+
+    Field names per Alpaca's NonTradeActivity docs (verified
+    2026-05-17): `id`, `activity_type`, `symbol` (carries OCC for
+    option events), `date`, `qty`. NOTE: `price` is NOT a
+    documented NTA field — `getattr(activity, "price", 0)` returns
+    0 when absent, which is the correct close-out price for these
+    events regardless.
     """
     from journal import log_trade
     activity_id = str(getattr(activity, "id", ""))
@@ -130,8 +160,19 @@ def _write_option_expiry_or_exercise(ctx, activity: Any) -> bool:
         return False
     activity_type = getattr(activity, "activity_type", "?")
     occ_symbol = (getattr(activity, "symbol", "") or "").upper()
+    if not occ_symbol:
+        logger.warning(
+            "activities_capture: %s %s has no symbol field — "
+            "Alpaca response shape differs from documented "
+            "NonTradeActivity. Skipping; qty-parity audit will "
+            "detect the resulting position drift within 10 min.",
+            activity_type, activity_id,
+        )
+        return False
     try:
         qty = float(getattr(activity, "qty", 0) or 0)
+        # price is not a documented NTA field; default 0 is correct
+        # for OPEXP/OPASN/OPXRC (see docstring above).
         price = float(getattr(activity, "price", 0) or 0)
     except (ValueError, TypeError):
         logger.warning(
