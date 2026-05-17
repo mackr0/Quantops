@@ -17,6 +17,22 @@ Rules going forward:
 
 ---
 
+## 2026-05-17 — morning_health_check.sh §H2 + clean_orphaned_profiles cascade. Severity: medium (UI ticker pollution + silent script bug).
+
+Two related discoveries surfaced after the fresh-start cleanup:
+
+**1. Dashboard "Strategy Activity" ticker still showed 13,780 stale entries** even though all 11 old profiles were deleted. Root cause: SQLite doesn't enforce foreign keys by default, so `activity_log` rows (and 439 `tuning_history` rows) referencing now-deleted profile_ids stayed in `quantopsai.db`. The dashboard `/api/activity` route returns rows by profile_id without checking profile existence.
+
+Fix: `clean_orphaned_profiles.py` now cascade-deletes orphan rows from both tables on every run (always, no flag needed — there's no scenario where keeping rows pointing to deleted profiles is correct). Backed by a regression test that seeds orphan rows + a current row, runs the script, asserts only the current row survives.
+
+**2. morning_health_check.sh §H2 reported "0/18 alt-data signals" when the actual count was 18/18.** Script ran the live Python check correctly — the Python output said `TOTALS: ok=18`. But the shell parser used GNU sed's `\+` quantifier, which is unsupported on BSD sed (macOS where the script runs from). The pattern silently returned empty, defaulting `H2_OK=0`, false-flagging the section red.
+
+Fix: replaced sed extraction with portable `grep -oE 'ok=[0-9]+' | cut -d= -f2`. Verified: §H2 now correctly reports 18/18.
+
+**3. §H2 also expanded to verify the full live-API alt-data surface** — previously §H only checked the 5 persistent-store DBs, giving a misleading "alt-data is fine" while the other 13 signals (yfinance, FINRA, Google Trends, Wikipedia, app store, etc.) went unverified. New §H2 calls `get_all_alternative_data("AAPL")` and reports per-signal pass/empty/missing across all 18.
+
+---
+
 ## 2026-05-17 — morning_health_check.sh: replace hardcoded altdata DB names with glob discovery. Severity: low (script-only, but a discipline failure worth documenting).
 
 Pre-experiment morning_health_check.sh dry-run surfaced a false-positive: "stale alt-data DBs: edgar_form4(494179h)". The 494,179-hour age = `(stat returning 0 because file not found) - now / 3600`. Root cause: the §H alt-data loop hardcoded a `case proj in ...` mapping of project → filename, and `edgar_form4 → form4.db` was wrong (actual filename is `edgar_form4.db`). 4 of 5 mappings happened to be right by coincidence, but the principle was violated: never guess names. The script was written without ever running `ls /opt/quantopsai/altdata/*/data/*.db` to verify.

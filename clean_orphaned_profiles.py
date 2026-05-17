@@ -147,6 +147,58 @@ def _find_orphans(main_db: str, user_id: int,
     return orphans
 
 
+def _cascade_delete_profile_orphan_rows(main_db: str,
+                                        apply: bool) -> Dict[str, int]:
+    """SQLite doesn't enforce FK constraints by default, so rows in
+    activity_log + tuning_history that reference now-deleted
+    trading_profiles stick around. The 2026-05-17 fresh-start cleanup
+    surfaced 13,780 orphan activity_log rows + 439 orphan
+    tuning_history rows that polluted the dashboard's Strategy
+    Activity ticker for hours after the profile rows themselves were
+    gone.
+
+    Cascade-deletes any row in those two tables whose `profile_id` no
+    longer resolves in trading_profiles. Returns count per table.
+    """
+    summary: Dict[str, int] = {}
+    for table in ("activity_log", "tuning_history"):
+        try:
+            with sqlite3.connect(main_db) as conn:
+                row = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} "
+                    "WHERE profile_id NOT IN "
+                    "(SELECT id FROM trading_profiles)"
+                ).fetchone()
+                count = int(row[0] or 0) if row else 0
+                if apply and count > 0:
+                    conn.execute(
+                        f"DELETE FROM {table} "
+                        "WHERE profile_id NOT IN "
+                        "(SELECT id FROM trading_profiles)"
+                    )
+                    conn.commit()
+                    log.info(
+                        "    cascade-deleted %d %s row(s)",
+                        count, table,
+                    )
+                elif not apply and count > 0:
+                    log.info(
+                        "    DRY: would cascade-delete %d %s row(s)",
+                        count, table,
+                    )
+                summary[table] = count
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                # Table doesn't exist yet — no orphans possible.
+                summary[table] = 0
+            else:
+                log.warning(
+                    "    %s cascade delete failed: %s", table, exc,
+                )
+                summary[table] = 0
+    return summary
+
+
 def _remove_all_alpaca_accounts(main_db: str, user_id: int,
                                 apply: bool) -> int:
     """Wipe every alpaca_accounts row for the user. Returns rowcount.
@@ -320,6 +372,15 @@ def main():
             main_db, args.user_id, args.apply,
         )
 
+    # Cascade: SQLite FKs aren't enforced by default, so activity_log
+    # and tuning_history rows referencing now-deleted profiles get
+    # left behind. Always do this — there's no scenario where keeping
+    # rows pointing to a deleted profile is correct.
+    log.info("cascade-deleting orphan rows from activity_log + tuning_history...")
+    cascade_summary = _cascade_delete_profile_orphan_rows(
+        main_db, args.apply,
+    )
+
     cleared_alerts = 0
     if args.clear_audit_alerts:
         log.info("clearing audit_alerts table...")
@@ -327,11 +388,16 @@ def main():
 
     log.info("=" * 70)
     if args.apply:
+        cascade_str = ""
+        for tbl, n in cascade_summary.items():
+            if n > 0:
+                cascade_str += f", {n} {tbl} orphan(s)"
         log.info(
-            "DONE: removed %d db file(s), %d profile row(s)%s%s",
+            "DONE: removed %d db file(s), %d profile row(s)%s%s%s",
             removed_files, removed_rows,
             (f", {removed_accounts} alpaca_accounts row(s)"
              if args.remove_all_alpaca_accounts else ""),
+            cascade_str,
             (f", cleared {cleared_alerts} audit_alerts row(s)"
              if args.clear_audit_alerts else ""),
         )

@@ -337,8 +337,9 @@ echo "  Cumulative across $ACTIVE_COUNT profiles: \$$(printf '%.2f' $TOTAL)"
 # =============================================================================
 # Section H — Alt-data freshness
 # =============================================================================
-hdr "H. Alt-data DBs refreshed within 30h"
+hdr "H. Alt-data sources (persistent stores + live APIs)"
 
+echo "[H1] Persistent-store alt-data DBs refreshed within 30h"
 # Auto-discover every altdata DB by glob rather than hardcoding the
 # (project, filename) pairs. Hardcoding broke this section once when
 # edgar_form4's filename was guessed as 'form4.db' (the actual file
@@ -361,6 +362,72 @@ if [ -z "$STALE" ]; then
     ok "all alt-data DBs refreshed in last 30h"
 else
     bad "stale alt-data DBs:$STALE — daily cron may have failed"
+fi
+
+echo
+echo "[H2] Live-API alt-data signals (calling get_all_alternative_data for AAPL)"
+# Exercises the SAME alt-data fetcher the AI pipeline uses. AAPL is
+# chosen because it's a large-cap with broad coverage across every
+# signal type (insider activity, analyst coverage, congressional
+# trades, etc.) — gaps are real failures, not "no data exists for
+# this symbol."
+#
+# Per-signal result interpretation:
+#   ✓  non-empty dict   = source returned data
+#   −  empty dict       = source reachable but no data for AAPL
+#                         (rare for a large-cap; may indicate API
+#                         hiccup or rate-limit)
+#   ✗  missing key      = signal absent from the response — code path
+#                         broken or the signal got disabled
+H2_OUT=$(ssh root@$DROPLET "cd /opt/quantopsai && /opt/quantopsai/venv/bin/python -c '
+import json, sys
+try:
+    from alternative_data import get_all_alternative_data
+    d = get_all_alternative_data(\"AAPL\")
+except Exception as exc:
+    print(\"FATAL get_all_alternative_data raised: %s: %s\" % (type(exc).__name__, exc))
+    sys.exit(1)
+EXPECTED = [
+    \"insider\", \"short\", \"fundamentals\", \"options\", \"intraday\",
+    \"finra_short_vol\", \"insider_cluster\", \"analyst_estimates\",
+    \"insider_earnings\", \"dark_pool\", \"earnings_surprise\",
+    \"congressional_recent\", \"institutional_13f\",
+    \"biotech_milestones\", \"stocktwits_sentiment\",
+    \"google_trends\", \"wikipedia_pageviews\", \"app_store_ranking\",
+]
+ok, empty, missing = 0, 0, 0
+for key in EXPECTED:
+    if key not in d:
+        print(\"  MISSING: %s\" % key)
+        missing += 1
+        continue
+    v = d[key]
+    if isinstance(v, dict) and v:
+        ok += 1
+    else:
+        # empty dict or non-dict — reachable but no payload
+        print(\"  EMPTY: %s\" % key)
+        empty += 1
+print(\"TOTALS: ok=%d empty=%d missing=%d (expected %d)\" % (ok, empty, missing, len(EXPECTED)))
+' 2>&1")
+echo "$H2_OUT" | sed 's/^/      /'
+H2_TOTALS=$(echo "$H2_OUT" | grep "^TOTALS:")
+# Use grep -oE for portable extraction — BSD sed (macOS) doesn't
+# support `\+` so the previous `sed -n 's/.*ok=\([0-9]\+\).*/\1/p'`
+# silently returned empty, false-flagging the §H2 result as 0/18
+# when the real count was 18/18. Verified with `which grep` works
+# on both BSD and GNU.
+H2_OK=$(echo "$H2_TOTALS" | grep -oE 'ok=[0-9]+' | cut -d= -f2)
+H2_EMPTY=$(echo "$H2_TOTALS" | grep -oE 'empty=[0-9]+' | cut -d= -f2)
+H2_MISSING=$(echo "$H2_TOTALS" | grep -oE 'missing=[0-9]+' | cut -d= -f2)
+if [ "${H2_MISSING:-0}" -gt 0 ]; then
+    bad "${H2_MISSING} alt-data signal(s) MISSING from response — code path broken"
+elif [ "${H2_OK:-0}" -ge 15 ]; then
+    ok "${H2_OK}/18 live-API signals returned data (${H2_EMPTY:-0} empty — within normal range)"
+elif [ "${H2_OK:-0}" -ge 10 ]; then
+    warn "${H2_OK}/18 live-API signals returned data (${H2_EMPTY:-0} empty — partial coverage)"
+else
+    bad "only ${H2_OK:-0}/18 live-API signals returned data — broad rate-limit or outage"
 fi
 
 # =============================================================================

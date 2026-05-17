@@ -278,6 +278,58 @@ class TestApply:
             ).fetchone()[0]
         assert acct_count == 1  # unchanged
 
+    def test_cascade_deletes_activity_log_and_tuning_history_orphans(
+        self, fake_world, monkeypatch,
+    ):
+        """SQLite doesn't enforce FKs by default — activity_log and
+        tuning_history rows referencing now-deleted profiles must be
+        cascade-deleted by the script. The 2026-05-17 launch
+        surfaced this: 13,780 orphan activity_log rows + 439 orphan
+        tuning_history rows survived an earlier cleanup and polluted
+        the dashboard ticker for hours."""
+        import sqlite3
+        # Seed orphan rows pointing to a profile that doesn't exist
+        with sqlite3.connect(fake_world["main_db"]) as conn:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS activity_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    timestamp TEXT, activity_type TEXT,
+                    title TEXT, detail TEXT
+                );
+                CREATE TABLE IF NOT EXISTS tuning_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_id INTEGER NOT NULL,
+                    timestamp TEXT, parameter_name TEXT,
+                    old_value TEXT, new_value TEXT
+                );
+                -- Orphans: profile_id=999 doesn't exist in trading_profiles
+                INSERT INTO activity_log (profile_id, user_id, timestamp,
+                    activity_type, title, detail)
+                    VALUES (999, 1, '2026-05-17', 'scan', 't', 'd'),
+                           (999, 1, '2026-05-17', 'scan', 't', 'd');
+                INSERT INTO tuning_history (profile_id, timestamp,
+                    parameter_name, old_value, new_value)
+                    VALUES (999, '2026-05-17', 'p', '1', '2');
+                -- Current row: profile_id=1 (live) — must survive
+                INSERT INTO activity_log (profile_id, user_id, timestamp,
+                    activity_type, title, detail)
+                    VALUES (1, 1, '2026-05-17', 'scan', 't', 'd');
+            """)
+        rc = _run_main(monkeypatch, fake_world, ["--apply"])
+        assert rc == 0
+        with sqlite3.connect(fake_world["main_db"]) as conn:
+            # Activity log: 1 current row survives, 2 orphans gone
+            act_remaining = conn.execute(
+                "SELECT COUNT(*) FROM activity_log"
+            ).fetchone()[0]
+            tune_remaining = conn.execute(
+                "SELECT COUNT(*) FROM tuning_history"
+            ).fetchone()[0]
+        assert act_remaining == 1  # only pid=1's row survives
+        assert tune_remaining == 0  # 1 orphan deleted
+
     def test_apply_no_orphans_is_noop(self, tmp_path, monkeypatch):
         """If there are no orphans, --apply returns 0 and changes nothing."""
         import clean_orphaned_profiles
