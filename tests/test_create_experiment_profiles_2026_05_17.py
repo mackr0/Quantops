@@ -46,15 +46,32 @@ class TestManifestStructure:
                        if p["name"].startswith("EXP-A1"))
         assert a1_total == 1_000_000.0
 
-    def test_account_2_capital_is_1_25M(self, manifest):
+    def test_account_2_capital_is_1M(self, manifest):
+        """v2.1: ablations sized to fit Alpaca's $1M paper-account
+        funding cap. 5 × $200K = $1M."""
         a2_total = sum(p["initial_capital"] for p in manifest
                        if p["name"].startswith("EXP-A2"))
-        assert a2_total == 1_250_000.0
+        assert a2_total == 1_000_000.0
 
-    def test_account_3_capital_is_750K(self, manifest):
+    def test_account_3_capital_is_1M(self, manifest):
+        """v2.1: Aggressive Free profile grew from $450K → $700K to
+        fill Account 3 to the $1M Alpaca cap.
+        $25K + $25K + $250K + $700K = $1M."""
         a3_total = sum(p["initial_capital"] for p in manifest
                        if p["name"].startswith("EXP-A3"))
-        assert a3_total == 750_000.0
+        assert a3_total == 1_000_000.0
+
+    def test_no_account_exceeds_alpaca_funding_cap(self, manifest):
+        """Hard invariant: no account total may exceed Alpaca's
+        $1M per-paper-account cap (the constraint that drove v2.1)."""
+        ALPACA_PAPER_CAP = 1_000_000.0
+        for prefix in ("EXP-A1", "EXP-A2", "EXP-A3"):
+            total = sum(p["initial_capital"] for p in manifest
+                        if p["name"].startswith(prefix))
+            assert total <= ALPACA_PAPER_CAP, (
+                f"{prefix} totals ${total:,.0f} which exceeds "
+                f"Alpaca's ${ALPACA_PAPER_CAP:,.0f} paper-account cap"
+            )
 
 
 class TestStrategyTypeAssignments:
@@ -73,11 +90,22 @@ class TestStrategyTypeAssignments:
 
 
 class TestAblationCleanDelta:
-    """Each Account 2 ablation must match the Account 1 Anchor's
-    capital + every risk knob, differing ONLY in the named flag.
-    This makes the ablation delta interpretable as 'caused by that
-    one flag,' not 'caused by a tangle of small config differences.'
+    """Each Account 2 ablation must match the Account 1 Anchor on every
+    risk knob (position sizing, confidence threshold, the other enable
+    flags), differing ONLY in the named flag plus the intentional
+    capital reduction documented in docs/15 v2.1.
+
+    Capital intentionally differs (Anchor $250K vs Ablation $200K) to
+    fit Alpaca's $1M paper-account cap. Comparison metrics — % return
+    and Sharpe — are capital-invariant for large-caps with
+    percentage-based position sizing, so this is interpretively safe.
+    The hard rule is: every PERCENTAGE-based knob matches Anchor, so
+    the strategy behavior is identical, only the dollar magnitudes
+    differ.
     """
+
+    EXPECTED_ABLATION_CAPITAL = 200_000.0
+    EXPECTED_ANCHOR_CAPITAL = 250_000.0
 
     def _anchor(self, manifest):
         return next(p for p in manifest
@@ -86,39 +114,63 @@ class TestAblationCleanDelta:
     def _ablation_by_name(self, manifest, name):
         return next(p for p in manifest if p["name"] == name)
 
-    def test_no_alt_data_only_differs_in_alt_data_flag(self, manifest):
+    def _assert_matches_anchor_except_named_flags(
+        self, manifest, ablation_name, *off_flags,
+    ):
+        """Every ablation: capital is the intentional $200K, every
+        percentage-based knob matches Anchor, only the named flags
+        differ from Anchor."""
         anchor = self._anchor(manifest)
-        ab = self._ablation_by_name(manifest, "EXP-A2-NoAltData")
-        # Same capital, max_position_pct, max_total_positions, etc.
-        assert ab["initial_capital"] == anchor["initial_capital"]
+        ab = self._ablation_by_name(manifest, ablation_name)
+        # Capital: intentional v2.1 difference (Alpaca cap)
+        assert ab["initial_capital"] == self.EXPECTED_ABLATION_CAPITAL
+        assert anchor["initial_capital"] == self.EXPECTED_ANCHOR_CAPITAL
+        # Behavior knobs (percentage-based, capital-invariant) MUST match
         assert ab["max_position_pct"] == anchor["max_position_pct"]
         assert ab["max_total_positions"] == anchor["max_total_positions"]
-        assert ab["enable_meta_model"] == anchor["enable_meta_model"]
-        assert ab["enable_self_tuning"] == anchor["enable_self_tuning"]
-        assert ab["enable_options"] == anchor["enable_options"]
+        assert ab["ai_confidence_threshold"] == anchor["ai_confidence_threshold"]
         assert ab["enable_short_selling"] == anchor["enable_short_selling"]
-        # Only alt_data differs
-        assert ab["enable_alt_data"] == 0
-        assert anchor["enable_alt_data"] == 1
+        # Every enable_* flag matches Anchor EXCEPT the named off_flags
+        for flag in ("enable_alt_data", "enable_meta_model",
+                     "enable_self_tuning", "enable_options"):
+            if flag in off_flags:
+                assert ab[flag] == 0, (
+                    f"{ablation_name}: {flag} should be 0 (off)")
+                assert anchor[flag] == 1, (
+                    f"Anchor must have {flag}=1 for the ablation "
+                    "to mean anything"
+                )
+            else:
+                assert ab[flag] == anchor[flag], (
+                    f"{ablation_name}: {flag} must match Anchor "
+                    "({anchor[flag]}), got {ab[flag]}"
+                )
+
+    def test_no_alt_data_only_differs_in_alt_data_flag(self, manifest):
+        self._assert_matches_anchor_except_named_flags(
+            manifest, "EXP-A2-NoAltData", "enable_alt_data",
+        )
 
     def test_no_meta_model_only_differs_in_meta_flag(self, manifest):
-        anchor = self._anchor(manifest)
-        ab = self._ablation_by_name(manifest, "EXP-A2-NoMetaModel")
-        assert ab["initial_capital"] == anchor["initial_capital"]
-        assert ab["enable_alt_data"] == anchor["enable_alt_data"]
-        assert ab["enable_self_tuning"] == anchor["enable_self_tuning"]
-        assert ab["enable_options"] == anchor["enable_options"]
-        assert ab["enable_meta_model"] == 0
+        self._assert_matches_anchor_except_named_flags(
+            manifest, "EXP-A2-NoMetaModel", "enable_meta_model",
+        )
+
+    def test_no_self_tuning_only_differs_in_self_tuning_flag(self, manifest):
+        self._assert_matches_anchor_except_named_flags(
+            manifest, "EXP-A2-NoSelfTuning", "enable_self_tuning",
+        )
+
+    def test_no_options_only_differs_in_options_flag(self, manifest):
+        self._assert_matches_anchor_except_named_flags(
+            manifest, "EXP-A2-NoOptions", "enable_options",
+        )
 
     def test_combined_ablation_disables_both_named_flags(self, manifest):
-        anchor = self._anchor(manifest)
-        ab = self._ablation_by_name(manifest, "EXP-A2-NoAltData-NoMetaModel")
-        assert ab["initial_capital"] == anchor["initial_capital"]
-        # Only the two named flags differ from Anchor
-        assert ab["enable_alt_data"] == 0
-        assert ab["enable_meta_model"] == 0
-        assert ab["enable_self_tuning"] == anchor["enable_self_tuning"]
-        assert ab["enable_options"] == anchor["enable_options"]
+        self._assert_matches_anchor_except_named_flags(
+            manifest, "EXP-A2-NoAltData-NoMetaModel",
+            "enable_alt_data", "enable_meta_model",
+        )
 
 
 class TestReplicaIsTrueReplica:
@@ -142,7 +194,7 @@ class TestAggressiveProfileLiftsConstraints:
         cand = next(p for p in manifest
                     if p["name"] == "EXP-A3-25K-Candidate")
         agg = next(p for p in manifest
-                   if p["name"] == "EXP-A3-450K-AggressiveFree")
+                   if p["name"] == "EXP-A3-700K-AggressiveFree")
         # Aggressive lifts: more positions, shorts on, smaller per-position
         assert agg["max_total_positions"] > cand["max_total_positions"]
         assert agg["enable_short_selling"] == 1

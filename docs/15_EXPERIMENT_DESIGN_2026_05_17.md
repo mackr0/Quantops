@@ -1,4 +1,4 @@
-# QuantOpsAI Experiment Design v2 — Post-Audit Fresh Start (2026-05-17)
+# QuantOpsAI Experiment Design v2.1 — Post-Audit Fresh Start (2026-05-17)
 
 ## Why this document exists
 
@@ -14,7 +14,14 @@ document defines the FRESH experiment that will tell us five things:
 4. **Is a $25K real-money deployment ready?** — Specifically: does the constrained best-of-all-strategies config produce positive return + Sharpe > 1.0 + max drawdown < 15% over 6 months?
 5. **Does the strategy scale, and would lifting constraints unlock alpha?** — Conservative-scaling test (10×) AND an aggressive-freedom variant that drops the small-account constraints.
 
-This v2 design replaces the v1 plan (the original 13-profile table earlier in this file's git history). v2 was rewritten 2026-05-17 to fix five real data-quality problems with v1: mixed ablation/baseline capital sizes confounding ablation deltas; only one Random null (high variance); the $1M (40×) profile asked the same question as the $25K Candidate just bigger; no combined-ablation arm to detect component interactions; and no upside-aggressive control to bound whether the conservative default leaves alpha on the table.
+This v2.1 design replaces v1 (the original 13-profile table earlier in this file's git history) and v2 (a brief intermediate that put Account 2 at $1.25M before we realized Alpaca paper accounts cap at $1M each). v2.1 was finalized 2026-05-17 to fix six real problems:
+
+1. v1 had mixed ablation/baseline capital sizes ($200K vs $333K) confounding ablation deltas.
+2. v1 had only one Random null (high variance — one lucky/unlucky run dominates).
+3. v1's $1M (40×) profile asked the same question as the $25K Candidate just bigger — learned nothing new.
+4. v1 had no combined-ablation arm to detect component interactions (complementary vs redundant).
+5. v1 had no upside-aggressive control to bound whether the conservative default leaves alpha on the table.
+6. v2 violated the $1M-per-Alpaca-paper-account funding cap. v2.1 puts ablations at $200K each (5 × $200K = $1M, fits cap) and grows the Aggressive Free profile to $700K to fill Account 3 to the cap. The 80% capital difference between Anchor ($250K) and ablations ($200K) is intentionally documented as a known footnote, NOT a confounder — percentage-based knobs are identical, comparison metrics (% return, Sharpe) are capital-invariant for large-caps at this scale.
 
 ---
 
@@ -90,17 +97,19 @@ Four profiles share equal capital so their results are directly comparable. They
 
 ---
 
-### Account 2 — Ablations ($1,250,000 paper, 5 profiles × $250,000)
+### Account 2 — Ablations ($1,000,000 paper, 5 profiles × $200,000)
 
-**What this account proves:** *which subsystems are actually generating the alpha that Account 1's Full System produces.* Each ablation removes ONE component (or a combination) while holding everything else identical to the Full System Standard from Account 1. Capital matches Account 1's anchor exactly so the comparison is clean.
+**What this account proves:** *which subsystems are actually generating the alpha that Account 1's Full System produces.* Each ablation removes ONE component (or a combination) while holding every behavior knob identical to the Full System Standard from Account 1.
+
+**Why ablations are at $200K instead of $250K (matching Anchor):** Alpaca paper accounts cap at $1M each, and the 5 ablation arms must fit inside one Alpaca account. 5 × $200K = $1M; 5 × $250K = $1.25M would overflow. The interpretive penalty is minimal: percentage-based knobs (`max_position_pct=0.10`, `max_total_positions=10`) are identical between ablations and Anchor, so the strategy *behavior* is identical — every position pick is the same fraction of equity. Only the absolute dollar magnitudes differ by 20%. The comparison metrics that matter for this experiment (% return, Sharpe ratio, max drawdown %) are capital-invariant for large-cap stocks at this scale, so the ablation delta remains interpretable as "caused by the named flag," not "confounded by capital."
 
 | Profile | Capital | What's off | What it answers |
 |---|---|---|---|
-| No Alt-Data | $250,000 | `enable_alt_data=0` | Marginal value of the paid+scraped data feeds (insider, Congress, Form 4, 13F, sentiment, biotech catalysts) — if return ≈ Anchor, alt-data adds nothing and the cost/complexity should be dropped |
-| No Meta-Model | $250,000 | `enable_meta_model=0` | Marginal value of the GBM + SGD calibration layer that maps raw AI confidence to a calibrated probability of win — if return ≈ Anchor, the calibration is doing nothing the AI doesn't already do |
-| No Self-Tuning | $250,000 | `enable_self_tuning=0` | Marginal value of the 12-layer autonomous parameter learner — explicitly tests the post-2026-05-14-fix self-tuner. If return < Anchor, self-tuner is helping; if return > Anchor, self-tuner is hurting (worth knowing) |
-| No Options | $250,000 | `enable_options=0` | Marginal value of the options pipeline (single-leg + multi-leg). After the 2026-05-13 episode that cost $200K on options, this is the most operationally important ablation — if return ≥ Anchor, options should be permanently disabled |
-| **No Alt-Data + No Meta-Model** | $250,000 | both off | **Combined ablation** — tests whether the two components are complementary (combined loss > sum of individual losses → keep both) or redundant (combined loss ≈ max of individual losses → keep only the cheaper one) |
+| No Alt-Data | $200,000 | `enable_alt_data=0` | Marginal value of the paid+scraped data feeds (insider, Congress, Form 4, 13F, sentiment, biotech catalysts) — if return ≈ Anchor, alt-data adds nothing and the cost/complexity should be dropped |
+| No Meta-Model | $200,000 | `enable_meta_model=0` | Marginal value of the GBM + SGD calibration layer that maps raw AI confidence to a calibrated probability of win — if return ≈ Anchor, the calibration is doing nothing the AI doesn't already do |
+| No Self-Tuning | $200,000 | `enable_self_tuning=0` | Marginal value of the 12-layer autonomous parameter learner — explicitly tests the post-2026-05-14-fix self-tuner. If return < Anchor, self-tuner is helping; if return > Anchor, self-tuner is hurting (worth knowing) |
+| No Options | $200,000 | `enable_options=0` | Marginal value of the options pipeline (single-leg + multi-leg). After the 2026-05-13 episode that cost $200K on options, this is the most operationally important ablation — if return ≥ Anchor, options should be permanently disabled |
+| **No Alt-Data + No Meta-Model** | $200,000 | both off | **Combined ablation** — tests whether the two components are complementary (combined loss > sum of individual losses → keep both) or redundant (combined loss ≈ max of individual losses → keep only the cheaper one) |
 
 **Why the combined arm matters:** With only ~6 months of paper data, single-axis ablations may not have enough resolved trades to detect modest effects (especially alt-data, where the high-signal events are rare). The combined arm produces a bigger and easier-to-detect delta, AND it surfaces a question single ablations can't answer: *do the components reinforce each other or substitute for each other?* If alt-data and meta-model are redundant, we can drop the more expensive one. If they're complementary, we keep both even if each one's individual contribution looks marginal.
 
@@ -116,7 +125,7 @@ Four profiles share equal capital so their results are directly comparable. They
 
 ---
 
-### Account 3 — Product candidate + scale ($750,000 paper, 4 profiles)
+### Account 3 — Product candidate + scale ($1,000,000 paper, 4 profiles)
 
 **What this account proves:** *whether the system is ready for real $25K cash, whether the result is signal or luck, and whether lifting constraints would yield more alpha than the conservative default.*
 
@@ -151,11 +160,11 @@ This account contains three distinct experiments:
 
 | Profile | Capital | Notes |
 |---|---|---|
-| **$450K Aggressive Free** | $450,000 | All small-capital constraints DROPPED: `max_total_positions = 15`, `max_position_pct = 0.10`, `enable_short_selling = 1`, multi-leg options allowed, longer hold periods, broader universe |
+| **$700K Aggressive Free** | $700,000 | All small-capital constraints DROPPED: `max_total_positions = 15`, `max_position_pct = 0.10`, `enable_short_selling = 1`, multi-leg options allowed, longer hold periods, broader universe |
 
 **What this proves:** *is the conservative default leaving alpha on the table, or is the conservative default actually the right risk/return tradeoff?*
 
-The $25K Candidate is conservative because it has to be — it can't hold 15 positions when each position would be $1,600, can't afford multi-leg options where one spread eats half the account, can't take shorts that tie up margin. Those constraints exist because of capital, not because they're optimal. At $450K, none of those constraints bind. The Aggressive Free profile lets the AI run with all of its tools — every signal source ON, every position type allowed, more diversification, longer hold periods.
+The $25K Candidate is conservative because it has to be — it can't hold 15 positions when each position would be $1,600, can't afford multi-leg options where one spread eats half the account, can't take shorts that tie up margin. Those constraints exist because of capital, not because they're optimal. At $700K, none of those constraints bind. The Aggressive Free profile lets the AI run with all of its tools — every signal source ON, every position type allowed, more diversification, longer hold periods.
 
 Two possible outcomes, both informative:
 - **Aggressive beats Conservative Scale by margin > slippage cost of scale** → the conservative defaults ARE leaving alpha on the table. The $25K cash deployment is conservative for capital reasons, not strategy reasons — and as real-money capital grows, lifting constraints will unlock more return.
@@ -164,7 +173,7 @@ Two possible outcomes, both informative:
 **Win condition for Account 3:**
 - $25K Candidate AND $25K Replica both: positive return after costs, Sharpe > 1.0, max drawdown < 15%, σ between them < 5% → **deploy real $25K cash**.
 - $250K Conservative Scale: degrades no more than 30% in Sharpe vs Candidate → the strategy scales; future real-money deployments can grow.
-- $450K Aggressive Free: result determines whether to lift constraints as real-money capital grows.
+- $700K Aggressive Free: result determines whether to lift constraints as real-money capital grows.
 
 **Failure modes this account exposes:**
 - Candidate positive but Replica negative (or vice versa) → strategy is too RNG-dependent, don't deploy.
@@ -176,11 +185,11 @@ Two possible outcomes, both informative:
 
 ## Total capital and profile count
 
-| Account | Capital | Profiles |
+| Alpaca Account | Capital (fits $1M paper cap) | QuantOps profiles |
 |---|---|---|
-| Account 1 — Baselines | $1,000,000 | 4 |
-| Account 2 — Ablations | $1,250,000 | 5 |
-| Account 3 — Product + scale | $750,000 | 4 |
+| Account 1 — Baselines | $1,000,000 | 4 (Buy-Hold SPY + Random A + Random B + Full System Standard) |
+| Account 2 — Ablations | $1,000,000 | 5 (No Alt-Data + No Meta-Model + No Self-Tuning + No Options + Combined NoAlt+NoMeta) |
+| Account 3 — Product + scale | $1,000,000 | 4 ($25K Candidate + $25K Replica + $250K Conservative Scale + $700K Aggressive Free) |
 | **Total** | **$3,000,000** | **13** |
 
 ---
@@ -218,7 +227,7 @@ After 6 months of paper trading on this design, the outcomes drive specific acti
 | $25K Candidate AND Replica both positive, Sharpe > 1.0, DD < 15%, σ between them < 5% | **Deploy real $25K cash** |
 | $25K Candidate positive but Replica fails OR they diverge > 5% | Don't deploy — strategy too RNG-dependent |
 | $250K Conservative Scale degrades > 30% vs Candidate | Strategy doesn't scale; cap future deployments at the largest size that holds |
-| $450K Aggressive Free crushes Conservative Scale | Conservative defaults are leaving alpha on the table — as real capital grows, lift constraints |
+| $700K Aggressive Free crushes Conservative Scale | Conservative defaults are leaving alpha on the table — as real capital grows, lift constraints |
 | Any individual ablation ≥ Anchor | That component is a cost center — remove from prod |
 | Combined ablation (NoAlt+NoMeta) loss >> sum of singles | Components are complementary — keep both even if individual contributions look marginal |
 | Combined ablation loss ≈ singles average | Components are redundant — keep the cheaper one |
@@ -292,16 +301,18 @@ Restart specific profiles only (keep the experiment running) if:
 ## Launch sequence
 
 1. `./morning_health_check.sh` — sanity-check current prod state.
-2. `python3 clean_orphaned_profiles.py` — dry-run; review the list of profiles to be removed.
-3. `python3 clean_orphaned_profiles.py --apply` — execute removal.
-4. **User creates 3 new Alpaca paper accounts** in the Alpaca dashboard, funds them:
-   - Account 1: $1,000,000
-   - Account 2: $1,250,000
-   - Account 3: $750,000
-5. **User adds the 3 accounts to QuantOps** via the settings page (paste the API keys).
-6. **Batch-create the 13 profiles** via a script (TBD — config dict per the tables above, calls `models.create_trading_profile`).
-7. `./morning_health_check.sh` — confirm all 13 profiles discovered, audit_alerts empty, reconciler heartbeat green, comparative-returns API returns 13 series at 0% return.
-8. **Let it run.** First useful comparative data emerges once each profile has ~5 daily snapshots + a few completed trade cycles (≈ 2 weeks).
+2. `python3 clean_orphaned_profiles.py --clear-audit-alerts` — dry-run; review the list of profiles to be removed AND the audit_alerts row count that would be cleared.
+3. `python3 clean_orphaned_profiles.py --apply --clear-audit-alerts` — execute removal + wipe audit_alerts so /issues starts truly clean.
+4. `python3 create_experiment_profiles.py` — dry-run; preview all 13 profiles that would be created.
+5. `python3 create_experiment_profiles.py --apply` — create the 13 profiles with `alpaca_account_id=NULL` (you wire keys after).
+6. **User creates 3 new Alpaca paper accounts** in the Alpaca dashboard, funds each one to the $1M paper cap:
+   - Alpaca Account 1: $1,000,000 (hosts the 4 EXP-A1-* profiles)
+   - Alpaca Account 2: $1,000,000 (hosts the 5 EXP-A2-* profiles)
+   - Alpaca Account 3: $1,000,000 (hosts the 4 EXP-A3-* profiles)
+7. **User adds the 3 Alpaca accounts to QuantOps** via /settings (paste the API keys for each).
+8. **User wires alpaca_account_id on each profile** via the profile edit page: all `EXP-A1-*` profiles → Account 1; all `EXP-A2-*` → Account 2; all `EXP-A3-*` → Account 3.
+9. `./morning_health_check.sh` — confirm all 13 profiles discovered, audit_alerts empty, reconciler heartbeat green, comparative-returns API returns 13 series at 0% return.
+10. **Let it run.** First 14 days are a system shakeout (per the Stop/Retune/Restart section above); the measurement clock starts day 15.
 
 ---
 

@@ -110,13 +110,18 @@ PROFILES: List[Dict[str, Any]] = [
         "ai_confidence_threshold": 0.60,
     },
 
-    # ── Account 2: Ablations ($1.25M, 5 × $250K) ─────────────────────
-    # Capital + risk knobs IDENTICAL to the Anchor — only the named
-    # flag differs. This is what makes the ablation delta meaningful.
+    # ── Account 2: Ablations ($1M, 5 × $200K) ────────────────────────
+    # Capital reduced from $250K → $200K vs Anchor so the account
+    # totals fit Alpaca's $1M paper-account funding cap. Comparison
+    # metrics (% return, Sharpe) are capital-invariant for large-caps
+    # with percentage-based position sizing, so the 80% capital
+    # difference is documented but not a confounder. Only the named
+    # flag differs from Anchor on each ablation — that's what makes
+    # the delta meaningful.
     {
         "name": "EXP-A2-NoAltData",
         "market_type": "largecap",
-        "initial_capital": 250_000.0,
+        "initial_capital": 200_000.0,
         "strategy_type": "ai",
         "enable_alt_data": 0,   # ← the only knob different from Anchor
         "enable_meta_model": 1,
@@ -131,7 +136,7 @@ PROFILES: List[Dict[str, Any]] = [
     {
         "name": "EXP-A2-NoMetaModel",
         "market_type": "largecap",
-        "initial_capital": 250_000.0,
+        "initial_capital": 200_000.0,
         "strategy_type": "ai",
         "enable_alt_data": 1,
         "enable_meta_model": 0,  # ←
@@ -146,7 +151,7 @@ PROFILES: List[Dict[str, Any]] = [
     {
         "name": "EXP-A2-NoSelfTuning",
         "market_type": "largecap",
-        "initial_capital": 250_000.0,
+        "initial_capital": 200_000.0,
         "strategy_type": "ai",
         "enable_alt_data": 1,
         "enable_meta_model": 1,
@@ -161,7 +166,7 @@ PROFILES: List[Dict[str, Any]] = [
     {
         "name": "EXP-A2-NoOptions",
         "market_type": "largecap",
-        "initial_capital": 250_000.0,
+        "initial_capital": 200_000.0,
         "strategy_type": "ai",
         "enable_alt_data": 1,
         "enable_meta_model": 1,
@@ -178,7 +183,7 @@ PROFILES: List[Dict[str, Any]] = [
         # complementary or redundant.
         "name": "EXP-A2-NoAltData-NoMetaModel",
         "market_type": "largecap",
-        "initial_capital": 250_000.0,
+        "initial_capital": 200_000.0,
         "strategy_type": "ai",
         "enable_alt_data": 0,    # ←
         "enable_meta_model": 0,  # ←
@@ -246,9 +251,11 @@ PROFILES: List[Dict[str, Any]] = [
     {
         # Aggressive Free — all small-account constraints DROPPED.
         # Upper-bound test: does lifting constraints unlock alpha?
-        "name": "EXP-A3-450K-AggressiveFree",
+        # Sized to fill Account 3 to the $1M Alpaca cap after the
+        # $25K + $25K + $250K from the other three profiles.
+        "name": "EXP-A3-700K-AggressiveFree",
         "market_type": "largecap",
-        "initial_capital": 450_000.0,
+        "initial_capital": 700_000.0,
         "strategy_type": "ai",
         "enable_alt_data": 1,
         "enable_meta_model": 1,
@@ -365,8 +372,9 @@ def main():
             "\nNext steps:\n"
             "  1. Create 3 fresh Alpaca paper accounts in the Alpaca dashboard:\n"
             "       Acct 1 funded $1,000,000\n"
-            "       Acct 2 funded $1,250,000\n"
-            "       Acct 3 funded $750,000\n"
+            "       Acct 2 funded $1,000,000\n"
+            "       Acct 3 funded $1,000,000\n"
+            "       (Alpaca paper accounts cap at $1M each → 3 × $1M = $3M)\n"
             "  2. /settings → Alpaca Accounts → add each one\n"
             "  3. For each EXP-A1-* profile: set alpaca_account_id = Acct 1\n"
             "     For each EXP-A2-* profile: set alpaca_account_id = Acct 2\n"
