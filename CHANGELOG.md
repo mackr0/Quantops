@@ -17,6 +17,26 @@ Rules going forward:
 
 ---
 
+## 2026-05-17 — Ablation flags (batch A of fresh-start experiment build). Severity: medium (new feature, default-on preserves existing behavior).
+
+The 13-profile fresh-start experiment (docs/15_EXPERIMENT_DESIGN_2026_05_17.md) requires ablation arms that disable specific subsystems so alpha attribution per component is measurable. Three columns + one strategy-mode column added to `trading_profiles`. All default ON / "ai" so no existing profile changes behavior.
+
+**Columns added (models.py migration block + allowlist + ctor):**
+- `enable_alt_data` (INTEGER, default 1) — gates the alt-data fetcher in `trade_pipeline._get_universe_context` (line ~3160). When False, every candidate gets `alt_data=None` instead of insider/Congress/Form4/13F/sentiment payloads. Used by the "No Alt-Data" ablation profile.
+- `enable_meta_model` (INTEGER, default 1) — gates `_meta_pregate_candidates` (line ~282) AND the main meta-model load in `trade_pipeline.execute_pipeline_step` (line ~1960). When False, raw AI confidence flows straight through with no GBM/SGD calibration. Used by the "No Meta-Model" ablation profile.
+- `enable_options` (INTEGER, default 1) — gates the `multileg_block` builder in `ai_analyst.build_prompt` (line ~1017) via a StopIteration short-circuit. When False, the AI prompt contains no options-strategy section so the model can't recommend multi-leg trades. Used by the "No Options" ablation profile.
+- `strategy_type` (TEXT, default 'ai') — orthogonal to the flags above. Reserved values: 'ai' (current behavior — full pipeline), 'buy_hold' (forthcoming — buy SPY day 1 and hold), 'random' (forthcoming — pick 5 random stocks/day, no AI). Strategy dispatch wiring lands in batch B.
+
+**Allowlist update**: `tests/test_every_lever_is_tuned.py` extended `MANUAL_PARAMETERS` with all 4 new columns. Rationale: auto-tuning ablation flags would defeat the experiment (the whole point is to measure what each subsystem contributes); `strategy_type` is an architectural mode, not a tunable knob.
+
+**Tests**: 12 new in `test_ablation_flags_2026_05_17.py` — defaults (4), each gate's enabled/disabled paths (6), and end-to-end profile-dict → UserContext wiring via `build_user_context_from_profile` (2). Full suite: 3303 passed.
+
+**Why this wasn't caught before**: it isn't a bug — it's missing functionality required for the experiment. The implementation-status table in docs/15 explicitly flagged these 3 flags + 2 strategy types as the 5/11 arms needing new code before the fresh-start launch.
+
+**Follow-ups (sequential)**: batch B — strategy_type='buy_hold' and 'random' dispatch in trade_pipeline (#162); batch C — clean DB wipe for fresh experiment (#163); comparative-returns chart on dashboard (#164).
+
+---
+
 ## 2026-05-16 — Zero-error audit, batches 1-3. Severity: critical (multi-day blind spots across production logs).
 
 After the edgar_form4 `ok_with_errors` "silent failures count but don't expose what failed" surfaced one instance of a broader pattern, the user mandated zero tolerance — every WARN/ERROR/CRITICAL gets surfaced and fixed. The audit catalogued 14 issues across the codebase + production logs; 12 closed across 3 deploys.

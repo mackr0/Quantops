@@ -285,6 +285,20 @@ class UserContext:
     # the AI prompt). Disable to skip the snapshot task.
     enable_portfolio_risk_snapshot: bool = True
 
+    # 2026-05-17 ablation flags for the fresh-start experiment.
+    # All default ON to preserve current behavior; disable
+    # individually for ablation profiles.
+    enable_alt_data: bool = True
+    enable_meta_model: bool = True
+    enable_options: bool = True
+
+    # 2026-05-17 strategy_type: dispatches to a non-AI baseline
+    # pipeline when set. 'ai' = normal scan-and-trade (default);
+    # 'buy_hold_spy' = weekly rebalance to 100% SPY; 'random_stock' =
+    # pick N random symbols per cycle from universe. Both baselines
+    # bypass AI entirely — they're the experiment's null hypotheses.
+    strategy_type: str = "ai"
+
     # Item 1c — long-vol portfolio tail-risk hedge. OFF by default
     # (opt-in: costs real put premium). When on, scheduler manages
     # SPY puts: open on drawdown / crisis / VaR trigger, roll near

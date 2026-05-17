@@ -110,20 +110,21 @@ If all three of those win conditions hit → real $25K deployed.
 
 | Arm | Status | What's missing |
 |---|---|---|
-| Buy & Hold SPY | ❌ Not implemented | New strategy type: "buy SPY, rebalance weekly to 100%." Bypasses AI entirely. Need a `strategy_type='buy_hold'` profile mode + ~150 LOC new code in trade_pipeline. |
-| Random Stock-of-Day | ❌ Not implemented | New strategy type that picks 5 random stocks from universe, holds N days, no AI consultation. ~150 LOC. |
+| Buy & Hold SPY | 🟡 Column exists | `strategy_type='buy_hold'` column added 2026-05-17; dispatch code (~150 LOC in trade_pipeline strategy router) pending batch B. |
+| Random Stock-of-Day | 🟡 Column exists | `strategy_type='random'` column added 2026-05-17; dispatch code pending batch B. |
 | Full System | ✅ Default | Works with current code (all flags ON). |
-| No Alt-Data | ❌ Flag missing | Add `enable_alt_data` column to trading_profiles; check in `get_batch_context_data` and similar to skip alt-data fetches. ~20 LOC + test. |
-| No Meta-Model | ❌ Flag missing | Add `enable_meta_model` column; check in `meta_model.predict` to return raw AI confidence unmodified. ~20 LOC + test. |
+| No Alt-Data | ✅ Implemented | `enable_alt_data` column added + gate in `trade_pipeline._get_universe_context` (2026-05-17). |
+| No Meta-Model | ✅ Implemented | `enable_meta_model` column added + gates in `_meta_pregate_candidates` and main meta-model load (2026-05-17). |
 | No Self-Tuning | ✅ Exists | `enable_self_tuning = 0` already supported. |
-| No Options | ❌ Flag missing | Add `enable_options` column; check in `ai_analyst.py:1829` (`multileg_action_enabled`) and single-leg paths. ~20 LOC + test. |
+| No Options | ✅ Implemented | `enable_options` column added + gate in `ai_analyst.build_prompt` multileg_block (2026-05-17). |
 | No Shorts | ✅ Exists | `enable_short_selling = 0` already supported. |
 | $25K Candidate (constrained) | ✅ Exists | All needed knobs (`max_total_positions`, `max_position_pct`, `enable_short_selling`, `initial_capital`) already supported. |
 | $25K Replicas | ✅ Exists | Same config × N profiles works today. |
 | Capital-scaling profiles | ✅ Exists | `initial_capital = 250000 / 1000000` already supported. |
 
-**6 of 11 arms work today. 5 require new code (2 new strategy types
-+ 3 new feature flags). Estimated effort: 1-2 days.**
+**9 of 11 arms work today (batch A complete 2026-05-17). 2 still
+require strategy_type dispatch code (batch B). Estimated effort:
+~1 day.**
 
 ---
 
@@ -187,11 +188,19 @@ After 6 months of paper trading on this design:
 
 Tracked as follow-up tasks in the QuantOps task list:
 
-- Build `strategy_type='buy_hold'` and `strategy_type='random'`
-  pipelines
-- Add `enable_alt_data` / `enable_meta_model` / `enable_options`
-  columns to trading_profiles + check in respective fetchers
-- (Already done) Reset script `reset_for_clean_experiment.py` —
-  ready to run when launch design is finalized
-- (Already done) Perfect-matching invariant: every trade row
-  carries the broker order_id; warning fires if not (#157)
+- **Batch B (next)**: Build `strategy_type='buy_hold'` and
+  `strategy_type='random'` dispatch in trade_pipeline so profiles
+  with those strategy_type values run their bespoke logic instead
+  of the AI pipeline.
+- **Batch C**: Clean wipe of orphaned per-profile DBs left over
+  from the old Alpaca accounts that were deleted 2026-05-17, then
+  rebuild fresh profiles per this experiment design.
+- **Dashboard**: Comparative-returns chart (#164) — overlay every
+  profile's daily equity curve against the SPY and Random
+  baselines so relative alpha is visible at a glance.
+- (Done 2026-05-17, batch A) `enable_alt_data` / `enable_meta_model`
+  / `enable_options` / `strategy_type` columns + ablation gates.
+- (Done) Reset script `reset_for_clean_experiment.py` — ready to
+  run when launch design is finalized.
+- (Done) Perfect-matching invariant: every trade row carries the
+  broker order_id; warning fires if not (#157).

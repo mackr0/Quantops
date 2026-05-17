@@ -73,6 +73,17 @@ MANUAL_PARAMETERS = {
     # Meta — tuner can't disable itself
     "enable_self_tuning": "Meta — tuner cannot disable itself",
 
+    # 2026-05-17 ablation flags — these define experimental arms in
+    # the 13-profile fresh-start experiment (docs/15_EXPERIMENT_DESIGN_
+    # 2026_05_17.md). Auto-tuning them would defeat their purpose
+    # (the experiment is testing whether THESE components add alpha).
+    # strategy_type ('ai' / 'buy_hold' / 'random') is a fundamental
+    # architecture choice, not a tunable knob.
+    "enable_alt_data":   "Ablation arm flag — operator-set for experiment",
+    "enable_meta_model": "Ablation arm flag — operator-set for experiment",
+    "enable_options":    "Ablation arm flag — operator-set for experiment",
+    "strategy_type":     "Strategy mode (ai/buy_hold/random) — architectural choice",
+
     # Historical baselines / virtual-account layer
     "initial_capital": "Historical baseline, not tunable",
     "is_virtual":      "Set at profile creation",

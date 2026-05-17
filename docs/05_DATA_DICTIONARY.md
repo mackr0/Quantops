@@ -187,6 +187,19 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 | `initial_capital` | REAL | 100000.0 | Starting capital for virtual P&L. |
 | `maga_mode` | INTEGER | 0 | Inject political-context block into AI prompt. |
 
+### Experiment ablation flags (2026-05-17)
+
+Operator-set columns that disable specific subsystems for the
+13-profile fresh-start experiment (docs/15). Never auto-tuned —
+auto-tuning ablations would defeat the experiment.
+
+| Column | Type | Default | Description |
+|---|---|---|---|
+| `enable_alt_data` | INTEGER | 1 | When 0, alt-data fetcher in `trade_pipeline._get_universe_context` is skipped; every candidate gets `alt_data=None`. Used by "No Alt-Data" ablation. |
+| `enable_meta_model` | INTEGER | 1 | When 0, `_meta_pregate_candidates` falls open (returns all candidates) and the main meta-model load is bypassed (raw AI confidence flows unmodified). Used by "No Meta-Model" ablation. |
+| `enable_options` | INTEGER | 1 | When 0, `ai_analyst.build_prompt` short-circuits the `multileg_block` builder so the AI prompt contains no options-strategy section. Used by "No Options" ablation. |
+| `strategy_type` | TEXT | `'ai'` | Strategy mode. `ai` = full pipeline (current behavior). `buy_hold` = buy SPY day 1 and hold (forthcoming, batch B). `random` = pick 5 random stocks/day with no AI consultation (forthcoming, batch B). Architectural choice, not tunable. |
+
 ### Item 1c — Long-vol portfolio hedge
 
 | Column | Type | Default | Description |

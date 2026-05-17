@@ -434,6 +434,34 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             # Empty list = wheel inactive for this profile (default).
             ("trading_profiles", "wheel_symbols",
                 "TEXT NOT NULL DEFAULT '[]'"),
+            # 2026-05-17 — ablation flags for the post-audit fresh-
+            # start experiment (docs/15_EXPERIMENT_DESIGN). Each
+            # disables one major system component so we can attribute
+            # alpha to specific subsystems:
+            # - enable_alt_data: insider / congress / Form 4 / 13F /
+            #   sentiment feeds. Off → AI prompt sees only price +
+            #   technicals + macro.
+            # - enable_meta_model: GBM + SGD confidence-adjustment
+            #   layer. Off → raw AI confidence used directly (no
+            #   meta-learning calibration).
+            # - enable_options: single-leg + multi-leg options
+            #   proposals. Off → AI is restricted to stock trades.
+            # All default ON to preserve current behavior; ablation
+            # profiles flip them off individually.
+            ("trading_profiles", "enable_alt_data",
+                "INTEGER NOT NULL DEFAULT 1"),
+            ("trading_profiles", "enable_meta_model",
+                "INTEGER NOT NULL DEFAULT 1"),
+            ("trading_profiles", "enable_options",
+                "INTEGER NOT NULL DEFAULT 1"),
+            # 2026-05-17 — strategy_type: dispatches to a non-AI
+            # baseline pipeline when set. 'ai' (default) runs the
+            # normal scan-and-trade flow. 'buy_hold_spy' rebalances
+            # to 100% SPY weekly. 'random_stock' picks N random
+            # symbols from universe each day. Both bypass AI for
+            # the experiment-design controls.
+            ("trading_profiles", "strategy_type",
+                "TEXT NOT NULL DEFAULT 'ai'"),
             # OPEN_ITEMS #10 — options roll-window thresholds, was module
             # constants in options_roll_manager.py. Per-profile lets users
             # who want tighter management (close at 60% max profit) or
@@ -1083,6 +1111,11 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         "enable_intraday_risk_halt",
         "enable_stat_arb_pairs",
         "enable_portfolio_risk_snapshot",
+        # 2026-05-17 ablation flags + strategy_type for fresh-start.
+        "enable_alt_data",
+        "enable_meta_model",
+        "enable_options",
+        "strategy_type",
         # Item 1c — long-vol hedge toggle + thresholds.
         "enable_long_vol_hedge",
         "long_vol_hedge_drawdown_pct",
@@ -1370,6 +1403,12 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         # Item 5c — slippage model uses market_type to scope the K
         # calibration cache.
         market_type=profile.get("market_type"),
+        # 2026-05-17 ablation flags (all default ON to preserve
+        # current behavior) + strategy_type (default 'ai').
+        enable_alt_data=bool(profile.get("enable_alt_data", 1)),
+        enable_meta_model=bool(profile.get("enable_meta_model", 1)),
+        enable_options=bool(profile.get("enable_options", 1)),
+        strategy_type=profile.get("strategy_type") or "ai",
         # Item 1c — long-vol portfolio tail-risk hedge (default OFF)
         enable_long_vol_hedge=bool(
             profile.get("enable_long_vol_hedge", 0)),

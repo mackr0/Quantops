@@ -273,6 +273,11 @@ def _meta_pregate_candidates(candidates: List[Dict[str, Any]],
     """
     if not candidates:
         return candidates
+    # 2026-05-17: gated by `ctx.enable_meta_model`. Ablation profiles
+    # bypass the pregate entirely — every candidate passes through
+    # to the AI without meta-prob filtering.
+    if not getattr(ctx, "enable_meta_model", True):
+        return candidates
     threshold = float(getattr(ctx, "meta_pregate_threshold", 0.5) or 0.0)
     if threshold <= 0:
         return candidates  # disabled — caller opted out
@@ -1958,8 +1963,14 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
         try:
             import meta_model
             profile_id = getattr(ctx, "profile_id", 0)
-            meta_path = meta_model.model_path_for_profile(profile_id)
-            meta_bundle = meta_model.load_model(meta_path)
+            # 2026-05-17: gated by `ctx.enable_meta_model`. Ablation
+            # profiles (No-Meta-Model arm) skip the GBM/SGD layer
+            # entirely — raw AI confidence is used unmodified.
+            if not getattr(ctx, "enable_meta_model", True):
+                meta_bundle = None
+            else:
+                meta_path = meta_model.model_path_for_profile(profile_id)
+                meta_bundle = meta_model.load_model(meta_path)
             if meta_bundle:
                 meta_stats["loaded"] = True
                 filtered_trades = []
@@ -3154,30 +3165,36 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
             )
 
         # Alternative data: insider, short interest, options, fundamentals, intraday
-        try:
-            alt = get_all_alternative_data(symbol)
-            if alt and not alt.get("is_crypto"):
-                # Add earnings transcript sentiment (requires ctx for AI call)
-                try:
-                    from sec_filings import get_earnings_call_sentiment
-                    alt["transcript_sentiment"] = get_earnings_call_sentiment(symbol, ctx=ctx)
-                except (ImportError, KeyError, ValueError, AttributeError,
-                        TypeError, OSError) as _ts_exc:
-                    # Transcript-sentiment add-on; rest of alt_data
-                    # still attached. Surface at DEBUG.
-                    logger.debug(
-                        "transcript-sentiment annotation failed for %s: %s: %s",
-                        symbol, type(_ts_exc).__name__, _ts_exc,
-                    )
-                entry["alt_data"] = alt
-        except (KeyError, ValueError, AttributeError, TypeError,
-                OSError) as _ad_exc:
-            # Per-candidate enrichment loop; AI prompt continues
-            # without alt-data block. Surface at DEBUG.
-            logger.debug(
-                "alt-data annotation failed for %s: %s: %s",
-                symbol, type(_ad_exc).__name__, _ad_exc,
-            )
+        # 2026-05-17: gated by `ctx.enable_alt_data`. Ablation
+        # profiles (No-Alt-Data arm of the fresh-start experiment)
+        # disable this so the AI sees only price/volume/technicals.
+        if not getattr(ctx, "enable_alt_data", True):
+            entry.setdefault("alt_data", None)
+        else:
+            try:
+                alt = get_all_alternative_data(symbol)
+                if alt and not alt.get("is_crypto"):
+                    # Add earnings transcript sentiment (requires ctx for AI call)
+                    try:
+                        from sec_filings import get_earnings_call_sentiment
+                        alt["transcript_sentiment"] = get_earnings_call_sentiment(symbol, ctx=ctx)
+                    except (ImportError, KeyError, ValueError, AttributeError,
+                            TypeError, OSError) as _ts_exc:
+                        # Transcript-sentiment add-on; rest of alt_data
+                        # still attached. Surface at DEBUG.
+                        logger.debug(
+                            "transcript-sentiment annotation failed for %s: %s: %s",
+                            symbol, type(_ts_exc).__name__, _ts_exc,
+                        )
+                    entry["alt_data"] = alt
+            except (KeyError, ValueError, AttributeError, TypeError,
+                    OSError) as _ad_exc:
+                # Per-candidate enrichment loop; AI prompt continues
+                # without alt-data block. Surface at DEBUG.
+                logger.debug(
+                    "alt-data annotation failed for %s: %s: %s",
+                    symbol, type(_ad_exc).__name__, _ad_exc,
+                )
 
         # Social sentiment from Reddit (if configured)
         try:

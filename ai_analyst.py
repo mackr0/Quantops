@@ -1014,8 +1014,15 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     # Phase B4 of OPTIONS_PROGRAM_PLAN — multi-leg recommendations on
     # CANDIDATES (the screener's shortlist), distinct from the per-
     # position covered_call/protective_put advisor above.
+    # 2026-05-17: gated by `ctx.enable_options`. Ablation profiles
+    # (No-Options arm of the fresh-start experiment) get an empty
+    # multileg block so the AI prompt has no option proposals to
+    # consider — restricts the AI to stock trades only.
     multileg_block = ""
+    options_enabled = getattr(ctx, "enable_options", True)
     try:
+        if not options_enabled:
+            raise StopIteration  # short-circuit to the empty-block path
         from options_strategy_advisor import render_multileg_recs_for_prompt
         regime = (market_context or {}).get("regime") if market_context else None
         multileg_block = render_multileg_recs_for_prompt(
@@ -1024,6 +1031,8 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             regime=regime,
             ctx=ctx,  # 2026-05-12 — ctx-tuned IV thresholds
         )
+    except StopIteration:
+        multileg_block = ""  # options disabled — empty block
     except (ImportError, KeyError, ValueError, AttributeError,
             TypeError, OSError) as _ml_exc:
         # AI-prompt enrichment; prompt continues without multileg
