@@ -491,11 +491,16 @@ def _close_journal_phantom(
         try:
             with closing(sqlite3.connect(db_path)) as conn:
                 conn.row_factory = sqlite3.Row
+                # Match ALL open rows for the symbol (buy/short
+                # entries AND sell-to-open OCC rows — multileg short
+                # legs use side='sell' with occ_symbol set). Closing
+                # them all is correct for the journal_phantom case:
+                # broker has 0, so whatever's "open" in journal is
+                # the phantom.
                 rows = conn.execute(
                     "SELECT id, symbol, side, qty, price FROM trades "
                     "WHERE (symbol = ? OR occ_symbol = ?) "
-                    "  AND COALESCE(status,'open') = 'open' "
-                    "  AND side IN ('buy', 'short')",
+                    "  AND COALESCE(status,'open') = 'open'",
                     (symbol, symbol),
                 ).fetchall()
                 for r in rows:
