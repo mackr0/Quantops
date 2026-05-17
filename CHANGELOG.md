@@ -57,6 +57,20 @@ After the edgar_form4 `ok_with_errors` "silent failures count but don't expose w
 
 **All 14 audit issues closed across 5 deploys (c25a764, ab7ff42, febe6d9, 8b367f0, bdb83b8, plus this batch). 3251 main-suite tests pass.**
 
+**Batch 9 — perfect-matching invariant (#157) + reset script (#158) + edgar_form4 no-CIK persistence (#159):**
+
+User mandate: "if we are going to start over, I need to know we match order IDs, whatever system we are working with." The `trades.order_id` column is the broker-agnostic identifier — same row in the journal, same order in the trading system. Three pieces:
+
+- **`log_trade` runtime guard**: writes a loud WARNING when called without `order_id` for a non-sentinel row. Sentinel types (`AUTO_RECONCILE` / `AUTO_RECONCILE_PHANTOM_CLOSE`) are explicit exceptions; everything else gets flagged. Catches any new code path that forgets to pass the broker's ID.
+- **Structural tests**: `test_trade_order_id_invariant_2026_05_17.py` pins three rules: no missing order_id on live rows, no duplicate (order_id, occ_symbol) within a profile, log_trade warns appropriately. 9 tests.
+- **`reset_for_clean_experiment.py`**: deletion script with safety rails. Backs up each profile DB to a timestamped folder BEFORE wipe. Default dry-run; `--apply` to write; `--close-broker` to flatten Alpaca first; `--wipe-ai-memory` to also drop specialist scores / tuning history (default keeps them). Profile configs in `quantopsai.db` (trading_profiles, alpaca_accounts) are NEVER touched — only per-profile trade/prediction/state tables. 6 tests pinning the safety contract.
+
+**edgar_form4 no-CIK persistence (#159)** — see earlier entry; tickers without SEC CIK mapping (ETFs, delisted, foreign) get a row in `no_cik_tickers` and the daily scrape skips them silently. Eliminates the "63 ticker error(s)" daily WARN; new `no-cik` CLI command surfaces the population.
+
+3291 main-suite tests pass.
+
+---
+
 **Batch 8 — virtual-cash-logic bugs (off by ~$200K per profile):**
 - `get_virtual_account_info` cash calc had two latent bugs that surfaced when my AUTO_RECONCILE backfills hit them.
 - **Bug A — stock-short proceeds never credited cash.** `side='short'` (stock short open) didn't match the `('sell', 'cover')` credit branch. Broker credits cash with the short proceeds in real time; the virtual ledger silently dropped them. Equity understated by the entire short premium. Across prod profiles: ~$217K of uncredited short premium (mostly from my AUTO_RECONCILE rows but the bug pre-dated them — any future stock short would have hit it).

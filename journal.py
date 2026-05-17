@@ -864,7 +864,33 @@ def log_trade(symbol, side, qty, price=None, order_id=None, signal_type=None,
         Option strike price. Denormalized from OCC.
 
     Returns the row id of the inserted trade.
+
+    PERFECT-MATCHING INVARIANT (2026-05-17): every row written here
+    represents a trade that the trading system (broker) executed or
+    is in the process of executing. Therefore `order_id` should
+    ALWAYS equal the trading system's order ID — that's what makes
+    journal ↔ broker reconciliation trivial. Exceptions logged
+    LOUDLY so we can find any code path that's writing without one:
+      - AUTO_RECONCILE / AUTO_RECONCILE_PHANTOM_CLOSE: sentinel
+        order_ids OK (explicit backfill/rebuild)
+      - pending_fill rows: order_id must be set (submitted, not yet
+        confirmed); if absent → bug, log
+      - any other status: order_id required; missing → bug, log
     """
+    if not order_id and signal_type not in (
+        "AUTO_RECONCILE", "AUTO_RECONCILE_PHANTOM_CLOSE",
+    ):
+        import logging as _log
+        _log.warning(
+            "log_trade: BROKER ORDER ID MISSING for %s %s qty=%s "
+            "signal=%s status=%s — every trade row should carry the "
+            "trading system's order_id (broker-agnostic identifier "
+            "of the actual order submitted). Without it, journal ↔ "
+            "broker reconciliation can't match this row to its fill, "
+            "leaving an unattributable position that will appear as "
+            "drift. Investigate the caller.",
+            side, symbol, qty, signal_type, status,
+        )
     with closing(_get_conn(db_path)) as conn:
         cursor = conn.execute(
             """INSERT INTO trades
