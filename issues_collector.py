@@ -347,6 +347,36 @@ def _collect_aggregate_drift(
         ve = f"value_parity audit raised: {type(exc).__name__}: {exc}"
         err = ve if not err else (err + " | " + ve)
 
+    # Equity-identity audit (#166, 2026-05-17). The journal's own algebra
+    # must balance: equity == initial_capital + realized + unrealized.
+    # Catches FIFO mismatch, hidden cash flows, market_value vs
+    # unrealized_pl divergence — bugs the other two audits can't see.
+    try:
+        from integrity_audit import audit_equity_identity_all
+        i_audit = audit_equity_identity_all(profile_ids=range(1, 12))
+        for d in i_audit.get("drift", []):
+            pid = d.get("profile_id", "?")
+            rows.append({
+                "source": f"equity_identity.profile_{pid}",
+                "level": "ERROR",
+                "message": (
+                    f"equity identity broken: expected=${d.get('expected_equity', 0):,.2f} "
+                    f"actual=${d.get('actual_equity', 0):,.2f} "
+                    f"drift=${d.get('drift', 0):+,.2f} "
+                    f"(init=${d.get('initial_capital', 0):,.2f}, "
+                    f"realized=${d.get('realized_total', 0):+,.2f}, "
+                    f"unrealized=${d.get('unrealized_total', 0):+,.2f})"
+                ),
+                "timestamp": "",
+                "is_live_snapshot": True,
+            })
+    except ImportError as exc:
+        ie = f"equity_identity audit unavailable: {exc}"
+        err = ie if not err else (err + " | " + ie)
+    except Exception as exc:
+        ie = f"equity_identity audit raised: {type(exc).__name__}: {exc}"
+        err = ie if not err else (err + " | " + ie)
+
     _DRIFT_CACHE["ts"] = now
     _DRIFT_CACHE["rows"] = rows
     _DRIFT_CACHE["error"] = err

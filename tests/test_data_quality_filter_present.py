@@ -100,6 +100,12 @@ ALLOWLIST_FILES = {
     "virtual_audit.py":
         "Audit script that intentionally surfaces all rows including "
         "tagged ones — that IS the audit's purpose.",
+    "integrity_audit.py":
+        "Equity-identity invariant must include every row that "
+        "get_virtual_account_info includes, otherwise it would "
+        "false-alarm on data_quality-tagged rows that legitimately "
+        "contribute to cash math. Filtering here would defeat the "
+        "purpose of the audit (which IS to surface bookkeeping bugs).",
     "recover_cycle_data.py":
         "Recovery script that lists recent predictions for human "
         "review. The MAX(timestamp) subquery triggers the analytics "

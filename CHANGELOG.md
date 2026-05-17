@@ -17,6 +17,36 @@ Rules going forward:
 
 ---
 
+## 2026-05-17 — Equity-identity invariant (#166). Severity: high (master no-money-hiding check).
+
+User insight after the value-parity check landed: visibility is the precondition for the AI to act on losses. Listed remaining gaps; this is the first of six. Different from #165 (which compares broker↔journal) — this one is the journal proving its OWN algebra.
+
+**The invariant:**
+    equity == initial_capital + Σ(realized_pnl) + Σ(unrealized_pnl)
+
+If a profile's equity doesn't match the sum of realized P&L on closed trades plus unrealized P&L on open positions plus initial capital, ONE of these is wrong:
+- FIFO matcher: `pnl` column inconsistent with the underlying cash flows
+- `market_value` computation different from `unrealized_pl` computation
+- Hidden cash flow (dividend credit, fee debit, manual adjustment) affecting equity without a matching trade row
+
+**Implementation (`integrity_audit.py`):**
+- `audit_equity_identity(profile_id)` returns a structured drift dict (init, realized, unrealized, expected, actual, drift, has_drift, errored).
+- `audit_equity_identity_all(profile_ids)` batch wrapper splits results into clean / drift / errored buckets.
+- Tolerance: $1 — the journal's own algebra should balance exactly modulo floating-point rounding; anything bigger is a bug.
+- Both unrealized and actual-equity computations share the same `client._make_price_fetcher` so snapshot lag can't cause false drift.
+
+**Wired into `issues_collector`** alongside the existing qty + value audits — drift items surface on `/issues` as ERROR rows with `source='equity_identity.profile_<id>'`.
+
+**Module split**: `aggregate_audit.py` (cross-system: journal↔broker) vs new `integrity_audit.py` (self-consistency: journal↔itself algebra). Different failure surfaces deserve different modules.
+
+**Allowlist update**: `tests/test_data_quality_filter_present.py` extended to allow `integrity_audit.py` — the equity check MUST include every row that `get_virtual_account_info` includes (which doesn't filter data_quality either), otherwise the audit would false-alarm.
+
+**Tests**: 6 new in `test_equity_identity_2026_05_17.py` covering identity holds (fresh + closed round-trip), identity broken (hidden cash flow, FIFO mismatch), batch wrapper sorting, and issues_collector wiring. Full suite: 3346 passed.
+
+**Why this wasn't done sooner**: the qty audit (#155) and value audit (#165) compare against the broker; nobody asked the more fundamental question "does the journal's own algebra balance" until visibility-of-loss became the explicit theme.
+
+---
+
 ## 2026-05-17 — Account-value parity invariant (#165). Severity: high (defense-in-depth catching dollar drift the qty audit can't see).
 
 The 2026-05-13 cash-logic bugs (stock-short proceeds not credited to virtual cash, options contract multiplier missing) sat undetected for weeks because the existing aggregate_audit only checks share-count parity per (account, symbol). With perfect share counts, the missing multiplier and missing short credits caused virtual `portfolio_value` to silently disagree with the broker's by ~$200K across all profiles. Quantity parity alone is insufficient.
