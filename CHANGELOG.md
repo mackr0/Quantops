@@ -17,6 +17,22 @@ Rules going forward:
 
 ---
 
+## 2026-05-17 — Google Gemini SDK migration (`google-generativeai` → `google-genai`). Severity: low (deprecation cleanup, no behavior change).
+
+After switching all 13 experiment profiles to Google Gemini 2.5 Flash Lite, the verify_ai_provider_per_profile.py output surfaced a deprecation warning from `google-generativeai` (Google's old Python SDK, now replaced by `google-genai`). Window to migrate: BEFORE the experiment starts collecting data, while there's no risk of breaking active trading.
+
+**Migration scope** (essentially 1:1 — verified against `google-genai 1.47.0` source):
+- `from google import genai` (was `import google.generativeai as genai`)
+- `client = genai.Client(api_key=key)` (was `genai.configure(api_key=key); model = genai.GenerativeModel(model)`)
+- `client.models.generate_content(model=, contents=, config={"max_output_tokens": ...})` (was `model.generate_content(prompt, generation_config=...)`)
+- Response `.text` and `.usage_metadata.{prompt_token_count, candidates_token_count}` field names are unchanged — no downstream parsing changes needed.
+
+**Files**: `ai_providers.py:_call_google` (~10 lines), `requirements.txt` (`google-generativeai>=0.3.0` → `google-genai>=1.47.0`).
+
+**No new tests**: the existing `verify_ai_provider_per_profile.py` end-to-end script (which round-trips a real prompt through each profile's configured provider) is the regression test — re-run it after the SDK swap to confirm every profile still reaches Gemini.
+
+---
+
 ## 2026-05-17 — Morning health-check script (#172). Severity: medium (operational tooling).
 
 `verify_first_cycle.sh` is the legacy post-deploy regression check — hardcodes profile IDs 1, 3-11 (the OLD Alpaca accounts the user is about to delete) and uses per-fix deploy-cutoff timestamps that have served their purpose. Two key gaps after the seven-tier integrity contract landed: (a) no section drives off the new `audit_alerts` table or the audit_runner; (b) hardcoded profile lists won't survive the fresh-experiment profile rotation.

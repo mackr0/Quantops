@@ -542,20 +542,31 @@ def _call_deepseek(prompt, model, api_key, max_tokens):
 
 
 def _call_google(prompt, model, api_key, max_tokens):
-    """Call Google Gemini API. Returns (text, input_tokens, output_tokens)."""
+    """Call Google Gemini API. Returns (text, input_tokens, output_tokens).
+
+    Uses the new `google-genai` SDK (replaces the deprecated
+    `google-generativeai`). API surface verified 2026-05-17 against
+    google-genai 1.47.0:
+      - Client init:  genai.Client(api_key=key)
+      - Generate:     client.models.generate_content(model=, contents=, config=)
+      - Response:     .text + .usage_metadata.{prompt,candidates}_token_count
+                      (same field names as the old SDK — drop-in)
+      - `config` accepts a dict mapping with keys matching
+        types.GenerateContentConfig (e.g. max_output_tokens).
+    """
     try:
-        import google.generativeai as genai
+        from google import genai
     except ImportError:
         raise ImportError(
-            "The 'google-generativeai' package is required for the Google provider. "
-            "Install it with: pip install google-generativeai"
+            "The 'google-genai' package is required for the Google provider. "
+            "Install it with: pip install google-genai"
         )
 
-    genai.configure(api_key=api_key)
-    model_obj = genai.GenerativeModel(model)
-    response = model_obj.generate_content(
-        prompt,
-        generation_config={"max_output_tokens": max_tokens},
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config={"max_output_tokens": max_tokens},
     )
     meta = getattr(response, "usage_metadata", None)
     in_tok = getattr(meta, "prompt_token_count", 0) if meta else 0
