@@ -173,9 +173,19 @@ These run at trade time, in addition to the pre-commit tests. Each is independen
 - **`reconcile_journal_to_broker`** — compares every per-profile journal against Alpaca. Detects: phantom SELLs (logged but not filled), partial-sale drift, broker-side liquidation, canceled entries that the journal still claims as open. Auto-corrects by undoing phantoms and backfilling broker actions.
 - **`aggregate_audit.audit_aggregate_drift`** — sums virtual positions across profiles routing to the same Alpaca account, compares to `api.list_positions()`. Catches multi-profile-overshoot scenarios where the sum exceeds broker actuals (logic bug).
 - **`aggregate_audit.audit_account_value_parity`** — sibling check on the DOLLAR side: sum of virtual `market_value` per account vs sum of broker `market_value` per account. Catches divergence even when quantities match (missing options multiplier, stale marks, value-only logic bugs). Tolerance: `max($50, 0.1% of broker value)`. Drift surfaces on `/issues` as ERROR; no auto-reconcile because the correct fix depends on which side is wrong.
+- **`aggregate_audit.audit_account_cash_parity`** — per Alpaca account, `broker_cash` should equal `sum(virtual_cash)` across profiles routing to it. Catches hidden broker cash flow (dividend, fee, manual deposit) and trades that hit broker but not journal. Tolerance: `max($50, 0.1% × broker_cash)`.
+- **`aggregate_audit.audit_account_basis_parity`** — per `(account, symbol)` where both sides hold the position, broker `avg_entry_price` should match the qty-weighted virtual `avg_entry_price` across all profiles holding that symbol. Catches wrong-price fills, broken FIFO basis adjustment, multileg cost-allocation drift. Tolerance per-share: `max($0.05, 0.5% × broker_avg)`.
 - **`integrity_audit.audit_equity_identity`** — per-profile self-consistency: `equity == initial_capital + Σ(realized) + Σ(unrealized)`. The journal's own algebra. Catches FIFO mismatches, hidden cash flows, market_value/unrealized_pl divergence — bugs that don't appear in broker comparisons because the broker is fine; the journal is internally inconsistent. Tolerance: $1.
 
-**Four-tier integrity contract**: every trade carries a broker `order_id` (#157 perfect-matching invariant) → quantities sum correctly per account (aggregate_audit) → values sum correctly per account (account_value_parity, #165) → each profile's own algebra balances (equity_identity, #166). Together these make any silent broker/journal divergence OR self-inconsistency impossible to hide.
+**Six-tier integrity contract**:
+1. Every trade carries a broker `order_id` (#157 perfect-matching invariant)
+2. Quantities sum correctly per account (aggregate_audit)
+3. Values sum correctly per account (account_value_parity, #165)
+4. Cash sums correctly per account (account_cash_parity, #167a)
+5. Per-share cost basis matches per (account, symbol) (account_basis_parity, #167b)
+6. Each profile's own algebra balances (equity_identity, #166)
+
+Together these make any silent broker/journal divergence OR self-inconsistency impossible to hide.
 
 ### 4.4 The `pending_fill` state machine
 SELL / COVER / option-close rows write `status='pending_fill'` on submit, NOT `closed`. `_task_update_fills` flips to `closed` once `filled_avg_price` arrives. Eliminates the phantom-close window where the journal would otherwise claim realized P&L the broker had async-canceled.

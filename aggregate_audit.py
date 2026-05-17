@@ -423,3 +423,338 @@ def format_value_drift_summary(audit: Dict) -> str:
             f"(tol=${d['tolerance']:,.2f}, {d.get('kind', '?')})"
         )
     return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Per-account cash parity (#167, 2026-05-17)
+# ─────────────────────────────────────────────────────────────────────
+#
+# Complement to value-parity: broker_cash for account A should equal
+# sum(virtual_cash) across all profiles routing to A — provided the
+# user's broker deposit matches the sum of profile initial_capital
+# values (the normal setup for the fresh experiment).
+#
+# If they DON'T match:
+#   - Broker received cash flow the journal doesn't know about
+#     (dividend credit, fee debit, manual deposit)
+#   - OR a trade hit the broker but never made it into the journal
+#   - OR initial_capital sum doesn't match the user's actual broker
+#     funding (configuration error)
+#
+# Tolerance same shape as value-parity: max($50, 0.1% × broker_cash).
+_CASH_TOLERANCE_ABS = 50.0
+_CASH_TOLERANCE_PCT = 0.001
+
+
+def _broker_cash(api) -> float:
+    """Broker's reported cash for this account. 0.0 on failure
+    (logged loudly)."""
+    try:
+        account = api.get_account()
+        return float(getattr(account, "cash", 0) or 0)
+    except Exception as exc:
+        logger.warning(
+            "aggregate_audit cash-parity: get_account failed: %s", exc,
+        )
+        return 0.0
+
+
+def _journal_cash(db_path: str, initial_capital: float) -> float:
+    """One profile's virtual cash (same algebra as
+    journal.get_virtual_account_info, but isolated to a single profile)."""
+    from journal import get_virtual_account_info
+    try:
+        info = get_virtual_account_info(
+            db_path=db_path, initial_capital=initial_capital,
+        )
+        return float(info.get("cash", 0) or 0)
+    except Exception as exc:
+        logger.warning(
+            "aggregate_audit cash-parity: get_virtual_account_info "
+            "failed for %s: %s: %s", db_path, type(exc).__name__, exc,
+        )
+        return 0.0
+
+
+def audit_account_cash_parity(
+    profile_ids: Iterable[int],
+    tolerance_abs: float = _CASH_TOLERANCE_ABS,
+    tolerance_pct: float = _CASH_TOLERANCE_PCT,
+) -> Dict:
+    """Compare summed virtual cash vs broker cash per Alpaca account.
+
+    Returns:
+      {
+        'accounts': {acct_id: {
+            'broker_cash': float,
+            'journal_cash': float,
+            'drift': float,            # broker - journal
+            'tolerance': float,
+            'profile_ids': [int, ...],
+            'kind': str (only on drift rows),
+        }},
+        'drift': [list of drift rows],
+        'errored': [profile_ids that failed to load],
+      }
+    """
+    from models import build_user_context_from_profile
+
+    by_account: Dict[int, Dict] = defaultdict(
+        lambda: {"journal_cash": 0.0, "profile_ids": [], "api": None}
+    )
+    errored: List[int] = []
+
+    for p_id in profile_ids:
+        try:
+            ctx = build_user_context_from_profile(p_id)
+        except Exception:
+            errored.append(p_id)
+            continue
+        acct = getattr(ctx, "alpaca_account_id", None)
+        if not acct:
+            continue
+        if by_account[acct]["api"] is None:
+            try:
+                api = ctx.get_alpaca_api() if hasattr(
+                    ctx, "get_alpaca_api") else ctx.api
+                by_account[acct]["api"] = api
+            except Exception:
+                errored.append(p_id)
+                continue
+        initial_capital = float(
+            getattr(ctx, "initial_capital", 0) or 0
+        )
+        cash = _journal_cash(ctx.db_path, initial_capital)
+        by_account[acct]["journal_cash"] += cash
+        by_account[acct]["profile_ids"].append(p_id)
+
+    accounts: Dict[int, Dict] = {}
+    drift: List[Dict] = []
+    for acct, info in by_account.items():
+        api = info["api"]
+        if api is None:
+            continue
+        broker_cash = round(_broker_cash(api), 2)
+        journal_cash = round(info["journal_cash"], 2)
+        d = round(broker_cash - journal_cash, 2)
+        tol = max(tolerance_abs, abs(broker_cash) * tolerance_pct)
+        row = {
+            "account": acct,
+            "broker_cash": broker_cash,
+            "journal_cash": journal_cash,
+            "drift": d,
+            "tolerance": round(tol, 2),
+            "profile_ids": sorted(info["profile_ids"]),
+        }
+        accounts[acct] = row
+        if abs(d) > tol:
+            row["kind"] = (
+                "broker_cash_orphan" if d > 0 else "journal_cash_phantom"
+            )
+            drift.append(row)
+
+    return {"accounts": accounts, "drift": drift, "errored": errored}
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Per-symbol cost-basis parity (#167 cont.)
+# ─────────────────────────────────────────────────────────────────────
+#
+# For each (account, symbol) the broker still holds, the qty-weighted
+# average entry price across all virtual profiles' positions in that
+# symbol should match the broker's avg_entry_price for that symbol.
+#
+# If they DON'T match:
+#   - A trade was logged at the wrong price (typo, rounding bug,
+#     post-fill correction never propagated)
+#   - Broker reports the FIFO-adjusted basis after a partial close
+#     while the journal still reflects the original entry
+#   - Multileg cost allocation across legs differs between broker
+#     and journal
+#
+# Tolerance is per-share: $0.05 absolute OR 0.5% of broker basis.
+_BASIS_TOLERANCE_ABS = 0.05      # dollars per share
+_BASIS_TOLERANCE_PCT = 0.005     # 0.5% of broker basis
+
+
+def _broker_basis_per_symbol(api) -> Dict[str, Dict[str, float]]:
+    """Symbol → {qty, avg_entry_price} from broker. 0.0 entries skipped."""
+    out: Dict[str, Dict[str, float]] = {}
+    try:
+        positions = api.list_positions()
+    except Exception as exc:
+        logger.warning(
+            "aggregate_audit basis-parity: list_positions failed: %s", exc,
+        )
+        return out
+    for p in positions:
+        sym = (getattr(p, "symbol", "") or "").upper()
+        if not sym:
+            continue
+        try:
+            qty = abs(float(getattr(p, "qty", 0) or 0))
+            avg = float(getattr(p, "avg_entry_price", 0) or 0)
+        except (ValueError, TypeError, AttributeError) as exc:
+            logger.warning(
+                "aggregate_audit basis-parity: parse failed for %s: %s",
+                sym, exc,
+            )
+            continue
+        if qty > 0 and avg > 0:
+            out[sym] = {"qty": qty, "avg_entry_price": avg}
+    return out
+
+
+def _journal_basis_per_symbol(db_path: str) -> Dict[str, Dict[str, float]]:
+    """Symbol → {qty, avg_entry_price} from this profile's journal."""
+    from journal import get_virtual_positions
+    out: Dict[str, Dict[str, float]] = {}
+    try:
+        positions = get_virtual_positions(db_path=db_path)
+    except Exception as exc:
+        logger.warning(
+            "aggregate_audit basis-parity: get_virtual_positions "
+            "failed for %s: %s", db_path, exc,
+        )
+        return out
+    for p in positions:
+        # Match broker's symbol convention (OCC for options, root for stocks)
+        sym = (p.get("occ_symbol") or p.get("symbol") or "").upper()
+        if not sym:
+            continue
+        qty = abs(float(p.get("qty", 0) or 0))
+        avg = float(p.get("avg_entry_price", 0) or 0)
+        if qty > 0 and avg > 0:
+            out[sym] = {"qty": qty, "avg_entry_price": avg}
+    return out
+
+
+def audit_account_basis_parity(
+    profile_ids: Iterable[int],
+    tolerance_abs: float = _BASIS_TOLERANCE_ABS,
+    tolerance_pct: float = _BASIS_TOLERANCE_PCT,
+) -> Dict:
+    """Per (account, symbol) compare broker avg_entry_price vs the
+    qty-weighted virtual avg_entry across all profiles holding that
+    symbol on that account.
+
+    Returns:
+      {
+        'accounts': {acct_id: {symbol: {
+            'broker_avg': float, 'journal_avg': float,
+            'broker_qty': float, 'journal_qty': float,
+            'drift': float,        # broker_avg - journal_avg
+            'tolerance': float,
+            'profile_ids': [int, ...],
+        }, ...}, ...},
+        'drift': [drift rows],
+        'errored': [profile_ids that errored],
+      }
+    """
+    from models import build_user_context_from_profile
+
+    # Per (account, symbol): collect (qty, avg) entries from every profile.
+    journal_lots: Dict[int, Dict[str, List]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    api_per_acct: Dict[int, object] = {}
+    profiles_per_acct: Dict[int, List[int]] = defaultdict(list)
+    errored: List[int] = []
+
+    for p_id in profile_ids:
+        try:
+            ctx = build_user_context_from_profile(p_id)
+        except Exception:
+            errored.append(p_id)
+            continue
+        acct = getattr(ctx, "alpaca_account_id", None)
+        if not acct:
+            continue
+        if acct not in api_per_acct:
+            try:
+                api = ctx.get_alpaca_api() if hasattr(
+                    ctx, "get_alpaca_api") else ctx.api
+                api_per_acct[acct] = api
+            except Exception:
+                errored.append(p_id)
+                continue
+        profiles_per_acct[acct].append(p_id)
+        per_sym = _journal_basis_per_symbol(ctx.db_path)
+        for sym, info in per_sym.items():
+            journal_lots[acct][sym].append(
+                (info["qty"], info["avg_entry_price"], p_id)
+            )
+
+    accounts: Dict[int, Dict] = {}
+    drift_rows: List[Dict] = []
+    for acct, api in api_per_acct.items():
+        broker_basis = _broker_basis_per_symbol(api)
+        per_sym_results: Dict[str, Dict] = {}
+        symbols = set(broker_basis.keys()) | set(journal_lots[acct].keys())
+        for sym in symbols:
+            b_info = broker_basis.get(sym, {})
+            b_qty = float(b_info.get("qty", 0) or 0)
+            b_avg = float(b_info.get("avg_entry_price", 0) or 0)
+            lots = journal_lots[acct].get(sym, [])
+            j_qty = sum(lot[0] for lot in lots)
+            if j_qty > 0:
+                j_avg = sum(lot[0] * lot[1] for lot in lots) / j_qty
+            else:
+                j_avg = 0.0
+            d = round(b_avg - j_avg, 4) if b_qty and j_qty else 0.0
+            tol = max(tolerance_abs, b_avg * tolerance_pct) if b_avg else tolerance_abs
+            row = {
+                "account": acct,
+                "symbol": sym,
+                "broker_avg": round(b_avg, 4),
+                "journal_avg": round(j_avg, 4),
+                "broker_qty": round(b_qty, 4),
+                "journal_qty": round(j_qty, 4),
+                "drift": d,
+                "tolerance": round(tol, 4),
+                "profile_ids": sorted(set(lot[2] for lot in lots)),
+            }
+            per_sym_results[sym] = row
+            # Only flag drift when BOTH sides hold the symbol — a
+            # one-sided position is a qty-parity issue, not basis.
+            if b_qty > 0 and j_qty > 0 and abs(d) > tol:
+                drift_rows.append({**row, "kind": "basis_drift"})
+        accounts[acct] = per_sym_results
+
+    return {
+        "accounts": accounts,
+        "drift": drift_rows,
+        "errored": errored,
+    }
+
+
+def format_cash_drift_summary(audit: Dict) -> str:
+    drift = audit.get("drift", [])
+    if not drift:
+        return "cash-parity audit: 0 drift items, broker cash matches journal sums"
+    lines = [f"cash-parity audit: {len(drift)} drift item(s)"]
+    for d in drift:
+        lines.append(
+            f"  acct{d['account']}: broker_cash=${d['broker_cash']:>12,.2f}  "
+            f"journal_cash=${d['journal_cash']:>12,.2f}  "
+            f"drift=${d['drift']:>+12,.2f}  "
+            f"(tol=${d['tolerance']:,.2f}, {d.get('kind', '?')})"
+        )
+    return "\n".join(lines)
+
+
+def format_basis_drift_summary(audit: Dict) -> str:
+    drift = audit.get("drift", [])
+    if not drift:
+        return "basis-parity audit: 0 drift items, all cost bases match"
+    lines = [f"basis-parity audit: {len(drift)} drift item(s)"]
+    for d in drift:
+        lines.append(
+            f"  acct{d['account']} {d['symbol']:>12s}: "
+            f"broker_avg=${d['broker_avg']:>8.4f}  "
+            f"journal_avg=${d['journal_avg']:>8.4f}  "
+            f"drift=${d['drift']:>+8.4f}  "
+            f"(broker_qty={d['broker_qty']:.2f}, "
+            f"journal_qty={d['journal_qty']:.2f}, tol=${d['tolerance']:.4f})"
+        )
+    return "\n".join(lines)

@@ -377,6 +377,70 @@ def _collect_aggregate_drift(
         ie = f"equity_identity audit raised: {type(exc).__name__}: {exc}"
         err = ie if not err else (err + " | " + ie)
 
+    # Cash-parity audit (#167, 2026-05-17). Per Alpaca account:
+    # broker cash should equal sum of virtual cash across profiles
+    # routing to it. Catches hidden broker cash flow (dividend, fee,
+    # manual deposit) and trades that hit broker but not the journal.
+    try:
+        from aggregate_audit import audit_account_cash_parity
+        c_audit = audit_account_cash_parity(profile_ids=range(1, 12))
+        for d in c_audit.get("drift", []):
+            acct = d.get("account", "?")
+            rows.append({
+                "source": f"cash_parity.{acct}",
+                "level": "ERROR",
+                "message": (
+                    f"{d.get('kind', 'cash_drift')}: "
+                    f"broker_cash=${d.get('broker_cash', 0):,.2f} "
+                    f"journal_cash=${d.get('journal_cash', 0):,.2f} "
+                    f"drift=${d.get('drift', 0):+,.2f} "
+                    f"(tol=${d.get('tolerance', 0):,.2f}, profiles="
+                    f"{d.get('profile_ids', [])})"
+                ),
+                "timestamp": "",
+                "is_live_snapshot": True,
+            })
+    except ImportError as exc:
+        ce = f"cash_parity audit unavailable: {exc}"
+        err = ce if not err else (err + " | " + ce)
+    except Exception as exc:
+        ce = f"cash_parity audit raised: {type(exc).__name__}: {exc}"
+        err = ce if not err else (err + " | " + ce)
+
+    # Basis-parity audit (#167, 2026-05-17). Per (account, symbol):
+    # broker avg_entry_price should match the qty-weighted virtual
+    # avg_entry across all profiles holding that symbol. Catches
+    # wrong-price fills, broken FIFO basis adjustment, multileg
+    # cost-allocation drift.
+    try:
+        from aggregate_audit import audit_account_basis_parity
+        b_audit = audit_account_basis_parity(profile_ids=range(1, 12))
+        for d in b_audit.get("drift", []):
+            acct = d.get("account", "?")
+            sym = d.get("symbol", "?")
+            rows.append({
+                "source": f"basis_parity.{acct}",
+                "level": "ERROR",
+                "message": (
+                    f"{d.get('kind', 'basis_drift')} {sym}: "
+                    f"broker_avg=${d.get('broker_avg', 0):.4f} "
+                    f"journal_avg=${d.get('journal_avg', 0):.4f} "
+                    f"drift=${d.get('drift', 0):+.4f} "
+                    f"(broker_qty={d.get('broker_qty', 0):.2f}, "
+                    f"journal_qty={d.get('journal_qty', 0):.2f}, "
+                    f"tol=${d.get('tolerance', 0):.4f}, profiles="
+                    f"{d.get('profile_ids', [])})"
+                ),
+                "timestamp": "",
+                "is_live_snapshot": True,
+            })
+    except ImportError as exc:
+        be = f"basis_parity audit unavailable: {exc}"
+        err = be if not err else (err + " | " + be)
+    except Exception as exc:
+        be = f"basis_parity audit raised: {type(exc).__name__}: {exc}"
+        err = be if not err else (err + " | " + be)
+
     _DRIFT_CACHE["ts"] = now
     _DRIFT_CACHE["rows"] = rows
     _DRIFT_CACHE["error"] = err

@@ -17,6 +17,44 @@ Rules going forward:
 
 ---
 
+## 2026-05-17 — Cash-parity + basis-parity audits (#167). Severity: high (closes the last two cross-system visibility gaps).
+
+After #165 (position dollar values) and #166 (equity identity), two cross-system surfaces remain where bugs could hide: broker cash flows the journal doesn't know about, and per-share cost bases that disagree even when quantities and current values match.
+
+**Cash-parity (`aggregate_audit.audit_account_cash_parity`):**
+
+Per Alpaca account, `broker_cash` should equal `sum(virtual_cash)` across all profiles routing to that account — given that the user's broker deposit matches the sum of profile `initial_capital` values (the normal fresh-experiment setup). Drift signals:
+- Broker received cash flow the journal doesn't know about (dividend, fee, manual deposit)
+- A trade hit the broker but never made it into the journal
+- `initial_capital` sum doesn't match the user's actual broker funding (configuration error)
+
+Tolerance: `max($50, 0.1% × broker_cash)`. Drift kinds: `broker_cash_orphan` (broker has more) vs `journal_cash_phantom` (journal claims more).
+
+**Basis-parity (`aggregate_audit.audit_account_basis_parity`):**
+
+Per (account, symbol) where both sides hold the position, the broker's `avg_entry_price` should match the qty-weighted virtual `avg_entry_price` across all profiles holding that symbol on that account. Drift signals:
+- Trade logged at wrong price (typo, rounding bug, post-fill correction lost)
+- FIFO basis adjustment after a partial close didn't propagate to journal
+- Multileg leg-cost allocation differs between broker and journal
+
+Tolerance per-share: `max($0.05, 0.5% × broker_avg)`. One-sided positions (broker has it, journal doesn't, or vice versa) are deliberately NOT flagged here — that's a qty-parity issue.
+
+**Wired into `issues_collector`** alongside the four existing audits. The drift-cache TTL covers all five together; one cron-style pass refreshes them all.
+
+**Five-tier integrity contract now complete:**
+1. `order_id` pairing (#157) — per-trade
+2. qty parity — per-account share counts
+3. value parity (#165) — per-account position dollars
+4. cash parity (#167a) — per-account uninvested dollars
+5. basis parity (#167b) — per-(account, symbol) per-share cost
+6. equity identity (#166) — per-profile self-consistency
+
+Together, no broker/journal divergence and no self-inconsistency can hide from `/issues`.
+
+**Tests**: 11 new in `test_cash_and_basis_parity_2026_05_17.py`. Full suite: 3357 passed.
+
+---
+
 ## 2026-05-17 — Equity-identity invariant (#166). Severity: high (master no-money-hiding check).
 
 User insight after the value-parity check landed: visibility is the precondition for the AI to act on losses. Listed remaining gaps; this is the first of six. Different from #165 (which compares broker↔journal) — this one is the journal proving its OWN algebra.
