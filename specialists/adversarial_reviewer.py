@@ -139,7 +139,7 @@ specialists are likely to miss.
 {portfolio}{pair_book_section}
 
 Candidates to review:
-{candidates_block(candidates)}
+{candidates_block(candidates, specialist_name="adversarial_reviewer")}
 
 For each candidate, work through this checklist mentally:
   1. CORRELATION: does the book already have material exposure to this

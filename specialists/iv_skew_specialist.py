@@ -65,7 +65,7 @@ For each candidate, judge:
     HOLD = flat skew or no clear alignment.
 
 Candidates:
-{candidates_block(candidates)}
+{candidates_block(candidates, specialist_name="iv_skew_specialist")}
 
 Return a STRICT JSON ARRAY — starts with `[` and ends with `]`. Every
 candidate must appear EXACTLY ONCE. Each entry:

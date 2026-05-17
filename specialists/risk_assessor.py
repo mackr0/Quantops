@@ -38,7 +38,7 @@ For each candidate, consider:
   - Has this specific symbol had unusually adverse recent behavior?
 
 Candidates:
-{candidates_block(candidates)}
+{candidates_block(candidates, specialist_name="risk_assessor")}
 
 Return a STRICT JSON ARRAY — starts with `[` and ends with `]`. Every
 candidate must appear EXACTLY ONCE. No markdown fences, no prose, no

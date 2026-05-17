@@ -134,7 +134,7 @@ lens.
     VETO.
 
 Candidates:
-{candidates_block(candidates)}
+{candidates_block(candidates, specialist_name="option_spread_risk")}
 
 Return a STRICT JSON ARRAY — starts with `[` and ends with `]`. Every
 candidate must appear EXACTLY ONCE. No markdown fences, no prose, no

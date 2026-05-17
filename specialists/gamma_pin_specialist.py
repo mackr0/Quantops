@@ -72,7 +72,7 @@ For each candidate, judge:
   - Otherwise: HOLD.
 
 Candidates:
-{candidates_block(candidates)}
+{candidates_block(candidates, specialist_name="gamma_pin_specialist")}
 
 Return a STRICT JSON ARRAY — starts with `[` and ends with `]`. Every
 candidate must appear EXACTLY ONCE. Each entry:

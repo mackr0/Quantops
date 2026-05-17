@@ -39,7 +39,7 @@ For each candidate, judge:
   - Does the macro/political narrative create a tailwind or headwind?
 
 Candidates:
-{candidates_block(candidates)}
+{candidates_block(candidates, specialist_name="sentiment_narrative")}
 
 Return a STRICT JSON ARRAY — starts with `[` and ends with `]`. Every
 candidate must appear EXACTLY ONCE. No markdown fences, no prose, no

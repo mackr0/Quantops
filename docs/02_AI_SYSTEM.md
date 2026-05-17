@@ -64,15 +64,27 @@ The meta-model itself is described in §6 below.
 
 ## 4. Specialist ensemble
 
-The ensemble (`ensemble.py`) consists of five specialist LLMs, each instantiated with the same backend model but a differentiated system prompt and feature subset:
+The ensemble (`ensemble.py`) consists of eight specialist LLMs, each instantiated with the same backend model but a differentiated system prompt and feature subset. Five run on every candidate (the original wave); three run only on option candidates (added 2026-05-12 for options-pipeline coverage):
+
+**Stock pipeline (always runs):**
 
 | Specialist | Role | Veto authority |
 |---|---|---|
 | `earnings_analyst` | Reasons about earnings calendar, surprise streak, transcript sentiment, days-to-PDUFA, days-to-earnings | No |
 | `pattern_recognizer` | Reasons about technical patterns, price action, volume confirmation | No |
-| `sentiment_narrative` | Reasons about news, Reddit, StockTwits, congressional trades, attention signals | No |
-| `risk_assessor` | Reasons about correlation, concentration, regime fit, drawdown context | **Yes** |
-| `adversarial_reviewer` | Red-teams the trade thesis: what's the failure mode, what's the bear case, where does this go wrong | **Yes** |
+| `sentiment_narrative` | Reasons about news, Reddit, StockTwits, congressional trades, attention signals, insider activity, 13D/G activist positions, 8-K material events | No |
+| `risk_assessor` | Reasons about correlation, concentration, regime fit, drawdown context, FDA/NHTSA/EPA citations, 10-K risk-factor diffs, restatements (8-K Item 4.02) | **Yes** |
+| `adversarial_reviewer` | Red-teams the trade thesis: failure modes, bear case, downside catalysts (8-K bankruptcy / officer change), where this goes wrong | **Yes** |
+
+**Option pipeline (runs only when candidate is an options strategy, `APPLIES_TO_PIPELINES = ("option",)`):**
+
+| Specialist | Role | Veto authority |
+|---|---|---|
+| `iv_skew_specialist` | Reads put/call IV skew for premium-side bias and direction of expected move | No |
+| `gamma_pin_specialist` | Reads dealer GEX + max-pain strike to identify pinning (stability) vs negative-gamma (instability) regimes | No |
+| `option_spread_risk` | Option-aware gatekeeper for IV crush risk, gamma exposure, max-loss budget violations | **Yes** |
+
+All eight share the same canonical interface — each specialist file in `specialists/` exposes `NAME`, `DESCRIPTION`, `HAS_VETO_AUTHORITY`, `APPLIES_TO_PIPELINES`, and `build_prompt(candidates, ctx)`. `specialists/__init__.py` auto-discovers them at load time so adding a 9th specialist requires only adding a file, not editing the loader.
 
 Each specialist returns a verdict (BUY / SELL / HOLD / SHORT / VETO) and a 0-100 confidence. The synthesizer in `ensemble.run_ensemble`:
 

@@ -36,7 +36,7 @@ For each candidate below, return one of:
           (e.g. going-concern disclosure, restatement, massive guide-down)
 
 Candidates (symbol, current signal, one-line context):
-{candidates_block(candidates)}
+{candidates_block(candidates, specialist_name="earnings_analyst")}
 
 Return a STRICT JSON ARRAY — starts with `[` and ends with `]`. No prose,
 no markdown fences, no single top-level object. Each entry:

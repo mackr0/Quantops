@@ -41,6 +41,35 @@ Fix: eliminate the case statement entirely. Auto-discover every altdata DB via `
 
 ---
 
+## 2026-05-17 — Specialist alt-data routing (#175) + docs/02 fix. Severity: high (latent bug: specialists were voting blind on new signals).
+
+User caught two things in one go:
+1. `docs/02_AI_SYSTEM.md` documented 5 specialists; codebase had 9 (the 3 options-pipeline specialists added 2026-05-12 — `iv_skew_specialist`, `gamma_pin_specialist`, `option_spread_risk` — were never documented).
+2. Even the documented specialists were being asked to vote on signals they couldn't see. `specialists/_common.candidates_block` rendered each candidate as `- AAPL [BUY @ $100]: <120-char reason>` — no alt-data passthrough. So sentiment_narrative was asked "are insiders buying?" with the insider data stripped out, and risk_assessor was asked about regime fit with macro/FDA/risk-factor signals invisible. The specialists were guessing from the reason string + their training, not voting on the signals.
+
+**Fix:**
+
+`specialists/_common.format_candidate_for_specialist(c, specialist_name)` — per-specialist alt-data routing. `_SPECIALIST_ALT_KEYS` maps each specialist to the subset relevant to its role:
+
+- `earnings_analyst` → earnings_surprise, biotech_milestones, insider_earnings, fundamentals, analyst_estimates
+- `pattern_recognizer` → intraday, options, short, finra_short_vol, dark_pool
+- `sentiment_narrative` → insider, insider_cluster, stocktwits, congressional, google_trends, wikipedia_pageviews, wikipedia_edits, app_store, activist_13dg, insider_track_records, star_manager_holdings
+- `risk_assessor` → fundamentals, short, risk_factor_diff, FDA, NHTSA, FAA, EPA/OSHA, macro (yield curve / vol / skew)
+- `adversarial_reviewer` → fundamentals, short, dark_pool, risk_factor_diff, recent_8k_events, FDA, NHTSA, FAA, EPA/OSHA (mirror of risk_assessor for downside-catalyst focus)
+- `iv_skew_specialist` → options, macro (cboe_skew, cross_asset_vol)
+- `gamma_pin_specialist` → options, intraday
+- `option_spread_risk` → options, fundamentals, intraday
+
+Each subset rendered as a compact tag string (`insider(3B/0S)`, `FDA(2)`, `newRisks(4)`, `8K(bankruptcy)`, `move=extreme`, etc.) so token cost stays bounded even with 15 candidates × 8 specialists.
+
+`candidates_block(candidates, limit, specialist_name="")` — backwards-compat: callers without a specialist name still get the bare brief. All 8 specialists in `/specialists/` updated to pass their own NAME.
+
+`docs/02_AI_SYSTEM.md §4` rewritten to list all 8 specialists with their roles, veto authority, and pipeline scope (`APPLIES_TO_PIPELINES`). Also documents the auto-discovery loader so adding specialist #9 needs only a file, not loader edits.
+
+**Tests**: 11 new in `test_specialist_alt_data_routing_2026_05_17.py` pinning per-specialist routing (sentiment sees insider, risk sees FDA/risk-diff, adversarial sees 8-K bankruptcy events, etc.) + graceful fallback when alt-data missing + an integration test that scans each specialist's build_prompt source for the literal `specialist_name="<NAME>"` so re-introducing the bare brief can't slip through. Full suite: 3479 passed (was 3469).
+
+---
+
 ## 2026-05-17 — Tier-2 + Tier-3 alt-data expansion (11 new signals). Severity: medium (broad coverage push; sector-mapped sources return empty for tickers outside their map — quiet by design).
 
 After the user pushed back that I'd documented 21 candidates and only built 3, finished the remaining 11 (Tier 1's Reddit is still blocked on API access). All flow through the same unified `get_all_alternative_data` bucket — one canonical inventory.

@@ -34,7 +34,7 @@ For each candidate, judge:
   - Are momentum indicators in confluence or diverging?
 
 Candidates:
-{candidates_block(candidates)}
+{candidates_block(candidates, specialist_name="pattern_recognizer")}
 
 Return a STRICT JSON ARRAY — starts with `[` and ends with `]`. Every
 candidate must appear EXACTLY ONCE. No markdown fences, no prose, no
