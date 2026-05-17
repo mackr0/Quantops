@@ -78,7 +78,7 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | `ai_cost_ledger.py` | Per-call cost accounting. |
 | `ai_pricing.py` | Provider price tables. |
 | `ai_tracker.py` | Prediction journaling + resolution. |
-| `ensemble.py` | 5-specialist ensemble synthesizer. |
+| `ensemble.py` | 8-specialist ensemble synthesizer (5 stock-pipeline + 3 options-pipeline). |
 | `specialist_calibration.py` | Platt-scaling per specialist. |
 | `meta_model.py` | GBM batch model. |
 | `online_meta_model.py` | SGD freshness layer. |
@@ -152,7 +152,7 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | Module | Purpose |
 |---|---|
 | `market_data.py` | Alpaca historical bars + cache. |
-| `alternative_data.py` | All alt-data signals (insider, options flow, congressional, 13F, biotech, StockTwits, Google Trends, Wikipedia, App Store, etc). |
+| `alternative_data.py` | Single canonical entry point for all 34 alt-data signals — `get_all_alternative_data(symbol)` returns the unified dict. See `docs/16_ALT_DATA_CANDIDATES.md` for the full inventory. Sub-modules: `sec_8k_broad.py`, `sec_13dg_activist.py`, `altdata_tier2_corporate.py`, `altdata_tier2_macro.py`, `altdata_tier3.py`. Macro signals reach the prompt via `alternative_data._get_cached_macro()` (same canonical bucket, not a separate pipeline). |
 | `news_sentiment.py` | Per-stock news from Alpaca. |
 | `social_sentiment.py` | Reddit ticker mentions via PRAW. |
 | `political_sentiment.py` | Macro political context (MAGA mode). |
@@ -241,7 +241,7 @@ When `_task_scan_and_trade(ctx)` fires for one profile:
 3. **Strategy votes** — each strategy in `strategies/` runs on each symbol; emits a vote.
 4. **Rank** — `multi_strategy.rank_candidates` computes composite score; takes top 30 with reserved long/short slots.
 5. **Meta-pregate** — `meta_model.predict_probability` per candidate; drop if < `meta_pregate_threshold`.
-6. **Ensemble** — `ensemble.run_ensemble(survivors)` runs the 5 specialists in parallel; vetoes drop candidates.
+6. **Ensemble** — `ensemble.run_ensemble(survivors)` runs the 8 specialists in parallel (5 stock-pipeline always; 3 options-pipeline when candidate is an options strategy). Vetoes from `risk_assessor`, `adversarial_reviewer`, or `option_spread_risk` drop the candidate. Each specialist receives a per-role subset of the alt-data dict via `format_candidate_for_specialist` (2026-05-17 #175 fix — previously specialists saw only the 120-char reason string).
 7. **Build candidate context** — `_build_candidates_data` enriches each remaining candidate with: technicals, alt_data dict, options_oracle, factor exposures, track_record, last_prediction, slippage_estimate, borrow_rate (shorts), SEC alerts.
 8. **Build market context** — `_build_market_context` returns regime, VIX, SPY trend, sector rotation, crisis_context, macro_context, political_context, portfolio_risk_summary, portfolio_risk_scenarios, long_vol_hedge_block, macro_event_block.
 9. **Build portfolio state** — equity, cash, positions, exposure breakdown, book beta, Kelly recommendations, drawdown scale, risk-budget, MFE capture, sector concentration warnings.

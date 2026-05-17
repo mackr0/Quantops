@@ -2120,7 +2120,7 @@
             <div><h5>News Headlines</h5><small>Up to 3 recent headlines per stock from Alpaca News API (Benzinga feed)</small></div>
         </div>
 
-        <h4>Per-Candidate Alternative Data (22 sources)</h4>
+        <h4>Per-Candidate Alternative Data (34 sources — 2026-05-17 expansion)</h4>
         <div class="grid">
             <div><h5>Insider Transactions</h5><small>Recent buys/sells count + dollar volume per symbol. Currently sourced from yfinance; SEC EDGAR Form 4 direct integration is on the roadmap.</small></div>
             <div><h5>Insider Clusters</h5><small>3+ insiders buying the same stock within 90 days = cluster signal</small></div>
@@ -2160,10 +2160,37 @@
             <div><h5>App Store Ranking</h5><small>Best free + grossing-rank for tickers with consumer apps (iTunes RSS). Material when top-100 grossing or top-50 free.</small></div>
         </div>
 
+        <h4 style="margin-top:0.5rem;">SEC Real-Time Filings (added 2026-05-17)</h4>
+        <div class="grid">
+            <div><h5>SEC 8-K Material Events</h5><small>Broad-universe daily scan of all new 8-K filings (M&A, earnings, officer changes, restatements, bankruptcies). Item taxonomy: 1.01 / 2.02 / 4.02 / 5.02 / 1.03 etc. with semantic tags. Distinct from the per-symbol 10-K/10-Q monitoring already in place.</small></div>
+            <div><h5>SEC 13D/G Activist Positions</h5><small>>5% ownership disclosures filed within 10 days of trigger date. 13D = activist intent-to-influence (high signal); 13G = passive holder. Names the filer.</small></div>
+            <div><h5>10-K Risk-Factor Diff</h5><small>Year-over-year count of NEW risk-factor sentences in the company's annual report. Surfaces freshly disclosed risks the market may not have priced.</small></div>
+        </div>
+
+        <h4 style="margin-top:0.5rem;">Sector-Mapped Signals (added 2026-05-17, render only for in-sector tickers)</h4>
+        <div class="grid">
+            <div><h5>GitHub Repo Activity <small class="muted">(tech)</small></h5><small>Public repo count, top-30 stars, active repos in 30 days for 26 mapped tech tickers (AAPL/MSFT/GOOGL/META/AMZN/NVDA/TSLA/AMD/etc.).</small></div>
+            <div><h5>FDA Drug Recalls <small class="muted">(pharma)</small></h5><small>openFDA drug-enforcement actions for 17 mapped pharma tickers (PFE/MRK/JNJ/LLY/etc.). Recent citation count + most-recent date.</small></div>
+            <div><h5>NHTSA Recalls <small class="muted">(auto / EV)</small></h5><small>NHTSA recall count for 12 mapped manufacturers (TSLA/F/GM/RIVN/LCID/etc.) across top 2-4 models × recent 2 model years.</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>Federal Contract Awards <small class="muted">(defense / govtech)</small></h5><small>USASpending.gov prime contract awards for 11 mapped defense tickers (LMT/RTX/NOC/GD/BA/etc.). YTD award count + total $.</small></div>
+            <div><h5>Wikipedia Article Edits</h5><small>Edit count in 30d + 7d windows. Material edit activity (≥5 edits in 30d) signals controversy precursor — distinct from pageviews.</small></div>
+            <div><h5>Insider Track Records</h5><small>Top 3 insiders by lifetime activity per symbol with their lifetime buys vs sells count. Reweights insider signals — a CEO with 5 winning buys ≠ a director who's noise.</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>Star Manager Holdings</h5><small>Which of Berkshire / Pershing Square / Greenlight / Third Point currently hold this symbol per their most recent 13F.</small></div>
+        </div>
+
         <h4 style="margin-top:0.5rem;">Pending External APIs <small class="muted">(not yet feeding the AI)</small></h4>
         <div class="grid">
-            <div><h5 class="muted">Patent Filing Velocity</h5><small class="muted">The public patent-search API we relied on was deprecated and the replacement isn't stable yet. Will turn on once it is.</small></div>
             <div><h5 class="muted">Reddit Sentiment</h5><small class="muted">Mention counts and sentiment from r/wallstreetbets, r/stocks, r/investing, r/options. Currently off because no Reddit account credentials are configured.</small></div>
+            <div><h5 class="muted">USPTO Patents</h5><small class="muted">Patent application velocity per assignee. Slot wired but PatentsView v2 API changed auth in Q4 2024 to require a key — set <code>USPTO_API_KEY</code> in <code>.env</code> to activate.</small></div>
+            <div><h5 class="muted">USDA Crop Reports / EIA Energy Inventories</h5><small class="muted">Macro-level signals for agri / energy regimes. Both slots wired but require <code>USDA_API_KEY</code> and <code>EIA_API_KEY</code> env vars (free, sign up at quickstats.nass.usda.gov + api.eia.gov).</small></div>
+        </div>
+        <div class="grid">
+            <div><h5 class="muted">EPA / OSHA / FAA Violations</h5><small class="muted">Slot wired but each needs a ticker→regulator-ID mapping table that doesn't exist as free clean data. Returns has_data=False until populated.</small></div>
+            <div><h5 class="muted">Job Postings (LinkedIn / Indeed)</h5><small class="muted">Slot wired but both platforms actively block scrapers; needs paid data source.</small></div>
         </div>
 
         <h4 style="margin-top:0.5rem;">Per-Candidate Memory</h4>
@@ -2173,7 +2200,7 @@
             <div><h5>Specialist Ensemble Verdict</h5><small>8 specialist AIs (earnings_analyst, pattern_recognizer, sentiment_narrative, risk_assessor, adversarial_reviewer for stocks + iv_skew_specialist, gamma_pin_specialist, option_spread_risk for options) — confidence-weighted consensus + risk VETO status</small></div>
         </div>
 
-        <h4 style="margin-top:0.5rem;">Market-Wide Context (13 sources, shared across all candidates)</h4>
+        <h4 style="margin-top:0.5rem;">Market-Wide Context (17 sources, shared across all candidates)</h4>
         <div class="grid">
             <div><h5>Portfolio State</h5><small>Current equity, cash, buying power, all held positions with unrealized P&L, drawdown level</small></div>
             <div><h5>Market Regime</h5><small>VIX level, SPY trend direction, crisis state (normal/elevated/crisis/severe)</small></div>
@@ -2188,6 +2215,15 @@
             <div><h5>FRED Economic Indicators</h5><small>Unemployment rate + trend, CPI YoY, consumer sentiment, initial claims</small></div>
             <div><h5>Sector Momentum Ranking</h5><small>11 sectors ranked by 5-day return, risk-on vs risk-off rotation detection</small></div>
             <div><h5>Market GEX Aggregate</h5><small>Aggregate gamma exposure regime — pinning (mean reversion) vs expansion (breakouts)</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>Cross-Asset Volatility <small class="muted">(new 2026-05-17)</small></h5><small>MOVE (bond), OVX (oil), GVZ (gold) — each with 30-day percentile rank (low / normal / elevated / extreme). Differentiates equity-only stress from broad cross-asset stress.</small></div>
+            <div><h5>Sector Flow Differential <small class="muted">(new 2026-05-17)</small></h5><small>Spread between strongest and weakest sector ETF flows — wide spread = rotation regime, near-zero = broad market.</small></div>
+            <div><h5>CFTC Commitments of Traders</h5><small>Most-recent COT report date for key futures contracts. Public Socrata endpoint (cftc.gov).</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>USDA Crop Reports <small class="muted">(if USDA_API_KEY set)</small></h5><small>Latest weekly corn / soy crop-condition % good+excellent (agri sector regime input).</small></div>
+            <div><h5>EIA Energy Inventories <small class="muted">(if EIA_API_KEY set)</small></h5><small>Latest weekly US crude-oil stocks + natural-gas storage (energy sector regime input).</small></div>
         </div>
         <div class="grid">
             <div><h5>Learned Patterns</h5><small>Discovered failure/success patterns by regime, strategy type, and time of day</small></div>

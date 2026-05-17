@@ -76,17 +76,21 @@ def get_usda_crop_reports() -> Dict[str, Any]:
         logger.debug("USDA_API_KEY not set — crop reports unavailable")
         _cache_put(ck, result)
         return result
+    # URL-encode every param — USDA's CONDITION categories include
+    # spaces ('PCT GOOD'), which urllib.request rejects as raw control
+    # characters. Use urlencode to handle quoting correctly.
     base = "https://quickstats.nass.usda.gov/api/api_GET/"
-    qs_corn = (
-        f"?key={_USDA_API_KEY}"
-        "&commodity_desc=CORN"
-        "&statisticcat_desc=CONDITION"
-        "&unit_desc=PCT GOOD"
-        "&agg_level_desc=NATIONAL"
-        "&format=JSON"
-    )
+    params = {
+        "key": _USDA_API_KEY,
+        "commodity_desc": "CORN",
+        "statisticcat_desc": "CONDITION",
+        "unit_desc": "PCT GOOD",
+        "agg_level_desc": "NATIONAL",
+        "format": "JSON",
+    }
+    url = base + "?" + urllib.parse.urlencode(params)
     try:
-        raw = _http_get(base + qs_corn).decode("utf-8", "replace")
+        raw = _http_get(url).decode("utf-8", "replace")
         data = json.loads(raw) if raw else {}
         rows = (data.get("data") or [])[:1]
         if rows:
