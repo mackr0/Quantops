@@ -209,6 +209,9 @@ def _collect_altdata_logs(
     paths = _altdata_log_paths(since_hours)
     if not paths:
         return [], None  # not an error — just no altdata logs here
+    from datetime import datetime, timedelta
+    cutoff_dt = datetime.utcnow() - timedelta(hours=since_hours)
+    cutoff_iso = cutoff_dt.isoformat(timespec="seconds")
     rows: List[Dict[str, Any]] = []
     errors: List[str] = []
     for p in paths:
@@ -223,12 +226,22 @@ def _collect_altdata_logs(
                     m = _LEVEL_RE.search(line)
                     if not m:
                         continue
+                    ts = _extract_log_timestamp(line)
+                    # Time-window filter: events older than the
+                    # requested window are stale residue. Pre-fix
+                    # we returned everything in the file (up to 7d
+                    # of historical altdata cron logs), making the
+                    # /issues page show errors that had already
+                    # been fixed but the old log lines hadn't aged
+                    # out.
+                    if ts and ts < cutoff_iso:
+                        continue
                     level = m.group(1).upper()
                     rows.append({
                         "source": os.path.basename(p),
                         "level": level,
                         "message": line.strip(),
-                        "timestamp": _extract_log_timestamp(line),
+                        "timestamp": ts,
                     })
         except OSError as exc:
             errors.append(f"read {p}: {type(exc).__name__}: {exc}")

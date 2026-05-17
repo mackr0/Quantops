@@ -390,6 +390,100 @@ class TestTier1OrderHistoryEnrichment:
         assert ok is False
 
 
+class TestOCCSymbolHandling:
+    """Caught 2026-05-17 (after 113 prod rows were broken): the
+    reconciler was writing the full OCC payload into the `symbol`
+    column. Convention is `symbol=UNDERLYING, occ_symbol=PAYLOAD`.
+    Wrong symbol broke `get_account_info` → 5 profiles showed
+    'Not connected' on the dashboard."""
+
+    def test_option_underlying_extracted_into_symbol(
+        self, tmp_path, monkeypatch,
+    ):
+        from reconcile_aggregate_drift import reconcile
+        db = tmp_path / "quantopsai_profile_1.db"
+        _create_trades_db(str(db))
+        monkeypatch.chdir(tmp_path)
+
+        fake_audit = {
+            "drift": [
+                {"account": "acct1",
+                 "symbol": "DOW260618C00040000",
+                 "journal_qty": 0.0, "broker_qty": 1.0,
+                 "drift": 1.0, "kind": "broker_orphan"},
+            ],
+            "accounts": {}, "errored": [],
+        }
+        with patch(
+            "aggregate_audit.audit_aggregate_drift",
+            return_value=fake_audit,
+        ), patch(
+            "reconcile_aggregate_drift._profiles_sharing_account",
+            return_value=[{"id": 1, "name": "p1", "enabled": True,
+                           "alpaca_account_id": "acct1"}],
+        ), patch(
+            "reconcile_aggregate_drift._broker_position_lookup",
+            return_value={"DOW260618C00040000": {
+                "qty": 1.0, "avg_entry_price": 0.85,
+                "market_value": 85.0, "side": "long"}},
+        ), patch(
+            "reconcile_aggregate_drift._find_opening_orders_for_position",
+            return_value=[],
+        ):
+            reconcile(apply=True)
+
+        with sqlite3.connect(str(db)) as conn:
+            r = conn.execute(
+                "SELECT symbol, occ_symbol FROM trades"
+            ).fetchone()
+        assert r[0] == "DOW", (
+            f"symbol column must be the UNDERLYING ('DOW'), not the "
+            f"full OCC payload; got {r[0]!r}"
+        )
+        assert r[1] == "DOW260618C00040000", (
+            "occ_symbol column must carry the full OCC payload"
+        )
+
+    def test_stock_symbol_unchanged(self, tmp_path, monkeypatch):
+        """Stocks shouldn't get touched by the OCC strip."""
+        from reconcile_aggregate_drift import reconcile
+        db = tmp_path / "quantopsai_profile_1.db"
+        _create_trades_db(str(db))
+        monkeypatch.chdir(tmp_path)
+
+        fake_audit = {
+            "drift": [
+                {"account": "acct1", "symbol": "AAPL",
+                 "journal_qty": 0.0, "broker_qty": 50.0,
+                 "drift": 50.0, "kind": "broker_orphan"},
+            ],
+            "accounts": {}, "errored": [],
+        }
+        with patch(
+            "aggregate_audit.audit_aggregate_drift",
+            return_value=fake_audit,
+        ), patch(
+            "reconcile_aggregate_drift._profiles_sharing_account",
+            return_value=[{"id": 1, "name": "p1", "enabled": True,
+                           "alpaca_account_id": "acct1"}],
+        ), patch(
+            "reconcile_aggregate_drift._broker_position_lookup",
+            return_value={"AAPL": {"qty": 50.0, "avg_entry_price": 200.0,
+                                    "market_value": 10000.0, "side": "long"}},
+        ), patch(
+            "reconcile_aggregate_drift._find_opening_orders_for_position",
+            return_value=[],
+        ):
+            reconcile(apply=True)
+
+        with sqlite3.connect(str(db)) as conn:
+            r = conn.execute(
+                "SELECT symbol, occ_symbol FROM trades"
+            ).fetchone()
+        assert r[0] == "AAPL"
+        assert r[1] is None  # no OCC for stock
+
+
 class TestBrokerAvgEntryPrimary:
     """2026-05-17 update: `list_positions.avg_entry_price` is the
     AUTHORITATIVE entry-price source (Alpaca tracks it independently

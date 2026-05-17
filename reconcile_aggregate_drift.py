@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sqlite3
 import sys
 from contextlib import closing
@@ -442,8 +443,24 @@ def _backfill_broker_orphan(
         f"profile short-overshoot or a pre-fix multileg combo-net "
         f"write."
     )
-    occ = symbol if (len(symbol) > 6
-                     and any(c.isdigit() for c in symbol[1:7])) else None
+    # OCC option symbol detection + underlying extraction.
+    # Convention in this codebase: trades.symbol = UNDERLYING ticker
+    # (e.g. "DOW"); trades.occ_symbol = full OCC payload (e.g.
+    # "DOW260618C00040000"). get_account_info downstream sends
+    # `symbol` to Alpaca's market-data API, which rejects OCC
+    # payloads as 'invalid symbol'. Caught 2026-05-17 — broke the
+    # dashboard for 5 profiles after the AUTO_RECONCILE writes.
+    occ = None
+    write_symbol = symbol
+    if (len(symbol) > 6 and any(c.isdigit() for c in symbol[1:7])):
+        occ = symbol
+        # Strip the trailing 6-digit date + C/P + 8-digit strike to
+        # recover the underlying. e.g. "DOW260618C00040000" → "DOW".
+        write_symbol = re.sub(r"\d{6}[CP]\d{8}$", "", symbol)
+        if not write_symbol:
+            # Pathological OCC with no recoverable underlying; fall
+            # back to a sentinel that won't be sent to Alpaca.
+            write_symbol = "_OCC_NO_UNDERLYING"
 
     log.info(
         "  %s broker_orphan: profile %d (%s) ← %s %s qty=%.4f @ "
@@ -463,7 +480,7 @@ def _backfill_broker_orphan(
                 "                     fill_price, signal_type, reason, "
                 "                     status, occ_symbol, order_id) "
                 "VALUES (?, ?, ?, ?, ?, ?, 'AUTO_RECONCILE', ?, 'open', ?, ?)",
-                (entry_ts, symbol, side, qty, entry_price, entry_price,
+                (entry_ts, write_symbol, side, qty, entry_price, entry_price,
                  reason, occ, first_order_id),
             )
             conn.commit()
