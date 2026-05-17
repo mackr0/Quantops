@@ -441,9 +441,129 @@
 </article>
 {% endif %}
 
+<!-- Comparative returns chart (#164) — overlays every profile's % return
+     since first snapshot, against the buy_hold SPY and random
+     stock-of-day baselines. -->
+<article id="comparative-returns" style="margin-top:1rem;">
+    <header><h3 style="margin:0;">Comparative Returns vs Baselines</h3></header>
+    <div id="cmp-returns-status" class="muted" style="font-size:0.9rem;padding:0.5rem 0;">Loading…</div>
+    <div id="cmp-returns-empty" style="display:none;padding:1rem;background:#f8f9fa;border-radius:4px;color:#555;"></div>
+    <canvas id="cmp-returns-chart" style="max-height:380px;"></canvas>
+</article>
+
 {% endblock %}
 
 {% block scripts %}
+<!-- Chart.js for the comparative-returns chart -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+(function(){
+    var statusEl = document.getElementById('cmp-returns-status');
+    var emptyEl  = document.getElementById('cmp-returns-empty');
+    var canvas   = document.getElementById('cmp-returns-chart');
+    if (!canvas) return;
+
+    function colorFor(strategy, idx) {
+        // Baselines get distinct, high-contrast colors; AI profiles
+        // share a palette so the eye picks the baselines first.
+        if (strategy === 'buy_hold') return '#1565c0';  // strong blue
+        if (strategy === 'random')   return '#6a1b9a';  // purple
+        var palette = ['#2e7d32','#ef6c00','#c62828','#00838f',
+                       '#558b2f','#ad1457','#4527a0','#37474f'];
+        return palette[idx % palette.length];
+    }
+
+    function dashFor(strategy) {
+        if (strategy === 'buy_hold') return [];      // solid
+        if (strategy === 'random')   return [6, 4];  // dashed
+        return [];                                    // solid for AI
+    }
+
+    function widthFor(strategy) {
+        if (strategy === 'buy_hold' || strategy === 'random') return 3;
+        return 2;
+    }
+
+    fetch('/api/comparative-returns', { credentials: 'same-origin' })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.empty_state) {
+            statusEl.style.display = 'none';
+            canvas.style.display = 'none';
+            emptyEl.style.display = 'block';
+            emptyEl.textContent = data.empty_message;
+            return;
+        }
+        // Build a unique sorted list of all dates so each dataset
+        // shares the same x axis even if some profiles started later.
+        var dateSet = {};
+        data.series.forEach(function(s) {
+            s.points.forEach(function(p) { dateSet[p.date] = true; });
+        });
+        var labels = Object.keys(dateSet).sort();
+
+        var datasets = data.series
+          .filter(function(s) { return s.points.length > 0; })
+          .map(function(s, idx) {
+            var byDate = {};
+            s.points.forEach(function(p) { byDate[p.date] = p.return_pct; });
+            var stype = s.strategy_type || 'ai';
+            var pname = s.profile_name || ('Profile ' + s.profile_id);
+            return {
+                label: pname + ' (' + stype + ')',
+                data: labels.map(function(d) {
+                    return byDate.hasOwnProperty(d) ? byDate[d] : null;
+                }),
+                borderColor: colorFor(stype, idx),
+                backgroundColor: colorFor(stype, idx),
+                borderDash: dashFor(stype),
+                borderWidth: widthFor(stype),
+                pointRadius: 0,
+                tension: 0.1,
+                spanGaps: true,
+            };
+          });
+
+        statusEl.style.display = 'none';
+        new Chart(canvas.getContext('2d'), {
+            type: 'line',
+            data: { labels: labels, datasets: datasets },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { mode: 'nearest', axis: 'x', intersect: false },
+                plugins: {
+                    legend: { position: 'bottom' },
+                    tooltip: {
+                        callbacks: {
+                            label: function(ctx) {
+                                var v = ctx.parsed.y;
+                                if (v === null) return ctx.dataset.label + ': —';
+                                return ctx.dataset.label + ': ' + v.toFixed(2) + '%';
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        title: { display: true, text: '% return since first snapshot' },
+                        ticks: { callback: function(v) { return v + '%'; } }
+                    },
+                    x: { title: { display: true, text: 'Date' } }
+                }
+            }
+        });
+      })
+      .catch(function(err) {
+        statusEl.style.display = 'none';
+        emptyEl.style.display = 'block';
+        emptyEl.style.background = '#fff5f5';
+        emptyEl.style.color = '#c62828';
+        emptyEl.textContent =
+            'Failed to load comparative returns: ' + err;
+      });
+})();
+</script>
 <!-- Tab switching -->
 <script>
 function showDashTab(event, tabName) {

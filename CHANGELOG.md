@@ -17,6 +17,31 @@ Rules going forward:
 
 ---
 
+## 2026-05-17 — Comparative returns chart (batch D / #164). Severity: medium (new dashboard feature, read-only).
+
+The experiment design ships two null benchmarks (Buy-Hold SPY, Random Stock-of-Day) so AI alpha is visible relative to them. Without a comparative chart, the operator would be left eyeballing per-profile equity values to estimate relative performance. This batch adds the chart.
+
+**New module `comparative_returns.py`:**
+- `build_payload(user_id)` reads `daily_snapshots.equity` from every active profile's per-profile DB, normalizes each series to "cumulative % return since the profile's first snapshot," and tags each series with its `strategy_type` so the chart can render baselines distinctly.
+- Tolerant of missing `daily_snapshots` table (fresh DB), missing per-profile DB file, and zero base-equity (returns flat 0% series instead of dividing).
+- Returns `{"empty_state": true, "empty_message": "…"}` when no series has data, so the front-end shows a one-line explanation instead of a blank chart (per "no hidden UI ever" — every section must render real data or an explicit empty-state).
+
+**New route `GET /api/comparative-returns`:**
+- Login-required JSON endpoint that wraps `build_payload`. No new auth model, no caching needed (snapshot reads are O(rows-per-profile) and there will only be ~13 profiles × a few hundred rows once the experiment is steady-state).
+
+**Dashboard chart:**
+- Chart.js 4.4.1 loaded from jsdelivr (matches the existing pico-css CDN pattern).
+- `buy_hold` profiles render in strong blue, `random` in dashed purple, `ai` profiles share a green/orange/red palette — eye picks the baselines first.
+- Tooltip shows `Profile (strategy_type): +X.XX%`.
+- All profiles share a single x-axis built from the union of all dates so series starting at different times line up correctly (`spanGaps: true` bridges the early gaps for late-starting profiles).
+- On API error, the empty-state pane flips red with the error message — no silent failure.
+
+**Tests**: 7 new in `test_comparative_returns_2026_05_17.py` (empty states, normalization correctness, strategy_type propagation, zero-base safety, missing-table tolerance, enabled-profile filter). Full suite: 3330 passed. Initial commit tripped `test_no_unsafe_field_interpolation` (the template-safety guardrail) on `s.strategy_type` interpolation; fixed by defaulting `var stype = s.strategy_type || 'ai'` in the chart-builder JS so the label stays safe even if the API contract drifts.
+
+**Data dependency**: chart reads from the existing `daily_snapshots` table per profile (already populated by `multi_scheduler` daily snapshot task). No new write path or cron required — the moment the fresh-start experiment profiles run their first snapshot, the chart populates.
+
+---
+
 ## 2026-05-17 — Strategy dispatch + orphan cleanup (batches B + C of fresh-start experiment build). Severity: medium (new feature + new ops script).
 
 **Batch B — non-AI baseline strategies (`simple_strategies.py`):**

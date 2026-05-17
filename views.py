@@ -704,6 +704,16 @@ def api_issues_count():
     return jsonify(issues_count(since_hours=24))
 
 
+@views_bp.route("/api/comparative-returns")
+@login_required
+def api_comparative_returns():
+    """Time-series % return for every active profile, tagged by
+    strategy_type so the dashboard chart can highlight the buy_hold
+    and random baselines distinctly. See docs/15."""
+    from comparative_returns import build_payload
+    return jsonify(build_payload(user_id=current_user.effective_user_id))
+
+
 @views_bp.route("/dashboard")
 @login_required
 def dashboard():

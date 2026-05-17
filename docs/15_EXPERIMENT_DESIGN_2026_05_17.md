@@ -197,9 +197,12 @@ Tracked as follow-up tasks in the QuantOps task list:
 - **Batch C**: Clean wipe of orphaned per-profile DBs left over
   from the old Alpaca accounts that were deleted 2026-05-17, then
   rebuild fresh profiles per this experiment design.
-- **Dashboard**: Comparative-returns chart (#164) — overlay every
-  profile's daily equity curve against the SPY and Random
-  baselines so relative alpha is visible at a glance.
+- (Done 2026-05-17, batch D) Comparative-returns chart (#164) on
+  the dashboard — every profile's cumulative-% return since first
+  snapshot, with `buy_hold` rendered in solid blue and `random` in
+  dashed purple so the baselines pop visually. Reads from existing
+  per-profile `daily_snapshots` table; populates automatically as
+  the multi_scheduler snapshot task runs.
 - (Done 2026-05-17, batch A) `enable_alt_data` / `enable_meta_model`
   / `enable_options` / `strategy_type` columns + ablation gates.
 - (Done) Reset script `reset_for_clean_experiment.py` — ready to
