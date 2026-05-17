@@ -1402,10 +1402,29 @@ def get_virtual_account_info(db_path=None, initial_capital=100000.0,
     """
     conn = _get_conn(db_path)
     try:
+        # Probe for the occ_symbol column — tests use a minimal
+        # schema without it. Production DBs all have it (added via
+        # _migrate_all_columns). Read it when present so option
+        # trades get the contract multiplier.
         try:
-            rows = conn.execute(
-                "SELECT side, qty, price FROM trades"
-            ).fetchall()
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(trades)"
+            ).fetchall()}
+            has_occ = "occ_symbol" in cols
+        except Exception:
+            has_occ = False
+        try:
+            if has_occ:
+                rows = conn.execute(
+                    "SELECT side, qty, price, occ_symbol FROM trades"
+                ).fetchall()
+            else:
+                rows = [
+                    (r[0], r[1], r[2], None)
+                    for r in conn.execute(
+                        "SELECT side, qty, price FROM trades"
+                    ).fetchall()
+                ]
         except Exception:
             return {
                 "equity": initial_capital,
@@ -1417,18 +1436,40 @@ def get_virtual_account_info(db_path=None, initial_capital=100000.0,
     finally:
         conn.close()
 
+    # Cash flows. Two bugs fixed 2026-05-17:
+    # (1) 'short' (sell-to-open a stock short) wasn't crediting cash.
+    #     Stocks shorted via side='short' had proceeds invisible to
+    #     virtual equity — equity understated by short premium.
+    # (2) Options had no contract multiplier. 1 contract = 100 shares,
+    #     so the cash effect of an option trade is qty * price * 100,
+    #     not qty * price. Every option trade was off by 100x.
+    # Caught when AUTO_RECONCILE backfill of 33 stock-shorts dropped
+    # the dashboard total by $216K — the broker had credited cash for
+    # those shorts months ago, but the virtual ledger never did.
     total_buys = 0.0
     total_sells = 0.0
     for row in rows:
         side = row[0]
         qty = float(row[1] or 0)
         price = float(row[2] or 0)
+        occ = row[3]
         if qty <= 0 or price <= 0:
             continue
+        multiplier = 100.0 if occ else 1.0
+        notional = qty * price * multiplier
+        # 'buy' = cash out (long open or short close)
+        # 'sell', 'cover', 'short' = cash in
+        #   - 'sell' = long close (proceeds) OR option sell-to-open
+        #              (premium received)
+        #   - 'cover' = stock short close via the rarely-used 'cover'
+        #              side label (in practice this codebase uses
+        #              'buy' to close stock shorts, so this branch
+        #              is mostly dormant)
+        #   - 'short' = stock short open (proceeds received)
         if side == "buy":
-            total_buys += qty * price
-        elif side in ("sell", "cover"):
-            total_sells += qty * price
+            total_buys += notional
+        elif side in ("sell", "cover", "short"):
+            total_sells += notional
 
     cash = initial_capital - total_buys + total_sells
 

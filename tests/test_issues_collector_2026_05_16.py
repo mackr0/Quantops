@@ -270,11 +270,21 @@ class TestLogTimestampExtraction:
         extracts it into the row's `timestamp` field. Pre-2026-05-16
         this was empty for every altdata row."""
         from issues_collector import _collect_altdata_logs
-        # Build a small log fixture in a temp dir; point collector at it.
-        log = tmp_path / "altdata-20260516.log"
+        # Use timestamps from the recent past so the 24h time-window
+        # filter doesn't drop them. (Hardcoded dates rot — `2026-05-16`
+        # was current when this test was written but is now > 24h old.)
+        from datetime import datetime, timedelta
+        recent_a = datetime.utcnow() - timedelta(minutes=5)
+        recent_b = datetime.utcnow() - timedelta(minutes=2)
+        a_str = recent_a.strftime("%Y-%m-%d %H:%M:%S,000")
+        b_str = recent_b.strftime("%Y-%m-%d %H:%M:%S,001")
+        a_iso = recent_a.strftime("%Y-%m-%dT%H:%M:%S")
+        b_iso = recent_b.strftime("%Y-%m-%dT%H:%M:%S")
+
+        log = tmp_path / "altdata-recent.log"
         log.write_text(
-            "2026-05-16 06:08:37,844 [ERROR] yfinance: $BRK.B test\n"
-            "2026-05-16 06:09:12,001 [WARNING] something else\n"
+            f"{a_str} [ERROR] yfinance: $BRK.B test\n"
+            f"{b_str} [WARNING] something else\n"
         )
         import issues_collector
         orig = issues_collector._altdata_log_paths
@@ -286,7 +296,7 @@ class TestLogTimestampExtraction:
         assert err is None
         assert len(rows) == 2
         ts_values = sorted(r["timestamp"] for r in rows)
-        assert ts_values == ["2026-05-16T06:08:37", "2026-05-16T06:09:12"], (
+        assert ts_values == [a_iso, b_iso], (
             "Each row must carry the per-line timestamp, not empty"
         )
 

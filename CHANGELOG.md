@@ -57,6 +57,14 @@ After the edgar_form4 `ok_with_errors` "silent failures count but don't expose w
 
 **All 14 audit issues closed across 5 deploys (c25a764, ab7ff42, febe6d9, 8b367f0, bdb83b8, plus this batch). 3251 main-suite tests pass.**
 
+**Batch 8 — virtual-cash-logic bugs (off by ~$200K per profile):**
+- `get_virtual_account_info` cash calc had two latent bugs that surfaced when my AUTO_RECONCILE backfills hit them.
+- **Bug A — stock-short proceeds never credited cash.** `side='short'` (stock short open) didn't match the `('sell', 'cover')` credit branch. Broker credits cash with the short proceeds in real time; the virtual ledger silently dropped them. Equity understated by the entire short premium. Across prod profiles: ~$217K of uncredited short premium (mostly from my AUTO_RECONCILE rows but the bug pre-dated them — any future stock short would have hit it).
+- **Bug B — no contract multiplier on option cash effects.** Options trade in contracts (1 contract = 100 shares); cash effect is `qty × price × 100`, not `qty × price`. Every option cash flow was 100× too small. `get_virtual_positions` correctly applied the multiplier to `market_value` (line 1332), but `get_virtual_account_info` cash calc didn't.
+- Fix: probe for `occ_symbol` column (tests use minimal schema without it); apply `multiplier = 100 if occ_symbol else 1`; add `'short'` to the credit branch.
+- 6 new tests in `test_virtual_account.py`: stock short open credits cash, stock short roundtrip profit, option buy subtracts premium × 100, option sell-to-open credits premium × 100, option roundtrip with multiplier, stock trade does NOT apply 100× (regression guard).
+- 17 tests total in `test_virtual_account.py` (11 pre-existing + 6 new) all pass.
+
 **Batch 7 — reconciler tier-1 enrichment with real Alpaca order history:**
 - User correctly flagged that batch 6's reconciler wrote FICTIONAL entry price (current mark), timestamp (now), and profile attribution (lowest-id-sharing-account). Drift would clear but P&L history would be a lie.
 - Two-tier strategy now:
