@@ -236,23 +236,44 @@ The full procedure has been rehearsed end-to-end on production with bit-identica
 
 ---
 
-## 6. Pre-deploy verification (`verify_first_cycle.sh`)
+## 6. Operational verification scripts
 
-After every deploy, run `./verify_first_cycle.sh` from the repo root. The script runs ~30 checks against the live droplet:
+Two complementary scripts live in the repo root:
 
-- **§0 Service health** — both services active, gunicorn workers fresh, prod git matches origin/main.
-- **§A Core scheduler health** — no NameError on Check Exits, per-position failures stay local, zero TASK FAILs since the latest fix-deploy cutoff.
-- **§B Cost & quality levers** — persistent cache hits, meta-pregate firing, disable-list reaching ensemble.
-- **§C INTRADAY_STOPS_PLAN** — broker stops actively placed (≥80% coverage), polling defers to broker trailing, MFE populated.
-- **§D Long/short capability** — short emission, regime-gate handling, RS universe candidates, Phase-1 validator clean, Kelly recommendations.
-- **§E Trade-quality metrics** — scratch classification, MFE capture, signed slippage cost.
-- **§F Trade execution** — loud-logged rejections classified, track record populated, pending-orders filtered.
-- **§G Cost** — today's spend.
-- **§H Alt-data** — bundled DBs at the merged path, refresh within 30h, cron entry correct.
-- **§I PDUFA + AdComm** — table populated, drug names extracted, idempotency table.
-- **§J UI guardrails** — no internal-tracker refs, no snake_case in dropdowns, blanket guardrail green, options-backtest endpoint working, display-name tests passing.
+### 6.1 `morning_health_check.sh` — daily operational check
 
-Each check has a per-fix deploy cutoff so historic pre-fix failures don't show as current. Adding a new fix = bump the cutoff in the script.
+Run every morning before market open. Drives off the seven-tier integrity contract + audit_runner shipped 2026-05-17. **Dynamically discovers active profiles** via `SELECT id FROM trading_profiles WHERE enabled = 1`, so it survives any profile rotation (the fresh-experiment account swap, future profile churn).
+
+Sections:
+- **§0 Services + deploy hygiene** — both services active, prod git = origin/main, gunicorn workers fresh.
+- **§A Scheduler liveness** — last cycle completed within 20 min (reads `scheduler_status.json`); zero TASK FAILs since session start.
+- **§B Integrity audits** — `audit_alerts` table exists; unresolved drift count grouped by audit type; every active drift item has been emailed (alert_sent flag).
+- **§C Reconciler heartbeat** — per active profile, "Reconcile Trade Statuses" task ran within 60 min.
+- **§D Activity capture** — `_task_capture_broker_activities` ran today on every profile; tallies DIV/OPEXP/OPASN captured in the 7-day window.
+- **§E Daily equity snapshot** — every profile has a `daily_snapshots` row for today (after market close; tolerant pre-close).
+- **§F Comparative-returns API** — `/api/comparative-returns` reachable and returns valid JSON.
+- **§G Cost** — today's cumulative AI spend across all active profiles.
+- **§H Alt-data freshness** — every alt-data DB refreshed within 30h.
+- **§I Options bucket health** — per-profile 30-day options P&L; warns when any profile is below −3% of capital but the `_optimize_options_pnl_cutoff` (#171) hasn't fired yet.
+
+### 6.2 `verify_first_cycle.sh` — post-deploy regression check
+
+Legacy script kept for after-deploy verification of specific shipped fixes. Each check is pinned to a per-fix deploy cutoff so historic pre-fix failures don't false-alarm. Bump the cutoff when shipping a relevant fix.
+
+Sections (hardcoded profile list — does NOT survive the fresh-experiment rotation; use this script ONLY against the legacy account topology):
+- §0 Service health
+- §A Core scheduler health (NameError, TASK FAILs)
+- §B Cost & quality levers
+- §C INTRADAY_STOPS_PLAN broker orders
+- §D Long/short capability
+- §E Trade-quality metrics
+- §F Trade execution behavior
+- §G Cost
+- §H Alt-data scrapers
+- §I PDUFA + AdComm
+- §J UI guardrails
+
+After the fresh-experiment cutover, `morning_health_check.sh` is the canonical daily check; `verify_first_cycle.sh` becomes opt-in for diagnosing specific regressions.
 
 ---
 

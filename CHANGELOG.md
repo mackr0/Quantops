@@ -17,6 +17,22 @@ Rules going forward:
 
 ---
 
+## 2026-05-17 — Morning health-check script (#172). Severity: medium (operational tooling).
+
+`verify_first_cycle.sh` is the legacy post-deploy regression check — hardcodes profile IDs 1, 3-11 (the OLD Alpaca accounts the user is about to delete) and uses per-fix deploy-cutoff timestamps that have served their purpose. Two key gaps after the seven-tier integrity contract landed: (a) no section drives off the new `audit_alerts` table or the audit_runner; (b) hardcoded profile lists won't survive the fresh-experiment profile rotation.
+
+**New `morning_health_check.sh`:**
+- Dynamically discovers active profiles via `SELECT id FROM trading_profiles WHERE enabled = 1` — survives any profile rotation.
+- Sections built around the seven-tier contract: scheduler liveness, audit-runner drift counts grouped by audit type, reconciler heartbeat per active profile, activity-capture freshness, daily-snapshot existence, comparative-returns API health, AI cost, alt-data freshness, options-bucket P&L per profile.
+- §I specifically watches for "options P&L below −3% of capital but `_optimize_options_pnl_cutoff` (#171) hasn't fired yet" — surfaces the gap between visibility signal and action.
+- Returns 0 on clean (warnings allowed), 1 on any real failure.
+
+**`verify_first_cycle.sh` retained** as the post-deploy regression check for specific shipped fixes (snake_case guardrails, INTRADAY_STOPS, MFE capture, etc.). Not deleted — those fix verifications are still useful when diagnosing specific regressions; they just don't belong in the every-morning ritual.
+
+Docs: `13_QUALITY_RELIABILITY.md §6` rewritten to describe both scripts and when to use each.
+
+---
+
 ## 2026-05-17 — Options P&L auto-cutoff (#171). Severity: high (direct $200K-loss prevention; closes the visibility→action loop).
 
 The user's framing — "no hidden losses → AI can take action" — held one final gap. Visibility was now complete (seven integrity audits running every 10 min with email alerts) but no automated *action* existed for the specific failure mode that cost $200K: the AI kept trading options while options were losing money. Nothing made the AI stop.
