@@ -171,7 +171,10 @@ These run at trade time, in addition to the pre-commit tests. Each is independen
 
 ### 4.3 Reconcile + audit (every 15 minutes via cron)
 - **`reconcile_journal_to_broker`** — compares every per-profile journal against Alpaca. Detects: phantom SELLs (logged but not filled), partial-sale drift, broker-side liquidation, canceled entries that the journal still claims as open. Auto-corrects by undoing phantoms and backfilling broker actions.
-- **`aggregate_audit`** — sums virtual positions across profiles routing to the same Alpaca account, compares to `api.list_positions()`. Catches multi-profile-overshoot scenarios where the sum exceeds broker actuals (logic bug).
+- **`aggregate_audit.audit_aggregate_drift`** — sums virtual positions across profiles routing to the same Alpaca account, compares to `api.list_positions()`. Catches multi-profile-overshoot scenarios where the sum exceeds broker actuals (logic bug).
+- **`aggregate_audit.audit_account_value_parity`** — sibling check on the DOLLAR side: sum of virtual `market_value` per account vs sum of broker `market_value` per account. Catches divergence even when quantities match (missing options multiplier, stale marks, value-only logic bugs). Tolerance: `max($50, 0.1% of broker value)`. Drift surfaces on `/issues` as ERROR; no auto-reconcile because the correct fix depends on which side is wrong.
+
+**Three-tier integrity contract**: every trade carries a broker `order_id` (#157 perfect-matching invariant) → quantities sum correctly per account (aggregate_audit) → values sum correctly per account (account_value_parity). Together these make any silent broker/journal divergence impossible to hide.
 
 ### 4.4 The `pending_fill` state machine
 SELL / COVER / option-close rows write `status='pending_fill'` on submit, NOT `closed`. `_task_update_fills` flips to `closed` once `filled_avg_price` arrives. Eliminates the phantom-close window where the journal would otherwise claim realized P&L the broker had async-canceled.

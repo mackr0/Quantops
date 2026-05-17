@@ -17,6 +17,37 @@ Rules going forward:
 
 ---
 
+## 2026-05-17 — Account-value parity invariant (#165). Severity: high (defense-in-depth catching dollar drift the qty audit can't see).
+
+The 2026-05-13 cash-logic bugs (stock-short proceeds not credited to virtual cash, options contract multiplier missing) sat undetected for weeks because the existing aggregate_audit only checks share-count parity per (account, symbol). With perfect share counts, the missing multiplier and missing short credits caused virtual `portfolio_value` to silently disagree with the broker's by ~$200K across all profiles. Quantity parity alone is insufficient.
+
+**New invariant** (sibling to #157 order_id pairing and aggregate_audit qty parity):
+
+For each shared Alpaca account A:
+    sum(market_value of every virtual position on profiles routing to A)
+                                MUST EQUAL
+                  sum(market_value of every broker position on A)
+
+If they disagree by more than `max($50, 0.1% of broker_value)`, drift is reported.
+
+**Implementation (`aggregate_audit.py`):**
+- `audit_account_value_parity(profile_ids)` — iterates profiles, groups by `alpaca_account_id`, marks both sides using the SAME price fetcher (`client._make_price_fetcher`) so snapshot lag doesn't false-flag.
+- Tolerance: `max(_VALUE_TOLERANCE_ABS=$50, _VALUE_TOLERANCE_PCT=0.1% × broker_value)`. The ABS floor handles tiny-account noise (a 0.1% drift on $1K is only $1), the PCT term scales with account size.
+- Drift kind: `broker_value_orphan` (broker holds more $ than profiles claim) vs `journal_value_phantom` (profiles claim more $ than broker holds) — symmetric with the existing qty-side `broker_orphan` / `journal_phantom` naming.
+- `format_value_drift_summary(audit)` for log lines / email.
+
+**Wired into `issues_collector._collect_aggregate_drift`** alongside the existing qty audit. Drift items surface on `/issues` as ERROR rows with `source='value_parity.<acct>'`. Per "warnings are errors" — value drift gets the same severity as qty drift. Cached against the same 60s drift-cache TTL as the qty audit (cheap second Alpaca call per account).
+
+**No auto-reconcile (yet)**: the existing reconciler handles qty drift because the fix is unambiguous (close phantom rows, backfill orphans). Value drift requires investigation before deciding whether to trust broker or journal — wrong-side reconciliation could destroy real position data.
+
+**Cash deliberately excluded**: broker cash reflects real deposits; virtual cash reflects per-profile `initial_capital` accounting. On shared accounts the two can legitimately diverge without indicating a bug. Cash parity is a separate question (and a separate future check if needed).
+
+**Tests**: 10 new in `test_account_value_parity_2026_05_17.py` (perfect match, within tolerance, broker_value_orphan, journal_value_phantom, multi-profile aggregation, profile with no broker, profile load failure, broker call failure, missing-multiplier regression test, issues_collector wiring). Full suite: 3340 passed.
+
+**Why this wasn't caught before**: aggregate_audit was designed in May 2026 as a qty-side defense-in-depth check; nobody asked the more general "are the dollar amounts the same" question until the user did today. The qty audit + value audit + order_id pairing form a complete three-tier integrity check between broker and journal.
+
+---
+
 ## 2026-05-17 — Comparative returns chart (batch D / #164). Severity: medium (new dashboard feature, read-only).
 
 The experiment design ships two null benchmarks (Buy-Hold SPY, Random Stock-of-Day) so AI alpha is visible relative to them. Without a comparative chart, the operator would be left eyeballing per-profile equity values to estimate relative performance. This batch adds the chart.

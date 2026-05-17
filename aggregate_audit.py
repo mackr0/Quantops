@@ -255,3 +255,171 @@ def format_drift_summary(audit: Dict) -> str:
             f"drift={d['drift']:>+8.2f}  ({d['kind']})"
         )
     return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Account-value parity (#165, 2026-05-17)
+# ─────────────────────────────────────────────────────────────────────
+#
+# qty-parity (above) catches mismatched share counts. value-parity
+# catches mismatched DOLLAR amounts — different mark prices, missing
+# multipliers, stale marks. Quantity audit + value audit + order_id
+# pairing together form the 3-tier integrity check between every
+# Alpaca account and the virtual profiles routing through it.
+#
+# Tolerance: max(_VALUE_TOLERANCE_ABS, _VALUE_TOLERANCE_PCT * broker_value).
+# The ABS floor handles tiny-account noise (a 0.1% drift on $1K is
+# only $1); the PCT term scales with account size so a $1M account
+# can absorb $1K of normal snapshot-lag drift.
+_VALUE_TOLERANCE_ABS = 50.0      # dollars
+_VALUE_TOLERANCE_PCT = 0.001     # 0.1% of broker positions value
+
+
+def _journal_positions_value(db_path: str, price_fetcher=None) -> float:
+    """Sum of market_value across all open virtual positions for ONE
+    profile. Uses the same price_fetcher as get_virtual_positions so
+    both sides of the comparison are marked consistently."""
+    from journal import get_virtual_positions
+    try:
+        positions = get_virtual_positions(
+            db_path=db_path, price_fetcher=price_fetcher,
+        )
+    except Exception as exc:
+        logger.warning(
+            "aggregate_audit value-parity: get_virtual_positions failed "
+            "for %s: %s: %s", db_path, type(exc).__name__, exc,
+        )
+        return 0.0
+    return sum(float(p.get("market_value", 0) or 0) for p in positions)
+
+
+def _broker_positions_value(api) -> float:
+    """Sum of market_value across the broker's positions on this
+    account. Excludes cash deliberately — cash parity is a separate
+    invariant (broker cash reflects real deposits; virtual cash is
+    bookkeeping from initial_capital, and the two can legitimately
+    diverge on shared accounts)."""
+    try:
+        positions = api.list_positions()
+    except Exception as exc:
+        logger.warning(
+            "aggregate_audit value-parity: list_positions failed: %s",
+            exc,
+        )
+        return 0.0
+    total = 0.0
+    for p in positions:
+        try:
+            total += float(getattr(p, "market_value", 0) or 0)
+        except (ValueError, TypeError, AttributeError, KeyError) as exc:
+            sym = getattr(p, "symbol", "?")
+            logger.warning(
+                "aggregate_audit value-parity per-position parse failed "
+                "(symbol=%s): %s: %s — this position will be MISSING "
+                "from the value comparison, possibly causing false drift",
+                sym, type(exc).__name__, exc,
+            )
+    return total
+
+
+def audit_account_value_parity(
+    profile_ids: Iterable[int],
+    tolerance_abs: float = _VALUE_TOLERANCE_ABS,
+    tolerance_pct: float = _VALUE_TOLERANCE_PCT,
+) -> Dict:
+    """Compare summed virtual positions value vs broker positions
+    value per Alpaca account.
+
+    Returns:
+      {
+        'accounts': {acct_id: {
+            'broker_value': float,
+            'journal_value': float,
+            'drift': float,        # broker - journal
+            'tolerance': float,    # the threshold this account uses
+            'profile_ids': [int, ...],
+        }},
+        'drift': [list of accounts where abs(drift) > tolerance],
+        'errored': [profile_ids that failed to load],
+      }
+    """
+    from models import build_user_context_from_profile
+    from client import _make_price_fetcher  # shared cache, hot
+
+    by_account: Dict[int, Dict] = defaultdict(
+        lambda: {"journal_value": 0.0, "profile_ids": [], "api": None}
+    )
+    errored: List[int] = []
+
+    for p_id in profile_ids:
+        try:
+            ctx = build_user_context_from_profile(p_id)
+        except Exception:
+            errored.append(p_id)
+            continue
+        acct = getattr(ctx, "alpaca_account_id", None)
+        if not acct:
+            continue
+        if by_account[acct]["api"] is None:
+            try:
+                api = ctx.get_alpaca_api() if hasattr(
+                    ctx, "get_alpaca_api") else ctx.api
+                by_account[acct]["api"] = api
+            except Exception:
+                errored.append(p_id)
+                continue
+        # Mark each profile's positions using the same fetcher as
+        # the broker side will use a moment later — keeps the two
+        # sides snapshotted consistently.
+        try:
+            fetcher = _make_price_fetcher(by_account[acct]["api"])
+        except Exception:
+            fetcher = None
+        v = _journal_positions_value(ctx.db_path, price_fetcher=fetcher)
+        by_account[acct]["journal_value"] += v
+        by_account[acct]["profile_ids"].append(p_id)
+
+    accounts: Dict[int, Dict] = {}
+    drift: List[Dict] = []
+    for acct, info in by_account.items():
+        api = info["api"]
+        if api is None:
+            continue
+        broker_value = _broker_positions_value(api)
+        journal_value = round(info["journal_value"], 2)
+        broker_value = round(broker_value, 2)
+        d = round(broker_value - journal_value, 2)
+        tol = max(tolerance_abs, abs(broker_value) * tolerance_pct)
+        row = {
+            "account": acct,
+            "broker_value": broker_value,
+            "journal_value": journal_value,
+            "drift": d,
+            "tolerance": round(tol, 2),
+            "profile_ids": sorted(info["profile_ids"]),
+        }
+        accounts[acct] = row
+        if abs(d) > tol:
+            # broker_orphan: broker holds more dollars than profiles claim
+            # journal_phantom: profiles claim more dollars than broker holds
+            row["kind"] = (
+                "broker_value_orphan" if d > 0 else "journal_value_phantom"
+            )
+            drift.append(row)
+
+    return {"accounts": accounts, "drift": drift, "errored": errored}
+
+
+def format_value_drift_summary(audit: Dict) -> str:
+    drift = audit.get("drift", [])
+    if not drift:
+        return "value-parity audit: 0 drift items, all account values match"
+    lines = [f"value-parity audit: {len(drift)} drift item(s)"]
+    for d in drift:
+        lines.append(
+            f"  acct{d['account']}: broker=${d['broker_value']:>12,.2f}  "
+            f"journal=${d['journal_value']:>12,.2f}  "
+            f"drift=${d['drift']:>+12,.2f}  "
+            f"(tol=${d['tolerance']:,.2f}, {d.get('kind', '?')})"
+        )
+    return "\n".join(lines)

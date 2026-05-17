@@ -314,6 +314,39 @@ def _collect_aggregate_drift(
     except Exception as exc:
         err = f"aggregate_audit raised: {type(exc).__name__}: {exc}"
 
+    # Value-parity audit (#165, 2026-05-17). Quantity audit catches
+    # share-count drift; this catches dollar drift even when shares
+    # match (different marks, missing multipliers, etc.).
+    try:
+        from aggregate_audit import audit_account_value_parity
+        v_audit = audit_account_value_parity(profile_ids=range(1, 12))
+        for d in v_audit.get("drift", []):
+            acct = d.get("account", "?")
+            cat = d.get("kind") or "value_drift"
+            rows.append({
+                "source": f"value_parity.{acct}",
+                "level": "ERROR",
+                "message": (
+                    f"{cat}: broker=${d.get('broker_value', 0):,.2f} "
+                    f"journal=${d.get('journal_value', 0):,.2f} "
+                    f"drift=${d.get('drift', 0):+,.2f} "
+                    f"(tol=${d.get('tolerance', 0):,.2f}, profiles="
+                    f"{d.get('profile_ids', [])})"
+                ),
+                "timestamp": "",
+                "is_live_snapshot": True,
+            })
+    except ImportError as exc:
+        # If qty audit was loaded but value audit isn't yet, surface
+        # the install issue rather than silently skipping the check.
+        if not err:
+            err = f"value_parity audit unavailable: {exc}"
+        else:
+            err += f" | value_parity audit unavailable: {exc}"
+    except Exception as exc:
+        ve = f"value_parity audit raised: {type(exc).__name__}: {exc}"
+        err = ve if not err else (err + " | " + ve)
+
     _DRIFT_CACHE["ts"] = now
     _DRIFT_CACHE["rows"] = rows
     _DRIFT_CACHE["error"] = err
