@@ -29,6 +29,7 @@ _CACHE_TTL = {
     "etf_flows": 86400,         # 24h
     "cboe_skew": 3600,          # 1h (intraday indicator)
     "fred_macro": 604800,       # 7d (monthly/weekly data)
+    "cross_asset_vol": 3600,    # 1h (MOVE / OVX / GVZ — intraday)
 }
 
 _FRED_API_KEY = os.environ.get("FRED_API_KEY", "DEMO_KEY")
@@ -483,6 +484,104 @@ def get_sector_momentum_ranking() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# 5. Cross-asset volatility (MOVE / OVX / GVZ)  —  2026-05-17 #3 Tier-1
+# ---------------------------------------------------------------------------
+
+# Three CBOE vol indices that complement VIX. Each measures implied vol
+# in a different asset class — useful for distinguishing "equity vol
+# spike alone" from "broad cross-asset stress."
+#   ^MOVE  Merrill Lynch Treasury Bond Option Volatility (1-month
+#          implied vol of US Treasury options)
+#   ^OVX   CBOE Crude Oil Volatility Index (1-month implied vol on
+#          USO front-month options)
+#   ^GVZ   CBOE Gold ETF Volatility Index (1-month implied vol on
+#          GLD options)
+#
+# Why 30d percentile vs raw value: each index has its own typical
+# range (MOVE typically 70-160; OVX typically 30-80; GVZ typically
+# 12-30). Percentile-rank is the comparable cross-asset signal.
+
+_VOL_INDEX_TICKERS = {
+    "move": "^MOVE",
+    "ovx": "^OVX",
+    "gvz": "^GVZ",
+}
+
+
+def get_cross_asset_vol() -> Dict[str, Any]:
+    """Pull MOVE / OVX / GVZ from yfinance, compute current value
+    + 30-day percentile rank. Returns:
+      {
+        move: {current, p30d, p30d_label}, ...
+        # p30d_label: 'low' (<25), 'normal', 'elevated' (>75), 'extreme' (>95)
+      }
+    Returns empty {} on full failure; per-index missing data is `None`.
+    """
+    cached = _get_cached("cross_asset_vol", "cross_asset_vol")
+    if cached is not None:
+        return cached
+
+    result: Dict[str, Any] = {}
+    try:
+        import yfinance as yf
+        import yf_lock as _yfl
+        for key, ticker_symbol in _VOL_INDEX_TICKERS.items():
+            try:
+                with _yfl._lock:
+                    t = yf.Ticker(ticker_symbol)
+                    hist = t.history(period="35d")
+                if hist is None or hist.empty:
+                    result[key] = {
+                        "current": None, "p30d": None,
+                        "p30d_label": "unavailable",
+                    }
+                    continue
+                col = "Close" if "Close" in hist.columns else "close"
+                closes = hist[col].dropna()
+                if len(closes) == 0:
+                    result[key] = {
+                        "current": None, "p30d": None,
+                        "p30d_label": "unavailable",
+                    }
+                    continue
+                cur = float(closes.iloc[-1])
+                window = closes.tail(30) if len(closes) >= 30 else closes
+                # Percentile rank: what fraction of recent observations
+                # were at or below the current value?
+                rank = float((window <= cur).sum()) / float(len(window))
+                pct = round(rank * 100, 1)
+                if pct >= 95:
+                    label = "extreme"
+                elif pct >= 75:
+                    label = "elevated"
+                elif pct <= 25:
+                    label = "low"
+                else:
+                    label = "normal"
+                result[key] = {
+                    "current": round(cur, 1),
+                    "p30d": pct,
+                    "p30d_label": label,
+                }
+            except Exception as exc:
+                logger.debug(
+                    "cross-asset vol fetch failed for %s: %s",
+                    ticker_symbol, exc,
+                )
+                result[key] = {
+                    "current": None, "p30d": None,
+                    "p30d_label": "unavailable",
+                }
+    except ImportError:
+        logger.warning(
+            "cross_asset_vol: yfinance not available — vol indices unfetched"
+        )
+
+    _set_cached("cross_asset_vol", result)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Aggregator
 # ---------------------------------------------------------------------------
 
@@ -490,7 +589,8 @@ def get_all_macro_data() -> Dict[str, Any]:
     """Fetch all market-wide macro data in one call.
 
     Returns dict combining yield curve, ETF flows, CBOE skew,
-    FRED economic indicators, and sector momentum ranking.
+    FRED economic indicators, sector momentum ranking, and the
+    MOVE/OVX/GVZ cross-asset vol indices.
     """
     return {
         "yield_curve": get_yield_curve(),
@@ -499,6 +599,10 @@ def get_all_macro_data() -> Dict[str, Any]:
         "fred_macro": get_fred_macro(),
         "sector_momentum": get_sector_momentum_ranking(),
         "market_gex": get_market_gex_aggregate(),
+        # 2026-05-17 #3 Tier-1: MOVE (bond vol), OVX (oil vol), GVZ
+        # (gold vol). Differentiates equity-only stress from broad
+        # cross-asset stress. Each carries 30d percentile rank.
+        "cross_asset_vol": get_cross_asset_vol(),
     }
 
 

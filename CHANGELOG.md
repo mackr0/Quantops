@@ -41,6 +41,40 @@ Fix: eliminate the case statement entirely. Auto-discover every altdata DB via `
 
 ---
 
+## 2026-05-17 — Tier-1 alt-data expansion: SEC 8-K + SEC 13D/G + MOVE/OVX/GVZ. Severity: medium (3 new high-signal feeds, all into the unified bucket).
+
+User audit caught me underselling alt-data coverage and asked for the Tier-1 candidates to be built before the experiment goes live. All three landed:
+
+**#1 SEC 8-K broad-universe discovery** (`sec_8k_broad.py`)
+- Pulls EDGAR's `getcurrent?type=8-K` atom feed every 24h (via the existing altdata cron with a thin `altdata/edgar_8k/edgar_8k/cli.py` shim — no parallel cron infra).
+- Distinct from `sec_filings.monitor_symbol` (which is symbol-targeted to held + shortlist symbols). This module scans the FULL universe so the AI sees material events on symbols the screener hasn't yet flagged.
+- Item taxonomy: 1.01 (M&A), 2.02 (earnings), 5.02 (officer change), 4.02 (restatement), 1.03 (bankruptcy), etc. High-signal items get semantic tags.
+- Storage: `altdata/edgar_8k/data/edgar_8k.db` with `UNIQUE(accession)` for idempotency.
+- Consumer API: `alternative_data.get_all_alternative_data(symbol)["recent_8k_events"]`.
+- AI prompt renders the most recent 3 high-signal events with their tags.
+- 14 tests.
+
+**#2 SEC 13D/G activist positions** (`sec_13dg_activist.py`)
+- Two atom feeds (one each for SC 13D and SC 13G), same scrape pattern as 8-K.
+- Distinguishes activist intent-to-influence (SC 13D) from passive >5% holder (SC 13G). The `has_13d` flag tells the AI prompt to weight 13D higher.
+- Filed within 10 days of the trigger date — much fresher than the quarterly 13F we already track.
+- Filer name + subject company extraction (subject company requires fetching the EDGAR filing index page since the atom title only carries filer info).
+- Storage: `altdata/edgar_13dg/data/edgar_13dg.db`. Consumer key: `activist_13dg`.
+- AI prompt renders the most recent 2 events with ACTIVIST/passive marker + filer name.
+- 8 tests.
+
+**#3 MOVE / OVX / GVZ cross-asset vol** (extension to `macro_data.py`)
+- Three CBOE-derived vol indices alongside the existing VIX coverage: MOVE (US Treasury option vol), OVX (oil ETF vol), GVZ (gold ETF vol).
+- Per-index 30-day percentile rank with semantic labels (low / normal / elevated / extreme) — capital-comparable across asset classes (raw values aren't, since each has its own typical range).
+- Picked up automatically by the unified alt-data macro cache (no separate wiring) — `get_all_macro_data()["cross_asset_vol"]`.
+- 9 tests.
+
+**Total**: 31 new tests across the three modules. Full suite: 3458 passed (was 3427).
+
+The user's "wait you said you didn't have FRED" observation that drove the unification refactor is now the structural guarantee: every alt-data signal — old or new — flows through `get_all_alternative_data` AND the `morning_health_check.sh §H2` live verification.
+
+---
+
 ## 2026-05-17 — Google Gemini SDK migration (`google-generativeai` → `google-genai`). Severity: low (deprecation cleanup, no behavior change).
 
 After switching all 13 experiment profiles to Google Gemini 2.5 Flash Lite, the verify_ai_provider_per_profile.py output surfaced a deprecation warning from `google-generativeai` (Google's old Python SDK, now replaced by `google-genai`). Window to migrate: BEFORE the experiment starts collecting data, while there's no risk of breaking active trading.

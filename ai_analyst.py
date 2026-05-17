@@ -1652,6 +1652,56 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                     if txt:
                         alt_parts.append(txt)
 
+            # 2026-05-17 #1 Tier-1: broad-universe SEC 8-K events.
+            # `recent_8k_events` carries up to 50 recent 8-Ks for the
+            # symbol with item codes + semantic tags. Only render
+            # when high-signal items present (M&A, earnings, officer
+            # change, restatement, bankruptcy) — generic 7.01 / 9.01
+            # exhibits are too noisy to surface every time.
+            k8 = alt.get("recent_8k_events") or {}
+            events = k8.get("events") or []
+            high_signal_events = [e for e in events
+                                   if e.get("item_tags")]
+            if high_signal_events:
+                # Most recent 3 high-signal events, summarized:
+                #   "2026-05-17: officer_change, material_agreement"
+                bits = []
+                for ev in high_signal_events[:3]:
+                    tags = "/".join(ev["item_tags"])
+                    bits.append(f"{ev['date']}: {tags}")
+                tail = (f" (+{len(high_signal_events) - 3} more)"
+                        if len(high_signal_events) > 3 else "")
+                txt = _weighted_signal_text(
+                    "recent_8k_events",
+                    f"8-K events: {' | '.join(bits)}{tail}",
+                )
+                if txt:
+                    alt_parts.append(txt)
+
+            # 2026-05-17 #2 Tier-1: SEC 13D/G activist positions.
+            # 13D = activist intent-to-influence at >5%; 13G = passive
+            # >5% holder. Render the most recent 2 events with filer
+            # name. Distinguish 13D (intent-to-influence — high signal)
+            # vs 13G (passive — lower signal) in the rendered text.
+            adg = alt.get("activist_13dg") or {}
+            adg_events = adg.get("events") or []
+            if adg_events:
+                bits = []
+                for ev in adg_events[:2]:
+                    ft = ev["form_type"]  # 'SC 13D' or 'SC 13G'
+                    role = "ACTIVIST" if ft == "SC 13D" else "passive"
+                    bits.append(
+                        f"{ev['date']}: {role} {ev['filer_name']}"
+                    )
+                tail = (f" (+{len(adg_events) - 2} more)"
+                        if len(adg_events) > 2 else "")
+                txt = _weighted_signal_text(
+                    "activist_13dg",
+                    f">5% holders: {' | '.join(bits)}{tail}",
+                )
+                if txt:
+                    alt_parts.append(txt)
+
             if alt_parts:
                 # Layer 6 verbosity: brief = show only top 3 signals;
                 # normal = show all; detailed = show all + a "(X more)"

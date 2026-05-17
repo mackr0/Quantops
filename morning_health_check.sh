@@ -394,6 +394,8 @@ EXPECTED = [
     \"congressional_recent\", \"institutional_13f\",
     \"biotech_milestones\", \"stocktwits_sentiment\",
     \"google_trends\", \"wikipedia_pageviews\", \"app_store_ranking\",
+    # 2026-05-17 Tier-1 additions
+    \"recent_8k_events\", \"activist_13dg\", \"macro\",
 ]
 ok, empty, missing = 0, 0, 0
 for key in EXPECTED:
@@ -422,12 +424,12 @@ H2_EMPTY=$(echo "$H2_TOTALS" | grep -oE 'empty=[0-9]+' | cut -d= -f2)
 H2_MISSING=$(echo "$H2_TOTALS" | grep -oE 'missing=[0-9]+' | cut -d= -f2)
 if [ "${H2_MISSING:-0}" -gt 0 ]; then
     bad "${H2_MISSING} alt-data signal(s) MISSING from response — code path broken"
-elif [ "${H2_OK:-0}" -ge 15 ]; then
-    ok "${H2_OK}/18 live-API signals returned data (${H2_EMPTY:-0} empty — within normal range)"
-elif [ "${H2_OK:-0}" -ge 10 ]; then
-    warn "${H2_OK}/18 live-API signals returned data (${H2_EMPTY:-0} empty — partial coverage)"
+elif [ "${H2_OK:-0}" -ge 17 ]; then
+    ok "${H2_OK}/21 live-API signals returned data (${H2_EMPTY:-0} empty — within normal range)"
+elif [ "${H2_OK:-0}" -ge 12 ]; then
+    warn "${H2_OK}/21 live-API signals returned data (${H2_EMPTY:-0} empty — partial coverage)"
 else
-    bad "only ${H2_OK:-0}/18 live-API signals returned data — broad rate-limit or outage"
+    bad "only ${H2_OK:-0}/21 live-API signals returned data — broad rate-limit or outage"
 fi
 
 # =============================================================================

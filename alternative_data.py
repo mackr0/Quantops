@@ -2408,9 +2408,52 @@ def get_all_alternative_data(symbol):
         "google_trends": get_google_trends_signal(symbol),
         "wikipedia_pageviews": get_wikipedia_pageviews_signal(symbol),
         "app_store_ranking": get_app_store_ranking(symbol),
+        # 2026-05-17 #1 Tier-1: broad-universe SEC 8-K discovery.
+        # Distinct from sec_filings.monitor_symbol (which is per-
+        # symbol). Reads from the daily atom-feed scrape persisted
+        # in altdata/edgar_8k/data/edgar_8k.db. Returns recent 8-K
+        # events for this symbol with parsed Item codes + tags
+        # (material_agreement / earnings / officer_change / etc.)
+        "recent_8k_events": _get_recent_8k_events_safe(symbol),
+        # 2026-05-17 #2 Tier-1: SEC 13D/G activist positions.
+        # 13D = activist intent-to-influence at >5% ownership; 13G
+        # = passive >5% holder. Both filed within 10 days of the
+        # trigger date (much fresher than quarterly 13F). Reads
+        # from altdata/edgar_13dg/data/edgar_13dg.db.
+        "activist_13dg": _get_recent_13dg_safe(symbol),
         # Symbol-agnostic macro context (cached, fetched once per cycle).
         # Includes yield curve, FRED indicators, CBOE skew, ETF flows
         # (and post-2026-05-17 the MOVE/OVX/GVZ vol indices).
         "macro": _get_cached_macro(),
         # patent_activity: DISABLED — PatentsView v1 API deprecated
     }
+
+
+def _get_recent_8k_events_safe(symbol):
+    """Wrapper that catches all errors so a broken 8-K module never
+    breaks the whole alt-data fetch."""
+    try:
+        from sec_8k_broad import get_recent_8k_events
+        return get_recent_8k_events(symbol)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "recent_8k_events fetch failed for %s: %s: %s",
+            symbol, type(exc).__name__, exc,
+        )
+        return {"events": [], "count": 0, "high_signal_count": 0}
+
+
+def _get_recent_13dg_safe(symbol):
+    """Wrapper that catches all errors so a broken 13D/G module never
+    breaks the whole alt-data fetch."""
+    try:
+        from sec_13dg_activist import get_recent_13dg_activist
+        return get_recent_13dg_activist(symbol)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "activist_13dg fetch failed for %s: %s: %s",
+            symbol, type(exc).__name__, exc,
+        )
+        return {"events": [], "count": 0, "has_13d": False}

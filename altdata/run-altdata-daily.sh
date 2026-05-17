@@ -31,6 +31,14 @@ DEFAULT_PROJECTS=(
     "edgar_form4"
     "biotechevents"
     "stocktwits"
+    # 2026-05-17 #1 Tier-1: broad-universe SEC 8-K discovery.
+    # Thin CLI shim at altdata/edgar_8k/edgar_8k/cli.py that
+    # delegates to repo-root sec_8k_broad.scrape_recent_8k_filings.
+    "edgar_8k"
+    # 2026-05-17 #2 Tier-1: broad-universe SEC 13D/G activist filings.
+    # Thin CLI shim at altdata/edgar_13dg/edgar_13dg/cli.py that
+    # delegates to repo-root sec_13dg_activist.scrape_recent_13dg_filings.
+    "edgar_13dg"
 )
 
 SKIPS=()
