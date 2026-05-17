@@ -1,211 +1,311 @@
-# QuantOpsAI Experiment Design — Post-Audit Fresh Start (2026-05-17)
+# QuantOpsAI Experiment Design v2 — Post-Audit Fresh Start (2026-05-17)
 
 ## Why this document exists
 
-After the multi-day zero-error audit (see CHANGELOG batches 1-9), the
-journal/cash/drift machinery was found to have several latent bugs that
-caused the previous experiment's results to be unreliable: stock short
-proceeds weren't credited to virtual cash, option contract multipliers
-were missing in cash math, multileg combo writes corrupted per-leg
-prices, drift between broker and journal accumulated silently.
+After the multi-day zero-error audit (CHANGELOG batches 1-12) and the
+subsequent visibility-to-action build-out (#165–#171), the journal,
+broker reconciliation, integrity-audit, and self-tuner machinery are
+all in known-good state. Before any real money is deployed, this
+document defines the FRESH experiment that will tell us five things:
 
-All those bugs are fixed (3291 tests pinning behavior). Before any
-real money is deployed, this document defines the FRESH experiment
-that will tell us:
+1. **Does the system beat null benchmarks?** — Is there any AI alpha at all?
+2. **Which components are pulling weight?** — Are alt-data / meta-model / self-tuning / options each adding measurable value, or is one of them a cost center?
+3. **Are those components complementary or redundant?** — Does removing two at once lose more than the sum of removing them individually?
+4. **Is a $25K real-money deployment ready?** — Specifically: does the constrained best-of-all-strategies config produce positive return + Sharpe > 1.0 + max drawdown < 15% over 6 months?
+5. **Does the strategy scale, and would lifting constraints unlock alpha?** — Conservative-scaling test (10×) AND an aggressive-freedom variant that drops the small-account constraints.
 
-1. **Does the system add value over null benchmarks?**
-2. **Which components are pulling weight?** (ablations)
-3. **Is a $25K real-money deployment ready?** (the specific
-   capital level we will trial first)
-4. **Are the $25K results reproducible or noise?** (replicas)
-5. **Does the strategy survive at 10× and 40× scale?**
+This v2 design replaces the v1 plan (the original 13-profile table earlier in this file's git history). v2 was rewritten 2026-05-17 to fix five real data-quality problems with v1: mixed ablation/baseline capital sizes confounding ablation deltas; only one Random null (high variance); the $1M (40×) profile asked the same question as the $25K Candidate just bigger; no combined-ablation arm to detect component interactions; and no upside-aggressive control to bound whether the conservative default leaves alpha on the table.
 
 ---
 
 ## Architecture reminder
 
-- **3 Alpaca paper accounts** = real broker accounts the system uses
-  for execution + funding. NOT the unit of accounting for the user.
-- **N virtual QuantOps profiles** = the actual units of accounting.
-  Each = one strategy with its own initial_capital, AI config, risk
-  params, journal, P&L. Many profiles share one Alpaca account.
-- **The journal is truth.** Dashboard equity is computed from
-  `journal.get_virtual_account_info()`, NOT from broker API.
+- **3 Alpaca paper accounts** = real broker accounts the system uses for execution + funding. NOT the unit of accounting for the user.
+- **N virtual QuantOps profiles** = the actual units of accounting. Each = one strategy with its own initial_capital, AI config, risk params, journal, P&L. Many profiles share one Alpaca account.
+- **The journal is truth.** Dashboard equity is computed from `journal.get_virtual_account_info()`, NOT from broker API.
+- **The seven-tier integrity contract** (order_id pairing, qty parity, value parity, cash parity, basis parity, equity identity, reconciler heartbeat — all in `aggregate_audit.py` and `integrity_audit.py`) runs every 10 minutes via `audit_runner.detect_and_alert_new_drift`. First detection of any new drift emails the operator. This means the experiment's measurements are trustworthy — any leak between broker and journal surfaces within minutes.
 
 ---
 
-## The 13-profile experiment
+## The strategy types in play
 
-### Account 1 — Benchmarks (~$1M paper)
+Each profile is assigned a `strategy_type` (column on `trading_profiles`, default `'ai'`). Three values are valid. The experiment uses all three:
 
-Three profiles competing on equal capital ($333K each). Direct
-apples-to-apples comparison of "AI vs null hypotheses."
+### `strategy_type='ai'` — the full pipeline
 
-| Profile | Capital | What it does | Purpose |
+The default mode. Runs the complete trade pipeline: screener → ensemble of specialists → meta-model calibration → AI analyst (the LLM call that picks the winning trades and writes the rationale) → execution gates → order submission.
+
+**Components active by default:**
+- **Alt-data feeds**: insider buys (Form 4), Congressional trades, 13F changes, sentiment (StockTwits), biotech catalysts (PDUFA / AdComm), patents, app store rankings
+- **Meta-model**: GBM + SGD calibration layer that adjusts raw AI confidence based on the profile's per-symbol track record
+- **Specialists**: pattern recognizer, risk assessor, options strategy advisor, etc. — each casts a vote that the AI sees in the prompt
+- **Self-tuner**: 12-layer autonomous parameter adjustment that runs daily and adjusts confidence thresholds, position sizes, strategy weights, etc. based on the profile's resolved-prediction track record
+- **Options**: single-leg AND multi-leg options recommendations included in the AI prompt
+- **Sentiment**: per-symbol sentiment scores from StockTwits message volume
+- **Regime detection**: market regime (bull / bear / chop) drives different position sizing
+- **Crisis monitor**: cross-asset doomsday signals trigger position-size reductions
+
+Each of these can be turned off individually via the corresponding `enable_X` column. The ablation profiles in Account 2 use exactly this mechanism to test marginal contribution.
+
+### `strategy_type='buy_hold'` — null floor
+
+Spends ~95% of equity on SPY on day one and holds. Only re-trades when SPY weight drifts more than 5% from 100% (covers accumulated cash from dividends). Never sells voluntarily. Zero AI involvement, zero alt-data, zero ML.
+
+**Why it's in the experiment:** This is the simplest possible "do nothing" strategy. If the full system can't beat this over 6 months of paper trading, the product is worthless and we should refund the user's time. Every claim the AI makes has to clear this floor first.
+
+### `strategy_type='random'` — random-stock-of-day null
+
+Each market day deterministically picks 5 symbols at random from the curated large-cap universe (seed = `hash((profile_id, today_iso))` so a re-run on the same day picks the same 5 — no churn). Closes any position not in today's pick, opens new picks equal-weighted from available cash. Zero AI involvement.
+
+**Why it's in the experiment:** Tests whether the AI's *stock-picking* adds value over chance. Buy-Hold-SPY is too easy to beat in a strong-bull regime (the AI just has to pick anything in the index). Random-stock-of-day strips out the index-membership advantage — it's a stricter "is your stock selection actually good?" test.
+
+**Why TWO Random replicas (A and B):** Random is by definition high-variance. A single Random profile could be unlucky for 6 months and look terrible, or lucky and look great. With two replicas using different `profile_id` (different RNG seeds), we get a tight bound on Random's variance band — the comparison to AI becomes statistically meaningful instead of "Full System beat Random by 2% but Random had σ of 4%."
+
+---
+
+## Account-by-account design
+
+### Account 1 — Baselines ($1,000,000 paper, 4 profiles × $250,000)
+
+**What this account proves:** *whether the AI adds value over null hypotheses at all.* If the answer is no, nothing else in the experiment matters.
+
+Four profiles share equal capital so their results are directly comparable. They run on the same universe (large-cap stocks) and the same maximum-position-percent rules so universe drift doesn't confound the result.
+
+| Profile | Capital | Strategy | What it answers |
 |---|---|---|---|
-| **Buy & Hold SPY** | $333,000 | Buys SPY on day 1, holds; rebalances weekly only if SPY weight drifts >5% | Null floor. If full system doesn't beat this, the product is worthless. |
-| **Random Stock-of-Day** | $333,000 | Each day picks 5 random stocks from S&P 500, holds 1 week, repeats. Zero AI involvement. | Second null. Tests whether the AI's stock-picking adds value above random selection. |
-| **Full System** | $333,000 | All AI features ON (alt-data, meta-model, specialists, self-tuning, options, sentiment, regime). Same universe as the other two for fair comparison. | The best shot the system has. Must beat both nulls to justify the product. |
+| Buy-Hold SPY | $250,000 | `strategy_type='buy_hold'` | Null floor — system must beat this or product is worthless |
+| Random A | $250,000 | `strategy_type='random'`, profile_id=N (RNG seed A) | Random null, replica (a) — combined with Random B bounds noise |
+| Random B | $250,000 | `strategy_type='random'`, profile_id=M (RNG seed B) | Random null, replica (b) — combined with Random A bounds noise |
+| **Full System Standard** | $250,000 | `strategy_type='ai'`, all `enable_*` flags ON | **The anchor** — every Account 2 ablation compares to this profile |
 
-**Win condition for Acct 1**: Full System > Random > Buy & Hold by
-margin > monte-carlo noise floor at 6 months.
+**Win condition for Account 1:**
+- `Sharpe(Full System) > Sharpe(SPY) + 0.5` *(meaningful index-beating margin, not just noise)*
+- `Sharpe(Full System) > max(Sharpe(Random A), Sharpe(Random B)) + 0.3` *(real stock-picking skill)*
+- Volatility within `1.5× Sharpe(SPY)` *(not just leveraging into the result)*
 
-### Account 2 — Ablations (~$800K paper)
+**Failure modes this account exposes:**
+- If Full System ≈ Buy-Hold SPY: the system is closet-indexing — paying AI costs for no benefit.
+- If Full System ≈ Random: stock-picking adds nothing — the alt-data + meta-model + specialists aren't doing useful work; investigate Account 2 ablations.
+- If Random A and Random B diverge wildly: noise floor is too high to draw any conclusion from a 6-month window; need to run longer OR rethink universe.
 
-Same starting capital ($200K each), same universe, same risk params.
-One component disabled per profile so you can attribute alpha to
-specific components.
+---
 
-| Profile | Capital | Disabled | Reveals |
+### Account 2 — Ablations ($1,250,000 paper, 5 profiles × $250,000)
+
+**What this account proves:** *which subsystems are actually generating the alpha that Account 1's Full System produces.* Each ablation removes ONE component (or a combination) while holding everything else identical to the Full System Standard from Account 1. Capital matches Account 1's anchor exactly so the comparison is clean.
+
+| Profile | Capital | What's off | What it answers |
 |---|---|---|---|
-| **No Alt-Data** | $200,000 | Insider / Congress / Form4 / 13F / sentiment feeds; AI only sees price + technicals | Alpha contribution of paid/scraped data |
-| **No Meta-Model** | $200,000 | GBM + SGD adjustment layer; raw AI confidence used directly | Alpha contribution of the ML calibration layer |
-| **No Self-Tuning** | $200,000 | Self-tuner frozen at initial params; no auto-adjustment | Alpha contribution of feedback learning |
-| **No Options** | $200,000 | Single-leg + multi-leg options disabled; stocks only | Alpha contribution of the options pipeline |
+| No Alt-Data | $250,000 | `enable_alt_data=0` | Marginal value of the paid+scraped data feeds (insider, Congress, Form 4, 13F, sentiment, biotech catalysts) — if return ≈ Anchor, alt-data adds nothing and the cost/complexity should be dropped |
+| No Meta-Model | $250,000 | `enable_meta_model=0` | Marginal value of the GBM + SGD calibration layer that maps raw AI confidence to a calibrated probability of win — if return ≈ Anchor, the calibration is doing nothing the AI doesn't already do |
+| No Self-Tuning | $250,000 | `enable_self_tuning=0` | Marginal value of the 12-layer autonomous parameter learner — explicitly tests the post-2026-05-14-fix self-tuner. If return < Anchor, self-tuner is helping; if return > Anchor, self-tuner is hurting (worth knowing) |
+| No Options | $250,000 | `enable_options=0` | Marginal value of the options pipeline (single-leg + multi-leg). After the 2026-05-13 episode that cost $200K on options, this is the most operationally important ablation — if return ≥ Anchor, options should be permanently disabled |
+| **No Alt-Data + No Meta-Model** | $250,000 | both off | **Combined ablation** — tests whether the two components are complementary (combined loss > sum of individual losses → keep both) or redundant (combined loss ≈ max of individual losses → keep only the cheaper one) |
 
-**Win condition for Acct 2**: Each ablation should underperform the
-Full System (Acct 1) by a measurable amount. If "No Alt-Data" equals
-the Full System after 6 months, alt-data adds nothing and should be
-removed.
+**Why the combined arm matters:** With only ~6 months of paper data, single-axis ablations may not have enough resolved trades to detect modest effects (especially alt-data, where the high-signal events are rare). The combined arm produces a bigger and easier-to-detect delta, AND it surfaces a question single ablations can't answer: *do the components reinforce each other or substitute for each other?* If alt-data and meta-model are redundant, we can drop the more expensive one. If they're complementary, we keep both even if each one's individual contribution looks marginal.
 
-### Account 3 — Product candidate + capital scaling (~$1.55M paper)
+**Win condition for Account 2:**
+- Every single ablation should underperform the Anchor by some amount. If an ablation **matches or beats** the Anchor, that component is a cost center.
+- The combined ablation either equals the sum of the two singles (additive — both real, independent) or is less negative than the sum (redundant — keep one) or more negative than the sum (complementary — keep both).
 
-The actual investment question. Six profiles all running the SAME
-configuration (best of all strategies, constrained to $25K-feasible
-instruments) at different capital levels and replications.
+**Failure modes this account exposes:**
+- Any individual ablation ≥ Anchor → drop that component from prod (saves cost, reduces complexity).
+- Combined ≈ singles average → components are redundant, pick the cheaper.
+- Combined >> sum of singles → components are complementary, the system needs both.
+- All ablations ≈ Anchor → none of the individual components matter; the AI is doing all the work just from price/volume, and we're paying for nothing.
 
-| Profile | Capital | Purpose |
+---
+
+### Account 3 — Product candidate + scale ($750,000 paper, 4 profiles)
+
+**What this account proves:** *whether the system is ready for real $25K cash, whether the result is signal or luck, and whether lifting constraints would yield more alpha than the conservative default.*
+
+This account contains three distinct experiments:
+
+#### Experiment 3.A — The $25K real-money question (2 profiles)
+
+| Profile | Capital | Notes |
 |---|---|---|
-| **$25K Candidate** | $25,000 | THE investment decision. Decides whether real money gets deployed. |
-| **$25K Replica A** | $25,000 | Reproducibility test #1 — different RNG, same config |
-| **$25K Replica B** | $25,000 | Reproducibility test #2 |
-| **$250K (10×)** | $250,000 | Does the same strategy work at 10× scale? Tests slippage model + position-sizing math |
-| **$1M (40×)** | $1,000,000 | Does it scale to fund-style capital? Tests concentration / liquidity caps |
-| _(unassigned)_ | ~$250K | Slack — not deployed to any profile |
+| **$25K Candidate** | $25,000 | The configuration that, if it wins, the user deploys with real $25K cash |
+| $25K Replica | $25,000 | Same configuration, different `profile_id` (different RNG) |
 
-**$25K Candidate constraints (best-of-all-strategies CONSTRAINED to
-what works at small capital):**
+**The $25K Candidate configuration** (constrained best-of-all-strategies — what works at small capital):
 - `max_total_positions = 5` (concentration over diversification at this size)
 - `max_position_pct = 0.20` (up to 20% per position; allows conviction)
-- `enable_short_selling = False` (shorts tie up too much margin at $25K)
-- Options: single-leg only (multi-leg spread margin makes them
-  infeasible at $25K)
-- All AI features ON (alt-data, meta-model, specialists, self-tuning)
-- Universe: liquid mid-to-large caps (no illiquid microcaps where
-  $25K is the whole float)
+- `enable_short_selling = 0` (shorts tie up too much margin at $25K)
+- Options: single-leg only (multi-leg spread margin makes them infeasible at $25K)
+- `enable_alt_data = 1`, `enable_meta_model = 1`, `enable_self_tuning = 1`, `enable_options = 1`
+- Universe: liquid mid-to-large caps (no illiquid microcaps where $25K is the whole float)
 
-**Win condition for Acct 3**:
-- $25K Candidate: positive return after costs, Sharpe > 1.0, max
-  drawdown < 15% over 6 months
-- Replicas A + B: within ±5% of Candidate's result (proves it's
-  signal not luck)
-- 10× and 40× scaling profiles: returns degrade no more than 30%
-  vs $25K Candidate (acceptable slippage cost of scale)
+**What having a Replica proves:** if the Candidate produces a positive return, the question becomes "is this signal or did we get lucky?" The Replica runs the identical configuration with a different RNG seed. If both Candidate and Replica land within ±5% of each other AND both are positive, the result is signal. If they diverge by more than 5%, the strategy is too RNG-sensitive — investigate before deploying real money.
 
-If all three of those win conditions hit → real $25K deployed.
+#### Experiment 3.B — The conservative-scaling question (1 profile)
+
+| Profile | Capital | Notes |
+|---|---|---|
+| $250K Conservative Scale | $250,000 | Same constraints as the Candidate, 10× the capital |
+
+**What this proves:** *does the strategy survive at 10× notional?* Slippage scales roughly with sqrt(position size). A strategy that works at $25K may degrade at $250K because the same fractional position size means trading larger dollar amounts, which means worse fills. If $250K returns are within 30% of the Candidate's returns (e.g., Candidate +12%, $250K +9%), the strategy scales linearly enough to consider larger real deployments. If $250K returns are <50% of the Candidate's, slippage is eating the alpha and real-money deployment should be capped at the largest size where returns hold.
+
+#### Experiment 3.C — The "what if we let it cook" question (1 profile)
+
+| Profile | Capital | Notes |
+|---|---|---|
+| **$450K Aggressive Free** | $450,000 | All small-capital constraints DROPPED: `max_total_positions = 15`, `max_position_pct = 0.10`, `enable_short_selling = 1`, multi-leg options allowed, longer hold periods, broader universe |
+
+**What this proves:** *is the conservative default leaving alpha on the table, or is the conservative default actually the right risk/return tradeoff?*
+
+The $25K Candidate is conservative because it has to be — it can't hold 15 positions when each position would be $1,600, can't afford multi-leg options where one spread eats half the account, can't take shorts that tie up margin. Those constraints exist because of capital, not because they're optimal. At $450K, none of those constraints bind. The Aggressive Free profile lets the AI run with all of its tools — every signal source ON, every position type allowed, more diversification, longer hold periods.
+
+Two possible outcomes, both informative:
+- **Aggressive beats Conservative Scale by margin > slippage cost of scale** → the conservative defaults ARE leaving alpha on the table. The $25K cash deployment is conservative for capital reasons, not strategy reasons — and as real-money capital grows, lifting constraints will unlock more return.
+- **Aggressive performs same or worse than Conservative Scale** → the conservative defaults aren't a constraint, they're the actual optimal config. Concentration + simple stocks + no shorts + single-leg only is the strategy. Even with more capital we shouldn't loosen — the AI is already running at its best.
+
+**Win condition for Account 3:**
+- $25K Candidate AND $25K Replica both: positive return after costs, Sharpe > 1.0, max drawdown < 15%, σ between them < 5% → **deploy real $25K cash**.
+- $250K Conservative Scale: degrades no more than 30% in Sharpe vs Candidate → the strategy scales; future real-money deployments can grow.
+- $450K Aggressive Free: result determines whether to lift constraints as real-money capital grows.
+
+**Failure modes this account exposes:**
+- Candidate positive but Replica negative (or vice versa) → strategy is too RNG-dependent, don't deploy.
+- Candidate and Replica both negative → strategy doesn't work at $25K; either redesign or shelve.
+- Candidate wins but Conservative Scale loses → strategy works at $25K because the broader market favored small-position strategies during this window; scaling reveals it's noise.
+- Aggressive Free crushes Candidate but Conservative Scale is flat → the $25K cash deployment is going to underperform what's possible with more capital; weigh against the "prove it with small money first" rationale.
+
+---
+
+## Total capital and profile count
+
+| Account | Capital | Profiles |
+|---|---|---|
+| Account 1 — Baselines | $1,000,000 | 4 |
+| Account 2 — Ablations | $1,250,000 | 5 |
+| Account 3 — Product + scale | $750,000 | 4 |
+| **Total** | **$3,000,000** | **13** |
 
 ---
 
 ## Implementation status (2026-05-17)
 
-| Arm | Status | What's missing |
-|---|---|---|
-| Buy & Hold SPY | ✅ Implemented | `simple_strategies.run_buy_hold_spy` + multi_scheduler dispatch (2026-05-17). |
-| Random Stock-of-Day | ✅ Implemented | `simple_strategies.run_random_stock_of_day` — deterministic per (profile, date) pick from LARGE_CAP_UNIVERSE (2026-05-17). |
-| Full System | ✅ Default | Works with current code (all flags ON). |
-| No Alt-Data | ✅ Implemented | `enable_alt_data` column added + gate in `trade_pipeline._get_universe_context` (2026-05-17). |
-| No Meta-Model | ✅ Implemented | `enable_meta_model` column added + gates in `_meta_pregate_candidates` and main meta-model load (2026-05-17). |
-| No Self-Tuning | ✅ Exists | `enable_self_tuning = 0` already supported. |
-| No Options | ✅ Implemented | `enable_options` column added + gate in `ai_analyst.build_prompt` multileg_block (2026-05-17). |
-| No Shorts | ✅ Exists | `enable_short_selling = 0` already supported. |
-| $25K Candidate (constrained) | ✅ Exists | All needed knobs (`max_total_positions`, `max_position_pct`, `enable_short_selling`, `initial_capital`) already supported. |
-| $25K Replicas | ✅ Exists | Same config × N profiles works today. |
-| Capital-scaling profiles | ✅ Exists | `initial_capital = 250000 / 1000000` already supported. |
+| Component | Status |
+|---|---|
+| `strategy_type='buy_hold'` dispatch + Buy-Hold SPY logic | ✅ `simple_strategies.run_buy_hold_spy` (commit 778e2f0) |
+| `strategy_type='random'` dispatch + deterministic-pick logic | ✅ `simple_strategies.run_random_stock_of_day` (commit 778e2f0) |
+| `enable_alt_data` flag + gate | ✅ commit 559d788 |
+| `enable_meta_model` flag + gate | ✅ commit 559d788 |
+| `enable_options` flag + gate | ✅ commit 559d788 |
+| `enable_self_tuning` flag | ✅ pre-existing |
+| `enable_short_selling` flag | ✅ pre-existing |
+| Comparative-returns chart (overlays all profiles vs baselines on dashboard) | ✅ commit 37cdbf4 |
+| Seven-tier integrity contract + 10-minute audit_runner | ✅ commits c2c6e47, 07dea6f, b6420de, 40c0f1c, 917c040 |
+| Options P&L auto-cutoff (#171 — prevents the 2026-05-13 episode) | ✅ commit f14f5f2 |
+| Orphaned-profile cleanup script | ✅ `clean_orphaned_profiles.py` (commit 778e2f0) |
+| Morning health check | ✅ `morning_health_check.sh` (commit e196b4d) |
 
-**All 11 arms work today (batches A + B complete 2026-05-17).
-Remaining experiment work is operational: clean orphaned profiles
-(batch C, `clean_orphaned_profiles.py`), create fresh Alpaca
-accounts in the UI, create the 13 experiment profiles via the
-profile-edit form.**
+**Every arm of this design works in the current code. Remaining work is operational: clean orphans → user creates 3 new Alpaca accounts → batch-create the 13 profiles → run morning health check to confirm.**
 
 ---
 
-## Decision needed before launching the experiment
+## Success criteria summary (decision matrix)
 
-Three options:
+After 6 months of paper trading on this design, the outcomes drive specific actions:
 
-1. **Build the missing 5 arms first** (1-2 days), launch the full
-   13-profile design. Most defensible scientifically.
-
-2. **Launch with what works today** (the 6 ✅ arms): $25K Candidate
-   + 2 replicas + 3 capital-scaling + No-self-tuning + No-shorts as
-   the only ablations. Loses the SPY-baseline / random / alt-data /
-   meta-model / options ablations. Faster to start, weaker science.
-
-3. **Hybrid**: Launch the 6 ✅ arms now, build the missing 5 in
-   parallel and add them as new profiles once ready (~week 2 of
-   experiment). Acceptable if the missing arms are "nice to have"
-   ablations; less so if you need the SPY baseline from day 1 to
-   measure relative alpha.
+| Outcome | Action |
+|---|---|
+| Full System Sharpe > both Random replicas Sharpe AND > Buy-Hold + 0.5 | System validated — proceed to ablation interpretation |
+| Full System ≈ Buy-Hold SPY | System is closet-indexing — investigate or shelve |
+| Random A and Random B diverge by σ > 4% | Noise floor too high — extend window or simplify universe |
+| $25K Candidate AND Replica both positive, Sharpe > 1.0, DD < 15%, σ between them < 5% | **Deploy real $25K cash** |
+| $25K Candidate positive but Replica fails OR they diverge > 5% | Don't deploy — strategy too RNG-dependent |
+| $250K Conservative Scale degrades > 30% vs Candidate | Strategy doesn't scale; cap future deployments at the largest size that holds |
+| $450K Aggressive Free crushes Conservative Scale | Conservative defaults are leaving alpha on the table — as real capital grows, lift constraints |
+| Any individual ablation ≥ Anchor | That component is a cost center — remove from prod |
+| Combined ablation (NoAlt+NoMeta) loss >> sum of singles | Components are complementary — keep both even if individual contributions look marginal |
+| Combined ablation loss ≈ singles average | Components are redundant — keep the cheaper one |
 
 ---
 
-## What gets reset / kept on launch
+## Reset / kept on launch
 
-**Reset:**
-- All per-profile journal tables: `trades`, `ai_predictions`,
-  `virtual_profile_state`, `ai_cost_ledger`, `activity_log`
-- (Optional, with `--wipe-ai-memory`): `specialist_outcomes`,
-  `tuning_history`, `learned_patterns`, `meta_model_state`,
-  `strategy_validations`, `ai_shadow_calls`
-- All open Alpaca broker positions (close via `--close-broker`) so
-  the experiment doesn't inherit legacy positions
+**Wiped** (via `reset_for_clean_experiment.py --apply`):
+- Per-profile journal tables: `trades`, `ai_predictions`, `virtual_profile_state`, `ai_cost_ledger`, `activity_log`
+- Optionally (`--wipe-ai-memory`): `specialist_outcomes`, `tuning_history`, `learned_patterns`, `meta_model_state`, `strategy_validations`, `ai_shadow_calls`
+- All open Alpaca broker positions (via `--close-broker`) — fresh experiment must not inherit legacy positions
+
+**Removed entirely** (via `clean_orphaned_profiles.py --apply`):
+- The 10 stale per-profile DB files + `trading_profiles` rows from the old Alpaca accounts the user deleted earlier on 2026-05-17
 
 **Kept:**
-- Profile configs in `quantopsai.db` (trading_profiles,
-  alpaca_accounts, users) — though we may want to CREATE NEW
-  profiles with the experiment design above rather than re-using
-  the current 10
-- Altdata DBs (insider, congresstrades, edgar13f, edgar_form4,
-  biotechevents, stocktwits) — these are world data
+- `quantopsai.db` itself (alpaca_accounts, users, audit_alerts table)
+- Altdata DBs (insider, congresstrades, edgar13f, edgar_form4, biotechevents, stocktwits) — world data
 - Code, tests, deployment infra
 
 ---
 
-## Success criteria summary
+## Stop / retune / restart conditions
 
-After 6 months of paper trading on this design:
+The 12 batches of code shipped 2026-05-17 are *tested* (3395 tests) and *audited* (seven-tier integrity contract running every 10 min) but most of the new code has never run against real broker activity. The first 2 weeks are a system shakeout, not a measurement window. The actual ablation-comparison clock starts on day 15 if days 1-14 ran clean.
 
-| Outcome | Action |
-|---|---|
-| Full System beats Buy-Hold SPY AND beats Random by Sharpe > 1.0 | System validated — ablation results tell us what to keep |
-| $25K Candidate + 2 replicas all positive with σ < 5% | Deploy real $25K |
-| $25K Candidate fails OR replicas wildly diverge | Don't deploy. Diagnose. |
-| Capital-scaling profiles degrade > 30% | Strategy doesn't scale; cap real deployment at the largest size that still works |
-| Any ablation profile matches Full System | That component isn't contributing alpha — remove from prod to reduce cost/complexity |
+### Things most likely to misbehave (calibrated uncertainty)
+
+1. **`activities_capture`** has never received a real dividend or option assignment from Alpaca. If `activity.net_amount` or `activity.qty` aren't shaped the way the implementation assumes, dividends silently fail to capture → broker_cash drifts → cash-parity audit fires within 10 min. The audit will catch it; the question is whether the dividend's effect on the experiment data is recoverable.
+2. **Options P&L auto-cutoff (`_optimize_options_pnl_cutoff`)** has never had real options trades to sum. Edge cases in `occ_symbol` tagging on FIFO-matched rows could cause it to under- or over-count, firing when it shouldn't or staying silent when it should.
+3. **`audit_runner` email path** has never sent a real production email. If SMTP is misconfigured on the droplet, `alert_sent` stays at 0 (which IS the correct retry behavior), but the operator may not see drift until they check `/issues` or the audit_alerts table directly.
+4. **`simple_strategies` dispatch in `multi_scheduler._task_scan_and_trade`** has never run a real profile. If `run_buy_hold_spy` errors on the first SPY fetch, the profile sits idle and the activity-log entry looks normal.
+
+### Tripwires
+
+| Severity | Condition | Action |
+|---|---|---|
+| **HARD STOP — restart everything** | `audit_alerts` table accumulates >5 unresolved drift items in any 24h window across any audit type | Pause via `kill_switch.set_killed(True)`. Investigate root cause. Fix code. Re-run `reset_for_clean_experiment.py --apply`. Drift means measurements are unreliable; any return data collected during the drift is suspect. |
+| **HARD STOP** | Any profile loses >5% of `initial_capital` in 24h OR >12% over 7 days | Kill switch on that profile (`enabled=0`). Determine cause: bug in new code? broker rejection cascade? legitimate market move? Restart that profile only OR call the experiment. |
+| **HARD STOP** | Equity-identity drift fires on ≥2 profiles simultaneously | Almost certainly a bug in journal cash math or activities_capture. Kill switch, fix code, re-run reset script for affected profiles. |
+| **HARD STOP** | Reconciler heartbeat stale on ≥3 profiles for >2 hours | Scheduler or host problem. Audits are reading frozen state, can't trust their "clean" status. Investigate scheduler immediately. |
+| **HARD STOP** | Any single drift signature stays unresolved >48h | The drift isn't auto-healing; needs manual diagnosis. Pause new entries on affected profiles until cleared. |
+| **SOFT RETUNE** | A single ablation profile shows zero trades for 7+ days while the Anchor is trading normally | The `enable_X=0` gate is too aggressive OR a code path got broken. Diff behavior, fix, restart THAT profile only (no full reset). |
+| **SOFT RETUNE** | Options auto-cutoff fires on >2 profiles in the same week | Either options ARE that bad (signal — keep them off, cutoff did its job) OR the cutoff calculation is wrong. Hand-audit the trades. If trade data looks right, accept the signal. If trade data looks wrong, fix the calculation and restart options for those profiles. |
+| **SOFT RETUNE** | Random A and Random B diverge by σ > 5% after 30+ days | Variance bound is broader than expected — extend window OR add a third Random replica before drawing conclusions about Full System vs Random. |
+| **SOFT RETUNE** | A single profile's daily-snapshot capture missing for ≥2 consecutive days | Daily snapshot task failing on that DB specifically. Investigate (likely schema or disk issue); don't reset experiment data. |
+| **CONTINUE — experiment is working** | Individual ablation underperforms Anchor by 1-4% | That IS the answer the experiment was designed to produce. Don't intervene. |
+| **CONTINUE** | Drift surfaces and resolves within hours via the audit_runner | Defense working as designed. |
+| **CONTINUE** | Profitability fluctuates within ±3% week-over-week | Normal noise; let it run. |
+
+### Operating procedure during the experiment
+
+- **Every morning**: run `./morning_health_check.sh`. Any FAIL = investigate before market open.
+- **Weekly**: open `/dashboard`, eyeball the comparative-returns chart, compare each profile's curve to the Anchor and the baselines. Anything visually anomalous (a profile flatlining, a wild outlier, the Random replicas diverging) = drill in.
+- **On any first-detection email**: the email from `audit_runner` is the FIRST chance to catch a problem. Don't snooze it — drift items get one alert each (no spam), so the next one is the next NEW problem.
+- **Quarterly**: re-read this section, especially the "Things most likely to misbehave" list. Tick off any item the experiment has now exercised without incident.
+
+### When to call the experiment vs restart
+
+Call the experiment (stop, accept the data so far as inconclusive, redesign) if:
+- Hard-stop tripwire fires more than twice during the same 30-day window — pattern, not flake.
+- The seven-tier audit produces drift you can't explain in code review — the integrity guarantees aren't holding for some reason; fix the foundations before continuing.
+
+Restart specific profiles only (keep the experiment running) if:
+- A soft-retune tripwire fires and is diagnosed to a single profile's configuration or a single component, not a systemic issue.
+- The fix is small + localized (e.g., a stuck ablation gate, a specific symbol causing problems).
+
+---
+
+## Launch sequence
+
+1. `./morning_health_check.sh` — sanity-check current prod state.
+2. `python3 clean_orphaned_profiles.py` — dry-run; review the list of profiles to be removed.
+3. `python3 clean_orphaned_profiles.py --apply` — execute removal.
+4. **User creates 3 new Alpaca paper accounts** in the Alpaca dashboard, funds them:
+   - Account 1: $1,000,000
+   - Account 2: $1,250,000
+   - Account 3: $750,000
+5. **User adds the 3 accounts to QuantOps** via the settings page (paste the API keys).
+6. **Batch-create the 13 profiles** via a script (TBD — config dict per the tables above, calls `models.create_trading_profile`).
+7. `./morning_health_check.sh` — confirm all 13 profiles discovered, audit_alerts empty, reconciler heartbeat green, comparative-returns API returns 13 series at 0% return.
+8. **Let it run.** First useful comparative data emerges once each profile has ~5 daily snapshots + a few completed trade cycles (≈ 2 weeks).
 
 ---
 
 ## Open implementation work
 
-Tracked as follow-up tasks in the QuantOps task list:
-
-- **Batch B (next)**: Build `strategy_type='buy_hold'` and
-  `strategy_type='random'` dispatch in trade_pipeline so profiles
-  with those strategy_type values run their bespoke logic instead
-  of the AI pipeline.
-- **Batch C**: Clean wipe of orphaned per-profile DBs left over
-  from the old Alpaca accounts that were deleted 2026-05-17, then
-  rebuild fresh profiles per this experiment design.
-- (Done 2026-05-17, batch D) Comparative-returns chart (#164) on
-  the dashboard — every profile's cumulative-% return since first
-  snapshot, with `buy_hold` rendered in solid blue and `random` in
-  dashed purple so the baselines pop visually. Reads from existing
-  per-profile `daily_snapshots` table; populates automatically as
-  the multi_scheduler snapshot task runs.
-- (Done 2026-05-17, batch A) `enable_alt_data` / `enable_meta_model`
-  / `enable_options` / `strategy_type` columns + ablation gates.
-- (Done) Reset script `reset_for_clean_experiment.py` — ready to
-  run when launch design is finalized.
-- (Done) Perfect-matching invariant: every trade row carries the
-  broker order_id; warning fires if not (#157).
+- Batch-insert script that takes a config dict (13-profile manifest) and calls `models.create_trading_profile` for each — saves 13 manual form fills.
+- (Done) Everything else — every arm of this design uses code already shipped today.
