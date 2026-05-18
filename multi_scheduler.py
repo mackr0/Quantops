@@ -1309,26 +1309,67 @@ def _task_update_fills(ctx):
                 )
             updated += 1
 
-            # NEW: state-machine transition. If this row was a
-            # SELL/COVER awaiting fill confirmation ('pending_fill'),
-            # the fill_avg_price reply confirms the close happened.
-            # Flip status -> 'closed' and flip matching open
-            # BUY/SHORT rows for this symbol to 'closed' too.
+            # State-machine transition. If this row was a SELL/COVER
+            # awaiting fill confirmation ('pending_fill'), the
+            # fill_avg_price reply confirms the close happened.
+            # Flip the SELL/COVER itself to 'closed', then FIFO-walk
+            # the symbol's entries to close ONLY those whose lot has
+            # been fully consumed by all closing-side trades.
+            #
+            # Pre-2026-05-18 this used a blanket
+            # `UPDATE trades SET status='closed' WHERE symbol=? AND
+            # side=opp_side AND status='open'` — which closed EVERY
+            # open entry for the symbol regardless of qty. Hit live
+            # on P12 (BuyHoldSPY) when a 16-share SPY SELL confirmed
+            # and BOTH the 322-share BUY and the 16-share BUY got
+            # flipped to closed even though 322 shares were still
+            # legitimately held. Same pattern affects SHORT/COVER
+            # pairs via the opp_side branch. The FIFO walk below
+            # only closes lots whose remaining qty is 0 — partial
+            # closes leave the lot 'open' with its qty unchanged
+            # (read-time FIFO in get_virtual_positions correctly
+            # computes the remaining qty without needing a status
+            # flip).
             if (trade["status"] == "pending_fill"
                     and trade["side"] in ("sell", "cover")):
                 conn.execute(
                     "UPDATE trades SET status = 'closed' WHERE id = ?",
                     (trade["id"],),
                 )
-                # Flip the matching entry rows so the trades page
-                # shows them as closed once the exit is confirmed.
                 opp_side = "buy" if trade["side"] == "sell" else "short"
-                conn.execute(
-                    "UPDATE trades SET status = 'closed' "
-                    "WHERE symbol = ? AND side = ? "
-                    "  AND COALESCE(status, 'open') = 'open'",
-                    (trade["symbol"], opp_side),
-                )
+                exit_side = trade["side"]  # 'sell' or 'cover'
+                rows = conn.execute(
+                    "SELECT id, side, qty FROM trades "
+                    "WHERE symbol = ? AND side IN (?, ?) "
+                    "  AND COALESCE(status, 'open') != 'canceled' "
+                    "ORDER BY timestamp ASC, id ASC",
+                    (trade["symbol"], opp_side, exit_side),
+                ).fetchall()
+                # FIFO walk: entries open lots, exits consume them
+                lots = []  # [trade_id, qty_remaining]
+                for r in rows:
+                    side_i = r[1]
+                    qty_i = float(r[2] or 0)
+                    if side_i == opp_side:
+                        lots.append([r[0], qty_i])
+                    else:  # exit side
+                        remaining = qty_i
+                        for lot in lots:
+                            if remaining <= 0:
+                                break
+                            if lot[1] <= 0:
+                                continue
+                            consumed = min(lot[1], remaining)
+                            lot[1] -= consumed
+                            remaining -= consumed
+                # Close lots whose remaining qty is 0 (within fp tolerance)
+                for lot_id, lot_remaining in lots:
+                    if lot_remaining <= 1e-6:
+                        conn.execute(
+                            "UPDATE trades SET status = 'closed' "
+                            "WHERE id = ? AND COALESCE(status, 'open') = 'open'",
+                            (lot_id,),
+                        )
                 confirmed_closes += 1
             elif trade["status"] == "pending_fill":
                 # Roll-manager / option-leg close path: flip to
