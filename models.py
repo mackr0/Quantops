@@ -273,6 +273,9 @@ def init_user_db(db_path: Optional[str] = None) -> None:
                 outcome_after TEXT DEFAULT 'pending',
                 win_rate_after REAL,
                 reviewed_at TEXT,
+                -- Item 4 of docs/17 — set when the auto-expire optimizer
+                -- has processed this row. NULL = not yet expired.
+                expired_at TEXT DEFAULT NULL,
                 FOREIGN KEY (profile_id) REFERENCES trading_profiles(id)
             );
 
@@ -551,6 +554,13 @@ def init_user_db(db_path: Optional[str] = None) -> None:
                 "TEXT NOT NULL DEFAULT '[]'"),
             ("trading_profiles", "shadow_api_keys_enc",
                 "TEXT NOT NULL DEFAULT '{}'"),
+            # --- tuning_history table ---
+            # 2026-05-18 — Item 4 of docs/17 Phase 1. Auto-expiry on
+            # restrictions. Set when the auto-expire optimizer fires for
+            # this tuning event so the rule doesn't re-process it.
+            # Default NULL means "not yet expired". Indexed implicitly
+            # via the ORDER BY timestamp query.
+            ("tuning_history", "expired_at", "TEXT DEFAULT NULL"),
         ]
         for table, col, col_def in _migrations:
             try:
@@ -1813,6 +1823,59 @@ def clear_param_references(profile_id: int) -> int:
             return cur.rowcount
     except sqlite3.OperationalError:
         return 0
+
+
+# ---------------------------------------------------------------------------
+# Tightening auto-expiry helpers — Item 4 of docs/17 Phase 1 (2026-05-18).
+# Used by `_optimize_auto_expire_old_tightenings` in self_tuning.py.
+# Excluded outcomes:
+#   'improved' — the tightening helped; keep it
+#   'worsened' — auto-reversal handles it via the existing reverse path
+# Eligible: 'pending', 'unchanged', and anything not in the above.
+# ---------------------------------------------------------------------------
+
+def get_expirable_tightenings(profile_id: int, ttl_days: int = 14,
+                               limit: int = 1) -> List[Dict[str, Any]]:
+    """Return up to `limit` unexpired tuning_history rows older than
+    `ttl_days` whose outcome is NOT 'improved'. Oldest first so the
+    auto-expire optimizer unwinds the stack from the bottom.
+
+    Each row is returned as a dict so the optimizer doesn't depend on
+    sqlite3.Row's column-access semantics.
+    """
+    try:
+        with closing(_get_conn()) as conn:
+            rows = conn.execute(
+                """SELECT * FROM tuning_history
+                   WHERE profile_id = ?
+                     AND expired_at IS NULL
+                     AND COALESCE(outcome_after, 'pending') != 'improved'
+                     AND datetime(timestamp) <= datetime('now', '-' || ? || ' days')
+                   ORDER BY timestamp ASC
+                   LIMIT ?""",
+                (profile_id, ttl_days, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except sqlite3.OperationalError:
+        return []
+
+
+def mark_tuning_event_expired(event_id: int) -> bool:
+    """Stamp `expired_at = now` on the given tuning_history row so
+    the auto-expire optimizer skips it on future runs. Returns True
+    if a row was updated.
+    """
+    try:
+        with closing(_get_conn()) as conn:
+            cur = conn.execute(
+                "UPDATE tuning_history SET expired_at = ? "
+                "WHERE id = ? AND expired_at IS NULL",
+                (datetime.utcnow().isoformat(), event_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except sqlite3.OperationalError:
+        return False
 
 
 def review_past_adjustments(profile_id: int,

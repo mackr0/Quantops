@@ -2148,6 +2148,7 @@ def _cast_param_value(param_name, value_str):
 _OPTIMIZER_DIRECTION = {
     # Loosening (action-creating)
     "_optimize_trade_count_auto_loosen": "LOOSEN",
+    "_optimize_auto_expire_old_tightenings": "LOOSEN",
     "_optimize_false_negatives": "LOOSEN",
     "_optimize_position_size_upward": "LOOSEN",
     "_optimize_commission_strategy": "LOOSEN",
@@ -2262,6 +2263,7 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_prompt_layout,
         # Loosening (action-creating — fire FIRST)
         _optimize_trade_count_auto_loosen,
+        _optimize_auto_expire_old_tightenings,
         _optimize_position_size_upward,
         _optimize_commission_strategy,
         _optimize_false_negatives,
@@ -5606,6 +5608,243 @@ def _optimize_trade_count_auto_loosen(conn, ctx, profile_id, user_id,
         f"AUTO-LOOSEN: {_label(param_name)} {current}→{applied}{suffix} "
         f"({reason})"
     )
+
+
+# ---------------------------------------------------------------------------
+# Auto-expiry on restrictions — Item 4 of docs/17 Phase 1 (2026-05-18).
+#
+# Every tightening event in tuning_history has a 14-day TTL. After
+# the TTL, if the event hasn't been classified as 'improved' by
+# `review_past_adjustments`, the auto-expire optimizer takes a
+# single 25%-bounded step back toward the pre-tightening value.
+# The rule keeps firing until each tightening is fully unwound or
+# new tightening evidence accumulates.
+#
+# Encodes the final piece of `feedback_self_tuner_must_drift_toward_trading`:
+# stale restrictions don't get to sit forever. Composes cleanly with
+# Items 1 (per-cycle cap) and 3 (reference window) — the loosen step
+# routes through `_apply_param_change` so both guardrails still apply.
+# ---------------------------------------------------------------------------
+
+_RESTRICTION_TTL_DAYS = 14
+
+# Direction = the side of the bounds where the parameter is MORE
+# restrictive. `up` means higher = more restrictive (a tightening event
+# is one where new_value > old_value). `down` means lower = more
+# restrictive (a tightening event is one where new_value < old_value).
+# Loosening is always the OPPOSITE direction.
+_TIGHTENING_DIRECTION: Dict[str, str] = {
+    # Entry / signal filters — higher = more restrictive
+    "ai_confidence_threshold":   "up",
+    "min_volume":                 "up",
+    "volume_surge_multiplier":    "up",
+    "breakout_volume_threshold":  "up",
+    "gap_pct_threshold":          "up",
+    "momentum_5d_gain":           "up",
+    "momentum_20d_gain":          "up",
+    "avoid_earnings_days":        "up",
+    "skip_first_minutes":         "up",
+    "meta_pregate_threshold":     "up",
+    # Concurrent-position caps — lower = more restrictive
+    "max_total_positions":        "down",
+    "max_sector_positions":       "down",
+    "max_correlation":            "down",
+    # Sizing — lower = more restrictive (smaller positions)
+    "max_position_pct":           "down",
+    "short_max_position_pct":     "down",
+    # Drawdown thresholds — lower = more restrictive
+    # (pause / reduce fire sooner)
+    "drawdown_pause_pct":         "down",
+    "drawdown_reduce_pct":        "down",
+    # Stop / take-profit — tighter stop OR tighter TP = more
+    # restrictive (less room to breathe / earlier exit)
+    "stop_loss_pct":              "down",
+    "take_profit_pct":            "down",
+    "short_stop_loss_pct":        "down",
+    "short_take_profit_pct":      "down",
+    "atr_multiplier_sl":          "down",
+    "atr_multiplier_tp":          "down",
+    "trailing_atr_multiplier":    "down",
+    # Price band — narrowing the band is restrictive. Handled as
+    # two separate params each with its own restrictive direction.
+    "min_price":                  "up",    # higher floor cuts low-end candidates
+    "max_price":                  "down",  # lower ceiling cuts high-end candidates
+    # RSI thresholds — extremes away from 50 fire less frequently
+    "rsi_overbought":             "up",   # higher = harder to hit
+    "rsi_oversold":               "down", # lower = harder to hit
+}
+
+
+def _is_tightening(param_name: str, old_value, new_value) -> bool:
+    """True iff the move from old→new is in the restrictive direction
+    for this parameter. Used to filter tuning_history rows before
+    proposing an expiry."""
+    direction = _TIGHTENING_DIRECTION.get(param_name)
+    if direction is None:
+        return False
+    try:
+        old_f = float(old_value)
+        new_f = float(new_value)
+    except (TypeError, ValueError):
+        return False
+    if direction == "up":
+        return new_f > old_f
+    return new_f < old_f  # direction == "down"
+
+
+def _loosen_one_step_toward(param_name: str, current, target) -> Optional[float]:
+    """Compute a single 25%-bounded step from `current` toward
+    `target` (loosening direction). Caps the step so we never
+    overshoot past the pre-tightening value. Returns the proposed
+    value (still subject to the wrapper's per-cycle cap) or None
+    when no movement is possible.
+    """
+    direction = _TIGHTENING_DIRECTION.get(param_name)
+    if direction is None:
+        return None
+    try:
+        cur = float(current)
+        tgt = float(target)
+    except (TypeError, ValueError):
+        return None
+    # Loosen direction is the opposite of restrictive direction
+    if direction == "up":
+        # Restrictive = up, so loosen = down. Move 25% down but
+        # never below target.
+        proposed = max(tgt, cur * 0.75)
+    else:
+        # Restrictive = down, so loosen = up. Move 25% up but
+        # never above target.
+        proposed = min(tgt, cur * 1.25)
+    if abs(proposed - cur) < 1e-9:
+        return None
+    return proposed
+
+
+def _optimize_auto_expire_old_tightenings(conn, ctx, profile_id, user_id,
+                                            overall_wr, resolved):
+    """Auto-expire the oldest unexpired tightening that's >14 days
+    old and not 'improved'. Loosens the parameter one cap-bounded
+    step back toward the pre-tightening value. The tuning_history
+    row is marked `expired_at = now` only when the current value
+    has reached (or passed) the original pre-tightening value —
+    until then the rule keeps walking the param back across
+    successive cycles.
+
+    Item 4 of docs/17 Phase 1. Tagged LOOSEN.
+
+    Skips when:
+      - No expirable rows (none old enough, or all are 'improved')
+      - The selected param has no entry in `_TIGHTENING_DIRECTION`
+      - The selected event wasn't actually a tightening (direction
+        matches but new_value < old_value, etc.)
+      - The current value is already at or past the pre-tightening
+        value (marks the row expired and returns None for the cycle —
+        next cycle picks the next-oldest event)
+      - The selected param was already adjusted in the last 24h
+        (let yesterday's change play out)
+    """
+    from models import get_expirable_tightenings, mark_tuning_event_expired
+
+    events = get_expirable_tightenings(
+        profile_id, ttl_days=_RESTRICTION_TTL_DAYS, limit=10,
+    )
+    if not events:
+        return None
+
+    for event in events:
+        param_name = event.get("parameter_name")
+        if not param_name or param_name not in _TIGHTENING_DIRECTION:
+            mark_tuning_event_expired(event["id"])
+            continue
+        if not _is_tightening(
+            param_name, event.get("old_value"), event.get("new_value"),
+        ):
+            # The historical event wasn't a tightening (e.g., it was a
+            # loosen logged in the same table). No-op + mark expired so
+            # we don't reconsider it.
+            mark_tuning_event_expired(event["id"])
+            continue
+        current = getattr(ctx, param_name, None)
+        if current is None:
+            mark_tuning_event_expired(event["id"])
+            continue
+
+        old_value = event.get("old_value")
+        try:
+            target = float(old_value)
+        except (TypeError, ValueError):
+            mark_tuning_event_expired(event["id"])
+            continue
+
+        # If current is already past (or at) the pre-tightening value,
+        # the tightening has been undone — mark expired and continue.
+        direction = _TIGHTENING_DIRECTION[param_name]
+        try:
+            cur_f = float(current)
+        except (TypeError, ValueError):
+            mark_tuning_event_expired(event["id"])
+            continue
+        if direction == "up" and cur_f <= target:
+            mark_tuning_event_expired(event["id"])
+            continue
+        if direction == "down" and cur_f >= target:
+            mark_tuning_event_expired(event["id"])
+            continue
+
+        proposed = _loosen_one_step_toward(param_name, current, target)
+        if proposed is None:
+            mark_tuning_event_expired(event["id"])
+            continue
+
+        if _get_recent_adjustment(profile_id, param_name, days=1):
+            # Yesterday's change for this param hasn't been given a
+            # chance to play out. Skip this event — try the next one
+            # in the queue (different param).
+            continue
+
+        age_days = "?"
+        try:
+            from datetime import datetime as _dt
+            ts = _dt.fromisoformat(event["timestamp"])
+            age_days = f"{(_dt.utcnow() - ts).days}"
+        # SILENT_OK: age_days is purely cosmetic (display string in the
+        # log line). Bad/missing timestamp falls back to "?" without
+        # affecting the loosen action itself. Catching specific parse
+        # exceptions only — other failures still propagate.
+        except (KeyError, TypeError, ValueError):
+            pass
+
+        reason = (
+            f"auto-expire: tightening from {event.get('timestamp')} "
+            f"({age_days}d old, outcome={event.get('outcome_after') or 'pending'}) "
+            f"changed {param_name} {old_value}→{event.get('new_value')}; "
+            f"reverting one cap-bounded step toward {old_value}"
+        )
+        applied, _, suffix = _apply_param_change(
+            profile_id, user_id, "auto_expire_tightening",
+            param_name, current, proposed, reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+
+        # If the loosen step landed at or past the pre-tightening
+        # target, this tightening event is now fully unwound — mark
+        # it expired. Otherwise leave it open so the next cycle
+        # continues unwinding.
+        try:
+            applied_f = float(applied)
+            if (direction == "up" and applied_f <= target) or \
+               (direction == "down" and applied_f >= target):
+                mark_tuning_event_expired(event["id"])
+        except (TypeError, ValueError):
+            pass
+
+        return (
+            f"AUTO-EXPIRE: {_label(param_name)} {current}→{applied}{suffix} "
+            f"(tightening {age_days}d old)"
+        )
+
+    return None
 
 
 # ---------------------------------------------------------------------------

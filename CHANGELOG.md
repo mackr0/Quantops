@@ -17,6 +17,43 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 — self-tuner auto-expiry on tightenings (Phase 1, Item 4 of docs/17). Severity: high (tightenings can't sit forever without evidence).
+
+The cascade prevention from Items 1+3 caps NEW restrictions; Item 2 forces loosening when entries fall below the floor. None of these unwind an EXISTING accumulation of tightenings sitting on a profile that *is* trading enough not to trip the floor but is over-restricted from past tuning. Item 4 closes that gap.
+
+**Fix.** Schema + optimizer:
+
+**1) Schema** (`models.py`):
+- Add `expired_at TEXT DEFAULT NULL` column to `tuning_history` (both in CREATE TABLE and in the `_migrations` list for older DBs).
+- `get_expirable_tightenings(profile_id, ttl_days=14, limit=10) → List[Dict]` returns rows where `expired_at IS NULL`, `timestamp ≤ now − ttl_days`, and `outcome_after != 'improved'`. Ordered oldest first.
+- `mark_tuning_event_expired(event_id) → bool` stamps `expired_at = now` so the rule doesn't reconsider the row.
+
+**2) Optimizer** (`self_tuning.py:_optimize_auto_expire_old_tightenings`, tagged LOOSEN):
+- Direction map `_TIGHTENING_DIRECTION` covers entry filters, sizing, drawdown, stops/TPs, ATR multipliers, price band, RSI thresholds — for each, declares whether higher or lower is restrictive.
+- `_is_tightening(param, old, new)` filters tuning_history rows to actual tightenings (a logged "loosen" event doesn't count).
+- `_loosen_one_step_toward(param, current, target)` proposes a 25% loosen step capped so we never overshoot the pre-tightening value.
+- Walks the expirable queue: first eligible event whose param ISN'T in 24h cooldown is the action. The change routes through `_apply_param_change` so per-cycle cap + reference-window still apply.
+- Marks the row expired when the value reaches (or passes) the pre-tightening target — the rule walks the param back over multiple cycles for large unwinds (e.g., 100→60 takes 4 cycles: 100→75→60).
+
+**Evidence-backed tightenings survive.** Outcomes classified 'improved' by `review_past_adjustments` are excluded from the queue. Outcomes 'worsened' are handled by the pre-existing reversal helper in `_check_overall_performance`; auto-expiry covers 'pending' and 'unchanged' — the cases where the tightening didn't clearly help.
+
+**Stack-unwinding behavior.** If multiple tightenings stack on the same param, the oldest expires first. Subsequent cycles process the next-oldest. Per-cycle cap means each event takes 1+ cycles to fully unwind; over 14+ days of below-floor pressure, the system steadily loosens until equilibrium is reached.
+
+**Tests** (`tests/test_auto_expire_tightenings_2026_05_18.py`, 28 tests):
+- `_is_tightening`: up/down direction × increase/decrease (4 combinations) + unknown param
+- `_loosen_one_step_toward`: cap at target when 25% overshoots, both directions, no-op at target
+- `get_expirable_tightenings`: empty, recent skipped, old returned, 'improved' skipped, 'pending'+'unchanged' included, already-expired skipped, oldest-first ordering
+- `mark_tuning_event_expired`: marks once + idempotent + returns False for missing id
+- Optimizer fires: no-op when nothing expirable, fires on pending+expired tightening, does NOT fire on 'improved', falls through to next event when oldest is in cooldown
+- Expiry marking: marks when step reaches target, leaves open mid-walk, marks when current already past target, marks for unknown-param event so we don't reconsider
+- Registry: tagged LOOSEN and present in `all_optimizers`
+
+**Silent-failure guardrail.** The cosmetic `age_days` computation in the optimizer's log message catches `(KeyError, TypeError, ValueError)` and falls back to `"?"` — annotated `# SILENT_OK:` per the standing rule. The loosen action itself isn't affected by a bad timestamp.
+
+**Follow-up**: Item 5 (weekly trade-rate anomaly alert) is the last Phase 1 piece. Phase 2 (RAG over post-mortems) is next.
+
+---
+
 ## 2026-05-18 — self-tuner reference-window invariant (Phase 1, Item 3 of docs/17). Severity: high (the per-cycle cap from Item 1 slows the cascade; this stops it).
 
 Item 1 caps any single cycle's movement at ±25%, but doesn't bound the accumulated drift over many cycles. A calibration test in the Item 1 suite documents that 14 consecutive within-cap proposals compound to `0.10 × 0.75^14 ≈ 0.00178` — still catastrophic. The reference-window invariant clamps proposed values to ±50% from a day-1 reference, capping the worst case.
