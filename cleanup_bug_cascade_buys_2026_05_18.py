@@ -123,14 +123,17 @@ def main() -> int:
                   f"SELL {qty:>5} shares (excess)")
             if not args.apply:
                 continue
+            # Use close_position(symbol, qty=N) instead of submit_order.
+            # The bare submit_order path failed for most symbols on the
+            # first apply attempt with "insufficient qty available" —
+            # protective stops from the original BUYs had encumbered
+            # the full position, so available=0 even though held=N.
+            # close_position atomically cancels conflicting open orders
+            # and submits the partial-close. The stop_coverage scheduled
+            # task re-applies protective stops on the remaining intended
+            # position within minutes.
             try:
-                order = api.submit_order(
-                    symbol=sym, qty=qty, side="sell",
-                    type="market", time_in_force="day",
-                )
-                # Same primitive log_trade as trader.execute_trade.
-                # decision_price omitted (filled price will land via
-                # the regular fill-update reconcile cycle).
+                order = api.close_position(sym, qty=str(qty))
                 log_trade(
                     symbol=sym,
                     side="sell",
@@ -149,7 +152,7 @@ def main() -> int:
                 total_shares += qty
                 time.sleep(0.2)  # gentle pacing
             except Exception as e:
-                print(f"      SUBMIT FAILED: {type(e).__name__}: {e}")
+                print(f"      CLOSE FAILED: {type(e).__name__}: {e}")
 
     print()
     mode = "APPLIED" if args.apply else "DRY-RUN"
