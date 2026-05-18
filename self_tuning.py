@@ -133,6 +133,52 @@ def _within_reference_window(param_name: str,
     return clamped, True, reason
 
 
+def _apply_param_change(profile_id: int, user_id: int,
+                        adjustment_type: str, param_name: str,
+                        old_value, proposed_new_value,
+                        reason: str,
+                        win_rate_at_change: Optional[float] = None,
+                        predictions_resolved: Optional[int] = None,
+                        max_pct_change: float = _MAX_PCT_PER_CYCLE) -> tuple:
+    """Single entry point every `_optimize_*` function must call for
+    parameter changes. Wraps `update_trading_profile + log_tuning_change`
+    behind the guardrails so the per-cycle cap can't be bypassed by
+    a future optimizer that forgets to wrap its own write.
+
+    Returns `(applied_value, was_clamped, suffix)`:
+      - applied_value: the value actually written (post-clamp)
+      - was_clamped: bool
+      - suffix: text describing the clamp (for appending to the
+        adjustment narrative) — empty when no clamp fired
+
+    The wrapper persists the CLAMPED value in both the profile config
+    and the tuning_history row, so /api/tuning-history and reviewers
+    see the real applied change, not the proposed one.
+    """
+    from models import update_trading_profile, log_tuning_change
+    applied, was_clamped, clamp_reason = _clamp_delta(
+        param_name, old_value, proposed_new_value, max_pct_change,
+    )
+    # Cast to the column type the profile expects
+    cast_value = _cast_param_value(param_name, str(applied))
+    update_kwargs = {param_name: cast_value}
+    update_trading_profile(profile_id, **update_kwargs)
+    final_reason = reason
+    if was_clamped:
+        final_reason = (
+            f"{reason} [guardrail: {clamp_reason}]"
+        )
+    log_tuning_change(
+        profile_id, user_id, adjustment_type,
+        param_name, str(old_value), str(applied), final_reason,
+        win_rate_at_change=win_rate_at_change,
+        predictions_resolved=predictions_resolved,
+    )
+    return applied, was_clamped, (
+        f" (clamped by guardrail to {applied:.4g})" if was_clamped else ""
+    )
+
+
 def _is_cached(key: str) -> bool:
     ts_key = f"{key}_ts"
     return (
@@ -2294,18 +2340,21 @@ def _optimize_confidence_threshold_upward(conn, ctx, profile_id, user_id,
     if above_count < 10:
         return None
 
-    from models import update_trading_profile, log_tuning_change
-    update_trading_profile(profile_id, ai_confidence_threshold=new_threshold)
     reason = (
         f"Confidence {new_threshold}+ band has {best_wr:.0f}% win rate "
         f"vs {overall_wr:.0f}% overall — focusing on higher-conviction trades"
     )
-    log_tuning_change(
-        profile_id, user_id, "confidence_threshold_optimization",
-        "ai_confidence_threshold", str(current), str(new_threshold), reason,
+    applied, was_clamped, suffix = _apply_param_change(
+        profile_id, user_id,
+        "confidence_threshold_optimization",
+        "ai_confidence_threshold",
+        current, new_threshold, reason,
         win_rate_at_change=overall_wr, predictions_resolved=resolved,
     )
-    return f"Raised confidence threshold from {current} to {new_threshold} ({reason})"
+    return (
+        f"Raised confidence threshold from {current} to "
+        f"{int(applied)}{suffix} ({reason})"
+    )
 
 
 def _optimize_regime_position_sizing(conn, ctx, profile_id, user_id,
@@ -2637,18 +2686,21 @@ def _optimize_position_size_upward(conn, ctx, profile_id, user_id,
     if new_pct <= current:
         return None
 
-    from models import update_trading_profile, log_tuning_change
-    update_trading_profile(profile_id, max_position_pct=new_pct)
     reason = (
         f"Win rate {overall_wr:.0f}% with +{avg_ret:.2f}% avg return "
         f"on {resolved} predictions — increasing position size to capitalize"
     )
-    log_tuning_change(
-        profile_id, user_id, "position_size_optimization",
-        "max_position_pct", str(current), str(new_pct), reason,
+    applied, was_clamped, suffix = _apply_param_change(
+        profile_id, user_id,
+        "position_size_optimization",
+        "max_position_pct",
+        current, new_pct, reason,
         win_rate_at_change=overall_wr, predictions_resolved=resolved,
     )
-    return f"Increased position size from {current:.1%} to {new_pct:.1%} ({reason})"
+    return (
+        f"Increased position size from {current:.1%} to "
+        f"{applied:.1%}{suffix} ({reason})"
+    )
 
 
 # ---------------------------------------------------------------------------

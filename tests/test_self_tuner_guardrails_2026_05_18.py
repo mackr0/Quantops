@@ -179,3 +179,71 @@ class TestReferenceWindowInvariant:
             f"After 14 cycles with both guardrails, expected ~0.05 "
             f"(the reference floor). Got {val}."
         )
+
+
+class TestApplyParamChangeWrapper:
+    """Integration: every _optimize_* function calls _apply_param_change.
+    The wrapper enforces the clamp via the shared helper AND writes
+    the clamped value to both the profile config and tuning_history.
+    Without this single entry point a future optimizer could bypass
+    the cap by calling update_trading_profile directly."""
+
+    def test_wrapper_passes_through_when_no_clamp(self, monkeypatch):
+        """In-band change → wrapper applies proposed value as-is to
+        both update_trading_profile and log_tuning_change."""
+        from unittest.mock import MagicMock
+        utp = MagicMock()
+        ltc = MagicMock(return_value=42)
+        monkeypatch.setattr("models.update_trading_profile", utp)
+        monkeypatch.setattr("models.log_tuning_change", ltc)
+        from self_tuning import _apply_param_change
+        applied, was_clamped, suffix = _apply_param_change(
+            profile_id=1, user_id=1,
+            adjustment_type="test_adjustment",
+            param_name="ai_confidence_threshold",
+            old_value=60, proposed_new_value=66,
+            reason="test reason",
+            win_rate_at_change=70, predictions_resolved=50,
+        )
+        assert was_clamped is False
+        assert applied == 66.0
+        assert suffix == ""
+        utp.assert_called_once_with(1, ai_confidence_threshold=66)
+        # Verify log_tuning_change got the same value, not the proposed
+        args, kwargs = ltc.call_args
+        # Positional: profile_id, user_id, adjustment_type, param_name,
+        #             old_value, new_value, reason
+        assert args[5] == "66.0", (
+            f"log_tuning_change new_value must match applied value; got {args[5]}"
+        )
+
+    def test_wrapper_clamps_and_writes_clamped_value(self, monkeypatch):
+        """50% proposed cut → wrapper clamps to 25% and writes the
+        clamped value to BOTH update_trading_profile and
+        log_tuning_change. Verifies the wrapper can't be bypassed by a
+        downstream caller reading the original proposed."""
+        from unittest.mock import MagicMock
+        utp = MagicMock()
+        ltc = MagicMock(return_value=42)
+        monkeypatch.setattr("models.update_trading_profile", utp)
+        monkeypatch.setattr("models.log_tuning_change", ltc)
+        from self_tuning import _apply_param_change
+        applied, was_clamped, suffix = _apply_param_change(
+            profile_id=1, user_id=1,
+            adjustment_type="position_size_optimization",
+            param_name="max_position_pct",
+            old_value=0.08, proposed_new_value=0.04,
+            reason="aggressive cut proposed",
+        )
+        assert was_clamped is True
+        assert applied == pytest.approx(0.06, abs=1e-9)  # 0.08 * 0.75
+        assert "clamped" in suffix.lower()
+        # update_trading_profile gets the clamped value, not 0.04
+        utp.assert_called_once()
+        _, utp_kwargs = utp.call_args
+        assert utp_kwargs["max_position_pct"] == pytest.approx(0.06, abs=1e-9)
+        # log_tuning_change reason text includes the guardrail note
+        ltc_args, _ = ltc.call_args
+        assert "guardrail" in ltc_args[6].lower(), (
+            f"Reason must explain the clamp. Got: {ltc_args[6]!r}"
+        )

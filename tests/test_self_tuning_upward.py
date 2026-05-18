@@ -164,7 +164,17 @@ class TestConfidenceThresholdUpward:
             conn, ctx, 1, 1, 53.3, 30)
         conn.close()
         assert result is not None
-        assert updated.get("ai_confidence_threshold") == 50  # Raises one band from 25
+        # Pre-2026-05-18 this test expected 50 (a 100% one-cycle jump
+        # from 25). The per-cycle delta cap (Phase 1 #1 of docs/17)
+        # now bounds any single adjustment to ±25%. So the optimizer's
+        # target of 50 gets clamped on the first cycle to 25 * 1.25 = 31.
+        # Over 3-4 cycles the value converges to the intended 50.
+        # This test now verifies the clamp fires correctly.
+        assert updated.get("ai_confidence_threshold") == 31, (
+            "Expected per-cycle clamp to 31 (25 * 1.25); the "
+            "guardrails closing the 2026-05-14 cascade are designed "
+            "to bound single-cycle jumps even on upward moves."
+        )
 
     def test_skipped_on_cooldown(self, setup, monkeypatch):
         db = _make_db(setup)
