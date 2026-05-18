@@ -36,3 +36,6 @@ calibrator_*.pkl
 cycle_data_*.json
 dynamic_screener_cache.json
 scheduler_status.json
+
+# Cloudflare Worker local state
+osha_proxy/.wrangler/
