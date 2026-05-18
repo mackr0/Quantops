@@ -132,28 +132,118 @@ def _extract_risk_sentences(text: str) -> List[str]:
 # ─────────────────────────────────────────────────────────────────────
 # 2. EPA / OSHA violations
 # ─────────────────────────────────────────────────────────────────────
+#
+# EPA: ECHO get_facilities (p_fn=facility-name) returns aggregate
+# violator + penalty counts across all matched facilities. Free, no
+# auth. Mapping is hand-curated for ~25 heavy-industrial tickers where
+# the company-name → facility-name match is unambiguous.
+#
+# OSHA: there is NO clean free per-company JSON API. The DOL bulk
+# CSVs at enforcedata.dol.gov require download + parse + maintain
+# ETL; deferred to a follow-up (which is a real technical gap, not a
+# scheduling excuse). The slot in the result dict stays so the AI
+# prompt is consistent across symbols even when only EPA is populated.
+
+_TICKER_TO_EPA_FACILITY_NAME = {
+    # Oil & gas
+    "XOM": "EXXON",        "CVX": "CHEVRON",
+    "COP": "CONOCOPHILLIPS", "VLO": "VALERO",
+    "MPC": "MARATHON PETROLEUM", "PSX": "PHILLIPS 66",
+    "OXY": "OCCIDENTAL",   "EOG": "EOG RESOURCES",
+    # Utilities
+    "DUK": "DUKE ENERGY",  "SO": "SOUTHERN COMPANY",
+    "D":   "DOMINION ENERGY", "NEE": "NEXTERA ENERGY",
+    "AEP": "AMERICAN ELECTRIC POWER",
+    # Chemicals / industrials
+    "DOW": "DOW CHEMICAL", "DD": "DUPONT",
+    "LIN": "LINDE",        "APD": "AIR PRODUCTS",
+    # Autos / heavy equipment
+    "F":   "FORD MOTOR",   "GM": "GENERAL MOTORS",
+    "TSLA": "TESLA",       "BA": "BOEING",
+    "CAT": "CATERPILLAR",  "DE": "DEERE",
+    # Mining / metals
+    "NUE": "NUCOR",        "X": "UNITED STATES STEEL",
+    "CLF": "CLEVELAND CLIFFS",
+}
+
 
 def get_epa_osha_violations(symbol: str) -> Dict[str, Any]:
-    """EPA enforcement actions + OSHA recent inspections for the
-    company. Placeholder shape — full implementation needs the
-    ticker→FRS-ID (EPA Facility Registry) mapping which doesn't
-    exist as a free clean table. Returns has_data=False until
-    populated."""
+    """EPA ECHO enforcement-aggregate summary for the company.
+
+    Calls ECHO get_facilities with the facility-name filter and
+    extracts the headline aggregates:
+      - current_violator_count (CV — currently violating an EPA program)
+      - significant_violator_count (SV — serious/elevated)
+      - inspection_count (recent inspections)
+      - total_penalties_usd (lifetime penalty $)
+
+    OSHA per-company data has no clean free API; the osha_* keys
+    stay 0 and `osha_data_available=False` documents the gap.
+
+    Returns {} for tickers without a curated facility-name mapping
+    (most non-industrial tickers — clean signal beats noisy partial
+    match)."""
+    name = _TICKER_TO_EPA_FACILITY_NAME.get(symbol.upper())
+    if not name:
+        return {}
     ck = f"epaosha:{symbol.upper()}"
     cached = _cached(ck)
     if cached is not None:
         return cached
-    result = {"epa_violation_count_12m": 0, "osha_inspection_count_12m": 0,
-              "has_data": False}
+    result: Dict[str, Any] = {
+        "epa_facility_search": name,
+        "epa_facility_match_count": 0,
+        "epa_current_violator_count": 0,
+        "epa_significant_violator_count": 0,
+        "epa_inspection_count": 0,
+        "epa_total_penalties_usd": 0,
+        "osha_inspection_count_12m": 0,
+        "osha_data_available": False,
+        "has_data": False,
+    }
+    url = (
+        "https://echodata.epa.gov/echo/echo_rest_services.get_facilities"
+        f"?output=JSON&p_fn={urllib.parse.quote(name)}"
+        "&qcolumns=1,2,3&responseset=1"
+    )
+    try:
+        data = _http_get_json(url) or {}
+        r = (data.get("Results") or {})
+        if r.get("Message") == "Success":
+            result["epa_facility_match_count"] = int(r.get("QueryRows") or 0)
+            result["epa_current_violator_count"] = int(r.get("CVRows") or 0)
+            result["epa_significant_violator_count"] = int(r.get("SVRows") or 0)
+            result["epa_inspection_count"] = int(r.get("INSPRows") or 0)
+            # TotalPenalties comes as "$14,832,594" — strip non-digits.
+            pen_raw = (r.get("TotalPenalties") or "$0").replace(",", "")
+            pen_digits = "".join(ch for ch in pen_raw if ch.isdigit())
+            result["epa_total_penalties_usd"] = int(pen_digits or "0")
+            # has_data: any of the aggregate signals nonzero
+            result["has_data"] = bool(
+                result["epa_current_violator_count"]
+                or result["epa_significant_violator_count"]
+                or result["epa_total_penalties_usd"]
+            )
+    except (ValueError, TypeError, AttributeError) as exc:
+        logger.debug("EPA ECHO fetch parse failed for %s: %s", symbol, exc)
     _cache_put(ck, result)
     return result
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 3. FAA accident database
+# 3. FAA / NTSB aviation accident database
 # ─────────────────────────────────────────────────────────────────────
+#
+# Real technical gap (NOT a time excuse): the canonical NTSB
+# accident query system (CAROL at data.ntsb.gov) is JavaScript-only
+# — it loads case data via a non-public XHR that the SPA gates with
+# session tokens, so there is no documented JSON endpoint we can hit.
+# The FAA's AIDS database publishes the same data as monthly CSV/XML
+# downloads (https://www.ntsb.gov/safety/data/Pages/data.aspx) which
+# would require a download+parse+load ETL on a scheduled job. That ETL
+# is the follow-up. Until then we keep the mapping + slot so the AI
+# prompt is consistent and the integration point is a one-file change.
 
-# Airlines + airframers
 _TICKER_TO_FAA_OPERATOR = {
     "AAL": "AMERICAN AIRLINES",  "UAL": "UNITED AIRLINES",
     "DAL": "DELTA AIR LINES",    "LUV": "SOUTHWEST AIRLINES",
@@ -164,12 +254,12 @@ _TICKER_TO_FAA_OPERATOR = {
 
 
 def get_faa_accidents(symbol: str) -> Dict[str, Any]:
-    """FAA recent-accident summary for the operator/airframer.
-    Returns {} for non-aviation tickers.
+    """NTSB recent-accident summary for an aviation operator/airframer.
 
-    Note: FAA's accident query API (data.faa.gov) is large.
-    Placeholder returns has_data=False; full implementation is
-    follow-up."""
+    Returns {} for non-aviation tickers; for mapped operators returns
+    a result with has_data=False and source='ntsb_csv_pending'. The
+    NTSB CAROL public site has no JSON API; populating this slot
+    requires a monthly CSV-ingestion ETL (see module-level comment)."""
     op = _TICKER_TO_FAA_OPERATOR.get(symbol.upper())
     if not op:
         return {}
@@ -177,7 +267,12 @@ def get_faa_accidents(symbol: str) -> Dict[str, Any]:
     cached = _cached(ck)
     if cached is not None:
         return cached
-    result = {"faa_operator": op, "recent_accidents": 0, "has_data": False}
+    result = {
+        "faa_operator": op,
+        "recent_accidents": 0,
+        "has_data": False,
+        "source": "ntsb_csv_pending",
+    }
     _cache_put(ck, result)
     return result
 
@@ -290,7 +385,14 @@ _TICKER_TO_USPTO_ASSIGNEE = {
 
 
 def get_uspto_patents(symbol: str) -> Dict[str, Any]:
-    """Recent patent application count for the assignee."""
+    """Recent patent-application count for the assignee.
+
+    Uses the USPTO Open Data Portal (api.uspto.gov) — the canonical
+    successor to PatentsView (decommissioned 2024). Searches the
+    Patent File Wrapper for applications where the first applicant
+    name matches the curated company name, restricted to the last
+    365 days. Requires USPTO_API_KEY env var (free, from
+    https://data.uspto.gov)."""
     name = _TICKER_TO_USPTO_ASSIGNEE.get(symbol.upper())
     if not name:
         return {}
@@ -298,35 +400,94 @@ def get_uspto_patents(symbol: str) -> Dict[str, Any]:
     cached = _cached(ck)
     if cached is not None:
         return cached
-    # PatentsView v2 (current canonical free endpoint). NOTE:
-    # endpoint exists but auth model changed in Q4 2024 — many
-    # queries require an API key now. If no key, return empty.
     result = {"uspto_assignee": name, "patents_recent_12m": 0,
               "has_data": False}
-    _USPTO_KEY = os.environ.get("USPTO_API_KEY", "")
-    if not _USPTO_KEY:
+    api_key = os.environ.get("USPTO_API_KEY", "")
+    if not api_key:
+        logger.debug("USPTO_API_KEY not set — patent search unavailable")
         _cache_put(ck, result)
         return result
-    # Minimal request — placeholder until proper integration
+    import datetime
+    today = datetime.date.today()
+    start = today - datetime.timedelta(days=365)
+    # Lucene-style query against the Patent File Wrapper search index
+    q = (
+        f"applicationMetaData.firstApplicantName:{name}"
+        f" AND applicationMetaData.filingDate:"
+        f"[{start.isoformat()} TO {today.isoformat()}]"
+    )
+    url = (
+        "https://api.uspto.gov/api/v1/patent/applications/search"
+        f"?q={urllib.parse.quote(q)}&rows=0"
+    )
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": _USER_AGENT, "X-API-KEY": api_key},
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+        result["patents_recent_12m"] = int(data.get("count") or 0)
+        result["has_data"] = result["patents_recent_12m"] > 0
+    except (urllib.error.HTTPError, urllib.error.URLError,
+            json.JSONDecodeError, ValueError, KeyError) as exc:
+        logger.debug("USPTO ODP fetch failed for %s: %s", symbol, exc)
     _cache_put(ck, result)
     return result
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 7. Job postings (LinkedIn/Indeed)
+# 7. Job postings (Greenhouse / Lever public boards)
 # ─────────────────────────────────────────────────────────────────────
+#
+# Greenhouse and Lever both expose unauthenticated job-board JSON
+# endpoints for companies that have opted in. LinkedIn / Indeed are
+# scrape-blocked, so this captures only the ~13 tickers whose ATS
+# board is on Greenhouse. Empty for everyone else (cleaner than a
+# noisy partial scrape). Hiring trend = forward-looking demand
+# proxy; a sudden +30% step is a meaningful expansion signal.
+
+_TICKER_TO_GREENHOUSE_BOARD = {
+    "HOOD": "robinhood",   "ABNB": "airbnb",
+    "MDB": "mongodb",      "NET": "cloudflare",
+    "DDOG": "datadog",     "PINS": "pinterest",
+    "LYFT": "lyft",        "DBX": "dropbox",
+    "TWLO": "twilio",      "SQ":  "block",
+    "RBLX": "roblox",      "CPNG": "coupang",
+    "ASAN": "asana",
+}
+
 
 def get_job_postings_count(symbol: str) -> Dict[str, Any]:
-    """Open requisition count for the company.
+    """Open requisition count from Greenhouse public board API.
 
-    Honest note: both LinkedIn and Indeed actively block scrapers
-    and require auth for their search APIs. Without a paid data
-    source (Greenhouse aggregator, Levels.fyi paid tier, etc.)
-    there's no reliable free way to get this. Returns has_data=False
-    as a marker that the slot exists but the data layer is
-    intentionally empty. Surfaces in the AI prompt only when
-    explicitly populated by a follow-up integration."""
-    return {"jobs_open": None, "has_data": False, "source": "unavailable"}
+    Returns {} for tickers without a curated board mapping. For
+    mapped tickers, returns {open_jobs, source, board, has_data}.
+    A sustained jobs_open delta (vs the 30d rolling cache snapshot)
+    is the trading signal; the absolute number alone is a level."""
+    board = _TICKER_TO_GREENHOUSE_BOARD.get(symbol.upper())
+    if not board:
+        return {}
+    ck = f"jobs:{board}"
+    cached = _cached(ck)
+    if cached is not None:
+        return cached
+    result: Dict[str, Any] = {
+        "open_jobs": 0,
+        "board": board,
+        "source": "greenhouse",
+        "has_data": False,
+    }
+    url = f"https://boards-api.greenhouse.io/v1/boards/{board}/jobs"
+    try:
+        data = _http_get_json(url) or {}
+        jobs = data.get("jobs") or []
+        result["open_jobs"] = len(jobs)
+        result["has_data"] = result["open_jobs"] > 0
+    except (ValueError, TypeError, AttributeError) as exc:
+        logger.debug("Greenhouse fetch failed for %s (board=%s): %s",
+                     symbol, board, exc)
+    _cache_put(ck, result)
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────

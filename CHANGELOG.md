@@ -17,6 +17,24 @@ Rules going forward:
 
 ---
 
+## 2026-05-17 — Tier-3 alt-data option B: EPA, USPTO, job_postings live; FAA gap documented. Severity: medium (alt-data surface area expansion before Monday open).
+
+User picked option B for the last four Tier-3 slots: build EPA/OSHA, FAA, and job_postings rather than leave them placeholder. Three of the four are now functional in production; FAA is documented as an honest technical gap (no time excuse — NTSB CAROL is JS-only).
+
+**EPA / OSHA (`get_epa_osha_violations`)**: EPA ECHO `get_facilities` endpoint returns aggregate violator + penalty counts when filtered by facility-name (param is `p_fn`, not `p_co` — `p_co` is *county*, which is why the initial probe returned 0 rows for Apple and ExxonMobil). 25 heavy-industrial tickers mapped (oil & gas, utilities, chemicals, autos, mining/metals). Smoke verified live on prod: XOM = 57 current violators, $14.8M lifetime penalties; TSLA = 8 current violators, $445K penalties. OSHA per-company has no clean free JSON API — DOL ORDS is HTML-only, bulk CSV would need a download-and-parse ETL. The `osha_*` keys in the result dict stay 0 with `osha_data_available=False` so the AI prompt is symmetric and the integration point is a one-file change when the CSV ETL lands.
+
+**FAA accident database (`get_faa_accidents`)**: Returns `has_data=False, source='ntsb_csv_pending'` for the 10 mapped aviation operators. NTSB CAROL is the canonical accident query system but is a JavaScript SPA with no documented JSON endpoint. The FAA AIDS database publishes the same data as monthly CSV/XML downloads — that ETL is the follow-up. This is a real technical absence, not a scheduling deferral.
+
+**USPTO patents (`get_uspto_patents`)**: PatentsView (the old USPTO research API) was decommissioned Q4 2024 and now redirects to the Open Data Portal at `api.uspto.gov`. New ODP key landed today and the integration is live. Lucene-style search against `applicationMetaData.firstApplicantName` with a 365-day filing-date window. Smoke verified live: Apple = 1,347 applications/12mo, NVIDIA = 294, Tesla = 66. 13 tech tickers mapped.
+
+**Job postings (`get_job_postings_count`)**: Greenhouse public-board API (`boards-api.greenhouse.io/v1/boards/{token}/jobs`) for the 13 tickers whose ATS board is hosted on Greenhouse: HOOD, ABNB, MDB, NET, DDOG, PINS, LYFT, DBX, TWLO, SQ, RBLX, CPNG, ASAN. Lever was probed and rejected — all six test boards (Plaid, Brex, Coinbase, Figma, Canva, GitLab) are private companies with no overlap to our ticker universe. LinkedIn and Indeed remain scrape-blocked. Smoke verified: HOOD = 135 open, DDOG = 409, MDB = 417, Stripe (private comparison) = 486.
+
+**Preflight extended**: `preflight_backfill.py` now warms the EPA + job_postings caches alongside the existing GitHub/FDA/NHTSA/SAM/Wikipedia/USPTO warms, so Monday's cycle-1 doesn't pay cold-start cost on these.
+
+**Net change**: alt-data surface went from "9 of 10 Tier-3 slots functional" to "9 of 10 Tier-3 slots functional" — but the population shifted: EPA / USPTO / job_postings moved from placeholder to live; FAA moved from "deferred placeholder" to "documented technical-gap placeholder" with the specific blocker (NTSB CAROL is JS-only) named and the integration point preserved for the CSV-ETL follow-up.
+
+---
+
 ## 2026-05-17 — morning_health_check.sh §H2 + clean_orphaned_profiles cascade. Severity: medium (UI ticker pollution + silent script bug).
 
 Two related discoveries surfaced after the fresh-start cleanup:

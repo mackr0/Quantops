@@ -2180,17 +2180,18 @@
         </div>
         <div class="grid">
             <div><h5>Star Manager Holdings</h5><small>Which of Berkshire / Pershing Square / Greenlight / Third Point currently hold this symbol per their most recent 13F.</small></div>
+            <div><h5>USPTO Patent Applications</h5><small>Last-365d application count per assignee via USPTO Open Data Portal (<code>api.uspto.gov</code>). 13 tech tickers mapped (AAPL/MSFT/GOOGL/META/NVDA/AMZN/TSLA/IBM/INTC/AMD/ORCL/CSCO/QCOM). Sample live: AAPL=1347, NVDA=294, TSLA=66.</small></div>
+            <div><h5>Job Postings (Greenhouse)</h5><small>Open requisition count per company via Greenhouse public board API. 13 tickers on Greenhouse (HOOD/ABNB/MDB/NET/DDOG/PINS/LYFT/DBX/TWLO/SQ/RBLX/CPNG/ASAN). Forward-looking hiring trend.</small></div>
+        </div>
+        <div class="grid">
+            <div><h5>EPA Enforcement Activity</h5><small>EPA ECHO aggregate for 25 heavy-industrial tickers (oil &amp; gas, utilities, chemicals, autos, mining/metals). Current violator count + significant violator count + recent inspection count + lifetime $ penalties. Sample live: XOM=57 current violators / $14.8M penalties.</small></div>
         </div>
 
         <h4 style="margin-top:0.5rem;">Pending External APIs <small class="muted">(not yet feeding the AI)</small></h4>
         <div class="grid">
             <div><h5 class="muted">Reddit Sentiment</h5><small class="muted">Mention counts and sentiment from r/wallstreetbets, r/stocks, r/investing, r/options. Currently off because no Reddit account credentials are configured.</small></div>
-            <div><h5 class="muted">USPTO Patents</h5><small class="muted">Patent application velocity per assignee. Slot wired but PatentsView v2 API changed auth in Q4 2024 to require a key — set <code>USPTO_API_KEY</code> in <code>.env</code> to activate.</small></div>
-            <div><h5 class="muted">USDA Crop Reports / EIA Energy Inventories</h5><small class="muted">Macro-level signals for agri / energy regimes. Both slots wired but require <code>USDA_API_KEY</code> and <code>EIA_API_KEY</code> env vars (free, sign up at quickstats.nass.usda.gov + api.eia.gov).</small></div>
-        </div>
-        <div class="grid">
-            <div><h5 class="muted">EPA / OSHA / FAA Violations</h5><small class="muted">Slot wired but each needs a ticker→regulator-ID mapping table that doesn't exist as free clean data. Returns has_data=False until populated.</small></div>
-            <div><h5 class="muted">Job Postings (LinkedIn / Indeed)</h5><small class="muted">Slot wired but both platforms actively block scrapers; needs paid data source.</small></div>
+            <div><h5 class="muted">OSHA Per-Company Inspections</h5><small class="muted">No clean free per-company JSON API exists — DOL ORDS is HTML-only, bulk CSVs at <code>enforcedata.dol.gov</code> need a download-and-parse ETL job. Slot kept in <code>epa_osha_violations</code> result so AI prompt is symmetric when the ETL lands.</small></div>
+            <div><h5 class="muted">FAA / NTSB Accidents</h5><small class="muted">NTSB CAROL public site is JavaScript-only — no documented JSON endpoint. FAA AIDS publishes monthly CSV/XML downloads that need a parse-and-load ETL. 10 aviation operators (AAL/UAL/DAL/LUV/BA/JBLU/ALK/SAVE/HA/MESA) mapped and waiting for the ETL.</small></div>
         </div>
 
         <h4 style="margin-top:0.5rem;">Per-Candidate Memory</h4>

@@ -88,10 +88,12 @@ def main() -> int:
     from altdata_tier3 import (
         get_wikipedia_edits, get_uspto_patents,
         _TICKER_TO_USPTO_ASSIGNEE,
+        get_epa_osha_violations, _TICKER_TO_EPA_FACILITY_NAME,
+        get_job_postings_count, _TICKER_TO_GREENHOUSE_BOARD,
     )
 
     counts = {"github": 0, "fda": 0, "nhtsa": 0, "sam": 0,
-              "wiki_edits": 0, "uspto": 0}
+              "wiki_edits": 0, "uspto": 0, "epa": 0, "jobs": 0}
 
     for ticker in _TICKER_TO_GITHUB_ORG.keys():
         try:
@@ -148,6 +150,22 @@ def main() -> int:
                 counts["uspto"] += 1
         except Exception as exc:
             log.debug("uspto warm %s failed: %s", ticker, exc)
+
+    for ticker in _TICKER_TO_EPA_FACILITY_NAME.keys():
+        try:
+            d = get_epa_osha_violations(ticker)
+            if d.get("has_data"):
+                counts["epa"] += 1
+        except Exception as exc:
+            log.debug("epa warm %s failed: %s", ticker, exc)
+
+    for ticker in _TICKER_TO_GREENHOUSE_BOARD.keys():
+        try:
+            d = get_job_postings_count(ticker)
+            if d.get("has_data"):
+                counts["jobs"] += 1
+        except Exception as exc:
+            log.debug("jobs warm %s failed: %s", ticker, exc)
 
     log.info("  per-symbol cache warm — tickers returning data:")
     for src, n in sorted(counts.items()):

@@ -74,17 +74,17 @@ Symbol-targeted SEC filings (10-K, 10-Q, 8-K diffs for held + shortlist symbols 
 | 10 | CFTC Commitments of Traders | ✅ Built — Socrata public endpoint, no auth | `get_cftc_cot_positioning` |
 | 11 | SAM.gov / USASpending gov contracts | ✅ Built — 11 defense/govtech tickers mapped | `get_sam_gov_contracts` |
 
-### Tier 3 — Specialized / lower frequency / harder (✅ ALL SLOTS WIRED 2026-05-17; 6 fully functional, 4 placeholder)
+### Tier 3 — Specialized / lower frequency / harder (✅ 9 of 10 functional 2026-05-17; FAA is the one honest gap)
 
 | # | Source | Status | Notes |
 |---|---|---|---|
 | 12 | SEC 10-K YoY risk-factor diff | ✅ Built | `altdata_tier3.get_risk_factor_diff` — counts NEW risk sentences vs prior year |
-| 13 | EPA / OSHA violations | 🟡 Placeholder | Slot wired; needs ticker→FRS-ID mapping table (not free) |
-| 14 | FAA accident database | 🟡 Placeholder | Slot wired; FAA query API is heavy, deferred |
+| 13 | EPA / OSHA violations | ✅ Built (EPA live; OSHA gap) | `get_epa_osha_violations` — EPA ECHO aggregate (CV/SV/inspections/$ penalties) for 25 heavy-industrial tickers; OSHA per-company has no clean free JSON API (DOL bulk-CSV ETL is the follow-up — slot kept so AI prompt stays consistent) |
+| 14 | FAA accident database | 🟡 NTSB CSV ETL pending | `get_faa_accidents` returns has_data=False with source=`ntsb_csv_pending`. The NTSB CAROL public site is JS-only (no JSON API); FAA AIDS publishes monthly CSV/XML that needs a download-and-parse ETL job. 10 aviation operators mapped, ready for the ETL to populate the slot. |
 | 15 | BLS weekly jobless claims | ✅ Built | Reuses FRED ICSA series (`altdata_tier3.get_bls_jobless_claims`) |
 | 16 | Wikipedia article EDITS | ✅ Built | `get_wikipedia_edits` — controversy precursor distinct from pageviews |
-| 17 | USPTO bulk patents (re-implement) | 🟡 Placeholder | Slot wired; PatentsView v2 auth model changed Q4 2024, needs key |
-| 18 | Job postings (LinkedIn/Indeed scrape) | 🟡 Placeholder | LinkedIn + Indeed actively block scrapers; would need paid data source |
+| 17 | USPTO patent applications | ✅ Built | `get_uspto_patents` — USPTO Open Data Portal (`api.uspto.gov`) — last-365d applications for 13 tech tickers; requires `USPTO_API_KEY` env var (free) |
+| 18 | Job postings | ✅ Built | `get_job_postings_count` — Greenhouse public-board API for 13 tickers (HOOD, ABNB, MDB, NET, DDOG, PINS, LYFT, DBX, TWLO, SQ, RBLX, CPNG, ASAN); LinkedIn/Indeed remain blocked, Lever has no public-ticker hits |
 | 19 | Sector ETF flow differentials | ✅ Built | Derived from existing `etf_flows`; lives in `altdata_tier2_macro.get_sector_flow_differentials` |
 | 20 | CEO/insider personal track records | ✅ Built | Derived from existing `altdata/edgar_form4/data/edgar_form4.db` |
 | 21 | Holdings of named star managers | ✅ Built | Derived from existing `altdata/edgar13f/data/edgar13f.db` — Berkshire / Pershing Square / Greenlight / Third Point hand-curated |
@@ -98,7 +98,10 @@ Symbol-targeted SEC filings (10-K, 10-Q, 8-K diffs for held + shortlist symbols 
 | Twitter/X sentiment | API became paywalled; can't justify cost vs StockTwits + WSB | 2025 |
 | Bloomberg Terminal data | Cost prohibitive ($24K/yr/seat) for a single-operator system | 2025 |
 | Glassdoor employee sentiment | Scraping is brittle + low signal for trade timing | 2025 |
-| PatentsView v1 | API deprecated by USPTO Q4 2024 | 2024 — replacement #17 above |
+| PatentsView v1 | API deprecated by USPTO Q4 2024 | 2024 — replacement #17 above (USPTO Open Data Portal) |
+| Lever public boards | Tested 6 known boards (Plaid/Brex/Coinbase/Figma/Canva/GitLab) — all are private companies, zero match our ticker universe | 2026-05-17 |
+| NTSB CAROL JSON API | Public site is JavaScript-only — no documented JSON endpoint exists. Will need monthly NTSB AIDS CSV download + parser ETL to populate FAA slot. | 2026-05-17 |
+| OSHA per-company JSON | DOL/OSHA has no clean free per-establishment JSON API; data is HTML-only (ORDS imis page) or bulk CSV at enforcedata.dol.gov. CSV ETL is the follow-up path. | 2026-05-17 |
 
 ---
 
