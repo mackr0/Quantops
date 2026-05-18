@@ -150,14 +150,16 @@
                     <th>Profile</th>
                     <th>Type</th>
                     <th>Equity</th>
+                    <th>P&amp;L</th>
                     <th>Cash</th>
                     <th>Positions</th>
                     <th>AI Cost Today</th>
                 </tr>
             </thead>
             <tbody>
-                {% set ns = namespace(total_equity=0, total_cash=0, total_positions=0, total_cost=0) %}
+                {% set ns = namespace(total_equity=0, total_cash=0, total_positions=0, total_cost=0, total_pnl=0) %}
                 {% for prof in profiles_data %}
+                {% set pnl = (prof.account.equity - prof.initial_capital) if (prof.account and prof.initial_capital) else 0 %}
                 <tr id="totals-row-{{ prof.id }}" style="cursor:pointer;" onclick="showDashTab(event, 'p{{ prof.id }}'); document.querySelector('a[href=\'#p{{ prof.id }}\']').classList.add('active');">
                     <td>
                         <strong>{{ prof.name }}</strong>
@@ -166,6 +168,7 @@
                     <td><small>{{ prof.market_type_name }}</small></td>
                     {% if prof.account %}
                     <td><strong id="totals-equity-{{ prof.id }}">${{ "{:,.0f}".format(prof.account.equity) }}</strong></td>
+                    <td id="totals-pnl-{{ prof.id }}" style="color:{{ '#2e7d32' if pnl > 0 else ('#c62828' if pnl < 0 else '#666') }};">{{ '+' if pnl > 0 else '' }}${{ "{:,.2f}".format(pnl) }}</td>
                     <td class="muted" id="totals-cash-{{ prof.id }}">${{ "{:,.0f}".format(prof.account.cash) }}</td>
                     <td id="totals-positions-{{ prof.id }}">{{ prof.positions|length }}</td>
                     <td class="muted" id="totals-cost-{{ prof.id }}">${{ "{:.2f}".format(prof.cost_today or 0) }}</td>
@@ -173,8 +176,9 @@
                     {% set ns.total_cash = ns.total_cash + prof.account.cash %}
                     {% set ns.total_positions = ns.total_positions + prof.positions|length %}
                     {% set ns.total_cost = ns.total_cost + (prof.cost_today or 0) %}
+                    {% set ns.total_pnl = ns.total_pnl + pnl %}
                     {% else %}
-                    <td colspan="4" class="muted">Not connected</td>
+                    <td colspan="5" class="muted">Not connected</td>
                     {% endif %}
                 </tr>
                 {% endfor %}
@@ -184,6 +188,7 @@
                     <td>Total ({{ profiles_data|length }} profiles) <small id="totals-updated" class="muted" style="font-weight:normal;">— live</small></td>
                     <td></td>
                     <td id="totals-book-equity">${{ "{:,.0f}".format(ns.total_equity) }}</td>
+                    <td id="totals-book-pnl" style="color:{{ '#2e7d32' if ns.total_pnl > 0 else ('#c62828' if ns.total_pnl < 0 else '#666') }};">{{ '+' if ns.total_pnl > 0 else '' }}${{ "{:,.2f}".format(ns.total_pnl) }}</td>
                     <td class="muted" id="totals-book-cash">${{ "{:,.0f}".format(ns.total_cash) }}</td>
                     <td id="totals-book-positions">{{ ns.total_positions }}</td>
                     <td class="muted" id="totals-book-cost">${{ "{:.2f}".format(ns.total_cost) }}</td>
@@ -200,25 +205,45 @@
                     // Use shared QF.* formatters (Issue 13). Inline
                     // `function fmt*` definitions are blocked by the
                     // test_no_inline_js_formatters guardrail.
+                    function pnlColor(v) {
+                        if (v > 0) return '#2e7d32';
+                        if (v < 0) return '#c62828';
+                        return '#666';
+                    }
+                    function pnlText(v) {
+                        return (v > 0 ? '+' : '') + QF.dollars2(v);
+                    }
                     (d.profiles || []).forEach(function(p) {
                         var eqEl = document.getElementById('totals-equity-' + p.id);
                         var caEl = document.getElementById('totals-cash-' + p.id);
                         var poEl = document.getElementById('totals-positions-' + p.id);
                         var coEl = document.getElementById('totals-cost-' + p.id);
+                        var pnEl = document.getElementById('totals-pnl-' + p.id);
                         if (eqEl) eqEl.innerHTML = '<strong>' + QF.dollars0(p.equity) + '</strong>';
                         if (caEl) caEl.textContent = QF.dollars0(p.cash);
                         if (poEl) poEl.textContent = p.num_positions;
                         if (coEl) coEl.textContent = QF.dollars2(p.cost_today || 0);
+                        if (pnEl) {
+                            var v = p.pnl || 0;
+                            pnEl.textContent = pnlText(v);
+                            pnEl.style.color = pnlColor(v);
+                        }
                     });
                     var be = document.getElementById('totals-book-equity');
                     var bc = document.getElementById('totals-book-cash');
                     var bp = document.getElementById('totals-book-positions');
                     var bk = document.getElementById('totals-book-cost');
+                    var bpnl = document.getElementById('totals-book-pnl');
                     var u = document.getElementById('totals-updated');
                     if (be) be.textContent = QF.dollars0(d.total_equity || 0);
                     if (bc) bc.textContent = QF.dollars0(d.total_cash || 0);
                     if (bp) bp.textContent = (d.total_positions || 0);
                     if (bk) bk.textContent = QF.dollars2(d.total_cost || 0);
+                    if (bpnl) {
+                        var tv = d.total_pnl || 0;
+                        bpnl.textContent = pnlText(tv);
+                        bpnl.style.color = pnlColor(tv);
+                    }
                     if (u) u.textContent = '— live · updated ' + new Date().toLocaleTimeString();
                 }).catch(function(){});
             }
@@ -852,6 +877,37 @@ function showOpTab(event, profileId, which) {
                                     'EXECUTED AS ' + escapeHtml((t.executed_action || '').toUpperCase()) +
                                     '</span>';
                         }
+                        // 2026-05-18 — BLOCKED badge for AI picks that
+                        // the pre-trade gate skipped (e.g. short-on-
+                        // bounce-days rule rejected a SHORT into a
+                        // down move). The api_cycle_data enrichment
+                        // stamps `execution_outcome='no_fill'` when
+                        // no trade row was created for the symbol;
+                        // the badge surfaces that on the dashboard
+                        // so the operator can see intent vs.
+                        // execution divergence. Muted gray to read
+                        // as "didn't make it to broker" — distinct
+                        // from red REJECTED (broker said no).
+                        var blockBadge = '';
+                        if (t.execution_outcome === 'no_fill') {
+                            var btip = escapeHtml(t.execution_outcome_display || '');
+                            blockBadge = ' <span title="' + btip +
+                                    '" style="display:inline-block;background:#757575;color:#fff;' +
+                                    'font-size:0.65rem;font-weight:600;padding:0.05rem 0.4rem;' +
+                                    'border-radius:3px;vertical-align:middle;margin-left:0.4rem;">' +
+                                    'BLOCKED</span>';
+                        }
+                        // Canceled — limit order never filled / reconcile
+                        // canceled it because broker had no matching
+                        // position. Same muted-gray family as BLOCKED.
+                        if (t.execution_outcome === 'canceled') {
+                            var ktip = escapeHtml(t.execution_outcome_display || '');
+                            blockBadge = ' <span title="' + ktip +
+                                    '" style="display:inline-block;background:#546e7a;color:#fff;' +
+                                    'font-size:0.65rem;font-weight:600;padding:0.05rem 0.4rem;' +
+                                    'border-radius:3px;vertical-align:middle;margin-left:0.4rem;">' +
+                                    'CANCELED</span>';
+                        }
                         // Sizing detail differs by action type:
                         //   BUY/SELL/SHORT — `size_pct` (% equity)
                         //   MULTILEG_OPEN — `contracts` + strategy_name
@@ -886,10 +942,17 @@ function showOpTab(event, profileId, which) {
                             sizing = '';
                         }
                         var detail = sizing ? sizing + ', ' : '';
+                        // Muted styling when the trade didn't make it
+                        // to broker (rejected / no_fill / canceled).
+                        var didntExecute = (
+                            t.execution_outcome === 'rejected' ||
+                            t.execution_outcome === 'no_fill' ||
+                            t.execution_outcome === 'canceled'
+                        );
                         html += '<span style="color:' +
-                                (t.execution_outcome === 'rejected' ? '#999' : '#00c853') + ';' +
-                                (t.execution_outcome === 'rejected' ? 'text-decoration:line-through;' : '') +
-                                '">' + escapeHtml(t.action || '') + ' ' + escapeHtml(t.symbol || '') + '</span>' + badge + convertBadge +
+                                (didntExecute ? '#999' : '#00c853') + ';' +
+                                (didntExecute ? 'text-decoration:line-through;' : '') +
+                                '">' + escapeHtml(t.action || '') + ' ' + escapeHtml(t.symbol || '') + '</span>' + badge + convertBadge + blockBadge +
                                 ' (' + detail + (t.confidence != null ? t.confidence + '% confidence' : 'confidence n/a') + ')<br>' +
                                 '<em>' + escapeHtml(t.reasoning || '') + '</em><br>';
                     });

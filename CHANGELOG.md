@@ -17,6 +17,26 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 — dashboard UX: BLOCKED badge for AI picks pre-trade-gate-skipped + P&L column on overview + baseline trades show in ticker. Severity: low (UX gaps; no trading impact).
+
+Three small dashboard issues surfaced today as operator noticed divergence between AI Brain intent and actual broker activity:
+
+**1. BLOCKED badge missing on `execution_outcome='no_fill'` and `'canceled'`.** P16 NoAltData's AI selected `SHORT AVGO` at 19:48 ET, but the short-on-bounce pre-trade gate skipped it (AVGO was −0.2% today; the rule only shorts on UP days). The `api_cycle_data` enrichment correctly stamped `execution_outcome='no_fill'` with the explanation, but the dashboard JS only had render branches for `'rejected'` and `'converted_to_close'` — so the badge silently never rendered. Operator saw 3 trades listed in the AI Brain widget and went hunting for an AVGO short that never existed.
+
+Fix: added BLOCKED + CANCELED badge branches in `templates/dashboard.html`. Muted-gray styling (vs. red REJECTED) signals "didn't reach broker" rather than "broker said no." The strikethrough + muted color on the trade text now covers ALL three "didn't execute" outcomes (rejected / no_fill / canceled) — previously only `rejected` got the strikethrough so `no_fill` rows rendered in bright green like they had executed.
+
+**2. P&L column missing from overview table.** Operator noted P&L existed on per-profile views but had disappeared from the overview. Added `P&L` column between Equity and Cash. Per-row PNL = `equity − initial_capital`, color-coded green/red/neutral. Footer total sums to book-wide P&L. `/api/dashboard-totals` payload now includes per-profile `pnl` + book `total_pnl`. JS refresh handler updates the cells every 30s alongside the existing columns.
+
+**3. Baseline trades (buy_hold + random) missing from Strategy Activity ticker.** The dashboard's ticker reads from the master `activity_log` table. AI-pipeline trades correctly log `trade_executed` rows there; `simple_strategies._submit_and_log` did not — it only wrote to the per-profile `trades` table. So buy_hold's SPY entry and random's 5-pick entries landed in journals but never appeared in the dashboard ticker. Added a `log_activity(activity_type='trade_executed', ...)` call after the successful `log_trade` in `_submit_and_log`. Activity-log write failures now log at WARNING (per no-silent-failures).
+
+**Tests**:
+- `tests/test_dashboard_blocked_badge_2026_05_18.py` — 5 tests covering badge branches, strikethrough styling, blockBadge concat, simple_strategies activity logging
+- `tests/test_dashboard_pnl_column_2026_05_18.py` — 5 tests covering header, per-row cell, footer total, API payload keys, color branches
+
+**Doc refresh**: `docs/01_EXECUTIVE_SUMMARY.md` and `docs/04_TECHNICAL_REFERENCE.md` test counts updated 3,413 → 3,794 to clear the documented-count-drift guardrail.
+
+---
+
 ## 2026-05-18 — NoAltData ablation profiles silently failed cycle_data write. Severity: high (dashboard "AI Brain" widget showed "Waiting for first cycle" indefinitely for both NoAltData profiles).
 
 EXP-A2-NoAltData (P16) and EXP-A2-NoAltData-NoMetaModel (P20) both had `enable_alt_data=0`. The AI pipeline correctly skips the alt-data fetch for these profiles, but did so by setting `entry["alt_data"] = None` (via `entry.setdefault("alt_data", None)` at trade_pipeline.py:3172). Downstream in `_save_cycle_data`, the shortlist comprehension was:

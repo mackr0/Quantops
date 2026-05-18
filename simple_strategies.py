@@ -115,6 +115,35 @@ def _submit_and_log(api, ctx, symbol, side, qty, price, strategy_name,
             side, symbol, qty, order.id, type(exc).__name__, exc,
         )
         return False
+
+    # Log to master activity_log so the dashboard ticker shows the
+    # trade alongside AI-pipeline trades. Without this, buy_hold and
+    # random profiles' day-1 entries land in the per-profile trades
+    # table but never appear in /api/activity → dashboard ticker
+    # silently misses them. Caught 2026-05-18 — operator observed
+    # AI profiles ticking trades but benchmarks producing nothing
+    # visible.
+    try:
+        from models import log_activity
+        action = "BUY" if side == "buy" else "SELL"
+        title = f"{action} {int(qty):,} {symbol} @ ${price:,.2f}"
+        log_activity(
+            profile_id=getattr(ctx, "profile_id", 0),
+            user_id=getattr(ctx, "user_id", 0),
+            activity_type="trade_executed",
+            title=title,
+            detail=f"Trade executed: {action} {symbol}\n{reason}",
+            symbol=symbol,
+        )
+    except Exception as exc:
+        # Activity log is informational; trade is already real at
+        # broker + journal. Surface at warning (not silent) so the
+        # /issues audit picks up any future regression.
+        logger.warning(
+            "simple_strategies: activity_log write failed for %s %s "
+            "(order_id=%s already submitted): %s: %s",
+            side, symbol, order.id, type(exc).__name__, exc,
+        )
     return True
 
 

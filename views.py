@@ -5399,6 +5399,13 @@ def api_dashboard_totals():
             equity = float(account.get("equity") or 0)
             cash = float(account.get("cash") or 0)
             n_pos = len(positions)
+            # Total P&L = current equity − initial capital. Drives the
+            # P&L column on the overview table (restored 2026-05-18
+            # after the operator noted it disappeared from the
+            # overview at some point even though per-profile views
+            # still surfaced it).
+            initial_capital = float(p.get("initial_capital") or 0)
+            pnl = equity - initial_capital if initial_capital > 0 else 0.0
             rows.append({
                 "id": p["id"],
                 "name": p["name"],
@@ -5406,6 +5413,8 @@ def api_dashboard_totals():
                 "cash": cash,
                 "num_positions": n_pos,
                 "cost_today": cost_today,
+                "initial_capital": initial_capital,
+                "pnl": pnl,
             })
             total_equity += equity
             total_cash += cash
@@ -5426,6 +5435,10 @@ def api_dashboard_totals():
         "total_cash": total_cash,
         "total_positions": total_positions,
         "total_cost": total_cost,
+        # Book-wide P&L = total_equity - sum(initial_capital). Drives
+        # the overview footer total cell. Sum of per-row pnl values
+        # (which already handle the initial_capital=0 fallback).
+        "total_pnl": sum(r.get("pnl", 0.0) for r in rows),
     }
     # Cache only on success. The endpoint never raises explicitly
     # (per-profile failures are absorbed via the WARNING above), so
