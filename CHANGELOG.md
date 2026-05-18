@@ -17,6 +17,16 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 — full_reset_2026_05_18.py missed altdata log files. Severity: low (cosmetic — /issues page still showed yesterday's noise after the master-DB wipe).
+
+After step 5 ran clean (master-DB tables wiped, runtime cache/marker files deleted, 11 orphan profile DBs unlinked), `/issues` still showed 422 ERROR groups from `altdata-20260518.log` — the 06:14 altdata cron's yfinance "possibly delisted" entries for tickers no longer in the universe.
+
+Root cause: `issues_collector.collect_issues()` reads from THREE source families, not two. (1) systemd journal (cleared by step 6's `journalctl --rotate --vacuum-time=1s`); (2) master-DB tables (`audit_alerts`, `scrape_runs`, etc — cleared by step 4); (3) altdata cron log FILES at `/opt/quantopsai/logs/altdata-*.log` and `edgar_form4_*.log` — NOT cleared. The reset script's file-deletion step only covered runtime cache/marker files, not log files.
+
+Fix: new step 5b truncates (not deletes — preserves any active logger handles) the trailing-24h altdata and edgar_form4 log files. Backups to `/tmp/<basename>.pre-clear.bak`. Manual truncate of today's `altdata-20260518.log` already done live; this commit fixes the script for future runs.
+
+---
+
 ## 2026-05-18 — hardcoded `range(1, 12)` excluded experiment profiles from cross-profile dedup. Severity: critical (caused phantom reconcile_backfill duplicates that crashed virtual equity).
 
 Today's cascading damage chain had two distinct bugs. The first was the `journal.py:1554` empty-broker-response close-all (separate entry above). The second is this one: four production code sites had `range(1, 12)` hardcoded — a relic of the original 11-profile setup that was never updated when the 13-profile fresh-start experiment created profiles 12-24.

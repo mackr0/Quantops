@@ -185,6 +185,41 @@ def step5_wipe_runtime_files(apply: bool):
         print(f"  deleted {deleted} files")
 
 
+def step5b_clear_altdata_logs(apply: bool):
+    """The /issues page reads from THREE sources, not just journald
+    and the master-DB tables: it also tails altdata cron log FILES
+    (`/opt/quantopsai/logs/altdata-*.log`, `edgar_form4_*.log`) for
+    the trailing 24h. Missing this on the 2026-05-18 reset left
+    422 yfinance "possibly delisted" ERROR groups from the 06:14
+    altdata cron still visible on /issues even though every other
+    source was cleared. Truncating (not deleting) preserves any
+    active logger handles."""
+    import datetime
+    print("\n=== STEP 5b: truncate today + yesterday altdata logs ===")
+    today = datetime.date.today()
+    yesterday = today - datetime.timedelta(days=1)
+    targets = [
+        f"/opt/quantopsai/logs/altdata-{today:%Y%m%d}.log",
+        f"/opt/quantopsai/logs/altdata-{yesterday:%Y%m%d}.log",
+    ]
+    targets.extend(glob.glob("/opt/quantopsai/logs/edgar_form4_*.log"))
+    for path in targets:
+        if not os.path.exists(path):
+            continue
+        sz = os.path.getsize(path)
+        print(f"  {'truncate' if apply else 'would truncate'} {path} (currently {sz}B)")
+        if apply:
+            # cp to /tmp/ for safety, then truncate in place
+            try:
+                bak = f"/tmp/{os.path.basename(path)}.pre-clear.bak"
+                import shutil
+                shutil.copy2(path, bak)
+                with open(path, "w") as f:
+                    pass  # truncate
+            except OSError as e:
+                print(f"    FAILED: {e}")
+
+
 def step6_rotate_journald(apply: bool):
     """Clear today's noisy journald entries (15 fake DB-corruption
     alerts, restart spam) so /issues + journalctl start clean."""
@@ -213,6 +248,7 @@ def main() -> int:
     step3_wipe_journals(args.apply)
     step4_wipe_master_tables(args.apply)
     step5_wipe_runtime_files(args.apply)
+    step5b_clear_altdata_logs(args.apply)
     step6_rotate_journald(args.apply)
     print()
     mode = "APPLIED" if args.apply else "DRY-RUN"
