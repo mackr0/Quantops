@@ -768,7 +768,17 @@ def dashboard():
                 "option_positions": option_positions,
                 "pending_orders": pending_orders,
                 "is_virtual": getattr(ctx, "is_virtual", False),
-                "cost_today": round(cost_today, 2),
+                # Keep the raw float — DO NOT round to 2 decimals here.
+                # Pre-rounding per-profile destroys precision when costs
+                # are < $0.005 each: round(0.0033, 2) = 0.0 → template
+                # accumulates zeros → footer total shows $0.00 even
+                # though the true sum is $0.01+. The API path stores
+                # the raw float and lets JS / template format at display
+                # time (`{:.2f}`), which preserves the precision through
+                # the summation. Caught 2026-05-18: 13 profiles each
+                # with ~$0.001 AI cost rendered as $0.00 footer until
+                # the 30s API refresh showed real $0.01.
+                "cost_today": cost_today,
                 # 2026-05-18 — initial_capital must be in the server-
                 # render dict so the overview-table P&L column renders
                 # real values on the very first page paint. Without
