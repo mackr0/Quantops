@@ -40,8 +40,8 @@ NEW_KEYS = [
         "58yA1ud5PZPix4HzaGVXpk3Sk3eGW9KqrPqTZDmmeT1M"),
     (5, "5-18-acct2-3", "PKKZNAYTW2J7X6KKBAGMQR5ZI5",
         "BkcRG2HEidTaJ557pGRGNwLcRiSQNKmbRgvymRZBFXVM"),
-    (6, "5-18-acct3-3", "PKZWYV5N74AC3SFB3PBUZ56NFN",
-        "J8Bp6nTpf4RdNU94QYKo6i5tSwodMyYrgHiPWvuVNrCQ"),
+    (6, "5-18-acct3-4", "PKDWQRPW7LG62ZY55D4EF463NX",
+        "CtUTJvMnbxwyVMrVMmxtoqj75CRo8gAPYhYCu7BnDciy"),
 ]
 
 # Master-DB tables that the /issues page and dashboard surface — wipe
