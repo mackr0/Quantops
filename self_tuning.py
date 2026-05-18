@@ -2109,6 +2109,7 @@ def _cast_param_value(param_name, value_str):
 
 _OPTIMIZER_DIRECTION = {
     # Loosening (action-creating)
+    "_optimize_trade_count_auto_loosen": "LOOSEN",
     "_optimize_false_negatives": "LOOSEN",
     "_optimize_position_size_upward": "LOOSEN",
     "_optimize_commission_strategy": "LOOSEN",
@@ -2222,6 +2223,7 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_symbol_overrides,
         _optimize_prompt_layout,
         # Loosening (action-creating — fire FIRST)
+        _optimize_trade_count_auto_loosen,
         _optimize_position_size_upward,
         _optimize_commission_strategy,
         _optimize_false_negatives,
@@ -5389,6 +5391,182 @@ def _optimize_false_negatives(conn, ctx, profile_id, user_id,
     return (
         f"Lowered {_label('ai_confidence_threshold')} from {threshold} "
         f"to {applied}{suffix} ({reason})"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Trade-count floor auto-loosen — Item 2 of docs/17 Phase 1 (2026-05-18).
+#
+# The 2026-05-14 over-restriction failure mode showed soft signals
+# alone aren't enough. The volume-floor flag biases downstream rules
+# toward loosening, but it doesn't FORCE action — under the wrong
+# data conditions every loosener self-skips and the cascade continues.
+# This rule encodes feedback_self_tuner_must_drift_toward_trading
+# as a deterministic action: when weekly stock entries fall below
+# the floor, the most-restrictive entry-filter parameter is FORCED
+# to loosen by ~25% (within the per-cycle delta cap from Item 1).
+# ---------------------------------------------------------------------------
+
+# Trigger threshold matches the existing `_runtime_under_volume_floor`
+# computation so both layers agree on what "below floor" means.
+_TRADE_COUNT_FLOOR_ENTRIES = 3
+_TRADE_COUNT_FLOOR_WINDOW_DAYS = 7
+
+# Entry-filter parameters with their restrictive-direction. The
+# loosen direction is the opposite. Sizing parameters (max_position_pct)
+# are excluded because they don't change the COUNT of entries — only
+# their dollar size; a sizing cut doesn't help when zero trades fire.
+_TRADE_COUNT_FILTERS: Dict[str, str] = {
+    # higher value = more restrictive (less candidates pass)
+    "ai_confidence_threshold":   "up",
+    "min_volume":                 "up",
+    "volume_surge_multiplier":    "up",
+    "breakout_volume_threshold":  "up",
+    "gap_pct_threshold":          "up",
+    "momentum_5d_gain":           "up",
+    "momentum_20d_gain":          "up",
+    "avoid_earnings_days":        "up",
+    "skip_first_minutes":         "up",
+    "meta_pregate_threshold":     "up",  # higher = more candidates dropped
+    # lower value = more restrictive (cap on concurrent / correlation)
+    "max_total_positions":        "down",
+    "max_sector_positions":       "down",
+    "max_correlation":            "down",
+}
+
+
+def _restriction_score(param_name: str, current_value) -> float:
+    """0.0 = at the loose end (least restrictive), 1.0 = at the tight
+    end (most restrictive). Uses PARAM_BOUNDS as the canonical range.
+    """
+    from param_bounds import PARAM_BOUNDS
+    bounds = PARAM_BOUNDS.get(param_name)
+    if not bounds:
+        return 0.0
+    lo, hi = float(bounds[0]), float(bounds[1])
+    if hi == lo:
+        return 0.0
+    try:
+        cur = float(current_value)
+    except (TypeError, ValueError):
+        return 0.0
+    direction = _TRADE_COUNT_FILTERS.get(param_name)
+    if direction == "up":
+        return max(0.0, min(1.0, (cur - lo) / (hi - lo)))
+    if direction == "down":
+        return max(0.0, min(1.0, (hi - cur) / (hi - lo)))
+    return 0.0
+
+
+def _loosen_target(param_name: str, current_value):
+    """Compute the loosen-by-25% target for `param_name`. Applies
+    PARAM_BOUNDS clamping AND the destination cast that
+    `_apply_param_change` will use, so callers can detect a no-op
+    BEFORE invoking the wrapper (avoids logging a tuning_history
+    row with old == new).
+
+    Returns the proposed value (post-bound, post-cast) or None when
+    the loosen direction is unknown or the value can't move further
+    after bounds + cast.
+    """
+    direction = _TRADE_COUNT_FILTERS.get(param_name)
+    if direction is None:
+        return None
+    try:
+        cur = float(current_value)
+    except (TypeError, ValueError):
+        return None
+    # Loosen by 25% — same magnitude as the per-cycle delta cap so the
+    # wrapper will accept this proposal in full.
+    if direction == "up":
+        proposed = cur * 0.75
+    else:  # "down"
+        proposed = cur * 1.25
+    bounded = _bound(param_name, proposed)
+    cast_proposed = _cast_param_value(param_name, str(bounded))
+    cast_current = _cast_param_value(param_name, str(current_value))
+    if cast_proposed == cast_current:
+        return None
+    return cast_proposed
+
+
+def _count_recent_stock_entries(conn, window_days: int = _TRADE_COUNT_FLOOR_WINDOW_DAYS) -> int:
+    """Stock-entry count over the last `window_days`. Mirrors the
+    query the soft `_runtime_under_volume_floor` signal uses so both
+    layers report the same number."""
+    try:
+        return conn.execute(
+            f"""SELECT COUNT(*) FROM trades
+                WHERE date(timestamp) >= date('now', '-{int(window_days)} days')
+                  AND side IN ('buy', 'short')
+                  AND signal_type IN
+                     ('BUY', 'STRONG_BUY', 'SHORT', 'STRONG_SELL')"""
+        ).fetchone()[0]
+    except sqlite3.OperationalError:
+        return _TRADE_COUNT_FLOOR_ENTRIES  # fail-open: don't auto-loosen on schema error
+
+
+def _optimize_trade_count_auto_loosen(conn, ctx, profile_id, user_id,
+                                       overall_wr, resolved):
+    """When weekly stock entries fall below the floor, force the
+    most-restrictive entry-filter parameter to loosen by ~25%.
+
+    Item 2 of docs/17 Phase 1. Encodes
+    `feedback_self_tuner_must_drift_toward_trading` as a hard rule:
+    the action happens regardless of whether any other loosener
+    self-skips for lack of data. The selected parameter passes
+    through `_apply_param_change`, so the per-cycle delta cap (Item 1)
+    still bounds the movement.
+
+    Skips when:
+      - Stock-entry count over the last 7 days is at or above the floor
+      - No entry-filter param is meaningfully above its loose-end value
+        (every candidate skipped via `_loosen_target` returning None)
+      - The selected param was already adjusted in the last 24h
+        (avoid thrashing — the prior change needs a chance to play out)
+    """
+    n_entries = _count_recent_stock_entries(conn)
+    if n_entries >= _TRADE_COUNT_FLOOR_ENTRIES:
+        return None  # floor not breached
+
+    # Rank candidates by restriction score (most-restrictive first).
+    candidates = []
+    for param_name in _TRADE_COUNT_FILTERS:
+        current = getattr(ctx, param_name, None)
+        if current is None:
+            continue
+        target = _loosen_target(param_name, current)
+        if target is None:
+            continue  # no actual movement available after bounds + cast
+        if _get_recent_adjustment(profile_id, param_name, days=1):
+            continue  # let yesterday's change play out
+        candidates.append((
+            _restriction_score(param_name, current),
+            param_name, current, target,
+        ))
+
+    if not candidates:
+        return None
+
+    # Highest restriction score wins. Tie-break alphabetically on the
+    # parameter name so behavior is deterministic across runs.
+    candidates.sort(key=lambda c: (-c[0], c[1]))
+    score, param_name, current, target = candidates[0]
+
+    reason = (
+        f"trade-count floor breach: {n_entries} stock entries in last "
+        f"{_TRADE_COUNT_FLOOR_WINDOW_DAYS}d (floor={_TRADE_COUNT_FLOOR_ENTRIES}). "
+        f"{_label(param_name)} is the most-restrictive entry filter "
+        f"(restriction={score:.0%}); forcing loosen."
+    )
+    applied, _, suffix = _apply_param_change(
+        profile_id, user_id, "trade_count_auto_loosen",
+        param_name, current, target, reason,
+        win_rate_at_change=overall_wr, predictions_resolved=resolved,
+    )
+    return (
+        f"AUTO-LOOSEN: {_label(param_name)} {current}→{applied}{suffix} "
+        f"({reason})"
     )
 
 

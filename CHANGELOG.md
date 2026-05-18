@@ -17,6 +17,34 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 — self-tuner trade-count floor auto-loosen (Phase 1, Item 2 of docs/17). Severity: high (encodes "drift toward trading" as a hard rule, not a hope).
+
+Item 1 (per-cycle delta cap) stops a single cycle from over-correcting, but it doesn't FORCE the system to recover when it's stuck under-trading. The pre-existing `_runtime_under_volume_floor` flag biased downstream rules toward loosening, but every loosen rule could still self-skip for lack of data — leaving the cascade scenario intact: every cycle the tuner finds no reason to loosen, no reason to tighten, and trade volume stays at zero.
+
+**Fix.** New `_optimize_trade_count_auto_loosen` in `self_tuning.py`. Tagged `LOOSEN`, fires FIRST in the registry. When stock entries in the last 7 days fall below 3 (same threshold as the existing soft signal so both layers agree), the rule:
+
+1. Scores every entry-filter parameter against PARAM_BOUNDS — `(current − loose_end) / (tight_end − loose_end)`. Higher score = more restrictive. Filters covered: `ai_confidence_threshold`, `min_volume`, `volume_surge_multiplier`, `breakout_volume_threshold`, `gap_pct_threshold`, `momentum_5d_gain`, `momentum_20d_gain`, `avoid_earnings_days`, `skip_first_minutes`, `meta_pregate_threshold`, `max_total_positions`, `max_sector_positions`, `max_correlation`.
+2. Skips any param that has no movement available after bounds + type-cast (e.g., already at the loose end) or that was already adjusted in the last 24 hours (let yesterday's change play out).
+3. Picks the highest-scoring eligible candidate (alphabetical tie-break for determinism).
+4. Proposes a 25% loosen — exactly at the Item 1 cap so the wrapper passes it through without further clamping. Routes the write through `_apply_param_change`, which means the change appears in `tuning_history` and the eventual auto-expiry helper (Item 4) can see it.
+
+**Why this matters.** Per `feedback_self_tuner_must_drift_toward_trading`: the default bias must be LOOSEN; restrictions need auto-expiry; rescue scripts indicate architectural failure. Items 1 and 2 together make this structural: any single tightening is capped, AND when under-trading, the system *automatically* unwinds the most-restrictive constraint each cycle. No human review, no rescue script, no waiting for the AI to "figure it out."
+
+**Sizing parameters excluded by design.** `max_position_pct` and friends control dollar exposure per trade, not entry count. Loosening sizing when ZERO trades fire doesn't help — the rule targets parameters that gate whether ANY trade fires at all.
+
+**Tests** (`tests/test_trade_count_auto_loosen_2026_05_18.py`, 24 tests):
+- `_restriction_score` boundary cases (loose end → 0.0, tight end → 1.0, midpoint → 0.5, both up/down direction conventions, unknown param → 0.0)
+- `_loosen_target` boundary cases (up-direction → multiply 0.75, down-direction → multiply 1.25, no-op when cast collapses, bounds respected, float precision preserved, unknown param → None)
+- Trigger: no-op when entries ≥ floor; fires when below; fires when zero
+- Selection: highest restriction score wins; alphabetical tie-break; no-op when all params at loose end
+- Cooldown: 24h-recent param skipped (falls through to next candidate); no-op when only candidate is in cooldown
+- Wrapper integration: change logged to tuning_history with `adjustment_type=trade_count_auto_loosen`; per-cycle cap doesn't fire on a normal 25% loosen (Items 1 and 2 compose cleanly)
+- Registry: tagged LOOSEN; appears in `_apply_upward_optimizations`'s `all_optimizers` list
+
+**Follow-up**: Items 3-5 (reference-window persistence, auto-expiry TTL, weekly trade-rate anomaly alert) remain. Phase 2 (RAG over post-mortems) is the next major slice after Item 5.
+
+---
+
 ## 2026-05-18 — self-tuner per-cycle delta cap (Phase 1, Item 1 of docs/17). Severity: high (closes the 2026-05-14 over-restriction failure mode at its source).
 
 The 2026-05-14 incident showed 14 days of compounding self-tuner tightening could kill stock entries entirely (project_self_tuner_overcorrection_2026_05_14). The system caught the symptom (volume floor signal) but had no structural cap on the *velocity* of any single parameter change — one optimizer running multiple times in a day could compound 50% cuts faster than the bias-toward-loosen heuristics could counterbalance.
