@@ -36,12 +36,12 @@ import sys
 from contextlib import closing
 
 NEW_KEYS = [
-    (4, "5-18-acct1", "PKWUDRMBHUHNEABYIBASNCIKOG",
-        "45g7K4Uca2uTM4takzfn2u3huVY4XPxK1LHaXtkHRLaG"),
-    (5, "5-18-acct2", "PKMKYXEANCJLWVUHUAEDHTECST",
-        "CNBvyRA2W7tmY1PaYFh1Z8NcxLszqamBdtU5HzQjCGwH"),
-    (6, "5-18-acct3", "PKXZ7D3RADZ2RPGN2QUHC6BZPJ",
-        "85EQGriG7ZUrH8saKr5caFYV6GFvN4YuPW2fGjQJwv5d"),
+    (4, "5-18-acct1-1", "PKUCHQMRE4XGTF2JCM6XGZX3H4",
+        "23BE9Qz79igwJwPGSbmbWkgs6MRiKMuBMyNCmUzwtBBv"),
+    (5, "5-18-acct2-1", "PKF3EPJFFU65FRKCJLGHUNOAYH",
+        "8PVCHUw498vi1Sde65K4gXsa5VZb88mYbrDRg4Cwe6Pt"),
+    (6, "5-18-acct3-1", "PKJL3LMAFBDQ4GOOK3QJI546M2",
+        "2biZxYh41B61kSRzvzHCd6jaYV1wLPHTCnqsyKKrwcNw"),
 ]
 
 # Master-DB tables that the /issues page and dashboard surface — wipe
