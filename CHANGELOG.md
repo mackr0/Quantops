@@ -17,6 +17,30 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 — NoAltData ablation profiles silently failed cycle_data write. Severity: high (dashboard "AI Brain" widget showed "Waiting for first cycle" indefinitely for both NoAltData profiles).
+
+EXP-A2-NoAltData (P16) and EXP-A2-NoAltData-NoMetaModel (P20) both had `enable_alt_data=0`. The AI pipeline correctly skips the alt-data fetch for these profiles, but did so by setting `entry["alt_data"] = None` (via `entry.setdefault("alt_data", None)` at trade_pipeline.py:3172). Downstream in `_save_cycle_data`, the shortlist comprehension was:
+
+```python
+"insider": (c.get("alt_data", {}).get("insider", {})
+            .get("net_direction", "neutral")),
+```
+
+The `c.get("alt_data", {})` returns `None` (not `{}`) when the key exists with value None — `.get` only returns the default when the key is MISSING, not when the value is None. So `None.get("insider", {})` → `AttributeError`. The outer `except Exception as exc: logging.debug(...)` swallowed it at DEBUG level — invisible. The cycle_data file never wrote. Dashboard widget stuck on "Waiting for first cycle" while the AI was happily running 15+ predictions per cycle.
+
+**Fix #1** (source): when `enable_alt_data=False`, set `entry["alt_data"] = {}` (empty dict) instead of `None`. Downstream `.get(...)` chains work.
+
+**Fix #2** (defense in depth): shortlist comprehension uses `(c.get("alt_data") or {})` everywhere instead of `c.get("alt_data", {})`. This handles ANY case where a value might be None — `news`, `social`, `sec_alert`, etc. all updated to the `or {}` / `or []` idiom.
+
+**Fix #3** (visibility): the `Failed to save cycle data` except clause now logs at WARNING (not DEBUG) so any future failure surfaces on `/issues` instead of being swallowed silently.
+
+**Tests** (`tests/test_cycle_data_handles_no_alt_data_2026_05_18.py`):
+- `test_save_cycle_data_with_alt_data_none` — exact regression (candidate with `alt_data=None` must produce a valid JSON)
+- `test_save_cycle_data_with_alt_data_dict` — sanity (real values propagate correctly)
+- `test_save_cycle_data_failure_surfaces_at_warning` — catches any future regression to debug-level swallowing
+
+---
+
 ## 2026-05-18 — benchmark contamination: buy_hold/random profiles inherited AI auto-exit tasks. Severity: critical (6-month experiment integrity).
 
 The new `strategy_type='buy_hold'` and `strategy_type='random'` profiles were added last week (commit 778e2f0) as null-floor benchmarks for the 13-profile experiment. The dispatcher correctly short-circuits the AI pipeline for these profiles, but the AUTO-EXIT tasks (Check Exits, Stop Coverage, Position Runaway, AI Consistency, Book Loss Floor, Intraday Risk Check, Long-Vol Hedge) were registered unconditionally in `_run_profile_cycle`. So every benchmark profile inherited the AI's trailing-stop / take-profit / kill-switch logic.

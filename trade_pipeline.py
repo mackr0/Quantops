@@ -2595,14 +2595,18 @@ def _save_cycle_data(ctx, candidates_data, shortlist, ai_trades,
                     "pct_from_52w_high": c.get("pct_from_52w_high"),
                     "squeeze": c.get("squeeze"),
                     "track_record": c.get("track_record"),
-                    "news": c.get("news", [])[:2],
-                    "insider": (c.get("alt_data", {}).get("insider", {})
-                                .get("net_direction", "neutral")),
-                    "short_pct": (c.get("alt_data", {}).get("short", {})
-                                  .get("short_pct_float", 0)),
-                    "options_signal": (c.get("alt_data", {}).get("options", {})
-                                       .get("signal", "neutral")),
-                    "reddit_mentions": c.get("social", {}).get("mentions", 0),
+                    "news": (c.get("news") or [])[:2],
+                    # Use `or {}` (not `, {}` default) so a None value
+                    # falls back to empty dict instead of raising
+                    # AttributeError on the next .get(). NoAltData
+                    # ablation profiles previously crashed here.
+                    "insider": ((c.get("alt_data") or {}).get("insider") or {})
+                                .get("net_direction", "neutral"),
+                    "short_pct": ((c.get("alt_data") or {}).get("short") or {})
+                                  .get("short_pct_float", 0),
+                    "options_signal": ((c.get("alt_data") or {}).get("options") or {})
+                                       .get("signal", "neutral"),
+                    "reddit_mentions": (c.get("social") or {}).get("mentions", 0),
                     "options_oracle_summary": c.get("options_oracle_summary"),
                     "sec_alert_severity": (c.get("sec_alert") or {}).get("severity"),
                 }
@@ -2622,7 +2626,18 @@ def _save_cycle_data(ctx, candidates_data, shortlist, ai_trades,
             _json.dump(cycle_data, f)
 
     except Exception as exc:
-        logging.debug(f"Failed to save cycle data: {exc}")
+        # WARNING (not debug) so the no-silent-failures audit picks
+        # this up. A cycle_data write failure means the dashboard's
+        # "AI Brain" widget will be stuck on "Waiting for first cycle"
+        # for the affected profile (caught 2026-05-18 for both
+        # NoAltData ablation profiles when a None alt_data tripped
+        # the shortlist comprehension — see the `or {}` defaults
+        # added above for the structural fix).
+        logging.warning(
+            "[profile %s] Failed to save cycle data: %s: %s",
+            getattr(ctx, "profile_id", "?"),
+            type(exc).__name__, exc,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3169,7 +3184,16 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
         # profiles (No-Alt-Data arm of the fresh-start experiment)
         # disable this so the AI sees only price/volume/technicals.
         if not getattr(ctx, "enable_alt_data", True):
-            entry.setdefault("alt_data", None)
+            # Empty dict (not None) so downstream code that uses
+            # `c.get("alt_data", {}).get("X", {}).get("Y", "...")`
+            # works without an AttributeError. Caught 2026-05-18 —
+            # NoAltData ablation profiles (enable_alt_data=0) were
+            # silently failing the cycle_data write in
+            # _save_cycle_data because `None.get("insider", ...)`
+            # raised, the exception was swallowed at debug level,
+            # and the dashboard's "AI Brain" widget never saw any
+            # data for those profiles.
+            entry.setdefault("alt_data", {})
         else:
             try:
                 alt = get_all_alternative_data(symbol)
