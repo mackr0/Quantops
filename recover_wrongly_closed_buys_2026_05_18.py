@@ -48,9 +48,16 @@ def _is_real_order_id(s: str | None) -> bool:
 
 
 def candidates(db_path: str) -> list[tuple]:
-    """Return wrongly-closed BUY rows for this profile DB."""
+    """Return wrongly-closed BUY rows for this profile DB. Skips DBs
+    that don't have a trades table (orphan shells from deleted
+    profiles)."""
     with closing(sqlite3.connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
+        has_trades = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='trades'"
+        ).fetchone()
+        if not has_trades:
+            return []
         rows = conn.execute(
             "SELECT id, timestamp, symbol, qty, price, order_id "
             "FROM trades "
