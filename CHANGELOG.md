@@ -58,8 +58,7 @@ The elif comment claimed "option-leg close" but the SQL had no guard. Every stoc
 3. `reconcile_aggregate_drift.py:_close_journal_phantom` — added a 5-minute min-age guard via `WHERE timestamp < ?`. Without this, an audit that fires moments after order submit would phantom-close the still-mid-fill journal row. 5 min is well beyond typical Alpaca submit→register latency.
 4. `tests/test_hardcoded_profile_range_absent_2026_05_18.py` — extended GUARDED_FILES to include `reconcile_aggregate_drift.py`. The earlier guardrail only checked 3 files; this 4th hardcoded `range(1, 12)` slipped through.
 
-**Latent (not fixed yet — no impact on today's experiment scope but should fix before pair trading enabled)**:
-- `stat_arb_pair_book.py:1085` — same partial-close pattern as `multi_scheduler.py:1320`. Closes ALL open pair_trade entries for a symbol on any close. Should use a FIFO walk like the fix in `multi_scheduler.py`. No pair trades active in the experiment, so deferred.
+**Bug #5 — fixed in same pass**: `stat_arb_pair_book.py:1085` had the same partial-close pattern as `multi_scheduler.py:1320`. Replaced blanket SQL with FIFO walk. Important quirk: pair_book stores SHORT entries as `side='sell'` (non-standard vs. the rest of the codebase which uses `side='short'`). FIFO walk handles pair_book's convention explicitly. Regression tests in `tests/test_stat_arb_pair_book_fifo_close_2026_05_18.py` + AST guardrail blocking re-introduction. The existing `test_exit_logs_close_and_flips_entry_rows_to_closed` still passes.
 
 **Tests**:
 - `tests/test_buy_fill_confirm_stays_open_2026_05_18.py` — direct regression: BUY pending_fill must transition to `open`, not `closed`; option-leg pending_fill (occ_symbol set) still transitions to `closed`; AST guardrail prevents the unguarded `elif` from returning.

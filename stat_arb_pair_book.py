@@ -1072,24 +1072,61 @@ def execute_pair_trade(api, proposal: Dict[str, Any], ctx,
                         status="closed",
                         db_path=db_path,
                     )
-                    # Also flip the matching entry rows to closed so
-                    # FIFO sees the pair as flat. Without this the
-                    # virtual position book carries the entries
-                    # forever even after the close logs above.
-                    # The just-written close row already has
-                    # status='closed' (passed explicitly above), so
-                    # the WHERE 'open' filter excludes it naturally.
+                    # Flip matching pair_trade entry rows whose lots
+                    # have been fully consumed by FIFO. Pre-2026-05-18
+                    # this was a blanket
+                    # `UPDATE WHERE symbol=? AND strategy='pair_trade'
+                    #  AND status='open'` — same partial-close
+                    # overclosure pattern as multi_scheduler.py:1320.
+                    # A partial pair exit (close 30 of 100 shares) used
+                    # to flip the original 100-share entry to closed.
+                    # FIFO walk: entries open lots in timestamp order,
+                    # exits consume them, only close lots whose
+                    # remaining qty hits 0.
                     import sqlite3 as _sqlite3
-                    conn = _sqlite3.connect(db_path)
-                    conn.execute(
-                        "UPDATE trades SET status='closed' "
-                        "WHERE symbol = ? "
-                        "  AND strategy = 'pair_trade' "
-                        "  AND COALESCE(status, 'open') = 'open'",
-                        (actual_sym,),
-                    )
-                    conn.commit()
-                    conn.close()
+                    # pair_book stores SHORT entries as side='sell'
+                    # (non-standard vs. the rest of the codebase which
+                    # uses 'short'). So the entry side for a leg is
+                    # the opposite of its close_side:
+                    #   close_side='sell' (closing long)  → entry='buy'
+                    #   close_side='buy'  (closing short) → entry='sell'
+                    opp_side_pair = "sell" if close_side == "buy" else "buy"
+                    exit_side_pair = close_side
+                    with _sqlite3.connect(db_path) as conn:
+                        rows = conn.execute(
+                            "SELECT id, side, qty FROM trades "
+                            "WHERE symbol = ? "
+                            "  AND strategy = 'pair_trade' "
+                            "  AND side IN (?, ?) "
+                            "  AND COALESCE(status, 'open') != 'canceled' "
+                            "ORDER BY timestamp ASC, id ASC",
+                            (actual_sym, opp_side_pair, exit_side_pair),
+                        ).fetchall()
+                        lots_pair = []  # [trade_id, qty_remaining]
+                        for r in rows:
+                            r_side = r[1]
+                            r_qty = float(r[2] or 0)
+                            if r_side == opp_side_pair:
+                                lots_pair.append([r[0], r_qty])
+                            else:
+                                rem = r_qty
+                                for lot in lots_pair:
+                                    if rem <= 0:
+                                        break
+                                    if lot[1] <= 0:
+                                        continue
+                                    consumed = min(lot[1], rem)
+                                    lot[1] -= consumed
+                                    rem -= consumed
+                        for lot_id, lot_rem in lots_pair:
+                            if lot_rem <= 1e-6:
+                                conn.execute(
+                                    "UPDATE trades SET status='closed' "
+                                    "WHERE id = ? "
+                                    "  AND COALESCE(status,'open')='open'",
+                                    (lot_id,),
+                                )
+                        conn.commit()
                 except Exception as log_exc:
                     logger.warning(
                         "EXIT leg %s (%s) submitted but log_trade failed: %s",
