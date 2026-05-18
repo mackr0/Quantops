@@ -161,7 +161,7 @@ def _cascade_delete_profile_orphan_rows(main_db: str,
     longer resolves in trading_profiles. Returns count per table.
     """
     summary: Dict[str, int] = {}
-    for table in ("activity_log", "tuning_history"):
+    for table in ("activity_log", "tuning_history", "param_references"):
         try:
             with sqlite3.connect(main_db) as conn:
                 row = conn.execute(

@@ -157,11 +157,49 @@ def _apply_param_change(profile_id: int, user_id: int,
     The wrapper persists the CLAMPED value in both the profile config
     and the tuning_history row, so /api/tuning-history and reviewers
     see the real applied change, not the proposed one.
+
+    Two guardrails run in sequence:
+      1. `_clamp_delta` — per-cycle delta cap (Item 1 of docs/17)
+      2. `_within_reference_window` — ±50% from day-1 reference
+         (Item 3 of docs/17). The reference is lazy-initialized: the
+         first time the wrapper sees a (profile, param), `old_value`
+         is recorded as the reference value for all future calls.
+
+    The reference layer is fail-soft: if `param_references` can't be
+    read (missing table, db error), the reference window is treated
+    as "no reference" and only the per-cycle cap applies.
     """
-    from models import update_trading_profile, log_tuning_change
+    from models import (
+        update_trading_profile, log_tuning_change,
+        get_param_reference, record_param_reference_if_absent,
+    )
+    # Lazy-record the day-1 reference. INSERT OR IGNORE is a no-op
+    # after the first call for this (profile, param), so this is
+    # safe to call every cycle.
+    record_param_reference_if_absent(profile_id, param_name, old_value)
+
+    # Step 1 — per-cycle delta cap.
     applied, was_clamped, clamp_reason = _clamp_delta(
         param_name, old_value, proposed_new_value, max_pct_change,
     )
+
+    # Step 2 — reference-window invariant (defense in depth). If the
+    # per-cycle-bounded value still drifts past ±50% from day-1, pull
+    # it back to the window edge. Helper returns the proposed value
+    # unchanged when no reference exists yet.
+    reference = get_param_reference(profile_id, param_name)
+    applied_after_ref, ref_clamped, ref_reason = _within_reference_window(
+        param_name, reference, applied,
+    )
+    if ref_clamped:
+        applied = applied_after_ref
+        was_clamped = True
+        # Compose the reasons so the operator sees both guardrails
+        # if both fired in the same call.
+        clamp_reason = (
+            f"{clamp_reason}; {ref_reason}" if clamp_reason else ref_reason
+        )
+
     # Cast to the column type the profile expects
     cast_value = _cast_param_value(param_name, str(applied))
     update_kwargs = {param_name: cast_value}

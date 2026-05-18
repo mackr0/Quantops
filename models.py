@@ -275,6 +275,20 @@ def init_user_db(db_path: Optional[str] = None) -> None:
                 reviewed_at TEXT,
                 FOREIGN KEY (profile_id) REFERENCES trading_profiles(id)
             );
+
+            CREATE TABLE IF NOT EXISTS param_references (
+                profile_id INTEGER NOT NULL,
+                parameter_name TEXT NOT NULL,
+                reference_value TEXT NOT NULL,
+                recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (profile_id, parameter_name)
+                -- No FK to trading_profiles intentionally: orphan rows
+                -- after a profile delete are harmless (keyed by id;
+                -- the reset script wipes them via clear_param_references).
+                -- Letting the FK in caused test fixtures that exercise
+                -- the helpers directly to need profile-row setup,
+                -- which is needless coupling.
+            );
         """)
         conn.commit()
 
@@ -1726,6 +1740,79 @@ def get_tuning_history(profile_id: int, limit: int = 20) -> List[Dict[str, Any]]
             (profile_id, limit),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Day-1 parameter references — Item 3 of docs/17 Phase 1 (2026-05-18).
+# Underpins the reference-window invariant. A reference is the value
+# the parameter held the first time the tuner observed it; subsequent
+# autonomous changes must stay within ±50% of that value. Prevents the
+# slow-cascade scenario where 14 cycles of within-cap tightening
+# compounds past safety.
+# ---------------------------------------------------------------------------
+
+def get_param_reference(profile_id: int, parameter_name: str) -> Optional[float]:
+    """Return the recorded day-1 reference value for (profile, param), or
+    None if no reference has been recorded yet OR the stored value
+    can't be parsed as a float (corrupt row — fail safe).
+    """
+    try:
+        with closing(_get_conn()) as conn:
+            row = conn.execute(
+                "SELECT reference_value FROM param_references "
+                "WHERE profile_id = ? AND parameter_name = ?",
+                (profile_id, parameter_name),
+            ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if not row:
+        return None
+    try:
+        return float(row["reference_value"])
+    except (TypeError, ValueError):
+        return None
+
+
+def record_param_reference_if_absent(profile_id: int, parameter_name: str,
+                                      value) -> bool:
+    """Record `value` as the reference for (profile, param) ONLY if no
+    reference has been recorded yet. Returns True when a new row was
+    inserted, False when one already existed.
+
+    Idempotent — safe to call on every `_apply_param_change`. The
+    INSERT OR IGNORE matches the (profile_id, parameter_name) PRIMARY
+    KEY so re-recording is a no-op rather than an error.
+    """
+    try:
+        with closing(_get_conn()) as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO param_references "
+                "(profile_id, parameter_name, reference_value, recorded_at) "
+                "VALUES (?, ?, ?, ?)",
+                (profile_id, parameter_name, str(value),
+                 datetime.utcnow().isoformat()),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except sqlite3.OperationalError:
+        return False
+
+
+def clear_param_references(profile_id: int) -> int:
+    """Wipe all reference rows for a profile. Used by the reset script
+    so a wiped profile starts fresh — first post-reset tuning event
+    re-establishes the new reference. Returns count deleted.
+    """
+    try:
+        with closing(_get_conn()) as conn:
+            cur = conn.execute(
+                "DELETE FROM param_references WHERE profile_id = ?",
+                (profile_id,),
+            )
+            conn.commit()
+            return cur.rowcount
+    except sqlite3.OperationalError:
+        return 0
 
 
 def review_past_adjustments(profile_id: int,

@@ -52,6 +52,11 @@ MASTER_TABLES_TO_WIPE = [
     "daily_snapshots",   # equity-curve history
     "activity_log",      # cross-profile activity feed (per-profile is
                          # wiped by reset_for_clean_experiment)
+    "param_references",  # Item 3 of docs/17 — day-1 reference values.
+                         # MUST be wiped on full reset so the post-reset
+                         # profile snapshots fresh references on its
+                         # first tuning event (otherwise the new profile
+                         # would be locked to pre-reset parameter values).
 ]
 
 # Runtime marker files / caches under /opt/quantopsai/ — kill them so

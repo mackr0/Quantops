@@ -17,6 +17,43 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 — self-tuner reference-window invariant (Phase 1, Item 3 of docs/17). Severity: high (the per-cycle cap from Item 1 slows the cascade; this stops it).
+
+Item 1 caps any single cycle's movement at ±25%, but doesn't bound the accumulated drift over many cycles. A calibration test in the Item 1 suite documents that 14 consecutive within-cap proposals compound to `0.10 × 0.75^14 ≈ 0.00178` — still catastrophic. The reference-window invariant clamps proposed values to ±50% from a day-1 reference, capping the worst case.
+
+**Fix.** Two pieces:
+
+**1) Persistence layer** (`models.py`):
+- New `param_references` table — `(profile_id, parameter_name)` primary key, stores `reference_value` as TEXT + `recorded_at` timestamp. No FK to `trading_profiles` intentionally; orphan rows are harmless and the reset path explicitly clears references.
+- `record_param_reference_if_absent(profile_id, parameter_name, value)` — INSERT OR IGNORE. Returns True iff a new row was created. Idempotent so the wrapper can call it every cycle.
+- `get_param_reference(profile_id, parameter_name) → Optional[float]` — fail-soft: returns None on missing row OR sqlite OperationalError (e.g., table not yet created in older test fixtures).
+- `clear_param_references(profile_id) → int` — for the reset script.
+
+**2) Wrapper wiring** (`self_tuning.py:_apply_param_change`):
+- Step 0: `record_param_reference_if_absent(profile_id, param_name, old_value)` — lazy init. The first time the wrapper sees a (profile, param), `old_value` is snapshotted as the reference for all subsequent calls. Idempotent — re-calling is a DB no-op.
+- Step 1 (unchanged): `_clamp_delta` enforces the per-cycle ±25% cap.
+- Step 2 (new): `_within_reference_window` clamps the per-cycle-bounded value to ±50% from the recorded reference. When both guardrails fire, the reasons are composed in the `tuning_history` row so reviewers see both.
+
+**Reset paths updated:**
+- `full_reset_2026_05_18.py` — `MASTER_TABLES_TO_WIPE` now includes `param_references` so post-reset profiles snapshot fresh references on their first tuning event.
+- `clean_orphaned_profiles.py` — cascade-delete now covers `param_references` along with `activity_log` and `tuning_history`.
+
+**Why both guardrails are necessary.** Per-cycle cap alone leaves a 14-day cascade at ~0.00178; reference-window alone allows a single 50% cut per cycle (faster). Composed, the value tracks down to the reference floor (0.05 = 50% below the day-1 reference of 0.10) and stops — verified by `test_14_cycles_held_to_reference_floor`.
+
+**Edge cases tested:**
+- First call records reference (used to be: just consulted, missed the lazy init step)
+- Second insert for same (profile, param) returns False — references stay anchored to day-1, not the cascading current value
+- No reference → wrapper passes through (only per-cycle cap applies). Critical for first-touch behavior.
+- Composed: 200% adversarial proposal → per-cycle cap binds at 87.5 (when current=70, reference=60). Per-cycle is the tighter constraint in that case; reference would allow up to 90.
+- Reference clamp reason logged in `tuning_history` for operator audit
+- Round-trip preserves float precision for both int and float params (stored TEXT, retrieved float)
+
+**Tests** (`tests/test_param_references_2026_05_18.py`, 17 tests).
+
+**Follow-up**: Items 4 (auto-expiry on restrictions, 14-day TTL) and 5 (weekly trade-rate anomaly alert) remain. Phase 2 (RAG over post-mortems) is next after Item 5.
+
+---
+
 ## 2026-05-18 — self-tuner trade-count floor auto-loosen (Phase 1, Item 2 of docs/17). Severity: high (encodes "drift toward trading" as a hard rule, not a hope).
 
 Item 1 (per-cycle delta cap) stops a single cycle from over-correcting, but it doesn't FORCE the system to recover when it's stuck under-trading. The pre-existing `_runtime_under_volume_floor` flag biased downstream rules toward loosening, but every loosen rule could still self-skip for lack of data — leaving the cascade scenario intact: every cycle the tuner finds no reason to loosen, no reason to tighten, and trade volume stays at zero.
