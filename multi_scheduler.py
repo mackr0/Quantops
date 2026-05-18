@@ -228,6 +228,17 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
     seg_label = ctx.display_name or ctx.segment
     logging.info(f"--- [{seg_label.upper()}] segment cycle start ---")
 
+    # Benchmark profiles (buy_hold, random) must NOT inherit the
+    # AI-driven exit/risk tasks — otherwise they're not pure nulls
+    # and the AI-vs-baseline comparison is contaminated. Caught
+    # 2026-05-18 14:53 ET when EXP-A1-RandomA's SNPS position hit
+    # a trailing stop ($492.73 < $499.00 = high $517.17 - 1.5×ATR
+    # $12.11), auto-exited, then random re-bought it on the next
+    # cycle, then it hit the trailing stop again — same churn for
+    # P14's AMD. Random was supposed to be "buy 5 random picks +
+    # hold until next day's picks" per docs/15_EXPERIMENT_DESIGN.
+    _is_baseline = getattr(ctx, "strategy_type", "ai") in ("buy_hold", "random")
+
     # CRITICAL ORDERING: exits BEFORE scan.
     # Exits are cheap (~1 sec per profile) and protect realized P&L.
     # Scans can take 5-30 minutes and sometimes hang (yfinance timeouts,
@@ -237,119 +248,103 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
     # exits first guarantees they can't be blocked by a downstream
     # failure in the scan pipeline.
     if run_exits:
-        run_task(
-            f"[{seg_label}] Check Exits",
-            lambda: _task_check_exits(ctx),
-            db_path=ctx.db_path,
-        )
-        # Cancel stale limit orders every exit-check cycle
+        # === AI-only auto-exit tasks (skipped for benchmark profiles) ===
+        # These drive exit decisions or AI-specific risk controls.
+        # Running them on buy_hold/random would impose stop-loss /
+        # trailing-stop / take-profit / kill-switch behavior that
+        # those benchmarks are designed NOT to have.
+        if not _is_baseline:
+            run_task(
+                f"[{seg_label}] Check Exits",
+                lambda: _task_check_exits(ctx),
+                db_path=ctx.db_path,
+            )
+            # Stop-order coverage — auto-attaches protective stops
+            # to open longs. Contaminates benchmarks (random would
+            # never have a stop in pure form).
+            run_task(
+                f"[{seg_label}] Stop Coverage",
+                lambda: _task_check_stop_coverage(ctx),
+                db_path=ctx.db_path,
+            )
+            # Position-runaway sentinel — detects AI duplicate-submit
+            # / oversize-qty bugs. Irrelevant for non-AI strategies.
+            run_task(
+                f"[{seg_label}] Position Runaway",
+                lambda: _task_check_position_runaway(ctx),
+                db_path=ctx.db_path,
+            )
+            # AI consistency floor — alerts when AI win rate drops.
+            # No AI in baselines → no win rate to floor.
+            run_task(
+                f"[{seg_label}] AI Consistency",
+                lambda: _task_check_ai_consistency(ctx),
+                db_path=ctx.db_path,
+            )
+            # Book-wide daily-loss floor — auto-flips the kill switch
+            # on drawdown. Benchmarks must take their drawdowns
+            # untouched for a clean comparison.
+            run_task(
+                f"[{seg_label}] Book Loss Floor",
+                lambda: _task_check_book_loss_floor(ctx),
+                db_path=ctx.db_path,
+            )
+            if getattr(ctx, "enable_intraday_risk_halt", True):
+                run_task(
+                    f"[{seg_label}] Intraday Risk Check",
+                    lambda: _task_intraday_risk_check(ctx),
+                    db_path=ctx.db_path,
+                )
+            if getattr(ctx, "enable_long_vol_hedge", False):
+                run_task(
+                    f"[{seg_label}] Long-Vol Hedge",
+                    lambda: _task_manage_long_vol_hedge(ctx),
+                    db_path=ctx.db_path,
+                )
+
+        # === Tasks that run for ALL profiles (data accuracy, broker reconcile) ===
+        # Sanity / journal-state maintenance. Don't drive exit
+        # decisions — safe for benchmarks too.
         run_task(
             f"[{seg_label}] Cancel Stale Orders",
             lambda: _task_cancel_stale_orders(ctx),
             db_path=ctx.db_path,
         )
-        # Update fill prices from Alpaca for slippage tracking
         run_task(
             f"[{seg_label}] Update Fill Prices",
             lambda: _task_update_fills(ctx),
             db_path=ctx.db_path,
         )
-        # Reconcile trade statuses — mark BUY rows closed when their
-        # positions go flat, and fix SELL rows whose status never
-        # flipped from 'open' to 'closed'.
         run_task(
             f"[{seg_label}] Reconcile Trade Statuses",
             lambda: _task_reconcile_trade_statuses(ctx),
             db_path=ctx.db_path,
         )
-        # Activities capture (#168, 2026-05-17) — pull DIV / OPEXP /
-        # OPASN / OPXRC events from Alpaca and write matching journal
-        # rows. Idempotent via Alpaca activity id == trades.order_id.
-        # Without this, dividend credits and option assignments
-        # silently drift broker_cash and broker_value from the
-        # journal — exactly what the five integrity audits then flag.
+        # Activities capture (dividends, option events) — REQUIRED
+        # for benchmarks too. buy_hold_spy specifically needs DIV
+        # credits posted to the journal to compute correct equity.
         run_task(
             f"[{seg_label}] Capture Broker Activities",
             lambda: _task_capture_broker_activities(ctx),
             db_path=ctx.db_path,
         )
-        # Options lifecycle — sweep expired contracts. No-op when the
-        # journal has no open option rows. Cheap query.
+        # Options-related tasks are no-ops for stock-only baselines
+        # (random + buy_hold trade SPY/equities) but cheap to run.
         run_task(
             f"[{seg_label}] Options Lifecycle",
             lambda: _task_options_lifecycle(ctx),
             db_path=ctx.db_path,
         )
-        # Phase C1 — roll manager: auto-close high-profit credits + flag
-        # roll candidates. No-op when no options near expiry.
         run_task(
             f"[{seg_label}] Options Roll Manager",
             lambda: _task_options_roll_manager(ctx),
             db_path=ctx.db_path,
         )
-        # Phase D1 — dynamic delta hedging. No-op when no hedgeable
-        # long single-leg options are open.
         run_task(
             f"[{seg_label}] Delta Hedger",
             lambda: _task_options_delta_hedger(ctx),
             db_path=ctx.db_path,
         )
-        # Doomsday gate: stop-order coverage. Alerts when <80% of
-        # open longs have a broker protective stop.
-        run_task(
-            f"[{seg_label}] Stop Coverage",
-            lambda: _task_check_stop_coverage(ctx),
-            db_path=ctx.db_path,
-        )
-
-        # Doomsday gate: position-runaway sentinel. Detects duplicate-
-        # submit bugs and excessive single-trade qty.
-        run_task(
-            f"[{seg_label}] Position Runaway",
-            lambda: _task_check_position_runaway(ctx),
-            db_path=ctx.db_path,
-        )
-
-        # Doomsday gate: AI consistency floor. Alerts when recent
-        # win rate drops below floor for N consecutive cycles.
-        run_task(
-            f"[{seg_label}] AI Consistency",
-            lambda: _task_check_ai_consistency(ctx),
-            db_path=ctx.db_path,
-        )
-
-        # Doomsday gate: book-wide daily-loss floor. Runs every cycle
-        # before the per-profile checks. Computes total book P&L
-        # across all profile DBs vs opening-day equity; if breaches
-        # floor (default -8%), flips the master kill switch ON. The
-        # pre-trade gate in trade_pipeline reads the switch and refuses
-        # all new entries while it's active.
-        run_task(
-            f"[{seg_label}] Book Loss Floor",
-            lambda: _task_check_book_loss_floor(ctx),
-            db_path=ctx.db_path,
-        )
-
-        # Item 2b — intraday risk monitoring. Writes a risk-halt
-        # state when drawdown / vol spike alerts fire; trade pipeline
-        # reads it to block new entries. Per-profile toggle so users
-        # can opt out of the auto-halt safety layer.
-        if getattr(ctx, "enable_intraday_risk_halt", True):
-            run_task(
-                f"[{seg_label}] Intraday Risk Check",
-                lambda: _task_intraday_risk_check(ctx),
-                db_path=ctx.db_path,
-            )
-        # Item 1c — long-vol portfolio tail hedge. OFF by default
-        # (opt-in: pays real put premium for active downside cover).
-        # When on, opens / rolls / closes SPY puts based on
-        # drawdown / crisis / VaR triggers.
-        if getattr(ctx, "enable_long_vol_hedge", False):
-            run_task(
-                f"[{seg_label}] Long-Vol Hedge",
-                lambda: _task_manage_long_vol_hedge(ctx),
-                db_path=ctx.db_path,
-            )
         if getattr(ctx, "is_virtual", False):
             run_task(
                 f"[{seg_label}] Virtual Audit",

@@ -17,6 +17,43 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 — benchmark contamination: buy_hold/random profiles inherited AI auto-exit tasks. Severity: critical (6-month experiment integrity).
+
+The new `strategy_type='buy_hold'` and `strategy_type='random'` profiles were added last week (commit 778e2f0) as null-floor benchmarks for the 13-profile experiment. The dispatcher correctly short-circuits the AI pipeline for these profiles, but the AUTO-EXIT tasks (Check Exits, Stop Coverage, Position Runaway, AI Consistency, Book Loss Floor, Intraday Risk Check, Long-Vol Hedge) were registered unconditionally in `_run_profile_cycle`. So every benchmark profile inherited the AI's trailing-stop / take-profit / kill-switch logic.
+
+Observed at 14:53 ET today: EXP-A1-RandomA bought 96 shares of SNPS earlier that cycle, watched the price run from ~$492.62 to a high of $517.17, then crossed back down through the trailing-stop level of $499.00 (high − 1.5×ATR). The Check Exits task fired → market sell → +$10.56 realized. Then the next cycle ran Random's deterministic-pick logic, saw SNPS in today's picks but NOT held → re-bought → trailing stop fired AGAIN. Same churn observed on P14's AMD (sold 115 + 114 across two cycles).
+
+Per `docs/15_EXPERIMENT_DESIGN_2026_05_17.md`:
+- `buy_hold`: "Never sells voluntarily. Re-trades only when SPY weight drifts > 5% from 100%."
+- `random`: "Closes any position not in today's pick, opens new picks equal-weighted from available cash. Zero AI involvement."
+
+Both benchmarks are supposed to be PURE nulls. Trailing stops, kill switches, and risk halts add exit-timing skill the benchmark shouldn't have, breaking apples-to-apples comparison with the AI profiles.
+
+**Fix**: `_run_profile_cycle` now computes `_is_baseline = strategy_type in ("buy_hold", "random")` and gates the AUTO-EXIT family on `if not _is_baseline`. The family:
+- Check Exits (trailing-stop / take-profit triggers)
+- Stop Coverage (auto-attaches protective stops)
+- Position Runaway (alerts on outsized positions)
+- AI Consistency (alerts on AI win-rate drop)
+- Book Loss Floor (auto-flips master kill switch)
+- Intraday Risk Check (auto-halts on drawdown / vol spike)
+- Long-Vol Hedge (opt-in SPY puts on drawdown)
+
+Tasks that STILL run for ALL profiles (data accuracy, broker reconcile, dividends — necessary for buy_hold P&L to be correct):
+- Cancel Stale Orders / Update Fill Prices / Reconcile Trade Statuses
+- Capture Broker Activities (DIV/OPEXP/OPASN — required for buy_hold dividend P&L)
+- Options Lifecycle / Roll Manager / Delta Hedger (no-ops for equity-only baselines, cheap)
+- Virtual Audit (data integrity)
+
+**Tests**: `tests/test_benchmark_no_auto_exits_2026_05_18.py`:
+- `test_check_exits_gated_on_baseline_flag` — AST scan: Check Exits surrounded by `_is_baseline`/`strategy_type` guard
+- `test_stop_coverage_gated_on_baseline_flag` — same for Stop Coverage
+- `test_baseline_flag_definition_present` — the `_is_baseline = ... strategy_type ... buy_hold ... random` definition must exist
+- `test_buy_hold_and_random_in_dispatcher` — sanity that simple_strategies still handles both
+
+**Why this fired today and not before**: the `strategy_type` values for `buy_hold`/`random` were added to the codebase last week but no profile actually used them until today's experiment kickoff. Today is the first day Random profiles are live-trading; the auto-exit contamination is therefore brand new in production.
+
+---
+
 ## 2026-05-18 — third outage + systematic audit of trades.status write paths. Severity: critical (P12/P13/P14 BUY rows closed immediately on fill confirmation, dashboard collapsed by ~$500K again).
 
 Third outage of the day, same family of bugs. After the earlier journal.py:1554 step 2 race fix + multi_scheduler.py:1320 FIFO partial-sell fix, the SAME fill-confirm code path still had a too-broad `elif`:
