@@ -2184,14 +2184,12 @@
             <div><h5>Job Postings (Greenhouse)</h5><small>Open requisition count per company via Greenhouse public board API. 13 tickers on Greenhouse (HOOD/ABNB/MDB/NET/DDOG/PINS/LYFT/DBX/TWLO/SQ/RBLX/CPNG/ASAN). Forward-looking hiring trend.</small></div>
         </div>
         <div class="grid">
-            <div><h5>EPA Enforcement Activity</h5><small>EPA ECHO aggregate for 25 heavy-industrial tickers (oil &amp; gas, utilities, chemicals, autos, mining/metals). Current violator count + significant violator count + recent inspection count + lifetime $ penalties. Sample live: XOM=57 current violators / $14.8M penalties.</small></div>
+            <div><h5>EPA + OSHA Regulatory Activity</h5><small>Combined for 25 heavy-industrial tickers (oil &amp; gas, utilities, chemicals, autos, mining/metals). EPA via ECHO direct: current violator count + significant violator count + lifetime $ penalties. OSHA via our Cloudflare Worker proxy (OSHA WAF-blocks our DigitalOcean prod IP, so the Worker fetches from a Cloudflare IP): inspections + violations over trailing 5y. Sample live: CVX=$29M EPA + 20 OSHA viols; US Steel=$14.9M + 18 OSHA viols.</small></div>
         </div>
 
         <h4 style="margin-top:0.5rem;">Pending External APIs <small class="muted">(not yet feeding the AI)</small></h4>
         <div class="grid">
             <div><h5 class="muted">Reddit Sentiment</h5><small class="muted">Mention counts and sentiment from r/wallstreetbets, r/stocks, r/investing, r/options. Currently off because no Reddit account credentials are configured.</small></div>
-            <div><h5 class="muted">OSHA Per-Company Inspections</h5><small class="muted">No clean free per-company JSON API exists — DOL ORDS is HTML-only, bulk CSVs at <code>enforcedata.dol.gov</code> need a download-and-parse ETL job. Slot kept in <code>epa_osha_violations</code> result so AI prompt is symmetric when the ETL lands.</small></div>
-            <div><h5 class="muted">FAA / NTSB Accidents</h5><small class="muted">NTSB CAROL public site is JavaScript-only — no documented JSON endpoint. FAA AIDS publishes monthly CSV/XML downloads that need a parse-and-load ETL. 10 aviation operators (AAL/UAL/DAL/LUV/BA/JBLU/ALK/SAVE/HA/MESA) mapped and waiting for the ETL.</small></div>
         </div>
 
         <h4 style="margin-top:0.5rem;">Per-Candidate Memory</h4>

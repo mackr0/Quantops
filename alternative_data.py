@@ -2430,12 +2430,12 @@ def get_all_alternative_data(symbol):
         "fda_inspections": _safe(_get_fda, symbol),
         "nhtsa_recalls": _safe(_get_nhtsa, symbol),
         "sam_gov_contracts": _safe(_get_sam_contracts, symbol),
-        # 2026-05-17 Tier-3 alt-data — 9 lower-frequency / derived /
+        # 2026-05-17 Tier-3 alt-data — 8 lower-frequency / derived /
         # specialized sources. Each returns {} when irrelevant to
         # the ticker's sector OR when the data layer is empty.
+        # (FAA dropped 2026-05-17 — see altdata_tier3.py header.)
         "risk_factor_diff": _safe(_get_risk_diff, symbol),
         "epa_osha_violations": _safe(_get_epa_osha, symbol),
-        "faa_accidents": _safe(_get_faa, symbol),
         "bls_jobless_claims": _safe(_get_bls_claims_kw),
         "wikipedia_edits": _safe(_get_wiki_edits, symbol),
         "uspto_patents": _safe(_get_uspto, symbol),
@@ -2530,11 +2530,6 @@ def _get_risk_diff(symbol):
 def _get_epa_osha(symbol):
     from altdata_tier3 import get_epa_osha_violations
     return get_epa_osha_violations(symbol)
-
-
-def _get_faa(symbol):
-    from altdata_tier3 import get_faa_accidents
-    return get_faa_accidents(symbol)
 
 
 def _get_bls_claims_kw(*_args, **_kwargs):

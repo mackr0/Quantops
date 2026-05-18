@@ -130,19 +130,22 @@ def _extract_risk_sentences(text: str) -> List[str]:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 2. EPA / OSHA violations
+# 2. EPA + OSHA violations (combined regulatory-pressure signal)
 # ─────────────────────────────────────────────────────────────────────
 #
 # EPA: ECHO get_facilities (p_fn=facility-name) returns aggregate
 # violator + penalty counts across all matched facilities. Free, no
-# auth. Mapping is hand-curated for ~25 heavy-industrial tickers where
-# the company-name → facility-name match is unambiguous.
+# auth.
 #
-# OSHA: there is NO clean free per-company JSON API. The DOL bulk
-# CSVs at enforcedata.dol.gov require download + parse + maintain
-# ETL; deferred to a follow-up (which is a real technical gap, not a
-# scheduling excuse). The slot in the result dict stays so the AI
-# prompt is consistent across symbols even when only EPA is populated.
+# OSHA: scraped via a Cloudflare Worker (osha_proxy/ in this repo).
+# OSHA's CloudFront WAF hard-403s our DigitalOcean prod IP regardless
+# of UA, so we route through the Worker — it runs from a Cloudflare
+# IP that OSHA does allow, parses the establishment.search HTML, and
+# returns clean JSON. Requires OSHA_PROXY_URL + OSHA_PROXY_TOKEN env
+# vars; without them the OSHA fields stay zero (EPA still works).
+#
+# Mapping is hand-curated for 25 heavy-industrial tickers where the
+# company-name → facility/establishment-name match is unambiguous.
 
 _TICKER_TO_EPA_FACILITY_NAME = {
     # Oil & gas
@@ -167,22 +170,43 @@ _TICKER_TO_EPA_FACILITY_NAME = {
 }
 
 
+def _fetch_osha_via_proxy(name: str) -> Dict[str, int]:
+    """Call the Cloudflare Worker (osha_proxy/) for the
+    establishment-name aggregate. Returns zeros on any failure
+    (missing env vars, network, non-200, malformed JSON)."""
+    out = {"osha_inspections_5y": 0, "osha_violations_5y": 0}
+    proxy_url = os.environ.get("OSHA_PROXY_URL", "").rstrip("/")
+    proxy_token = os.environ.get("OSHA_PROXY_TOKEN", "")
+    if not proxy_url or not proxy_token:
+        return out
+    url = f"{proxy_url}/?establishment={urllib.parse.quote(name)}"
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": _USER_AGENT,
+                "X-Proxy-Token": proxy_token,
+            },
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+        out["osha_inspections_5y"] = int(data.get("inspections_5y") or 0)
+        out["osha_violations_5y"] = int(data.get("violations_5y") or 0)
+    except (urllib.error.HTTPError, urllib.error.URLError,
+            json.JSONDecodeError, ValueError, KeyError, OSError) as exc:
+        logger.debug("OSHA proxy fetch failed for %s: %s", name, exc)
+    return out
+
+
 def get_epa_osha_violations(symbol: str) -> Dict[str, Any]:
-    """EPA ECHO enforcement-aggregate summary for the company.
+    """Combined EPA + OSHA regulatory-pressure summary.
 
-    Calls ECHO get_facilities with the facility-name filter and
-    extracts the headline aggregates:
-      - current_violator_count (CV — currently violating an EPA program)
-      - significant_violator_count (SV — serious/elevated)
-      - inspection_count (recent inspections)
-      - total_penalties_usd (lifetime penalty $)
-
-    OSHA per-company data has no clean free API; the osha_* keys
-    stay 0 and `osha_data_available=False` documents the gap.
-
-    Returns {} for tickers without a curated facility-name mapping
-    (most non-industrial tickers — clean signal beats noisy partial
-    match)."""
+    EPA aggregates from ECHO (current/significant violator count,
+    inspection count, lifetime $ penalties). OSHA aggregates from the
+    Cloudflare Worker proxy that fronts the OSHA establishment-search
+    HTML (inspections last 5y, total violations last 5y). Returns {}
+    for tickers without a curated mapping (most non-industrial
+    tickers — clean signal beats noisy partial match)."""
     name = _TICKER_TO_EPA_FACILITY_NAME.get(symbol.upper())
     if not name:
         return {}
@@ -191,23 +215,24 @@ def get_epa_osha_violations(symbol: str) -> Dict[str, Any]:
     if cached is not None:
         return cached
     result: Dict[str, Any] = {
-        "epa_facility_search": name,
+        "search_name": name,
         "epa_facility_match_count": 0,
         "epa_current_violator_count": 0,
         "epa_significant_violator_count": 0,
         "epa_inspection_count": 0,
         "epa_total_penalties_usd": 0,
-        "osha_inspection_count_12m": 0,
-        "osha_data_available": False,
+        "osha_inspections_5y": 0,
+        "osha_violations_5y": 0,
         "has_data": False,
     }
-    url = (
+    # EPA via ECHO
+    epa_url = (
         "https://echodata.epa.gov/echo/echo_rest_services.get_facilities"
         f"?output=JSON&p_fn={urllib.parse.quote(name)}"
         "&qcolumns=1,2,3&responseset=1"
     )
     try:
-        data = _http_get_json(url) or {}
+        data = _http_get_json(epa_url) or {}
         r = (data.get("Results") or {})
         if r.get("Message") == "Success":
             result["epa_facility_match_count"] = int(r.get("QueryRows") or 0)
@@ -218,63 +243,34 @@ def get_epa_osha_violations(symbol: str) -> Dict[str, Any]:
             pen_raw = (r.get("TotalPenalties") or "$0").replace(",", "")
             pen_digits = "".join(ch for ch in pen_raw if ch.isdigit())
             result["epa_total_penalties_usd"] = int(pen_digits or "0")
-            # has_data: any of the aggregate signals nonzero
-            result["has_data"] = bool(
-                result["epa_current_violator_count"]
-                or result["epa_significant_violator_count"]
-                or result["epa_total_penalties_usd"]
-            )
     except (ValueError, TypeError, AttributeError) as exc:
         logger.debug("EPA ECHO fetch parse failed for %s: %s", symbol, exc)
+    # OSHA via the Worker proxy
+    osha = _fetch_osha_via_proxy(name)
+    result["osha_inspections_5y"] = osha["osha_inspections_5y"]
+    result["osha_violations_5y"] = osha["osha_violations_5y"]
+    result["has_data"] = bool(
+        result["epa_current_violator_count"]
+        or result["epa_significant_violator_count"]
+        or result["epa_total_penalties_usd"]
+        or result["osha_inspections_5y"]
+        or result["osha_violations_5y"]
+    )
     _cache_put(ck, result)
     return result
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 3. FAA / NTSB aviation accident database
+# 3. FAA accident database — REMOVED 2026-05-17
 # ─────────────────────────────────────────────────────────────────────
-#
-# Real technical gap (NOT a time excuse): the canonical NTSB
-# accident query system (CAROL at data.ntsb.gov) is JavaScript-only
-# — it loads case data via a non-public XHR that the SPA gates with
-# session tokens, so there is no documented JSON endpoint we can hit.
-# The FAA's AIDS database publishes the same data as monthly CSV/XML
-# downloads (https://www.ntsb.gov/safety/data/Pages/data.aspx) which
-# would require a download+parse+load ETL on a scheduled job. That ETL
-# is the follow-up. Until then we keep the mapping + slot so the AI
-# prompt is consistent and the integration point is a one-file change.
-
-_TICKER_TO_FAA_OPERATOR = {
-    "AAL": "AMERICAN AIRLINES",  "UAL": "UNITED AIRLINES",
-    "DAL": "DELTA AIR LINES",    "LUV": "SOUTHWEST AIRLINES",
-    "BA": "BOEING",              "JBLU": "JETBLUE",
-    "ALK": "ALASKA AIRLINES",    "SAVE": "SPIRIT AIRLINES",
-    "HA": "HAWAIIAN AIRLINES",   "MESA": "MESA AIRLINES",
-}
-
-
-def get_faa_accidents(symbol: str) -> Dict[str, Any]:
-    """NTSB recent-accident summary for an aviation operator/airframer.
-
-    Returns {} for non-aviation tickers; for mapped operators returns
-    a result with has_data=False and source='ntsb_csv_pending'. The
-    NTSB CAROL public site has no JSON API; populating this slot
-    requires a monthly CSV-ingestion ETL (see module-level comment)."""
-    op = _TICKER_TO_FAA_OPERATOR.get(symbol.upper())
-    if not op:
-        return {}
-    ck = f"faa:{op}"
-    cached = _cached(ck)
-    if cached is not None:
-        return cached
-    result = {
-        "faa_operator": op,
-        "recent_accidents": 0,
-        "has_data": False,
-        "source": "ntsb_csv_pending",
-    }
-    _cache_put(ck, result)
-    return result
+# Dropped intentionally. NTSB CAROL is JS-only; FAA AIDS would need a
+# monthly CSV-ETL pipeline. ~95% of NTSB records are general-aviation
+# events (private pilots, Cessnas) irrelevant to the 10 listed
+# airlines/airframers we'd map, and catastrophic events that actually
+# move airline stocks are already captured in real time by the SEC
+# 8-K broad-discovery scraper (Item 8.01 "Other material events").
+# See CHANGELOG.md 2026-05-17 for the rationale; do not re-add without
+# new signal evidence.
 
 
 # ─────────────────────────────────────────────────────────────────────

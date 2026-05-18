@@ -1,0 +1,8 @@
+name = "osha-proxy"
+main = "worker.js"
+compatibility_date = "2026-05-17"
+
+# Set PROXY_TOKEN via:
+#   wrangler secret put PROXY_TOKEN
+# (paste any 32+ char random string; same value goes in /opt/quantopsai/.env
+# as OSHA_PROXY_TOKEN — see osha_proxy/README.md)

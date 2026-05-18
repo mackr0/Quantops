@@ -42,25 +42,32 @@ class TestTier2CorporateGracefulSkip:
 class TestTier3GracefulNoData:
     """Sources with placeholders or unmapped tickers return safe shapes."""
 
-    def test_faa_returns_empty_for_non_aviation(self):
-        from altdata_tier3 import get_faa_accidents
-        assert get_faa_accidents("XYZ_UNKNOWN") == {}
-
     def test_uspto_returns_empty_for_unmapped(self):
         from altdata_tier3 import get_uspto_patents
         assert get_uspto_patents("XYZ_UNKNOWN") == {}
 
-    def test_epa_osha_returns_no_data_shape(self):
+    def test_epa_osha_returns_empty_for_unmapped(self):
+        # AAPL is not in the heavy-industrial mapping → {} (no
+        # noisy partial-name match attempted).
         from altdata_tier3 import get_epa_osha_violations
-        r = get_epa_osha_violations("AAPL")
-        assert r["has_data"] is False
-        assert "epa_violation_count_12m" in r
+        assert get_epa_osha_violations("AAPL") == {}
 
-    def test_job_postings_unavailable_shape(self):
+    def test_epa_osha_returns_combined_shape_for_mapped(self):
+        # XOM is mapped to "EXXON" — must return both EPA aggregate
+        # keys AND OSHA aggregate keys (OSHA is now reachable via
+        # the Cloudflare Worker proxy in osha_proxy/, gated by
+        # OSHA_PROXY_URL + OSHA_PROXY_TOKEN env vars). Network /
+        # proxy may be unavailable in CI; we only assert shape.
+        from altdata_tier3 import get_epa_osha_violations
+        r = get_epa_osha_violations("XOM")
+        for k in ("epa_current_violator_count",
+                  "epa_total_penalties_usd",
+                  "osha_inspections_5y", "osha_violations_5y"):
+            assert k in r, f"missing key {k}"
+
+    def test_job_postings_returns_empty_for_unmapped(self):
         from altdata_tier3 import get_job_postings_count
-        r = get_job_postings_count("AAPL")
-        assert r["has_data"] is False
-        assert r["source"] == "unavailable"
+        assert get_job_postings_count("XYZ_UNKNOWN") == {}
 
 
 class TestUnifiedDictContract:
@@ -72,8 +79,8 @@ class TestUnifiedDictContract:
         # Tier 2 corporate
         "github_activity", "fda_inspections", "nhtsa_recalls",
         "sam_gov_contracts",
-        # Tier 3
-        "risk_factor_diff", "epa_osha_violations", "faa_accidents",
+        # Tier 3 (8 — FAA dropped 2026-05-17)
+        "risk_factor_diff", "epa_osha_violations",
         "bls_jobless_claims", "wikipedia_edits", "uspto_patents",
         "job_postings", "insider_track_records",
         "star_manager_holdings",
@@ -104,7 +111,6 @@ class TestUnifiedDictContract:
             ("altdata_tier2_corporate", "get_sam_gov_contracts"),
             ("altdata_tier3", "get_risk_factor_diff"),
             ("altdata_tier3", "get_epa_osha_violations"),
-            ("altdata_tier3", "get_faa_accidents"),
             ("altdata_tier3", "get_bls_jobless_claims"),
             ("altdata_tier3", "get_wikipedia_edits"),
             ("altdata_tier3", "get_uspto_patents"),

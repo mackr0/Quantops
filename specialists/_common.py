@@ -138,13 +138,13 @@ _SPECIALIST_ALT_KEYS = {
     ),
     "risk_assessor": (
         "fundamentals", "short", "risk_factor_diff",
-        "fda_inspections", "nhtsa_recalls", "faa_accidents",
+        "fda_inspections", "nhtsa_recalls",
         "epa_osha_violations", "macro",
     ),
     "adversarial_reviewer": (
         "fundamentals", "short", "dark_pool", "risk_factor_diff",
         "recent_8k_events", "fda_inspections", "nhtsa_recalls",
-        "faa_accidents", "epa_osha_violations",
+        "epa_osha_violations",
     ),
     "iv_skew_specialist": ("options", "macro"),
     "gamma_pin_specialist": ("options", "intraday"),

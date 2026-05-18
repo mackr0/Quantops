@@ -74,13 +74,13 @@ Symbol-targeted SEC filings (10-K, 10-Q, 8-K diffs for held + shortlist symbols 
 | 10 | CFTC Commitments of Traders | ✅ Built — Socrata public endpoint, no auth | `get_cftc_cot_positioning` |
 | 11 | SAM.gov / USASpending gov contracts | ✅ Built — 11 defense/govtech tickers mapped | `get_sam_gov_contracts` |
 
-### Tier 3 — Specialized / lower frequency / harder (✅ 9 of 10 functional 2026-05-17; FAA is the one honest gap)
+### Tier 3 — Specialized / lower frequency / harder (✅ 9 of 9 functional 2026-05-17; FAA dropped — see Rejected table)
 
 | # | Source | Status | Notes |
 |---|---|---|---|
 | 12 | SEC 10-K YoY risk-factor diff | ✅ Built | `altdata_tier3.get_risk_factor_diff` — counts NEW risk sentences vs prior year |
-| 13 | EPA / OSHA violations | ✅ Built (EPA live; OSHA gap) | `get_epa_osha_violations` — EPA ECHO aggregate (CV/SV/inspections/$ penalties) for 25 heavy-industrial tickers; OSHA per-company has no clean free JSON API (DOL bulk-CSV ETL is the follow-up — slot kept so AI prompt stays consistent) |
-| 14 | FAA accident database | 🟡 NTSB CSV ETL pending | `get_faa_accidents` returns has_data=False with source=`ntsb_csv_pending`. The NTSB CAROL public site is JS-only (no JSON API); FAA AIDS publishes monthly CSV/XML that needs a download-and-parse ETL job. 10 aviation operators mapped, ready for the ETL to populate the slot. |
+| 13 | EPA + OSHA violations | ✅ Built (both live) | `get_epa_osha_violations` for 25 heavy-industrial tickers. EPA via ECHO direct (CV/SV/inspections/$ penalties). OSHA via Cloudflare Worker (`osha_proxy/`) because OSHA's CloudFront WAF hard-403s our DigitalOcean IP — the Worker runs from a Cloudflare IP that OSHA allows, parses the establishment.search HTML, returns JSON aggregates (inspections_5y, violations_5y). Worker is token-gated (`OSHA_PROXY_TOKEN`) and edge-cached 24h. Sample live: CVX = $29M EPA + 20 OSHA viols; US Steel = $14.9M EPA + 18 OSHA viols. |
+| 14 | FAA accident database | ❌ Dropped 2026-05-17 | See Rejected table — ~95% of NTSB records are general-aviation, catastrophic airline events already captured by SEC 8-K Item 8.01 in real time. |
 | 15 | BLS weekly jobless claims | ✅ Built | Reuses FRED ICSA series (`altdata_tier3.get_bls_jobless_claims`) |
 | 16 | Wikipedia article EDITS | ✅ Built | `get_wikipedia_edits` — controversy precursor distinct from pageviews |
 | 17 | USPTO patent applications | ✅ Built | `get_uspto_patents` — USPTO Open Data Portal (`api.uspto.gov`) — last-365d applications for 13 tech tickers; requires `USPTO_API_KEY` env var (free) |
@@ -100,8 +100,8 @@ Symbol-targeted SEC filings (10-K, 10-Q, 8-K diffs for held + shortlist symbols 
 | Glassdoor employee sentiment | Scraping is brittle + low signal for trade timing | 2025 |
 | PatentsView v1 | API deprecated by USPTO Q4 2024 | 2024 — replacement #17 above (USPTO Open Data Portal) |
 | Lever public boards | Tested 6 known boards (Plaid/Brex/Coinbase/Figma/Canva/GitLab) — all are private companies, zero match our ticker universe | 2026-05-17 |
-| NTSB CAROL JSON API | Public site is JavaScript-only — no documented JSON endpoint exists. Will need monthly NTSB AIDS CSV download + parser ETL to populate FAA slot. | 2026-05-17 |
-| OSHA per-company JSON | DOL/OSHA has no clean free per-establishment JSON API; data is HTML-only (ORDS imis page) or bulk CSV at enforcedata.dol.gov. CSV ETL is the follow-up path. | 2026-05-17 |
+| FAA / NTSB accident database | ~95% of NTSB records are general-aviation events (private pilots, Cessnas) — irrelevant to the 10 listed airlines we'd map. Catastrophic events that move airline stocks are already captured in real time by the SEC 8-K broad-discovery scraper (Item 8.01 "Other material events"). Building the NTSB AIDS CSV-ETL would be plumbing for redundant signal. | 2026-05-17 |
+| Direct OSHA scrape from prod | OSHA's CloudFront WAF hard-403s our DigitalOcean prod IP regardless of UA / header massage. SOLVED via the Cloudflare Worker proxy in `osha_proxy/` — see signal #13 above. | 2026-05-17 |
 
 ---
 
