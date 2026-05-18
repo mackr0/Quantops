@@ -1548,43 +1548,33 @@ def reconcile_trade_statuses(db_path=None, open_symbols=None):
         )
         sells_fixed = cur.rowcount
 
-        # 2. BUY rows for closed positions
-        if open_symbols is not None:
-            if open_symbols:
-                placeholders = ",".join("?" * len(open_symbols))
-                cur = conn.execute(
-                    f"UPDATE trades SET status='closed' "
-                    f"WHERE side='buy' AND status='open' "
-                    f"AND symbol NOT IN ({placeholders})",
-                    list(open_symbols),
-                )
-                buys_fixed = cur.rowcount
-            else:
-                # Broker returned an empty position list. This is
-                # ambiguous: it could mean "truly zero positions" or
-                # "broker call failed / returned partial data we
-                # can't trust." Closing every open BUY on the
-                # ambiguous case wipes real positions out of the
-                # virtual ledger (caught 2026-05-18 13:30 ET: all
-                # A1 profiles had every BUY mis-closed within minutes
-                # of market open after their first reconcile cycle
-                # hit an empty broker response, collapsing dashboard
-                # equity from $3M to $2.27M by hiding $730K of real
-                # holdings behind status='closed'). The FIFO matching
-                # in step 3 below still closes BUYs that have a
-                # matching SELL with realized pnl, which is the
-                # correct close-detection path that doesn't depend
-                # on the broker response.
-                buys_fixed = 0
-        else:
-            cur = conn.execute(
-                "UPDATE trades SET status='closed' "
-                "WHERE side='buy' AND status='open' AND symbol IN ("
-                "  SELECT DISTINCT symbol FROM trades "
-                "  WHERE side='sell' AND pnl IS NOT NULL"
-                ")"
-            )
-            buys_fixed = cur.rowcount
+        # 2. Step 2 was REMOVED 2026-05-18 (15:55 ET) after a second
+        # outage caused by the same code path. Earlier in the day the
+        # empty-open_symbols variant was fixed (see ca2cdac), but the
+        # NON-empty variant has a race condition that's just as
+        # destructive: in the few seconds between when a BUY order is
+        # submitted and when the broker registers the fill in
+        # list_positions, the reconciler sees an INCOMPLETE
+        # broker_open_symbols set and the `symbol NOT IN
+        # (open_symbols)` SQL flips fresh open BUYs to closed. With
+        # status='closed' BUYs excluded from get_virtual_positions,
+        # the dashboard collapses to cash-only equity. Caught
+        # 2026-05-18 15:38–15:51 when P12/P13/P14 each placed their
+        # day-1 buys and every BUY was marked closed within minutes
+        # by a reconcile cycle that fired while the broker was still
+        # processing the orders.
+        #
+        # The blanket SQL is redundant: reconcile_journal_to_broker
+        # has _classify_long_phantom (called from
+        # _task_reconcile_trade_statuses) which does per-trade
+        # reasoning by checking each BUY's order_id status at the
+        # broker — only acts when the order is truly terminal
+        # (filled+sold or canceled). The FIFO matching in step 3
+        # below closes BUYs that have a real matching SELL with
+        # realized pnl. Those two paths cover every legitimate
+        # close-detection case without the race-condition false
+        # positives.
+        buys_fixed = 0
 
         # 3. FIFO-match BUY lots to SELLs to compute realized pnl on BUY rows
         pnl_computed = 0

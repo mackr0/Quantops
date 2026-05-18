@@ -105,20 +105,32 @@ class TestFixSellRows:
 
 
 class TestFixBuyRowsWithLivePositions:
-    def test_buys_for_symbols_not_in_open_list_get_closed(self, fresh_db):
+    def test_buys_not_in_broker_list_left_alone_race_safe(self, fresh_db):
+        """Step 2 of reconcile_trade_statuses was REMOVED 2026-05-18
+        after the race-condition variant caused a second outage. The
+        prior behavior closed any BUY whose symbol wasn't in the
+        broker's current positions — but between submit and fill, the
+        broker hasn't registered fresh orders yet, so the SQL flipped
+        valid open BUYs to closed and collapsed dashboard equity.
+        After the fix, this path is a no-op; the per-trade reasoning
+        in reconcile_journal_to_broker._classify_long_phantom handles
+        legitimate closes by checking each BUY's order_id status."""
         from journal import reconcile_trade_statuses
         _insert(fresh_db, "AAPL", "buy", status="open")
         _insert(fresh_db, "TSLA", "buy", status="open")
         _insert(fresh_db, "HIMS", "buy", status="open")
 
-        # Only AAPL is still held
+        # Only AAPL shows in broker — but per the new design, that
+        # alone is NOT enough to close TSLA/HIMS BUYs. The race
+        # window between submit and broker registration means the
+        # broker reply may be incomplete.
         result = reconcile_trade_statuses(
             db_path=fresh_db, open_symbols={"AAPL"},
         )
-        assert result["buys_fixed"] == 2
+        assert result["buys_fixed"] == 0
         assert _status(fresh_db, "AAPL", "buy") == ["open"]
-        assert _status(fresh_db, "TSLA", "buy") == ["closed"]
-        assert _status(fresh_db, "HIMS", "buy") == ["closed"]
+        assert _status(fresh_db, "TSLA", "buy") == ["open"]
+        assert _status(fresh_db, "HIMS", "buy") == ["open"]
 
     def test_empty_open_symbols_leaves_buys_alone(self, fresh_db):
         """Empty broker response is AMBIGUOUS (could be a real zero OR
@@ -146,15 +158,24 @@ class TestFixBuyRowsWithLivePositions:
 
 
 class TestFixBuyRowsHeuristic:
-    """When no live positions list is provided, fall back to the
-    sell-implied-close heuristic."""
+    """The "sell-implied-close heuristic" (open_symbols=None branch)
+    was removed 2026-05-18 alongside the broker-open-symbols branch:
+    both shared the same partial-sell-closes-everything pattern.
+    A single SELL row with pnl shouldn't close every open BUY for that
+    symbol — there may be 100 shares left after a 10-share partial
+    sell. The correct close path is reconcile_journal_to_broker._classify_long_phantom
+    which checks each BUY's order_id status individually."""
 
-    def test_buy_with_matching_sell_gets_closed(self, fresh_db):
+    def test_buy_with_matching_sell_stays_open(self, fresh_db):
+        """A SELL with pnl no longer triggers a blanket BUY close.
+        FIFO consumption is handled by get_virtual_positions at read
+        time; status flips happen only via _classify_long_phantom or
+        explicit per-id UPDATEs."""
         from journal import reconcile_trade_statuses
         _insert(fresh_db, "AAPL", "buy", status="open")
         _insert(fresh_db, "AAPL", "sell", pnl=5.50, status="closed")
         reconcile_trade_statuses(db_path=fresh_db)  # no open_symbols arg
-        assert _status(fresh_db, "AAPL", "buy") == ["closed"]
+        assert _status(fresh_db, "AAPL", "buy") == ["open"]
 
     def test_buy_without_matching_sell_stays_open(self, fresh_db):
         from journal import reconcile_trade_statuses

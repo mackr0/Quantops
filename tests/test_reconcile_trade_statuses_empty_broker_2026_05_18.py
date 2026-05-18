@@ -83,9 +83,13 @@ class TestReconcileEmptyBrokerResponse:
             "from the dashboard."
         )
 
-    def test_non_empty_set_closes_only_unlisted(self, tmp_path):
-        """Sanity: the safe path still works — broker returns
-        [AAPL] → MSFT and NVDA close, AAPL stays open."""
+    def test_non_empty_set_no_longer_closes_unlisted(self, tmp_path):
+        """The "broker says symbol not in positions → close BUY" path
+        was REMOVED 2026-05-18 (the second-outage fix). Race window
+        between submit and broker fill registration made it unsafe:
+        a fresh BUY whose order is still mid-flight at the broker
+        would get closed wrongly. Per-trade reasoning lives in
+        reconcile_journal_to_broker._classify_long_phantom now."""
         from journal import reconcile_trade_statuses
         db = str(tmp_path / "journal.db")
         _make_minimal_db(db)
@@ -94,7 +98,9 @@ class TestReconcileEmptyBrokerResponse:
             rows = dict(conn.execute(
                 "SELECT symbol, status FROM trades ORDER BY symbol"
             ).fetchall())
-        assert rows == {"AAPL": "open", "MSFT": "closed", "NVDA": "closed"}
+        # All three stay open — the function no longer flips BUY
+        # status based on broker's open_symbols set alone.
+        assert rows == {"AAPL": "open", "MSFT": "open", "NVDA": "open"}
 
     def test_none_falls_back_to_fifo_path(self, tmp_path):
         """Sanity: open_symbols=None (caller didn't query broker)

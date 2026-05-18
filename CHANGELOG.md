@@ -17,6 +17,37 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 — second outage: same code path, race-condition variant. Severity: critical (P12/P13/P14 equity collapsed from $250K each to ~$11–$38K within minutes of the fresh restart).
+
+Earlier today the empty-`open_symbols` variant of journal.py step 2 was fixed (commit ca2cdac). After the full reset and scheduler restart at 15:37, the SAME function fired the SAME class of bug but with a different trigger: the race window between order submit and broker fill registration.
+
+Sequence:
+- 15:38:26 P13 submits 5 BUY orders (SJM, CDNS, BLK, EW, LMT) and P14 submits 7 (INTC, LLY, KHC, ISRG, GD, DPZ, T) and P12 submits 1 (322 SPY)
+- 15:38:27 Alpaca takes a moment to register each fill in `list_positions`
+- 15:38:28 reconciler fires for P13 — calls `api.list_positions()` — broker reply is partial because the fills haven't all registered yet
+- step 2 SQL: `UPDATE trades SET status='closed' WHERE side='buy' AND status='open' AND symbol NOT IN (<partial-set>)` — every P13 BUY whose symbol isn't in the partial reply gets flipped to closed
+- `get_virtual_positions` excludes status='closed' BUYs → P13 shows 0 positions → equity = cash only
+
+Same mechanism that hit at 13:30 ET earlier, but with a non-empty (just incomplete) broker reply this time. The 15:38 reconcile cycle ran 1-3 seconds after order submit, before Alpaca's `list_positions` endpoint had caught up.
+
+**Fix**: remove step 2 of `reconcile_trade_statuses` entirely. The "broker says symbol isn't open → close BUY" heuristic CAN'T be safe at the reconcile granularity — there's always a race window. The legitimate close-detection paths are:
+1. `reconcile_journal_to_broker._classify_long_phantom` — per-trade reasoning that checks each BUY's `order_id` STATUS directly at the broker (`filled` / `canceled` / `pending_new`) before acting
+2. `multi_scheduler._task_update_fill_prices` SELL-confirms-BUY pairing (still has a latent partial-sell-overcloses bug, documented separately, but doesn't fire for fresh BUYs without a paired SELL)
+3. FIFO matching in `get_virtual_positions` at read time — net qty after walking all SELL rows
+
+The "sell-implied close" heuristic on the `open_symbols=None` branch shared the same partial-sell-overcloses pattern; removed alongside step 2.
+
+**Tests**:
+- `tests/test_reconcile_race_condition_2026_05_18.py` — three regression tests for the partial broker reply during the submit→fill window + AST guardrail that prevents the SQL pattern from being re-added
+- Existing `test_buys_for_symbols_not_in_open_list_get_closed` renamed and inverted to `test_buys_not_in_broker_list_left_alone_race_safe`
+- Existing `test_buy_with_matching_sell_gets_closed` renamed to `test_buy_with_matching_sell_stays_open`
+
+**Recovery**: run `recover_wrongly_closed_buys_2026_05_18.py --apply` to flip back the wrongly-closed BUYs from today's 15:38–15:51 window (status='closed' AND pnl IS NULL AND has UUID order_id).
+
+**Why fix #1 wasn't enough**: the earlier fix only guarded the `if open_symbols:` branch (empty set falsy). The IF branch's SQL was still active for non-empty sets and still subject to the race. The proper fix is removing the whole step-2 logic, not making it conditional.
+
+---
+
 ## 2026-05-18 — full_reset_2026_05_18.py missed altdata log files. Severity: low (cosmetic — /issues page still showed yesterday's noise after the master-DB wipe).
 
 After step 5 ran clean (master-DB tables wiped, runtime cache/marker files deleted, 11 orphan profile DBs unlinked), `/issues` still showed 422 ERROR groups from `altdata-20260518.log` — the 06:14 altdata cron's yfinance "possibly delisted" entries for tickers no longer in the universe.
