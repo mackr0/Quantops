@@ -33,6 +33,106 @@ _cache: Dict[str, Any] = {}
 _CACHE_TTL = 30 * 60  # 30 minutes
 
 
+# ---------------------------------------------------------------------------
+# Guardrails on parameter changes (Phase 1 of docs/17, 2026-05-18)
+# ---------------------------------------------------------------------------
+# Closes the over-restriction failure mode documented in
+# `project_self_tuner_overcorrection_2026_05_14` (14d compounding tightening
+# killed stock entries entirely). Three deterministic checks every parameter
+# adjustment passes through before it's applied:
+#
+#   1. Per-cycle delta cap — no single change exceeds MAX_PCT_PER_CYCLE
+#      of the current value (defaults 25%). Stops a single cycle from
+#      cutting/doubling a parameter; the cascade can only build over many
+#      cycles, which steps #2 and #3 then catch.
+#   2. Reference-window invariant — the new value can't drift more than
+#      MAX_PCT_FROM_REFERENCE (default 50%) from the day-1 reference value.
+#      Defense in depth.
+#   3. (Phase 1 #2 in docs/17) Trade-count starvation auto-loosen —
+#      built as a separate scheduled task that bypasses this clamp when
+#      forcing a parameter to loosen.
+
+_MAX_PCT_PER_CYCLE = 0.25       # 25% per single tuning cycle
+_MAX_PCT_FROM_REFERENCE = 0.50  # 50% from day-1 baseline
+
+
+def _clamp_delta(param_name: str,
+                 old_value: float,
+                 new_value: float,
+                 max_pct_change: float = _MAX_PCT_PER_CYCLE) -> tuple:
+    """Clamp a proposed parameter change so no single adjustment exceeds
+    `max_pct_change` of the current value in either direction.
+
+    Returns `(clamped_new, was_clamped, reason)`:
+      - clamped_new: float — the value to actually write
+      - was_clamped: bool — True if the clamp fired
+      - reason: str — empty when not clamped, else describes the cap
+
+    Examples (default 25% cap):
+        _clamp_delta("max_position_pct", 0.08, 0.05)  → (0.06, True, ...)
+        _clamp_delta("max_position_pct", 0.08, 0.09)  → (0.09, False, "")
+        _clamp_delta("ai_confidence_threshold", 60, 90) → (75, True, ...)
+        _clamp_delta("ai_confidence_threshold", 60, 65) → (65, False, "")
+
+    Edge cases:
+      - old_value == 0: returns new_value unchanged (can't compute %).
+      - old_value < 0: uses abs(old_value) as the magnitude.
+      - new_value == old_value: returns (new_value, False, "").
+    """
+    try:
+        old_f = float(old_value)
+        new_f = float(new_value)
+    except (TypeError, ValueError):
+        return new_value, False, ""
+    if old_f == 0 or old_f == new_f:
+        return new_f, False, ""
+    pct_change = (new_f - old_f) / abs(old_f)
+    if abs(pct_change) <= max_pct_change:
+        return new_f, False, ""
+    # Clamp in the direction of the proposed change
+    direction = 1 if pct_change > 0 else -1
+    clamped = old_f * (1 + direction * max_pct_change)
+    reason = (
+        f"per-cycle delta cap: proposed {pct_change*100:+.1f}% change to "
+        f"{param_name} exceeds ±{max_pct_change*100:.0f}% — clamped to "
+        f"{clamped:.4g} (from {old_f:.4g})"
+    )
+    return clamped, True, reason
+
+
+def _within_reference_window(param_name: str,
+                             reference_value: Optional[float],
+                             proposed_value: float,
+                             max_pct: float = _MAX_PCT_FROM_REFERENCE) -> tuple:
+    """Defense in depth — reject proposed values that drift more than
+    `max_pct` from the day-1 reference value, even if a single cycle's
+    delta is within the per-cycle cap. Prevents the cascade scenario
+    where 14 consecutive small tightening cycles compound past safety.
+
+    Returns `(allowed_value, was_clamped, reason)`. When reference_value
+    is None (no baseline recorded yet), returns the proposed value
+    unchanged.
+    """
+    if reference_value is None or reference_value == 0:
+        return proposed_value, False, ""
+    try:
+        ref = float(reference_value)
+        prop = float(proposed_value)
+    except (TypeError, ValueError):
+        return proposed_value, False, ""
+    pct_from_ref = (prop - ref) / abs(ref)
+    if abs(pct_from_ref) <= max_pct:
+        return prop, False, ""
+    direction = 1 if pct_from_ref > 0 else -1
+    clamped = ref * (1 + direction * max_pct)
+    reason = (
+        f"reference-window invariant: proposed value drifts "
+        f"{pct_from_ref*100:+.1f}% from day-1 reference {ref:.4g} for "
+        f"{param_name}; clamped to {clamped:.4g} (±{max_pct*100:.0f}% band)"
+    )
+    return clamped, True, reason
+
+
 def _is_cached(key: str) -> bool:
     ts_key = f"{key}_ts"
     return (
