@@ -7,10 +7,11 @@ Criterion for "wrongly closed":
   - status='closed'
   - has a real Alpaca order_id (UUID-shaped)
   - timestamp >= 2026-05-18 13:30:00 (today, post-open)
-  - NO matching SELL row in the same DB for the same symbol with
-    realized pnl (i.e., it wasn't actually closed via a sell — the
-    close was a status flip from the buggy reconciler, not a real
-    exit)
+  - pnl IS NULL — the buggy step 2 of reconcile_trade_statuses
+    flips status without writing pnl, whereas the legitimate close
+    path (FIFO matching in step 3) writes realized pnl onto the
+    BUY row. A status='closed' BUY without pnl was therefore closed
+    by the bug, not by a real exit.
 
 Flip those back to status='open' so get_virtual_positions can see
 them and the dashboard reflects real held capital.
@@ -62,28 +63,12 @@ def candidates(db_path: str) -> list[tuple]:
             "SELECT id, timestamp, symbol, qty, price, order_id "
             "FROM trades "
             "WHERE side='buy' AND status='closed' "
+            "  AND pnl IS NULL "
             "  AND timestamp >= ? "
             "ORDER BY timestamp",
             (CUTOFF,),
         ).fetchall()
-    out = []
-    with closing(sqlite3.connect(db_path)) as conn:
-        for r in rows:
-            if not _is_real_order_id(r["order_id"]):
-                continue
-            # Skip if there's a SELL with realized pnl for this symbol
-            # in the same DB — that's a real exit, not a status flip.
-            matching_sell = conn.execute(
-                "SELECT 1 FROM trades "
-                "WHERE side='sell' AND symbol=? "
-                "  AND pnl IS NOT NULL "
-                "  AND timestamp >= ? LIMIT 1",
-                (r["symbol"], CUTOFF),
-            ).fetchone()
-            if matching_sell:
-                continue
-            out.append(tuple(r))
-    return out
+    return [tuple(r) for r in rows if _is_real_order_id(r["order_id"])]
 
 
 def main() -> int:
