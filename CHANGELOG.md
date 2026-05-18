@@ -17,6 +17,41 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 — self-tuner per-cycle delta cap (Phase 1, Item 1 of docs/17). Severity: high (closes the 2026-05-14 over-restriction failure mode at its source).
+
+The 2026-05-14 incident showed 14 days of compounding self-tuner tightening could kill stock entries entirely (project_self_tuner_overcorrection_2026_05_14). The system caught the symptom (volume floor signal) but had no structural cap on the *velocity* of any single parameter change — one optimizer running multiple times in a day could compound 50% cuts faster than the bias-toward-loosen heuristics could counterbalance.
+
+**Fix.** New `_apply_param_change(profile_id, user_id, adjustment_type, param_name, old_value, proposed_new_value, reason, ...)` wrapper in `self_tuning.py:136` enforces two guardrails before writing to the profile config:
+- `_clamp_delta` — no single cycle can move any parameter by more than ±25% of its current value (`_MAX_PCT_PER_CYCLE = 0.25`). 1e-9 tolerance at the boundary so legitimate at-boundary proposals don't trip the cap from IEEE 754 rounding.
+- `_within_reference_window` — proposed values can't drift more than ±50% from a day-1 reference value (`_MAX_PCT_FROM_REFERENCE = 0.50`). Defense in depth: per-cycle cap alone slows but doesn't stop a 14-day cascade; reference-window does. (Reference-value persistence to be wired in a follow-up slice.)
+
+The wrapper writes the *clamped* value to both `update_trading_profile` and `tuning_history`, so reviewers and `/api/tuning-history` see the actual applied change, not the unclamped proposal. When a clamp fires, the `tuning_history` reason text is annotated `[guardrail: ...]` and the optimizer's return string carries a `(clamped by guardrail to ...)` suffix.
+
+**Refactored sites** in `self_tuning.py` (~30 numeric-parameter writes routed through the wrapper). Boolean toggles (`enable_options`, `use_conviction_tp_override`, `enable_short_selling`, `maga_mode`) and the reversal helper kept as direct writes — 0/1 transitions don't have a meaningful percent delta, and reversals to a known-good prior value intentionally bypass the cap.
+
+**Why this matters.** Per `feedback_self_tuner_must_drift_toward_trading`: default bias is LOOSEN, restrictions need auto-expiry, rescue scripts indicate architectural failure. The cap is the *first* of five guardrails (per-cycle cap → trade-count floor → reference-window → auto-expiry → anomaly alert) planned in docs/17. Each layer closes a different escape hatch in the cascade scenario.
+
+**Tests** (`tests/test_self_tuner_guardrails_2026_05_18.py`, 15 tests):
+- Clamp boundary cases (tighten / loosen at exactly ±25% with float-precision edges)
+- Zero / equal / negative / string-input edges
+- Per-cycle cap alone slows but doesn't stop the 14-cycle cascade (calibration test)
+- Reference-window invariant clamps to the floor in the same scenario
+- Wrapper integration: clamped value reaches `update_trading_profile` AND `log_tuning_change` (no bypass via downstream code reading the proposed)
+
+**Cast layer** (`_cast_param_value`) extended to cover `max_correlation`, `max_sector_positions`, `meta_pregate_threshold`, `atr_multiplier_sl/tp`, `trailing_atr_multiplier`, `short_max_position_pct`. The wrapper sends `str(applied)` through this cast so the column type stays consistent regardless of the optimizer's source representation.
+
+**Structural guardrail** (`tests/test_every_lever_is_tuned.py`) extended with a fourth pattern: matches `_apply_param_change(pid, uid, "<type>", "<col>", ...)` calls. Without this, the refactor would have hidden coverage from the lever-is-tuned scan (the columns are still tuned, just via the wrapper).
+
+**Existing test updates** (the cap is the new policy; old tests pinned unclamped behavior):
+- `test_self_tuning_upward.py::test_raised_to_best_band` — 25→50 jump clamped to 25→31
+- `test_self_tuning_wave2.py::test_raises_when_marginal_volume_entries_lose` — 500K→750K clamped to 500K→625K
+- `test_self_tuning_wave3.py::test_widens_when_first_15_min_slippage_high` — 5→10 clamped to 5→6
+- `test_self_tuning_wave3.py::test_tightens_when_first_15_min_better_than_rest` — 10→5 clamped to 10→7
+
+**Follow-up**: Phase 1 items 2-5 (trade-count auto-loosen, reference-value persistence wiring, auto-expiry TTL, weekly trade-rate anomaly alert) and Phase 2 (RAG over post-mortems) still pending per docs/17.
+
+---
+
 ## 2026-05-18 — dashboard UX: BLOCKED badge for AI picks pre-trade-gate-skipped + P&L column on overview + baseline trades show in ticker. Severity: low (UX gaps; no trading impact).
 
 Three small dashboard issues surfaced today as operator noticed divergence between AI Brain intent and actual broker activity:

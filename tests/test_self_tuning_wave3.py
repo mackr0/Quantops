@@ -710,7 +710,9 @@ class TestSkipFirstMinutesTuner:
         conn.close()
         assert msg is not None
         assert "Widened" in msg
-        assert captured == [{"skip_first_minutes": 10}]
+        # Rule proposes 5→10 (+100%); 2026-05-18 per-cycle delta cap
+        # clamps to +25% → 5 * 1.25 = 6.25 → int 6.
+        assert captured == [{"skip_first_minutes": 6}]
 
     def test_tightens_when_first_15_min_better_than_rest(self, tmp_path):
         db = _make_db_with_slip_and_dq(tmp_path)
@@ -730,7 +732,9 @@ class TestSkipFirstMinutesTuner:
         conn.close()
         assert msg is not None
         assert "Tightened" in msg
-        assert captured == [{"skip_first_minutes": 5}]
+        # Rule proposes 10→5 (-50%); 2026-05-18 per-cycle delta cap
+        # clamps to -25% → 10 * 0.75 = 7.5 → int 7.
+        assert captured == [{"skip_first_minutes": 7}]
 
     def test_thin_sample_no_change(self, tmp_path):
         db = _make_db_with_slip_and_dq(tmp_path)

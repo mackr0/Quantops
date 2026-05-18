@@ -91,10 +91,12 @@ class TestMinVolume:
                     with patch("models.log_tuning_change"):
                         msg = _optimize_min_volume(
                             conn, ctx, 1, 1, overall_wr=45.0, resolved=20)
-                        mock_up.assert_called_with(1, min_volume=750_000)
+                        # Rule proposes +50% (500K→750K); 2026-05-18
+                        # per-cycle delta cap clamps to +25% (625K).
+                        mock_up.assert_called_with(1, min_volume=625_000)
         conn.close()
         assert msg is not None
-        assert "750,000" in msg
+        assert "625,000" in msg
 
     def test_no_op_without_features(self, tmp_path):
         db = _make_db(tmp_path)

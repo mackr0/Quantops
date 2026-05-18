@@ -87,7 +87,10 @@ def _clamp_delta(param_name: str,
     if old_f == 0 or old_f == new_f:
         return new_f, False, ""
     pct_change = (new_f - old_f) / abs(old_f)
-    if abs(pct_change) <= max_pct_change:
+    # 1e-9 tolerance — a proposal of exactly max_pct_change is in-band;
+    # IEEE 754 rounding (e.g. 0.075/0.10 → 0.2500000000000000022) must not
+    # spuriously fire the clamp at the boundary.
+    if abs(pct_change) <= max_pct_change + 1e-9:
         return new_f, False, ""
     # Clamp in the direction of the proposed change
     direction = 1 if pct_change > 0 else -1
@@ -1827,21 +1830,20 @@ def apply_auto_adjustments(ctx, db_path=None):
                         profile_id, "ai_confidence_threshold")
                     if past_outcome != "worsened":
                         old_val = ctx.ai_confidence_threshold
-                        update_trading_profile(profile_id, ai_confidence_threshold=70)
                         reason = (
                             f"Win rate at <70% confidence was {wr70:.0f}% "
                             f"({band70_wins}/{band70_total})"
                         )
-                        log_tuning_change(
+                        applied, _, suffix = _apply_param_change(
                             profile_id, user_id or 0,
                             "confidence_threshold", "ai_confidence_threshold",
-                            str(old_val), "70", reason,
+                            old_val, 70, reason,
                             win_rate_at_change=overall_wr,
                             predictions_resolved=resolved,
                         )
                         adjustments_made.append(
                             f"Raised AI confidence threshold from {old_val} "
-                            f"to 70 ({reason})"
+                            f"to {applied}{suffix} ({reason})"
                         )
                         conf_adjusted = True
 
@@ -1865,21 +1867,20 @@ def apply_auto_adjustments(ctx, db_path=None):
                             profile_id, "ai_confidence_threshold")
                         if past_outcome != "worsened":
                             old_val = ctx.ai_confidence_threshold
-                            update_trading_profile(profile_id, ai_confidence_threshold=60)
                             reason = (
                                 f"Win rate at <60% confidence was {wr60:.0f}% "
                                 f"({band60_wins}/{band60_total})"
                             )
-                            log_tuning_change(
+                            applied, _, suffix = _apply_param_change(
                                 profile_id, user_id or 0,
                                 "confidence_threshold", "ai_confidence_threshold",
-                                str(old_val), "60", reason,
+                                old_val, 60, reason,
                                 win_rate_at_change=overall_wr,
                                 predictions_resolved=resolved,
                             )
                             adjustments_made.append(
                                 f"Raised AI confidence threshold from {old_val} "
-                                f"to 60 ({reason})"
+                                f"to {applied}{suffix} ({reason})"
                             )
 
         # --- BUY vs SELL performance ---
@@ -1945,21 +1946,20 @@ def apply_auto_adjustments(ctx, db_path=None):
                         current_sl = getattr(ctx, "short_stop_loss_pct", 0.08)
                         new_sl = round(min(current_sl * 1.5, 0.20), 4)
                         if new_sl > current_sl:
-                            update_trading_profile(profile_id, short_stop_loss_pct=new_sl)
                             reason = (
                                 f"Short selling 0% win rate across {short_cnt} trades — "
                                 f"widening stop-loss by 50%"
                             )
-                            log_tuning_change(
+                            applied, _, suffix = _apply_param_change(
                                 profile_id, user_id or 0,
                                 "short_stop_loss", "short_stop_loss_pct",
-                                str(current_sl), str(new_sl), reason,
+                                current_sl, new_sl, reason,
                                 win_rate_at_change=overall_wr,
                                 predictions_resolved=resolved,
                             )
                             adjustments_made.append(
                                 f"Widened short stop-loss from {current_sl:.0%} to "
-                                f"{new_sl:.0%} ({reason})"
+                                f"{applied:.0%}{suffix} ({reason})"
                             )
 
                 # Auto-disable shorts when consistently losing money: 10+ trades,
@@ -2009,18 +2009,17 @@ def apply_auto_adjustments(ctx, db_path=None):
                 new_pct = max(0.03, ctx.max_position_pct * 0.8)
                 if new_pct < ctx.max_position_pct:
                     old_val = ctx.max_position_pct
-                    update_trading_profile(profile_id, max_position_pct=round(new_pct, 4))
                     reason = f"Overall win rate {overall_wr:.0f}% below 30%"
-                    log_tuning_change(
+                    applied, _, suffix = _apply_param_change(
                         profile_id, user_id or 0,
                         "position_size", "max_position_pct",
-                        str(old_val), str(round(new_pct, 4)), reason,
+                        old_val, round(new_pct, 4), reason,
                         win_rate_at_change=overall_wr,
                         predictions_resolved=resolved,
                     )
                     adjustments_made.append(
                         f"Reduced max position size from {old_val:.1%} "
-                        f"to {new_pct:.1%} ({reason})"
+                        f"to {applied:.1%}{suffix} ({reason})"
                     )
 
         # --- Upward optimizations (only when not in disaster mode) ---
@@ -2049,14 +2048,19 @@ def apply_auto_adjustments(ctx, db_path=None):
 def _cast_param_value(param_name, value_str):
     """Cast a string value back to the appropriate type for a profile parameter."""
     int_params = {"ai_confidence_threshold", "max_total_positions", "min_volume",
-                   "avoid_earnings_days", "skip_first_minutes"}
+                   "avoid_earnings_days", "skip_first_minutes",
+                   "max_sector_positions"}
     float_params = {
         "max_position_pct", "stop_loss_pct", "take_profit_pct",
         "short_stop_loss_pct", "short_take_profit_pct",
+        "short_max_position_pct",
         "min_price", "max_price", "volume_surge_multiplier",
         "rsi_overbought", "rsi_oversold", "momentum_5d_gain",
         "momentum_20d_gain", "breakout_volume_threshold", "gap_pct_threshold",
         "drawdown_pause_pct", "drawdown_reduce_pct",
+        "max_correlation", "meta_pregate_threshold",
+        "atr_multiplier_sl", "atr_multiplier_tp",
+        "trailing_atr_multiplier",
     }
     bool_params = {
         "strategy_momentum_breakout", "strategy_volume_spike",
@@ -2412,18 +2416,19 @@ def _optimize_regime_position_sizing(conn, ctx, profile_id, user_id,
         new_pct = round(max(0.03, current_pct * 0.75), 4)
         if new_pct >= current_pct:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, max_position_pct=new_pct)
         reason = (
             f"{current_regime} regime win rate {current_regime_wr:.0f}% "
             f"vs {overall_wr:.0f}% overall — reducing exposure"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "regime_position_sizing",
-            "max_position_pct", str(current_pct), str(new_pct), reason,
+            "max_position_pct", current_pct, new_pct, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return f"Reduced position size from {current_pct:.1%} to {new_pct:.1%} ({reason})"
+        return (
+            f"Reduced position size from {current_pct:.1%} to "
+            f"{applied:.1%}{suffix} ({reason})"
+        )
 
     elif diff >= 15:
         # Winning regime — increase by 15%
@@ -2432,18 +2437,19 @@ def _optimize_regime_position_sizing(conn, ctx, profile_id, user_id,
         new_pct = round(min(0.20, current_pct * 1.15), 4)
         if new_pct <= current_pct:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, max_position_pct=new_pct)
         reason = (
             f"{current_regime} regime win rate {current_regime_wr:.0f}% "
             f"vs {overall_wr:.0f}% overall — increasing exposure to edge"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "regime_position_sizing",
-            "max_position_pct", str(current_pct), str(new_pct), reason,
+            "max_position_pct", current_pct, new_pct, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return f"Increased position size from {current_pct:.1%} to {new_pct:.1%} ({reason})"
+        return (
+            f"Increased position size from {current_pct:.1%} to "
+            f"{applied:.1%}{suffix} ({reason})"
+        )
 
     return None
 
@@ -2610,22 +2616,20 @@ def _optimize_stop_take_profit(conn, ctx, profile_id, user_id,
                     # 40%+ of losses cluster near the stop → stop is too tight
                     new_sl = round(min(0.08, ctx.stop_loss_pct * 1.20), 4)
                     if new_sl > ctx.stop_loss_pct:
-                        from models import update_trading_profile, log_tuning_change
                         old_val = ctx.stop_loss_pct
-                        update_trading_profile(profile_id, stop_loss_pct=new_sl)
                         reason = (
                             f"{len(near_stop)}/{len(losses)} losses cluster near "
                             f"{sl_pct:.1f}% stop — widening to give trades more room"
                         )
-                        log_tuning_change(
+                        applied, _, suffix = _apply_param_change(
                             profile_id, user_id, "stop_loss_optimization",
-                            "stop_loss_pct", str(old_val), str(new_sl), reason,
+                            "stop_loss_pct", old_val, new_sl, reason,
                             win_rate_at_change=overall_wr,
                             predictions_resolved=resolved,
                         )
                         return (
-                            f"Widened stop-loss from {old_val:.1%} to {new_sl:.1%} "
-                            f"({reason})"
+                            f"Widened stop-loss from {old_val:.1%} to "
+                            f"{applied:.1%}{suffix} ({reason})"
                         )
 
     # --- Take-profit optimization ---
@@ -2638,22 +2642,20 @@ def _optimize_stop_take_profit(conn, ctx, profile_id, user_id,
                 if avg_win < tp_pct * 0.5 and tp_pct > 3.0:
                     new_tp = round(max(0.03, ctx.take_profit_pct * 0.80), 4)
                     if new_tp < ctx.take_profit_pct:
-                        from models import update_trading_profile, log_tuning_change
                         old_val = ctx.take_profit_pct
-                        update_trading_profile(profile_id, take_profit_pct=new_tp)
                         reason = (
                             f"Average win is +{avg_win:.1f}% but TP is at "
                             f"{tp_pct:.1f}% — tightening to capture more gains"
                         )
-                        log_tuning_change(
+                        applied, _, suffix = _apply_param_change(
                             profile_id, user_id, "take_profit_optimization",
-                            "take_profit_pct", str(old_val), str(new_tp), reason,
+                            "take_profit_pct", old_val, new_tp, reason,
                             win_rate_at_change=overall_wr,
                             predictions_resolved=resolved,
                         )
                         return (
-                            f"Tightened take-profit from {old_val:.1%} to {new_tp:.1%} "
-                            f"({reason})"
+                            f"Tightened take-profit from {old_val:.1%} to "
+                            f"{applied:.1%}{suffix} ({reason})"
                         )
 
     return None
@@ -2777,18 +2779,16 @@ def _optimize_max_total_positions(conn, ctx, profile_id, user_id,
         new_val = _bound("max_total_positions", current - 1)
         if new_val == current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, max_total_positions=new_val)
         reason = (
             f"Concentration risk — avg loss ${avg_loss:.0f} on {overall_wr:.0f}% WR "
             f"— reduce concurrent positions"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "concentration_reduce",
-            "max_total_positions", str(current), str(new_val), reason,
+            "max_total_positions", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return f"Reduced max concurrent positions from {current} to {new_val} ({reason})"
+        return f"Reduced max concurrent positions from {current} to {applied}{suffix} ({reason})"
 
     # Increase when strong WR AND average winner is meaningful.
     # _trades_dq already in scope from the avg_loss block above.
@@ -2802,18 +2802,16 @@ def _optimize_max_total_positions(conn, ctx, profile_id, user_id,
         new_val = _bound("max_total_positions", current + 1)
         if new_val == current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, max_total_positions=new_val)
         reason = (
             f"Strong edge — {overall_wr:.0f}% WR, avg winner ${avg_win:.0f} "
             f"— allow more concurrent positions"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "concentration_increase",
-            "max_total_positions", str(current), str(new_val), reason,
+            "max_total_positions", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return f"Raised max concurrent positions from {current} to {new_val} ({reason})"
+        return f"Raised max concurrent positions from {current} to {applied}{suffix} ({reason})"
 
     return None
 
@@ -2867,35 +2865,31 @@ def _optimize_max_correlation(conn, ctx, profile_id, user_id,
         new_val = _bound("max_correlation", round(current - 0.05, 4))
         if new_val >= current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, max_correlation=new_val)
         reason = (
             f"Loss-cluster weeks {cluster_rate:.0%} — tighten correlation cap"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "correlation_tighten",
-            "max_correlation", str(current), str(new_val), reason,
+            "max_correlation", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return f"Tightened {_label('max_correlation')} from {current:.2f} to {new_val:.2f} ({reason})"
+        return f"Tightened {_label('max_correlation')} from {current:.2f} to {applied:.2f}{suffix} ({reason})"
 
     # Loosen if very few clustering weeks AND profile is performing well
     if cluster_rate < 0.1 and overall_wr >= 55:
         new_val = _bound("max_correlation", round(current + 0.05, 4))
         if new_val <= current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, max_correlation=new_val)
         reason = (
             f"Low loss-clustering ({cluster_rate:.0%}) + healthy WR — "
             f"loosen correlation cap to admit more candidates"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "correlation_loosen",
-            "max_correlation", str(current), str(new_val), reason,
+            "max_correlation", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return f"Loosened {_label('max_correlation')} from {current:.2f} to {new_val:.2f} ({reason})"
+        return f"Loosened {_label('max_correlation')} from {current:.2f} to {applied:.2f}{suffix} ({reason})"
 
     return None
 
@@ -2914,18 +2908,16 @@ def _optimize_max_sector_positions(conn, ctx, profile_id, user_id,
         new_val = _bound("max_sector_positions", current - 1)
         if new_val == current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, max_sector_positions=new_val)
         reason = (
             f"Overall WR {overall_wr:.0f}% — tighten sector cap to "
             f"avoid concentration drawdowns"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "sector_cap_tighten",
-            "max_sector_positions", str(current), str(new_val), reason,
+            "max_sector_positions", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return f"Reduced {_label('max_sector_positions')} from {current} to {new_val} ({reason})"
+        return f"Reduced {_label('max_sector_positions')} from {current} to {applied}{suffix} ({reason})"
 
     return None
 
@@ -2946,19 +2938,17 @@ def _optimize_drawdown_thresholds(conn, ctx, profile_id, user_id,
     new_val = _bound("drawdown_pause_pct", round(current - 0.02, 4))
     if new_val >= current:
         return None
-    from models import update_trading_profile, log_tuning_change
-    update_trading_profile(profile_id, drawdown_pause_pct=new_val)
     reason = (
         f"WR drifting at {overall_wr:.0f}% — tighten drawdown-pause "
         f"to catch deterioration sooner"
     )
-    log_tuning_change(
+    applied, _, suffix = _apply_param_change(
         profile_id, user_id, "drawdown_pause_tighten",
-        "drawdown_pause_pct", str(current), str(new_val), reason,
+        "drawdown_pause_pct", current, new_val, reason,
         win_rate_at_change=overall_wr, predictions_resolved=resolved,
     )
     return (f"Tightened drawdown-pause threshold from {current:.0%} to "
-            f"{new_val:.0%} ({reason})")
+            f"{applied:.0%}{suffix} ({reason})")
 
 
 def _optimize_drawdown_reduce(conn, ctx, profile_id, user_id,
@@ -2972,19 +2962,17 @@ def _optimize_drawdown_reduce(conn, ctx, profile_id, user_id,
     new_val = _bound("drawdown_reduce_pct", round(current - 0.01, 4))
     if new_val >= current:
         return None
-    from models import update_trading_profile, log_tuning_change
-    update_trading_profile(profile_id, drawdown_reduce_pct=new_val)
     reason = (
         f"WR drifting at {overall_wr:.0f}% — tighten drawdown-reduce "
         f"trigger so position-size cuts kick in earlier"
     )
-    log_tuning_change(
+    applied, _, suffix = _apply_param_change(
         profile_id, user_id, "drawdown_reduce_tighten",
-        "drawdown_reduce_pct", str(current), str(new_val), reason,
+        "drawdown_reduce_pct", current, new_val, reason,
         win_rate_at_change=overall_wr, predictions_resolved=resolved,
     )
     return (f"Tightened drawdown-reduce threshold from {current:.0%} to "
-            f"{new_val:.0%} ({reason})")
+            f"{applied:.0%}{suffix} ({reason})")
 
 
 def _optimize_price_band(conn, ctx, profile_id, user_id, overall_wr, resolved):
@@ -3025,21 +3013,19 @@ def _optimize_price_band(conn, ctx, profile_id, user_id, overall_wr, resolved):
             candidate = min(current_min * 1.25, current_min * 2.0)
             new_min = _bound("min_price", round(candidate, 2))
             if new_min > current_min and new_min < current_max:
-                from models import update_trading_profile, log_tuning_change
-                update_trading_profile(profile_id, min_price=new_min)
                 reason = (
                     f"Bottom-of-band entries (≤${bottom_threshold:.2f}) "
                     f"win rate {bot_wr:.0f}% on {bot_row['cnt']} trades — "
                     f"raise {_label('min_price')} floor"
                 )
-                log_tuning_change(
+                applied, _, suffix = _apply_param_change(
                     profile_id, user_id, "price_band_min_raise",
-                    "min_price", str(current_min), str(new_min), reason,
+                    "min_price", current_min, new_min, reason,
                     win_rate_at_change=overall_wr,
                     predictions_resolved=resolved,
                 )
                 return (f"Raised {_label('min_price')} from ${current_min:.2f} to "
-                        f"${new_min:.2f} ({reason})")
+                        f"${applied:.2f}{suffix} ({reason})")
 
     # Top-of-band failure check: trades entered within 0.85× of max_price.
     # Phase 5e exclusion: same pattern as bottom-of-band.
@@ -3056,21 +3042,19 @@ def _optimize_price_band(conn, ctx, profile_id, user_id, overall_wr, resolved):
             candidate = max(current_max * 0.85, current_max * 0.5)
             new_max = _bound("max_price", round(candidate, 2))
             if new_max < current_max and new_max > current_min:
-                from models import update_trading_profile, log_tuning_change
-                update_trading_profile(profile_id, max_price=new_max)
                 reason = (
                     f"Top-of-band entries (≥${top_threshold:.2f}) "
                     f"win rate {top_wr:.0f}% on {top_row['cnt']} trades — "
                     f"lower {_label('max_price')} ceiling"
                 )
-                log_tuning_change(
+                applied, _, suffix = _apply_param_change(
                     profile_id, user_id, "price_band_max_lower",
-                    "max_price", str(current_max), str(new_max), reason,
+                    "max_price", current_max, new_max, reason,
                     win_rate_at_change=overall_wr,
                     predictions_resolved=resolved,
                 )
                 return (f"Lowered {_label('max_price')} from ${current_max:.2f} to "
-                        f"${new_max:.2f} ({reason})")
+                        f"${applied:.2f}{suffix} ({reason})")
 
     return None
 
@@ -3145,21 +3129,19 @@ def _optimize_avoid_earnings_days(conn, ctx, profile_id, user_id,
         new_val = _bound("avoid_earnings_days", current + 1)
         if new_val == current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, avoid_earnings_days=new_val)
         reason = (
             f"In-window WR {in_wr:.0f}% < out-of-window {out_wr:.0f}% "
             f"by {out_wr - in_wr:.0f}pp"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "avoid_earnings_tighten",
-            "avoid_earnings_days", str(current), str(new_val), reason,
+            "avoid_earnings_days", current, new_val, reason,
             win_rate_at_change=overall_wr,
             predictions_resolved=resolved,
         )
         return (
             f"Tightened {_label('avoid_earnings_days')} from "
-            f"{current} to {new_val} ({reason})"
+            f"{current} to {applied}{suffix} ({reason})"
         )
     # Outperformance band: in-window predictions actually do BETTER.
     # Loosen so we don't miss those setups.
@@ -3167,21 +3149,19 @@ def _optimize_avoid_earnings_days(conn, ctx, profile_id, user_id,
         new_val = _bound("avoid_earnings_days", current - 1)
         if new_val == current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, avoid_earnings_days=new_val)
         reason = (
             f"In-window WR {in_wr:.0f}% > out-of-window {out_wr:.0f}% "
             f"by {in_wr - out_wr:.0f}pp"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "avoid_earnings_loosen",
-            "avoid_earnings_days", str(current), str(new_val), reason,
+            "avoid_earnings_days", current, new_val, reason,
             win_rate_at_change=overall_wr,
             predictions_resolved=resolved,
         )
         return (
             f"Loosened {_label('avoid_earnings_days')} from "
-            f"{current} to {new_val} ({reason})"
+            f"{current} to {applied}{suffix} ({reason})"
         )
     return None
 
@@ -3263,42 +3243,38 @@ def _optimize_skip_first_minutes(conn, ctx, profile_id, user_id,
         new_val = _bound("skip_first_minutes", min(boundary, current + 5))
         if new_val == current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, skip_first_minutes=new_val)
         reason = (
             f"Opening {boundary}min WR {early_wr:.0f}% < later "
             f"{late_wr:.0f}% by {late_wr - early_wr:.0f}pp"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "skip_first_minutes_tighten",
-            "skip_first_minutes", str(current), str(new_val), reason,
+            "skip_first_minutes", current, new_val, reason,
             win_rate_at_change=overall_wr,
             predictions_resolved=resolved,
         )
         return (
             f"Raised {_label('skip_first_minutes')} from {current} "
-            f"to {new_val} ({reason})"
+            f"to {applied}{suffix} ({reason})"
         )
     # Early predictions actually fine → reduce / disable the skip.
     if early_wr > late_wr - 1 and current > 0:
         new_val = _bound("skip_first_minutes", max(0, current - 5))
         if new_val == current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, skip_first_minutes=new_val)
         reason = (
             f"Opening {boundary}min WR {early_wr:.0f}% ≈ later "
             f"{late_wr:.0f}%"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "skip_first_minutes_loosen",
-            "skip_first_minutes", str(current), str(new_val), reason,
+            "skip_first_minutes", current, new_val, reason,
             win_rate_at_change=overall_wr,
             predictions_resolved=resolved,
         )
         return (
             f"Lowered {_label('skip_first_minutes')} from {current} "
-            f"to {new_val} ({reason})"
+            f"to {applied}{suffix} ({reason})"
         )
     return None
 
@@ -3379,18 +3355,16 @@ def _optimize_min_volume(conn, ctx, profile_id, user_id, overall_wr, resolved):
         new_val = _bound("min_volume", int(current * 1.50))
         if new_val == current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, min_volume=new_val)
         reason = (
             f"Marginal-volume entries (≤ 1.5× threshold) WR {wr:.0f}% on "
             f"{n} samples — raise {_label('min_volume')} floor"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "min_volume_raise",
-            "min_volume", str(current), str(new_val), reason,
+            "min_volume", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
-        return f"Raised {_label('min_volume')} from {current:,} to {new_val:,} ({reason})"
+        return f"Raised {_label('min_volume')} from {current:,} to {int(applied):,}{suffix} ({reason})"
     return None
 
 
@@ -3408,19 +3382,17 @@ def _optimize_volume_surge_multiplier(conn, ctx, profile_id, user_id,
         new_val = _bound("volume_surge_multiplier", round(current + 0.25, 2))
         if new_val == current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, volume_surge_multiplier=new_val)
         reason = (
             f"Marginal volume-surge entries WR {wr:.0f}% on {n} samples — "
             f"require stronger surge for confirmation"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "volume_surge_tighten",
-            "volume_surge_multiplier", str(current), str(new_val), reason,
+            "volume_surge_multiplier", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
         return (f"Raised {_label('volume_surge_multiplier')} from {current:.2f} to "
-                f"{new_val:.2f} ({reason})")
+                f"{applied:.2f}{suffix} ({reason})")
     return None
 
 
@@ -3438,19 +3410,17 @@ def _optimize_breakout_volume_threshold(conn, ctx, profile_id, user_id,
         new_val = _bound("breakout_volume_threshold", round(current + 0.25, 2))
         if new_val == current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, breakout_volume_threshold=new_val)
         reason = (
             f"Marginal-breakout entries WR {wr:.0f}% on {n} samples — "
             f"require more confirmation volume"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "breakout_volume_tighten",
-            "breakout_volume_threshold", str(current), str(new_val), reason,
+            "breakout_volume_threshold", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
         return (f"Raised {_label('breakout_volume_threshold')} from {current:.2f} to "
-                f"{new_val:.2f} ({reason})")
+                f"{applied:.2f}{suffix} ({reason})")
     return None
 
 
@@ -3468,19 +3438,17 @@ def _optimize_gap_pct_threshold(conn, ctx, profile_id, user_id,
         new_val = _bound("gap_pct_threshold", round(current + 0.5, 2))
         if new_val == current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, gap_pct_threshold=new_val)
         reason = (
             f"Marginal-gap entries (within 1.2× threshold) WR {wr:.0f}% "
             f"on {n} samples — require larger gap"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "gap_threshold_tighten",
-            "gap_pct_threshold", str(current), str(new_val), reason,
+            "gap_pct_threshold", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
         return (f"Raised {_label('gap_pct_threshold')} from {current:.2f}% to "
-                f"{new_val:.2f}% ({reason})")
+                f"{applied:.2f}%{suffix} ({reason})")
     return None
 
 
@@ -3497,19 +3465,17 @@ def _optimize_momentum_5d(conn, ctx, profile_id, user_id, overall_wr, resolved):
         new_val = _bound("momentum_5d_gain", round(current + 0.5, 2))
         if new_val == current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, momentum_5d_gain=new_val)
         reason = (
             f"Marginal 5d-momentum entries WR {wr:.0f}% on {n} samples — "
             f"require stronger momentum"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "momentum_5d_tighten",
-            "momentum_5d_gain", str(current), str(new_val), reason,
+            "momentum_5d_gain", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
         return (f"Raised {_label('momentum_5d_gain')} from {current:.2f}% to "
-                f"{new_val:.2f}% ({reason})")
+                f"{applied:.2f}%{suffix} ({reason})")
     return None
 
 
@@ -3526,19 +3492,17 @@ def _optimize_momentum_20d(conn, ctx, profile_id, user_id, overall_wr, resolved)
         new_val = _bound("momentum_20d_gain", round(current + 0.5, 2))
         if new_val == current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, momentum_20d_gain=new_val)
         reason = (
             f"Marginal 20d-momentum entries WR {wr:.0f}% on {n} samples — "
             f"require stronger momentum"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "momentum_20d_tighten",
-            "momentum_20d_gain", str(current), str(new_val), reason,
+            "momentum_20d_gain", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
         return (f"Raised {_label('momentum_20d_gain')} from {current:.2f}% to "
-                f"{new_val:.2f}% ({reason})")
+                f"{applied:.2f}%{suffix} ({reason})")
     return None
 
 
@@ -3565,19 +3529,17 @@ def _optimize_rsi_overbought(conn, ctx, profile_id, user_id,
         new_val = _bound("rsi_overbought", round(current + 2, 1))
         if new_val == current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, rsi_overbought=new_val)
         reason = (
             f"Near-overbought entries (RSI {band_lo:.0f}-{band_hi:.0f}) "
             f"won {wr:.0f}% on {total} samples — raise threshold"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "rsi_overbought_raise",
-            "rsi_overbought", str(current), str(new_val), reason,
+            "rsi_overbought", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
         return (f"Raised {_label('rsi_overbought')} from {current:.0f} to "
-                f"{new_val:.0f} ({reason})")
+                f"{applied:.0f}{suffix} ({reason})")
     return None
 
 
@@ -3602,19 +3564,17 @@ def _optimize_rsi_oversold(conn, ctx, profile_id, user_id,
         new_val = _bound("rsi_oversold", round(current - 2, 1))
         if new_val == current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, rsi_oversold=new_val)
         reason = (
             f"Near-oversold entries (RSI {band_lo:.0f}-{band_hi:.0f}) "
             f"won {wr:.0f}% on {total} samples — lower threshold"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "rsi_oversold_lower",
-            "rsi_oversold", str(current), str(new_val), reason,
+            "rsi_oversold", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
         return (f"Lowered {_label('rsi_oversold')} from {current:.0f} to "
-                f"{new_val:.0f} ({reason})")
+                f"{applied:.0f}{suffix} ({reason})")
     return None
 
 
@@ -3658,17 +3618,15 @@ def _optimize_short_stop_loss(conn, ctx, profile_id, user_id,
         new_val = _bound("short_stop_loss_pct", round(current * 1.15, 4))
         if new_val <= current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, short_stop_loss_pct=new_val)
         reason = (f"Short loss rate {loss_rate*100:.0f}% over {len(rows)} "
                   f"trades — widen stop from noise threshold")
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "short_stop_loss_widen",
-            "short_stop_loss_pct", str(current), str(new_val), reason,
+            "short_stop_loss_pct", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
         return (f"Widened {_label('short_stop_loss_pct')} from "
-                f"{current:.0%} to {new_val:.0%} ({reason})")
+                f"{current:.0%} to {applied:.0%}{suffix} ({reason})")
 
     # Loss rate <30% AND avg winner significantly bigger than avg
     # loser: shorts have edge — can tighten stop slightly to free
@@ -3677,17 +3635,15 @@ def _optimize_short_stop_loss(conn, ctx, profile_id, user_id,
         new_val = _bound("short_stop_loss_pct", round(current * 0.9, 4))
         if new_val >= current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, short_stop_loss_pct=new_val)
         reason = (f"Short loss rate {loss_rate*100:.0f}% with strong winners — "
                   f"tighten stop to recycle losers faster")
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "short_stop_loss_tighten",
-            "short_stop_loss_pct", str(current), str(new_val), reason,
+            "short_stop_loss_pct", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
         return (f"Tightened {_label('short_stop_loss_pct')} from "
-                f"{current:.0%} to {new_val:.0%} ({reason})")
+                f"{current:.0%} to {applied:.0%}{suffix} ({reason})")
     return None
 
 
@@ -3727,17 +3683,15 @@ def _optimize_short_max_position_pct(conn, ctx, profile_id, user_id,
                           round(min(long_max, current + (long_max - current) * 0.1), 4))
         if new_val <= current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, short_max_position_pct=new_val)
         reason = (f"Short PF {profit_factor:.2f} > 1.5 over {len(rows)} trades "
                   f"— increase short cap toward long cap")
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "short_max_position_pct_up",
-            "short_max_position_pct", str(current), str(new_val), reason,
+            "short_max_position_pct", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
         return (f"Raised {_label('short_max_position_pct')} from "
-                f"{current:.0%} to {new_val:.0%} ({reason})")
+                f"{current:.0%} to {applied:.0%}{suffix} ({reason})")
 
     # PF < 0.8 with >=15 trades: shrink short cap, the edge isn't there
     if profit_factor < 0.8 and len(rows) >= 15:
@@ -3745,17 +3699,15 @@ def _optimize_short_max_position_pct(conn, ctx, profile_id, user_id,
                           round(max(0.01, current * 0.7), 4))
         if new_val >= current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, short_max_position_pct=new_val)
         reason = (f"Short PF {profit_factor:.2f} < 0.8 over {len(rows)} trades "
                   f"— shrink position size while edge is unproven")
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "short_max_position_pct_down",
-            "short_max_position_pct", str(current), str(new_val), reason,
+            "short_max_position_pct", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
         return (f"Reduced {_label('short_max_position_pct')} from "
-                f"{current:.0%} to {new_val:.0%} ({reason})")
+                f"{current:.0%} to {applied:.0%}{suffix} ({reason})")
     return None
 
 
@@ -3831,19 +3783,17 @@ def _optimize_short_take_profit(conn, ctx, profile_id, user_id,
         new_val = _bound("short_take_profit_pct", round(current * 0.8, 4))
         if new_val >= current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, short_take_profit_pct=new_val)
         reason = (
             f"Short TP avg {avg*100:.1f}% < 50% of target "
             f"{current*100:.1f}% — tighten to capture sooner"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "short_take_profit_tighten",
-            "short_take_profit_pct", str(current), str(new_val), reason,
+            "short_take_profit_pct", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
         return (f"Tightened {_label('short_take_profit_pct')} from {current:.0%} to "
-                f"{new_val:.0%} ({reason})")
+                f"{applied:.0%}{suffix} ({reason})")
     return None
 
 
@@ -3888,19 +3838,17 @@ def _optimize_atr_multiplier_sl(conn, ctx, profile_id, user_id,
         new_val = _bound("atr_multiplier_sl", round(current + 0.25, 2))
         if new_val == current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, atr_multiplier_sl=new_val)
         reason = (
             f"{near_stop_rate:.0%} of losses cluster near the stop — "
             f"widen ATR-stop multiplier to give trades more room"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "atr_sl_widen",
-            "atr_multiplier_sl", str(current), str(new_val), reason,
+            "atr_multiplier_sl", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
         return (f"Widened {_label('atr_multiplier_sl')} from {current:.2f} to "
-                f"{new_val:.2f} ({reason})")
+                f"{applied:.2f}{suffix} ({reason})")
     return None
 
 
@@ -3938,19 +3886,17 @@ def _optimize_atr_multiplier_tp(conn, ctx, profile_id, user_id,
         new_val = _bound("atr_multiplier_tp", round(current - 0.25, 2))
         if new_val >= current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, atr_multiplier_tp=new_val)
         reason = (
             f"Avg winner {avg_win*100:.1f}% well under best winner "
             f"{max_win*100:.1f}% — tighten ATR-TP to capture more"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "atr_tp_tighten",
-            "atr_multiplier_tp", str(current), str(new_val), reason,
+            "atr_multiplier_tp", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
         return (f"Tightened {_label('atr_multiplier_tp')} from {current:.2f} to "
-                f"{new_val:.2f} ({reason})")
+                f"{applied:.2f}{suffix} ({reason})")
     return None
 
 
@@ -4020,22 +3966,20 @@ def _optimize_trailing_atr_multiplier(conn, ctx, profile_id, user_id,
                           round(max(0.5, current * 0.85), 2))
         if new_val == current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, trailing_atr_multiplier=new_val)
         reason = (
             f"Avg give-back from peak {avg_give_back:.0f}% on "
             f"{len(samples)} closed longs — too much profit "
             f"evaporates before trailing stop fires"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "trailing_tighten",
-            "trailing_atr_multiplier", str(current), str(new_val), reason,
+            "trailing_atr_multiplier", current, new_val, reason,
             win_rate_at_change=overall_wr,
             predictions_resolved=resolved,
         )
         return (
             f"Tightened {_label('trailing_atr_multiplier')} from "
-            f"{current:.2f} to {new_val:.2f} ({reason})"
+            f"{current:.2f} to {applied:.2f}{suffix} ({reason})"
         )
 
     # Loosen when give-back is small AND winners are still profitable
@@ -4045,22 +3989,20 @@ def _optimize_trailing_atr_multiplier(conn, ctx, profile_id, user_id,
                           round(min(3.0, current * 1.15), 2))
         if new_val == current:
             return None
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, trailing_atr_multiplier=new_val)
         reason = (
             f"Avg give-back {avg_give_back:.0f}% on {len(samples)} "
             f"closed longs — winners exiting near peak; loosen to "
             f"let them run"
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "trailing_loosen",
-            "trailing_atr_multiplier", str(current), str(new_val), reason,
+            "trailing_atr_multiplier", current, new_val, reason,
             win_rate_at_change=overall_wr,
             predictions_resolved=resolved,
         )
         return (
             f"Loosened {_label('trailing_atr_multiplier')} from "
-            f"{current:.2f} to {new_val:.2f} ({reason})"
+            f"{current:.2f} to {applied:.2f}{suffix} ({reason})"
         )
     return None
 
@@ -4150,28 +4092,23 @@ def _optimize_stop_to_tp_ratio(conn, ctx, profile_id, user_id,
         direction = "tighten SL + loosen TP"
 
     changed_any = False
-    from models import update_trading_profile, log_tuning_change
+    reason = (
+        f"stop-to-TP ratio {ratio:.1f} over {total_attributed} "
+        f"exits (stops={stops}, tps={tps}) — {direction}"
+    )
+    applied_sl = current_sl
+    applied_tp = current_tp
     if abs(new_sl - current_sl) > 1e-9:
-        update_trading_profile(profile_id, atr_multiplier_sl=new_sl)
-        reason = (
-            f"stop-to-TP ratio {ratio:.1f} over {total_attributed} "
-            f"exits (stops={stops}, tps={tps}) — {direction}"
-        )
-        log_tuning_change(
+        applied_sl, _, _ = _apply_param_change(
             profile_id, user_id, "stop_to_tp_rebalance",
-            "atr_multiplier_sl", str(current_sl), str(new_sl), reason,
+            "atr_multiplier_sl", current_sl, new_sl, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
         changed_any = True
     if abs(new_tp - current_tp) > 1e-9:
-        update_trading_profile(profile_id, atr_multiplier_tp=new_tp)
-        reason = (
-            f"stop-to-TP ratio {ratio:.1f} over {total_attributed} "
-            f"exits (stops={stops}, tps={tps}) — {direction}"
-        )
-        log_tuning_change(
+        applied_tp, _, _ = _apply_param_change(
             profile_id, user_id, "stop_to_tp_rebalance",
-            "atr_multiplier_tp", str(current_tp), str(new_tp), reason,
+            "atr_multiplier_tp", current_tp, new_tp, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
         changed_any = True
@@ -4180,8 +4117,8 @@ def _optimize_stop_to_tp_ratio(conn, ctx, profile_id, user_id,
         return None
     return (
         f"Stop-to-TP rebalance: ratio={ratio:.1f}, "
-        f"SL {current_sl:.2f}→{new_sl:.2f}, "
-        f"TP {current_tp:.2f}→{new_tp:.2f} "
+        f"SL {current_sl:.2f}→{applied_sl:.2f}, "
+        f"TP {current_tp:.2f}→{applied_tp:.2f} "
         f"(stops={stops}, tps={tps}, {direction})"
     )
 
@@ -4837,19 +4774,17 @@ def _optimize_meta_pregate_threshold(conn, ctx, profile_id, user_id,
             f"recent predictions — AI is firing aggressively; "
             f"sharpen the cohort with a tighter pre-filter"
         )
-    from models import update_trading_profile, log_tuning_change
-    update_trading_profile(profile_id, meta_pregate_threshold=new_val)
-    log_tuning_change(
+    applied, _, suffix = _apply_param_change(
         profile_id, user_id,
         ("meta_pregate_lower" if direction == "lowered"
          else "meta_pregate_raise"),
-        "meta_pregate_threshold", str(current), str(new_val), why,
+        "meta_pregate_threshold", current, new_val, why,
         win_rate_at_change=overall_wr, predictions_resolved=resolved,
     )
     return (
         f"{direction.capitalize()} "
         f"{_label('meta_pregate_threshold')} from "
-        f"{current:.2f} to {new_val:.2f} ({why})"
+        f"{current:.2f} to {applied:.2f}{suffix} ({why})"
     )
 
 
@@ -4940,40 +4875,36 @@ def _optimize_skip_first_minutes_slippage(conn, ctx, profile_id, user_id,
 
     if first_avg > rest_avg * 1.5 and current < 30:
         new_val = min(30, current + 5)
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, skip_first_minutes=new_val)
         reason = (
             f"First-15-min slippage {first_avg:.3f}% vs rest-of-day "
             f"{rest_avg:.3f}% ({first_avg/rest_avg:.1f}× worse). "
             f"Widen open-skip to {new_val} min."
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "skip_first_minutes_widen",
-            "skip_first_minutes", str(current), str(new_val), reason,
+            "skip_first_minutes", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
         return (
             f"Widened {_label('skip_first_minutes')} "
-            f"from {current} to {new_val} min ({reason})"
+            f"from {current} to {applied} min{suffix} ({reason})"
         )
 
     if first_avg < rest_avg and current > 0:
         new_val = max(0, current - 5)
-        from models import update_trading_profile, log_tuning_change
-        update_trading_profile(profile_id, skip_first_minutes=new_val)
         reason = (
             f"First-15-min slippage {first_avg:.3f}% no worse than "
             f"rest-of-day {rest_avg:.3f}% — tighten open-skip "
             f"to {new_val} min."
         )
-        log_tuning_change(
+        applied, _, suffix = _apply_param_change(
             profile_id, user_id, "skip_first_minutes_tighten",
-            "skip_first_minutes", str(current), str(new_val), reason,
+            "skip_first_minutes", current, new_val, reason,
             win_rate_at_change=overall_wr, predictions_resolved=resolved,
         )
         return (
             f"Tightened {_label('skip_first_minutes')} "
-            f"from {current} to {new_val} min ({reason})"
+            f"from {current} to {applied} min{suffix} ({reason})"
         )
     return None
 
@@ -5444,22 +5375,20 @@ def _optimize_false_negatives(conn, ctx, profile_id, user_id,
     if new_threshold >= threshold:
         return None
 
-    from models import update_trading_profile, log_tuning_change
-    update_trading_profile(profile_id, ai_confidence_threshold=new_threshold)
     reason = (
         f"False-negative analysis: {marginal}/{total} ({frac:.0%}) of "
         f"the AI's HOLD-losses had confidence in the marginal band "
         f"{band_lo}-{threshold} — threshold rejecting trades that "
         f"would have won. Lower from {threshold} to {new_threshold}."
     )
-    log_tuning_change(
+    applied, _, suffix = _apply_param_change(
         profile_id, user_id, "false_negative_loosen",
-        "ai_confidence_threshold", str(threshold), str(new_threshold), reason,
+        "ai_confidence_threshold", threshold, new_threshold, reason,
         win_rate_at_change=overall_wr, predictions_resolved=resolved,
     )
     return (
         f"Lowered {_label('ai_confidence_threshold')} from {threshold} "
-        f"to {new_threshold} ({reason})"
+        f"to {applied}{suffix} ({reason})"
     )
 
 

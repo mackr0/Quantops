@@ -227,10 +227,13 @@ def _tuned_columns() -> Set[str]:
     the BOUNDS dict in pipelines/option.py:tune (and similar in
     future stock.py:tune).
 
-    Catches three patterns:
+    Catches four patterns:
       1. update_trading_profile(pid, <col>=value)
       2. update_trading_profile(pid, **{<col>: value})
       3. The strategy-toggle dict-key pattern.
+      4. _apply_param_change(pid, uid, "<type>", "<col>", ...) —
+         the 2026-05-18 guardrail wrapper that the per-cycle delta
+         cap routes every continuous-parameter write through.
     Plus the BOUNDS dict in pipelines/{stock,option}.py:tune which
     enumerates columns the new pipeline tuner adjusts.
     """
@@ -269,6 +272,20 @@ def _tuned_columns() -> Set[str]:
         col = m.group(1) or m.group(2)
         if col:
             cols.add(col)
+
+    # Pattern 4 — _apply_param_change wrapper. Capture the 4th
+    # positional arg (param_name) of every call. Allows multi-line
+    # calls with optional whitespace between args.
+    for m in re.finditer(
+        r"_apply_param_change\(\s*"
+        r"[^,]+,\s*"           # profile_id
+        r"[^,]+,\s*"           # user_id
+        r'"[^"]+"\s*,\s*'      # adjustment_type
+        r'"([a-z_]+)"',        # param_name (captured)
+        src,
+        flags=re.DOTALL,
+    ):
+        cols.add(m.group(1))
 
     # Pattern 3 — _optimize_strategy_toggles uses
     # `**{toggle_col: 0}` where toggle_col comes from

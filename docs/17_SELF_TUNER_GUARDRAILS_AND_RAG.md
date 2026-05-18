@@ -17,9 +17,9 @@ Per the deep-system analysis 2026-05-18 PM: the LLM portion of the pipeline does
 
 | # | Guardrail | What it prevents | Status |
 |---|---|---|---|
-| 1 | **Per-cycle delta cap** | Single cycle can't tighten any parameter by more than X% | Pending |
+| 1 | **Per-cycle delta cap** | Single cycle can't tighten any parameter by more than X% | **Landed 2026-05-18** — `_apply_param_change` wrapper in `self_tuning.py:136` with ±25% per-cycle cap (`_MAX_PCT_PER_CYCLE`). All ~30 numeric-parameter optimizer call sites routed through it. Helpers `_clamp_delta` and `_within_reference_window` ready for item #3 once day-1 reference persistence is added. |
 | 2 | **Trade-count floor with auto-loosen** | If trade count drops below N over 7 days, the most-restrictive parameter is FORCED to loosen by Y% | Pending |
-| 3 | **Reference window invariant** | No parameter can drift more than ±30% from its day-1 value without operator override | Pending |
+| 3 | **Reference window invariant** | No parameter can drift more than ±50% from its day-1 value without operator override | Pending wiring (helper `_within_reference_window` built; needs persistence of day-1 reference per profile) |
 | 4 | **Auto-expiry on restrictions** | Every tightening has a TTL (default 14 days). After TTL it auto-reverts unless re-justified by recent loss evidence | Pending |
 | 5 | **Trade-rate anomaly alert** | If weekly trade count drops >50%, fire `/issues` alert and pause self-tuner pending review | Pending |
 
