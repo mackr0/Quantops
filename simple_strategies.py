@@ -72,6 +72,25 @@ def _submit_and_log(api, ctx, symbol, side, qty, price, strategy_name,
             side, symbol, qty, type(exc).__name__, exc,
         )
         return False
+    except Exception as exc:
+        # alpaca_trade_api raises alpaca_trade_api.rest.APIError for
+        # things like `asset "X" not found` (stale tickers no longer
+        # tradable) and `insufficient buying power`. These are
+        # PER-TICKER failures — they must not propagate up and fail
+        # the whole scan loop. Caught 2026-05-18 17:28 ET when GPS
+        # (Gap, renamed in 2025) was picked by random and the bare
+        # APIError tore down P13's entire 5-pick scan, leaving the
+        # profile with fewer-than-intended day-1 positions. Catching
+        # broadly here because alpaca_trade_api isn't a stdlib
+        # import we want to chase in this hot path; the cost of
+        # missing one new exception class < the cost of crashing
+        # the loop on one bad symbol.
+        logger.warning(
+            "simple_strategies: submit_order rejected for %s %s x%d "
+            "(skipping pick, continuing scan): %s: %s",
+            side, symbol, qty, type(exc).__name__, exc,
+        )
+        return False
     try:
         log_trade(
             symbol=symbol,

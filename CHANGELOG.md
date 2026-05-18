@@ -17,6 +17,28 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 — stale tickers in LARGE_CAP_UNIVERSE + non-resilient `_submit_and_log`. Severity: medium (single bad ticker crashed an entire random-pick scan; cosmetic dashboard "Scan Failures" alert).
+
+13:28 PM ET first cycle after the second reset: P13 RandomA's deterministic 5-pick was `['TXN', 'GPS', 'AMAT', 'ASML', 'CLX']`. GPS (Gap Inc) — renamed to GAP in 2025, ticker no longer tradable on Alpaca — triggered `APIError: asset "GPS" not found` when `_submit_and_log` called `api.submit_order`. The bare `except (AttributeError, ValueError, TypeError, OSError)` didn't catch the Alpaca-specific APIError, so the exception propagated up through `run_random_stock_of_day`'s `for sym in picks` loop and failed the entire `Scan & Trade` task. Only TXN (picks[0]) had been processed before GPS at picks[1]; AMAT/ASML/CLX never got attempted.
+
+**Fix #1 — graceful broker errors**: added a broad `except Exception` to `_submit_and_log` after the specific stdlib exceptions. Logs WARNING (not ERROR), returns False, lets the caller's loop continue to the next pick. The cost of one extra-broad except in this hot path is much less than the cost of crashing an entire scan loop on one bad symbol.
+
+**Fix #2 — stale tickers**: audited `LARGE_CAP_UNIVERSE` against `api.list_assets(status='active', tradable=True)`. Found 3 stale entries:
+- ANSS: Synopsys acquired Ansys mid-2025, ticker delisted
+- SQ: Square renamed to Block in 2024 (ticker XYZ)
+- GPS: Gap Inc renamed to GAP in 2025
+
+All 3 removed with dated `# REMOVED 2026-05-18` comments. Universe size: 163 → 160.
+
+**Tests**: `tests/test_simple_strategies_graceful_apierror_2026_05_18.py`:
+- `test_asset_not_found_returns_false_no_raise` (direct regression for GPS)
+- `test_insufficient_buying_power_returns_false_no_raise` (same class of broker rejection)
+- `test_random_strategy_continues_past_bad_ticker` (end-to-end with 1 of 5 picks bad → expects 4 buys, 1 error, no raise)
+
+**Future hygiene**: should add a periodic job that re-audits `LARGE_CAP_UNIVERSE` against Alpaca's tradable-asset list and either drops stale entries automatically or surfaces a `/issues` warning. Not blocking today's experiment; deferred to follow-up.
+
+---
+
 ## 2026-05-18 — second outage: same code path, race-condition variant. Severity: critical (P12/P13/P14 equity collapsed from $250K each to ~$11–$38K within minutes of the fresh restart).
 
 Earlier today the empty-`open_symbols` variant of journal.py step 2 was fixed (commit ca2cdac). After the full reset and scheduler restart at 15:37, the SAME function fired the SAME class of bug but with a different trigger: the race window between order submit and broker fill registration.

@@ -170,14 +170,16 @@ LARGE_CAP_UNIVERSE = [
     "LRCX", "AMAT", "ASML",
     # Software / cloud
     "CRM", "ORCL", "ADBE", "NOW", "INTU", "WDAY", "TEAM", "ZM",
-    "CDNS", "SNPS", "ANSS", "PTC", "FICO", "CPRT", "CSGP", "VRSK",
+    # ANSS removed 2026-05-18: Synopsys acquired Ansys, ticker no longer trades
+    "CDNS", "SNPS", "PTC", "FICO", "CPRT", "CSGP", "VRSK",
     # Internet / media
     "NFLX", "DIS", "CMCSA", "UBER", "BKNG",
     # Networking / IT
     "CSCO", "IBM", "ACN", "DELL", "HPQ",
     # Payments / fintech
     "V", "MA", "PYPL", "FIS", "FISV", "GPN", "ADP", "PAYX",
-    "SQ", "COF", "AXP",
+    # SQ removed 2026-05-18: renamed to Block (XYZ) in 2025
+    "COF", "AXP",
     # Banks / financial services
     "JPM", "BAC", "WFC", "C", "GS", "MS", "USB", "PNC", "TFC",
     "SCHW", "BLK",
@@ -205,7 +207,8 @@ LARGE_CAP_UNIVERSE = [
     # Restaurants / food service
     "SBUX", "MCD", "YUM", "CMG", "DPZ", "QSR",
     # Apparel / lifestyle
-    "NKE", "LULU", "ANF", "AEO", "GPS",
+    # GPS removed 2026-05-18: Gap Inc renamed to GAP in 2025
+    "NKE", "LULU", "ANF", "AEO",
     # Airlines
     "LUV", "DAL", "UAL", "AAL",
     # Hotels / travel
