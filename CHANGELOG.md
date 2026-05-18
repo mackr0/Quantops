@@ -17,6 +17,34 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 — reconcile_trade_statuses wiped every open BUY on empty broker response. Severity: critical (hid $730K of real positions from the dashboard within 7 minutes of market open).
+
+13:30 ET market open. A1 profiles (P12 BuyHoldSPY, P13 RandomA, P14 RandomB) all placed real BUY orders that filled at Alpaca (confirmed: real UUID order_ids, real fill prices). By 13:37 the dashboard's per-profile equity for the A1 trio had collapsed from ~$250K each to under $750. User saw total dashboard equity drop from $3M to $2.27M in minutes. Triage confirmed positions still existed on Alpaca; the loss was entirely in the local virtual ledger.
+
+**Root cause**: `journal.py:1554` reconcile_trade_statuses had two nested branches. Outer `if open_symbols is not None:` correctly distinguished "caller didn't query broker" from "caller queried and provided a result." But the inner `if open_symbols:` collapsed an empty set into the same path as None, falling into:
+
+```sql
+UPDATE trades SET status='closed'
+WHERE side='buy' AND status='open'
+-- NO symbol filter, NO matching-SELL gate
+```
+
+When the reconciler called `api.list_positions()` and got back an empty list (either a genuine zero or, more dangerously, a transient broker call that returned partial/empty data), `broker_open_symbols = set()` was truthy-empty → fell into the close-all branch → every open BUY in the profile's trades table got flipped to `status='closed'`.
+
+Downstream amplification: `get_virtual_positions()` explicitly excludes `status='closed'` BUY rows (status-aware filter added 2026-05-16 to suppress phantom lots). Once every BUY was marked closed, `portfolio_value = sum(market_value for p in positions) = 0`, so `equity = cash + 0 = cash-only`. The dashboard's headline equity dropped by exactly the buy notional ($730K of fills minus a few thousand of residual cash on each profile) because the stock value vanished from the calc.
+
+**Fix**: when `open_symbols` is an empty set, treat it as ambiguous — do nothing. The FIFO matching in step 3 of the same function still closes BUYs that have a real matching SELL with realized pnl, which is the correct close-detection path that doesn't depend on broker availability. A subsequent reconcile cycle with a non-empty broker response will pick up any genuinely-closed positions.
+
+**Why it slipped**: today was the first day this could trigger. The 13-profile fresh-start experiment kicked off this morning; before today the fresh DBs had zero open trades, so the close-all branch was a no-op. The class-level guardrail tests (`test_no_bare_except_pass_on_db_or_broker_calls`, the broker_submit_invariants suite) covered submit-side patterns but not reconcile-side patterns. New guardrail in `tests/test_reconcile_trade_statuses_empty_broker_2026_05_18.py`:
+- `test_empty_set_does_not_close_all_buys` — direct regression for the bug
+- `test_non_empty_set_closes_only_unlisted` — safe path stays correct
+- `test_none_falls_back_to_fifo_path` — None case unchanged
+- `test_close_all_buys_pattern_is_absent_from_journal` — AST scan that fails if the unguarded SQL pattern returns to journal.py
+
+**Recovery**: `recover_wrongly_closed_buys_2026_05_18.py` — one-off script that flips `status='closed' → 'open'` for BUY rows from today with a real UUID order_id and no matching realized-pnl SELL. Dry-run mode by default; `--apply` to write. Run on prod once the deploy lands so the dashboard reflects real held capital.
+
+---
+
 ## 2026-05-17 — OSHA goes live via Cloudflare Worker proxy; FAA dropped. Severity: medium (closes the last open-loop in option B).
 
 OSHA is now feeding the AI alongside EPA in the same `epa_osha_violations` alt-data key. Path here was non-obvious so it's worth the writeup.

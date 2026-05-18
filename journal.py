@@ -1550,20 +1550,32 @@ def reconcile_trade_statuses(db_path=None, open_symbols=None):
 
         # 2. BUY rows for closed positions
         if open_symbols is not None:
-            placeholders = ",".join("?" * len(open_symbols)) if open_symbols else "''"
             if open_symbols:
+                placeholders = ",".join("?" * len(open_symbols))
                 cur = conn.execute(
                     f"UPDATE trades SET status='closed' "
                     f"WHERE side='buy' AND status='open' "
                     f"AND symbol NOT IN ({placeholders})",
                     list(open_symbols),
                 )
+                buys_fixed = cur.rowcount
             else:
-                cur = conn.execute(
-                    "UPDATE trades SET status='closed' "
-                    "WHERE side='buy' AND status='open'"
-                )
-            buys_fixed = cur.rowcount
+                # Broker returned an empty position list. This is
+                # ambiguous: it could mean "truly zero positions" or
+                # "broker call failed / returned partial data we
+                # can't trust." Closing every open BUY on the
+                # ambiguous case wipes real positions out of the
+                # virtual ledger (caught 2026-05-18 13:30 ET: all
+                # A1 profiles had every BUY mis-closed within minutes
+                # of market open after their first reconcile cycle
+                # hit an empty broker response, collapsing dashboard
+                # equity from $3M to $2.27M by hiding $730K of real
+                # holdings behind status='closed'). The FIFO matching
+                # in step 3 below still closes BUYs that have a
+                # matching SELL with realized pnl, which is the
+                # correct close-detection path that doesn't depend
+                # on the broker response.
+                buys_fixed = 0
         else:
             cur = conn.execute(
                 "UPDATE trades SET status='closed' "
