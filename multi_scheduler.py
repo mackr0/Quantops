@@ -2402,9 +2402,16 @@ def _task_reconcile_trade_statuses(ctx):
         from reconcile_journal_to_broker import (
             reconcile_with_ctx, _all_journal_sell_order_ids,
         )
+        from models import get_active_profile_ids
         # Cross-profile dedup so the fallback match path doesn't
-        # attribute one broker fill to multiple profiles.
-        cross_used = _all_journal_sell_order_ids(range(1, 12))
+        # attribute one broker fill to multiple profiles. Dynamic
+        # lookup of active profile IDs — the hardcoded range(1, 12)
+        # this replaced silently excluded experiment profiles 12-24,
+        # which caused the reconciler to interpret manual_cleanup
+        # SELLs as unmatched broker exits and insert phantom
+        # duplicate SELL rows (caught 2026-05-18 in P12 id=10/11
+        # and P13 id=36/40, id=37/41).
+        cross_used = _all_journal_sell_order_ids(get_active_profile_ids())
         result = reconcile_with_ctx(ctx, apply_changes=True,
                                     cross_profile_used_ids=cross_used)
         n_cancel = len(result.get("cancel", []))
@@ -2431,11 +2438,18 @@ def _task_reconcile_trade_statuses(ctx):
     # guard might miss (manual broker actions, future code paths that
     # forget the guard, race conditions). Run once per orchestrator
     # cycle, not per-profile, so we don't duplicate work — gated to
-    # only run when ctx is the FIRST profile in the iteration order.
-    if getattr(ctx, "profile_id", None) == 1:
+    # only run when ctx is the FIRST active profile in the iteration
+    # order. The hardcoded `profile_id == 1` gate this replaced never
+    # fired for the experiment profiles (the lowest active id is 12),
+    # so aggregate drift detection was silently disabled and never
+    # would have caught today's reconcile bug (caught 2026-05-18).
+    from models import get_active_profile_ids
+    _first_active = next(iter(get_active_profile_ids()), None)
+    if (_first_active is not None
+            and getattr(ctx, "profile_id", None) == _first_active):
         try:
             from aggregate_audit import audit_aggregate_drift, format_drift_summary
-            audit = audit_aggregate_drift(profile_ids=range(1, 12))
+            audit = audit_aggregate_drift(profile_ids=get_active_profile_ids())
             if audit.get("drift"):
                 logging.error(
                     "AGGREGATE AUDIT DRIFT DETECTED:\n%s",

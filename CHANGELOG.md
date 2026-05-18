@@ -17,6 +17,31 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 — hardcoded `range(1, 12)` excluded experiment profiles from cross-profile dedup. Severity: critical (caused phantom reconcile_backfill duplicates that crashed virtual equity).
+
+Today's cascading damage chain had two distinct bugs. The first was the `journal.py:1554` empty-broker-response close-all (separate entry above). The second is this one: four production code sites had `range(1, 12)` hardcoded — a relic of the original 11-profile setup that was never updated when the 13-profile fresh-start experiment created profiles 12-24.
+
+Sites:
+- `multi_scheduler.py:2407` — `_all_journal_sell_order_ids(range(1, 12))` for the reconciler's cross-profile SELL dedup
+- `multi_scheduler.py:2438` — `audit_aggregate_drift(profile_ids=range(1, 12))` for cross-account aggregate audit
+- `multi_scheduler.py:2435` — `if profile_id == 1` gate for "run aggregate audit on first profile" (1 is no longer the first active profile; 12 is)
+- `aggregate_audit.py:33` — docstring example with same range
+- `reconcile_journal_to_broker.py:913, 917` — CLI default + cross-used set
+
+Consequence: the reconciler's `_find_matching_exit_fill()` skips Alpaca SELL fills whose order_id is `in already_used_order_ids`. Because that set was empty for profiles 12-24, EVERY manual_cleanup SELL we submitted (with a valid order_id, journaled with that order_id) was interpreted as an unmatched broker exit, and a phantom `reconcile_backfill` SELL row got inserted with the same order_id / fill_price. The duplicates double-counted cash credits and double-decremented position quantities, collapsing per-profile virtual equity to nonsense (P12 BuyHoldSPY showed equity=$24K while it actually held ~$237K of SPY).
+
+Secondary consequence: `if profile_id == 1` gated cross-account aggregate drift detection to a profile_id that doesn't exist as active anymore, so the audit silently never fired. Today's bug would have been caught hours earlier if this gate had been dynamic.
+
+**Fix**: new helper `models.get_active_profile_ids()` returns enabled profile IDs dynamically from `trading_profiles`. All four hardcoded ranges replaced. The aggregate-audit gate now fires on `profile_id == next(get_active_profile_ids())` so it follows whoever is the first active profile.
+
+**Guardrail**: `tests/test_hardcoded_profile_range_absent_2026_05_18.py` AST-scans the three production modules for the structural pattern `range(0|1, <small-int>)` in executable code. Any future hardcoded range fails the test with a pointer to use `get_active_profile_ids()` instead.
+
+**Why the data cleanup yesterday didn't catch it**: `clean_orphaned_profiles.py` removed the 11 old profile rows from `trading_profiles` and cascade-cleared their `activity_log` / `tuning_history` rows. That's a data cleanup. The hardcoded `range(1, 12)` constants live in Python source code, not in the database, so a data-cleanup script can't reach them. They needed to be caught at the time the new experiment profiles were created — they weren't.
+
+**Cosmetic cleanup**: the same data-cleanup pass also missed unlinking the 11 orphan profile DB files on disk (P1, P3-P11 — each a 4KB empty shell). Unlinked today.
+
+---
+
 ## 2026-05-18 — reconcile_trade_statuses wiped every open BUY on empty broker response. Severity: critical (hid $730K of real positions from the dashboard within 7 minutes of market open).
 
 13:30 ET market open. A1 profiles (P12 BuyHoldSPY, P13 RandomA, P14 RandomB) all placed real BUY orders that filled at Alpaca (confirmed: real UUID order_ids, real fill prices). By 13:37 the dashboard's per-profile equity for the A1 trio had collapsed from ~$250K each to under $750. User saw total dashboard equity drop from $3M to $2.27M in minutes. Triage confirmed positions still existed on Alpaca; the loss was entirely in the local virtual ledger.

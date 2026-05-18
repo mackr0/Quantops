@@ -1057,6 +1057,21 @@ def get_active_profiles(user_id: Optional[int] = None) -> List[Dict[str, Any]]:
     return results
 
 
+def get_active_profile_ids(user_id: Optional[int] = None) -> List[int]:
+    """Return enabled profile IDs, optionally filtered by user.
+
+    Helper for code that needs to iterate every active profile's
+    journal DB — replaces hardcoded `range(1, 12)` (the old 11-profile
+    range) so future profile additions are picked up automatically.
+    Without this, reconcile/audit cross-profile dedup silently
+    excluded all profiles outside the hardcoded range (caught
+    2026-05-18: manual cleanup SELLs on profiles 12-14 got duplicated
+    by the reconciler because their order_ids weren't in the
+    cross-used set).
+    """
+    return [int(p["id"]) for p in get_active_profiles(user_id=user_id)]
+
+
 def update_trading_profile(profile_id: int, **kwargs) -> None:
     """Update specific fields on a trading profile.
 

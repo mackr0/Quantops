@@ -120,14 +120,23 @@ class TestFixBuyRowsWithLivePositions:
         assert _status(fresh_db, "TSLA", "buy") == ["closed"]
         assert _status(fresh_db, "HIMS", "buy") == ["closed"]
 
-    def test_empty_open_symbols_means_all_buys_closed(self, fresh_db):
-        """No live positions → every open BUY is stale."""
+    def test_empty_open_symbols_leaves_buys_alone(self, fresh_db):
+        """Empty broker response is AMBIGUOUS (could be a real zero OR
+        a transient broker failure that returned empty). Closing every
+        BUY on the ambiguous case hides real positions — this exact
+        bug fired 2026-05-18 13:30 ET and collapsed dashboard equity
+        from $3M to $2.27M within minutes of market open. After the
+        fix, open_symbols=set() leaves BUYs alone; the FIFO matching
+        in step 3 still closes BUYs that have a matching SELL with
+        realized pnl, which is the correct close-detection path that
+        doesn't depend on broker availability."""
         from journal import reconcile_trade_statuses
         _insert(fresh_db, "AAPL", "buy", status="open")
         _insert(fresh_db, "TSLA", "buy", status="open")
         result = reconcile_trade_statuses(db_path=fresh_db, open_symbols=set())
-        assert result["buys_fixed"] == 2
-        assert _status(fresh_db, "AAPL", "buy") == ["closed"]
+        assert result["buys_fixed"] == 0
+        assert _status(fresh_db, "AAPL", "buy") == ["open"]
+        assert _status(fresh_db, "TSLA", "buy") == ["open"]
 
     def test_active_positions_preserved(self, fresh_db):
         from journal import reconcile_trade_statuses
@@ -163,12 +172,15 @@ class TestReturnedCounts:
         assert result["pnl_computed"] == 0
 
     def test_both_fixes_reported_independently(self, fresh_db):
+        """Step 1 (close SELLs with realized pnl) fires independently
+        of step 2. With open_symbols=set() step 2 is a no-op (post
+        2026-05-18 fix), so only sells_fixed is 1; buys_fixed is 0."""
         from journal import reconcile_trade_statuses
         _insert(fresh_db, "AAPL", "sell", pnl=5.0, status="open")
         _insert(fresh_db, "TSLA", "buy", status="open")
         result = reconcile_trade_statuses(db_path=fresh_db, open_symbols=set())
         assert result["sells_fixed"] == 1
-        assert result["buys_fixed"] == 1
+        assert result["buys_fixed"] == 0
 
 
 # ---------------------------------------------------------------------------

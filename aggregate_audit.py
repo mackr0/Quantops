@@ -30,7 +30,8 @@ audit catches anything that bypasses the guard — manual orders,
 future code that forgets the guard, race conditions.
 
 Usage:
-    audit = audit_aggregate_drift(profile_ids=range(1,12))
+    from models import get_active_profile_ids
+    audit = audit_aggregate_drift(profile_ids=get_active_profile_ids())
     if audit['drift']:
         # Alert / email / log loud
 """

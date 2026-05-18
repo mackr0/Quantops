@@ -905,16 +905,17 @@ def main():
     ap.add_argument("--apply", action="store_true",
                     help="actually write changes (default: dry-run)")
     ap.add_argument("--profile", type=int, default=None,
-                    help="run for a single profile id (default: all 1..11)")
+                    help="run for a single profile id (default: all active)")
     ap.add_argument("--quiet", action="store_true",
                     help="cron-friendly: print only summary + errors")
     args = ap.parse_args()
 
-    profile_ids = [args.profile] if args.profile else list(range(1, 12))
+    from models import get_active_profile_ids
+    profile_ids = [args.profile] if args.profile else get_active_profile_ids()
 
     # Pre-compute the cross-profile dedup set so the fallback match
     # path can't double-attribute one broker fill to multiple profiles.
-    cross_used = _all_journal_sell_order_ids(range(1, 12))
+    cross_used = _all_journal_sell_order_ids(get_active_profile_ids())
 
     grand = {"cancel": 0, "backfill_sell": 0, "backfill_cover": 0,
              "backfill_partial_sell": 0, "fix_partial_entry": 0,
