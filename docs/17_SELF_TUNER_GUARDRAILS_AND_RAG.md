@@ -13,7 +13,9 @@ Per the deep-system analysis 2026-05-18 PM: the LLM portion of the pipeline does
 
 ## Build order
 
-### Phase 1 — Self-tuner guardrails (defensive: close the over-restriction failure mode)
+### Phase 1 — Self-tuner guardrails (defensive: close the over-restriction failure mode) — **COMPLETE 2026-05-18**
+
+All five layers shipped in a single day (2026-05-18) atop the existing `tuning_auto_expiry.py` infrastructure. The four autonomous layers (1, 2, 3, 4) prevent and unwind over-restriction structurally; the fifth (5) surfaces the symptom so the operator knows when the autonomous systems are actively working. The tuner is never paused — remediation is entirely deterministic per `feedback_ai_driven_no_manual_loop`.
 
 | # | Guardrail | What it prevents | Status |
 |---|---|---|---|
@@ -21,7 +23,7 @@ Per the deep-system analysis 2026-05-18 PM: the LLM portion of the pipeline does
 | 2 | **Trade-count floor with auto-loosen** | If trade count drops below N over 7 days, the most-restrictive parameter is FORCED to loosen by Y% | **Landed 2026-05-18** — `_optimize_trade_count_auto_loosen` in `self_tuning.py`. Trigger: `<3` stock entries in last 7 days. Action: picks the entry-filter parameter with the highest restriction score from PARAM_BOUNDS, loosens it 25% (matches the Item 1 cap so it passes without further clamping), routes through `_apply_param_change` so the change appears in `tuning_history`. Tagged LOOSEN — fires FIRST in the registry. 24 new tests. |
 | 3 | **Reference window invariant** | No parameter can drift more than ±50% from its day-1 value without operator override | **Landed 2026-05-18** — `param_references` table + `get_param_reference` / `record_param_reference_if_absent` / `clear_param_references` helpers in `models.py`. `_apply_param_change` now records `old_value` as the day-1 reference on first observation and consults it via the existing `_within_reference_window` helper. Both `full_reset_2026_05_18.py` and `clean_orphaned_profiles.py` wired to wipe references. 17 new tests including the original 14-cycle cascade scenario (stops at 0.05 floor vs 0.00178 without). |
 | 4 | **Auto-expiry on restrictions** | Every tightening has a TTL (default 14 days). After TTL it auto-reverts unless re-justified by recent loss evidence | **Landed 2026-05-18** — `expired_at` column added to `tuning_history`; `get_expirable_tightenings` + `mark_tuning_event_expired` helpers in `models.py`; `_optimize_auto_expire_old_tightenings` in `self_tuning.py` (tagged LOOSEN). Picks the oldest unexpired tightening >14d old whose outcome isn't 'improved' and walks the parameter one cap-bounded step back toward the pre-tightening value. Marks the row expired once the value reaches the target. 28 new tests. |
-| 5 | **Trade-rate anomaly alert** | If weekly trade count drops >50%, fire `/issues` alert and pause self-tuner pending review | Pending |
+| 5 | **Trade-rate anomaly alert** | If weekly trade count drops >50%, fire `/issues` alert (observability only — the tuner is NOT paused, per `feedback_ai_driven_no_manual_loop`) | **Landed 2026-05-18** — new `trade_rate_anomaly.py` module with `detect_anomaly` / `record_alert` / `resolve_alert_if_recovered` / `check_and_alert`. Wired as daily scheduler task `_task_trade_rate_anomaly_check` in `multi_scheduler.py`. Writes a stable per-profile-per-prior-week signature into the existing `audit_alerts` table so `/issues` picks it up; resolves automatically when trade rate recovers. Structural test pins that the module never mutates `enable_self_tuning` or calls `update_trading_profile` — pure observability. 17 new tests. |
 
 Each is a small deterministic check added to the existing `self_tuning.py` decision rules. Order chosen to maximize early payoff:
 - #1 stops the cascade *directly* (single biggest fix)

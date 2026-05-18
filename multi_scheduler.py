@@ -414,6 +414,16 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_auto_expire_gate_tightens(ctx),
             db_path=ctx.db_path,
         )
+        # Trade-rate anomaly check (Item 5 of docs/17 Phase 1) —
+        # operator-visibility alert when weekly entry count drops
+        # >50%. Daily — internally rate-limited via
+        # _trade_rate_anomaly_last_run_date. Does NOT pause the
+        # tuner (per feedback_ai_driven_no_manual_loop).
+        run_task(
+            f"[{seg_label}] Trade-Rate Anomaly Check",
+            lambda: _task_trade_rate_anomaly_check(ctx),
+            db_path=ctx.db_path,
+        )
         # Cross-account reconciliation (virtual profiles only)
         if getattr(ctx, "is_virtual", False):
             run_task(
@@ -1674,6 +1684,63 @@ _HEALTH_PROBE_INTERVAL_SEC = 600  # every 10 min
 
 
 _auto_expiry_last_run_date = None
+_trade_rate_anomaly_last_run_date = None
+
+
+def _task_trade_rate_anomaly_check(ctx):
+    """Item 5 of docs/17 Phase 1 — operator-visibility layer.
+
+    Compares the last 7 days of stock entries vs the prior 7 days.
+    Fires an `audit_alerts` row of type `trade_rate_anomaly` when
+    current-week entries fall to <50% of prior-week entries (with a
+    noise floor of >=5 prior-week entries). Per
+    `feedback_ai_driven_no_manual_loop`, the tuner is NOT paused —
+    the alert is purely informational.
+
+    Runs once per profile per UTC calendar day; the underlying
+    detection / write functions are idempotent so a duplicate run
+    within the day refreshes the same audit_alerts row rather than
+    creating new ones.
+
+    Master-DB resolution mirrors `_task_auto_expire_gate_tightens`:
+    use config.DB_PATH (the master DB the audit_alerts table lives
+    in) regardless of the profile's per-profile DB.
+    """
+    global _trade_rate_anomaly_last_run_date
+    import datetime as _dt
+    today = _dt.date.today().isoformat()
+    pid = getattr(ctx, "profile_id", 0)
+    state_key = f"{today}:{pid}"
+    if _trade_rate_anomaly_last_run_date == state_key:
+        return
+    _trade_rate_anomaly_last_run_date = state_key
+
+    try:
+        import config
+        from trade_rate_anomaly import check_and_alert
+        status = check_and_alert(
+            profile_id=pid,
+            profile_db_path=ctx.db_path,
+            main_db_path=config.DB_PATH,
+        )
+        if status.get("fired"):
+            seg = ctx.display_name or ctx.segment
+            d = status["details"]
+            logging.info(
+                "[%s] Trade-rate anomaly: %d→%d entries (-%.0f%%) vs prior week",
+                seg, d["prior_week_entries"], d["current_week_entries"],
+                d["drop_pct"],
+            )
+        elif status.get("resolved"):
+            seg = ctx.display_name or ctx.segment
+            logging.info(
+                "[%s] Trade-rate anomaly resolved (recovered)", seg,
+            )
+    except Exception as exc:
+        logging.warning(
+            "trade_rate_anomaly check failed for profile %s: %s: %s",
+            pid, type(exc).__name__, exc,
+        )
 
 
 def _task_auto_expire_gate_tightens(ctx):

@@ -45,6 +45,17 @@ INFRASTRUCTURE_TASKS = {
     "_task_cost_check",                # AI spend guard
     "_task_data_source_health",        # silent-fallback detector (2026-05-15 incident response)
     "_task_auto_expire_gate_tightens", # 4th guardrail from 2026-05-14 (auto-revert old unhelpful gate-tightens)
+    "_task_trade_rate_anomaly_check",  # Item 5 of docs/17 Phase 1 —
+                                        # observability layer that writes
+                                        # an audit_alerts row when weekly
+                                        # entry count drops >50%. Internally
+                                        # rate-limited to once per profile
+                                        # per UTC day. A toggle would defeat
+                                        # the purpose: the alert exists
+                                        # specifically so the operator KNOWS
+                                        # when the autonomous guardrails are
+                                        # working overtime, regardless of
+                                        # the profile's other settings.
     "_task_cross_account_reconcile",   # virtual account ledger sync
     "_task_self_tune",                 # autonomous parameter tuning
     "_task_retrain_meta_model",        # daily GBM + SGD bootstrap

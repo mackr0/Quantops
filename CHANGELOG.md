@@ -17,6 +17,43 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 — self-tuner trade-rate anomaly alert (Phase 1, Item 5 of docs/17 — **PHASE 1 COMPLETE**). Severity: high (operator-visibility layer on top of the four autonomous guardrails).
+
+Items 1-4 are autonomous; Item 5 closes the observability gap. When the autonomous systems are working overtime to unwind restrictions (Item 2 auto-loosen firing, Item 4 auto-expire reverting tightenings), the operator needs a signal that "something is structurally off about this profile" so they can investigate root cause — without that signal, the symptoms are absorbed silently and the only feedback path is reading dashboards by hand.
+
+**Fix.** New `trade_rate_anomaly.py` module + scheduler task:
+
+**1) Detection module** (`trade_rate_anomaly.py`):
+- `detect_anomaly(profile_id, profile_db_path)` — compares last-7-days entries vs prior-7-days entries. Fires when current < prior × 0.5 AND prior ≥ 5 (noise floor). Returns a details dict with the actual numbers + drop percentage.
+- `record_alert(main_db_path, details)` — INSERT-or-UPDATE into the canonical `audit_alerts` table with a stable per-profile-per-prior-week signature. Re-firing the same anomaly refreshes `last_seen` instead of creating duplicates.
+- `resolve_alert_if_recovered(...)` — marks the alert resolved when a subsequent check no longer detects the drop. Trade rate recovering naturally closes the alert.
+- `check_and_alert(...)` — end-to-end one-shot the scheduler calls. Returns `{fired, is_new, resolved, details}` for log lines.
+
+**2) Scheduler task** (`multi_scheduler.py:_task_trade_rate_anomaly_check`):
+- Runs once per profile per UTC day (`_trade_rate_anomaly_last_run_date` rate-limit, same pattern as `_task_auto_expire_gate_tightens`).
+- Registered next to the existing auto-expire task; uses `config.DB_PATH` for the master DB and `ctx.db_path` for the per-profile DB.
+- Added to `INFRASTRUCTURE_TASKS` in `test_scheduled_features_have_settings.py` — a toggle would defeat the purpose. The alert exists specifically so the operator KNOWS when the autonomous guardrails are doing heavy lifting, regardless of profile settings.
+
+**Per `feedback_ai_driven_no_manual_loop`: the alert does NOT pause the tuner.** A structural test scans `trade_rate_anomaly.py` for `update_trading_profile` or `enable_self_tuning=0` patterns and fails if found. The autonomous remediation belongs to Items 1-4; Item 5 is purely "tell the human something looks off."
+
+**Tests** (`tests/test_trade_rate_anomaly_2026_05_18.py`, 17 tests):
+- `detect_anomaly`: noise floor, within tolerance, fires on majority drop, exact-boundary handling (50% is right at threshold → no fire), zero-entries case, missing-DB fail-soft, custom threshold
+- `record_alert`: first insert, second call is update, creates table when missing (cold-start safety), re-opens after resolved (regression case)
+- `resolve_alert_if_recovered`: marks resolved + idempotent + no-op when no open alert
+- `check_and_alert`: end-to-end fire writes alert; resolves when recovered; no-op below floor doesn't write
+- Constraint: source-scan that pins the no-mutate invariant for the module
+
+**Phase 1 complete.** All five guardrails are live in production:
+- Item 1 (`27950f4`) — per-cycle delta cap
+- Item 2 (`e61dbf5`) — trade-count floor auto-loosen
+- Item 3 (`1920160`) — reference-window persistence + wiring
+- Item 4 (`40db996`) — auto-expiry on stale tightenings
+- Item 5 (this commit) — trade-rate anomaly alert
+
+The 2026-05-14 over-restriction failure mode is now structurally bounded at every layer: a single change is capped (1), accumulated drift is bounded (3), under-trading forces loosening (2), stale restrictions auto-revert (4), and the operator gets visibility when the system is working overtime (5). Next is Phase 2 — RAG over post-mortems — to start closing the "LLM doesn't learn from outcomes" gap.
+
+---
+
 ## 2026-05-18 — self-tuner auto-expiry on tightenings (Phase 1, Item 4 of docs/17). Severity: high (tightenings can't sit forever without evidence).
 
 The cascade prevention from Items 1+3 caps NEW restrictions; Item 2 forces loosening when entries fall below the floor. None of these unwind an EXISTING accumulation of tightenings sitting on a profile that *is* trading enough not to trip the floor but is over-restricted from past tuning. Item 4 closes that gap.
