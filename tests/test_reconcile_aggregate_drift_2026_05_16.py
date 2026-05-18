@@ -28,6 +28,20 @@ def _no_history():
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _mock_active_profile_ids(monkeypatch):
+    """`reconcile_aggregate_drift.reconcile` now calls
+    `models.get_active_profile_ids()` to replace the old
+    hardcoded `range(1, 12)`. These tests don't initialize a master
+    DB, so we mock the helper to return [1] (matches the fake
+    `fake_profile = {"id": 1, ...}` the tests build below). Tests
+    can override by passing `profile_ids=[...]` explicitly to
+    `reconcile()`."""
+    monkeypatch.setattr(
+        "models.get_active_profile_ids", lambda user_id=None: [1],
+    )
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 
 

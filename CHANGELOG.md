@@ -17,6 +17,58 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 — third outage + systematic audit of trades.status write paths. Severity: critical (P12/P13/P14 BUY rows closed immediately on fill confirmation, dashboard collapsed by ~$500K again).
+
+Third outage of the day, same family of bugs. After the earlier journal.py:1554 step 2 race fix + multi_scheduler.py:1320 FIFO partial-sell fix, the SAME fill-confirm code path still had a too-broad `elif`:
+
+```python
+if (trade["status"] == "pending_fill"
+        and trade["side"] in ("sell", "cover")):
+    # FIFO close path (fixed)
+    ...
+elif trade["status"] == "pending_fill":
+    # Roll-manager / option-leg close path
+    UPDATE trades SET status = 'closed' WHERE id = ?
+```
+
+The elif comment claimed "option-leg close" but the SQL had no guard. Every stock BUY/SHORT pending_fill row hit it the instant Alpaca confirmed `filled_avg_price`. P12 SPY, P13 TXN, P14's 5 random picks all flipped to closed within milliseconds of fill registration.
+
+**Systematic audit done this pass** — instead of fixing one symptom and restarting (which had already failed 3 times today), enumerated every code site that writes `trades.status`:
+
+| Site | Triggers | Verdict |
+|---|---|---|
+| `options_lifecycle.py:407` | option outcome → expired/assigned/exercised | safe (per-id) |
+| `journal.py:1546` step 1 | SELL has pnl but status='open' | safe |
+| `journal.py:1554` step 2 | (removed earlier today — race-condition path) | n/a |
+| `journal.py:1581` step 3 FIFO | per-symbol consumption | safe |
+| `multi_scheduler.py:1198` | broker order ended without fill | safe |
+| `multi_scheduler.py:1336` SELL/COVER pending_fill | (fixed today — FIFO walk) | safe |
+| `multi_scheduler.py:1374` elif pending_fill | **THE BUG** | fixed |
+| `multi_scheduler.py:1390` orphan multileg | per-id close after partner expiry | safe |
+| `reconcile_journal_to_broker.py:778-851` | broker-confirmed cancel/backfill | safe (per-id) |
+| `reconcile_aggregate_drift.py:533` `_close_journal_phantom` | broker has zero, close all open | **race-window risk** |
+| `reconcile_aggregate_drift.py:553` | `range(1, 12)` hardcoded | **stale (same class as earlier fix)** |
+| `stat_arb_pair_book.py:1085` | pair exit closes ALL open pair_trade entries | **partial-close pattern, latent** |
+| `trader.py:310` | option phantom cleanup (broker rejection pattern) | safe (scoped) |
+
+**Fixes applied in this commit:**
+
+1. `multi_scheduler.py:1374` elif now gated on `trade["occ_symbol"]`. Option-leg rows hit `closed`; stock BUY/SHORT pending_fill rows fall through to a NEW branch that flips them to `open` — the correct fill-confirmed state for an entry.
+2. `reconcile_aggregate_drift.py:553` — replaced `range(1, 12)` with `get_active_profile_ids()`.
+3. `reconcile_aggregate_drift.py:_close_journal_phantom` — added a 5-minute min-age guard via `WHERE timestamp < ?`. Without this, an audit that fires moments after order submit would phantom-close the still-mid-fill journal row. 5 min is well beyond typical Alpaca submit→register latency.
+4. `tests/test_hardcoded_profile_range_absent_2026_05_18.py` — extended GUARDED_FILES to include `reconcile_aggregate_drift.py`. The earlier guardrail only checked 3 files; this 4th hardcoded `range(1, 12)` slipped through.
+
+**Latent (not fixed yet — no impact on today's experiment scope but should fix before pair trading enabled)**:
+- `stat_arb_pair_book.py:1085` — same partial-close pattern as `multi_scheduler.py:1320`. Closes ALL open pair_trade entries for a symbol on any close. Should use a FIFO walk like the fix in `multi_scheduler.py`. No pair trades active in the experiment, so deferred.
+
+**Tests**:
+- `tests/test_buy_fill_confirm_stays_open_2026_05_18.py` — direct regression: BUY pending_fill must transition to `open`, not `closed`; option-leg pending_fill (occ_symbol set) still transitions to `closed`; AST guardrail prevents the unguarded `elif` from returning.
+- Existing `test_pending_fill_option_close_flips_to_closed_no_opp_side` updated assertions still pass (occ_symbol guarded branch handles options correctly).
+
+**Why this took 3 cycles to find**: I was patching one symptom at a time instead of auditing the whole status-flip surface. Each restart re-fired the next pre-existing bug. This commit closes that pattern — every status-write site enumerated, classified, and either confirmed safe or fixed.
+
+---
+
 ## 2026-05-18 — stale tickers in LARGE_CAP_UNIVERSE + non-resilient `_submit_and_log`. Severity: medium (single bad ticker crashed an entire random-pick scan; cosmetic dashboard "Scan Failures" alert).
 
 13:28 PM ET first cycle after the second reset: P13 RandomA's deterministic 5-pick was `['TXN', 'GPS', 'AMAT', 'ASML', 'CLX']`. GPS (Gap Inc) — renamed to GAP in 2025, ticker no longer tradable on Alpaca — triggered `APIError: asset "GPS" not found` when `_submit_and_log` called `api.submit_order`. The bare `except (AttributeError, ValueError, TypeError, OSError)` didn't catch the Alpaca-specific APIError, so the exception propagated up through `run_random_stock_of_day`'s `for sym in picks` loop and failed the entire `Scan & Trade` task. Only TXN (picks[0]) had been processed before GPS at picks[1]; AMAT/ASML/CLX never got attempted.

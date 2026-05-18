@@ -28,6 +28,7 @@ GUARDED_FILES = [
     "multi_scheduler.py",
     "aggregate_audit.py",
     "reconcile_journal_to_broker.py",
+    "reconcile_aggregate_drift.py",
 ]
 
 # Regex matches range(<low>, <high>) where low <= 1 and high <= 50

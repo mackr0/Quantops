@@ -499,7 +499,19 @@ def _close_journal_phantom(
 ) -> int:
     """For each profile sharing this account, mark any open journal
     rows for `symbol` as `status='auto_reconciled_phantom_close'`.
-    Returns count of rows that would be (or were) marked."""
+    Returns count of rows that would be (or were) marked.
+
+    Min-age guard (added 2026-05-18): only closes rows older than 5
+    minutes. Without this guard, a row submitted seconds before the
+    audit fires would get flipped to phantom-close while the broker
+    is still processing it — the same race window class that hit
+    journal.py:1554 step 2. Five minutes is well beyond typical
+    Alpaca submit-to-fill-register latency (1-5s) and short enough
+    that real phantoms still get cleaned up on the same business
+    day."""
+    import datetime
+    cutoff = (datetime.datetime.now(datetime.timezone.utc)
+              - datetime.timedelta(minutes=5)).isoformat()
     n_marked = 0
     for profile in profiles:
         db_path = f"quantopsai_profile_{profile['id']}.db"
@@ -510,15 +522,15 @@ def _close_journal_phantom(
                 conn.row_factory = sqlite3.Row
                 # Match ALL open rows for the symbol (buy/short
                 # entries AND sell-to-open OCC rows — multileg short
-                # legs use side='sell' with occ_symbol set). Closing
-                # them all is correct for the journal_phantom case:
-                # broker has 0, so whatever's "open" in journal is
-                # the phantom.
+                # legs use side='sell' with occ_symbol set). Min-age
+                # guard via `timestamp < ?` skips just-submitted rows
+                # that the broker hasn't yet registered.
                 rows = conn.execute(
                     "SELECT id, symbol, side, qty, price FROM trades "
                     "WHERE (symbol = ? OR occ_symbol = ?) "
-                    "  AND COALESCE(status,'open') = 'open'",
-                    (symbol, symbol),
+                    "  AND COALESCE(status,'open') = 'open' "
+                    "  AND timestamp < ?",
+                    (symbol, symbol, cutoff),
                 ).fetchall()
                 for r in rows:
                     log.info(
@@ -546,11 +558,19 @@ def _close_journal_phantom(
     return n_marked
 
 
-def reconcile(apply: bool = False, user_id: int = 1) -> Dict[str, int]:
-    """Run the deterministic reconciler. Returns a counters dict."""
-    from aggregate_audit import audit_aggregate_drift
+def reconcile(apply: bool = False, user_id: int = 1,
+              profile_ids: Optional[List[int]] = None) -> Dict[str, int]:
+    """Run the deterministic reconciler. Returns a counters dict.
 
-    audit = audit_aggregate_drift(profile_ids=range(1, 12))
+    profile_ids: optional explicit list (used by tests). When None,
+    falls back to `models.get_active_profile_ids()` for production
+    callers — replaces the hardcoded range(1, 12) that silently
+    excluded the experiment profiles 12-24."""
+    from aggregate_audit import audit_aggregate_drift
+    if profile_ids is None:
+        from models import get_active_profile_ids
+        profile_ids = get_active_profile_ids()
+    audit = audit_aggregate_drift(profile_ids=profile_ids)
     drift = audit.get("drift", [])
     if not drift:
         log.info("No drift — nothing to reconcile.")

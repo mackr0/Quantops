@@ -1371,15 +1371,36 @@ def _task_update_fills(ctx):
                             (lot_id,),
                         )
                 confirmed_closes += 1
-            elif trade["status"] == "pending_fill":
+            elif (trade["status"] == "pending_fill"
+                    and trade["occ_symbol"]):
                 # Roll-manager / option-leg close path: flip to
                 # 'closed' once confirmed; no opposite-side rows
-                # to flip (option close stands alone).
+                # to flip (option close stands alone). Gated on
+                # occ_symbol presence so that BUY-side pending_fill
+                # rows for stocks don't fall into this branch and
+                # get wrongly closed on their first fill.
+                # Caught 2026-05-18 17:28 ET when P12/P13/P14 day-1
+                # BUYs flipped to closed the instant the broker
+                # confirmed each fill — only the SELL/COVER branch
+                # above is meant to flip status; for BUY pending_fill
+                # the correct transition is to 'open' (handled by
+                # the fill-price backfill above this block) so the
+                # entry stays in get_virtual_positions.
                 conn.execute(
                     "UPDATE trades SET status = 'closed' WHERE id = ?",
                     (trade["id"],),
                 )
                 confirmed_closes += 1
+            elif trade["status"] == "pending_fill":
+                # Stock BUY/SHORT pending_fill just got its fill
+                # confirmed by Alpaca — transition pending_fill -> open
+                # so it shows up as a held position in
+                # get_virtual_positions. (Prior code wrongly closed
+                # these.)
+                conn.execute(
+                    "UPDATE trades SET status = 'open' WHERE id = ?",
+                    (trade["id"],),
+                )
 
         conn.commit()
 
