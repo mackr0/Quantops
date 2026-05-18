@@ -738,8 +738,23 @@ def dashboard():
             pending_orders = _safe_pending_orders(ctx)
             try:
                 from ai_cost_ledger import spend_summary
-                cost_today = spend_summary(ctx.db_path)["today"]["usd"]
-            except Exception:
+                # Match the defensive `.get(...) or {}` chain used by
+                # /api/dashboard-totals so the initial page render
+                # doesn't display 0 when spend_summary returns an
+                # unusual shape (e.g. dict without 'today' key on a
+                # freshly-initialized DB). Pre-fix the bare
+                # `[...][...]` access would KeyError, the except
+                # caught it, and the column rendered 0 until the
+                # 30s API refresh repopulated.
+                _ss = spend_summary(ctx.db_path) or {}
+                cost_today = float(
+                    (_ss.get("today") or {}).get("usd") or 0
+                )
+            except Exception as exc:
+                logger.warning(
+                    "dashboard server-render: spend_summary failed "
+                    "for profile %s: %s", prof.get("id"), exc,
+                )
                 cost_today = 0
             return {
                 "id": prof["id"],
@@ -754,6 +769,14 @@ def dashboard():
                 "pending_orders": pending_orders,
                 "is_virtual": getattr(ctx, "is_virtual", False),
                 "cost_today": round(cost_today, 2),
+                # 2026-05-18 — initial_capital must be in the server-
+                # render dict so the overview-table P&L column renders
+                # real values on the very first page paint. Without
+                # this the template's `if prof.initial_capital`
+                # branch falls through to 0 and the column shows $0
+                # until the 30s /api/dashboard-totals poll lands.
+                # Same pattern as the cost_today column.
+                "initial_capital": float(prof.get("initial_capital") or 0),
             }
         except Exception as exc:
             logger.warning("Dashboard error for profile #%d: %s", prof["id"], exc)
