@@ -123,17 +123,28 @@ def main() -> int:
                   f"SELL {qty:>5} shares (excess)")
             if not args.apply:
                 continue
-            # Use close_position(symbol, qty=N) instead of submit_order.
-            # The bare submit_order path failed for most symbols on the
-            # first apply attempt with "insufficient qty available" —
-            # protective stops from the original BUYs had encumbered
-            # the full position, so available=0 even though held=N.
-            # close_position atomically cancels conflicting open orders
-            # and submits the partial-close. The stop_coverage scheduled
-            # task re-applies protective stops on the remaining intended
-            # position within minutes.
+            # Step 1: cancel any open SELL orders for this symbol.
+            # Both bare submit_order AND close_position failed earlier
+            # with "insufficient qty available" because each position
+            # had a trailing_stop SELL covering the FULL holding —
+            # Alpaca's `available` = `held − qty_in_open_orders`. The
+            # stop_coverage scheduled task re-creates the trailing
+            # stop on the remaining intended position within minutes
+            # of any uncovered open position, so this only briefly
+            # leaves the position unprotected (paper account, safe).
             try:
-                order = api.close_position(sym, qty=str(qty))
+                open_orders = api.list_orders(status="open", symbols=[sym])
+                for o in open_orders:
+                    if o.side == "sell":
+                        api.cancel_order(o.id)
+                        print(f"      canceled blocking order {o.id[:8]}… "
+                              f"({o.type} qty={o.qty})")
+                # Give Alpaca a moment to release the qty.
+                time.sleep(0.5)
+                order = api.submit_order(
+                    symbol=sym, qty=qty, side="sell",
+                    type="market", time_in_force="day",
+                )
                 log_trade(
                     symbol=sym,
                     side="sell",
