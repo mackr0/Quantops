@@ -30,7 +30,7 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 | `id` | INTEGER PK | autoincrement | Profile ID. Used everywhere as the per-profile key. |
 | `user_id` | INTEGER | required | Foreign key → `users.id`. Owner. |
 | `name` | TEXT | required | User-chosen profile name. |
-| `market_type` | TEXT | required | `largecap` / `midcap` / `smallcap` / `microsmall` / `crypto` / `*_shorts` variants. Defines universe + strategy emphasis. |
+| `market_type` | TEXT | required | `largecap` / `midcap` / `small` / `micro` / `crypto`. **As of 2026-05-19 the four stock values are interchangeable for strategy selection** — every stock-applicable strategy runs for every stock profile; the AI weighs the signals. The label is retained for profile organization (naming, dashboard filters) and for the genuine stock-vs-crypto data-source split. `crypto` profiles use a separate code path (24/7 schedule, crypto data endpoints, crypto-applicable strategies only). |
 | `enabled` | INTEGER | 1 | Master on/off for this profile. |
 | `created_at` | TEXT | now() | Profile creation timestamp. |
 

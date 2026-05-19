@@ -82,8 +82,52 @@ def _auto_strategy_modules() -> List[str]:
     return [f"strategies.{n}" for n in sorted(names)]
 
 
+_STOCK_MARKETS = ("micro", "small", "midcap", "largecap")
+_CRYPTO_MARKETS = ("crypto",)
+
+
+def _strategy_applies_to_market(applicable: List[str], market_type: str) -> bool:
+    """Return True iff a strategy's APPLICABLE_MARKETS allows this market.
+
+    2026-05-19 — semantics changed. Previously this required an
+    exact match (e.g., a strategy listing
+    `["small","midcap"]` was excluded from `largecap`). That
+    arbitrary within-stock walling-off didn't fit the current
+    AI-driven architecture: the AI is the picker, and the right
+    place to decide whether a signal matters is the AI, not a
+    static registry filter. A largecap genuinely going parabolic
+    SHOULD light up `parabolic_exhaustion` — the AI will weigh it.
+
+    New rule:
+      - `"*"` in applicable    → universal, runs everywhere
+      - Crypto profile         → applicable must list `"crypto"`
+      - Any stock profile      → applicable must list AT LEAST ONE
+                                  stock market (any of micro/small/
+                                  midcap/largecap)
+
+    Stock-vs-crypto distinction is kept because the data sources
+    are genuinely different (crypto fetches BTC/USD via the crypto
+    endpoint; stock fetches AAPL via the equities endpoint). But
+    within the stock universe, every stock-applicable strategy
+    runs for every stock profile.
+    """
+    if "*" in applicable:
+        return True
+    if market_type in _CRYPTO_MARKETS:
+        return any(m in applicable for m in _CRYPTO_MARKETS)
+    if market_type in _STOCK_MARKETS:
+        return any(m in applicable for m in _STOCK_MARKETS)
+    # Unknown market_type — fall back to exact match (defensive)
+    return market_type in applicable
+
+
 def discover_strategies(market_type: str) -> List[Any]:
-    """Import every strategy module (built-in + auto-generated) applicable to a market."""
+    """Import every strategy module (built-in + auto-generated) applicable to a market.
+
+    Applicability rule changed 2026-05-19 — see
+    `_strategy_applies_to_market` for the rationale. tl;dr: any
+    stock-applicable strategy runs on any stock profile; crypto
+    handled separately."""
     import importlib
     out = []
     for mod_path in STRATEGY_MODULES + _auto_strategy_modules():
@@ -99,7 +143,7 @@ def discover_strategies(market_type: str) -> List[Any]:
             )
             continue
         applicable = getattr(mod, "APPLICABLE_MARKETS", [])
-        if "*" in applicable or market_type in applicable:
+        if _strategy_applies_to_market(applicable, market_type):
             out.append(mod)
     return out
 
@@ -113,15 +157,38 @@ def _auto_strategy_statuses(db_path: str) -> Dict[str, str]:
         return {}
 
 
-def get_active_strategies(market_type: str, db_path: Optional[str] = None) -> List[Any]:
+def _is_stock_applicable(applicable: List[str]) -> bool:
+    """True iff this strategy can run on stock universes."""
+    return ("*" in applicable
+            or any(m in _STOCK_MARKETS for m in applicable))
+
+
+def _is_crypto_applicable(applicable: List[str]) -> bool:
+    """True iff this strategy can run on the crypto universe."""
+    return "*" in applicable or "crypto" in applicable
+
+
+def get_active_strategies(market_type: str,
+                          db_path: Optional[str] = None,
+                          *,
+                          enable_stocks: bool = True,
+                          enable_crypto: bool = False) -> List[Any]:
     """Discover applicable strategies and return the actively-trading set.
 
     Filtering:
       * Deprecated strategies (Phase 3) are excluded.
       * Auto-generated strategies are included only when their lifecycle
         status is `active`. Shadow strategies are discovered but returned
-        by `get_shadow_strategies()` instead — they generate predictions
-        for tracking but do not drive trades.
+        by `get_shadow_strategies()` instead.
+      * 2026-05-19 — per-profile asset-class flags. `enable_stocks=True`
+        keeps every stock-applicable strategy; `enable_crypto=True` keeps
+        every crypto-applicable strategy. A universal (`"*"`) strategy
+        qualifies under either flag. Defaults preserve current
+        behavior (stocks on, crypto off).
+
+    `market_type` is still consulted for `discover_strategies` (the
+    APPLICABLE_MARKETS list filter), but within-stock filtering is now
+    a no-op — any stock-applicable strategy runs on any stock profile.
     """
     deprecated: set = set()
     auto_status: Dict[str, str] = {}
@@ -130,8 +197,6 @@ def get_active_strategies(market_type: str, db_path: Optional[str] = None) -> Li
             from alpha_decay import list_deprecated
             deprecated = {d["strategy_type"] for d in list_deprecated(db_path)}
         except (ImportError, KeyError, AttributeError, OSError) as _dep_exc:
-            # Deprecated-strategy lookup; auto_status step below
-            # proceeds with empty set. Surface for follow-up.
             logger.debug(
                 "deprecated-strategy lookup failed: %s: %s",
                 type(_dep_exc).__name__, _dep_exc,
@@ -144,9 +209,19 @@ def get_active_strategies(market_type: str, db_path: Optional[str] = None) -> Li
         if not name or name in deprecated:
             continue
         if getattr(mod, "AUTO_GENERATED", False):
-            # Auto-generated strategy: only include when status == active
             if auto_status.get(name) != "active":
                 continue
+        applicable = getattr(mod, "APPLICABLE_MARKETS", [])
+        # Asset-class enablement gate (2026-05-19). A strategy is kept
+        # iff the operator has the relevant asset class enabled for
+        # this profile.
+        keep = False
+        if enable_stocks and _is_stock_applicable(applicable):
+            keep = True
+        if enable_crypto and _is_crypto_applicable(applicable):
+            keep = True
+        if not keep:
+            continue
         active.append(mod)
     return active
 

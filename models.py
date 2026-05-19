@@ -335,6 +335,15 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             # P4.1 of LONG_SHORT_PLAN.md — beta-targeted construction.
             ("trading_profiles", "target_book_beta", "REAL DEFAULT NULL"),
             ("trading_profiles", "enable_self_tuning", "INTEGER NOT NULL DEFAULT 1"),
+            # 2026-05-19 — explicit per-profile asset-class
+            # enablement flags. `enable_options` already existed; the
+            # other two complete the trio so the Settings UI shows
+            # operator-controllable Stocks / Options / Crypto toggles.
+            # Defaults preserve current behavior: every existing
+            # profile already trades stocks (default 1); no profile
+            # trades crypto (default 0).
+            ("trading_profiles", "enable_stocks", "INTEGER NOT NULL DEFAULT 1"),
+            ("trading_profiles", "enable_crypto", "INTEGER NOT NULL DEFAULT 0"),
             ("trading_profiles", "ai_provider", "TEXT NOT NULL DEFAULT 'anthropic'"),
             ("trading_profiles", "ai_model", "TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001'"),
             ("trading_profiles", "ai_api_key_enc", "TEXT NOT NULL DEFAULT ''"),
@@ -1581,6 +1590,10 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         enable_alt_data=bool(profile.get("enable_alt_data", 1)),
         enable_meta_model=bool(profile.get("enable_meta_model", 1)),
         enable_options=bool(profile.get("enable_options", 1)),
+        # 2026-05-19 — per-asset-class flags. Defaults match the
+        # new column defaults (stocks=on, crypto=off).
+        enable_stocks=bool(profile.get("enable_stocks", 1)),
+        enable_crypto=bool(profile.get("enable_crypto", 0)),
         strategy_type=profile.get("strategy_type") or "ai",
         # Item 1c — long-vol portfolio tail-risk hedge (default OFF)
         enable_long_vol_hedge=bool(

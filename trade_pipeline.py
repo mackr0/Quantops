@@ -1577,7 +1577,24 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
 
     market_type = ctx.segment if ctx is not None else "small"
 
-    update_status(_pid, "Running 16 strategies", "%d candidates" % len(filtered_candidates))
+    # 2026-05-19 — was hard-coded "Running 16 strategies". The
+    # actual count is dynamic (market_type / deprecation state /
+    # auto-generated strategies / per-profile asset-class flags).
+    # Read it from the registry honoring the profile's enable_stocks
+    # / enable_crypto opt-ins so the label tracks reality.
+    try:
+        from strategies import get_active_strategies as _get_active
+        _n_strategies = len(_get_active(
+            getattr(ctx, "segment", "largecap"),
+            db_path=getattr(ctx, "db_path", None),
+            enable_stocks=getattr(ctx, "enable_stocks", True),
+            enable_crypto=getattr(ctx, "enable_crypto", False),
+        ))
+    except Exception:
+        _n_strategies = 0
+    update_status(_pid,
+                  f"Running {_n_strategies} strategies",
+                  "%d candidates" % len(filtered_candidates))
     # ── STEP 3: Run strategy on ALL filtered candidates (free, no AI) ──
     # Note: blacklisted symbols flow through (they're blocked at the Step
     # 4.95 execution gate, not here). This keeps the AI's prediction

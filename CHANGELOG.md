@@ -17,6 +17,105 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Strategy applicability + explicit asset-class checkboxes (Stocks / Options / Crypto). Severity: medium (architectural cleanup; UI reflects reality of what each profile trades).
+
+Two related changes shipped together:
+
+### (a) AI is the picker — drop within-stock strategy filtering
+
+Before today, `strategies.discover_strategies(market_type)` required an exact match between a profile's `market_type` and each strategy's `APPLICABLE_MARKETS`. A strategy listing `["small", "midcap"]` was hard-walled off from `largecap` profiles — the AI never saw its signals. Operator: *"the system uses AI to make trade decisions; shouldn't the AI be able to make that choice?"* — correct, that was a pre-AI-era assumption.
+
+**New rule (`strategies._strategy_applies_to_market`):**
+- `"*"` in applicable → universal
+- Crypto profile → strategy must list `"crypto"`
+- Stock profile (any of `largecap` / `midcap` / `small` / `micro`) → strategy must list AT LEAST ONE stock market
+
+Stock-vs-crypto stays a real distinction (data sources differ). Within stocks, every stock-applicable strategy runs for every stock profile.
+
+Effect on the user's 13-profile largecap setup: **strategies per cycle 23 → 26** (3 newly included: `parabolic_exhaustion`, `short_term_reversal`, `short_squeeze_setup`). +~10–15% scan time; trades only when the new strategies actually find candidates.
+
+### (b) Per-profile asset-class checkboxes — explicit operator control
+
+New columns on `trading_profiles`:
+- `enable_stocks INTEGER NOT NULL DEFAULT 1` (every profile trades stocks)
+- `enable_crypto INTEGER NOT NULL DEFAULT 0` (no profile trades crypto until a real strategy ships)
+- `enable_options` already existed (default 1)
+
+`get_active_strategies(market_type, db_path, *, enable_stocks=True, enable_crypto=False)` honors the flags. A strategy is kept iff (`enable_stocks` AND stock-applicable) OR (`enable_crypto` AND crypto-applicable). UserContext carries the flags through (`build_user_context_from_profile` populates from the DB).
+
+**Settings UI (`templates/settings.html`) per-profile edit form** got a new "Asset Classes This Profile Trades" section with three checkboxes:
+- **Trade Stocks** (defaults ON) — 26 stock-applicable strategies run; AI weighs signals
+- **Trade Options** (defaults ON) — single-leg + multi-leg become available in the AI prompt
+- **Trade Crypto** (defaults OFF) — forward-looking; **no crypto-specific strategies exist today**, toggle is for the future
+
+Save handler reads the three checkbox values into `config_updates`.
+
+**Also fixed: hardcoded "Running 16 strategies" status line** at `trade_pipeline.py:1580`. Now reads `len(get_active_strategies(...))` at runtime, honoring the per-profile asset-class flags so the dashboard label tracks reality as strategies are added/removed or asset classes toggled.
+
+### Current profile state (verified post-migration)
+
+| Group | Profiles | enable_stocks | enable_options | enable_crypto |
+|---|---|---|---|---|
+| Baselines (no AI) | BuyHoldSPY, RandomA, RandomB | 1 | 0 | 0 |
+| AI-driven (full system + ablations) | FullSystemStandard, NoAltData, NoMetaModel, NoSelfTuning, NoAltData-NoMetaModel, 25K-Candidate, 25K-Replica, 250K-Conservative, 700K-Aggressive | 1 | 1 | 0 |
+| No-Options ablation | NoOptions | 1 | 0 | 0 |
+
+13 of 13 trade stocks; 9 of 13 trade options; 0 of 13 trade crypto. UI now reflects exactly that.
+
+### Docs updated
+
+- `docs/05_DATA_DICTIONARY.md` — `market_type` row clarified
+- `docs/04_TECHNICAL_REFERENCE.md` — `segments.py` row clarified
+
+### Regression tests
+
+`tests/test_strategy_applicability_2026_05_19.py` — 14 tests:
+- Every stock profile sees every stock-applicable strategy (4 parametrized — largecap/midcap/small/micro)
+- Crypto-only strategies don't run on stocks
+- Stock-only strategies don't run on crypto
+- The previously-walled-off 3 strategies appear in largecap's active list
+- Largecap strategy count equals midcap (was 23 vs 26 pre-fix)
+- Per-profile asset-class flag tests (4): `enable_stocks=False, enable_crypto=False` → []; `enable_stocks=True, enable_crypto=False` → only stock strategies; default flags preserve current behavior; etc.
+
+47 total tests pass across strategy / user_context / pipelines suites.
+
+---
+
+## 2026-05-19 PM — Killed the env-level Alpaca "master key" path entirely; options data flowing again. Severity: critical (active prod outage at the time of fix).
+
+**What changed.** Before today, `strategies.discover_strategies(market_type)` required an exact match between the profile's `market_type` and each strategy's `APPLICABLE_MARKETS`. A strategy listing `["small", "midcap"]` was hard-walled off from `largecap` profiles — the AI never saw its signals. Operator: *"the system uses AI to make trade decisions; shouldn't the AI be able to make that choice?"* — correct, that was a pre-AI-era assumption that doesn't fit the current architecture.
+
+**New rule (`strategies._strategy_applies_to_market`):**
+- `"*"` in applicable → universal, runs everywhere
+- Crypto profile → strategy must list `"crypto"`
+- Stock profile (any of `largecap` / `midcap` / `small` / `micro`) → strategy must list AT LEAST ONE stock market
+
+Stock-vs-crypto stays a real distinction (data sources genuinely differ — equities vs `BTC/USD`). Within stocks, every stock-applicable strategy runs for every stock profile.
+
+**Operational impact for current 13-profile setup (all `largecap`):**
+- Strategies per cycle: **23 → 26** (3 newly included: `parabolic_exhaustion`, `short_term_reversal`, `short_squeeze_setup`)
+- Scan time per cycle: +~10–15% (3 more strategies scan the same universe)
+- New trades from the additional strategies: only when they actually find candidates that pattern-match — if a largecap genuinely IS exhibiting parabolic exhaustion or a squeeze setup, the AI now sees that signal. Mostly the new strategies will return `[]` on largecaps and contribute zero, which is harmless.
+
+**Also fixed: the hardcoded "Running 16 strategies" status line** at `trade_pipeline.py:1580` that was misleading users. Now reads `get_active_strategies(ctx.segment).len()` at runtime so the dashboard label tracks the actual count as strategies are added/removed.
+
+**Settings UI** updated. The "Create New Profile" form's Market Type dropdown now includes explanatory text: *"Within stock markets the strategy mix is identical — the AI decides which signals matter. Use the label to organize profiles by intent. Crypto profiles are a separate code path."* So the operator isn't misled into thinking the dropdown choice changes which strategies run.
+
+**Docs updated:**
+- `docs/05_DATA_DICTIONARY.md` — `market_type` row reflects the new "interchangeable within stocks, real for stock-vs-crypto split" semantics
+- `docs/04_TECHNICAL_REFERENCE.md` — `segments.py` row + universe-load step note the change
+
+**Regression tests.** `tests/test_strategy_applicability_2026_05_19.py` — 11 tests:
+- Every stock profile (largecap/midcap/small/micro) sees every stock-applicable strategy (parametrized)
+- Crypto-only strategies don't run on stocks
+- Stock-only strategies don't run on crypto
+- Universal `"*"` runs everywhere
+- The previously-walled-off 3 strategies (`parabolic_exhaustion`, `short_term_reversal`, `short_squeeze_setup`) NOW appear in `get_active_strategies("largecap")`
+- Largecap strategy count equals midcap (was 23 vs 26 pre-fix; both equal post-fix)
+- Unknown market_type falls back to exact match (defensive)
+
+---
+
 ## 2026-05-19 PM — Killed the env-level Alpaca "master key" path entirely; options data flowing again. Severity: critical (active prod outage at the time of fix).
 
 **What broke (active prod outage).** Around 17:00 UTC operator noticed zero option trades despite OptionPipeline.execute being live since Phase 4c. Root cause: `options_oracle.get_options_oracle()` returned `{has_options: False}` for every symbol including SPY. The oracle calls `options_chain_alpaca.fetch_chain_alpaca` which calls `_resolve_alpaca_credentials` which returned the `.env` `ALPACA_API_KEY=PKZOLZ...` — and that key was returning HTTP 401 across every Alpaca endpoint (revoked or rotated server-side since this morning).

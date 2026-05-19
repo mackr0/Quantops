@@ -1299,6 +1299,11 @@ def save_profile(profile_id):
         "strategy_mean_reversion": 1 if form.get("strategy_mean_reversion") else 0,
         "strategy_gap_and_go": 1 if form.get("strategy_gap_and_go") else 0,
         "maga_mode": 1 if form.get("maga_mode") else 0,
+        # 2026-05-19 — per-asset-class enablement flags. Operator
+        # explicitly opts in/out of stocks / options / crypto.
+        "enable_stocks": 1 if form.get("enable_stocks") else 0,
+        "enable_options": 1 if form.get("enable_options") else 0,
+        "enable_crypto": 1 if form.get("enable_crypto") else 0,
         "enable_short_selling": 1 if form.get("enable_short_selling") else 0,
         "short_stop_loss_pct": float(form.get("short_stop_loss_pct", 0.08)),
         "short_take_profit_pct": float(form.get("short_take_profit_pct", 0.08)),

@@ -235,6 +235,17 @@
                     <option value="{{ mt_key }}">{{ mt_name }}</option>
                     {% endfor %}
                 </select>
+                <small style="color:#666;display:block;margin-top:0.25rem;">
+                    Within stock markets (Large/Mid/Small/Micro Cap),
+                    <strong>the strategy mix is identical</strong> — all
+                    stock-applicable strategies run for every stock profile;
+                    the AI decides which signals matter for the candidate.
+                    Use the label to organize profiles by intent
+                    (e.g., "Conservative Large Cap Income"). Crypto
+                    profiles are a separate code path (24/7 schedule,
+                    different data endpoints) and currently get only
+                    crypto-applicable strategies.
+                </small>
             </label>
         </div>
         <div class="grid">
@@ -551,6 +562,29 @@
                 </label>
             </div>
 
+            <h5 style="margin-top:1rem;">Asset Classes This Profile Trades</h5>
+            <p style="font-size:0.85rem;color:#666;margin-top:-0.5rem;">
+                Explicit per-asset-class enablement. The AI picks
+                signals from the strategies that match what you enable
+                here.
+            </p>
+            <label style="display:flex;align-items:flex-start;gap:0.5rem;">
+                <input type="checkbox" name="enable_stocks" value="1" style="flex-shrink:0;margin-top:0.2rem;"
+                       {{ 'checked' if prof.get('enable_stocks', 1) else '' }}>
+                <span><strong>Trade Stocks</strong><br><small style="color:#888;font-weight:normal;">All 26 stock-applicable strategies run; AI weighs their signals. Default ON.</small></span>
+            </label>
+            <label style="display:flex;align-items:flex-start;gap:0.5rem;">
+                <input type="checkbox" name="enable_options" value="1" style="flex-shrink:0;margin-top:0.2rem;"
+                       {{ 'checked' if prof.get('enable_options', 1) else '' }}>
+                <span><strong>Trade Options</strong><br><small style="color:#888;font-weight:normal;">Single-leg (OPTIONS) + multi-leg spreads (MULTILEG_OPEN) become available in the AI prompt. Default ON.</small></span>
+            </label>
+            <label style="display:flex;align-items:flex-start;gap:0.5rem;">
+                <input type="checkbox" name="enable_crypto" value="1" style="flex-shrink:0;margin-top:0.2rem;"
+                       {{ 'checked' if prof.get('enable_crypto', 0) else '' }}>
+                <span><strong>Trade Crypto</strong><br><small style="color:#888;font-weight:normal;">Crypto-applicable strategies + 24/7 data path. <strong>No crypto-specific strategies exist today</strong> — this toggle is forward-looking; turning it on won't add trades until a real crypto strategy ships. Default OFF.</small></span>
+            </label>
+
+            <h5 style="margin-top:1rem;">Short Selling</h5>
             <label style="display:flex;align-items:flex-start;gap:0.5rem;">
                 <input type="checkbox" name="enable_short_selling" value="1" style="flex-shrink:0;margin-top:0.2rem;"
                        {{ 'checked' if prof.enable_short_selling else '' }}>

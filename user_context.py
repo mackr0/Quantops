@@ -291,6 +291,13 @@ class UserContext:
     enable_alt_data: bool = True
     enable_meta_model: bool = True
     enable_options: bool = True
+    # 2026-05-19 — per-asset-class enablement flags. Operator
+    # controls which asset classes a profile trades. Defaults
+    # preserve current state: every existing profile already trades
+    # stocks; none trades crypto (no crypto strategies have a real
+    # thesis yet).
+    enable_stocks: bool = True
+    enable_crypto: bool = False
 
     # 2026-05-17 strategy_type: dispatches to a non-AI baseline
     # pipeline when set. 'ai' = normal scan-and-trade (default);

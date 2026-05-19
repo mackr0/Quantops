@@ -168,7 +168,7 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | `earnings_calendar.py` | Earnings date lookup with cache. |
 | `screener.py` | Universe scanning + sector rotation. |
 | `historical_universe_augment.py` | Daily diff of Alpaca's active asset list (survivorship-bias correction). |
-| `segments.py` | Live universe definitions per market type. |
+| `segments.py` | Live universe definitions per market type. Note: 2026-05-19 — within stock markets (largecap/midcap/small/micro) the strategy mix is identical; the label is for profile organization + the stock-vs-crypto data-source split, not behavior gating. See `strategies/__init__.py:_strategy_applies_to_market`. |
 | `segments_historical.py` | Frozen baseline for backtest. |
 
 ### 3g. Self-tuning + learning

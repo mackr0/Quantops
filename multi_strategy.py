@@ -43,7 +43,14 @@ def aggregate_candidates(ctx: Any, universe: List[str],
     from strategies import get_active_strategies
 
     market_type = getattr(ctx, "segment", "small")
-    strategies = get_active_strategies(market_type, db_path=db_path)
+    # 2026-05-19 — honor per-profile asset-class flags so a profile
+    # that has stocks disabled (and only crypto enabled, or vice
+    # versa) gets the right strategy mix.
+    strategies = get_active_strategies(
+        market_type, db_path=db_path,
+        enable_stocks=getattr(ctx, "enable_stocks", True),
+        enable_crypto=getattr(ctx, "enable_crypto", False),
+    )
 
     # When the profile cannot go short, SELL votes from long-only entry
     # strategies would otherwise be scored as bearish sentiment and bias
