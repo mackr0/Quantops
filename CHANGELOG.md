@@ -17,6 +17,25 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Backfill `alpaca_accounts` (3 rows) + link `trading_profiles.alpaca_account_id`. Severity: high (silent yfinance fallback for every non-profile-context data call; data-source-health alert fires every cycle).
+
+**The problem.** Post-reset, all 13 `trading_profiles` had their own per-profile Alpaca keys set but `alpaca_accounts` was empty (0 rows). The `Data Source Health` task fired on every cycle with `['alpaca_bars', 'alpaca_options', 'alpaca_news']` and emailed the operator. Trades from per-profile broker calls (`ctx.get_alpaca_api()` via `models.build_user_context_from_profile`) still worked because the resolver falls back to per-profile keys when `alpaca_account_id` is null — but any data call without a profile context (`market_data._fetch_via_alpaca`, the three `data_source_health.probe_alpaca_*` probes, etc.) reads from `alpaca_accounts` only and silently falls to yfinance. That violates the Alpaca-first data-source priority.
+
+**Root cause.** The shared/per-profile credential model is intentional: ≤3 physical paper accounts, N profiles per account. But the reset workflow left both the `alpaca_accounts` table and `trading_profiles.alpaca_account_id` empty. Per-profile keys filled in via the Settings UI populated `trading_profiles.alpaca_api_key_enc` only; nothing wrote the shared rows or set the FK.
+
+**The fix.** Verified via decrypt that the 13 per-profile keys collapse to exactly 3 distinct `(api_key, secret)` pairs matching the EXP-A1-/A2-/A3- naming convention (fp `f57241cc18` → profiles 12–15, fp `ec87d4a106` → profiles 16–20, fp `882ec612b7` → profiles 21–24). Transactionally on prod: (a) inserted 3 rows into `alpaca_accounts` named `A1`/`A2`/`A3` using one representative profile's encrypted blob from each group; (b) set `trading_profiles.alpaca_account_id` on all 13 rows to the matching shared row id. Per-profile `alpaca_api_key_enc`/`alpaca_secret_key_enc` columns kept in place as a redundant copy (resolver prefers the shared row when `alpaca_account_id` is set, so they're now dead but harmless). Master DB snapshotted to `quantopsai.db.bak-pre-alpaca-acct-backfill-1779222894` before mutation.
+
+**Verified.** Re-ran `probe_alpaca_bars` / `probe_alpaca_options` / `probe_alpaca_news` directly against the live env on prod — all 3 return `True` (5 SPY bars, 169 calls + 169 puts on the near-term expiration, 3 news items).
+
+**Why it wasn't caught.** No guardrail asserts that `alpaca_accounts` has at least one row matching every distinct per-profile credential pair, and no integration test forces the data-source-health probes through a fresh-reset state.
+
+**Follow-up (TODO):**
+- Add a startup invariant: if any `trading_profile.alpaca_api_key_enc` is set and `alpaca_accounts` is empty (or no profile has `alpaca_account_id` set), refuse to start and surface a loud error pointing at this fix.
+- Bake the `alpaca_accounts` backfill into `full_reset_2026_05_18.py` so the next reset can't reproduce this state.
+- Add `tests/test_alpaca_accounts_backfill_invariant.py` covering both checks.
+
+---
+
 ## 2026-05-19 PM — Equalise AI prompt across action types (stocks / options / multileg). Severity: medium (prompt-engineering — corrects asymmetric framing that biased AI toward plain stocks).
 
 **The problem.** After today's earlier fixes restored the options data path, AI cycles kept choosing plain stock shorts even when the prompt offered defined-risk bear_put_spread alternatives on the same symbols (BSX, TSLA, etc., with IV rank in the 50s — perfectly tradeable). Looking at the prompt source revealed why: asymmetric framing across action types.
