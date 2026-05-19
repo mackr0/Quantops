@@ -545,6 +545,13 @@
                 <span><strong>Trade Crypto</strong><br><small style="color:#888;font-weight:normal;">Crypto-applicable strategies + 24/7 data path. <strong>No crypto-specific strategies exist today</strong> — this toggle is forward-looking; turning it on won't add trades until a real crypto strategy ships. Default OFF.</small></span>
             </label>
 
+            <h5 style="margin-top:1rem;">Pipeline Refactor — Shadow Eval</h5>
+            <label style="display:flex;align-items:flex-start;gap:0.5rem;">
+                <input type="checkbox" name="enable_pipeline_shadow_eval" value="1" style="flex-shrink:0;margin-top:0.2rem;"
+                       {{ 'checked' if prof.get('enable_pipeline_shadow_eval', 0) else '' }}>
+                <span><strong>Enable Pipeline Shadow Eval</strong><br><small style="color:#888;font-weight:normal;">Read-only A/B of the new <code>Pipeline.run_cycle</code> dispatch against the legacy <code>trade_pipeline.run_trade_cycle</code>. Captures per-layer divergence (candidates, prompt, AI proposals, specialist verdict) to <code>pipeline_shadow_runs</code> for the <a href="/shadow">Shadow dashboard</a>. Adds ~$0.01–0.02/cycle to AI spend (one extra Gemini call per pipeline that has candidates). Turn on for one profile during soak; turn off after cutover. Default OFF.</small></span>
+            </label>
+
             <h5 style="margin-top:1rem;">Short Selling</h5>
             <label style="display:flex;align-items:flex-start;gap:0.5rem;">
                 <input type="checkbox" name="enable_short_selling" value="1" style="flex-shrink:0;margin-top:0.2rem;"

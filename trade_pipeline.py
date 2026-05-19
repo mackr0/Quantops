@@ -2539,6 +2539,29 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                      portfolio_reasoning, market_ctx, regime_info,
                      meta_stats=meta_stats, ensemble_result=ensemble_result)
 
+    # Scope C: shadow-eval the new Pipeline.run_cycle path against
+    # this legacy cycle. Read-only — no broker calls. Per-profile
+    # opt-in via ctx.enable_pipeline_shadow_eval; default OFF. Fail-
+    # soft: any exception is caught + logged inside shadow_compare
+    # so the legacy return below is unaffected.
+    try:
+        from pipelines.shadow import shadow_compare
+        _legacy_prompt = ai_response.get("prompt", "") if isinstance(ai_response, dict) else ""
+        shadow_compare(
+            ctx,
+            shortlist=shortlist,
+            legacy_prompt=_legacy_prompt,
+            legacy_ai_proposals=ai_trades or [],
+            legacy_details=details or [],
+        )
+    except Exception as _shadow_exc:
+        # Belt-and-suspenders: even the import or argument-prep
+        # failing must NOT break the legacy return.
+        logging.warning(
+            "pipeline shadow_compare outer-guard caught: %s: %s",
+            type(_shadow_exc).__name__, _shadow_exc,
+        )
+
     return result
 
 

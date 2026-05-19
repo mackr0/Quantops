@@ -366,6 +366,36 @@ def init_db(db_path=None):
                 completed_at TEXT NOT NULL DEFAULT (datetime('now')),
                 details TEXT
             );
+
+            -- 2026-05-19 — Scope C of the per-pipeline refactor:
+            -- shadow-eval the new Pipeline.run_cycle dispatch path
+            -- against the legacy trade_pipeline.run_trade_cycle.
+            -- Every cycle (when ctx.enable_pipeline_shadow_eval=1)
+            -- writes one row here capturing how the two paths'
+            -- specialist-routing decisions compared. Read-only —
+            -- never affects broker calls or journal trades.
+            -- Queryable later: "over the last N cycles, how often
+            -- did the two paths agree on which trades to approve?"
+            CREATE TABLE IF NOT EXISTS pipeline_shadow_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                cycle_id TEXT,
+                legacy_proposal_count INTEGER NOT NULL DEFAULT 0,
+                pipeline_proposal_count INTEGER NOT NULL DEFAULT 0,
+                legacy_approved_count INTEGER NOT NULL DEFAULT 0,
+                pipeline_approved_count INTEGER NOT NULL DEFAULT 0,
+                legacy_vetoed_count INTEGER NOT NULL DEFAULT 0,
+                pipeline_vetoed_count INTEGER NOT NULL DEFAULT 0,
+                legacy_symbols TEXT,
+                pipeline_symbols TEXT,
+                symbols_diff TEXT,
+                verdict_diff TEXT,
+                duration_ms REAL,
+                success INTEGER NOT NULL DEFAULT 1,
+                error_message TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_pipeline_shadow_runs_ts
+                ON pipeline_shadow_runs(timestamp DESC);
         """)
 
         # Universal schema migration: ensures every column defined in the

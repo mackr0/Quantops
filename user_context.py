@@ -298,6 +298,12 @@ class UserContext:
     # thesis yet).
     enable_stocks: bool = True
     enable_crypto: bool = False
+    # 2026-05-19 Scope C: per-profile opt-in to shadow-eval the new
+    # Pipeline.run_cycle dispatch path against the legacy
+    # trade_pipeline.run_trade_cycle dispatch. Read-only; no broker
+    # impact. Default OFF until operator starts soak on a specific
+    # profile.
+    enable_pipeline_shadow_eval: bool = False
 
     # 2026-05-17 strategy_type: dispatches to a non-AI baseline
     # pipeline when set. 'ai' = normal scan-and-trade (default);

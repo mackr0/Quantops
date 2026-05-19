@@ -344,6 +344,14 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             # trades crypto (default 0).
             ("trading_profiles", "enable_stocks", "INTEGER NOT NULL DEFAULT 1"),
             ("trading_profiles", "enable_crypto", "INTEGER NOT NULL DEFAULT 0"),
+            # 2026-05-19 — Scope C: per-profile opt-in to shadow eval
+            # of the new Pipeline.run_cycle dispatch path. When set,
+            # `trade_pipeline.run_trade_cycle` calls
+            # `pipelines.shadow.shadow_compare` at end-of-cycle to
+            # log how the new pipeline path would have classified
+            # the same proposals — read-only, no broker impact.
+            # Default OFF; operator turns it on per profile for soak.
+            ("trading_profiles", "enable_pipeline_shadow_eval", "INTEGER NOT NULL DEFAULT 0"),
             ("trading_profiles", "ai_provider", "TEXT NOT NULL DEFAULT 'anthropic'"),
             ("trading_profiles", "ai_model", "TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001'"),
             ("trading_profiles", "ai_api_key_enc", "TEXT NOT NULL DEFAULT ''"),
@@ -1322,6 +1330,17 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         # encrypted per-provider API keys. Edited from the settings
         # page and consumed by ai_providers.call_ai shadow dispatch.
         "enable_shadow_eval", "shadow_models", "shadow_api_keys_enc",
+        # 2026-05-19 — per-asset-class enablement flags. The settings
+        # POST sends these; without them on the allowlist they get
+        # silently dropped (same bug class as the 2026-04-28
+        # disabled_specialists incident). enable_options already
+        # above; adding the other two.
+        "enable_stocks", "enable_crypto",
+        # 2026-05-19 Scope C of the per-pipeline refactor — per-
+        # profile opt-in to read-only A/B of the new
+        # Pipeline.run_cycle dispatch path. See
+        # pipelines/shadow.py.
+        "enable_pipeline_shadow_eval",
     }
     updates = {}
     rejected = []
@@ -1616,6 +1635,8 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         # new column defaults (stocks=on, crypto=off).
         enable_stocks=bool(profile.get("enable_stocks", 1)),
         enable_crypto=bool(profile.get("enable_crypto", 0)),
+        enable_pipeline_shadow_eval=bool(
+            profile.get("enable_pipeline_shadow_eval", 0)),
         strategy_type=profile.get("strategy_type") or "ai",
         # Item 1c — long-vol portfolio tail-risk hedge (default OFF)
         enable_long_vol_hedge=bool(

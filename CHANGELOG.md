@@ -17,6 +17,50 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Scope C shadow harness (cross-path verification before pipeline cutover). Severity: medium (read-only; enables the cutover from legacy dispatch to `Pipeline.run_cycle` to ship with confidence).
+
+**The goal.** The per-pipeline refactor (`StockPipeline` + `OptionPipeline`) is end-to-end runnable but the production scheduler still uses the legacy `trade_pipeline.run_trade_cycle` dispatch. Cutting over directly would conflate "the pipeline path works" with "the pipeline path produces the same decisions" — those are different claims. Scope C captures the second one via a read-only A/B that runs every cycle the legacy path executes.
+
+**What's in place.**
+
+| Layer | File | What |
+|---|---|---|
+| Schema | `journal.py` | `pipeline_shadow_runs` table — one row per cycle: candidates / prompts / proposals / verdict counts + JSON-blob per-layer diffs + cost / duration / success / error_message |
+| Config | `models.py` + `user_context.py` | `enable_pipeline_shadow_eval` migration on `trading_profiles` + field on `UserContext` (default OFF) |
+| Settings UI | `templates/settings.html` + `views.py` | Per-profile checkbox under "Pipeline Refactor — Shadow Eval" + allowlist entry in `update_trading_profile` so the POST actually persists |
+| Harness | `pipelines/shadow.py` | `shadow_compare(ctx, shortlist, legacy_prompt, legacy_ai_proposals, legacy_details, cycle_id)` — runs `StockPipeline` + `OptionPipeline` through candidates → prompt → `decide` → `route_to_specialists` and diffs against the legacy outputs. STOPS before `execute()` — never submits broker orders. Fail-soft at every layer; total crash falls through to a `success=0` row with `error_message`. Kill-switches: per-profile flag OR env `AI_PIPELINE_SHADOW_EVAL=1` |
+| Hook | `trade_pipeline.py` | Single call at the end of `run_trade_cycle`, wrapped in outer try/except so even a top-level shadow failure cannot impact the legacy return |
+| AI plumbing | `ai_analyst.py` | `ai_select_trades` now attaches `prompt` to the return dict so the harness can capture & digest the legacy prompt |
+| Dashboard | `views.py` + `templates/shadow.html` + `templates/base.html` nav | `/shadow` route: per-profile rolling agreement %, lifetime shadow-AI cost, recent-cycle table with per-layer divergence counts |
+
+**The per-layer comparison.**
+- **Layer 1 — Candidates.** Legacy's combined shortlist vs `StockPipeline.generate_candidates` ∪ `OptionPipeline.generate_candidates`. Records `only_in_legacy` / `only_in_pipeline` / `in_both`.
+- **Layer 2 — Prompts.** Legacy's one combined prompt vs each pipeline's separate prompt. Stores sha256 digest + char length (full prompts too big to log every cycle).
+- **Layer 3 — AI proposals.** Legacy's mixed-action proposals vs pipeline's union of stock-side + option-side proposals.
+- **Layer 4 — Specialist verdict.** Legacy's per-symbol classification (submitted / vetoed / rejected / unknown derived from `details`) vs the pipeline's `SpecialistVerdict.approved` ∪ `vetoed` from both pipelines. `agreement_pct` = 1 − (mismatched-symbols / in-both).
+
+**Critical contracts (load-bearing):**
+1. **No broker calls.** `shadow_compare` invokes `generate_candidates → build_prompt → decide → route_to_specialists` and STOPS — never calls `pipeline.execute()`. Pinned by `test_shadow_never_calls_execute` (the spy's `execute()` raises if invoked).
+2. **No legacy-flow impact.** Every layer is wrapped, the top of the function is wrapped, the row insert is wrapped, AND the call site in `trade_pipeline.py` is wrapped. Four nested fail-soft guards. Pinned by `test_failsoft_on_total_crash_writes_error_row` and `test_failsoft_when_db_write_fails`.
+3. **Default OFF.** Per-profile + env both default to off; cost only fires when an operator explicitly opts in for soak. Pinned by `test_killswitch_off_writes_nothing_and_calls_nothing` (no DB row, no pipeline instantiation).
+
+**Tests.** `tests/test_pipeline_shadow_eval_2026_05_19.py` — **9 tests, all green:**
+- Kill-switch off → nothing happens
+- Env override force-enables when per-profile flag off
+- Happy path full payload populates all 4 layers
+- Fail-soft on `decide` crash (sub-level guard catches)
+- Fail-soft on top-level crash (outer guard writes `success=0` row)
+- Fail-soft on DB write failure (table missing → no exception escapes)
+- Never calls `execute()` (the spied method asserts on call)
+- Verdict diff captures `only_in_legacy` / `only_in_pipeline` and computes `agreement_pct`
+- Route-layer crash on one pipeline doesn't break the row write
+
+**Adjacent latent bug fixed.** While auditing the settings POST allowlist for the new `enable_pipeline_shadow_eval` field, found that `enable_stocks` and `enable_crypto` were ALSO missing — meaning per-asset-class toggles posted from the UI have been silently dropped since they shipped (2026-05-19 AM). Added all three to `allowed_cols` in `models.update_trading_profile` in the same patch. The 2026-04-28 `disabled_specialists` allowlist-omission incident is the precedent; identical pattern.
+
+**Soak plan.** Flip `enable_pipeline_shadow_eval` on for one profile via the Settings UI. After 1–2 trading days, check the `/shadow` dashboard. Target: verdict-layer `agreement_pct ≥ 95%` with `layers_with_divergence ≤ 1` on each cycle. If green, swap the `multi_scheduler` dispatch to `Pipeline.run_cycle` and remove the hook from `trade_pipeline.run_trade_cycle`. If red, the per-layer JSON points at exactly which layer needs investigation.
+
+---
+
 ## 2026-05-19 PM — Permanent guardrails for the `alpaca_accounts` empty-table outage. Severity: high (closes the class of bugs that caused this morning's silent yfinance fallback).
 
 **Background.** Today's earlier entry documented a one-shot DB-state fix: backfilling 3 rows into `alpaca_accounts` and linking all 13 `trading_profiles.alpaca_account_id`. This entry is the structural follow-up that makes the broken state un-shippable from now on.

@@ -67,7 +67,7 @@ The OptionPipeline + StockPipeline stubs (formerly listed here) were finished in
 | `StockPipeline.decide` | ✓ implemented — same shape as option side, filters to stock-side actions |
 | `StockPipeline.execute` | ✓ implemented — loops verdict.approved → `trader.execute_trade`; classifies into submitted/rejected/skipped/errors |
 
-Both pipelines are now **runnable end-to-end via `.run_cycle(ctx)`**. Production scheduler still uses the legacy `trade_pipeline.run_trade_cycle` dispatch path — the cutover (scope C) is a separate change requiring shadow-mode soak.
+Both pipelines are now **runnable end-to-end via `.run_cycle(ctx)`**. Production scheduler still uses the legacy `trade_pipeline.run_trade_cycle` dispatch path. Scope C **shadow harness** is now in place (see §3.5 below); the cutover itself remains pending until soak validates verdict-layer agreement &gt; 95%.
 
 Tests in `tests/test_pipelines_b_complete_2026_05_19.py` pin per-method behavior + the full `run_cycle` composition. 200 tests across the full pipeline suite pass.
 
@@ -121,9 +121,10 @@ Ordered by what unblocks downstream work.
 
 ### 3.5 Scheduler cutover from legacy dispatch to `Pipeline.run_cycle`
 
-- This is the big one. Requires StockPipeline to also have its STUBs filled (currently `StockPipeline.generate_candidates`, `decide`, `execute` are all `NotImplementedError`).
-- Once both pipelines are end-to-end runnable, `multi_scheduler` can dispatch via `for p in get_pipelines_for_profile(ctx): p.run_cycle(ctx)` instead of calling `trade_pipeline.run_trade_cycle` directly.
-- Test: A/B comparison cycle (run both legacy and pipeline path on the same ctx and assert identical outputs). Soak-test in a sandbox profile before cutting over production.
+- This is the big one. Both pipelines are now end-to-end runnable (done in scope B); the remaining work is the **cutover with confidence**.
+- **Shadow harness (scope C) — DONE 2026-05-19.** `pipelines/shadow.py` runs `StockPipeline` + `OptionPipeline` through candidates → prompt → `decide` → `route_to_specialists` in parallel with the legacy `trade_pipeline.run_trade_cycle` and writes one row per cycle to `pipeline_shadow_runs` capturing per-layer divergence (candidates symbol diff, prompt digests, AI proposal diff, specialist verdict diff). Read-only — shadow STOPS before `execute()` so it never submits broker orders. Per-profile opt-in via `enable_pipeline_shadow_eval` (Settings UI checkbox or DB column); also force-enable globally via `AI_PIPELINE_SHADOW_EVAL=1`. Fail-soft: every layer guarded, top-level guarded, write guarded — a shadow crash NEVER affects the legacy return. Dashboard at `/shadow` aggregates rolling agreement % and shadow AI cost per profile. Cost: ~$0.01–0.02/cycle per shadow-enabled profile (one extra Gemini call per pipeline with candidates).
+- **Cutover criteria (remaining):** turn shadow on for one profile for 1–2 trading days; verify verdict-layer `agreement_pct ≥ 95%` with no critical-layer divergence; if green, switch `multi_scheduler` dispatch to `for p in get_pipelines_for_profile(ctx): p.run_cycle(ctx)` and remove the shadow hook from `trade_pipeline.run_trade_cycle`.
+- **Tests:** `tests/test_pipeline_shadow_eval_2026_05_19.py` (9 tests, all green) pins the kill-switch behavior, fail-soft contracts (decide crash, total crash, DB write failure), the "never calls execute" invariant, and per-layer accounting (verdict mismatches, agreement %).
 
 ### 3.6 Build dashboard panel for per-position Greeks
 
@@ -148,7 +149,8 @@ When EVERY box below ticks, options work is done. Until then it isn't.
 - [ ] Phase 5c backfill runs nightly; no resolved option prediction is using underlying-price math by accident.
 - [ ] Single-leg `OPTIONS` action flows through `OptionPipeline.execute`, not the legacy elif branch.
 - [x] StockPipeline also fully implemented. **Done 2026-05-19 (scope B).**
-- [ ] Multi-scheduler can dispatch via `Pipeline.run_cycle` (scope C — requires shadow-mode soak before cutover).
+- [x] **Shadow harness in place** (`pipelines/shadow.py`, hooked into `trade_pipeline.run_trade_cycle`; dashboard at `/shadow`). Read-only A/B that captures per-layer divergence between legacy and `Pipeline.run_cycle` dispatch. **Done 2026-05-19 (scope C).** Tests: `tests/test_pipeline_shadow_eval_2026_05_19.py`.
+- [ ] Multi-scheduler dispatch switched from `trade_pipeline.run_trade_cycle` to `Pipeline.run_cycle` (requires shadow-soak agreement ≥ 95% on one profile for 1–2 trading days first).
 - [ ] Dashboard renders a per-position Greeks panel.
 - [ ] Per-cycle IV-rank degradation alarm fires loudly when >80% of lookups return None.
 - [ ] Every entry above has a regression test referenced by name in CHANGELOG.

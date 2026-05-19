@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>Pipeline Shadow Eval</h2>
+<p class="muted">
+    Per-profile comparison of the legacy
+    <code>trade_pipeline.run_trade_cycle</code> dispatch against
+    the new <code>Pipeline.run_cycle</code> dispatch. Read-only —
+    shadow code never submits broker orders. Captures every layer
+    (candidates → prompt → AI proposals → specialist verdict).
+    Opt-in per profile via the <em>Enable Pipeline Shadow Eval</em>
+    flag on the profile edit page.
+</p>
+
+{% if per_profile %}
+    {% for entry in per_profile %}
+    <article>
+        <header>
+            <h3 style="margin:0;">{{ entry.profile.name }}
+                <small class="muted">
+                    {{ entry.row_count }} cycle{{ 's' if entry.row_count != 1 else '' }} captured
+                </small>
+            </h3>
+        </header>
+
+        <div class="grid">
+            <div>
+                <strong>Rolling agreement (last 20)</strong><br>
+                {% if entry.rolling_agreement_pct is not none %}
+                <span style="font-size:1.4rem;">{{ entry.rolling_agreement_pct }}%</span>
+                <small class="muted">verdict-layer agreement between legacy and pipeline paths</small>
+                {% else %}
+                <span class="muted">(no comparable verdicts yet)</span>
+                {% endif %}
+            </div>
+            <div>
+                <strong>Shadow AI cost (lifetime)</strong><br>
+                <span style="font-size:1.4rem;">${{ "%.4f"|format(entry.total_shadow_cost_usd) }}</span>
+                <small class="muted">extra spend from the pipeline-path AI calls</small>
+            </div>
+            <div>
+                <strong>Status</strong><br>
+                {% if entry.shadow_eval_enabled %}
+                <span class="pnl-pos">Enabled</span> — soaking
+                {% else %}
+                <span class="muted">Disabled</span> — flip the per-profile flag to enable
+                {% endif %}
+            </div>
+        </div>
+
+        <details style="margin-top:1rem;">
+            <summary>Recent cycles ({{ entry.row_count }})</summary>
+            <div class="overflow-auto">
+                <table class="striped">
+                    <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>Legacy props</th>
+                            <th>Pipeline props</th>
+                            <th>Legacy approved</th>
+                            <th>Pipeline approved</th>
+                            <th>Agreement %</th>
+                            <th>Layers diverged</th>
+                            <th>Cost</th>
+                            <th>Success</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {% for r in entry.rows %}
+                        <tr>
+                            <td><small>{{ r.timestamp }}</small></td>
+                            <td>{{ r.legacy_proposal_count }}</td>
+                            <td>{{ r.pipeline_proposal_count }}</td>
+                            <td>{{ r.legacy_approved_count }}</td>
+                            <td>{{ r.pipeline_approved_count }}</td>
+                            <td>{% if r.agreement_pct is not none %}{{ r.agreement_pct }}%{% else %}<span class="muted">—</span>{% endif %}</td>
+                            <td>{{ r.layers_with_divergence }}</td>
+                            <td><small>${{ "%.4f"|format(r.shadow_ai_cost_usd or 0) }}</small></td>
+                            <td>{% if r.success %}<span class="pnl-pos">✓</span>{% else %}<span class="pnl-neg">✗ {{ (r.error_message or '')|truncate(60) }}</span>{% endif %}</td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    </article>
+    {% endfor %}
+{% else %}
+<article>
+    <p>No shadow-eval data yet. Turn on
+    <strong>Enable Pipeline Shadow Eval</strong> on a profile's
+    edit page to start the soak. The harness will then write one
+    row per cycle here.</p>
+    <p class="muted">
+        Recommended soak: turn on for one profile first, let it run
+        for 1-2 trading days, review the agreement % and per-layer
+        divergence breakdown above. If &gt;95% verdict agreement
+        with no critical-layer divergence, the cutover from legacy
+        to <code>Pipeline.run_cycle</code> dispatch is safe.
+    </p>
+</article>
+{% endif %}
+
+{% endblock %}

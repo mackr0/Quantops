@@ -576,8 +576,15 @@ def ai_select_trades(candidates_data, portfolio_state, market_context, ctx=None)
             "pass_this_cycle": True,
         }
 
-    return _validate_ai_trades(result, candidates_data, ctx,
-                                 portfolio_state=portfolio_state)
+    validated = _validate_ai_trades(result, candidates_data, ctx,
+                                     portfolio_state=portfolio_state)
+    # 2026-05-19 Scope C: attach the prompt to the return dict so
+    # the shadow-eval harness can capture/digest it for cross-path
+    # comparison. Non-breaking — existing callers ignore unknown
+    # keys.
+    if isinstance(validated, dict):
+        validated["prompt"] = prompt
+    return validated
 
 
 def _parse_ai_response_tolerant(raw: str) -> dict:
