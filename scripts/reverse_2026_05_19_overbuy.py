@@ -72,31 +72,10 @@ def _already_reversed(db: str, symbol: str) -> bool:
 
 
 def _get_ctx(profile_id: int):
-    """Build a minimal ctx object the strategy helpers need."""
-    import sqlite3
-    from types import SimpleNamespace
-    with closing(sqlite3.connect("/opt/quantopsai/quantopsai.db")) as conn:
-        conn.row_factory = sqlite3.Row
-        prof = dict(conn.execute(
-            "SELECT * FROM trading_profiles WHERE id = ?", (profile_id,),
-        ).fetchone())
-        acct_id = prof["alpaca_account_id"]
-        acct = dict(conn.execute(
-            "SELECT * FROM alpaca_accounts WHERE id = ?", (acct_id,),
-        ).fetchone())
-    return SimpleNamespace(
-        user_id=prof["user_id"],
-        profile_id=profile_id,
-        segment=prof.get("market_type") or "largecap",
-        display_name=prof["name"],
-        db_path=_profile_db_path(profile_id),
-        # Per-profile Alpaca credentials live on alpaca_accounts —
-        # fall back to per-profile fields if alpaca_accounts table
-        # uses different column names.
-        alpaca_account_id=acct_id,
-        is_virtual=bool(prof.get("is_virtual")),
-        initial_capital=float(prof.get("initial_capital") or 0),
-    )
+    """Build the full UserContext via the canonical helper so
+    get_alpaca_api() resolves to the right per-profile credentials."""
+    from models import build_user_context_from_profile
+    return build_user_context_from_profile(profile_id)
 
 
 def main():
