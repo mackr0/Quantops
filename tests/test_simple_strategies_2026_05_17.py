@@ -101,21 +101,24 @@ class TestDispatch:
 # ─────────────────────────────────────────────────────────────────────
 
 class TestBuyHoldSpy:
-    def test_day_one_buys_spy_with_equity(self):
-        """No existing SPY position → buy ~95% of equity in SPY."""
+    """Contract (post-2026-05-19 bug fix): run_buy_hold_spy fires
+    ONCE per profile lifetime, sizing against per-profile virtual
+    equity (NOT shared Alpaca account equity). Every subsequent
+    invocation is a no-op."""
+
+    def test_first_fire_buys_spy_with_virtual_equity(self):
         from simple_strategies import run_buy_hold_spy
-        ctx = _ctx()
+        ctx = _ctx()  # initial_capital=333_000
         api = _stub_api(price_map={"SPY": 500.0}, positions=[])
         with patch("client.get_api", return_value=api), patch(
-            "client.get_account_info", return_value=api._account,
-        ), patch("client.get_positions", return_value=[]), patch(
-            "journal.log_trade",
-        ) as fake_log_trade:
+            "simple_strategies._has_prior_strategy_entry", return_value=False,
+        ), patch(
+            "simple_strategies._virtual_equity", return_value=333_000.0,
+        ), patch("journal.log_trade") as fake_log_trade:
             summary = run_buy_hold_spy(ctx)
         assert summary["buys"] == 1
         assert summary["errors"] == 0
-        # equity=333k, price=500, buffer 5% → buy 632 shares
-        # (333_000 * 0.95 / 500 = 632.7 → int 632)
+        # 333_000 * 0.95 / 500 = 632
         api.submit_order.assert_called_once()
         call_kwargs = api.submit_order.call_args.kwargs
         assert call_kwargs["symbol"] == "SPY"
@@ -123,40 +126,31 @@ class TestBuyHoldSpy:
         assert call_kwargs["qty"] == 632
         fake_log_trade.assert_called_once()
         log_kwargs = fake_log_trade.call_args.kwargs
-        assert log_kwargs["order_id"].startswith("ord-SPY-buy-")
         assert log_kwargs["strategy"] == "buy_hold_spy"
 
-    def test_already_holds_spy_within_drift_band_holds(self):
-        """SPY weight already ≈ 100% → no order."""
-        from simple_strategies import run_buy_hold_spy
-        ctx = _ctx()
-        # 632 shares × $500 = $316,000 ≈ 95% of $333,000 equity
-        positions = [SimpleNamespace(symbol="SPY", qty=632)]
-        api = _stub_api(price_map={"SPY": 500.0}, positions=positions)
-        with patch("client.get_api", return_value=api), patch(
-            "client.get_account_info",
-            return_value={"equity": 333_000.0, "cash": 17_000.0,
-                          "buying_power": 17_000.0,
-                          "portfolio_value": 333_000.0, "status": "ACTIVE"},
-        ), patch("client.get_positions", return_value=positions), patch(
-            "journal.log_trade",
-        ) as fake_log_trade:
-            summary = run_buy_hold_spy(ctx)
-        assert summary["holds"] == 1
-        assert summary["buys"] == 0
-        api.submit_order.assert_not_called()
-        fake_log_trade.assert_not_called()
-
-    def test_zero_equity_errors_no_order(self):
+    def test_prior_entry_makes_subsequent_runs_no_op(self):
+        """Once any 'buy_hold_spy' trade is in the journal, every
+        future call must be a no-op (holds=1, zero broker contact)."""
         from simple_strategies import run_buy_hold_spy
         ctx = _ctx()
         api = _stub_api(price_map={"SPY": 500.0})
         with patch("client.get_api", return_value=api), patch(
-            "client.get_account_info",
-            return_value={"equity": 0.0, "cash": 0.0,
-                          "buying_power": 0.0,
-                          "portfolio_value": 0.0, "status": "ACTIVE"},
-        ), patch("client.get_positions", return_value=[]):
+            "simple_strategies._has_prior_strategy_entry", return_value=True,
+        ), patch("journal.log_trade") as fake_log_trade:
+            summary = run_buy_hold_spy(ctx)
+        assert summary["holds"] == 1
+        assert summary["buys"] == 0
+        api.submit_order.assert_not_called()
+        api.get_latest_trade.assert_not_called()  # never even fetched price
+        fake_log_trade.assert_not_called()
+
+    def test_zero_virtual_equity_errors_no_order(self):
+        from simple_strategies import run_buy_hold_spy
+        ctx = _ctx()
+        api = _stub_api(price_map={"SPY": 500.0})
+        with patch("client.get_api", return_value=api), patch(
+            "simple_strategies._has_prior_strategy_entry", return_value=False,
+        ), patch("simple_strategies._virtual_equity", return_value=0.0):
             summary = run_buy_hold_spy(ctx)
         assert summary["errors"] == 1
         api.submit_order.assert_not_called()
@@ -167,11 +161,8 @@ class TestBuyHoldSpy:
         api = MagicMock()
         api.get_latest_trade.side_effect = OSError("network down")
         with patch("client.get_api", return_value=api), patch(
-            "client.get_account_info",
-            return_value={"equity": 333_000.0, "cash": 333_000.0,
-                          "buying_power": 333_000.0,
-                          "portfolio_value": 333_000.0, "status": "ACTIVE"},
-        ), patch("client.get_positions", return_value=[]):
+            "simple_strategies._has_prior_strategy_entry", return_value=False,
+        ), patch("simple_strategies._virtual_equity", return_value=333_000.0):
             summary = run_buy_hold_spy(ctx)
         assert summary["errors"] == 1
         api.submit_order.assert_not_called()
@@ -182,109 +173,92 @@ class TestBuyHoldSpy:
 # ─────────────────────────────────────────────────────────────────────
 
 class TestRandomStockOfDay:
-    def test_picks_are_deterministic_per_profile_date(self):
-        """Same (profile_id, date) → same picks every call."""
-        from simple_strategies import _pick_random_symbols
-        universe = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA",
-                    "TSLA", "AMD", "INTC", "QCOM"]
-        picks1 = _pick_random_symbols(42, "2026-05-17", universe, 5)
-        picks2 = _pick_random_symbols(42, "2026-05-17", universe, 5)
-        assert picks1 == picks2
+    """Contract (post-2026-05-19 bug fix): run_random_stock_of_day
+    fires ONCE per profile lifetime — picks 5 symbols deterministically
+    by profile_id alone (NOT date), buys equal-weighted from per-
+    profile virtual equity, then holds FOREVER. No daily rotation.
+    Every subsequent invocation is a no-op."""
 
-    def test_picks_differ_across_profiles_same_date(self):
-        """Different profile_id → different random pick (almost
-        always; sample of 5 from 10 → not strictly guaranteed but
-        with these seeds they differ)."""
+    def test_picks_are_stable_across_days_for_same_profile(self):
+        """Same profile_id → same picks regardless of when called.
+        The fix dropped the date component from the seed."""
         from simple_strategies import _pick_random_symbols
         universe = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA",
                     "TSLA", "AMD", "INTC", "QCOM"]
-        p1 = _pick_random_symbols(1, "2026-05-17", universe, 5)
-        p2 = _pick_random_symbols(2, "2026-05-17", universe, 5)
-        # Same content possible by chance; assert ordering at least
-        # differs (RNG is fully deterministic so order is stable per
-        # seed).
+        p1 = _pick_random_symbols(42, universe, 5)
+        p2 = _pick_random_symbols(42, universe, 5)
+        assert p1 == p2
+
+    def test_picks_differ_across_profiles(self):
+        from simple_strategies import _pick_random_symbols
+        universe = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA",
+                    "TSLA", "AMD", "INTC", "QCOM"]
+        p1 = _pick_random_symbols(1, universe, 5)
+        p2 = _pick_random_symbols(2, universe, 5)
         assert p1 != p2
 
-    def test_picks_differ_across_dates_same_profile(self):
-        from simple_strategies import _pick_random_symbols
-        universe = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA",
-                    "TSLA", "AMD", "INTC", "QCOM"]
-        d1 = _pick_random_symbols(42, "2026-05-17", universe, 5)
-        d2 = _pick_random_symbols(42, "2026-05-18", universe, 5)
-        assert d1 != d2
-
-    def test_first_run_no_positions_buys_today_picks(self):
-        """Fresh profile with no positions → buys today's 5 picks."""
+    def test_first_fire_buys_initial_picks(self):
         from simple_strategies import run_random_stock_of_day
         ctx = _ctx(strategy_type="random")
-        api = _stub_api(
-            price_map={s: 100.0 for s in (
-                "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA",
-                "TSLA", "AMD", "INTC", "QCOM", "AVGO", "TXN",
-                "MU", "ADI", "NXPI", "KLAC", "LRCX", "AMAT",
-                "ASML", "CRM", "ORCL", "ADBE", "NOW", "INTU",
-                "WDAY", "TEAM", "ZM", "CDNS", "SNPS", "ANSS",
-                "PTC", "FICO", "CPRT", "CSGP", "VRSK", "NFLX",
-                "DIS", "CMCSA", "UBER", "BKNG", "CSCO", "IBM",
-                "ACN", "DELL", "HPQ", "V", "MA", "PYPL",
-                "FIS", "FISV", "GPN", "ADP", "PAYX", "SQ",
-                "COF", "AXP", "JPM", "BAC", "WFC", "C", "GS",
-                "MS", "USB", "PNC", "TFC", "SCHW", "BLK",
-                "BA", "RTX", "LMT", "NOC", "GD", "GE", "HON",
-                "CAT", "DE", "MMM", "ITW", "EMR", "ETN", "ROK",
-                "ISRG", "DXCM", "ALGN", "IDXX", "ZBH", "SYK",
-                "MDT", "ABT", "BSX", "EW", "TMO", "DHR", "A",
-                "BIO", "IQV", "VRTX", "REGN", "AMGN", "GILD",
-                "BIIB", "BMY", "LLY", "PFE", "MRK", "JNJ",
-                "ABBV", "UNH", "CI", "HUM", "CNC", "MOH", "ELV",
-                "HCA", "THC", "UHS", "DVA", "XOM", "CVX",
-            )},
-            positions=[],
-        )
+        from segments import LARGE_CAP_UNIVERSE
+        price_map = {s: 100.0 for s in LARGE_CAP_UNIVERSE}
+        api = _stub_api(price_map=price_map, positions=[])
         with patch("client.get_api", return_value=api), patch(
-            "client.get_account_info", return_value=api._account,
-        ), patch("client.get_positions", return_value=[]), patch(
-            "journal.log_trade",
-        ) as fake_log_trade:
+            "simple_strategies._has_prior_strategy_entry", return_value=False,
+        ), patch(
+            "simple_strategies._virtual_equity", return_value=333_000.0,
+        ), patch("journal.log_trade") as fake_log_trade:
             summary = run_random_stock_of_day(ctx)
         assert summary["buys"] == 5
         assert summary["sells"] == 0
         assert fake_log_trade.call_count == 5
-        # Each log entry must have an order_id (perfect-matching invariant)
+        # Each log row carries the strategy tag the fire-once guard reads
         for call in fake_log_trade.call_args_list:
-            assert call.kwargs["order_id"].startswith("ord-")
             assert call.kwargs["strategy"] == "random_stock_of_day"
+            assert call.kwargs["side"] == "buy"
 
-    def test_closes_positions_not_in_todays_pick(self):
-        """Existing positions in symbols not chosen today → sold."""
-        from simple_strategies import (
-            run_random_stock_of_day, _pick_random_symbols,
-        )
+    def test_prior_entry_makes_subsequent_runs_no_op(self):
+        """Once any 'random_stock_of_day' trade is in the journal,
+        every future call must be a no-op (holds=1, zero broker
+        contact). This is the core defense against the 2026-05-19
+        daily-rotation bug."""
+        from simple_strategies import run_random_stock_of_day
+        ctx = _ctx(strategy_type="random")
+        api = _stub_api(price_map={"AAPL": 100.0})
+        with patch("client.get_api", return_value=api), patch(
+            "simple_strategies._has_prior_strategy_entry", return_value=True,
+        ), patch("journal.log_trade") as fake_log_trade:
+            summary = run_random_stock_of_day(ctx)
+        assert summary["holds"] == 1
+        assert summary["buys"] == 0
+        assert summary["sells"] == 0
+        api.submit_order.assert_not_called()
+        api.get_latest_trade.assert_not_called()
+        fake_log_trade.assert_not_called()
+
+    def test_never_sells(self):
+        """Buy-and-hold benchmark should NEVER emit a sell order,
+        regardless of what positions exist. The fix removed the
+        'sell positions not in today's pick' branch entirely."""
+        from simple_strategies import run_random_stock_of_day
         from segments import LARGE_CAP_UNIVERSE
         ctx = _ctx(strategy_type="random")
-        today = datetime.now(tz=timezone.utc).date().isoformat()
-        picks = _pick_random_symbols(
-            ctx.profile_id, today, LARGE_CAP_UNIVERSE, 5,
-        )
-        # Hold one symbol that's definitely NOT in today's picks
-        stale = next(s for s in LARGE_CAP_UNIVERSE if s not in picks)
-        positions = [SimpleNamespace(symbol=stale, qty=50)]
+        # First-fire path with positions present — must NOT sell them
+        positions = [SimpleNamespace(symbol="AAPL", qty=50)]
         price_map = {s: 100.0 for s in LARGE_CAP_UNIVERSE}
         api = _stub_api(price_map=price_map, positions=positions)
         with patch("client.get_api", return_value=api), patch(
-            "client.get_account_info", return_value=api._account,
-        ), patch("client.get_positions", return_value=positions), patch(
-            "journal.log_trade",
-        ) as fake_log_trade:
+            "simple_strategies._has_prior_strategy_entry", return_value=False,
+        ), patch(
+            "simple_strategies._virtual_equity", return_value=333_000.0,
+        ), patch("journal.log_trade") as fake_log_trade:
             summary = run_random_stock_of_day(ctx)
-        assert summary["sells"] >= 1
-        # Find the SELL call for the stale symbol
+        assert summary["sells"] == 0
         sell_calls = [
             c for c in fake_log_trade.call_args_list
             if c.kwargs.get("side") == "sell"
-            and c.kwargs.get("symbol") == stale
         ]
-        assert len(sell_calls) == 1
+        assert sell_calls == []
 
 
 # ─────────────────────────────────────────────────────────────────────

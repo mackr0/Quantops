@@ -4,15 +4,24 @@ Dispatched from multi_scheduler when a trading_profile's
 `strategy_type` column is `buy_hold` or `random` instead of the
 default `ai`.
 
+**Hard rule (2026-05-19, after live bug):** these are BENCHMARKS,
+not active strategies. They MUST fire once on first run and then
+HOLD FOREVER. Any subsequent run for the same profile is a no-op.
+The fire-once guard is enforced by checking the profile's journal
+for prior entries tagged with this strategy. If found → return a
+HOLD summary without contacting Alpaca.
+
 Goals (docs/15_EXPERIMENT_DESIGN_2026_05_17.md):
 - `run_buy_hold_spy(ctx)`: null floor for the full-system arm.
-  Buys SPY on day 1, holds, rebalances to 100% only when SPY weight
-  drifts more than 5% from target. Never sells voluntarily.
+  Fires once → buys SPY using per-profile VIRTUAL equity (NOT the
+  shared Alpaca account equity, which is corrupted by other
+  profiles' positions). Holds forever afterward.
 - `run_random_stock_of_day(ctx)`: tests whether the AI's stock-picking
-  adds value over random selection. Each market day deterministically
-  picks 5 symbols from the large-cap universe (seed = profile_id +
-  date), closes any held positions not in today's pick, and opens
-  today's picks equal-weighted.
+  adds value over random selection. Fires once → picks 5 symbols
+  deterministically (seed = profile_id), buys equal-weighted from
+  per-profile virtual equity. Holds forever. The strategy name
+  "stock_of_day" is now a historical artifact — daily re-rolling
+  was wrong-by-design for a benchmark.
 
 Both strategies write through the journal (`log_trade`) carrying the
 broker order_id so the perfect-matching invariant (#157) holds.
@@ -29,9 +38,64 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 SPY_SYMBOL = "SPY"
-SPY_DRIFT_THRESHOLD = 0.05  # 5% rebalance trigger
 RANDOM_PICK_COUNT = 5
 CASH_BUFFER = 0.05  # leave 5% as cash to absorb slippage / partial fills
+
+
+def _has_prior_strategy_entry(db_path: str, strategy_tag: str) -> bool:
+    """True iff the profile's journal has at least one trade row with
+    `strategy = <tag>`. Used by both baseline strategies as the
+    fire-once guard — once an initial buy has been logged, the
+    strategy NEVER re-fires.
+    """
+    if not db_path:
+        return False
+    try:
+        import sqlite3
+        from contextlib import closing
+        with closing(sqlite3.connect(db_path)) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM trades WHERE strategy = ? LIMIT 1",
+                (strategy_tag,),
+            ).fetchone()
+            return row is not None
+    except Exception as exc:
+        # Fail-CLOSED: if we can't read the journal, refuse to fire.
+        # Better to skip a baseline cycle than to double-buy.
+        logger.warning(
+            "_has_prior_strategy_entry: journal read failed (%s) — "
+            "refusing to fire %s as a safety measure",
+            exc, strategy_tag,
+        )
+        return True
+
+
+def _virtual_equity(ctx) -> float:
+    """Per-profile VIRTUAL equity (initial_capital - net spend +
+    portfolio value). Falls back to `ctx.initial_capital` when
+    journal can't be read.
+
+    Critical: must NEVER fall back to `get_account_info()`'s Alpaca
+    equity — that's the SHARED account, corrupted by other virtual
+    profiles' positions, which caused the 2026-05-19 over-allocation
+    bug.
+    """
+    db_path = getattr(ctx, "db_path", None)
+    initial_capital = float(getattr(ctx, "initial_capital", 0) or 0)
+    if not db_path:
+        return initial_capital
+    try:
+        from journal import get_virtual_account_info
+        info = get_virtual_account_info(
+            db_path=db_path, initial_capital=initial_capital)
+        return float(info.get("equity", initial_capital))
+    except Exception as exc:
+        logger.warning(
+            "_virtual_equity: get_virtual_account_info failed (%s) — "
+            "falling back to initial_capital %s",
+            exc, initial_capital,
+        )
+        return initial_capital
 
 
 def _fetch_price(api, symbol: str) -> Optional[float]:
@@ -152,70 +216,59 @@ def _submit_and_log(api, ctx, symbol, side, qty, price, strategy_name,
 # ─────────────────────────────────────────────────────────────────────
 
 def run_buy_hold_spy(ctx) -> Dict[str, Any]:
-    """Buy and hold SPY. Day 1 spends ~100% of equity on SPY; later
-    cycles only act if SPY weight has drifted more than 5% from
-    100% (e.g. via accumulated cash from dividends). Never sells."""
+    """Buy and hold SPY. Fires ONCE per profile lifetime — buys SPY
+    using per-profile VIRTUAL equity, then HOLDS FOREVER. Any
+    subsequent invocation is a no-op (returns holds=1).
+
+    2026-05-19 — original "rebalance on 5% drift" design was wrong:
+    drift was being computed against shared-Alpaca account equity
+    (which includes OTHER virtual profiles' positions), causing
+    daily re-buys and ~2× over-allocation. A benchmark must NEVER
+    re-trigger or drift-rebalance — that's the entire definition of
+    "buy and hold."
+    """
     summary = _empty_summary("buy_hold")
     seg_label = ctx.display_name or ctx.segment
 
-    from client import get_api, get_account_info, get_positions
-    api = get_api(ctx)
-
-    account = get_account_info(api=api, ctx=ctx)
-    if not account:
-        logger.error("[%s buy_hold] no account info", seg_label)
-        summary["errors"] = 1
-        return summary
-
-    equity = float(account.get("equity", 0))
-    if equity <= 0:
-        logger.error("[%s buy_hold] equity=0, nothing to invest",
-                     seg_label)
-        summary["errors"] = 1
-        return summary
-
-    positions = get_positions(api=api, ctx=ctx)
-    spy_qty = 0.0
-    for p in positions:
-        # Positions list may be Position objects or dicts; support both
-        sym = getattr(p, "symbol", None) or (
-            p.get("symbol") if isinstance(p, dict) else None
+    # Fire-once guard. Once we've logged ANY 'buy_hold_spy' trade
+    # for this profile, we are done forever. No drift rebalance, no
+    # re-allocation, no exceptions.
+    db_path = getattr(ctx, "db_path", None)
+    if _has_prior_strategy_entry(db_path or "", "buy_hold_spy"):
+        summary["holds"] = 1
+        logger.info(
+            "[%s buy_hold] prior buy_hold_spy entry exists — HOLD (fire-once)",
+            seg_label,
         )
-        if sym == SPY_SYMBOL:
-            q = getattr(p, "qty", None)
-            if q is None and isinstance(p, dict):
-                q = p.get("qty", 0)
-            spy_qty = float(q or 0)
-            break
+        return summary
 
+    # First fire: size against PER-PROFILE virtual equity, not the
+    # shared Alpaca account.
+    equity = _virtual_equity(ctx)
+    if equity <= 0:
+        logger.error("[%s buy_hold] virtual equity = %s, nothing to invest",
+                     seg_label, equity)
+        summary["errors"] = 1
+        return summary
+
+    from client import get_api
+    api = get_api(ctx)
     price = _fetch_price(api, SPY_SYMBOL)
     if not price:
         logger.error("[%s buy_hold] could not fetch SPY price", seg_label)
         summary["errors"] = 1
         return summary
 
-    target_qty = int(equity * (1.0 - CASH_BUFFER) / price)
-    qty_to_buy = target_qty - int(spy_qty)
-    spy_value = spy_qty * price
-    spy_weight = spy_value / equity if equity > 0 else 0.0
-
-    # Skip rebalance if already within drift band AND at least 1 share held
-    if spy_qty > 0 and abs(1.0 - spy_weight) <= SPY_DRIFT_THRESHOLD:
-        summary["holds"] = 1
-        logger.info(
-            "[%s buy_hold] SPY weight=%.2f%% within ±%.0f%% drift band — hold",
-            seg_label, spy_weight * 100, SPY_DRIFT_THRESHOLD * 100,
-        )
-        return summary
-
+    qty_to_buy = int(equity * (1.0 - CASH_BUFFER) / price)
     if qty_to_buy <= 0:
         summary["holds"] = 1
         return summary
 
     reason = (
-        "buy_hold rebalance: SPY weight %.2f%% → target 100%% "
-        "(buy %d shares @ ~$%.2f)"
-        % (spy_weight * 100, qty_to_buy, price)
+        "buy_hold INITIAL allocation: $%.2f virtual equity → "
+        "%d shares of SPY @ ~$%.2f. After this fires, the strategy "
+        "HOLDS forever — no rebalance, no re-trigger."
+        % (equity, qty_to_buy, price)
     )
     if _submit_and_log(
         api, ctx, SPY_SYMBOL, "buy", qty_to_buy, price,
@@ -232,84 +285,68 @@ def run_buy_hold_spy(ctx) -> Dict[str, Any]:
 # Random Stock-of-Day
 # ─────────────────────────────────────────────────────────────────────
 
-def _pick_random_symbols(profile_id: int, today: str,
+def _pick_random_symbols(profile_id: int,
                          universe: List[str], n: int) -> List[str]:
-    """Deterministic pick: same (profile, date) → same picks. Re-runs
-    on the same day don't churn positions."""
-    seed = hash((profile_id, today)) & 0xFFFFFFFF
+    """Deterministic pick from the universe, seeded by profile_id
+    ALONE (no date component). 2026-05-19 — was previously seeded
+    by (profile_id, today_date), which produced different picks
+    every day and rotated the portfolio. For a benchmark that
+    fires once and holds, the seed must be stable across days."""
+    seed = hash(("random_baseline_v2", profile_id)) & 0xFFFFFFFF
     rng = random.Random(seed)
     return rng.sample(list(universe), min(n, len(universe)))
 
 
 def run_random_stock_of_day(ctx) -> Dict[str, Any]:
-    """Pick 5 random large-cap symbols, hold N days (until next pick).
-    Each cycle:
-    1. Compute today's picks deterministically.
-    2. Sell any held position not in today's picks.
-    3. Buy any pick not currently held, equal-weighted from equity.
+    """Pick 5 random large-cap symbols, buy them ONCE, hold forever.
+
+    2026-05-19 — original design re-picked every day (different
+    seed per date) and rotated the portfolio. That's a high-
+    turnover strategy, not a benchmark. Fixed: pick once on first
+    fire (seed = profile_id alone), buy equal-weighted from per-
+    profile virtual equity, then HOLD FOREVER. The function name
+    keeps "stock_of_day" for backward-compat but the semantics are
+    now "stock_of_baseline" — fire once, hold forever.
+
+    Any subsequent invocation after the initial buy is a no-op
+    (returns holds=1). Enforced by the fire-once guard.
     """
     summary = _empty_summary("random")
     seg_label = ctx.display_name or ctx.segment
 
-    from client import get_api, get_account_info, get_positions
-    from segments import LARGE_CAP_UNIVERSE
-    api = get_api(ctx)
+    # Fire-once guard.
+    db_path = getattr(ctx, "db_path", None)
+    if _has_prior_strategy_entry(db_path or "", "random_stock_of_day"):
+        summary["holds"] = 1
+        logger.info(
+            "[%s random] prior random_stock_of_day entry exists — "
+            "HOLD (fire-once)", seg_label,
+        )
+        return summary
 
-    today = datetime.now(tz=timezone.utc).date().isoformat()
+    # First fire: pick + buy.
+    from segments import LARGE_CAP_UNIVERSE
     picks = _pick_random_symbols(
         getattr(ctx, "profile_id", 0) or 0,
-        today, LARGE_CAP_UNIVERSE, RANDOM_PICK_COUNT,
+        LARGE_CAP_UNIVERSE, RANDOM_PICK_COUNT,
     )
-    pick_set = set(picks)
-    logger.info("[%s random] today=%s picks=%s", seg_label, today, picks)
+    logger.info("[%s random] INITIAL picks (held forever): %s",
+                seg_label, picks)
 
-    positions = get_positions(api=api, ctx=ctx)
-    held: Dict[str, float] = {}
-    for p in positions:
-        sym = getattr(p, "symbol", None) or (
-            p.get("symbol") if isinstance(p, dict) else None
-        )
-        if not sym:
-            continue
-        q = getattr(p, "qty", None)
-        if q is None and isinstance(p, dict):
-            q = p.get("qty", 0)
-        held[sym] = float(q or 0)
-
-    # Step 1: close positions not in today's pick.
-    for sym, qty in list(held.items()):
-        if sym in pick_set or qty <= 0:
-            continue
-        price = _fetch_price(api, sym) or 0.0
-        reason = "random_stock_of_day: %s not in today's pick" % sym
-        if _submit_and_log(
-            api, ctx, sym, "sell", qty, price,
-            "random_stock_of_day", reason,
-        ):
-            summary["sells"] += 1
-        else:
-            summary["errors"] += 1
-
-    # Step 2: open new picks. Re-fetch account so just-closed
-    # positions are reflected.
-    account = get_account_info(api=api, ctx=ctx)
-    if not account:
-        summary["errors"] += 1
-        return summary
-    equity = float(account.get("equity", 0))
+    equity = _virtual_equity(ctx)
     if equity <= 0:
+        logger.error("[%s random] virtual equity = %s, nothing to invest",
+                     seg_label, equity)
         summary["errors"] += 1
         return summary
     cash_per_pick = (equity * (1.0 - CASH_BUFFER)) / RANDOM_PICK_COUNT
 
+    from client import get_api
+    api = get_api(ctx)
     for sym in picks:
-        if sym in held and held[sym] > 0:
-            continue  # already holding (carried over from yesterday)
         price = _fetch_price(api, sym)
         if not price or price <= 0:
-            logger.warning(
-                "[%s random] skip %s: no price", seg_label, sym,
-            )
+            logger.warning("[%s random] skip %s: no price", seg_label, sym)
             summary["errors"] += 1
             continue
         qty = int(cash_per_pick / price)
@@ -319,9 +356,12 @@ def run_random_stock_of_day(ctx) -> Dict[str, Any]:
                 seg_label, sym, cash_per_pick, price,
             )
             continue
-        reason = ("random_stock_of_day: today's pick (date=%s, "
-                  "equal-weighted from $%.2f / %d picks)"
-                  % (today, equity, RANDOM_PICK_COUNT))
+        reason = (
+            "random_baseline INITIAL allocation: $%.2f virtual equity / "
+            "%d picks = $%.2f per pick → %d shares of %s @ ~$%.2f. "
+            "After this fires, the strategy HOLDS forever."
+            % (equity, RANDOM_PICK_COUNT, cash_per_pick, qty, sym, price)
+        )
         if _submit_and_log(
             api, ctx, sym, "buy", qty, price,
             "random_stock_of_day", reason,
@@ -330,7 +370,7 @@ def run_random_stock_of_day(ctx) -> Dict[str, Any]:
         else:
             summary["errors"] += 1
 
-    if summary["buys"] == 0 and summary["sells"] == 0:
+    if summary["buys"] == 0:
         summary["holds"] = 1
     return summary
 

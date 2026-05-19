@@ -90,12 +90,14 @@ class TestSubmitAndLogGracefulRejection:
         ctx.segment = "largecap"
         ctx.display_name = "TEST"
 
-        # Mock get_account_info to return $250K equity (so cash_per_pick
-        # is enough to buy at $100/sh) — patched at the call-site path
-        # the strategy uses.
+        # Mock virtual_equity to $250K (post-2026-05-19 fix: strategy
+        # reads per-profile virtual equity, not Alpaca shared equity).
+        # Force fire-once guard to "no prior entry" so this first-fire
+        # path executes.
         with patch("client.get_api", return_value=api), \
-                patch("client.get_account_info", return_value={"equity": 250_000}), \
-                patch("client.get_positions", return_value=[]), \
+                patch("simple_strategies._virtual_equity", return_value=250_000.0), \
+                patch("simple_strategies._has_prior_strategy_entry",
+                      return_value=False), \
                 patch("simple_strategies._pick_random_symbols",
                       return_value=["GOOD1", "BAD", "GOOD2", "GOOD3", "GOOD4"]), \
                 patch("journal.log_trade"):
