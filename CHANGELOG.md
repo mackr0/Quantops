@@ -17,6 +17,38 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Reconcile-backfill rows now name the actual protective order kind. Severity: medium (operational visibility — was actively misleading the operator).
+
+**What broke (operator-visible).** Three EXP-A3 profiles held NOW (ServiceNow) bought 2026-05-18 at $103.67 with TP=$115.89, SL=$95.52. At 2026-05-19 14:50 UTC the positions exited at $105.29 for +1.6%. The dashboard reasoning read "broker exited via protective order — backfilled by reconcile" — but TP and SL were nowhere near $105.29. Operator reasonably asked "what the fuck?"
+
+**Root cause.** The trailing stop fired (NOW peaked at $110.83, pulled back 5%, hit the trailed level at $105.29 = $110.83 × 0.95). But `reconcile_journal_to_broker.py:827` hard-coded the reason text `'broker exited via protective order — backfilled by reconcile'` for every backfill, regardless of which protective mechanism actually fired. Trailing-stop, take-profit, stop-loss, and even market-sell all got the same vague "protective order" label. Operator couldn't tell from the journal what happened.
+
+**Confirmed via Alpaca order history.** Direct query of `paper-api/v2/orders?symbols=NOW&after=2026-05-19T00:00:00Z` returned 3 fills all with `order_type='trailing_stop'`. That field had been available in `actions["backfill_sell"][i]["sell_order_type"]` since the reconciler's initial commit; it just was never threaded into the reason text.
+
+**Fix.** New helper `_build_backfill_reason(order_type, exit_price, entry_price, side, partial)` in `reconcile_journal_to_broker.py` branches on Alpaca's `order_type`:
+- `trailing_stop` → "trailing stop fired — exited at $X (+N%)"
+- `stop` → "stop-loss hit — exited at $X (-N%)"
+- `stop_limit` → "stop-limit triggered — exited at $X (±N%)"
+- `limit` → "take-profit hit — exited at $X (+N%)"
+- `market` → "market exited (manual/external close)" — explicitly NOT labeled protective
+- unknown / `None` → "broker exited via protective order (<type>)" — generic fallback preserves grep-compat
+
+Three backfill loops updated (`backfill_sell`, `backfill_cover`, `backfill_partial_sell`). Move-% suffix included when both prices are available. Partial fills get "partially" adverb.
+
+**Regression tests.** `tests/test_reconcile_backfill_reason_specific_2026_05_19.py` — 13 tests covering:
+- Trailing-stop attribution for long and short (the NOW class).
+- Stop / take-profit attribution by order_type.
+- Market-sell NOT labeled "protective" (the original lie this incident exposed).
+- Partial-fill phrasing.
+- Unknown / missing order_type graceful fallback.
+- Missing price / zero entry-price graceful handling.
+- **Structural test**: each protective `order_type` produces a *distinct* reason string — pins the differentiation as the whole point of the helper.
+
+**Pending follow-ups (not in this commit):**
+- One-shot UPDATE for the 3 existing NOW backfill rows (id=10 on profiles 21/22/23 DBs) to refresh their misleading "protective order" text with the new attribution. Awaiting operator OK before touching historical journal rows.
+
+---
+
 ## 2026-05-19 PM — Options-completion inventory doc (`docs/18`). Severity: doc-only.
 
 Operator asked: *"have you fully documented what you need to get to 100% perfect completion on the options work?"* — honest answer was **no**. Wrote `docs/18_OPTIONS_COMPLETION_INVENTORY.md` to fix that. It classifies every options-related artifact in the repo as PRODUCTION / CAPABILITY / STUB / REFINEMENT, lists the 7 concrete work items needed to reach 100%, and pins a 9-box exit criteria. Lead findings:

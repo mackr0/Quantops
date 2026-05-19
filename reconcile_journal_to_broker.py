@@ -50,6 +50,121 @@ logger = logging.getLogger(__name__)
 _API_MAX_RETRIES = 3
 
 
+def _build_backfill_reason(order_type: Optional[str],
+                            exit_price: Optional[float],
+                            entry_price: Optional[float],
+                            side: str,
+                            partial: bool) -> str:
+    """Render a specific reason string for a reconcile-backfilled exit.
+
+    Alpaca's `order_type` on the filled exit identifies which protective
+    mechanism fired. Threading that into the journal's `reason` text
+    means an operator looking at the trades dashboard immediately sees
+    "trailing stop fired" / "take-profit hit" / "stop-loss hit" instead
+    of a generic "protective order" label that's identical for all
+    three exit kinds.
+
+    Triggered by the 2026-05-19 NOW-position confusion: TP=$115.89,
+    SL=$95.52, actual exit=$105.29. With the old generic label the
+    operator could not tell from the journal which order fired — it
+    was actually the trailing stop, not the TP or SL.
+
+    Args:
+        order_type: Alpaca order_type field from the broker fill
+            (e.g., 'trailing_stop', 'stop', 'stop_limit', 'limit',
+            'market'). May be None or '?' on lookup failure.
+        exit_price: Fill price of the protective order. Optional —
+            included in the message for trailing-stop attribution
+            when present.
+        entry_price: Entry price. Used to compute % move on exit
+            when both prices are available.
+        side: 'sell' (long close) or 'cover' (short cover). Wording
+            differs slightly between the two so the trade history
+            reads naturally.
+        partial: True when this exit was a partial close (only some
+            of the position filled at the protective level).
+
+    Returns a single-line string suitable for the `reason` column.
+    """
+    side_verb = "exited" if side == "sell" else "covered"
+    # "partially exited" reads naturally as adverb modifying verb; the
+    # original generic message used the same form.
+    partial_prefix = "partially " if partial else ""
+
+    move_pct = None
+    try:
+        if exit_price and entry_price and float(entry_price) > 0:
+            if side == "sell":
+                move_pct = (float(exit_price) - float(entry_price)) / float(entry_price) * 100.0
+            else:  # cover: profit when cover_price < short_price
+                move_pct = (float(entry_price) - float(exit_price)) / float(entry_price) * 100.0
+    except (TypeError, ValueError):
+        move_pct = None
+    move_suffix = f" ({move_pct:+.1f}%)" if move_pct is not None else ""
+
+    ot = (order_type or "").lower()
+    if ot == "trailing_stop":
+        return (
+            f"trailing stop fired — {partial_prefix}{side_verb} at "
+            f"${float(exit_price):.2f}{move_suffix}; broker order "
+            f"backfilled by reconcile"
+        ) if exit_price else (
+            f"trailing stop fired — {partial_prefix}{side_verb}; "
+            f"broker order backfilled by reconcile"
+        )
+    if ot == "stop":
+        # Long: stop-loss caps a drawdown. Short: stop above entry
+        # caps an adverse rally.
+        kind = "stop-loss" if side == "sell" else "stop"
+        return (
+            f"{kind} hit — {partial_prefix}{side_verb} at "
+            f"${float(exit_price):.2f}{move_suffix}; broker order "
+            f"backfilled by reconcile"
+        ) if exit_price else (
+            f"{kind} hit — {partial_prefix}{side_verb}; "
+            f"broker order backfilled by reconcile"
+        )
+    if ot == "stop_limit":
+        return (
+            f"stop-limit triggered — {partial_prefix}{side_verb} at "
+            f"${float(exit_price):.2f}{move_suffix}; broker order "
+            f"backfilled by reconcile"
+        ) if exit_price else (
+            f"stop-limit triggered — {partial_prefix}{side_verb}; "
+            f"broker order backfilled by reconcile"
+        )
+    if ot == "limit":
+        # Long: limit close = take-profit. Short: limit cover at low
+        # price = take-profit on the short.
+        kind = "take-profit hit"
+        return (
+            f"{kind} — {partial_prefix}{side_verb} at "
+            f"${float(exit_price):.2f}{move_suffix}; broker order "
+            f"backfilled by reconcile"
+        ) if exit_price else (
+            f"{kind} — {partial_prefix}{side_verb}; "
+            f"broker order backfilled by reconcile"
+        )
+    if ot == "market":
+        # Market exits aren't usually a "protective" order — likely a
+        # manual close, external AI close, or position-clearing. Label
+        # honestly rather than calling it protective.
+        return (
+            f"market {side_verb} (manual/external close) — "
+            f"{partial_prefix}filled at ${float(exit_price):.2f}"
+            f"{move_suffix}; backfilled by reconcile"
+        ) if exit_price else (
+            f"market {side_verb} (manual/external close) — "
+            f"{partial_prefix}backfilled by reconcile"
+        )
+    # Unknown / missing order_type — keep the legacy generic phrasing
+    # so existing parsers that grep for "protective" still match.
+    return (
+        f"broker {side_verb} via protective order ({ot or 'unknown type'}) — "
+        f"{partial_prefix}backfilled by reconcile"
+    )
+
+
 def _to_utc_iso(value) -> Optional[datetime]:
     """Coerce a journal timestamp (TEXT) to a UTC-aware datetime."""
     if value is None:
@@ -818,16 +933,30 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                 # Compute realized pnl directly so the trades page shows
                 # a real number on the row (not blank). pnl = (sell - buy) * qty.
                 pnl = round((a["sell_price"] - a["buy_price"]) * a["sell_qty"], 2)
+                # 2026-05-19 — specific protective-order attribution. The
+                # generic "broker exited via protective order" was actively
+                # misleading: trailing_stop fires look identical to take-
+                # profit fires in the journal, leaving the operator unable
+                # to tell whether the exit was the trailing stop locking
+                # in a gain or the take-profit hitting target. _build_reason
+                # branches on Alpaca's order_type so each row says exactly
+                # which protective mechanism fired and at what price.
+                reason_text = _build_backfill_reason(
+                    a.get("sell_order_type"),
+                    a.get("sell_price"),
+                    a.get("buy_price"),
+                    side="sell", partial=False,
+                )
                 conn.execute(
                     """INSERT INTO trades
                        (timestamp, symbol, side, qty, price, order_id, signal_type,
                         strategy, reason, status, fill_price, pnl)
                        VALUES (?, ?, 'sell', ?, ?, ?, 'reconcile_backfill',
-                               'reconcile_backfill',
-                               'broker exited via protective order — backfilled by reconcile',
+                               'reconcile_backfill', ?,
                                'closed', ?, ?)""",
                     (a["sell_filled_at"], a["symbol"], a["sell_qty"],
-                     a["sell_price"], a["sell_order_id"], a["sell_price"], pnl),
+                     a["sell_price"], a["sell_order_id"], reason_text,
+                     a["sell_price"], pnl),
                 )
                 conn.execute(
                     "UPDATE trades SET status='closed' WHERE id=?",
@@ -836,16 +965,22 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
             for a in actions["backfill_cover"]:
                 # Short pnl: profit when cover_price < short_price.
                 pnl = round((a["short_price"] - a["cover_price"]) * a["cover_qty"], 2)
+                reason_text = _build_backfill_reason(
+                    a.get("cover_order_type"),
+                    a.get("cover_price"),
+                    a.get("short_price"),
+                    side="cover", partial=False,
+                )
                 conn.execute(
                     """INSERT INTO trades
                        (timestamp, symbol, side, qty, price, order_id, signal_type,
                         strategy, reason, status, fill_price, pnl)
                        VALUES (?, ?, 'cover', ?, ?, ?, 'reconcile_backfill',
-                               'reconcile_backfill',
-                               'broker covered via protective order — backfilled by reconcile',
+                               'reconcile_backfill', ?,
                                'closed', ?, ?)""",
                     (a["cover_filled_at"], a["symbol"], a["cover_qty"],
-                     a["cover_price"], a["cover_order_id"], a["cover_price"], pnl),
+                     a["cover_price"], a["cover_order_id"], reason_text,
+                     a["cover_price"], pnl),
                 )
                 conn.execute(
                     "UPDATE trades SET status='closed' WHERE id=?",
@@ -857,16 +992,22 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                 # the right amount from the lot when computing virtual
                 # positions.
                 pnl = round((a["sell_price"] - a["buy_price"]) * a["sell_qty"], 2)
+                reason_text = _build_backfill_reason(
+                    a.get("sell_order_type"),
+                    a.get("sell_price"),
+                    a.get("buy_price"),
+                    side="sell", partial=True,
+                )
                 conn.execute(
                     """INSERT INTO trades
                        (timestamp, symbol, side, qty, price, order_id, signal_type,
                         strategy, reason, status, fill_price, pnl)
                        VALUES (?, ?, 'sell', ?, ?, ?, 'reconcile_backfill_partial',
-                               'reconcile_backfill_partial',
-                               'broker partially exited via protective order — backfilled by reconcile',
+                               'reconcile_backfill_partial', ?,
                                'closed', ?, ?)""",
                     (a["sell_filled_at"], a["symbol"], a["sell_qty"],
-                     a["sell_price"], a["sell_order_id"], a["sell_price"], pnl),
+                     a["sell_price"], a["sell_order_id"], reason_text,
+                     a["sell_price"], pnl),
                 )
             conn.commit()
 
