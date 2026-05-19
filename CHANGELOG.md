@@ -17,6 +17,34 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Pipeline scope B: every abstract method implemented end-to-end. Severity: medium (capability — production unchanged; readies scheduler cutover for scope C).
+
+**What landed.** Three years of "Phase 1 wires this / Phase 3 wires this" stub docstrings are now true. The remaining `NotImplementedError` placeholders in `pipelines/option.py` and `pipelines/stock.py` are gone. Both pipelines run end-to-end via `.run_cycle(ctx)`.
+
+| Method | Status before | Status after |
+|---|---|---|
+| `OptionPipeline.generate_candidates` | STUB (docstring "Phase 1 wires this" — Phase 1 actually did metrics, never this) | ✓ reads `ctx.shortlist`, fetches IV rank via `options_oracle.get_options_oracle`, enumerates strategies via `options_strategy_advisor.evaluate_candidate_for_multileg`, emits one Candidate per multileg rec with `iv_rank` / `dte` / `strike` / `option_strategy` in `extra` |
+| `OptionPipeline.decide` | STUB (docstring "Phase 3 wires this" — Phase 3 actually did prompts, never this) | ✓ calls `ai_providers.call_ai(provider=ctx.ai_provider, ...)`, uses tolerant JSON parser, filters returned trades to MULTILEG_OPEN/OPTIONS actions, returns AIResult with proposals + reasoning + confidence_avg |
+| `StockPipeline.generate_candidates` | STUB (same Phase 1 miss) | ✓ reads `ctx.shortlist`, filters to actionable signals, carries stock technicals (rsi, adx, atr, volume_ratio, vwap, candle, etc.) in `extra`, top-N by score |
+| `StockPipeline.decide` | STUB (same Phase 3 miss) | ✓ calls `ai_providers.call_ai`, filters returned trades to stock-side actions (BUY/SELL/SHORT/COVER/STRONG_*) |
+| `StockPipeline.execute` | STUB (Phase 4 did multileg, stock-side deferred to "future cleanup" that never came) | ✓ vetoed → `record_broker_rejection` + skipped; approved → `trader.execute_trade(symbol, signal, ctx)` → classify result into submitted/rejected/skipped/errors |
+
+**Helpers added:**
+- `pipelines/option.py:_days_to_expiry(expiry_str)` — parse YYYY-MM-DD, return days-from-today
+- `pipelines/option.py:_strike_summary(strikes)` — render multileg strikes as compact string ("S145/L140", "P140/135 C150/155", etc.)
+- `pipelines/stock.py:_veto_reason_for_stock` + `_record_stock_veto` — mirror of OptionPipeline's helpers (veto-log parsing + broker_rejections persistence). Identical logic; future cleanup could lift to `pipelines/__init__.py`.
+
+**Production behavior unchanged.** The scheduler still dispatches through `trade_pipeline.run_trade_cycle` (the legacy ~3000-line function that handles both stocks and options in one prompt + sort-by-action). The new pipeline classes are CAPABILITY — runnable via `.run_cycle(ctx)` for tests and for the eventual scope-C cutover, but not yet on the production hot path.
+
+**Tests.**
+- New: `tests/test_pipelines_b_complete_2026_05_19.py` — 21 tests covering per-method behavior + full `run_cycle` composition.
+- Updated: `tests/test_pipelines_phase0.py` — replaced `TestPhase0PlaceholdersRaiseClearly` (asserted NotImplementedError) with `TestPhase0PlaceholdersAllWired` (asserts every method is implemented; failures only on `NotImplementedError` propagation, not on infrastructure-missing exceptions in bare-ctx tests).
+- 200 tests pass across the full pipeline suite (Phase 0 + Phase 1 metrics + Phase 2 tuning + Phase 3 prompt + Phase 4/4b/4c specialists + execute + Phase 5 outcomes + Phase 6 risk + scope B).
+
+**Closes** items 1-3 + 7 of the `docs/18` exit criteria. Remaining for full completion: live IV in risk model, Phase 5c backfill schedule, single-leg migration, dashboard Greeks panel, IV-degradation alarm, scope-C scheduler cutover.
+
+---
+
 ## 2026-05-19 PM — In-call retry on transient AI failures (Gemini 503 cushion). Severity: medium (operational reliability).
 
 **Why.** Earlier today's audit showed ~40% of `gemini-2.5-flash-lite` calls returning HTTP 503 *"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later."* When 3 fire in a row the circuit breaker opens for 5 minutes and every profile stalls during that window. Most 503s are individually transient — the same request seconds later usually succeeds — but the existing code treated the first transient as terminal and moved straight to the fallback chain (or, post-gate, to "AI provider chain exhausted").

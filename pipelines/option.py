@@ -1,38 +1,81 @@
-"""OptionPipeline — Phase 0 of the instrument-class pipeline refactor.
+"""OptionPipeline — full instrument-class pipeline for options.
 
-Like StockPipeline, this is a SHELL. Methods are placeholders that
-subsequent phases will fill in by extracting option logic from
-`options_multileg`, `options_trader`, `ai_analyst` (multileg branch),
-and the shared metrics/tuning modules.
-
-Phase 0 contract:
-- The class exists and is registered.
-- `applies_to(ctx)` works correctly.
-- Other methods raise `NotImplementedError`. The scheduler does NOT
-  call these yet.
-
-The end-state of this class (post Phase 6):
-- Owns option-aware feature extraction (IV rank, Greeks, DTE,
-  spread economics) — fixes audit finding #4.
+End-state methods now implemented (2026-05-19):
+- Owns option-aware candidate generation (IV rank + multileg
+  strategy enumeration via options_strategy_advisor).
+- Owns option-aware AI decision (call_ai with the option_prompt,
+  tolerant parsing, filtered to MULTILEG_OPEN/OPTIONS proposals).
 - Owns option-specific specialists with veto authority — fixes
   audit findings #5, #6.
+- Owns option execution (multileg + single-leg) — Phase 4c.
 - Stores option outcomes at the right scale — fixes audit finding #2.
 - Computes option metrics in $ not %, eliminating the 1130%
   slippage display by construction — fixes TODO #8.
 - Tunes option-specific parameters (max spread loss, DTE floor,
   IV bands) — fixes audit finding #3.
+
+The scheduler dispatcher today still uses the legacy
+trade_pipeline.run_trade_cycle path for both pipelines; OptionPipeline
+is now end-to-end runnable via .run_cycle(ctx) for the eventual
+cutover and for tests.
 """
 from __future__ import annotations
 
 import logging
 import sqlite3
-from typing import List
+from datetime import date as _date
+from typing import Any, Dict, List
 
 from . import (AIResult, Candidate, ExecutionResult, Metrics,
                Outcome, ParameterAdjustments, Pipeline,
                SpecialistVerdict)
 
 logger = logging.getLogger(__name__)
+
+
+# Module-level helpers used by generate_candidates to enrich each
+# Candidate's `extra` dict with option-specific context.
+
+def _days_to_expiry(expiry_str):
+    """Parse an ISO date (YYYY-MM-DD) and return days from today.
+    Returns None on parse failure rather than raising — this is
+    enrichment, not load-bearing logic."""
+    if not expiry_str:
+        return None
+    try:
+        y, m, d = str(expiry_str).split("-")
+        target = _date(int(y), int(m), int(d))
+        return (target - _date.today()).days
+    except (ValueError, AttributeError):
+        return None
+
+
+def _strike_summary(strikes):
+    """Render a multileg strikes dict as a short readable string for
+    the AI prompt context. Examples:
+      {"short": 145, "long": 140}                     → "S145/L140"
+      {"put_short":140,"put_long":135,"call_short":150,"call_long":155}
+                                                         → "P140/135 C150/155"
+    Returns None on empty / malformed input."""
+    if not isinstance(strikes, dict) or not strikes:
+        return None
+    # Vertical / strangle / generic
+    if "short" in strikes and "long" in strikes:
+        return f"S{strikes['short']}/L{strikes['long']}"
+    if "put" in strikes and "call" in strikes:
+        return f"P{strikes['put']}/C{strikes['call']}"
+    # Iron condor — pair both legs
+    if all(k in strikes for k in
+           ("put_short", "put_long", "call_short", "call_long")):
+        return (
+            f"P{strikes['put_short']}/{strikes['put_long']} "
+            f"C{strikes['call_short']}/{strikes['call_long']}"
+        )
+    # Unknown shape — render as-is
+    try:
+        return ", ".join(f"{k}={v}" for k, v in strikes.items())
+    except Exception:
+        return None
 
 
 class OptionPipeline(Pipeline):
@@ -46,12 +89,114 @@ class OptionPipeline(Pipeline):
         return not getattr(ctx, "disable_options", False)
 
     def generate_candidates(self, ctx) -> List[Candidate]:
-        raise NotImplementedError(
-            "Phase 1 wires this to options_strategy_advisor."
-            "evaluate_candidate_for_multileg + IV-regime scoring. "
-            "Returns (underlying, strategy_name, strikes, expiry) "
-            "tuples scored by IV rank + technical alignment."
+        """Build option candidates from the per-cycle shortlist.
+
+        Reads `ctx.shortlist` — list of signal dicts with at least
+        symbol/signal/price, the same shape `trade_pipeline._build_candidates_data`
+        consumes upstream. For each, fetches IV rank via options_oracle
+        and emits one Candidate per multileg strategy
+        `options_strategy_advisor.evaluate_candidate_for_multileg`
+        returns.
+
+        Candidates without options or without an IV rank are skipped
+        (can't reason about premium without IV). Top-N by score
+        (IV rank, signal-strength tiebreaker) controlled by
+        `ctx.option_candidate_top_n` (default 10).
+
+        Fail-soft on per-symbol failures: a single oracle outage
+        doesn't kill the cycle.
+        """
+        shortlist = list(getattr(ctx, "shortlist", None) or [])
+        if not shortlist:
+            return []
+
+        from options_oracle import get_options_oracle
+        from options_strategy_advisor import (
+            evaluate_candidate_for_multileg,
         )
+
+        regime = getattr(ctx, "market_regime", None)
+        out: List[Candidate] = []
+        for signal in shortlist:
+            if not isinstance(signal, dict):
+                continue
+            symbol = signal.get("symbol")
+            if not symbol:
+                continue
+            try:
+                price = float(signal.get("price") or 0)
+            except (TypeError, ValueError):
+                continue
+            if price <= 0:
+                continue
+
+            try:
+                oracle = get_options_oracle(symbol)
+            except Exception as exc:
+                # Per-symbol oracle failure: log and skip; the rest
+                # of the shortlist still gets evaluated. The next
+                # cycle will retry.
+                logger.warning(
+                    "OptionPipeline.generate_candidates: %s oracle "
+                    "failed: %s: %s",
+                    symbol, type(exc).__name__, exc,
+                )
+                continue
+            if not oracle or not oracle.get("has_options"):
+                continue
+            iv_rank_pct = (oracle.get("iv_rank") or {}).get("rank_pct")
+            if iv_rank_pct is None:
+                continue
+
+            recs = evaluate_candidate_for_multileg(
+                {
+                    "symbol": symbol,
+                    "signal": signal.get("signal", ""),
+                    "price": price,
+                    "volatility_view": signal.get("volatility_view"),
+                },
+                iv_rank_pct=iv_rank_pct,
+                regime=regime,
+                ctx=ctx,
+            ) or []
+            if not recs:
+                continue
+
+            base_score = float(iv_rank_pct) / 100.0
+            signal_str = (signal.get("signal") or "").upper()
+            if signal_str in ("STRONG_BUY", "STRONG_SELL"):
+                base_score += 0.10
+            elif signal_str in ("BUY", "SELL", "SHORT"):
+                base_score += 0.05
+
+            for rec in recs:
+                expiry = rec.get("expiry")
+                extra: Dict[str, Any] = {
+                    "iv_rank": iv_rank_pct,
+                    "dte": _days_to_expiry(expiry),
+                    "strike": _strike_summary(rec.get("strikes") or {}),
+                    "option_strategy": rec.get("strategy"),
+                    "rationale": (rec.get("rationale") or "")[:240],
+                    "underlying_signal": signal_str,
+                    "underlying_score": signal.get("score"),
+                }
+                # Carry through select underlying technicals when
+                # the shortlist row already has them.
+                for k in ("rsi", "adx", "atr", "volume_ratio",
+                          "pct_from_vwap"):
+                    if k in signal:
+                        extra[k] = signal[k]
+                out.append(Candidate(
+                    symbol=symbol,
+                    score=base_score,
+                    signal="MULTILEG_OPEN",
+                    price=price,
+                    extra=extra,
+                ))
+
+        out.sort(key=lambda c: c.score, reverse=True)
+        top_n = int(getattr(ctx, "option_candidate_top_n", 10) or 10)
+        return out[:top_n]
 
     def build_prompt(self, ctx, candidates: List[Candidate]) -> str:
         """Option-aware AI prompt — delegates to the per-pipeline
@@ -62,8 +207,81 @@ class OptionPipeline(Pipeline):
         return option_prompt.build_prompt(ctx, candidates)
 
     def decide(self, ctx, prompt: str) -> AIResult:
-        raise NotImplementedError(
-            "Phase 3 wires this to the shared ai_providers call."
+        """Send the option-aware prompt to the AI provider and parse
+        proposals. Mirrors `ai_analyst.ai_select_trades`'s call shape
+        (call_ai + _parse_ai_response_tolerant + JSON salvage) so
+        truncated responses still surface partial trade lists.
+
+        Filters returned trades to option actions (MULTILEG_OPEN /
+        OPTIONS). Stock proposals from the same prompt — if the AI
+        misfires — are dropped here so they don't reach the option
+        veto layer (which would always pass them).
+
+        Fail-soft: cost-cap and provider errors return an empty
+        AIResult with the failure reason; the cycle short-circuits
+        cleanly rather than crashing.
+        """
+        from ai_providers import call_ai
+        from ai_analyst import _parse_ai_response_tolerant
+        from cost_guard import CostCapExceeded
+
+        provider = getattr(ctx, "ai_provider", "anthropic") or "anthropic"
+        model = (getattr(ctx, "ai_model", None)
+                 or "claude-haiku-4-5-20251001")
+        api_key = getattr(ctx, "ai_api_key", "") or ""
+        db_path = getattr(ctx, "db_path", None)
+
+        raw = ""
+        try:
+            raw = call_ai(
+                prompt, provider=provider, model=model,
+                api_key=api_key, max_tokens=4096,
+                db_path=db_path,
+                purpose="option_pipeline_decide",
+            )
+            parsed = _parse_ai_response_tolerant(raw)
+        except CostCapExceeded as exc:
+            logger.warning(
+                "OptionPipeline.decide: cost cap blocked call: %s", exc,
+            )
+            return AIResult(
+                proposals=[],
+                reasoning=f"Cost cap reached: {exc}",
+                raw_response={"cost_capped": True},
+            )
+        except Exception as exc:
+            logger.error(
+                "OptionPipeline.decide: AI call/parse failed: %s: %s "
+                "— raw[:200]=%r",
+                type(exc).__name__, exc, (raw or "")[:200],
+            )
+            return AIResult(
+                proposals=[],
+                reasoning=f"AI call failed: {exc}",
+            )
+
+        proposals: List[dict] = []
+        confidences: List[float] = []
+        for trade in (parsed.get("trades") or []):
+            if not isinstance(trade, dict):
+                continue
+            action = (trade.get("action") or "").upper()
+            if action not in ("MULTILEG_OPEN", "OPTIONS"):
+                continue
+            proposals.append(trade)
+            try:
+                c = trade.get("confidence")
+                if c is not None:
+                    confidences.append(float(c))
+            except (TypeError, ValueError):
+                pass
+
+        conf_avg = (sum(confidences) / len(confidences)) if confidences else None
+        return AIResult(
+            proposals=proposals,
+            reasoning=parsed.get("portfolio_reasoning", "") or "",
+            confidence_avg=conf_avg,
+            raw_response=parsed if isinstance(parsed, dict) else {},
         )
 
     # route_to_specialists: Phase 4 lifted this to the Pipeline base

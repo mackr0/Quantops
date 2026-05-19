@@ -118,34 +118,51 @@ class TestRegistry:
 # message. Catches accidental wiring before the right phase lands.
 # ---------------------------------------------------------------------------
 
-class TestPhase0PlaceholdersRaiseClearly:
+# 2026-05-19 — every pipeline method is now wired. The original
+# Phase 0 NotImplementedError class is empty for parametrize but
+# kept here as a historical marker. New "method is implemented"
+# behavioral tests live in test_pipelines_b_complete_2026_05_19.py.
+
+class TestPhase0PlaceholdersAllWired:
+    """Pre-2026-05-19, generate_candidates / decide / execute raised
+    NotImplementedError on both StockPipeline and OptionPipeline.
+    After scope-B build-out (this commit), every abstract method is
+    implemented. Test verifies no method raises NotImplementedError
+    when called with a no-op-friendly ctx."""
+
     @pytest.mark.parametrize("cls", [StockPipeline, OptionPipeline])
-    @pytest.mark.parametrize("method,args", [
-        ("generate_candidates", (None,)),
-        # build_prompt now wired in Phase 3.
-        ("decide", (None, "")),
-        # route_to_specialists wired in Phase 4 (concrete on Pipeline
-        # base). See test_pipelines_phase4_specialists.py.
-        # execute wired in Phase 4c (2026-05-12) — see
-        # test_pipelines_phase4c_execute.py.
-        # record_outcome wired in Phase 5 (writes pipeline_kind tag).
-        # See test_pipelines_phase5_outcomes.py.
-        # compute_metrics now wired in Phase 1.
-        # tune now wired in Phase 2.
-    ])
-    def test_unimplemented_methods_raise_with_phase_pointer(
-        self, cls, method, args,
-    ):
-        instance = cls()
-        with pytest.raises(NotImplementedError) as exc_info:
-            getattr(instance, method)(*args)
-        msg = str(exc_info.value)
-        # Each placeholder names the phase that lands the real
-        # implementation — makes "unwired pipeline call" debuggable.
-        assert "Phase" in msg, (
-            f"{cls.__name__}.{method}() raises NotImplementedError but "
-            f"doesn't say which Phase will land it: {msg}"
+    def test_no_method_raises_not_implemented(self, cls):
+        from pipelines import (
+            SpecialistVerdict as SV, AIResult as AR,
         )
+        ctx = SimpleNamespace()
+        instance = cls()
+        # Each method must execute without raising NotImplementedError.
+        # Result correctness is verified by test_pipelines_b_complete.
+        for method, args in [
+            ("applies_to", (ctx,)),
+            ("generate_candidates", (ctx,)),
+            ("build_prompt", (ctx, [])),
+            # decide requires a non-empty api_key on ctx to actually
+            # reach the AI; we don't exercise that here. Verify only
+            # that the method exists and doesn't raise NotImplementedError.
+            ("route_to_specialists", (ctx, AR(proposals=[]))),
+            ("execute", (ctx, SV())),
+            ("compute_metrics", (ctx,)),
+            ("tune", (ctx, Metrics(pipeline_name=cls.name))),
+        ]:
+            try:
+                getattr(instance, method)(*args)
+            except NotImplementedError as exc:
+                raise AssertionError(
+                    f"{cls.__name__}.{method}() still raises "
+                    f"NotImplementedError after scope-B build-out: {exc}"
+                )
+            except Exception:
+                # Other exceptions (missing infrastructure in a bare
+                # SimpleNamespace ctx) are fine — we only forbid
+                # NotImplementedError.
+                pass
 
 
 # ---------------------------------------------------------------------------

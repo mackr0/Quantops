@@ -55,16 +55,21 @@ These are runnable via `OptionPipeline().run_cycle(ctx)` and exercised by tests,
 | `pipelines/option_prompt.build_prompt` | Built but the legacy `ai_analyst._build_batch_prompt` still serves production prompts for both pipelines. |
 | `OptionPipeline.run_cycle` | Inherits from base `Pipeline`; calls each method in order. Cannot run today because `generate_candidates` and `decide` are STUB. |
 
-### 1c. STUB (NotImplementedError — explicitly unfinished)
+### 1c. ~~STUB~~ — RESOLVED 2026-05-19
 
-These are why the answer to "is options 100% complete?" is **no**.
+The OptionPipeline + StockPipeline stubs (formerly listed here) were finished in scope-B build-out:
 
-| Method | File / line | Docstring claims | Actual status |
-|---|---|---|---|
-| `OptionPipeline.generate_candidates` | `pipelines/option.py:48` | *"Phase 1 wires this to options_strategy_advisor.evaluate_candidate_for_multileg + IV-regime scoring."* | Phase 1 actually shipped (per-pipeline **metrics**, commit `9f3e66c`). This method was never filled in. |
-| `OptionPipeline.decide` | `pipelines/option.py:64` | *"Phase 3 wires this to the shared ai_providers call."* | Phase 3 actually shipped (prompt fork / `build_prompt`, commit `d503ce0`). This method was never filled in. |
+| Method | Status |
+|---|---|
+| `OptionPipeline.generate_candidates` | ✓ implemented — reads `ctx.shortlist`, fetches IV rank via `options_oracle`, enumerates strategies via `options_strategy_advisor.evaluate_candidate_for_multileg`, emits one Candidate per multileg strategy with option features in `extra` |
+| `OptionPipeline.decide` | ✓ implemented — uses `ai_providers.call_ai` with `ctx.ai_provider` + `ctx.ai_api_key`; tolerant JSON parsing; filters to MULTILEG_OPEN/OPTIONS proposals |
+| `StockPipeline.generate_candidates` | ✓ implemented — same shape as option side, carries stock technicals in `extra` |
+| `StockPipeline.decide` | ✓ implemented — same shape as option side, filters to stock-side actions |
+| `StockPipeline.execute` | ✓ implemented — loops verdict.approved → `trader.execute_trade`; classifies into submitted/rejected/skipped/errors |
 
-The two stub docstrings reference phases that have already happened doing other work. The stubs are STALE LIES and need to be filled in or the docstrings rewritten to reflect reality.
+Both pipelines are now **runnable end-to-end via `.run_cycle(ctx)`**. Production scheduler still uses the legacy `trade_pipeline.run_trade_cycle` dispatch path — the cutover (scope C) is a separate change requiring shadow-mode soak.
+
+Tests in `tests/test_pipelines_b_complete_2026_05_19.py` pin per-method behavior + the full `run_cycle` composition. 200 tests across the full pipeline suite pass.
 
 ### 1d. REFINEMENT (shipped phase but with explicitly-deferred follow-up)
 
@@ -136,13 +141,14 @@ Ordered by what unblocks downstream work.
 
 When EVERY box below ticks, options work is done. Until then it isn't.
 
-- [ ] `pipelines/option.py` contains zero `NotImplementedError`.
-- [ ] `OptionPipeline().run_cycle(ctx)` is end-to-end runnable in a test with a fixture ctx; returns a valid `ExecutionResult` for empty input and for input with each strategy type.
-- [ ] `tests/test_pipelines_phase0.py` no longer asserts NotImplementedError on `generate_candidates` / `decide`. Replacement tests pin actual behavior.
+- [x] `pipelines/option.py` contains zero `NotImplementedError`. **Done 2026-05-19 (scope B).**
+- [x] `OptionPipeline().run_cycle(ctx)` is end-to-end runnable in a test with a fixture ctx; returns a valid `ExecutionResult` for empty input and for input with each strategy type. **Done — see `test_pipelines_b_complete_2026_05_19.py`.**
+- [x] `tests/test_pipelines_phase0.py` no longer asserts NotImplementedError on `generate_candidates` / `decide`. Replacement tests pin actual behavior. **Done — `TestPhase0PlaceholdersAllWired` replaces it.**
 - [ ] Risk model delta-adjusted exposure uses live IV (no `FALLBACK_IV` fallback in the production path).
 - [ ] Phase 5c backfill runs nightly; no resolved option prediction is using underlying-price math by accident.
 - [ ] Single-leg `OPTIONS` action flows through `OptionPipeline.execute`, not the legacy elif branch.
-- [ ] Multi-scheduler can dispatch via `Pipeline.run_cycle` (StockPipeline also fully implemented; cutover decision is operational, not capability).
+- [x] StockPipeline also fully implemented. **Done 2026-05-19 (scope B).**
+- [ ] Multi-scheduler can dispatch via `Pipeline.run_cycle` (scope C — requires shadow-mode soak before cutover).
 - [ ] Dashboard renders a per-position Greeks panel.
 - [ ] Per-cycle IV-rank degradation alarm fires loudly when >80% of lookups return None.
 - [ ] Every entry above has a regression test referenced by name in CHANGELOG.
