@@ -253,6 +253,33 @@ RULE_MODULES = [
     "deterministic_specialists.candle_dark_cloud_cover",
     "deterministic_specialists.candle_morning_star",
     "deterministic_specialists.candle_evening_star",
+    # ── 2026-05-18 PM: market-context + portfolio batch ──
+    # Reads `candidate["_market_context"]` (regime, vix, spy_trend,
+    # sector_rotation, crisis_context, macro_event_block) and
+    # `candidate["_portfolio"]` (positions, drawdown_pct) — both
+    # stashed by ai_analyst._build_batch_prompt right before the
+    # panel runs. Zero new data fetches; pure plumbing of context
+    # already built upstream.
+    "deterministic_specialists.regime_bullish_long_confirm",
+    "deterministic_specialists.regime_bearish_long_caution",
+    "deterministic_specialists.regime_bearish_short_confirm",
+    "deterministic_specialists.regime_bullish_short_caution",
+    "deterministic_specialists.regime_volatile_caution",
+    "deterministic_specialists.vix_high_caution",
+    "deterministic_specialists.vix_extreme_panic",
+    "deterministic_specialists.vix_low_riskon",
+    "deterministic_specialists.vix_extreme_complacency",
+    "deterministic_specialists.spy_uptrend_long_confirm",
+    "deterministic_specialists.spy_downtrend_long_caution",
+    "deterministic_specialists.spy_downtrend_short_confirm",
+    "deterministic_specialists.crisis_state_long_caution",
+    "deterministic_specialists.crisis_state_short_confirm",
+    "deterministic_specialists.macro_event_imminent",
+    "deterministic_specialists.sector_rotation_top_winner",
+    "deterministic_specialists.sector_rotation_bottom_loser",
+    "deterministic_specialists.portfolio_already_long",
+    "deterministic_specialists.portfolio_already_short",
+    "deterministic_specialists.portfolio_high_drawdown",
 ]
 
 

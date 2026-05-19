@@ -17,6 +17,33 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 PM — Market-context + portfolio batch (Phase 3 near-final). Severity: medium (deterministic library 159 → 179; total ensemble 167 → 187).
+
+User push to keep building. Plumbing extension first: `ai_analyst._build_batch_prompt` now stashes `_market_context` (regime, vix, spy_trend, sector_rotation, crisis_context, macro_event_block) and `_portfolio` (positions, drawdown_pct) onto each candidate dict before calling `build_panel_block`. Idempotent — re-renders are no-op overwrites. Rules read these via the standard candidate-dict interface, no signature change to the rule contract.
+
+**20 new rules shipped** — all consume data already constructed upstream; zero new API calls:
+
+- **Regime alignment (5)** — `regime_bullish_long_confirm`, `regime_bearish_long_caution`, `regime_bearish_short_confirm`, `regime_bullish_short_caution`, `regime_volatile_caution`. Aligns trade direction with the prevailing market regime.
+- **VIX-based (4)** — `vix_high_caution` (>25), `vix_extreme_panic` (>35, VETO LONG), `vix_low_riskon` (<18), `vix_extreme_complacency` (<11). Stack-able with regime rules; e.g., bullish regime + low VIX = two confirms.
+- **SPY trend (3)** — `spy_uptrend_long_confirm`, `spy_downtrend_long_caution`, `spy_downtrend_short_confirm`. Single-name candidates aligned with or fighting the index.
+- **Crisis state (2)** — `crisis_state_long_caution` and `crisis_state_short_confirm`. Crisis_monitor's elevated states (ELEVATED/HIGH/CRITICAL/SEVERE/CATASTROPHIC) bias toward shorts.
+- **Macro events (1)** — `macro_event_imminent` (FOMC/CPI/NFP today or tomorrow → defer entries).
+- **Sector rotation (2)** — `sector_rotation_top_winner` (CONFIRM LONG when sector is top-2 by 5d return), `sector_rotation_bottom_loser` (CAUTION LONG when bottom-2).
+- **Portfolio context (3)** — `portfolio_already_long`, `portfolio_already_short`, `portfolio_high_drawdown`. Single-name concentration + risk-of-ruin awareness.
+
+Severity mix of this batch: 6 CONFIRM, 13 CAUTION, 1 VETO. Tilts toward CAUTION because most market-context rules describe risk environments, not new opportunities — but balanced by the existing confirm-heavy candle batch.
+
+**Tests** — 20 positive fixtures added to the table-driven test. 4,032 tests passing overall.
+
+**Current state**: **187 total specialists** (179 deterministic + 8 LLM). 94% of the 200 target. Final ~13 require dedicated new data feeds:
+- Ex-dividend calendar (for dividend-cycle effects: pre-ex-div drift, post-ex-div bounce, drop-by-div-amount caution)
+- ETF flow data (for retail-vs-institutional flow signals)
+- Tick / quote microstructure data (for HFT pressure, dark-pool footprints — same data extension Phase 4c microstructure model would need)
+
+These are real feed integrations, not single-session tasks. Documented in `docs/17` as the final stretch.
+
+---
+
 ## 2026-05-18 PM — Candlestick-proxy batch (Phase 3 final stretch). Severity: medium (deterministic library 143 → 159; total ensemble 151 → 167).
 
 User asked if the candlestick patterns were easy to add. Verified: yes — `trade_pipeline._get_latest_indicators` already pulls 200 OHLC bars per candidate; only need to surface the last 3 bars' raw OHLC + body/wick descriptors.

@@ -80,15 +80,16 @@ Categories shipped in the first batch:
 | Second batch (2026-05-18) | 109 | +49 rules — trend/momentum, gap, microstructure, attention, smart-money, fundamentals, options, macro, 8-K, calendar |
 | Third batch (2026-05-18) | 155 | +46 rules — factor signals (momentum/quality/low-vol), oscillator confluence, Bollinger walks, round-number psychology, sentiment depth, macro detail (oil/treasury/gold vol), short-side complements, options flow detail, catalyst stacking, intraday flow, wash-cycle |
 | PM audit cleanup (2026-05-18) | 151 | −4 noisy wall-clock CAUTIONs (`monday_morning_open`, `last_30_min_session`, `first_5_min_session`, `friday_close_caution`) dropped + 5 CAUTIONs tightened thresholds to fix structural anti-action bias caught by user audit. Severity mix now 9V/67C/67C (balanced). |
-| Candlestick batch (2026-05-18 PM) | **167** | +16 candlestick-pattern rules (`candle_*`): hammer, shooting-star, doji, bullish/bearish engulfing, inside/outside day, marubozu long/short, three white soldiers / black crows, hanging-man, piercing pattern, dark-cloud cover, morning star, evening star. Uses OHLC of the last 3 bars surfaced via `trade_pipeline._get_latest_indicators` → `candidate["candle"]`. Zero new API calls (pure derived from the existing 200-bar fetch). |
-| Final stretch | 200 | Remaining ~30 — dividend-cycle effects (need ex-div calendar feed), ETF flow signals (need per-ETF routing), cross-asset / breadth signals (need SPY/QQQ context block in candidate dict). Each requires a small upstream data extension. |
+| Candlestick batch (2026-05-18 PM) | 167 | +16 candlestick-pattern rules (`candle_*`). Uses OHLC of the last 3 bars surfaced via `trade_pipeline._get_latest_indicators` → `candidate["candle"]`. Zero new API calls. |
+| Market-context + portfolio batch (2026-05-18 PM) | **187** | +20 rules consuming `candidate["_market_context"]` (regime, vix, spy_trend, sector_rotation, crisis_context, macro_event_block) + `candidate["_portfolio"]` (positions, drawdown_pct) — both stashed by `ai_analyst._build_batch_prompt` before the panel runs. Categories: regime alignment, VIX bands, SPY trend, crisis state, macro events, sector rotation, portfolio concentration / drawdown. |
+| Final stretch | 200 | Remaining ~13 require dedicated new data feeds — ex-div calendar (dividend-cycle effects), ETF flow data (institutional-vs-retail flows), tick / quote microstructure (HFT pressure, dark-pool footprints — same data extension Phase 4c microstructure model would need). Not single-session work. |
 
-**Current state (2026-05-18 EOD)**: **167 specialists** in the live ensemble.
+**Current state (2026-05-18 EOD)**: **187 specialists** in the live ensemble.
 
 | Layer | Count | Notes |
 |---|---|---|
 | LLM-narrative (`specialists/`) | 8 | 6 re-scoped 2026-05-18 PM to synthesize from the deterministic panel rather than re-derive facts. `gamma_pin_specialist` + `option_spread_risk` kept as-is (unique territory the rule library can't subsume). |
-| Deterministic (`deterministic_specialists/`) | 159 | Pure-Python rule checkers. Severities: VETO / CAUTION / CONFIRM. Mix: 9 VETO / ~75 CAUTION / ~75 CONFIRM (balanced after the PM audit). Each rule gated by `APPLIES_TO_SIGNALS`. Per-rule exception isolation prevents one bad rule from silencing the panel. |
+| Deterministic (`deterministic_specialists/`) | 179 | Pure-Python rule checkers. Severities: VETO / CAUTION / CONFIRM. Mix: 10 VETO / ~88 CAUTION / ~81 CONFIRM. Each rule gated by `APPLIES_TO_SIGNALS`. Per-rule exception isolation prevents one bad rule from silencing the panel. Rules can read market context + portfolio via `candidate["_market_context"]` / `candidate["_portfolio"]` stashed by `ai_analyst._build_batch_prompt`. |
 
 **Target state**: 200 specialists.
 

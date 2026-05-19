@@ -1884,6 +1884,16 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         # The AI weighs these as additional input.
         try:
             from deterministic_specialists import build_panel_block
+            # 2026-05-18 PM — stash market_context + portfolio_state on
+            # the candidate so rules that need market-level data
+            # (regime / VIX / sector rotation / crisis state / macro
+            # events) can read them via the standard candidate dict
+            # interface. Idempotent — re-stashing on re-renders is a
+            # no-op overwrite.
+            if isinstance(market_context, dict):
+                c["_market_context"] = market_context
+            if isinstance(portfolio_state, dict):
+                c["_portfolio"] = portfolio_state
             panel = build_panel_block(c, ctx)
             if panel:
                 line += "\n" + panel
