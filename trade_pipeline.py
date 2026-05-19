@@ -981,17 +981,20 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             # the calibrator can use real participation_rate later.
             predicted_slip = None
             adv_at_decision = None
+            # 2026-05-19 (Phase B1): widen the catch to bare Exception.
+            # ADV + predicted-slippage are best-effort calibration
+            # telemetry; an unexpected exception here MUST NOT
+            # orphan the just-submitted broker fill by skipping the
+            # log_trade call below. Per `feedback_no_orphan_broker_fills`.
             try:
                 from market_data import get_bars
                 _bars = get_bars(symbol, limit=25)
                 if _bars is not None and len(_bars) >= 5:
                     adv_at_decision = float(_bars["volume"].tail(20).mean())
-            except (KeyError, ValueError, AttributeError, TypeError,
-                    ImportError, OSError) as _adv_exc:
-                # ADV capture is calibration telemetry; trade
-                # proceeds without it but surface for follow-up.
+            except Exception as _adv_exc:
                 logger.debug(
-                    "ADV capture failed for %s on BUY: %s: %s",
+                    "ADV capture failed for %s on BUY (non-fatal — journal "
+                    "still writes): %s: %s",
                     symbol, type(_adv_exc).__name__, _adv_exc,
                 )
             try:
@@ -1004,12 +1007,10 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                     market_type=getattr(ctx, "market_type", None) if ctx else None,
                 )
                 predicted_slip = _est.get("total_bps")
-            except (KeyError, ValueError, AttributeError, TypeError,
-                    ImportError, OSError, sqlite3.OperationalError) as _ps_exc:
-                # Predicted-slippage capture is telemetry; trade
-                # proceeds without it but surface the bug.
+            except Exception as _ps_exc:
                 logger.debug(
-                    "predicted-slippage capture failed for %s on BUY: %s: %s",
+                    "predicted-slippage capture failed for %s on BUY "
+                    "(non-fatal — journal still writes): %s: %s",
                     symbol, type(_ps_exc).__name__, _ps_exc,
                 )
             log_trade(
@@ -1100,17 +1101,17 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
             # Item 5c — capture predicted slippage + ADV on the exit
             predicted_slip_sell = None
             adv_at_sell = None
+            # 2026-05-19 (Phase B1): bare-Exception catch — see BUY
+            # comment above. Best-effort telemetry must never orphan.
             try:
                 from market_data import get_bars
                 _bars = get_bars(symbol, limit=25)
                 if _bars is not None and len(_bars) >= 5:
                     adv_at_sell = float(_bars["volume"].tail(20).mean())
-            except (KeyError, ValueError, AttributeError, TypeError,
-                    ImportError, OSError) as _adv_exc:
-                # ADV capture on exit is calibration telemetry;
-                # sell proceeds without it but surface for follow-up.
+            except Exception as _adv_exc:
                 logger.debug(
-                    "ADV capture failed for %s on SELL: %s: %s",
+                    "ADV capture failed for %s on SELL (non-fatal — "
+                    "journal still writes): %s: %s",
                     symbol, type(_adv_exc).__name__, _adv_exc,
                 )
             try:
@@ -1123,12 +1124,10 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                     market_type=getattr(ctx, "market_type", None) if ctx else None,
                 )
                 predicted_slip_sell = _est.get("total_bps")
-            except (KeyError, ValueError, AttributeError, TypeError,
-                    ImportError, OSError, sqlite3.OperationalError) as _ps_exc:
-                # Predicted-slippage capture is telemetry; sell
-                # proceeds without it but surface for follow-up.
+            except Exception as _ps_exc:
                 logger.debug(
-                    "predicted-slippage capture failed for %s on SELL: %s: %s",
+                    "predicted-slippage capture failed for %s on SELL "
+                    "(non-fatal — journal still writes): %s: %s",
                     symbol, type(_ps_exc).__name__, _ps_exc,
                 )
             # NEW (2026-05-07): write status='pending_fill' instead of

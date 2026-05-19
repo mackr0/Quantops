@@ -795,8 +795,21 @@ def _process_exit_trigger(trigger_signal, api, ctx, db_path, positions,
     # through the narrative — without this, the macro shows
     # "Auto-exit" with no number, and the trades page reads as if
     # the close came from nowhere.
+    # 2026-05-19 (Phase B1): wrap in try/except so a metadata-fetch
+    # failure CANNOT orphan the just-submitted broker fill. The
+    # journal row is more important than the AI-attribution; an
+    # empty entry_meta produces a less-rich row but never a missing
+    # one. Per `feedback_no_orphan_broker_fills`.
     from journal import get_open_entry_metadata
-    entry_meta = get_open_entry_metadata(db_path, symbol)
+    try:
+        entry_meta = get_open_entry_metadata(db_path, symbol)
+    except Exception as _em_exc:
+        logging.warning(
+            "get_open_entry_metadata failed for %s (continuing with "
+            "empty meta — journal write is load-bearing): %s: %s",
+            symbol, type(_em_exc).__name__, _em_exc,
+        )
+        entry_meta = {"ai_confidence": None, "ai_reasoning": None}
 
     log_trade(
         symbol=symbol,

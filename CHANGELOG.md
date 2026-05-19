@@ -17,6 +17,56 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Phase B1 (atomic-journaling audit) + Phase B2 (specialist coverage parity for options). Severity: medium (tightening + observability + structural-coverage upgrade).
+
+**Phase B1 — atomic-journaling audit + structural hardening.**
+
+The safety net from earlier today HALTs a profile when the reconciler detects an orphan broker fill. The "primary fix" the user named alongside that — making orphans structurally impossible — is this commit's Phase B1 work. Audited every `api.submit_order` call site in production code (17 sites across 8 files). Findings:
+- **No immediate leaks today** — every site already had a journal write within the same code path. The cron's backfill counts are at 0 since today's reset.
+- **Two structural risks fixed:**
+  - `trader.py:_process_exit_trigger` fetches `get_open_entry_metadata` AFTER submit_order and BEFORE log_trade. If the metadata fetch raised, the broker fill was orphaned. Wrapped in try/except with empty-meta fallback — journal write is now load-bearing, AI-attribution enrichment is best-effort.
+  - `trade_pipeline.py` BUY+SELL entry blocks ran ADV + slippage estimation between submit_order and log_trade, catching only `(KeyError, ValueError, AttributeError, TypeError, ImportError, OSError, sqlite3.OperationalError)`. An unexpected exception type (`RuntimeError`, `ZeroDivisionError`, etc.) would have orphaned. Widened to bare `except Exception` — telemetry remains best-effort, journal write is load-bearing.
+- **New structural guardrails (`tests/test_atomic_journaling_audit_2026_05_19.py`, 6 tests):**
+  1. `test_no_production_caller_passes_log_false` — production code may not pass `log=False` to `execute_trade` / `execute_pair_trade` / `execute_option_strategy`. Tests/scripts exempt.
+  2. `test_every_submit_order_site_has_a_journal_write_nearby` — for each `submit_order` call in PRODUCTION_SUBMIT_FILES, a `log_trade(` / `UPDATE trades` / `INSERT INTO trades` marker must appear within 100 source lines. Bracket-protective sites use a different atomicity model (`submit_protective_*` returns the order_id, caller updates `protective_*_order_id` on the parent trade row) — exempted explicitly and covered by `test_bracket_callers_persist_order_id_atomically`.
+  3. `test_no_unknown_submit_order_call_sites` — if a NEW file adds `api.submit_order`, the test fails until it's added to `PRODUCTION_SUBMIT_FILES`, forcing the operator to confirm atomic journaling holds at the new site.
+  4. `test_trade_pipeline_intermediate_enrichment_catches_bare_exception` — pin the bare-except widening so a future refactor can't re-introduce the restrictive tuple.
+  5. `test_trader_exit_metadata_fetch_is_wrapped` — pin the new try/except on `get_open_entry_metadata`.
+
+The 17 submit_order sites, classified:
+
+| File | Sites | Pattern | Atomicity status |
+|---|---|---|---|
+| `trader.py:113, 161` (BUY/SELL entries) | 2 | log_trade within ~15 lines, `if log:` gate (only tests pass `log=False`) | ✅ atomic |
+| `trader.py:732, 765` (COVER/SELL exits) | 2 | log_trade at line 810 via shared exit flow; metadata fetch now wrapped | ✅ atomic |
+| `trade_pipeline.py:965, 1084, 1305` (BUY/SELL/MULTILEG entries) | 3 | log_trade within ~50 lines; enrichment widened to bare-except | ✅ atomic |
+| `options_delta_hedger.py:214` | 1 | log_trade @238 | ✅ atomic |
+| `options_roll_manager.py:289` | 1 | UPDATE trades on existing row @312 | ✅ atomic |
+| `multi_scheduler.py:1546` (sibling-cleanup close) | 1 | log_trade @1567 | ✅ atomic |
+| `stat_arb_pair_book.py:941, 954, 1042` (pair legs) | 3 | log_trade for both legs after both submits succeed | ✅ atomic (with half-pair-open error logging if leg B fails after leg A) |
+| `simple_strategies.py:129` (buy_hold / random_stock) | 1 | log_trade @159 | ✅ atomic |
+| `bracket_orders.py:51, 153, 217` (protective stop/TP/trailing) | 3 | function returns order_id; caller updates `protective_*_order_id` on parent | ✅ atomic via caller pattern (pinned by `test_bracket_callers_persist_order_id_atomically`) |
+
+**Phase B2 — deterministic specialist coverage parity for options.**
+
+Before today, the 179 deterministic specialists in `deterministic_specialists/` were gated by `APPLIES_TO_SIGNALS = ("BUY", "STRONG_BUY", "WEAK_BUY")` (123 long-only), `(... "SHORT")` (15 short-only), or both (41 bidirectional). The router's filter (`if candidate.signal not in applies: continue`) meant an `OPTIONS` or `MULTILEG_OPEN` candidate matched ZERO rules and skipped the entire 179-rule library. Option proposals saw only the 3 LLM-narrative option specialists (`option_spread_risk`, `gamma_pin_specialist`, `iv_skew_specialist`) + 5 underlying-shaped LLM ones — a ~150-vs-8 pre-trade gate asymmetry.
+
+**Fix (single-file change, no per-rule edits).** Added a `signal_direction(candidate)` helper to `deterministic_specialists/__init__.py` that returns `"bullish"` / `"bearish"` / `"neutral"` / `None` based on `(signal, option_strategy)`. Updated `run_panel` so that:
+- Stock-side candidates fire rules whose `APPLIES_TO_SIGNALS` directly contains the signal (unchanged legacy behavior)
+- `OPTIONS` / `MULTILEG_OPEN` candidates fire rules whose `APPLIES_TO_SIGNALS` overlaps the same-direction stock-action set:
+  - Bullish options (long_call, bull_call_spread, bull_put_spread, cash_secured_put, covered_call) → fire long-only rules
+  - Bearish options (long_put, bear_call_spread, bear_put_spread, protective_put) → fire short-only rules
+  - Neutral (iron_condor, iron_butterfly, straddle, strangle, calendar_spread) → fire neither directional set (covered by LLM option specialists)
+  - Unknown strategy → fire nothing directional (don't mis-attribute)
+
+So a bullish `OPTIONS` candidate on AAPL now sees ALL the bullish vetoes the 179-rule library has — RSI overbought, parabolic blow-off, insider sold, sector weakness, VIX extreme, etc. Same coverage as a `BUY AAPL` candidate. Zero rule files needed to change.
+
+**Tests (`tests/test_specialist_coverage_parity_2026_05_19.py`, 29 tests):** parameterised `signal_direction` checks across all stock actions + bullish/bearish option strategies + neutral + unknown; `run_panel` exhaustively: long-rule fires/skips on bullish/bearish/neutral options + multileg, short-rule same, bidirectional rule fires on both, legacy stock routing unchanged, empty-applies-to-signals fires-always, integration check that the LIVE panel now fires ≥1 rule on a clearly-overbought bullish OPTIONS candidate.
+
+**Combined impact for tomorrow's open:** option proposals get ~150 deterministic vetoes plus the 8 LLM specialists' verdicts (same gate strength as stock proposals on the same underlying), AND any submit_order leak that slips past the audit will be caught immediately by the reconciler safety net + the structural guardrail tests. 139/139 tests green across all of today's work (12 new test files this session, 90 new tests).
+
+---
+
 ## 2026-05-19 PM — Reconciler safety net: synthesis paths HALT instead of silently INSERT. Severity: high (Phase A of the orphan-broker-fills hardening that caused this morning's BuyHoldSPY chaos).
 
 **Background — today's BuyHoldSPY incident.** Mack manually corrected a phantom BuyHoldSPY row 4 times via SQL; each time the 15-min `reconcile_journal_to_broker --apply` cron undid the fix. Root cause: the reconciler's apply phase silently INSERTed synthetic `'reconcile_backfill'` SELL rows + UPDATEd matching BUY rows to `'closed'` whenever it detected that the broker no longer held a position the journal said was open. That works as designed when the journaling code path is bulletproof — but it papers over a real bug if any `api.submit_order` call site fails to journal in-line.

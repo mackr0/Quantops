@@ -302,6 +302,108 @@ def discover_rules() -> List[Any]:
     return out
 
 
+# 2026-05-19 (Phase B2): directional translation so the 179
+# deterministic rules — written against stock actions
+# (BUY/SELL/SHORT) — ALSO fire on directionally-equivalent
+# OPTIONS / MULTILEG_OPEN candidates.
+#
+# Before: every rule's `APPLIES_TO_SIGNALS` enumerated stock
+# actions, so an OPTIONS or MULTILEG_OPEN candidate matched
+# nothing and skipped the entire 179-rule panel — option
+# proposals got ~3-8 LLM specialists' verdicts vs ~150+ for stock
+# proposals on the same underlying. Per memory rule "[System
+# exists to trade and make money, not hoard cash]", under-
+# covering option proposals = weaker pre-trade gate = either
+# more bad option trades AND/OR more options being unnecessarily
+# rejected by the AI for lack of confirmation.
+#
+# After: the router computes the candidate's DIRECTION from
+# (action, option_strategy) and matches a rule's stock-action
+# `APPLIES_TO_SIGNALS` against that direction. A rule listing
+# `BUY/STRONG_BUY/WEAK_BUY` (bullish stock) now also fires on
+# bullish options (`long_call`, `bull_call_spread`, etc.). Zero
+# rule files needed to change.
+
+BULLISH_STOCK_ACTIONS = frozenset({"BUY", "STRONG_BUY", "WEAK_BUY"})
+BEARISH_STOCK_ACTIONS = frozenset({"SELL", "STRONG_SELL", "WEAK_SELL", "SHORT"})
+
+# Bullish option strategies: profit when the underlying rises
+# (or stays above strike for collected-premium strategies).
+BULLISH_OPTION_STRATEGIES = frozenset({
+    "long_call",
+    "bull_call_spread",
+    "bull_put_spread",
+    "cash_secured_put",
+    "covered_call",
+})
+# Bearish option strategies: profit when the underlying falls
+# (or stays below strike for short-call strategies).
+BEARISH_OPTION_STRATEGIES = frozenset({
+    "long_put",
+    "bear_call_spread",
+    "bear_put_spread",
+    "protective_put",
+})
+# Non-directional strategies (range-bound or vol-bet) intentionally
+# don't trigger directional rules — they have their own option-
+# specific specialists (`gamma_pin_specialist`, `iv_skew_specialist`,
+# `option_spread_risk`) that cover the structural risks.
+_NEUTRAL_OPTION_STRATEGIES = frozenset({
+    "iron_condor",
+    "iron_butterfly",
+    "straddle",
+    "strangle",
+    "calendar_spread",
+})
+
+
+def signal_direction(candidate: Dict[str, Any],
+                      ) -> Optional[str]:
+    """Return 'bullish' / 'bearish' / 'neutral' / None for a
+    candidate based on its signal + option_strategy.
+
+    Used by `run_panel` to translate OPTIONS / MULTILEG_OPEN
+    candidates into a direction so directional rules fire on them.
+    Stock-side actions translate directly. Unknown signals return
+    None (no rule fires).
+    """
+    signal = (candidate.get("signal") or "").upper()
+    if signal in BULLISH_STOCK_ACTIONS:
+        return "bullish"
+    if signal in BEARISH_STOCK_ACTIONS:
+        return "bearish"
+    if signal in ("OPTIONS", "MULTILEG_OPEN"):
+        strat = (candidate.get("option_strategy") or "").lower()
+        if strat in BULLISH_OPTION_STRATEGIES:
+            return "bullish"
+        if strat in BEARISH_OPTION_STRATEGIES:
+            return "bearish"
+        if strat in _NEUTRAL_OPTION_STRATEGIES:
+            return "neutral"
+        # Unknown option_strategy on an OPTIONS/MULTILEG_OPEN
+        # candidate — don't fire directional rules (they may
+        # mis-attribute). The option-specific specialists still
+        # run via the LLM-narrative ensemble.
+        return None
+    return None
+
+
+def _rule_matches_directional_candidate(applies: tuple,
+                                         direction: Optional[str]) -> bool:
+    """A rule whose APPLIES_TO_SIGNALS lists stock actions
+    `applies` matches a directional (options/multileg) candidate
+    when its enumerated actions overlap with the same-direction
+    stock-action set."""
+    if direction is None or direction == "neutral":
+        return False
+    applies_set = set(applies)
+    if direction == "bullish":
+        return bool(applies_set & BULLISH_STOCK_ACTIONS)
+    if direction == "bearish":
+        return bool(applies_set & BEARISH_STOCK_ACTIONS)
+    return False
+
+
 def run_panel(candidate: Dict[str, Any], ctx: Any = None) -> List[Dict[str, Any]]:
     """Run every registered rule against the candidate. Returns a list
     of fired verdicts (rules that returned None are filtered out).
@@ -311,15 +413,30 @@ def run_panel(candidate: Dict[str, Any], ctx: Any = None) -> List[Dict[str, Any]
     Per `feedback_no_silent_failures`, each rule's exceptions are
     logged but do not break the panel — one bad rule shouldn't
     silence the others.
+
+    Routing (2026-05-19): for stock-side actions, the rule's
+    `APPLIES_TO_SIGNALS` tuple is matched directly (legacy
+    behavior). For OPTIONS / MULTILEG_OPEN candidates, the
+    candidate's direction (bullish/bearish via option_strategy
+    lookup) is computed and the rule fires if its actions overlap
+    the same-direction stock-action set. Lets the 179-rule
+    library serve options proposals without per-rule edits.
     """
     signal = (candidate.get("signal") or "").upper()
+    direction = signal_direction(candidate) if signal in ("OPTIONS",
+                                                             "MULTILEG_OPEN") else None
     fired: List[Dict[str, Any]] = []
     for mod in discover_rules():
         applies = getattr(mod, "APPLIES_TO_SIGNALS", ())
         if applies:
-            # A signal-restricted rule needs a matching signal to
-            # consider running. Empty signal → skip those rules.
-            if not signal or signal not in applies:
+            # Direct stock-signal match (legacy path)
+            direct_match = signal and signal in applies
+            # New: directional translation for options/multileg
+            directional_match = (
+                direction is not None
+                and _rule_matches_directional_candidate(applies, direction)
+            )
+            if not (direct_match or directional_match):
                 continue
         try:
             verdict = mod.evaluate(candidate, ctx)
