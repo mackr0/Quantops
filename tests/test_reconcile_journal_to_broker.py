@@ -122,9 +122,19 @@ def test_cancel_without_fill_marks_status_canceled(tmp_path):
     assert status == "canceled"
 
 
-def test_broker_sold_via_stop_backfills_sell_row(tmp_path):
+def test_broker_sold_via_stop_categorizes_but_halts_not_synthesizes(tmp_path):
     """BUY filled, broker stop fired, journal missed the SELL — the
-    prod scenario for 35 of the 40 phantoms."""
+    prod scenario for 35 of the 40 phantoms.
+
+    BEHAVIOR CHANGE 2026-05-19 (Phase A safety net). The reconciler
+    USED to silently INSERT the SELL row + mark BUY closed.
+    Per `feedback_no_orphan_broker_fills`, that papered over a real
+    bug — every broker order MUST be journaled by the submit_order
+    code path. Now the reconciler CATEGORIZES the would-be backfill
+    (so the operator can see what WOULD have been synthesized) but
+    does NOT mutate the journal. Instead it HALTs the profile (via
+    `halt_and_alert`) so trading-pipeline dispatch is blocked until
+    the leak is fixed."""
     from reconcile_journal_to_broker import reconcile_with_ctx
     db = _make_journal_db(tmp_path, [
         (88, "BMY", "buy", 71, "open", "bmy-buy",
@@ -145,27 +155,27 @@ def test_broker_sold_via_stop_backfills_sell_row(tmp_path):
     ]
     ctx = _ctx(api, db)
     res = reconcile_with_ctx(ctx, apply_changes=True)
+    # Categorization still works (the operator can see what would
+    # have been synthesized)
     assert len(res["cancel"]) == 0
     assert len(res["backfill_sell"]) == 1
     backfill = res["backfill_sell"][0]
     assert backfill["symbol"] == "BMY"
     assert backfill["sell_price"] == 57.90
-    # Verify DB writes
+    assert res.get("halted_synthesis_count") == 1
+    # But the journal is NOT mutated — no synthesis fired
     conn = sqlite3.connect(db)
     buy_status = conn.execute("SELECT status FROM trades WHERE id=88").fetchone()[0]
-    assert buy_status == "closed"
-    sell_rows = conn.execute(
-        "SELECT symbol, side, qty, price, status, order_id "
-        "FROM trades WHERE id != 88"
-    ).fetchall()
-    assert len(sell_rows) == 1
-    sym, side, qty, price, status, oid = sell_rows[0]
-    assert sym == "BMY"
-    assert side == "sell"
-    assert qty == 71
-    assert price == 57.90
-    assert status == "closed"
-    assert oid == "bmy-stop-fill"
+    assert buy_status == "open", (
+        "BUY row must stay 'open' — the reconciler must HALT, not "
+        "silently close the row. If this fails, the synthesis "
+        "INSERT/UPDATE was re-added."
+    )
+    sell_rows = conn.execute("SELECT side FROM trades WHERE id != 88").fetchall()
+    assert sell_rows == [], (
+        "No SELL row may be synthesized. If this fails, the silent "
+        "INSERT was re-added — the safety net is gone."
+    )
     conn.close()
 
 
@@ -251,18 +261,18 @@ def test_multiple_profiles_with_same_qty_attribution(tmp_path):
     ctx_a = _ctx(api, db_a, name="A", profile_id=1)
     ctx_b = _ctx(api, db_b, name="B", profile_id=2)
     res_a = reconcile_with_ctx(ctx_a, apply_changes=True)
-    # Within a profile, used_sell_order_ids tracks; across profiles the
-    # script is run separately, so each picks the OLDEST fill. To prove
-    # multi-profile attribution does NOT double-count, run B and verify
-    # its picked sell_order_id differs from A's. The strategy: A is run
-    # first, picks 'stop-a' (oldest). Then B runs — but in reality
-    # 'stop-a' is now consumed because A's reconcile already did its
-    # pass. The naive cross-profile dedupe needs out-of-band state.
-    # For now, just assert each picks a valid ID and assert that
-    # rerunning the same profile is idempotent (no double-backfill).
+    # BEHAVIOR CHANGE 2026-05-19: first pass categorizes the
+    # would-be backfill but HALTS instead of synthesizing. Re-running
+    # is no longer idempotent in the "second pass sees nothing to do"
+    # sense — the journal is unchanged, so the SAME drift is detected
+    # again, and HALT is refreshed (no-op state-wise but the action
+    # list re-populates).
     res_a2 = reconcile_with_ctx(ctx_a, apply_changes=True)
     assert len(res_a["backfill_sell"]) == 1
-    assert len(res_a2["backfill_sell"]) == 0  # second pass: nothing to do
+    # Second pass still detects the SAME drift (because we didn't
+    # synthesize — the drift persists). This is the new contract:
+    # halt persists until the upstream leak is fixed.
+    assert len(res_a2["backfill_sell"]) == 1
 
 
 def test_no_order_id_is_ambiguous(tmp_path):
@@ -343,9 +353,13 @@ def test_short_phantom_cancel(tmp_path):
     assert status == "canceled"
 
 
-def test_short_covered_by_broker_backfills_cover_row(tmp_path):
-    """Broker BOUGHT to cover via stop — backfill 'cover' row, mark
-    short closed."""
+def test_short_covered_by_broker_categorizes_but_halts(tmp_path):
+    """Broker BOUGHT to cover via stop — categorize the would-be
+    cover backfill but HALT instead of synthesizing.
+
+    BEHAVIOR CHANGE 2026-05-19: see
+    test_broker_sold_via_stop_categorizes_but_halts_not_synthesizes
+    for the rationale."""
     from reconcile_journal_to_broker import reconcile_with_ctx
     db = _make_journal_db(tmp_path, [
         (12, "MSFT", "short", 17, "open", "short-order",
@@ -370,16 +384,14 @@ def test_short_covered_by_broker_backfills_cover_row(tmp_path):
     backfill = res["backfill_cover"][0]
     assert backfill["symbol"] == "MSFT"
     assert backfill["cover_price"] == 395.00
+    assert res.get("halted_synthesis_count") == 1
+    # Journal NOT mutated
     conn = sqlite3.connect(db)
     short_status = conn.execute("SELECT status FROM trades WHERE id=12").fetchone()[0]
-    assert short_status == "closed"
-    cover_rows = conn.execute(
-        "SELECT side, qty, price FROM trades WHERE id != 12"
-    ).fetchall()
-    assert len(cover_rows) == 1
-    assert cover_rows[0][0] == "cover"
-    assert cover_rows[0][1] == 17
-    assert cover_rows[0][2] == 395.00
+    assert short_status == "open"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM trades WHERE id != 12"
+    ).fetchone()[0] == 0
     conn.close()
 
 
@@ -454,16 +466,17 @@ def test_partial_sale_drift_backfills_partial_sell(tmp_path):
     assert len(res["backfill_partial_sell"]) == 1
     bp = res["backfill_partial_sell"][0]
     assert bp["sell_qty"] == 21
-    # Check DB: BUY still open, SELL row inserted
+    assert res.get("halted_synthesis_count") == 1
+    # BEHAVIOR CHANGE 2026-05-19: no synthesis. BUY stays open (it
+    # already does in the partial-sell case for FIFO reasons) and
+    # NO new SELL row is inserted.
     conn = sqlite3.connect(str(p))
     buy_status = conn.execute("SELECT status FROM trades WHERE id=88").fetchone()[0]
-    assert buy_status == "open"  # FIFO consumes the SELL — BUY lot stays
+    assert buy_status == "open"
     sell_rows = conn.execute(
         "SELECT side, qty, price FROM trades WHERE id != 88"
     ).fetchall()
-    assert len(sell_rows) == 1
-    assert sell_rows[0][0] == "sell"
-    assert sell_rows[0][1] == 21
+    assert sell_rows == []
     conn.close()
 
 
@@ -675,13 +688,17 @@ def test_protective_fill_fallback_finds_exit_without_stored_id(tmp_path):
     ]
     ctx = _ctx(api, str(p))
     res = reconcile_with_ctx(ctx, apply_changes=True)
-    # Fallback path catches it
+    # Fallback path catches it (categorization works)
     assert len(res["backfill_sell"]) == 1
     assert res["backfill_sell"][0]["sell_qty"] == 492
+    assert res.get("halted_synthesis_count") == 1
+    # BEHAVIOR CHANGE 2026-05-19: HALT instead of close. Journal
+    # is NOT mutated; the operator has to fix the upstream leak
+    # (the original missing protective_*_order_id store).
     conn = sqlite3.connect(str(p))
     status = conn.execute("SELECT status FROM trades WHERE id=48").fetchone()[0]
     conn.close()
-    assert status == "closed"
+    assert status == "open"
 
 
 def test_partial_fill_sell_corrects_journal_qty(tmp_path):
@@ -857,13 +874,17 @@ def test_protective_fill_caught_when_siblings_still_hold_symbol(tmp_path):
     res = reconcile_with_ctx(ctx, apply_changes=True)
     assert len(res["backfill_sell"]) == 1
     assert res["backfill_sell"][0]["sell_qty"] == 573
-    # BUY now closed
+    assert res.get("halted_synthesis_count") == 1
+    # BEHAVIOR CHANGE 2026-05-19: the multi-profile-correct
+    # categorization still works (this profile's protective fill
+    # is found despite sibling-profile shares masking the
+    # symbol-level broker qty) — but HALT instead of synthesize.
     conn = sqlite3.connect(str(p))
     status = conn.execute("SELECT status FROM trades WHERE id=17").fetchone()[0]
     sell_count = conn.execute("SELECT COUNT(*) FROM trades WHERE side='sell'").fetchone()[0]
     conn.close()
-    assert status == "closed"
-    assert sell_count == 1  # one new SELL row inserted
+    assert status == "open"
+    assert sell_count == 0
 
 
 def test_archived_profile_with_no_account_id_is_skipped(tmp_path):

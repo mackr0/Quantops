@@ -17,6 +17,41 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Reconciler safety net: synthesis paths HALT instead of silently INSERT. Severity: high (Phase A of the orphan-broker-fills hardening that caused this morning's BuyHoldSPY chaos).
+
+**Background — today's BuyHoldSPY incident.** Mack manually corrected a phantom BuyHoldSPY row 4 times via SQL; each time the 15-min `reconcile_journal_to_broker --apply` cron undid the fix. Root cause: the reconciler's apply phase silently INSERTed synthetic `'reconcile_backfill'` SELL rows + UPDATEd matching BUY rows to `'closed'` whenever it detected that the broker no longer held a position the journal said was open. That works as designed when the journaling code path is bulletproof — but it papers over a real bug if any `api.submit_order` call site fails to journal in-line.
+
+**The fix (Phase A — safety net).** Convert the three synthesis paths in `reconcile_journal_to_broker.reconcile_with_ctx`'s `apply_changes` block — `backfill_sell`, `backfill_cover`, `backfill_partial_sell` — from "silent INSERT/UPDATE" to "HALT the profile + write a loud `audit_alerts` row + send notify_error email (first transition only)". The corrective paths (`cancel`, `uncancel_sell`, `fix_partial_sell`, `fix_partial_entry`) are untouched — they restore journal-to-broker truth on existing rows, no synthesis.
+
+**Mechanism:**
+
+| Piece | File | What |
+|---|---|---|
+| Schema migration | `models.py` | `trading_profiles.trading_halted INT NOT NULL DEFAULT 0`, `halt_reason TEXT`, `halted_at TEXT` |
+| Helpers | `halt_helpers.py` (new) | `halt_profile(pid, reason)`, `clear_halt(pid, source)`, `is_halted(pid) → (bool, reason)`, `halt_and_alert(...)` (one-shot wrapper that writes audit row + halts profile + notify_error on first transition) |
+| Reconciler | `reconcile_journal_to_broker.py` | When `synthesis_actions > 0`: call `halt_and_alert`, NEVER mutate journal trades. When `synthesis_actions == 0` AND profile was halted with `Reconciler safety net:` prefix: auto-clear (`clear_halt` with source=`"reconciler_auto_clear"`) |
+| Scheduler | `multi_scheduler.py:cycle_segment` | Branch on `is_halted(pid)` before invoking either dispatcher (legacy `run_trade_cycle` OR `run_via_pipelines`); when halted, log + record activity + return. Existing exits / monitoring continue through other tasks. |
+| Settings UI | `templates/settings.html` + `views.clear_profile_halt` | Per-profile halt banner (red warning, reason, halted_at timestamp); operator-override "Clear halt" button calls `clear_halt(source="settings_ui")` |
+| /issues | (no code change) | The `audit_alerts` row written by `halt_and_alert` is already surfaced by the `/issues` page — same path the IV-rank degradation alarm uses |
+
+**Critical contracts:**
+1. **HALT only blocks new entries.** Existing exits, monitors, risk snapshots continue running through their own scheduler tasks. Halt is asymmetric: closing positions is always permitted; opening new ones requires the journal to be trustworthy.
+2. **Auto-clear is automatic.** When the next reconcile pass detects no synthesis needed (drift resolved), it calls `clear_halt` unconditionally (idempotent). Operator never has to manually unhalt unless they want to skip waiting for the next 15-min cron tick.
+3. **First-transition-only notify.** Calling `halt_profile` repeatedly with the same reason refreshes `halted_at` but does NOT re-fire `notify_error` — the operator gets one email per halt event, not one per 15-min cron tick.
+4. **Defensive read.** `is_halted` returns `(False, None)` on DB error so a flaky master DB doesn't accidentally HALT trading (false positive is operationally expensive).
+
+**Phase A scope vs Phase B.** Per the user's framing: the *primary* fix is making orphans structurally impossible (atomic journaling at every `api.submit_order` call site — 17 sites identified across `trader.py`, `trade_pipeline.py`, `options_trader.py`, `stat_arb_pair_book.py`, etc.). That's a multi-commit Phase B project. This commit is the *safety net* (Phase A) — if any submit_order leak slips through, the reconciler stops trading instead of silently corrupting the journal further.
+
+**Tests (10 new + 6 updated, all green):**
+- `tests/test_reconciler_halt_safety_net_2026_05_19.py` (10) — round-trip halt/clear, idempotent halts, unknown-profile read returns False, defensive DB-error handling, `halt_and_alert` writes audit row + halts + notifies once, scheduler source-level branch on `is_halted`, reconciler source no longer contains `'reconcile_backfill'` synthesis INSERTs, reconciler source calls `halt_and_alert`, reconciler source auto-clears when no synthesis.
+- `tests/test_reconcile_journal_to_broker.py` — updated 6 existing tests that pinned the OLD silent-INSERT behavior. Now pin: categorization still populates `res["backfill_sell"]` / `res["backfill_cover"]` / `res["backfill_partial_sell"]` (operator can see what WOULD have synthesized), the new `res["halted_synthesis_count"]` counter equals the synthesis count, BUT the journal is NOT mutated (BUY/SHORT rows stay `'open'`, no new SELL/COVER row inserted). The "idempotent re-run sees nothing to do" assertion flipped to "second pass detects the same drift again because synthesis didn't fire" — halt persists until upstream leak is fixed.
+
+**What lands tomorrow.** Backfill counts are at 0 in the prod reconcile cron log since today's full reset, so the safety net deploys into a clean state — no immediate HALT events expected. If a `submit_order` call site has a real leak that surfaces tomorrow, the affected profile will halt loudly instead of accumulating phantom journal rows for hours.
+
+**Phase B (queued, not in this commit).** Audit each of the 17 `api.submit_order` call sites to guarantee atomic journaling in the same code path. Each site gets a regression test that fails if a submit happens without a matching journal write. Once Phase B ships, the safety net should rarely if ever fire — but it stays as the doomsday backstop.
+
+---
+
 ## 2026-05-19 PM — Last three docs/18 follow-ups: nightly Phase 5c backfill, single-leg OPTIONS migration, per-position Greeks panel. Severity: medium (one bug-fix path consolidation + one operational-visibility improvement + one outage-prevention).
 
 **docs/18 #2 — Nightly Phase 5c backfill task.** The boot-time call in `cycle_segment` is gated by a migration marker — it runs once per profile DB and no-ops thereafter, leaving any newly-resolved option row with broken underlying-price math untouched. Added `_task_phase5c_backfill_nightly(ctx)` to the daily-snapshot block in `multi_scheduler`. It calls `backfill_historical_option_predictions(force=True)` once per profile per day. Row-level idempotency (`option_order_id IS NULL AND occ_symbol IS NULL`) keeps it cheap on clean DBs — quiet log on the steady state, activity row only when something actually got linked. Tests: `tests/test_phase5c_backfill_nightly_2026_05_19.py` (5 tests, all green). Pins `force=True` is actually passed, clean-DB → no activity row, dirty-DB → activity row with leg counts, backfill crash contained.

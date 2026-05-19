@@ -277,6 +277,25 @@
                 </form>
             </div>
         </div>
+        {% if prof.trading_halted %}
+        <div style="margin-top:0.5rem; padding:0.6rem 0.9rem; background:#fff3cd; border-left:4px solid #c62828; border-radius:3px;">
+            <strong style="color:#c62828;">⚠ TRADING HALTED</strong> —
+            reconciler safety net blocked new entries.
+            <br><small><strong>Reason:</strong> {{ prof.halt_reason or '(no reason recorded)' }}</small>
+            {% if prof.halted_at %}<br><small><strong>Halted at:</strong> {{ prof.halted_at }}</small>{% endif %}
+            <br><small style="color:#555;">
+                Existing exits + monitoring continue; only new entries are blocked.
+                Halt auto-clears next reconcile pass when no synthesis is needed.
+                Clear manually only AFTER investigating which <code>submit_order</code>
+                call site failed to journal atomically.
+            </small>
+            <form method="post" action="/settings/profile/{{ prof.id }}/clear-halt" style="margin-top:0.4rem;">
+                <button type="submit" class="outline" style="padding:0.25rem 0.75rem; font-size:0.8rem; border-color:#c62828; color:#c62828;">
+                    Clear halt (operator override)
+                </button>
+            </form>
+        </div>
+        {% endif %}
     </header>
     <details>
         <summary>Configure {{ prof.name }}</summary>

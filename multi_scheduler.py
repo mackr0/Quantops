@@ -962,6 +962,44 @@ def _task_scan_and_trade(ctx):
         )
         return
 
+    # 2026-05-19 reconciler safety net: if the reconciler HALTED this
+    # profile (it detected drift that would require synthesizing
+    # journal rows), skip the trade-pipeline dispatch entirely so
+    # NEW ENTRIES are blocked. Existing exits / monitoring / risk-
+    # snapshot tasks continue elsewhere — only the new-entry path is
+    # gated here. Auto-clears next reconcile pass when drift resolves.
+    try:
+        from halt_helpers import is_halted
+        halted, halt_reason = is_halted(_pid)
+    except Exception as _hc_exc:
+        # is_halted is read-only and best-effort, but if its DB
+        # query fails we must NOT block trading — false positives
+        # are operationally expensive. Default to not-halted.
+        logging.warning(
+            f"[{seg_label}] is_halted check failed (continuing as "
+            f"NOT halted): {type(_hc_exc).__name__}: {_hc_exc}"
+        )
+        halted, halt_reason = False, None
+    if halted:
+        clear_status(_pid)
+        logging.warning(
+            f"[{seg_label}] TRADING HALTED — skipping trade-pipeline "
+            f"dispatch. Reason: {halt_reason}"
+        )
+        try:
+            _safe_log_activity(
+                _pid, ctx.user_id, "trading_halted",
+                f"{seg_label} HALTED — trade pipeline skipped",
+                f"Reconciler safety net is HALTING this profile. "
+                f"Reason: {halt_reason}\n\n"
+                "Existing exits + monitoring continue; only new entries "
+                "are blocked. Halt auto-clears next reconcile pass when "
+                "no synthesis is needed."
+            )
+        except Exception:
+            logging.exception("Failed to log halt activity")
+        return
+
     update_status(_pid, "Running trade pipeline", "%d candidates" % len(symbols))
     # Scope C cutover gate: per-profile flag selects which dispatcher
     # the scheduler uses for THIS cycle. The two paths are mutually

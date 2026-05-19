@@ -929,86 +929,87 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                      f"reconcile: corrected partial-fill (was qty={a['original_qty']})",
                      a["trade_id"]),
                 )
-            for a in actions["backfill_sell"]:
-                # Compute realized pnl directly so the trades page shows
-                # a real number on the row (not blank). pnl = (sell - buy) * qty.
-                pnl = round((a["sell_price"] - a["buy_price"]) * a["sell_qty"], 2)
-                # 2026-05-19 — specific protective-order attribution. The
-                # generic "broker exited via protective order" was actively
-                # misleading: trailing_stop fires look identical to take-
-                # profit fires in the journal, leaving the operator unable
-                # to tell whether the exit was the trailing stop locking
-                # in a gain or the take-profit hitting target. _build_reason
-                # branches on Alpaca's order_type so each row says exactly
-                # which protective mechanism fired and at what price.
-                reason_text = _build_backfill_reason(
-                    a.get("sell_order_type"),
-                    a.get("sell_price"),
-                    a.get("buy_price"),
-                    side="sell", partial=False,
-                )
-                conn.execute(
-                    """INSERT INTO trades
-                       (timestamp, symbol, side, qty, price, order_id, signal_type,
-                        strategy, reason, status, fill_price, pnl)
-                       VALUES (?, ?, 'sell', ?, ?, ?, 'reconcile_backfill',
-                               'reconcile_backfill', ?,
-                               'closed', ?, ?)""",
-                    (a["sell_filled_at"], a["symbol"], a["sell_qty"],
-                     a["sell_price"], a["sell_order_id"], reason_text,
-                     a["sell_price"], pnl),
-                )
-                conn.execute(
-                    "UPDATE trades SET status='closed' WHERE id=?",
-                    (a["trade_id"],),
-                )
-            for a in actions["backfill_cover"]:
-                # Short pnl: profit when cover_price < short_price.
-                pnl = round((a["short_price"] - a["cover_price"]) * a["cover_qty"], 2)
-                reason_text = _build_backfill_reason(
-                    a.get("cover_order_type"),
-                    a.get("cover_price"),
-                    a.get("short_price"),
-                    side="cover", partial=False,
-                )
-                conn.execute(
-                    """INSERT INTO trades
-                       (timestamp, symbol, side, qty, price, order_id, signal_type,
-                        strategy, reason, status, fill_price, pnl)
-                       VALUES (?, ?, 'cover', ?, ?, ?, 'reconcile_backfill',
-                               'reconcile_backfill', ?,
-                               'closed', ?, ?)""",
-                    (a["cover_filled_at"], a["symbol"], a["cover_qty"],
-                     a["cover_price"], a["cover_order_id"], reason_text,
-                     a["cover_price"], pnl),
-                )
-                conn.execute(
-                    "UPDATE trades SET status='closed' WHERE id=?",
-                    (a["trade_id"],),
-                )
-            for a in actions["backfill_partial_sell"]:
-                # Insert a SELL row for the closed portion. The original
-                # BUY row stays open with original qty — the FIFO consumes
-                # the right amount from the lot when computing virtual
-                # positions.
-                pnl = round((a["sell_price"] - a["buy_price"]) * a["sell_qty"], 2)
-                reason_text = _build_backfill_reason(
-                    a.get("sell_order_type"),
-                    a.get("sell_price"),
-                    a.get("buy_price"),
-                    side="sell", partial=True,
-                )
-                conn.execute(
-                    """INSERT INTO trades
-                       (timestamp, symbol, side, qty, price, order_id, signal_type,
-                        strategy, reason, status, fill_price, pnl)
-                       VALUES (?, ?, 'sell', ?, ?, ?, 'reconcile_backfill_partial',
-                               'reconcile_backfill_partial', ?,
-                               'closed', ?, ?)""",
-                    (a["sell_filled_at"], a["symbol"], a["sell_qty"],
-                     a["sell_price"], a["sell_order_id"], reason_text,
-                     a["sell_price"], pnl),
-                )
+            # 2026-05-19 reconciler safety net: synthesis paths
+            # (backfill_sell / backfill_cover / backfill_partial_sell)
+            # used to silently INSERT a new SELL/COVER row reflecting
+            # what the broker says happened. Per
+            # `feedback_no_orphan_broker_fills`, this papers over a
+            # real bug — every broker order MUST be journaled by the
+            # submit_order code path. If we got here, the journaling
+            # in that code path failed for some submit_order leak.
+            # Instead of synthesizing, HALT the profile so trading
+            # stops on the new-entry side until the leak is found.
+            # Auto-clears next pass when synthesis no longer needed.
+            synthesis_actions = (
+                len(actions["backfill_sell"])
+                + len(actions["backfill_cover"])
+                + len(actions["backfill_partial_sell"])
+            )
+            if synthesis_actions:
+                from halt_helpers import halt_and_alert
+                detail_lines = []
+                for a in actions["backfill_sell"]:
+                    detail_lines.append(
+                        f"  backfill_sell: {a['symbol']} qty={a['sell_qty']} "
+                        f"sell_order={a['sell_order_id'][:8]} "
+                        f"@ ${a['sell_price']:.2f} "
+                        f"({a.get('sell_order_type', '?')})"
+                    )
+                for a in actions["backfill_cover"]:
+                    detail_lines.append(
+                        f"  backfill_cover: {a['symbol']} qty={a['cover_qty']} "
+                        f"cover_order={a['cover_order_id'][:8]} "
+                        f"@ ${a['cover_price']:.2f} "
+                        f"({a.get('cover_order_type', '?')})"
+                    )
+                for a in actions["backfill_partial_sell"]:
+                    detail_lines.append(
+                        f"  backfill_partial_sell: {a['symbol']} "
+                        f"qty={a['sell_qty']}/{a['journal_qty']} "
+                        f"sell_order={a['sell_order_id'][:8]}"
+                    )
+                pid = getattr(ctx, "profile_id", None)
+                if pid is not None:
+                    title = (
+                        f"Reconciler safety net: {synthesis_actions} "
+                        f"synthesis action(s) needed — profile HALTED"
+                    )
+                    detail = (
+                        "The reconciler detected broker fill(s) that "
+                        "would have required SYNTHESIZING journal rows. "
+                        "Per the atomic-journaling contract, this "
+                        "indicates a submit_order code path failed to "
+                        "journal in-line. Profile is HALTED until the "
+                        "next reconcile pass shows no synthesis needed "
+                        "(auto-clear) OR until the operator clears "
+                        "manually after fixing the leak.\n\n"
+                        + "\n".join(detail_lines)
+                    )
+                    halt_and_alert(
+                        profile_id=pid, db_path=db_path,
+                        alert_type="reconciler_synthesis_halt",
+                        title=title, detail=detail,
+                    )
+                # Record the not-performed actions on the result so the
+                # CLI summary surfaces them as "would have backfilled".
+                actions["halted_synthesis_count"] = synthesis_actions
+            else:
+                # No synthesis needed this pass — auto-clear any halt
+                # that was set on a previous pass.
+                pid = getattr(ctx, "profile_id", None)
+                if pid is not None:
+                    try:
+                        from halt_helpers import is_halted, clear_halt
+                        halted, _reason = is_halted(pid)
+                        if halted and _reason and _reason.startswith(
+                            "Reconciler safety net:"
+                        ):
+                            clear_halt(pid, source="reconciler_auto_clear")
+                    except Exception as _hc_exc:
+                        logger.warning(
+                            "halt auto-clear check failed for pid=%s: %s: %s",
+                            pid, type(_hc_exc).__name__, _hc_exc,
+                        )
             conn.commit()
 
     finally:

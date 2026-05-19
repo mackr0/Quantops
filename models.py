@@ -360,6 +360,20 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             # AFTER shadow soak shows verdict agreement ≥ 95% for
             # 1–2 trading days. Default OFF (legacy dispatch).
             ("trading_profiles", "use_pipeline_dispatch", "INTEGER NOT NULL DEFAULT 0"),
+            # 2026-05-19 reconciler safety net. When 1, the scheduler
+            # SKIPS this profile's trade-pipeline dispatch (no new
+            # entries). Set automatically by the reconciler when it
+            # detects a journal-vs-broker drift that would require
+            # synthesizing journal rows (a `backfill_sell` /
+            # `backfill_cover` / `broker_orphan` / `journal_phantom`).
+            # Auto-clears when the next reconcile pass shows no
+            # synthesis needed. Operator can also clear manually
+            # from Settings after fixing the root-cause submit_order
+            # leak. Existing exit / monitoring tasks continue to run
+            # while halted — only new entries are blocked.
+            ("trading_profiles", "trading_halted", "INTEGER NOT NULL DEFAULT 0"),
+            ("trading_profiles", "halt_reason", "TEXT"),
+            ("trading_profiles", "halted_at", "TEXT"),
             ("trading_profiles", "ai_provider", "TEXT NOT NULL DEFAULT 'anthropic'"),
             ("trading_profiles", "ai_model", "TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001'"),
             ("trading_profiles", "ai_api_key_enc", "TEXT NOT NULL DEFAULT ''"),
@@ -1353,6 +1367,11 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         # Pipeline.run_cycle dispatch in place of the legacy
         # run_trade_cycle. Default OFF; flip after shadow soak.
         "use_pipeline_dispatch",
+        # 2026-05-19 reconciler safety net — operator-clearable
+        # halt flag + structured reason / timestamp. Set by the
+        # reconciler on synthesis-action detection, cleared
+        # automatically when drift resolves OR via Settings UI.
+        "trading_halted", "halt_reason", "halted_at",
     }
     updates = {}
     rejected = []

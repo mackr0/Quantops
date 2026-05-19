@@ -1703,6 +1703,40 @@ def delete_profile_route(profile_id):
     return redirect(url_for("views.settings"))
 
 
+@views_bp.route("/settings/profile/<int:profile_id>/clear-halt",
+                methods=["POST"])
+@login_required
+@admin_required
+def clear_profile_halt(profile_id):
+    """Operator override: clear the reconciler safety-net halt on a
+    profile after investigating the root-cause submit_order leak.
+
+    The halt also auto-clears next reconcile pass when no synthesis
+    is needed — this route is for the case where the operator wants
+    to resume trading sooner (e.g., the orphan was a known one-off
+    that's been manually reconciled, or the operator is confident
+    the upstream fix is deployed and wants to skip waiting for the
+    next 15-min reconcile cron tick).
+    """
+    profile = get_trading_profile(profile_id)
+    if not profile or profile["user_id"] != current_user.effective_user_id:
+        abort(404)
+    from halt_helpers import clear_halt
+    cleared = clear_halt(profile_id, source="settings_ui")
+    if cleared:
+        flash(
+            f'Halt cleared on "{profile["name"]}". Trading dispatch '
+            f"will resume on the next scheduler cycle.",
+            "success",
+        )
+    else:
+        flash(
+            f'Profile "{profile["name"]}" was not halted; nothing to clear.',
+            "info",
+        )
+    return redirect(url_for("views.settings") + f"#profile-{profile_id}")
+
+
 @views_bp.route("/settings/profile/<int:profile_id>/toggle", methods=["POST"])
 @login_required
 @admin_required
