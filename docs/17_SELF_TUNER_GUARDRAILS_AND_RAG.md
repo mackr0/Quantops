@@ -45,7 +45,41 @@ Pre-decision case-file injection into the AI prompt. The LLM doesn't learn weigh
 
 Implementation: `case_file_rag.py` (270 lines), wired into `ai_analyst.py:_build_batch_prompt`. 22 new tests covering the text builder, retrieval ranking + thresholds, win/loss balance, format rendering, and the prompt-builder integration.
 
-### Phase 3 (deferred but committed to) — Specialist library expansion: 8 → 200
+### Phase 3 (IN PROGRESS) — Specialist library expansion: 8 → 200
+
+**2026-05-18 update.** First Phase-3 batch landed. Original framing was "wait for post-mortems to surface patterns" — that's the CALIBRATION mechanism, not the discovery mechanism. Most quant patterns are well-documented in the literature and don't need a losing trade to teach us. Discovery is now aggressive.
+
+**Architecture decision.** The 192 new specialists are NOT LLM-narrative specialists (that would 25× the per-cycle AI cost). They're **deterministic code-only rule checkers** in a new `deterministic_specialists/` directory:
+
+  - Each rule = pure function `(candidate, ctx) → Optional[{severity, reasoning}]`
+  - Severities: `VETO` (high-confidence stop), `CAUTION` (yellow flag), `CONFIRM` (pattern supports the signal)
+  - Zero per-rule API cost — runs as a panel block injected into the prompt, weighed by the LLM
+  - Registered in `RULE_MODULES`; each gated by `APPLIES_TO_SIGNALS` so SHORT rules don't fire on BUY candidates and vice versa
+
+**Status after first batch (2026-05-18):**
+- **44 deterministic specialists** shipped today + 8 from the initial v0 = **52 deterministic specialists**
+- Plus the **8 LLM-narrative specialists** from `specialists/` = **60 total specialists** in the live ensemble
+- Up from 8 at session start. ~6 weeks of the originally-projected cadence delivered in one session.
+
+Categories shipped in the first batch:
+- Late-stage / extended pattern warnings (RSI overbought + 52w high, parabolic blow-off, gap-into-resistance, bearish divergence, VWAP extension, MFI overbought, CMF distribution)
+- Breakout / momentum quality (volume-dry breakout, low-ATR breakout, weak-ADX breakout)
+- Smart-money + crowding (insider sold, high SI, crowded long, StockTwits euphoria, FINRA short vol)
+- Smart-money + flow confirms (insider cluster buying, 13D activist, dark-pool accumulation, congressional buying, UOA aligned, StockTwits capitulation)
+- Earnings / analyst momentum (EPS up-revisions, down-revisions, beat streak, miss streak, in-window earnings)
+- Regulatory / corporate-event (8-K Items 1.03/4.02/2.06, 8-K Item 5.02, risk-factor diff additions, FDA citations, NHTSA recalls, SEC HIGH/CRITICAL alerts)
+- Trend / pattern confirms (strong ADX, RSI oversold in uptrend, 3×+ volume confirm, sector RS, sector weakness, sector downtrend long, CMF accumulation, MFI oversold, near Fib support, TTM-squeeze release, ORB breakout)
+- Short-side specific (extended below VWAP, high borrow cost, HIGH squeeze risk)
+- Macro / volatility regime (IV extreme high, cross-asset vol high, yield curve inverted, CBOE SKEW extreme)
+- Execution / friction (high slippage, news cluster without parsed SEC catalyst)
+
+| Phase | Specialist count | Source of new specialists |
+|---|---|---|
+| Session start (2026-05-18) | 8 | Initial LLM ensemble |
+| End of session (2026-05-18) | 60 | First Phase 3 batch + RAG infra |
+| ~Week 2 target | 100+ | Continue aggressive build from the documented quant-patterns catalog |
+| ~Month 1 target | 150+ | Calibration data informs which rules deserve to stay (rules that fire often but don't align with realized outcomes get pruned) |
+| Year 1 | 150-200 | Mature library with calibrated weights |
 
 **Current state**: 8 specialists in the ensemble. Per the 2026-05-17 #175 commit (`specialists/_common.py` per-specialist alt-data routing), the 8 active ones are:
 

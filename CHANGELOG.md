@@ -17,6 +17,46 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 — Phase 3 of docs/17 starts: deterministic specialist library 8 → 60. Severity: high (the AI's role starts shifting from "decider" to "tie-breaker").
+
+The original docs/17 framing said "wait for post-mortems to surface patterns" — that was lazy thinking. Most quant patterns are documented in academic literature and practitioner playbooks; they don't need a losing trade to be discovered. Calibration (which rules earn the right to keep firing) is what comes from post-mortems. Discovery is up to us.
+
+**Architecture decision.** The 192 new specialists are NOT LLM-narrative specialists — that would multiply per-cycle API cost by ~25×. They're **deterministic code-only rule checkers** in a new `deterministic_specialists/` package:
+
+  - Each rule = pure function `(candidate, ctx) → Optional[{severity, reasoning}]`
+  - Severities: `VETO` / `CAUTION` / `CONFIRM`
+  - Zero per-rule API cost — fired verdicts are formatted into a panel block injected into the AI prompt next to the RAG block (Phase 2 also landed today)
+  - Registered in `RULE_MODULES`; each gated by `APPLIES_TO_SIGNALS` so SHORT rules don't fire on BUY candidates and vice versa
+  - Per-rule exceptions caught so one bad rule can't silence the others
+
+**First batch — 44 new deterministic specialists shipped today** (plus the 8 from the framework v0 = 52 deterministic + 8 LLM = **60 specialists total**, up from 8 at session start):
+
+Categories:
+- Late-stage / extended pattern warnings: `rsi_overbought_late_stage`, `parabolic_blow_off`, `gap_into_resistance`, `bearish_divergence`, `extended_above_vwap`, `mfi_overbought_caution`, `cmf_distribution_long`
+- Breakout / momentum quality: `volume_dry_breakout`, `low_atr_breakout`, `weak_adx_breakout`
+- Smart-money + crowding (cautions): `insider_sold_recently`, `high_short_interest_long`, `crowded_long`, `stocktwits_extreme_bullish`, `finra_short_volume_elevated`
+- Smart-money + flow (confirms): `insider_cluster_buying`, `activist_13d_filed`, `dark_pool_accumulation`, `congressional_buying`, `unusual_options_activity`, `stocktwits_extreme_bearish`
+- Earnings / analyst momentum: `positive_earnings_revisions`, `negative_earnings_revisions`, `earnings_surprise_streak`, `earnings_miss_streak`, `earnings_within_window`
+- Regulatory / corporate-event: `recent_8k_negative_event`, `recent_8k_exec_departure`, `risk_factor_diff_added`, `fda_inspection_warning`, `nhtsa_recall_active`, `sec_alert_high_severity`
+- Trend / pattern confirms: `strong_adx_trend_confirm`, `rsi_oversold_uptrend`, `high_volume_confirmation`, `sector_relative_strength_confirm`, `sector_weakness_caution`, `sector_downtrend_long`, `cmf_accumulation_long`, `mfi_oversold_confirm`, `near_fib_support`, `squeeze_release_setup`, `orb_breakout`
+- Short-side specific: `below_vwap_short_extended`, `borrow_cost_high_short`, `squeeze_risk_short`
+- Macro / volatility regime: `options_iv_extreme_high`, `macro_risk_off_cross_asset_vol`, `yield_curve_inverted`, `cboe_skew_extreme`
+- Execution / friction: `slippage_high_caution`, `news_volume_spike`
+
+**Prompt integration.** `_build_batch_prompt` in `ai_analyst.py` calls `build_panel_block(candidate, ctx)` per candidate; the rendered block lists fired verdicts ordered VETO → CAUTION → CONFIRM. Fail-soft: any rule that raises is logged and skipped; the prompt is still complete without the panel.
+
+**Severity-rendering guardrail update.** The `test_alert_severity_rendering` structural test was extended to honor its own `INTENTIONALLY_UNRENDERED` allowlist (previously the check only consulted `KNOWN_SEVERITIES`), and `VETO` / `CAUTION` / `CONFIRM` were added with the rationale that they're AI-prompt vocabulary, not alert-badge values — they never render in templates.
+
+**Tests** (`tests/test_deterministic_specialists_2026_05_18.py`, 113 tests):
+- Framework: discovery completeness, contract conformance, signal-gate skipping, rule-exception isolation, severity ordering, header rendering, empty-input handling
+- Per-rule fire cases (table-driven, 52 rows): every rule fires with the expected severity on its canonical positive fixture and includes reasoning text
+- Per-rule negative cases (52 rows): every rule no-ops on a candidate with no relevant fields (catches crashes on `candidate.get(...) is None`)
+- Integration: structural import check that `ai_analyst.py` actually wires `build_panel_block` so the rules aren't dead code
+
+**Calibration loop is the next chapter.** The 60 specialists are now LIVE — every AI decision sees the panel. Over the next weeks the post-mortem cycle will tell us which rules' fire-patterns align with realized outcomes (good rules stay; rules that consistently fire wrong get pruned). That's the data-driven side of the Phase 3 build; the discovery side just got moved decades forward.
+
+---
+
 ## 2026-05-18 — Phase 2 of docs/17: RAG over the AI's own resolved trades. Severity: high (the LLM gains "experience" without retraining).
 
 The LLM's weights are frozen at Anthropic's training cutoff. The system has accumulated thousands of resolved AI predictions per profile and the model can't learn from any of them. Phase 2 closes that gap with in-context retrieval: on every new decision the AI sees the most-similar past resolved cases from THIS profile's own history, injected into the prompt as concrete cases-to-reason-from. No retraining, no fine-tuning — pure few-shot learning over the system's own outcomes.

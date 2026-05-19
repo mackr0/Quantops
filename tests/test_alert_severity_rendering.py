@@ -81,6 +81,22 @@ INTENTIONALLY_UNRENDERED: dict = {
     "catastrophic":
         "Stress-scenario severity only. Surfaced in the stress-test "
         "report as a label, never as an alert badge.",
+    # Phase 3 of docs/17 — deterministic specialist library
+    # (2026-05-18). These three severities are the rule-panel
+    # vocabulary, surfaced inside the AI prompt text only. They
+    # never render as alert badges in templates because the panel
+    # is a string block consumed by the LLM, not an alerting surface.
+    "VETO":
+        "Deterministic specialist verdict — rule has high confidence "
+        "the trade should NOT happen. Surfaced inside the AI prompt "
+        "block; never as an alert badge.",
+    "CAUTION":
+        "Deterministic specialist verdict — rule sees a yellow flag. "
+        "Surfaced inside the AI prompt block; never as an alert badge.",
+    "CONFIRM":
+        "Deterministic specialist verdict — rule's pattern actively "
+        "supports the candidate signal. Surfaced inside the AI prompt "
+        "block; never as an alert badge.",
 }
 
 
@@ -193,6 +209,8 @@ class TestAlertSeverityRendering:
                 continue
             for lineno, kind, value in _walk_severity_assignments(tree):
                 if value in KNOWN_SEVERITIES:
+                    continue
+                if value in INTENTIONALLY_UNRENDERED:
                     continue
                 violations.append((rel, lineno, kind, value))
 

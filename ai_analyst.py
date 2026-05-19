@@ -1879,6 +1879,21 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                 sym, type(_rag_exc).__name__, _rag_exc,
             )
 
+        # Phase 3 of docs/17 — deterministic specialist panel. Pure-Python
+        # rule library (no LLM cost) flags veto/caution/confirm patterns.
+        # The AI weighs these as additional input.
+        try:
+            from deterministic_specialists import build_panel_block
+            panel = build_panel_block(c, ctx)
+            if panel:
+                line += "\n" + panel
+        except (ImportError, KeyError, ValueError, AttributeError,
+                TypeError) as _det_exc:
+            logger.debug(
+                "deterministic_specialists block render failed for %s: %s: %s",
+                sym, type(_det_exc).__name__, _det_exc,
+            )
+
         cand_lines.append(line)
 
     # P1.8 of LONG_SHORT_PLAN.md — when shorts are enabled, surface
