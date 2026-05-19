@@ -72,8 +72,16 @@ def run_via_pipelines(candidates: Any, ctx: Any) -> Dict[str, Any]:
         # SimpleNamespace from tests — set directly via __dict__ as fallback
         try:
             object.__setattr__(ctx, "shortlist", _normalize_shortlist(candidates))
-        except Exception:
-            pass
+        except Exception as _ctx_exc:
+            # ctx doesn't accept shortlist (frozen dataclass, namespace
+            # of weird type) — pipelines tolerate missing shortlist via
+            # getattr default. Surface for follow-up so we don't silently
+            # run on a broken candidate set.
+            logger.warning(
+                "ctx.shortlist set failed both ways (%s); pipelines "
+                "will see empty shortlist this cycle",
+                type(_ctx_exc).__name__,
+            )
 
     summary: Dict[str, Any] = {
         "total": len(candidates) if candidates else 0,

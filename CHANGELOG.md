@@ -17,6 +17,43 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Memory-rule enforcement test suite + morning health check market-awareness. Severity: medium (structural enforcement of the discipline rules the assistant violated multiple times today).
+
+**Context.** Today's session saw two clear memory-rule violations: (1) shipped Phase B2 (specialist coverage parity) updating CHANGELOG but not docs, (2) introduced bare `except Exception: pass` blocks in `pipelines/dispatch.py:75`, `pipelines/shadow.py:236`, and `views.py:746/759` when extending the safety net + shadow dashboard. Operator caught both. The right structural answer is enforcement-by-test so future violations surface immediately.
+
+**Two coupled improvements:**
+
+**(1) `tests/test_memory_rule_enforcement_2026_05_19.py`** — 7 tests encoding the high-violation-rate rules. Failures here mean a memory rule is being violated by the current code or recent commits:
+
+| Test | Memory rule | Mechanism |
+|---|---|---|
+| `test_working_tree_has_changelog_update_when_modifying_production_source` | "Every code change must include CHANGELOG.md and doc updates" | Preventive — checks the current uncommitted working tree. Fails before you commit if a production .py is modified without CHANGELOG.md. Bypass: stash the change or add CHANGELOG entry first. |
+| `test_recent_commits_have_changelog_update_when_modifying_production_source` | Same | Post-hoc — examines last 5 commits and fails if any non-exempt commit modified production source without CHANGELOG. Rolling window so old violations age out. Bypass: `[no-changelog]` tag in commit message OR `CHANGELOG_PARITY_EXEMPT_SHAS` allowlist with one-line justification. |
+| `test_no_sed_inplace_in_shell_scripts` | "Never use sed -i on production source" | Greps shell scripts for `sed -i`. Tests/scripts/cleanup files exempt. |
+| `test_no_master_key_references_in_production_code` | "No 'master key' — Alpaca creds live in alpaca_accounts only" | Regex over .py only (docs/CHANGELOG describe past). Skips pure-comment lines + triple-quoted docstring blocks (multi-line state machine) so historical explanations of the removal don't trip the test. |
+| `test_no_bare_except_pass_in_production_source` | "No silent failures — every error must be surfaced" | AST scan for `except:` / `except Exception:` blocks whose body is a single `pass`. Specific exception types with `pass` allowed (sometimes legitimate). Bypass: `# SILENT_OK: <reason>` or `# noqa: bare-pass` comment within ±5 lines of the except — explicit acknowledgment is the bypass. |
+| `test_no_direct_journal_mutation_outside_authorized_modules` | "Never SQL-edit journal DBs to fix perceived state — manual DELETE/UPDATE gets undone by reconcile cron" | Greps for `DELETE FROM trades` / `UPDATE trades SET` / `INSERT INTO trades` patterns in all production .py. `AUTHORIZED` allowlist contains the legitimate writers (journal.py, reconcile_*, trade_pipeline, trader, bracket_orders for protective_*_order_id updates, etc.). Skips `altdata/` subtree where `trades` refers to congressional-trades schema, not our journal. |
+| `test_rule_enforcement_module_is_collected` | Meta-rule — pin the file is discoverable | Ensures the enforcement file itself doesn't get accidentally excluded from pytest collection. |
+
+**Bare-pass cleanup tonight (driven by the new test).** The 3 sites I introduced today now log instead of silently passing:
+- `pipelines/dispatch.py:75` — when ctx is a frozen object and neither attribute-set nor `object.__setattr__` works, log a warning explaining pipelines will see an empty shortlist this cycle
+- `pipelines/shadow.py:236` — same shortlist-set issue in the shadow harness; log a debug
+- `views.py:746/759` — malformed `verdict_diff` / `symbols_diff` JSON in pipeline_shadow_runs row; log a debug noting which row was skipped
+
+The existing `notifications.py:1163` site (the outermost-notify-error safety net that can't safely re-notify) already had a `# SILENT_OK:` comment block — the new test recognizes that marker as the legitimate bypass.
+
+**(2) `morning_health_check.sh`** — fixed 3 false-positive failures the user surfaced when running it after market close:
+
+- **[A1] "scheduler stalled, last cycle 3.3h ago"**: the 20-min stale threshold assumed market hours. Wrapped with `multi_scheduler.is_market_open()` so when market is closed and the scheduler is intentionally sleeping until next open, the check passes with "market closed; last cycle Xs ago (scheduler intentionally idle)" instead of failing.
+- **[C] "stale reconciler ~200m on every profile"**: same root cause — the `reconcile_journal_to_broker` cron is `*/15 13-21 * * 1-5` and by design stops at 21:00 UTC. When market is closed, every profile's last-run is 60m+ old by definition. Same `is_market_open()` guard.
+- **[H2] "faa_accidents MISSING"**: stale expectation. `faa_accidents` was intentionally removed 2026-05-17 (95% irrelevant general-aviation events, airline-impacting events captured by SEC 8-K scraper). Removed from the expected-signals list in the check.
+
+After fixes: **15 pass / 1 warn / 0 fail** on the same prod state that previously reported 3 fails.
+
+**Why this matters going forward.** The new rule-enforcement test runs in the standard pytest sweep. Any future commit that modifies production source without updating CHANGELOG fails immediately. Any new bare `except Exception: pass` site fails immediately. Any new `master key` reference fails immediately. Memory-rule discipline shifts from "operator catches violations" to "test suite catches them before the commit lands". The morning health check now produces signal-clean output regardless of when the operator runs it.
+
+---
+
 ## 2026-05-19 PM — Phase B1 (atomic-journaling audit) + Phase B2 (specialist coverage parity for options). Severity: medium (tightening + observability + structural-coverage upgrade).
 
 **Phase B1 — atomic-journaling audit + structural hardening.**

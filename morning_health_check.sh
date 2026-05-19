@@ -100,6 +100,18 @@ esac
 # =============================================================================
 hdr "A. Scheduler liveness"
 
+# 2026-05-19 — guard the "scheduler stalled" + "stale reconciler"
+# checks against time-of-day false positives. When market is
+# closed the scheduler is INTENDED to be idle (sleeps until next
+# open) and the reconcile cron stops firing (it runs `*/15 13-21
+# * * 1-5`). Using `multi_scheduler.is_market_open` so the check
+# follows the same calendar truth the scheduler uses.
+MARKET_OPEN_NOW=$(ssh root@$DROPLET \
+    "cd /opt/quantopsai && /opt/quantopsai/venv/bin/python3 -c \"
+from multi_scheduler import is_market_open
+print('open' if is_market_open() else 'closed')
+\"" 2>/dev/null)
+
 echo "[A1] Last scheduler cycle completed within 20 minutes"
 # main_loop writes to scheduler_status.json on every cycle completion;
 # its updated_at is the source of truth.
@@ -113,7 +125,9 @@ try:
 except Exception as e:
     print(99999)
 \"" 2>/dev/null)
-if [ "${LAST_CYCLE_AGE_SEC:-99999}" -lt 1200 ]; then
+if [ "$MARKET_OPEN_NOW" = "closed" ] && [ "${LAST_CYCLE_AGE_SEC:-99999}" -ge 1200 ]; then
+    ok "market closed; last cycle ${LAST_CYCLE_AGE_SEC}s ago (scheduler intentionally idle)"
+elif [ "${LAST_CYCLE_AGE_SEC:-99999}" -lt 1200 ]; then
     ok "last cycle completed ${LAST_CYCLE_AGE_SEC}s ago"
 elif [ "${LAST_CYCLE_AGE_SEC}" -lt 3600 ]; then
     warn "last cycle completed ${LAST_CYCLE_AGE_SEC}s ago — over 20 min, under 1 hour"
@@ -211,6 +225,12 @@ except Exception:
     done
     if [ -z "$STALE_PROFILES" ]; then
         ok "all $ACTIVE_COUNT active profiles ran reconciler within last 60 min"
+    elif [ "$MARKET_OPEN_NOW" = "closed" ]; then
+        # The reconcile cron is `*/15 13-21 * * 1-5` — by design it
+        # only fires during market hours and stops at 21:00 UTC.
+        # When market has been closed for hours, every profile's
+        # last-run timestamp is 60m+ old by definition.
+        ok "market closed; reconciler intentionally idle (cron is */15 13-21 * * 1-5)"
     else
         bad "stale reconciler:$STALE_PROFILES — silent cron failure or scheduler stall"
     fi
@@ -400,7 +420,10 @@ EXPECTED = [
     \"github_activity\", \"fda_inspections\", \"nhtsa_recalls\",
     \"sam_gov_contracts\",
     # 2026-05-17 Tier-3 additions
-    \"risk_factor_diff\", \"epa_osha_violations\", \"faa_accidents\",
+    \"risk_factor_diff\", \"epa_osha_violations\",
+    # faa_accidents was REMOVED 2026-05-17 (95% irrelevant general
+    # aviation; airline-impacting events captured by SEC 8-K scraper).
+    # See altdata_tier3.py:264 + CHANGELOG.md 2026-05-17.
     \"bls_jobless_claims\", \"wikipedia_edits\", \"uspto_patents\",
     \"job_postings\", \"insider_track_records\", \"star_manager_holdings\",
 ]

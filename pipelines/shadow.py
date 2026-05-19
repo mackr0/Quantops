@@ -233,10 +233,17 @@ def shadow_compare(ctx: Any,
         # input.
         try:
             ctx.shortlist = shortlist
-        except Exception:
+        except Exception as _ctx_exc:
             # SimpleNamespace from tests — fall through; pipelines
-            # tolerate missing shortlist via getattr default.
-            pass
+            # tolerate missing shortlist via getattr default. Log
+            # so we don't silently shadow-eval against an empty
+            # shortlist when prod ctx is the unusual case.
+            logger.debug(
+                "ctx.shortlist set failed (%s); pipelines will see "
+                "their own generate_candidates output uninfluenced "
+                "by the legacy shortlist this cycle",
+                type(_ctx_exc).__name__,
+            )
 
         legacy_dig, legacy_len = _digest(legacy_prompt or "")
         payload["legacy_prompt_digest"] = legacy_dig

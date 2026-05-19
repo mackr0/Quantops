@@ -743,8 +743,14 @@ def shadow_page():
                         a = d.get("agreement_pct")
                         if a is not None:
                             agreements.append(a)
-                    except Exception:
-                        pass
+                    except Exception as _vd_exc:
+                        # Skip malformed verdict_diff rows but log so a
+                        # systemic corruption pattern surfaces.
+                        logger.debug(
+                            "shadow_page: skipped malformed "
+                            "verdict_diff (%s)",
+                            type(_vd_exc).__name__,
+                        )
                 rolling_agreement = (
                     round(sum(agreements) / len(agreements), 1)
                     if agreements else None
@@ -756,8 +762,12 @@ def shadow_page():
                         total_cost += float(
                             sd.get("aggregate", {}).get("shadow_ai_cost_usd", 0)
                         )
-                    except Exception:
-                        pass
+                    except Exception as _sd_exc:
+                        logger.debug(
+                            "shadow_page: skipped malformed "
+                            "symbols_diff (%s)",
+                            type(_sd_exc).__name__,
+                        )
                 # Decode JSON columns to dicts so the template
                 # doesn't need a custom filter
                 decoded_rows = []
