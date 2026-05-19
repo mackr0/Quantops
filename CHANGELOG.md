@@ -17,6 +17,19 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Options-completion inventory doc (`docs/18`). Severity: doc-only.
+
+Operator asked: *"have you fully documented what you need to get to 100% perfect completion on the options work?"* — honest answer was **no**. Wrote `docs/18_OPTIONS_COMPLETION_INVENTORY.md` to fix that. It classifies every options-related artifact in the repo as PRODUCTION / CAPABILITY / STUB / REFINEMENT, lists the 7 concrete work items needed to reach 100%, and pins a 9-box exit criteria. Lead findings:
+- Two stubs remain in `pipelines/option.py:48,64` (`generate_candidates`, `decide`); their docstrings reference "future Phases" that have already shipped doing other work — the stubs are stale.
+- Phase 6 risk model still uses `FALLBACK_IV=0.25` for delta-adjusted exposure; live `options_oracle.compute_iv_rank` isn't plumbed in.
+- Phase 5c backfill helper exists but isn't scheduled.
+- Single-leg `OPTIONS` execution still runs through `trade_pipeline.py:2273` directly, not `OptionPipeline.execute` (multileg migrated 2026-05-12; single-leg wasn't).
+- Scheduler cutover from legacy `trade_pipeline.run_trade_cycle` to `Pipeline.run_cycle` is blocked behind both pipelines' STUBs being filled in.
+
+Doc-only commit; no behavior change.
+
+---
+
 ## 2026-05-19 PM — Silent Anthropic fallback on Gemini outage. Severity: critical (real-money unauthorized spend on profiles configured for Gemini).
 
 **What broke.** Every trading profile in the system is configured for `google/gemini-2.5-flash-lite` in `trading_profiles.ai_provider`. Despite that, profile 16's `ai_cost_ledger` showed 9 Anthropic Claude calls totalling ~$0.11 between 13:30 and 14:52 UTC today across `batch_select`, `ensemble:adversarial_reviewer`, `ensemble:pattern_recognizer`, `ensemble:sentiment_narrative`, and `ensemble:risk_assessor` purposes. Profile 20 showed 4 Anthropic calls totalling ~$0.06. Across 13+ profiles per cycle, this had been bleeding cash continuously.
