@@ -948,18 +948,23 @@ def settings():
     # Decrypt keys for display (masked)
     alpaca_key = decrypt(user.get("alpaca_api_key_enc", ""))
     alpaca_secret = decrypt(user.get("alpaca_secret_key_enc", ""))
-    anthropic_key = decrypt(user.get("anthropic_api_key_enc", ""))
+    # 2026-05-19 — column `anthropic_api_key_enc` now stores any
+    # provider's key (per `users.llm_provider`). UI label is
+    # "Fallback LLM Key"; column rename is a future refactor.
+    llm_key = decrypt(user.get("anthropic_api_key_enc", ""))
+    llm_provider = user.get("llm_provider") or "anthropic"
     resend_key = decrypt(user.get("resend_api_key_enc", ""))
     notification_email = user.get("notification_email", "")
 
     keys = {
         "alpaca_api_key": _mask_key(alpaca_key),
         "alpaca_secret_key": _mask_key(alpaca_secret),
-        "anthropic_api_key": _mask_key(anthropic_key),
+        "llm_api_key": _mask_key(llm_key),
+        "llm_provider": llm_provider,
         "resend_api_key": _mask_key(resend_key),
         "notification_email": notification_email,
         "has_alpaca": bool(alpaca_key),
-        "has_anthropic": bool(anthropic_key),
+        "has_llm": bool(llm_key),
         "has_resend": bool(resend_key),
     }
 
@@ -1119,7 +1124,11 @@ def save_exclusions():
 def save_keys():
     alpaca_key = request.form.get("alpaca_api_key", "").strip()
     alpaca_secret = request.form.get("alpaca_secret_key", "").strip()
-    anthropic_key = request.form.get("anthropic_api_key", "").strip()
+    # 2026-05-19 — generalised: was `anthropic_api_key`, now
+    # `llm_api_key` paired with `llm_provider` so the field can hold
+    # a key for any supported provider.
+    llm_key = request.form.get("llm_api_key", "").strip()
+    llm_provider = request.form.get("llm_provider", "").strip() or None
     notification_email = request.form.get("notification_email", "").strip()
     resend_key = request.form.get("resend_api_key", "").strip()
 
@@ -1127,7 +1136,7 @@ def save_keys():
     user = get_user_by_id(current_user.effective_user_id)
     current_alpaca_key = decrypt(user.get("alpaca_api_key_enc", ""))
     current_alpaca_secret = decrypt(user.get("alpaca_secret_key_enc", ""))
-    current_anthropic_key = decrypt(user.get("anthropic_api_key_enc", ""))
+    current_llm_key = decrypt(user.get("anthropic_api_key_enc", ""))
     current_resend_key = decrypt(user.get("resend_api_key_enc", ""))
 
     # If the form value looks masked (contains ****), keep the existing key
@@ -1135,8 +1144,8 @@ def save_keys():
         alpaca_key = current_alpaca_key
     if "****" in alpaca_secret:
         alpaca_secret = current_alpaca_secret
-    if "****" in anthropic_key:
-        anthropic_key = current_anthropic_key
+    if "****" in llm_key:
+        llm_key = current_llm_key
     if "****" in resend_key:
         resend_key = current_resend_key
 
@@ -1144,7 +1153,8 @@ def save_keys():
         current_user.effective_user_id,
         alpaca_key=alpaca_key,
         alpaca_secret=alpaca_secret,
-        anthropic_key=anthropic_key,
+        llm_key=llm_key,
+        llm_provider=llm_provider,
         notification_email=notification_email,
         resend_key=resend_key,
     )

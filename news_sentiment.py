@@ -1,12 +1,26 @@
-"""News fetching and AI-powered sentiment analysis."""
+"""News fetching and AI-powered sentiment analysis.
+
+2026-05-19 — `analyze_sentiment` migrated from a hardcoded Anthropic
+client (`get_claude_client()` + Claude-only) to the provider-agnostic
+`ai_providers.call_ai`. Resolution order for the LLM provider/key:
+  1. Explicit `ctx` argument (per-profile provider + key)
+  2. Explicit `user_id` argument → loads `users.llm_provider` +
+     decrypted fallback key via `get_user_llm_settings`
+  3. Neither → returns a NEUTRAL sentiment dict with an explanatory
+     error field (no crash, no silent fallback to a process-level key)
+
+The trade pipeline doesn't invoke `analyze_sentiment` today — it
+uses `fetch_news_alpaca` for headlines only — but CLI tools
+(`main.py sentiment AAPL`, `main.py ai-scan`) and any future
+caller now respect the user's chosen LLM instead of secretly
+calling Anthropic.
+"""
 
 import json
 import logging
 import time
 
-from config import CLAUDE_MODEL
 from client import get_api
-from ai_analyst import get_claude_client
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +44,10 @@ def fetch_news(symbol, limit=10, api=None):
     return fetch_news_alpaca(symbol, limit=min(limit, 5))
 
 
-def analyze_sentiment(symbol, news_items):
+def analyze_sentiment(symbol, news_items, ctx=None, user_id=None):
     """
-    Send news headlines/summaries to Claude and get sentiment scores.
+    Score news headlines via the user's configured LLM and return
+    per-item sentiment plus an aggregate score.
 
     Parameters
     ----------
@@ -40,6 +55,15 @@ def analyze_sentiment(symbol, news_items):
         The ticker symbol the news relates to.
     news_items : list[dict]
         Output of fetch_news().
+    ctx : UserContext, optional
+        When provided, the AI call uses `ctx.ai_provider`,
+        `ctx.ai_model`, `ctx.ai_api_key` — i.e. the per-profile LLM.
+    user_id : int, optional
+        When `ctx` is not provided, falls back to the user's
+        `Settings → Fallback LLM Key` configuration
+        (`users.llm_provider` + `users.anthropic_api_key_enc`).
+    Without either argument: returns a NEUTRAL sentiment with an
+    "error" field — no silent .env fallback (removed 2026-05-19).
 
     Returns a dict with per-item scores and an overall sentiment score
     ranging from -1.0 (very bearish) to +1.0 (very bullish).
@@ -80,15 +104,55 @@ def analyze_sentiment(symbol, news_items):
         "+1.0 = extremely bullish. Consider the impact on the stock price."
     )
 
-    try:
-        client = get_claude_client()
-        message = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
-        )
+    # Resolve provider / key — ctx wins; user_id fallback; otherwise
+    # return a NEUTRAL sentiment with the lack-of-key explained.
+    provider = None
+    model = None
+    api_key = None
+    db_path = None
+    if ctx is not None:
+        provider = getattr(ctx, "ai_provider", None)
+        model = getattr(ctx, "ai_model", None)
+        api_key = getattr(ctx, "ai_api_key", None)
+        db_path = getattr(ctx, "db_path", None)
+    elif user_id is not None:
+        try:
+            from models import get_user_llm_settings
+            settings = get_user_llm_settings(user_id)
+            provider = settings.get("provider")
+            api_key = settings.get("api_key")
+            # Pick a sane default model per provider when none is set
+            # at user level (UI doesn't surface model — keep simple).
+            from ai_providers import _DEFAULT_MODELS
+            model = _DEFAULT_MODELS.get(provider) if provider else None
+        except Exception as exc:
+            logger.warning(
+                "analyze_sentiment: failed to load user LLM settings "
+                "for user_id=%s: %s", user_id, exc,
+            )
 
-        response_text = message.content[0].text.strip()
+    if not provider or not api_key:
+        return {
+            "symbol": symbol,
+            "overall_score": 0.0,
+            "label": "NEUTRAL",
+            "items": [],
+            "error": (
+                "No LLM key available for sentiment scoring. Pass "
+                "ctx= for per-profile usage, or user_id= to fall back "
+                "to Settings → Fallback LLM Key."
+            ),
+        }
+
+    try:
+        from ai_providers import call_ai
+        response_text = call_ai(
+            prompt,
+            provider=provider, model=model, api_key=api_key,
+            max_tokens=1024,
+            db_path=db_path,
+            purpose="news_sentiment",
+        )
         # Use the tolerant parser shared with ai_analyst — handles
         # markdown fences (```json ... ```), trailing prose, and
         # truncated arrays. The strict json.loads here was the source
@@ -125,10 +189,13 @@ def analyze_sentiment(symbol, news_items):
         }
 
 
-def get_sentiment_signal(symbol):
+def get_sentiment_signal(symbol, ctx=None, user_id=None):
     """
     Convenience function: fetch news, analyze sentiment, and convert to a
     trading signal dict.
+
+    `ctx` / `user_id` flow through to `analyze_sentiment` so callers
+    can choose between per-profile and per-user-fallback LLMs.
 
     Signal thresholds:
         overall_score > 0.3  -> BUY
@@ -147,7 +214,8 @@ def get_sentiment_signal(symbol):
             "news_count": 0,
         }
 
-    sentiment = analyze_sentiment(symbol, news_items)
+    sentiment = analyze_sentiment(symbol, news_items, ctx=ctx,
+                                    user_id=user_id)
     score = sentiment.get("overall_score", 0.0)
     label = sentiment.get("label", "NEUTRAL")
 

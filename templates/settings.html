@@ -34,11 +34,28 @@
         </div>
         <div class="grid">
             <label>
-                Anthropic API Key
-                <input type="password" name="anthropic_api_key" value="{{ keys.anthropic_api_key }}"
-                       placeholder="Enter Anthropic API key">
-                {% if keys.has_anthropic %}<small class="pnl-pos">Configured</small>{% endif %}
+                Fallback LLM Key
+                <input type="password" name="llm_api_key" value="{{ keys.llm_api_key }}"
+                       placeholder="Enter API key for the provider selected below">
+                {% if keys.has_llm %}<small class="pnl-pos">Configured</small>{% endif %}
             </label>
+            <label>
+                Fallback LLM Provider
+                <select name="llm_provider">
+                    {% for pkey, pinfo in ai_providers.items() %}
+                    <option value="{{ pkey }}" {{ 'selected' if keys.llm_provider == pkey else '' }}>{{ pinfo.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+        </div>
+        <p style="font-size:0.8rem;color:#666;margin:-0.25rem 0 0.75rem 0;">
+            Used by CLI tools and helpers that don't have a per-profile
+            context (<code>main.py ai-analyze</code>, news sentiment
+            scoring, etc.). <strong>Your trading profiles each have
+            their own provider + key</strong> set on the profile
+            edit page — those are independent of this fallback.
+        </p>
+        <div class="grid">
             <label>
                 Notification Email
                 <input type="email" name="notification_email" value="{{ keys.notification_email }}"

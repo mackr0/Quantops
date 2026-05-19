@@ -17,6 +17,43 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Settings page "Anthropic API Key" → provider-agnostic "Fallback LLM Key". Severity: medium (UX clarity + finishes the news_sentiment refactor that the per-profile migration skipped).
+
+**What changed.** The top-of-Settings field was renamed and gained a provider dropdown, so the user can pick whichever LLM they want as the **non-profile** fallback. The field is now honestly labeled and explains its scope: *"Used by CLI tools and helpers that don't have a per-profile context. Your trading profiles each have their own provider + key — this is for everything else."*
+
+- **DB migration**: added `users.llm_provider TEXT NOT NULL DEFAULT 'anthropic'` via the existing `_migrations` list. Idempotent ALTER. Default preserves behavior for users whose stored key was previously Anthropic. Applied on prod: both existing users got `llm_provider='anthropic'`.
+- **Column rename deferred**: `users.anthropic_api_key_enc` retains its name (rename is a future refactor); semantically it now stores any provider's key.
+- **`update_user_credentials` signature**: new `llm_key=` + `llm_provider=` keyword args. The legacy `anthropic_key=` keyword still works as an alias so callers don't break.
+- **New helper**: `models.get_user_llm_settings(user_id) → {provider, api_key}` — canonical accessor replacing direct reads of `users.anthropic_api_key_enc`.
+- **Template + view**: `templates/settings.html` field is "Fallback LLM Key" with provider dropdown sourced from `ai_providers.get_providers()`. `views.save_keys` reads `llm_api_key` + `llm_provider` form fields and passes them to `update_user_credentials`. Mask-preservation behavior on `****` retained.
+
+**Refactored `news_sentiment.analyze_sentiment` (the one path that got skipped in the per-profile migration).** It used to hardcode an Anthropic SDK client via `get_claude_client()`. Now signature is `analyze_sentiment(symbol, news_items, ctx=None, user_id=None)`:
+- `ctx` → uses per-profile `ctx.ai_provider` + `ctx.ai_model` + `ctx.ai_api_key`.
+- `user_id` → falls back to `get_user_llm_settings` (Settings page Fallback LLM Key).
+- Neither → returns NEUTRAL sentiment with an `error` field explaining no key was available. **No silent .env fallback.**
+
+`get_sentiment_signal` updated to pass ctx/user_id through. Dead `get_claude_client` import removed from `political_sentiment.py`.
+
+**Why it matters.** The trade pipeline doesn't invoke `analyze_sentiment` today (it uses `fetch_news_alpaca` for headlines only). But the function lived as legacy Anthropic-hardcoded code, contradicting the user's expectation that Settings controls all AI usage. Now consistent: if the user picks Google in the Settings page, `main.py sentiment AAPL` uses Google too. Finishes the unfinished per-profile migration of 2026-04/05.
+
+**Regression tests.** `tests/test_llm_key_settings_2026_05_19.py` — 12 tests:
+- Migration adds `llm_provider` column on existing DBs (real prod-like flow)
+- Default is `'anthropic'` (preserves legacy behavior)
+- Migration is idempotent
+- `update_user_credentials(llm_provider=..., llm_key=...)` writes both columns
+- `update_user_credentials(anthropic_key=...)` legacy alias still works
+- Omitting `llm_provider=` preserves the existing value (only-key-update doesn't reset provider)
+- `get_user_llm_settings` returns provider+decrypted key
+- Missing user returns empty defaults (no crash)
+- `analyze_sentiment` with empty news returns NEUTRAL without calling AI
+- `analyze_sentiment` with no ctx + no user_id returns NEUTRAL with explanatory `error`
+- `analyze_sentiment(ctx=...)` honors ctx provider + key
+- `analyze_sentiment(user_id=...)` honors Settings page fallback LLM
+
+All 12 pass on prod's venv pre-deploy. 31 existing tests (user_context + provider_circuit + no-silent-fallback) still pass.
+
+---
+
 ## 2026-05-19 PM — Removed 6 silent fallbacks to process-level Anthropic key. Severity: high (UX integrity — Settings page now actually does what it says).
 
 **What broke (UX).** Operator removed the Anthropic key from the top of the Settings page (which writes `users.anthropic_api_key_enc=''`) expecting Anthropic to be fully out of the system. It wasn't — six code sites silently fell back to `config.ANTHROPIC_API_KEY` (loaded from `/opt/quantopsai/.env`) whenever a context-level key was missing or a ctx-less caller invoked an AI helper. The UI implied authority it didn't have; the system kept reaching into a process-level master key the user couldn't see or remove via the web.

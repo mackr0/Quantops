@@ -20,7 +20,9 @@ from typing import Optional, Dict, Any, List
 
 import config
 from ai_providers import call_ai
-from ai_analyst import get_claude_client  # backward compat
+# 2026-05-19 — removed dead `from ai_analyst import get_claude_client`
+# import. Never actually invoked from this module; the comment claimed
+# "backward compat" but no caller relied on it being re-exported here.
 
 logger = logging.getLogger(__name__)
 

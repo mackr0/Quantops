@@ -305,6 +305,15 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             ("users", "scanning_active", "INTEGER NOT NULL DEFAULT 1"),
             ("users", "role", "TEXT NOT NULL DEFAULT 'admin'"),
             ("users", "linked_to_user_id", "INTEGER"),
+            # 2026-05-19 — provider-agnostic "fallback LLM key" column.
+            # The legacy `anthropic_api_key_enc` column stays (it now
+            # stores the key for whatever provider `llm_provider`
+            # selects — the column name is historical). This pair is
+            # used by CLI tools / helpers that don't have a profile
+            # context: main.py ai-analyze, news_sentiment, etc.
+            # Default 'anthropic' preserves behavior for existing users
+            # whose stored key is an Anthropic key.
+            ("users", "llm_provider", "TEXT NOT NULL DEFAULT 'anthropic'"),
             # --- user_segment_configs table ---
             ("user_segment_configs", "alpaca_api_key_enc", "TEXT NOT NULL DEFAULT ''"),
             ("user_segment_configs", "alpaca_secret_key_enc", "TEXT NOT NULL DEFAULT ''"),
@@ -751,30 +760,83 @@ def verify_password(user: Dict[str, Any], password: str) -> bool:
 
 
 def update_user_credentials(user_id: int, alpaca_key: str = "",
-                            alpaca_secret: str = "", anthropic_key: str = "",
+                            alpaca_secret: str = "",
+                            llm_key: str = "",
+                            llm_provider: Optional[str] = None,
                             notification_email: str = "",
-                            resend_key: str = "") -> None:
-    """Encrypt and store API credentials for a user."""
+                            resend_key: str = "",
+                            # 2026-05-19 — `anthropic_key` retained as
+                            # alias for `llm_key` so existing callers
+                            # don't break. The DB column itself is
+                            # still `anthropic_api_key_enc` (the rename
+                            # is a future refactor); semantically it
+                            # now holds any provider's key per
+                            # `llm_provider`.
+                            anthropic_key: Optional[str] = None) -> None:
+    """Encrypt and store API credentials for a user.
+
+    `llm_key` + `llm_provider` set the user-level "fallback LLM" used
+    by CLI tools and helpers that don't have a per-profile context
+    (e.g., `main.py ai-analyze`, `news_sentiment.analyze_sentiment`).
+    Trading-profile cycles use the per-profile key in
+    `trading_profiles.ai_api_key_enc`, not this one.
+    """
+    # Back-compat alias: callers that still pass `anthropic_key=`
+    # see the value applied as the new `llm_key`. If both are passed,
+    # `llm_key` wins.
+    if not llm_key and anthropic_key is not None:
+        llm_key = anthropic_key
+    fields = [
+        "alpaca_api_key_enc = ?",
+        "alpaca_secret_key_enc = ?",
+        "anthropic_api_key_enc = ?",
+        "notification_email = ?",
+        "resend_api_key_enc = ?",
+    ]
+    params = [
+        encrypt(alpaca_key),
+        encrypt(alpaca_secret),
+        encrypt(llm_key),
+        notification_email,
+        encrypt(resend_key),
+    ]
+    if llm_provider is not None:
+        # Only touch the provider column when an explicit value is
+        # given — preserves the existing value when callers update
+        # only the key.
+        fields.append("llm_provider = ?")
+        params.append(llm_provider)
+    params.append(user_id)
+    sql = f"UPDATE users SET {', '.join(fields)} WHERE id = ?"
     with closing(_get_conn()) as conn:
-        conn.execute(
-            """UPDATE users
-               SET alpaca_api_key_enc = ?,
-                   alpaca_secret_key_enc = ?,
-                   anthropic_api_key_enc = ?,
-                   notification_email = ?,
-                   resend_api_key_enc = ?
-               WHERE id = ?""",
-            (
-                encrypt(alpaca_key),
-                encrypt(alpaca_secret),
-                encrypt(anthropic_key),
-                notification_email,
-                encrypt(resend_key),
-                user_id,
-            ),
-        )
+        conn.execute(sql, tuple(params))
         conn.commit()
     logger.info("Updated credentials for user #%d", user_id)
+
+
+def get_user_llm_settings(user_id: int) -> Dict[str, str]:
+    """Return the user's fallback LLM provider + (decrypted) key.
+
+    Used by CLI / helper code paths that don't have a per-profile
+    context. Returns {"provider": <str>, "api_key": <str>}; both
+    fields may be empty when the user hasn't configured one. The
+    canonical helper, replacing direct reads of
+    `users.anthropic_api_key_enc` (2026-05-19 column-name preserved
+    but semantics generalised).
+    """
+    with closing(_get_conn()) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT llm_provider, anthropic_api_key_enc "
+            "FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+    if row is None:
+        return {"provider": "anthropic", "api_key": ""}
+    return {
+        "provider": row["llm_provider"] or "anthropic",
+        "api_key": decrypt(row["anthropic_api_key_enc"] or ""),
+    }
 
 
 def is_scanning_active(user_id: int) -> bool:
