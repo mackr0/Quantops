@@ -981,7 +981,21 @@ def get_alpaca_account(account_id: int) -> Optional[Dict[str, Any]]:
 
 
 def create_trading_profile(user_id: int, name: str, market_type: str) -> int:
-    """Create a new trading profile with defaults from segments.py.  Returns profile_id."""
+    """Create a new trading profile with defaults from segments.py.  Returns profile_id.
+
+    Eagerly initialises the profile's journal DB (writes the schema)
+    immediately after the master INSERT commits. Reason: a bare
+    `sqlite3.connect(path)` creates a 0-byte file as a side-effect and
+    only writes the SQLite header on the first transaction. If the
+    process is SIGKILLed during that window, a 0-byte phantom remains
+    on disk — exactly the failure that caused the 2026-05-19 outage
+    (phantom `quantopsai_profile_25.db` halted the integrity gate and
+    locked the scheduler into a 19-restart loop). Calling
+    `open_profile_db()` here forces an immediate schema write, so
+    by the time this function returns, the journal file either
+    exists with a valid SQLite header or doesn't exist at all —
+    never the 0-byte limbo.
+    """
     seg = get_segment(market_type)
     # Default schedule: crypto gets 24/7, everything else gets market_hours
     default_schedule = "24_7" if market_type == "crypto" else "market_hours"
@@ -1007,6 +1021,27 @@ def create_trading_profile(user_id: int, name: str, market_type: str) -> int:
         )
         conn.commit()
         profile_id = cursor.lastrowid
+
+    # Eager journal initialisation — writes the SQLite header + base
+    # schema synchronously. After this returns, the journal file is
+    # NEVER 0 bytes; an integrity scan can't mistake it for a phantom.
+    # Best-effort: if the write fails, log and continue — the master
+    # row is the source of truth, and a subsequent trading cycle will
+    # retry the open. The PHANTOM scenario this prevents is the one
+    # where the master row is committed but the file never gets a
+    # header before some unrelated process is killed.
+    try:
+        journal_path = f"quantopsai_profile_{profile_id}.db"
+        conn = open_profile_db(journal_path)
+        conn.close()
+    except Exception as exc:
+        logger.warning(
+            "create_trading_profile: eager journal init failed "
+            "for profile %d (%s); the next trading cycle will "
+            "retry the journal open",
+            profile_id, exc,
+        )
+
     logger.info("Created trading profile #%d (%s/%s) for user #%d",
                 profile_id, name, market_type, user_id)
     return profile_id
@@ -1235,10 +1270,47 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
 
 
 def delete_trading_profile(profile_id: int) -> None:
-    """Delete a trading profile."""
+    """Delete a trading profile AND rename its journal file aside.
+
+    Two-step:
+      1. DELETE FROM trading_profiles WHERE id=?
+      2. Rename `quantopsai_profile_<N>.db` to
+         `quantopsai_profile_<N>.db.deleted-<ts>` so the orphan
+         doesn't keep matching the `quantopsai_profile_*.db` glob
+         used by the integrity gate and dashboard enumerators.
+
+    Rename, not delete: a profile's journal contains trade history
+    + AI predictions + cost ledger — too valuable to throw away on
+    a UI button click. The renamed file remains on disk for
+    forensic review and can be reinstated by renaming it back.
+
+    Renamed files end with `.deleted-<utc-iso>` which is
+    grep-friendly (`ls *.deleted-*` lists every parked journal).
+    Best-effort: rename failures are logged but do not block the
+    master DELETE (the master row is the source of truth)."""
+    import os
+    from datetime import datetime, timezone
     with closing(_get_conn()) as conn:
         conn.execute("DELETE FROM trading_profiles WHERE id = ?", (profile_id,))
         conn.commit()
+    journal_path = f"quantopsai_profile_{profile_id}.db"
+    if os.path.exists(journal_path):
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        parked = f"{journal_path}.deleted-{ts}"
+        try:
+            os.rename(journal_path, parked)
+            logger.info(
+                "Renamed journal %s to %s on profile delete; "
+                "preserved for forensic review",
+                journal_path, parked,
+            )
+        except OSError as exc:
+            logger.warning(
+                "delete_trading_profile: failed to rename %s "
+                "(%s); journal file remains in place and may be "
+                "picked up by orphan-DB scanners",
+                journal_path, exc,
+            )
     logger.info("Deleted trading profile #%d", profile_id)
 
 

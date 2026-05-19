@@ -17,6 +17,42 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Profile create/delete: no more 0-byte phantom journals. Severity: high (closes the structural gap that produced today's outage).
+
+**Follow-up to the morning phantom-DB outage.** The defensive fix (db_integrity skips phantom DBs at scan time) landed in `ed72dc7`; this commit closes the upstream gap that ever lets a phantom file exist in the first place.
+
+**Two complementary changes in `models.py`:**
+
+1. **`create_trading_profile` now eagerly initialises the journal DB** by calling `open_profile_db(journal_path)` immediately after the master INSERT commits. `open_profile_db` runs `init_tracker_db + init_journal_db` which write the `ai_predictions` and `trades` schemas — a `CREATE TABLE` is a write transaction, so SQLite is forced to flush the file header and schema page synchronously. By the time `create_trading_profile` returns, the journal file either has a valid SQLite header or doesn't exist at all — never the 0-byte limbo SQLite leaves between `sqlite3.connect()` and the first commit. Best-effort: a journal init failure is logged but doesn't block the master INSERT (the next trading cycle's open will retry).
+
+2. **`delete_trading_profile` now renames the journal file aside** to `quantopsai_profile_<N>.db.deleted-<utc-iso>` after the master DELETE. Rename, not delete — the journal holds trade history + AI predictions + cost ledger and is too valuable to throw away on a UI button click. The `.deleted-<ts>` suffix means the file no longer matches the `quantopsai_profile_*.db` glob that enumerators (db_integrity, dashboard) use, so it can't be mistaken for a real profile journal. Rename failures are logged but don't block the master DELETE (best-effort).
+
+**Why both halves matter.** Just defending the delete path (rename on delete) wouldn't help — today's outage was a create-side phantom (no matching master row ever existed for profile_25). Just defending create (eager init) wouldn't help — a future delete that left the journal file would still phantom on the next scheduler restart. Together they make every profile lifecycle leave one of two states: file with valid header (live profile), or no file matching the glob (deleted/never-created). No third state.
+
+**Regression tests.** `tests/test_profile_lifecycle_no_phantom_2026_05_19.py` — 9 tests:
+
+*Create-path:*
+- Journal file exists after `create_trading_profile` returns
+- Journal file is NOT 0 bytes (the literal regression class)
+- Journal passes `db_integrity.check_db` (the exact gate that halted today)
+- Journal contains the canonical `trades` table
+
+*Delete-path:*
+- Delete renames journal with `.deleted-<ts>` suffix
+- Renamed file does NOT match the `quantopsai_profile_*.db` glob
+- Master DELETE succeeds even if the rename fails (best-effort contract)
+- Delete is idempotent when journal file is already missing
+
+*End-to-end:*
+- Create → delete leaves zero `quantopsai_profile_<N>.db` files in `_all_db_paths` — the exact code path that halted today returns clean.
+
+All 9 pass on prod's venv (verified pre-deploy).
+
+**Pending follow-ups (not in this commit):**
+- Audit the OTHER bare `sqlite3.connect(profile_db_path)` call sites (slippage_model, meta_model, sec_13dg_activist, pdufa_scraper, post_mortem, ...) — they all rely on the file already existing OR being safely auto-created. None of them write the SQLite header eagerly. A consolidated `safe_profile_connect(profile_id)` helper that verifies the profile exists in master before opening would harden every call site.
+
+---
+
 ## 2026-05-19 PM — Phantom profile DB caused 30+ min restart loop blocking all 13 profiles. Severity: critical (production outage — every profile stalled).
 
 **What broke.** Around 14:55 UTC a 0-byte file `quantopsai_profile_25.db` was left on disk (likely a SIGKILL casualty during an earlier 14:44 / 14:48 force-restart while the process was mid-create-profile). There is no matching row in `trading_profiles.id=25` — it's a phantom shell, not a real profile. The DB integrity gate (`db_integrity._all_db_paths`) enumerates profile DBs via glob, picked up the phantom, flagged it as critical corruption ("file is 0 bytes (too small for SQLite header)"), and refused scheduler startup. systemd restarted every 60-90s; restart counter climbed to 19. **All 13 real profiles (ids 12-24) stalled for 30+ minutes** — no AI calls, no trades, no exits, no reconciles. Dashboard showed stale state from before 15:03 UTC. An ERROR email fired on every restart attempt.
