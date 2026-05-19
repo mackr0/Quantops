@@ -432,6 +432,7 @@ def build_context_from_segment(segment_name: str) -> UserContext:
     """
     import config
     from segments import get_segment
+    from market_data import _resolve_alpaca_credentials
 
     seg = get_segment(segment_name)
 
@@ -439,9 +440,20 @@ def build_context_from_segment(segment_name: str) -> UserContext:
         user_id=1,
         segment=segment_name,
         display_name=seg.get("name", segment_name),
-        # Alpaca — prefer segment-level keys, fall back to global config
-        alpaca_api_key=seg.get("alpaca_key") or config.ALPACA_API_KEY or "",
-        alpaca_secret_key=seg.get("alpaca_secret") or config.ALPACA_SECRET_KEY or "",
+        # Alpaca — segment-level keys if set (rarely used today), else
+        # the alpaca_accounts-backed resolver. 2026-05-19 — removed
+        # the silent fallback to `config.ALPACA_API_KEY` (the env
+        # "master key" path) so the resolver is the single source.
+        alpaca_api_key=(
+            seg.get("alpaca_key")
+            or _resolve_alpaca_credentials()[0]
+            or ""
+        ),
+        alpaca_secret_key=(
+            seg.get("alpaca_secret")
+            or _resolve_alpaca_credentials()[1]
+            or ""
+        ),
         alpaca_base_url=config.ALPACA_BASE_URL,
         # AI configuration. 2026-05-19: removed silent fallback to
         # config.ANTHROPIC_API_KEY so the segment-level legacy path

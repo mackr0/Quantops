@@ -262,8 +262,9 @@ def fetch_news_alpaca(symbol, limit=3):
     every time a symbol had news. Caught by strategies' broad
     except blocks at debug level → entire `news_sentiment_spike`
     strategy silently never fired. Cached for 30 minutes per symbol.
-    Uses the `_resolve_alpaca_credentials` self-healing resolver so
-    a stale master key doesn't drop us to a no-fallback path.
+    Uses `market_data._resolve_alpaca_credentials` which sources
+    Alpaca creds from the `alpaca_accounts` DB table (the env-level
+    "master key" path was removed 2026-05-19).
     """
     now = time.time()
     cached = _news_cache.get(symbol)

@@ -37,20 +37,28 @@ def get_api(ctx=None):
     Parameters
     ----------
     ctx : UserContext, optional
-        If provided, credentials are taken from the context instead of
-        module-level config globals.  When *ctx* is None the existing
-        config.* behaviour is preserved (backward compat for CLI).
+        If provided, credentials are taken from the context (the
+        per-profile key for that user's trading account).
+        When *ctx* is None, credentials come from
+        `market_data._resolve_alpaca_credentials()`, which sources
+        from the `alpaca_accounts` master DB table. The env-var
+        ("master key") path was removed 2026-05-19 — operator
+        feedback was that env-level Alpaca keys repeatedly caused
+        outages (stale/wrong/limited) and the per-account keys are
+        the canonical source kept fresh by the trading workflow.
     """
     if ctx is not None:
         return ctx.get_alpaca_api()
 
-    api_key = config.ALPACA_API_KEY
-    secret_key = config.ALPACA_SECRET_KEY
+    from market_data import _resolve_alpaca_credentials
+    api_key, secret_key, base_url = _resolve_alpaca_credentials()
     if not api_key or not secret_key:
         raise ValueError(
-            "Missing API credentials. Copy .env.example to .env and add your keys."
+            "No Alpaca credentials available. Add a paper account "
+            "via the Settings page (writes to alpaca_accounts), or "
+            "pass an explicit ctx with per-profile credentials."
         )
-    return tradeapi.REST(api_key, secret_key, config.ALPACA_BASE_URL, api_version="v2")
+    return tradeapi.REST(api_key, secret_key, base_url, api_version="v2")
 
 
 def _prefetch_prices(symbols):

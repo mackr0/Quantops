@@ -40,35 +40,30 @@ _bars_cache_lock = threading.Lock()
 
 
 def _resolve_alpaca_credentials():
-    """Return (key, secret, base_url) using the first working source.
+    """Return (key, secret, base_url) sourced from `alpaca_accounts`.
 
-    Order:
-      1. `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` env vars (master key,
-         set in `.env`).
-      2. Any non-null `alpaca_api_key_enc` row in the master DB's
-         `alpaca_accounts` table (decrypted) — these are the
-         per-trading-account keys that the scheduler also uses for
-         orders, and they share the same data subscription as the
-         master key. Tested in registration order; first one whose
-         basic-auth challenge succeeds is cached for reuse.
+    2026-05-19 — env-key path REMOVED. Previously the resolver
+    consulted `ALPACA_API_KEY`/`ALPACA_SECRET_KEY` env vars first
+    ("master key"), falling through to the DB if env was empty. That
+    pattern produced three separate outages in 24 hours — each
+    triggered by a stale/wrong/limited env key silently winning the
+    resolution order. The operator's per-account keys in
+    `alpaca_accounts` are kept fresh by the trading workflow (Alpaca
+    dashboard ↔ DB row); a stale one fails trades visibly and gets
+    rotated immediately. The env-key "master" was a relic from a
+    single-account, single-user era and added only failure modes.
 
-    Self-healing rationale (added 2026-05-15): the master key was
-    revoked at some point and only the per-account keys were
-    refreshed. `_get_alpaca_data_client` then silently failed and
-    `get_bars` fell back to yfinance for the entire system. Falling
-    through to alpaca_accounts keys ensures a credential rotation on
-    the master key alone doesn't put the bar fetcher onto yfinance
-    again — the per-account keys are kept fresh because the trading
-    code uses them and a stale one would fail trades visibly.
+    Source: first row of `alpaca_accounts` (ORDER BY id LIMIT 1) — the
+    same paper account whose data subscription serves the rest of the
+    system. Order submissions still use per-profile keys via
+    `ctx.get_alpaca_api()`; this resolver is ONLY for data calls that
+    don't have a profile context.
+
+    Returns ("", "", base_url) when the DB has no rows or can't be
+    read. Callers must handle empty keys (raise / log / skip).
     """
-    env_key = os.getenv("ALPACA_API_KEY", "")
-    env_secret = os.getenv("ALPACA_SECRET_KEY", "")
     base_url = os.getenv("ALPACA_BASE_URL",
                           "https://paper-api.alpaca.markets")
-    if env_key and env_secret:
-        return env_key, env_secret, base_url
-
-    # Fallback: try alpaca_accounts table.
     try:
         import sqlite3 as _sq3
         from contextlib import closing as _closing
@@ -85,7 +80,7 @@ def _resolve_alpaca_credentials():
             return decrypt(row[0]), decrypt(row[1]), base_url
     except Exception as exc:
         logger.warning(
-            "alpaca_accounts credential fallback failed: %s: %s",
+            "alpaca_accounts credential lookup failed: %s: %s",
             type(exc).__name__, exc,
         )
     return "", "", base_url

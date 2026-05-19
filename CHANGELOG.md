@@ -17,6 +17,42 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Killed the env-level Alpaca "master key" path entirely; options data flowing again. Severity: critical (active prod outage at the time of fix).
+
+**What broke (active prod outage).** Around 17:00 UTC operator noticed zero option trades despite OptionPipeline.execute being live since Phase 4c. Root cause: `options_oracle.get_options_oracle()` returned `{has_options: False}` for every symbol including SPY. The oracle calls `options_chain_alpaca.fetch_chain_alpaca` which calls `_resolve_alpaca_credentials` which returned the `.env` `ALPACA_API_KEY=PKZOLZ...` — and that key was returning HTTP 401 across every Alpaca endpoint (revoked or rotated server-side since this morning).
+
+**Same problem class as the morning Anthropic outage, different key.** The resolver's env-first design lets a stale env key win the resolution chain even though the per-account keys in `alpaca_accounts` are kept fresh by the trading workflow. Operator: *"i don't know why you keep asking for the master key, i don't believe it does anything and you keep breaking it so it seems pointless, we have keys for each account but you insist on talking about the master key every few days and then something breaks."*
+
+**Three outages in one day from the same architectural pattern.** Removing the env-key path entirely so the failure mode can't re-occur.
+
+**Code changes (`market_data._resolve_alpaca_credentials` and 4 bypass sites):**
+
+| File | Before | After |
+|---|---|---|
+| `market_data.py` | Env-first: read `ALPACA_API_KEY`/`ALPACA_SECRET_KEY`, fall through to `alpaca_accounts` only if env empty | DB-only: read `alpaca_accounts.ORDER BY id LIMIT 1`; env vars completely ignored |
+| `client.py:get_api(ctx=None)` | Read `config.ALPACA_API_KEY` directly; raise `ValueError("Missing API credentials. Copy .env.example...")` | Use the resolver; error message points to Settings page + alpaca_accounts |
+| `models.py:fetch_and_cache_names` | Direct `config.ALPACA_API_KEY` read for Alpaca asset-name lookup | Resolver |
+| `screener.py:_fetch_crypto_bars_alpaca` | Direct `config.ALPACA_API_KEY` read for crypto bars | Resolver |
+| `alternative_data.py:get_intraday_patterns` | Direct `config.ALPACA_API_KEY` read for 5-min bars | Resolver |
+| `user_context.py:build_context_from_segment` | `seg.get("alpaca_key") or config.ALPACA_API_KEY or ""` (silent env fallback) | `seg.get("alpaca_key") or _resolve_alpaca_credentials()[0] or ""` |
+| `news_sentiment.py` comment | "stale master key doesn't drop us to a no-fallback path" | "alpaca_accounts DB table (env-level master key path removed 2026-05-19)" |
+
+**Data action (`/opt/quantopsai/.env`):** removed the dead `ALPACA_API_KEY=PKZOLZ...` and `ALPACA_SECRET_KEY=ChcA...` lines. Backup at `.env.bak.before-alpaca-env-removal.20260519T172621Z`. After removal:
+```
+Resolver returns: key=PKQVFSRG...VPGH  base=https://paper-api.alpaca.markets
+SPY oracle has_options=True  iv_rank=100
+```
+
+**Regression tests.** `tests/test_alpaca_creds_db_only_2026_05_19.py` — 8 tests:
+- Env set to garbage → resolver still returns DB key (3 variants)
+- Empty DB → resolver returns empty strings (env vars do NOT save it)
+- Structural: each of the 4 fixed call sites scanned for executable `config.ALPACA_API_KEY` reads — fails on regression
+- Resolver docstring mentions DB-only + that env path was removed
+
+60 tests pass across the credential / pipeline / user_context suites. Production scheduler restarted at ~17:30 UTC; resolver confirmed returning `PKQVFSRG` (account-4 per-account key); SPY oracle returning `has_options=True, iv_rank=100`; option trades should surface next AI-driven cycle.
+
+---
+
 ## 2026-05-19 PM — Pipeline scope B: every abstract method implemented end-to-end. Severity: medium (capability — production unchanged; readies scheduler cutover for scope C).
 
 **What landed.** Three years of "Phase 1 wires this / Phase 3 wires this" stub docstrings are now true. The remaining `NotImplementedError` placeholders in `pipelines/option.py` and `pipelines/stock.py` are gone. Both pipelines run end-to-end via `.run_cycle(ctx)`.

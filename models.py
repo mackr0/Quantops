@@ -2165,14 +2165,23 @@ def fetch_and_cache_names(symbols: List[str]) -> Dict[str, str]:
         return cached
 
     import requests
-    import config
-
+    # 2026-05-19 — use the alpaca_accounts-backed resolver instead of
+    # config.ALPACA_API_KEY (the env-level "master key" path was
+    # removed). The resolver returns per-account keys from the DB.
+    from market_data import _resolve_alpaca_credentials
+    api_key, secret_key, base_url = _resolve_alpaca_credentials()
+    if not api_key:
+        logger.warning(
+            "fetch_and_cache_names: no Alpaca credentials available; "
+            "returning cached names only"
+        )
+        return cached
     headers = {
-        "APCA-API-KEY-ID": config.ALPACA_API_KEY,
-        "APCA-API-SECRET-KEY": config.ALPACA_SECRET_KEY,
+        "APCA-API-KEY-ID": api_key,
+        "APCA-API-SECRET-KEY": secret_key,
     }
     new_names: Dict[str, str] = {}
-    base_url = config.ALPACA_BASE_URL.rstrip("/")
+    base_url = base_url.rstrip("/")
     for sym in missing:
         try:
             r = requests.get(f"{base_url}/v2/assets/{sym}",

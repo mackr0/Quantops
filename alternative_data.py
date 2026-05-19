@@ -493,11 +493,17 @@ def get_intraday_patterns(symbol):
 
         end = datetime.now(timezone.utc)
         start = end - timedelta(days=1)
+        # 2026-05-19 — use resolver (env "master key" path removed)
+        from market_data import _resolve_alpaca_credentials
+        api_key, secret_key, _ = _resolve_alpaca_credentials()
+        if not api_key:
+            _set_cached(cache_key, result)
+            return result
         r = requests.get(
             f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/bars",
             headers={
-                "APCA-API-KEY-ID": config.ALPACA_API_KEY,
-                "APCA-API-SECRET-KEY": config.ALPACA_SECRET_KEY,
+                "APCA-API-KEY-ID": api_key,
+                "APCA-API-SECRET-KEY": secret_key,
             },
             params={
                 "timeframe": "5Min",

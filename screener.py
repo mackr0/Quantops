@@ -401,14 +401,23 @@ def _fetch_crypto_bars_alpaca(symbols, days=30):
     succeeded. Each bar has: t (timestamp), o, h, l, c, v.
     """
     import requests
-    import config
     from datetime import timedelta
 
     if not symbols:
         return {}
+    # 2026-05-19 — use the alpaca_accounts-backed resolver instead of
+    # config.ALPACA_API_KEY (env "master key" path removed).
+    from market_data import _resolve_alpaca_credentials
+    api_key, secret_key, _ = _resolve_alpaca_credentials()
+    if not api_key:
+        _dyn_logger.warning(
+            "_fetch_crypto_bars_alpaca: no Alpaca credentials; "
+            "returning empty"
+        )
+        return {}
     headers = {
-        "APCA-API-KEY-ID": config.ALPACA_API_KEY,
-        "APCA-API-SECRET-KEY": config.ALPACA_SECRET_KEY,
+        "APCA-API-KEY-ID": api_key,
+        "APCA-API-SECRET-KEY": secret_key,
     }
     end = datetime.now()
     start = end - timedelta(days=days)
