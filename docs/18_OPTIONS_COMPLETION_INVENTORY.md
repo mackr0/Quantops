@@ -146,7 +146,7 @@ When EVERY box below ticks, options work is done. Until then it isn't.
 - [x] `pipelines/option.py` contains zero `NotImplementedError`. **Done 2026-05-19 (scope B).**
 - [x] `OptionPipeline().run_cycle(ctx)` is end-to-end runnable in a test with a fixture ctx; returns a valid `ExecutionResult` for empty input and for input with each strategy type. **Done — see `test_pipelines_b_complete_2026_05_19.py`.**
 - [x] `tests/test_pipelines_phase0.py` no longer asserts NotImplementedError on `generate_candidates` / `decide`. Replacement tests pin actual behavior. **Done — `TestPhase0PlaceholdersAllWired` replaces it.**
-- [ ] Risk model delta-adjusted exposure uses live IV (no `FALLBACK_IV` fallback in the production path).
+- [x] **Risk model delta-adjusted exposure uses live IV.** Default `iv_lookup` is now auto-wired in `compute_book_greeks` and `portfolio_delta_exposure` (mirrors what `effective_positions_for_risk_model` already did). Shared factory in `options_iv_lookup.default_iv_lookup_factory()`. `FALLBACK_IV=0.25` still fires when the oracle genuinely returns nothing — surfaced via the new IV-degradation alarm (item #6 below). **Done 2026-05-19.** Tests: `tests/test_live_iv_in_risk_model_2026_05_19.py`.
 - [ ] Phase 5c backfill runs nightly; no resolved option prediction is using underlying-price math by accident.
 - [ ] Single-leg `OPTIONS` action flows through `OptionPipeline.execute`, not the legacy elif branch.
 - [x] StockPipeline also fully implemented. **Done 2026-05-19 (scope B).**
@@ -154,7 +154,7 @@ When EVERY box below ticks, options work is done. Until then it isn't.
 - [x] **Cutover dispatcher in place, gated** (`pipelines/dispatch.run_via_pipelines`, wired into `multi_scheduler:957` behind `ctx.use_pipeline_dispatch`, default OFF). **Done 2026-05-19 (scope C cutover infra).** Tests: `tests/test_pipeline_dispatch_cutover_2026_05_19.py`. Submits real orders when the per-profile flag is flipped to ON — do that only after the shadow soak passes.
 - [ ] Flip `use_pipeline_dispatch=1` on profile 15 after shadow soak shows verdict agreement ≥ 95% for 1–2 trading days; widen to all profiles after one clean trading day on the new dispatcher; then remove the legacy `trade_pipeline.run_trade_cycle` + the shadow hook entirely.
 - [ ] Dashboard renders a per-position Greeks panel.
-- [ ] Per-cycle IV-rank degradation alarm fires loudly when >80% of lookups return None.
+- [x] **Per-cycle IV-rank degradation alarm.** Wired into the Portfolio Risk Snapshot task in `multi_scheduler`. Reads `book_greeks.fallback_iv_count / n_options_legs` from the snapshot's Greeks aggregation; fires an `audit_alerts` row of type `iv_rank_degradation` (severity `warning`) at ≥80% degradation with a ≥3-leg noise floor. Surfaces on `/issues` immediately so operators don't have to find oracle failures via "why no options trades?". **Done 2026-05-19.** Tests: `tests/test_iv_rank_degradation_alarm_2026_05_19.py`.
 - [ ] Every entry above has a regression test referenced by name in CHANGELOG.
 
 ---

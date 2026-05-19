@@ -17,6 +17,26 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Live IV wired into risk model + IV-rank degradation alarm. Severity: high (closes the "silent 25% IV fallback" hole that's been understating option exposure since Phase 6b shipped + closes the operator-driven detection lag on options chain failures).
+
+**Two coupled fixes; docs/18 items #1 + #6.**
+
+**#1 — Live IV wiring.** Until today, `compute_book_greeks` and `portfolio_delta_exposure` both silently fell back to `FALLBACK_IV=0.25` when callers didn't pass `iv_lookup`. Every production call site qualified — `views.py` dashboard, `multi_scheduler` risk snapshot, `options_trader`, `options_delta_hedger`, `specialists.option_spread_risk`. The risk model has been computing delta-adjusted exposure with a flat 25% IV for every option position since Phase 6b, regardless of whether the underlying was actually trading at 60% IV (earnings, vol-spike) or 15% IV (quiet name). `effective_positions_for_risk_model` already had a `use_live_iv=True` default that auto-wired `_default_iv_lookup_factory`; the other two now mirror that pattern.
+
+Extracted `default_iv_lookup_factory()` to new `options_iv_lookup.py` (breaks a circular dep — `options_greeks_aggregator` is imported BY `pipelines.risk.exposure`, so the shared factory has to live outside both). Both `compute_book_greeks` and `portfolio_delta_exposure` got a `use_live_iv: bool = True` kwarg; when no caller-passed `iv_lookup` and the flag is True, the factory is built per-call. Tests can pass `use_live_iv=False` to keep deterministic behavior without network access.
+
+**#6 — IV-rank degradation alarm.** Wired into the per-cycle Portfolio Risk Snapshot task in `multi_scheduler`. Reads `book_greeks.fallback_iv_count / n_options_legs`. Threshold: ≥80% with a noise floor of ≥3 legs. When tripped, writes an `audit_alerts` row of type `iv_rank_degradation` (severity `warning`) so the `/issues` page surfaces it immediately. Before this, operators only noticed via "why no options trades?" — silent oracle failures could persist for hours.
+
+**Why these ship together.** #6 reads the `fallback_iv_count` metric that #1 makes accurate. Without #1, every cycle would report 100% fallback even when the oracle was healthy. Without #6, #1 fixes the silent degradation but leaves no early-warning signal when the oracle itself breaks.
+
+**Tests (15 total, all green):**
+- `tests/test_live_iv_in_risk_model_2026_05_19.py` (8 tests) — default auto-wire produces non-fallback IV; `use_live_iv=False` preserves historical fallback; caller-passed lookup overrides default; per-call cache hits oracle once; failures cache None; oracle exceptions never propagate; `fallback_iv_count` accurately reports failed lookups.
+- `tests/test_iv_rank_degradation_alarm_2026_05_19.py` (7 tests) — fires at exactly 80% (and at 100%); does NOT fire at 70%; noise floor of 3 legs prevents 1-leg-100%-fallback false alarms; payload has correct type/severity/title/detail; empty `book_greeks` doesn't crash.
+
+**Follow-up.** The IV-rank degradation alarm currently fires per-profile via the existing per-profile risk snapshot task; cross-profile aggregation (e.g. "the oracle is broken globally") is left for a future fix when more than one profile starts running options. The alarm's threshold + noise floor are pinned by tests so future refactors can't silently relax them.
+
+---
+
 ## 2026-05-19 PM — Scope C cutover dispatcher (gated; default OFF; soak armed on profile 15). Severity: medium-high when activated (submits real orders via the new path), zero when OFF.
 
 **Background.** The shadow harness shipped two commits ago lets us measure agreement between the legacy `trade_pipeline.run_trade_cycle` dispatch and the new `Pipeline.run_cycle` dispatch. This commit lands the cutover itself — but **gated**, so production behavior is unchanged until an operator flips a per-profile flag after reviewing soak data.

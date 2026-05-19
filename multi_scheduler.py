@@ -3089,6 +3089,59 @@ def _task_portfolio_risk_snapshot(ctx):
             )
             risk["book_greeks"] = {}
 
+        # docs/18 item #6: IV-rank degradation alarm. The options oracle
+        # silently degrades when chains can't be fetched; before this,
+        # operators only noticed via "why no options trades?". The
+        # fallback_iv_count metric is wired in compute_book_greeks
+        # (auto-IV lookup, 2026-05-19); if ≥80% of legs needed the
+        # 25% fallback in a cycle, fire a loud audit_alerts row.
+        try:
+            bg = risk.get("book_greeks") or {}
+            n_legs = int(bg.get("n_options_legs") or 0)
+            n_fb = int(bg.get("fallback_iv_count") or 0)
+            if n_legs >= 3 and n_fb / max(1, n_legs) >= 0.80:
+                pct = round(100.0 * n_fb / n_legs, 1)
+                msg = (
+                    f"IV-rank lookup degraded: {n_fb}/{n_legs} option "
+                    f"legs ({pct}%) used FALLBACK_IV=0.25 this cycle. "
+                    "Investigate options_oracle / Alpaca options chain "
+                    "fetch — silent degradation means delta-adjusted "
+                    "exposure understates risk for high-IV underlyings."
+                )
+                logging.warning(f"[{seg_label}] {msg}")
+                try:
+                    from journal import _get_conn as _gc
+                    with closing(_gc(ctx.db_path)) as conn:
+                        conn.execute("""
+                            CREATE TABLE IF NOT EXISTS audit_alerts (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                                alert_type TEXT NOT NULL,
+                                severity TEXT NOT NULL DEFAULT 'warning',
+                                title TEXT NOT NULL,
+                                detail TEXT,
+                                resolved INTEGER NOT NULL DEFAULT 0)
+                        """)
+                        conn.execute(
+                            "INSERT INTO audit_alerts "
+                            "(alert_type, severity, title, detail) "
+                            "VALUES (?, ?, ?, ?)",
+                            ("iv_rank_degradation", "warning",
+                             f"IV-rank lookup degraded ({pct}%)",
+                             msg),
+                        )
+                        conn.commit()
+                except Exception as _alert_exc:
+                    logging.warning(
+                        f"[{seg_label}] audit_alerts insert for IV "
+                        f"degradation failed: {_alert_exc}"
+                    )
+        except Exception as _iv_exc:
+            logging.debug(
+                f"[{seg_label}] IV degradation check failed "
+                f"(non-fatal): {_iv_exc}"
+            )
+
         scenarios = run_all_scenarios(
             risk["weights"], risk["exposures"], portfolio_value=equity,
         )

@@ -140,48 +140,14 @@ def _signed_delta_dollars_for_position(
 
 
 def _default_iv_lookup_factory() -> Callable[[str], Optional[float]]:
-    """Phase 6c (2026-05-12): cached per-call IV lookup using the
-    live options oracle. Returns a callable that resolves an
-    underlying ticker to its ATM call IV (annualized decimal,
-    e.g. 0.35 = 35%).
-
-    The lookup hits `options_oracle.get_options_oracle` which is
-    a chain-fetch — caches per-call so multiple positions on the
-    same underlying don't re-fetch. Returns None on any failure;
-    callers fall back to `FALLBACK_IV=0.25`.
-
-    Without this wiring (the Phase 6b state), every option
-    position's delta-adjusted exposure used the 25% fallback,
-    regardless of whether the underlying was actually trading
-    at 60% IV (overpriced, near earnings) or 15% IV (quiet name).
-    """
-    _cache: Dict[str, Optional[float]] = {}
-
-    def lookup(underlying: str) -> Optional[float]:
-        if not underlying:
-            return None
-        if underlying in _cache:
-            return _cache[underlying]
-        try:
-            from options_oracle import get_options_oracle
-            oracle = get_options_oracle(underlying)
-            if not oracle or not oracle.get("has_options"):
-                _cache[underlying] = None
-                return None
-            # Skew dict has call_iv (ATM call IV, annualized
-            # decimal). Use that as the effective IV for delta
-            # calc — close enough for portfolio aggregation.
-            iv = float(oracle.get("skew", {}).get("call_iv") or 0)
-            if iv <= 0:
-                _cache[underlying] = None
-                return None
-            _cache[underlying] = iv
-            return iv
-        except Exception:
-            _cache[underlying] = None
-            return None
-
-    return lookup
+    """2026-05-19: factory extracted to `options_iv_lookup` for reuse
+    in `options_greeks_aggregator.compute_book_greeks` and
+    `portfolio_delta_exposure` (both previously silently fell back
+    to FALLBACK_IV=0.25 because they don't auto-wire the lookup the
+    way this module's `effective_positions_for_risk_model` does).
+    This thin wrapper preserves the existing public symbol."""
+    from options_iv_lookup import default_iv_lookup_factory
+    return default_iv_lookup_factory()
 
 
 def signed_portfolio_delta_exposure(
@@ -306,6 +272,7 @@ def portfolio_delta_exposure(
     price_lookup: Optional[Callable[[str], Optional[float]]] = None,
     iv_lookup: Optional[Callable[[str], Optional[float]]] = None,
     today: Optional[_date] = None,
+    use_live_iv: bool = True,
 ) -> Dict[str, float]:
     """Aggregate delta-adjusted exposure across the book.
 
@@ -315,11 +282,17 @@ def portfolio_delta_exposure(
     how the factor model wants weights (factor exposures are
     per-underlying, not per-contract).
 
-    No external calls without lookups; safe to use in tests with
-    `price_lookup=lambda s: prices[s]`.
+    2026-05-19: now mirrors `effective_positions_for_risk_model` —
+    when `iv_lookup` is None and `use_live_iv` is True (default),
+    auto-builds a per-call cached live IV lookup. Before this, every
+    option position used the 25% fallback, regardless of the real
+    underlying IV. Tests can pass `use_live_iv=False` to keep the
+    historical fallback behavior.
     """
     today = today or _date.today()
     out: Dict[str, float] = {}
+    if iv_lookup is None and use_live_iv:
+        iv_lookup = _default_iv_lookup_factory()
 
     for pos in positions or []:
         qty = float(pos.get("qty") or 0)

@@ -130,6 +130,7 @@ def compute_book_greeks(
     price_lookup: Optional[Callable[[str], Optional[float]]] = None,
     iv_lookup: Optional[Callable[[str], Optional[float]]] = None,
     today: Optional[_date] = None,
+    use_live_iv: bool = True,
 ) -> Dict[str, Any]:
     """Aggregate Greeks across an entire position book.
 
@@ -158,6 +159,19 @@ def compute_book_greeks(
       }
     """
     today = today or _date.today()
+    # 2026-05-19: auto-wire the live IV lookup when no caller-provided
+    # iv_lookup is set. Before this, every option position silently
+    # used FALLBACK_IV=0.25 in every Greeks computation that didn't
+    # explicitly pass a lookup (every prod call site qualified —
+    # views.py, multi_scheduler, options_trader, options_delta_hedger,
+    # specialists.option_spread_risk). Tests pass use_live_iv=False
+    # to keep deterministic behavior.
+    if iv_lookup is None and use_live_iv:
+        try:
+            from options_iv_lookup import default_iv_lookup_factory
+            iv_lookup = default_iv_lookup_factory()
+        except Exception as exc:
+            logger.debug("default_iv_lookup_factory unavailable: %s", exc)
     summary: Dict[str, Any] = {
         "net_delta": 0.0, "net_gamma": 0.0, "net_vega": 0.0,
         "net_theta": 0.0, "net_rho": 0.0,
