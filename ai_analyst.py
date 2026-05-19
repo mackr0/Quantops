@@ -1841,6 +1841,44 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         if news:
             line += f"\n     News: {' | '.join(n[:80] for n in news[:3])}"
 
+        # Phase 2 of docs/17 — RAG over the AI's own resolved trades.
+        # Retrieve up to 3 most-similar past cases for THIS profile
+        # and inject them as concrete cases-to-reason-from. The LLM
+        # doesn't learn weights but it sees specific relevant
+        # history on every call.
+        try:
+            from case_file_rag import build_prompt_block
+            _rag_db = getattr(ctx, "db_path", None) if ctx else None
+            if _rag_db:
+                rag_candidate = {
+                    "symbol": sym,
+                    "predicted_signal": signal,
+                    "confidence": c.get("score"),
+                    "regime_at_prediction": (
+                        market_context.get("regime")
+                        if isinstance(market_context, dict) else None
+                    ),
+                    "strategy_type": c.get("strategy_type"),
+                    "features_json": {
+                        "rsi": rsi,
+                        "momentum_5d": roc,
+                        "volume_ratio": vol_ratio,
+                        "gap_pct": gap,
+                    },
+                }
+                rag_block = build_prompt_block(_rag_db, rag_candidate)
+                if rag_block:
+                    line += "\n" + rag_block
+        except (ImportError, KeyError, ValueError, AttributeError,
+                TypeError, OSError) as _rag_exc:
+            # Prompt enrichment is fail-soft — the prompt is still
+            # complete without it. Log so silent quality degradation
+            # is visible.
+            logger.debug(
+                "case_file_rag block render failed for %s: %s: %s",
+                sym, type(_rag_exc).__name__, _rag_exc,
+            )
+
         cand_lines.append(line)
 
     # P1.8 of LONG_SHORT_PLAN.md — when shorts are enabled, surface

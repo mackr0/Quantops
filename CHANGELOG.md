@@ -17,6 +17,42 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 — Phase 2 of docs/17: RAG over the AI's own resolved trades. Severity: high (the LLM gains "experience" without retraining).
+
+The LLM's weights are frozen at Anthropic's training cutoff. The system has accumulated thousands of resolved AI predictions per profile and the model can't learn from any of them. Phase 2 closes that gap with in-context retrieval: on every new decision the AI sees the most-similar past resolved cases from THIS profile's own history, injected into the prompt as concrete cases-to-reason-from. No retraining, no fine-tuning — pure few-shot learning over the system's own outcomes.
+
+**Fix.** New `case_file_rag.py` module + a single prompt-injection site:
+
+**1) Retrieval module** (`case_file_rag.py`):
+- `build_case_file_text(prediction, include_outcome=True)` — renders an `ai_predictions` row as a structured token stream. Symbol, signal, regime, strategy_type, confidence bucket, indicator bands (RSI / momentum_5d / momentum_20d / volume_ratio / gap_pct / atr_pct), outcome, return bucket. No schema migration needed — all derived from existing columns.
+- Numeric features are BUCKETED (e.g. `rsi_70_80`, `volume_ratio_1.5_2.5`). TF-IDF would treat raw floats as unique tokens contributing nothing to similarity; buckets give discrete, matchable categories.
+- `include_outcome=False` for the new candidate at retrieval time — outcome tokens aren't yet known, omitting them prevents the structural mismatch from dominating cosine similarity.
+- `retrieve_similar(profile_db_path, candidate, top_n=3, min_similarity=0.15)` — fits sklearn `TfidfVectorizer(token_pattern=r"\S+")` on the rolling-window corpus (default last 2000 resolved cases) + the candidate text, returns top-N above the cosine threshold.
+- `format_cases_for_prompt(cases)` — compact bulleted output: `[date] SIGNAL SYMBOL in regime → OUTCOME (return in days, sim=X)` + an optional indicator sub-line.
+- `build_prompt_block(...)` — end-to-end one-call wrapper used by the prompt builder. Returns empty string when nothing useful — caller splices unconditionally.
+
+**2) Prompt injection** (`ai_analyst.py:_build_batch_prompt`):
+- Per-candidate loop now calls `build_prompt_block` with the candidate's symbol/signal/regime/indicators. The returned block is appended to the candidate's prompt section directly after the news/SEC/options blocks.
+- Adapter inline: candidate dict fields (`signal`, `score` as confidence proxy, `rsi`, `roc` as momentum_5d, `vol_ratio`, `gap`) → the RAG-expected schema. `market_context["regime"]` plumbs the regime through.
+- Fail-soft except block catches `(ImportError, KeyError, ValueError, AttributeError, TypeError, OSError)` so a RAG failure doesn't break the prompt — the AI just doesn't get the extra context. Logged at DEBUG so silent quality regressions are visible.
+
+**Why TF-IDF, not sentence-transformers.** The case-file text is highly structured key=value tokens, not natural-language paraphrasing. TF-IDF's exact-token matching is well-suited to "same regime + similar RSI bucket + same signal direction" similarity. Sentence-transformers would add ~1GB of PyTorch + model weights to the droplet and not noticeably improve quality on this corpus shape. Sklearn is already installed; zero new dependencies. The architecture supports a later upgrade if quality measurably lags.
+
+**Win/loss balance preserved.** Retrieval returns BOTH outcomes (test pins this) per `feedback_self_tuner_must_drift_toward_trading` — filtering to only warnings would bias the AI away from action. Wins and losses are both base rates the LLM needs.
+
+**No schema migration.** All retrieval inputs are derived from existing `ai_predictions` columns (`symbol`, `predicted_signal`, `regime_at_prediction`, `strategy_type`, `confidence`, `features_json`, `actual_outcome`, `actual_return_pct`, `resolved_at`, `days_held`). Backfill is automatic on the first cycle — every already-resolved row immediately becomes available to the corpus.
+
+**Tests** (`tests/test_case_file_rag_2026_05_18.py`, 22 tests):
+- `build_case_file_text`: core tokens, indicator bucketing, string-or-dict features, include_outcome toggle, missing-fields, non-numeric features
+- `retrieve_similar`: missing DB, empty corpus, same-symbol ranking, win+loss balance, top_n / min_similarity respected, similarity annotated on each result, pending/neutral predictions excluded
+- `format_cases_for_prompt`: empty input → empty string, full render with indicators, missing-features safe
+- `build_prompt_block`: empty corpus → empty string, header includes candidate symbol, cap at top_n
+- `test_module_wired_into_ai_analyst` — structural test pins that the import exists in `ai_analyst.py` so all the retrieval work isn't dead code
+
+**What's next.** Phase 3 (8 → 200 specialist library expansion) is a multi-month ongoing build per docs/17 — each new losing-trade pattern becomes a candidate specialist. Phase 4 (prompt engineering, fine-tune, quant-ML) is deferred per the original plan. The next operational priority is monitoring the retrieved cases for the first few days to verify quality (logged at DEBUG; pulled into the cycle_data JSON for dashboard inspection).
+
+---
+
 ## 2026-05-18 — self-tuner trade-rate anomaly alert (Phase 1, Item 5 of docs/17 — **PHASE 1 COMPLETE**). Severity: high (operator-visibility layer on top of the four autonomous guardrails).
 
 Items 1-4 are autonomous; Item 5 closes the observability gap. When the autonomous systems are working overtime to unwind restrictions (Item 2 auto-loosen firing, Item 4 auto-expire reverting tightenings), the operator needs a signal that "something is structurally off about this profile" so they can investigate root cause — without that signal, the symptoms are absorbed silently and the only feedback path is reading dashboards by hand.

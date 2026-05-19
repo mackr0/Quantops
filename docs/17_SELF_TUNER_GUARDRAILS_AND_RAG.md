@@ -32,16 +32,18 @@ Each is a small deterministic check added to the existing `self_tuning.py` decis
 - #4 cleans up the accumulation of stale restrictions
 - #5 gives the operator visibility when something is off
 
-### Phase 2 — RAG over resolved trades / post-mortems
+### Phase 2 — RAG over resolved trades / post-mortems — **COMPLETE 2026-05-18**
 
 Pre-decision case-file injection into the AI prompt. The LLM doesn't learn weights but it sees specific relevant past cases on every call — effectively few-shot learning over the system's own history.
 
-| Component | Approach |
+| Component | Approach (as shipped) |
 |---|---|
-| **Embedding generation** | At trade-resolve time, compute an embedding over `(symbol, signal_type, market_context, regime, outcome)` and persist it on the `ai_predictions` row |
-| **Retrieval at decision time** | For each new candidate, retrieve top-N most-similar past resolved trades from the SAME profile (then optionally cross-profile if same `strategy_type`) |
-| **Prompt injection** | Inject the retrieved case files into the system prompt as "here's what happened last time you faced similar setups" |
-| **Embedding backend** | Use Anthropic's embedding endpoint (matches our LLM provider) OR a local Sentence-BERT model (no external call) — TBD on cost / latency tradeoff |
+| **Embedding generation** | Derived ON DEMAND from existing `ai_predictions` columns (`symbol`, `predicted_signal`, `regime_at_prediction`, `strategy_type`, `confidence`, `features_json`, `actual_outcome`, `actual_return_pct`). No schema migration needed; no persisted vectors. Numeric features (RSI, momentum, volume ratio, gap, ATR) bucketed into stable bands so TF-IDF treats them as discrete tokens. |
+| **Retrieval at decision time** | `case_file_rag.retrieve_similar` fits TF-IDF on the rolling-window corpus + candidate text (sklearn — already installed; no new deps), returns top-N above a 0.15 cosine-similarity floor. Same-profile only by default. Returns BOTH wins and losses per `feedback_self_tuner_must_drift_toward_trading` (filtering to warnings would bias away from action). |
+| **Prompt injection** | `_build_batch_prompt` in `ai_analyst.py` calls `build_prompt_block` per candidate. Outputs a "SIMILAR PAST CASES" block: each line is `[date] SIGNAL SYMBOL in regime → OUTCOME (return in days, sim=X)` plus an indicator-key=value sub-line. Fail-soft — empty corpus or missing DB yields no block, the existing prompt still works. |
+| **Embedding backend** | TF-IDF (sklearn). Chosen over sentence-transformers because: (1) case files are highly structured token sequences, not natural language paraphrasing; (2) no PyTorch / no 1GB+ disk cost on the droplet; (3) deterministic + fast (no model load). Can be upgraded to sentence-transformers later if quality measurably lags. |
+
+Implementation: `case_file_rag.py` (270 lines), wired into `ai_analyst.py:_build_batch_prompt`. 22 new tests covering the text builder, retrieval ranking + thresholds, win/loss balance, format rendering, and the prompt-builder integration.
 
 ### Phase 3 (deferred but committed to) — Specialist library expansion: 8 → 200
 
