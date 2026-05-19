@@ -78,21 +78,17 @@ Categories shipped in the first batch:
 | Session start (2026-05-18) | 8 | Initial LLM ensemble |
 | First batch (2026-05-18) | 60 | Phase 3 framework + 44 deterministic rules |
 | Second batch (2026-05-18) | 109 | +49 rules — trend/momentum, gap, microstructure, attention, smart-money, fundamentals, options, macro, 8-K, calendar |
-| Third batch (2026-05-18) | **155** | +46 rules — factor signals (momentum/quality/low-vol), oscillator confluence, Bollinger walks, round-number psychology, sentiment depth, macro detail (oil/treasury/gold vol), short-side complements, options flow detail, catalyst stacking, intraday flow, wash-cycle, additional time-of-day |
-| Final stretch | 200 | Remaining ~45 — candlestick proxies, more dividend-cycle / ETF flow / cross-asset / breadth signals as data extension supports them |
+| Third batch (2026-05-18) | 155 | +46 rules — factor signals (momentum/quality/low-vol), oscillator confluence, Bollinger walks, round-number psychology, sentiment depth, macro detail (oil/treasury/gold vol), short-side complements, options flow detail, catalyst stacking, intraday flow, wash-cycle |
+| PM audit cleanup (2026-05-18) | 151 | −4 noisy wall-clock CAUTIONs (`monday_morning_open`, `last_30_min_session`, `first_5_min_session`, `friday_close_caution`) dropped + 5 CAUTIONs tightened thresholds to fix structural anti-action bias caught by user audit. Severity mix now 9V/67C/67C (balanced). |
+| Candlestick batch (2026-05-18 PM) | **167** | +16 candlestick-pattern rules (`candle_*`): hammer, shooting-star, doji, bullish/bearish engulfing, inside/outside day, marubozu long/short, three white soldiers / black crows, hanging-man, piercing pattern, dark-cloud cover, morning star, evening star. Uses OHLC of the last 3 bars surfaced via `trade_pipeline._get_latest_indicators` → `candidate["candle"]`. Zero new API calls (pure derived from the existing 200-bar fetch). |
+| Final stretch | 200 | Remaining ~30 — dividend-cycle effects (need ex-div calendar feed), ETF flow signals (need per-ETF routing), cross-asset / breadth signals (need SPY/QQQ context block in candidate dict). Each requires a small upstream data extension. |
 
-**Current state**: 8 specialists in the ensemble. Per the 2026-05-17 #175 commit (`specialists/_common.py` per-specialist alt-data routing), the 8 active ones are:
+**Current state (2026-05-18 EOD)**: **167 specialists** in the live ensemble.
 
-| # | Specialist | Role |
+| Layer | Count | Notes |
 |---|---|---|
-| 1 | `pattern_recognizer` | Technical patterns: breakouts, squeezes, support/resistance |
-| 2 | `risk_assessor` | Fundamentals + short interest + risk-factor diff + EPA/OSHA + FDA + NHTSA + macro |
-| 3 | `sentiment_narrative` | Insider + Congress + StockTwits + Google Trends + Wikipedia + activists |
-| 4 | `adversarial_reviewer` | Devil's advocate — looks for reasons the trade should NOT happen |
-| 5 | `iv_skew_specialist` | Options IV skew analysis |
-| 6 | `gamma_pin_specialist` | Gamma pinning + intraday options effects |
-| 7 | `option_spread_risk` | Multi-leg spread Greeks + max-loss bounding |
-| 8 | (placeholder for the 5th stock-pipeline specialist) | TBD |
+| LLM-narrative (`specialists/`) | 8 | 6 re-scoped 2026-05-18 PM to synthesize from the deterministic panel rather than re-derive facts. `gamma_pin_specialist` + `option_spread_risk` kept as-is (unique territory the rule library can't subsume). |
+| Deterministic (`deterministic_specialists/`) | 159 | Pure-Python rule checkers. Severities: VETO / CAUTION / CONFIRM. Mix: 9 VETO / ~75 CAUTION / ~75 CONFIRM (balanced after the PM audit). Each rule gated by `APPLIES_TO_SIGNALS`. Per-rule exception isolation prevents one bad rule from silencing the panel. |
 
 **Target state**: 200 specialists.
 
@@ -112,9 +108,75 @@ Categories shipped in the first batch:
 
 **Operational consequence**: as the library grows, the AI's role shifts from "decider" to "tie-breaker." With 200 specialists, most candidates will be unambiguous (clear majority pattern). The LLM only resolves the genuinely-contested cases. Cost per cycle DROPS because most decisions short-circuit before the LLM call.
 
-### Phase 4 (deferred) — Prompt engineering, fine-tune, quant-ML
+### Phase 4 (deferred — detailed scope so it can be picked up cleanly)
 
-Documented in the deep-system analysis. Not part of this build pass.
+These three workstreams were intentionally deferred past today's build because they each carry substantial commitment that the current state doesn't yet need. Documented in detail here so the next session can pick them up without re-deriving the plan.
+
+#### 4a. Prompt engineering — systematic A/B testing of prompt structure
+
+**What we have today.** Layer 6 of the self-tuner (`prompt_layout.get_verbosity`) lets the tuner set per-section verbosity to `brief` / `normal` / `detailed`. This is COARSE — only affects per-section length, not section ordering, not section presence, not framing wording. The tuner adjusts based on post-mortem outcomes, but the adjustment space is small.
+
+**What Phase 4a builds.**
+- A prompt-variant registry (`prompt_variants.py`) defining named variants of each section (e.g., `portfolio.v1_terse` vs `portfolio.v2_with_factor_table`).
+- A per-profile A/B assignment table — which variants this profile is currently using.
+- Outcome tracking that ties each resolved prediction back to which variants were active at decision time.
+- A learning loop (probably nightly) that aggregates per-variant outcomes and shifts profile assignments toward winning variants. Same shape as the existing meta-model retraining cadence.
+- Guardrails: variants only swap when a clear lift is demonstrated over a horizon of ≥50 resolved predictions; thrashing is prevented via a min-hold window per variant assignment.
+
+**Why deferred.** Today's CHANGELOG-level moves (Phase 1+2+3) are bigger expected lift. Prompt engineering is a refinement of an already-functioning prompt; worth doing after the deterministic+RAG architecture has accumulated a month+ of outcome data so the A/B tests have signal.
+
+**Scope estimate.** Substantial — ~1 week of focused work including the variants library, the assignment table, the outcome attribution, the learning loop, and the tests. Not a single-session task.
+
+#### 4b. Fine-tune — train a model variant on the system's own resolved trades
+
+**What we have today.** The LLM is a stock Anthropic model (`claude-haiku-4-5-20251001` by default). Every cycle pays the standard per-token rate; the model has no specific knowledge of this profile's history beyond what we inject via prompt context (RAG + specialist panel + track record).
+
+**What Phase 4b builds.**
+- A fine-tuning dataset builder that converts resolved `ai_predictions` into training examples (input = candidate context at decision time, output = chosen action, label = realized outcome).
+- A fine-tuning pipeline (Anthropic's fine-tune API or comparable). Real per-cycle inference cost goes UP (fine-tuned model rates are higher) while quality should go UP more.
+- A model-version manager — current production model vs candidate fine-tune in parallel — so promotion is gated on measured outperformance.
+- A retraining cadence (probably weekly or monthly depending on per-profile prediction volume).
+
+**Why deferred.** (1) Real money commitment — fine-tuning API time + higher per-token rates. (2) Requires sufficient training data per profile — at typical AI-call volumes (~20-50 decisions/day) it takes weeks-to-month to accumulate enough resolved cases for a meaningful train. (3) The RAG layer (Phase 2) gets ~70% of the benefit at zero incremental cost; fine-tuning is the marginal next step *after* RAG is producing measurable lift.
+
+**Scope estimate.** Substantial — ~2-3 weeks of focused work for the dataset pipeline + fine-tune integration + version management. Plus ongoing operational cost.
+
+#### 4c. Quant-ML — additional learned models beyond the meta-model
+
+**Clarification (per Mack's question 2026-05-18):** Quant-ML is NOT a product to buy. In this context it means us building additional learned models that complement or extend the AI ensemble — same architectural shape as the GBM + SGD layers we already run in `meta_model.py` and `online_meta_model.py`, just more of them.
+
+**What we have today.**
+- `meta_model.py` — scikit-learn `GradientBoostingClassifier` predicting P(AI was right) per candidate at decision time. Trained nightly on resolved predictions. Drives the pre-gate (drops sub-0.5 candidates) and re-weights AI confidence at execution.
+- `online_meta_model.py` — `SGDClassifier` that updates incrementally on every resolved prediction. Catches regime drift faster than the nightly GBM. Bootstrapped from the GBM's training set.
+
+**What Phase 4c would add (candidate models, each independently scoped).**
+- **Regime classifier** — a learned model that consumes macro features (VIX, term structure, breadth, sector dispersion, yield curve) and emits a regime label with calibrated probabilities. Replaces the current rule-based regime tagger in `market_regime.py`. Better at handling regime transitions because it sees the full feature vector rather than tripping on individual thresholds.
+- **Learned ranker on top of strategy votes** — instead of the linear composite-score formula in `multi_strategy.rank_candidates`, train a model on `(strategy_vote_vector, realized_outcome)` pairs to learn the optimal weighting per regime. Captures empirical strategy interaction effects rather than equal weighting.
+- **Entry-quality model** — a gradient-boosted model predicting the realized return distribution for a candidate given its full feature payload. Output drives sizing: high-confidence high-expected-return = full size, marginal = quarter size. Replaces the conviction-based sizing heuristic.
+- **Exit-quality model** — same idea but for the exit side: predicts whether the current position's exit conditions are likely to be met by the planned stop/TP, or whether the trade should be closed early. Augments `trader.check_exits`.
+- **Order-flow / microstructure model** — uses tick / quote data (currently not in the pipeline; would require an upstream data extension) to detect HFT pressure, dark-pool footprints, and short-term liquidity events that affect execution. Drives venue selection and order timing.
+
+**Why deferred.** (1) Each candidate model is itself a multi-week build with its own training pipeline, calibration loop, validation, and integration plumbing. (2) The existing meta-model layer captures a lot of what these would capture — the marginal lift per new model decreases. (3) The deterministic-specialist library (Phase 3) provides much of the regime + ranking benefit at zero training cost. (4) Adding models increases system complexity / failure surface — better to ship them one at a time with measured production lift, not all at once.
+
+**Recommended pick-up order if/when Phase 4c is approved:** start with the regime classifier (clearest existing pain — the rule-based regime tagger occasionally mislabels transitions), then the learned ranker (highest expected per-cycle lift), then entry-quality, then exit-quality, then microstructure (requires data-pipeline extension that's a project of its own).
+
+**Scope estimate.** Each candidate model is ~2-3 weeks. The full Phase 4c is a multi-month effort. **Not a product to buy** — pure internal model development using the same scikit-learn / pandas / numpy stack already in production.
+
+---
+
+### Phase 4 — go/no-go decision criteria
+
+The trigger conditions for picking up Phase 4 work, ordered by likely first-needed:
+
+| Condition | If observed → kick off |
+|---|---|
+| RAG retrieval consistently returns the same generic cases (low signal from the corpus) | Phase 4b — fine-tune to internalize patterns RAG can't surface |
+| Deterministic+LLM ensemble's CONFIRMs vs CAUTIONs are tied and the LLM is consistently picking HOLD | Phase 4a — better prompt structure to break ties |
+| Profile is consistently mislabeling regime transitions (e.g., bull→bear catches days late) | Phase 4c (regime classifier first) |
+| Strategy vote composite score is poorly calibrated against realized outcomes | Phase 4c (learned ranker) |
+| Execution slippage is materially eroding per-trade edge | Phase 4c (microstructure model + extended data pipeline) |
+
+None of these conditions are observed today. Phase 4 stays parked until the data argues for it.
 
 ## Test plan per phase
 

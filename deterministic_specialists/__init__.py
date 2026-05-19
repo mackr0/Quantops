@@ -233,6 +233,26 @@ RULE_MODULES = [
     "deterministic_specialists.intraday_pattern_opposed",
     # Tax / cycle
     "deterministic_specialists.wash_cycle_recent",
+    # ── 2026-05-18 PM: candlestick-proxy batch (Phase 3 final stretch) ──
+    # Uses OHLC of the last 3 bars surfaced via trade_pipeline.
+    # _get_latest_indicators → candidate["candle"]. Zero new API
+    # calls; pure derived features from the existing 200-bar fetch.
+    "deterministic_specialists.candle_hammer",
+    "deterministic_specialists.candle_shooting_star",
+    "deterministic_specialists.candle_doji",
+    "deterministic_specialists.candle_bullish_engulfing",
+    "deterministic_specialists.candle_bearish_engulfing",
+    "deterministic_specialists.candle_inside_day",
+    "deterministic_specialists.candle_outside_day",
+    "deterministic_specialists.candle_marubozu_long",
+    "deterministic_specialists.candle_marubozu_short",
+    "deterministic_specialists.candle_three_white_soldiers",
+    "deterministic_specialists.candle_three_black_crows",
+    "deterministic_specialists.candle_hanging_man",
+    "deterministic_specialists.candle_piercing_pattern",
+    "deterministic_specialists.candle_dark_cloud_cover",
+    "deterministic_specialists.candle_morning_star",
+    "deterministic_specialists.candle_evening_star",
 ]
 
 

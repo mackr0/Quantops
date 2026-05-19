@@ -17,6 +17,36 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 PM — Candlestick-proxy batch (Phase 3 final stretch). Severity: medium (deterministic library 143 → 159; total ensemble 151 → 167).
+
+User asked if the candlestick patterns were easy to add. Verified: yes — `trade_pipeline._get_latest_indicators` already pulls 200 OHLC bars per candidate; only need to surface the last 3 bars' raw OHLC + body/wick descriptors.
+
+**Pipeline extension** (`trade_pipeline.py`):
+- New `_candle_features(bar)` helper computes per-bar body / upper-wick / lower-wick (as fraction of range), is_green, close_to_high_pct, raw OHLC. Range-zero bars (halted ticker with one print) return zeros so downstream rules treat them as no-signal.
+- `_get_latest_indicators` now returns a `candle` dict carrying `today` / `prior` / `prior2` shape descriptors.
+- `_build_candidates_data` passes `candle` through to the candidate dict.
+
+**16 candlestick-pattern rules shipped** (in `deterministic_specialists/candle_*.py`):
+
+- 1-bar: `candle_hammer` (CONFIRM LONG), `candle_shooting_star` (CAUTION LONG), `candle_doji` (CAUTION both sides), `candle_marubozu_long` (CONFIRM LONG), `candle_marubozu_short` (CONFIRM SHORT), `candle_hanging_man` (CAUTION LONG — hammer shape after positive ROC)
+- 2-bar: `candle_bullish_engulfing` (CONFIRM LONG), `candle_bearish_engulfing` (CAUTION LONG), `candle_inside_day` (CAUTION both sides), `candle_outside_day` (CONFIRM aligned with close direction), `candle_piercing_pattern` (CONFIRM LONG), `candle_dark_cloud_cover` (CAUTION LONG)
+- 3-bar: `candle_three_white_soldiers` (CONFIRM LONG), `candle_three_black_crows` (CAUTION LONG), `candle_morning_star` (CONFIRM LONG), `candle_evening_star` (CAUTION LONG)
+
+Severity mix of this batch: 8 CONFIRM, 7 CAUTION, 1 both-sides — balanced.
+
+**Tests** — 16 positive fixtures added to the table-driven test in `tests/test_deterministic_specialists_2026_05_18.py`. 3,992 tests passing overall.
+
+**Phase 4 plan now documented in detail in `docs/17_SELF_TUNER_GUARDRAILS_AND_RAG.md` § Phase 4** so it can be picked up without re-deriving the scope:
+- **4a Prompt engineering** — A/B testing of prompt-section variants (~1 week scope)
+- **4b Fine-tune** — train model variant on resolved trades (~2-3 week scope + ongoing cost)
+- **4c Quant-ML** — additional learned models extending the meta-model layer (regime classifier → learned ranker → entry-quality → exit-quality → microstructure). NOT a product to buy; same scikit-learn stack as existing meta-model. Multi-month total; each candidate model is ~2-3 weeks.
+
+Plus a "go/no-go decision criteria" table — which conditions in production data would trigger picking up which Phase 4 piece. None of the trigger conditions are currently observed.
+
+**Final 200-target gap is now ~33 rules**, all requiring small upstream data extensions (ex-div calendar feed, ETF flow routing, SPY/QQQ context block). Scoped but not built tonight.
+
+---
+
 ## 2026-05-18 PM — LLM specialist re-scope + panel-noise rebalance. Severity: high (corrects structural anti-action bias the Phase 3 rule library inadvertently introduced).
 
 Two related cleanups after user audit:

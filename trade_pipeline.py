@@ -2908,6 +2908,40 @@ def _extract_indicator(signal, key, default=0):
     return default
 
 
+def _candle_features(bar) -> dict:
+    """Per-bar shape descriptors used by the candlestick-proxy rules
+    in `deterministic_specialists/candle_*.py`. Computed from OHLC
+    directly so no per-bar indicators are needed.
+
+    Returns the body/wick/color descriptors as percentages of the
+    full bar range (high-low) so the values are comparable across
+    different-priced names. Range-zero bars (e.g., halted ticker
+    with one print) return zeros so downstream rules treat them
+    as no-signal.
+    """
+    o = float(bar.get("open", 0) or 0)
+    h = float(bar.get("high", 0) or 0)
+    l = float(bar.get("low", 0) or 0)
+    c = float(bar.get("close", 0) or 0)
+    rng = h - l
+    if rng <= 0:
+        return {"open": o, "high": h, "low": l, "close": c,
+                 "body_pct": 0.0, "upper_wick_pct": 0.0,
+                 "lower_wick_pct": 0.0, "is_green": c >= o,
+                 "close_to_high_pct": 0.0, "rng": 0.0}
+    body_top = max(o, c)
+    body_bot = min(o, c)
+    return {
+        "open": o, "high": h, "low": l, "close": c, "rng": rng,
+        "body_pct": (body_top - body_bot) / rng,
+        "upper_wick_pct": (h - body_top) / rng,
+        "lower_wick_pct": (body_bot - l) / rng,
+        "is_green": c >= o,
+        # 0.0 = close at low, 1.0 = close at high
+        "close_to_high_pct": (c - l) / rng,
+    }
+
+
 def _get_latest_indicators(symbol):
     """Fetch the latest indicator values directly from market data.
 
@@ -2922,7 +2956,7 @@ def _get_latest_indicators(symbol):
             return {}
         df = add_indicators(df)
         latest = df.iloc[-1]
-        return {
+        out = {
             "rsi": float(latest.get("rsi", 50)),
             "stoch_rsi": float(latest.get("stoch_rsi", 50)),
             "adx": float(latest.get("adx", 0)),
@@ -2940,6 +2974,17 @@ def _get_latest_indicators(symbol):
             "volume_ratio": float(latest.get("volume", 0) / latest.get("volume_sma_20", 1))
                            if latest.get("volume_sma_20", 0) > 0 else 1.0,
         }
+        # Candlestick-proxy features (2026-05-18 PM, Phase 3 final stretch).
+        # Surfaces the last 3 bars' OHLC + body/wick descriptors so the
+        # `deterministic_specialists/candle_*.py` rules can fire without
+        # needing a separate market_data fetch.
+        candle = {"today": _candle_features(latest)}
+        if len(df) >= 2:
+            candle["prior"] = _candle_features(df.iloc[-2])
+        if len(df) >= 3:
+            candle["prior2"] = _candle_features(df.iloc[-3])
+        out["candle"] = candle
+        return out
     except Exception:
         return {}
 
@@ -3008,6 +3053,9 @@ def _build_candidates_data(shortlist, ctx, symbol_reputation):
             "pct_from_vwap": indicators.get("pct_from_vwap", 0),
             "nearest_fib_dist": indicators.get("nearest_fib_dist", 99),
             "gap_pct": indicators.get("gap_pct", 0),
+            # 2026-05-18 PM (Phase 3 final stretch) — candlestick-pattern
+            # context for the `deterministic_specialists/candle_*.py` rules.
+            "candle": indicators.get("candle", {}),
             "reason": signal.get("reason", "")[:120],
         }
 
