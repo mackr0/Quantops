@@ -25,30 +25,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + "/..")
 logger = logging.getLogger("reversal")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
-# Profile → list of (symbol, qty, original_price) buys to reverse.
-# Pulled by hand from `trades` rows with date(timestamp) = 2026-05-19
-# at 2026-05-19T13:30 UTC (the bad first-cycle today).
-TO_REVERSE = {
-    # Profile 12 (BuyHoldSPY): drift-rebalance bug → 2nd SPY buy
-    12: [("SPY", 322, 735.11)],
-    # Profile 13 (RandomA): daily re-roll → today's 5 picks
-    13: [
-        ("KMB", 487, 96.755),
-        ("ROK", 109, 432.11),
-        ("MSFT", 109, 430.555),
-        ("T", 1919, 24.59),
-        ("CMCSA", 1872, 25.205),
-    ],
-    # Profile 14 (RandomB): daily re-roll → today's 5 picks
-    14: [
-        ("JNJ", 205, 228.72),
-        ("REGN", 74, 631.6),
-        ("WDAY", 353, 133.46),
-        ("AAPL", 158, 296.73),
-        ("TMO", 106, 442.765),
-    ],
-}
-
 REVERSAL_TAG = "reverse_2026_05_19_overbuy"
 
 
@@ -56,19 +32,45 @@ def _profile_db_path(profile_id: int) -> str:
     return f"/opt/quantopsai/quantopsai_profile_{profile_id}.db"
 
 
-def _already_reversed(db: str, symbol: str) -> bool:
-    """Idempotency check: is there already a reversal sell logged
-    for this (profile, symbol)?"""
+def _todays_bad_buys(profile_id: int):
+    """Return a list of (symbol, qty, price) for every BUY row on
+    profile_id's journal with date(timestamp) = '2026-05-19' AND
+    strategy in (buy_hold_spy, random_stock_of_day) AND no matching
+    reversal sell yet. Uses the running sum of net qty per symbol
+    so partial reversals already done don't get double-sold."""
+    db = _profile_db_path(profile_id)
+    if not os.path.exists(db):
+        return []
     try:
         with closing(sqlite3.connect(db)) as conn:
-            row = conn.execute(
-                "SELECT 1 FROM trades WHERE strategy = ? AND symbol = ? "
-                "AND side = 'sell' LIMIT 1",
-                (REVERSAL_TAG, symbol),
-            ).fetchone()
-            return row is not None
+            buy_rows = conn.execute(
+                "SELECT symbol, qty, price FROM trades "
+                "WHERE date(timestamp) = '2026-05-19' "
+                "AND strategy IN ('buy_hold_spy', 'random_stock_of_day') "
+                "AND side = 'buy'"
+            ).fetchall()
+            # Total qty already reversed per symbol
+            reversed_rows = conn.execute(
+                "SELECT symbol, SUM(qty) FROM trades "
+                "WHERE strategy = ? AND side = 'sell' "
+                "GROUP BY symbol",
+                (REVERSAL_TAG,),
+            ).fetchall()
     except sqlite3.OperationalError:
-        return False
+        return []
+    reversed_qty = {r[0]: float(r[1] or 0) for r in reversed_rows}
+    # Sum bad-buy qty per symbol
+    buys_per_symbol: dict = {}
+    last_price: dict = {}
+    for sym, qty, px in buy_rows:
+        buys_per_symbol[sym] = buys_per_symbol.get(sym, 0.0) + float(qty)
+        last_price[sym] = float(px)
+    out = []
+    for sym, total_qty in buys_per_symbol.items():
+        net = total_qty - reversed_qty.get(sym, 0.0)
+        if net > 0:
+            out.append((sym, int(net), last_price[sym]))
+    return out
 
 
 def _get_ctx(profile_id: int):
@@ -87,13 +89,11 @@ def main():
 
     total_attempted = 0
     total_succeeded = 0
-    total_skipped = 0
 
-    for profile_id, reversals in TO_REVERSE.items():
-        db = _profile_db_path(profile_id)
-        if not os.path.exists(db):
-            logger.warning("Profile %d DB not found at %s — skipping",
-                           profile_id, db)
+    for profile_id in (12, 13, 14):
+        reversals = _todays_bad_buys(profile_id)
+        if not reversals:
+            logger.info("== profile %d: nothing left to reverse ==", profile_id)
             continue
         ctx = _get_ctx(profile_id)
         api = get_api(ctx)
@@ -101,19 +101,14 @@ def main():
 
         for symbol, qty, original_price in reversals:
             total_attempted += 1
-            if _already_reversed(db, symbol):
-                logger.info("  [skip] %s — already reversed (idempotent)", symbol)
-                total_skipped += 1
-                continue
             current_price = _fetch_price(api, symbol)
             if not current_price:
                 logger.error("  [error] %s — could not fetch price", symbol)
                 continue
             reason = (
-                f"REVERSAL of 2026-05-19 bad buy: original buy "
-                f"qty={qty} @ ${original_price:.2f} (strategy bug — "
-                f"baseline re-fired). Selling at market to revert to "
-                f"yesterday's holdings."
+                f"REVERSAL of 2026-05-19 bad buy: net unreversed qty={qty} "
+                f"(strategy bug — baseline re-fired). Selling at market "
+                f"to revert to yesterday's holdings."
             )
             logger.info("  [sell] %s qty=%d @ ~$%.2f (orig $%.2f)",
                         symbol, qty, current_price, original_price)
@@ -127,8 +122,8 @@ def main():
                 logger.error("  [error] %s — submit/log failed", symbol)
 
     logger.info(
-        "REVERSAL summary: attempted=%d succeeded=%d skipped=%d",
-        total_attempted, total_succeeded, total_skipped,
+        "REVERSAL summary: attempted=%d succeeded=%d",
+        total_attempted, total_succeeded,
     )
 
 
