@@ -57,9 +57,9 @@ Implementation: `case_file_rag.py` (270 lines), wired into `ai_analyst.py:_build
   - Registered in `RULE_MODULES`; each gated by `APPLIES_TO_SIGNALS` so SHORT rules don't fire on BUY candidates and vice versa
 
 **Status after second batch (2026-05-18, same day):**
-- **101 deterministic specialists** in `deterministic_specialists/`
-- Plus the **8 LLM-narrative specialists** from `specialists/` = **109 total specialists** in the live ensemble
-- Up from 8 at session start. The original "Month 6: 100-120" projection achieved in a single day — because most quant patterns are documented in literature; "wait for losses" was only the *calibration* mechanism, never the *discovery* one.
+- **147 deterministic specialists** in `deterministic_specialists/`
+- Plus the **8 LLM-narrative specialists** from `specialists/` = **155 total specialists** in the live ensemble
+- Up from 8 at session start. The original "Year 1: 150-200" projection achieved in a single day — because most quant patterns are documented in literature; "wait for losses" was only the *calibration* mechanism, never the *discovery* one.
 
 Categories shipped in the first batch:
 - Late-stage / extended pattern warnings (RSI overbought + 52w high, parabolic blow-off, gap-into-resistance, bearish divergence, VWAP extension, MFI overbought, CMF distribution)
@@ -77,9 +77,9 @@ Categories shipped in the first batch:
 |---|---|---|
 | Session start (2026-05-18) | 8 | Initial LLM ensemble |
 | First batch (2026-05-18) | 60 | Phase 3 framework + 44 deterministic rules |
-| Second batch (2026-05-18) | **109** | +49 more rules — trend/momentum, gap, microstructure, attention, smart-money quality, fundamentals (PE), options (IV/PCR), macro (low-vol/skew/curve-steepening), 8-K specifics, calendar/time-of-day |
-| Next ~50 target | ~150 | Continue from the literature catalog (factor exposures, candlestick proxies, microstructure events, dividend-cycle effects, ETF flow signals) |
-| Year 1 | 150-200 | Mature library with calibrated weights from realized outcomes |
+| Second batch (2026-05-18) | 109 | +49 rules — trend/momentum, gap, microstructure, attention, smart-money, fundamentals, options, macro, 8-K, calendar |
+| Third batch (2026-05-18) | **155** | +46 rules — factor signals (momentum/quality/low-vol), oscillator confluence, Bollinger walks, round-number psychology, sentiment depth, macro detail (oil/treasury/gold vol), short-side complements, options flow detail, catalyst stacking, intraday flow, wash-cycle, additional time-of-day |
+| Final stretch | 200 | Remaining ~45 — candlestick proxies, more dividend-cycle / ETF flow / cross-asset / breadth signals as data extension supports them |
 
 **Current state**: 8 specialists in the ensemble. Per the 2026-05-17 #175 commit (`specialists/_common.py` per-specialist alt-data routing), the 8 active ones are:
 

@@ -17,6 +17,35 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 — Phase 3 third batch: deterministic specialist library 109 → 155. Severity: high (the original "Year 1: 150-200" projection achieved in one day; 78% to the 200 target).
+
+User pushed for 150. Shipped 46 more rules in one batch:
+
+- **Factor signals**: `momentum_5d_strong_positive`, `momentum_5d_negative_long`, `low_vol_factor`, `high_vol_caution`, `quality_factor_long`
+- **Oscillator confluence**: `triple_overbought`, `triple_oversold` (RSI + StochRSI + MFI agreement)
+- **Bollinger walks**: `bollinger_walk_up`, `bollinger_walk_down`
+- **Round-number psychology**: `round_number_resistance`, `round_number_support`
+- **Sentiment depth**: `retail_panic_oversold`, `retail_euphoria_overbought`, `sentiment_divergence`, `stocktwits_data_absent`
+- **Macro detail**: `macro_oil_vol_high` (OVX), `macro_treasury_vol_high` (MOVE), `macro_gold_vol_high` (GVZ), `macro_treasury_low_riskon`
+- **Short-side complements**: `squeeze_release_with_volume_short`, `rsi_bull_short_caution`, `rsi_bear_short_confirm`, `value_short_warning`, `expensive_short_confirm`
+- **Calendar / time-of-day**: `wednesday_strength`, `friday_close_caution`
+- **Options flow detail**: `options_unusual_calls`, `options_unusual_puts`, `options_iv_normal_zone`
+- **Catalyst stacking**: `multiple_negative_catalysts` (VETO on 2+ regulatory/disclosure hits), `multiple_positive_catalysts` (CONFIRM on 2+ smart-money flow hits), `divergent_signals_caution`
+- **Execution / liquidity**: `wide_spread_caution`, `extreme_high_price_caution`, `multi_alt_data_silent`
+- **Volume / flow**: `strong_volume_late_session`, `insider_recent_buys_meaningful`, `finra_short_volume_collapsed`, `cmf_neutral_low_signal`
+- **Sector rotation**: `sector_sector_rotation_signal` (laggard in winning sector), `sector_sector_strength_aligned`
+- **Compound signals**: `squeeze_with_consensus`, `insider_cluster_with_options`
+- **Intraday flow**: `intraday_pattern_aligned`, `intraday_pattern_opposed`
+- **Tax / cycle**: `wash_cycle_recent`
+
+**155 total specialists** in the live ensemble (147 deterministic + 8 LLM). Up from 8 at session start. **Test suite: 3,941 passing** (+86 from this batch).
+
+Mid-batch caught two filename/NAME mismatches that broke the framework discovery test before the broader suite ran — fixed by renaming module files to match their `NAME` constants. The structural test catches this class of error fast which is the whole point.
+
+The remaining ~45 toward 200 require modest data-pipeline extensions (candlestick proxies need recent OHLC, dividend events need a calendar feed, ETF flows need ETF-specific routing). Those are real but bounded build-outs — the days of "I'll only build what literature documents" are over.
+
+---
+
 ## 2026-05-18 — Phase 3 second batch: deterministic specialist library 60 → 109. Severity: high (the original "Month 6: 100+ specialists" projection achieved in one day).
 
 User called out the lazy framing again: "you could only find documentation on 60 specialists?" Right — the literature has hundreds. Pushing harder.

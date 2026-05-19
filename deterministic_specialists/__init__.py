@@ -170,6 +170,69 @@ RULE_MODULES = [
     "deterministic_specialists.multi_signal_consensus",
     "deterministic_specialists.low_conviction_score",
     "deterministic_specialists.sector_high_short_volume",
+    # ── 2026-05-18 third batch ──
+    # Factor signals
+    "deterministic_specialists.momentum_5d_strong_positive",
+    "deterministic_specialists.momentum_5d_negative_long",
+    "deterministic_specialists.low_vol_factor",
+    "deterministic_specialists.high_vol_caution",
+    "deterministic_specialists.quality_factor_long",
+    # Oscillator confluence
+    "deterministic_specialists.triple_overbought",
+    "deterministic_specialists.triple_oversold",
+    # Bollinger walks
+    "deterministic_specialists.bollinger_walk_up",
+    "deterministic_specialists.bollinger_walk_down",
+    # Round-number psychology
+    "deterministic_specialists.round_number_resistance",
+    "deterministic_specialists.round_number_support",
+    # Sentiment depth
+    "deterministic_specialists.retail_panic_oversold",
+    "deterministic_specialists.retail_euphoria_overbought",
+    "deterministic_specialists.sentiment_divergence",
+    "deterministic_specialists.stocktwits_data_absent",
+    # Macro detail
+    "deterministic_specialists.macro_oil_vol_high",
+    "deterministic_specialists.macro_treasury_vol_high",
+    "deterministic_specialists.macro_gold_vol_high",
+    "deterministic_specialists.macro_treasury_low_riskon",
+    # Short-side complements
+    "deterministic_specialists.squeeze_release_with_volume_short",
+    "deterministic_specialists.rsi_bull_short_caution",
+    "deterministic_specialists.rsi_bear_short_confirm",
+    "deterministic_specialists.value_short_warning",
+    "deterministic_specialists.expensive_short_confirm",
+    # Calendar / time-of-day
+    "deterministic_specialists.wednesday_strength",
+    "deterministic_specialists.friday_close_caution",
+    # Options flow detail
+    "deterministic_specialists.options_unusual_calls",
+    "deterministic_specialists.options_unusual_puts",
+    "deterministic_specialists.options_iv_normal_zone",
+    # Catalyst stacking
+    "deterministic_specialists.multiple_negative_catalysts",
+    "deterministic_specialists.multiple_positive_catalysts",
+    "deterministic_specialists.divergent_signals_caution",
+    # Execution / liquidity
+    "deterministic_specialists.wide_spread_caution",
+    "deterministic_specialists.extreme_high_price_caution",
+    "deterministic_specialists.multi_alt_data_silent",
+    # Volume / flow
+    "deterministic_specialists.strong_volume_late_session",
+    "deterministic_specialists.insider_recent_buys_meaningful",
+    "deterministic_specialists.finra_short_volume_collapsed",
+    "deterministic_specialists.cmf_neutral_low_signal",
+    # Sector rotation
+    "deterministic_specialists.sector_sector_rotation_signal",
+    "deterministic_specialists.sector_sector_strength_aligned",
+    # Compound signals
+    "deterministic_specialists.squeeze_with_consensus",
+    "deterministic_specialists.insider_cluster_with_options",
+    # Intraday flow
+    "deterministic_specialists.intraday_pattern_aligned",
+    "deterministic_specialists.intraday_pattern_opposed",
+    # Tax / cycle
+    "deterministic_specialists.wash_cycle_recent",
 ]
 
 
