@@ -525,8 +525,14 @@ class OptionPipeline(Pipeline):
     def _execute_single_leg(ctx, proposal, symbol):
         """Single-leg option execution. Body extracted from
         trade_pipeline's `if action == "OPTIONS":` branch (Phase 4c
-        migration). For symmetry with multileg — the elif branch
-        for single-leg can also delegate here in a future cleanup."""
+        migration).
+
+        2026-05-19 (docs/18 item #3): `trade_pipeline.run_trade_cycle`
+        now delegates here for `action == "OPTIONS"` instead of
+        duplicating the ~37-line body. Bug fixes to single-leg
+        option submission now live in one place. The same helper
+        is invoked by `OptionPipeline.execute()` when the new
+        dispatcher (Scope C) is active."""
         from options_trader import execute_option_strategy
         from client import get_api as _get_api
         api = _get_api(ctx)

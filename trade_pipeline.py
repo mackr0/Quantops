@@ -2283,46 +2283,20 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
         }
 
         try:
-            # Item 1a — route OPTIONS proposals through the dedicated
-            # options executor. Sizing constraints / OCC formatting /
-            # broker call all live in options_trader.execute_option_strategy.
+            # docs/18 item #3 (2026-05-19): single-leg OPTIONS now
+            # delegates to OptionPipeline._execute_single_leg — the
+            # same helper the new dispatcher uses. Eliminates the
+            # ~37-line duplicate body that lived here since 2026-05-11
+            # and made bug fixes touch two files. The helper carries
+            # the same prediction-to-trade linkage (Phase 5c) so the
+            # option-aware resolver still sees the executed contract.
             if action == "OPTIONS":
-                from options_trader import execute_option_strategy
-                from client import get_api as _get_api
-                api_for_opt = _get_api(ctx)
-                print(f"  Executing: OPTIONS {ai_trade.get('option_strategy', '?')} "
-                      f"{symbol} ({ai_trade.get('contracts', '?')}× "
-                      f"@ ${ai_trade.get('strike', '?')}/{ai_trade.get('expiry', '?')})")
-                trade_result = execute_option_strategy(
-                    api_for_opt, ai_trade, ctx=ctx, log=log,
+                _proposal = dict(ai_trade)
+                _proposal.setdefault("symbol", symbol)
+                from pipelines.option import OptionPipeline
+                trade_result = OptionPipeline._execute_single_leg(
+                    ctx, _proposal, symbol,
                 )
-                trade_result.setdefault("symbol", symbol)
-                # Phase 5c (2026-05-11): link the just-executed
-                # single-leg option to its prediction row so the
-                # option-aware resolver can fetch the contract's
-                # current premium at resolution time. Best-effort.
-                try:
-                    _occ = (trade_result.get("occ_symbol")
-                            or ai_trade.get("occ_symbol"))
-                    if _occ and ctx and getattr(ctx, "db_path", None):
-                        from journal import (
-                            link_option_prediction_to_trade,
-                        )
-                        link_option_prediction_to_trade(
-                            ctx.db_path,
-                            symbol=symbol,
-                            signal="OPTIONS",
-                            occ_symbol=_occ,
-                        )
-                except (sqlite3.OperationalError, sqlite3.DatabaseError,
-                        AttributeError, KeyError, ImportError, OSError) as _link_exc:
-                    # Linking is best-effort; trade already executed.
-                    # Surface for follow-up so resolver doesn't lose
-                    # visibility of the contract.
-                    logger.warning(
-                        "option prediction-to-trade link failed for %s: %s: %s",
-                        symbol, type(_link_exc).__name__, _link_exc,
-                    )
             # Phase 4c (2026-05-12): MULTILEG_OPEN proposals now flow
             # through OptionPipeline.execute() — the SAME entry point
             # the dispatcher will eventually use for full pipeline

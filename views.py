@@ -3950,10 +3950,14 @@ def ai_dashboard():
         # — no extra fetches.
         price_by = {pp.get("symbol"): float(pp.get("current_price") or 0)
                     for pp in positions}
+        # 2026-05-19 (docs/18 #1): omit iv_lookup so the auto-wired
+        # default (per-call cached oracle hit) fires. Before this,
+        # the dashboard explicitly passed `lambda s: None` which
+        # always fell back to FALLBACK_IV=0.25 even for high-IV
+        # underlyings. Per-request cache keeps cost bounded.
         summary = compute_book_greeks(
             positions,
             price_lookup=lambda s: price_by.get(s),
-            iv_lookup=lambda s: None,  # falls back to FALLBACK_IV
         )
         if summary["n_options_legs"] == 0 and summary["n_stock_positions"] == 0:
             continue

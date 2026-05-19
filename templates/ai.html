@@ -1277,6 +1277,58 @@
                     {% endfor %}
                 </tbody>
             </table>
+
+            {# docs/18 item #5 (2026-05-19): per-position Greek
+               attribution. Previously the operator could see the
+               BOOK totals above but not WHICH leg was driving the
+               net delta / theta burn / vega — meant working from
+               prompt logs instead of the UI when investigating a
+               risk overshoot. #}
+            {% for prof in greeks_info.per_profile %}
+                {% set s = prof.summary %}
+                {% if s.by_leg %}
+                <details style="margin-top:0.75rem; font-size:0.8rem;">
+                    <summary>
+                        <strong>{{ prof.name }}</strong>
+                        <span class="muted">— per-position Greeks ({{ s.by_leg|length }} legs)</span>
+                    </summary>
+                    <table style="width:100%; margin-top:0.4rem;">
+                        <thead>
+                            <tr>
+                                <th style="text-align:left;">OCC</th>
+                                <th style="text-align:left;">Underlying</th>
+                                <th style="text-align:right;">Qty</th>
+                                <th style="text-align:right;">Spot</th>
+                                <th style="text-align:right;">IV</th>
+                                <th style="text-align:right;">DTE</th>
+                                <th style="text-align:right;">Δ</th>
+                                <th style="text-align:right;">Γ</th>
+                                <th style="text-align:right;">Vega</th>
+                                <th style="text-align:right;">Theta/day</th>
+                                <th style="text-align:right;">Price</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        {% for leg in s.by_leg %}
+                            <tr>
+                                <td style="font-family:monospace;font-size:0.72rem;">{{ leg.occ_symbol }}</td>
+                                <td>{{ leg.underlying }}</td>
+                                <td style="text-align:right;">{{ "%+.0f"|format(leg.qty) }}</td>
+                                <td style="text-align:right;">${{ "%.2f"|format(leg.spot or 0) }}</td>
+                                <td style="text-align:right;">{{ "%.0f"|format((leg.iv or 0) * 100) }}%</td>
+                                <td style="text-align:right;">{{ leg.days_to_expiry }}</td>
+                                <td style="text-align:right;">{{ "%+.0f"|format(leg.delta or 0) }}</td>
+                                <td style="text-align:right;">{{ "%+.2f"|format(leg.gamma or 0) }}</td>
+                                <td style="text-align:right;">{{ "%+.0f"|format(leg.vega or 0) }}</td>
+                                <td style="text-align:right;">{{ "%+.0f"|format(leg.theta or 0) }}</td>
+                                <td style="text-align:right;">${{ "%.2f"|format(leg.price or 0) }}</td>
+                            </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </details>
+                {% endif %}
+            {% endfor %}
         </article>
         {% endif %}
 

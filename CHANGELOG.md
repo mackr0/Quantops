@@ -17,6 +17,25 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Last three docs/18 follow-ups: nightly Phase 5c backfill, single-leg OPTIONS migration, per-position Greeks panel. Severity: medium (one bug-fix path consolidation + one operational-visibility improvement + one outage-prevention).
+
+**docs/18 #2 — Nightly Phase 5c backfill task.** The boot-time call in `cycle_segment` is gated by a migration marker — it runs once per profile DB and no-ops thereafter, leaving any newly-resolved option row with broken underlying-price math untouched. Added `_task_phase5c_backfill_nightly(ctx)` to the daily-snapshot block in `multi_scheduler`. It calls `backfill_historical_option_predictions(force=True)` once per profile per day. Row-level idempotency (`option_order_id IS NULL AND occ_symbol IS NULL`) keeps it cheap on clean DBs — quiet log on the steady state, activity row only when something actually got linked. Tests: `tests/test_phase5c_backfill_nightly_2026_05_19.py` (5 tests, all green). Pins `force=True` is actually passed, clean-DB → no activity row, dirty-DB → activity row with leg counts, backfill crash contained.
+
+**docs/18 #3 — Single-leg `OPTIONS` migration to `OptionPipeline._execute_single_leg`.** The legacy `trade_pipeline.run_trade_cycle:2289` branch had a ~37-line duplicate body (execute_option_strategy call + Phase 5c prediction-to-trade link). Same code lived in `OptionPipeline._execute_single_leg`. Bug fixes had to touch two files. Replaced the legacy body with a thin delegation:
+```python
+if action == "OPTIONS":
+    _proposal = dict(ai_trade)
+    _proposal.setdefault("symbol", symbol)
+    trade_result = OptionPipeline._execute_single_leg(ctx, _proposal, symbol)
+```
+Same helper the new dispatcher uses for `action="OPTIONS"`. One source of truth. Tests: `tests/test_single_leg_options_migration_2026_05_19.py` (4 tests). Grep-style guardrail asserts the legacy inline body (distinctive `print(f"  Executing: OPTIONS ..."` line) is not back; shape contracts pinned for both broker-success and broker-failure paths.
+
+**docs/18 #5 — Per-position Greeks panel.** The AI page's "Book Greeks" panel rendered only book-level totals (`net_delta`, `net_gamma`, etc.). Per-leg attribution was in `compute_book_greeks.by_leg` but never rendered — operators had to read prompt logs to find which leg was driving net delta or theta burn. Added a per-profile `<details>` expandable block below each profile row listing every option leg's OCC symbol, qty, spot, IV, DTE, and the four primary Greeks (Δ/Γ/Vega/Θ). Empty profiles get no `<details>` block (no UI noise). Also removed the explicit `iv_lookup=lambda s: None` argument from `views.py:3953` so the auto-wired live IV (docs/18 #1) now fires on the dashboard too — before this, even after #1 the dashboard still used FALLBACK_IV=0.25 because the explicit lambda blocked the auto-wire. Tests: `tests/test_per_position_greeks_panel_2026_05_19.py` (4 tests). Pin the `<details>` renders when `by_leg` is populated, each leg row contains all four Greeks, no empty `<details>` for stock-only profiles, multiple profiles get separate `<details>` blocks.
+
+**docs/18 status after this commit: 8/9 done.** The last open item is the actual scheduler cutover (flipping `use_pipeline_dispatch=1` on profile 15), which is gated on tomorrow's shadow soak data showing verdict agreement ≥ 95%.
+
+---
+
 ## 2026-05-19 PM — Live IV wired into risk model + IV-rank degradation alarm. Severity: high (closes the "silent 25% IV fallback" hole that's been understating option exposure since Phase 6b shipped + closes the operator-driven detection lag on options chain failures).
 
 **Two coupled fixes; docs/18 items #1 + #6.**

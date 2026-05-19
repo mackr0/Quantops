@@ -548,6 +548,16 @@ def run_segment_cycle(ctx, run_scan=True, run_exits=True,
             lambda: _task_db_backup(ctx),
             db_path=ctx.db_path,
         )
+        # docs/18 item #2: nightly Phase 5c backfill — catches new
+        # historical option rows that get created during the day
+        # with broken underlying-price math. force=True bypasses
+        # the migration marker; row-level WHERE clause keeps it
+        # cheap on clean DBs.
+        run_task(
+            f"[{seg_label}] Phase 5c Backfill (Nightly)",
+            lambda: _task_phase5c_backfill_nightly(ctx),
+            db_path=ctx.db_path,
+        )
         # Weekly proposal generation runs on Sundays; on other days this task
         # is a near-immediate no-op.
         run_task(
@@ -3798,6 +3808,71 @@ def _task_run_watchdog(ctx):
             "is DOWN until the next watchdog cycle; investigate "
             "immediately",
             type(exc).__name__, exc,
+        )
+
+
+def _task_phase5c_backfill_nightly(ctx):
+    """docs/18 item #2: nightly Phase 5c/d backfill of historical
+    option predictions.
+
+    The boot-time call in `cycle_segment` is gated by a migration
+    marker — it only runs ONCE per profile DB and no-ops thereafter.
+    This nightly task calls with `force=True` so any new
+    `pipeline_kind='option'` resolved row that's missing
+    `option_order_id` / `occ_symbol` gets re-resolved with the
+    Phase 5c option-aware math instead of leaving the broken
+    underlying-price-based `actual_return_pct` in place.
+
+    Idempotency is row-level via the `option_order_id IS NULL AND
+    occ_symbol IS NULL` WHERE clause — even forced runs only touch
+    rows that genuinely need backfilling. Cost: one cheap query +
+    zero updates on a clean DB.
+    """
+    try:
+        from pipelines.outcomes.backfill import (
+            backfill_historical_option_predictions,
+        )
+        seg_label = ctx.display_name or ctx.segment
+        counts = backfill_historical_option_predictions(
+            ctx.db_path, force=True,
+        )
+        n_linked = (counts.get("linked_multileg", 0)
+                     + counts.get("linked_single_leg", 0))
+        if counts.get("scanned", 0) == 0:
+            logging.info(
+                f"[{seg_label}] Phase 5c nightly backfill: nothing "
+                f"to do (no unlinked historical option rows)"
+            )
+            return
+        logging.info(
+            f"[{seg_label}] Phase 5c nightly backfill: scanned="
+            f"{counts.get('scanned', 0)}, linked_multileg="
+            f"{counts.get('linked_multileg', 0)}, "
+            f"linked_single_leg={counts.get('linked_single_leg', 0)}, "
+            f"no_match={counts.get('no_match', 0)}"
+        )
+        if n_linked > 0:
+            try:
+                _safe_log_activity(
+                    getattr(ctx, "profile_id", 0), ctx.user_id,
+                    "phase5c_backfill",
+                    f"Phase 5c nightly backfill linked {n_linked} rows",
+                    (f"Re-linked {n_linked} historical option "
+                     f"prediction(s) so the Phase 5c option-aware "
+                     f"resolver re-resolves them with correct math "
+                     f"on the next cycle. (multileg="
+                     f"{counts.get('linked_multileg', 0)}, "
+                     f"single-leg="
+                     f"{counts.get('linked_single_leg', 0)})"),
+                )
+            except Exception:
+                logging.exception(
+                    "Phase 5c backfill activity log failed"
+                )
+    except Exception as exc:
+        logging.warning(
+            f"Phase 5c nightly backfill task failed: "
+            f"{type(exc).__name__}: {exc}"
         )
 
 
