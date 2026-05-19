@@ -296,11 +296,83 @@ def detect_regime() -> Dict[str, Any]:
             f"{vix_val:.1f}" if vix_val is not None else "unavailable",
             result["spy_trend"],
         )
+
+        # Phase 4c shadow predict (2026-05-18 PM). Runs the ML
+        # classifier alongside the rule output and logs both to
+        # `regime_shadow_calls` for accumulated comparison data.
+        # The production result above is NOT changed — promotion
+        # to the ML path requires measured outperformance from the
+        # logged comparisons.
+        _shadow_log_if_enabled(result, spy_hist, vix_val)
+
         return result
 
     except Exception as exc:
         logger.error("Failed to detect market regime: %s", exc)
         return result
+
+
+def _shadow_log_if_enabled(rule_result, spy_hist, vix_val):
+    """Phase 4c — best-effort shadow predict + log.
+
+    Reads `config.DB_PATH` and `config.REGIME_CLASSIFIER_PATH`
+    (latter defaults to `/opt/quantopsai/regime_classifier_ml_v1.pkl`).
+    Skips silently when:
+      - the model pickle isn't present (model not yet trained)
+      - the master DB path isn't configured
+      - the VIX is unknown (we don't shadow-predict without a real VIX
+        — feeding a fake into the model would pollute the comparison)
+
+    No exception from the shadow path can break regime detection;
+    the outer detect_regime() try/except already wraps this call,
+    and we also wrap the body for defense in depth.
+    """
+    try:
+        import config
+        db = getattr(config, "DB_PATH", None)
+        model_path = getattr(
+            config, "REGIME_CLASSIFIER_PATH",
+            "/opt/quantopsai/regime_classifier_ml_v1.pkl",
+        )
+        if not db:
+            return
+        if vix_val is None:
+            return
+        # Build the three series the classifier needs from the SPY
+        # DataFrame the rule path already pulled. spy_hist has at
+        # least 50 bars (per the earlier guard); the classifier needs
+        # 200 — skip if we're under.
+        if spy_hist is None or len(spy_hist) < 200:
+            return
+        spy_close = [float(c) for c in spy_hist["close"].tolist()]
+        spy_high = [float(h) for h in spy_hist["high"].tolist()]
+        spy_low = [float(l) for l in spy_hist["low"].tolist()]
+        # For VIX history we use a flat series of the current value —
+        # the bootstrap dataset includes vix_change_20d but in
+        # production we don't fetch the VIX history per cycle. Future
+        # enhancement: add a small VIX history fetcher. For now the
+        # shadow logs `vix_change_20d=0` which the model treats as a
+        # mild bias toward "no recent vol change."
+        vix_series = [float(vix_val)] * 25
+
+        from regime_classifier_ml import shadow_predict_and_log
+        shadow_predict_and_log(
+            model_path=model_path,
+            db_path=db,
+            rule_regime=rule_result.get("regime", "unknown"),
+            spy_close=spy_close,
+            spy_high=spy_high,
+            spy_low=spy_low,
+            vix_series=vix_series,
+            spy_price_now=rule_result.get("spy_price", 0.0),
+            vix_now=vix_val,
+        )
+    except Exception as exc:
+        # Production regime detection MUST NOT fail because of shadow.
+        logger.debug(
+            "regime ML shadow log skipped: %s: %s",
+            type(exc).__name__, exc,
+        )
 
 
 def get_regime_context() -> str:
