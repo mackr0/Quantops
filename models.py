@@ -1006,6 +1006,27 @@ def update_user_segment_config(user_id: int, segment: str, **kwargs) -> None:
 # Trading Profiles
 # ---------------------------------------------------------------------------
 
+def asset_classes_label(profile: Dict[str, Any]) -> str:
+    """Render the asset classes this profile is configured to trade.
+
+    2026-05-19 — replaces the old `market_type_name` label ("Large
+    Cap" / "Mid Cap" / etc.) on dashboard / settings / popup
+    surfaces. The within-stock filtering is gone, so the only
+    meaningful distinction is which asset classes a profile trades:
+    Stocks, Options, Crypto, or a combination. The market_type
+    column is preserved in the schema but is no longer surfaced
+    in the UI.
+    """
+    parts = []
+    if profile.get("enable_stocks", 1):
+        parts.append("Stocks")
+    if profile.get("enable_options", 1):
+        parts.append("Options")
+    if profile.get("enable_crypto", 0):
+        parts.append("Crypto")
+    return " + ".join(parts) if parts else "(no asset class enabled)"
+
+
 MARKET_TYPE_NAMES = {
     "micro": "Micro Cap",
     "small": "Small Cap",
@@ -1131,8 +1152,9 @@ def get_trading_profile(profile_id: int) -> Optional[Dict[str, Any]]:
         d["custom_watchlist"] = json.loads(d.get("custom_watchlist", "[]"))
     except (json.JSONDecodeError, TypeError):
         d["custom_watchlist"] = []
-    # Add human-readable market type name
-    d["market_type_name"] = MARKET_TYPE_NAMES.get(d["market_type"], d["market_type"])
+    # Human-readable label: post-2026-05-19 the displayed concept is
+    # asset classes (Stocks / Options / Crypto), not market_type.
+    d["market_type_name"] = asset_classes_label(d)
     return d
 
 
@@ -1150,7 +1172,7 @@ def get_user_profiles(user_id: int) -> List[Dict[str, Any]]:
             d["custom_watchlist"] = json.loads(d.get("custom_watchlist", "[]"))
         except (json.JSONDecodeError, TypeError):
             d["custom_watchlist"] = []
-        d["market_type_name"] = MARKET_TYPE_NAMES.get(d["market_type"], d["market_type"])
+        d["market_type_name"] = asset_classes_label(d)
         results.append(d)
     return results
 
@@ -1182,7 +1204,7 @@ def get_active_profiles(user_id: Optional[int] = None) -> List[Dict[str, Any]]:
             d["custom_watchlist"] = json.loads(d.get("custom_watchlist", "[]"))
         except (json.JSONDecodeError, TypeError):
             d["custom_watchlist"] = []
-        d["market_type_name"] = MARKET_TYPE_NAMES.get(d["market_type"], d["market_type"])
+        d["market_type_name"] = asset_classes_label(d)
         results.append(d)
     return results
 

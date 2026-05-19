@@ -225,7 +225,7 @@
             <label>
                 Profile Name
                 <input type="text" name="profile_name" required
-                       placeholder="e.g. Aggressive Crypto, Conservative Large Cap">
+                       placeholder="e.g. EXP-A1-FullSystemStandard, Income-Wheel-1">
             </label>
             <label>
                 Market Type
@@ -236,15 +236,12 @@
                     {% endfor %}
                 </select>
                 <small style="color:#666;display:block;margin-top:0.25rem;">
-                    Within stock markets (Large/Mid/Small/Micro Cap),
-                    <strong>the strategy mix is identical</strong> — all
-                    stock-applicable strategies run for every stock profile;
-                    the AI decides which signals matter for the candidate.
-                    Use the label to organize profiles by intent
-                    (e.g., "Conservative Large Cap Income"). Crypto
-                    profiles are a separate code path (24/7 schedule,
-                    different data endpoints) and currently get only
-                    crypto-applicable strategies.
+                    Internal field — kept for schema compatibility but
+                    does not affect strategy selection or display. Set
+                    what this profile actually trades via the
+                    Stocks / Options / Crypto checkboxes on the
+                    profile edit page (default: Stocks + Options on,
+                    Crypto off).
                 </small>
             </label>
         </div>
@@ -327,8 +324,8 @@
             </label>
 
             <p class="muted" style="margin-top:-0.5rem;">
-                Market Type: <strong>{{ prof.market_type_name }}</strong>
-                <small>(determines the stock/crypto universe &mdash; set at creation)</small>
+                Trades: <strong>{{ prof.market_type_name }}</strong>
+                <small>(set via the Stocks / Options / Crypto checkboxes below)</small>
             </p>
 
             <!-- Enable toggle -->
