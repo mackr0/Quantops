@@ -17,6 +17,34 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Phantom profile DB caused 30+ min restart loop blocking all 13 profiles. Severity: critical (production outage — every profile stalled).
+
+**What broke.** Around 14:55 UTC a 0-byte file `quantopsai_profile_25.db` was left on disk (likely a SIGKILL casualty during an earlier 14:44 / 14:48 force-restart while the process was mid-create-profile). There is no matching row in `trading_profiles.id=25` — it's a phantom shell, not a real profile. The DB integrity gate (`db_integrity._all_db_paths`) enumerates profile DBs via glob, picked up the phantom, flagged it as critical corruption ("file is 0 bytes (too small for SQLite header)"), and refused scheduler startup. systemd restarted every 60-90s; restart counter climbed to 19. **All 13 real profiles (ids 12-24) stalled for 30+ minutes** — no AI calls, no trades, no exits, no reconciles. Dashboard showed stale state from before 15:03 UTC. An ERROR email fired on every restart attempt.
+
+**Why it wasn't caught.** The integrity gate's enumeration logic (line 117 of `db_integrity.py`) made no reference to the master `trading_profiles` table. A file matching the glob `quantopsai_profile_*.db` was always treated as a real profile journal, even when no profile pointed to it. There was no distinction between "real profile with corrupt journal" (should halt) and "phantom file no profile owns" (should warn but proceed).
+
+**Fix landed in two parts.**
+
+*Immediate (data action, 15:25 UTC):* `rm /opt/quantopsai/quantopsai_profile_25.db` unblocked the restart loop. Scheduler resumed clean cycles at 15:29:14 UTC; all 13 profiles now cycling normally per journal (`EXP-A1-RANDOMA`, `EXP-A1-RANDOMB`, etc.). The 0-byte phantom had no data to preserve.
+
+*Long-term (code):* new helper `db_integrity._known_profile_ids(master_path)` reads `master.trading_profiles.id` and returns the set of profile IDs the system actually owns. `_all_db_paths` now filters every `quantopsai_profile_<N>.db` against that set — files with IDs not in the master are logged as orphan warnings and excluded from the integrity scan, but the scheduler is allowed to start. When the master DB itself is unreadable, `_known_profile_ids` returns `None` and the filter falls open (legacy include-everything behavior), so the actual master-corruption case still halts as designed.
+
+**Regression test.** `tests/test_db_integrity_phantom_filter_2026_05_19.py` — 11 tests covering:
+- `_known_profile_ids` reads from master.trading_profiles correctly.
+- `_known_profile_ids` returns None when master is missing / corrupt / missing the table.
+- `_all_db_paths` excludes phantom profile files (the 2026-05-19 regression class).
+- Real profile files (id in master) are still included.
+- Master unreadable falls back to including everything (conservative).
+- Master DB itself is always included.
+- Malformed profile filenames are included defensively (no silent skipping).
+- **End-to-end structural test**: `check_all_dbs(repo_root)` containing a phantom returns ZERO entries in `critical_corrupt()` — the exact code path that halted the scheduler today.
+
+**Pending follow-ups:**
+- Audit why a profile create flow leaves a 0-byte file on SIGKILL. Likely fix: wrap the create-profile sequence so the journal file is opened only AFTER the `trading_profiles` INSERT commits, not before. Tracked separately.
+- Consider adding `phantom_profile_count` to the daily health email so phantom files are surfaced even when they're not blocking startup.
+
+---
+
 ## 2026-05-19 PM — Reconcile-backfill rows now name the actual protective order kind. Severity: medium (operational visibility — was actively misleading the operator).
 
 **What broke (operator-visible).** Three EXP-A3 profiles held NOW (ServiceNow) bought 2026-05-18 at $103.67 with TP=$115.89, SL=$95.52. At 2026-05-19 14:50 UTC the positions exited at $105.29 for +1.6%. The dashboard reasoning read "broker exited via protective order — backfilled by reconcile" — but TP and SL were nowhere near $105.29. Operator reasonably asked "what the fuck?"

@@ -29,12 +29,69 @@ import re
 import shutil
 import sqlite3
 from contextlib import closing
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
 
 _SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+# Pattern for matching a per-profile DB filename and extracting the
+# profile id, e.g. `quantopsai_profile_25.db` → 25.
+_PROFILE_DB_RE = re.compile(r"quantopsai_profile_(\d+)\.db$")
+
+
+def _known_profile_ids(master_path: str) -> Optional[Set[int]]:
+    """Return the set of profile ids present in `trading_profiles`.
+
+    Used by `_all_db_paths` to filter out PHANTOM profile journal
+    files — `quantopsai_profile_<N>.db` files where no row exists
+    in master.trading_profiles. These are typically 0-byte shells
+    left by a process that was SIGKILLed mid-create-profile (after
+    the file was touched but before the master INSERT committed).
+
+    Treating phantoms as critical halts the entire scheduler over
+    a file that no real profile points to. The 2026-05-19 incident:
+    `quantopsai_profile_25.db` (0 bytes, no master row) caused the
+    scheduler to restart-loop for 30+ minutes, blocking all 13 real
+    profiles (ids 12-24) from running their cycles. Filtering by
+    `trading_profiles` membership at discovery time makes the
+    integrity gate immune to this class of phantom.
+
+    Returns None when the master DB is itself missing or unreadable.
+    Caller falls back to including every profile_*.db file (i.e.
+    legacy behavior) — better to halt on a real corruption than to
+    silently skip a real profile because the master temporarily
+    couldn't be read.
+    """
+    if not master_path or not os.path.exists(master_path):
+        return None
+    try:
+        with closing(sqlite3.connect(
+            f"file:{master_path}?mode=ro&immutable=1",
+            uri=True, timeout=5.0,
+        )) as conn:
+            rows = conn.execute(
+                "SELECT id FROM trading_profiles"
+            ).fetchall()
+        return {int(r[0]) for r in rows}
+    except sqlite3.DatabaseError as exc:
+        # Master is corrupt/missing the table — fall through to
+        # legacy "include everything" so the actual master-corruption
+        # case still halts the scheduler.
+        logger.warning(
+            "db_integrity._known_profile_ids: master read failed (%s); "
+            "falling back to including every profile_*.db file",
+            exc,
+        )
+        return None
+    except Exception as exc:
+        logger.warning(
+            "db_integrity._known_profile_ids: unexpected error (%s); "
+            "falling back to legacy behavior", exc,
+        )
+        return None
 
 
 def check_db(path: str) -> Dict[str, str]:
@@ -106,17 +163,50 @@ def check_db(path: str) -> Dict[str, str]:
 
 
 def _all_db_paths(repo_root: Optional[str] = None) -> List[str]:
-    """Discover every SQLite DB the system writes to."""
+    """Discover every SQLite DB the system writes to.
+
+    Profile journal files are filtered against `trading_profiles`:
+    files whose id is not present in master.trading_profiles are
+    treated as phantoms (typically 0-byte shells from a killed
+    create-profile flow) and skipped. A loud warning is logged for
+    each skipped phantom so an operator can investigate, but the
+    scheduler is allowed to start. This closes the 2026-05-19
+    phantom-DB restart loop without weakening the integrity gate
+    for real profiles."""
     repo_root = repo_root or os.path.dirname(os.path.abspath(__file__))
     paths: List[str] = []
     # Master DB
     master = os.path.join(repo_root, "quantopsai.db")
     if os.path.exists(master):
         paths.append(master)
-    # Per-profile DBs
-    paths.extend(glob.glob(os.path.join(
+    # Per-profile DBs — filter out phantom files whose id isn't in
+    # trading_profiles. Fall back to including every file when the
+    # master is unreadable (legacy behavior; conservative).
+    known_ids = _known_profile_ids(master)
+    profile_files = glob.glob(os.path.join(
         repo_root, "quantopsai_profile_*.db",
-    )))
+    ))
+    for path in profile_files:
+        if known_ids is None:
+            paths.append(path)
+            continue
+        m = _PROFILE_DB_RE.search(os.path.basename(path))
+        if not m:
+            # Doesn't match the standard pattern — include defensively
+            # so a malformed name doesn't silently disappear from the
+            # integrity scan.
+            paths.append(path)
+            continue
+        pid = int(m.group(1))
+        if pid in known_ids:
+            paths.append(path)
+        else:
+            logger.warning(
+                "db_integrity: skipping orphan profile DB %s "
+                "(no profile id=%d in trading_profiles — phantom "
+                "file, not blocking scheduler startup)",
+                path, pid,
+            )
     # Alt-data project DBs (post-merge: altdata/<p>/data/*.db)
     paths.extend(glob.glob(os.path.join(
         repo_root, "altdata", "*", "data", "*.db",
