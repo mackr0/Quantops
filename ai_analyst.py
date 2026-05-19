@@ -1854,7 +1854,23 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
             line += f"\n     {ens}"
         news = c.get("news")
         if news:
-            line += f"\n     News: {' | '.join(n[:80] for n in news[:3])}"
+            # 2026-05-19 — `news` items are dicts (headline/summary/
+            # source/created_at) per fetch_news_alpaca's contract;
+            # previous code sliced n[:80] expecting strings, which
+            # crashed with `KeyError: slice(None, 80, None)` once the
+            # alpaca-creds refactor made news fetches actually succeed.
+            # Hidden until now because the env-level master key had
+            # been failing news fetches silently, so this code path
+            # was effectively dead.
+            def _headline_str(n):
+                if isinstance(n, dict):
+                    return (n.get("headline") or "")[:80]
+                if isinstance(n, str):
+                    return n[:80]
+                return ""
+            rendered = [s for s in (_headline_str(n) for n in news[:3]) if s]
+            if rendered:
+                line += f"\n     News: {' | '.join(rendered)}"
 
         # Phase 2 of docs/17 — RAG over the AI's own resolved trades.
         # Retrieve up to 3 most-similar past cases for THIS profile
