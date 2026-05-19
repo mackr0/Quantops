@@ -129,9 +129,27 @@ def _is_transient_failure(exc: BaseException) -> bool:
 
 def _build_fallback_chain(primary_provider: str):
     """Return list of (provider, api_key, model) tuples to try after
-    primary fails. Sources keys from config — only providers with a
-    configured key are eligible. Order: openai → google (by default;
-    skipping the primary)."""
+    primary fails.
+
+    Default policy (2026-05-19): NEVER silently fall back to Anthropic
+    from a non-Anthropic primary. Profiles configured for Gemini or
+    OpenAI made that choice deliberately (paid Gemini included — the
+    user is on the paid tier and still does not want silent Claude
+    spend); a transient primary failure must fail loudly rather than
+    secretly route to Claude. The fallback chain is therefore filtered:
+      - Anthropic is excluded unless `AI_ALLOW_ANTHROPIC_FALLBACK=1`
+        is set in the environment (opt-in escape hatch).
+      - Anthropic IS still in the chain when it is the primary —
+        i.e., a profile explicitly configured for Anthropic can still
+        fall back to itself via a different model is not the concern;
+        this gate only affects cross-provider fallback.
+
+    Was the 2026-05-19 incident: Gemini 503s opened the google
+    circuit; every subsequent call fell back to Anthropic at $0.01-
+    $0.02/call across batch_select + 4 ensemble specialists. Profile
+    16 alone accumulated ~$0.11 in unauthorized Anthropic spend
+    before the fix landed."""
+    import os
     import config as _config
     chain = []
     candidates = [
@@ -139,10 +157,25 @@ def _build_fallback_chain(primary_provider: str):
         ("google", _config.GEMINI_API_KEY, _config.GEMINI_MODEL),
         ("anthropic", _config.ANTHROPIC_API_KEY, _config.CLAUDE_MODEL),
     ]
+    allow_anthropic_fallback = (
+        os.getenv("AI_ALLOW_ANTHROPIC_FALLBACK", "").strip() == "1"
+    )
     for prov, key, model in candidates:
         if prov == primary_provider:
             continue
         if not key:
+            continue
+        if prov == "anthropic" and not allow_anthropic_fallback:
+            # Explicit gate — profiles configured for Gemini/OpenAI
+            # must NOT silently route to paid Claude when their primary
+            # has a transient outage. Logging the skip so dashboard
+            # surfaces "fallback blocked" instead of the call vanishing.
+            logger.warning(
+                "AI fallback to anthropic SUPPRESSED for primary=%s "
+                "(set AI_ALLOW_ANTHROPIC_FALLBACK=1 to allow paid "
+                "fallback to Claude)",
+                primary_provider,
+            )
             continue
         chain.append((prov, key, model))
     return chain

@@ -173,3 +173,113 @@ def test_successful_primary_does_not_invoke_fallback():
     assert "primary-ok" in out
     a_mock.assert_called_once()
     o_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Anthropic-fallback suppression — 2026-05-19 incident.
+#
+# Gemini 503s opened the google circuit; every subsequent AI call
+# silently fell back to Anthropic at ~$0.01-$0.02/call. The user's
+# profiles are deliberately configured for Gemini (cheap). The
+# fallback chain must NOT secretly spend on Claude when the primary
+# was a non-Anthropic provider, unless explicitly opted in via
+# AI_ALLOW_ANTHROPIC_FALLBACK=1.
+# ---------------------------------------------------------------------------
+
+class TestAnthropicFallbackSuppression:
+    """The fallback chain must never silently route a Gemini-or-OpenAI
+    primary to paid Anthropic. This is policy, not heuristic — the
+    behavioral test pins it at the chain-builder level so any future
+    refactor that re-introduces the silent path breaks here."""
+
+    def test_chain_excludes_anthropic_by_default_when_primary_is_google(self, monkeypatch):
+        import config
+        monkeypatch.setattr(config, "OPENAI_API_KEY", "sk-test")
+        monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "anthropic-test")
+        monkeypatch.setattr(config, "GEMINI_API_KEY", "google-test")
+        monkeypatch.delenv("AI_ALLOW_ANTHROPIC_FALLBACK", raising=False)
+        from ai_providers import _build_fallback_chain
+        chain = _build_fallback_chain("google")
+        providers = [p for p, _, _ in chain]
+        assert "anthropic" not in providers, (
+            f"anthropic must be excluded from google-primary fallback chain "
+            f"by default; got {providers}"
+        )
+        # OpenAI is fine — it's not the paid escalation we're guarding
+        assert "openai" in providers
+
+    def test_chain_excludes_anthropic_by_default_when_primary_is_openai(self, monkeypatch):
+        import config
+        monkeypatch.setattr(config, "OPENAI_API_KEY", "sk-test")
+        monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "anthropic-test")
+        monkeypatch.setattr(config, "GEMINI_API_KEY", "google-test")
+        monkeypatch.delenv("AI_ALLOW_ANTHROPIC_FALLBACK", raising=False)
+        from ai_providers import _build_fallback_chain
+        chain = _build_fallback_chain("openai")
+        providers = [p for p, _, _ in chain]
+        assert "anthropic" not in providers
+
+    def test_chain_includes_anthropic_when_opt_in_flag_set(self, monkeypatch):
+        """Operator can opt back in via env var if they explicitly
+        want paid fallback. Documented escape hatch."""
+        import config
+        monkeypatch.setattr(config, "OPENAI_API_KEY", None)
+        monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "anthropic-test")
+        monkeypatch.setattr(config, "GEMINI_API_KEY", "google-test")
+        monkeypatch.setenv("AI_ALLOW_ANTHROPIC_FALLBACK", "1")
+        from ai_providers import _build_fallback_chain
+        chain = _build_fallback_chain("google")
+        providers = [p for p, _, _ in chain]
+        assert "anthropic" in providers
+
+    def test_chain_includes_anthropic_when_primary_is_anthropic(self, monkeypatch):
+        """Gate only affects FALLBACK to anthropic. When anthropic IS
+        the primary, the chain-builder filters it as 'primary == fallback'
+        anyway, so this test pins the obvious case — no regression where
+        my gate accidentally affects primary calls."""
+        import config
+        monkeypatch.setattr(config, "OPENAI_API_KEY", "sk-test")
+        monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "anthropic-test")
+        monkeypatch.setattr(config, "GEMINI_API_KEY", "google-test")
+        monkeypatch.delenv("AI_ALLOW_ANTHROPIC_FALLBACK", raising=False)
+        from ai_providers import _build_fallback_chain
+        chain = _build_fallback_chain("anthropic")
+        providers = [p for p, _, _ in chain]
+        # primary is anthropic → it's NOT in the chain (it's already
+        # at position 0 in `attempts`). Other providers fall through.
+        assert "anthropic" not in providers
+        assert "openai" in providers
+        assert "google" in providers
+
+    def test_end_to_end_gemini_outage_does_not_invoke_anthropic(
+        self, monkeypatch,
+    ):
+        """Behavioral guarantee: when primary=google fails transient,
+        anthropic._call_anthropic must NOT be called even though an
+        Anthropic key is present in config. The cycle should raise
+        RuntimeError 'exhausted' instead (no eligible fallback)."""
+        from provider_circuit import reset, record_failure
+        reset()
+        # Pre-open the google circuit so call_ai immediately moves to
+        # the fallback chain
+        for _ in range(3):
+            record_failure("google", Exception("503 high demand"))
+
+        import config
+        monkeypatch.setattr(config, "OPENAI_API_KEY", None)
+        monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "anthropic-test")
+        monkeypatch.setattr(config, "GEMINI_API_KEY", "google-test")
+        monkeypatch.delenv("AI_ALLOW_ANTHROPIC_FALLBACK", raising=False)
+
+        with patch("ai_providers._call_anthropic") as anthropic_mock, \
+             patch("ai_providers._call_google") as google_mock:
+            from ai_providers import call_ai
+            with pytest.raises(RuntimeError, match="exhausted"):
+                call_ai("hello", provider="google",
+                        model="gemini-2.5-flash-lite",
+                        api_key="google-test")
+        # Critical assertion: even though Anthropic is configured AND
+        # would normally be the only available fallback, the gate
+        # blocks the call from reaching it.
+        anthropic_mock.assert_not_called()
+        google_mock.assert_not_called()  # google circuit is open

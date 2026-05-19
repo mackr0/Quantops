@@ -17,6 +17,39 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Silent Anthropic fallback on Gemini outage. Severity: critical (real-money unauthorized spend on profiles configured for Gemini).
+
+**What broke.** Every trading profile in the system is configured for `google/gemini-2.5-flash-lite` in `trading_profiles.ai_provider`. Despite that, profile 16's `ai_cost_ledger` showed 9 Anthropic Claude calls totalling ~$0.11 between 13:30 and 14:52 UTC today across `batch_select`, `ensemble:adversarial_reviewer`, `ensemble:pattern_recognizer`, `ensemble:sentiment_narrative`, and `ensemble:risk_assessor` purposes. Profile 20 showed 4 Anthropic calls totalling ~$0.06. Across 13+ profiles per cycle, this had been bleeding cash continuously.
+
+**Root cause.** `ai_providers._build_fallback_chain` constructed a fallback list of every provider with a configured API key, primary excluded. When Google Gemini returned HTTP 503 "high demand" at 13:30:21 UTC (paid Gemini API can and does throttle), the google circuit-breaker tripped open after 3 consecutive failures (`provider_circuit.py` default). For the 5-minute cooldown that followed, every AI call's fallback chain on production was `[anthropic]` (because `config.OPENAI_API_KEY` and `config.GEMINI_API_KEY` are empty at the process level — profiles supply Gemini keys per-ctx, not via env). Calls silently re-routed to Claude.
+
+Journal evidence preserved in `journalctl -u quantopsai --since 'Tue 13:30'`:
+```
+13:30:21  POST .../gemini-2.5-flash-lite "HTTP/1.1 503 Service Unavailable"
+13:30:26  AI failover: primary google circuit open, served by anthropic
+13:30:29  AI provider circuit OPEN for google after 3 failures (cooldown 300s)
+13:30:32 → 13:33:34  failover: primary google circuit open, served by anthropic
+                      (repeated dozens of times)
+```
+
+**Why it wasn't caught.** Operator previously asked whether profile-configured providers could ever be bypassed; the system was answered with "no, the per-ctx provider is honored." That was wrong — the per-ctx provider IS honored for the primary call, but the fallback chain reaches into process-level config keys and routes there silently. No alarm fired because each ledger entry just looks like a normal call; only when you `GROUP BY provider` does the cross-provider bleed show.
+
+**Fix.** `_build_fallback_chain` now explicitly suppresses anthropic from any non-anthropic primary's fallback chain. Operators wanting paid Claude fallback must opt in via `AI_ALLOW_ANTHROPIC_FALLBACK=1` in the environment (escape hatch documented in the function). When the gate fires, a WARNING line is logged ("AI fallback to anthropic SUPPRESSED for primary=...") so the journal surfaces the blocked fallback rather than the call vanishing.
+
+**Regression test.** `tests/test_provider_circuit_failover.py::TestAnthropicFallbackSuppression` (5 new tests):
+- `test_chain_excludes_anthropic_by_default_when_primary_is_google`
+- `test_chain_excludes_anthropic_by_default_when_primary_is_openai`
+- `test_chain_includes_anthropic_when_opt_in_flag_set`
+- `test_chain_includes_anthropic_when_primary_is_anthropic` (sanity — gate doesn't affect anthropic-primary)
+- `test_end_to_end_gemini_outage_does_not_invoke_anthropic` — patches `_call_anthropic` and asserts it's NEVER invoked when the google circuit is open and primary=google, even with a configured Anthropic key. This is the test that would have caught today's incident.
+
+**Pending follow-ups (separate tracking):**
+- Dashboard alert: any `ai_cost_ledger` row where `provider` ≠ profile's configured `trading_profiles.ai_provider` should fire a loud alert.
+- Consider per-profile fallback policy (some profiles may want OpenAI-only fallback; others none).
+- Operator decision: keep `ANTHROPIC_API_KEY` in `/opt/quantopsai/.env` for admin/post-mortem paths or remove entirely.
+
+---
+
 ## 2026-05-18 PM — Market-context + portfolio batch (Phase 3 near-final). Severity: medium (deterministic library 159 → 179; total ensemble 167 → 187).
 
 User push to keep building. Plumbing extension first: `ai_analyst._build_batch_prompt` now stashes `_market_context` (regime, vix, spy_trend, sector_rotation, crisis_context, macro_event_block) and `_portfolio` (positions, drawdown_pct) onto each candidate dict before calling `build_panel_block`. Idempotent — re-renders are no-op overwrites. Rules read these via the standard candidate-dict interface, no signature change to the rule contract.
