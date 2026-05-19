@@ -114,6 +114,18 @@ def _strip_markdown_fences(text):
 # Circuit-breaker / failover
 # ---------------------------------------------------------------------------
 
+# 2026-05-19 — in-call retry tuning. When a provider returns a
+# transient failure (503 / 504 / 529 / timeout / overload), the
+# SAME provider gets retried this many times with these sleeps
+# (seconds) between attempts before we move to the fallback chain
+# or trip the circuit. Two retries with 2s + 4s catches the
+# overwhelming majority of Google's "service unavailable" 503s
+# (per their "spikes in demand are usually temporary" note) without
+# meaningful added latency on success. Tests monkeypatch this to
+# () to disable sleeps.
+_RETRY_DELAYS_SECONDS = (2.0, 4.0)
+
+
 def _is_transient_failure(exc: BaseException) -> bool:
     """True when the exception looks like a provider-overload / 5xx /
     network-timeout — the kind that should TRIP the circuit. Auth
@@ -424,25 +436,65 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
             "Calling AI: provider=%s, model=%s, max_tokens=%d",
             attempt_provider, attempt_model, max_tokens,
         )
-        try:
-            response_text, in_tok, out_tok = _call_provider(
-                attempt_provider, prompt, attempt_model, attempt_key,
-                max_tokens,
+        # In-call retry on transient failures (2026-05-19). 503s and
+        # similar are usually temporary — Google's own error body says
+        # "spikes in demand are usually temporary, please try again
+        # later." So before failing over to a different provider (or
+        # tripping the circuit), retry the SAME provider after a
+        # short sleep. Non-transient errors (auth, bad input) skip
+        # the retry loop and propagate immediately.
+        import time as _time
+        response_text = in_tok = out_tok = None
+        per_call_last_exc = None
+        # Build the attempt schedule: first try is at delay=0, then
+        # each entry of _RETRY_DELAYS_SECONDS is a sleep-before-retry.
+        attempt_schedule = [0.0] + list(_RETRY_DELAYS_SECONDS)
+        for retry_idx, sleep_seconds in enumerate(attempt_schedule):
+            if sleep_seconds > 0:
+                logger.info(
+                    "AI retry %d/%d for %s after %.1fs sleep "
+                    "(transient: %s)",
+                    retry_idx, len(_RETRY_DELAYS_SECONDS),
+                    attempt_provider, sleep_seconds,
+                    per_call_last_exc,
+                )
+                _time.sleep(sleep_seconds)
+            try:
+                response_text, in_tok, out_tok = _call_provider(
+                    attempt_provider, prompt, attempt_model,
+                    attempt_key, max_tokens,
+                )
+                per_call_last_exc = None
+                break  # success — drop out of the retry loop
+            except Exception as call_exc:
+                if not _is_transient_failure(call_exc):
+                    # Non-transient (auth / bad input / unknown) —
+                    # propagate immediately, don't waste retries.
+                    raise
+                per_call_last_exc = call_exc
+                # On the final attempt this exits the for-loop and we
+                # fall through to the post-loop handler below.
+        if per_call_last_exc is not None:
+            # All retries on this provider returned transient errors.
+            # NOW record the failure (one circuit-tick per provider
+            # call, not per HTTP retry — the circuit ticks per cycle
+            # of failure, not per sub-second retry).
+            _circuit_record_failure(attempt_provider, per_call_last_exc)
+            last_exc = per_call_last_exc
+            skip_reasons.append(
+                f"{attempt_provider}: {len(_RETRY_DELAYS_SECONDS)+1} "
+                f"attempts all transient (last: {per_call_last_exc})"
             )
-        except Exception as exc:
-            if _is_transient_failure(exc):
-                _circuit_record_failure(attempt_provider, exc)
-                last_exc = exc
-                if attempt_provider != provider:
-                    logger.warning(
-                        "AI fallback %s also failed (transient): %s",
-                        attempt_provider, exc,
-                    )
-                continue
-            # Non-transient failures (auth, bad input, etc.) — don't
-            # trip the circuit, just propagate.
-            raise
+            if attempt_provider != provider:
+                logger.warning(
+                    "AI fallback %s also failed (transient after "
+                    "%d retries): %s",
+                    attempt_provider, len(_RETRY_DELAYS_SECONDS),
+                    per_call_last_exc,
+                )
+            continue
 
+        # Fall through to the original success path that follows.
         # Success path
         _circuit_record_success(attempt_provider)
         if attempt_provider != provider:

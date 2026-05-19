@@ -31,6 +31,18 @@ def _reset_circuits():
     reset()
 
 
+@pytest.fixture(autouse=True)
+def _disable_retry_sleeps(monkeypatch):
+    """The 2026-05-19 in-call retry adds 2s + 4s sleeps on transient
+    failures. Tests would block for 6s per failover scenario without
+    this. Set the delays to empty so retries are disabled in tests
+    (transient failure → immediately move to fallback). Tests that
+    specifically want to exercise the retry timing override this
+    fixture locally."""
+    import ai_providers
+    monkeypatch.setattr(ai_providers, "_RETRY_DELAYS_SECONDS", ())
+
+
 def test_circuit_starts_closed():
     from provider_circuit import is_open
     assert is_open("anthropic") is False
@@ -185,6 +197,120 @@ def test_successful_primary_does_not_invoke_fallback():
 # was a non-Anthropic provider, unless explicitly opted in via
 # AI_ALLOW_ANTHROPIC_FALLBACK=1.
 # ---------------------------------------------------------------------------
+
+class TestInCallRetryOnTransient:
+    """2026-05-19 — call_ai retries the SAME provider on transient
+    failures (503/504/529/timeout) before falling over or tripping
+    the circuit. Most Gemini 503 "high demand" responses recover
+    within seconds, so a 2-attempt retry catches them cheaply
+    without changing tier or provider."""
+
+    def test_transient_then_success_returns_response_without_fallback(
+        self, monkeypatch,
+    ):
+        """Gemini 503s once, then succeeds. call_ai must return the
+        successful response from the SAME provider — no fallback
+        triggered, no circuit tick recorded for this provider."""
+        import ai_providers
+        # Enable retry path with zero sleeps (don't slow tests)
+        monkeypatch.setattr(ai_providers, "_RETRY_DELAYS_SECONDS", (0.0,))
+
+        import config
+        monkeypatch.setattr(config, "OPENAI_API_KEY", "sk-test")
+        monkeypatch.setattr(config, "GEMINI_API_KEY", "g-test")
+        monkeypatch.setattr(config, "ANTHROPIC_API_KEY", None)
+
+        # First call 503, second call succeeds
+        call_counts = {"google": 0, "openai": 0}
+        def google_side_effect(*a, **k):
+            call_counts["google"] += 1
+            if call_counts["google"] == 1:
+                raise Exception("503 service unavailable")
+            return ("from-gemini-retry", 50, 10)
+        def openai_side_effect(*a, **k):
+            call_counts["openai"] += 1
+            return ("from-openai", 0, 0)
+
+        with patch("ai_providers._call_google",
+                   side_effect=google_side_effect), \
+             patch("ai_providers._call_openai",
+                   side_effect=openai_side_effect):
+            from ai_providers import call_ai
+            out = call_ai("hi", provider="google", model="gemini",
+                          api_key="g-test")
+        assert "from-gemini-retry" in out, (
+            "After transient 503, retry on SAME provider should "
+            "succeed and return its response"
+        )
+        assert call_counts["google"] == 2, (
+            "Google should be called twice: first 503, then retry success"
+        )
+        assert call_counts["openai"] == 0, (
+            "Fallback to OpenAI must NOT happen when retry on "
+            "primary succeeded"
+        )
+
+    def test_all_retries_transient_then_falls_back(self, monkeypatch):
+        """When every retry on the primary returns a transient error,
+        fall through to the fallback provider — matching pre-retry
+        behavior. Circuit ticks ONCE per provider, not per HTTP retry."""
+        import ai_providers
+        monkeypatch.setattr(ai_providers, "_RETRY_DELAYS_SECONDS",
+                            (0.0, 0.0))
+
+        import config
+        monkeypatch.setattr(config, "OPENAI_API_KEY", "sk-test")
+        monkeypatch.setattr(config, "GEMINI_API_KEY", "g-test")
+        monkeypatch.setattr(config, "ANTHROPIC_API_KEY", None)
+
+        from provider_circuit import status as circuit_status
+
+        with patch("ai_providers._call_google",
+                   side_effect=Exception("503 unavailable")) as g_mock, \
+             patch("ai_providers._call_openai",
+                   return_value=("from-openai", 0, 0)) as o_mock:
+            from ai_providers import call_ai
+            out = call_ai("hi", provider="google", model="gemini",
+                          api_key="g-test")
+        # Google called 3 times (1 initial + 2 retries), OpenAI called once
+        assert g_mock.call_count == 3, (
+            f"Expected 3 Google attempts (1 + 2 retries); got {g_mock.call_count}"
+        )
+        assert o_mock.call_count == 1
+        assert "from-openai" in out
+        # Circuit ticked exactly once for google (not 3 times)
+        google_state = circuit_status().get("google", {})
+        assert google_state.get("consecutive_failures", 0) == 1, (
+            f"Circuit must record ONE failure per provider call "
+            f"(not one per HTTP retry); got "
+            f"{google_state.get('consecutive_failures')}"
+        )
+
+    def test_non_transient_does_not_retry(self, monkeypatch):
+        """Auth errors and bad-input errors should NOT trigger
+        retries — they'd fail forever. They propagate immediately."""
+        import ai_providers
+        monkeypatch.setattr(ai_providers, "_RETRY_DELAYS_SECONDS",
+                            (0.0, 0.0))
+
+        import config
+        monkeypatch.setattr(config, "OPENAI_API_KEY", None)
+        monkeypatch.setattr(config, "GEMINI_API_KEY", "g-test")
+        monkeypatch.setattr(config, "ANTHROPIC_API_KEY", None)
+
+        with patch("ai_providers._call_google",
+                   side_effect=Exception(
+                       "401 invalid api key")) as g_mock:
+            from ai_providers import call_ai
+            with pytest.raises(Exception, match="401"):
+                call_ai("hi", provider="google", model="gemini",
+                        api_key="bad-key")
+        # Auth failure: only the first attempt is made — no retries
+        assert g_mock.call_count == 1, (
+            f"Non-transient error must not retry; got "
+            f"{g_mock.call_count} attempts"
+        )
+
 
 class TestAnthropicFallbackSuppression:
     """The fallback chain must never silently route a Gemini-or-OpenAI

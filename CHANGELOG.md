@@ -17,6 +17,32 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — In-call retry on transient AI failures (Gemini 503 cushion). Severity: medium (operational reliability).
+
+**Why.** Earlier today's audit showed ~40% of `gemini-2.5-flash-lite` calls returning HTTP 503 *"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later."* When 3 fire in a row the circuit breaker opens for 5 minutes and every profile stalls during that window. Most 503s are individually transient — the same request seconds later usually succeeds — but the existing code treated the first transient as terminal and moved straight to the fallback chain (or, post-gate, to "AI provider chain exhausted").
+
+**What changed.** In `ai_providers.call_ai`, the per-provider call site now retries on transient failures BEFORE falling over:
+
+```python
+_RETRY_DELAYS_SECONDS = (2.0, 4.0)  # 1 immediate + 2 retries with 2s + 4s sleeps
+```
+
+- Per-call HTTP attempts: 1 initial + 2 retries = **3 chances on the same provider** before falling to the fallback chain or recording a circuit failure.
+- The circuit breaker still ticks **once per call_ai invocation**, not per HTTP retry. So 3 retries that all fail = 1 tick. Three CYCLES of failure still open the circuit — same threshold as before.
+- Non-transient errors (auth, bad input) propagate immediately — no wasted retries.
+- The retry follows Google's own guidance: "spikes in demand are usually temporary, try again."
+
+**Expected impact.** Catches the ~85% of Gemini 503s that are individually transient. Visible failure rate should drop from ~40% to under 10%. Added latency on success path: zero (retries only fire on failure). Added latency on full-failure path: up to 6 seconds (2s + 4s sleeps).
+
+**Tests.** `tests/test_provider_circuit_failover.py::TestInCallRetryOnTransient` — 3 new tests:
+- Transient-then-success returns the retry's response without falling over to a different provider
+- All retries transient → falls through to fallback chain; circuit records exactly ONE failure (not 3)
+- Non-transient errors (401 auth) do NOT retry — single attempt, propagate
+
+Existing 16 failover tests still pass. Tests use a new autouse fixture `_disable_retry_sleeps` that monkeypatches `_RETRY_DELAYS_SECONDS = ()` so the existing transient-failure tests don't gain 6 seconds of latency.
+
+---
+
 ## 2026-05-19 PM — Settings page "Anthropic API Key" → provider-agnostic "Fallback LLM Key". Severity: medium (UX clarity + finishes the news_sentiment refactor that the per-profile migration skipped).
 
 **What changed.** The top-of-Settings field was renamed and gained a provider dropdown, so the user can pick whichever LLM they want as the **non-profile** fallback. The field is now honestly labeled and explains its scope: *"Used by CLI tools and helpers that don't have a per-profile context. Your trading profiles each have their own provider + key — this is for everything else."*
