@@ -79,7 +79,7 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | `ai_pricing.py` | Provider price tables. |
 | `ai_tracker.py` | Prediction journaling + resolution. |
 | `ensemble.py` | 8-specialist LLM-narrative ensemble synthesizer (5 stock-pipeline + 3 options-pipeline). Five of the eight are re-scoped (2026-05-18, Phase 3) to synthesize from the deterministic panel rather than re-derive facts. |
-| `deterministic_specialists/` | 147 pure-Python rule checkers (zero API cost per rule). Each rule = `(candidate, ctx) → Optional[{severity: VETO/CAUTION/CONFIRM, reasoning}]`. Fired verdicts surface in the apex AI prompt and as a compact `RULES: [V]name [C]name ...` suffix in each re-scoped LLM specialist's candidate render. |
+| `deterministic_specialists/` | 179 pure-Python rule checkers (zero API cost per rule). Each rule = `(candidate, ctx) → Optional[{severity: VETO/CAUTION/CONFIRM, reasoning}]`. Fired verdicts surface in the apex AI prompt and as a compact `RULES: [V]name [C]name ...` suffix in each re-scoped LLM specialist's candidate render. Routing (2026-05-19): stock candidates direct-match by `APPLIES_TO_SIGNALS`; OPTIONS/MULTILEG_OPEN candidates route to same-direction rules via `signal_direction(candidate)` — a bullish option strategy sees every long-only veto a `BUY` would. |
 | `case_file_rag.py` | RAG over resolved `ai_predictions`. TF-IDF over a rolling 2000-case corpus; injects top-3 most-similar past cases per candidate into the apex prompt as concrete cases-to-reason-from. |
 | `specialist_calibration.py` | Platt-scaling per specialist. |
 | `meta_model.py` | GBM batch model. |

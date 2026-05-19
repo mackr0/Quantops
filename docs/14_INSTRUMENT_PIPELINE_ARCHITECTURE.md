@@ -131,7 +131,7 @@ portfolio risk view, you call the same AI provider.
 |---|---|
 | Candidate generation | Different universes (stock universe vs option chains), different scoring (stock-momentum vs IV-regime). |
 | AI prompt | Different features: stocks need RSI/MACD; options need IV/Greeks/DTE/spread economics. |
-| Specialists | Stock specialists (sector rotation, technical, sentiment) make no sense for an option spread; option specialists (IV-skew, Greeks, spread P&L) make no sense for stocks. |
+| Specialists | Strictly option-specific specialists (IV-skew, Greeks, spread P&L like `option_spread_risk`, `gamma_pin_specialist`, `iv_skew_specialist`) make no sense for stocks. *Underlying-shaped* deterministic rules (sector rotation, technical, sentiment, regime) DO apply to options of matching direction — a bullish option entry on AAPL faces the same "is AAPL overextended?" concerns as a bullish AAPL stock entry. The router (`run_panel`) computes the candidate's direction from `(signal, option_strategy)` and routes OPTIONS/MULTILEG_OPEN to the same-direction stock rules. See `docs/02_AI_SYSTEM.md §4a` for routing details. |
 | Executor | Stock = `submit_order(symbol, qty, side)`. Option = OCC routing + position_intent + combo legs. |
 | Metrics | Stock Sharpe on equity returns vs option theta-decay-adjusted return. Slippage is dollars-per-share for stocks vs dollars-per-contract for options. |
 | Tuning | Stock parameters (`stop_loss_pct`) don't apply to options; option parameters (spread max-loss tolerance, DTE floor) don't apply to stocks. |
@@ -523,7 +523,7 @@ explicit cross-pipeline contamination:
 | #3 Tuning corruption | Tuning fork (Phase 2): each pipeline tunes its own params. |
 | #4 Stock-only prompt | Prompt fork (Phase 3): option prompt has IV/Greeks. |
 | #5 Multileg specialist bypass | Specialist fork (Phase 4): every pipeline routes through its specialists. |
-| #6 Stock specialists on options | Same as #5: stock specialists don't see option proposals. |
+| #6 Stock specialists on options | **Resolved 2026-05-19** — `deterministic_specialists.run_panel` now translates OPTIONS/MULTILEG_OPEN candidates to a direction via `signal_direction(candidate)` and routes them to same-direction stock rules. A bullish option strategy sees the 123 long-only rules; a bearish strategy sees the 15 short-only set. No per-rule edits needed. |
 | #7 Risk model 1:1 market_value | Risk model upgrade (Phase 6): delta-adjusted. |
 
 ---

@@ -68,7 +68,7 @@ The ensemble has two parallel layers that surface into the apex LLM prompt:
 
 ### 4a. Deterministic specialist library (`deterministic_specialists/`)
 
-147 pure-Python rule checkers. Each rule is a function `(candidate, ctx) → Optional[{severity, reasoning}]` with severities `VETO` / `CAUTION` / `CONFIRM`. Zero per-rule API cost. Each rule fires only when its specific data pattern is present; in practice 5-15 rules fire per candidate. The fired verdicts render into two surfaces:
+179 pure-Python rule checkers. Each rule is a function `(candidate, ctx) → Optional[{severity, reasoning}]` with severities `VETO` / `CAUTION` / `CONFIRM`. Zero per-rule API cost. Each rule fires only when its specific data pattern is present; in practice 5-15 rules fire per candidate. The fired verdicts render into two surfaces:
 
   - **Apex prompt panel** — `deterministic_specialists.build_panel_block(candidate, ctx)` is appended to each candidate's section of the batched LLM prompt as a `DETERMINISTIC RULE PANEL` block.
   - **Compact rules-suffix on LLM specialist candidate renders** — when the LLM specialists call `candidates_block(candidates, specialist_name=..., ctx=ctx)`, each rendered candidate carries a `RULES: [V]name [C]name ...` suffix so the LLM specialists synthesize from the rule layer rather than re-deriving facts.
@@ -77,7 +77,14 @@ Rule categories include: late-stage / extended warnings (`rsi_overbought_late_st
 
 Adding a rule: drop a module under `deterministic_specialists/<name>.py` exposing `NAME`, `DESCRIPTION`, `APPLIES_TO_SIGNALS`, and `evaluate(candidate, ctx)`. Add the import path to `RULE_MODULES`. The structural test pins one positive fixture per rule.
 
-Per-rule exception isolation: one bad rule logs at DEBUG and is skipped; the rest of the panel continues. `APPLIES_TO_SIGNALS` gates each rule so SHORT rules don't fire on BUY candidates and vice versa.
+Per-rule exception isolation: one bad rule logs at DEBUG and is skipped; the rest of the panel continues.
+
+**Routing — stock signals and options/multileg.** `APPLIES_TO_SIGNALS` enumerates the stock-side actions a rule applies to (typically `("BUY", "STRONG_BUY", "WEAK_BUY")` for long-only checks or `("SELL", "STRONG_SELL", "WEAK_SELL", "SHORT")` for short-only). The router (`run_panel` in `deterministic_specialists/__init__.py`) supports two match modes:
+
+  - **Direct match** (stock candidates): the candidate's signal must appear in the rule's tuple. Long-only rules don't fire on SHORT candidates and vice versa.
+  - **Directional match** (options / multileg candidates): the router calls `signal_direction(candidate)` to classify the candidate by `(signal, option_strategy)` as `bullish` / `bearish` / `neutral`. A rule then fires if its `APPLIES_TO_SIGNALS` overlaps the same-direction stock-action set. So a `long_call` / `bull_call_spread` / `cash_secured_put` / `covered_call` / `bull_put_spread` fires the same long-only rules as a `BUY` would; `long_put` / `bear_call_spread` / `bear_put_spread` / `protective_put` fires the same short-only rules as a `SHORT` would.
+
+Non-directional strategies (`iron_condor`, `iron_butterfly`, `straddle`, `strangle`, `calendar_spread`) don't trigger directional rules — they're covered by the option-specific LLM specialists (`gamma_pin_specialist`, `iv_skew_specialist`, `option_spread_risk`). Unknown option strategies on an `OPTIONS` / `MULTILEG_OPEN` candidate fire no directional rules (avoid mis-attribution). This routing landed 2026-05-19; no per-rule edits were needed — every rule's existing `APPLIES_TO_SIGNALS` tuple already encodes its direction.
 
 ### 4b. LLM specialist ensemble (`specialists/`)
 

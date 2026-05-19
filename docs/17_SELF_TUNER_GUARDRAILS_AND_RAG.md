@@ -54,11 +54,11 @@ Implementation: `case_file_rag.py` (270 lines), wired into `ai_analyst.py:_build
   - Each rule = pure function `(candidate, ctx) → Optional[{severity, reasoning}]`
   - Severities: `VETO` (high-confidence stop), `CAUTION` (yellow flag), `CONFIRM` (pattern supports the signal)
   - Zero per-rule API cost — runs as a panel block injected into the prompt, weighed by the LLM
-  - Registered in `RULE_MODULES`; each gated by `APPLIES_TO_SIGNALS` so SHORT rules don't fire on BUY candidates and vice versa
+  - Registered in `RULE_MODULES`; each gated by `APPLIES_TO_SIGNALS`. Routing: stock candidates direct-match by signal; OPTIONS/MULTILEG_OPEN candidates route to same-direction rules via `signal_direction(candidate)` (added 2026-05-19) — a bullish option strategy (`long_call`, `bull_call_spread`, `bull_put_spread`, `cash_secured_put`, `covered_call`) fires the same long-only rules a `BUY` would, and bearish strategies fire the short-only set. Neutral strategies (`iron_condor`, etc.) skip directional rules — they're covered by `gamma_pin_specialist` / `iv_skew_specialist` / `option_spread_risk` in the LLM layer.
 
 **Status after second batch (2026-05-18, same day):**
-- **147 deterministic specialists** in `deterministic_specialists/`
-- Plus the **8 LLM-narrative specialists** from `specialists/` = **155 total specialists** in the live ensemble
+- **179 deterministic specialists** in `deterministic_specialists/`
+- Plus the **8 LLM-narrative specialists** from `specialists/` = **187 total specialists** in the live ensemble
 - Up from 8 at session start. The original "Year 1: 150-200" projection achieved in a single day — because most quant patterns are documented in literature; "wait for losses" was only the *calibration* mechanism, never the *discovery* one.
 
 Categories shipped in the first batch:
