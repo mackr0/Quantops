@@ -171,49 +171,13 @@
 </article>
 
 <!-- Trading Profiles Section -->
-<h2>Alpaca Accounts</h2>
-<article>
-    <p class="muted">Alpaca accounts are the broker connections where trades execute. Multiple profiles can share one account — the system tracks positions internally per profile.</p>
-    {% if alpaca_accounts %}
-    <div class="overflow-auto">
-        <table class="striped">
-            <thead><tr><th>Name</th><th>API Key</th><th>Profiles Using</th><th></th></tr></thead>
-            <tbody>
-                {% for acct in alpaca_accounts %}
-                <tr>
-                    <td><strong>{{ acct.name }}</strong></td>
-                    <td class="muted">{{ acct._key_masked }}</td>
-                    <td>
-                        {% set ns = namespace(count=0) %}
-                        {% for p in profiles if p.get('alpaca_account_id') == acct.id %}{% set ns.count = ns.count + 1 %}{% endfor %}
-                        {{ ns.count }} profile{{ 's' if ns.count != 1 else '' }}
-                    </td>
-                    <td>
-                        <form method="post" action="/settings/alpaca-accounts" style="margin:0;">
-                            <input type="hidden" name="action" value="delete">
-                            <input type="hidden" name="account_id" value="{{ acct.id }}">
-                            <button type="submit" class="outline secondary" style="padding:0.2rem 0.5rem; font-size:0.8rem;" onclick="return confirm('Remove this Alpaca account?')">Remove</button>
-                        </form>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-    {% endif %}
-    <details>
-        <summary>Add Alpaca Account</summary>
-        <form method="post" action="/settings/alpaca-accounts" style="margin-top:0.5rem;">
-            <input type="hidden" name="action" value="create">
-            <div class="grid">
-                <label>Account Name <input type="text" name="account_name" placeholder="e.g. Paper Account 1" required></label>
-                <label>API Key <input type="text" name="account_api_key" placeholder="PK..." required></label>
-                <label>Secret Key <input type="password" name="account_secret_key" placeholder="Secret key" required></label>
-            </div>
-            <button type="submit">Add Account</button>
-        </form>
-    </details>
-</article>
+<!-- 2026-05-19 — removed the "Alpaca Accounts" article that lived
+     here. The shared-account concept is gone: each profile holds
+     its own Alpaca API key + secret in trading_profiles.alpaca_api_key_enc,
+     edited on the per-profile edit form below. Multiple profiles
+     can still share a broker account by entering the SAME key on
+     each (the per-profile setup the operator established
+     2026-05-19). -->
 
 <h2>Your Trading Profiles</h2>
 
