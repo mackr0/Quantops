@@ -127,6 +127,24 @@ def record_failure(provider: str, exc: BaseException) -> None:
             )
 
 
+def seconds_until_close(provider: str) -> Optional[float]:
+    """Return seconds remaining until this provider's circuit
+    becomes eligible for a half-open trial call, or None if the
+    circuit is currently closed (no cool-down active).
+
+    Used by `ai_providers.call_ai` to surface a retry hint when the
+    chain is exhausted — the AI Brain panel can render "retry in
+    ~187s" instead of just "AI unavailable."
+    """
+    s = _state(provider)
+    with s.lock:
+        if s.opened_at is None:
+            return None
+        elapsed = time.time() - s.opened_at
+        remaining = s.current_cooldown - elapsed
+        return max(0.0, remaining)
+
+
 def reset(provider: Optional[str] = None) -> None:
     """Test helper: reset state for one provider or all."""
     with _global_lock:

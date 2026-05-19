@@ -127,6 +127,27 @@ def _is_transient_failure(exc: BaseException) -> bool:
     return any(m in msg for m in transient_markers)
 
 
+class AIProviderUnavailable(RuntimeError):
+    """Raised when every eligible provider in the chain was skipped
+    (circuit open, no key, fallback gate suppression) — no actual call
+    was made and no exception was raised by a provider. Distinct from
+    a real `RuntimeError` so callers (ai_analyst, dashboard renderer)
+    can present this as a transient "waiting for AI provider" state
+    rather than a "system error."
+
+    The exception carries `skip_reasons` (list of human-readable
+    strings, one per provider that was skipped) and `next_retry_hint`
+    (optional seconds-until-circuit-reset for the primary). These let
+    consumers build informative UI without re-deriving the state.
+    """
+
+    def __init__(self, message: str, skip_reasons=None,
+                 next_retry_hint=None):
+        super().__init__(message)
+        self.skip_reasons = list(skip_reasons or [])
+        self.next_retry_hint = next_retry_hint
+
+
 def _build_fallback_chain(primary_provider: str):
     """Return list of (provider, api_key, model) tuples to try after
     primary fails.
@@ -179,6 +200,44 @@ def _build_fallback_chain(primary_provider: str):
             continue
         chain.append((prov, key, model))
     return chain
+
+
+def _enumerate_chain_skip_reasons(primary_provider: str):
+    """Companion to `_build_fallback_chain` — returns a list of
+    human-readable strings describing every provider that COULD have
+    been in the chain but was excluded, and why.
+
+    Used by `call_ai` when the whole chain is exhausted, to build a
+    diagnostic that explains WHICH providers were tried/skipped and
+    WHY. Without this, a chain exhausted by circuit-open + gate
+    suppression produces the misleading "Last error: None" (because
+    no provider was actually called — every one was skipped before
+    the call).
+    """
+    import os
+    import config as _config
+    notes = []
+    allow_anthropic_fallback = (
+        os.getenv("AI_ALLOW_ANTHROPIC_FALLBACK", "").strip() == "1"
+    )
+    candidates = [
+        ("openai", _config.OPENAI_API_KEY),
+        ("google", _config.GEMINI_API_KEY),
+        ("anthropic", _config.ANTHROPIC_API_KEY),
+    ]
+    for prov, key in candidates:
+        if prov == primary_provider:
+            continue
+        if not key:
+            notes.append(f"{prov}: not configured (no API key in env)")
+            continue
+        if prov == "anthropic" and not allow_anthropic_fallback:
+            notes.append(
+                "anthropic: fallback suppressed (paid-provider gate; "
+                "set AI_ALLOW_ANTHROPIC_FALLBACK=1 to allow)"
+            )
+            continue
+    return notes
 
 
 def _call_provider(provider, prompt, model, api_key, max_tokens):
@@ -334,6 +393,10 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
     fallback_chain = _build_fallback_chain(provider)
     attempts = [(provider, api_key, model)] + fallback_chain
     last_exc: BaseException = None
+    # Track every provider's skip reason for the diagnostic that
+    # gets raised if the entire chain ends up skipped without any
+    # actual call being attempted (the "Last error: None" case).
+    skip_reasons = []
 
     for attempt_provider, attempt_key, attempt_model in attempts:
         # Skip a provider whose circuit is currently OPEN (cool-down
@@ -342,6 +405,20 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
             logger.info(
                 "AI failover: skipping %s — circuit OPEN", attempt_provider,
             )
+            # Try to surface the cool-down remaining so the diagnostic
+            # tells operators when to expect recovery.
+            try:
+                from provider_circuit import seconds_until_close
+                remaining = seconds_until_close(attempt_provider)
+                if remaining:
+                    skip_reasons.append(
+                        f"{attempt_provider}: circuit OPEN "
+                        f"(retry in ~{int(remaining)}s)"
+                    )
+                else:
+                    skip_reasons.append(f"{attempt_provider}: circuit OPEN")
+            except Exception:
+                skip_reasons.append(f"{attempt_provider}: circuit OPEN")
             continue
         logger.info(
             "Calling AI: provider=%s, model=%s, max_tokens=%d",
@@ -408,9 +485,39 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
         return cleaned_response
 
     # Every attempt either had its circuit open or raised transient.
-    raise RuntimeError(
-        f"AI provider chain exhausted ({len(attempts)} attempts). "
-        f"Last error: {last_exc}"
+    # Build a diagnostic that names each provider and its skip reason.
+    # The legacy "Last error: None" failure mode came from skipping
+    # every provider (circuit_open + gate suppression) without
+    # actually CALLING any — last_exc stayed None, so the original
+    # error string was useless. Now we surface what we know.
+    suppression_notes = _enumerate_chain_skip_reasons(provider)
+    # Combine actively-tried skips with suppression-time skips
+    all_reasons = list(skip_reasons) + suppression_notes
+    if last_exc is not None:
+        # Truncate the last exception (Google error bodies are long).
+        last_str = str(last_exc)
+        if len(last_str) > 200:
+            last_str = last_str[:200] + "…"
+        all_reasons.append(f"last actual error: {last_str}")
+    reason_text = "; ".join(all_reasons) if all_reasons else "no providers eligible"
+    # When the only reason for failure was circuit-open + gate
+    # suppression (no actual error from any provider), surface this
+    # as a transient unavailability rather than a hard failure.
+    is_transient_unavailable = (
+        last_exc is None
+        and any("circuit OPEN" in r for r in skip_reasons)
+    )
+    primary_retry_hint = None
+    if is_transient_unavailable:
+        try:
+            from provider_circuit import seconds_until_close
+            primary_retry_hint = seconds_until_close(provider)
+        except Exception:
+            primary_retry_hint = None
+    raise AIProviderUnavailable(
+        f"AI provider chain exhausted: {reason_text}",
+        skip_reasons=all_reasons,
+        next_retry_hint=primary_retry_hint,
     )
 
 
