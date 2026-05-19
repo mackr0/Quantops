@@ -18,7 +18,11 @@ def evaluate(candidate: Dict[str, Any], ctx: Any = None) -> Optional[Dict[str, A
         v = float(cmf)
     except (TypeError, ValueError):
         return None
-    if abs(v) <= 0.05:
+    # Narrowed 2026-05-18 PM (post-Phase-3 audit). Original |CMF| ≤
+    # 0.05 fired on most range-bound names every day, creating
+    # CAUTION wallpaper that biased the LLM against routine entries.
+    # Now requires near-zero CMF (|v| ≤ 0.02) to fire — true neutrality.
+    if abs(v) <= 0.02:
         return {"severity": "CAUTION",
-                "reasoning": f"CMF {v:+.2f} — neutral. Neither buyers nor sellers committed; directional flow conviction is absent."}
+                "reasoning": f"CMF {v:+.2f} — flat. Neither buyers nor sellers committed; directional flow conviction is absent."}
     return None

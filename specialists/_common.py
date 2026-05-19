@@ -238,45 +238,97 @@ def _render_alt_value(key: str, value: Any) -> str:
     return ""
 
 
+def _get_or_compute_panel(c: Dict[str, Any], ctx: Any) -> List[Dict[str, Any]]:
+    """Lazy-compute the deterministic-rule panel for this candidate and
+    cache the result on the candidate dict so subsequent specialists
+    in the same cycle don't re-run all 147 rules.
+
+    2026-05-18 — Phase 3 re-scope. The LLM specialists used to derive
+    facts themselves; now the deterministic library has the facts and
+    the LLM's job is synthesis. Surfacing the panel verdicts in the
+    candidate render is the plumbing that makes the re-scope possible.
+
+    Fail-soft: any error returns an empty list so the prompt is still
+    well-formed.
+    """
+    if "_panel_verdicts" in c:
+        return c["_panel_verdicts"]
+    try:
+        from deterministic_specialists import run_panel
+        verdicts = run_panel(c, ctx)
+    except Exception:
+        verdicts = []
+    c["_panel_verdicts"] = verdicts
+    return verdicts
+
+
+def _format_panel_compact(verdicts: List[Dict[str, Any]]) -> str:
+    """One-line `[SEV]name; [SEV]name; ...` summary of fired
+    verdicts. Compact form for inlining into the candidate render —
+    the full reasoning text is omitted here because the candidate
+    line has a length budget. Specialists that need the reasoning
+    can ask the deterministic library directly."""
+    if not verdicts:
+        return ""
+    sev_order = {"VETO": 0, "CAUTION": 1, "CONFIRM": 2}
+    ranked = sorted(verdicts, key=lambda v: sev_order.get(v.get("severity"), 9))
+    bits = [f"[{v['severity'][0]}]{v['name']}" for v in ranked[:12]]
+    return "  |  RULES: " + " ".join(bits)
+
+
 def format_candidate_for_specialist(
-    c: Dict[str, Any], specialist_name: str
+    c: Dict[str, Any], specialist_name: str, ctx: Any = None,
 ) -> str:
     """Per-specialist candidate render. Falls back to the bare brief
     when the specialist isn't in the routing table or when the
-    candidate has no alt-data dict."""
+    candidate has no alt-data dict.
+
+    When `ctx` is provided, appends a compact RULES summary of the
+    deterministic panel verdicts (Phase 3 of docs/17) so the LLM can
+    synthesize from facts the rule layer already established."""
     sym = c.get("symbol", "?")
     signal = c.get("signal", "?")
     price = c.get("price", 0) or 0
     reason = c.get("reason", "")[:120]
     keys = _SPECIALIST_ALT_KEYS.get(specialist_name)
     alt = c.get("alt_data") or {}
+    panel_suffix = ""
+    if ctx is not None:
+        panel_suffix = _format_panel_compact(_get_or_compute_panel(c, ctx))
     if not keys or not alt:
-        return f"- {sym} [{signal} @ ${price}]: {reason}"
+        return f"- {sym} [{signal} @ ${price}]: {reason}{panel_suffix}"
     bits = []
     for k in keys:
         rendered = _render_alt_value(k, alt.get(k))
         if rendered:
             bits.append(rendered)
     if not bits:
-        return f"- {sym} [{signal} @ ${price}]: {reason}"
-    return f"- {sym} [{signal} @ ${price}]: {reason}  |  {' '.join(bits)}"
+        return f"- {sym} [{signal} @ ${price}]: {reason}{panel_suffix}"
+    return (f"- {sym} [{signal} @ ${price}]: {reason}  "
+            f"|  {' '.join(bits)}{panel_suffix}")
 
 
 def candidates_block(candidates: List[Dict[str, Any]],
                      limit: int = 20,
-                     specialist_name: str = "") -> str:
+                     specialist_name: str = "",
+                     ctx: Any = None) -> str:
     """Render a candidate list as a markdown bullet block for prompts.
 
     When `specialist_name` is set, each candidate gets a per-
     specialist alt-data view (insider data for sentiment_narrative,
     risk-factor diff for risk_assessor, etc.). Otherwise falls back
     to the bare brief.
+
+    When `ctx` is provided, each rendered candidate also carries a
+    compact summary of the deterministic-rule panel verdicts so the
+    LLM specialist can synthesize from the facts the rule layer
+    has already established (Phase 3 of docs/17, 2026-05-18 re-scope).
     """
     if not candidates:
         return "(no candidates)"
     if specialist_name:
         return "\n".join(
-            format_candidate_for_specialist(c, specialist_name)
+            format_candidate_for_specialist(c, specialist_name, ctx=ctx)
             for c in candidates[:limit]
         )
     return "\n".join(format_candidate_brief(c) for c in candidates[:limit])

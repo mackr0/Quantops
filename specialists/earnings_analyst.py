@@ -1,10 +1,19 @@
-"""Earnings-focused specialist.
+"""Earnings synthesis specialist (re-scoped 2026-05-18, Phase 3 of docs/17).
 
-Role: read each candidate through the lens of its most recent earnings
-release and any outstanding SEC filing signals. Flags stocks where the
-earnings picture (surprise, guidance direction, post-announcement drift,
-going-concern / material-weakness alerts) materially supports or opposes
-the technical setup.
+Originally read each candidate's earnings context, surprise streak,
+guidance tone, etc. directly from alt-data. As of Phase 3 the
+deterministic library has ~8 earnings-specific rules
+(earnings_surprise_streak, earnings_miss_streak, earnings_within_
+window, positive/negative_earnings_revisions, insider_buying/
+selling_near_earnings, transcript_sentiment_bullish/bearish,
+recent_8k_earnings_release, biotech_milestone_upcoming).
+
+New role: SYNTHESIZE the earnings setup. Given which earnings
+rules fired, is the earnings narrative compelling (beat-and-raise
+trajectory)? Is it deteriorating (down-revisions + miss streak)?
+Is the upcoming-event risk priced in (high IV)? The LLM's value
+is in weaving the individual rule signals into a forward-looking
+earnings thesis.
 """
 
 from __future__ import annotations
@@ -15,28 +24,26 @@ from specialists._common import candidates_block, extract_verdict_array
 
 
 NAME = "earnings_analyst"
-DESCRIPTION = "Interprets earnings context, guidance tone, and SEC filing alerts"
-# Earnings drives both stock direction (post-announcement drift, guidance
-# reaction) AND option behavior (IV expansion pre-event, IV crush post-
-# event). Relevant to both pipelines.
+DESCRIPTION = "Synthesizes earnings trajectory from the earnings-cluster rule verdicts"
 APPLIES_TO_PIPELINES = ("stock", "option")
 
 
 def build_prompt(candidates: List[Dict[str, Any]], ctx: Any) -> str:
-    return f"""You are a specialist equity analyst focused on earnings and financial filings.
-Your job is a FOCUSED LENS — not a full investment decision. You only
-judge each candidate through the earnings / filing dimension. Ignore
-pure technicals; other specialists cover those.
+    return f"""You are an earnings synthesis specialist. The deterministic rule layer
+has already flagged the standard earnings signals — surprise streak,
+miss streak, in-window upcoming earnings, EPS revisions direction,
+insider buying/selling near earnings, transcript sentiment tone,
+recent 8-K Item 2.02 (earnings release), biotech milestones. Each
+candidate below carries a `RULES: [V]name [C]name ...` suffix.
 
-For each candidate below, return one of:
-  BUY   = earnings picture strongly supports the long thesis
-  SELL  = earnings / filing signals are a red flag for longs
-  HOLD  = specific earnings context exists and is neutral
-  VETO  = a material earnings-related risk makes this trade unacceptable
-          (e.g. going-concern disclosure, restatement, massive guide-down)
+Your job is NOT to re-enumerate which rules fired. Your job is to
+SYNTHESIZE the earnings trajectory: is this a beat-and-raise story
+(revision-up + surprise-streak + bullish transcript), a deteriorating
+story (revision-down + miss-streak + bearish transcript), or an
+event-priced story (in-window + high IV + opposite insider activity)?
 
-Candidates (symbol, current signal, one-line context):
-{candidates_block(candidates, specialist_name="earnings_analyst")}
+Candidates:
+{candidates_block(candidates, specialist_name="earnings_analyst", ctx=ctx)}
 
 Return a STRICT JSON ARRAY — starts with `[` and ends with `]`. No prose,
 no markdown fences, no single top-level object. Each entry:
@@ -44,22 +51,27 @@ no markdown fences, no single top-level object. Each entry:
     "symbol": "TICKER",
     "verdict": "BUY" | "SELL" | "HOLD" | "VETO",
     "confidence": 0-100,
-    "reasoning": "one-sentence earnings/filing-specific rationale"
+    "reasoning": "one-sentence trajectory synthesis (not a rule re-statement)"
   }}
 
-CRITICAL — OMIT SYMBOLS YOU CAN'T ASSESS:
-If the context does not include specific earnings data (upcoming
-earnings date, recent EPS surprise, guidance commentary, or a SEC
-filing alert), DO NOT include that symbol in your response. Return
-ONLY the symbols you have specific earnings-dimension information
-about. An empty array is a valid response.
+Verdict semantics:
+  BUY  = trajectory synthesis is coherently bullish — multiple
+         earnings rules reinforce each other
+  SELL = trajectory synthesis is deteriorating
+  HOLD = no clear synthesis from the rules (or rules silent)
+  VETO = trajectory reveals catastrophic-earnings risk the rule layer
+         hasn't fully escalated (e.g., compounding miss streak +
+         insider selling + transcript tone all aligned to disaster)
 
-This is a CHANGE from prior behavior. Previously the instruction was
-"return HOLD with low confidence" for unknown symbols — that polluted
-the consensus. Now: silence is the right answer when you have no data.
+CRITICAL — OMIT SYMBOLS WITH NO EARNINGS-RULE VERDICTS:
+If a candidate's RULES suffix contains NO earnings-cluster rules
+(none of the earnings_* / transcript_* / insider_*_near_earnings /
+biotech_milestone_upcoming rules fired), OMIT that symbol from your
+response. An empty array is valid. Silence beats noise when there's
+no earnings dimension to synthesize.
 
-For symbols you DO include, return high-confidence verdicts based on
-the actual earnings/filing evidence you can see.
+For symbols you DO include, return high-confidence verdicts grounded
+in the specific rule verdicts you weighted.
 """
 
 

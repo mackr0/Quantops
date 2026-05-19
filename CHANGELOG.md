@@ -17,6 +17,48 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 PM — LLM specialist re-scope + panel-noise rebalance. Severity: high (corrects structural anti-action bias the Phase 3 rule library inadvertently introduced).
+
+Two related cleanups after user audit:
+
+**1) LLM specialist re-scope (Phase 3 architectural follow-up).** The 147 deterministic rules absorbed the FACT-FINDING role of 6 of the 8 LLM specialists. Six specialists pivoted from "derive observations from candidate" to "synthesize from the deterministic panel's verdicts":
+
+- `pattern_recognizer` → technical thesis synthesis
+- `risk_assessor` → worst-plausible-outcome scenario synthesis (retains VETO authority)
+- `sentiment_narrative` → narrative synthesis (who is positioning, why)
+- `earnings_analyst` → earnings trajectory synthesis (beat-and-raise vs deteriorating vs event-priced)
+- `adversarial_reviewer` → tuned to hunt failure modes the rule library CAN'T encode (retains VETO authority)
+- `iv_skew_specialist` → tweaked to consume options-rule verdicts
+
+Plumbing: `specialists/_common.py:format_candidate_for_specialist(c, name, ctx=None)` now accepts ctx, lazily computes the deterministic panel via `_get_or_compute_panel(c, ctx)` cached on the candidate dict, and appends a compact `RULES: [V]name [C]name ...` suffix to the rendered candidate. The cache hangs off the candidate dict so multiple specialists in the same cycle don't re-run all 147 rules. Per-rule exception isolation in the panel runner prevents one bad rule from silencing the others. **23 new tests** (`tests/test_specialist_rescope_2026_05_18.py`).
+
+**Two LLM specialists intentionally untouched**: `gamma_pin_specialist` and `option_spread_risk` cover unique territory (gamma surface modeling, multi-leg Greeks) the rule library can't subsume.
+
+**2) Panel-noise rebalance.** User-driven audit ("are you putting unnecessary constraints on the system's ability to trade?") found 76 CAUTION vs 62 CONFIRM rules — structural +23% warning bias — plus several CAUTIONs firing on common benign conditions:
+
+- `below_vwap_long_caution` — tightened threshold from -0.1% to -2% below VWAP (was firing on every pullback-buy candidate, which is *exactly when you want to buy*)
+- `cmf_neutral_low_signal` — narrowed band from |CMF| ≤ 0.05 to |CMF| ≤ 0.02 (was firing on most range-bound names)
+- `low_adx_no_trade` — tightened threshold from ADX < 15 to ADX < 12 (was firing on most non-trending names)
+- `no_news_low_attention` — now also requires |ROC10| > 5% to fire (absence-of-catalyst alone fired on every stable name)
+- `multi_alt_data_silent` — tightened from "<2 signal sources" to "0 signal sources" (was firing on most small-caps)
+
+**Wall-clock CAUTIONs dropped entirely** (4 rules removed): `monday_morning_open`, `last_30_min_session`, `first_5_min_session`, `friday_close_caution`. These added no signal beyond "look at the clock" — the LLM already knows what time it is. CAUTION-tagging every Monday morning entry biased the panel against routine trades.
+
+New count: 143 deterministic rules (147 - 4 dropped). New severity mix: 9 VETO / 67 CAUTION / 67 CONFIRM — equal warning and confirm density. The LLM should see affirmative signals as routinely as warnings on typical setups.
+
+Saved as durable rule: `feedback_trade_and_make_money_not_hoard.md` — every system component must default to action; under-deployment vs benchmark is system failure even when each individual check looks reasonable.
+
+**Documentation updates** (this CHANGELOG entry + audit-prompted doc cleanup):
+- `docs/02_AI_SYSTEM.md` § 4 rewritten as "Two-layer specialist ensemble" with subsections 4a (deterministic library), 4b (LLM specialists re-scoped), 4c (case-file RAG). § 9.0 self-tuner principle extended with Phase 1 hard-rule references. § 7.2 candidate block now correctly lists the rule panel + RAG block.
+- `docs/04_TECHNICAL_REFERENCE.md` — `ensemble.py` row reflects 6-of-8 re-scope; added `deterministic_specialists/` and `case_file_rag.py` rows. Cycle step 6 ensemble description updated. Test count `3,794 → 3,963`.
+- `docs/01_EXECUTIVE_SUMMARY.md` — test count `3,794 → 3,963`.
+- `docs/11_INTEGRATION_GUIDE.md` § 5 rewritten to cover both rule-layer and LLM-layer specialist addition (deterministic preferred for fact patterns; LLM reserved for synthesis).
+- `docs/17_SELF_TUNER_GUARDRAILS_AND_RAG.md` — specialist counts updated throughout.
+
+**Investigated separately, not yet fixed**: zero options trades in today's single (12:48 PT) post-deploy cycle. Cause is upstream — all 15 candidates that reached the AI were `directional_long`/`directional_short`; no options entered the candidate set at all. Worth observing tomorrow's first 2-3 full-session cycles before assuming the cause.
+
+---
+
 ## 2026-05-18 — Phase 3 third batch: deterministic specialist library 109 → 155. Severity: high (the original "Year 1: 150-200" projection achieved in one day; 78% to the 200 target).
 
 User pushed for 150. Shipped 46 more rules in one batch:

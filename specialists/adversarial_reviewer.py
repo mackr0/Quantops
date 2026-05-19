@@ -138,8 +138,16 @@ specialists are likely to miss.
 
 {portfolio}{pair_book_section}
 
-Candidates to review:
-{candidates_block(candidates, specialist_name="adversarial_reviewer")}
+Candidates to review (each carries a `RULES: [V]name [C]name ...` suffix
+with deterministic rule verdicts already evaluated):
+{candidates_block(candidates, specialist_name="adversarial_reviewer", ctx=ctx)}
+
+Phase 3 of docs/17 — 2026-05-18 re-scope. The deterministic rule layer
+now enumerates the standard failure modes (high-SI, FDA citations, 8-K
+risks, crowded longs, etc.). Your job is NOT to re-derive what those
+rules already flagged — it's to hunt for failure modes the rule library
+CAN'T encode: book-level correlation, pair-book interaction,
+mandate violations, and novel scenario combinations.
 
 For each candidate, work through this checklist mentally:
   1. CORRELATION: does the book already have material exposure to this

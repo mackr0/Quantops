@@ -346,7 +346,7 @@ _FIRE_CASES = [
     ("above_vwap_long_confirm",
      {"signal": "BUY", "pct_from_vwap": 1.5}, "CONFIRM", None),
     ("below_vwap_long_caution",
-     {"signal": "BUY", "pct_from_vwap": -1.0}, "CAUTION", None),
+     {"signal": "BUY", "pct_from_vwap": -2.5}, "CAUTION", None),
     ("penny_stock_caution",
      {"signal": "BUY", "price": 3.50}, "CAUTION", None),
     ("squeeze_unreleased",
@@ -483,7 +483,8 @@ _FIRE_CASES = [
       "alt_data": {"finra_short_vol": {"is_elevated": True}}},
      "CAUTION", None),
     ("no_news_low_attention",
-     {"signal": "BUY", "news": [], "sec_alert": {}}, "CAUTION", None),
+     {"signal": "BUY", "news": [], "sec_alert": {}, "roc_10": 7.0},
+     "CAUTION", None),
     # ── 2026-05-18 third batch ──
     ("momentum_5d_strong_positive",
      {"signal": "BUY", "roc_10": 8}, "CONFIRM", None),
@@ -672,12 +673,11 @@ _EMPTY_FIRE_EXEMPT = {
     "no_news_low_attention",        # designed to flag absence of catalyst
     "end_of_quarter_window",         # date-driven
     "turn_of_month_strength",        # date-driven
-    "monday_morning_open",           # date+time-driven
-    "last_30_min_session",           # time-driven
-    "first_5_min_session",           # time-driven
     "wednesday_strength",            # weekday-driven
-    "friday_close_caution",          # weekday+time-driven
     "strong_volume_late_session",    # time-driven (afternoon volume)
+    # Wall-clock CAUTIONs (monday_morning_open / last_30_min_session /
+    # first_5_min_session / friday_close_caution) were dropped
+    # 2026-05-18 PM as low-value panel noise.
 }
 
 
@@ -765,33 +765,7 @@ class TestCalendarRules:
         self._patch_now(monkeypatch, mod, _dt(2026, 5, 15, 14, 0))
         assert mod.evaluate({"signal": "BUY"}, None) is None
 
-    def test_monday_morning_fires(self, monkeypatch):
-        from datetime import datetime as _dt
-        from deterministic_specialists import monday_morning_open as mod
-        # Monday May 18 2026 at 14:00 UTC = 10:00 ET (within 09:30-11:00)
-        self._patch_now(monkeypatch, mod, _dt(2026, 5, 18, 14, 0))
-        out = mod.evaluate({"signal": "BUY"}, None)
-        assert out is not None and out["severity"] == "CAUTION"
-
-    def test_monday_morning_skips_other_weekdays(self, monkeypatch):
-        from datetime import datetime as _dt
-        from deterministic_specialists import monday_morning_open as mod
-        # Tuesday May 19 2026 at 14:00 UTC
-        self._patch_now(monkeypatch, mod, _dt(2026, 5, 19, 14, 0))
-        assert mod.evaluate({"signal": "BUY"}, None) is None
-
-    def test_last_30_min_fires(self, monkeypatch):
-        from datetime import datetime as _dt
-        from deterministic_specialists import last_30_min_session as mod
-        # Tuesday at 19:45 UTC = 15:45 ET
-        self._patch_now(monkeypatch, mod, _dt(2026, 5, 19, 19, 45))
-        out = mod.evaluate({"signal": "BUY"}, None)
-        assert out is not None and out["severity"] == "CAUTION"
-
-    def test_first_5_min_fires(self, monkeypatch):
-        from datetime import datetime as _dt
-        from deterministic_specialists import first_5_min_session as mod
-        # Tuesday at 13:32 UTC = 09:32 ET
-        self._patch_now(monkeypatch, mod, _dt(2026, 5, 19, 13, 32))
-        out = mod.evaluate({"signal": "BUY"}, None)
-        assert out is not None and out["severity"] == "CAUTION"
+    # NOTE: monday_morning_open / last_30_min_session / first_5_min_session
+    # were DROPPED 2026-05-18 PM as low-value panel noise — the LLM
+    # already knows what time it is; CAUTION-tagging every Monday
+    # morning entry biased the panel against routine trades.

@@ -155,13 +155,24 @@ A scheduled task is a per-cycle or once-per-day function in `multi_scheduler.py`
 - `test_scheduled_features_have_settings` — fails if the task runs unconditionally and isn't on `INFRASTRUCTURE_TASKS`.
 - `test_today_integration` — fails if scheduler wiring regresses.
 
-## 5. Adding a new specialist to the ensemble
+## 5. Adding a new specialist
 
-The 5-specialist ensemble is one of the highest-leverage decisions in the system. A new specialist is a non-trivial change.
+The system has two specialist layers — choose the right one. **Deterministic rules** (in `deterministic_specialists/`) are cheap, instant, and the right home for any pattern that's a clear `(candidate) → fact` mapping. **LLM specialists** (in `specialists/`) are the right home only for work that requires synthesis or narrative reasoning the rule layer structurally can't do.
 
-### 5a. Steps
+### 5a. Deterministic specialist (preferred for fact-pattern checks)
 
-1. **Decide what role the specialist plays.** Existing specialists: earnings_analyst, pattern_recognizer, sentiment_narrative, risk_assessor, adversarial_reviewer. A new specialist must have a clearly differentiated reasoning surface, otherwise its verdict will correlate with an existing one and add cost without value.
+Zero per-rule API cost, instant evaluation, no calibration drift. The right choice unless the rule genuinely needs LLM reasoning.
+
+1. Drop a module under `deterministic_specialists/<rule_name>.py` exposing `NAME`, `DESCRIPTION`, `APPLIES_TO_SIGNALS` (tuple of signal strings the rule applies to), and `evaluate(candidate, ctx) -> Optional[{severity, reasoning}]`. Severity is one of `VETO` / `CAUTION` / `CONFIRM`.
+2. Add the import path to `RULE_MODULES` in `deterministic_specialists/__init__.py`.
+3. Add a positive-fixture row to `_FIRE_CASES` in `tests/test_deterministic_specialists_2026_05_18.py` so the structural test pins the rule's fire behavior. The test framework also auto-runs a no-op check on minimal candidates — exempt your rule from that via `_EMPTY_FIRE_EXEMPT` if its purpose IS to fire on minimal context.
+4. No CHANGELOG entry needed per rule, but batch-shipped rules get one entry summarizing the batch.
+
+### 5b. LLM specialist (reserve for synthesis work)
+
+A new LLM specialist is a significant change — adds API cost on every cycle. Justification needed.
+
+1. **Decide what role the specialist plays.** Existing LLM specialists: `earnings_analyst`, `pattern_recognizer`, `sentiment_narrative`, `risk_assessor`, `adversarial_reviewer`, `iv_skew_specialist`, `gamma_pin_specialist`, `option_spread_risk`. As of 2026-05-18 the first six were re-scoped to synthesize from the deterministic panel rather than re-derive facts (Phase 3 of docs/17). A new specialist needs a clearly differentiated *synthesis* role — not a fact-derivation overlap with what the rule layer already handles.
 2. **Add the specialist class** to `ensemble.py`. Follow existing specialist class patterns: subclass with system prompt + feature subset.
 3. **Define veto authority.** Default: not authorized. If the specialist should be able to veto trades regardless of the others (like `risk_assessor` and `adversarial_reviewer`), add it to the `VETO_AUTHORIZED` set.
 4. **Update the synthesizer** in `ensemble.run_ensemble` to handle the new verdict slot.

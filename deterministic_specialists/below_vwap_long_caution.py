@@ -15,8 +15,12 @@ def evaluate(candidate: Dict[str, Any], ctx: Any = None) -> Optional[Dict[str, A
         d = float(v)
     except (TypeError, ValueError):
         return None
-    # Below VWAP but not extreme (extended_above_vwap mirror handles -3%+)
-    if -3.0 <= d <= -0.1:
+    # Below VWAP by a meaningful amount. Narrowed 2026-05-18 PM
+    # (post-Phase-3 audit) — original -0.1% threshold fired on every
+    # pullback-buy, biasing the panel against legitimate entries.
+    # Now requires -2% to -3% (still below extended_above_vwap's -3%
+    # mirror) to fire — only meaningful intraday weakness.
+    if -3.0 <= d <= -2.0:
         return {"severity": "CAUTION",
-                "reasoning": f"Price {d:.1f}% below session VWAP — algo flow leans bearish intraday."}
+                "reasoning": f"Price {d:.1f}% below session VWAP — meaningful intraday weakness."}
     return None

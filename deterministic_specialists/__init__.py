@@ -159,12 +159,13 @@ RULE_MODULES = [
     "deterministic_specialists.recent_8k_acquisition",
     "deterministic_specialists.recent_8k_regulation_fd",
     "deterministic_specialists.recent_8k_earnings_release",
-    # Calendar / time-of-day
+    # Calendar (CONFIRMs only — wall-clock CAUTIONs dropped
+    # 2026-05-18 PM as low-value panel noise. monday_morning_open,
+    # last_30_min_session, first_5_min_session, friday_close_caution
+    # added no signal beyond "look at the clock"; the LLM already
+    # knows what time it is.)
     "deterministic_specialists.end_of_quarter_window",
     "deterministic_specialists.turn_of_month_strength",
-    "deterministic_specialists.monday_morning_open",
-    "deterministic_specialists.last_30_min_session",
-    "deterministic_specialists.first_5_min_session",
     # Catalyst-attribution
     "deterministic_specialists.no_news_low_attention",
     "deterministic_specialists.multi_signal_consensus",
@@ -202,9 +203,8 @@ RULE_MODULES = [
     "deterministic_specialists.rsi_bear_short_confirm",
     "deterministic_specialists.value_short_warning",
     "deterministic_specialists.expensive_short_confirm",
-    # Calendar / time-of-day
+    # Calendar (CONFIRMs only after 2026-05-18 PM noise cleanup)
     "deterministic_specialists.wednesday_strength",
-    "deterministic_specialists.friday_close_caution",
     # Options flow detail
     "deterministic_specialists.options_unusual_calls",
     "deterministic_specialists.options_unusual_puts",

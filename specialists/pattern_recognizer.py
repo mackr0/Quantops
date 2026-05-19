@@ -1,9 +1,16 @@
-"""Technical pattern specialist.
+"""Technical synthesis specialist (re-scoped 2026-05-18, Phase 3 of docs/17).
 
-Role: evaluate each candidate purely through chart structure — breakouts,
-reversals, support/resistance, volume confirmation, trend strength. The
-generalist AI sees these indicators too, but a specialist with a narrow
-mandate produces sharper verdicts than a jack-of-all-trades.
+Originally this specialist re-derived technical observations from
+the candidate dict — RSI overbought, ADX strength, breakout
+volume, etc. As of Phase 3 the deterministic specialist library
+emits 25+ rule verdicts on exactly those questions, far more
+reliably than the LLM ever could.
+
+The new role: SYNTHESIZE from the deterministic rules' verdicts.
+The candidate render now carries a `RULES: [V]name [C]name ...`
+suffix. The LLM's job is to weigh the conflicting verdicts and
+form a coherent technical thesis — the unique work the LLM is
+actually good at.
 """
 
 from __future__ import annotations
@@ -14,27 +21,28 @@ from specialists._common import candidates_block, extract_verdict_array
 
 
 NAME = "pattern_recognizer"
-DESCRIPTION = "Judges chart structure, trend quality, and volume confirmation"
-# Stock-only: option contract premiums move on Greeks, not chart patterns
-# of the contract itself. Underlying technicals are surfaced separately
-# in the option pipeline's prompt — pipelines/option_prompt.py.
+DESCRIPTION = "Synthesizes a coherent technical thesis from the deterministic rule panel"
 APPLIES_TO_PIPELINES = ("stock",)
 
 
 def build_prompt(candidates: List[Dict[str, Any]], ctx: Any) -> str:
-    return f"""You are a technical pattern specialist. Your lens is purely chart
-structure, indicator confluence, and volume behavior — NOT fundamentals,
-NOT news, NOT macro. Other specialists cover those.
+    return f"""You are a technical synthesis specialist. The deterministic rule layer
+has already evaluated every standard technical pattern (RSI bands, ADX
+strength, Bollinger walks, VWAP relationship, squeeze release, volume
+confirmation, Fibonacci levels, momentum factor, etc.). Each candidate
+below carries a `RULES: [V]name [C]name ...` suffix where:
+  [V] = VETO  — the rule has high confidence the trade should NOT happen
+  [C] = CAUTION — the rule sees a yellow flag
+  [C] = CONFIRM — the rule's pattern actively supports the candidate
 
-For each candidate, judge:
-  - Is the pattern clean (well-defined breakout, confirmed reversal,
-    coherent trend) or is it noise?
-  - Does volume confirm price? (breakouts without volume are traps)
-  - Is the entry location advantageous relative to support/resistance?
-  - Are momentum indicators in confluence or diverging?
+Your job is NOT to re-derive what those rules already said. Your job is
+to SYNTHESIZE: given the verdicts AND the underlying data, what is the
+coherent technical thesis? Where do the verdicts agree, conflict, or
+miss a pattern the deterministic layer can't see (multi-bar narratives,
+chart symmetry, complex divergences spanning multiple indicators)?
 
 Candidates:
-{candidates_block(candidates, specialist_name="pattern_recognizer")}
+{candidates_block(candidates, specialist_name="pattern_recognizer", ctx=ctx)}
 
 Return a STRICT JSON ARRAY — starts with `[` and ends with `]`. Every
 candidate must appear EXACTLY ONCE. No markdown fences, no prose, no
@@ -43,15 +51,16 @@ single top-level object. Each entry:
     "symbol": "TICKER",
     "verdict": "BUY" | "SELL" | "HOLD" | "VETO",
     "confidence": 0-100,
-    "reasoning": "one-sentence technical rationale"
+    "reasoning": "one-sentence SYNTHESIS — reference the rule verdicts you weighted"
   }}
 
 Verdict semantics:
-  BUY  = pattern is structurally clean and supports the shortlist signal
-  SELL = pattern contradicts the shortlist signal
-  HOLD = pattern is ambiguous or mid-range
-  VETO = chart is actively dangerous (late-stage extension, clear failed
-         breakout, broken support) — regardless of other factors
+  BUY  = rule confirms outweigh rule warnings AND the overall pattern
+         is coherent in the signal direction
+  SELL = rule warnings dominate the picture for a LONG candidate
+  HOLD = rules conflict without a clear synthesis; weight is genuinely mixed
+  VETO = your synthesis surfaces something the rule layer missed (rare —
+         the deterministic VETOs usually catch this already)
 
 You MUST return exactly {len(candidates)} entries, one per candidate,
 in the same order as the list above.

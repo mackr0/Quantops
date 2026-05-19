@@ -31,7 +31,12 @@ def evaluate(candidate: Dict[str, Any], ctx: Any = None) -> Optional[Dict[str, A
         v = alt.get(key)
         if isinstance(v, dict) and v and len(v) > 1:
             signal_count += 1
-    if signal_count >= 2:
+    # Narrowed 2026-05-18 PM (post-Phase-3 audit). Original "fire when
+    # <2 sources carry signal" fired on most small-cap candidates and
+    # biased the panel against entries that had nothing wrong with
+    # them — pure-technical entries on small-caps are routine.
+    # Now requires ZERO alt-data signal carriers to fire — truly silent.
+    if signal_count >= 1:
         return None
     return {"severity": "CAUTION",
-            "reasoning": f"Only {signal_count} of {len(_SIGNAL_KEYS)} alt-data sources carry signal — pure-technical entry; weigh chart conservatively."}
+            "reasoning": f"All {len(_SIGNAL_KEYS)} alt-data sources are silent — pure-technical entry with no confirming flow signals."}

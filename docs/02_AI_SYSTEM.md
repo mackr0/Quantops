@@ -62,29 +62,66 @@ This is a cost-and-quality lever: it cuts specialist API calls roughly in half o
 
 The meta-model itself is described in §6 below.
 
-## 4. Specialist ensemble
+## 4. Two-layer specialist ensemble
 
-The ensemble (`ensemble.py`) consists of eight specialist LLMs, each instantiated with the same backend model but a differentiated system prompt and feature subset. Five run on every candidate (the original wave); three run only on option candidates (added 2026-05-12 for options-pipeline coverage):
+The ensemble has two parallel layers that surface into the apex LLM prompt:
 
-**Stock pipeline (always runs):**
+### 4a. Deterministic specialist library (`deterministic_specialists/`)
+
+147 pure-Python rule checkers. Each rule is a function `(candidate, ctx) → Optional[{severity, reasoning}]` with severities `VETO` / `CAUTION` / `CONFIRM`. Zero per-rule API cost. Each rule fires only when its specific data pattern is present; in practice 5-15 rules fire per candidate. The fired verdicts render into two surfaces:
+
+  - **Apex prompt panel** — `deterministic_specialists.build_panel_block(candidate, ctx)` is appended to each candidate's section of the batched LLM prompt as a `DETERMINISTIC RULE PANEL` block.
+  - **Compact rules-suffix on LLM specialist candidate renders** — when the LLM specialists call `candidates_block(candidates, specialist_name=..., ctx=ctx)`, each rendered candidate carries a `RULES: [V]name [C]name ...` suffix so the LLM specialists synthesize from the rule layer rather than re-deriving facts.
+
+Rule categories include: late-stage / extended warnings (`rsi_overbought_late_stage`, `parabolic_blow_off`, `gap_into_resistance`), breakout / momentum quality (`volume_dry_breakout`, `low_atr_breakout`, `weak_adx_breakout`), smart-money + flow (`insider_cluster_buying`, `dark_pool_accumulation`, `activist_13d_filed`, `congressional_buying`), earnings momentum (`positive/negative_earnings_revisions`, `earnings_surprise/miss_streak`), regulatory events (`recent_8k_negative_event`, `fda_inspection_warning`, `nhtsa_recall_active`), trend confirms (`strong_adx_trend_confirm`, `bollinger_walk_up/down`, `near_fib_support`), short-side specific (`borrow_cost_high_short`, `squeeze_risk_short`), macro / volatility regime (`yield_curve_inverted`, `cboe_skew_extreme`, `macro_oil/treasury/gold_vol_high`), execution friction (`slippage_high_caution`, `wide_spread_caution`), calendar / time-of-day (`turn_of_month_strength`, `monday_morning_open`, `last_30_min_session`), oscillator confluence (`triple_overbought`, `triple_oversold`), and catalyst stacking (`multiple_negative_catalysts`, `multiple_positive_catalysts`).
+
+Adding a rule: drop a module under `deterministic_specialists/<name>.py` exposing `NAME`, `DESCRIPTION`, `APPLIES_TO_SIGNALS`, and `evaluate(candidate, ctx)`. Add the import path to `RULE_MODULES`. The structural test pins one positive fixture per rule.
+
+Per-rule exception isolation: one bad rule logs at DEBUG and is skipped; the rest of the panel continues. `APPLIES_TO_SIGNALS` gates each rule so SHORT rules don't fire on BUY candidates and vice versa.
+
+### 4b. LLM specialist ensemble (`specialists/`)
+
+Eight LLM-narrative specialists, each instantiated with the same backend model but a differentiated system prompt and feature subset. Originally each specialist re-derived observations from the candidate dict; as of 2026-05-18 (Phase 3 re-scope) six of them have been pivoted to **synthesize** from the deterministic panel rather than re-derive facts. Two remain as-is because they cover unique territory the rule library cannot subsume.
+
+**Re-scoped specialists** (consume the rules-suffix in the candidate render and pivot to synthesis):
+
+| Specialist | Re-scoped role | Veto authority |
+|---|---|---|
+| `pattern_recognizer` | Synthesizes a coherent technical thesis from the deterministic technical rules' verdicts | No |
+| `risk_assessor` | Synthesizes a worst-plausible-outcome scenario from the risk-cluster rule verdicts | **Yes** |
+| `sentiment_narrative` | Synthesizes the coherent narrative — who is positioning and why — from the smart-money + sentiment rules | No |
+| `earnings_analyst` | Synthesizes the earnings trajectory from the earnings-cluster rules (beat-and-raise vs deteriorating vs event-priced) | No |
+| `adversarial_reviewer` | Hunts failure modes the rule library can't encode (book-level correlation, mandate violations, novel scenarios) | **Yes** |
+| `iv_skew_specialist` | Reads put/call IV skew for premium-side bias; tweaked to consume the options-rule verdicts | No |
+
+**Untouched specialists** (deterministic library can't subsume these):
 
 | Specialist | Role | Veto authority |
 |---|---|---|
-| `earnings_analyst` | Reasons about earnings calendar, surprise streak, transcript sentiment, days-to-PDUFA, days-to-earnings | No |
-| `pattern_recognizer` | Reasons about technical patterns, price action, volume confirmation | No |
-| `sentiment_narrative` | Reasons about news, Reddit, StockTwits, congressional trades, attention signals, insider activity, 13D/G activist positions, 8-K material events | No |
-| `risk_assessor` | Reasons about correlation, concentration, regime fit, drawdown context, FDA/NHTSA/EPA citations, 10-K risk-factor diffs, restatements (8-K Item 4.02) | **Yes** |
-| `adversarial_reviewer` | Red-teams the trade thesis: failure modes, bear case, downside catalysts (8-K bankruptcy / officer change), where this goes wrong | **Yes** |
+| `gamma_pin_specialist` | Reads dealer GEX + max-pain strike for pinning (stability) vs negative-gamma (instability) regimes | No |
+| `option_spread_risk` | Option-aware gatekeeper for IV crush, gamma exposure, max-loss budget violations | **Yes** |
 
-**Option pipeline (runs only when candidate is an options strategy, `APPLIES_TO_PIPELINES = ("option",)`):**
+All eight share the same canonical interface — each specialist file in `specialists/` exposes `NAME`, `DESCRIPTION`, `HAS_VETO_AUTHORITY`, `APPLIES_TO_PIPELINES`, and `build_prompt(candidates, ctx)`. `specialists/__init__.py` auto-discovers them at load time. The re-scoped specialists pass `ctx=ctx` into `candidates_block(...)` so the deterministic panel verdicts appear in each candidate's render; this is enforced by `tests/test_specialist_rescope_2026_05_18.py`.
 
-| Specialist | Role | Veto authority |
-|---|---|---|
-| `iv_skew_specialist` | Reads put/call IV skew for premium-side bias and direction of expected move | No |
-| `gamma_pin_specialist` | Reads dealer GEX + max-pain strike to identify pinning (stability) vs negative-gamma (instability) regimes | No |
-| `option_spread_risk` | Option-aware gatekeeper for IV crush risk, gamma exposure, max-loss budget violations | **Yes** |
+The architectural split between the two layers:
+- **Deterministic** wins for "did X happen?" — pattern matching on facts. 100% accuracy, zero cost, instant.
+- **LLM** wins for "given all these facts, what's the coherent thesis?" — synthesis and narrative reasoning that pure code structurally can't do.
 
-All eight share the same canonical interface — each specialist file in `specialists/` exposes `NAME`, `DESCRIPTION`, `HAS_VETO_AUTHORITY`, `APPLIES_TO_PIPELINES`, and `build_prompt(candidates, ctx)`. `specialists/__init__.py` auto-discovers them at load time so adding a 9th specialist requires only adding a file, not editing the loader.
+This split is the core architecture decision: facts on rails, narrative on judgment. Before the Phase 3 re-scope, the LLM specialists were duplicating the cheap work and skipping the expensive work; now each LLM call shifts from "look at the data" to "interpret what the rule layer concluded."
+
+### 4c. Case-file RAG (`case_file_rag.py`)
+
+The LLM's weights are frozen at the model provider's training cutoff. To compensate, every new decision retrieves the most-similar past *resolved* cases from THIS profile's own history and injects them into the prompt as concrete cases-to-reason-from. The system gains experience without retraining the model.
+
+Implementation:
+- `case_file_rag.build_case_file_text(prediction)` renders an `ai_predictions` row as a structured token stream — symbol, signal, regime, strategy_type, confidence bucket, indicator bands (RSI / momentum / volume / gap / ATR), outcome, return bucket. Numeric indicators are bucketed (`rsi_70_80`, `volume_ratio_1.5_2.5`) so TF-IDF treats them as discrete tokens instead of unique per-row floats.
+- `case_file_rag.retrieve_similar(profile_db_path, candidate, top_n=3, min_similarity=0.15)` fits sklearn `TfidfVectorizer` on the rolling 2000-case corpus + the candidate text and returns top-N cosine-similarity matches above the floor. Returns BOTH wins and losses (filtering to only "warnings" would bias the AI away from action — pinned by test).
+- `case_file_rag.build_prompt_block(...)` is the one-call wrapper used by `ai_analyst._build_batch_prompt` per candidate. Output is a `SIMILAR PAST CASES FOR <SYMBOL>` block with one line per case: `[date] SIGNAL SYMBOL in regime → OUTCOME (return in days, sim=X)`.
+- No schema migration — all retrieval inputs derive from existing `ai_predictions` columns. Backfill is automatic; every already-resolved row immediately becomes available to the corpus.
+
+Backend choice: TF-IDF (sklearn — already installed). Sentence-transformers were considered and rejected because (1) case-file text is highly structured key=value tokens, not natural-language paraphrasing, and (2) the dependency would add ~1GB of PyTorch + model weights. Architecture supports a later upgrade if quality measurably lags.
+
+Fail-soft: any retrieval error (missing DB, sklearn unavailable, malformed corpus) yields an empty block — the existing prompt still works, the AI just doesn't get the extra context. Logged at DEBUG so silent quality regressions are visible.
 
 Each specialist returns a verdict (BUY / SELL / HOLD / SHORT / VETO) and a 0-100 confidence. The synthesizer in `ensemble.run_ensemble`:
 
@@ -157,7 +194,7 @@ This framing is the architectural fix for the bug class that drove stock BUY sig
 - **STOCK ACTION RECOMMENDATIONS** (new 2026-05-14): one entry per directional candidate with action (BUY/SHORT), size_pct (conviction-scaled), stop_loss_pct (ATR-based), take_profit_pct (ATR-based), confidence, rationale. Built by `stock_strategy_advisor.render_stock_recs_for_prompt`.
 - **MULTI-LEG OPTIONS STRATEGIES**: defined-risk options structures with strategy name, strikes, expiry, rationale. Built by `options_strategy_advisor.render_multileg_recs_for_prompt`. Gated by IV dead zone (no rec when IV rank is in the 45-60 neutral band).
 - **Market context block:** regime label + VIX, SPY trend, sector rotation (5-day returns), crisis level (with size multiplier), macro context (yield curve, CBOE skew, FRED indicators, ETF flows), portfolio risk readout (daily σ, 95% VaR, ES, top factor exposures, worst-3 stress scenarios), next macro event (FOMC/CPI/NFP), long-vol hedge state (when active).
-- **Candidate block** for each of the (typically 5-15) survivors, including: technical indicators, options oracle summary (IV rank, term structure, skew, GEX, max pain, implied move), alternative data (insider, short interest, options flow, intraday patterns, congressional, 13F, biotech, StockTwits, Google Trends, Wikipedia views, App Store ranks), specialist ensemble verdicts, per-stock track record by signal type, last prediction reasoning, earnings warning, SEC alerts, news headlines, slippage estimate, borrow rate (for shorts).
+- **Candidate block** for each of the (typically 5-15) survivors, including: technical indicators, options oracle summary (IV rank, term structure, skew, GEX, max pain, implied move), alternative data (insider, short interest, options flow, intraday patterns, congressional, 13F, biotech, StockTwits, Google Trends, Wikipedia views, App Store ranks), LLM specialist ensemble verdicts, the **deterministic rule panel** (§4a — typically 5-15 fired verdicts per candidate), the **RAG case-file block** (§4c — top-3 most-similar resolved past trades for this profile), per-stock track record by signal type, last prediction reasoning, earnings warning, SEC alerts, news headlines, slippage estimate, borrow rate (for shorts).
 - **Long/short balance target** and **book-beta target** with directives ("UNDERSHORTED — pick a SHORT this cycle"; "BETA TOO HIGH — DEFENSIVE picks long or LEVERED shorts").
 - **Learned patterns** from prior post-mortems and self-tuner findings.
 - **Track record** aggregated and split by signal type to prevent confabulation (e.g., the AI cannot claim "100% win rate on VALE shorts" when all 13 wins were HOLDs).
@@ -222,6 +259,14 @@ The self-tuner exists to make the system trade better, not to make it trade less
 - **No manual rescue scripts.** A revert script needed to "rescue" the system from over-restriction is evidence of architectural failure, not a feature. Every restriction must have a path back to action.
 
 These guarantees were added on 2026-05-14 in response to a 14-day compounding-restriction collapse (stock entries fell from 24/day to 0/day system-wide) — see `feedback_self_tuner_must_drift_toward_trading.md` and the 2026-05-14 CHANGELOG entries for the incident narrative.
+
+**Phase 1 hard-rule layer (added 2026-05-18, see `docs/17_SELF_TUNER_GUARDRAILS_AND_RAG.md`).** Five guardrails formalize the principle as deterministic code rather than convention:
+
+1. **Per-cycle delta cap.** Every numeric parameter write routes through `_apply_param_change` which clamps the change to ±25% of the current value. Composes with #3 so no single cycle can cascade past the cap.
+2. **Trade-count floor auto-loosen.** When stock entries fall below 3 in a 7-day window, `_optimize_trade_count_auto_loosen` (tagged LOOSEN — fires FIRST in the registry) picks the most-restrictive entry-filter parameter and forces it to loosen by 25%. Encodes "drift toward trading" as a deterministic action, not just a soft bias.
+3. **Reference-window invariant.** `param_references` table snapshots the day-1 value for each (profile, param) on first observation; subsequent writes are clamped to ±50% from that reference. With #1 composed, the 14-day compounding cascade lands at the reference floor (e.g., 0.05) instead of spiraling toward zero — pinned by `test_14_cycles_held_to_reference_floor`.
+4. **Auto-expiry on tightenings.** `expired_at` column on `tuning_history`; `_optimize_auto_expire_old_tightenings` (tagged LOOSEN) picks the oldest unexpired tightening older than 14 days whose `outcome_after` is not `'improved'` and walks the parameter one cap-bounded step back toward `old_value`. Stale restrictions can't sit forever without evidence.
+5. **Trade-rate anomaly alert.** `trade_rate_anomaly.py` + daily scheduler task `_task_trade_rate_anomaly_check` write an `audit_alerts` row when weekly entry count drops >50% week-over-week. Observability only — does NOT pause the tuner (per `feedback_ai_driven_no_manual_loop`), surfaces in `/issues`.
 
 ### 9.1 The 12 layers
 

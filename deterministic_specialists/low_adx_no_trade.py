@@ -22,7 +22,11 @@ def evaluate(candidate: Dict[str, Any], ctx: Any = None) -> Optional[Dict[str, A
         a = float(adx)
     except (TypeError, ValueError):
         return None
-    if a < 15:
+    # Tightened 2026-05-18 PM (post-Phase-3 audit). Original ADX < 15
+    # fired on most range-bound names; the panel got noisy with
+    # CAUTIONs for routine non-trending entries. Now requires < 12
+    # for true "no man's land" trend absence.
+    if a < 12:
         return {"severity": "CAUTION",
                 "reasoning": f"ADX {a:.0f} — no-trend regime. Directional edge compresses; size down."}
     return None

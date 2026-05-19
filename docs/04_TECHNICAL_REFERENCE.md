@@ -78,7 +78,9 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | `ai_cost_ledger.py` | Per-call cost accounting. |
 | `ai_pricing.py` | Provider price tables. |
 | `ai_tracker.py` | Prediction journaling + resolution. |
-| `ensemble.py` | 8-specialist ensemble synthesizer (5 stock-pipeline + 3 options-pipeline). |
+| `ensemble.py` | 8-specialist LLM-narrative ensemble synthesizer (5 stock-pipeline + 3 options-pipeline). Five of the eight are re-scoped (2026-05-18, Phase 3) to synthesize from the deterministic panel rather than re-derive facts. |
+| `deterministic_specialists/` | 147 pure-Python rule checkers (zero API cost per rule). Each rule = `(candidate, ctx) → Optional[{severity: VETO/CAUTION/CONFIRM, reasoning}]`. Fired verdicts surface in the apex AI prompt and as a compact `RULES: [V]name [C]name ...` suffix in each re-scoped LLM specialist's candidate render. |
+| `case_file_rag.py` | RAG over resolved `ai_predictions`. TF-IDF over a rolling 2000-case corpus; injects top-3 most-similar past cases per candidate into the apex prompt as concrete cases-to-reason-from. |
 | `specialist_calibration.py` | Platt-scaling per specialist. |
 | `meta_model.py` | GBM batch model. |
 | `online_meta_model.py` | SGD freshness layer. |
@@ -241,8 +243,8 @@ When `_task_scan_and_trade(ctx)` fires for one profile:
 3. **Strategy votes** — each strategy in `strategies/` runs on each symbol; emits a vote.
 4. **Rank** — `multi_strategy.rank_candidates` computes composite score; takes top 30 with reserved long/short slots.
 5. **Meta-pregate** — `meta_model.predict_probability` per candidate; drop if < `meta_pregate_threshold`.
-6. **Ensemble** — `ensemble.run_ensemble(survivors)` runs the 8 specialists in parallel (5 stock-pipeline always; 3 options-pipeline when candidate is an options strategy). Vetoes from `risk_assessor`, `adversarial_reviewer`, or `option_spread_risk` drop the candidate. Each specialist receives a per-role subset of the alt-data dict via `format_candidate_for_specialist` (2026-05-17 #175 fix — previously specialists saw only the 120-char reason string).
-7. **Build candidate context** — `_build_candidates_data` enriches each remaining candidate with: technicals, alt_data dict, options_oracle, factor exposures, track_record, last_prediction, slippage_estimate, borrow_rate (shorts), SEC alerts.
+6. **Ensemble** — `ensemble.run_ensemble(survivors)` runs the 8 LLM specialists in parallel (5 stock-pipeline always; 3 options-pipeline when candidate is an options strategy). Vetoes from `risk_assessor`, `adversarial_reviewer`, or `option_spread_risk` drop the candidate. Each specialist receives a per-role subset of the alt-data dict via `format_candidate_for_specialist`. Six of the eight specialists (re-scoped 2026-05-18, Phase 3 of docs/17) receive the candidate render with a compact `RULES: [V]name [C]name ...` suffix carrying the deterministic-panel verdicts so their prompts synthesize from the rule layer rather than re-derive facts; `gamma_pin_specialist` and `option_spread_risk` are intentionally left alone because they cover unique territory the rule library doesn't subsume.
+7. **Build candidate context** — `_build_candidates_data` enriches each remaining candidate with: technicals, alt_data dict, options_oracle, factor exposures, track_record, last_prediction, slippage_estimate, borrow_rate (shorts), SEC alerts. Also computes the deterministic rule panel (`deterministic_specialists.run_panel`) and the RAG case-file block (`case_file_rag.build_prompt_block`) for injection into the apex prompt.
 8. **Build market context** — `_build_market_context` returns regime, VIX, SPY trend, sector rotation, crisis_context, macro_context, political_context, portfolio_risk_summary, portfolio_risk_scenarios, long_vol_hedge_block, macro_event_block.
 9. **Build portfolio state** — equity, cash, positions, exposure breakdown, book beta, Kelly recommendations, drawdown scale, risk-budget, MFE capture, sector concentration warnings.
 10. **AI batch call** — `ai_analyst.ai_select_trades(candidates_data, portfolio_state, market_ctx, ctx)` makes one LLM call. Returns 0-3 trade proposals with reasoning.
@@ -388,7 +390,7 @@ Run: `venv/bin/python -m pytest tests/ -q`.
 
 Test discipline:
 
-- 3,794 tests, zero skipped.
+- 3,963 tests passing (1 skipped — an `_EMPTY_FIRE_EXEMPT` rule whose purpose is to fire on minimal context).
 - pytest-randomly for order-independence.
 - 30s default timeout per test.
 - Mocked external APIs (no network calls).

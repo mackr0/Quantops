@@ -64,8 +64,12 @@ For each candidate, judge:
     SELL = misaligned (premium edge works AGAINST the trade).
     HOLD = flat skew or no clear alignment.
 
-Candidates:
-{candidates_block(candidates, specialist_name="iv_skew_specialist")}
+Candidates (each carries a `RULES: [V]name [C]name ...` suffix with
+deterministic options-rule verdicts — options_iv_extreme_high,
+options_iv_rich_for_sellers, options_iv_cheap_for_buyers,
+options_iv_normal_zone, options_pcr_panic/complacent,
+options_unusual_calls/puts — already evaluated):
+{candidates_block(candidates, specialist_name="iv_skew_specialist", ctx=ctx)}
 
 Return a STRICT JSON ARRAY — starts with `[` and ends with `]`. Every
 candidate must appear EXACTLY ONCE. Each entry:

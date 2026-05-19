@@ -1,10 +1,16 @@
-"""Risk-management specialist.
+"""Risk synthesis specialist (re-scoped 2026-05-18, Phase 3 of docs/17).
 
-Role: the designated pessimist. Checks each candidate against portfolio-
-and regime-level risk conditions — correlation to existing positions,
-drawdown context, volatility regime, liquidity, recent losing streaks.
-Has unique authority to VETO a trade regardless of what the other
-specialists think.
+Originally enumerated risk factors directly from the candidate's
+alt-data (FDA citations, NHTSA recalls, risk-factor diffs, macro
+vol regime, etc.). As of Phase 3 the deterministic library has
+~12 rules that fire on exactly those conditions.
+
+New role: SYNTHESIZE a worst-plausible-outcome scenario from the
+rule verdicts. Retains VETO authority — but VETOes are now only
+issued when the LLM's synthesis reveals risk dynamics the rule
+layer's individual checks cannot have surfaced (e.g., the
+combination of two CAUTION rules creating compounded exposure
+the individual rules don't capture).
 """
 
 from __future__ import annotations
@@ -15,30 +21,31 @@ from specialists._common import candidates_block, extract_verdict_array
 
 
 NAME = "risk_assessor"
-DESCRIPTION = "Portfolio and regime risk gatekeeper — holds VETO authority"
+DESCRIPTION = "Synthesizes worst-plausible-outcome scenarios from the rule panel"
 HAS_VETO_AUTHORITY = True
-# Portfolio-level concentration, regime, and liquidity risk apply to all
-# instrument classes — stock and option positions both consume risk
-# budget and contribute to drawdown.
 APPLIES_TO_PIPELINES = ("stock", "option")
 
 
 def build_prompt(candidates: List[Dict[str, Any]], ctx: Any) -> str:
     regime = getattr(ctx, "market_regime", None) or "unknown"
-    return f"""You are a portfolio risk specialist. Your job is to flag SPECIFIC,
-NAMED risk factors — not to be generically cautious.
+    return f"""You are a risk-synthesis specialist. The deterministic rule layer has
+already flagged the standard risk conditions (PE extremes, FDA citations,
+NHTSA recalls, EPA/OSHA violations, risk-factor-diff additions, recent
+adverse 8-K items, macro vol regime, multiple-negative-catalyst stacking,
+etc.). Each candidate below carries a `RULES: [V]name [C]name ...` suffix.
 
 Current regime: {regime}
 
-For each candidate, consider:
-  - Is this symbol known to be illiquid, gappy, or subject to trading halts?
-  - Are there named concentration issues (same sector as held positions)?
-  - Is there a specific, acute risk event (imminent Fed decision,
-    known legal/regulatory action, major index level breach)?
-  - Has this specific symbol had unusually adverse recent behavior?
+Your job is NOT to re-discover what those rules already flagged. Your
+job is to SYNTHESIZE the worst plausible outcome: what's the SCENARIO
+in which this trade goes badly, given the rule verdicts AND the broader
+context? Look for COMPOUNDED risk (multiple CAUTIONs that the individual
+rules don't catch but interact dangerously together) and HIDDEN risk
+(a coherent failure path the rule library doesn't have a check for —
+your unique value vs the deterministic layer).
 
 Candidates:
-{candidates_block(candidates, specialist_name="risk_assessor")}
+{candidates_block(candidates, specialist_name="risk_assessor", ctx=ctx)}
 
 Return a STRICT JSON ARRAY — starts with `[` and ends with `]`. Every
 candidate must appear EXACTLY ONCE. No markdown fences, no prose, no
@@ -47,25 +54,26 @@ single top-level object. Each entry:
     "symbol": "TICKER",
     "verdict": "BUY" | "SELL" | "HOLD" | "VETO",
     "confidence": 0-100,
-    "reasoning": "one-sentence risk rationale"
+    "reasoning": "one-sentence scenario synthesis — name the dominant risk path"
   }}
 
-VERDICT DISCIPLINE — read carefully:
-  HOLD  = the DEFAULT. No specific named risk factor identified for
-          this symbol. This does NOT mean "I'm uncertain" — uncertainty
-          is always HOLD, not VETO.
-  VETO  = reserved for SPECIFIC, NAMED, symbol-level risks. Valid VETO
-          reasons: known illiquidity, active litigation, imminent
-          earnings/event, regulatory halt, extreme concentration risk.
-          INVALID VETO reasons (do NOT use): "uncertain market",
-          "sideways regime", "low volatility", "general caution",
-          "lack of information". These are HOLD, not VETO.
-  SELL  = risk picture supports closing an existing position
-  BUY   = risk picture actively supports this entry (rare)
+VERDICT DISCIPLINE:
+  HOLD  = the DEFAULT. No coherent worst-case scenario stands out beyond
+          what the deterministic rules already say.
+  VETO  = your scenario synthesis reveals a SPECIFIC failure path with
+          compounded probability — typically when 2+ CAUTION rules
+          combine into a thesis the individual rules don't fully convey,
+          or when you see a risk the rule library can't enumerate (novel
+          regulatory action, idiosyncratic concentration, etc.). The
+          deterministic VETOs already catch the obvious cases — don't
+          duplicate them; add ONLY what synthesis uniquely reveals.
+  SELL  = risk synthesis supports closing an existing position
+  BUY   = synthesis reveals risk is ASYMMETRICALLY low (rare)
 
 You MUST return exactly {len(candidates)} entries, one per candidate,
-in the same order as the list above. If you find yourself writing more
-than 2 VETOs in a batch of 5, re-examine — you are likely over-vetoing.
+in the same order as the list above. Over-vetoing is the failure mode
+to watch for — if you find yourself writing >2 VETOs in a batch of 5,
+re-examine whether you're synthesizing or just rediscovering rules.
 """
 
 
