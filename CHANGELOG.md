@@ -17,6 +17,35 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Equalise AI prompt across action types (stocks / options / multileg). Severity: medium (prompt-engineering — corrects asymmetric framing that biased AI toward plain stocks).
+
+**The problem.** After today's earlier fixes restored the options data path, AI cycles kept choosing plain stock shorts even when the prompt offered defined-risk bear_put_spread alternatives on the same symbols (BSX, TSLA, etc., with IV rank in the 50s — perfectly tradeable). Looking at the prompt source revealed why: asymmetric framing across action types.
+
+**Asymmetries removed:**
+
+| Action | Before | After |
+|---|---|---|
+| Stocks (`BUY`/`SHORT`) | "Take them as-is / ADJUST / or PROPOSE…" (inviting, three verbs) | unchanged — was the template |
+| Single-leg (`OPTIONS`) | "propose for any candidate whose ALT DATA…" (conditional, one verb) | parallel "take as-is / adjust / propose your own" |
+| Multileg (`MULTILEG_OPEN`) | "only propose when…" (restrictive — framed as exception case) | parallel "take as-is / adjust / propose your own" + explicit "defined-risk spreads can be a capital-efficient alternative" |
+| Top-of-prompt header | "Do NOT default to options just because a multi-leg strategy is pre-listed… the simple stock action may have better risk/reward… Stock setups are first-class trades" — explicitly stock-biased | "ALL ACTION TYPES ARE EQUAL FIRST-CLASS TRADES…" — neutral. Notes that defined-risk spreads can offer lower max loss; plain stock simpler exits; single-leg concentrated leverage; none inherently "better" |
+
+The old header phrasing had been added 2026-05-14 to fix a different asymmetry (options-biased) and overcorrected into stock-bias. The new wording is genuinely neutral.
+
+**Operator principle (added to `feedback_trade_and_make_money_not_hoard` memory):** *"It is not supposed to be biased one way or another towards any market — stocks, options, later on crypto, fx etc. may be added, but one should not 'win' over the other."* + *"If we have the money to make the trades the AI recommends we should make the trades."*
+
+**Regression tests.** `tests/test_prompt_asset_class_neutrality_2026_05_19.py` — 4 tests:
+- `MULTILEG_OPEN` note does NOT use "only propose when" framing
+- Header does NOT contain stock-biased phrases ("Do NOT default to options", "stock setups are first-class trades", "simple stock action may have better risk/reward")
+- "All action types are equal first-class trades" assertion present in header
+- OPTIONS section uses parallel "take/adjust/propose" verbs
+
+These pin the neutrality structurally so a future "fix" can't slide back into asymmetric framing.
+
+**What this does NOT do:** bias toward options. The whole point is no bias either direction. AI still picks based on per-setup risk/reward; this commit just removes the prompt-level thumb on the scale.
+
+---
+
 ## 2026-05-19 PM — Strategy applicability + explicit asset-class checkboxes (Stocks / Options / Crypto). Severity: medium (architectural cleanup; UI reflects reality of what each profile trades).
 
 Two related changes shipped together:

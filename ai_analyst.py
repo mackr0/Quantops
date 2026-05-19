@@ -2088,17 +2088,27 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     options_note = ""
     options_example = ""
     if options_action_enabled:
+        # 2026-05-19 — phrasing equalised with stocks/multileg.
+        # Stocks read as "take as-is / adjust / propose your own";
+        # options used to read as "propose if conditions are met"
+        # (more conditional, less inviting). Asymmetric framing
+        # silently biased the AI toward stocks. Now parallel.
         options_note = (
-            "\n- OPTIONS: propose for any candidate whose ALT DATA / "
-            "OPTIONS line shows IV / Greeks (i.e. has tradeable options "
-            "on Alpaca), or for held positions surfaced in OPTIONS "
-            "STRATEGIES. Required fields: option_strategy "
-            "(covered_call|protective_put|long_call|long_put|cash_secured_put), "
+            "\n- OPTIONS (single-leg): pre-computed setups appear in the "
+            "OPTIONS STRATEGIES + ALT DATA / OPTIONS lines for any "
+            "candidate with tradeable options on Alpaca or any held "
+            "position. Take them as-is when they fit, ADJUST strike / "
+            "expiry / contracts based on the candidate's IV rank and "
+            "your conviction, or PROPOSE a different option setup. "
+            "Required fields: option_strategy (covered_call|"
+            "protective_put|long_call|long_put|cash_secured_put), "
             "strike (number), expiry (YYYY-MM-DD), contracts (int). "
-            "Premium budget capped at 1% of equity for long_call/long_put "
-            "regardless of contracts requested. covered_call requires the "
-            "underlying held in long quantity ≥ contracts × 100. "
-            "size_pct/stop_loss_pct/take_profit_pct are NOT required for OPTIONS.\n"
+            "Premium budget capped at 1% of equity for long_call/long_put. "
+            "covered_call requires the underlying held in long quantity "
+            "≥ contracts × 100. size_pct/stop_loss_pct/take_profit_pct "
+            "NOT required. Option setups are first-class trades — there "
+            "is NO preference for or against them relative to stocks "
+            "or multileg spreads.\n"
         )
         options_example = (
             ', {"symbol": "TICKER", "action": "OPTIONS", '
@@ -2151,16 +2161,27 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
     multileg_note = ""
     multileg_example = ""
     if multileg_action_enabled:
+        # 2026-05-19 — phrasing equalised with stocks/options.
+        # "only propose when..." framed this as an exception case;
+        # asymmetric vs the inviting "take/adjust/propose" used for
+        # stocks. Now parallel.
         multileg_note = (
-            "\n- MULTILEG_OPEN: only propose when a MULTI-LEG OPTIONS "
-            "STRATEGIES line above lists the symbol + strategy. "
+            "\n- MULTILEG_OPEN (defined-risk spreads): pre-computed "
+            "setups appear in the MULTI-LEG OPTIONS STRATEGIES lines "
+            "above. Take them as-is when they fit, ADJUST strikes / "
+            "expiry / contracts based on conviction, or PROPOSE a "
+            "different spread on any candidate with IV data. "
             "Required fields: strategy_name (one of bull_call_spread / "
             "bear_put_spread / bull_put_spread / bear_call_spread / "
             "iron_condor / iron_butterfly / long_straddle / "
             "short_straddle / long_strangle), symbol (underlying), "
             "strikes (dict matching the strategy — see examples in "
             "the rationale), expiry (YYYY-MM-DD), contracts (int). "
-            "size_pct is NOT used.\n"
+            "size_pct NOT used. Multi-leg setups are first-class trades "
+            "— there is NO preference for or against them relative to "
+            "stocks or single-leg options. Defined-risk spreads can be "
+            "a CAPITAL-EFFICIENT alternative to a plain long/short "
+            "(lower max loss for the same directional exposure).\n"
         )
         multileg_example = (
             ', {"symbol": "AAPL", "action": "MULTILEG_OPEN", '
@@ -2177,17 +2198,23 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"There is no fixed cap on the number of trades — propose as many "
         f"high-conviction setups as you see, and zero is acceptable when "
         f"none qualify.\n\n"
-        f"STOCKS AND OPTIONS ARE EQUAL OPPORTUNITIES, NOT COMPETING "
-        f"ALTERNATIVES. When you see a candidate, evaluate it on its own "
-        f"merits — directional stock entry (BUY/SHORT), defined-risk "
-        f"options structure (MULTILEG_OPEN), or single-leg option "
-        f"(OPTIONS) — and pick the action with the best risk/reward for "
-        f"THAT setup. Do NOT default to options just because a multi-leg "
-        f"strategy is pre-listed for a candidate. The pre-listed options "
-        f"strategies are reference suggestions; the simple stock action "
-        f"may have better risk/reward in many cases. Stock BUY/SHORT "
-        f"setups are first-class trades — propose them whenever a "
-        f"candidate's technicals warrant a directional bet.\n\n"
+        f"ALL ACTION TYPES ARE EQUAL FIRST-CLASS TRADES. The available "
+        f"actions for any given candidate are: directional stock entry "
+        f"(BUY/SHORT), single-leg options (OPTIONS), defined-risk "
+        f"multileg spreads (MULTILEG_OPEN). When the same candidate "
+        f"can be played multiple ways, pick the action with the best "
+        f"risk/reward FOR THAT SETUP — not based on action-type "
+        f"preference. Pre-listed setups (stock recs, single-leg "
+        f"option recs, multileg spreads) are reference suggestions: "
+        f"take them as-is when they fit, adjust them, or propose your "
+        f"own. Defined-risk spreads can offer materially lower max "
+        f"loss for similar directional exposure; plain stock can offer "
+        f"simpler exits; single-leg options can offer concentrated "
+        f"directional leverage — none is inherently 'better' than "
+        f"another, only better-suited to a specific setup. The system "
+        f"exists to trade and make money across every asset class "
+        f"available; under-deployment when good setups exist is a "
+        f"failure mode just like over-trading bad setups.\n\n"
         f"{portfolio_section}\n\n"
         f"{market_section}\n\n"
         f"{candidates_section}\n\n"
