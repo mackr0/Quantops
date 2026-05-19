@@ -44,8 +44,7 @@ Three backfill loops updated (`backfill_sell`, `backfill_cover`, `backfill_parti
 - Missing price / zero entry-price graceful handling.
 - **Structural test**: each protective `order_type` produces a *distinct* reason string — pins the differentiation as the whole point of the helper.
 
-**Pending follow-ups (not in this commit):**
-- One-shot UPDATE for the 3 existing NOW backfill rows (id=10 on profiles 21/22/23 DBs) to refresh their misleading "protective order" text with the new attribution. Awaiting operator OK before touching historical journal rows.
+**Historical backfill applied** — operator approved the one-shot UPDATE of the 3 existing NOW backfill rows (id=10 on profiles 21/22/23 DBs). Each row's `reason` column now reads "trailing stop fired — exited at $105.28-29 (+1.6%); broker order backfilled by reconcile". Pre-update snapshots saved as `quantopsai_profile_{21,22,23}.db.preNOWreasonfix.<ts>` on the droplet. Dashboard reads `ai_reasoning OR reason` per `templates/_trades_table.html:219`; `ai_reasoning` was NULL on these rows so the dashboard now picks up the corrected `reason`.
 
 ---
 
