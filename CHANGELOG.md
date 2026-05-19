@@ -17,7 +17,28 @@ Rules going forward:
 
 ---
 
-## 2026-05-19 PM — Backfill `alpaca_accounts` (3 rows) + link `trading_profiles.alpaca_account_id`. Severity: high (silent yfinance fallback for every non-profile-context data call; data-source-health alert fires every cycle).
+## 2026-05-19 PM — Permanent guardrails for the `alpaca_accounts` empty-table outage. Severity: high (closes the class of bugs that caused this morning's silent yfinance fallback).
+
+**Background.** Today's earlier entry documented a one-shot DB-state fix: backfilling 3 rows into `alpaca_accounts` and linking all 13 `trading_profiles.alpaca_account_id`. This entry is the structural follow-up that makes the broken state un-shippable from now on.
+
+**Changes:**
+
+1. **New module `alpaca_credentials_invariant.py` with `check_alpaca_credentials(db_path)`.** Returns `(ok, problems)`. Detects two failure modes:
+   - **Branch A**: `alpaca_accounts` empty AND any `trading_profile` has a non-empty `alpaca_api_key_enc` (the exact 2026-05-19 broken state — operator entered per-profile keys but shared rows / FK linkage never got backfilled)
+   - **Branch B**: any *enabled* `trading_profile` has neither `alpaca_account_id` set nor non-empty per-profile keys (no resolvable credentials at all)
+   Both branches emit actionable remediation strings.
+
+2. **Scheduler boot guard in `multi_scheduler.py`.** Inserted directly after the existing DB-integrity check. On invariant failure: `logging.error`, `notify_error` email, then `sys.exit(1)` — same shape as the DB-corruption halt. Logged "Alpaca credentials invariant: OK" on success so post-deploy verification has a positive signal to grep for.
+
+3. **Idempotent reset script (`full_reset_2026_05_18.py`).** The bug's root cause was that `step2_install_keys` keyed on hardcoded `acct_id` 4/5/6, found nothing (the table was empty post-reset), and printed "NOT FOUND — skipping" — leaving the table empty without surfacing the problem. Rewrote step 2 to:
+   - Key on `name` ("A1" / "A2" / "A3") instead of `id` — stable identifier that survives row deletions
+   - INSERT when missing, UPDATE when present (true idempotency)
+   - New `step2b_link_profiles` parses the `EXP-Ax-` prefix from each profile name and sets `alpaca_account_id` accordingly
+   - New `step2c_verify_linkage` is the post-condition gate; main() exits non-zero if linkage is wrong post-apply
+
+4. **Tests: `tests/test_alpaca_accounts_backfill_invariant.py`** — 10 tests, all green. Covers both invariant branches (A and B), happy paths (linked-via-FK, per-profile-keys-with-shared-row), fresh-bootstrap and missing-tables edge cases, plus the reset script's step2/step2b/step2c idempotency (including the "run twice" check that asserts no duplicate `alpaca_accounts` rows accumulate).
+
+**Verified.** Local pytest: 10/10 pass. Live prod DB after this morning's manual fix: `check_alpaca_credentials("quantopsai.db")` returns `OK: True`. `python -m py_compile` clean on all three modified files.
 
 **The problem.** Post-reset, all 13 `trading_profiles` had their own per-profile Alpaca keys set but `alpaca_accounts` was empty (0 rows). The `Data Source Health` task fired on every cycle with `['alpaca_bars', 'alpaca_options', 'alpaca_news']` and emailed the operator. Trades from per-profile broker calls (`ctx.get_alpaca_api()` via `models.build_user_context_from_profile`) still worked because the resolver falls back to per-profile keys when `alpaca_account_id` is null — but any data call without a profile context (`market_data._fetch_via_alpaca`, the three `data_source_health.probe_alpaca_*` probes, etc.) reads from `alpaca_accounts` only and silently falls to yfinance. That violates the Alpaca-first data-source priority.
 

@@ -4341,6 +4341,53 @@ def main_loop(active_segments=None, legacy_mode=False):
             "DB integrity check failed to run (continuing): %s", exc,
         )
 
+    # ── Alpaca credentials invariant ────────────────────────────────
+    # 2026-05-19: a post-reset bug left alpaca_accounts empty while
+    # every profile had its own per-profile encrypted keys. Trades
+    # still went through (resolver falls back to per-profile keys
+    # when alpaca_account_id is NULL), but data_source_health probes
+    # — which read from alpaca_accounts only — failed every cycle and
+    # silent yfinance fallback fired system-wide. Refuse to boot when
+    # we detect that broken state.
+    try:
+        from alpaca_credentials_invariant import check_alpaca_credentials
+        ok, problems = check_alpaca_credentials("quantopsai.db")
+        if not ok:
+            for p in problems:
+                logging.error("ALPACA CREDENTIALS INVARIANT: %s", p)
+            try:
+                from notifications import notify_error
+                notify_error(
+                    error_msg=(
+                        "Scheduler refusing to start — Alpaca "
+                        "credentials invariant failed:\n\n"
+                        + "\n\n".join(problems)
+                    ),
+                    context="Alpaca credentials invariant failed",
+                )
+            except (ImportError, AttributeError, OSError) as _ne_exc:
+                logger.warning(
+                    "alpaca-creds invariant notify_error failed: %s: %s",
+                    type(_ne_exc).__name__, _ne_exc,
+                )
+            logging.error(
+                "Scheduler refusing to start — fix Alpaca credentials "
+                "configuration and restart."
+            )
+            sys.exit(1)
+        logging.info("Alpaca credentials invariant: OK")
+    except SystemExit:
+        raise
+    except Exception as _inv_exc:
+        # Never silently swallow — surface it but don't halt on the
+        # invariant itself failing (DB lock, missing module). The
+        # underlying state may still be fine.
+        logging.warning(
+            "Alpaca credentials invariant check failed to run "
+            "(continuing): %s: %s",
+            type(_inv_exc).__name__, _inv_exc,
+        )
+
     # ── Orphan-restart cleanup ──────────────────────────────────────
     # Any task_runs row still labeled `running` in any profile DB at
     # this point is by definition a zombie — its parent process was
