@@ -953,8 +953,21 @@ def _task_scan_and_trade(ctx):
         return
 
     update_status(_pid, "Running trade pipeline", "%d candidates" % len(symbols))
-    logging.info(f"[{seg_label}] Running scan on {len(symbols)} candidates")
-    summary = run_trade_cycle(symbols, ctx=ctx)
+    # Scope C cutover gate: per-profile flag selects which dispatcher
+    # the scheduler uses for THIS cycle. The two paths are mutually
+    # exclusive — one cycle = one dispatcher, never both (otherwise
+    # every trade would be submitted twice). Default OFF preserves
+    # legacy behavior. Flip per profile only after shadow soak shows
+    # verdict agreement ≥ 95%.
+    if getattr(ctx, "use_pipeline_dispatch", False):
+        from pipelines.dispatch import run_via_pipelines
+        logging.info(
+            f"[{seg_label}] dispatch=pipeline (Pipeline.run_cycle) — "
+            f"{len(symbols)} candidates")
+        summary = run_via_pipelines(symbols, ctx)
+    else:
+        logging.info(f"[{seg_label}] Running scan on {len(symbols)} candidates")
+        summary = run_trade_cycle(symbols, ctx=ctx)
     clear_status(_pid)
     logging.info(
         f"[{seg_label}] Trade summary: "

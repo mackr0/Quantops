@@ -352,6 +352,14 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             # the same proposals — read-only, no broker impact.
             # Default OFF; operator turns it on per profile for soak.
             ("trading_profiles", "enable_pipeline_shadow_eval", "INTEGER NOT NULL DEFAULT 0"),
+            # 2026-05-19 Scope C cutover gate. When 1, the scheduler
+            # dispatches this profile's cycles through
+            # `pipelines.dispatch.run_via_pipelines` (which calls
+            # Pipeline.run_cycle per enabled pipeline) instead of the
+            # legacy `trade_pipeline.run_trade_cycle`. Flip per profile
+            # AFTER shadow soak shows verdict agreement ≥ 95% for
+            # 1–2 trading days. Default OFF (legacy dispatch).
+            ("trading_profiles", "use_pipeline_dispatch", "INTEGER NOT NULL DEFAULT 0"),
             ("trading_profiles", "ai_provider", "TEXT NOT NULL DEFAULT 'anthropic'"),
             ("trading_profiles", "ai_model", "TEXT NOT NULL DEFAULT 'claude-haiku-4-5-20251001'"),
             ("trading_profiles", "ai_api_key_enc", "TEXT NOT NULL DEFAULT ''"),
@@ -1341,6 +1349,10 @@ def update_trading_profile(profile_id: int, **kwargs) -> None:
         # Pipeline.run_cycle dispatch path. See
         # pipelines/shadow.py.
         "enable_pipeline_shadow_eval",
+        # 2026-05-19 Scope C cutover. When 1, the scheduler uses
+        # Pipeline.run_cycle dispatch in place of the legacy
+        # run_trade_cycle. Default OFF; flip after shadow soak.
+        "use_pipeline_dispatch",
     }
     updates = {}
     rejected = []
@@ -1637,6 +1649,8 @@ def build_user_context_from_profile(profile_id: int) -> UserContext:
         enable_crypto=bool(profile.get("enable_crypto", 0)),
         enable_pipeline_shadow_eval=bool(
             profile.get("enable_pipeline_shadow_eval", 0)),
+        use_pipeline_dispatch=bool(
+            profile.get("use_pipeline_dispatch", 0)),
         strategy_type=profile.get("strategy_type") or "ai",
         # Item 1c — long-vol portfolio tail-risk hedge (default OFF)
         enable_long_vol_hedge=bool(

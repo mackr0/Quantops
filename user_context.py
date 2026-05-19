@@ -304,6 +304,13 @@ class UserContext:
     # impact. Default OFF until operator starts soak on a specific
     # profile.
     enable_pipeline_shadow_eval: bool = False
+    # 2026-05-19 Scope C cutover gate. When True, the scheduler
+    # dispatches via `pipelines.dispatch.run_via_pipelines`
+    # (Pipeline.run_cycle per enabled pipeline) instead of the
+    # legacy `trade_pipeline.run_trade_cycle`. THIS submits orders —
+    # flip only after shadow soak confirms verdict agreement.
+    # Default OFF.
+    use_pipeline_dispatch: bool = False
 
     # 2026-05-17 strategy_type: dispatches to a non-AI baseline
     # pipeline when set. 'ai' = normal scan-and-trade (default);

@@ -17,6 +17,49 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Scope C cutover dispatcher (gated; default OFF; soak armed on profile 15). Severity: medium-high when activated (submits real orders via the new path), zero when OFF.
+
+**Background.** The shadow harness shipped two commits ago lets us measure agreement between the legacy `trade_pipeline.run_trade_cycle` dispatch and the new `Pipeline.run_cycle` dispatch. This commit lands the cutover itself — but **gated**, so production behavior is unchanged until an operator flips a per-profile flag after reviewing soak data.
+
+**The wiring.**
+
+| Layer | File | What |
+|---|---|---|
+| Dispatcher | `pipelines/dispatch.py` (new) | `run_via_pipelines(candidates, ctx)` — sets `ctx.shortlist`, iterates `get_pipelines_for_profile(ctx)`, calls `Pipeline.run_cycle(ctx)` on each, aggregates `ExecutionResult`s into the legacy `summary` dict shape (same keys, no downstream KeyError). Fail-soft: a pipeline crash is contained — other pipelines still run, `summary["errors"]` increments. |
+| Schema | `models.py` migration | `trading_profiles.use_pipeline_dispatch INTEGER NOT NULL DEFAULT 0` |
+| Config | `user_context.py` + `models.build_user_context_from_profile` + `update_trading_profile` allowlist | Plumbs the flag through |
+| Settings UI | `templates/settings.html` | New "Use Pipeline Dispatch (cutover)" checkbox with **SUBMITS ORDERS** warning chip + 95%-agreement soak gate copy |
+| Scheduler | `multi_scheduler.py:957` | `if getattr(ctx, "use_pipeline_dispatch", False): summary = run_via_pipelines(symbols, ctx) else: summary = run_trade_cycle(symbols, ctx=ctx)` — if/else, never both. |
+
+**Critical invariant.** The two dispatchers are **mutually exclusive per cycle**. The scheduler branch is `if/else`, not `if/if` — pinned by `test_scheduler_branches_on_use_pipeline_dispatch_flag`. If both were ever invoked together every trade would be submitted twice.
+
+**Action-to-summary mapping.** The legacy `summary` reports `buys/sells/shorts`. The new dispatcher maps:
+- `BUY` / `STRONG_BUY` / `WEAK_BUY` / `OPTIONS` / `MULTILEG_OPEN` → `buys` (all open new positions)
+- `SELL` / `STRONG_SELL` / `WEAK_SELL` / `COVER` → `sells`
+- `SHORT` → `shorts`
+- `ExecutionResult.skipped` → `ai_vetoed` + appended to `vetoed_details`
+- `ExecutionResult.rejected` (broker refusal) → folded into `errors`
+- `ExecutionResult.errors` (execute exceptions) → straight into `errors`
+
+`summary["dispatch"] = "pipeline"` is added as a marker so downstream logging can tell which dispatcher produced the row. Legacy callers ignore unknown keys.
+
+**Tests.** `tests/test_pipeline_dispatch_cutover_2026_05_19.py` — **25 tests, all green:**
+- Helpers: `_normalize_shortlist` (str list / dict list / empty), `_bucket_action` parameterised over all 10 known actions + 1 unknown (drops silently)
+- Output shape contains every legacy key (no downstream KeyError on dashboard / activity log)
+- Buys / sells / shorts aggregate correctly across pipelines
+- `skipped` surfaces as `ai_vetoed` + `vetoed_details`
+- `rejected` + `errors` both bucket into the `errors` counter
+- One pipeline crashing doesn't block others (option side still runs after stock side raises)
+- All pipelines crashing returns a valid summary with `errors = N` and no escaping exception
+- No enabled pipelines returns zero-summary, not a crash
+- **Each pipeline's `run_cycle` is called exactly once per cycle** (the load-bearing no-double-submit invariant)
+- `ctx.shortlist` is set before pipelines run
+- Scheduler call-site branch is genuinely if/else: with `use_pipeline_dispatch=False` only `run_trade_cycle` fires; with `True` only `run_via_pipelines` fires
+
+**Soak armed.** `enable_pipeline_shadow_eval=1` set on profile 15 (`EXP-A1-FullSystemStandard`) on prod via direct DB update. First shadow row will land on tomorrow's first AI cycle. After 1–2 trading days, check `/shadow` — target verdict-layer `agreement_pct ≥ 95%` with `layers_with_divergence ≤ 1` per cycle. If green, flip `use_pipeline_dispatch=1` on profile 15 first; widen rollout once that profile produces a clean trading day on the new dispatcher. The `use_pipeline_dispatch` checkbox on Settings is the soak-gated kill-switch — flipping it back to off reverts that profile to legacy dispatch instantly.
+
+---
+
 ## 2026-05-19 PM — Scope C shadow harness (cross-path verification before pipeline cutover). Severity: medium (read-only; enables the cutover from legacy dispatch to `Pipeline.run_cycle` to ship with confidence).
 
 **The goal.** The per-pipeline refactor (`StockPipeline` + `OptionPipeline`) is end-to-end runnable but the production scheduler still uses the legacy `trade_pipeline.run_trade_cycle` dispatch. Cutting over directly would conflate "the pipeline path works" with "the pipeline path produces the same decisions" — those are different claims. Scope C captures the second one via a read-only A/B that runs every cycle the legacy path executes.

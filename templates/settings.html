@@ -551,6 +551,11 @@
                        {{ 'checked' if prof.get('enable_pipeline_shadow_eval', 0) else '' }}>
                 <span><strong>Enable Pipeline Shadow Eval</strong><br><small style="color:#888;font-weight:normal;">Read-only A/B of the new <code>Pipeline.run_cycle</code> dispatch against the legacy <code>trade_pipeline.run_trade_cycle</code>. Captures per-layer divergence (candidates, prompt, AI proposals, specialist verdict) to <code>pipeline_shadow_runs</code> for the <a href="/shadow">Shadow dashboard</a>. Adds ~$0.01–0.02/cycle to AI spend (one extra Gemini call per pipeline that has candidates). Turn on for one profile during soak; turn off after cutover. Default OFF.</small></span>
             </label>
+            <label style="display:flex;align-items:flex-start;gap:0.5rem;">
+                <input type="checkbox" name="use_pipeline_dispatch" value="1" style="flex-shrink:0;margin-top:0.2rem;"
+                       {{ 'checked' if prof.get('use_pipeline_dispatch', 0) else '' }}>
+                <span><strong>Use Pipeline Dispatch (cutover)</strong> <span style="background:#fff3cd;color:#664d03;padding:0.05rem 0.4rem;border-radius:3px;font-size:0.7rem;font-weight:700;">SUBMITS ORDERS</span><br><small style="color:#888;font-weight:normal;">When ON, the scheduler dispatches this profile's cycles through <code>pipelines.dispatch.run_via_pipelines</code> (Pipeline.run_cycle per enabled pipeline) INSTEAD OF the legacy <code>run_trade_cycle</code>. <strong>This submits real broker orders via the new path.</strong> Only flip after the Shadow dashboard shows verdict agreement ≥ 95% for 1–2 trading days. The two paths are mutually exclusive — one cycle = one dispatcher, never both. Default OFF.</small></span>
+            </label>
 
             <h5 style="margin-top:1rem;">Short Selling</h5>
             <label style="display:flex;align-items:flex-start;gap:0.5rem;">

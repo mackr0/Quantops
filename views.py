@@ -1416,6 +1416,11 @@ def save_profile(profile_id):
         # path. See pipelines/shadow.py — opt-in per profile.
         "enable_pipeline_shadow_eval": 1 if form.get(
             "enable_pipeline_shadow_eval") else 0,
+        # 2026-05-19 Scope C cutover: when 1, scheduler uses
+        # Pipeline.run_cycle dispatch instead of legacy run_trade_cycle.
+        # Submits real orders — only flip after shadow soak passes.
+        "use_pipeline_dispatch": 1 if form.get(
+            "use_pipeline_dispatch") else 0,
         "enable_short_selling": 1 if form.get("enable_short_selling") else 0,
         "short_stop_loss_pct": float(form.get("short_stop_loss_pct", 0.08)),
         "short_take_profit_pct": float(form.get("short_take_profit_pct", 0.08)),
