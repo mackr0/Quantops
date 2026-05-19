@@ -108,6 +108,68 @@ RULE_MODULES = [
     # ── Execution / friction ──
     "deterministic_specialists.slippage_high_caution",
     "deterministic_specialists.news_volume_spike",
+    # ── 2026-05-18 second batch ──
+    # Trend / momentum
+    "deterministic_specialists.rsi_midline_bull",
+    "deterministic_specialists.rsi_midline_bear",
+    "deterministic_specialists.stoch_overbought",
+    "deterministic_specialists.stoch_oversold",
+    "deterministic_specialists.low_adx_no_trade",
+    "deterministic_specialists.strong_uptrend_pullback",
+    # Gap / open behavior
+    "deterministic_specialists.gap_down_capitulation",
+    "deterministic_specialists.extreme_gap_news",
+    # VWAP relationship
+    "deterministic_specialists.above_vwap_long_confirm",
+    "deterministic_specialists.below_vwap_long_caution",
+    # Microstructure
+    "deterministic_specialists.penny_stock_caution",
+    "deterministic_specialists.squeeze_unreleased",
+    "deterministic_specialists.squeeze_then_release_buy",
+    # Attention / sentiment
+    "deterministic_specialists.google_trends_spike",
+    "deterministic_specialists.wikipedia_attention_surge",
+    "deterministic_specialists.app_store_ranking_jump",
+    "deterministic_specialists.app_store_ranking_drop",
+    # Smart-money quality
+    "deterministic_specialists.star_manager_holding",
+    "deterministic_specialists.insider_track_record_strong",
+    "deterministic_specialists.insider_track_record_weak",
+    "deterministic_specialists.insider_buying_near_earnings",
+    "deterministic_specialists.insider_selling_near_earnings",
+    "deterministic_specialists.short_squeeze_setup",
+    # Catalysts / fundamentals
+    "deterministic_specialists.biotech_milestone_upcoming",
+    "deterministic_specialists.transcript_sentiment_bullish",
+    "deterministic_specialists.transcript_sentiment_bearish",
+    "deterministic_specialists.patent_velocity_strong",
+    "deterministic_specialists.epa_osha_violations_present",
+    "deterministic_specialists.pe_extreme_high",
+    "deterministic_specialists.pe_value_zone",
+    # Options
+    "deterministic_specialists.options_iv_rich_for_sellers",
+    "deterministic_specialists.options_iv_cheap_for_buyers",
+    "deterministic_specialists.options_pcr_panic",
+    "deterministic_specialists.options_pcr_complacent",
+    # Macro
+    "deterministic_specialists.macro_low_vol_riskon",
+    "deterministic_specialists.cboe_skew_complacent",
+    "deterministic_specialists.macro_yield_curve_steepening",
+    # 8-K events
+    "deterministic_specialists.recent_8k_acquisition",
+    "deterministic_specialists.recent_8k_regulation_fd",
+    "deterministic_specialists.recent_8k_earnings_release",
+    # Calendar / time-of-day
+    "deterministic_specialists.end_of_quarter_window",
+    "deterministic_specialists.turn_of_month_strength",
+    "deterministic_specialists.monday_morning_open",
+    "deterministic_specialists.last_30_min_session",
+    "deterministic_specialists.first_5_min_session",
+    # Catalyst-attribution
+    "deterministic_specialists.no_news_low_attention",
+    "deterministic_specialists.multi_signal_consensus",
+    "deterministic_specialists.low_conviction_score",
+    "deterministic_specialists.sector_high_short_volume",
 ]
 
 
@@ -144,8 +206,11 @@ def run_panel(candidate: Dict[str, Any], ctx: Any = None) -> List[Dict[str, Any]
     fired: List[Dict[str, Any]] = []
     for mod in discover_rules():
         applies = getattr(mod, "APPLIES_TO_SIGNALS", ())
-        if applies and signal and signal not in applies:
-            continue
+        if applies:
+            # A signal-restricted rule needs a matching signal to
+            # consider running. Empty signal → skip those rules.
+            if not signal or signal not in applies:
+                continue
         try:
             verdict = mod.evaluate(candidate, ctx)
         except Exception as exc:

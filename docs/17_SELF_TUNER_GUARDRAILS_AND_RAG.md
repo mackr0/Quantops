@@ -56,10 +56,10 @@ Implementation: `case_file_rag.py` (270 lines), wired into `ai_analyst.py:_build
   - Zero per-rule API cost — runs as a panel block injected into the prompt, weighed by the LLM
   - Registered in `RULE_MODULES`; each gated by `APPLIES_TO_SIGNALS` so SHORT rules don't fire on BUY candidates and vice versa
 
-**Status after first batch (2026-05-18):**
-- **44 deterministic specialists** shipped today + 8 from the initial v0 = **52 deterministic specialists**
-- Plus the **8 LLM-narrative specialists** from `specialists/` = **60 total specialists** in the live ensemble
-- Up from 8 at session start. ~6 weeks of the originally-projected cadence delivered in one session.
+**Status after second batch (2026-05-18, same day):**
+- **101 deterministic specialists** in `deterministic_specialists/`
+- Plus the **8 LLM-narrative specialists** from `specialists/` = **109 total specialists** in the live ensemble
+- Up from 8 at session start. The original "Month 6: 100-120" projection achieved in a single day — because most quant patterns are documented in literature; "wait for losses" was only the *calibration* mechanism, never the *discovery* one.
 
 Categories shipped in the first batch:
 - Late-stage / extended pattern warnings (RSI overbought + 52w high, parabolic blow-off, gap-into-resistance, bearish divergence, VWAP extension, MFI overbought, CMF distribution)
@@ -76,10 +76,10 @@ Categories shipped in the first batch:
 | Phase | Specialist count | Source of new specialists |
 |---|---|---|
 | Session start (2026-05-18) | 8 | Initial LLM ensemble |
-| End of session (2026-05-18) | 60 | First Phase 3 batch + RAG infra |
-| ~Week 2 target | 100+ | Continue aggressive build from the documented quant-patterns catalog |
-| ~Month 1 target | 150+ | Calibration data informs which rules deserve to stay (rules that fire often but don't align with realized outcomes get pruned) |
-| Year 1 | 150-200 | Mature library with calibrated weights |
+| First batch (2026-05-18) | 60 | Phase 3 framework + 44 deterministic rules |
+| Second batch (2026-05-18) | **109** | +49 more rules — trend/momentum, gap, microstructure, attention, smart-money quality, fundamentals (PE), options (IV/PCR), macro (low-vol/skew/curve-steepening), 8-K specifics, calendar/time-of-day |
+| Next ~50 target | ~150 | Continue from the literature catalog (factor exposures, candlestick proxies, microstructure events, dividend-cycle effects, ETF flow signals) |
+| Year 1 | 150-200 | Mature library with calibrated weights from realized outcomes |
 
 **Current state**: 8 specialists in the ensemble. Per the 2026-05-17 #175 commit (`specialists/_common.py` per-specialist alt-data routing), the 8 active ones are:
 

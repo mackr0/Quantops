@@ -17,6 +17,35 @@ Rules going forward:
 
 ---
 
+## 2026-05-18 — Phase 3 second batch: deterministic specialist library 60 → 109. Severity: high (the original "Month 6: 100+ specialists" projection achieved in one day).
+
+User called out the lazy framing again: "you could only find documentation on 60 specialists?" Right — the literature has hundreds. Pushing harder.
+
+**49 additional deterministic specialists** shipped this batch:
+
+- **Trend / momentum**: `rsi_midline_bull`, `rsi_midline_bear`, `stoch_overbought`, `stoch_oversold`, `low_adx_no_trade`, `strong_uptrend_pullback`
+- **Gap / open behavior**: `gap_down_capitulation`, `extreme_gap_news`
+- **VWAP relationship**: `above_vwap_long_confirm`, `below_vwap_long_caution`
+- **Microstructure**: `penny_stock_caution`, `squeeze_unreleased`, `squeeze_then_release_buy`
+- **Attention / retail sentiment**: `google_trends_spike`, `wikipedia_attention_surge`, `app_store_ranking_jump`, `app_store_ranking_drop`
+- **Smart-money quality**: `star_manager_holding`, `insider_track_record_strong`, `insider_track_record_weak`, `insider_buying_near_earnings`, `insider_selling_near_earnings`, `short_squeeze_setup`
+- **Catalysts / fundamentals**: `biotech_milestone_upcoming`, `transcript_sentiment_bullish`, `transcript_sentiment_bearish`, `patent_velocity_strong`, `epa_osha_violations_present`, `pe_extreme_high`, `pe_value_zone`
+- **Options**: `options_iv_rich_for_sellers`, `options_iv_cheap_for_buyers`, `options_pcr_panic`, `options_pcr_complacent`
+- **Macro**: `macro_low_vol_riskon`, `cboe_skew_complacent`, `macro_yield_curve_steepening`
+- **8-K events**: `recent_8k_acquisition` (Item 1.01), `recent_8k_regulation_fd` (Item 7.01), `recent_8k_earnings_release` (Item 2.02)
+- **Calendar / time-of-day**: `end_of_quarter_window`, `turn_of_month_strength`, `monday_morning_open`, `last_30_min_session`, `first_5_min_session`
+- **Catalyst-attribution**: `no_news_low_attention`, `multi_signal_consensus`, `low_conviction_score`, `sector_high_short_volume`
+
+**Framework bug fix.** `run_panel`'s signal-gate logic had a subtle bug: `if applies and signal and signal not in applies` — when `signal=""` the second condition shortcuts to False and signal-restricted rules ran anyway. Fixed to `if applies: if not signal or signal not in applies: continue` so an empty-signal candidate doesn't trigger directional rules.
+
+**Test infrastructure additions.** Calendar/time-of-day rules can't be exercised by the table-driven fixture (they read the wall clock), so added a separate `TestCalendarRules` class that monkeypatches `datetime.utcnow()` and `datetime.now()` per rule module. Plus an `_EMPTY_FIRE_EXEMPT` set for rules whose entire purpose is to fire on minimal context (the `no_news_low_attention` rule design IS firing when there's no apparent catalyst — exempt from the "no-op on empty candidate" smoke test).
+
+**109 total specialists** in the live ensemble now (101 deterministic + 8 LLM). Past the halfway mark to 200. Test suite: 3,855 passing, +96 from this batch.
+
+The remaining ~90 toward 200 will come from continuing the literature catalog: more candlestick proxies, factor-exposure signals, dividend-cycle effects, ETF flow signals, microstructure events, sector-rotation patterns. Calibration data (which rules survive vs which get pruned) starts accumulating immediately now that all 109 are live.
+
+---
+
 ## 2026-05-18 — Phase 3 of docs/17 starts: deterministic specialist library 8 → 60. Severity: high (the AI's role starts shifting from "decider" to "tie-breaker").
 
 The original docs/17 framing said "wait for post-mortems to surface patterns" — that was lazy thinking. Most quant patterns are documented in academic literature and practitioner playbooks; they don't need a losing trade to be discovered. Calibration (which rules earn the right to keep firing) is what comes from post-mortems. Discovery is up to us.

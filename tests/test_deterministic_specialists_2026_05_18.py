@@ -326,6 +326,168 @@ _FIRE_CASES = [
      {"signal": "BUY",
       "alt_data": {"stocktwits_sentiment": {"net_sentiment_7d": -0.60}}},
      "CONFIRM", None),
+    # ── 2026-05-18 second batch ──
+    ("rsi_midline_bull",
+     {"signal": "BUY", "rsi": 60}, "CONFIRM", None),
+    ("rsi_midline_bear",
+     {"signal": "BUY", "rsi": 40}, "CAUTION", None),
+    ("stoch_overbought",
+     {"signal": "BUY", "stoch_rsi": 85}, "CAUTION", None),
+    ("stoch_oversold",
+     {"signal": "BUY", "stoch_rsi": 15, "roc_10": 2}, "CONFIRM", None),
+    ("low_adx_no_trade",
+     {"signal": "BUY", "adx": 10}, "CAUTION", None),
+    ("strong_uptrend_pullback",
+     {"signal": "BUY", "rsi": 45, "adx": 30, "roc_10": 3}, "CONFIRM", None),
+    ("gap_down_capitulation",
+     {"signal": "BUY", "gap_pct": -4.0, "rsi": 28}, "CONFIRM", None),
+    ("extreme_gap_news",
+     {"signal": "BUY", "gap_pct": 7.0}, "CAUTION", None),
+    ("above_vwap_long_confirm",
+     {"signal": "BUY", "pct_from_vwap": 1.5}, "CONFIRM", None),
+    ("below_vwap_long_caution",
+     {"signal": "BUY", "pct_from_vwap": -1.0}, "CAUTION", None),
+    ("penny_stock_caution",
+     {"signal": "BUY", "price": 3.50}, "CAUTION", None),
+    ("squeeze_unreleased",
+     {"signal": "BUY", "squeeze": 1, "volume_ratio": 0.9}, "CAUTION", None),
+    ("squeeze_then_release_buy",
+     {"signal": "BUY", "squeeze": 1, "volume_ratio": 2.0, "adx": 25},
+     "CONFIRM", None),
+    ("google_trends_spike",
+     {"signal": "BUY",
+      "alt_data": {"google_trends": {"has_spike": True, "spike_pct": 150}}},
+     "CAUTION", None),
+    ("wikipedia_attention_surge",
+     {"signal": "BUY",
+      "alt_data": {"wikipedia_pageviews": {"has_surge": True, "surge_pct": 200}}},
+     "CAUTION", None),
+    ("app_store_ranking_jump",
+     {"signal": "BUY",
+      "alt_data": {"app_store_ranking": {"rank_delta_wow": -15}}},
+     "CONFIRM", None),
+    ("app_store_ranking_drop",
+     {"signal": "BUY",
+      "alt_data": {"app_store_ranking": {"rank_delta_wow": 20}}},
+     "CAUTION", None),
+    ("star_manager_holding",
+     {"signal": "BUY",
+      "alt_data": {"star_manager_holdings": {"holders": [{"name": "Buffett"}]}}},
+     "CONFIRM", None),
+    ("insider_track_record_strong",
+     {"signal": "BUY",
+      "alt_data": {"insider_track_records": {"avg_win_rate": 0.75}}},
+     "CONFIRM", None),
+    ("insider_track_record_weak",
+     {"signal": "BUY",
+      "alt_data": {"insider_track_records": {"avg_win_rate": 0.30}}},
+     "CAUTION", None),
+    ("insider_buying_near_earnings",
+     {"signal": "BUY",
+      "alt_data": {"insider_earnings": {"insider_buying_near_earnings": True,
+                                          "days_to_earnings": 10}}},
+     "CONFIRM", None),
+    ("insider_selling_near_earnings",
+     {"signal": "BUY",
+      "alt_data": {"insider_earnings": {"insider_selling_near_earnings": True,
+                                          "days_to_earnings": 10}}},
+     "CAUTION", None),
+    ("short_squeeze_setup",
+     {"signal": "BUY",
+      "alt_data": {"short": {"short_pct_float": 30.0, "squeeze_risk": "HIGH"}}},
+     "CONFIRM", None),
+    ("biotech_milestone_upcoming",
+     {"signal": "BUY",
+      "alt_data": {"biotech_milestones": {"has_upcoming": True,
+                                            "days_to_event": 14,
+                                            "event_type": "PDUFA"}}},
+     "CAUTION", None),
+    ("transcript_sentiment_bullish",
+     {"signal": "BUY",
+      "alt_data": {"transcript_sentiment": {"has_data": True, "tone": "bullish",
+                                              "key_phrases": ["raised guide"]}}},
+     "CONFIRM", None),
+    ("transcript_sentiment_bearish",
+     {"signal": "BUY",
+      "alt_data": {"transcript_sentiment": {"has_data": True, "tone": "bearish",
+                                              "key_phrases": ["lowered guide"]}}},
+     "CAUTION", None),
+    ("patent_velocity_strong",
+     {"signal": "BUY",
+      "alt_data": {"patent_activity": {"has_data": True,
+                                         "velocity_trend": "accelerating",
+                                         "recent_filings_90d": 15,
+                                         "recent_filings_365d": 60}}},
+     "CONFIRM", None),
+    ("epa_osha_violations_present",
+     {"signal": "BUY",
+      "alt_data": {"epa_osha_violations": {"epa_count": 2, "osha_count": 1}}},
+     "CAUTION", None),
+    ("pe_extreme_high",
+     {"signal": "BUY",
+      "alt_data": {"fundamentals": {"pe_trailing": 75}}},
+     "CAUTION", None),
+    ("pe_value_zone",
+     {"signal": "BUY",
+      "alt_data": {"fundamentals": {"pe_trailing": 12}}},
+     "CONFIRM", None),
+    ("options_iv_rich_for_sellers",
+     {"signal": "BUY",
+      "alt_data": {"options": {"iv_rank": 65}}},
+     "CONFIRM", None),
+    ("options_iv_cheap_for_buyers",
+     {"signal": "BUY",
+      "alt_data": {"options": {"iv_rank": 15}}},
+     "CONFIRM", None),
+    ("options_pcr_panic",
+     {"signal": "BUY",
+      "alt_data": {"options": {"put_call_ratio": 1.8}}},
+     "CONFIRM", None),
+    ("options_pcr_complacent",
+     {"signal": "BUY",
+      "alt_data": {"options": {"put_call_ratio": 0.3}}},
+     "CAUTION", None),
+    ("macro_low_vol_riskon",
+     {"signal": "BUY",
+      "alt_data": {"macro": {"cross_asset_vol": {
+          "move": {"p30d_label": "low"},
+          "ovx": {"p30d_label": "low"}}}}},
+     "CONFIRM", None),
+    ("cboe_skew_complacent",
+     {"signal": "BUY",
+      "alt_data": {"macro": {"cboe_skew": {"skew_signal": "low"}}}},
+     "CAUTION", None),
+    ("macro_yield_curve_steepening",
+     {"signal": "BUY",
+      "alt_data": {"macro": {"yield_curve": {"curve_signal": "steepening"}}}},
+     "CONFIRM", None),
+    ("recent_8k_acquisition",
+     {"signal": "BUY",
+      "alt_data": {"recent_8k_events": {"events": [{"item_tags": ["1.01"]}]}}},
+     "CAUTION", None),
+    ("recent_8k_regulation_fd",
+     {"signal": "BUY",
+      "alt_data": {"recent_8k_events": {"events": [{"item_tags": ["7.01"]}]}}},
+     "CAUTION", None),
+    ("recent_8k_earnings_release",
+     {"signal": "BUY",
+      "alt_data": {"recent_8k_events": {"events": [{"item_tags": ["2.02"]}]}}},
+     "CAUTION", None),
+    ("multi_signal_consensus",
+     {"signal": "BUY", "score": 3}, "CONFIRM", None),
+    ("low_conviction_score",
+     {"signal": "BUY", "score": 1}, "CAUTION", None),
+    ("sector_high_short_volume",
+     {"signal": "BUY",
+      "rel_strength": {"relative_strength": 4.0, "sector": "Tech"},
+      "alt_data": {"finra_short_vol": {"is_elevated": True}}},
+     "CAUTION", None),
+    ("no_news_low_attention",
+     {"signal": "BUY", "news": [], "sec_alert": {}}, "CAUTION", None),
+    # NOTE: end_of_quarter_window / turn_of_month_strength /
+    # monday_morning_open / last_30_min_session / first_5_min_session
+    # are date-driven so they may or may not fire today. They're
+    # exercised separately in TestCalendarRules below using monkeypatch.
 ]
 
 
@@ -356,11 +518,27 @@ def test_rule_fires_on_positive_fixture(rule_name, candidate,
 # Per-rule negative cases — every rule no-ops on empty candidate
 # ─────────────────────────────────────────────────────────────────────
 
+# Rules whose entire purpose is to fire on minimal context — these
+# are legitimately wall-clock or absence-driven, so the "no-op on
+# empty candidate" smoke test doesn't apply.
+_EMPTY_FIRE_EXEMPT = {
+    "no_news_low_attention",        # designed to flag absence of catalyst
+    "end_of_quarter_window",         # date-driven
+    "turn_of_month_strength",        # date-driven
+    "monday_morning_open",           # date+time-driven
+    "last_30_min_session",           # time-driven
+    "first_5_min_session",           # time-driven
+}
+
+
 @pytest.mark.parametrize("rule_name", [c[0] for c in _FIRE_CASES])
 def test_rule_no_op_on_empty_candidate(rule_name):
     """Every rule must return None on a candidate with no relevant
     fields. Guards against rules that crash on `candidate.get(...)
-    is None`."""
+    is None`. Exempts rules whose purpose is to fire on absence or
+    wall-clock — those are tested separately."""
+    if rule_name in _EMPTY_FIRE_EXEMPT:
+        pytest.skip(f"{rule_name} legitimately fires on minimal context")
     mod = importlib.import_module(f"deterministic_specialists.{rule_name}")
     # Empty candidate apart from a matching signal
     cand = {"symbol": "X", "signal": "BUY"}
@@ -379,3 +557,91 @@ class TestIntegration:
         src = (Path(__file__).resolve().parent.parent
                / "ai_analyst.py").read_text()
         assert "from deterministic_specialists import build_panel_block" in src
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Calendar / time-of-day rules — tested via monkeypatched datetime
+# ─────────────────────────────────────────────────────────────────────
+
+class TestCalendarRules:
+    """These rules read the wall clock so the deterministic fixture
+    table can't exercise them reliably. We monkeypatch datetime in
+    the rule module to a known date/time and assert the verdict."""
+
+    def _patch_now(self, monkeypatch, module, fake_dt):
+        """Replace datetime.utcnow() in `module`'s namespace."""
+        import datetime as real_dt
+        class _FakeDT(real_dt.datetime):
+            @classmethod
+            def utcnow(cls):
+                return fake_dt
+            @classmethod
+            def now(cls, tz=None):
+                if tz:
+                    return fake_dt.replace(tzinfo=tz)
+                return fake_dt
+        monkeypatch.setattr(module, "datetime", _FakeDT)
+
+    def test_end_of_quarter_window_fires_on_last_days(self, monkeypatch):
+        from datetime import datetime as _dt
+        from deterministic_specialists import end_of_quarter_window as mod
+        self._patch_now(monkeypatch, mod, _dt(2026, 3, 29, 14, 0))
+        out = mod.evaluate({"signal": "BUY"}, None)
+        assert out is not None and out["severity"] == "CONFIRM"
+
+    def test_end_of_quarter_window_skips_mid_month(self, monkeypatch):
+        from datetime import datetime as _dt
+        from deterministic_specialists import end_of_quarter_window as mod
+        self._patch_now(monkeypatch, mod, _dt(2026, 3, 15, 14, 0))
+        assert mod.evaluate({"signal": "BUY"}, None) is None
+
+    def test_turn_of_month_fires_at_month_end(self, monkeypatch):
+        from datetime import datetime as _dt
+        from deterministic_specialists import turn_of_month_strength as mod
+        self._patch_now(monkeypatch, mod, _dt(2026, 5, 29, 14, 0))
+        out = mod.evaluate({"signal": "BUY"}, None)
+        assert out is not None and out["severity"] == "CONFIRM"
+
+    def test_turn_of_month_fires_at_month_start(self, monkeypatch):
+        from datetime import datetime as _dt
+        from deterministic_specialists import turn_of_month_strength as mod
+        self._patch_now(monkeypatch, mod, _dt(2026, 5, 2, 14, 0))
+        out = mod.evaluate({"signal": "BUY"}, None)
+        assert out is not None and out["severity"] == "CONFIRM"
+
+    def test_turn_of_month_skips_mid_month(self, monkeypatch):
+        from datetime import datetime as _dt
+        from deterministic_specialists import turn_of_month_strength as mod
+        self._patch_now(monkeypatch, mod, _dt(2026, 5, 15, 14, 0))
+        assert mod.evaluate({"signal": "BUY"}, None) is None
+
+    def test_monday_morning_fires(self, monkeypatch):
+        from datetime import datetime as _dt
+        from deterministic_specialists import monday_morning_open as mod
+        # Monday May 18 2026 at 14:00 UTC = 10:00 ET (within 09:30-11:00)
+        self._patch_now(monkeypatch, mod, _dt(2026, 5, 18, 14, 0))
+        out = mod.evaluate({"signal": "BUY"}, None)
+        assert out is not None and out["severity"] == "CAUTION"
+
+    def test_monday_morning_skips_other_weekdays(self, monkeypatch):
+        from datetime import datetime as _dt
+        from deterministic_specialists import monday_morning_open as mod
+        # Tuesday May 19 2026 at 14:00 UTC
+        self._patch_now(monkeypatch, mod, _dt(2026, 5, 19, 14, 0))
+        assert mod.evaluate({"signal": "BUY"}, None) is None
+
+    def test_last_30_min_fires(self, monkeypatch):
+        from datetime import datetime as _dt
+        from deterministic_specialists import last_30_min_session as mod
+        # Tuesday at 19:45 UTC = 15:45 ET
+        self._patch_now(monkeypatch, mod, _dt(2026, 5, 19, 19, 45))
+        out = mod.evaluate({"signal": "BUY"}, None)
+        assert out is not None and out["severity"] == "CAUTION"
+
+    def test_first_5_min_fires(self, monkeypatch):
+        from datetime import datetime as _dt
+        from deterministic_specialists import first_5_min_session as mod
+        # Tuesday at 13:32 UTC = 09:32 ET
+        self._patch_now(monkeypatch, mod, _dt(2026, 5, 19, 13, 32))
+        out = mod.evaluate({"signal": "BUY"}, None)
+        assert out is not None and out["severity"] == "CAUTION"
