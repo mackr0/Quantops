@@ -200,12 +200,16 @@ def analyze_political_climate(ctx=None) -> Dict[str, Any]:
         "Political panic selloffs often overcorrect and revert within days."
     )
 
+    # 2026-05-19: removed silent fallback to config.ANTHROPIC_API_KEY
+    # when ctx is None. The Settings-page key + per-profile encrypted
+    # key are now the only sources. ctx-less callers raise ValueError
+    # from call_ai's API-key check, which is what we want.
     try:
         response_text = call_ai(
             prompt,
             provider=ctx.ai_provider if ctx else "anthropic",
             model=ctx.ai_model if ctx else config.CLAUDE_MODEL,
-            api_key=ctx.ai_api_key if ctx else config.ANTHROPIC_API_KEY,
+            api_key=ctx.ai_api_key if ctx else None,
             max_tokens=1024,
             db_path=getattr(ctx, "db_path", None) if ctx else None,
             purpose="political_context",

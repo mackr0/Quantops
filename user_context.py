@@ -443,10 +443,17 @@ def build_context_from_segment(segment_name: str) -> UserContext:
         alpaca_api_key=seg.get("alpaca_key") or config.ALPACA_API_KEY or "",
         alpaca_secret_key=seg.get("alpaca_secret") or config.ALPACA_SECRET_KEY or "",
         alpaca_base_url=config.ALPACA_BASE_URL,
-        # AI configuration (defaults to Anthropic for backward compat)
+        # AI configuration. 2026-05-19: removed silent fallback to
+        # config.ANTHROPIC_API_KEY so the segment-level legacy path
+        # doesn't quietly pick up the process-level Anthropic key.
+        # This function is legacy (no production callers — the
+        # canonical path is build_user_context_from_profile in
+        # models.py). Kept for back-compat with any CLI / test usage
+        # but the AI key defaults to empty; explicit callers must
+        # pass api_key= when invoking call_ai with the resulting ctx.
         ai_provider="anthropic",
         ai_model=config.CLAUDE_MODEL,
-        ai_api_key=config.ANTHROPIC_API_KEY or "",
+        ai_api_key="",
         # Database — use the segment-specific DB path
         db_path=seg.get("db_path", config.DB_PATH),
         # Notifications

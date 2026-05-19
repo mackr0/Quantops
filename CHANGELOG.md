@@ -17,6 +17,31 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Removed 6 silent fallbacks to process-level Anthropic key. Severity: high (UX integrity — Settings page now actually does what it says).
+
+**What broke (UX).** Operator removed the Anthropic key from the top of the Settings page (which writes `users.anthropic_api_key_enc=''`) expecting Anthropic to be fully out of the system. It wasn't — six code sites silently fell back to `config.ANTHROPIC_API_KEY` (loaded from `/opt/quantopsai/.env`) whenever a context-level key was missing or a ctx-less caller invoked an AI helper. The UI implied authority it didn't have; the system kept reaching into a process-level master key the user couldn't see or remove via the web.
+
+**The 6 leaky paths (all removed in this commit):**
+
+| Site | What it did before |
+|---|---|
+| `user_context.py:449` `build_context_from_segment` | Built segment-level ctx with `ai_api_key=config.ANTHROPIC_API_KEY or ""` |
+| `ai_analyst.py:27` `get_claude_client(api_key=None)` | Fell back to `config.ANTHROPIC_API_KEY` when called with no arg |
+| `ai_analyst.py:150` `analyze_symbol(ctx=None, ...)` | `ctx.ai_api_key if ctx else config.ANTHROPIC_API_KEY` |
+| `ai_analyst.py:418` `analyze_portfolio_risk(ctx=None, ...)` | Same pattern |
+| `political_sentiment.py:208` `get_maga_mode_context(ctx=None, ...)` | Same pattern |
+| `self_tuning.py:5943` strategy-proposer key resolution | `ai_api_key = os.getenv("ANTHROPIC_API_KEY", "")` direct read |
+
+Each now either requires ctx (raises clearly when missing) or returns None / "" gracefully — never silently reaches into `.env`. `get_claude_client`'s ValueError now points the operator at the Settings page instead of the .env file.
+
+Note: a SEVENTH path — the cross-provider fallback chain in `ai_providers._build_fallback_chain` — was already neutralized by the morning Anthropic-suppression gate (`9c8cac8`). The .env Anthropic key is now functionally unreachable from any production trading code path.
+
+**Regression test.** `tests/test_no_silent_anthropic_fallback_2026_05_19.py` — 6 tests, one per leaky site, plus a structural test that scans `self_tuning.py` source and fails if `os.getenv("ANTHROPIC_API_KEY"` appears in any non-comment line. Catches a refactor that accidentally re-introduces the silent fallback. All pass; 87 existing tests across `tests/test_provider_circuit_failover.py`, `tests/test_self_tuning_wave{1,2,3}.py`, and `tests/test_user_context.py` still pass.
+
+**Pending follow-up:** delete the `ANTHROPIC_API_KEY=...` line from `/opt/quantopsai/.env` in a data action after this code deploys. Until that's done the key still exists in the file (just nothing reads it any more).
+
+---
+
 ## 2026-05-19 PM — Profile create/delete: no more 0-byte phantom journals. Severity: high (closes the structural gap that produced today's outage).
 
 **Follow-up to the morning phantom-DB outage.** The defensive fix (db_integrity skips phantom DBs at scan time) landed in `ed72dc7`; this commit closes the upstream gap that ever lets a phantom file exist in the first place.

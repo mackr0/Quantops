@@ -17,17 +17,26 @@ def get_claude_client(api_key=None):
 
     Parameters
     ----------
-    api_key : str, optional
-        Anthropic API key.  Falls back to config.ANTHROPIC_API_KEY when
-        not provided.
+    api_key : str
+        Anthropic API key. **Required** — the silent fallback to
+        `config.ANTHROPIC_API_KEY` was removed 2026-05-19 so the
+        Settings-page key field (`users.anthropic_api_key_enc`) is
+        the single source of truth. The fallback let removing the key
+        from Settings silently leave it active via `/opt/quantopsai/.env`,
+        which was actively misleading.
 
-    Note: New code should use ai_providers.call_ai() instead.
+    Note: New code should use `ai_providers.call_ai()` instead; this
+    helper exists only for legacy CLI paths in `main.py` and
+    `news_sentiment.py`.
     """
     import anthropic
-    key = api_key or config.ANTHROPIC_API_KEY
+    key = api_key
     if not key:
         raise ValueError(
-            "Missing ANTHROPIC_API_KEY. Add it to your .env file."
+            "Missing Anthropic API key. Either pass api_key=<key> "
+            "explicitly, or configure it via the Settings page "
+            "(per-user encrypted storage). The silent .env fallback "
+            "was removed 2026-05-19."
         )
     return anthropic.Anthropic(api_key=key)
 
@@ -134,11 +143,15 @@ def analyze_symbol(symbol, ctx=None, api=None, political_context=None):
             )
 
         # Call AI provider (multi-provider via ai_providers.call_ai)
+        # 2026-05-19: removed silent fallback to config.ANTHROPIC_API_KEY
+        # when ctx is None. ctx-less callers (CLI scripts) must now pass
+        # an explicit api_key or call_ai raises ValueError. Production
+        # always passes ctx, so this only affects main.py CLI paths.
         response_text = call_ai(
             prompt,
             provider=ctx.ai_provider if ctx else "anthropic",
             model=ctx.ai_model if ctx else config.CLAUDE_MODEL,
-            api_key=ctx.ai_api_key if ctx else config.ANTHROPIC_API_KEY,
+            api_key=ctx.ai_api_key if ctx else None,
             db_path=getattr(ctx, "db_path", None) if ctx else None,
             purpose="single_analyze",
         )
@@ -402,11 +415,13 @@ def analyze_portfolio_risk(positions, account_info, ctx=None):
             "utilization, and correlation between holdings."
         )
 
+        # 2026-05-19: removed silent fallback to config.ANTHROPIC_API_KEY
+        # (see analyze_symbol comment above for context).
         response_text = call_ai(
             prompt,
             provider=ctx.ai_provider if ctx else "anthropic",
             model=ctx.ai_model if ctx else config.CLAUDE_MODEL,
-            api_key=ctx.ai_api_key if ctx else config.ANTHROPIC_API_KEY,
+            api_key=ctx.ai_api_key if ctx else None,
             db_path=getattr(ctx, "db_path", None) if ctx else None,
             purpose="portfolio_review",
         )

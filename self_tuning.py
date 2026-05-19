@@ -5938,10 +5938,11 @@ def _optimize_commission_strategy(conn, ctx, profile_id, user_id,
         # ctx-round-trip test surfaced the silent-disconnect class.
         ai_api_key = getattr(ctx, "ai_api_key", None)
         if not ai_api_key:
-            # Fall back to environment-configured default
-            import os
-            ai_api_key = os.getenv("ANTHROPIC_API_KEY", "")
-        if not ai_api_key:
+            # 2026-05-19: removed silent fallback to
+            # os.getenv("ANTHROPIC_API_KEY") so the per-profile /
+            # per-user key is the only source. ctx-less or
+            # key-less invocations now skip cleanly rather than
+            # secretly using a process-level Anthropic key.
             return None
 
         # ctx.segment is the canonical market-type field. Earlier
