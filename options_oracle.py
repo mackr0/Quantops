@@ -29,6 +29,8 @@ import math
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -396,31 +398,25 @@ def compute_max_pain(chain_data: Dict[str, Any]) -> Dict[str, Any]:
         if not strikes:
             return {"max_pain_strike": 0.0, "distance_pct": 0.0, "pinning": False}
 
-        best_strike = strikes[0]
-        min_pain = float("inf")
+        # Vectorized max-pain: for each candidate strike S[i], total pain is
+        #   sum_j max(0, S[i] - call_k[j]) * call_oi[j]   (ITM calls)
+        # + sum_j max(0, put_k[j]  - S[i]) * put_oi[j]    (ITM puts)
+        # Replaces the prior O(N²) iterrows loop that was the cycle-time
+        # bottleneck (py-spy 2026-05-20: 2/3 worker threads stuck here).
+        S = np.asarray(strikes, dtype=float)
+        ck = calls["strike"].to_numpy(dtype=float)
+        coi = calls["openInterest"].fillna(0).to_numpy(dtype=float) \
+            if "openInterest" in calls.columns else np.zeros(len(ck))
+        pk = puts["strike"].to_numpy(dtype=float)
+        poi = puts["openInterest"].fillna(0).to_numpy(dtype=float) \
+            if "openInterest" in puts.columns else np.zeros(len(pk))
 
-        for strike in strikes:
-            # Total dollars option holders lose if price pins at `strike`
-            # For ITM calls (strike < price): call holders gain (price - strike) * OI
-            # For ITM puts (strike > price): put holders gain (strike - price) * OI
-            call_pain = 0.0
-            put_pain = 0.0
+        call_pain = np.maximum(S[:, None] - ck[None, :], 0.0) @ coi
+        put_pain = np.maximum(pk[None, :] - S[:, None], 0.0) @ poi
+        total_pain = call_pain + put_pain
 
-            for _, row in calls.iterrows():
-                k = float(row["strike"])
-                oi = float(row.get("openInterest", 0) or 0)
-                if strike > k:
-                    call_pain += (strike - k) * oi
-            for _, row in puts.iterrows():
-                k = float(row["strike"])
-                oi = float(row.get("openInterest", 0) or 0)
-                if strike < k:
-                    put_pain += (k - strike) * oi
-
-            total = call_pain + put_pain
-            if total < min_pain:
-                min_pain = total
-                best_strike = strike
+        best_idx = int(np.argmin(total_pain))
+        best_strike = float(S[best_idx])
 
         distance_pct = (current - best_strike) / current * 100 if current > 0 else 0.0
         # Pinning pressure if within 2% of max pain and <14 DTE

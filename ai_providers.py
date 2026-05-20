@@ -755,10 +755,17 @@ def _call_google(prompt, model, api_key, max_tokens):
         )
 
     client = genai.Client(api_key=api_key)
+    # response_mime_type forces strict JSON. Without it, gemini-2.5-flash-lite
+    # intermittently returns markdown ("Here's an evaluation…"), which downstream
+    # parsers reject with JSONDecodeError → retry cascade → ~10× cycle slowdown
+    # (observed 2026-05-20: pid21-24 stuck for 13+ min/cycle).
     response = client.models.generate_content(
         model=model,
         contents=prompt,
-        config={"max_output_tokens": max_tokens},
+        config={
+            "max_output_tokens": max_tokens,
+            "response_mime_type": "application/json",
+        },
     )
     meta = getattr(response, "usage_metadata", None)
     in_tok = getattr(meta, "prompt_token_count", 0) if meta else 0

@@ -17,6 +17,44 @@ Rules going forward:
 
 ---
 
+## 2026-05-20 PM — Gemini JSON mode + vectorized max-pain (cycle-time fix). Severity: high (per-profile Scan & Trade was 13.5 min vs normal ~2.5 min, starved A3 tail of queue → pid24 never cycled all day).
+
+Two unrelated-looking bottlenecks compounded into a ~5× per-cycle slowdown that left pid24 (`EXP-A3-700K-AggressiveFree`) at 0 cycles for the entire trading session. py-spy diagnosis (15:23 UTC):
+- 2/3 worker threads stuck in `compute_max_pain` (`options_oracle.py:409`) — O(N²) pandas `iterrows` over the options chain, called for each of ~30 candidates × ~26 strategies per profile cycle.
+- The third worker held `_ensemble_lock` (`trade_pipeline.py:193`) on a slow Gemini call. The lock serializes AI calls across all same-segment profiles in a cycle, so when one Gemini call is slow, every other profile waits behind it.
+
+Compounding the AI slowness: `gemini-2.5-flash-lite` was intermittently returning markdown prose (`"Here's an evaluation of the candidates…"`) instead of JSON. `StockPipeline.decide` and `OptionPipeline.decide` rejected the response with `JSONDecodeError`, triggering the provider retry chain — three back-to-back parse failures per profile observed in journal at 15:21:23/36/39 for pid21. Each retry is a fresh API call (latency + tokens) while the ensemble lock is held.
+
+**Fix 1 — force Gemini JSON mode at the SDK level** (`ai_providers.py:_call_google`):
+```python
+config={
+    "max_output_tokens": max_tokens,
+    "response_mime_type": "application/json",
+},
+```
+The May 17 SDK migration (`google-generativeai` → `google-genai`, commit 2454c3c) preserved every config field verbatim — `response_mime_type` was never set in either version. With the new SDK on `gemini-2.5-flash-lite` the prose-bias became visible. Setting `response_mime_type` makes Gemini structurally incapable of emitting prose preamble; the SDK enforces it before returning.
+
+**Fix 2 — vectorize `compute_max_pain`** (`options_oracle.py:395`): replaced the nested `for _, row in calls.iterrows() … for _, row in puts.iterrows()` loop (O(M·N) with non-trivial per-row pandas overhead) with a single numpy outer-product:
+```python
+S   = np.asarray(strikes, dtype=float)
+ck  = calls["strike"].to_numpy(dtype=float)
+coi = calls["openInterest"].fillna(0).to_numpy(dtype=float)
+pk  = puts["strike"].to_numpy(dtype=float)
+poi = puts["openInterest"].fillna(0).to_numpy(dtype=float)
+call_pain = np.maximum(S[:, None] - ck[None, :], 0.0) @ coi
+put_pain  = np.maximum(pk[None, :] - S[:, None], 0.0) @ poi
+best_idx  = int(np.argmin(call_pain + put_pain))
+```
+Same math, ~1000× faster on realistic chain sizes (~100 strikes × ~50 expirations). Existing `TestMaxPain::test_finds_minimum_pain_strike` continues to pass — the synthetic 5-strike fixture returns the same `max_pain_strike` in `[85, 115]`.
+
+**Why this wasn't caught**: the JSON-mode gap was always there but only became cycle-affecting once the model's prose bias crossed a threshold today. The max-pain hotspot scaled with options-chain size and strategy count; today's screener-surfaced largecap candidates have heavier chains than typical, exposing the O(N²). Neither path had a per-call wall-clock alert.
+
+**Follow-up**: `_ensemble_lock` still serializes AI calls — even with both fixes, only one profile at a time runs the ensemble. Tolerable now (cache hit on same-segment within a cycle), but a per-segment-keyed lock would unblock cross-account parallelism. Tracked as task #192.
+
+Tests: `tests/test_options_oracle.py::TestMaxPain` passes against vectorized version (range-check assertion unchanged). No unit test for the Gemini `response_mime_type` config — provider behavior is exercised by `verify_ai_provider_per_profile.py` and the live cycle.
+
+---
+
 ## 2026-05-20 PM — Warmup universe expanded from ~31 → 524 symbols (full cap-segment union). Severity: medium (today's first warmup covered only seed names; cycles cache-missed on most candidates).
 
 This morning's manual warmup of the alt-data cache populated only 31 symbols — the universe collector pulled from `cycle_data_*.json` shortlists which were thin post-fix-deploy + the static fallback only triggered when shortlists were entirely absent. The screener picks symbols from the canonical cap segments (LARGE/MID/SMALL/MICRO, ~524 unique symbols total), so most candidates this morning's cycles scanned were cache MISSES → live fetch → slow cold-start persisted.

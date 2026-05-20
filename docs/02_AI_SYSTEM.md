@@ -431,6 +431,11 @@ The cost guard (`cost_guard.py`) enforces a per-user daily AI-spend ceiling. Har
 
 Three providers wired (`ai_providers.py`): Anthropic Claude (Haiku, Sonnet, Opus), OpenAI GPT, Google Gemini. Default model per profile is configurable; the per-profile `ai_model_auto_tune` toggle (off by default) lets the tuner A/B-test alternative models within the daily cost ceiling.
 
+**Structured-output enforcement.** Every provider call is wrapped so the model is forced to return parseable JSON, not free-form prose:
+- Anthropic: tool-use schema in `call_ai_structured` (see §`_call_anthropic`).
+- OpenAI: `response_format={"type": "json_object"}` is the default.
+- Google Gemini: `config={"response_mime_type": "application/json", ...}` in `_call_google`. Required on `gemini-2.5-flash-lite` or the model intermittently emits markdown preamble ("Here's an evaluation…"), which downstream parsers reject with `JSONDecodeError`, triggering the provider retry chain and inflating cycle time. See CHANGELOG 2026-05-20 PM.
+
 ## 15. What's deliberately not in the AI system
 
 - **No reinforcement learning loop.** The system is a stacked prediction-and-decision pipeline, not an RL agent. The "feedback loop" is supervised: resolve labeled predictions, retrain models. This is a deliberate choice; see `docs/10_METHODOLOGY.md`.

@@ -168,6 +168,60 @@ class TestMaxPain:
         assert 85 <= result["max_pain_strike"] <= 115
         assert "distance_pct" in result
 
+    def test_synthetic_chain_exact_max_pain_is_100(self, synthetic_chain):
+        """Sharpens the range-check above with an exact value.
+
+        Hand-computed total-pain for each strike in the fixture chain:
+          S=90  → 128,500       S=95  → 69,500
+          S=100 → 35,500 (min)  S=105 → 71,500   S=110 → 135,000
+        """
+        from options_oracle import compute_max_pain
+        result = compute_max_pain(synthetic_chain)
+        assert result["max_pain_strike"] == 100.0
+
+    def test_vectorized_matches_reference_loop_on_random_chain(self):
+        """Guardrail: the numpy-vectorized implementation must match a
+        pure-Python reference loop bit-for-bit on a non-trivial random
+        chain. Catches future refactors that subtly change the math
+        (the original O(N²) iterrows loop is the reference)."""
+        import numpy as np
+        import pandas as pd
+        from options_oracle import compute_max_pain
+
+        rng = np.random.default_rng(42)
+        n = 60  # realistic chain size
+        strikes = np.arange(50.0, 50.0 + n)
+        call_oi = rng.integers(0, 10000, size=n).astype(float)
+        put_oi = rng.integers(0, 10000, size=n).astype(float)
+
+        calls = pd.DataFrame({"strike": strikes, "openInterest": call_oi})
+        puts = pd.DataFrame({"strike": strikes, "openInterest": put_oi})
+        chain = {
+            "current_price": 80.0,
+            "near_term": {"calls": calls, "puts": puts,
+                          "expiration": "2026-06-20"},
+            "chains": [],
+        }
+
+        # Reference: the pre-vectorization nested loop
+        def _reference(S_list, c, p):
+            best, best_pain = S_list[0], float("inf")
+            for S in S_list:
+                cp = sum(max(0, S - float(r["strike"])) * float(r["openInterest"])
+                         for _, r in c.iterrows())
+                pp = sum(max(0, float(r["strike"]) - S) * float(r["openInterest"])
+                         for _, r in p.iterrows())
+                if cp + pp < best_pain:
+                    best, best_pain = S, cp + pp
+            return float(best)
+
+        expected = _reference(sorted(set(strikes.tolist())), calls, puts)
+        actual = compute_max_pain(chain)["max_pain_strike"]
+        assert actual == expected, (
+            f"Vectorized {actual} ≠ reference {expected} — math drift in "
+            "compute_max_pain. Inspect the numpy outer-product expressions."
+        )
+
 
 class TestOracleIntegration:
     def test_crypto_symbol_returns_no_options(self):
