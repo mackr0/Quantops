@@ -763,7 +763,25 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
                 symbol, type(_corr_exc).__name__, _corr_exc,
             )
 
-    positions = {p["symbol"]: p for p in positions_list}
+    # execute_trade is the STOCK pipeline. Option signals (OPTIONS,
+    # MULTILEG_OPEN) and pair signals (PAIR_TRADE) route to their own
+    # pipelines at run_trade_cycle:2318 / 2344 / 2382. Without this
+    # filter, a profile holding both stock X and an option leg on X
+    # produced a dict-key collision (Position.__getitem__("symbol")
+    # returns the underlying for BOTH) — AI's stock-level signal then
+    # acted on whichever position the dict comprehension landed on,
+    # producing wrong-qty stock sells with option-magnitude P&L
+    # (e.g., the 2026-05-20 QCOM 1-share sells with -$111 P&L the
+    # operator caught). The option pipeline manages option positions
+    # independently via options_lifecycle / options_multileg /
+    # OptionPipeline; this filter restores the separation that was
+    # already the design intent. (#189, 2026-05-20.)
+    #
+    # IMPORTANT: this filter is downstream of the correlation check
+    # (line 751) which still receives the full positions_list — option
+    # underlyings should still contribute to correlation budgeting.
+    positions = {p["symbol"]: p for p in positions_list
+                 if not getattr(p, "is_option", False)}
 
     equity = account.get("equity", 0)
     cash = account.get("cash", 0)
@@ -1413,7 +1431,14 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
         positions_list = [p for p in positions_list if ("/" in p["symbol"]) == is_crypto]
 
     held_symbols = {p["symbol"] for p in positions_list}
-    positions_dict = {p["symbol"]: p for p in positions_list}
+    # Stock-only dict for the prediction classifier (line ~1829) — the
+    # AI's BUY / SELL / SHORT predictions are stock-level signals;
+    # classifying against stock holdings is the right interpretation.
+    # Option positions are tracked + classified by the option pipeline
+    # separately. Filtering avoids the dict-key collision when stock
+    # and option leg share the same underlying. (#189, 2026-05-20.)
+    positions_dict = {p["symbol"]: p for p in positions_list
+                      if not getattr(p, "is_option", False)}
 
     # Drawdown check — ONCE at the top
     drawdown_action = "normal"
@@ -1434,7 +1459,18 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             }
 
     enable_shorts = ctx.enable_short_selling if ctx is not None else False
-    num_positions = len(positions_list)
+    # Stock-position count for the stock pipeline's max_total_positions
+    # cap. Option positions are NOT counted here — they have their own
+    # gates via greek-budget params on the schema
+    # (max_net_options_delta_pct, max_theta_burn_dollars_per_day,
+    # max_short_vega_dollars). Without this filter, a multileg spread
+    # of N legs counted as N positions against a 10-position cap and
+    # produced spurious at_max_positions True states that blocked
+    # every new stock candidate (observed 2026-05-20: pid17 reporting
+    # 12/10, pid21 reporting 9/5). (#189, 2026-05-20.)
+    num_positions = sum(
+        1 for p in positions_list if not getattr(p, "is_option", False)
+    )
     if ctx is not None:
         try:
             from regime_overrides import resolve_for_current_regime

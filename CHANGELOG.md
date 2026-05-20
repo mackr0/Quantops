@@ -17,6 +17,75 @@ Rules going forward:
 
 ---
 
+## 2026-05-20 PM — Stock pipeline stops seeing option positions (separation honored). Severity: high (silent: wrong-instrument exits + position-cap inflation).
+
+`execute_trade` and `run_trade_cycle` in `trade_pipeline.py` are the **stock** pipeline. Option signals route to `OptionPipeline` (single-leg + multileg), pair-trade signals route to `execute_pair_trade` — the dispatch is explicit at `run_trade_cycle:2318 / 2344 / 2382`. The pipelines were always designed as separate, but the stock pipeline was building its `positions` dict from `client.get_positions()`'s full list, which contains BOTH stock and option positions. The fix restores the separation that was already the design intent.
+
+**The bug shape that motivated the fix.** `Position.__getitem__("symbol")` returns the underlying for BOTH stock and option-leg positions (back-compat shim for code written before the Position class existed; see `position.py:236`). So a profile holding 73 shares of QCOM plus an option leg on QCOM produced a dict-key collision:
+```python
+positions = {p["symbol"]: p for p in positions_list}
+# → positions["QCOM"] = whichever landed LAST in iteration
+```
+The AI's STRONG_SELL signal then acted on whichever position the dict landed on:
+- If the option leg won: code did `api.submit_order(symbol="QCOM", qty=1, side="sell")` (interpreted by Alpaca as a stock sell of 1 share), then `log_trade(pnl=position.get("unrealized_pl"))` — using the OPTION's P&L on the STOCK sell row.
+- If the stock won: behaved correctly.
+
+This produced rows the operator caught on 2026-05-20: QCOM 1-share sells with -$111 / +$25.50 P&L (impossible stock arithmetic — only explainable as option-premium magnitude stamped on a stock row).
+
+A separate symptom of the same root cause: `num_positions = len(positions_list)` counted each option leg toward the stock cap `max_total_positions`. A multileg spread of N legs counted as N positions. Profiles overshot their cap silently (observed 2026-05-20: pid17 reporting 12/10, pid21 reporting 9/5). The pre-filter then blocked every new stock candidate on `at_max_positions`, producing the "no signal" symptom (29 of 30 candidates per cycle dropped as "max-positions").
+
+**Three narrow edits in `trade_pipeline.py`:**
+
+1. **Line 766** (`execute_trade.positions`): filter to stock positions only.
+```python
+positions = {p["symbol"]: p for p in positions_list
+             if not getattr(p, "is_option", False)}
+```
+Local to `execute_trade`'s SELL/BUY/SHORT decision branches. The correlation check at line 751 and `_build_portfolio_state` at line 1707 still receive the full `positions_list` — option underlyings still contribute to correlation budgeting and the AI's full-portfolio context.
+
+2. **Line 1416** (`run_trade_cycle.positions_dict`): same filter. The downstream consumer is the prediction classifier (line ~1829) deciding if AI's SELL is `exit_long` / `exit_short` / `directional_short`. The AI's stock-level BUY/SELL/SHORT predictions should classify against stock holdings.
+
+3. **Line 1437** (`num_positions`): count stocks only.
+```python
+num_positions = sum(
+    1 for p in positions_list if not getattr(p, "is_option", False)
+)
+```
+`max_total_positions` becomes "max stock positions" — semantically aligned with the separated-pipeline architecture. Option positions are gated by greek-budget params already on the schema (`max_net_options_delta_pct`, `max_theta_burn_dollars_per_day`, `max_short_vega_dollars`), not by count.
+
+**`held_symbols` at line 1415 stays inclusive** (it's the pre-filter's "do we hold ANYTHING on this symbol" check). A profile with option-only holdings on QCOM still has `"QCOM" in held_symbols` — the pre-filter correctly treats it as "held" for skip-when-at-max-positions logic, but the stock pipeline's positions/num_positions don't include it.
+
+**Behavior matrix:**
+
+| Profile holds | AI signal | Before | After |
+|---|---|---|---|
+| Stock QCOM only | STRONG_SELL | Closes stock (when stock won the dict collision) | Always closes stock with correct qty |
+| Option leg QCOM only | STRONG_SELL | Tries to sell 1 share of QCOM stock; logs row with option's P&L | Falls through to short-open path; opens new short stock IF shorts enabled. The option leg is OptionPipeline's domain. |
+| Stock + option leg | STRONG_SELL | Non-deterministic (dict iteration order) | Always closes the stock with correct qty; option leg untouched |
+| Stock QCOM short | STRONG_SELL | Untouched (line 1036's `qty > 0` guard) | Unchanged |
+| No QCOM held | STRONG_SELL | Short-open path | Unchanged |
+
+**Why this is not an asset-class bias** (per `feedback_trade_and_make_money_not_hoard` rule "no preference between asset classes"): this isn't "prefer stock over option" — this is "the stock pipeline only sees what it manages." The option pipeline (separate code path) manages option positions; the stock pipeline (this code path) manages stock positions. Separation of concerns, not bias.
+
+**Out of scope (deferred):**
+- The "option-only holding + STRONG_SELL opens new short stock" behavior is technically correct under separated pipelines (the stock pipeline has no stock position to manage; the AI's directional signal acts on the stock market). If the operator wants something smarter (e.g., "if we have a long put on QCOM, don't also open a short stock — they're redundant directional bets"), that's per-instrument AI reasoning and belongs to task #195 (position-cap as soft bound + swap decisions).
+- Backfill of historical journal rows. Investigation (2026-05-20 PM) confirmed via `api.get_order(order_id)` that the 129 ambiguous historical rows the dashboard surfaced are actually STOCK orders (Alpaca returns `class='us_equity'`, OCC-format check fails). They're not mislabeled options — they're stock rows with cross-contaminated P&L from the dict-collision bug. The wrong P&L IS recoverable from broker history (compute pnl = (sell_price − cost_basis) × qty per matched FIFO open row), but that's a separate cleanup script.
+- The `backfill_option_exits_2026_05_20.py` script (committed in 736dd9a) was built for "recover OCC on option exits"; the investigation showed those rows aren't option exits. The script remains in `scripts/` as a reusable scaffold; it should not be invoked against current data (it would find no candidates and write no changes — dry-run report was 0 / 129 resolved via Alpaca, 6 / 129 via FIFO which would have been false positives).
+
+Tests: `tests/test_separated_pipelines_stocks_vs_options_2026_05_20.py` adds 8 guardrails covering:
+- stock-position-survives-when-option-leg-shares-underlying
+- option-only-holding-is-invisible-to-stock-pipeline
+- no-options-holding-unchanged
+- multileg-spread-does-not-count-as-three-positions
+- pure-options-portfolio-has-zero-stock-count
+- mixed-portfolio-counts-unique-stock-underlyings
+- dict-excludes-option-legs (prediction classifier)
+- held-symbols-remains-inclusive (pre-filter still sees option-only underlyings)
+
+Full suite: 4596 passing / 2 skipped.
+
+---
+
 ## 2026-05-20 PM — Retired the morning alt-data warmup (kept the cache layer). Severity: medium (operational simplification; corrects a same-day diagnosis error that produced a feature solving the wrong problem).
 
 The morning `premarket_warmup.py` cron + `altdata_warmup.py` universe-iterator shipped earlier today (see entry "Warmup universe expanded from ~31 → 524 symbols" below and the precursor "Alt-data pre-market warmup + cache layer" commit `952aabf`) is removed today. The cache layer underneath (`alt_data_cache.py`) is kept — it still earns its keep on intra-cycle dedup.
