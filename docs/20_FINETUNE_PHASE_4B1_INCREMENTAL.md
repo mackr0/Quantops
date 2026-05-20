@@ -638,11 +638,118 @@ tests/
 
 Already scoped in docs/17 Phase 4b but excluded from 4b.1:
 
-- **Phase 4b.2 (self-hosted LoRA on Llama/Mistral/Qwen)** — replaces vendor API entirely. Higher ops complexity (need GPU instance) but ~$100-150/month all-in including inference, and full data sovereignty. Pick-up trigger: 4b.1 success AND operator wants to remove the OpenAI vendor dependency.
+- **Phase 4b.2 (self-hosted LoRA on Llama/Mistral/Qwen)** — replaces vendor API entirely. ~$0-150/month all-in depending on hosting choice (see §16.1 for the concrete split-architecture path), and full data sovereignty. Pick-up trigger: 4b.1 success AND operator wants to remove the OpenAI vendor dependency. OR: activate as an *alternative* to 4b.1 if operator wants to avoid OpenAI from the start (training cost is $0 and inference is competitive vs Gemini today).
 
 - **Phase 4b.3 (per-profile fine-tunes)** — after each profile accumulates ≥25K resolved predictions individually (~12 months at current rate). Replaces the pooled model with per-profile checkpoints; better at capturing per-profile ablation signal. Pick-up trigger: pooled fine-tune is producing measurable lift AND profile-level data sets cross the threshold.
 
 - **RLHF / DPO over operator preferences** — instead of hindsight outcomes, use operator-curated preference pairs ("the AI should have chosen X over Y") as the training signal. Stronger supervision for narrative-quality decisions but needs sustained operator-time investment.
+
+---
+
+### 16.1 Phase 4b.2 concrete path — local LoRA training (M2 Max) + hosted inference
+
+Added 2026-05-20 after operator review of §16 surfaced a key insight: **the training step and the inference step don't need the same hardware.** Train locally on the operator's M2 Max 64GB (zero infra cost, zero vendor dependency for training); push the merged weights to a managed inference endpoint that the prod droplet calls via the existing `ai_providers.py` HTTP path.
+
+This collapses the "self-hosted LoRA" ops burden from "stand up + maintain a GPU instance" to "pick an inference provider and push weights to it." It is competitive with 4b.1 on cost and arguably simpler operationally.
+
+#### Architecture
+
+```
+[M2 Max 64GB]                    [managed inference]              [prod droplet]
+weekly training run        →     HuggingFace Endpoints /     →    multi_scheduler
+  - load prev merged weights         Together / Fireworks /        ai_providers.call_ai
+  - LoRA on new batch                DO GPU droplet running       ("custom" provider)
+  - merge + push                     vLLM
+```
+
+Each box is owned independently:
+- **Local training** is purely an operator-cadence loop. No prod dependency. If the training laptop is offline for a week, the previous merged model keeps serving inference. Operator runs training when convenient.
+- **Inference endpoint** is the only piece prod cares about. URL + API key in `ai_providers.py`; per-profile `ai_model` field names the endpoint.
+
+#### Hardware fit (M2 Max 64GB)
+
+Confirmed feasible workloads on this machine using Apple's MLX framework (`mlx-lm`, specifically `mlx_lm.lora`):
+
+| Model | Method | Memory | Per-batch train time (500 examples) |
+|---|---|---|---|
+| Llama-3.1-8B-Instruct | LoRA (16-bit) | ~22 GB | 15-25 min |
+| Llama-3.1-8B-Instruct | Full fine-tune | ~48 GB | 30-60 min |
+| Qwen-2.5-7B / Mistral-7B-v0.3 | LoRA (16-bit) | ~20 GB | 15-25 min |
+| Llama-3.1-70B | QLoRA (4-bit base) | ~50 GB | 90-180 min |
+
+LoRA is the default — fast, smaller artifact (~10-100MB adapter), trivially mergeable. Full fine-tune is overkill for the incremental cadence here.
+
+MLX is Apple-Silicon-native and uses unified memory directly; no CUDA emulation overhead, no GPU partition fights. The `mlx_lm.lora` script handles checkpointing, LoRA → merged-weights export, and JSONL data ingestion out of the box.
+
+(Unsloth and axolotl are excellent on CUDA but don't ship a Mac path. Stick with MLX.)
+
+#### Hosting options for the merged model
+
+Concrete trade-offs as of mid-2026 (verify pricing before activation — these change quarterly):
+
+| Option | Pricing shape | Best when |
+|---|---|---|
+| **HuggingFace Inference Endpoints (serverless)** | Pay-per-token (~$0.20-$1 per M tokens for 8B-class) | Low volume (<10K calls/day). Simplest deploy: `huggingface_hub.upload_folder` then point endpoint at the repo. |
+| **HuggingFace Inference Endpoints (dedicated)** | Hourly (~$0.50-$2/hour for T4/A10) | Steady volume; always-on. ~$360-1440/month. |
+| **Together AI / Fireworks AI** | Pay-per-token serverless on custom Llama deployments (~$0.10-0.30 per M tokens for 8B) | Moderate volume; cheapest at scale; fast cold-start. Both accept LoRA + base model uploads. |
+| **Replicate** | Per-second compute (~$0.0006/sec on T4) | Sporadic / bursty calls. Cold-start can be 10-30s. |
+| **DO GPU Droplet running vLLM/Ollama** | Hourly droplet rental (~$0.50-3/hr depending on GPU class) | High-volume, want full control, willing to manage uptime/scaling. ~$360-2160/month always-on. |
+| **DO GenAI Platform** | Per-call via DO's managed proxy | Currently scoped at orchestrating *closed* vendor models (OpenAI/Anthropic) — verify their product page for current custom-model support. As of last check, NOT a path for custom Llama weights. |
+
+For the trading system's current call volume (~13 profiles × ~12-15 cycles/day × ~2-3 AI calls/cycle = ~500-600 calls/day, ~2-4M tokens/day), **HuggingFace serverless** or **Together serverless** is likely cheapest: $0.4-2/day = $12-60/month. Compare against Gemini-2.5-Flash-Lite today (~$3-10/day depending on prompt size).
+
+#### Code delta in `ai_providers.py`
+
+Add a new provider entry mirroring the existing OpenAI/Anthropic/Google call sites:
+
+```python
+def _call_custom(prompt, model, api_key, max_tokens):
+    """Call a custom HTTP endpoint hosting a fine-tuned open-weight model.
+
+    `model` is the endpoint identifier (e.g. HF endpoint URL or
+    Together model slug). `api_key` is the provider's API key.
+    Compatible with OpenAI-style /v1/chat/completions for HF / Together
+    / Fireworks / vLLM; one common shape, no per-provider branching
+    inside this function — pick the provider via the model string.
+    """
+    # Single OpenAI-format chat completion call. Set
+    # response_format={"type": "json_object"} for the JSON-mode
+    # enforcement we already require from Gemini.
+    ...
+```
+
+The trading-profile DB column `ai_provider` adds `"custom"` as a fourth option alongside `"anthropic"` / `"openai"` / `"google"`. Profiles can opt-in per experiment. Existing shadow-eval scaffolding (`shadow_models` JSON column on `trading_profiles`) is the natural home for "try the fine-tuned model alongside the current Gemini call without touching trades" — exactly what Phase 4b.1 §7.3 specifies, applied to the local-train artifact.
+
+#### Iteration loop (weekly cadence, mirrors §6.1)
+
+1. **Pull labels** — `scripts/build_finetune_corpus.py` reads `predictions_archive/` + live `ai_predictions` from each profile's journal; produces a JSONL of `(prompt, target_decision, outcome_score)` rows (same format §5.3 specifies).
+2. **Train** — on M2 Max, run `mlx_lm.lora --train --data jsonl_path --adapter-path adapters/week_N --resume-from adapters/week_{N-1}`. Time: 15-30 min for ~500 new pairs.
+3. **Merge** — `mlx_lm.fuse --adapter-path adapters/week_N --save-path merged/week_N`. Produces a single full-weights model directory.
+4. **Push** — `huggingface_hub.upload_folder` (HF Endpoints) OR `together fine-tunes upload` (Together) OR `scp + restart vllm` (DO droplet).
+5. **Promote** — update profile's `ai_model` field via Settings UI to name the new endpoint. Same promotion criteria as §8.3.
+
+#### Cost shape vs 4b.1 (per docs/20 §9)
+
+| Item | 4b.1 (OpenAI hosted) | 4b.2 (M2 Max + hosted inference) |
+|---|---|---|
+| Per-week training | $15-150 (OpenAI ft API per-token) | $0 (your hardware + electricity) |
+| Per-1k-input-token inference | $0.003 (fine-tuned GPT-3.5) | $0.0001-0.0003 (Llama-8B Together serverless) |
+| Per-call infrastructure | None (OpenAI handles) | Endpoint hourly OR per-token, depending on hosting |
+| Vendor lock | OpenAI account + ft API tier required | None — model weights are yours; can self-host or move providers |
+| Quality vs Gemini today | Likely comparable (ft GPT-3.5 vs base Flash-Lite) | Unknown until measured (ft Llama-8B vs base Flash-Lite) — bench on held-out predictions before promotion |
+
+The unknown is **base-model quality after fine-tune**. An 8B model fine-tuned on the system's specific trading patterns CAN match or beat a frozen larger model on the system's distribution, but the first iterations likely underperform. The shadow-eval window (§16 first bullet → §8.2) is exactly what tells you whether that's true for your data before any real money rides on it.
+
+#### When to pick 4b.2 over 4b.1
+
+- Operator wants zero vendor lock-in from day one
+- Has 64GB+ Apple Silicon (or equivalent CUDA hardware) available for daily training
+- Willing to invest the one-time setup of an inference endpoint
+- Comfortable with the higher quality variance early on (mitigated by shadow eval)
+
+Pick 4b.1 instead if: prefer to outsource training entirely; want the simplest possible "click a few buttons" path; don't mind ~$100/month for vendor convenience.
+
+Either path is reversible — the corpus pipeline (§5) is shared between them. Switching providers is just changing which training script consumes the JSONL.
 
 ---
 

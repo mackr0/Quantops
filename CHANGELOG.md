@@ -17,6 +17,42 @@ Rules going forward:
 
 ---
 
+## 2026-05-20 PM — Retired the morning alt-data warmup (kept the cache layer). Severity: medium (operational simplification; corrects a same-day diagnosis error that produced a feature solving the wrong problem).
+
+The morning `premarket_warmup.py` cron + `altdata_warmup.py` universe-iterator shipped earlier today (see entry "Warmup universe expanded from ~31 → 524 symbols" below and the precursor "Alt-data pre-market warmup + cache layer" commit `952aabf`) is removed today. The cache layer underneath (`alt_data_cache.py`) is kept — it still earns its keep on intra-cycle dedup.
+
+**Diagnosis correction.** `docs/21`'s TL;DR claimed the slow ~10-min cold-start cycles were caused by per-candidate alt-data network fetches. That diagnosis was wrong. Same-day investigation of the 2026-05-20 cycle-time incident (see CHANGELOG entry "Gemini JSON mode + vectorized max-pain") found the real hotspots were:
+1. `compute_max_pain` O(N²) pandas `iterrows` over options chains — 2/3 worker threads stuck there per py-spy
+2. Gemini intermittently returning markdown prose → `JSONDecodeError` → provider retry cascade
+3. `_ensemble_lock` serializing AI calls behind the slow Gemini response
+
+With (1) vectorized and (2) fixed via `response_mime_type: application/json`, per-profile Scan & Trade dropped from ~13.5 min to ~2-5 min **without** a warm cache. The alt-data network calls were never the dominant cost; they only looked like it because the cycle was overall slow.
+
+**What the warmup was costing us:**
+- 9,504 daily 3rd-party API calls (528 symbols × 18 sources), some against rate-limited providers
+- Operational complexity: cron entry, log file, monitoring burden
+- Coverage mismatch: warmup primed 528 curated names while the trading universe is ~8,000 (see CHANGELOG "Unified stock universe" above). The top-30-by-volume per cycle frequently included symbols outside the warmed set, so cache hit rate was low.
+- An integrity bug observed in today's manual run: Google Trends returned 429 after ~20 symbols and the fetcher's short-circuit return value (empty-but-non-`None` dict) was counted as "fetched" by the warmup wrapper. 508 placeholder rows landed in the cache and would look like real data to downstream strategies. This is the kind of bug the operator's `feedback_verify_integrity_not_liveness` memory was written to catch.
+
+**What was removed:**
+- `premarket_warmup.py`
+- `altdata_warmup.py`
+- `tests/test_altdata_warmup_2026_05_20.py`
+- `crontab` line on prod: `0 8 * * 1-5 cd /opt/quantopsai && /opt/quantopsai/venv/bin/python3 premarket_warmup.py …` (removed via `ssh root@droplet "crontab -l | grep -v premarket_warmup | crontab -"` before code deploy, so no race window where cron tried to run a missing script)
+
+**What was kept:**
+- `alt_data_cache.py` — the cache wrapper itself. `get_all_alternative_data` continues to call `cache_or_fetch(source, symbol, fetcher)` for each cacheable source. Misses fall through to live fetch and populate as a side effect; subsequent profiles in the same 30-min window hit the cache. Kill-switch via `ALTDATA_CACHE_ENABLED=0` retained.
+
+**docs/21 status:** RETIRED. Document is kept (not deleted) with a "Retirement rationale" preamble explaining the diagnosis correction, so the same idea doesn't get re-proposed in 6 months without re-checking the premise. The original TL;DR + body remain below the rationale as a record of the original design.
+
+**Why this matters as a process lesson:** the warmup was built and shipped before the actual cycle-time hotspots were profiled. The user said the system "seems stuck"; the build chased a plausible-sounding cause (alt-data network calls) rather than profiling first. py-spy on a live cycle would have surfaced `compute_max_pain` immediately. Build feature → measure later is the wrong order when the feature has real operational cost.
+
+**If a real cold-start problem ever surfaces** (evidence, not theory), the right fix is **lazy / adaptive**: track which symbols the screener actually surfaces over recent days; opportunistically pre-fetch those specific symbols' alt-data outside cycle time. Not a hardcoded curated list run via cron.
+
+Tests: removed `tests/test_altdata_warmup_2026_05_20.py`. The retained `alt_data_cache` tests still cover the kept-layer contract.
+
+---
+
 ## 2026-05-20 PM — Unified stock universe (completes yesterday's cap-tier removal). Severity: high (closes the gap between commit-message claims of 2026-05-19 and actual runtime behavior; corrects partial work that was represented as complete).
 
 Yesterday's commits `840293c` ("Strategy applicability: AI is picker + per-profile Stocks/Options/Crypto") and `464f1ca` ("Replace 'Large Cap' market_type label with asset-class label") declared the cap-tier (`micro` / `small` / `midcap` / `largecap`) concept dead, with `464f1ca`'s message saying "market_type is now informational... it's an internal field that doesn't affect strategy selection."

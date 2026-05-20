@@ -1,21 +1,46 @@
 # Pre-Market Alt-Data Warmup + Cache Layer
 
-**Eliminates the cold-start tax at market open by pre-fetching the 25 daily-cadence alt-data sources at 04:00 ET. Only the 3 truly-intraday sources get live-fetched per cycle.**
+**Status: RETIRED — 2026-05-20 PM.** Premise was wrong; the cycle-time problem the warmup was built to solve had a different root cause that landed the same day. See "Retirement rationale" below. The cache layer (`alt_data_cache.py`) survives the retirement — it still earns intra-cycle dedup. The pre-fetcher (`altdata_warmup.py` + `premarket_warmup.py` cron) is removed.
 
-Status: IN PROGRESS — design + initial implementation 2026-05-20.
-Owner: TBD.
-Triggered by: operator's repeated observation that the system "seems stuck" at market open because cold-start cycles take 10+ minutes before the first AI call.
-Depends on: nothing (no external dependencies; ships as a self-contained refactor).
+This document is preserved as a record of the original design + the diagnosis correction so the same idea doesn't get re-proposed without re-checking the premise.
 
 ---
 
-## 0. TL;DR
+## Retirement rationale (2026-05-20 PM)
+
+The TL;DR below claimed "wall-clock from screener-done to first AI call: ~9 minutes per profile" was caused by per-candidate alt-data network calls. **That diagnosis was wrong.** The same-day investigation of the 2026-05-20 cycle-time incident (see `CHANGELOG.md`, "Gemini JSON mode + vectorized max-pain") found the real hotspots were:
+
+1. `compute_max_pain` O(N²) pandas `iterrows` over options chains — 2/3 worker threads stuck here per py-spy
+2. Gemini returning markdown prose → `JSONDecodeError` → provider retry cascade
+3. `_ensemble_lock` serializing AI calls behind the slow Gemini response
+
+With (1) vectorized and (2) fixed via `response_mime_type: application/json`, per-profile Scan & Trade dropped from ~13.5 min to 2-5 min WITHOUT a warm cache. The alt-data network calls were never the dominant cost — they only looked like it because the cycle WAS slow.
+
+What we kept:
+- `alt_data_cache.py` — still earns its keep on intra-cycle dedup (multiple profiles in the same 30-min window hitting the screener's same top-30 symbols → second profile's alt-data call gets a cache hit). Lazy-warm via `cache_or_fetch` is sufficient.
+
+What we removed:
+- `premarket_warmup.py` (CLI entry point for the 04:00 ET cron)
+- `altdata_warmup.py` (universe collector + per-source iteration loop)
+- The cron entry on prod
+- `tests/test_altdata_warmup_2026_05_20.py`
+- Coverage-mismatch problem (warmup hit 528 curated names, screener trades 8000) is moot
+- Integrity-mismatch problem (Google Trends 429 → 508 placeholder rows tagged as "fetched") is moot
+- 9,504 daily 3rd-party API calls
+
+If a real cold-start problem ever surfaces in evidence (not theory), the right fix is lazy/adaptive: the cache writes itself as cycles run, and the screener's recent-history determines what gets opportunistically pre-fetched. Not a hardcoded 528-symbol list run via cron.
+
+---
+
+## 0. TL;DR (original — preserved for the record; superseded by retirement)
 
 At today's market open (2026-05-20 13:30 UTC), 9 AI profiles entered their first cycle. **Wall-clock from screener-done to first AI call: ~9 minutes per profile.** Cause: each candidate (~30 post-screener) triggers ~28 alt-data fetches; most of those are network calls to per-symbol APIs (yfinance, FINRA, SEC, StockTwits, Google Trends, etc.). With a 3-worker thread pool processing 13 profiles, the fleet takes ~40-60 minutes to complete its first cycle of the day.
 
 **Of the 28 alt-data sources, only 3 are genuinely intraday.** The other 25 update at daily-or-slower cadence — insider Form 4s, 13F filings, earnings calendar, FDA inspections, congressional trades, etc. We are re-fetching the same data we had at 16:00 ET yesterday, every morning, in parallel across 13 profiles, against rate-limited public APIs.
 
 The fix: a new SQLite cache that gets populated at 04:00 ET by a single pre-warmer iterating the universe. The per-candidate path checks the cache first and falls back to live fetch only on miss. Result: cycle cold-start drops from ~10min to ~30-60sec; first AI predictions land within ~2min of market open instead of ~10min.
+
+(The diagnosis above was wrong; see "Retirement rationale" at top.)
 
 ---
 

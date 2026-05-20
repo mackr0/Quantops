@@ -151,7 +151,7 @@ Used for validating auto-generated strategies' `applicable_markets` field. With 
 - `models.py:1523` (`segment=profile["market_type"]`) **unchanged** — ctx.segment now flows as `"stocks"` or `"crypto"`.
 
 ### G. `altdata_warmup.py:66-74`
-Replace the four imports with `from segments import STOCK_UNIVERSE` and the union loop becomes a single set update.
+Updated to import `STOCK_UNIVERSE`. **Superseded same day**: the entire warmup (`altdata_warmup.py` + `premarket_warmup.py` + cron) was retired the same evening once we found the real cycle-time hotspots were elsewhere. See `docs/21_ALTDATA_PREMARKET_WARMUP.md` "Retirement rationale".
 
 ### H. `simple_strategies.py`
 Replace `LARGE_CAP_UNIVERSE` import with `STOCK_UNIVERSE`.
@@ -177,7 +177,7 @@ Normalization logic for old segment names — strip out the cap-tier branches; k
 - `test_specialist_disable_lever.py`
 - `test_shared_ai_cache.py`
 - `test_screener_cache.py`
-- `test_altdata_warmup_2026_05_20.py` — universe import changes
+- `test_altdata_warmup_2026_05_20.py` — universe import changes (test file deleted same evening when warmup was retired; see docs/21 retirement rationale)
 - `test_historical_universe_augment.py`
 - `test_scaling_projection.py:232`
 - `test_database.py:77`
