@@ -17,6 +17,20 @@ Rules going forward:
 
 ---
 
+## 2026-05-20 PM — Profile-level P&L stat-card on dashboard. Severity: low (UI improvement; no behavior change).
+
+Added a 5th `stat-card` to the per-profile account-stats row on `/dashboard` (the one with Equity / Cash / Buying Power / Status). Shows total profile P&L = `account.equity − initial_capital` as a dollar amount + % change subtitle, with green (`pnl-pos`) on positive / red (`pnl-neg`) on negative. Server-rendered on initial page load AND auto-updated every 30s by the existing `/api/portfolio/<pid>` polling.
+
+Two changes:
+- `templates/dashboard.html` — new `<div class="stat-card">` in the account-stats grid with id `pnl-{pid}`, plus JS in `updateProfile(pid)` that recomputes P&L from the live `data.account.equity − data.initial_capital` on every poll.
+- `views.py` `/api/portfolio/<pid>` route now returns `initial_capital` in the payload so the JS doesn't need a separate roundtrip.
+
+Tip text: "Total profile P&L = current equity − initial capital (since profile start / last reset). Green when up, red when down."
+
+Same number the summary table at the top of the dashboard already computed; surfaced here so an operator looking at a single profile's panel can see how it's doing without scrolling up.
+
+---
+
 ## 2026-05-20 PM — Pre-market alt-data warmup + cache layer (eliminates the ~10-min cold-start tax at market open). Severity: medium (performance/operability improvement, no behavioral change to AI prompts when working correctly).
 
 **Context.** At today's 09:30 ET open, the first AI cycle took ~9 minutes from screener-done to first AI call. Cause: per-candidate alt-data fetches — ~28 sources × ~30 candidates × 13 profiles, mostly network calls to per-symbol public APIs (FINRA, SEC, StockTwits, Google Trends, yfinance). With a 3-worker thread pool, cold-start cycles serialized into 10+ minutes; Google Trends rate-limited at minute 9 and circuit-broke for the rest of the process. User has asked about this multiple times in prior sessions.

@@ -5496,10 +5496,16 @@ def api_portfolio(profile_id):
         account = _safe_account_info(ctx)
         positions = _enriched_positions(ctx, profile_id)
         pending_orders = _safe_pending_orders(ctx)
+        # 2026-05-20 — expose initial_capital so the JS auto-refresh
+        # can recompute profile-level P&L (equity − initial_capital)
+        # without needing a second server roundtrip. Server-rendered
+        # P&L stays in the dashboard template; this just keeps it
+        # live across the 30s auto-refresh.
         payload = {
             "account": account,
             "positions": positions,
             "pending_orders": pending_orders,
+            "initial_capital": float(profile.get("initial_capital") or 0),
         }
         # Cache only on success (we got here without an exception).
         _ttl_cache_set(cache_key, payload)
