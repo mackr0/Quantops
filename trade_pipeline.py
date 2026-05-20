@@ -1565,13 +1565,16 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             })
             continue
 
-        # At max positions and don't hold this stock? Can only close existing.
-        if at_max_positions and symbol not in held_symbols:
-            pre_filter_skips.append({
-                "symbol": symbol, "action": "SKIP",
-                "reason": "At max positions, can only close existing",
-            })
-            continue
+        # 2026-05-20 (docs/23 / #195 Phase 1): pre-filter no longer drops
+        # candidates when at max_total_positions. Per the operator's
+        # "trade-not-hoard" principle (feedback_trade_and_make_money_not_hoard):
+        # position caps are soft bounds the AI is told about — the AI
+        # should always see all candidates and have the option to emit
+        # SELL on a current holding to free room for a better one.
+        # The AI's per-cycle dispatch puts SELLs before BUYs so freed
+        # cash is available within the same cycle (see STEP 5 ordering).
+        # The cap remains a real bound: per-trade sizing + broker
+        # buying power still enforce "don't spend cash we don't have".
 
         filtered_candidates.append(symbol)
 
@@ -2282,6 +2285,24 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
 
     update_status(_pid, "Executing trades", "%d selected" % len(ai_trades))
     # ── STEP 5: Execute AI-selected trades ───────────────────────────
+    # 2026-05-20 (docs/23 / #195 Phase 1): order SELL/STRONG_SELL
+    # decisions BEFORE BUY/SHORT/OPEN decisions. When the AI emits a
+    # cap-aware pair like "SELL X + BUY Y" in the same cycle (because
+    # the operator's trade-not-hoard rule requires it can — see
+    # docs/23), the close-shaped action must execute first so the
+    # cash credit is in the account before the open-shaped action
+    # draws against it. Stable sort by action class — relative order
+    # within each class is preserved (AI's intended priority within
+    # the SELLs and within the BUYs both kept). Actions that free cash:
+    # SELL, STRONG_SELL (when on a held long). Everything else
+    # (BUY/STRONG_BUY/SHORT/OPTIONS/MULTILEG_OPEN/PAIR_TRADE) consumes
+    # cash or margin and goes second.
+    _CLOSE_ACTIONS = {"SELL", "STRONG_SELL"}
+    ai_trades = sorted(
+        ai_trades,
+        key=lambda t: 0 if (t.get("action") or "").upper() in _CLOSE_ACTIONS else 1,
+    )
+
     for ai_trade in ai_trades:
         symbol = ai_trade["symbol"]
         action = ai_trade["action"]

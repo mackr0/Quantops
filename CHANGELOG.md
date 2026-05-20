@@ -17,6 +17,52 @@ Rules going forward:
 
 ---
 
+## 2026-05-20 PM — Position cap as soft bound (Phase 1 of docs/23) + bundled cross-account drift fix. Severity: high (the soft-bound change closes the trade-not-hoard violation observed in the 2026-05-20 cycle; the drift fix removes a persistent false-positive alert in the operator ticker).
+
+### Phase 1 of #195 — four edits
+
+Background: docs/23 scoped the architectural change required to honor the operator memory `feedback_trade_and_make_money_not_hoard` rule "position limits are soft bounds the AI is told about and works around." Phase 1 ships the immediate cash-hoarding-symptom fix.
+
+**Edit 1 — `trade_pipeline.py` pre-filter no longer drops at-max candidates.** The block that previously appended `pre_filter_skips` with reason "At max positions, can only close existing" for every non-held candidate when `at_max_positions` is True is deleted. Candidates now flow through to the strategy + AI evaluation regardless of count. The cap is still a real bound — per-trade sizing and broker buying-power enforcement still prevent spending cash we don't have — but the AI now SEES the candidates and can self-direct (emit SELL on a current holding to free room for a better new one).
+
+**Edit 2 — `trade_pipeline.py` STEP 5 dispatch orders SELL/STRONG_SELL before everything else.** Stable-sort `ai_trades` so close-shaped actions execute first. When the AI emits a cap-aware pair like "SELL X + BUY Y" in the same cycle, the SELL fill credits cash to the account before the BUY tries to draw it. Within-class ordering is preserved (AI's priority within the SELLs and within the BUYs is respected).
+
+**Edit 3 — `ai_analyst.py` prompt includes cap-aware directive.** When `num_positions >= max_total_positions`, the prompt explicitly tells the AI: "AT POSITION CAP. To open ANY new position this cycle, ALSO emit SELL on a current holding you judge weaker than the new candidate. SELLs execute before BUYs within the cycle." When >=80% of cap, a softer hint. Below 80%, no directive (no cognitive load). The AI now has explicit signal that the swap option is available.
+
+**Edit 4 — `pipelines/option.py:_execute_multileg` invokes the Greeks gate.** Mirrors the existing single-leg gate at `options_trader.py:497-540`. Aggregates per-leg delta / theta / vega contributions, looks up current book Greeks, calls `check_greeks_gates`. If blocked, returns `SKIP` with the gate's reason. Closes the regression from #189 (committed fe25a18) where collapsing `max_total_positions` to stock-only removed the only de-facto cap on multileg leg counts. Best-effort: gate eval failure (e.g., spot/IV lookup error) is non-blocking — execution proceeds without the gate rather than fail the trade.
+
+### Bundled — cross-account drift reconciler keys by OCC
+
+**Edit 5 — `virtual_audit.audit_cross_account` keys virtual_totals by OCC for option positions.** Pre-existing bug surfaced today: the operator's "AI strategy ticker" alert kept showing "Cross-Account Drift: 14 issue(s)" with every option leg appearing as `virtual total=0 vs Alpaca=N`, despite the journal correctly tracking those legs. Root cause: line 178 was keying `virtual_totals[p["symbol"]]` — and `Position.__getitem__("symbol")` returns the UNDERLYING for both stock and option positions via the dict-shim (`position.py:236 _legacy_symbol`). Meanwhile line 191 keys `alpaca_totals[p.symbol]` where `p` is Alpaca's raw position object — and Alpaca returns the OCC for option positions. Two dicts keyed differently → option legs never matched, every one looked like drift.
+
+Verified the bug with hard data before fixing: `ABNB260626P00121000` journal rows across pid21/22/23 sum to 4 (2+1+1) — exactly matching the Alpaca-reported `4`. Same pattern for the other 13 alerted legs.
+
+Fix: change line 178 to key by `p.get("occ_symbol") or p["symbol"]`. Both sides now agree on OCC for options, underlying for stocks. The drift report becomes accurate.
+
+This is unrelated in root cause to #189 (which was about the stock pipeline reading option positions and stamping wrong-pipeline data). It is in the same neighborhood (option-leg accounting) and same code-area (Position dict-shim quirks), so it bundles cleanly.
+
+### Tests
+`tests/test_position_cap_soft_bound_phase1_2026_05_20.py` — 10 guardrails:
+- pre-filter at-max SKIP branch removed (source-string assertion)
+- dispatch sort partitions SELLs before others, stable within class
+- dispatcher source contains the sort marker
+- AI prompt directive at cap / softer hint near cap / silent below 80%
+- multileg source contains the Greeks-gate call + intent comment
+- cross-account audit keys by OCC for options, by underlying for stocks
+- source-string assertion pinning the OCC-first keying
+
+Full suite: 4,606 passing / 2 skipped.
+
+### Out of scope (Phase 2 of docs/23 — deferred)
+- Greek caps in Settings UI
+- Self-tuners for the three greek caps + LOOSEN direction for `max_total_positions`
+- `param_bounds.py` bounds for greek caps
+- Full AI-prompt context block (cap utilization %, dollar values per greek)
+
+Phase 2 is paradigm completion (bring greek caps fully into the AI-tunable paradigm). It's not time-critical because Phase 1 already addresses the trade-not-hoard symptom and Phase 1's multileg gate enforces the existing greek-cap default values until the tuner can adjust them.
+
+---
+
 ## 2026-05-20 PM — Historical journal correction: 6 rows contaminated by #189. Severity: low (cosmetic — cash unaffected; journal display now matches reality).
 
 Following the forward fix for #189 (separated-pipeline edits in `trade_pipeline.py`), an impact analysis found 6 historical SELL rows where the dict-key collision had stamped option-leg `unrealized_pl` magnitudes onto stock-sell journal rows. Population was bounded: 2 EWJ rows on pid 15, 4 QCOM rows on pid 20, all from 2026-05-20 (no older rows affected — the bug only triggered when a profile held both stock + option on the same underlying, which only started happening this week).

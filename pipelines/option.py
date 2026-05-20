@@ -485,6 +485,69 @@ class OptionPipeline(Pipeline):
                 builder, strategy_name, symbol,
                 expiry_date, strikes, contracts,
             )
+
+            # 2026-05-20 (docs/23 / #195 Phase 1): Greeks gate for the
+            # multileg path. Mirrors the single-leg gate at
+            # options_trader.py:497-540. Aggregates per-leg delta /
+            # theta / vega contributions and checks against the
+            # profile's greek caps (max_net_options_delta_pct,
+            # max_theta_burn_dollars_per_day, max_short_vega_dollars).
+            # Closes the regression from #189 where collapsing
+            # max_total_positions to stock-only removed the only
+            # de-facto cap on multileg leg counts. Best-effort: gate
+            # failure is non-blocking (logged debug) so a flaky
+            # spot/IV lookup never breaks legitimate execution.
+            try:
+                from options_greeks_aggregator import (
+                    compute_book_greeks, _greek_contribution,
+                    _parse_option_position, check_greeks_gates, FALLBACK_IV,
+                )
+                from market_data import get_bars as _gb_gate
+                from datetime import date as _date_gate
+                _bars = _gb_gate(symbol, limit=2)
+                _spot = (float(_bars["close"].iloc[-1])
+                         if _bars is not None and len(_bars) > 0 else None)
+                if _spot and _spot > 0:
+                    _today = _date_gate.today()
+                    _total = {"delta": 0.0, "theta": 0.0, "vega": 0.0}
+                    for _leg in spec.legs:
+                        _mock = {"occ_symbol": _leg.occ_symbol,
+                                 "qty": _leg.signed_qty()}
+                        _parsed = _parse_option_position(_mock)
+                        if _parsed is None:
+                            continue
+                        _contrib = _greek_contribution(
+                            _parsed, _spot, FALLBACK_IV, today=_today,
+                        )
+                        if _contrib is None:
+                            continue
+                        _total["delta"] += _contrib.get("delta", 0)
+                        _total["theta"] += _contrib.get("theta", 0)
+                        _total["vega"] += _contrib.get("vega", 0)
+                    from client import get_positions as _gp
+                    _positions_for_gate = _gp(ctx=ctx) or []
+                    _book = compute_book_greeks(
+                        _positions_for_gate,
+                        price_lookup=lambda s: _spot if s == symbol else None,
+                        iv_lookup=lambda s: FALLBACK_IV,
+                    )
+                    _gate = check_greeks_gates(_book, _total, ctx=ctx)
+                    if not _gate.get("allowed", True):
+                        return {
+                            "action": "SKIP", "symbol": symbol,
+                            "reason": (
+                                f"Greeks gate blocked multileg "
+                                f"{strategy_name}: "
+                                f"{'; '.join(_gate.get('reasons', []))}"
+                            ),
+                        }
+            except Exception as _gate_exc:
+                logger.debug(
+                    "Multileg Greeks gate eval failed (non-blocking): "
+                    "%s: %s",
+                    type(_gate_exc).__name__, _gate_exc,
+                )
+
             trade_result = execute_multileg_strategy(
                 api_for_ml, spec, ctx=ctx, log=print,
                 limit_price=proposal.get("limit_price"),

@@ -1198,6 +1198,32 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         else:
             target_block += "  → Balance is on target; pick on conviction.\n"
 
+    # 2026-05-20 (docs/23 / #195 Phase 1) — cap-aware directive. When the
+    # profile is at or near max_total_positions, tell the AI explicitly
+    # that to open a new position it must also SELL a current holding.
+    # The pre-filter no longer drops new candidates when at-cap, so the
+    # AI sees them all; this block makes the swap option explicit.
+    # SELLs execute before BUYs within a cycle (see trade_pipeline.py
+    # STEP 5 sort), so freed cash is available immediately.
+    _num_pos = int(portfolio_state.get("num_positions", 0) or 0)
+    swap_directive_block = ""
+    if max_positions and _num_pos >= max_positions:
+        swap_directive_block = (
+            f"\n  ⚠ AT POSITION CAP ({_num_pos}/{max_positions}). "
+            f"To open ANY new position this cycle, ALSO emit SELL on a "
+            f"current holding you judge weaker than the new candidate. "
+            f"SELLs execute before BUYs within the cycle so freed cash "
+            f"is available. Only swap when the new candidate is "
+            f"genuinely better — don't churn for the sake of action."
+        )
+    elif max_positions and _num_pos >= int(max_positions * 0.8):
+        swap_directive_block = (
+            f"\n  Position count: {_num_pos}/{max_positions} (near cap). "
+            f"If you want a new position, consider whether any current "
+            f"holding is worse than the candidates you're considering — "
+            f"if so, SELL it in this same cycle."
+        )
+
     portfolio_section = (
         f"PORTFOLIO STATE:\n"
         f"  Equity: ${portfolio_state.get('equity', 0):,.0f} | "
@@ -1205,6 +1231,7 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         f"  Positions ({portfolio_state.get('num_positions', 0)}/{max_positions}):\n"
         f"{positions_text}\n"
         f"  Drawdown: {dd_pct:.1f}% from peak ({dd_action})"
+        f"{swap_directive_block}"
         f"{exposure_block}"
         f"{beta_target_block}"
         f"{target_block}"

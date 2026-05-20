@@ -168,16 +168,29 @@ def audit_cross_account(alpaca_account_id: int,
 
     problems = []
 
-    # Sum virtual positions across all profiles sharing this account
+    # Sum virtual positions across all profiles sharing this account.
+    #
+    # 2026-05-20 (docs/23 / #195 Phase 1, bundled drift-report fix):
+    # Key by OCC for option positions, by underlying for stock. Alpaca's
+    # list_positions (below) returns OCC as p.symbol for option positions,
+    # so both sides of the comparison must agree on the key. Before this
+    # fix, Position.__getitem__("symbol") returned the underlying for
+    # BOTH stock and option-leg positions (back-compat shim — see
+    # position.py:236 _legacy_symbol). That meant every option leg the
+    # broker held appeared in the drift report as `virtual total=0 vs
+    # Alpaca=N`, because the OCC key wasn't in virtual_totals (it was
+    # under the underlying). Operator saw this as 14-row "Cross-Account
+    # Drift" alerts in the AI strategy ticker, every cycle, despite the
+    # journal actually having the correct OCC-keyed rows that summed to
+    # the Alpaca total.
     virtual_totals: Dict[str, float] = {}
     for pid in profile_ids:
         try:
             ctx = build_user_context_from_profile(pid)
             positions = get_virtual_positions(db_path=ctx.db_path)
             for p in positions:
-                virtual_totals[p["symbol"]] = (
-                    virtual_totals.get(p["symbol"], 0) + p["qty"]
-                )
+                key = p.get("occ_symbol") or p["symbol"]
+                virtual_totals[key] = virtual_totals.get(key, 0) + p["qty"]
         except Exception as exc:
             problems.append(f"Profile {pid}: could not read positions: {exc}")
 
