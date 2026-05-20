@@ -17,6 +17,41 @@ Rules going forward:
 
 ---
 
+## 2026-05-20 PM — Pre-market alt-data warmup + cache layer (eliminates the ~10-min cold-start tax at market open). Severity: medium (performance/operability improvement, no behavioral change to AI prompts when working correctly).
+
+**Context.** At today's 09:30 ET open, the first AI cycle took ~9 minutes from screener-done to first AI call. Cause: per-candidate alt-data fetches — ~28 sources × ~30 candidates × 13 profiles, mostly network calls to per-symbol public APIs (FINRA, SEC, StockTwits, Google Trends, yfinance). With a 3-worker thread pool, cold-start cycles serialized into 10+ minutes; Google Trends rate-limited at minute 9 and circuit-broke for the rest of the process. User has asked about this multiple times in prior sessions.
+
+**The split.** Of the 28 alt-data sources, only 3 are genuinely intraday (`intraday`, `recent_8k_events`, `macro`). The other 25 update at daily-or-slower cadence (insider Form 4 has a 2-day lag; 13F is quarterly; congressional trades have a 45-day window; etc.). We were re-fetching at 09:30 ET the same data we had at 16:00 ET yesterday, against rate-limited public APIs.
+
+**Architecture (full design in `docs/21_ALTDATA_PREMARKET_WARMUP.md`):**
+
+1. **`alt_data_cache.py`** — SQLite-backed cache at `altdata/cache/static_altdata.db`. One row per `(symbol, source)`; lazy TTL check on read; UPSERT on write. Per-source TTL config (`SOURCE_TTL_SECONDS`): 24h for most daily-cadence sources, 7d for quarterly sources (fundamentals, 13F, risk-factor diff, etc.), 30min for stocktwits, 5min for options (intraday IV/UOA), nothing for the 3 truly-intraday sources. Kill-switch via `ALTDATA_CACHE_ENABLED=0`.
+2. **`alternative_data.get_all_alternative_data`** — every per-symbol source call now wrapped through `cache_or_fetch(source, symbol, fetcher)`. Cache hit returns instantly; cache miss falls through to live fetch and writes the result. Cache failures NEVER block live fetch — defensive: any cache-layer exception logs + falls through. The 3 truly-intraday sources (intraday, recent_8k_events, macro) are NOT cached — they still fetch every cycle.
+3. **`altdata_warmup.py`** — standalone pre-warmer iterating the active universe (sourced from `cycle_data_*.json` shortlists; falls back to a 30-name S&P seed list on fresh-reset days). For each of the 18 pre-warmable sources, fetches per-symbol with per-source rate limiting (Google Trends paced at 1.0s/req; others 0-0.1s). Per-source errors logged but don't abort the warmup — one broken source doesn't take down the rest.
+4. **`premarket_warmup.py`** — thin CLI wrapper. Installed as a daily cron at 08:00 UTC (04:00 ET) weekdays:
+   ```
+   0 8 * * 1-5 cd /opt/quantopsai && /opt/quantopsai/venv/bin/python3 \
+       premarket_warmup.py >> logs/warmup.log 2>&1
+   ```
+   (Operator installs the cron entry; the scheduler doesn't manage it because it sleeps outside market hours.)
+
+**Expected impact at next market open after the cron's first run:**
+- Cycle cold-start per profile: ~10min → ~30-60sec (cache hits return in microseconds; only the 3 intraday sources hit the network per candidate)
+- First AI predictions land ≤2 min after market open instead of ~10 min
+- Google Trends rate-limit issues disappear — 30 candidates × 13 profiles in parallel becomes 1500 symbols paced at 1 req/sec over 25 minutes during pre-market
+
+**Tests (29 across two files, all green):**
+- `tests/test_alt_data_cache_2026_05_20.py` (20): round-trip, TTL respected, expired-entry returns None, upsert, case normalization, cache_or_fetch fetcher-call count on hit/miss, cache_or_fetch falls through to live on DB error, evict_stale removes only stale, cache_stats shape, kill-switch via env var, SOURCE_TTL_SECONDS sanity (all positive, key sources present, minimum makes sense).
+- `tests/test_altdata_warmup_2026_05_20.py` (9): universe dedupes + uppercases + excludes crypto + falls back to seed when cycle_data empty; run_warmup writes to cache; per-symbol failure doesn't abort the warmup for other symbols; source missing from TTL config is skipped (not cached without TTL guidance); rate-limit honored; kill-switch makes warmup a no-op; integration check that get_all_alternative_data hits cache after warmup.
+
+**Operational notes:**
+- First post-deploy market open (Wed): no cron has run yet → no cache populated → cold-start same as today. After the first cron run (Thursday 04:00 ET), cycles should be fast.
+- To manually pre-warm before the first cron run: `cd /opt/quantopsai && venv/bin/python3 premarket_warmup.py` — takes ~25 minutes at 1500 symbols.
+- `/altdata` dashboard route (future B3 work) will show cache freshness; for now operator can query `alt_data_cache.cache_stats()` directly.
+- The 18 cached sources match what `get_all_alternative_data` invokes; if a new source is added later, add it to both `SOURCE_TTL_SECONDS` AND `_WARMUP_SOURCES` (test `test_source_ttl_seconds_includes_key_sources` catches the most common omission).
+
+---
+
 ## 2026-05-20 AM — Drawdown-acceleration check false-positive on post-reset baseline. Severity: HIGH (was blocking ALL trades fleet-wide at market open today). Plus docs/21 pre-market alt-data warmup scoping (in-progress build).
 
 **The bug.** At today's 09:30 ET open, the AI proposed trades on every cycle (3 per profile) but ALL 13 active AI profiles showed `Intraday risk halt (block_new_entries): blocked 3 of 3 trade(s)` in the logs. Inspection of `intraday_risk_halt` per profile showed the same alert payload:

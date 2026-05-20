@@ -2389,65 +2389,91 @@ def get_all_alternative_data(symbol):
     if "/" in symbol:
         return {"is_crypto": True, "macro": _get_cached_macro()}
 
+    # 2026-05-20 (docs/21) — wrap each per-symbol source through
+    # alt_data_cache.cache_or_fetch so daily-cadence sources hit a
+    # local SQLite cache populated pre-market at 04:00 ET. Cycle
+    # cold-start drops from ~10min/profile to ~30-60sec by eliding
+    # ~25 redundant network calls per candidate.
+    #
+    # The 3 truly-intraday sources (intraday, recent_8k_events,
+    # macro) are NOT cached — they need fresh-per-cycle data.
+    #
+    # Cache failures fall through to live fetch (cache_or_fetch
+    # never blocks), so a cache outage degrades gracefully to
+    # today's behavior.
+    from alt_data_cache import cache_or_fetch, is_enabled
+
+    def _cached(source: str, fetcher):
+        """Wrap a 0-arg-after-symbol fetcher. Kill-switch via
+        ALTDATA_CACHE_ENABLED=0 falls through to bare live fetch."""
+        if not is_enabled():
+            return fetcher(symbol)
+        return cache_or_fetch(source, symbol, fetcher)
+
+    def _cached_safe(source: str, fetcher):
+        """Same as _cached but wraps the fetcher in _safe() so its
+        exceptions become {} returns (matching the existing _safe
+        pattern on the tier-2/tier-3 sources)."""
+        if not is_enabled():
+            return _safe(fetcher, symbol)
+        return cache_or_fetch(source, symbol, lambda s: _safe(fetcher, s))
+
     return {
-        "insider": get_insider_activity(symbol),
-        "short": get_short_interest(symbol),
-        "fundamentals": get_fundamentals(symbol),
-        "options": get_options_unusual(symbol),
+        "insider": _cached("insider", get_insider_activity),
+        "short": _cached("short", get_short_interest),
+        "fundamentals": _cached("fundamentals", get_fundamentals),
+        "options": _cached("options", get_options_unusual),
+        # Cycle-fresh — NOT cached
         "intraday": get_intraday_patterns(symbol),
-        "finra_short_vol": get_finra_short_volume(symbol),
-        "insider_cluster": get_insider_cluster(symbol),
-        "analyst_estimates": get_analyst_estimates(symbol),
-        "insider_earnings": get_insider_earnings_signal(symbol),
-        "dark_pool": get_dark_pool_volume(symbol),
-        "earnings_surprise": get_earnings_surprise(symbol),
+        "finra_short_vol": _cached("finra_short_vol", get_finra_short_volume),
+        "insider_cluster": _cached("insider_cluster", get_insider_cluster),
+        "analyst_estimates": _cached("analyst_estimates", get_analyst_estimates),
+        "insider_earnings": _cached("insider_earnings", get_insider_earnings_signal),
+        "dark_pool": _cached("dark_pool", get_dark_pool_volume),
+        "earnings_surprise": _cached("earnings_surprise", get_earnings_surprise),
         # Local-SQLite alt-data sources (the 4 standalone projects).
         # Each returns {} or a small dict; the AI prompt has weighted
         # signal blocks that consume these. No-op gracefully if the
         # project DB isn't on this host yet (e.g., before the
         # altdata/ subdirectory deploy lands).
-        "congressional_recent": get_congressional_recent(symbol),
-        "institutional_13f": get_13f_institutional(symbol),
-        "biotech_milestones": get_biotech_milestones(symbol),
-        "stocktwits_sentiment": get_stocktwits_sentiment(symbol),
+        "congressional_recent": _cached("congressional_recent", get_congressional_recent),
+        "institutional_13f": _cached("institutional_13f", get_13f_institutional),
+        "biotech_milestones": _cached("biotech_milestones", get_biotech_milestones),
+        "stocktwits_sentiment": _cached("stocktwits_sentiment", get_stocktwits_sentiment),
         # Item 3a — web-scraped attention signals.
-        "google_trends": get_google_trends_signal(symbol),
-        "wikipedia_pageviews": get_wikipedia_pageviews_signal(symbol),
-        "app_store_ranking": get_app_store_ranking(symbol),
+        "google_trends": _cached("google_trends", get_google_trends_signal),
+        "wikipedia_pageviews": _cached("wikipedia_pageviews", get_wikipedia_pageviews_signal),
+        "app_store_ranking": _cached("app_store_ranking", get_app_store_ranking),
         # 2026-05-17 #1 Tier-1: broad-universe SEC 8-K discovery.
-        # Distinct from sec_filings.monitor_symbol (which is per-
-        # symbol). Reads from the daily atom-feed scrape persisted
-        # in altdata/edgar_8k/data/edgar_8k.db. Returns recent 8-K
-        # events for this symbol with parsed Item codes + tags
-        # (material_agreement / earnings / officer_change / etc.)
+        # CYCLE-FRESH: 8:30am ET filings matter — NOT cached
         "recent_8k_events": _get_recent_8k_events_safe(symbol),
         # 2026-05-17 #2 Tier-1: SEC 13D/G activist positions.
-        # 13D = activist intent-to-influence at >5% ownership; 13G
-        # = passive >5% holder. Both filed within 10 days of the
-        # trigger date (much fresher than quarterly 13F). Reads
-        # from altdata/edgar_13dg/data/edgar_13dg.db.
-        "activist_13dg": _get_recent_13dg_safe(symbol),
+        "activist_13dg": _cached("activist_13dg", _get_recent_13dg_safe),
         # 2026-05-17 Tier-2 corporate-mapped sources. Each maps the
         # ticker to a corporate ID (GitHub org / FDA company name /
         # NHTSA manufacturer) and fetches via free public API.
         # Returns {} for tickers outside the mapped sector — no
         # per-ticker noise.
-        "github_activity": _safe(_get_github, symbol),
-        "fda_inspections": _safe(_get_fda, symbol),
-        "nhtsa_recalls": _safe(_get_nhtsa, symbol),
-        "sam_gov_contracts": _safe(_get_sam_contracts, symbol),
+        "github_activity": _cached_safe("github_activity", _get_github),
+        "fda_inspections": _cached_safe("fda_inspections", _get_fda),
+        "nhtsa_recalls": _cached_safe("nhtsa_recalls", _get_nhtsa),
+        "sam_gov_contracts": _cached_safe("sam_gov_contracts", _get_sam_contracts),
         # 2026-05-17 Tier-3 alt-data — 8 lower-frequency / derived /
         # specialized sources. Each returns {} when irrelevant to
         # the ticker's sector OR when the data layer is empty.
         # (FAA dropped 2026-05-17 — see altdata_tier3.py header.)
-        "risk_factor_diff": _safe(_get_risk_diff, symbol),
-        "epa_osha_violations": _safe(_get_epa_osha, symbol),
+        "risk_factor_diff": _cached_safe("risk_factor_diff", _get_risk_diff),
+        "epa_osha_violations": _cached_safe("epa_osha_violations", _get_epa_osha),
+        # bls_jobless_claims is symbol-agnostic (the same value applies
+        # to every symbol that maps to the same sector keyword); the
+        # _safe-without-symbol pattern is preserved here. NOT cached
+        # individually per symbol — it's macro-level data.
         "bls_jobless_claims": _safe(_get_bls_claims_kw),
-        "wikipedia_edits": _safe(_get_wiki_edits, symbol),
-        "uspto_patents": _safe(_get_uspto, symbol),
-        "job_postings": _safe(_get_job_postings, symbol),
-        "insider_track_records": _safe(_get_insider_track, symbol),
-        "star_manager_holdings": _safe(_get_star_holdings, symbol),
+        "wikipedia_edits": _cached_safe("wikipedia_edits", _get_wiki_edits),
+        "uspto_patents": _cached_safe("uspto_patents", _get_uspto),
+        "job_postings": _cached_safe("job_postings", _get_job_postings),
+        "insider_track_records": _cached_safe("insider_track_records", _get_insider_track),
+        "star_manager_holdings": _cached_safe("star_manager_holdings", _get_star_holdings),
         # #8 (sector_flow_diff) is symbol-agnostic and lives in the
         # macro cache (altdata_tier2_macro.get_sector_flow_differentials);
         # surfaced under alt_data["macro"]["sector_flow_diff"]
