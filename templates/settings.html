@@ -976,6 +976,30 @@
                     <small class="muted">e.g. 0.50 = surface roll candidates above 50% max profit</small>
                 </label>
             </div>
+
+            <h4>Options Greek-Exposure Caps</h4>
+            <p style="color:#888;font-size:0.85rem;margin-top:-0.5rem;">Risk-budget caps enforced on every option open (single-leg + multileg). The self-tuner adjusts these per profile over time based on option-bucket realized P&L. Operator can override; tuner re-evaluates on the next run.</p>
+            <div class="grid">
+                <label>
+                    <span class="tip" data-tip="Cap on |net options delta| as % of equity. 5% = options can contribute up to 5% of equity in direction exposure. Self-tuner widens when realized risk has been well under the cap; tightens when option-bucket losses cluster around cap-hit attempts.">Net options delta cap (% of equity)</span>
+                    <input type="number" name="max_net_options_delta_pct" min="0.01" max="0.20" step="0.01"
+                           value="{{ '%.2f'|format(prof.get('max_net_options_delta_pct', 0.05)) }}">
+                    <small class="muted">e.g. 0.05 = 5% of equity ($5,000 of delta-shares on a $100K book)</small>
+                </label>
+                <label>
+                    <span class="tip" data-tip="Maximum daily theta decay (in dollars) the book is allowed to be paying. Negative theta = paying decay (long-vol). When the cap is hit, new long-premium opens are blocked.">Max theta burn ($/day)</span>
+                    <input type="number" name="max_theta_burn_dollars_per_day" min="10" max="500" step="5"
+                           value="{{ '%.0f'|format(prof.get('max_theta_burn_dollars_per_day', 50.0)) }}">
+                    <small class="muted">e.g. 50 = up to $50/day of theta decay across the book</small>
+                </label>
+                <label>
+                    <span class="tip" data-tip="Cap on short-vega exposure (in dollars). Short vega = exposure to volatility expansion (loses when IV rises). Tighter cap = less vulnerable to VIX spikes.">Max short-vega exposure ($)</span>
+                    <input type="number" name="max_short_vega_dollars" min="50" max="5000" step="50"
+                           value="{{ '%.0f'|format(prof.get('max_short_vega_dollars', 500.0)) }}">
+                    <small class="muted">e.g. 500 = $500 of short-vega before new short-premium opens are blocked</small>
+                </label>
+            </div>
+
             <a href="javascript:void(0)" class="view-universe-btn"
                data-profile-id="{{ prof.id }}"
                data-profile-name="{{ prof.name }}"

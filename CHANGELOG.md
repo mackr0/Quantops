@@ -17,6 +17,59 @@ Rules going forward:
 
 ---
 
+## 2026-05-20 PM — #195 Phase 2: Greek-exposure caps in the AI-tunable paradigm. Severity: medium (paradigm completion; no immediate runtime behavior change — values stay at current defaults until the self-tuner accumulates evidence to adjust).
+
+Background: docs/23 §3.5-3.7 + §4 Phase 2. After Phase 1 closed the cash-hoarding symptom by stopping the at-max pre-filter block, Phase 2 brings the three Greek-exposure caps (`max_net_options_delta_pct`, `max_theta_burn_dollars_per_day`, `max_short_vega_dollars`) into the same paradigm every other tunable already follows: operator-settable in the UI **and** autonomously adjusted by the self-tuner based on observed outcomes.
+
+Per the operator's intent ("AI has the ability to set it and adjust it as it sees fit for risk and profit, as long as it can be set in the UI like everything"): Path A — autonomous adjustment is the self-tuner's job, AI trades within the current cap (no per-trade override). This matches `max_position_pct`, `stop_loss_pct`, `take_profit_pct`, `ai_confidence_threshold`, etc.
+
+**Six edits:**
+
+1. **`param_bounds.py`** — added bounds for the three Greek caps so `clamp()` can be called by the tuner and the UI persist layer:
+   ```python
+   "max_net_options_delta_pct":     (0.01, 0.20),
+   "max_theta_burn_dollars_per_day": (10.0, 500.0),
+   "max_short_vega_dollars":        (50.0, 5000.0),
+   ```
+
+2. **`self_tuning.py`** — added three new BIDIRECTIONAL tuner functions plus a shared helper:
+   - `_options_bucket_pnl_30d(conn, profile_id)` — sums realized P&L over closed option-bucket trades in the last 30 days, filtering by `occ_symbol IS NOT NULL` (matches the existing `_optimize_options_pnl_cutoff` pattern) and excluding data_quality-tagged rows.
+   - `_optimize_greek_cap(...)` — generic helper. Reads option-bucket P&L; requires ≥20 closed option trades; TIGHTENS the named cap by one step when P&L is < -2% of `initial_capital`; LOOSENS by one step when P&L is > +2%; no change within tolerance. Calls `_safe_change_guarded` for cooldown and `_apply_param_change` for the actual write + audit log.
+   - Three thin wrappers — `_optimize_max_net_options_delta_pct` (step 0.01), `_optimize_max_theta_burn_dollars_per_day` (step $10), `_optimize_max_short_vega_dollars` (step $100) — each delegate to the helper.
+   - All three registered in the bidirectional tuner list (runs alongside `_optimize_options_pnl_cutoff`).
+   - All three added to `_DIRECTION_TAGS` as `BIDIRECTIONAL`.
+
+3. **`self_tuning.py`** — retag `_optimize_max_total_positions` from `TIGHTEN` to `BIDIRECTIONAL`. The function ALREADY has both branches (TIGHTEN when avg_loss < -$200 AND overall_wr < 40%; LOOSEN when overall_wr ≥ 60% AND avg_win > $100; see lines 2819-2856). The prior `TIGHTEN` tag scheduled it in the action-restricting priority slot (last to fire), which is wrong per `feedback_self_tuner_must_drift_toward_trading` ("default bias = LOOSEN").
+
+4. **`templates/settings.html`** — new "Options Greek-Exposure Caps" subsection with three numeric inputs alongside the existing options-roll thresholds. Each has its tip text describing what the cap controls and that the self-tuner adjusts it based on outcomes.
+
+5. **`views.py:save_profile`** — three new `config_updates[...]` writes that read the form fields and pass through `param_bounds.clamp` so a typo'd UI value can't blow the bound. Mirrors the existing `options_roll_window_days` / `options_auto_close_profit_pct` pattern at line ~1569.
+
+6. **Coarse-signal note (honest design caveat):** all three Greek-cap tuners react to the SAME aggregate signal — option-bucket realized P&L over 30 days. If P&L is bad, all three tighten in the same run; if good, all three loosen. This is intentionally coarse for the first iteration. Proper per-Greek attribution (which loss came from delta vs theta vs vega) requires per-trade Greek snapshots we don't yet capture. When that data is instrumented, `_optimize_greek_cap` can split into three distinct decisions. The current implementation is honest about being a first cut.
+
+**Behavior on day 1 of Phase 2 in production:** No change. The 13 active profiles haven't accumulated 20+ closed option trades each over the last 30 days, so all three tuners no-op on the `count < 20` guard. As option trades resolve, the tuners begin to fire — first adjustments expected within a week.
+
+**Tests** — `tests/test_greek_cap_tuners_phase2_2026_05_20.py` adds 14 guardrails:
+- Direction tags registered for all three new tuners + max_total_positions retag
+- All three tuner functions callable from the module
+- `_options_bucket_pnl_30d` filters to `occ_symbol IS NOT NULL` (stocks excluded)
+- Empty trades table returns `(0.0, 0)`
+- Insufficient sample (<20) → tuner returns None
+- Strong loss (P&L < -2%) → cap tightens by one step
+- Strong win (P&L > +2%) → cap loosens by one step
+- Within tolerance → no change
+- Crypto segment skipped
+- `PARAM_BOUNDS` contains all three Greek caps with correct ranges
+- `clamp()` respects the bounds (below floor → floor; above ceiling → ceiling; in range → passthrough)
+- Settings UI has all three input fields
+- `views.save_profile` persists all three via clamped writes
+
+Full suite: 4,620 passing / 2 skipped.
+
+**docs/23 §4 Phase 2 status:** complete except §3.2's full cap-utilization breakdown in the AI prompt (current state of greeks vs cap as %). Deferred — the simpler swap directive landed in Phase 1 is sufficient until the tuners produce evidence the AI should see more granular cap data.
+
+---
+
 ## 2026-05-20 PM — Position cap as soft bound (Phase 1 of docs/23) + bundled cross-account drift fix. Severity: high (the soft-bound change closes the trade-not-hoard violation observed in the 2026-05-20 cycle; the drift fix removes a persistent false-positive alert in the operator ticker).
 
 ### Phase 1 of #195 — four edits

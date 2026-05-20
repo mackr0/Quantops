@@ -1571,6 +1571,23 @@ def save_profile(profile_id):
         0.99,
     ))
 
+    # #195 Phase 2 (docs/23) — Greek-exposure caps. Clamped to
+    # PARAM_BOUNDS so a typo'd UI value can't blow out the cap; the
+    # self-tuner re-evaluates from outcomes on its next run.
+    from param_bounds import clamp as _clamp_bound
+    config_updates["max_net_options_delta_pct"] = _clamp_bound(
+        "max_net_options_delta_pct",
+        float(form.get("max_net_options_delta_pct", 0.05) or 0.05),
+    )
+    config_updates["max_theta_burn_dollars_per_day"] = _clamp_bound(
+        "max_theta_burn_dollars_per_day",
+        float(form.get("max_theta_burn_dollars_per_day", 50.0) or 50.0),
+    )
+    config_updates["max_short_vega_dollars"] = _clamp_bound(
+        "max_short_vega_dollars",
+        float(form.get("max_short_vega_dollars", 500.0) or 500.0),
+    )
+
     # AI provider/model configuration
     ai_provider = form.get("ai_provider", "").strip()
     ai_model = form.get("ai_model", "").strip()

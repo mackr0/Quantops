@@ -2156,6 +2156,13 @@ _OPTIMIZER_DIRECTION = {
     "_optimize_meta_pregate_threshold": "BIDIRECTIONAL",
     "_optimize_short_selling_toggle": "BIDIRECTIONAL",
     "_optimize_options_pnl_cutoff": "BIDIRECTIONAL",
+    # #195 Phase 2 (docs/23) — Greek-exposure cap tuners. BIDIRECTIONAL
+    # because they both TIGHTEN (on option-bucket losses) and LOOSEN (on
+    # option-bucket wins). Honors the trade-not-hoard rule's "default
+    # bias = LOOSEN" by allowing widening when outcomes support it.
+    "_optimize_max_net_options_delta_pct": "BIDIRECTIONAL",
+    "_optimize_max_theta_burn_dollars_per_day": "BIDIRECTIONAL",
+    "_optimize_max_short_vega_dollars": "BIDIRECTIONAL",
     "_optimize_conviction_tp_override": "BIDIRECTIONAL",
     "_optimize_signal_weights": "BIDIRECTIONAL",
     "_optimize_stop_to_tp_ratio": "BIDIRECTIONAL",
@@ -2177,7 +2184,15 @@ _OPTIMIZER_DIRECTION = {
     # Tightening (action-restricting — fire LAST in the registry)
     "_optimize_confidence_threshold_upward": "TIGHTEN",
     "_optimize_strategy_toggles": "TIGHTEN",
-    "_optimize_max_total_positions": "TIGHTEN",
+    # 2026-05-20 (#195 Phase 2): retagged TIGHTEN → BIDIRECTIONAL.
+    # The function ALREADY has both branches (see lines 2819-2856 of
+    # _optimize_max_total_positions): TIGHTEN when avg_loss < -200
+    # AND overall_wr < 40%; LOOSEN when overall_wr >= 60% AND avg_win
+    # > $100. Prior TIGHTEN tag put it in the LAST-to-fire group
+    # (action-restricting per the _DIRECTION_PRIORITY at line 2203) —
+    # against the operator's "default bias = LOOSEN" rule
+    # (feedback_self_tuner_must_drift_toward_trading).
+    "_optimize_max_total_positions": "BIDIRECTIONAL",
     "_optimize_max_correlation": "TIGHTEN",
     "_optimize_max_sector_positions": "TIGHTEN",
     "_optimize_drawdown_thresholds": "TIGHTEN",
@@ -2250,6 +2265,10 @@ def _apply_upward_optimizations(conn, ctx, profile_id, user_id, overall_wr, reso
         _optimize_conviction_tp_override,
         _optimize_short_selling_toggle,
         _optimize_options_pnl_cutoff,
+        # #195 Phase 2 (docs/23) — Greek-cap tuners
+        _optimize_max_net_options_delta_pct,
+        _optimize_max_theta_burn_dollars_per_day,
+        _optimize_max_short_vega_dollars,
         _optimize_meta_pregate_threshold,
         _optimize_signal_weights,
         # Structural (parameter-shape changes; not volume-direction)
@@ -4357,6 +4376,147 @@ def _optimize_options_pnl_cutoff(conn, ctx, profile_id, user_id,
         win_rate_at_change=overall_wr, predictions_resolved=resolved,
     )
     return reason
+
+
+def _options_bucket_pnl_30d(conn, profile_id):
+    """Shared helper for the Greek-cap tuners. Returns (pnl, count) over
+    closed option-bucket trades in the last 30 days. Excludes
+    data_quality-tagged rows. Returns (0.0, 0) when the trades table
+    doesn't exist or the query fails."""
+    try:
+        from journal import data_quality_clause
+        _dq = data_quality_clause(conn, table="trades")
+        row = conn.execute(
+            "SELECT COALESCE(SUM(pnl), 0), COUNT(*) FROM trades "
+            "WHERE status = 'closed' "
+            "  AND occ_symbol IS NOT NULL "
+            "  AND pnl IS NOT NULL "
+            f"  AND timestamp >= datetime('now', '-30 days'){_dq}"
+        ).fetchone()
+        if not row:
+            return 0.0, 0
+        return float(row[0] or 0), int(row[1] or 0)
+    except Exception as exc:
+        logger.debug(
+            "_options_bucket_pnl_30d: query failed for profile %s: %s",
+            profile_id, exc,
+        )
+        return 0.0, 0
+
+
+def _optimize_greek_cap(conn, ctx, profile_id, user_id,
+                         overall_wr, resolved,
+                         *, param_name, step, default_value):
+    """Generic tuner for a Greek-exposure cap. Adjusts the cap based on
+    the profile's option-bucket realized P&L over the last 30 days.
+
+    Decision rule (#195 Phase 2, docs/23):
+      - Minimum sample: 20 closed option trades in the window
+      - LOWER when option-bucket P&L is < -2% of initial_capital
+        (the cap was too generous given realized losses)
+      - RAISE when option-bucket P&L is > +2% of initial_capital
+        (the cap was a binding constraint and the data supports widening)
+      - Otherwise: no change
+
+    Same coarse signal drives all three Greek caps for now (aggregate
+    option P&L). Per-Greek attribution (which loss came from delta vs
+    theta vs vega) requires per-trade Greek snapshots we don't yet
+    capture. When that data is instrumented, this helper can split into
+    three distinct decisions.
+    """
+    if not _safe_change_guarded(profile_id, param_name):
+        return None
+    segment = (getattr(ctx, "segment", "") or "").lower()
+    if "crypto" in segment:
+        return None
+
+    current = float(getattr(ctx, param_name, default_value) or default_value)
+    initial_capital = float(
+        getattr(ctx, "initial_capital", 100_000.0) or 100_000.0
+    )
+    if initial_capital <= 0:
+        return None
+
+    pnl, count = _options_bucket_pnl_30d(conn, profile_id)
+    if count < 20:
+        return None  # insufficient sample to act on
+
+    pct = (pnl / initial_capital) * 100.0
+    lower_threshold = -2.0  # 2% loss of capital from options bucket
+    raise_threshold = +2.0  # 2% gain of capital from options bucket
+
+    if pct <= lower_threshold:
+        new_val = _bound(param_name, current - step)
+        if new_val == current:
+            return None
+        reason = (
+            f"Options bucket: ${pnl:+,.2f} ({pct:+.2f}% of capital) over "
+            f"{count} closed trades — bias TIGHTER on {_label(param_name)} "
+            f"to bound future Greek exposure."
+        )
+        applied, _, suffix = _apply_param_change(
+            profile_id, user_id, f"{param_name}_tighten",
+            param_name, current, new_val, reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (
+            f"Tightened {_label(param_name)} from {current} to "
+            f"{applied}{suffix} ({reason})"
+        )
+
+    if pct >= raise_threshold:
+        new_val = _bound(param_name, current + step)
+        if new_val == current:
+            return None
+        reason = (
+            f"Options bucket: ${pnl:+,.2f} ({pct:+.2f}% of capital) over "
+            f"{count} closed trades — strong edge supports LOOSENING "
+            f"{_label(param_name)} to give the AI more room."
+        )
+        applied, _, suffix = _apply_param_change(
+            profile_id, user_id, f"{param_name}_loosen",
+            param_name, current, new_val, reason,
+            win_rate_at_change=overall_wr, predictions_resolved=resolved,
+        )
+        return (
+            f"Loosened {_label(param_name)} from {current} to "
+            f"{applied}{suffix} ({reason})"
+        )
+
+    return None
+
+
+def _optimize_max_net_options_delta_pct(conn, ctx, profile_id, user_id,
+                                          overall_wr, resolved):
+    """Adjust max_net_options_delta_pct based on option-bucket P&L.
+    Step = 1% of equity per adjustment, clamped to (0.01, 0.20)."""
+    return _optimize_greek_cap(
+        conn, ctx, profile_id, user_id, overall_wr, resolved,
+        param_name="max_net_options_delta_pct",
+        step=0.01, default_value=0.05,
+    )
+
+
+def _optimize_max_theta_burn_dollars_per_day(conn, ctx, profile_id, user_id,
+                                                overall_wr, resolved):
+    """Adjust max_theta_burn_dollars_per_day based on option-bucket P&L.
+    Step = $10/day per adjustment, clamped to ($10, $500)."""
+    return _optimize_greek_cap(
+        conn, ctx, profile_id, user_id, overall_wr, resolved,
+        param_name="max_theta_burn_dollars_per_day",
+        step=10.0, default_value=50.0,
+    )
+
+
+def _optimize_max_short_vega_dollars(conn, ctx, profile_id, user_id,
+                                       overall_wr, resolved):
+    """Adjust max_short_vega_dollars based on option-bucket P&L.
+    Step = $100 per adjustment, clamped to ($50, $5000)."""
+    return _optimize_greek_cap(
+        conn, ctx, profile_id, user_id, overall_wr, resolved,
+        param_name="max_short_vega_dollars",
+        step=100.0, default_value=500.0,
+    )
 
 
 def _optimize_short_selling_toggle(conn, ctx, profile_id, user_id,

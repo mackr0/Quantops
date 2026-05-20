@@ -82,6 +82,15 @@ PARAM_BOUNDS: Dict[str, Tuple[Number, Number]] = {
     # realized P&L. (0=disable new options entries, 1=enable.)
     "enable_options":                (0, 1),
 
+    # ── Options Greek-exposure caps (#195 Phase 2 — docs/23) ─────
+    # Enforced at single-leg open (options_trader.py) and at multileg
+    # open (pipelines/option.py); auto-tuned per profile by self_tuning
+    # based on option-bucket realized P&L over recent closes. Operator
+    # can also set in Settings UI.
+    "max_net_options_delta_pct":     (0.01, 0.20),   # 1%–20% of equity
+    "max_theta_burn_dollars_per_day": (10.0, 500.0), # $10–$500/day decay budget
+    "max_short_vega_dollars":        (50.0, 5000.0), # $50–$5000 short-vega cap
+
     # ── Entry filters ─────────────────────────────────────────────
     "min_volume":                    (100_000, 5_000_000),
     "volume_surge_multiplier":       (1.0, 5.0),
