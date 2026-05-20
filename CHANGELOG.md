@@ -17,6 +17,23 @@ Rules going forward:
 
 ---
 
+## 2026-05-20 PM — Warmup universe expanded from ~31 → 524 symbols (full cap-segment union). Severity: medium (today's first warmup covered only seed names; cycles cache-missed on most candidates).
+
+This morning's manual warmup of the alt-data cache populated only 31 symbols — the universe collector pulled from `cycle_data_*.json` shortlists which were thin post-fix-deploy + the static fallback only triggered when shortlists were entirely absent. The screener picks symbols from the canonical cap segments (LARGE/MID/SMALL/MICRO, ~524 unique symbols total), so most candidates this morning's cycles scanned were cache MISSES → live fetch → slow cold-start persisted.
+
+Fix: `altdata_warmup._get_universe()` now returns the **union** of:
+- `LARGE_CAP_UNIVERSE + MID_CAP_UNIVERSE + SMALL_CAP_UNIVERSE + MICRO_CAP_UNIVERSE` from `segments.py` (524 unique symbols — the screener's canonical universe)
+- Any additional symbols found in `cycle_data_*.json` shortlists (catches experiment-specific watchlist additions)
+- The static 30-name seed only as a last-resort if both above fail
+
+Expected: at the next manual warmup run, ~524 symbols × 18 sources = ~9,400 cache rows. Wall-clock estimate ~25-30 min (Google Trends at 1 req/sec is the long-pole; other sources go faster). After that warmup, the cache covers essentially every symbol the screener will surface, so cycle cold-start drops to ~30-60sec.
+
+Tests updated: `test_universe_dedupes_and_uppercases` + `test_universe_excludes_crypto` now stub cap segments empty so they isolate the cycle_data path. New `test_universe_includes_cap_segments` asserts the union is ≥400 symbols + spot-checks that AAPL + CRM appear (both in LARGE_CAP).
+
+The 04:00 ET cron now naturally picks up the full 524-symbol universe each morning; no operator action needed beyond this one-time expansion.
+
+---
+
 ## 2026-05-20 PM — Profile-level P&L stat-card on dashboard. Severity: low (UI improvement; no behavior change).
 
 Added a 5th `stat-card` to the per-profile account-stats row on `/dashboard` (the one with Equity / Cash / Buying Power / Status). Shows total profile P&L = `account.equity − initial_capital` as a dollar amount + % change subtitle, with green (`pnl-pos`) on positive / red (`pnl-neg`) on negative. Server-rendered on initial page load AND auto-updated every 30s by the existing `/api/portfolio/<pid>` polling.

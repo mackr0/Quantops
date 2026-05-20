@@ -48,9 +48,40 @@ def _get_universe() -> List[str]:
     """
     symbols: Set[str] = set()
 
-    # The most reliable universe source: the symbols that appear in
-    # recent screener output. Read from cycle_data_*.json files
-    # which capture each profile's last shortlist.
+    # 2026-05-20 — universe is now the UNION of:
+    #   (a) all 4 cap segments (LARGE/MID/SMALL/MICRO from segments.py)
+    #       = 524 unique symbols total, covering everything the
+    #         screener could surface for any profile
+    #   (b) symbols appearing in any profile's recent cycle_data
+    #       shortlist (catches mid-cycle additions / experiment-
+    #       specific watchlists)
+    #
+    # Previously this returned ~31 symbols (just (b) thinned by
+    # post-reset shortlist size), which meant first-day cycles
+    # cache-missed on most candidates the screener picked. The
+    # 524-symbol union covers the screener's canonical universe;
+    # cache hit rate should approach 100% on the first cycle that
+    # follows a warmup run.
+    try:
+        from segments import (
+            LARGE_CAP_UNIVERSE, MID_CAP_UNIVERSE,
+            SMALL_CAP_UNIVERSE, MICRO_CAP_UNIVERSE,
+        )
+        for u in (LARGE_CAP_UNIVERSE, MID_CAP_UNIVERSE,
+                   SMALL_CAP_UNIVERSE, MICRO_CAP_UNIVERSE):
+            for sym in u:
+                if sym and "/" not in sym:
+                    symbols.add(sym.upper())
+    except Exception as exc:
+        logger.warning(
+            "warmup universe: cap-segment import failed (%s); "
+            "falling back to cycle_data + seed only",
+            exc,
+        )
+
+    # Augment with symbols from any profile's most-recent shortlist
+    # so we catch experiment-specific additions the cap segments
+    # might miss.
     import glob
     import json
     for path in glob.glob("cycle_data_*.json"):
@@ -64,24 +95,27 @@ def _get_universe() -> List[str]:
         except Exception as exc:
             logger.debug("warmup universe: skipped %s: %s", path, exc)
 
-    # Fallback: if cycle_data files don't exist or are empty (fresh
-    # reset, first day), use a static seed list of S&P 500 / popular
-    # names so the pre-warm still has something to do. The screener's
-    # own universe (`relative_weakness_universe`, etc.) will broaden
-    # this over time as profiles accumulate watchlists.
+    # Last-resort fallback: if both segments AND cycle_data failed,
+    # use a static seed list so the warmup still has something to do
+    # rather than no-op'ing.
     if not symbols:
         symbols.update([
-            "SPY", "QQQ", "IWM", "DIA",  # ETF benchmarks
+            "SPY", "QQQ", "IWM", "DIA",
             "AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA", "NVDA",
             "BRK.B", "JPM", "V", "JNJ", "WMT", "PG", "UNH", "HD",
             "MA", "DIS", "BAC", "PFE", "KO", "PEP", "XOM", "CVX",
             "T", "VZ", "MRK", "INTC", "CSCO", "ADBE", "CRM",
         ])
-        logger.info(
-            "warmup universe: empty cycle_data — using static %d-symbol seed list",
+        logger.warning(
+            "warmup universe: every primary source failed — using "
+            "%d-symbol static seed as last resort",
             len(symbols),
         )
 
+    logger.info(
+        "warmup universe: %d unique symbols (cap-segments + cycle_data)",
+        len(symbols),
+    )
     return sorted(symbols)
 
 
