@@ -17,6 +17,38 @@ Rules going forward:
 
 ---
 
+## 2026-05-20 PM — Historical journal correction: 6 rows contaminated by #189. Severity: low (cosmetic — cash unaffected; journal display now matches reality).
+
+Following the forward fix for #189 (separated-pipeline edits in `trade_pipeline.py`), an impact analysis found 6 historical SELL rows where the dict-key collision had stamped option-leg `unrealized_pl` magnitudes onto stock-sell journal rows. Population was bounded: 2 EWJ rows on pid 15, 4 QCOM rows on pid 20, all from 2026-05-20 (no older rows affected — the bug only triggered when a profile held both stock + option on the same underlying, which only started happening this week).
+
+The contamination was journal-only — every broker order DID execute as the printed stock sell of 1 share at the printed price. Cash/equity (`account.equity` from Alpaca) was always correct. The bug was that journal `pnl` carried the option's unrealized magnitude (e.g. -$215 on a 1-share EWJ sell at $90.78, which would require a cost basis of $305.78 — impossible for EWJ).
+
+`scripts/recompute_contaminated_pnl_2026_05_20.py` recomputed correct stock P&L via FIFO over the BUY rows on the same symbol:
+
+| Profile / Symbol | Row id | Old `pnl` | New `pnl` |
+|---|---|---|---|
+| pid 15 / EWJ | 38 | -$215.00 | -$0.22 |
+| pid 15 / EWJ | 41 | -$215.00 | -$0.03 |
+| pid 20 / QCOM | 45 | -$90.00 | -$0.89 |
+| pid 20 / QCOM | 46 | -$111.00 | -$0.89 |
+| pid 20 / QCOM | 47 | +$9.00 | -$0.115 |
+| pid 20 / QCOM | 50 | +$25.50 | -$0.115 |
+
+Total phantom |pnl| removed from the journal: ~$650.65 → corrected to ~$2.35 of actual small stock losses.
+
+**Operator-acknowledged residual impact:** the self-tune runs that fired BEFORE this correction may have aggregated the bad pnl into per-symbol win/loss stats. Next self-tune run re-derives from corrected rows; the stale aggregate self-corrects naturally. No script needed to push the correction forward — every consumer of these rows re-reads from the trades table.
+
+**Safety profile of the script:**
+- Targets 6 explicit row ids (no broad WHERE that could over-match)
+- Dry-run by default; --apply required to commit
+- Pure UPDATE on trades.pnl; no broker calls, no other column writes, no cross-DB effects
+- Per-row before/after audit at `scripts/recompute_pnl_audit_<ts>.jsonl`
+- Idempotent: re-running computes the same FIFO cost basis and writes the same value
+
+The script is reusable for any future case where the same bug-class produces contamination, but with the forward fix in place no new contamination should occur.
+
+---
+
 ## 2026-05-20 PM — Stock pipeline stops seeing option positions (separation honored). Severity: high (silent: wrong-instrument exits + position-cap inflation).
 
 `execute_trade` and `run_trade_cycle` in `trade_pipeline.py` are the **stock** pipeline. Option signals route to `OptionPipeline` (single-leg + multileg), pair-trade signals route to `execute_pair_trade` — the dispatch is explicit at `run_trade_cycle:2318 / 2344 / 2382`. The pipelines were always designed as separate, but the stock pipeline was building its `positions` dict from `client.get_positions()`'s full list, which contains BOTH stock and option positions. The fix restores the separation that was already the design intent.
