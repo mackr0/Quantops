@@ -17,6 +17,39 @@ Rules going forward:
 
 ---
 
+## 2026-05-20 AM — Drawdown-acceleration check false-positive on post-reset baseline. Severity: HIGH (was blocking ALL trades fleet-wide at market open today). Plus docs/21 pre-market alt-data warmup scoping (in-progress build).
+
+**The bug.** At today's 09:30 ET open, the AI proposed trades on every cycle (3 per profile) but ALL 13 active AI profiles showed `Intraday risk halt (block_new_entries): blocked 3 of 3 trade(s)` in the logs. Inspection of `intraday_risk_halt` per profile showed the same alert payload:
+
+> `drawdown_acceleration: Intraday drawdown 0.53% is 2.2x the 7d average (0.24%) → block_new_entries`
+
+**Root cause.** `intraday_risk_monitor.check_drawdown_acceleration` triggers when `today_intraday_pct / avg_7d_intraday_pct >= 2.0`. The math was correct but the **absolute scale was tiny on both sides**: post-reset (Mon afternoon 2026-05-19), the 7-day average drawdown is ~0.24% because we've only had ~1 day of post-reset data. Today's intraday drawdown of 0.53% (totally normal market noise) is mechanically >2× that baseline → block fires.
+
+This is the class of bug where "X is N× the average" sounds meaningful until X is itself trivially small. Below a reasonable absolute floor, the ratio amplifies noise instead of signal.
+
+**Fix.** Added `DRAWDOWN_ACCEL_MIN_ABS = 0.015` (1.5% absolute drawdown floor). The check now requires BOTH:
+1. Today's intraday drawdown ≥ 1.5% absolute (NEW gate)
+2. Today's drawdown ≥ 2.0× the 7-day average (existing gate)
+
+Drawdowns below 1.5% are market microstructure — they shouldn't gate new entries regardless of how they compare to a tiny baseline. 1.5% is conservative enough to still catch real risk events; today's 0.53% is comfortably below it.
+
+**Tests.** `tests/test_drawdown_acceleration_floor_2026_05_20.py` — 7 tests:
+- The exact 2026-05-20 scenario (0.53% drawdown, 0.24% baseline, 2.2× multiple) does NOT trigger
+- Real risk event (3% drawdown, 1% baseline, 3× multiple) DOES trigger at critical severity
+- 3% drawdown vs 1.4% baseline (2.14×) triggers at warning severity with `block_new_entries`
+- 3% drawdown vs 2% baseline (1.5×) does NOT trigger (multiple-check still gates)
+- Zero/negative baseline doesn't divide-by-zero
+- Floor constant is sane (≥0.5%) — catches a future change that defangs the floor
+- Floor constant is imported at module level — pins the structural commitment
+
+**Prod recovery.** After the deploy:
+1. New deployments will respect the floor on every subsequent intraday-risk-monitor check
+2. **The currently-set `intraday_risk_halt` rows are stale** — they were written before this fix. Manually cleared per profile (`DELETE FROM intraday_risk_halt`) so trading can resume today instead of waiting for the next monitor cycle.
+
+**Also in this session (in-progress, not in this commit):** `docs/21_ALTDATA_PREMARKET_WARMUP.md` — thorough scoping doc for the pre-market alt-data warmup that will eliminate the 10-minute cold-start cycle delay at market open. Plus `alt_data_cache.py` — the cache module that the warmup populates. Build is in progress; the rest of the wiring (source-getter rewiring, scheduler task, tests) ships separately once the trading-block fix above is verified live.
+
+---
+
 ## 2026-05-19 PM — Phase 4b.1 scoping doc (incremental fine-tune on archived predictions). Severity: low (doc-only; no code change).
 
 Added `docs/20_FINETUNE_PHASE_4B1_INCREMENTAL.md` — thorough scoping for the OpenAI weekly-incremental fine-tune workstream that B1's data-collection upgrade enables. Followed user request to be thorough; doc could be handed to a competent engineer to implement without back-and-forth.

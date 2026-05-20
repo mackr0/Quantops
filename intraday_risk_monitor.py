@@ -40,6 +40,13 @@ logger = logging.getLogger(__name__)
 
 # Tunable thresholds
 DRAWDOWN_ACCEL_MULTIPLE = 2.0   # today vs 7d average drawdown
+# 2026-05-20 — absolute-magnitude floor on the drawdown-acceleration
+# check. Without this, post-reset days produce tiny baselines
+# (e.g., 7d avg = 0.24%) that today's normal noise (0.53%) easily
+# exceeds by >2× → ALL trades blocked despite no actual risk event.
+# 1.5% absolute is the floor below which "acceleration" is just
+# market microstructure and shouldn't gate new entries.
+DRAWDOWN_ACCEL_MIN_ABS = 0.015   # 1.5% intraday drawdown absolute floor
 VOL_SPIKE_MULTIPLE = 3.0         # current hour vs 20d avg hour
 SECTOR_SWING_PCT = 3.0           # absolute % move in top sector
 HALT_AUTO_CLEAR_SECONDS = 60 * 60  # 60 min
@@ -70,15 +77,29 @@ def check_drawdown_acceleration(
     today_intraday_pct: float,
     avg_7d_intraday_pct: float,
 ) -> Optional[IntradayRiskAlert]:
-    """Today's intraday drawdown > N× the 7-day average → alert.
+    """Today's intraday drawdown > N× the 7-day average AND
+    >= DRAWDOWN_ACCEL_MIN_ABS absolute → alert.
 
     Args:
         today_intraday_pct: today's high-to-current drawdown (positive
             number; 0.04 = 4% drawdown from intraday high).
         avg_7d_intraday_pct: 7-day average of daily high-to-current
             drawdowns (also positive).
+
+    2026-05-20: requires BOTH conditions (multiple ≥ 2.0 AND
+    absolute ≥ 1.5%) to avoid false-positive halts when the 7-day
+    baseline is small (post-reset, calm-week, etc.) and ordinary
+    noise mechanically exceeds 2× the baseline. Without the
+    absolute floor, every Tuesday morning following a quiet
+    Monday triggered the halt — caught on the 2026-05-20 open
+    when post-reset 0.24% baseline + 0.53% today's drawdown
+    blocked all 13 profiles' trades despite no real risk event.
     """
     if avg_7d_intraday_pct <= 0:
+        return None
+    # NEW: absolute-magnitude floor — drawdowns below this are
+    # market microstructure noise, not a risk event.
+    if today_intraday_pct < DRAWDOWN_ACCEL_MIN_ABS:
         return None
     multiple = today_intraday_pct / avg_7d_intraday_pct
     if multiple < DRAWDOWN_ACCEL_MULTIPLE:
