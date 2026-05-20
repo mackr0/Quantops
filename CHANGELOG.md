@@ -17,6 +17,44 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Phase B1 data-collection upgrade for future fine-tuning. Severity: medium (foundational change to capture fine-tune-quality training data going forward; preserves data across experiment resets).
+
+**Context.** The user asked: are we collecting prediction data in a way that will be useful when we eventually fine-tune our own model (docs/17 Phase 4b)? Audit found three gaps: (1) the full prompt text + raw AI response weren't persisted with each prediction (only stored when `shadow_eval` framework was on); (2) cycle-level cross-candidate context existed in `cycle_data_{profile_id}.json` but was **overwritten every 15 minutes**, so historical context was lost; (3) every experiment reset wipes `ai_predictions` entirely, so without archiving the fine-tune corpus resets to zero on every reset. User confirmed earlier today's reset destroyed ~20K predictions accumulated over the prior month. Without fixing this, fine-tuning could never accumulate enough training data because the corpus resets faster than it accumulates.
+
+**Changes — three coupled improvements:**
+
+1. **Five new columns on `ai_predictions`** (migration via `journal._migrate_all_columns`):
+   - `cycle_id TEXT` — FK linking each prediction to its parent cycle in the new `ai_cycles` table
+   - `prompt_text TEXT` — the exact prompt the AI saw at decision time
+   - `raw_response_json TEXT` — the AI's full response dict, not just parsed action+reasoning summary
+   - `meta_model_score REAL` — pre-gate P(correct) from the GBM meta-model at decision time
+   - `online_meta_score REAL` — online SGD meta-model score (catches regime drift faster than the nightly GBM)
+   `record_prediction` now accepts these as kwargs; legacy callers (no kwargs) still work (defaults to NULL).
+
+2. **New `ai_cycles` table** (`journal.init_db`) — append-only history of per-cycle decision context. Schema mirrors what `cycle_data_{profile_id}.json` writes today (regime, vix, shortlist with full features, market context, sector rotation, learned patterns, meta-model stats, ensemble summary, trade selection counts) plus a stable `cycle_id` primary key. `_save_cycle_data` in `trade_pipeline.py` now writes BOTH the JSON file (for the dashboard's "AI Brain" widget) AND the table row (for fine-tune corpus + post-hoc analytics + RAG reconstruction). The JSON file is the volatile snapshot; the table is the durable history. Restored cross-candidate context that today's overwriting was throwing away.
+
+3. **New `predictions_archive.py` + `reset_for_clean_experiment.py` integration.** Before each profile's wipe in the reset workflow, `archive_predictions(db_path, profile_id, archive_root)` dumps `ai_predictions` + `ai_cycles` + `specialist_outcomes` to JSONL files under `predictions_archive/{profile_id}/{reset_yyyymmdd_hhmmss}/`. Format: one row per line, all columns preserved. If the archive fails, the wipe is **aborted** (raises) — losing data is worse than aborting a reset. Cumulative across all experiment generations, this becomes the long-term fine-tune corpus.
+
+**Cycle ID plumbing.** `trade_pipeline.run_trade_cycle` generates a `uuid4().hex` cycle_id at the start of each cycle, passes it through to both `_save_cycle_data` (writes the `ai_cycles` row) and every `record_prediction` call (links each prediction to its parent cycle). At training time, joining `ai_predictions.cycle_id → ai_cycles.cycle_id` reconstructs the full cross-candidate context for any prediction (what other candidates the AI saw in the same prompt, their features, their relative ranks, what got HOLD'd vs picked).
+
+**What is NOT changed:** No data is wiped or destroyed by this commit. The reset script still requires explicit `--apply` to actually wipe; the only new behavior is "if you do run the reset, your predictions get archived first instead of vanishing." Production scheduler is unaffected — it just starts writing the new columns on every cycle going forward.
+
+**Tests (`tests/test_predictions_archive_b1_2026_05_19.py`, 8 tests, all green):**
+- `record_prediction` round-trip with all new fields preserved
+- Backward-compat: legacy callers without new kwargs still work
+- `ai_cycles` table accepts a full cycle row with all expected fields
+- `cycle_id` correctly links predictions to their cycle (JOIN works)
+- `archive_predictions` writes JSONL files for each table with expected row counts
+- `archive_predictions` returns empty dict (not raise) when db_path is missing
+- `archive_predictions` tolerates missing tables (e.g., a minimal-schema DB) — dumps what exists, writes empty files for the rest
+- Source-level pin: `reset_for_clean_experiment.py` calls archive **inside the apply path AND before the wipe loop**, and the archive-failure path raises (no silent continue to wipe)
+
+**Calendar impact.** Phase 4b fine-tune was previously a 6-12 month horizon. With this archive-before-reset preserving data across resets, the corpus now accumulates **monotonically** instead of resetting. Combined with the 2K/profile/month measured rate, a pooled-fleet fine-tune dataset reaches the 50-100K useful-fine-tune threshold in ~2-4 months from today and stays there permanently.
+
+**Follow-up (Task #185, queued):** Phase B2 — multi-horizon outcomes (1d/5d/20d) + `deterministic_panel_outcomes` table (so the 179-rule panel verdicts also persist per prediction). Phase B3 (Task #186) — cost-adjusted returns + alt-data freshness flags.
+
+---
+
 ## 2026-05-19 PM — Memory-rule enforcement test suite + morning health check market-awareness. Severity: medium (structural enforcement of the discipline rules the assistant violated multiple times today).
 
 **Context.** Today's session saw two clear memory-rule violations: (1) shipped Phase B2 (specialist coverage parity) updating CHANGELOG but not docs, (2) introduced bare `except Exception: pass` blocks in `pipelines/dispatch.py:75`, `pipelines/shadow.py:236`, and `views.py:746/759` when extending the safety net + shadow dashboard. Operator caught both. The right structural answer is enforcement-by-test so future violations surface immediately.

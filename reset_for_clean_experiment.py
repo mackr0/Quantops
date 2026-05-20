@@ -221,8 +221,32 @@ def _reset_profile(
                 log.info("    DRY would delete %d row(s) from %s", n, t)
         return counts
 
-    # Real wipe: backup first, then truncate.
+    # Real wipe: backup first, archive predictions for fine-tune
+    # corpus, then truncate.
     _backup_db(profile["db_path"], backup_dir)
+    # 2026-05-19 (Phase B1 data-collection upgrade) — archive
+    # ai_predictions + ai_cycles + specialist_outcomes to JSONL
+    # before they get wiped. Without this, every reset destroys
+    # the future fine-tune corpus.
+    try:
+        from predictions_archive import archive_predictions
+        archive_counts = archive_predictions(
+            db_path=profile["db_path"],
+            profile_id=profile["id"],
+        )
+        log.info(
+            "    archived for fine-tune corpus: %s",
+            archive_counts,
+        )
+    except Exception as _arc_exc:
+        # If the archive fails we MUST NOT proceed with the wipe —
+        # losing the data is worse than aborting the reset.
+        log.error(
+            "    ARCHIVE FAILED — refusing to wipe (would lose "
+            "fine-tune corpus): %s: %s",
+            type(_arc_exc).__name__, _arc_exc,
+        )
+        raise
     with closing(sqlite3.connect(profile["db_path"])) as conn:
         for t in _ALWAYS_WIPE:
             n = _truncate_table(conn, t)

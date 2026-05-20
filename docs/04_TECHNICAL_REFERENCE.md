@@ -22,7 +22,7 @@
                     37 scheduled tasks, per-profile + once-per-day
                                               ↕
         ┌─────────────────────  Per-profile DB (quantopsai_profile_<id>.db) ────┐
-        │  trades · ai_predictions · daily_snapshots · signals ·               │
+        │  trades · ai_predictions · ai_cycles · daily_snapshots · signals ·   │
         │  signal_performance_history · deprecated_strategies ·                │
         │  sec_filings_history · task_runs · recently_exited_symbols ·         │
         │  ai_cost_ledger · crisis_state_history · events ·                    │
@@ -81,6 +81,7 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | `ensemble.py` | 8-specialist LLM-narrative ensemble synthesizer (5 stock-pipeline + 3 options-pipeline). Five of the eight are re-scoped (2026-05-18, Phase 3) to synthesize from the deterministic panel rather than re-derive facts. |
 | `deterministic_specialists/` | 179 pure-Python rule checkers (zero API cost per rule). Each rule = `(candidate, ctx) → Optional[{severity: VETO/CAUTION/CONFIRM, reasoning}]`. Fired verdicts surface in the apex AI prompt and as a compact `RULES: [V]name [C]name ...` suffix in each re-scoped LLM specialist's candidate render. Routing (2026-05-19): stock candidates direct-match by `APPLIES_TO_SIGNALS`; OPTIONS/MULTILEG_OPEN candidates route to same-direction rules via `signal_direction(candidate)` — a bullish option strategy sees every long-only veto a `BUY` would. |
 | `case_file_rag.py` | RAG over resolved `ai_predictions`. TF-IDF over a rolling 2000-case corpus; injects top-3 most-similar past cases per candidate into the apex prompt as concrete cases-to-reason-from. |
+| `predictions_archive.py` | 2026-05-19 — JSONL archive of `ai_predictions` + `ai_cycles` + `specialist_outcomes` before each experiment reset. Without this, every reset destroys the future fine-tune corpus (Phase 4b). `reset_for_clean_experiment.py` calls `archive_predictions(db_path, profile_id, archive_root)` inside its apply path before truncating; archive failure aborts the wipe (raises) rather than silently continuing. Format: per-profile per-reset-timestamp directories under `predictions_archive/`; one row per JSONL line; full column preservation. |
 | `specialist_calibration.py` | Platt-scaling per specialist. |
 | `meta_model.py` | GBM batch model. |
 | `online_meta_model.py` | SGD freshness layer. |

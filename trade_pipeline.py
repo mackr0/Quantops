@@ -1771,6 +1771,17 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     from ai_analyst import ai_select_trades
     ai_response = ai_select_trades(candidates_data, portfolio_state, market_ctx, ctx=ctx)
 
+    # 2026-05-19 (Phase B1 data-collection upgrade) — generate a
+    # cycle_id at this point and use it both for ai_cycles + every
+    # record_prediction below. Links cross-candidate context to each
+    # individual prediction so fine-tune can reconstruct what other
+    # candidates the AI saw in the same prompt.
+    import uuid as _uuid
+    cycle_id = _uuid.uuid4().hex
+    _cycle_prompt = (
+        ai_response.get("prompt", "") if isinstance(ai_response, dict) else ""
+    )
+
     ai_trades = ai_response.get("trades", [])
     portfolio_reasoning = ai_response.get("portfolio_reasoning", "")
     logging.info(f"AI selected {len(ai_trades)} trades: {portfolio_reasoning[:200]}")
@@ -1937,6 +1948,12 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
             features_payload["_rotation_phase"] = _macro.get("sector_momentum", {}).get("rotation_phase", "mixed")
             features_payload["_market_gex_regime"] = _macro.get("market_gex", {}).get("net_regime", "balanced")
 
+            # 2026-05-19 (Phase B1) — capture the meta-model
+            # scores that influenced this prediction. The features
+            # dict already exposes meta_score if available; pull
+            # for first-class storage.
+            _meta_score = features_payload.get("meta_model_score")
+            _online_meta_score = features_payload.get("online_meta_score")
             pred_id = record_prediction(
                 symbol=sym,
                 predicted_signal=pred_signal,
@@ -1949,6 +1966,15 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 strategy_type=strategy,
                 features=features_payload,
                 prediction_type=pred_type,
+                # Phase B1 fine-tune-quality fields
+                cycle_id=cycle_id,
+                prompt_text=_cycle_prompt,
+                raw_response={
+                    k: v for k, v in ai_response.items()
+                    if k not in ("prompt",)  # avoid duplicating prompt blob
+                } if isinstance(ai_response, dict) else None,
+                meta_model_score=_meta_score,
+                online_meta_score=_online_meta_score,
             )
             # Wave 3 / Fix #9 — log the per-specialist verdicts that
             # contributed to this prediction so the calibrators can
@@ -2510,7 +2536,8 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
     # Save cycle data for the web dashboard to display
     _save_cycle_data(ctx, candidates_data, shortlist, ai_trades,
                      portfolio_reasoning, market_ctx, regime_info,
-                     meta_stats=meta_stats, ensemble_result=ensemble_result)
+                     meta_stats=meta_stats, ensemble_result=ensemble_result,
+                     cycle_id=cycle_id)
 
     # Scope C: shadow-eval the new Pipeline.run_cycle path against
     # this legacy cycle. Read-only — no broker calls. Per-profile
@@ -2571,8 +2598,16 @@ def _ensemble_summary_for_cycle(ensemble_result):
 
 def _save_cycle_data(ctx, candidates_data, shortlist, ai_trades,
                      portfolio_reasoning, market_ctx, regime_info,
-                     meta_stats=None, ensemble_result=None):
-    """Save the last cycle's AI decisions to a JSON file for the dashboard."""
+                     meta_stats=None, ensemble_result=None,
+                     cycle_id=None):
+    """Save the last cycle's AI decisions to a JSON file for the dashboard
+    AND append a row to the ai_cycles history table (2026-05-19 Phase B1).
+
+    The JSON file is the dashboard's "AI Brain" widget source (gets
+    overwritten each cycle). The ai_cycles table is the append-only
+    history that fine-tune-quality data collection needs — every cycle
+    persists indefinitely so cross-candidate context can be
+    reconstructed at training time."""
     import json as _json
     import time as _time
 
@@ -2633,10 +2668,55 @@ def _save_cycle_data(ctx, candidates_data, shortlist, ai_trades,
             "ensemble": _ensemble_summary_for_cycle(ensemble_result),
         }
 
-        # Write per-profile cycle file
+        # Write per-profile cycle file (dashboard source — overwritten)
         path = f"cycle_data_{profile_id}.json"
         with open(path, "w") as f:
             _json.dump(cycle_data, f)
+
+        # 2026-05-19 (Phase B1 data-collection upgrade) — append-only
+        # ai_cycles row so cross-candidate context survives past the
+        # next cycle's overwrite. The JSON snapshot serves the
+        # dashboard; the table row serves the fine-tune dataset +
+        # post-hoc analytics + RAG corpus reconstruction.
+        if cycle_id and getattr(ctx, "db_path", None):
+            try:
+                from journal import _get_conn as _gc
+                from contextlib import closing as _cl
+                with _cl(_gc(ctx.db_path)) as conn:
+                    conn.execute(
+                        """INSERT OR REPLACE INTO ai_cycles
+                           (cycle_id, profile_id, regime, vix,
+                            ai_reasoning, shortlist_json,
+                            market_context_json, sector_rotation_json,
+                            learned_patterns_json, meta_model_stats_json,
+                            ensemble_summary_json, n_trades_selected,
+                            n_candidates_in_shortlist)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            cycle_id,
+                            profile_id,
+                            cycle_data["regime"],
+                            cycle_data["vix"],
+                            cycle_data["ai_reasoning"],
+                            _json.dumps(cycle_data["shortlist"]),
+                            _json.dumps(market_ctx or {}),
+                            _json.dumps(cycle_data["sector_rotation"]),
+                            _json.dumps(cycle_data["learned_patterns"]),
+                            _json.dumps(cycle_data["meta_model"]),
+                            _json.dumps(cycle_data["ensemble"]),
+                            len(cycle_data["trades_selected"]),
+                            len(cycle_data["shortlist"]),
+                        ),
+                    )
+                    conn.commit()
+            except Exception as _ac_exc:
+                logging.warning(
+                    "[profile %s] ai_cycles append failed (cycle "
+                    "data still written to JSON for dashboard): "
+                    "%s: %s",
+                    profile_id,
+                    type(_ac_exc).__name__, _ac_exc,
+                )
 
     except Exception as exc:
         # WARNING (not debug) so the no-silent-failures audit picks

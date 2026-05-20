@@ -155,7 +155,11 @@ def init_tracker_db(db_path=None):
 def record_prediction(symbol, predicted_signal, confidence, reasoning,
                       price_at_prediction, price_targets=None, db_path=None,
                       regime=None, strategy_type=None, features=None,
-                      prediction_type=None):
+                      prediction_type=None,
+                      # 2026-05-19 Phase B1 — fine-tune-quality fields
+                      cycle_id=None, prompt_text=None,
+                      raw_response=None, meta_model_score=None,
+                      online_meta_score=None):
     """Save an AI prediction to the database.
 
     Parameters
@@ -182,6 +186,22 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
         Full feature context the AI saw at prediction time (indicators, alt
         data, sector context, track record). Serialized to JSON and stored
         for the Phase 1 meta-model. See ROADMAP.md.
+    cycle_id : str, optional
+        UUID of the parent ai_cycles row this prediction was made in. Lets
+        training data reconstruct the cross-candidate context (what other
+        candidates were in the same prompt, their relative ranks).
+    prompt_text : str, optional
+        The exact prompt the AI saw. Critical for fine-tuning — without
+        this the training input must be reconstructed from features and
+        loses whatever the prompt-builder added (RAG injections, panel
+        renders, market-context blocks).
+    raw_response : dict, optional
+        The AI's full response dict (not just parsed action+reasoning).
+        Serialized to JSON for storage.
+    meta_model_score : float, optional
+        Pre-gate P(correct) at decision time from the GBM meta-model.
+    online_meta_score : float, optional
+        Online SGD meta-model score at decision time (catches regime drift).
 
     Returns
     -------
@@ -202,6 +222,9 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
 
     price_targets = price_targets or {}
     features_json = _json.dumps(features) if features else None
+    raw_response_json = (
+        _json.dumps(raw_response) if raw_response is not None else None
+    )
 
     with closing(_get_conn(db_path)) as conn:
         cursor = conn.execute(
@@ -209,8 +232,11 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
                (timestamp, symbol, predicted_signal, confidence, reasoning,
                 price_at_prediction, target_entry, target_stop_loss,
                 target_take_profit, status, regime_at_prediction, strategy_type,
-                features_json, prediction_type)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
+                features_json, prediction_type,
+                cycle_id, prompt_text, raw_response_json,
+                meta_model_score, online_meta_score)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?,
+                       ?, ?, ?, ?, ?)""",
             (
                 datetime.utcnow().isoformat(),
                 symbol.upper(),
@@ -225,6 +251,11 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
                 strategy_type,
                 features_json,
                 prediction_type,
+                cycle_id,
+                prompt_text,
+                raw_response_json,
+                meta_model_score,
+                online_meta_score,
             ),
         )
         conn.commit()

@@ -396,6 +396,38 @@ def init_db(db_path=None):
             );
             CREATE INDEX IF NOT EXISTS idx_pipeline_shadow_runs_ts
                 ON pipeline_shadow_runs(timestamp DESC);
+
+            -- 2026-05-19 (Phase B1 data-collection upgrade) —
+            -- append-only history of the per-cycle decision context.
+            -- Today's `cycle_data_{profile_id}.json` holds the same
+            -- shape but gets OVERWRITTEN every 15 minutes. Without
+            -- history, fine-tuning loses cross-candidate context
+            -- (what other candidates the AI saw in the same prompt,
+            -- their relative ranks, what got picked vs HOLD'd).
+            --
+            -- ai_predictions.cycle_id is a FK pointing back here so
+            -- training data can reconstruct the full cycle a single
+            -- prediction came from.
+            CREATE TABLE IF NOT EXISTS ai_cycles (
+                cycle_id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                profile_id INTEGER,
+                regime TEXT,
+                vix REAL,
+                ai_reasoning TEXT,
+                shortlist_json TEXT,
+                market_context_json TEXT,
+                sector_rotation_json TEXT,
+                learned_patterns_json TEXT,
+                meta_model_stats_json TEXT,
+                ensemble_summary_json TEXT,
+                n_trades_selected INTEGER NOT NULL DEFAULT 0,
+                n_candidates_in_shortlist INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_cycles_ts
+                ON ai_cycles(timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_ai_cycles_profile
+                ON ai_cycles(profile_id, timestamp DESC);
         """)
 
         # Universal schema migration: ensures every column defined in the
@@ -646,6 +678,36 @@ def _migrate_all_columns(conn):
             # filter pattern uniformly across both tables, killing
             # the bug class structurally.
             ("data_quality", "TEXT"),
+            # 2026-05-19 (Phase B1 data-collection upgrade) —
+            # columns that turn ai_predictions into a fine-tune-
+            # quality dataset. Each row now carries the full
+            # decision context, not just the parsed action.
+            #
+            # cycle_id links the prediction back to its parent
+            # cycle in the new ai_cycles table — restores cross-
+            # candidate context (what OTHER candidates were in the
+            # same prompt, their relative ranks, what the AI did
+            # with each) that today's overwriting cycle_data_*.json
+            # was throwing away.
+            ("cycle_id", "TEXT"),
+            # The actual prompt text the AI saw. Previously only
+            # the shadow_eval framework persisted this; main path
+            # threw it away after submission. Fine-tune needs the
+            # exact input the model was trained against.
+            ("prompt_text", "TEXT"),
+            # Full AI response dict (JSON). The parsed signal +
+            # reasoning summary throw away structured fields some
+            # training approaches use. Stored verbatim.
+            ("raw_response_json", "TEXT"),
+            # Pre-gate meta-model score at decision time (GBM batch
+            # model in meta_model.py). The candidate may or may not
+            # have been suppressed based on this; either way it's
+            # useful supervision input for fine-tune.
+            ("meta_model_score", "REAL"),
+            # Online meta-model score at decision time (SGD in
+            # online_meta_model.py). Catches regime drift faster
+            # than the nightly GBM.
+            ("online_meta_score", "REAL"),
         ],
         # `call_id` joins primary cost-ledger rows to the
         # ai_shadow_calls rows produced by the shadow dispatcher for
