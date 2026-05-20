@@ -17,6 +17,16 @@ Rules going forward:
 
 ---
 
+## 2026-05-19 PM — Phase 4b.1 scoping doc (incremental fine-tune on archived predictions). Severity: low (doc-only; no code change).
+
+Added `docs/20_FINETUNE_PHASE_4B1_INCREMENTAL.md` — thorough scoping for the OpenAI weekly-incremental fine-tune workstream that B1's data-collection upgrade enables. Followed user request to be thorough; doc could be handed to a competent engineer to implement without back-and-forth.
+
+Sections covered: TL;DR + why incremental beats big-batch (cost/regime/forgetting); goals + non-goals; prerequisites (B1 ✅, B2 recommended, OpenAI tier + budget required); architecture diagram; data pipeline (filtering + hindsight-relabel logic with the look-ahead-bias safeguard); training pipeline (weekly cadence + incremental hyperparameters + model registry table); inference integration (per-profile flag + shadow harness extension + Settings UI); evaluation framework (online A/B + operator-reviewed promotion + new /finetune dashboard); cost model (~$125-155/month, roughly cost-neutral vs current Gemini spend); 14 failure modes + responses; risks matrix (including the critical look-ahead-bias risk + mitigation); 5-phase rollout/soak plan with per-phase kill switches; complete test plan including the source-level pin for no-lookahead-bias; file list (8 new files + 9 to modify); 7 open decisions for operator review; future work (4b.2 self-hosted LoRA, 4b.3 per-profile fine-tunes, RLHF/DPO).
+
+Activation criteria: earliest realistic start is late June 2026 after ~4 weeks of post-B1 data accumulation. Doc explicitly says "not yet implemented" and gives the decision criteria for picking it up.
+
+---
+
 ## 2026-05-19 PM — Phase B1 data-collection upgrade for future fine-tuning. Severity: medium (foundational change to capture fine-tune-quality training data going forward; preserves data across experiment resets).
 
 **Context.** The user asked: are we collecting prediction data in a way that will be useful when we eventually fine-tune our own model (docs/17 Phase 4b)? Audit found three gaps: (1) the full prompt text + raw AI response weren't persisted with each prediction (only stored when `shadow_eval` framework was on); (2) cycle-level cross-candidate context existed in `cycle_data_{profile_id}.json` but was **overwritten every 15 minutes**, so historical context was lost; (3) every experiment reset wipes `ai_predictions` entirely, so without archiving the fine-tune corpus resets to zero on every reset. User confirmed earlier today's reset destroyed ~20K predictions accumulated over the prior month. Without fixing this, fine-tuning could never accumulate enough training data because the corpus resets faster than it accumulates.
