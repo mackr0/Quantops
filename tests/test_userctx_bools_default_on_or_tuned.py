@@ -83,6 +83,21 @@ KNOWN_OFF_BY_DESIGN = {
         "observed slippage; deferred — slippage tuner already "
         "exists for skip_first_minutes which addresses the same "
         "concern.",
+    # Asset-class enablement is per-profile architectural choice, not
+    # a tunable knob. The operator decides whether a profile trades
+    # stocks, options, and/or crypto; the tuner has no business flipping
+    # that on/off based on outcome data.
+    "enable_crypto":
+        "Asset-class enablement (operator-set). A profile trades crypto "
+        "iff the user picked it; the tuner can't decide for them.",
+    # Pipeline-cutover toggles (Scope C). Operator-controlled
+    # architectural rollout state; not tunable.
+    "use_pipeline_dispatch":
+        "Pipeline-cutover architectural toggle — operator-set during "
+        "rollout. Tuner would never flip this on its own.",
+    "enable_pipeline_shadow_eval":
+        "Pipeline-cutover shadow-harness toggle — operator-set during "
+        "rollout. Observation harness, not a behavior knob.",
 }
 
 

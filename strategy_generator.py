@@ -69,7 +69,7 @@ ALLOWED_DERIVED_FIELDS = {
 ALLOWED_FIELDS = ALLOWED_INDICATOR_FIELDS | ALLOWED_DERIVED_FIELDS
 
 ALLOWED_OPS = {">", ">=", "<", "<=", "==", "!="}
-ALLOWED_MARKETS = {"micro", "small", "midcap", "largecap", "crypto"}
+ALLOWED_MARKETS = {"stocks", "crypto"}
 ALLOWED_DIRECTIONS = {"BUY", "SELL"}
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")

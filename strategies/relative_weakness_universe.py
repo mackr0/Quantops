@@ -47,7 +47,7 @@ from typing import Any, Dict, List
 
 
 NAME = "relative_weakness_universe"
-APPLICABLE_MARKETS = ["small", "midcap", "largecap"]
+APPLICABLE_MARKETS = ["stocks"]
 
 # Tunable constants — kept module-level so self_tuning can adjust later
 # if needed. Conservative defaults: bottom 5% AND a 5%+ underperformance

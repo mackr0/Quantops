@@ -29,7 +29,7 @@ def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:
     """
     from strategy_router import run_strategy
 
-    market_type = getattr(ctx, "segment", "small")
+    market_type = getattr(ctx, "segment", "stocks")
 
     strategy_params = {
         "rsi_oversold": getattr(ctx, "rsi_oversold", 25.0),

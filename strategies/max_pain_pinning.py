@@ -19,7 +19,7 @@ from typing import Any, Dict, List
 
 
 NAME = "max_pain_pinning"
-APPLICABLE_MARKETS = ["midcap", "largecap"]
+APPLICABLE_MARKETS = ["stocks"]
 
 
 def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:

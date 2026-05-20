@@ -325,10 +325,10 @@ def run_random_stock_of_day(ctx) -> Dict[str, Any]:
         return summary
 
     # First fire: pick + buy.
-    from segments import LARGE_CAP_UNIVERSE
+    from segments import STOCK_UNIVERSE
     picks = _pick_random_symbols(
         getattr(ctx, "profile_id", 0) or 0,
-        LARGE_CAP_UNIVERSE, RANDOM_PICK_COUNT,
+        STOCK_UNIVERSE, RANDOM_PICK_COUNT,
     )
     logger.info("[%s random] INITIAL picks (held forever): %s",
                 seg_label, picks)

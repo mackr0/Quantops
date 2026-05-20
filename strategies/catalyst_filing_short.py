@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 
 NAME = "catalyst_filing_short"
-APPLICABLE_MARKETS = ["small", "midcap", "largecap"]
+APPLICABLE_MARKETS = ["stocks"]
 
 
 def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:

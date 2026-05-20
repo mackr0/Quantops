@@ -65,7 +65,7 @@ def _make_db(tmp_path):
 def _ctx(db, **overrides):
     defaults = dict(
         profile_id=1, user_id=1, db_path=db, enable_self_tuning=True,
-        display_name="Test", segment="small",
+        display_name="Test", segment="stocks",
         entry_blacklist="{}",
     )
     defaults.update(overrides)

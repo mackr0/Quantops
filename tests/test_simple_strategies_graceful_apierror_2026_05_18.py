@@ -87,7 +87,7 @@ class TestSubmitAndLogGracefulRejection:
 
         ctx = _fake_ctx(tmp_path)
         ctx.profile_id = 99
-        ctx.segment = "largecap"
+        ctx.segment = "stocks"
         ctx.display_name = "TEST"
 
         # Mock virtual_equity to $250K (post-2026-05-19 fix: strategy

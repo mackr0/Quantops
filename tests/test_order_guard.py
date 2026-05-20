@@ -25,7 +25,7 @@ _ET = ZoneInfo("America/New_York")
 def _ctx(schedule_type="market_hours"):
     from user_context import UserContext
     return UserContext(
-        user_id=1, segment="small", display_name="Test",
+        user_id=1, segment="stocks", display_name="Test",
         alpaca_api_key="k", alpaca_secret_key="s",
         ai_provider="anthropic", ai_model="claude-haiku-4-5-20251001",
         ai_api_key="k", db_path=":memory:",

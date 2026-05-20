@@ -144,7 +144,7 @@ class TestUserContextFields:
     def test_is_virtual_defaults_false(self):
         from user_context import UserContext
         ctx = UserContext(
-            user_id=1, segment="small", display_name="t",
+            user_id=1, segment="stocks", display_name="t",
             alpaca_api_key="k", alpaca_secret_key="s",
             ai_provider="anthropic", ai_model="claude-haiku-4-5-20251001",
             ai_api_key="k", db_path=":memory:",

@@ -27,8 +27,8 @@ class _StubCtx:
     enable_short_selling = False
     max_position_pct = 0.10
     max_total_positions = 10
-    segment = "midcap"
-    market_type = "midcap"
+    segment = "stocks"
+    market_type = "stocks"
     db_path = None
     signal_weights = "{}"
     prompt_layout = "{}"

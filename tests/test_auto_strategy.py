@@ -23,7 +23,7 @@ def _good_spec(name: str = "auto_test_strategy") -> dict:
     return {
         "name": name,
         "description": "test: oversold rsi with volume",
-        "applicable_markets": ["small"],
+        "applicable_markets": ["stocks"],
         "direction": "BUY",
         "score": 2,
         "conditions": [

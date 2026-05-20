@@ -103,12 +103,18 @@ class TestSegments:
                 assert key in seg, f"{seg_name} missing {key}"
                 assert seg[key] > 0, f"{seg_name}.{key} must be positive"
 
-    def test_price_ranges_dont_overlap_wrong(self):
+    def test_stocks_segment_has_sane_price_range(self):
+        """2026-05-20 (docs/22): the four cap-tier segments collapsed
+        into a single 'stocks' segment with intentionally wide bounds
+        (min_price=1.0, max_price=10000.0). Per-profile thresholds on
+        the trading_profiles row are now the runtime gate."""
         from segments import get_segment
-        micro = get_segment("micro")
-        small = get_segment("small")
-        assert micro["max_price"] <= small["max_price"]
-        assert micro["min_price"] < small["min_price"]
+        stocks = get_segment("stocks")
+        assert stocks["min_price"] > 0
+        assert stocks["max_price"] > stocks["min_price"]
+        # Wide enough to cover both penny stocks and BRK-class names
+        assert stocks["min_price"] <= 5.0
+        assert stocks["max_price"] >= 1000.0
 
 class TestMetrics:
     """Verify metrics module handles edge cases."""

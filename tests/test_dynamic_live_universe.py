@@ -37,8 +37,8 @@ def test_default_returns_hardcoded_list(monkeypatch):
     `seg["universe"]` lookup."""
     _no_flag_env(monkeypatch)
     import segments
-    expected = list(segments.SEGMENTS["small"]["universe"])
-    result = segments.get_live_universe("small")
+    expected = list(segments.SEGMENTS["stocks"]["universe"])
+    result = segments.get_live_universe("stocks")
     assert result == expected
 
 
@@ -47,12 +47,12 @@ def test_flag_on_filters_by_alpaca_active(monkeypatch):
     hardcoded list and Alpaca's active asset set."""
     _flag_on(monkeypatch)
     import segments
-    hardcoded = set(segments.SEGMENTS["small"]["universe"])
+    hardcoded = set(segments.SEGMENTS["stocks"]["universe"])
     # Pretend only the first 5 hardcoded names are still active
     active_subset = set(list(hardcoded)[:5])
     with patch("screener.get_active_alpaca_symbols",
                return_value=active_subset):
-        result = segments.get_live_universe("small")
+        result = segments.get_live_universe("stocks")
     assert set(result) == active_subset
     # Crucially: dead names (the rest of the hardcoded list) are dropped
     dropped = hardcoded - active_subset
@@ -69,9 +69,9 @@ def test_flag_on_empty_alpaca_falls_back_to_hardcoded(monkeypatch):
     successful Alpaca call."""
     _flag_on(monkeypatch)
     import segments
-    expected = list(segments.SEGMENTS["small"]["universe"])
+    expected = list(segments.SEGMENTS["stocks"]["universe"])
     with patch("screener.get_active_alpaca_symbols", return_value=set()):
-        result = segments.get_live_universe("small")
+        result = segments.get_live_universe("stocks")
     assert result == expected
 
 
@@ -80,10 +80,10 @@ def test_flag_on_alpaca_exception_falls_back(monkeypatch):
     to the hardcoded list rather than break the caller."""
     _flag_on(monkeypatch)
     import segments
-    expected = list(segments.SEGMENTS["small"]["universe"])
+    expected = list(segments.SEGMENTS["stocks"]["universe"])
     with patch("screener.get_active_alpaca_symbols",
                side_effect=RuntimeError("alpaca down")):
-        result = segments.get_live_universe("small")
+        result = segments.get_live_universe("stocks")
     assert result == expected
 
 

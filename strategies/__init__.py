@@ -82,7 +82,7 @@ def _auto_strategy_modules() -> List[str]:
     return [f"strategies.{n}" for n in sorted(names)]
 
 
-_STOCK_MARKETS = ("micro", "small", "midcap", "largecap")
+_STOCK_MARKETS = ("stocks",)
 _CRYPTO_MARKETS = ("crypto",)
 
 

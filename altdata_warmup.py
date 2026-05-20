@@ -48,33 +48,24 @@ def _get_universe() -> List[str]:
     """
     symbols: Set[str] = set()
 
-    # 2026-05-20 — universe is now the UNION of:
-    #   (a) all 4 cap segments (LARGE/MID/SMALL/MICRO from segments.py)
-    #       = 524 unique symbols total, covering everything the
-    #         screener could surface for any profile
+    # 2026-05-20 — universe is the UNION of:
+    #   (a) STOCK_UNIVERSE from segments.py — the curated outage-fallback
+    #       list (~524 unique symbols, was the union of the old four
+    #       cap-tier lists). Covers the screener's canonical liquid set.
     #   (b) symbols appearing in any profile's recent cycle_data
     #       shortlist (catches mid-cycle additions / experiment-
-    #       specific watchlists)
+    #       specific watchlists).
     #
-    # Previously this returned ~31 symbols (just (b) thinned by
-    # post-reset shortlist size), which meant first-day cycles
-    # cache-missed on most candidates the screener picked. The
-    # 524-symbol union covers the screener's canonical universe;
-    # cache hit rate should approach 100% on the first cycle that
-    # follows a warmup run.
+    # docs/22 collapsed the four cap-tier universes into a single
+    # STOCK_UNIVERSE — this warmup just imports that.
     try:
-        from segments import (
-            LARGE_CAP_UNIVERSE, MID_CAP_UNIVERSE,
-            SMALL_CAP_UNIVERSE, MICRO_CAP_UNIVERSE,
-        )
-        for u in (LARGE_CAP_UNIVERSE, MID_CAP_UNIVERSE,
-                   SMALL_CAP_UNIVERSE, MICRO_CAP_UNIVERSE):
-            for sym in u:
-                if sym and "/" not in sym:
-                    symbols.add(sym.upper())
+        from segments import STOCK_UNIVERSE
+        for sym in STOCK_UNIVERSE:
+            if sym and "/" not in sym:
+                symbols.add(sym.upper())
     except Exception as exc:
         logger.warning(
-            "warmup universe: cap-segment import failed (%s); "
+            "warmup universe: STOCK_UNIVERSE import failed (%s); "
             "falling back to cycle_data + seed only",
             exc,
         )

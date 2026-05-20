@@ -59,7 +59,7 @@ def track_run(db_path: str, task_name: str):
     """Context manager that records start/end of a task run.
 
     Usage:
-        with track_run(db_path, "scan_and_trade:midcap"):
+        with track_run(db_path, "scan_and_trade:stocks"):
             ... do the work ...
 
     On normal exit: row is marked `status='completed'` with duration.

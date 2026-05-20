@@ -273,5 +273,5 @@ def test_user_context_default_target_short_pct_is_zero():
     """Existing profiles without target_short_pct set should default
     to long-only (0.0) — no behavior change for long-only users."""
     from user_context import UserContext
-    ctx = UserContext(user_id=1, segment="midcap")
+    ctx = UserContext(user_id=1, segment="stocks")
     assert ctx.target_short_pct == 0.0

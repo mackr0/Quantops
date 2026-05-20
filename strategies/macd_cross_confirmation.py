@@ -19,7 +19,7 @@ from typing import Any, Dict, List
 
 
 NAME = "macd_cross_confirmation"
-APPLICABLE_MARKETS = ["small", "midcap", "largecap", "crypto"]
+APPLICABLE_MARKETS = ["stocks", "crypto"]
 
 
 def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:

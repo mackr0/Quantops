@@ -69,7 +69,7 @@ class TestConfigLoading:
         """When enable_shadow_eval=0 (default), no shadow config."""
         from models import create_trading_profile, create_user
         user_id = create_user("u1@example.com", "pw", "U1")
-        pid = create_trading_profile(user_id, "Test", "small")
+        pid = create_trading_profile(user_id, "Test", "stocks")
         # By default enable_shadow_eval = 0
         from shadow_eval import _load_shadow_config
         assert _load_shadow_config(pid) is None
@@ -77,7 +77,7 @@ class TestConfigLoading:
     def test_no_models_returns_none(self, tmp_main_db):
         from models import create_trading_profile, create_user, update_trading_profile
         user_id = create_user("u2@example.com", "pw", "U2")
-        pid = create_trading_profile(user_id, "Test", "small")
+        pid = create_trading_profile(user_id, "Test", "stocks")
         update_trading_profile(
             pid,
             enable_shadow_eval=1,
@@ -89,7 +89,7 @@ class TestConfigLoading:
     def test_enabled_with_models_returns_dict(self, tmp_main_db):
         from models import create_trading_profile, create_user, update_trading_profile
         user_id = create_user("u3@example.com", "pw", "U3")
-        pid = create_trading_profile(user_id, "Test", "small")
+        pid = create_trading_profile(user_id, "Test", "stocks")
         update_trading_profile(
             pid,
             enable_shadow_eval=1,
@@ -136,7 +136,7 @@ class TestOperationalInvariant:
         # Set up a profile-DB-style path so shadow eval will engage
         from models import create_user, create_trading_profile, update_trading_profile
         user_id = create_user("u4@example.com", "pw", "U4")
-        pid = create_trading_profile(user_id, "Test", "small")
+        pid = create_trading_profile(user_id, "Test", "stocks")
         update_trading_profile(
             pid,
             enable_shadow_eval=1,
@@ -182,7 +182,7 @@ class TestDispatchShadowCalls:
             self, monkeypatch, tmp_main_db, tmp_path):
         from models import create_user, create_trading_profile, update_trading_profile
         user_id = create_user("u5@example.com", "pw", "U5")
-        pid = create_trading_profile(user_id, "Test", "small")
+        pid = create_trading_profile(user_id, "Test", "stocks")
         # Encrypt a fake key so the dispatcher actually fires
         from crypto import encrypt
         update_trading_profile(
@@ -243,7 +243,7 @@ class TestDispatchShadowCalls:
         surface the gap."""
         from models import create_user, create_trading_profile, update_trading_profile
         user_id = create_user("u6@example.com", "pw", "U6")
-        pid = create_trading_profile(user_id, "Test", "small")
+        pid = create_trading_profile(user_id, "Test", "stocks")
         update_trading_profile(
             pid,
             enable_shadow_eval=1,

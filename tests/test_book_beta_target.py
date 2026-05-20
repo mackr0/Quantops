@@ -103,7 +103,7 @@ class _StubCtx:
     enable_short_selling = False
     max_position_pct = 0.10
     max_total_positions = 10
-    segment = "midcap"
+    segment = "stocks"
     db_path = None
     signal_weights = "{}"
     prompt_layout = "{}"
@@ -205,5 +205,5 @@ def test_book_beta_directive_skipped_when_book_empty():
 
 def test_user_context_default_target_book_beta_is_none():
     from user_context import UserContext
-    ctx = UserContext(user_id=1, segment="midcap")
+    ctx = UserContext(user_id=1, segment="stocks")
     assert ctx.target_book_beta is None

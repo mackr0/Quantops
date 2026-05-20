@@ -87,14 +87,17 @@ class TestUserContext:
         assert ctx.is_within_schedule(mon_5pm) is False
 
     def test_build_from_segment(self):
+        """2026-05-20 (docs/22): segments collapsed to stocks + crypto.
+        The stocks segment now has wide thresholds (1.0–10000.0) since
+        per-profile columns are the actual gate at runtime."""
         from user_context import build_context_from_segment
-        ctx = build_context_from_segment("small")
-        assert ctx.segment == "small"
-        assert ctx.min_price == 5.0
-        assert ctx.max_price == 20.0
+        ctx = build_context_from_segment("stocks")
+        assert ctx.segment == "stocks"
+        assert ctx.min_price == 1.0
+        assert ctx.max_price == 10000.0
 
     def test_all_segment_types(self):
         from user_context import build_context_from_segment
-        for seg in ["micro", "small", "midcap", "largecap", "crypto"]:
+        for seg in ["stocks", "crypto"]:
             ctx = build_context_from_segment(seg)
             assert ctx.segment == seg

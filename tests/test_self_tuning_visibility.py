@@ -37,7 +37,7 @@ def ctx_with_fresh_db(monkeypatch):
     ctx = SimpleNamespace(
         profile_id=1, user_id=1, db_path=path,
         enable_self_tuning=True, display_name="Test",
-        segment="small",
+        segment="stocks",
     )
     return ctx, path
 

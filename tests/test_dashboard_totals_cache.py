@@ -171,7 +171,7 @@ class TestDashboardTotalsCache:
                 first_call["raised"] = True
                 raise RuntimeError("transient DB error")
             # Recovers on second call
-            return [{"id": 1, "name": "A", "user_id": 1, "market_type": "midcap"}]
+            return [{"id": 1, "name": "A", "user_id": 1, "market_type": "stocks"}]
 
         counter = {"account": 0, "positions": 0, "spend": 0}
         with patch("flask_login.utils._get_user", return_value=_user(1)):

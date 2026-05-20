@@ -51,7 +51,7 @@ def _ctx(profile_id=1, initial_capital=100_000.0, enable_options=True):
         user_id=1,
         initial_capital=initial_capital,
         enable_options=enable_options,
-        segment="largecap",
+        segment="stocks",
     )
 
 

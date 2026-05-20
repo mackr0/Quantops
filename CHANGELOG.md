@@ -17,6 +17,58 @@ Rules going forward:
 
 ---
 
+## 2026-05-20 PM — Unified stock universe (completes yesterday's cap-tier removal). Severity: high (closes the gap between commit-message claims of 2026-05-19 and actual runtime behavior; corrects partial work that was represented as complete).
+
+Yesterday's commits `840293c` ("Strategy applicability: AI is picker + per-profile Stocks/Options/Crypto") and `464f1ca` ("Replace 'Large Cap' market_type label with asset-class label") declared the cap-tier (`micro` / `small` / `midcap` / `largecap`) concept dead, with `464f1ca`'s message saying "market_type is now informational... it's an internal field that doesn't affect strategy selection."
+
+That was true for the UI label and the within-stock strategy filter. It was **not true** for the runtime: source audit during the 2026-05-20 cycle-time incident found seven places the cap-tier still drove behavior (universe selection, ensemble cache key, screener cache key, profile-creation risk defaults, env-var credential fallback, backtester argument, segment-keyed UI watchlist endpoints). The previous commits shipped half the work and worded the commit messages as if it was done. This entry is the honest completion.
+
+**What changed (file-by-file)**:
+- `segments.py`: `MICRO_CAP_UNIVERSE`, `SMALL_CAP_UNIVERSE`, `MID_CAP_UNIVERSE` deleted. `LARGE_CAP_UNIVERSE` replaced with `STOCK_UNIVERSE` (deduplicated union of all four — kept as the screener's outage fallback only, not the primary candidate source). `SEGMENTS` dict collapsed from five entries to two: `"stocks"` (wide defaults: `min_price=1.0`, `max_price=10000.0`, `min_volume=100_000`) and `"crypto"` (unchanged). Cap-tier env vars (`_LARGECAP_KEY` / `_MIDCAP_KEY` / `_SMALLCAP_KEY`) deleted — were already dead per the "no master key" memory rule.
+- `screener.py`: removed the `random.sample(..., min(500, ...))` cap at the entry of `screen_dynamic_universe`. Every cycle now screens all Alpaca-tradable US equities (~8000 symbols), filtered by per-profile `min_price`/`max_price`/`min_volume`. The Alpaca-snapshots path handles ~1000 symbols per call chunked at 200; total screening wall-clock for 8000 names is a few seconds.
+- `strategies/__init__.py`: `_STOCK_MARKETS = ("stocks",)` (was the four-tuple).
+- All 26 files in `strategies/`: `APPLICABLE_MARKETS` normalized to `["stocks"]`, `["stocks", "crypto"]`, or `["*"]` — no more `["small", "midcap", "largecap"]` etc.
+- `strategy_generator.py`: `ALLOWED_MARKETS = {"stocks", "crypto"}`.
+- `models.py`: default-segment iteration tuple becomes `("stocks", "crypto")`; `MARKET_TYPE_NAMES` collapsed to `{"stocks": "Stocks", "crypto": "Crypto"}`.
+- `altdata_warmup.py`, `simple_strategies.py`: replaced four-list import with `STOCK_UNIVERSE`.
+- `scaling_projection.py`: `_normalize_market_type` accepts `"stocks"` (maps to `"large"` tier for the $ADV-based slippage projection — this is a UI-only feature; underlying $ADV reasoning is economic reality, not system design, so a future cleanup should derive the tier from actual portfolio $ADV rather than the segment name).
+
+**SQL migration on prod** (applied before scheduler restart):
+```sql
+UPDATE trading_profiles
+SET market_type='stocks',
+    min_price=1.0,
+    max_price=10000.0,
+    min_volume=100000
+WHERE market_type IN ('largecap', 'midcap', 'small', 'micro');
+```
+All 13 active profiles affected (all were `largecap`). Their per-profile thresholds widen from the inherited largecap defaults (50/500/1M) to true full-universe values (1/10000/100k).
+
+**Tests updated**:
+- `tests/test_user_context.py`: `test_build_from_segment` + `test_all_segment_types` now exercise the `"stocks"` and `"crypto"` segments.
+- `tests/test_dynamic_live_universe.py`: every `"small"` reference → `"stocks"`.
+- `tests/test_strategy_applicability_2026_05_19.py`: rewritten for the unified-segment semantics. Removed the within-stock-cap-tier parametrize; preserved the stock-vs-crypto split test cases.
+- `tests/test_auto_strategy.py` + `tests/test_integration.py` + `tests/test_self_commission.py`: `applicable_markets` literals in test specs updated to `["stocks"]`.
+- `tests/test_simple_strategies_2026_05_17.py`: `LARGE_CAP_UNIVERSE` import → `STOCK_UNIVERSE`.
+- `tests/test_altdata_warmup_2026_05_20.py`: cap-segment stubs collapsed to a single `STOCK_UNIVERSE` stub; new `test_universe_includes_stock_universe` replaces the four-import variant.
+- `tests/test_relative_weakness_universe.py` + `tests/test_earnings_disaster_short.py`: assertion `"small" in m.APPLICABLE_MARKETS` etc. → `"stocks" in m.APPLICABLE_MARKETS`.
+- `tests/test_every_lever_is_tuned.py`: added explicit `MANUAL_PARAMETERS` entries for the existing-but-previously-uncategorized columns (`enable_stocks`, `enable_crypto`, `trading_halted`, `halt_reason`, `halted_at`, `use_pipeline_dispatch`, `enable_pipeline_shadow_eval`).
+
+**Why this wasn't caught yesterday**: the previous commits' tests checked the UI label and the strategy-applicability filter — both of which they DID fix. No test covered "is `market_type` still load-bearing for universe selection / cache keys / risk defaults?", so the runtime gap survived. Today's `docs/22_UNIFIED_STOCK_UNIVERSE.md` lays out the full landscape so future "remove the cap-tier" work doesn't get represented as complete when only half is done.
+
+**Risks accepted**: removing the 500-sample cap means each cycle's screener processes all 8000 Alpaca equities instead of the previous 500-sample. Alpaca snapshots handle this in a few seconds. Downstream strategy iteration now sees more candidates after the per-profile price/volume gate; combined with this morning's `compute_max_pain` vectorization (same CHANGELOG, earlier entry), cycle time is expected to stay under ~5 min. If a new hotspot surfaces, same approach: profile + fix.
+
+**Adjacent fixes folded in** because the test harness caught them:
+- `models.py:1154` (`create_trading_profile`'s eager journal-init): wrapped `open_profile_db` in `try/finally close` per the connection-hygiene guardrail test.
+- `docs/01_EXECUTIVE_SUMMARY.md` test-count line and `docs/04_TECHNICAL_REFERENCE.md` test-file count refreshed from drift (3963 → 4600 tests; 302 → 354 files).
+
+**Out of scope** (separate cleanup tasks, tracked in #193 follow-up):
+- Dropping the `trading_profiles.market_type` column entirely.
+- Killing the legacy single-segment `scheduler.py` + `main.py` CLI paths and their duplicate `SMALL_CAP_UNIVERSE` in `screener.py:48`.
+- Re-keying `_ensemble_lock` to be more granular than per-segment (task #192).
+
+---
+
 ## 2026-05-20 PM — Gemini JSON mode + vectorized max-pain (cycle-time fix). Severity: high (per-profile Scan & Trade was 13.5 min vs normal ~2.5 min, starved A3 tail of queue → pid24 never cycled all day).
 
 Two unrelated-looking bottlenecks compounded into a ~5× per-cycle slowdown that left pid24 (`EXP-A3-700K-AggressiveFree`) at 0 cycles for the entire trading session. py-spy diagnosis (15:23 UTC):

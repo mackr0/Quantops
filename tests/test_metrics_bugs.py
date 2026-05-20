@@ -96,7 +96,7 @@ class TestDailyPnlPopulated:
 
         from types import SimpleNamespace
         ctx = SimpleNamespace(db_path=tmp_profile_db,
-                               display_name="Test", segment="midcap")
+                               display_name="Test", segment="stocks")
         from multi_scheduler import _task_daily_snapshot
         _task_daily_snapshot(ctx)
 
@@ -120,7 +120,7 @@ class TestDailyPnlPopulated:
         monkeypatch.setattr("client.get_positions", lambda ctx=None: [])
         from types import SimpleNamespace
         ctx = SimpleNamespace(db_path=tmp_profile_db,
-                               display_name="Test", segment="midcap")
+                               display_name="Test", segment="stocks")
         from multi_scheduler import _task_daily_snapshot
         _task_daily_snapshot(ctx)
 

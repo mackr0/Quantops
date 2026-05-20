@@ -945,7 +945,7 @@ def create_default_segment_configs(user_id: int) -> None:
     Default values are pulled from the segment definitions in segments.py.
     """
     with closing(_get_conn()) as conn:
-        for seg_name in ("micro", "small", "midcap", "largecap", "crypto"):
+        for seg_name in ("stocks", "crypto"):
             seg = get_segment(seg_name)
             conn.execute(
                 """INSERT OR IGNORE INTO user_segment_configs
@@ -1058,10 +1058,7 @@ def asset_classes_label(profile: Dict[str, Any]) -> str:
 
 
 MARKET_TYPE_NAMES = {
-    "micro": "Micro Cap",
-    "small": "Small Cap",
-    "midcap": "Mid Cap",
-    "largecap": "Large Cap",
+    "stocks": "Stocks",
     "crypto": "Crypto",
 }
 
@@ -1155,7 +1152,10 @@ def create_trading_profile(user_id: int, name: str, market_type: str) -> int:
     try:
         journal_path = f"quantopsai_profile_{profile_id}.db"
         conn = open_profile_db(journal_path)
-        conn.close()
+        try:
+            pass  # open is enough to materialize the schema header
+        finally:
+            conn.close()
     except Exception as exc:
         logger.warning(
             "create_trading_profile: eager journal init failed "

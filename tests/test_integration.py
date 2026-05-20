@@ -91,7 +91,7 @@ class TestShadowStrategiesDontDriveTrades:
         spec = {
             "name": "auto_shadow_integration",
             "description": "integration test shadow",
-            "applicable_markets": ["small"],
+            "applicable_markets": ["stocks"],
             "direction": "BUY", "score": 1,
             "conditions": [{"field": "rsi", "op": "<", "value": 30}],
         }
@@ -236,7 +236,7 @@ class TestAutoStrategyValidationFlow:
         spec_id = save_spec(tmp_profile_db, {
             "name": "auto_integration_pass",
             "description": "integration pass path",
-            "applicable_markets": ["small"],
+            "applicable_markets": ["stocks"],
             "direction": "BUY", "score": 2,
             "conditions": [{"field": "rsi", "op": "<", "value": 30}],
         })
@@ -264,7 +264,7 @@ class TestAutoStrategyValidationFlow:
         spec_id = save_spec(tmp_profile_db, {
             "name": "auto_integration_fail",
             "description": "integration fail path",
-            "applicable_markets": ["small"],
+            "applicable_markets": ["stocks"],
             "direction": "BUY", "score": 1,
             "conditions": [{"field": "rsi", "op": "<", "value": 30}],
         })

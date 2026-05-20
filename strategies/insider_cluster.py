@@ -18,7 +18,7 @@ from typing import Any, Dict, List
 
 
 NAME = "insider_cluster"
-APPLICABLE_MARKETS = ["micro", "small", "midcap", "largecap"]
+APPLICABLE_MARKETS = ["stocks"]
 
 
 def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:

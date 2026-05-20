@@ -43,7 +43,7 @@ from typing import Any, Dict, List
 
 
 NAME = "earnings_disaster_short"
-APPLICABLE_MARKETS = ["small", "midcap", "largecap"]
+APPLICABLE_MARKETS = ["stocks"]
 
 
 def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:

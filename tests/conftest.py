@@ -80,7 +80,7 @@ def sample_ctx():
     from user_context import UserContext
     return UserContext(
         user_id=1,
-        segment="small",
+        segment="stocks",
         display_name="Test",
         alpaca_api_key="test_key",
         alpaca_secret_key="test_secret",

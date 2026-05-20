@@ -45,15 +45,12 @@ def cache_in_tmp(tmp_path, monkeypatch):
 def test_universe_dedupes_and_uppercases(tmp_path, monkeypatch):
     """If cycle_data files yield duplicate or mixed-case symbols,
     the universe must collapse them to one uppercase entry each.
-    Cap segments are stubbed empty to isolate the cycle_data path."""
+    STOCK_UNIVERSE is stubbed empty to isolate the cycle_data path."""
     import json
     monkeypatch.chdir(tmp_path)
-    # Stub cap segments to empty so we only see cycle_data symbols
+    # Stub stock universe to empty so we only see cycle_data symbols
     import segments
-    monkeypatch.setattr(segments, "LARGE_CAP_UNIVERSE", [])
-    monkeypatch.setattr(segments, "MID_CAP_UNIVERSE", [])
-    monkeypatch.setattr(segments, "SMALL_CAP_UNIVERSE", [])
-    monkeypatch.setattr(segments, "MICRO_CAP_UNIVERSE", [])
+    monkeypatch.setattr(segments, "STOCK_UNIVERSE", [])
     with open("cycle_data_15.json", "w") as f:
         json.dump({"shortlist": [
             {"symbol": "aapl"}, {"symbol": "AAPL"}, {"symbol": "msft"},
@@ -73,12 +70,9 @@ def test_universe_excludes_crypto(tmp_path, monkeypatch):
     universe."""
     import json
     monkeypatch.chdir(tmp_path)
-    # Stub cap segments empty so we test cycle_data path in isolation
+    # Stub stock universe empty so we test cycle_data path in isolation
     import segments
-    monkeypatch.setattr(segments, "LARGE_CAP_UNIVERSE", [])
-    monkeypatch.setattr(segments, "MID_CAP_UNIVERSE", [])
-    monkeypatch.setattr(segments, "SMALL_CAP_UNIVERSE", [])
-    monkeypatch.setattr(segments, "MICRO_CAP_UNIVERSE", [])
+    monkeypatch.setattr(segments, "STOCK_UNIVERSE", [])
     with open("cycle_data_15.json", "w") as f:
         json.dump({"shortlist": [
             {"symbol": "AAPL"}, {"symbol": "BTC/USD"},
@@ -87,25 +81,24 @@ def test_universe_excludes_crypto(tmp_path, monkeypatch):
     assert _get_universe() == ["AAPL"]
 
 
-def test_universe_includes_cap_segments(tmp_path, monkeypatch):
-    """2026-05-20: warmup now pulls the full 524-symbol union of
-    LARGE/MID/SMALL/MICRO cap segments so the cache covers the
-    screener's actual universe, not just whatever happens to be
-    in cycle_data shortlists."""
+def test_universe_includes_stock_universe(tmp_path, monkeypatch):
+    """2026-05-20 (docs/22): the four cap-tier universes collapsed
+    into one STOCK_UNIVERSE. Warmup pulls it so the cache covers
+    everything the screener could surface for any stock profile."""
     monkeypatch.chdir(tmp_path)
     from altdata_warmup import _get_universe
     universe = _get_universe()
-    # 524 in the canonical universe; allow some flex for future
-    # adjustments but it should be much bigger than the prior ~31
+    # STOCK_UNIVERSE has ~524 unique liquid US names (was the union
+    # of the old four cap-tier lists). Allow flex for future tuning.
     assert len(universe) >= 400, (
         f"Universe is suspiciously small ({len(universe)}). The "
-        "cap-segment import probably failed and we fell back to "
+        "STOCK_UNIVERSE import probably failed and we fell back to "
         "the static seed list — that's the old behavior the user "
         "explicitly asked us to fix."
     )
-    # Spot-check a few names that should appear from cap segments
-    assert "AAPL" in universe        # LARGE
-    assert "CRM" in universe         # LARGE
+    # Spot-check names that must appear
+    assert "AAPL" in universe
+    assert "CRM" in universe
     # No crypto
     assert all("/" not in s for s in universe)
 

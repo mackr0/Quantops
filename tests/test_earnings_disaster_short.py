@@ -28,7 +28,7 @@ def _make_bars(prices, volumes=None):
 def test_module_has_required_interface():
     from strategies import earnings_disaster_short as m
     assert m.NAME == "earnings_disaster_short"
-    assert "small" in m.APPLICABLE_MARKETS
+    assert "stocks" in m.APPLICABLE_MARKETS
     assert callable(m.find_candidates)
 
 

@@ -36,7 +36,7 @@ def _make_db(tmp_path):
 def _ctx(db, **overrides):
     defaults = dict(
         profile_id=1, user_id=1, db_path=db, enable_self_tuning=True,
-        display_name="Test", segment="small",
+        display_name="Test", segment="stocks",
         short_take_profit_pct=0.08,
         atr_multiplier_sl=2.0,
         atr_multiplier_tp=3.0,
@@ -781,9 +781,9 @@ class TestShortSellingAndSkipMigrations:
         import config, models
         db = str(tmp_path / "users.db")
         self._seed_user_db(db, [
-            (1, "Mid Cap", "midcap", 0, 0),
+            (1, "Stocks Profile", "stocks", 0, 0),
             (2, "Crypto Trader", "crypto", 0, 0),
-            (3, "Already Short", "smallcap", 1, 0),
+            (3, "Already Short", "stocks", 1, 0),
         ])
         monkeypatch.setattr(config, "DB_PATH", db)
         models.init_user_db()
@@ -813,9 +813,9 @@ class TestShortSellingAndSkipMigrations:
         import config, models
         db = str(tmp_path / "users.db")
         self._seed_user_db(db, [
-            (1, "A", "midcap", 0, 0),    # bump 0→5
-            (2, "B", "smallcap", 0, 25), # preserved at 25
-            (3, "C", "largecap", 0, 0),  # bump 0→5
+            (1, "A", "stocks", 0, 0),    # bump 0→5
+            (2, "B", "stocks", 0, 25),   # preserved at 25
+            (3, "C", "stocks", 0, 0),    # bump 0→5
         ])
         monkeypatch.setattr(config, "DB_PATH", db)
         models.init_user_db()

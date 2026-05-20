@@ -32,7 +32,7 @@ from typing import Any, Dict, List
 
 
 NAME = "relative_weakness_in_strong_sector"
-APPLICABLE_MARKETS = ["small", "midcap", "largecap"]
+APPLICABLE_MARKETS = ["stocks"]
 
 
 # Sector ETF mapping. Falls back to SPY for unknown sectors so the

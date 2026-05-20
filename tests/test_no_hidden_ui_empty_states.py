@@ -143,7 +143,7 @@ class TestBacktestEmptyStates:
     def test_all_trades_section_shows_header_and_empty_msg(self, app_ctx):
         html = _render(app_ctx, "backtest.html",
                        results=_Loose({"trades": []}),
-                       market_type="small", days=30)
+                       market_type="stocks", days=30)
         assert "All Trades (0)" in html
         assert "No trades in this backtest result" in html
 

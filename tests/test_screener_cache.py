@@ -47,7 +47,7 @@ class TestStaleFallback:
         import screener
 
         # Seed a stale cache entry (simulates a previous successful run)
-        cache_key = "largecap_50.0_500.0_1000000"
+        cache_key = "stocks_50.0_500.0_1000000"
         stale_symbols = ["AAPL", "MSFT", "GOOG"]
         screener._dynamic_cache = {
             cache_key: (time.time() - 7200, stale_symbols),  # 2 hrs old
@@ -79,7 +79,7 @@ class TestStaleFallback:
 
         result = screener.screen_dynamic_universe(
             min_price=50.0, max_price=500.0, min_volume=1_000_000,
-            market_type="largecap", fallback_universe=["SPY", "QQQ"],
+            market_type="stocks", fallback_universe=["SPY", "QQQ"],
         )
         assert result == stale_symbols
 

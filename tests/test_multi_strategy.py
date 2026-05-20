@@ -21,7 +21,7 @@ import pytest
 class TestRegistryDiscovery:
     def test_market_engine_applies_to_every_market(self):
         from strategies import discover_strategies
-        for market in ("micro", "small", "midcap", "largecap", "crypto"):
+        for market in ("stocks", "crypto"):
             mods = discover_strategies(market)
             names = [m.NAME for m in mods]
             assert "market_engine" in names, (
@@ -33,15 +33,17 @@ class TestRegistryDiscovery:
         crypto_names = [m.NAME for m in discover_strategies("crypto")]
         assert "insider_cluster" not in crypto_names
 
-    def test_insider_cluster_included_in_equity_markets(self):
+    def test_insider_cluster_included_in_stocks(self):
+        """2026-05-20 (docs/22): cap-tier collapsed to a single
+        'stocks' segment. insider_cluster is a stock strategy so it
+        must surface for stocks."""
         from strategies import discover_strategies
-        for market in ("micro", "small", "midcap", "largecap"):
-            names = [m.NAME for m in discover_strategies(market)]
-            assert "insider_cluster" in names, f"missing in {market}"
+        names = [m.NAME for m in discover_strategies("stocks")]
+        assert "insider_cluster" in names
 
     def test_every_strategy_exposes_required_interface(self):
         from strategies import discover_strategies
-        for mod in discover_strategies("small"):
+        for mod in discover_strategies("stocks"):
             assert hasattr(mod, "NAME") and isinstance(mod.NAME, str)
             assert hasattr(mod, "APPLICABLE_MARKETS") and isinstance(
                 mod.APPLICABLE_MARKETS, list
@@ -50,8 +52,8 @@ class TestRegistryDiscovery:
 
     def test_get_active_strategies_no_db_returns_all(self):
         from strategies import get_active_strategies, discover_strategies
-        all_mods = discover_strategies("small")
-        active = get_active_strategies("small", db_path=None)
+        all_mods = discover_strategies("stocks")
+        active = get_active_strategies("stocks", db_path=None)
         assert len(active) == len(all_mods)
 
     def test_get_active_strategies_filters_deprecated(self, tmp_profile_db):
@@ -65,7 +67,7 @@ class TestRegistryDiscovery:
         conn.commit()
         conn.close()
 
-        active_names = [m.NAME for m in get_active_strategies("small", db_path=tmp_profile_db)]
+        active_names = [m.NAME for m in get_active_strategies("stocks", db_path=tmp_profile_db)]
         assert "insider_cluster" not in active_names
         assert "market_engine" in active_names
 
@@ -80,7 +82,7 @@ class TestRegistryDiscovery:
         conn.commit()
         conn.close()
 
-        active_names = [m.NAME for m in get_active_strategies("small", db_path=tmp_profile_db)]
+        active_names = [m.NAME for m in get_active_strategies("stocks", db_path=tmp_profile_db)]
         assert "insider_cluster" in active_names
 
 
@@ -93,7 +95,7 @@ class TestAggregateCandidates:
         # Force every strategy to return nothing — we only care about
         # shape of the empty-result dict here.
         from strategies import discover_strategies
-        for mod in discover_strategies("small"):
+        for mod in discover_strategies("stocks"):
             monkeypatch.setattr(mod, "find_candidates", lambda ctx, uni: [])
 
         from multi_strategy import aggregate_candidates
@@ -105,7 +107,7 @@ class TestAggregateCandidates:
 
     def test_single_strategy_vote(self, sample_ctx, monkeypatch):
         from strategies import discover_strategies
-        for mod in discover_strategies("small"):
+        for mod in discover_strategies("stocks"):
             if mod.NAME == "market_engine":
                 monkeypatch.setattr(mod, "find_candidates", lambda ctx, uni: [
                     {"symbol": "AAPL", "signal": "BUY", "score": 1,
@@ -125,7 +127,7 @@ class TestAggregateCandidates:
 
     def test_two_strategies_agree_upgrades_to_strong_buy(self, sample_ctx, monkeypatch):
         from strategies import discover_strategies
-        mods = discover_strategies("small")
+        mods = discover_strategies("stocks")
         calls = {
             "market_engine": [{"symbol": "AAPL", "signal": "BUY", "score": 1,
                                "votes": {"market_engine": "BUY"}, "reason": "r1"}],
@@ -148,7 +150,7 @@ class TestAggregateCandidates:
         from strategies import discover_strategies
         # SELL votes only survive aggregation when shorting is enabled
         sample_ctx.enable_short_selling = True
-        mods = discover_strategies("small")
+        mods = discover_strategies("stocks")
         calls = {
             "market_engine": [{"symbol": "AAPL", "signal": "BUY", "score": 1,
                                "votes": {"market_engine": "BUY"}, "reason": "r1"}],
@@ -172,7 +174,7 @@ class TestAggregateCandidates:
         def boom(ctx, uni):
             raise RuntimeError("strategy exploded")
 
-        for mod in discover_strategies("small"):
+        for mod in discover_strategies("stocks"):
             if mod.NAME == "insider_cluster":
                 monkeypatch.setattr(mod, "find_candidates", boom)
             elif mod.NAME == "market_engine":
@@ -192,7 +194,7 @@ class TestAggregateCandidates:
 
     def test_skips_candidate_without_symbol(self, sample_ctx, monkeypatch):
         from strategies import discover_strategies
-        for mod in discover_strategies("small"):
+        for mod in discover_strategies("stocks"):
             if mod.NAME == "market_engine":
                 monkeypatch.setattr(mod, "find_candidates", lambda ctx, uni: [
                     {"symbol": "", "signal": "BUY", "score": 1, "votes": {}, "reason": "r"},
@@ -305,8 +307,8 @@ class TestAllocationSummary:
         from multi_strategy import get_allocation_summary
         from strategies import get_active_strategies
 
-        summary = get_allocation_summary(tmp_profile_db, "small")
-        active_names = {m.NAME for m in get_active_strategies("small", db_path=tmp_profile_db)
+        summary = get_allocation_summary(tmp_profile_db, "stocks")
+        active_names = {m.NAME for m in get_active_strategies("stocks", db_path=tmp_profile_db)
                         if m.NAME != "market_engine"}
         summary_names = {row["name"] for row in summary if not row.get("is_legacy")}
         assert summary_names == active_names
@@ -316,7 +318,7 @@ class TestAllocationSummary:
         wrapper, and showing it as a strategy with lifetime_n=0 was the
         2026-05-15 misleading-zombie bug."""
         from multi_strategy import get_allocation_summary
-        summary = get_allocation_summary(tmp_profile_db, "small")
+        summary = get_allocation_summary(tmp_profile_db, "stocks")
         for row in summary:
             assert row["name"] != "market_engine", (
                 f"market_engine row leaked into allocation summary: {row}"
@@ -340,7 +342,7 @@ class TestAllocationSummary:
         conn.close()
 
         from multi_strategy import get_allocation_summary
-        summary = get_allocation_summary(tmp_profile_db, "small")
+        summary = get_allocation_summary(tmp_profile_db, "stocks")
         legacy = [r for r in summary if r.get("is_legacy")]
         legacy_names = {r["name"] for r in legacy}
         assert "pullback_support" in legacy_names, (
@@ -350,7 +352,7 @@ class TestAllocationSummary:
 
     def test_summary_rows_have_required_keys(self, tmp_profile_db):
         from multi_strategy import get_allocation_summary
-        summary = get_allocation_summary(tmp_profile_db, "small")
+        summary = get_allocation_summary(tmp_profile_db, "stocks")
         required = {"name", "weight", "rolling_sharpe", "lifetime_sharpe",
                     "rolling_n", "lifetime_n", "rolling_win_rate", "is_legacy"}
         for row in summary:
@@ -362,7 +364,7 @@ class TestAllocationSummary:
         capital allocation — they're surfaced for visibility, not
         for sizing."""
         from multi_strategy import get_allocation_summary
-        summary = get_allocation_summary(tmp_profile_db, "small")
+        summary = get_allocation_summary(tmp_profile_db, "stocks")
         registered = [r for r in summary if not r.get("is_legacy")]
         if registered:
             total = sum(r["weight"] for r in registered)

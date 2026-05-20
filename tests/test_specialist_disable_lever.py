@@ -25,7 +25,7 @@ import pytest
 
 def _make_ctx(disabled=None):
     ctx = MagicMock()
-    ctx.segment = "midcap"
+    ctx.segment = "stocks"
     ctx.ai_provider = "anthropic"
     ctx.ai_model = "claude-haiku-4-5-20251001"
     ctx.ai_api_key = "fake"

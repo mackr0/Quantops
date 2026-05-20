@@ -150,8 +150,26 @@ def build_ladder(current_capital: float) -> List[Tuple[int, str]]:
 
 
 def _normalize_market_type(market_type: str) -> str:
-    """Collapse the various market_type spellings to a canonical tier."""
+    """Collapse market_type spellings to a canonical scaling tier.
+
+    Post-docs/22 (2026-05-20) the system has two segments: "stocks" and
+    "crypto". This module's $ADV ladder still uses cap-tier reasoning
+    (small-cap names DO have ~10x less $ADV than large-cap names, that's
+    economic reality, not a system-design choice). So when a profile
+    arrives as market_type='stocks', we have to pick a representative
+    tier for the projection.
+
+    Default for 'stocks' → 'large' because the live system's per-profile
+    min_price/max_price/min_volume thresholds today are wide enough to
+    surface all cap tiers, but the actual held positions skew large-cap
+    in production. A future refactor should compute the projected tier
+    from the portfolio's actual position-weighted $ADV rather than from
+    the segment name. The legacy spellings stay accepted for backward-
+    compat with any saved snapshots.
+    """
     mt = (market_type or "").lower()
+    if mt == "stocks":
+        return "large"
     if mt in ("micro", "microcap"):
         return "micro"
     if mt in ("small", "smallcap"):
@@ -162,7 +180,7 @@ def _normalize_market_type(market_type: str) -> str:
         return "large"
     if mt == "crypto":
         return "crypto"
-    return "small"
+    return "large"
 
 
 def _recommended_tier(capital: float, market_type: str) -> str:

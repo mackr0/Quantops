@@ -71,7 +71,7 @@ class TestCreateInitialisesJournalEagerly:
     def test_journal_file_exists_after_create(self, isolated_cwd):
         from models import create_trading_profile
         pid = create_trading_profile(
-            isolated_cwd["user_id"], "TestProfile", "largecap",
+            isolated_cwd["user_id"], "TestProfile", "stocks",
         )
         journal = isolated_cwd["tmp_path"] / f"quantopsai_profile_{pid}.db"
         assert journal.exists(), (
@@ -85,7 +85,7 @@ class TestCreateInitialisesJournalEagerly:
         because the SQLite header is missing."""
         from models import create_trading_profile
         pid = create_trading_profile(
-            isolated_cwd["user_id"], "TestProfile", "largecap",
+            isolated_cwd["user_id"], "TestProfile", "stocks",
         )
         journal = isolated_cwd["tmp_path"] / f"quantopsai_profile_{pid}.db"
         size = journal.stat().st_size
@@ -101,7 +101,7 @@ class TestCreateInitialisesJournalEagerly:
         from models import create_trading_profile
         from db_integrity import check_db
         pid = create_trading_profile(
-            isolated_cwd["user_id"], "TestProfile", "largecap",
+            isolated_cwd["user_id"], "TestProfile", "stocks",
         )
         journal = str(isolated_cwd["tmp_path"]
                        / f"quantopsai_profile_{pid}.db")
@@ -118,7 +118,7 @@ class TestCreateInitialisesJournalEagerly:
         would still need to migrate."""
         from models import create_trading_profile
         pid = create_trading_profile(
-            isolated_cwd["user_id"], "TestProfile", "largecap",
+            isolated_cwd["user_id"], "TestProfile", "stocks",
         )
         journal = str(isolated_cwd["tmp_path"]
                        / f"quantopsai_profile_{pid}.db")
@@ -141,7 +141,7 @@ class TestDeleteRenamesJournalAside:
     def test_delete_renames_journal_with_deleted_suffix(self, isolated_cwd):
         from models import create_trading_profile, delete_trading_profile
         pid = create_trading_profile(
-            isolated_cwd["user_id"], "TestProfile", "largecap",
+            isolated_cwd["user_id"], "TestProfile", "stocks",
         )
         original = isolated_cwd["tmp_path"] / f"quantopsai_profile_{pid}.db"
         assert original.exists()
@@ -167,7 +167,7 @@ class TestDeleteRenamesJournalAside:
         prevention that makes deletes safe."""
         from models import create_trading_profile, delete_trading_profile
         pid = create_trading_profile(
-            isolated_cwd["user_id"], "TestProfile", "largecap",
+            isolated_cwd["user_id"], "TestProfile", "stocks",
         )
         delete_trading_profile(pid)
 
@@ -191,7 +191,7 @@ class TestDeleteRenamesJournalAside:
         not block the master DELETE."""
         from models import create_trading_profile, delete_trading_profile
         pid = create_trading_profile(
-            isolated_cwd["user_id"], "TestProfile", "largecap",
+            isolated_cwd["user_id"], "TestProfile", "stocks",
         )
 
         # Force os.rename to raise so we exercise the failure path
@@ -222,7 +222,7 @@ class TestDeleteRenamesJournalAside:
         up manually), delete_trading_profile must still succeed."""
         from models import create_trading_profile, delete_trading_profile
         pid = create_trading_profile(
-            isolated_cwd["user_id"], "TestProfile", "largecap",
+            isolated_cwd["user_id"], "TestProfile", "stocks",
         )
         # Manually remove the journal first
         journal = isolated_cwd["tmp_path"] / f"quantopsai_profile_{pid}.db"
@@ -253,7 +253,7 @@ class TestEndToEndLifecycleLeavesNoPhantom:
         from models import create_trading_profile, delete_trading_profile
         from db_integrity import _all_db_paths
         pid = create_trading_profile(
-            isolated_cwd["user_id"], "TestProfile", "largecap",
+            isolated_cwd["user_id"], "TestProfile", "stocks",
         )
         delete_trading_profile(pid)
 

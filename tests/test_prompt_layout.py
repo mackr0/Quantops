@@ -214,7 +214,7 @@ class TestPromptBuilderRespectsVerbosity:
             signal_weights="{}",
             prompt_layout='{"alt_data": "brief"}',
             max_position_pct=0.10, max_total_positions=10,
-            enable_short_selling=False, segment="small",
+            enable_short_selling=False, segment="stocks",
         )
         prompt = _build_batch_prompt(
             self._candidate(self._build_alt_data()),
@@ -230,7 +230,7 @@ class TestPromptBuilderRespectsVerbosity:
             signal_weights="{}",
             prompt_layout="{}",  # normal default
             max_position_pct=0.10, max_total_positions=10,
-            enable_short_selling=False, segment="small",
+            enable_short_selling=False, segment="stocks",
         )
         prompt = _build_batch_prompt(
             self._candidate(self._build_alt_data()),

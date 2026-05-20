@@ -752,19 +752,20 @@ def screen_dynamic_universe(min_price=1.0, max_price=20.0, min_volume=500_000,
         if len(equity_symbols) < 100:
             raise ValueError(f"Too few assets ({len(equity_symbols)}), using fallback")
 
-        # Step 2: Batch download 5-day data from yfinance in chunks
-        import random
-        # Sample to avoid downloading all 8000 at once
-        # Take a random 500 to screen, plus the curated universe
-        sample = random.sample(equity_symbols, min(500, len(equity_symbols)))
+        # Step 2: Screen every Alpaca-tradable US equity (no sampling).
+        # 2026-05-20 — removed the prior `random.sample(..., min(500, ...))`
+        # cap; that was a leftover yfinance-batch-download constraint
+        # from when downloading 8000 names took 30+ minutes. The
+        # primary path below uses Alpaca snapshots (~1000 symbols/call,
+        # chunked at 200 = ~40 calls = a few seconds for ~8000 names).
+        # See docs/22_UNIFIED_STOCK_UNIVERSE.md.
+        sample = list(equity_symbols)
         if fallback_universe:
-            # Only keep curated symbols Alpaca still considers active —
-            # otherwise dead tickers (e.g. SQ→XYZ, PARA→PSKY, delisted
-            # names like X / CFLT / AZUL) get shipped into get_snapshots
-            # and downstream yfinance fallbacks, producing "possibly
-            # delisted" log spam on every cycle. The `equity_symbols`
-            # list above is Alpaca's own source of truth for what is
-            # currently tradable.
+            # Outage safety net: even with sample == equity_symbols, keep
+            # the merge so that if Alpaca's list ever returns suspiciously
+            # few names we still cover the curated set. Filter the
+            # fallback to active symbols only so dead tickers (e.g.
+            # renamed/delisted names) don't flow into downstream lookups.
             active_syms = set(equity_symbols)
             alive_fallback = [s for s in fallback_universe if s in active_syms]
             sample = list(set(sample + alive_fallback))

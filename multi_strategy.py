@@ -42,7 +42,7 @@ def aggregate_candidates(ctx: Any, universe: List[str],
     """
     from strategies import get_active_strategies
 
-    market_type = getattr(ctx, "segment", "small")
+    market_type = getattr(ctx, "segment", "stocks")
     # 2026-05-19 — honor per-profile asset-class flags so a profile
     # that has stocks disabled (and only crypto enabled, or vice
     # versa) gets the right strategy mix.
@@ -133,7 +133,7 @@ def aggregate_shadow_candidates(ctx: Any, universe: List[str],
     """
     from strategies import get_shadow_strategies
 
-    market_type = getattr(ctx, "segment", "small")
+    market_type = getattr(ctx, "segment", "stocks")
     shadows = get_shadow_strategies(market_type, db_path=db_path)
     out: List[Dict[str, Any]] = []
     for mod in shadows:

@@ -264,7 +264,7 @@ class TestPromptBuilderRespectsWeights:
         from ai_analyst import _build_batch_prompt
         ctx = SimpleNamespace(signal_weights="{}",
                                 max_position_pct=0.10, max_total_positions=10,
-                                enable_short_selling=False, segment="small")
+                                enable_short_selling=False, segment="stocks")
         prompt = _build_batch_prompt(
             self._make_candidate_with_insider_cluster(),
             {"equity": 100000, "cash": 100000, "positions": [],
@@ -279,7 +279,7 @@ class TestPromptBuilderRespectsWeights:
         ctx = SimpleNamespace(
             signal_weights='{"insider_cluster": 0.4}',
             max_position_pct=0.10, max_total_positions=10,
-            enable_short_selling=False, segment="small",
+            enable_short_selling=False, segment="stocks",
         )
         prompt = _build_batch_prompt(
             self._make_candidate_with_insider_cluster(),
@@ -295,7 +295,7 @@ class TestPromptBuilderRespectsWeights:
         ctx = SimpleNamespace(
             signal_weights='{"insider_cluster": 0.0}',
             max_position_pct=0.10, max_total_positions=10,
-            enable_short_selling=False, segment="small",
+            enable_short_selling=False, segment="stocks",
         )
         prompt = _build_batch_prompt(
             self._make_candidate_with_insider_cluster(),

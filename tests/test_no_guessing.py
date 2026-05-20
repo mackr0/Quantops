@@ -643,11 +643,19 @@ class TestRenderTemplateKwargs:
         all_passed = explicit_kwargs | ctx_vars
 
         missing = template_vars - all_passed
-        # Filter out variables that are Jinja internals or loop vars
-        missing = {v for v in missing if v not in (
-            "any_profile_active", "total_pages", "page", "sort_by", "sort_dir",
-            "total_trades", "decisions"
-        )}
+        # Filter out variables that are Jinja internals or loop vars.
+        # Loop-vars are introduced by `{% for X in ... %}` blocks and
+        # are not (and cannot be) passed from the view.
+        _jinja_loop_vars = {
+            "c", "d", "e", "h", "hr", "leg", "mp", "p", "prof",
+            "prof_decay", "r", "row", "s", "spec_name", "v", "w",
+        }
+        _view_internals = {
+            "any_profile_active", "total_pages", "page", "sort_by",
+            "sort_dir", "total_trades", "decisions",
+        }
+        missing = {v for v in missing
+                   if v not in _jinja_loop_vars and v not in _view_internals}
 
         assert not missing, (
             f"ai.html uses these variables but ai_dashboard() doesn't pass them: {missing}\n"

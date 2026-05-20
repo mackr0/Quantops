@@ -52,14 +52,14 @@ def _ctx_without_db_path():
     the id(ctx) fallback."""
     return SimpleNamespace(
         get_alpaca_api=lambda: MagicMock(),
-        display_name="Test", segment="small",
+        display_name="Test", segment="stocks",
     )
 
 
 def _ctx_with_db_path(path="/tmp/profile_999.db"):
     return SimpleNamespace(
         get_alpaca_api=lambda: MagicMock(),
-        display_name="Test", segment="small",
+        display_name="Test", segment="stocks",
         db_path=path,
     )
 

@@ -118,7 +118,7 @@ class TestNoStrategyZombies:
         # discover_strategies takes a market_type but to enumerate ALL
         # registered strategies we union across the markets we trade.
         all_modules = {}
-        for mt in ("micro", "small", "midcap", "largecap", "crypto"):
+        for mt in ("stocks", "crypto"):
             for mod in discover_strategies(mt):
                 name = getattr(mod, "NAME", None)
                 if name and name not in _WRAPPERS:

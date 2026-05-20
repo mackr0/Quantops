@@ -54,7 +54,7 @@ def _make_ctx(db, **overrides):
     """Build a mock UserContext."""
     defaults = dict(
         profile_id=1, user_id=1, db_path=db, enable_self_tuning=True,
-        display_name="Test", segment="small",
+        display_name="Test", segment="stocks",
         ai_confidence_threshold=25, max_position_pct=0.10,
         stop_loss_pct=0.03, take_profit_pct=0.10,
         strategy_momentum_breakout=True, strategy_volume_spike=True,

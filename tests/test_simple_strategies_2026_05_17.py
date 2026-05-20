@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 
 def _ctx(**overrides):
     base = dict(
-        user_id=1, segment="largecap", display_name="Test Buy-Hold",
+        user_id=1, segment="stocks", display_name="Test Buy-Hold",
         profile_id=42, db_path=":memory:",
         strategy_type="buy_hold", initial_capital=333_000.0,
         is_virtual=False,
@@ -200,8 +200,8 @@ class TestRandomStockOfDay:
     def test_first_fire_buys_initial_picks(self):
         from simple_strategies import run_random_stock_of_day
         ctx = _ctx(strategy_type="random")
-        from segments import LARGE_CAP_UNIVERSE
-        price_map = {s: 100.0 for s in LARGE_CAP_UNIVERSE}
+        from segments import STOCK_UNIVERSE
+        price_map = {s: 100.0 for s in STOCK_UNIVERSE}
         api = _stub_api(price_map=price_map, positions=[])
         with patch("client.get_api", return_value=api), patch(
             "simple_strategies._has_prior_strategy_entry", return_value=False,
@@ -241,11 +241,11 @@ class TestRandomStockOfDay:
         regardless of what positions exist. The fix removed the
         'sell positions not in today's pick' branch entirely."""
         from simple_strategies import run_random_stock_of_day
-        from segments import LARGE_CAP_UNIVERSE
+        from segments import STOCK_UNIVERSE
         ctx = _ctx(strategy_type="random")
         # First-fire path with positions present — must NOT sell them
         positions = [SimpleNamespace(symbol="AAPL", qty=50)]
-        price_map = {s: 100.0 for s in LARGE_CAP_UNIVERSE}
+        price_map = {s: 100.0 for s in STOCK_UNIVERSE}
         api = _stub_api(price_map=price_map, positions=positions)
         with patch("client.get_api", return_value=api), patch(
             "simple_strategies._has_prior_strategy_entry", return_value=False,

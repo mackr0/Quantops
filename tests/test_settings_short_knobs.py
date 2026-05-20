@@ -35,7 +35,7 @@ def _make_user_and_profile(tmp_db):
     from models import create_user, create_trading_profile
     create_user("u@x.com", "hashed_dummy", is_admin=1)
     return create_trading_profile(
-        user_id=1, name="Test Shorts", market_type="small",
+        user_id=1, name="Test Shorts", market_type="stocks",
     )
 
 

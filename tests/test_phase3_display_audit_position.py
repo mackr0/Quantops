@@ -60,7 +60,7 @@ def _ctx_with_positions(positions):
     ]
     return SimpleNamespace(
         get_alpaca_api=lambda: api, db_path="test.db",
-        display_name="Test", segment="small",
+        display_name="Test", segment="stocks",
     )
 
 

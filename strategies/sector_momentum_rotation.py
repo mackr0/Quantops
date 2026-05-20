@@ -20,7 +20,7 @@ from typing import Any, Dict, List
 
 
 NAME = "sector_momentum_rotation"
-APPLICABLE_MARKETS = ["small", "midcap", "largecap"]
+APPLICABLE_MARKETS = ["stocks"]
 
 
 def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:

@@ -110,13 +110,13 @@ class TestScoreAggregationManyVoters:
     def test_unanimous_buy_gets_strong_buy(self, sample_ctx, monkeypatch):
         from strategies import discover_strategies
         # Force every strategy to buy AAPL
-        for mod in discover_strategies("midcap"):
+        for mod in discover_strategies("stocks"):
             monkeypatch.setattr(mod, "find_candidates", lambda ctx, uni: [{
                 "symbol": "AAPL", "signal": "BUY", "score": 1,
                 "votes": {mod.NAME: "BUY"}, "reason": "test", "price": 100,
             }])
 
-        sample_ctx.segment = "midcap"
+        sample_ctx.segment = "stocks"
         from multi_strategy import aggregate_candidates
         out = aggregate_candidates(sample_ctx, ["AAPL"])
         entries = [c for c in out["candidates"] if c["symbol"] == "AAPL"]
@@ -131,7 +131,7 @@ class TestScoreAggregationManyVoters:
 
     def test_split_decision_dampens_to_hold(self, sample_ctx, monkeypatch):
         from strategies import discover_strategies
-        mods = discover_strategies("midcap")
+        mods = discover_strategies("stocks")
         # Half BUY, half SELL — dominant direction wins by 1
         for i, mod in enumerate(mods):
             sig = "BUY" if i % 2 == 0 else "SELL"
@@ -143,7 +143,7 @@ class TestScoreAggregationManyVoters:
                 }],
             )
 
-        sample_ctx.segment = "midcap"
+        sample_ctx.segment = "stocks"
         # Short-selling must be on for SELL votes to survive aggregation
         sample_ctx.enable_short_selling = True
         from multi_strategy import aggregate_candidates

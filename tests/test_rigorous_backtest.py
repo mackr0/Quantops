@@ -148,7 +148,7 @@ class TestPersistence:
             "passed_gates": ["sharpe", "win_rate"],
             "failed_gates": [],
             "metrics": {"baseline": {"sharpe_ratio": 1.5}},
-            "config": {"market_type": "midcap"},
+            "config": {"market_type": "stocks"},
             "elapsed_sec": 12.3,
         }
         row_id = save_validation("test_strategy", fake_result, db_path=db)

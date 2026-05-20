@@ -35,9 +35,7 @@ def test_strategy_module_has_required_interface():
     assert hasattr(m, "NAME")
     assert hasattr(m, "APPLICABLE_MARKETS")
     assert hasattr(m, "find_candidates")
-    assert "small" in m.APPLICABLE_MARKETS
-    assert "midcap" in m.APPLICABLE_MARKETS
-    assert "largecap" in m.APPLICABLE_MARKETS
+    assert "stocks" in m.APPLICABLE_MARKETS
 
 
 def test_emits_nothing_when_universe_too_small():

@@ -230,6 +230,12 @@ class TestUIQuality:
         assert ".md" not in all_strings
 
     def test_market_type_aliases_normalize(self):
+        """Legacy spellings still normalize to their canonical tier so
+        any saved snapshots that reference the old names continue to
+        produce the same projection. 'small' and 'smallcap' both map
+        to the same internal tier. After docs/22 the live system only
+        emits 'stocks' / 'crypto', but the normalizer keeps backward
+        compat with old aliases."""
         from scaling_projection import project_scaling
         out_a = project_scaling(_trades(50, 0.05), 10_000, 10.0, "small")
         out_b = project_scaling(_trades(50, 0.05), 10_000, 10.0, "smallcap")

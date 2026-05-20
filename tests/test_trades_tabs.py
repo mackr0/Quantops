@@ -134,7 +134,7 @@ class TestTradesRouteAcceptsKindParam:
         monkeypatch.setattr(
             "views.get_user_profiles",
             lambda _uid: [{"id": 1, "name": "Mid Cap",
-                           "enabled": True, "market_type": "midcap"}],
+                           "enabled": True, "market_type": "stocks"}],
         )
 
         with patch("flask_login.utils._get_user", return_value=self._admin()):
@@ -159,7 +159,7 @@ class TestTradesRouteAcceptsKindParam:
         monkeypatch.setattr(
             "views.get_user_profiles",
             lambda _uid: [{"id": 1, "name": "Mid Cap",
-                           "enabled": True, "market_type": "midcap"}],
+                           "enabled": True, "market_type": "stocks"}],
         )
 
         with patch("flask_login.utils._get_user", return_value=self._admin()):
@@ -182,7 +182,7 @@ class TestTradesRouteAcceptsKindParam:
         monkeypatch.setattr(
             "views.get_user_profiles",
             lambda _uid: [{"id": 1, "name": "Mid Cap",
-                           "enabled": True, "market_type": "midcap"}],
+                           "enabled": True, "market_type": "stocks"}],
         )
 
         with patch("flask_login.utils._get_user", return_value=self._admin()):

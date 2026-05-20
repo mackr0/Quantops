@@ -402,7 +402,7 @@ def test_strategy_proposer_embeds_direction_mix_in_prompt():
         ctx_summary="test",
         recent_performance=[],
         n_proposals=2,
-        market_types=["small"],
+        market_types=["stocks"],
         direction_mix={"BUY": 1, "SELL": 1},
     )
     # Direction mix should be embedded as a constraint
@@ -416,6 +416,6 @@ def test_strategy_proposer_omits_mix_when_not_requested():
         ctx_summary="test",
         recent_performance=[],
         n_proposals=2,
-        market_types=["small"],
+        market_types=["stocks"],
     )
     assert "Direction mix required" not in prompt

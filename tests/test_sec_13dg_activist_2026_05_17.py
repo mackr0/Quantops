@@ -109,9 +109,17 @@ class TestConsumerAPI:
 
 
 class TestIntegration:
-    def test_alternative_data_returns_activist_13dg_key(self):
+    def test_alternative_data_returns_activist_13dg_key(self, monkeypatch):
         """Avoid the 20-nested-with Python limit by using ExitStack
-        to compose 20+ patches dynamically."""
+        to compose 20+ patches dynamically.
+
+        2026-05-20: also disable the alt_data_cache so the patched
+        fetchers are actually called (otherwise the SQLite cache —
+        added by the pre-market warmup in docs/21 — returns stale
+        rows from an earlier population)."""
+        # Cache off → forces every cached source to call its fetcher
+        # live, which is what the patches in this test are stubbing.
+        monkeypatch.setenv("ALTDATA_CACHE_ENABLED", "0")
         from contextlib import ExitStack
         from alternative_data import get_all_alternative_data
         per_symbol_stubs = [

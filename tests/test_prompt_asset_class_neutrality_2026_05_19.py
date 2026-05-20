@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 def _make_ctx():
     return SimpleNamespace(
         ai_provider="google",
-        segment="largecap",
+        segment="stocks",
         max_position_pct=0.05,
         max_total_positions=10,
         enable_short_selling=True,

@@ -19,7 +19,7 @@ from typing import Any, Dict, List
 
 
 NAME = "short_squeeze_setup"
-APPLICABLE_MARKETS = ["micro", "small", "midcap"]
+APPLICABLE_MARKETS = ["stocks"]
 
 
 def find_candidates(ctx: Any, universe: List[str]) -> List[Dict[str, Any]]:

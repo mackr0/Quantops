@@ -110,6 +110,14 @@ INFRASTRUCTURE_TASKS = {
                                          # day across all profiles
     "_task_pdufa_scrape",              # OPEN_ITEMS #6 — daily idempotent
                                          # PDUFA event scrape
+    "_task_phase5c_backfill_nightly",  # Phase 5c migration backfill —
+                                         # idempotent migration marker
+                                         # gates repeat runs; runs once
+                                         # per profile-DB lifetime, then
+                                         # no-ops. Operator toggle would
+                                         # be misleading (it's a one-shot
+                                         # data correction, not an ongoing
+                                         # feature).
 }
 
 

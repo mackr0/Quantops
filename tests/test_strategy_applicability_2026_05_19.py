@@ -1,19 +1,22 @@
 """Strategy applicability: stock-vs-crypto split, no within-stock filtering.
 
-2026-05-19. The pre-AI-era registry filtered strategies by exact
-market_type match — a strategy listing `["small", "midcap"]`
-was excluded from `largecap` because the author thought the
-pattern didn't apply. That decision belongs to the AI now, not
-a static registry filter.
+History:
+- 2026-05-19. Pre-AI-era registry filtered strategies by exact market_type
+  match — a strategy listing `["small", "midcap"]` was excluded from
+  `largecap` because the author thought the pattern didn't apply. That
+  decision belongs to the AI now, not a static registry filter.
+- 2026-05-20 (docs/22). Cap-tier collapsed to a single `stocks` segment.
+  Every stock strategy's APPLICABLE_MARKETS normalized to `["stocks"]`.
+  Strategy filter constants updated: `_STOCK_MARKETS = ("stocks",)`.
 
 New semantics for `strategies._strategy_applies_to_market`:
   - "*" in applicable → universal
   - crypto profile → applicable must list "crypto"
-  - stock profile (largecap/midcap/small/micro) → applicable must
-    list ANY stock market
+  - stock profile (market_type == "stocks") → applicable must list
+    "stocks" (or "*")
 
-Stock vs crypto stays a real distinction (data sources differ);
-within stock, the AI sees everything.
+Stock vs crypto stays a real distinction (data sources differ, symbol
+format differs); within the stock universe, the AI sees everything.
 """
 from __future__ import annotations
 
@@ -29,113 +32,82 @@ from strategies import (
 )
 
 
-class TestStockProfilesSeeAllStockStrategies:
-    """The 2026-05-19 regression class: every stock-applicable
-    strategy must run for every stock market_type, regardless of
-    which specific stock markets its APPLICABLE_MARKETS lists."""
+class TestStockProfileSeesAllStockStrategies:
+    """Every stock-applicable strategy must run for the stocks segment."""
 
-    @pytest.mark.parametrize("market_type",
-                              ["largecap", "midcap", "small", "micro"])
-    def test_strategy_listing_some_stock_markets_runs_on_every_stock_market(
-        self, market_type,
-    ):
-        # A strategy that lists only ["small", "midcap"] historically
-        # was excluded from largecap. New behavior: it should apply.
-        assert _strategy_applies_to_market(
-            ["small", "midcap"], market_type,
-        ) is True
-        # Single-stock-market lists also apply to any stock profile
-        assert _strategy_applies_to_market(
-            ["midcap"], market_type,
-        ) is True
+    def test_stock_strategy_runs_on_stocks(self):
+        # Normalized stock strategy
+        assert _strategy_applies_to_market(["stocks"], "stocks") is True
+        # Mixed strategy (stocks + crypto) also runs on stocks
+        assert _strategy_applies_to_market(["stocks", "crypto"], "stocks") is True
         # Universal still works
-        assert _strategy_applies_to_market(["*"], market_type) is True
+        assert _strategy_applies_to_market(["*"], "stocks") is True
 
-    def test_strategy_listing_only_crypto_does_not_run_on_stocks(self):
-        """The stock-vs-crypto split is preserved. A hypothetical
-        crypto-only strategy (none exist today) would not run on
-        stock profiles."""
-        assert _strategy_applies_to_market(["crypto"], "largecap") is False
-        assert _strategy_applies_to_market(["crypto"], "small") is False
+    def test_crypto_only_strategy_does_not_run_on_stocks(self):
+        """The stock-vs-crypto split is preserved."""
+        assert _strategy_applies_to_market(["crypto"], "stocks") is False
 
 
-class TestCryptoProfilesGetOnlyCryptoStrategies:
-    def test_strategy_with_crypto_in_list_runs(self):
+class TestCryptoProfileGetsOnlyCryptoStrategies:
+    def test_crypto_strategy_runs_on_crypto(self):
         assert _strategy_applies_to_market(["crypto"], "crypto") is True
-        # Mixed (crypto + stocks): runs on both sides
-        assert _strategy_applies_to_market(
-            ["small", "midcap", "largecap", "crypto"], "crypto",
-        ) is True
+        # Mixed (stocks + crypto) runs on both sides
+        assert _strategy_applies_to_market(["stocks", "crypto"], "crypto") is True
 
-    def test_strategy_listing_only_stock_markets_does_not_run_on_crypto(self):
+    def test_stock_only_strategy_does_not_run_on_crypto(self):
         """A stock-universe strategy can't sensibly produce candidates
         for a BTC/USD-only profile — keep it out."""
-        assert _strategy_applies_to_market(
-            ["small", "midcap", "largecap"], "crypto",
-        ) is False
-        assert _strategy_applies_to_market(["largecap"], "crypto") is False
+        assert _strategy_applies_to_market(["stocks"], "crypto") is False
 
     def test_universal_strategy_runs_on_crypto(self):
         assert _strategy_applies_to_market(["*"], "crypto") is True
 
 
-class TestActualStrategyCountForLargecap:
-    """Pin the count: at the time of this commit, the registry has
-    26 stock-applicable strategies (every entry in STRATEGY_MODULES
-    except none — all list at least one stock market). All 26 must
-    now activate for a largecap profile."""
+class TestActualStrategyCountForStocks:
+    """Pin the count: at 2026-05-20 the registry has 26 stock-applicable
+    strategies (every entry in STRATEGY_MODULES except none — every
+    file declares either ["stocks"], ["stocks","crypto"], or ["*"]).
+    All 26 activate for a stocks profile."""
 
-    def test_largecap_gets_all_stock_applicable_strategies(self):
-        active = get_active_strategies("largecap", db_path=None)
-        # Must include the 3 that were previously walled off
+    def test_stocks_gets_all_stock_applicable_strategies(self):
+        active = get_active_strategies("stocks", db_path=None)
         names = {getattr(m, "NAME", "") for m in active}
-        assert "parabolic_exhaustion" in names, (
-            "parabolic_exhaustion now applies to largecap "
-            "(was filtered out pre-2026-05-19)"
-        )
-        assert "short_term_reversal" in names, (
-            "short_term_reversal now applies to largecap"
-        )
-        assert "short_squeeze_setup" in names, (
-            "short_squeeze_setup now applies to largecap"
-        )
+        # The three strategies that were filtered out pre-2026-05-19
+        # must all activate now
+        assert "parabolic_exhaustion" in names
+        assert "short_term_reversal" in names
+        assert "short_squeeze_setup" in names
 
-    def test_largecap_strategy_count_at_least_as_high_as_midcap(self):
-        """The previous filtering produced largecap=23, midcap=26.
-        Post-fix, largecap should equal midcap (both get all
-        stock-applicable strategies)."""
-        n_large = len(get_active_strategies("largecap", db_path=None))
-        n_mid = len(get_active_strategies("midcap", db_path=None))
-        assert n_large == n_mid, (
-            f"Largecap should now match midcap (was 23 vs 26 before "
-            f"the fix); got largecap={n_large} midcap={n_mid}"
+    def test_stocks_strategy_count_covers_full_registry(self):
+        """Every non-crypto-only strategy in STRATEGY_MODULES must
+        activate for a stocks profile."""
+        active = get_active_strategies("stocks", db_path=None)
+        # Should be at least 23 (the floor from pre-2026-05-19) but
+        # post-fix targets every stock-applicable strategy.
+        assert len(active) >= 23, (
+            f"Stocks profile should see ~26 strategies; got {len(active)}"
         )
 
 
 class TestPerProfileAssetClassFlags:
-    """2026-05-19 — get_active_strategies honors per-profile
-    enable_stocks / enable_crypto flags. Operator can disable a
-    whole asset class for a profile without changing market_type."""
+    """get_active_strategies honors per-profile enable_stocks / enable_crypto
+    flags. Operator can disable a whole asset class for a profile without
+    changing market_type."""
 
-    def test_stocks_off_returns_no_stock_strategies(self):
+    def test_both_off_returns_no_strategies(self):
         active = get_active_strategies(
-            "largecap", db_path=None,
+            "stocks", db_path=None,
             enable_stocks=False, enable_crypto=False,
         )
-        assert active == [], (
-            "Both flags off must return no strategies"
-        )
+        assert active == [], "Both flags off must return no strategies"
 
     def test_stocks_on_crypto_off_returns_stock_strategies(self):
-        """Default for the user's current setup. All 26 stock
-        strategies run; no crypto-only strategies (there are none
-        in the registry today, but if there were, they'd be skipped)."""
+        """Default for the current setup. Every active strategy must
+        be stock-applicable (no crypto-only kept under stocks=True only)."""
         active = get_active_strategies(
-            "largecap", db_path=None,
+            "stocks", db_path=None,
             enable_stocks=True, enable_crypto=False,
         )
-        # Every active strategy must list at least one stock market
-        # or "*" — none should be crypto-only
         from strategies import _is_stock_applicable
         for mod in active:
             apps = getattr(mod, "APPLICABLE_MARKETS", [])
@@ -146,23 +118,19 @@ class TestPerProfileAssetClassFlags:
 
     def test_default_flags_match_current_behavior(self):
         """Defaults (stocks=True, crypto=False) should produce the
-        same list a stock profile gets today."""
-        active = get_active_strategies("largecap", db_path=None)
-        # All 26 stock-applicable strategies
-        assert len(active) >= 23, (
-            f"Default flags should preserve current largecap "
-            f"coverage; got {len(active)}"
-        )
+        same list a stocks profile gets today."""
+        active = get_active_strategies("stocks", db_path=None)
+        assert len(active) >= 23
 
 
 class TestUnknownMarketTypeFallbackToExactMatch:
-    """Defensive: an operator could set market_type to something
-    weird ("commodities"). Old exact-match semantics apply."""
+    """Defensive: an operator could set market_type to something weird
+    ("commodities"). Old exact-match semantics apply as a safety net."""
 
     def test_unknown_market_uses_exact_match(self):
         assert _strategy_applies_to_market(
             ["commodities"], "commodities",
         ) is True
         assert _strategy_applies_to_market(
-            ["largecap"], "commodities",
+            ["stocks"], "commodities",
         ) is False

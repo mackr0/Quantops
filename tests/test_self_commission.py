@@ -111,7 +111,7 @@ class TestOptimizeCommissionStrategy:
         conn = _get_conn(db)
         fake_spec = {
             "name": "test", "description": "test strategy",
-            "applicable_markets": ["small"],
+            "applicable_markets": ["stocks"],
             "trigger_conditions": [],
             "side": "BUY",
         }

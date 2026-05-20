@@ -164,11 +164,14 @@ class TestValidationsScoping:
     before trimming to the displayed 30."""
 
     def _sample_validations(self):
-        # 200 mixed rows: 10 markets × 20 rows.
+        """2026-05-20 (docs/22): the live system has two market_types
+        now (stocks, crypto). The historical mix in this fixture
+        deliberately includes the old cap-tier values too so the
+        filter-test exercises the path where saved validations may
+        carry legacy market_type strings that no live profile uses."""
         rows = []
         for i in range(200):
-            market = ["midcap", "crypto", "largecap",
-                      "smallcap", "micro"][i % 5]
+            market = ["stocks", "crypto", "stocks", "stocks", "stocks"][i % 5]
             rows.append({
                 "id": 200 - i,
                 "strategy_name": f"strategy_{i}",
@@ -178,20 +181,20 @@ class TestValidationsScoping:
             })
         return rows
 
-    def test_filter_to_midcap_returns_only_midcap_rows(self):
+    def test_filter_to_stocks_returns_only_stocks_rows(self):
         raw = self._sample_validations()
-        selected_market_type = "midcap"
+        selected_market_type = "stocks"
 
         filtered = [v for v in raw
                     if v.get("market_type") == selected_market_type]
         trimmed = filtered[:30]
 
         assert trimmed, (
-            "Expected at least one midcap validation in the sample"
+            "Expected at least one stocks validation in the sample"
         )
         for r in trimmed:
-            assert r["market_type"] == "midcap", (
-                f"Filter leaked non-midcap row: {r}"
+            assert r["market_type"] == "stocks", (
+                f"Filter leaked non-stocks row: {r}"
             )
         # And: we got enough rows after filtering — proves the
         # widened limit=200 fetch leaves room post-filter.

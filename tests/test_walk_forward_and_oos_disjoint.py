@@ -110,7 +110,7 @@ def test_walk_forward_folds_are_pairwise_disjoint():
     with patch("backtester.backtest_strategy", recorder):
         rigorous_backtest.walk_forward_analysis(
             strategy_fn=lambda symbol, df: {"signal": "HOLD"},
-            market_type="midcap",
+            market_type="stocks",
             history_days=360,
             folds=4,
             params=None,
@@ -163,7 +163,7 @@ def test_oos_in_sample_and_out_of_sample_do_not_overlap():
     with patch("backtester.backtest_strategy", recorder):
         rigorous_backtest.out_of_sample_degradation(
             strategy_fn=lambda symbol, df: {"signal": "HOLD"},
-            market_type="midcap",
+            market_type="stocks",
             history_days=360,
             params=None,
             initial_capital=10_000,

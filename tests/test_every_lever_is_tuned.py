@@ -82,6 +82,8 @@ MANUAL_PARAMETERS = {
     "enable_alt_data":   "Ablation arm flag — operator-set for experiment",
     "enable_meta_model": "Ablation arm flag — operator-set for experiment",
     "enable_options":    "Ablation arm flag — operator-set for experiment",
+    "enable_stocks":     "Asset-class enablement (per-profile user choice; pairs with enable_options/enable_crypto)",
+    "enable_crypto":     "Asset-class enablement (per-profile user choice; pairs with enable_stocks/enable_options)",
     "strategy_type":     "Strategy mode (ai/buy_hold/random) — architectural choice",
 
     # Historical baselines / virtual-account layer
@@ -181,6 +183,21 @@ MANUAL_PARAMETERS = {
     # passes today; remove from this list when the rule's stub
     # body is filled in (see self_tuning.py:_optimize_short_max_hold_days).
     "short_max_hold_days": "Tuning rule scaffolded but stub-only until days_held data accumulates",
+
+    # Kill-switch state — operator-set safety override; the tuner must
+    # never re-enable trading on its own once it's been halted, and the
+    # halt reason + timestamp are audit trail, not knobs.
+    "trading_halted": "Kill-switch state — operator-set safety override",
+    "halt_reason":    "Kill-switch audit trail — human-written rationale",
+    "halted_at":      "Kill-switch audit trail — timestamp set at halt time",
+
+    # Pipeline-refactor cutover flags (Scope C). use_pipeline_dispatch
+    # toggles the per-pipeline dispatch path; enable_pipeline_shadow_eval
+    # arms the shadow harness for A/B comparison vs the legacy path.
+    # Both are architectural rollout toggles owned by the operator
+    # during the cutover; not autonomously tuned.
+    "use_pipeline_dispatch":      "Pipeline-cutover architectural toggle — operator-set during rollout",
+    "enable_pipeline_shadow_eval": "Pipeline-cutover shadow-harness toggle — operator-set during rollout",
 }
 
 

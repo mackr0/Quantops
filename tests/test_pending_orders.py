@@ -22,7 +22,7 @@ class TestSafePendingOrders:
     def _ctx_with_api(self, api):
         return SimpleNamespace(
             get_alpaca_api=lambda: api,
-            display_name="Test", segment="small",
+            display_name="Test", segment="stocks",
         )
 
     def test_returns_list_of_dicts_shaped_for_ui(self):

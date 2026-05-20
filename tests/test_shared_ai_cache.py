@@ -58,8 +58,8 @@ def fresh_cache_db(monkeypatch):
 def test_put_get_round_trip(fresh_cache_db):
     import shared_ai_cache as sac
     val = {"verdict": "BUY", "confidence": 78, "specialists": ["earn", "patt"]}
-    sac.put("ensemble", "midcap", val, db_path=fresh_cache_db)
-    got = sac.get("ensemble", "midcap", db_path=fresh_cache_db)
+    sac.put("ensemble", "stocks", val, db_path=fresh_cache_db)
+    got = sac.get("ensemble", "stocks", db_path=fresh_cache_db)
     assert got == val
 
 
@@ -80,11 +80,11 @@ def test_get_returns_none_when_bucket_changes(fresh_cache_db):
     conn.execute(
         "INSERT INTO shared_ai_cache "
         "(cache_key, cache_kind, bucket, payload) VALUES (?, ?, ?, ?)",
-        ("midcap", "ensemble", old_bucket, payload),
+        ("stocks", "ensemble", old_bucket, payload),
     )
     conn.commit()
     conn.close()
-    assert sac.get("ensemble", "midcap", db_path=fresh_cache_db) is None
+    assert sac.get("ensemble", "stocks", db_path=fresh_cache_db) is None
 
 
 def test_get_returns_none_on_pickle_corruption(fresh_cache_db):
@@ -97,28 +97,28 @@ def test_get_returns_none_on_pickle_corruption(fresh_cache_db):
     conn.execute(
         "INSERT INTO shared_ai_cache "
         "(cache_key, cache_kind, bucket, payload) VALUES (?, ?, ?, ?)",
-        ("midcap", "ensemble", cur_bucket, b"not-a-pickle-blob"),
+        ("stocks", "ensemble", cur_bucket, b"not-a-pickle-blob"),
     )
     conn.commit()
     conn.close()
-    assert sac.get("ensemble", "midcap", db_path=fresh_cache_db) is None
+    assert sac.get("ensemble", "stocks", db_path=fresh_cache_db) is None
 
 
 def test_clear_kind_evicts_only_matching_rows(fresh_cache_db):
     import shared_ai_cache as sac
-    sac.put("ensemble", "midcap", {"v": 1}, db_path=fresh_cache_db)
+    sac.put("ensemble", "stocks", {"v": 1}, db_path=fresh_cache_db)
     sac.put("political", "global", {"v": 2}, db_path=fresh_cache_db)
     sac.clear_kind("ensemble", db_path=fresh_cache_db)
-    assert sac.get("ensemble", "midcap", db_path=fresh_cache_db) is None
+    assert sac.get("ensemble", "stocks", db_path=fresh_cache_db) is None
     assert sac.get("political", "global", db_path=fresh_cache_db) == {"v": 2}
 
 
 def test_concurrent_put_atomic_replace(fresh_cache_db):
     """INSERT OR REPLACE — second write replaces first cleanly."""
     import shared_ai_cache as sac
-    sac.put("ensemble", "smallcap", {"v": "first"}, db_path=fresh_cache_db)
-    sac.put("ensemble", "smallcap", {"v": "second"}, db_path=fresh_cache_db)
-    assert sac.get("ensemble", "smallcap", db_path=fresh_cache_db) == {"v": "second"}
+    sac.put("ensemble", "stocks_alt", {"v": "first"}, db_path=fresh_cache_db)
+    sac.put("ensemble", "stocks_alt", {"v": "second"}, db_path=fresh_cache_db)
+    assert sac.get("ensemble", "stocks_alt", db_path=fresh_cache_db) == {"v": "second"}
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +144,7 @@ def test_get_shared_ensemble_uses_persisted_cache_after_restart(fresh_cache_db, 
         "raw": {},
         "cost_calls": 4,
     }
-    sac.put("ensemble", "midcap", persisted_result, db_path=fresh_cache_db)
+    sac.put("ensemble", "stocks", persisted_result, db_path=fresh_cache_db)
 
     # Simulate restart: clear the in-process cache.
     tp._ensemble_cache = {}
@@ -152,7 +152,7 @@ def test_get_shared_ensemble_uses_persisted_cache_after_restart(fresh_cache_db, 
 
     # Build a minimal ctx
     ctx = MagicMock()
-    ctx.segment = "midcap"
+    ctx.segment = "stocks"
     ctx.ai_provider = "anthropic"
     ctx.ai_model = "claude-haiku-4-5-20251001"
     ctx.ai_api_key = "fake"
