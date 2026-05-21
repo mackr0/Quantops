@@ -569,6 +569,52 @@ def ai_review(symbol, technical_signal, ctx=None, political_context=None):
 
 
 # ---------------------------------------------------------------------------
+# Live position-count maintenance during the STEP 5 dispatch loop
+# ---------------------------------------------------------------------------
+
+def _decrement_closed_stock_position(positions_list, trade_result):
+    """Remove the fully-closed STOCK symbol from the live
+    positions_list so a later same-cycle BUY's position-cap check
+    sees the freed slot.
+
+    Background (#195 follow-up, 2026-05-21): the dispatch loop sorts
+    SELL/STRONG_SELL before BUY so the AI's cap-aware "SELL X + BUY Y"
+    pair frees a slot before the BUY draws it. But
+    `execute_trade.check_portfolio_constraints` counts positions from
+    a positions_list SNAPSHOT taken at cycle start. Without
+    decrementing it as closes execute, the BUY still sees X in the
+    count and hits "Already at max positions" even though the slot
+    just opened.
+
+    STOCK pipeline only. Removes the stock row for the closed symbol
+    (matched on NOT is_option) and leaves any option legs on the same
+    underlying intact — the options pipeline gates on Greek-exposure
+    caps, not this position-count cap.
+
+    Mutates `positions_list` in place. Returns rows removed (0 when
+    the trade wasn't a full stock close).
+    """
+    if not isinstance(trade_result, dict):
+        return 0
+    if trade_result.get("action") != "SELL":
+        return 0
+    if not trade_result.get("position_closed"):
+        return 0
+    closed_sym = trade_result.get("symbol")
+    if not closed_sym:
+        return 0
+    before = len(positions_list)
+    positions_list[:] = [
+        p for p in positions_list
+        if not (
+            p["symbol"] == closed_sym
+            and not getattr(p, "is_option", False)
+        )
+    ]
+    return before - len(positions_list)
+
+
+# ---------------------------------------------------------------------------
 # Execute a single trade
 # ---------------------------------------------------------------------------
 
@@ -1175,6 +1221,15 @@ def execute_trade(symbol, signal, ctx=None, ai_result=None,
         result["action"] = "SELL"
         result["qty"] = sell_qty
         result["order_id"] = order.id
+        # 2026-05-21 (#195 follow-up) — signal whether this close
+        # fully exits the position. The STEP 5 dispatch loop uses
+        # this to decrement the in-memory stock positions_list so a
+        # later stock BUY in the SAME cycle sees the freed slot
+        # (the AI's cap-aware "SELL X + BUY Y" pair). A partial SELL
+        # (75%) leaves the position open → slot still occupied →
+        # position_closed=False. STRONG_SELL (100%) or any SELL the
+        # broker guard reduced to the full holding → True.
+        result["position_closed"] = (int(sell_qty) >= int(qty))
 
         if log:
             pnl = position.get("unrealized_pl")
@@ -2529,6 +2584,10 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                     _dd=dd,
                 )
             details.append(trade_result)
+            # 2026-05-21 (#195 follow-up) — keep the in-memory stock
+            # positions_list LIVE as closes execute, so a later
+            # same-cycle BUY's position cap sees the freed slot.
+            _decrement_closed_stock_position(positions_list, trade_result)
             # Visibility: when the trade dict says SKIP / EXCLUDED /
             # ERROR / etc., surface it. The previous behavior was
             # silent — the user only saw "Executing: SHORT X" and

@@ -17,6 +17,39 @@ Rules going forward:
 
 ---
 
+## 2026-05-21 PM — Position cap: decrement the live count as same-cycle closes execute (#195 follow-up). Severity: high (blocked the AI's cap-aware swaps).
+
+### Symptom
+
+`Trade NOT submitted for RGTI (BUY): action=BLOCKED reason=Already at max positions (5). Close a position before opening a new one.` — fired even when the AI emitted a cap-aware "SELL X + BUY Y" pair in the same cycle (exactly the swap #195 Phase 1 was built to enable).
+
+### Root cause
+
+#195 Phase 1 made the cap a soft bound: pre-filter passes at-max candidates, the AI prompt carries a swap directive, and the STEP 5 dispatch sorts SELL/STRONG_SELL before BUY so a close frees a slot before the open draws it. But the gating function `portfolio_manager.check_portfolio_constraints` (called from the STOCK pipeline's `execute_trade`) counts open positions from a `positions_list` SNAPSHOT taken once at cycle start (trade_pipeline.py:1490). As closes executed earlier in the dispatch loop, that in-memory list was never decremented — so the later BUY's cap check still counted the just-sold position and blocked the swap.
+
+The hard block in `check_portfolio_constraints` is itself correct — it's the backstop that enforces the bound when the AI does NOT free a slot. The bug was purely the stale count starving legitimate swaps.
+
+### Fix
+
+New `trade_pipeline._decrement_closed_stock_position(positions_list, trade_result)` — after a full stock close executes in the dispatch loop, removes that symbol's stock row from the live `positions_list` so the next BUY's `check_portfolio_constraints` sees the freed slot. `execute_trade`'s SELL path now sets `result["position_closed"] = (sell_qty >= qty)` so the helper only decrements on a FULL close (STRONG_SELL = 100%, or a SELL the broker guard reduced to the full holding). A partial SELL (75%) leaves the position open → no decrement.
+
+### Pipeline separation (operator rule: stocks and options are distinct pipelines)
+
+- Only STOCK closes decrement (`action == 'SELL'`, the stock-pipeline close result). Option closes route through `OptionPipeline` and never touch this stock cap.
+- The removal matches NON-option rows only — an option leg on the same underlying is preserved (verified by test). The options pipeline gates on Greek-exposure caps (delta/theta/vega), confirmed by re-reading `pipelines/option.py` — it does NOT call `check_portfolio_constraints`.
+
+### Tests
+
+`tests/test_position_cap_live_decrement_2026_05_21.py` (8): full close removes the stock row; partial close removes nothing; non-SELL actions remove nothing; option leg on the same underlying preserved; **end-to-end — an at-cap (3/3) BUY is blocked, then passes after a full close decrements to 2/3** (the property that makes the AI's SELL+BUY swap actually execute).
+
+Existing #195 Phase 1 + pipeline-separation suites (15 tests) still pass.
+
+### Why this wasn't caught earlier
+
+#195 Phase 1 shipped the three visible pieces (pre-filter, prompt directive, dispatch ordering) and tests pinned each in isolation. None exercised the full SELL-then-BUY round trip against the live count, so the snapshot-staleness slipped through. The new end-to-end test closes that.
+
+---
+
 ## 2026-05-21 PM — Buy-qty sanity guard: compute the median from STOCK buys only. Severity: high (fleet-wide stock-trade blocking).
 
 ### Symptom
