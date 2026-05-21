@@ -770,3 +770,64 @@ Per docs/17 §4 go/no-go pattern:
 | OpenAI account tier supports fine-tune API + has ≥$50/month budget | REQUIRED |
 
 None of these are observed today (2026-05-19). The earliest realistic activation is **late June 2026** after the first month of post-B1 data accumulation. Reassess at that point.
+
+---
+
+## 18. Portability contract (BINDING — added 2026-05-21)
+
+Operator concern that motivated this section: "I don't want to train
+on my machine and then be told the model can only run from my
+machine." Lock-in is avoidable by design. This contract is binding
+on every future build step in this phase — any code that violates it
+is wrong, regardless of which vendor/framework path is chosen.
+
+### The three layers and where lock-in can live
+
+| Layer | Lock-in risk | Contract |
+|---|---|---|
+| **Corpus** (`finetune/dataset_builder.py`) | None | MUST stay framework-neutral JSONL (`{"messages":[...]}`). Already true. No MLX/vendor/machine dependency may enter the corpus format. |
+| **Inference** (prod path) | None | Prod MUST reach the model via an OpenAI-compatible HTTP endpoint (`ai_providers._call_custom`, `/v1/chat/completions`). The training machine is NEVER in the prod path. Swapping hosting providers is a config change, not a code change. |
+| **Model artifact** | THE risk | The trained weights MUST be **HuggingFace-format safetensors** (base model + PEFT LoRA adapter, OR a merged full model). This is the universal format consumed by vLLM, TGI, Together, Fireworks, HF Endpoints, and convertible to GGUF for Ollama/llama.cpp. |
+
+### Rules
+
+1. **Artifact format = HF safetensors, always.** Never ship an
+   MLX-format model as the deliverable. MLX is permitted ONLY as a
+   training-speed optimization, and ONLY when followed by a
+   validated `fuse → HF safetensors` export step with a test that
+   the exported model loads in plain `transformers`. Default
+   training stack is **HuggingFace PEFT + transformers on the MPS
+   backend** — native safetensors output, zero conversion, zero
+   lock-in. The weekly cadence makes PEFT-on-MPS's slower training
+   (~40-90 min vs MLX's ~15-25 min for ~500 examples) irrelevant.
+
+2. **Base model = an open-weight HF model** (Llama-3.1-8B-Instruct /
+   Qwen-2.5-7B-Instruct / Mistral-7B-v0.3). Never a vendor-closed
+   base. The base is re-downloadable from HF on any machine.
+
+3. **The training machine is fungible.** M2 Max today; a cloud GPU
+   or a different laptop tomorrow. Because training only consumes
+   the portable corpus and produces the portable artifact, the
+   machine choice has zero downstream coupling.
+
+4. **The hosting provider is fungible.** Push the merged safetensors
+   to Together / Fireworks / HF Endpoints / a self-run vLLM droplet.
+   Prod names the endpoint via the profile's `ai_model` field +
+   `ai_provider='custom'`. Switching providers = update two config
+   values.
+
+5. **Escape hatch to 4b.1 is always open.** Because the corpus is
+   shared (§5), abandoning local entirely and fine-tuning via OpenAI
+   instead is a training-side swap with no change to prod inference
+   wiring beyond the provider/model fields.
+
+### Validation gate (do this BEFORE investing in a real corpus)
+
+Run the end-to-end portability dry run (`finetune/dryrun_portability.py`,
+runbook in that file's header). It trains a throwaway LoRA on ~20
+synthetic examples in the dataset_builder's exact JSONL format, merges
+to safetensors, RELOADS the merged model in a plain `transformers`
+context on a different code path, and runs inference. If that chain
+works once, the portability contract is proven for the real run.
+Cost: ~30 min, one small open model download. Do it before late June
+so there are no surprises when the real corpus is ready.

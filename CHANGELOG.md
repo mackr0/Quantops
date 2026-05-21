@@ -17,6 +17,22 @@ Rules going forward:
 
 ---
 
+## 2026-05-21 PM — Phase 4B1 portability contract + dry-run proof. Severity: low (doc + operator script; no live-path code).
+
+Operator concern on the local-LoRA path: "I don't want to train on my machine and then be told the model can only run from my machine." Lock-in is avoidable by design; this makes the guarantee binding.
+
+**docs/20 §18 — Portability contract (BINDING on all future Phase 4B1 build steps):**
+- Corpus stays framework-neutral JSONL (already true).
+- Inference reaches the model via OpenAI-compatible HTTP (`_call_custom`); the training machine is never in the prod path.
+- The model artifact MUST be HuggingFace-format safetensors (base + PEFT LoRA, or merged). MLX permitted only as a training-speed optimization with a validated `fuse → safetensors` export + load test. **Default training stack: HuggingFace PEFT + transformers on MPS** — native safetensors, zero conversion, zero lock-in; the weekly cadence makes its slower train time irrelevant.
+- Base model = open-weight HF (Llama-3.1-8B / Qwen-2.5-7B / Mistral-7B). Training machine and hosting provider are both fungible. The escape hatch to 4b.1 (OpenAI) stays open because the corpus is shared.
+
+**`finetune/dryrun_portability.py` — operator-run end-to-end proof:** trains a throwaway LoRA on ~20 synthetic examples in the dataset_builder's exact JSONL shape (PEFT + MPS), merges to safetensors, then RELOADS the merged model on a fresh plain-CPU `transformers` path and runs inference. If it passes, the artifact provably runs off the training machine (vLLM / Together / Fireworks / HF Endpoints / Ollama-via-GGUF). ~30 min, one small open-model download. Runbook in the file header. NOT in the pytest suite (needs torch/MPS/network).
+
+No live-path code changed. Validates the lock-in concern is retired before any real corpus is built (gated to ~late June regardless).
+
+---
+
 ## 2026-05-21 PM — Phase 4B1 fine-tune package: dataset builder + model registry (foundation). Severity: low (new package, not wired to live trading).
 
 First, data-independent pieces of the incremental fine-tune pipeline (docs/20). Buildable now even though the first real training run is gated on ~4-8 weeks of post-B1 data accumulation (docs/20 §17 — earliest ~late June 2026). Nothing here runs on the live path yet; it's pure infrastructure behind no flag.
