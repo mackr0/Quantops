@@ -97,12 +97,40 @@ def allowable_buy_qty(
         return (requested_qty, "permissive: no db_path")
     try:
         with closing(sqlite3.connect(db_path)) as conn:
-            rows = conn.execute(
-                "SELECT qty FROM trades "
-                "WHERE side = 'buy' AND qty IS NOT NULL AND qty > 0 "
-                "ORDER BY id DESC LIMIT ?",
-                (_RECENT_QTY_WINDOW,),
-            ).fetchall()
+            # 2026-05-21 — restrict the median to STOCK buys only
+            # (occ_symbol IS NULL). The requested_qty being checked
+            # here is a share count (option BUYs bypass this guard
+            # entirely via the OCC-symbol check above). Pooling
+            # option-contract qtys (1-4 contracts) into the median
+            # made it ~1.0 for options-heavy profiles, so EVERY
+            # legitimate stock BUY (100s-1000s of shares) read as
+            # 100-1000× median and got blocked. Caught 2026-05-21:
+            # fleet-wide stock BUYs (ACHR 1134, GRAB 1899, SMR 301)
+            # blocked because the profiles had been trading mostly
+            # option spreads, dragging the median to 1.00.
+            #
+            # Probe for the occ_symbol column — older test fixtures
+            # use a minimal schema without it. When absent, fall back
+            # to the all-buys query (pre-2026-05-21 behavior).
+            has_occ = bool(conn.execute(
+                "SELECT COUNT(*) FROM pragma_table_info('trades') "
+                "WHERE name = 'occ_symbol'"
+            ).fetchone()[0])
+            if has_occ:
+                rows = conn.execute(
+                    "SELECT qty FROM trades "
+                    "WHERE side = 'buy' AND qty IS NOT NULL AND qty > 0 "
+                    "  AND (occ_symbol IS NULL OR occ_symbol = '') "
+                    "ORDER BY id DESC LIMIT ?",
+                    (_RECENT_QTY_WINDOW,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT qty FROM trades "
+                    "WHERE side = 'buy' AND qty IS NOT NULL AND qty > 0 "
+                    "ORDER BY id DESC LIMIT ?",
+                    (_RECENT_QTY_WINDOW,),
+                ).fetchall()
     except Exception as exc:
         logger.warning(
             "allowable_buy_qty: DB read failed for %s — permissive "

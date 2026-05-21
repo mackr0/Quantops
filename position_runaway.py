@@ -53,40 +53,75 @@ def find_excessive_qty_trades(
     db_path: str, mult: float = EXCESSIVE_QTY_MULT,
     window: int = RECENT_TRADE_WINDOW,
 ) -> List[Dict[str, object]]:
-    """Open trades whose qty is > mult × profile-recent median."""
+    """Open trades whose qty is > mult × profile-recent median,
+    computed PER INSTRUMENT CLASS.
+
+    2026-05-21 — stock share-counts (100s-1000s) and option
+    contract-counts (1-4) live in the same `qty` column. Pooling
+    them into one median made the median ~1.0 for options-heavy
+    profiles, so EVERY open stock position read as 100-1000× median
+    and got flagged as a runaway. Now we compute a separate median
+    for stock rows (occ_symbol NULL) vs option rows (occ_symbol set)
+    and check each open position against its OWN class's median.
+    Falls back to a single pooled median on minimal schemas without
+    the occ_symbol column (older test fixtures).
+    """
     try:
         with closing(sqlite3.connect(db_path)) as conn:
             conn.row_factory = sqlite3.Row
-            recent = conn.execute(
-                "SELECT qty FROM trades WHERE qty IS NOT NULL AND qty > 0 "
-                "ORDER BY id DESC LIMIT ?",
-                (window,),
-            ).fetchall()
-            if not recent or len(recent) < 5:
-                return []
-            qtys = sorted(float(r["qty"]) for r in recent)
-            mid = qtys[len(qtys) // 2]
-            threshold = mid * mult
-            flagged = conn.execute(
-                "SELECT id, symbol, qty FROM trades "
-                "WHERE status='open' AND qty > ? "
-                "ORDER BY qty DESC",
-                (threshold,),
-            ).fetchall()
+            has_occ = bool(conn.execute(
+                "SELECT COUNT(*) FROM pragma_table_info('trades') "
+                "WHERE name = 'occ_symbol'"
+            ).fetchone()[0])
+
+            def _median(where_extra: str) -> float:
+                recent = conn.execute(
+                    f"SELECT qty FROM trades "
+                    f"WHERE qty IS NOT NULL AND qty > 0{where_extra} "
+                    f"ORDER BY id DESC LIMIT ?",
+                    (window,),
+                ).fetchall()
+                if not recent or len(recent) < 5:
+                    return 0.0  # insufficient history → no flagging
+                qtys = sorted(float(r["qty"]) for r in recent)
+                return qtys[len(qtys) // 2]
+
+            if has_occ:
+                stock_median = _median(
+                    " AND (occ_symbol IS NULL OR occ_symbol = '')")
+                option_median = _median(
+                    " AND occ_symbol IS NOT NULL AND occ_symbol != ''")
+                open_rows = conn.execute(
+                    "SELECT id, symbol, qty, occ_symbol FROM trades "
+                    "WHERE status='open' AND qty IS NOT NULL AND qty > 0 "
+                    "ORDER BY qty DESC",
+                ).fetchall()
+            else:
+                pooled = _median("")
+                stock_median = option_median = pooled
+                open_rows = conn.execute(
+                    "SELECT id, symbol, qty, NULL AS occ_symbol FROM trades "
+                    "WHERE status='open' AND qty IS NOT NULL AND qty > 0 "
+                    "ORDER BY qty DESC",
+                ).fetchall()
     except Exception as exc:
         logger.debug("find_excessive_qty_trades: %s", exc)
         return []
-    return [
-        {
-            "trade_id": int(r["id"]), "symbol": r["symbol"],
-            "qty": float(r["qty"]), "median": mid,
-            "multiple": (
-                round(float(r["qty"]) / mid, 1)
-                if mid > 0 else float("inf")
-            ),
-        }
-        for r in flagged
-    ]
+
+    flagged_out = []
+    for r in open_rows:
+        is_option = bool(r["occ_symbol"])
+        mid = option_median if is_option else stock_median
+        if mid <= 0:
+            # Insufficient same-class history → can't judge; skip.
+            continue
+        if float(r["qty"]) > mid * mult:
+            flagged_out.append({
+                "trade_id": int(r["id"]), "symbol": r["symbol"],
+                "qty": float(r["qty"]), "median": mid,
+                "multiple": round(float(r["qty"]) / mid, 1),
+            })
+    return flagged_out
 
 
 def runaway_snapshot(db_path: str) -> Dict[str, List]:

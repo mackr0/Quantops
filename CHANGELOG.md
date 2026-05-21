@@ -17,6 +17,38 @@ Rules going forward:
 
 ---
 
+## 2026-05-21 PM — Buy-qty sanity guard: compute the median from STOCK buys only. Severity: high (fleet-wide stock-trade blocking).
+
+### Symptom
+
+Stock BUYs blocked fleet-wide. Log showed `allowable_buy_qty: BLOCKED ACHR 1134 — qty 1134 is 1134.0× the profile's recent median 1.00 (threshold=20×)`. Same for GRAB (1899), SMR (301), and others. The AI was predicting plenty of BUYs but almost none reached the broker.
+
+### Root cause
+
+`order_guard.allowable_buy_qty` computes a "recent median buy qty" from the last 50 BUY rows and blocks any order > 20× that median. But the query pooled ALL buy qtys — including option-contract buys (1-4 contracts) — into the same median. The profiles had shifted to mostly options trading (bull_put_spreads etc.), so the median collapsed to ~1.0. Every legitimate stock BUY (100s-1000s of shares) then read as 100-1000× median and got blocked.
+
+The guard already had a symbol-level bypass for OPTION buys (OCC symbols skip the check). But the *median itself* was still polluted by option history, breaking the check for STOCK buys.
+
+### Fix
+
+`order_guard.allowable_buy_qty` now computes the median from STOCK buys only (`occ_symbol IS NULL OR occ_symbol = ''`), matching the units of the share-count being checked. Probes for the `occ_symbol` column first; falls back to the all-buys query on minimal schemas (older test fixtures).
+
+Same bug existed in `position_runaway.find_excessive_qty_trades` (the post-fact runaway monitor — alerts, not blocks). Fixed more thoroughly there: it now computes a SEPARATE median for stock vs option rows and checks each open position against its OWN class's median. Without this it would have spammed false-positive runaway alerts on every normal stock position held by an options-heavy profile.
+
+### Tests
+
+`tests/test_order_guard.py` — `TestStockMedianExcludesOptionContracts` (3): stock BUY of 1000 shares NOT blocked when the profile has 40 option buys (median ~2) + 12 stock buys (median ~100); genuinely excessive stock BUY (30× stock median) still blocked; insufficient stock history → permissive.
+
+`tests/test_position_runaway.py` (3 new): normal stock position not flagged against option median; runaway stock still flagged against stock median; runaway option still flagged against option median (per-class split doesn't blind option-runaway detection).
+
+Existing 37 order_guard + runaway tests still pass (they use the minimal no-occ_symbol schema → exercise the fallback path).
+
+### Why this wasn't caught earlier
+
+The guard predates the heavy options-trading shift. When it was written, profiles traded mostly stocks, so the pooled median was a stock median by default. As the AI moved toward options spreads, the median silently became an option-contract median and started blocking the stock side. Classic "correct-when-written, wrong-after-mix-change" — the new tests pin the stock/option separation explicitly so a future schema or query change can't re-pool them.
+
+---
+
 ## 2026-05-21 PM — Protective orders journal at PLACEMENT time — eliminate the orphan-fill class at the source. Severity: HIGH (trading-halt root cause + data integrity).
 
 ### Symptom

@@ -327,3 +327,90 @@ class TestAllowableBuyQty:
         allowed, reason = allowable_buy_qty(db, "MSFT260612P00375000", 1)
         assert allowed == 1
         assert "option" in reason.lower()
+
+
+class TestStockMedianExcludesOptionContracts:
+    """2026-05-21 regression: the buy-qty median must be computed from
+    STOCK buys only. Pooling option-contract qtys (1-4) dragged the
+    median to ~1.0 on options-heavy profiles, so legitimate stock
+    BUYs (100s-1000s of shares) read as 100-1000× median and got
+    blocked fleet-wide (ACHR 1134, GRAB 1899, SMR 301)."""
+
+    def _seed_mixed(self, tmp_path, stock_qtys, option_qtys):
+        """DB with the FULL schema (occ_symbol present), seeded with
+        a mix of stock BUYs (occ_symbol NULL) and option BUYs
+        (occ_symbol set)."""
+        import sqlite3
+        db = str(tmp_path / "mixed.db")
+        conn = sqlite3.connect(db)
+        conn.execute("""
+            CREATE TABLE trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT DEFAULT (datetime('now')),
+                symbol TEXT, side TEXT, qty REAL, price REAL,
+                occ_symbol TEXT, status TEXT DEFAULT 'open'
+            )
+        """)
+        for q in option_qtys:
+            conn.execute(
+                "INSERT INTO trades (symbol, side, qty, price, occ_symbol) "
+                "VALUES ('QCOM', 'buy', ?, 5.0, 'QCOM260626C00225000')",
+                (q,),
+            )
+        for q in stock_qtys:
+            conn.execute(
+                "INSERT INTO trades (symbol, side, qty, price, occ_symbol) "
+                "VALUES ('AAPL', 'buy', ?, 200.0, NULL)",
+                (q,),
+            )
+        conn.commit()
+        conn.close()
+        return db
+
+    def test_stock_buy_not_blocked_by_option_polluted_median(self, tmp_path):
+        """The exact prod scenario: profile has 40 option-contract
+        buys (qty 1-4) and 12 stock buys (qty ~100). A new stock BUY
+        of 1000 shares must NOT be blocked — the stock-only median is
+        ~100, so 1000 is 10× (under the 20× threshold)."""
+        from order_guard import allowable_buy_qty
+        db = self._seed_mixed(
+            tmp_path,
+            stock_qtys=[100] * 12,
+            option_qtys=[1, 2, 3, 4] * 10,  # 40 option buys, median ~2
+        )
+        allowed, reason = allowable_buy_qty(db, "AAPL", 1000)
+        assert allowed == 1000, (
+            f"Stock BUY of 1000 shares was blocked: {reason}. The "
+            "median must be computed from STOCK buys only (~100), not "
+            "the option-polluted pool (~2). 1000/100 = 10× is under "
+            "the 20× threshold."
+        )
+        assert reason == "ok"
+
+    def test_genuinely_excessive_stock_buy_still_blocked(self, tmp_path):
+        """The guard must still catch a real sizing bug: 3000 shares
+        against a stock median of 100 = 30× → blocked. (Confirms the
+        fix didn't neuter the guard entirely.)"""
+        from order_guard import allowable_buy_qty
+        db = self._seed_mixed(
+            tmp_path,
+            stock_qtys=[100] * 12,
+            option_qtys=[1, 2, 3, 4] * 10,
+        )
+        allowed, reason = allowable_buy_qty(db, "AAPL", 3000)
+        assert allowed == 0
+        assert "blocked" in reason.lower()
+
+    def test_insufficient_stock_history_is_permissive(self, tmp_path):
+        """A profile with only option buys (zero/few stock buys) can't
+        produce a confident stock median → permissive, so a first
+        stock BUY isn't artificially throttled."""
+        from order_guard import allowable_buy_qty
+        db = self._seed_mixed(
+            tmp_path,
+            stock_qtys=[100] * 3,   # only 3 stock buys (< 10 min)
+            option_qtys=[1, 2, 3, 4] * 10,
+        )
+        allowed, reason = allowable_buy_qty(db, "AAPL", 1000)
+        assert allowed == 1000
+        assert "permissive" in reason.lower()

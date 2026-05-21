@@ -112,3 +112,84 @@ def test_runaway_snapshot_combines(tmp_path):
     snap = runaway_snapshot(p)
     assert any(d["symbol"] == "DUP" for d in snap["duplicate_buys"])
     assert any(e["symbol"] == "BIG" for e in snap["excessive_qty"])
+
+
+# ---------------------------------------------------------------------------
+# 2026-05-21 — per-instrument-class median (stock vs option)
+# ---------------------------------------------------------------------------
+
+def _add_option_trade(path, occ_symbol, qty, status="open", side="buy"):
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "INSERT INTO trades (symbol, side, qty, price, status, occ_symbol) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (occ_symbol[:4], side, qty, 5.0, status, occ_symbol),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_stock_positions_not_flagged_against_option_median(tmp_path):
+    """The exact prod scenario: an options-heavy profile (option
+    contract qtys 1-4) holding normal stock positions (~100 shares).
+    Open stock positions must NOT be flagged as runaways just because
+    the OPTION median is ~2. Each class is judged against its own
+    median."""
+    from position_runaway import find_excessive_qty_trades
+    p = str(tmp_path / "p.db")
+    _setup(p)
+    # 40 option buys, median ~2
+    for i in range(40):
+        _add_option_trade(p, f"QCOM2606{i:02d}C00225000", (i % 4) + 1)
+    # 10 stock buys, median ~100
+    for sym in ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]:
+        _add_trade(p, sym, 100)
+    # One open stock position at 150 shares (1.5× the stock median —
+    # totally normal). Pre-fix this would flag as 75× the option-
+    # polluted median (~2).
+    _add_trade(p, "NORMAL_STOCK", 150)
+    out = find_excessive_qty_trades(p, mult=5.0)
+    flagged_syms = {e["symbol"] for e in out}
+    assert "NORMAL_STOCK" not in flagged_syms, (
+        f"Normal 150-share stock position flagged as runaway: {out}. "
+        "The median must be per-instrument-class — 150 shares is 1.5× "
+        "the stock median (~100), not 75× the option median (~2)."
+    )
+
+
+def test_excessive_stock_still_flagged_with_option_history(tmp_path):
+    """A genuinely runaway stock position (10× the stock median) is
+    still flagged even when option history is present."""
+    from position_runaway import find_excessive_qty_trades
+    p = str(tmp_path / "p.db")
+    _setup(p)
+    for i in range(40):
+        _add_option_trade(p, f"QCOM2606{i:02d}C00225000", (i % 4) + 1)
+    for sym in ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]:
+        _add_trade(p, sym, 100)
+    _add_trade(p, "RUNAWAY_STOCK", 1000)  # 10× stock median
+    out = find_excessive_qty_trades(p, mult=5.0)
+    flagged = {e["symbol"]: e for e in out}
+    assert "RUNAWAY_STOCK" in flagged
+    assert flagged["RUNAWAY_STOCK"]["multiple"] == 10.0
+
+
+def test_excessive_option_flagged_against_option_median(tmp_path):
+    """An option position that's huge relative to the OPTION median
+    (e.g., 50 contracts vs median 2) is still flagged — the per-class
+    split protects option-runaway detection too."""
+    from position_runaway import find_excessive_qty_trades
+    p = str(tmp_path / "p.db")
+    _setup(p)
+    for i in range(40):
+        _add_option_trade(p, f"QCOM2606{i:02d}C00225000", (i % 4) + 1)
+    for sym in ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]:
+        _add_trade(p, sym, 100)
+    _add_option_trade(p, "AAPL260101C00200000", 50)  # 25× option median
+    out = find_excessive_qty_trades(p, mult=5.0)
+    flagged_syms = {e["symbol"] for e in out}
+    assert "AAPL" in flagged_syms, (
+        "A 50-contract option position should flag against the option "
+        "median (~2); per-class split must not blind option-runaway "
+        "detection."
+    )
