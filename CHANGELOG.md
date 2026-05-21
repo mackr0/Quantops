@@ -17,6 +17,42 @@ Rules going forward:
 
 ---
 
+## 2026-05-21 PM — Protective-order protection decided by Alpaca truth (order_id), not fuzzy journal lookup. Severity: high (every-cycle "insufficient qty available" spam + journal/broker linkage drift).
+
+### Symptom
+
+`Could not place protective trailing stop for FCX (qty=418, trail=5.00%): insufficient qty available for order (requested: 418, available: 0)` — firing every cycle, for FCX and also AMZN / AAPL / AVGO. The positions were ALREADY protected (a live trailing stop reserved all the shares), but the sweep kept re-attempting placement and failing.
+
+### Root cause
+
+`bracket_orders.ensure_protective_stops` decided "is this position already protected?" by re-deriving the answer from a FUZZY journal lookup: `WHERE symbol = ? AND side = 'buy' AND status = 'open' ORDER BY id DESC LIMIT 1`. For a symbol held BOTH as stock AND as option legs (pid24 FCX: a 418-share stock BUY #49 + FCX bear_call_spread legs #53/#55), `ORDER BY id DESC` grabbed the most-recent OPTION leg row — which has no `protective_trailing_order_id`. The skip-check saw "no recorded protection," tried to place a NEW trailing stop on the 418-share stock, and failed because the stock's REAL protective order (recorded on entry row #49) already reserved all shares.
+
+The journal and Alpaca were never actually out of sync — entry #49 had the correct `protective_trailing_order_id` and the broker had the matching live order. The code just *read the journal wrong*. The canonical key (the Alpaca order_id) was sitting right there, but the matching logic used a symbol heuristic instead.
+
+### Fix — protection is now a BROKER-TRUTH, order_id-keyed decision
+
+1. **`active_protective_coverage(api)`** — pulls every live protective order (stop / trailing_stop / stop_limit) from Alpaca ONCE per sweep and buckets them by (symbol, close-side). This is the source of truth for "is this protected?"
+
+2. **`ensure_protective_stops` skip decision** now checks broker coverage: if Alpaca already has active protective coverage for (symbol, close_side) ≥ position qty, the position IS protected → skip placement. It also HEALS the journal entry-row pointer to the live order_id when the recorded pointer is missing or stale, so journal == Alpaca going forward. The old per-id `_is_order_active` checks remain as a fail-open fallback for when the bulk `list_orders` fetch errors.
+
+3. **`verify_protective_order_sync(api, db_path)`** — the order_id-keyed invariant the operator asked for: every protective order_id the journal records as active MUST be live at Alpaca. Stale linkage (journal points at an order that fired/canceled/drifted) is flagged deterministically. Wired into `_task_reconcile_trade_statuses` — logs a WARNING per cycle when drift is found (not a halt; stale linkage isn't a trading-safety issue, and the next sweep self-heals it). This makes "journal == Alpaca" a CHECKED property.
+
+   Direction note: only journal→Alpaca is checked per-profile (Alpaca's `list_orders` is account-wide on the shared-account architecture, so it can't be attributed to a single profile's journal in isolation). The Alpaca→journal direction is covered by the atomic-journaling contract + the account-level `aggregate_audit`.
+
+The entry-row lookup also got the occ_symbol exclusion (schema-probed, so minimal test fixtures still work) — still needed to pick the right STOCK row to heal/store the pointer on.
+
+### Architecture note (operator framing)
+
+Every order this system places is journaled with the Alpaca order_id returned by `submit_order`; a share's owner is "which profile's journal holds the order_id that created it." With order_id as the canonical key and atomic journaling at placement, attribution is structurally sound — every bug in this family was a deviation (protective orders bypassing journaling; fuzzy symbol matching), not a flaw in the model. The three enforcement layers are now all present: atomic-journaling audit (placement), `verify_protective_order_sync` (linkage), `aggregate_audit` (per-account sum == broker).
+
+### Tests
+
+`tests/test_protective_order_sync_2026_05_21.py` (9): coverage buckets by symbol/side and excludes non-protective/inactive orders; API error → empty (fail-open); broker-truth skip with pointer heal; the exact FCX stock+option-legs scenario skips placement; places when broker has no coverage; invariant flags stale pointer / pending_protective drift, verifies live pointer.
+
+Existing 35 bracket-order tests + 12 placement tests still pass (entry-row lookup made schema-defensive).
+
+---
+
 ## 2026-05-21 PM — Position cap: decrement the live count as same-cycle closes execute (#195 follow-up). Severity: high (blocked the AI's cap-aware swaps).
 
 ### Symptom

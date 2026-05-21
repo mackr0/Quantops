@@ -2616,6 +2616,36 @@ def _task_reconcile_trade_statuses(ctx):
     except Exception:
         logging.exception(f"[{seg_label}] Reconcile trade statuses failed")
 
+    # 2026-05-21 — order_id-keyed protective-order invariant. Verifies
+    # every protective order_id this profile's journal records as
+    # active is actually live at Alpaca. Catches stale-linkage drift
+    # (the FCX-class bug: journal points at a protective order that
+    # fired/canceled or drifted, so ensure_protective_stops keeps
+    # re-attempting an already-protected position). Logged, not
+    # halting — stale linkage isn't a trading-safety issue like an
+    # orphan FILL; the next ensure_protective_stops sweep self-heals
+    # the pointer against broker truth. The WARNING makes "journal ==
+    # Alpaca" a CHECKED property instead of a hope.
+    try:
+        from bracket_orders import verify_protective_order_sync
+        from client import get_api as _get_api_sync
+        sync = verify_protective_order_sync(
+            _get_api_sync(ctx), ctx.db_path)
+        if sync["stale"]:
+            logging.warning(
+                "[%s] Protective-order linkage drift: %d journal "
+                "pointer(s) name an order not live at Alpaca "
+                "(self-heals next sweep): %s",
+                seg_label, len(sync["stale"]),
+                [f"{s['symbol']}:{(s['order_id'] or '')[:8]}"
+                 for s in sync["stale"][:5]],
+            )
+    except Exception as _sync_exc:
+        logging.warning(
+            "[%s] protective-order sync check failed (%s: %s)",
+            seg_label, type(_sync_exc).__name__, _sync_exc,
+        )
+
     # Aggregate audit — defense-in-depth alongside the per-profile
     # reconcile. Compares sum(virtual_positions across profiles routing
     # to the same Alpaca account) vs broker.list_positions for that

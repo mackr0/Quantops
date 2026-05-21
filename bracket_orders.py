@@ -405,6 +405,64 @@ def _is_order_active(api, order_id: str) -> bool:
                        "accepted_for_bidding")
 
 
+_ACTIVE_ORDER_STATUSES = frozenset({
+    "new", "accepted", "pending_new", "held", "accepted_for_bidding",
+    "partially_filled",
+})
+_PROTECTIVE_ORDER_TYPES = frozenset({"stop", "trailing_stop", "stop_limit"})
+
+
+def active_protective_coverage(api):
+    """Return broker-truth protective coverage, keyed by (symbol, side).
+
+    2026-05-21 — the canonical source of "is this position protected?"
+    is the BROKER, not a re-derived journal lookup. This pulls every
+    currently-working protective order (stop / trailing_stop /
+    stop_limit) from Alpaca ONCE and buckets them by (symbol,
+    close-side) so `ensure_protective_stops` can decide skip-vs-place
+    against reality instead of guessing which journal row owns the
+    position.
+
+    Returns: dict {(symbol, side): [ {order_id, qty, type}, ... ]}
+    where side is 'sell' (protects a long) or 'buy' (protects a short).
+    Empty dict on API error (caller falls back to per-position
+    placement — fail-open, never leave a position unprotected because
+    the bulk fetch blipped).
+    """
+    out = {}
+    try:
+        orders = api.list_orders(status="open", limit=500)
+    except Exception as exc:
+        logger.warning(
+            "active_protective_coverage: list_orders failed (%s: %s) — "
+            "falling back to per-position placement",
+            type(exc).__name__, exc,
+        )
+        return out
+    for o in orders or []:
+        otype = (getattr(o, "order_type", None)
+                 or getattr(o, "type", "") or "").lower()
+        if otype not in _PROTECTIVE_ORDER_TYPES:
+            continue
+        status = (getattr(o, "status", "") or "").lower()
+        if status not in _ACTIVE_ORDER_STATUSES:
+            continue
+        sym = (getattr(o, "symbol", "") or "").upper()
+        side = (getattr(o, "side", "") or "").lower()
+        if not sym or side not in ("sell", "buy"):
+            continue
+        try:
+            qty = abs(float(getattr(o, "qty", 0) or 0))
+        except (TypeError, ValueError):
+            qty = 0.0
+        out.setdefault((sym, side), []).append({
+            "order_id": getattr(o, "id", None),
+            "qty": qty,
+            "type": otype,
+        })
+    return out
+
+
 def ensure_protective_stops(api, positions, ctx, db_path,
                               conviction_tp_skip=None):
     """Sweep all open positions and place ONE broker protective order
@@ -454,6 +512,29 @@ def ensure_protective_stops(api, positions, ctx, db_path,
     except Exception:
         return
 
+    # Probe for the occ_symbol column once. Real prod trades tables
+    # always have it (migration); minimal test fixtures may not. The
+    # entry-row lookup below filters option legs out only when the
+    # column exists.
+    try:
+        _has_occ = bool(conn.execute(
+            "SELECT COUNT(*) FROM pragma_table_info('trades') "
+            "WHERE name = 'occ_symbol'"
+        ).fetchone()[0])
+    except Exception:
+        _has_occ = False
+    _occ_filter = (
+        " AND (occ_symbol IS NULL OR occ_symbol = '')" if _has_occ else ""
+    )
+
+    # 2026-05-21 — pull broker-truth protective coverage ONCE per
+    # sweep. The skip-vs-place decision below is made against this
+    # (keyed on Alpaca order_id) instead of a fuzzy journal lookup.
+    # Eliminates the FCX-class bug where a symbol held as BOTH stock
+    # and option legs caused the journal lookup to grab the wrong row
+    # and re-attempt an already-placed protective order every cycle.
+    broker_coverage = active_protective_coverage(api)
+
     try:
         for pos in positions:
             # Skip option positions — defined-risk multileg spreads
@@ -478,12 +559,29 @@ def ensure_protective_stops(api, positions, ctx, db_path,
 
             is_short = qty < 0
             entry_side_in_db = "short" if is_short else "buy"
+            # 2026-05-21 — EXCLUDE option legs from the entry-row
+            # lookup. This loop only protects STOCK positions (option
+            # rows skipped at the top via pos.is_option). But the
+            # journal lookup matched by symbol+side ONLY, so for a
+            # symbol held BOTH as stock AND as option legs (e.g. pid24
+            # FCX: a 418-share stock BUY + FCX bear_call_spread legs),
+            # `ORDER BY id DESC LIMIT 1` grabbed the most-recent
+            # OPTION leg row — which has no protective_trailing_order_id.
+            # The skip-check then saw "no existing protection" and
+            # tried to place a NEW trailing stop on the stock, failing
+            # every cycle with "insufficient qty available" because
+            # the stock's REAL protective order (recorded on the stock
+            # entry row) already reserved all the shares. Restricting
+            # to occ_symbol IS NULL picks the actual stock entry row,
+            # so its protective_trailing_order_id is found and the
+            # already-protected position is correctly skipped.
             row = conn.execute(
                 "SELECT id, protective_stop_order_id, protective_tp_order_id, "
                 "protective_trailing_order_id "
                 "FROM trades "
-                "WHERE symbol = ? AND side = ? AND status = 'open' "
-                "ORDER BY id DESC LIMIT 1",
+                "WHERE symbol = ? AND side = ? AND status = 'open'"
+                + _occ_filter +
+                " ORDER BY id DESC LIMIT 1",
                 (symbol, entry_side_in_db),
             ).fetchone()
             if not row:
@@ -491,6 +589,59 @@ def ensure_protective_stops(api, positions, ctx, db_path,
 
             close_side = "buy" if is_short else "sell"
             abs_qty = abs(int(qty))
+
+            # 2026-05-21 — BROKER-TRUTH skip decision. If Alpaca
+            # already has active protective coverage for this
+            # (symbol, close_side) that meets/exceeds the position
+            # qty, the position IS protected — skip placement. Heal
+            # the journal entry-row pointer to the live order_id when
+            # it's missing or stale so journal == Alpaca (keyed on
+            # order_id). This replaces the prior logic that re-derived
+            # protection status from the entry row's stored id alone
+            # — which broke when the wrong row was matched or the
+            # pointer drifted, causing endless "insufficient qty
+            # available" retries on already-protected positions.
+            _cover = broker_coverage.get((symbol.upper(), close_side), [])
+            _covered_qty = sum(c["qty"] for c in _cover)
+            if _cover and _covered_qty >= abs_qty - 0.001:
+                # Already protected at the broker. Heal the journal
+                # pointer if it doesn't already name a live order.
+                _live_ids = {c["order_id"] for c in _cover if c["order_id"]}
+                _recorded = (
+                    row["protective_trailing_order_id"]
+                    or row["protective_stop_order_id"]
+                )
+                if _recorded not in _live_ids:
+                    # Prefer the trailing order's column when the live
+                    # coverage is a trailing stop; else the stop column.
+                    _has_trailing = any(
+                        c["type"] == "trailing_stop" for c in _cover)
+                    _heal_col = (
+                        "protective_trailing_order_id" if _has_trailing
+                        else "protective_stop_order_id"
+                    )
+                    _heal_id = sorted(_live_ids)[0] if _live_ids else None
+                    if _heal_id:
+                        try:
+                            conn.execute(
+                                f"UPDATE trades SET {_heal_col} = ? "
+                                f"WHERE id = ?",
+                                (_heal_id, row["id"]),
+                            )
+                            conn.commit()
+                            logger.info(
+                                "Healed protective linkage for %s: "
+                                "entry trade #%s -> live broker order %s "
+                                "(was %r)",
+                                symbol, row["id"], _heal_id[:8],
+                                _recorded,
+                            )
+                        except Exception as _heal_exc:
+                            logger.warning(
+                                "Could not heal protective linkage for "
+                                "%s: %s", symbol, _heal_exc,
+                            )
+                continue
 
             # Conviction-override: runaway winner — let it run, no
             # trail cap. Polling stop-loss is the only guard.
@@ -626,6 +777,99 @@ def has_active_broker_trailing(api, db_path: str, symbol: str) -> bool:
         return _is_order_active(api, row[0])
     except Exception:
         return False
+
+
+def verify_protective_order_sync(api, db_path: str) -> dict:
+    """Order_id-keyed invariant: every protective order_id the
+    journal records as ACTIVE must be live at Alpaca.
+
+    This is the "journal == Alpaca, always" guarantee — keyed on the
+    canonical Alpaca order_id, not re-derived by symbol heuristics.
+    It catches the stale-linkage class deterministically:
+
+      - The journal points an open entry row's protective_*_order_id
+        (or a pending_protective row's order_id) at an order that is
+        NOT live at the broker → STALE. Either the order fired/
+        canceled and the reconciler hasn't updated the row, or the
+        pointer drifted. This is exactly the FCX-class drift that
+        spammed "insufficient qty available" every cycle.
+
+    Direction note: only the journal→Alpaca direction is checked
+    per-profile. The Alpaca→journal direction (a live broker order
+    with no journal row) is account-level — Alpaca's list_orders is
+    shared across the profiles on one account, so it can't be
+    attributed to a single profile's journal here. The atomic-
+    journaling contract (every submit_order writes a row) plus the
+    reconciler's orphan-fill safety net cover that direction.
+
+    Pure read — never mutates. Returns:
+      {"stale": [ {order_id, symbol, source} ... ],
+       "verified": int}   # count of journal ids confirmed live
+    """
+    import sqlite3
+    if not db_path:
+        return {"stale": [], "verified": 0}
+    recorded = []  # (order_id, symbol, source)
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            # Active protective pointers on open entry rows
+            for col in ("protective_stop_order_id",
+                        "protective_tp_order_id",
+                        "protective_trailing_order_id"):
+                try:
+                    rows = conn.execute(
+                        f"SELECT {col} AS oid, symbol FROM trades "
+                        f"WHERE status = 'open' AND {col} IS NOT NULL "
+                        f"AND {col} != ''",
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    continue  # column absent on a minimal schema
+                for r in rows:
+                    recorded.append((r["oid"], r["symbol"], col))
+            # pending_protective rows (written at placement; reconciler
+            # flips to 'closed' on fill)
+            try:
+                rows = conn.execute(
+                    "SELECT order_id AS oid, symbol FROM trades "
+                    "WHERE status = 'pending_protective' "
+                    "AND order_id IS NOT NULL AND order_id != ''",
+                ).fetchall()
+                for r in rows:
+                    recorded.append((r["oid"], r["symbol"],
+                                     "pending_protective"))
+            except sqlite3.OperationalError as _pp_exc:
+                # status/order_id column absent on a minimal schema —
+                # skip the pending_protective scan; the entry-pointer
+                # scan above still runs. Logged (not silent) per the
+                # broker-submit-invariant: no bare except-pass on a
+                # DB call.
+                logger.debug(
+                    "verify_protective_order_sync: pending_protective "
+                    "scan skipped (%s)", _pp_exc,
+                )
+    except Exception as exc:
+        logger.warning(
+            "verify_protective_order_sync: journal read failed "
+            "(%s: %s)", type(exc).__name__, exc,
+        )
+        return {"stale": [], "verified": 0}
+
+    stale = []
+    verified = 0
+    # Dedup by order_id (the same id can appear on both the entry
+    # pointer and a pending_protective row).
+    seen = {}
+    for oid, sym, source in recorded:
+        if oid in seen:
+            continue
+        seen[oid] = True
+        if _is_order_active(api, oid):
+            verified += 1
+        else:
+            stale.append({"order_id": oid, "symbol": sym,
+                          "source": source})
+    return {"stale": stale, "verified": verified}
 
 
 def cancel_for_symbol(api, db_path: str, symbol: str) -> None:
