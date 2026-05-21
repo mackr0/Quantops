@@ -39,6 +39,19 @@
                 </tr>
             </thead>
             <tbody>
+                {# 2026-05-21 — multileg grouping. Each leg of a
+                   combo-order multileg strategy is currently a
+                   separate trades row (correct for accounting), but
+                   the table previously rendered them as N independent
+                   rows with no visual indication they're a single
+                   strategic play. We use `order_id` as the grouping
+                   key: every leg of a combo order shares the same
+                   broker order UUID. When the order_id changes (or
+                   the row isn't a multileg leg), we emit a "spread
+                   header" row above the first leg and tag every leg
+                   in the group with a CSS class that draws a left
+                   border to visually connect them. #}
+                {% set ns = namespace(current_group_id='', group_open=False) %}
                 {% for t in trades %}
                 {# Differentiate option legs from stock rows: contract
                    detail label under the symbol, OPT badge, tinted
@@ -49,6 +62,67 @@
                    `current_price` on option rows. #}
                 {% set is_option = t.occ_symbol is defined and t.occ_symbol %}
                 {% set option_mult = 100 if is_option else 1 %}
+                {# Multileg-group detection. A row is part of a multileg
+                   group when it has an option_strategy AND an order_id
+                   AND signal_type starts with 'MULTILEG'. Group ID is
+                   the order_id — same combo order = same group. #}
+                {% set _is_multileg_leg = (
+                    t.option_strategy is defined and t.option_strategy
+                    and t.order_id is defined and t.order_id
+                    and t.signal_type is defined and t.signal_type
+                    and t.signal_type.startswith('MULTILEG')
+                ) %}
+                {% set _is_new_group = _is_multileg_leg and t.order_id != ns.current_group_id %}
+                {% if _is_new_group %}
+                    {% set ns.current_group_id = t.order_id %}
+                    {% set ns.group_open = True %}
+                    {# Spread-header row. Shows the strategy name,
+                       expiry, qty, and a brief credit/debit indicator.
+                       Net premium is best-effort: we sum signed leg
+                       notionals across ALL rows in `trades` matching
+                       this order_id. The header is muted (not
+                       interactive) and visually distinct from the
+                       leg rows below it. #}
+                    {% set _group_legs = [] %}
+                    {% for _candidate in trades %}
+                        {% if _candidate.order_id == t.order_id and _candidate.signal_type is defined and _candidate.signal_type and _candidate.signal_type.startswith('MULTILEG') %}
+                            {% set _ = _group_legs.append(_candidate) %}
+                        {% endif %}
+                    {% endfor %}
+                    {% set _net_premium = namespace(value=0.0) %}
+                    {% for _leg in _group_legs %}
+                        {% set _leg_notional = (_leg.price or 0) * (_leg.qty or 0) * 100 %}
+                        {# Buy = debit (cash out, positive premium paid);
+                           Sell = credit (cash in, negative premium paid).
+                           Net premium = sum(debits) - sum(credits).
+                           Positive net = net debit; negative = net credit. #}
+                        {% if _leg.side == 'buy' %}
+                            {% set _net_premium.value = _net_premium.value + _leg_notional %}
+                        {% elif _leg.side == 'sell' %}
+                            {% set _net_premium.value = _net_premium.value - _leg_notional %}
+                        {% endif %}
+                    {% endfor %}
+                    {% set _is_credit = _net_premium.value < 0 %}
+                    {% set _net_disp = '$%.2f'|format(_net_premium.value|abs) %}
+                    <tr class="multileg-header-row" style="background:#ede7f6;border-top:2px solid #7e57c2;border-left:4px solid #7e57c2;">
+                        <td colspan="{{ 9 if show_profile else 8 }}" style="padding:0.4rem 0.75rem;font-size:0.8rem;">
+                            <span style="display:inline-block;background:#5e35b1;color:white;font-size:0.65rem;font-weight:700;padding:0.1rem 0.4rem;border-radius:3px;letter-spacing:0.05em;margin-right:0.5rem;">SPREAD</span>
+                            <strong>{{ t.symbol }}</strong>
+                            <span style="margin-left:0.4rem;color:#5e35b1;font-weight:600;">{{ t.option_strategy|humanize }}</span>
+                            {% if t.expiry %}<span class="muted" style="margin-left:0.4rem;">· exp {{ t.expiry }}</span>{% endif %}
+                            <span class="muted" style="margin-left:0.4rem;">· {{ _group_legs|length }} legs</span>
+                            <span style="float:right;font-weight:600;color:{{ '#2e7d32' if _is_credit else '#c62828' }};">
+                                {{ 'Net credit' if _is_credit else 'Net debit' }} {{ _net_disp }}
+                            </span>
+                        </td>
+                    </tr>
+                {% elif ns.group_open and not _is_multileg_leg %}
+                    {# Transition out of a multileg group into a non-
+                       multileg row. Reset state so any later multileg
+                       group still triggers a fresh header. #}
+                    {% set ns.current_group_id = '' %}
+                    {% set ns.group_open = False %}
+                {% endif %}
                 {# Terminal-unfilled rows: order ended expired/canceled/
                    rejected with 0 fill. _task_update_fills marks the
                    journal accordingly so this branch can render them
@@ -63,7 +137,7 @@
                    muted row styling + EXCLUDED badge make it clear
                    they're not counted in headline metrics. #}
                 {% set is_excluded_dq = t.data_quality is defined and t.data_quality %}
-                <tr class="trade-row{% if is_option %} option-row{% endif %}{% if is_excluded_dq %} dq-excluded-row{% endif %}" data-symbol="{{ t.symbol }}" data-ts="{{ t.timestamp or '' }}" style="cursor:pointer;{% if is_option %}background:#fbf7ff;{% endif %}{% if is_terminal_unfilled %}opacity:0.55;font-style:italic;{% endif %}{% if is_excluded_dq %}opacity:0.5;background:#f5f5f5;{% endif %}" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? '' : 'none'; this.querySelector('.expand-caret').innerHTML = this.nextElementSibling.style.display === 'none' ? '&#9654;' : '&#9660;'">
+                <tr class="trade-row{% if is_option %} option-row{% endif %}{% if is_excluded_dq %} dq-excluded-row{% endif %}{% if _is_multileg_leg %} multileg-leg-row{% endif %}" data-symbol="{{ t.symbol }}" data-ts="{{ t.timestamp or '' }}" style="cursor:pointer;{% if _is_multileg_leg %}border-left:4px solid #7e57c2;{% endif %}{% if is_option %}background:#fbf7ff;{% endif %}{% if is_terminal_unfilled %}opacity:0.55;font-style:italic;{% endif %}{% if is_excluded_dq %}opacity:0.5;background:#f5f5f5;{% endif %}" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? '' : 'none'; this.querySelector('.expand-caret').innerHTML = this.nextElementSibling.style.display === 'none' ? '&#9654;' : '&#9660;'">
                     <td style="width:1.5rem;text-align:center;"><span class="expand-caret" style="font-size:0.7rem;color:#888;">&#9654;</span></td>
                     <td class="muted" data-raw="{{ t.timestamp or '' }}">{{ (t.timestamp or '')|friendly_time }}</td>
                     {% if show_profile %}<td>{{ t.profile_name or t.segment or '--' }}</td>{% endif %}
@@ -196,7 +270,7 @@
                         {% endif %}
                     </td>
                 </tr>
-                <tr class="detail-row" style="display:none;">
+                <tr class="detail-row{% if _is_multileg_leg %} multileg-detail-row{% endif %}" style="display:none;{% if _is_multileg_leg %}border-left:4px solid #7e57c2;{% endif %}">
                     <td colspan="{{ 9 if show_profile else 8 }}" style="background:#f8f9fa; padding:0.75rem; max-width:0;">
                         <div style="font-size:0.85rem;">
                             {% if t.market_value is defined and t.market_value is not none %}

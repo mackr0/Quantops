@@ -17,6 +17,30 @@ Rules going forward:
 
 ---
 
+## 2026-05-21 AM — Trades table: visually group multileg legs as a single strategic play. Severity: low (UI/UX clarity).
+
+Operator: each leg of a multileg spread was rendering as a fully-independent row in the trades table and dashboard panels. Reading 2 BAC rows (one sell, one buy) with no visual cue that they're a bull_put_spread filled atomically by a single broker order was confusing — the table looked like "two unrelated option trades on the same symbol in the same second" instead of one defined-risk spread.
+
+`templates/_trades_table.html` now groups multileg legs visually using `order_id` as the grouping key (every leg of a combo order shares the same broker UUID). When a new multileg group is detected, the macro emits a "spread header" row above the first leg:
+
+```
+[SPREAD] BAC  Bull Put Spread  · exp 2026-06-26 · 2 legs    Net credit $168.00
+| BAC260626P00049000  sell  4 @ $0.84
+| BAC260626P00046000  buy   4 @ $0.42
+```
+
+The header shows the strategy name (humanized via the existing filter), expiry, leg count, and a computed net premium with credit/debit indicator. Net premium math: `sum(buy_notional × 100) - sum(sell_notional × 100)` across all legs sharing the order_id; positive = net debit (red), negative = net credit (green).
+
+Leg rows themselves get a purple left border (`border-left:4px solid #7e57c2`) connecting them visually to the spread header above. The border extends through the click-to-expand detail row too, so an expanded leg's AI reasoning still reads as part of the spread group.
+
+The same template macro is used by both `/trades` (full history) and the dashboard's per-profile position panels (via `import "_trades_table.html"`), so this single edit fixes both surfaces.
+
+Edge case noted: when the user re-sorts the table client-side by a column other than time, legs sharing an order_id may no longer be adjacent — the visual grouping bars then read as discontinuous. That's acceptable for v1; a follow-up could add `data-group-id` attributes and have the sort-JS keep groups together.
+
+No tests touched — pure presentation layer.
+
+---
+
 ## 2026-05-21 AM — `cover` mis-classified as cash IN inflated pid16 equity by $41K of phantom P&L. Severity: HIGH (data integrity — dashboard, learning loop, and self-tuner all read against the wrong number).
 
 ### Symptom
