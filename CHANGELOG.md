@@ -17,6 +17,31 @@ Rules going forward:
 
 ---
 
+## 2026-05-20 PM — #192: per-key ensemble lock + double-checked cache lookup. Severity: medium (latency improvement; eliminates cross-segment serialization on the AI ensemble call).
+
+Carryover from the 2026-05-20 cycle-time incident. py-spy traces during the Gemini-degraded period showed profiles blocked on `_ensemble_lock` waiting for one slow AI call. Pre-fix, the entire body of `_get_shared_ensemble` (cache check + AI compute + cache write) ran under a single module-global lock — so even cache-hit callers had to acquire it. When the lock-holder was mid-AI-call (5 min that day), every other caller blocked for the full duration.
+
+**Refactor:** double-checked locking with per-key locks.
+
+1. **L1 cache check moved OUTSIDE the lock.** Python's GIL makes dict reads atomic. Cache hits return instantly without any lock acquisition.
+2. **L2 cache (SQLite) check moved OUTSIDE the lock.** WAL-mode reads are concurrent-safe; sub-ms.
+3. **Cache miss → acquire PER-KEY lock**, not the global. `_per_key_ensemble_locks: Dict[str, threading.Lock]` plus `_get_per_key_ensemble_lock(key)` helper running under the meta-lock (kept named `_ensemble_lock` for back-compat with `tests/test_silent_failures.test_ensemble_cache_has_lock`).
+4. **Inside per-key lock: double-check L1.** Another thread on the same key may have filled while we waited. Skip the AI call in that case.
+
+Lock duration drops from "any caller for any segment for the full duration of the AI call" to "first miss on a given key only; subsequent same-key callers hit L1 outside the lock entirely."
+
+**Production impact today:** with only two segments (`stocks`/`crypto` post-docs/22), cross-segment unblocking helps minimally because all 13 active profiles are stock-segment. The bigger win is the fast-path L1 — same-segment profiles arriving AFTER the first one filled the cache no longer wait on the lock at all. Saves the lock-acquisition × N callers latency every cycle.
+
+**Future-proofing:** when cache keys gain more granularity (e.g., `(segment, candidates_hash, ai_model)`), the per-key lock structure already handles it.
+
+**Why this wasn't caught earlier:** the original `_get_shared_ensemble` predates the heterogeneous-segment world. The lock structure was correct-when-written but became a bottleneck as AI call duration grew (Gemini's 503 / parse-failure cascade made each call multi-minute on 2026-05-20). The classic "fine until it isn't" pattern.
+
+**Tests** — `tests/test_ensemble_per_key_lock_192_2026_05_20.py` adds 10 guardrails: module exposure of `_per_key_ensemble_locks` dict + helper + meta-name preservation; same-key returns same lock object; different keys return different locks; 20-thread race to create a fresh-key lock produces ONE lock object; L1 check appears BEFORE the per-key lock in source; double-check L1 inside the lock; **threading test** — thread B on key Y completes in <1s while thread A holds key X's lock mid-compute; **threading test** — 2 threads racing on a cold same-key cause exactly ONE `run_ensemble` call.
+
+Full suite: 4,630 passing / 2 skipped.
+
+---
+
 ## 2026-05-20 PM — #195 Phase 2: Greek-exposure caps in the AI-tunable paradigm. Severity: medium (paradigm completion; no immediate runtime behavior change — values stay at current defaults until the self-tuner accumulates evidence to adjust).
 
 Background: docs/23 §3.5-3.7 + §4 Phase 2. After Phase 1 closed the cash-hoarding symptom by stopping the at-max pre-filter block, Phase 2 brings the three Greek-exposure caps (`max_net_options_delta_pct`, `max_theta_burn_dollars_per_day`, `max_short_vega_dollars`) into the same paradigm every other tunable already follows: operator-settable in the UI **and** autonomously adjusted by the self-tuner based on observed outcomes.

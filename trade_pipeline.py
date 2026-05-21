@@ -34,7 +34,30 @@ from strategy_router import run_strategy
 # ---------------------------------------------------------------------------
 _ensemble_cache = {}
 _ensemble_cache_cycle = 0
+# Meta-guard for cache-rotation + per-key-lock dict mutation only.
+# Should NOT be held during the actual AI call — that's what
+# `_per_key_ensemble_locks` is for. (#192, 2026-05-20.)
 _ensemble_lock = __import__("threading").Lock()
+# Per-cache-key locks so two profiles with DIFFERENT cache keys
+# (e.g. stocks vs crypto, or future per-prompt-hash keys) don't
+# serialize on each other's AI calls. Within a single key, the
+# lock + double-checked cache lookup prevents duplicate AI calls.
+# (#192, 2026-05-20.)
+_per_key_ensemble_locks = {}
+
+
+def _get_per_key_ensemble_lock(cache_key):
+    """Return (creating if needed) the threading.Lock for a cache key.
+    Lock creation is itself serialized under _ensemble_lock so two
+    callers racing to create a lock for the same key end up sharing
+    one. (#192, 2026-05-20.)"""
+    import threading
+    with _ensemble_lock:
+        lock = _per_key_ensemble_locks.get(cache_key)
+        if lock is None:
+            lock = threading.Lock()
+            _per_key_ensemble_locks[cache_key] = lock
+        return lock
 
 # Political context cache — same climate for all MAGA-mode profiles
 # within a 30-minute window. One AI call instead of one per profile.
@@ -182,41 +205,82 @@ def _get_shared_political_context(ctx):
 def _get_shared_ensemble(candidates_data, ctx):
     """Return ensemble result, cached per market_type per cycle.
 
-    Lever 1 of COST_AND_QUALITY_LEVERS_PLAN.md (2026-04-27): cache
-    is now persistent in SQLite so deploy-restarts don't wipe a
-    valid cached result. Two-tier: in-memory L1 (process-local) +
-    SQLite L2 (cross-restart). Same 30-min TTL as before.
+    Two-tier cache: in-memory L1 (process-local) + SQLite L2
+    (cross-restart). 30-min TTL.
+
+    #192 refactor (2026-05-20):
+      Pre-#192, the entire body ran under a single module-global lock.
+      Profiles in the SAME segment correctly shared the cache after
+      the first profile filled it, BUT every subsequent caller had to
+      ACQUIRE the lock to even check the cache. If the lock-holder was
+      mid-AI-call (e.g., 5 min during the 2026-05-20 Gemini-degraded
+      incident), every other profile blocked for the full duration
+      waiting their turn to read a cache hit. py-spy traces showed up
+      to 12 profiles serialized behind a single slow Gemini call.
+
+      New structure:
+        1. L1 cache check — NO lock needed (Python GIL guarantees safe
+           dict read).
+        2. L2 cache check (SQLite) — NO lock needed (SQLite WAL mode
+           makes concurrent reads safe).
+        3. Cache miss → acquire PER-KEY lock (different segments don't
+           block each other).
+        4. Inside per-key lock: double-check L1 (another thread may
+           have filled while we waited), then compute + populate
+           both tiers.
+
+      Lock duration drops from "any caller for any segment for the
+      duration of the AI call" to "callers for the SAME key only,
+      and only on the first miss; subsequent same-key callers hit
+      L1 outside the lock entirely."
     """
     global _ensemble_cache, _ensemble_cache_cycle
     import time as _t
 
+    cache_key = ctx.segment
+
+    # Cycle-bucket rotation — guarded by the meta lock so a rotation
+    # check doesn't race with a per-key compute filling L1.
+    now_bucket = int(_t.time() / 1800)
     with _ensemble_lock:
-        now_bucket = int(_t.time() / 1800)
         if now_bucket != _ensemble_cache_cycle:
             _ensemble_cache = {}
             _ensemble_cache_cycle = now_bucket
 
-        cache_key = ctx.segment
+    # ── FAST PATH 1: L1 (in-process) cache hit — no lock required.
+    # Python dict reads are atomic under the GIL. Worst case: we miss
+    # a value that's in flight from another thread and proceed to L2
+    # / compute — extra work but no incorrectness.
+    if cache_key in _ensemble_cache:
+        logging.info("Using shared ensemble results for %s", cache_key)
+        return _ensemble_cache[cache_key]
 
-        # L1: in-process cache
+    # ── FAST PATH 2: L2 (SQLite) cache hit — no lock required.
+    # WAL-mode reads are concurrent-safe; one read is sub-millisecond.
+    _cache_get = _cache_put = None
+    try:
+        from shared_ai_cache import get as _cache_get, put as _cache_put
+        persisted = _cache_get("ensemble", cache_key, bucket_seconds=1800)
+        if persisted is not None:
+            # Populate L1 so the next same-process caller hits fast path 1.
+            _ensemble_cache[cache_key] = persisted
+            logging.info(
+                "Using persisted ensemble results for %s (from disk)",
+                cache_key,
+            )
+            return persisted
+    except Exception:
+        _cache_get = _cache_put = None
+
+    # ── SLOW PATH: cache miss — acquire per-key lock, double-check,
+    # compute. Only one thread per cache_key reaches the AI call;
+    # other same-key threads wait HERE (not on a global lock) and
+    # then hit the double-check cache lookup right after.
+    key_lock = _get_per_key_ensemble_lock(cache_key)
+    with key_lock:
         if cache_key in _ensemble_cache:
-            logging.info("Using shared ensemble results for %s", cache_key)
+            # Filled by another thread while we waited
             return _ensemble_cache[cache_key]
-
-        # L2: persistent SQLite cache
-        try:
-            from shared_ai_cache import get as _cache_get, put as _cache_put
-            persisted = _cache_get("ensemble", cache_key,
-                                   bucket_seconds=1800)
-            if persisted is not None:
-                _ensemble_cache[cache_key] = persisted
-                logging.info(
-                    "Using persisted ensemble results for %s (from disk)",
-                    cache_key,
-                )
-                return persisted
-        except Exception:
-            _cache_get = _cache_put = None
 
         from ensemble import run_ensemble
         result = run_ensemble(
