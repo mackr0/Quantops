@@ -257,6 +257,14 @@ else
     done
     if [ -z "$NEVER_CAPTURED" ]; then
         ok "capture task ran today on all $ACTIVE_COUNT active profiles"
+    elif [ "$MARKET_OPEN_NOW" = "closed" ]; then
+        # Capture Broker Activities runs inside the per-profile cycle
+        # loop, which only fires during market hours (the scheduler is
+        # intentionally idle pre-market and after-hours). Pre-open it
+        # cannot have run "today" yet — flagging it as FAIL is a
+        # script artifact, not a real failure. Mirrors the same grace
+        # pattern Section C applies to the reconciler heartbeat.
+        ok "market closed; capture task runs inside per-profile cycle (idle pre-open)"
     else
         bad "no capture today:$NEVER_CAPTURED"
     fi

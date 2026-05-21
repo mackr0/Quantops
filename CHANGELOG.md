@@ -17,6 +17,16 @@ Rules going forward:
 
 ---
 
+## 2026-05-20 PM — morning_health_check.sh: D1 grace for pre-market. Severity: low (script-only false-positive fix).
+
+`[D1] Capture task ran today` was hard-failing every morning run executed before market open. The capture task runs inside the per-profile cycle loop, which is intentionally idle pre-market — so before 13:30 UTC it cannot have run "today" yet. Section C (reconciler heartbeat) and Section E (daily snapshot) both already have explicit pre-market-close grace using `$MARKET_OPEN_NOW`; D1 was missed when those landed.
+
+Adds the same `elif [ "$MARKET_OPEN_NOW" = "closed" ]` branch to D1 — when the market is closed, reports OK with a note explaining the cron behavior instead of FAIL. When market is open and capture hasn't run, still flags as bad.
+
+Verified locally — pre-market run now reports 14 pass / 2 warn / 0 fail (was 13 / 2 / 1).
+
+---
+
 ## 2026-05-20 PM — Settings page: relabel the top-of-page Alpaca key field to honestly describe its purpose. Severity: low (UI-only text change).
 
 Operator caught that I'd claimed the "master Alpaca key" was removed when in fact only the env-variable path was killed; the DB-table master at `alpaca_accounts ORDER BY id LIMIT 1` is still live and still depended on by 8 no-context code paths (daily/intraday bars, options chains, news, asset names, intraday alt-data, and the #185 horizon-measurement bar fetcher I just shipped). The settings page still exposed a generic "Alpaca API Key" field at the top with no explanation, which contributed to the recurring "is this a master key or a profile key" confusion.
