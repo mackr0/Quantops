@@ -708,6 +708,16 @@ def _migrate_all_columns(conn):
             # online_meta_model.py). Catches regime drift faster
             # than the nightly GBM.
             ("online_meta_score", "REAL"),
+            # 2026-05-20 (#186 Phase A — docs/23-adjacent): cost-
+            # adjusted return. `actual_return_pct` is the gross price
+            # move; this column subtracts an estimate of round-trip
+            # transaction costs (slippage) so downstream analytics
+            # (self-tuner, calibration, win-rate, AI track_record)
+            # work against numbers that actually predict trading P&L,
+            # not just price prediction. Populated by the resolver
+            # alongside actual_return_pct; NULL on legacy rows
+            # resolved before the column existed.
+            ("actual_return_pct_net", "REAL"),
         ],
         # `call_id` joins primary cost-ledger rows to the
         # ai_shadow_calls rows produced by the shadow dispatcher for

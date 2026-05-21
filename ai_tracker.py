@@ -364,6 +364,71 @@ _OPTION_SIGNALS = frozenset({"MULTILEG_OPEN", "OPTIONS",
                               "OPTION_EXERCISE"})
 
 
+def _estimate_round_trip_cost_pct(prediction, db_path):
+    """Estimate the % cost (slippage) of a round-trip trade matching
+    this prediction. Used to compute actual_return_pct_net (#186
+    Phase A, 2026-05-20).
+
+    Look-up strategy:
+      1. Match the prediction to an entry trade row by (symbol +
+         predicted side + timestamp within +/- 10 min). Take its
+         slippage_pct.
+      2. Round-trip estimate = 2 × entry_slippage_pct (assumes
+         symmetric exit slippage — coarse but a defensible first
+         cut; refine when we instrument exit-side fill timing).
+
+    Returns the % cost (always non-negative for sane data). Returns
+    0.0 when no matching trade is found (so net == gross — better
+    than NULL-ing the column for legacy / unmatched rows).
+
+    Honest caveat: this is an APPROXIMATION. For predictions that
+    never traded (AI said BUY but pre-filter / blacklist / cash
+    blocked the entry), cost is genuinely 0 — the prediction is
+    purely a directional bet on paper. For trades that did execute,
+    the 2× entry-slippage assumption may over- or under-estimate
+    depending on the actual exit market state. Better than nothing;
+    iterates later as data on exit slippage accumulates.
+    """
+    if not db_path:
+        return 0.0
+    signal = (prediction.get("predicted_signal") or "").upper()
+    if signal in _OPTION_SIGNALS:
+        # Option resolver already operates on premium prices directly
+        # (not underlying); slippage is implicit in the premium fill.
+        # First cut: zero out, refine later with option-specific
+        # commission ($0.65/contract × contracts) and bid-ask spread.
+        return 0.0
+    side = "buy" if signal in ("BUY", "STRONG_BUY") else "sell"
+    try:
+        conn = _get_conn(db_path)
+        # Look for a trade row close to the prediction timestamp.
+        # +/- 10 min is generous enough to catch real entries but
+        # narrow enough to avoid grabbing an unrelated trade on the
+        # same symbol made later in the day.
+        row = conn.execute(
+            "SELECT slippage_pct FROM trades "
+            "WHERE symbol = ? AND side = ? "
+            "  AND slippage_pct IS NOT NULL "
+            "  AND ABS(julianday(timestamp) - julianday(?)) <= (10.0 / (24*60)) "
+            "ORDER BY ABS(julianday(timestamp) - julianday(?)) ASC "
+            "LIMIT 1",
+            (prediction["symbol"], side, prediction["timestamp"],
+             prediction["timestamp"]),
+        ).fetchone()
+    except Exception as exc:
+        logger.debug(
+            "round-trip-cost lookup failed for %s/%s: %s",
+            prediction.get("symbol"), signal, exc,
+        )
+        return 0.0
+    if not row or row[0] is None:
+        return 0.0
+    entry_slip_pct = abs(float(row[0]))
+    # 2x to model symmetric round-trip cost. Exit slippage is not yet
+    # captured separately at resolve time for stocks.
+    return entry_slip_pct * 2.0
+
+
 def _resolve_one(prediction, current_price):
     """Determine outcome for a single prediction.
 
@@ -568,17 +633,32 @@ def resolve_predictions(api=None, db_path=None, profile_id=None):
                 continue
 
             outcome, return_pct, days_held = result
+            # #186 Phase A (2026-05-20): compute cost-adjusted return.
+            # Subtract estimated round-trip slippage so downstream
+            # analytics (self-tuner, calibration, AI track_record) work
+            # against numbers that predict actual trading P&L, not just
+            # price prediction. For directional-LONG winners, costs
+            # eat into the gain; for losers, costs deepen the loss
+            # (cost is added to magnitude regardless of direction).
+            cost_pct = _estimate_round_trip_cost_pct(prediction_dict, db_path)
+            if return_pct >= 0:
+                net_pct = return_pct - cost_pct
+            else:
+                # Losses become MORE negative once costs are subtracted:
+                # we lose on the price move AND pay the round-trip cost.
+                net_pct = return_pct - cost_pct
             conn.execute(
                 """UPDATE ai_predictions
                    SET status = 'resolved',
                        actual_outcome = ?,
                        actual_return_pct = ?,
+                       actual_return_pct_net = ?,
                        resolved_at = ?,
                        resolution_price = ?,
                        days_held = ?
                    WHERE id = ?""",
-                (outcome, round(return_pct, 4), now_iso, current_price,
-                 days_held, row["id"]),
+                (outcome, round(return_pct, 4), round(net_pct, 4),
+                 now_iso, current_price, days_held, row["id"]),
             )
             # Commit *each row* immediately. Specialist-calibration and
             # online-meta-model updates below open their own connections

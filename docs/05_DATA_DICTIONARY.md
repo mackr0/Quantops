@@ -300,7 +300,8 @@ The proprietary asset. Every AI decision writes a row.
 | `price_targets` | TEXT | JSON {stop, take_profit}. |
 | `status` | TEXT | `pending` / `resolved`. |
 | `actual_outcome` | TEXT | `win` / `loss` / `neutral`. |
-| `actual_return_pct` | REAL | Realized return. |
+| `actual_return_pct` | REAL | Realized **gross** return (price-move only; ignores slippage). |
+| `actual_return_pct_net` | REAL | Realized return **net of round-trip slippage** (approximated as 2 × entry slippage from the matched trade row; 0 for option signals, where premium P&L already nets). The learning loop and self-tuner should pivot to this column; `actual_return_pct` is kept for backward compat. Written by `ai_tracker.resolve_predictions`. |
 | `resolution_price` | REAL | Price at resolution. |
 | `days_held` | INTEGER | Days from prediction to resolution. |
 | `resolved_at` | TEXT | UTC ISO timestamp of resolution. |

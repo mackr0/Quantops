@@ -1481,6 +1481,49 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         alt = c.get("alt_data", {})
         if alt:
             alt_parts = []
+            # 2026-05-20 (#186 Phase B — docs/23-adjacent): summarize
+            # freshness of the alt-data sources for this candidate so
+            # the AI knows which signals are live vs cached. Each
+            # source's payload carries `_cached` + `_cached_age_min`
+            # annotations from `alt_data_cache.cache_or_fetch`. We
+            # don't render per-source age inline (too noisy); a single
+            # summary line tells the AI "trust the live signals more
+            # than the day-old cached ones."
+            try:
+                _cached_count = 0
+                _live_count = 0
+                _max_age_min = 0
+                for _src_payload in alt.values():
+                    if not isinstance(_src_payload, dict):
+                        continue
+                    if "_cached" not in _src_payload:
+                        continue
+                    if _src_payload.get("_cached"):
+                        _cached_count += 1
+                        _age = _src_payload.get("_cached_age_min") or 0
+                        if isinstance(_age, (int, float)) and _age > _max_age_min:
+                            _max_age_min = int(_age)
+                    else:
+                        _live_count += 1
+                if _cached_count or _live_count:
+                    _max_age_disp = (
+                        f"{_max_age_min // 60}h{_max_age_min % 60:02d}m"
+                        if _max_age_min >= 60 else f"{_max_age_min}m"
+                    )
+                    alt_parts.append(
+                        f"[Freshness: {_live_count} live, "
+                        f"{_cached_count} cached (oldest {_max_age_disp})]"
+                    )
+            except Exception:
+                # SILENT_OK: freshness summary is an informational
+                # annotation only; if alt-data has an unexpected
+                # shape (e.g., legacy cached row missing the new
+                # `_cached` keys) we drop the summary and continue
+                # rendering the rest of the alt-data block. Failing
+                # the whole prompt build over a cosmetic line would
+                # block all AI calls for this candidate.
+                pass
+
             # EVERY field access below uses .get() with defaults.
             # Direct dict['key'] access is BANNED — it crashes when
             # data sources are disabled or return empty dicts.

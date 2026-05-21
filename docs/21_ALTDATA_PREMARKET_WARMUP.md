@@ -18,6 +18,7 @@ With (1) vectorized and (2) fixed via `response_mime_type: application/json`, pe
 
 What we kept:
 - `alt_data_cache.py` — still earns its keep on intra-cycle dedup (multiple profiles in the same 30-min window hitting the screener's same top-30 symbols → second profile's alt-data call gets a cache hit). Lazy-warm via `cache_or_fetch` is sufficient.
+- **Freshness annotations (#186 Phase B, 2026-05-20):** `cache_or_fetch` now annotates returned dict payloads with `_cached: bool` and `_cached_age_min: int`. The AI prompt renders a single `[Freshness: X live, Y cached (oldest Nh:MMm)]` summary line per candidate's alt-data block so the AI can weight live vs cached signals. Annotations are added AFTER `cache_set`, so they do not persist into the cached payload (next call re-annotates from scratch).
 
 What we removed:
 - `premarket_warmup.py` (CLI entry point for the 04:00 ET cron)

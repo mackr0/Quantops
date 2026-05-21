@@ -17,6 +17,40 @@ Rules going forward:
 
 ---
 
+## 2026-05-20 PM — #186: cost-adjusted returns + alt-data freshness flags. Severity: medium (observability + learning-signal fidelity).
+
+Two adjacent learning-loop improvements bundled into one ship. Both make
+the resolver and the prompt more honest about reality.
+
+### Phase A — cost-adjusted returns (`actual_return_pct_net`)
+
+**Problem.** `ai_predictions.actual_return_pct` was the gross return — what the price did, ignoring slippage. The learning loop and analytics displays both treated gross returns as if they were P&L, which systematically over-rated marginal calls (small positive moves that lost money after costs got scored as "AI was right").
+
+**Fix.**
+1. Migration: `journal.py:_migrate_all_columns` adds `actual_return_pct_net REAL` to `ai_predictions` (idempotent — re-running on a populated DB is a no-op).
+2. New helper `ai_tracker._estimate_round_trip_cost_pct(prediction, db_path)` looks up the matching entry trade by `(symbol, side, ±10min of prediction.timestamp)` and returns `2 × |entry_slippage_pct|` as the round-trip cost approximation. Option signals return 0 (P&L math already nets premium). Missing trade row returns 0.
+3. `ai_tracker.resolve_predictions` now writes BOTH columns. `actual_return_pct` keeps its gross meaning; `actual_return_pct_net` is the new column the learning loop should pivot to.
+
+The round-trip-cost approximation is intentional and conservative — actual fills can have asymmetric entry/exit slippage, but doubling entry slippage is a defensible lower-bound and avoids the historical pattern of looking up the exit fill (which may or may not exist by the time the prediction resolves).
+
+**Tests** — `tests/test_cost_adjusted_returns_186a_2026_05_20.py` (11 cases): migration present + idempotent; estimator returns `2×slippage` for stock BUY and stock SELL; returns 0 for option signals; returns 0 with no matching trade; uses absolute value of slippage; ±10-min window excludes unrelated later trades. Resolver writes both columns; net=gross when no matching trade; loss becomes MORE negative after cost.
+
+### Phase B — alt-data freshness flags
+
+**Problem.** The AI prompt rendered cached alt-data identically to live-fetched alt-data. A day-old insider signal looked the same as one pulled this cycle. The AI had no way to weight signals by recency, and any over-reliance on stale cached signals during a slow-news day got rewarded by the cache TTL choice rather than penalized for being stale.
+
+**Fix.**
+1. `alt_data_cache.cache_or_fetch` annotates the returned dict with `_cached: bool` and `_cached_age_min: int`. Live fetches get `False/0`; cache hits get `True/age-in-minutes`. New helper `_cache_row_age_minutes(symbol, source)` queries the cache row's `fetched_at` timestamp.
+2. Annotations are added AFTER `cache_set`, so they are NOT persisted into the cached payload (verified by a test that reads the raw row). The next call re-annotates from scratch — no stale-annotation leak.
+3. `ai_analyst._build_batch_prompt` aggregates per-source annotations into a single `[Freshness: X live, Y cached (oldest Nh:MMm)]` summary line per candidate's alt-data block. Single line keeps the prompt compact; the AI can now reason "trust the live signals more than the day-old cached ones."
+4. The summary block is wrapped in try/except (`# SILENT_OK:`) so a malformed payload can never block prompt construction — freshness is informational, not load-bearing.
+
+**Tests** — `tests/test_altdata_freshness_flags_186b_2026_05_20.py` (9 cases): live fetch annotates `_cached: False, _cached_age_min: 0`; cache hit annotates `_cached: True` plus non-negative age; raw cache row does NOT contain the annotation keys (no leak); non-dict (e.g. `None`) returns pass through without `AttributeError`; age helper returns 0–5 immediately after `cache_set`, `None` for missing row; prompt summary appears when annotations present and counts live/cached correctly; summary omitted when no sources have annotations; age formatting under one hour shows minutes only (no spurious `0h` prefix).
+
+**Why this wasn't a bug per se.** Both behaviors (gross-only returns; un-annotated alt-data) were intentional simplifications from the original learning loop. The shift here is recognizing that the next round of self-tuning needs honest cost-of-trade and honest data-age signals to converge correctly. Without Phase A, the tuner rewards trades that lost money. Without Phase B, the AI weights stale and fresh signals identically.
+
+---
+
 ## 2026-05-20 PM — #192: per-key ensemble lock + double-checked cache lookup. Severity: medium (latency improvement; eliminates cross-segment serialization on the AI ensemble call).
 
 Carryover from the 2026-05-20 cycle-time incident. py-spy traces during the Gemini-degraded period showed profiles blocked on `_ensemble_lock` waiting for one slow AI call. Pre-fix, the entire body of `_get_shared_ensemble` (cache check + AI compute + cache write) ran under a single module-global lock — so even cache-hit callers had to acquire it. When the lock-holder was mid-AI-call (5 min that day), every other caller blocked for the full duration.

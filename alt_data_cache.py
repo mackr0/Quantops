@@ -239,6 +239,32 @@ def cache_set(symbol: str, source: str, payload: Dict[str, Any],
         return False
 
 
+def _cache_row_age_minutes(symbol: str, source: str) -> Optional[int]:
+    """Return the age in minutes of the cache row for (symbol, source),
+    or None if the row doesn't exist / age can't be computed. Used by
+    `cache_or_fetch` to annotate freshness on payloads it returns
+    from cache. (#186 Phase B — docs/23-adjacent, 2026-05-20.)"""
+    if not symbol or not source:
+        return None
+    try:
+        _ensure_cache_db()
+        with closing(sqlite3.connect(_CACHE_DB)) as conn:
+            row = conn.execute(
+                "SELECT fetched_at FROM altdata_cache "
+                "WHERE symbol = ? AND source = ?",
+                (symbol.upper(), source),
+            ).fetchone()
+        if not row or not row[0]:
+            return None
+        fetched_at = datetime.fromisoformat(row[0])
+        if fetched_at.tzinfo is None:
+            fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+        age = datetime.now(timezone.utc) - fetched_at
+        return int(age.total_seconds() / 60)
+    except Exception:
+        return None
+
+
 def cache_or_fetch(source: str, symbol: str,
                     fetcher_fn: Callable[[str], Dict[str, Any]],
                     ttl_seconds: Optional[int] = None,
@@ -254,13 +280,25 @@ def cache_or_fetch(source: str, symbol: str,
       sane — either cached data or fresh data)
     - Fetcher exceptions propagate — callers should already wrap their
       alt-data calls in try/except where appropriate
+    - Dict-shaped payloads are annotated with `_cached` (bool) and
+      `_cached_age_min` (int or None) so downstream consumers (AI
+      prompt builder, freshness audits) can tell stale-but-still-fresh
+      cache hits from live fetches. (#186 Phase B, 2026-05-20.) These
+      keys are added AFTER `cache_set` so they don't get persisted —
+      next call reads the raw payload from cache and re-annotates.
     """
     cached = cache_get(symbol, source)
     if cached is not None:
+        if isinstance(cached, dict):
+            cached["_cached"] = True
+            cached["_cached_age_min"] = _cache_row_age_minutes(symbol, source)
         return cached
     result = fetcher_fn(symbol)
     if result is not None:
         cache_set(symbol, source, result, ttl_seconds=ttl_seconds)
+        if isinstance(result, dict):
+            result["_cached"] = False
+            result["_cached_age_min"] = 0
     return result
 
 
