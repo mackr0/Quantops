@@ -757,6 +757,18 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
             if prot_kind == "backfill_full":
                 used_sell_ids.add(prot_detail["order_id"])
                 entry_price = float(r["price"] or 0)
+                # 2026-05-21 — tag entries from the PROTECTIVE path
+                # (where the order_id was tracked on the entry row via
+                # protective_*_order_id) so the safety-net halt counter
+                # only counts truly-orphan synthesis actions. A
+                # protective fill IS expected synthesis: we placed the
+                # protective order via submit_order (journaled then),
+                # but the FILL happens broker-side on its own with no
+                # corresponding code-path call — only the reconciler
+                # can see it. That's the reconciler's design, not an
+                # orphan-fill bug. The memory rule "no orphan broker
+                # fills" is about submit_order journaling leaks, not
+                # about broker-side protective triggers we configured.
                 if is_short:
                     actions["backfill_cover"].append({
                         "trade_id": r["id"], "symbol": sym, "qty": qty,
@@ -766,6 +778,7 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                         "cover_qty": prot_detail["filled_qty"],
                         "cover_filled_at": prot_detail["filled_at"].isoformat(),
                         "cover_order_type": prot_detail["order_type"],
+                        "source": "protective",
                     })
                 else:
                     actions["backfill_sell"].append({
@@ -776,6 +789,7 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                         "sell_qty": prot_detail["filled_qty"],
                         "sell_filled_at": prot_detail["filled_at"].isoformat(),
                         "sell_order_type": prot_detail["order_type"],
+                        "source": "protective",
                     })
                 continue
             if prot_kind == "backfill_partial":
@@ -789,6 +803,7 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                     "sell_qty": prot_detail["filled_qty"],
                     "sell_filled_at": prot_detail["filled_at"].isoformat(),
                     "sell_order_type": prot_detail["order_type"],
+                    "source": "protective",
                 })
                 continue
 
@@ -825,6 +840,13 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                     **detail,
                 })
             elif kind == "backfill":
+                # 2026-05-21 — these enter via _classify_long_phantom
+                # / _classify_short_phantom — the FUZZY-match path
+                # (search broker order history for any unattributed
+                # exit matching symbol/qty/time). The order_id was
+                # NOT in our journal previously. This IS the orphan-
+                # fill class the safety net is designed to halt on.
+                # Tagged source="phantom" so the counter knows.
                 if is_short:
                     used_cover_ids.add(detail["order_id"])
                     actions["backfill_cover"].append({
@@ -835,6 +857,7 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                         "cover_qty": detail["filled_qty"],
                         "cover_filled_at": detail["filled_at"].isoformat(),
                         "cover_order_type": detail["order_type"],
+                        "source": "phantom",
                     })
                 else:
                     used_sell_ids.add(detail["order_id"])
@@ -846,6 +869,7 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                         "sell_qty": detail["filled_qty"],
                         "sell_filled_at": detail["filled_at"].isoformat(),
                         "sell_order_type": detail["order_type"],
+                        "source": "phantom",
                     })
             elif kind == "ambiguous":
                 actions["ambiguous"].append({
@@ -929,6 +953,88 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
                      f"reconcile: corrected partial-fill (was qty={a['original_qty']})",
                      a["trade_id"]),
                 )
+            # 2026-05-21 — Protective-source path: UPDATE pre-journaled
+            # `pending_protective` row, no synthesis. This is the
+            # primary path for protective fills going forward: every
+            # bracket_orders.submit_protective_* call writes a
+            # `pending_protective` trades row at PLACEMENT time, so
+            # when the broker fills it the reconciler just flips that
+            # row to status='closed' with fill data. No INSERT needed.
+            #
+            # If the pending row is missing (legacy entry from before
+            # this refactor landed), the protective-source entry stays
+            # in the synthesis bucket and trips the halt — same as a
+            # true orphan. Fixed via one-time backfill scripts for
+            # known legacy gaps (scripts/backfill_protective_orphan_*).
+            applied_protective = 0
+            still_orphan_protective = []
+            for bucket_name, kind in (
+                ("backfill_sell", "sell"),
+                ("backfill_cover", "cover"),
+                ("backfill_partial_sell", "partial"),
+            ):
+                for a in actions[bucket_name]:
+                    if a.get("source") != "protective":
+                        continue
+                    fill_oid = (a.get("sell_order_id")
+                                or a.get("cover_order_id"))
+                    if not fill_oid:
+                        continue
+                    pending_row = conn.execute(
+                        "SELECT id, qty FROM trades "
+                        "WHERE order_id = ? AND status = 'pending_protective' "
+                        "LIMIT 1",
+                        (fill_oid,),
+                    ).fetchone()
+                    if not pending_row:
+                        # No pre-journaled row → legacy gap → leave in
+                        # the synthesis bucket for halt + alert
+                        still_orphan_protective.append(a)
+                        continue
+                    fill_price = (a.get("sell_price")
+                                   or a.get("cover_price"))
+                    filled_at = (a.get("sell_filled_at")
+                                  or a.get("cover_filled_at"))
+                    filled_qty = (a.get("sell_qty")
+                                   or a.get("cover_qty"))
+                    # UPDATE the pending row to closed-with-fill-data.
+                    # Partial path: leave qty at the journal value;
+                    # add a NOTE so a future reconcile cycle can
+                    # resume tracking the remainder.
+                    note = ""
+                    if kind == "partial":
+                        note = (
+                            f" | reconciler: partial fill "
+                            f"{filled_qty}/{a.get('journal_qty')}"
+                        )
+                    conn.execute(
+                        "UPDATE trades "
+                        "SET status='closed', price=?, fill_price=?, "
+                        "    qty=?, "
+                        "    reason=COALESCE(reason || ' | ', '') || ? "
+                        "WHERE id=?",
+                        (
+                            fill_price, fill_price, filled_qty,
+                            f"reconciler: protective fill confirmed "
+                            f"@ ${fill_price:.2f}{note}",
+                            pending_row[0],
+                        ),
+                    )
+                    # Mark the entry-side BUY/SHORT closed too —
+                    # the protective fully exited the position.
+                    if kind != "partial":
+                        conn.execute(
+                            "UPDATE trades SET status='closed' WHERE id=?",
+                            (a["trade_id"],),
+                        )
+                    applied_protective += 1
+            if applied_protective:
+                logger.info(
+                    "Reconciler: applied %d protective fill update(s) "
+                    "(no synthesis, no halt)",
+                    applied_protective,
+                )
+
             # 2026-05-19 reconciler safety net: synthesis paths
             # (backfill_sell / backfill_cover / backfill_partial_sell)
             # used to silently INSERT a new SELL/COVER row reflecting
@@ -940,10 +1046,22 @@ def reconcile_with_ctx(ctx, apply_changes: bool = False,
             # Instead of synthesizing, HALT the profile so trading
             # stops on the new-entry side until the leak is found.
             # Auto-clears next pass when synthesis no longer needed.
+            #
+            # 2026-05-21 — refined: only count PHANTOM-source entries
+            # (or PROTECTIVE entries whose pending row is missing —
+            # legacy gap) toward the halt. The vast majority of
+            # protective fills now hit the UPDATE path above and
+            # never touch the halt counter at all.
+            def _halt_count(rows):
+                return sum(
+                    1 for a in rows
+                    if (a.get("source") != "protective"
+                        or a in still_orphan_protective)
+                )
             synthesis_actions = (
-                len(actions["backfill_sell"])
-                + len(actions["backfill_cover"])
-                + len(actions["backfill_partial_sell"])
+                _halt_count(actions["backfill_sell"])
+                + _halt_count(actions["backfill_cover"])
+                + _halt_count(actions["backfill_partial_sell"])
             )
             if synthesis_actions:
                 from halt_helpers import halt_and_alert

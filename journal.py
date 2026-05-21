@@ -1300,7 +1300,7 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
                     "    (side IN ('sell', 'cover') AND "
                     "     COALESCE(status, 'open') NOT IN "
                     "     ('canceled', 'expired', 'rejected', "
-                    "      'done_for_day'))"
+                    "      'done_for_day', 'pending_protective'))"
                     ") "
                     "ORDER BY timestamp ASC, id ASC"
                 ).fetchall()
@@ -1336,7 +1336,7 @@ def get_virtual_positions(db_path=None, price_fetcher=None):
                     "    (side IN ('sell', 'cover') AND "
                     "     COALESCE(status, 'open') NOT IN "
                     "     ('canceled', 'expired', 'rejected', "
-                    "      'done_for_day'))"
+                    "      'done_for_day', 'pending_protective'))"
                     ") "
                     "ORDER BY timestamp ASC, id ASC"
                 ).fetchall()
@@ -1595,15 +1595,28 @@ def get_virtual_account_info(db_path=None, initial_capital=100000.0,
         except Exception:
             has_occ = False
         try:
+            # 2026-05-21 — exclude 'pending_protective' placeholder
+            # rows from the cash math. These are written at
+            # protective-order PLACEMENT time and carry the trigger
+            # price (stop/TP) in `price`, which would otherwise be
+            # counted as a real cash flow. No cash actually moves
+            # until the broker fires the order, at which point the
+            # reconciler flips the row to status='closed' and it
+            # participates in cash math correctly. (Trailing rows
+            # have price=NULL so they were already skipped by the
+            # qty/price>0 guard; stop/TP rows have a real trigger
+            # price and WOULD have inflated cash without this filter.)
             if has_occ:
                 rows = conn.execute(
-                    "SELECT side, qty, price, occ_symbol FROM trades"
+                    "SELECT side, qty, price, occ_symbol FROM trades "
+                    "WHERE COALESCE(status, 'open') != 'pending_protective'"
                 ).fetchall()
             else:
                 rows = [
                     (r[0], r[1], r[2], None)
                     for r in conn.execute(
-                        "SELECT side, qty, price FROM trades"
+                        "SELECT side, qty, price FROM trades "
+                        "WHERE COALESCE(status, 'open') != 'pending_protective'"
                     ).fetchall()
                 ]
         except Exception:

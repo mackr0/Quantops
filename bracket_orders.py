@@ -20,9 +20,96 @@ from __future__ import annotations
 import logging
 import sqlite3
 from contextlib import closing
+from datetime import datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+# 2026-05-21 — Per `feedback_no_orphan_broker_fills`: every api.submit_order
+# MUST write a journal row in the same code path. Protective orders
+# (stop / take-profit / trailing) were the historical hole — placement
+# wrote only the order_id onto the entry row's `protective_*_order_id`
+# column, NOT a separate trades row. So when the broker autonomously
+# filled the protective order, the reconciler saw a fill with no
+# matching trades row and (per safety-net) halted the profile.
+#
+# Fix: at placement time, write a `status='pending_protective'` row
+# carrying the protective order's id + intended trigger. The
+# reconciler then just UPDATEs that row on fill — no synthesis path.
+
+_PENDING_PROTECTIVE_STATUS = "pending_protective"
+
+
+def _write_pending_protective_row(
+    db_path: Optional[str],
+    symbol: str,
+    side: str,
+    qty: int,
+    order_id: str,
+    signal_type: str,
+    trigger_price: Optional[float],
+    entry_trade_id: Optional[int] = None,
+    reason: Optional[str] = None,
+) -> None:
+    """Write a placeholder trades row for a protective order at
+    PLACEMENT time. The reconciler will UPDATE this row to
+    status='closed' with the fill data once the broker fires it.
+
+    No-op when `db_path` is None (caller couldn't pass one — better
+    to log a WARNING than to crash the placement). The protective
+    order IS still placed at the broker either way; missing the
+    journal row just means the reconciler will fall through to its
+    safety-net halt on that fill, which is the SAME outcome as the
+    pre-fix world. Better to fail loud than silently swallow.
+    """
+    if not db_path:
+        logger.warning(
+            "Pending-protective row NOT written for %s/%s order_id=%s — "
+            "db_path is None. The protective order IS placed at the "
+            "broker but its FILL will trigger the reconciler safety-net "
+            "halt because no journal row exists to update. Fix the "
+            "caller to pass db_path.",
+            signal_type, symbol, order_id,
+        )
+        return
+    try:
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.execute(
+                "INSERT INTO trades "
+                "(timestamp, symbol, side, qty, price, order_id, "
+                " signal_type, status, reason) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    datetime.utcnow().isoformat(),
+                    symbol.upper(),
+                    side,
+                    int(qty),
+                    # NULL for trailing (no fixed trigger); fixed price
+                    # for stop / take-profit. trigger_price is the
+                    # broker's stop_price / limit_price as submitted.
+                    float(trigger_price) if trigger_price else None,
+                    order_id,
+                    signal_type,
+                    _PENDING_PROTECTIVE_STATUS,
+                    reason or f"protective {signal_type} placement; "
+                              f"awaiting fill",
+                ),
+            )
+            conn.commit()
+    except sqlite3.Error as exc:
+        # Log loudly — this IS the orphan-prevention contract. If the
+        # journal write fails after submit_order succeeded, we have a
+        # broker order with no journal row. WARNING (not CRITICAL)
+        # because the next reconcile pass will catch the fill and
+        # halt the profile; the safety net is the backstop.
+        logger.warning(
+            "Pending-protective journal write FAILED for %s/%s "
+            "order_id=%s: %s: %s. The protective order IS placed at "
+            "the broker but its FILL will trigger the reconciler "
+            "safety-net halt because no journal row exists.",
+            signal_type, symbol, order_id, type(exc).__name__, exc,
+        )
 
 
 def submit_protective_stop(
@@ -31,6 +118,8 @@ def submit_protective_stop(
     qty: int,
     side: str,
     stop_price: float,
+    db_path: Optional[str] = None,
+    entry_trade_id: Optional[int] = None,
 ) -> Optional[str]:
     """Submit a broker stop order. Returns the order_id on success, None on failure.
 
@@ -40,6 +129,13 @@ def submit_protective_stop(
       qty: Absolute share count to protect.
       side: "sell" (close a long) or "buy" (cover a short).
       stop_price: Trigger price. Must be below current for sell, above for buy.
+      db_path: Per-profile journal DB path. When provided, a
+        `pending_protective` trades row is written at placement time
+        so the reconciler can UPDATE it on fill (no orphan path).
+        Optional only for back-compat with older callers; new
+        callers MUST pass it.
+      entry_trade_id: Id of the entry trade this protective belongs
+        to (for the journal row's reason field). Optional.
 
     Failure is intentionally non-fatal — if the broker rejects the order
     the polling fallback in check_exits still detects threshold breaches.
@@ -61,6 +157,20 @@ def submit_protective_stop(
             logger.info(
                 "Protective stop placed: %s %s qty=%d stop=$%.2f order_id=%s",
                 side, symbol, qty, stop_price, order_id,
+            )
+            # ATOMIC JOURNALING per feedback_no_orphan_broker_fills.
+            _write_pending_protective_row(
+                db_path=db_path,
+                symbol=symbol, side=side, qty=qty,
+                order_id=order_id,
+                signal_type="PROTECTIVE_STOP",
+                trigger_price=stop_price,
+                entry_trade_id=entry_trade_id,
+                reason=(
+                    f"broker stop @ ${stop_price:.2f}; entry_trade={entry_trade_id}"
+                    if entry_trade_id else
+                    f"broker stop @ ${stop_price:.2f}"
+                ),
             )
         return order_id
     except Exception as exc:
@@ -139,6 +249,8 @@ def submit_protective_take_profit(
     qty: int,
     side: str,
     limit_price: float,
+    db_path: Optional[str] = None,
+    entry_trade_id: Optional[int] = None,
 ) -> Optional[str]:
     """Submit a broker limit order to lock in profit at a target level.
 
@@ -146,6 +258,10 @@ def submit_protective_take_profit(
     the target. Won't slip past the limit on gaps; will simply not fill
     if the target is never reached. Pairs with the protective stop on
     the downside.
+
+    `db_path` and `entry_trade_id` enable atomic journaling: a
+    `pending_protective` trades row is written on placement so the
+    reconciler can UPDATE it on fill without a synthesis path.
     """
     if not symbol or qty <= 0 or limit_price <= 0 or side not in ("sell", "buy"):
         return None
@@ -163,6 +279,20 @@ def submit_protective_take_profit(
             logger.info(
                 "Protective take-profit placed: %s %s qty=%d limit=$%.2f order_id=%s",
                 side, symbol, qty, limit_price, order_id,
+            )
+            _write_pending_protective_row(
+                db_path=db_path,
+                symbol=symbol, side=side, qty=qty,
+                order_id=order_id,
+                signal_type="PROTECTIVE_TAKE_PROFIT",
+                trigger_price=limit_price,
+                entry_trade_id=entry_trade_id,
+                reason=(
+                    f"broker take-profit @ ${limit_price:.2f}; "
+                    f"entry_trade={entry_trade_id}"
+                    if entry_trade_id else
+                    f"broker take-profit @ ${limit_price:.2f}"
+                ),
             )
         return order_id
     except Exception as exc:
@@ -201,6 +331,8 @@ def submit_protective_trailing(
     qty: int,
     side: str,
     trail_percent: float,
+    db_path: Optional[str] = None,
+    entry_trade_id: Optional[int] = None,
 ) -> Optional[str]:
     """Submit a broker trailing-stop order.
 
@@ -210,6 +342,12 @@ def submit_protective_trailing(
     caused IBM-style "intraday spike then EOD collapse" giveback.
 
     side='sell' for long position close, 'buy' for short cover.
+
+    `db_path` and `entry_trade_id` enable atomic journaling: a
+    `pending_protective` trades row is written on placement so the
+    reconciler can UPDATE it on fill without a synthesis path. The
+    journal row's `price` is NULL (trailing stops have no fixed
+    trigger; the broker continuously adjusts the stop level).
     """
     if not symbol or qty <= 0 or trail_percent <= 0 or side not in ("sell", "buy"):
         return None
@@ -227,6 +365,20 @@ def submit_protective_trailing(
             logger.info(
                 "Protective trailing stop placed: %s %s qty=%d trail=%.2f%% order_id=%s",
                 side, symbol, qty, trail_percent, order_id,
+            )
+            _write_pending_protective_row(
+                db_path=db_path,
+                symbol=symbol, side=side, qty=qty,
+                order_id=order_id,
+                signal_type="PROTECTIVE_TRAILING",
+                trigger_price=None,  # trailing has no fixed price
+                entry_trade_id=entry_trade_id,
+                reason=(
+                    f"broker trailing-stop {trail_percent:.2f}%; "
+                    f"entry_trade={entry_trade_id}"
+                    if entry_trade_id else
+                    f"broker trailing-stop {trail_percent:.2f}%"
+                ),
             )
         return order_id
     except Exception as exc:
@@ -375,6 +527,7 @@ def ensure_protective_stops(api, positions, ctx, db_path,
                     continue
                 order_id = submit_protective_trailing(
                     api, symbol, abs_qty, close_side, trail_pct,
+                    db_path=db_path, entry_trade_id=row["id"],
                 )
                 column = "protective_trailing_order_id"
             else:
@@ -388,6 +541,7 @@ def ensure_protective_stops(api, positions, ctx, db_path,
                     continue
                 order_id = submit_protective_stop(
                     api, symbol, abs_qty, close_side, stop_price,
+                    db_path=db_path, entry_trade_id=row["id"],
                 )
                 column = "protective_stop_order_id"
 

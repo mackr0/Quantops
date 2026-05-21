@@ -17,6 +17,44 @@ Rules going forward:
 
 ---
 
+## 2026-05-21 PM — Protective orders journal at PLACEMENT time — eliminate the orphan-fill class at the source. Severity: HIGH (trading-halt root cause + data integrity).
+
+### Symptom
+
+pid24 (EXP-A3-700K-AggressiveFree) was HALTED and producing zero stock trades for hours. Log showed every reconcile cycle: `Reconciler safety net: 1 synthesis action(s) needed — profile HALTED`. The orphan was always the same: `backfill_sell: QCOM qty=125.0 sell_order=d43d5479 @ $199.50 (trailing_stop)`.
+
+### Root cause
+
+`bracket_orders.submit_protective_*` (stop / take-profit / trailing) called `api.submit_order` but wrote NO journal row at placement — only stamped the protective order's id onto the entry trade's `protective_*_order_id` column. When the broker autonomously FILLED a protective order, there was no trades row for the reconciler to UPDATE, so the fill looked like a brand-new orphan. The 2026-05-19 safety net (correctly) refuses to silently synthesize rows for orphan fills, so it HALTED the profile — every cycle, because the orphan never got resolved.
+
+This violated `feedback_no_orphan_broker_fills`: "every api.submit_order writes a journal row in the same code path." The protective placements were the hole.
+
+### Fix (three pieces, one commit)
+
+**1. `bracket_orders.py` — atomic journaling at placement.** New `_write_pending_protective_row` helper. All three placement helpers (`submit_protective_stop`, `submit_protective_take_profit`, `submit_protective_trailing`) now write a `status='pending_protective'` trades row immediately after a successful `submit_order`, carrying the protective order_id, side, qty, signal_type (`PROTECTIVE_STOP` / `_TAKE_PROFIT` / `_TRAILING`), and trigger price (NULL for trailing). `ensure_protective_stops` passes `db_path` + `entry_trade_id` down. Journal-write failure is non-fatal (the broker order IS placed; WARNING logged) and `db_path=None` logs a WARNING but still places the order — back-compat safe.
+
+**2. `reconcile_journal_to_broker.py` — UPDATE the pending row, don't synthesize.** When the reconciler detects a protective fill, it looks up the `pending_protective` row by order_id and UPDATEs it to `status='closed'` with the fill price/qty, and marks the entry closed. No INSERT, no synthesis. The safety-net halt now only counts PHANTOM-source entries (broker fills with no journaled order_id of ANY kind) and any PROTECTIVE entry whose pending row is missing (legacy pre-fix gap). After this lands, protective fills never touch the halt counter.
+
+**3. `journal.py` — pending rows are passive.** `get_virtual_positions` and `get_virtual_account_info` now exclude `status='pending_protective'`. Without this, a pending stop's trigger price (stored in `price`) would be counted as a real cash flow and the pending SELL would FIFO-close the still-open entry. Both wrong: nothing has moved until the broker fires the order.
+
+### One-time legacy cleanup
+
+`scripts/backfill_protective_orphan_pid24_qcom_2026_05_21.py` — pid24's QCOM trailing stop fired under the OLD code, so there's no pending row to UPDATE. The script inserts the missing SELL row (125 @ $199.50, the broker fill) and marks the entry BUY (#40) closed with realized pnl = (199.50 − 200.99) × 125 = −$186.25. Idempotent (skips if the SELL already exists or the entry is already closed; refuses to act if the data shape doesn't match the expected legacy state). The reconciler auto-clears the halt on the next pass once no synthesis is needed.
+
+### Tests
+
+`tests/test_protective_journaling_at_placement_2026_05_21.py` (12 cases): each placement helper writes a pending row with correct fields; trailing writes price=NULL; short-cover uses side=buy; entry_trade_id linkage; submit failure writes nothing; db_path=None still places + warns; journal-write failure is non-fatal; **pending_protective row does NOT close the position or move cash; once flipped to closed it DOES count.**
+
+`tests/test_atomic_journaling_audit_2026_05_19.py` updated: `_write_pending_protective_row` added as a recognized JOURNAL_MARKER; the bracket-site line-number EXEMPTION retired (the audit now positively VERIFIES protective sites journal in-function rather than skipping them). The caller-side UPDATE linkage is still pinned by `test_bracket_callers_persist_order_id_atomically`.
+
+Existing 60 reconciler tests + 17 virtual-account/cover tests still pass.
+
+### Why this wasn't caught earlier
+
+The atomic-journaling audit EXEMPTED the bracket sites by line number with the rationale "different atomicity model — caller persists the order_id." That exemption was the blind spot: it verified the order_id linkage but never the FILL-side journaling, so broker-side protective triggers slipped through as orphans. The audit now verifies the fill-side row exists, closing the class.
+
+---
+
 ## 2026-05-21 PM — /trades page also gets the SPREAD header Unrealized P&L. Severity: low (UI parity).
 
 Operator: dashboard SPREAD header showed Unrealized P&L correctly after the earlier deploy, but /trades still showed only "Net credit $X" with no Unrealized clause. Same template, different data source.

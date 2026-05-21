@@ -119,22 +119,39 @@ JOURNAL_MARKERS = (
     "log_trade(",
     "UPDATE trades",  # exit-path UPDATE of existing row
     "INSERT INTO trades",  # rare — direct INSERT
+    # 2026-05-21 — protective placements (stop / TP / trailing) now
+    # journal a `pending_protective` row in-function via this helper
+    # immediately after submit_order. Recognizing the helper call as
+    # a journal marker turns the old line-number EXEMPTION into a
+    # positive verification — the audit now CONFIRMS protective sites
+    # journal, rather than skipping them.
+    "_write_pending_protective_row(",
 )
 
 MAX_LINES_TO_JOURNAL = 100  # accommodates ADV+slippage enrichment between submit and journal
 
 
-# Bracket-order submission has a different atomicity model: the
-# function RETURNS the order_id and the CALLER persists the
-# linkage on the parent trade row. So `submit_order` here doesn't
-# have a journal marker in-function — the in-caller UPDATE is the
-# atomicity guarantee. Covered by
+# 2026-05-21 — Bracket-order submission USED to have a different
+# atomicity model (function returns order_id, caller persists the
+# linkage; submit_order had no in-function journal marker). That
+# left a hole: when the broker autonomously FILLED a protective
+# order, there was no trades row for the reconciler to UPDATE, so
+# the fill looked like an orphan and tripped the safety-net halt
+# (caught 2026-05-21 on pid24 QCOM trailing stop).
+#
+# Now the protective placement helpers journal a `pending_protective`
+# row in-function via `_write_pending_protective_row` (a recognized
+# JOURNAL_MARKER above). So they pass the main forward-scan check
+# like any other submit_order site — no line-number exemption
+# needed. The set is kept empty (rather than deleted) so the
+# `(fname, i+1) in BRACKET_SUBMIT_SITES` guard below stays valid
+# and a future operator can re-add an exemption if a genuinely
+# different model is introduced.
+#
+# The caller-side UPDATE (protective_*_order_id linkage on the
+# entry row) is STILL required and still pinned by
 # test_bracket_callers_persist_order_id_atomically below.
-BRACKET_SUBMIT_SITES = {
-    ("bracket_orders.py", 51),    # submit_protective_stop
-    ("bracket_orders.py", 153),   # submit_protective_tp
-    ("bracket_orders.py", 217),   # submit_protective_trailing
-}
+BRACKET_SUBMIT_SITES = set()
 
 
 def test_every_submit_order_site_has_a_journal_write_nearby():
