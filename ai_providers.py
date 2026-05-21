@@ -174,11 +174,22 @@ def _resolve_same_provider_fallback_model(primary_provider: str,
     When -lite trips its (provider, model) circuit, the chain will try
     -flash once before declaring google failed.
 
-    Returns the fallback model id, or None when:
-      - The user hasn't picked one
+    Returns a tuple `(fallback_model, fallback_api_key)`, or None when:
+      - The user hasn't picked a model
       - The user's chosen llm_provider doesn't match the primary
       - The fallback model equals the primary model (no-op)
+      - The user hasn't set a Fallback LLM Key (no credential to use)
       - The DB lookup fails (no master DB on test fixtures, etc.)
+
+    The Fallback LLM Key (stored in `users.anthropic_api_key_enc` —
+    the column name is historical from when the field was Anthropic-
+    specific; it now holds the key for whichever provider llm_provider
+    selects) IS the credential used. We do NOT reuse the caller's
+    per-profile key here because that would route the operator's
+    "fallback" plumbing through a key they may not want to use for
+    fallback (e.g., a profile that uses a paper-tier Gemini key,
+    where the operator's user-level fallback key targets a higher-
+    tier billing account with looser rate limits).
 
     Note: this is a single-row read from quantopsai.db. Cached values
     aren't needed — the read is ~ms and only happens on chain-build.
@@ -189,8 +200,8 @@ def _resolve_same_provider_fallback_model(primary_provider: str,
         with _closing(_sq3.connect("quantopsai.db")) as conn:
             conn.row_factory = _sq3.Row
             row = conn.execute(
-                "SELECT llm_provider, llm_model FROM users "
-                "ORDER BY id ASC LIMIT 1"
+                "SELECT llm_provider, llm_model, anthropic_api_key_enc "
+                "FROM users ORDER BY id ASC LIMIT 1"
             ).fetchone()
         if not row:
             return None
@@ -204,7 +215,31 @@ def _resolve_same_provider_fallback_model(primary_provider: str,
             # Operator picked the same model for primary + fallback —
             # nothing to gain; skip the no-op entry.
             return None
-        return fb_model
+        # Decrypt the fallback key (stored encrypted in the legacy-
+        # named `anthropic_api_key_enc` column). Without a key we
+        # can't actually call the provider, so suppress the chain
+        # entry instead of returning a key-less tuple that would
+        # blow up later.
+        try:
+            from crypto import decrypt as _decrypt
+            enc = row["anthropic_api_key_enc"] or ""
+            fb_key = _decrypt(enc) if enc else ""
+        except Exception as _decrypt_exc:
+            logger.warning(
+                "same-provider fallback key decrypt failed (%s: %s) — "
+                "chain will skip the same-provider fallback entry",
+                type(_decrypt_exc).__name__, _decrypt_exc,
+            )
+            return None
+        if not fb_key:
+            logger.info(
+                "same-provider fallback model is set (%s/%s) but no "
+                "Fallback LLM Key configured — skipping. Set the key "
+                "in Settings → Fallback LLM Key to enable.",
+                fb_provider, fb_model,
+            )
+            return None
+        return (fb_model, fb_key)
     except Exception as exc:
         logger.debug(
             "same-provider fallback lookup failed (%s: %s) — chain "
@@ -248,23 +283,20 @@ def _build_fallback_chain(primary_provider: str,
     # 2026-05-21 — SAME-PROVIDER fallback model. Inserted at the head
     # of the chain (BEFORE cross-provider fallbacks) so a more-reliable
     # model on the same provider gets tried first when the primary
-    # model's circuit trips. Reuses the primary provider's API key —
-    # no new credential needed.
-    fb_model = _resolve_same_provider_fallback_model(
+    # model's circuit trips. Uses the operator's user-level Fallback
+    # LLM Key (Settings → Fallback LLM section) — independent of the
+    # per-profile API key used by the primary call.
+    fb_resolution = _resolve_same_provider_fallback_model(
         primary_provider, primary_model,
     )
-    if fb_model:
-        primary_key = next(
-            (k for prov, k, _m in candidates if prov == primary_provider),
-            None,
+    if fb_resolution is not None:
+        fb_model, fb_key = fb_resolution
+        chain.append((primary_provider, fb_key, fb_model))
+        logger.info(
+            "Same-provider fallback enabled: %s/%s -> %s/%s",
+            primary_provider, primary_model or "(default)",
+            primary_provider, fb_model,
         )
-        if primary_key:
-            chain.append((primary_provider, primary_key, fb_model))
-            logger.info(
-                "Same-provider fallback enabled: %s/%s -> %s/%s",
-                primary_provider, primary_model or "(default)",
-                primary_provider, fb_model,
-            )
 
     allow_anthropic_fallback = (
         os.getenv("AI_ALLOW_ANTHROPIC_FALLBACK", "").strip() == "1"

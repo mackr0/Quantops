@@ -67,9 +67,17 @@ Existing `tests/test_provider_circuit_failover.py` — 4 tests updated to use co
 
 ### Operator action required
 
-To enable: Settings → Fallback LLM section → set Provider=Google + Model=gemini-2.5-flash + Key (same key already in your env). Save. Effective immediately on next AI call.
+To enable: Settings → Fallback LLM section → set Provider=Google + Model=gemini-2.5-flash + Key. Save. Effective immediately on next AI call.
 
 Until configured, the chain behavior is unchanged — bare-provider fallback only, no same-provider model fallback. So this ship is back-compat safe: zero behavior change for any profile until the operator picks a fallback model.
+
+### Follow-up fix (same day)
+
+Initial ship looked up the same-provider fallback's API key from `config.GEMINI_API_KEY` (env-level), which is empty post-2026-05-19 master-key removal. Result: `_build_fallback_chain` resolved the fallback model correctly but couldn't construct a chain entry because there was no key — same-provider fallback silently no-op'd.
+
+Fixed by reading the user's Fallback LLM Key (stored encrypted in `users.anthropic_api_key_enc` — the column name is historical) and using THAT as the fallback's credential. `_resolve_same_provider_fallback_model` now returns a `(fallback_model, fallback_api_key)` tuple, and the chain builder uses both directly without consulting env-level config. Also handles the "model set but key not set" case with a clear INFO log so the operator knows why the fallback isn't active.
+
+Tests updated to seed the encrypted-key column when constructing test master DBs. New test pins the "model set but no key" → returns None path. 52/52 pass across affected suites.
 
 ---
 

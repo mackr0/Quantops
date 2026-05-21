@@ -111,14 +111,17 @@ class TestResolveSameProviderFallback:
     @pytest.fixture
     def master_db(self, tmp_path, monkeypatch):
         """Build a minimal master DB with a users table the helper
-        can read."""
+        can read. Includes the encrypted-key column so the fallback
+        lookup can decrypt successfully."""
+        from crypto import encrypt
         db_path = tmp_path / "quantopsai.db"
         conn = sqlite3.connect(str(db_path))
         conn.executescript("""
             CREATE TABLE users (
                 id INTEGER PRIMARY KEY,
                 llm_provider TEXT,
-                llm_model TEXT
+                llm_model TEXT,
+                anthropic_api_key_enc TEXT
             );
         """)
         conn.commit()
@@ -126,23 +129,29 @@ class TestResolveSameProviderFallback:
         monkeypatch.chdir(tmp_path)
         return db_path
 
-    def _set_user(self, db_path, provider, model):
+    def _set_user(self, db_path, provider, model,
+                   api_key="test-fallback-key"):
+        from crypto import encrypt
         conn = sqlite3.connect(str(db_path))
         conn.execute("DELETE FROM users")
+        enc = encrypt(api_key) if api_key else ""
         conn.execute(
-            "INSERT INTO users (id, llm_provider, llm_model) "
-            "VALUES (1, ?, ?)",
-            (provider, model),
+            "INSERT INTO users (id, llm_provider, llm_model, "
+            "anthropic_api_key_enc) VALUES (1, ?, ?, ?)",
+            (provider, model, enc),
         )
         conn.commit()
         conn.close()
 
-    def test_returns_model_when_provider_matches(self, master_db):
+    def test_returns_model_and_key_when_provider_matches(self, master_db):
         from ai_providers import _resolve_same_provider_fallback_model
         self._set_user(master_db, "google", "gemini-2.5-flash")
         out = _resolve_same_provider_fallback_model(
             "google", "gemini-2.5-flash-lite")
-        assert out == "gemini-2.5-flash"
+        assert out is not None
+        model, key = out
+        assert model == "gemini-2.5-flash"
+        assert key == "test-fallback-key"
 
     def test_returns_none_when_provider_mismatch(self, master_db):
         """User has llm_provider='openai' but caller's primary is
@@ -169,6 +178,17 @@ class TestResolveSameProviderFallback:
             "google", "gemini-2.5-flash-lite")
         assert out is None
 
+    def test_returns_none_when_no_fallback_key(self, master_db):
+        """Operator selected a fallback model but didn't set a
+        Fallback LLM Key. Can't make the call → skip the entry
+        cleanly (logs an INFO so the operator knows why)."""
+        from ai_providers import _resolve_same_provider_fallback_model
+        self._set_user(master_db, "google", "gemini-2.5-flash",
+                       api_key="")
+        out = _resolve_same_provider_fallback_model(
+            "google", "gemini-2.5-flash-lite")
+        assert out is None
+
     def test_returns_none_when_db_missing(self, tmp_path, monkeypatch):
         """No master DB → helper falls through cleanly. Don't break
         ai_providers in test environments without a populated DB."""
@@ -186,17 +206,23 @@ class TestResolveSameProviderFallback:
 class TestFallbackChainInsertion:
     @pytest.fixture
     def master_db(self, tmp_path, monkeypatch):
+        from crypto import encrypt
         db_path = tmp_path / "quantopsai.db"
         conn = sqlite3.connect(str(db_path))
         conn.executescript("""
             CREATE TABLE users (
                 id INTEGER PRIMARY KEY,
                 llm_provider TEXT,
-                llm_model TEXT
+                llm_model TEXT,
+                anthropic_api_key_enc TEXT
             );
-            INSERT INTO users (id, llm_provider, llm_model)
-                VALUES (1, 'google', 'gemini-2.5-flash');
         """)
+        conn.execute(
+            "INSERT INTO users (id, llm_provider, llm_model, "
+            "anthropic_api_key_enc) VALUES (1, 'google', "
+            "'gemini-2.5-flash', ?)",
+            (encrypt("fallback-key-1234567890"),),
+        )
         conn.commit()
         conn.close()
         monkeypatch.chdir(tmp_path)
@@ -205,7 +231,7 @@ class TestFallbackChainInsertion:
     def test_same_provider_entry_at_chain_head(self, master_db, monkeypatch):
         """When the user has llm_provider=google + llm_model=flash,
         and the primary call is google/flash-lite, the chain's first
-        entry should be (google, primary_key, flash) — before any
+        entry should be (google, fallback_key, flash) — before any
         cross-provider entries."""
         import config
         monkeypatch.setattr(config, "OPENAI_API_KEY", "sk-test")
@@ -220,9 +246,10 @@ class TestFallbackChainInsertion:
             f"Same-provider fallback should be FIRST in chain; "
             f"got {first[0]} at position 0"
         )
-        assert first[1] == "g-test", (
-            "Same-provider fallback should reuse the provider's "
-            "primary API key — not require a new credential."
+        assert first[1] == "fallback-key-1234567890", (
+            "Same-provider fallback should use the user's "
+            "Fallback LLM Key from Settings, not the env-level "
+            "GEMINI_API_KEY (env-level master keys were removed)."
         )
         assert first[2] == "gemini-2.5-flash"
 
@@ -269,17 +296,23 @@ class TestEndToEndSameProviderFallback:
 
     @pytest.fixture
     def master_db(self, tmp_path, monkeypatch):
+        from crypto import encrypt
         db_path = tmp_path / "quantopsai.db"
         conn = sqlite3.connect(str(db_path))
         conn.executescript("""
             CREATE TABLE users (
                 id INTEGER PRIMARY KEY,
                 llm_provider TEXT,
-                llm_model TEXT
+                llm_model TEXT,
+                anthropic_api_key_enc TEXT
             );
-            INSERT INTO users (id, llm_provider, llm_model)
-                VALUES (1, 'google', 'gemini-2.5-flash');
         """)
+        conn.execute(
+            "INSERT INTO users (id, llm_provider, llm_model, "
+            "anthropic_api_key_enc) VALUES (1, 'google', "
+            "'gemini-2.5-flash', ?)",
+            (encrypt("fallback-key-1234567890"),),
+        )
         conn.commit()
         conn.close()
         monkeypatch.chdir(tmp_path)
