@@ -148,10 +148,12 @@ class TestCostCapEnforcedAtProviderBoundary:
         )
         # Stub circuit-breaker checks
         monkeypatch.setattr(
-            "provider_circuit.is_open", lambda _provider: False,
+            "provider_circuit.is_open",
+            lambda _provider, _model=None: False,
         )
         monkeypatch.setattr(
-            "provider_circuit.record_success", lambda _provider: None,
+            "provider_circuit.record_success",
+            lambda _provider, _model=None: None,
         )
 
         from ai_providers import call_ai
@@ -176,10 +178,12 @@ class TestCostCapEnforcedAtProviderBoundary:
             lambda *a, **k: ("ok", 1, 1),
         )
         monkeypatch.setattr(
-            "provider_circuit.is_open", lambda _provider: False,
+            "provider_circuit.is_open",
+            lambda _provider, _model=None: False,
         )
         monkeypatch.setattr(
-            "provider_circuit.record_success", lambda _provider: None,
+            "provider_circuit.record_success",
+            lambda _provider, _model=None: None,
         )
         from ai_providers import call_ai
         # No db_path at all — must not raise CostCapExceeded.

@@ -61,19 +61,39 @@
             </label>
             <label>
                 Fallback LLM Provider
-                <select name="llm_provider">
+                <select name="llm_provider" class="ai-provider-select" data-profile-id="_fallback">
                     {% for pkey, pinfo in ai_providers.items() %}
                     <option value="{{ pkey }}" {{ 'selected' if keys.llm_provider == pkey else '' }}>{{ pinfo.name }}</option>
                     {% endfor %}
                 </select>
             </label>
+            <label>
+                Fallback LLM Model
+                <select name="llm_model" class="ai-model-select" data-profile-id="_fallback" data-current-model="{{ keys.llm_model or '' }}">
+                    <!-- Populated by JS based on llm_provider selection -->
+                </select>
+            </label>
         </div>
         <p style="font-size:0.8rem;color:#666;margin:-0.25rem 0 0.75rem 0;">
-            Used by CLI tools and helpers that don't have a per-profile
-            context (<code>main.py ai-analyze</code>, news sentiment
-            scoring, etc.). <strong>Your trading profiles each have
-            their own provider + key</strong> set on the profile
-            edit page — those are independent of this fallback.
+            Used <strong>two ways</strong>:
+            <ol style="margin:0.25rem 0 0 1.25rem;padding:0;">
+                <li>By CLI tools and helpers that don't have a
+                    per-profile context
+                    (<code>main.py ai-analyze</code>, news sentiment
+                    scoring, etc.)</li>
+                <li>As a <strong>same-provider fallback model</strong>
+                    for trading profiles. When a profile's primary
+                    model trips its circuit (e.g.,
+                    <code>gemini-2.5-flash-lite</code> getting 503'd
+                    by Google's throttle), the chain will retry on the
+                    model selected here before declaring the call
+                    failed. Pick a more-reliable tier (e.g.,
+                    <code>gemini-2.5-flash</code>) so a flaky cheap
+                    tier doesn't kill the cycle.</li>
+            </ol>
+            <strong>Your trading profiles each have their own primary
+            provider + key</strong> set on the profile edit page —
+            those are independent of this fallback.
         </p>
         <div class="grid">
             <label>

@@ -57,17 +57,36 @@ _states: Dict[str, _ProviderState] = {}
 _global_lock = threading.Lock()
 
 
-def _state(provider: str) -> _ProviderState:
+def _key(provider: str, model: Optional[str] = None) -> str:
+    """Compose the per-(provider, model) state key.
+
+    2026-05-21 — circuits used to be per-provider only, which made
+    a single throttled model (e.g. `gemini-2.5-flash-lite` during
+    Google's high-demand windows) lock out ALL models on that
+    provider — including same-provider fallback models the operator
+    explicitly configured to step around the throttled tier. Now
+    each model gets its own circuit. Calls without an explicit
+    model (legacy / pre-2026-05-21) fall back to the bare provider
+    key so existing test fixtures and old code paths don't crash.
+    """
+    if model:
+        return f"{provider}::{model}"
+    return provider
+
+
+def _state(provider: str, model: Optional[str] = None) -> _ProviderState:
     with _global_lock:
-        if provider not in _states:
-            _states[provider] = _ProviderState()
-        return _states[provider]
+        k = _key(provider, model)
+        if k not in _states:
+            _states[k] = _ProviderState()
+        return _states[k]
 
 
-def is_open(provider: str) -> bool:
-    """Return True when callers should SKIP this provider and try
-    fallback. Half-open state returns False (one call gets through)."""
-    s = _state(provider)
+def is_open(provider: str, model: Optional[str] = None) -> bool:
+    """Return True when callers should SKIP this (provider, model)
+    and try fallback. Half-open state returns False (one call gets
+    through)."""
+    s = _state(provider, model)
     with s.lock:
         if s.opened_at is None:
             return False
@@ -80,23 +99,29 @@ def is_open(provider: str) -> bool:
         return True
 
 
-def record_success(provider: str) -> None:
-    """Successful call resets the circuit."""
-    s = _state(provider)
+def record_success(provider: str, model: Optional[str] = None) -> None:
+    """Successful call resets the circuit for this (provider, model)."""
+    s = _state(provider, model)
     with s.lock:
         if s.opened_at is not None:
             logger.info(
                 "AI provider circuit CLOSED for %s (success after %.0fs)",
-                provider, time.time() - s.opened_at,
+                _key(provider, model), time.time() - s.opened_at,
             )
         s.consecutive_failures = 0
         s.opened_at = None
         s.current_cooldown = OPEN_COOLDOWN_SECONDS
 
 
-def record_failure(provider: str, exc: BaseException) -> None:
-    """Failed call. Increment counter; if threshold hit, open circuit."""
-    s = _state(provider)
+def record_failure(provider: str, exc: BaseException,
+                    model: Optional[str] = None) -> None:
+    """Failed call. Increment counter; if threshold hit, open circuit.
+
+    Note the `exc` arg comes BEFORE `model` to preserve the existing
+    positional-call signature `record_failure(provider, exc)` — older
+    call sites that don't pass a model continue to work and just key
+    by provider alone."""
+    s = _state(provider, model)
     with s.lock:
         s.consecutive_failures += 1
         # If circuit was already open and we're in HALF_OPEN, this
@@ -127,8 +152,9 @@ def record_failure(provider: str, exc: BaseException) -> None:
             )
 
 
-def seconds_until_close(provider: str) -> Optional[float]:
-    """Return seconds remaining until this provider's circuit
+def seconds_until_close(provider: str,
+                         model: Optional[str] = None) -> Optional[float]:
+    """Return seconds remaining until this (provider, model) circuit
     becomes eligible for a half-open trial call, or None if the
     circuit is currently closed (no cool-down active).
 
@@ -136,7 +162,7 @@ def seconds_until_close(provider: str) -> Optional[float]:
     chain is exhausted — the AI Brain panel can render "retry in
     ~187s" instead of just "AI unavailable."
     """
-    s = _state(provider)
+    s = _state(provider, model)
     with s.lock:
         if s.opened_at is None:
             return None

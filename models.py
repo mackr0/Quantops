@@ -314,6 +314,18 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             # Default 'anthropic' preserves behavior for existing users
             # whose stored key is an Anthropic key.
             ("users", "llm_provider", "TEXT NOT NULL DEFAULT 'anthropic'"),
+            # 2026-05-21 — user-configurable fallback MODEL. Pairs with
+            # llm_provider above. Lets the operator set a specific
+            # model (e.g. gemini-2.5-flash) as the same-provider
+            # fallback when the profile-level primary model
+            # (e.g. gemini-2.5-flash-lite) trips its circuit. Was
+            # added after Gemini's flash-lite tier started 503ing
+            # ~40-50% of the time, and the chain had no way to
+            # promote to the more-reliable flash tier without
+            # losing the cost savings on the modal call path. NULL
+            # (or empty) means "use the provider's default model"
+            # for backward compat with users who haven't picked.
+            ("users", "llm_model", "TEXT"),
             # --- user_segment_configs table ---
             ("user_segment_configs", "alpaca_api_key_enc", "TEXT NOT NULL DEFAULT ''"),
             ("user_segment_configs", "alpaca_secret_key_enc", "TEXT NOT NULL DEFAULT ''"),
@@ -802,6 +814,7 @@ def update_user_credentials(user_id: int, alpaca_key: str = "",
                             alpaca_secret: str = "",
                             llm_key: str = "",
                             llm_provider: Optional[str] = None,
+                            llm_model: Optional[str] = None,
                             notification_email: str = "",
                             resend_key: str = "",
                             # 2026-05-19 — `anthropic_key` retained as
@@ -845,6 +858,12 @@ def update_user_credentials(user_id: int, alpaca_key: str = "",
         # only the key.
         fields.append("llm_provider = ?")
         params.append(llm_provider)
+    if llm_model is not None:
+        # 2026-05-21 — same partial-update pattern as llm_provider.
+        # An empty string is a legitimate value (meaning "use the
+        # provider's default model" — clears the explicit override).
+        fields.append("llm_model = ?")
+        params.append(llm_model or None)
     params.append(user_id)
     sql = f"UPDATE users SET {', '.join(fields)} WHERE id = ?"
     with closing(_get_conn()) as conn:
@@ -866,14 +885,17 @@ def get_user_llm_settings(user_id: int) -> Dict[str, str]:
     with closing(_get_conn()) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            "SELECT llm_provider, anthropic_api_key_enc "
+            "SELECT llm_provider, llm_model, anthropic_api_key_enc "
             "FROM users WHERE id = ?",
             (user_id,),
         ).fetchone()
     if row is None:
-        return {"provider": "anthropic", "api_key": ""}
+        return {"provider": "anthropic", "model": None, "api_key": ""}
     return {
         "provider": row["llm_provider"] or "anthropic",
+        # 2026-05-21 — same-provider fallback model. None / empty
+        # means "use provider's default model" for back-compat.
+        "model": row["llm_model"] if "llm_model" in row.keys() else None,
         "api_key": decrypt(row["anthropic_api_key_enc"] or ""),
     }
 

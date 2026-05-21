@@ -1071,6 +1071,10 @@ def settings():
     # "Fallback LLM Key"; column rename is a future refactor.
     llm_key = decrypt(user.get("anthropic_api_key_enc", ""))
     llm_provider = user.get("llm_provider") or "anthropic"
+    # 2026-05-21 — same-provider fallback model. The model select on
+    # the Settings page reads from this; empty/None means "use the
+    # provider's default model" for back-compat.
+    llm_model = user.get("llm_model") or ""
     resend_key = decrypt(user.get("resend_api_key_enc", ""))
     notification_email = user.get("notification_email", "")
 
@@ -1079,6 +1083,7 @@ def settings():
         "alpaca_secret_key": _mask_key(alpaca_secret),
         "llm_api_key": _mask_key(llm_key),
         "llm_provider": llm_provider,
+        "llm_model": llm_model,
         "resend_api_key": _mask_key(resend_key),
         "notification_email": notification_email,
         "has_alpaca": bool(alpaca_key),
@@ -1247,6 +1252,10 @@ def save_keys():
     # a key for any supported provider.
     llm_key = request.form.get("llm_api_key", "").strip()
     llm_provider = request.form.get("llm_provider", "").strip() or None
+    # 2026-05-21 — same-provider fallback model. Empty string is a
+    # legitimate value (clear the explicit override → use the
+    # provider's default model).
+    llm_model = request.form.get("llm_model", "").strip()
     notification_email = request.form.get("notification_email", "").strip()
     resend_key = request.form.get("resend_api_key", "").strip()
 
@@ -1273,6 +1282,7 @@ def save_keys():
         alpaca_secret=alpaca_secret,
         llm_key=llm_key,
         llm_provider=llm_provider,
+        llm_model=llm_model,
         notification_email=notification_email,
         resend_key=resend_key,
     )

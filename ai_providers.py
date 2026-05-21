@@ -160,7 +160,62 @@ class AIProviderUnavailable(RuntimeError):
         self.next_retry_hint = next_retry_hint
 
 
-def _build_fallback_chain(primary_provider: str):
+def _resolve_same_provider_fallback_model(primary_provider: str,
+                                            primary_model: Optional[str]):
+    """Look up the user-configured same-provider fallback model.
+
+    2026-05-21 — added so the operator can configure (via Settings →
+    Fallback LLM Model) a more-reliable model on the same provider
+    that the chain will try BEFORE giving up on the provider entirely.
+
+    Typical use: profile primary is `gemini-2.5-flash-lite` (cheap,
+    heavily throttled by Google); operator sets the fallback model to
+    `gemini-2.5-flash` (standard tier, ~3× cost, far more reliable).
+    When -lite trips its (provider, model) circuit, the chain will try
+    -flash once before declaring google failed.
+
+    Returns the fallback model id, or None when:
+      - The user hasn't picked one
+      - The user's chosen llm_provider doesn't match the primary
+      - The fallback model equals the primary model (no-op)
+      - The DB lookup fails (no master DB on test fixtures, etc.)
+
+    Note: this is a single-row read from quantopsai.db. Cached values
+    aren't needed — the read is ~ms and only happens on chain-build.
+    """
+    try:
+        import sqlite3 as _sq3
+        from contextlib import closing as _closing
+        with _closing(_sq3.connect("quantopsai.db")) as conn:
+            conn.row_factory = _sq3.Row
+            row = conn.execute(
+                "SELECT llm_provider, llm_model FROM users "
+                "ORDER BY id ASC LIMIT 1"
+            ).fetchone()
+        if not row:
+            return None
+        fb_provider = (row["llm_provider"] or "").strip().lower()
+        fb_model = (row["llm_model"] or "").strip()
+        if not fb_model:
+            return None
+        if fb_provider != primary_provider:
+            return None
+        if primary_model and fb_model == primary_model:
+            # Operator picked the same model for primary + fallback —
+            # nothing to gain; skip the no-op entry.
+            return None
+        return fb_model
+    except Exception as exc:
+        logger.debug(
+            "same-provider fallback lookup failed (%s: %s) — chain "
+            "will proceed with cross-provider fallbacks only",
+            type(exc).__name__, exc,
+        )
+        return None
+
+
+def _build_fallback_chain(primary_provider: str,
+                           primary_model: Optional[str] = None):
     """Return list of (provider, api_key, model) tuples to try after
     primary fails.
 
@@ -190,6 +245,27 @@ def _build_fallback_chain(primary_provider: str):
         ("google", _config.GEMINI_API_KEY, _config.GEMINI_MODEL),
         ("anthropic", _config.ANTHROPIC_API_KEY, _config.CLAUDE_MODEL),
     ]
+    # 2026-05-21 — SAME-PROVIDER fallback model. Inserted at the head
+    # of the chain (BEFORE cross-provider fallbacks) so a more-reliable
+    # model on the same provider gets tried first when the primary
+    # model's circuit trips. Reuses the primary provider's API key —
+    # no new credential needed.
+    fb_model = _resolve_same_provider_fallback_model(
+        primary_provider, primary_model,
+    )
+    if fb_model:
+        primary_key = next(
+            (k for prov, k, _m in candidates if prov == primary_provider),
+            None,
+        )
+        if primary_key:
+            chain.append((primary_provider, primary_key, fb_model))
+            logger.info(
+                "Same-provider fallback enabled: %s/%s -> %s/%s",
+                primary_provider, primary_model or "(default)",
+                primary_provider, fb_model,
+            )
+
     allow_anthropic_fallback = (
         os.getenv("AI_ALLOW_ANTHROPIC_FALLBACK", "").strip() == "1"
     )
@@ -402,7 +478,7 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
         record_failure as _circuit_record_failure,
     )
 
-    fallback_chain = _build_fallback_chain(provider)
+    fallback_chain = _build_fallback_chain(provider, model)
     attempts = [(provider, api_key, model)] + fallback_chain
     last_exc: BaseException = None
     # Track every provider's skip reason for the diagnostic that
@@ -411,26 +487,33 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
     skip_reasons = []
 
     for attempt_provider, attempt_key, attempt_model in attempts:
-        # Skip a provider whose circuit is currently OPEN (cool-down
-        # not elapsed). HALF_OPEN passes through.
-        if _circuit_is_open(attempt_provider):
+        # Skip a (provider, model) whose circuit is currently OPEN
+        # (cool-down not elapsed). HALF_OPEN passes through. Circuits
+        # are keyed per-(provider, model) as of 2026-05-21 — a single
+        # throttled model no longer locks out same-provider fallback
+        # models the operator explicitly configured.
+        if _circuit_is_open(attempt_provider, attempt_model):
             logger.info(
-                "AI failover: skipping %s — circuit OPEN", attempt_provider,
+                "AI failover: skipping %s/%s — circuit OPEN",
+                attempt_provider, attempt_model,
             )
             # Try to surface the cool-down remaining so the diagnostic
             # tells operators when to expect recovery.
             try:
                 from provider_circuit import seconds_until_close
-                remaining = seconds_until_close(attempt_provider)
+                remaining = seconds_until_close(
+                    attempt_provider, attempt_model)
+                _circuit_id = f"{attempt_provider}/{attempt_model}"
                 if remaining:
                     skip_reasons.append(
-                        f"{attempt_provider}: circuit OPEN "
+                        f"{_circuit_id}: circuit OPEN "
                         f"(retry in ~{int(remaining)}s)"
                     )
                 else:
-                    skip_reasons.append(f"{attempt_provider}: circuit OPEN")
+                    skip_reasons.append(f"{_circuit_id}: circuit OPEN")
             except Exception:
-                skip_reasons.append(f"{attempt_provider}: circuit OPEN")
+                skip_reasons.append(
+                    f"{attempt_provider}/{attempt_model}: circuit OPEN")
             continue
         logger.info(
             "Calling AI: provider=%s, model=%s, max_tokens=%d",
@@ -479,7 +562,8 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
             # NOW record the failure (one circuit-tick per provider
             # call, not per HTTP retry — the circuit ticks per cycle
             # of failure, not per sub-second retry).
-            _circuit_record_failure(attempt_provider, per_call_last_exc)
+            _circuit_record_failure(
+                attempt_provider, per_call_last_exc, attempt_model)
             last_exc = per_call_last_exc
             skip_reasons.append(
                 f"{attempt_provider}: {len(_RETRY_DELAYS_SECONDS)+1} "
@@ -496,7 +580,7 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
 
         # Fall through to the original success path that follows.
         # Success path
-        _circuit_record_success(attempt_provider)
+        _circuit_record_success(attempt_provider, attempt_model)
         if attempt_provider != provider:
             logger.warning(
                 "AI failover: primary %s circuit open, served by %s",
@@ -563,7 +647,10 @@ def call_ai(prompt, provider="anthropic", model=None, api_key=None, max_tokens=1
     if is_transient_unavailable:
         try:
             from provider_circuit import seconds_until_close
-            primary_retry_hint = seconds_until_close(provider)
+            # 2026-05-21 — circuits are keyed per-(provider, model)
+            # now, so the retry hint for the primary must include the
+            # specific model the caller picked.
+            primary_retry_hint = seconds_until_close(provider, model)
         except Exception:
             primary_retry_hint = None
     raise AIProviderUnavailable(

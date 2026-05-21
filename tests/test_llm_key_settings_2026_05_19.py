@@ -144,7 +144,15 @@ class TestGetUserLLMSettings:
             notification_email="", resend_key="",
         )
         result = get_user_llm_settings(fresh_master["user_id"])
-        assert result == {"provider": "openai", "api_key": "my-key"}
+        # 2026-05-21 — return dict gained an `model` field for the
+        # same-provider fallback model. Assert per-field rather than
+        # full-dict equality so future fields don't keep tripping
+        # this test.
+        assert result["provider"] == "openai"
+        assert result["api_key"] == "my-key"
+        assert result.get("model") in (None, ""), (
+            "model field defaults to None/empty when not configured"
+        )
 
     def test_missing_user_returns_empty_defaults(self, fresh_master):
         from models import get_user_llm_settings

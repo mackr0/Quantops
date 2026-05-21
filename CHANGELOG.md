@@ -17,6 +17,62 @@ Rules going forward:
 
 ---
 
+## 2026-05-21 PM — Same-provider model fallback: -lite → -flash on Gemini without losing cost savings. Severity: medium (reliability).
+
+`gemini-2.5-flash-lite` (the cheap tier the operator switched to after Haiku costs hit ~$3/day) was 503ing ~40-50% of the time under Google's "high demand" throttle. With only Google configured in the provider chain, when the (provider) circuit opened on -lite, every specialist call in that 5-min window failed — the AI Brain panel surfaced "AI provider chain exhausted: google: circuit OPEN (retry in ~155s)".
+
+Straight model swap to `gemini-2.5-flash` would have worked but cost ~3× (back toward the Haiku spend the operator left). The right answer: keep -lite as primary for the ~85-90% of calls that succeed, but configure -flash as a same-provider fallback for the cases where -lite gets throttled. Expected cost impact: ~$0.05-0.10/day extra (-flash only fires on -lite failures), vs ~$0.50-1.00/day on a straight swap.
+
+### Architectural changes
+
+**1. Circuit-breaker keyed per-(provider, model)**. Previously, three -lite failures opened the GOOGLE circuit, which then locked out -flash on the same provider too — defeating the whole point of a same-provider fallback. `provider_circuit.py` now keys state by `f"{provider}::{model}"`. Bare-provider keying still works for back-compat (legacy callers and unit-test fixtures). All signatures gain an optional `model` parameter:
+- `is_open(provider, model=None)`
+- `record_success(provider, model=None)`
+- `record_failure(provider, exc, model=None)`
+- `seconds_until_close(provider, model=None)`
+
+**2. New `users.llm_model` column**. Operator-configurable same-provider fallback model. Default NULL = "use the provider's default model" for back-compat. Migration via the standard `_migrate_all_columns` path.
+
+**3. Settings UI: "Fallback LLM Model" dropdown**. Sits next to the existing "Fallback LLM Provider" select. JS-populated based on the provider selection (reusing the existing `.ai-provider-select` / `.ai-model-select` pattern from the profile editor — same classes, fresh `data-profile-id="_fallback"` so the auto-init JS picks it up without code changes). Help text updated to explain the dual-purpose nature: CLI tools AND same-provider trading fallback.
+
+**4. `_resolve_same_provider_fallback_model` helper**. Reads `users.llm_provider` + `users.llm_model` from the master DB (`quantopsai.db`, first row). Returns the fallback model when the user's chosen provider matches the primary AND the chosen model isn't equal to the primary; returns None otherwise. Falls through cleanly when the DB is missing (test environments).
+
+**5. `_build_fallback_chain(primary_provider, primary_model)` accepts the primary model**. When a same-provider fallback model resolves, it gets inserted at the HEAD of the chain — before any cross-provider entries. Reuses the primary provider's API key (no new credential required).
+
+### Behavioral guarantee
+
+When `users.llm_model = 'gemini-2.5-flash'` and the operator's profile primary is `gemini-2.5-flash-lite`:
+
+1. Call → -lite 503 → retry → 503 → retry → 503 → record_failure(google, ..., gemini-2.5-flash-lite)
+2. Chain proceeds to fallback entry → (google, same_key, gemini-2.5-flash)
+3. is_open(google, gemini-2.5-flash) → False (separate circuit, never opened)
+4. Call → -flash 200 → record_success(google, gemini-2.5-flash)
+5. Caller receives the -flash response; -lite's circuit remains open for the 5-min cooldown but doesn't block -flash
+
+If -flash ALSO 503s, the chain continues to cross-provider candidates (openai, then anthropic if `AI_ALLOW_ANTHROPIC_FALLBACK=1`).
+
+### Tests
+
+`tests/test_same_provider_model_fallback_2026_05_21.py` — 13 cases:
+- Per-(provider, model) circuit independence (the key safety property)
+- Legacy bare-provider calls still work (back-compat)
+- `status()` exposes composite keys
+- `seconds_until_close` takes a model
+- Helper returns configured model when provider matches; None when mismatch / not set / fallback equals primary / DB missing
+- Chain-head insertion when llm_model is set; fall-through to cross-provider when not
+- End-to-end: -lite 503 storm routes to -flash without invoking openai/anthropic
+- End-to-end: -flash also 503ing escapes to cross-provider
+
+Existing `tests/test_provider_circuit_failover.py` — 4 tests updated to use composite keys (the pre-open patterns now include the model argument). 19/19 still pass.
+
+### Operator action required
+
+To enable: Settings → Fallback LLM section → set Provider=Google + Model=gemini-2.5-flash + Key (same key already in your env). Save. Effective immediately on next AI call.
+
+Until configured, the chain behavior is unchanged — bare-provider fallback only, no same-provider model fallback. So this ship is back-compat safe: zero behavior change for any profile until the operator picks a fallback model.
+
+---
+
 ## 2026-05-21 AM — Trades table: visually group multileg legs as a single strategic play. Severity: low (UI/UX clarity).
 
 Operator: each leg of a multileg spread was rendering as a fully-independent row in the trades table and dashboard panels. Reading 2 BAC rows (one sell, one buy) with no visual cue that they're a bull_put_spread filled atomically by a single broker order was confusing — the table looked like "two unrelated option trades on the same symbol in the same second" instead of one defined-risk spread.

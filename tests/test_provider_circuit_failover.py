@@ -96,12 +96,18 @@ def test_status_reports_state():
 def test_call_ai_failover_falls_back_when_anthropic_521s():
     """Primary 529s three times → circuit opens. Fallback (openai)
     succeeds → call returns the openai response."""
-    from provider_circuit import record_failure
+    from provider_circuit import record_failure, reset as _circ_reset
     import config
 
-    # Pre-open the anthropic circuit
+    # 2026-05-21 — circuits are keyed per-(provider, model) now.
+    # Pre-open the SAME key call_ai will look up below
+    # (provider="anthropic", model="claude-haiku-4-5").
+    _circ_reset()
     for _ in range(3):
-        record_failure("anthropic", Exception("529 overloaded"))
+        record_failure(
+            "anthropic", Exception("529 overloaded"),
+            "claude-haiku-4-5",
+        )
 
     fake_response = ("openai-response-text", 100, 50)
     with patch.object(config, "OPENAI_API_KEY", "sk-test"), \
@@ -157,12 +163,15 @@ def test_non_transient_errors_do_not_trip_circuit():
 
 
 def test_call_ai_no_fallback_configured_raises_when_primary_open():
-    """If only anthropic is configured AND its circuit is open, the
-    call should raise (no fallback to use)."""
-    from provider_circuit import record_failure
+    """If only anthropic is configured AND its (provider, model)
+    circuit is open, the call should raise (no fallback to use)."""
+    from provider_circuit import record_failure, reset as _circ_reset
     import config
+    # 2026-05-21 — circuits keyed per-(provider, model); pre-open
+    # under the same key call_ai will look up.
+    _circ_reset()
     for _ in range(3):
-        record_failure("anthropic", Exception("529"))
+        record_failure("anthropic", Exception("529"), "claude")
 
     with patch.object(config, "OPENAI_API_KEY", None), \
          patch.object(config, "GEMINI_API_KEY", None):
@@ -278,12 +287,15 @@ class TestInCallRetryOnTransient:
         )
         assert o_mock.call_count == 1
         assert "from-openai" in out
-        # Circuit ticked exactly once for google (not 3 times)
-        google_state = circuit_status().get("google", {})
+        # 2026-05-21 — circuits are now keyed per-(provider, model).
+        # The failure for google/gemini lives under "google::gemini",
+        # not bare "google". Look up the composite key.
+        google_state = circuit_status().get("google::gemini", {})
         assert google_state.get("consecutive_failures", 0) == 1, (
-            f"Circuit must record ONE failure per provider call "
-            f"(not one per HTTP retry); got "
-            f"{google_state.get('consecutive_failures')}"
+            f"Circuit must record ONE failure per (provider, model) "
+            f"call (not one per HTTP retry); got "
+            f"{google_state.get('consecutive_failures')} for "
+            f"google::gemini"
         )
 
     def test_non_transient_does_not_retry(self, monkeypatch):
@@ -386,10 +398,14 @@ class TestAnthropicFallbackSuppression:
         RuntimeError 'exhausted' instead (no eligible fallback)."""
         from provider_circuit import reset, record_failure
         reset()
-        # Pre-open the google circuit so call_ai immediately moves to
-        # the fallback chain
+        # 2026-05-21 — circuits keyed per-(provider, model). Pre-open
+        # the SAME key call_ai will look up below
+        # (provider="google", model="gemini-2.5-flash-lite").
         for _ in range(3):
-            record_failure("google", Exception("503 high demand"))
+            record_failure(
+                "google", Exception("503 high demand"),
+                "gemini-2.5-flash-lite",
+            )
 
         import config
         monkeypatch.setattr(config, "OPENAI_API_KEY", None)
