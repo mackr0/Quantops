@@ -1514,15 +1514,20 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                         f"[Freshness: {_live_count} live, "
                         f"{_cached_count} cached (oldest {_max_age_disp})]"
                     )
-            except Exception:
-                # SILENT_OK: freshness summary is an informational
-                # annotation only; if alt-data has an unexpected
-                # shape (e.g., legacy cached row missing the new
-                # `_cached` keys) we drop the summary and continue
-                # rendering the rest of the alt-data block. Failing
-                # the whole prompt build over a cosmetic line would
-                # block all AI calls for this candidate.
-                pass
+            # SILENT_OK: freshness summary is an informational
+            # annotation only. The narrow exception scope (TypeError /
+            # AttributeError) covers the realistic failure modes —
+            # legacy cached payloads missing the new `_cached` keys, or
+            # non-dict values inside `alt`. Dropping the summary and
+            # continuing prompt rendering is the right call: a
+            # cosmetic annotation must never block an AI call.
+            except (TypeError, AttributeError) as _fresh_exc:
+                logger.debug(
+                    "freshness-summary annotation skipped for %s "
+                    "(%s: %s) — alt-data block continues to render "
+                    "without the summary line.",
+                    sym, type(_fresh_exc).__name__, _fresh_exc,
+                )
 
             # EVERY field access below uses .get() with defaults.
             # Direct dict['key'] access is BANNED — it crashes when
@@ -1991,7 +1996,9 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
         # rule library (no LLM cost) flags veto/caution/confirm patterns.
         # The AI weighs these as additional input.
         try:
-            from deterministic_specialists import build_panel_block
+            from deterministic_specialists import (
+                run_panel, format_panel_for_prompt, signal_direction,
+            )
             # 2026-05-18 PM — stash market_context + portfolio_state on
             # the candidate so rules that need market-level data
             # (regime / VIX / sector rotation / crisis state / macro
@@ -2002,9 +2009,36 @@ def _build_batch_prompt(candidates_data, portfolio_state, market_context, ctx=No
                 c["_market_context"] = market_context
             if isinstance(portfolio_state, dict):
                 c["_portfolio"] = portfolio_state
-            panel = build_panel_block(c, ctx)
-            if panel:
-                line += "\n" + panel
+            verdicts = run_panel(c, ctx)
+            # 2026-05-20 #185 — enrich each verdict with the candidate's
+            # directional context (long / short / neutral) and stash the
+            # structured list on the candidate so the downstream
+            # record_prediction call in trade_pipeline can persist a
+            # rule_votes_json snapshot for the fine-tune dataset
+            # builder. Direction is the same value the panel uses to
+            # route options/multileg signals, so a rule that fired
+            # against a bearish options candidate is tagged "short"
+            # even though the bare signal is "OPTIONS".
+            if verdicts:
+                # signal_direction returns "bullish" / "bearish" /
+                # "neutral" / None. We default None to "neutral" so
+                # the snapshot stays a clean closed set of three
+                # values — easier for the fine-tune dataset's
+                # categorical encoding. No try/except: signal_direction
+                # is pure dict lookups + string ops; if it raises, the
+                # candidate dict is malformed and the outer panel
+                # try/except (logs + skips the panel render) is the
+                # right place to handle that.
+                _direction = signal_direction(c) or "neutral"
+                for _v in verdicts:
+                    _v.setdefault("direction", _direction)
+                c["_panel_verdicts"] = verdicts
+                panel_text = format_panel_for_prompt(verdicts)
+                if panel_text:
+                    line += (
+                        f"\nDETERMINISTIC RULE PANEL FOR {sym} "
+                        f"({len(verdicts)} rule(s) fired):\n{panel_text}"
+                    )
         except (ImportError, KeyError, ValueError, AttributeError,
                 TypeError) as _det_exc:
             logger.debug(

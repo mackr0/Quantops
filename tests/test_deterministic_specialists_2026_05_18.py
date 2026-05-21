@@ -887,10 +887,29 @@ def test_rule_no_op_on_empty_candidate(rule_name):
 
 class TestIntegration:
     def test_panel_builder_imported_in_ai_analyst(self):
+        """Pins that ai_analyst wires to the deterministic-specialist
+        panel. Originally the import was the composed `build_panel_block`;
+        as of #185 (2026-05-20) ai_analyst calls `run_panel` and
+        `format_panel_for_prompt` separately so it can stash the
+        structured verdicts on the candidate dict for the
+        rule_votes_json fine-tune snapshot. Either import shape
+        satisfies the intent — that the panel is actually being
+        rendered into the prompt."""
         from pathlib import Path
         src = (Path(__file__).resolve().parent.parent
                / "ai_analyst.py").read_text()
-        assert "from deterministic_specialists import build_panel_block" in src
+        legacy = "from deterministic_specialists import build_panel_block"
+        modern_marker = "from deterministic_specialists import"
+        assert (
+            legacy in src
+            or (modern_marker in src and "run_panel" in src
+                and "format_panel_for_prompt" in src)
+        ), (
+            "ai_analyst.py no longer imports the deterministic-panel "
+            "rendering. Either restore `build_panel_block` or — if you "
+            "refactored to `run_panel`+`format_panel_for_prompt` — keep "
+            "both symbols present in the import."
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────

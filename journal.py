@@ -98,6 +98,48 @@ def init_db(db_path=None):
                 prediction_type TEXT
             );
 
+            -- #185 (2026-05-20): multi-horizon outcomes table. Stores
+            -- the realized return at each of several horizons (1d, 3d,
+            -- 5d, 10d, 20d) per prediction, plus max-favorable /
+            -- max-adverse excursion within each window. Built as a
+            -- sibling table (not wide columns on ai_predictions) so:
+            --   - new horizons cost a row insert, not a migration
+            --   - per-prediction partial-fill states are clean row
+            --     existence rather than NULLs scattered across columns
+            --   - the future fine-tune dataset builder gets one
+            --     SELECT ... json_group_array() over this table to
+            --     produce a clean multi-label vector per prediction
+            --
+            -- MFE/MAE columns aren't in the literal ticket text but
+            -- are essential for fine-tuning: they separate directional
+            -- skill from timing skill (a trade that hit +5% then
+            -- closed at +1% is "right call, weak hold" — fine-tune
+            -- needs that distinction to avoid wrong-lesson learning).
+            -- Sign convention: MFE/MAE are signed by prediction
+            -- DIRECTION (long: high - entry vs low - entry; short:
+            -- entry - low vs entry - high) so positive MFE always
+            -- means "the prediction was right at some point" no
+            -- matter the side.
+            CREATE TABLE IF NOT EXISTS ai_prediction_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                prediction_id INTEGER NOT NULL REFERENCES ai_predictions(id),
+                horizon_days INTEGER NOT NULL,
+                price_at_horizon REAL,
+                return_pct REAL NOT NULL,
+                return_pct_net REAL,
+                mfe_pct REAL,
+                mae_pct REAL,
+                outcome_class TEXT,
+                measured_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (prediction_id, horizon_days)
+            );
+            CREATE INDEX IF NOT EXISTS idx_outcomes_pred
+                ON ai_prediction_outcomes(prediction_id);
+            CREATE INDEX IF NOT EXISTS idx_outcomes_horizon
+                ON ai_prediction_outcomes(horizon_days);
+            CREATE INDEX IF NOT EXISTS idx_outcomes_class
+                ON ai_prediction_outcomes(outcome_class);
+
             -- Broker-rejected order attempts. The AI proposed the trade,
             -- the system tried to submit it, but the broker (Alpaca)
             -- refused with a recoverable reason (cross-direction conflict
@@ -718,6 +760,17 @@ def _migrate_all_columns(conn):
             # alongside actual_return_pct; NULL on legacy rows
             # resolved before the column existed.
             ("actual_return_pct_net", "REAL"),
+            # 2026-05-20 (#185 — multi-horizon outcomes): snapshot of
+            # which deterministic-panel rules fired at prediction time.
+            # JSON list of {"name": str, "severity": "VETO"|"CAUTION"|
+            # "CONFIRM", "direction": "long"|"short"|"neutral"}. Lets
+            # the fine-tune dataset builder join rule-firings to
+            # multi-horizon outcomes (which rule, fired in which
+            # direction, was followed by what outcome at 1d/5d/20d)
+            # without re-running the panel from saved features.
+            # NULL on rows written before the column existed; NULL
+            # also when the panel didn't fire any rules.
+            ("rule_votes_json", "TEXT"),
         ],
         # `call_id` joins primary cost-ledger rows to the
         # ai_shadow_calls rows produced by the shadow dispatcher for

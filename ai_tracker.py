@@ -159,7 +159,9 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
                       # 2026-05-19 Phase B1 — fine-tune-quality fields
                       cycle_id=None, prompt_text=None,
                       raw_response=None, meta_model_score=None,
-                      online_meta_score=None):
+                      online_meta_score=None,
+                      # 2026-05-20 #185 — deterministic-panel snapshot
+                      rule_votes=None):
     """Save an AI prediction to the database.
 
     Parameters
@@ -202,6 +204,13 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
         Pre-gate P(correct) at decision time from the GBM meta-model.
     online_meta_score : float, optional
         Online SGD meta-model score at decision time (catches regime drift).
+    rule_votes : list[dict], optional
+        Snapshot of the deterministic-panel verdicts that fired for this
+        candidate at prediction time. Each entry: {name, severity,
+        direction}. Serialized to JSON and stored on ai_predictions
+        for #185 — lets the fine-tune dataset builder join firing rules
+        to multi-horizon outcomes (rule X, fired in direction Y, was
+        followed by what return at 1d/5d/20d).
 
     Returns
     -------
@@ -225,6 +234,32 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
     raw_response_json = (
         _json.dumps(raw_response) if raw_response is not None else None
     )
+    # Normalize rule_votes to a JSON string. Accept either the raw
+    # output of `deterministic_specialists.run_panel` (list of dicts
+    # with name/severity/reasoning) or the trimmed-for-storage shape
+    # (name/severity/direction). We keep only name + severity +
+    # direction at write time — reasoning text is reconstructable
+    # from rerunning the rule against features and bloats the row.
+    rule_votes_json = None
+    if rule_votes:
+        try:
+            trimmed = [
+                {
+                    "name": rv.get("name"),
+                    "severity": rv.get("severity"),
+                    "direction": rv.get("direction"),
+                }
+                for rv in rule_votes
+                if isinstance(rv, dict) and rv.get("name")
+            ]
+            if trimmed:
+                rule_votes_json = _json.dumps(trimmed)
+        except (TypeError, ValueError) as _rv_exc:
+            logger.debug(
+                "record_prediction: rule_votes serialization failed (%s: %s); "
+                "storing NULL",
+                type(_rv_exc).__name__, _rv_exc,
+            )
 
     with closing(_get_conn(db_path)) as conn:
         cursor = conn.execute(
@@ -234,9 +269,10 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
                 target_take_profit, status, regime_at_prediction, strategy_type,
                 features_json, prediction_type,
                 cycle_id, prompt_text, raw_response_json,
-                meta_model_score, online_meta_score)
+                meta_model_score, online_meta_score,
+                rule_votes_json)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?)""",
             (
                 datetime.utcnow().isoformat(),
                 symbol.upper(),
@@ -256,6 +292,7 @@ def record_prediction(symbol, predicted_signal, confidence, reasoning,
                 raw_response_json,
                 meta_model_score,
                 online_meta_score,
+                rule_votes_json,
             ),
         )
         conn.commit()
@@ -399,34 +436,468 @@ def _estimate_round_trip_cost_pct(prediction, db_path):
         # commission ($0.65/contract × contracts) and bid-ask spread.
         return 0.0
     side = "buy" if signal in ("BUY", "STRONG_BUY") else "sell"
-    try:
-        conn = _get_conn(db_path)
-        # Look for a trade row close to the prediction timestamp.
-        # +/- 10 min is generous enough to catch real entries but
-        # narrow enough to avoid grabbing an unrelated trade on the
-        # same symbol made later in the day.
-        row = conn.execute(
-            "SELECT slippage_pct FROM trades "
-            "WHERE symbol = ? AND side = ? "
-            "  AND slippage_pct IS NOT NULL "
-            "  AND ABS(julianday(timestamp) - julianday(?)) <= (10.0 / (24*60)) "
-            "ORDER BY ABS(julianday(timestamp) - julianday(?)) ASC "
-            "LIMIT 1",
-            (prediction["symbol"], side, prediction["timestamp"],
-             prediction["timestamp"]),
-        ).fetchone()
-    except Exception as exc:
-        logger.debug(
-            "round-trip-cost lookup failed for %s/%s: %s",
-            prediction.get("symbol"), signal, exc,
-        )
-        return 0.0
+    # Narrow exception scope: only sqlite3.Error caught here. A bad
+    # `prediction` dict (missing keys) is a caller bug and should
+    # raise loudly; only DB-level failures fall through to the
+    # gross=net fallback. Logged at WARNING so the operator sees it
+    # in journal-tails — silently returning 0.0 on a real DB problem
+    # would hide cost-tracking breakage from the self-tuner.
+    with closing(_get_conn(db_path)) as conn:
+        try:
+            row = conn.execute(
+                "SELECT slippage_pct FROM trades "
+                "WHERE symbol = ? AND side = ? "
+                "  AND slippage_pct IS NOT NULL "
+                "  AND ABS(julianday(timestamp) - julianday(?)) <= (10.0 / (24*60)) "
+                "ORDER BY ABS(julianday(timestamp) - julianday(?)) ASC "
+                "LIMIT 1",
+                (prediction["symbol"], side, prediction["timestamp"],
+                 prediction["timestamp"]),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            logger.warning(
+                "round-trip-cost lookup DB failure for %s/%s: %s: %s — "
+                "falling back to gross=net for this prediction",
+                prediction["symbol"], signal, type(exc).__name__, exc,
+            )
+            return 0.0
     if not row or row[0] is None:
         return 0.0
     entry_slip_pct = abs(float(row[0]))
     # 2x to model symmetric round-trip cost. Exit slippage is not yet
     # captured separately at resolve time for stocks.
     return entry_slip_pct * 2.0
+
+
+# ---------------------------------------------------------------------------
+# 2026-05-20 #185 — Multi-horizon outcomes for the fine-tune dataset
+# ---------------------------------------------------------------------------
+
+# Five horizons capture different timescales. 1d = intraday-momentum
+# (closest proxy for "did the trade make money" since most positions
+# close within 1-2 days). 3d / 5d catch weekly mean-reversion patterns.
+# 10d / 20d catch monthly trend. Adding a new horizon is a one-line
+# change here plus a single backfill — no schema migration required
+# (the outcomes table is keyed by (prediction_id, horizon_days), so a
+# new horizon is just a new set of rows).
+HORIZON_DAYS = (1, 3, 5, 10, 20)
+
+
+def _classify_outcome(return_pct):
+    """Categorical outcome label for the fine-tune dataset.
+
+    Five-class scheme lets the trainer use cross-entropy loss
+    directly without re-deriving thresholds in training code.
+    Thresholds chosen for daily stock returns and are asymmetric
+    around zero (the gain/loss boundaries are symmetric at ±1%
+    and ±5% — keeping the trainer's label distribution balanced
+    is more important than skewing thresholds to favor loss
+    aversion, which is a portfolio-level concern not a per-trade
+    label concern).
+    """
+    if return_pct is None:
+        return None
+    if return_pct >= 5.0:
+        return "big_win"
+    if return_pct >= 1.0:
+        return "win"
+    # Strict boundary on the loss side: -1.0 maps to "loss" (not
+    # "flat") so a 1% loss doesn't get hidden in the neutral bucket.
+    # Likewise -5.0 maps to "big_loss". Asymmetric but intentional:
+    # the trainer benefits from labels that don't blur small losses
+    # into "no signal."
+    if return_pct > -1.0:
+        return "flat"
+    if return_pct > -5.0:
+        return "loss"
+    return "big_loss"
+
+
+def _measure_one_prediction(conn, pred, bars, db_path, now_iso):
+    """Fill in any missing horizon outcome rows for one prediction.
+
+    `bars` is a DataFrame returned by market_data.get_bars_daterange
+    for this prediction's symbol covering [pred_date, today]. Indexed
+    by timestamp in US/Eastern.
+
+    Returns the count of rows written.
+    """
+    pred_id = pred["id"]
+    entry_price = float(pred["price_at_prediction"])
+    if entry_price <= 0:
+        return 0
+    try:
+        pred_dt = datetime.fromisoformat(pred["timestamp"])
+    except ValueError:
+        return 0
+    signal = (pred["predicted_signal"] or "").upper()
+    is_short = signal in ("SELL", "SHORT")
+
+    existing = {
+        row[0] for row in conn.execute(
+            "SELECT horizon_days FROM ai_prediction_outcomes "
+            "WHERE prediction_id = ?",
+            (pred_id,),
+        ).fetchall()
+    }
+    if len(existing) >= len(HORIZON_DAYS):
+        return 0
+
+    if bars is None or bars.empty:
+        return 0
+    bars = bars.sort_index()
+    # Locate the entry-day bar: first bar whose date >= prediction date.
+    # Compare via .date() to sidestep timezone-vs-naive datetime
+    # comparison surprises (bars are tz-aware US/Eastern; pred_dt is
+    # naive UTC).
+    entry_date = pred_dt.date()
+    entry_idx = None
+    for i, ts in enumerate(bars.index):
+        try:
+            bar_date = ts.date()
+        except AttributeError:
+            continue
+        if bar_date >= entry_date:
+            entry_idx = i
+            break
+    if entry_idx is None:
+        return 0
+
+    cost_pct = _estimate_round_trip_cost_pct(
+        {
+            "symbol": pred["symbol"],
+            "predicted_signal": signal,
+            "timestamp": pred["timestamp"],
+        },
+        db_path,
+    )
+
+    written = 0
+    for horizon in HORIZON_DAYS:
+        if horizon in existing:
+            continue
+        target_idx = entry_idx + horizon
+        if target_idx >= len(bars):
+            # Horizon hasn't elapsed (not enough trading days of bar
+            # history yet). Skip — next cycle will try again.
+            continue
+
+        horizon_bar = bars.iloc[target_idx]
+        try:
+            exit_price = float(horizon_bar["close"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        return_pct = ((exit_price - entry_price) / entry_price) * 100.0
+        if is_short:
+            return_pct = -return_pct
+
+        # MFE / MAE over the window (entry+1 → horizon, inclusive).
+        # Signed by DIRECTION so positive MFE always means "the
+        # prediction was right at some point" regardless of long/short.
+        mfe_pct = mae_pct = None
+        window = bars.iloc[entry_idx + 1 : target_idx + 1]
+        if not window.empty and "high" in window.columns and "low" in window.columns:
+            try:
+                highs = window["high"].astype(float)
+                lows = window["low"].astype(float)
+                if is_short:
+                    mfe_pct = ((entry_price - lows.min())
+                                / entry_price) * 100.0
+                    mae_pct = -((highs.max() - entry_price)
+                                 / entry_price) * 100.0
+                else:
+                    mfe_pct = ((highs.max() - entry_price)
+                                / entry_price) * 100.0
+                    mae_pct = -((entry_price - lows.min())
+                                 / entry_price) * 100.0
+            except (ValueError, TypeError) as _exc:
+                logger.debug(
+                    "MFE/MAE compute failed for pred %s horizon %sd: %s",
+                    pred_id, horizon, _exc,
+                )
+
+        net_pct = return_pct - cost_pct
+        outcome_class = _classify_outcome(return_pct)
+
+        cursor = conn.execute(
+            """INSERT OR IGNORE INTO ai_prediction_outcomes
+               (prediction_id, horizon_days, price_at_horizon,
+                return_pct, return_pct_net, mfe_pct, mae_pct,
+                outcome_class, measured_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                pred_id, horizon, exit_price,
+                round(return_pct, 4), round(net_pct, 4),
+                round(mfe_pct, 4) if mfe_pct is not None else None,
+                round(mae_pct, 4) if mae_pct is not None else None,
+                outcome_class, now_iso,
+            ),
+        )
+        if cursor.rowcount > 0:
+            written += 1
+
+    return written
+
+
+def measure_horizon_outcomes(api=None, db_path=None,
+                              lookback_calendar_days=35):
+    """Walk recent predictions and fill in any multi-horizon outcome
+    rows whose horizon has elapsed.
+
+    Designed to be called every cycle alongside resolve_predictions.
+    Each prediction is touched at most 5 times total over its 20d life
+    (once per horizon); 90% of calls per cycle are no-ops because the
+    next horizon hasn't elapsed yet. Idempotent via the UNIQUE
+    (prediction_id, horizon_days) constraint.
+
+    Stock signals only. Option signals are deferred — premium % moves
+    don't fit the 1d/3d/5d/10d/20d horizon model used here (a multileg
+    spread's premium can swing 30% on day 1 from bid/ask alone). The
+    existing option_resolver in pipelines/outcomes handles those.
+
+    Parameters
+    ----------
+    api : alpaca REST client, optional
+        Unused here (bars are fetched via market_data.get_bars_daterange
+        which uses its own client) — kept for signature parity with
+        resolve_predictions and future use.
+    db_path : str, optional
+        Override database path.
+    lookback_calendar_days : int
+        How far back to scan. Default 35 = ~25 trading days, so the
+        20d horizon for the oldest prediction in scope can be filled.
+
+    Returns the number of new outcome rows written.
+    """
+    from market_data import get_bars_daterange
+
+    init_tracker_db(db_path)
+    conn = _get_conn(db_path)
+    try:
+        cutoff = (datetime.utcnow()
+                  - timedelta(days=lookback_calendar_days)).isoformat()
+        rows = conn.execute(
+            """SELECT p.id, p.symbol, p.timestamp, p.price_at_prediction,
+                      p.predicted_signal
+               FROM ai_predictions p
+               WHERE p.timestamp >= ?
+                 AND p.price_at_prediction > 0
+                 AND COALESCE(p.predicted_signal, '') NOT IN
+                     ('MULTILEG_OPEN','OPTIONS','OPTION_EXERCISE')
+               ORDER BY p.timestamp ASC""",
+            (cutoff,),
+        ).fetchall()
+        if not rows:
+            return 0
+
+        # Group by symbol so each symbol's bars are fetched once and
+        # shared across all its predictions in this window.
+        by_symbol = {}
+        for r in rows:
+            by_symbol.setdefault(r["symbol"], []).append(r)
+
+        written = 0
+        now = datetime.utcnow()
+        now_iso = now.isoformat()
+        today_iso = now.date().isoformat()
+
+        for symbol, preds in by_symbol.items():
+            # Skip the symbol entirely if every prediction already
+            # has all 5 horizons — saves the bar fetch.
+            pred_ids = [p["id"] for p in preds]
+            placeholders = ",".join("?" * len(pred_ids))
+            done_count = conn.execute(
+                f"SELECT prediction_id, COUNT(*) AS n "
+                f"FROM ai_prediction_outcomes "
+                f"WHERE prediction_id IN ({placeholders}) "
+                f"GROUP BY prediction_id "
+                f"HAVING n >= ?",
+                (*pred_ids, len(HORIZON_DAYS)),
+            ).fetchall()
+            done_pred_ids = {row[0] for row in done_count}
+            pending = [p for p in preds if p["id"] not in done_pred_ids]
+            if not pending:
+                continue
+
+            oldest_ts = min(p["timestamp"] for p in pending)
+            try:
+                start_dt = datetime.fromisoformat(oldest_ts)
+            except ValueError as _exc:
+                # A malformed timestamp on a prediction row is a real
+                # data-integrity problem (the writer is supposed to
+                # always write ISO format). Skip this symbol but log
+                # LOUDLY so the operator sees it — silently dropping
+                # would hide the corruption.
+                logger.warning(
+                    "measure_horizon_outcomes: bad timestamp %r on a "
+                    "prediction for %s (%s) — skipping symbol; fix the "
+                    "writer that produced this row.",
+                    oldest_ts, symbol, _exc,
+                )
+                continue
+            start = start_dt.date().isoformat()
+            # Narrow exception scope. get_bars_daterange is documented
+            # to return an empty DataFrame on missing-data (caught by
+            # _measure_one_prediction); the exceptions that actually
+            # escape are network/IO faults from the underlying Alpaca
+            # / yfinance clients. Log at WARNING so flaky data sources
+            # are visible — the alternative ("silently miss this
+            # cycle's horizon row") is the silent-failure pattern.
+            try:
+                bars = get_bars_daterange(symbol, start, today_iso)
+            except (ConnectionError, TimeoutError, OSError,
+                    ValueError, KeyError, AttributeError) as _exc:
+                logger.warning(
+                    "measure_horizon_outcomes: bar fetch for %s failed "
+                    "(%s: %s) — horizon rows for this symbol will be "
+                    "retried next cycle.",
+                    symbol, type(_exc).__name__, _exc,
+                )
+                continue
+
+            for p in pending:
+                # No try/except around _measure_one_prediction: it
+                # already catches its OWN narrow exceptions (bad bar
+                # data, missing columns) internally and surfaces only
+                # via the logged sub-paths. If something escapes from
+                # here, it's a programming bug — let it raise so the
+                # per-symbol commit below doesn't silently bury it
+                # under "everything seemed fine." The outer task
+                # handler (_task_resolve_predictions) will log and
+                # continue the scheduler loop.
+                written += _measure_one_prediction(
+                    conn, p, bars, db_path, now_iso,
+                )
+
+            # Commit per-symbol so a downstream failure doesn't lose
+            # all the progress in the cycle (mirrors resolve_predictions
+            # commit cadence).
+            conn.commit()
+
+        return written
+    finally:
+        conn.close()
+
+
+def build_training_dataset(db_path=None, min_horizons_required=1,
+                            include_unresolved=False):
+    """Return a list of per-prediction training rows ready for the
+    fine-tune pipeline. This is the payoff of the multi-horizon
+    outcomes schema — one call gives you a clean, trainable dataset
+    without having to know how the underlying tables join.
+
+    Each row is a dict containing:
+      - All structured fields from ai_predictions (id, symbol,
+        predicted_signal, confidence, regime, strategy_type, etc.)
+      - `features`: the parsed features_json dict (or None)
+      - `rule_votes`: the parsed rule_votes_json list (or [])
+      - `outcomes`: dict {horizon_days: {return_pct, return_pct_net,
+        mfe_pct, mae_pct, outcome_class, price_at_horizon}} — one
+        entry per measured horizon
+      - `prompt_text`, `raw_response_json`: full decision context for
+        prompt-conditioned fine-tuning
+
+    Parameters
+    ----------
+    db_path : str, optional
+        Override database path.
+    min_horizons_required : int
+        Skip predictions that don't have at least this many horizon
+        rows yet. Default 1 — usable for the first day's labels;
+        raise to 5 to require the full horizon set (better for
+        sequence-modeling approaches that train on the full label
+        vector).
+    include_unresolved : bool
+        If True, also yield predictions with zero outcome rows. Useful
+        for prompt-only fine-tuning that doesn't need labels (e.g.
+        instruction tuning on the AI's own reasoning).
+
+    Returns
+    -------
+    list[dict]
+        One dict per prediction matching the criteria. Returns an
+        empty list when no predictions match.
+    """
+    import json as _json
+
+    init_tracker_db(db_path)
+    conn = _get_conn(db_path)
+    try:
+        pred_rows = conn.execute(
+            """SELECT p.* FROM ai_predictions p
+               ORDER BY p.timestamp ASC"""
+        ).fetchall()
+        if not pred_rows:
+            return []
+
+        # Bulk-load all outcome rows in one query and bucket by
+        # prediction_id. Avoids the N+1 query problem on a dataset
+        # with thousands of predictions.
+        outcome_map = {}
+        for row in conn.execute(
+            "SELECT prediction_id, horizon_days, return_pct, "
+            "return_pct_net, mfe_pct, mae_pct, outcome_class, "
+            "price_at_horizon "
+            "FROM ai_prediction_outcomes"
+        ).fetchall():
+            outcome_map.setdefault(row[0], {})[row[1]] = {
+                "return_pct": row[2],
+                "return_pct_net": row[3],
+                "mfe_pct": row[4],
+                "mae_pct": row[5],
+                "outcome_class": row[6],
+                "price_at_horizon": row[7],
+            }
+
+        out = []
+        for r in pred_rows:
+            outcomes = outcome_map.get(r["id"], {})
+            if len(outcomes) < min_horizons_required and not include_unresolved:
+                continue
+
+            features = None
+            if r["features_json"]:
+                try:
+                    features = _json.loads(r["features_json"])
+                except (ValueError, TypeError):
+                    features = None
+            rule_votes = []
+            try:
+                rv_json = r["rule_votes_json"]
+            except (IndexError, KeyError):
+                rv_json = None
+            if rv_json:
+                try:
+                    rule_votes = _json.loads(rv_json) or []
+                except (ValueError, TypeError):
+                    rule_votes = []
+
+            out.append({
+                "id": r["id"],
+                "timestamp": r["timestamp"],
+                "symbol": r["symbol"],
+                "predicted_signal": r["predicted_signal"],
+                "confidence": r["confidence"],
+                "reasoning": r["reasoning"],
+                "price_at_prediction": r["price_at_prediction"],
+                "regime_at_prediction": r["regime_at_prediction"],
+                "strategy_type": r["strategy_type"],
+                "prediction_type": r["prediction_type"],
+                "features": features,
+                "rule_votes": rule_votes,
+                "outcomes": outcomes,
+                "prompt_text": r["prompt_text"]
+                    if "prompt_text" in r.keys() else None,
+                "raw_response_json": r["raw_response_json"]
+                    if "raw_response_json" in r.keys() else None,
+                "meta_model_score": r["meta_model_score"]
+                    if "meta_model_score" in r.keys() else None,
+                "online_meta_score": r["online_meta_score"]
+                    if "online_meta_score" in r.keys() else None,
+            })
+        return out
+    finally:
+        conn.close()
 
 
 def _resolve_one(prediction, current_price):

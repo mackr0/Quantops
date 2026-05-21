@@ -302,9 +302,37 @@ The proprietary asset. Every AI decision writes a row.
 | `actual_outcome` | TEXT | `win` / `loss` / `neutral`. |
 | `actual_return_pct` | REAL | Realized **gross** return (price-move only; ignores slippage). |
 | `actual_return_pct_net` | REAL | Realized return **net of round-trip slippage** (approximated as 2 × entry slippage from the matched trade row; 0 for option signals, where premium P&L already nets). The learning loop and self-tuner should pivot to this column; `actual_return_pct` is kept for backward compat. Written by `ai_tracker.resolve_predictions`. |
+| `rule_votes_json` | TEXT | #185 (2026-05-20). JSON list of deterministic-panel verdicts that fired for this prediction at decision time. Each entry: `{name, severity: VETO\|CAUTION\|CONFIRM, direction: long\|short\|neutral}`. Reasoning text intentionally dropped (reconstructable; bloats row). Joined by the fine-tune dataset builder to `ai_prediction_outcomes` so "rule X fired in direction Y → outcome at horizon Z" is one query. |
 | `resolution_price` | REAL | Price at resolution. |
 | `days_held` | INTEGER | Days from prediction to resolution. |
 | `resolved_at` | TEXT | UTC ISO timestamp of resolution. |
+
+### `ai_prediction_outcomes` (per-profile)
+
+#185 (2026-05-20). Multi-horizon outcome rows, one per `(prediction_id,
+horizon_days)` pair. Designed for the future fine-tune dataset
+builder (`ai_tracker.build_training_dataset`) — sibling table rather
+than wide columns on `ai_predictions` so adding a new horizon is a
+one-line constant change with no schema migration. Stock signals only
+(option outcomes go through `pipelines/outcomes/option_resolver`).
+Written by `ai_tracker.measure_horizon_outcomes` on each scheduler
+cycle alongside `resolve_predictions`. Idempotent via UNIQUE.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | INTEGER PK | |
+| `prediction_id` | INTEGER | FK → ai_predictions(id). |
+| `horizon_days` | INTEGER | One of 1, 3, 5, 10, 20. |
+| `price_at_horizon` | REAL | Close price at horizon bar. |
+| `return_pct` | REAL | Gross return at horizon. Signed by prediction direction (long: (exit-entry)/entry; short: -(exit-entry)/entry). |
+| `return_pct_net` | REAL | Cost-adjusted return — `return_pct - 2 × entry_slippage` from the matched trade row. |
+| `mfe_pct` | REAL | Max favorable excursion within (entry, horizon] window. Signed by direction so positive MFE always means "the prediction was right at some point" — long: `(max_high - entry)/entry`; short: `(entry - min_low)/entry`. |
+| `mae_pct` | REAL | Max adverse excursion within window. Always non-positive when present. Long: `-(entry - min_low)/entry`; short: `-(max_high - entry)/entry`. |
+| `outcome_class` | TEXT | Categorical label for cross-entropy training: `big_win` (≥5%), `win` (≥1%), `flat` (>-1%), `loss` (>-5%), `big_loss` (≤-5%). Boundary-strict on the loss side (a -1% return labels as "loss", not "flat"). |
+| `measured_at` | TEXT | UTC ISO timestamp when the row was written. |
+
+Unique: `(prediction_id, horizon_days)` — re-running the measurer
+silently skips already-filled rows.
 
 ---
 

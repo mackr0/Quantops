@@ -2851,8 +2851,19 @@ def _task_check_book_loss_floor(ctx):
 
 
 def _task_resolve_predictions(ctx):
-    """Resolve outstanding AI predictions against actual prices."""
-    from ai_tracker import resolve_predictions
+    """Resolve outstanding AI predictions against actual prices, then
+    fill in any multi-horizon outcome rows whose horizon has elapsed.
+
+    The horizon-measurement pass (#185, 2026-05-20) is intentionally
+    bundled into the same task as resolve_predictions because they
+    share the same data dependency (recent predictions + price bars)
+    and the same cadence makes sense (a horizon row should appear as
+    soon as the horizon elapses, so the self-tuner can use it on the
+    next cycle). Idempotent via the UNIQUE (prediction_id,
+    horizon_days) constraint — a re-run does nothing for already-
+    filled rows.
+    """
+    from ai_tracker import resolve_predictions, measure_horizon_outcomes
     from client import get_api
 
     api = get_api(ctx)
@@ -2861,6 +2872,26 @@ def _task_resolve_predictions(ctx):
         profile_id=getattr(ctx, "profile_id", None),
     )
     logging.info("AI predictions resolved.")
+    try:
+        n_horizons = measure_horizon_outcomes(
+            api=api, db_path=ctx.db_path,
+        )
+        if n_horizons:
+            logging.info(
+                "Horizon-outcomes written this cycle: %d", n_horizons,
+            )
+    except Exception as exc:
+        # Per feedback_no_silent_failures: surface and continue.
+        # The horizon-measurement pass is additive (new dataset
+        # rows for fine-tuning); a failure here must not block the
+        # primary resolver that's already run successfully above.
+        logging.warning(
+            "measure_horizon_outcomes failed (%s: %s) — resolver "
+            "completed normally; horizon rows for this cycle will "
+            "be backfilled on the next pass via the UNIQUE-constraint "
+            "idempotency.",
+            type(exc).__name__, exc,
+        )
 
 
 def _task_daily_snapshot(ctx):

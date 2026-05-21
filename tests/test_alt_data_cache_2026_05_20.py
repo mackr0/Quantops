@@ -89,11 +89,16 @@ def test_expired_entry_returns_none(cache_in_tmp, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_cache_or_fetch_calls_fetcher_on_miss(cache_in_tmp):
+    # Post-#186 Phase B: cache_or_fetch annotates returned dicts with
+    # `_cached` / `_cached_age_min`. Assert on the payload field
+    # directly rather than dict-equality so the test isn't brittle
+    # to the freshness annotations.
     fetcher = MagicMock(return_value={"v": 42})
     out = cache_in_tmp.cache_or_fetch(
         "insider", "AAPL", fetcher, ttl_seconds=60,
     )
-    assert out == {"v": 42}
+    assert out["v"] == 42
+    assert out.get("_cached") is False
     fetcher.assert_called_once_with("AAPL")
 
 
@@ -102,9 +107,11 @@ def test_cache_or_fetch_does_not_call_fetcher_on_hit(cache_in_tmp):
     # First call: cache miss → fetcher called
     cache_in_tmp.cache_or_fetch("insider", "AAPL", fetcher, ttl_seconds=60)
     fetcher.reset_mock()
-    # Second call within TTL: should hit cache, no fetcher call
+    # Second call within TTL: should hit cache, no fetcher call.
+    # Post-#186 Phase B annotation: returned dict is tagged _cached=True.
     out = cache_in_tmp.cache_or_fetch("insider", "AAPL", fetcher, ttl_seconds=60)
-    assert out == {"v": 1}
+    assert out["v"] == 1
+    assert out.get("_cached") is True
     fetcher.assert_not_called()
 
 
@@ -146,7 +153,14 @@ def test_cache_get_returns_none_on_db_error(monkeypatch, tmp_path):
 
 def test_cache_or_fetch_falls_through_to_live_when_cache_breaks(monkeypatch):
     """If the cache layer fails, cache_or_fetch still returns whatever
-    the fetcher produced — never blocks on cache error."""
+    the fetcher produced — never blocks on cache error.
+
+    Post-#186 Phase B (2026-05-20): the returned dict is also annotated
+    with `_cached: False, _cached_age_min: 0` so downstream consumers
+    can tell this came from a live fetch even when the cache write
+    silently failed (which is the case here — broken _CACHE_DIR).
+    Asserting on the live field directly rather than dict-equality
+    to allow the freshness annotations through."""
     import alt_data_cache
     monkeypatch.setattr(alt_data_cache, "_CACHE_DIR", "/proc/0/nonexistent")
     monkeypatch.setattr(alt_data_cache, "_CACHE_DB", "/proc/0/nonexistent/x.db")
@@ -154,7 +168,9 @@ def test_cache_or_fetch_falls_through_to_live_when_cache_breaks(monkeypatch):
     out = alt_data_cache.cache_or_fetch(
         "insider", "AAPL", fetcher, ttl_seconds=60,
     )
-    assert out == {"v": "live"}
+    assert out["v"] == "live"
+    # Annotation should reflect live-fetch state even on cache fallthrough
+    assert out.get("_cached") is False
     fetcher.assert_called_once()
 
 

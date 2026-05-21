@@ -17,6 +17,150 @@ Rules going forward:
 
 ---
 
+## 2026-05-20 PM — #185: multi-horizon outcomes + deterministic-panel snapshot — fine-tune-optimized schema. Severity: medium (learning-signal fidelity + future fine-tune readiness).
+
+The third and final ship in today's learning-loop fidelity sequence
+(#192 → #186 → #185). Where #186 made the resolver and prompt honest
+about reality (cost-adjusted returns; data-age annotations), #185
+restructures what we capture per prediction so a future custom AI
+fine-tune has a clean, multi-label, rule-annotated dataset ready
+to train on — without any post-hoc data archaeology.
+
+### Schema changes
+
+1. **New table `ai_prediction_outcomes`** keyed by `(prediction_id,
+   horizon_days)` UNIQUE. Stores realized return at each of five
+   horizons (1d, 3d, 5d, 10d, 20d) per prediction, plus:
+   - `return_pct_net` (cost-adjusted; same helper as #186 Phase A)
+   - `mfe_pct` / `mae_pct` — max favorable / max adverse excursion
+     within the horizon window, **signed by prediction direction**
+     so positive MFE always means "the prediction was right at some
+     point" whether long or short
+   - `outcome_class` — 5-class label (big_win / win / flat / loss /
+     big_loss) for cross-entropy training without re-deriving
+     thresholds in training code
+
+2. **New column `ai_predictions.rule_votes_json`** — JSON list of
+   `{name, severity, direction}` per deterministic-panel rule that
+   fired at prediction time. Reasoning text is intentionally dropped
+   (reconstructable by rerunning the rule; would bloat the row).
+
+### Why sibling table, not wide columns
+
+A future fine-tune dataset query is:
+```sql
+SELECT p.*, json_group_array(json_object('h', o.horizon_days,
+                                          'r', o.return_pct_net,
+                                          'c', o.outcome_class)) AS labels
+FROM ai_predictions p
+JOIN ai_prediction_outcomes o ON o.prediction_id = p.id
+GROUP BY p.id
+```
+That gives the trainer a clean per-prediction multi-label vector.
+Adding a new horizon (60d for swing-learning, say) is a one-line
+constant change + a backfill — zero schema migration. Wide columns
+on `ai_predictions` would force every horizon to be a permanent
+schema commitment, and partial-fill states would look like NULLs
+scattered across rows instead of clean row-existence.
+
+### Why MFE/MAE matter for fine-tuning
+
+They separate **directional skill** ("was the AI right?") from
+**timing skill** ("did it hold long enough?"). A trade that hit
++5% on day 2 then closed at +1% on day 5 is "right call, weak
+hold" — without MFE the trainer sees +1% and learns the wrong
+lesson. Cheap to compute alongside the horizon return (same bar
+series fetched).
+
+### Why directional rule snapshots
+
+A future "should I trust rule X when it fires?" model needs:
+- INPUT: prediction context (features) + which rules fired + their
+  direction
+- LABEL: outcome at each horizon
+
+The `direction` field (long/short/neutral) is what lets the trainer
+learn rule-level conditional probabilities — `rule_x fired bullish →
++3% at 5d` is a different lesson than `rule_x fired bearish → -2%
+at 5d`, and without the direction tag they collapse into noise.
+
+### Runtime flow
+
+- `ai_analyst._build_batch_prompt` now calls `run_panel(c, ctx)` +
+  `format_panel_for_prompt(verdicts)` separately (replacing the old
+  single `build_panel_block` call) so it can stash the structured
+  verdicts on the candidate dict as `c["_panel_verdicts"]`, enriched
+  with the candidate's directional context.
+- `trade_pipeline.run_trade_cycle` reads `c.get("_panel_verdicts")`
+  and passes it as `rule_votes=` to `record_prediction`.
+- `record_prediction` serializes `{name, severity, direction}` only
+  (trims reasoning text), writes NULL for empty / missing.
+- `multi_scheduler._task_resolve_predictions` now calls
+  `measure_horizon_outcomes` after `resolve_predictions` — same
+  cadence, same task. Idempotent via UNIQUE constraint; per-cycle
+  cost is one Alpaca bar fetch per symbol with any pending horizon.
+- Bars fetched ONCE per symbol per cycle, shared across all of that
+  symbol's pending predictions (most stocks have many).
+
+### Dataset builder
+
+`ai_tracker.build_training_dataset(db_path, min_horizons_required=1,
+include_unresolved=False)` is the payoff API. One call returns a
+list of per-prediction dicts containing parsed features, parsed
+rule_votes, and a `{horizon_days: {return_pct, return_pct_net,
+mfe_pct, mae_pct, outcome_class, price_at_horizon}}` mapping. The
+fine-tune pipeline imports this directly — no SQL knowledge of
+the underlying schema required.
+
+### What's intentionally NOT in this ship
+
+- Option signals (MULTILEG_OPEN / OPTIONS / OPTION_EXERCISE) are
+  skipped — premium % moves don't fit the 1d/3d/5d/10d/20d horizon
+  model (a multileg spread's premium can swing 30% on day 1 from
+  bid/ask alone). The existing `pipelines/outcomes/option_resolver`
+  owns those outcomes.
+- The single-candidate `record_prediction` call site at
+  `trade_pipeline.py:521` (single-symbol path, only used by legacy
+  approval-gate flow) was not wired to pass rule_votes. The batch
+  path at line 2060+ — the main path for all multi-candidate AI
+  cycles — IS wired. Legacy-path predictions will store NULL for
+  `rule_votes_json`, which the dataset builder correctly handles
+  as `[]` (no rules fired).
+
+### Tests — `tests/test_multi_horizon_outcomes_185_2026_05_20.py` (22 cases)
+
+Schema: outcomes table exists post-init; UNIQUE constraint
+enforced; rule_votes_json column present; migration re-runs are
+idempotent. Record path: rule_votes serializes correctly (trims
+reasoning, preserves name/severity/direction); None → NULL; empty
+list → NULL. Classifier: all five class boundaries pinned (5/1/-1/-5
+% thresholds); None returns None. Measurement: long writes all 5
+horizon rows with correct return + MFE + MAE; short inverts the
+sign convention so positive MFE still means "favorable" (the
+hardest test in the suite — directional sign confusion is the
+most likely future regression); re-running writes zero duplicate
+rows (UNIQUE enforcement); skips horizons beyond available bars
+(grows over cycles as more bar history accumulates). Top-level:
+option signals are skipped at the query level (no bar fetch
+wasted); symbols whose every prediction has the full horizon set
+are skipped entirely. Dataset builder: returns per-prediction dicts
+with parsed fields; `min_horizons_required` filters out partials;
+`include_unresolved=True` yields rows with empty outcomes dict.
+
+### Production impact
+
+- New schema lands as additive (CREATE TABLE IF NOT EXISTS +
+  ALTER ADD COLUMN); existing rows are unaffected
+- First few cycles after deploy will write the initial horizon
+  rows for ~25 days of pending predictions backlog (one symbol's
+  bar fetch per stock with pending predictions)
+- The fine-tune pipeline can begin pulling clean datasets
+  immediately via `build_training_dataset(db_path)` — no waiting
+  for the new rows to accumulate because the function is happy
+  with partial horizon coverage
+
+---
+
 ## 2026-05-20 PM — #186: cost-adjusted returns + alt-data freshness flags. Severity: medium (observability + learning-signal fidelity).
 
 Two adjacent learning-loop improvements bundled into one ship. Both make

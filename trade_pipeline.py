@@ -2078,6 +2078,14 @@ def run_trade_cycle(candidates, ctx=None, max_position_pct=None,
                 } if isinstance(ai_response, dict) else None,
                 meta_model_score=_meta_score,
                 online_meta_score=_online_meta_score,
+                # 2026-05-20 #185 — capture the deterministic-panel
+                # snapshot stashed by ai_analyst._build_batch_prompt.
+                # None when the panel fired no rules for this
+                # candidate (record_prediction stores NULL); a non-
+                # empty list serializes to ai_predictions.rule_votes_json
+                # for the fine-tune dataset builder to join against
+                # multi-horizon outcomes.
+                rule_votes=c.get("_panel_verdicts"),
             )
             # Wave 3 / Fix #9 — log the per-specialist verdicts that
             # contributed to this prediction so the calibrators can
