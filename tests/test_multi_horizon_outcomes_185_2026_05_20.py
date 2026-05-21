@@ -597,3 +597,66 @@ class TestBuildTrainingDataset:
         ds = build_training_dataset(db_path=db, include_unresolved=True)
         assert len(ds) == 1
         assert ds[0]["outcomes"] == {}
+
+    def test_tainted_rows_excluded_by_default(self, db):
+        """The 2026-05-21 cover-classification bug persisted phantom
+        equity in 17 pid16 prompts. Those rows were tagged with
+        `data_quality='tainted_equity_2026_05_21'`. The fine-tune
+        dataset builder must filter them out by default so training
+        material stays clean."""
+        from ai_tracker import build_training_dataset
+        good_id = _record_pred(db, symbol="AAPL")
+        bad_id = _record_pred(db, symbol="MSFT")
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute(
+                "UPDATE ai_predictions SET data_quality = ? WHERE id = ?",
+                ("tainted_equity_2026_05_21", bad_id),
+            )
+            conn.commit()
+        ds = build_training_dataset(db_path=db, include_unresolved=True)
+        ids = {row["id"] for row in ds}
+        assert good_id in ids
+        assert bad_id not in ids, (
+            "Tainted row leaked into fine-tune dataset. The default "
+            "build_training_dataset path must apply the data_quality "
+            "filter — otherwise corrupt prompts pollute training."
+        )
+
+    def test_include_tainted_returns_everything(self, db):
+        """The `include_tainted=True` escape hatch is for forensic
+        review / repair workflows. It must return ALL rows including
+        the tagged ones."""
+        from ai_tracker import build_training_dataset
+        good_id = _record_pred(db, symbol="AAPL")
+        bad_id = _record_pred(db, symbol="MSFT")
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute(
+                "UPDATE ai_predictions SET data_quality = ? WHERE id = ?",
+                ("tainted_equity_2026_05_21", bad_id),
+            )
+            conn.commit()
+        ds = build_training_dataset(
+            db_path=db, include_unresolved=True, include_tainted=True,
+        )
+        ids = {row["id"] for row in ds}
+        assert good_id in ids
+        assert bad_id in ids
+
+    def test_tainted_marker_value_not_hardcoded(self, db):
+        """The filter is `data_quality IS NULL` — any non-NULL marker
+        excludes the row, not just the specific 2026-05-21 string. This
+        means future bug-tag values automatically get the same
+        defense-in-depth without code changes."""
+        from ai_tracker import build_training_dataset
+        good_id = _record_pred(db, symbol="AAPL")
+        future_tag_id = _record_pred(db, symbol="MSFT")
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute(
+                "UPDATE ai_predictions SET data_quality = ? WHERE id = ?",
+                ("hypothetical_future_bug_2027_01_01", future_tag_id),
+            )
+            conn.commit()
+        ds = build_training_dataset(db_path=db, include_unresolved=True)
+        ids = {row["id"] for row in ds}
+        assert good_id in ids
+        assert future_tag_id not in ids

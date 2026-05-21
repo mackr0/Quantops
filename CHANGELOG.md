@@ -67,6 +67,21 @@ Source guardrails: scans `get_virtual_account_info` source for `("buy", "cover")
 
 This bug was mine. The comment claiming cover was dormant was mine. The line bucketing cover wrong was mine. The "small surface" framing in the original PR that let the bug ship without a test for the cover branch was mine. Apologies — surfacing it here in plain language so the next session can see the failure mode clearly.
 
+### Tainted-prompt remediation (same-day follow-up)
+
+17 predictions on pid16 (IDs 494-510) made during the 14:18-15:28 UTC bug window persisted phantom equity ("$240K" instead of the correct ~$200K) in their `ai_predictions.prompt_text` field. The prompt-builder reads `get_virtual_account_info` when assembling the `PORTFOLIO STATE:` block, so every prompt emitted during the bug window captured the wrong number.
+
+Audit confirmed all OTHER persistence is clean: `trades` untouched, `daily_snapshots` clean (pre-cover), `tuning_history` empty during window, `audit_alerts` empty, `ai_cycles` JSON columns don't embed equity, price-based outcomes (`actual_return_pct/_net`, `ai_prediction_outcomes`) unaffected since they use per-symbol prices.
+
+Remediation: the 17 rows were tagged with `data_quality = 'tainted_equity_2026_05_21'` (the existing data_quality column added 2026-05-13 for exactly this purpose). `ai_tracker.build_training_dataset` was updated to filter out rows where `data_quality IS NOT NULL` by default, with an `include_tainted=True` escape hatch for forensic / repair workflows. The filter checks `IS NULL`, not the specific marker string, so any future bug-tag value automatically gets the same defense-in-depth.
+
+Three new tests pin the behavior:
+- Tagged rows excluded by default
+- `include_tainted=True` returns everything including tagged
+- Any non-NULL marker string excludes the row (not just the 2026-05-21 literal)
+
+The damaged training material is preserved in the DB for forensic visibility; the fine-tune pipeline gets a clean dataset via the default filter path.
+
 ---
 
 ## 2026-05-20 PM — morning_health_check.sh: D1 grace for pre-market. Severity: low (script-only false-positive fix).

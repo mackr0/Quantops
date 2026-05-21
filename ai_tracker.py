@@ -780,7 +780,8 @@ def measure_horizon_outcomes(api=None, db_path=None,
 
 
 def build_training_dataset(db_path=None, min_horizons_required=1,
-                            include_unresolved=False):
+                            include_unresolved=False,
+                            include_tainted=False):
     """Return a list of per-prediction training rows ready for the
     fine-tune pipeline. This is the payoff of the multi-horizon
     outcomes schema — one call gives you a clean, trainable dataset
@@ -811,6 +812,16 @@ def build_training_dataset(db_path=None, min_horizons_required=1,
         If True, also yield predictions with zero outcome rows. Useful
         for prompt-only fine-tuning that doesn't need labels (e.g.
         instruction tuning on the AI's own reasoning).
+    include_tainted : bool
+        If True, also include predictions whose `data_quality` column
+        is set to a non-NULL marker (e.g. `'tainted_equity_2026_05_21'`
+        for the 17 pid16 prompts that captured phantom equity from
+        the cover-classification bug). Default False — the standard
+        path for the fine-tune dataset builder excludes tainted rows
+        via the same `data_quality_clause` pattern that
+        `journal.data_quality_clause` applies to analytics queries.
+        Set True only when explicitly auditing the corruption or
+        rebuilding affected prompts.
 
     Returns
     -------
@@ -823,9 +834,20 @@ def build_training_dataset(db_path=None, min_horizons_required=1,
     init_tracker_db(db_path)
     conn = _get_conn(db_path)
     try:
+        # Tainted-row exclusion uses the same defense-in-depth pattern
+        # that `journal.data_quality_clause()` applies to analytics SQL
+        # on trades + ai_predictions: rows tagged with any data_quality
+        # marker get filtered out so corruption can't pollute the
+        # downstream consumer. The training-dataset builder is exactly
+        # such a consumer — fine-tune training material must be clean.
+        # `include_tainted=True` bypasses for forensic / repair work.
+        if include_tainted:
+            where_clause = ""
+        else:
+            where_clause = " WHERE p.data_quality IS NULL"
         pred_rows = conn.execute(
-            """SELECT p.* FROM ai_predictions p
-               ORDER BY p.timestamp ASC"""
+            f"""SELECT p.* FROM ai_predictions p{where_clause}
+                ORDER BY p.timestamp ASC"""
         ).fetchall()
         if not pred_rows:
             return []
