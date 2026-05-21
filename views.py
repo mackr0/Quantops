@@ -542,18 +542,29 @@ def _get_trade_history_for_profile(profile_id, limit=100, kind=None,
 def _enrich_trade_history_with_live_pnl(trades, ctx):
     """Attach `current_price`, `unrealized_pl`, `unrealized_plpc` from
     Alpaca's live position list to the most recent journal row per OCC
-    (option) or symbol (stock) whose position is currently open.
+    (option) or symbol (stock) whose position is currently open. ALSO
+    runs the spread grouper for open multileg legs so the trades
+    page's SPREAD header can show the Unrealized P&L the same way the
+    dashboard does (2026-05-21).
 
-    Without this, BUY rows and the SELL leg of a multileg open render
-    blank P&L on /trades — because realized P&L only lives on the
-    closing trade, and the dashboard's `_enriched_positions` was the
-    only path injecting unrealized P&L for the shared
-    `_trades_table.html` macro. Caught 2026-05-10: every open option
-    leg displayed `--` in the P&L column.
+    Without per-leg enrichment: BUY rows and the SELL leg of a
+    multileg open render blank P&L on /trades — because realized P&L
+    only lives on the closing trade, and the dashboard's
+    `_enriched_positions` was the only path injecting unrealized P&L
+    for the shared `_trades_table.html` macro. Caught 2026-05-10:
+    every open option leg displayed `--` in the P&L column.
+
+    Without spread-level enrichment: the SPREAD header on /trades
+    rendered "Net credit $X" but no Unrealized clause, because
+    `spread_pnl` was only stamped by `_enriched_positions` on the
+    dashboard path. Caught 2026-05-21.
 
     Mutates `trades` in place. Only the most recent journal row per
     position key gets enriched, so historical adds-to-position don't
-    each show the same position-level unrealized P&L.
+    each show the same position-level unrealized P&L. Spread fields
+    are stamped on EVERY leg of an open multileg group so the
+    template macro's header (which reads from the first leg) always
+    has the data.
     """
     if not trades:
         return
@@ -578,6 +589,57 @@ def _enrich_trade_history_with_live_pnl(trades, ctx):
         t["unrealized_plpc"] = p.get("unrealized_plpc")
         t["market_value"] = p.get("market_value")
         seen.add(key)
+
+    # 2026-05-21 — Spread-level enrichment for /trades.
+    # Mirror the dashboard's spread grouping (views._enriched_positions)
+    # so trade rows for currently-open multileg legs carry spread_pnl /
+    # spread_pnl_pct / spread_max_loss. Stamps on EVERY matching leg
+    # (not just one per group) so the macro's header — which reads
+    # from the first leg in iteration order — always has the data.
+    # For closed legs (no matching open position) the stamping is a
+    # no-op, which is correct: a closed spread has realized P&L per
+    # leg already, no unrealized to compute.
+    try:
+        from spread import group_into_spreads
+        option_legs_for_grouping = [
+            p for p in positions
+            if getattr(p, "is_option", False) or p.get("occ_symbol")
+        ]
+        # Build the "journal rows" the grouper expects from the
+        # currently-OPEN multileg trade rows we already pulled.
+        journal_rows = [
+            t for t in trades
+            if t.get("occ_symbol")
+            and t.get("signal_type") in ("MULTILEG", "MULTILEG_OPEN")
+        ]
+        if option_legs_for_grouping and journal_rows:
+            spreads, _ungrouped = group_into_spreads(
+                option_legs_for_grouping, journal_rows,
+            )
+            spread_by_occ = {}
+            for sp in spreads:
+                for leg in sp.legs:
+                    spread_by_occ[leg.occ_symbol] = sp
+            for t in trades:
+                occ = t.get("occ_symbol")
+                if not occ or occ not in spread_by_occ:
+                    continue
+                sp = spread_by_occ[occ]
+                t["spread_pnl"] = sp.display_unrealized_pl
+                t["spread_pnl_pct"] = sp.display_unrealized_pl_pct
+                t["spread_max_loss"] = sp.structural_max_loss
+                t["spread_strategy"] = sp.strategy_name
+                t["spread_group_key"] = (
+                    f"{sp.strategy_name}/{sp.underlying}/"
+                    f"{sp.earliest_entry_ts}"
+                )
+    except Exception as exc:
+        logger.warning(
+            "/trades spread enrichment failed (%s: %s) — header will "
+            "render only entry credit/debit; per-leg unrealized still "
+            "populated above.",
+            type(exc).__name__, exc,
+        )
 
 
 def _mask_key(key):

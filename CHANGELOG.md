@@ -17,6 +17,22 @@ Rules going forward:
 
 ---
 
+## 2026-05-21 PM — /trades page also gets the SPREAD header Unrealized P&L. Severity: low (UI parity).
+
+Operator: dashboard SPREAD header showed Unrealized P&L correctly after the earlier deploy, but /trades still showed only "Net credit $X" with no Unrealized clause. Same template, different data source.
+
+Root cause: the dashboard path (`views._enriched_positions`) runs `spread.group_into_spreads` and stamps `spread_pnl` / `spread_pnl_pct` / `spread_max_loss` / `spread_strategy` / `spread_group_key` onto each position dict. The /trades path (`_enrich_trade_history_with_live_pnl`) was only enriching per-leg fields (`current_price`, `unrealized_pl`, `unrealized_plpc`, `market_value`) — never the spread-level ones. So when the template macro evaluated `t.spread_pnl is defined and t.spread_pnl is not none`, the conditional was False on /trades and the Unrealized clause didn't render.
+
+Fix: `_enrich_trade_history_with_live_pnl` now mirrors the dashboard's spread-grouping logic. After the per-leg enrichment, it runs `group_into_spreads` against the open-position list + the multileg journal rows, then stamps the five spread-level fields on every leg of each recognized spread. Stamped on ALL legs (not just one per group) so the macro's header — which reads from whichever leg appears first in iteration order — always has the data.
+
+For closed multileg legs (no matching open position), the stamping is a no-op, which is the right behavior: a closed spread has realized P&L per leg already; no unrealized to compute.
+
+Side-effect: `_enrich_trade_history_with_live_pnl` now also imports `spread.group_into_spreads`. Wrapped in try/except (narrow exceptions logged at WARNING) so a grouper failure can't poison the per-leg enrichment that comes before it.
+
+No tests touched — same data-shape additive change as the earlier dashboard fix. 56 tests pass across web + trades-table + memory-rule-enforcement + silent-failures suites.
+
+---
+
 ## 2026-05-21 PM — Spread header shows unrealized P&L + remove option-row tint that conflicted with header color. Severity: low (UI clarity).
 
 Two operator-driven UI tweaks:
