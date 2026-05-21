@@ -291,6 +291,19 @@ def _enriched_positions(ctx, profile_id):
             "decision_price": meta.get("decision_price"),
             "fill_price": meta.get("fill_price"),
             "slippage_pct": meta.get("slippage_pct"),
+            # 2026-05-21 — surface order_id + option_strategy +
+            # signal_type so the trades-table macro's multileg
+            # grouping logic (which uses order_id as the spread
+            # group key) actually fires on dashboard positions. Pre-
+            # this, only the /trades route's raw-trades query carried
+            # these fields, so the dashboard rendered each leg as an
+            # independent row with no SPREAD header. Pulling from
+            # `meta` since that's the most-recent entry trade for
+            # this leg, where the combo order_id was set.
+            "order_id": meta.get("order_id"),
+            "option_strategy": meta.get("option_strategy"),
+            "signal_type": meta.get("signal_type"),
+            "expiry": meta.get("expiry"),
             "pnl": None,
             "unrealized_pl": p["unrealized_pl"],
             "unrealized_plpc": p["unrealized_plpc"],

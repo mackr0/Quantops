@@ -17,6 +17,20 @@ Rules going forward:
 
 ---
 
+## 2026-05-21 PM — Dashboard: surface multileg grouping fields on enriched positions. Severity: low (UI follow-up to earlier same-day commit).
+
+Operator: dashboard for pid24 showed each leg of 5 open multileg spreads as an independent row with no SPREAD header — the visual grouping shipped earlier today (commit f91f416) wasn't activating on the dashboard. Activated correctly on `/trades` because that query pulls raw trade rows (which carry `order_id` + `option_strategy` + `signal_type`), but the dashboard goes through `_enriched_positions` which built its dicts from broker positions + per-leg trade metadata WITHOUT copying those three grouping-key fields out of the metadata.
+
+Fix: `views._enriched_positions` now stamps `order_id`, `option_strategy`, `signal_type`, and `expiry` onto every position dict, pulled from the `meta` row (the most-recent entry trade for that leg, where the combo `order_id` was already populated). The shared `_trades_table.html` macro's existing grouping logic then fires on the dashboard exactly as it does on `/trades` — one SPREAD header per multileg combo with leg rows underneath visually connected by the purple left border.
+
+No template changes — the same `_trades_table.html` macro is the rendering surface for both `/trades` (raw trades) and dashboard panels (enriched positions). One consistent grouping signal across both pages.
+
+No tests touched — pure data-shape additive change. 45 tests pass across web + trades-table + memory-rule-enforcement suites.
+
+Independent observation that surfaced during the report (NOT part of this fix): QCOM bear_call_spread on pid24 shows -$794 (-22.9%) unrealized. Math verified correct given the broker marks (-$1,028 short-leg loss + $236 long-leg gain), and structural-max-loss capping is doing its job. However, the marks themselves are imprecise for illiquid OTM contracts (5+ weeks out, wide bid-ask). The displayed number is honest within ±$200 — realized close would likely land somewhere in that band. This matches the operator's `feedback_paper_trading_must_match_real_world` guidance and isn't a bug to fix; documenting here so future sessions understand why a spread can mark at a different number than it would close at.
+
+---
+
 ## 2026-05-21 PM — Same-provider model fallback: -lite → -flash on Gemini without losing cost savings. Severity: medium (reliability).
 
 `gemini-2.5-flash-lite` (the cheap tier the operator switched to after Haiku costs hit ~$3/day) was 503ing ~40-50% of the time under Google's "high demand" throttle. With only Google configured in the provider chain, when the (provider) circuit opened on -lite, every specialist call in that 5-min window failed — the AI Brain panel surfaced "AI provider chain exhausted: google: circuit OPEN (retry in ~155s)".
