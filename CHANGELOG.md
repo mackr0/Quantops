@@ -17,6 +17,22 @@ Rules going forward:
 
 ---
 
+## 2026-05-21 PM — Spread header shows unrealized P&L + remove option-row tint that conflicted with header color. Severity: low (UI clarity).
+
+Two operator-driven UI tweaks:
+
+**1. Unrealized P&L on the SPREAD header.** Previously the header showed only the entry net credit/debit (e.g., "Net credit $540"), while the spread-level mark-to-market loss/gain sat on each leg row. Operator asked the obvious question: a spread that opened at +$540 credit was now showing -$794 on each leg — were those two different things? (Yes — entry credit vs current unrealized.) Answer: surface both on the header so the relationship is explicit. Header now renders:
+
+  `[SPREAD] QCOM Bear Call Spread · exp 2026-06-26 · 2 legs   Net credit $540.00 · Unrealized -$794.00 (-22.9%)`
+
+Pulled from `spread_pnl` / `spread_pnl_pct` already stamped on every leg by `views._enriched_positions` (via `spread.group_into_spreads`). Conditional on `spread_pnl is defined` — gracefully omits the Unrealized clause on /trades raw-row rendering (where spread metadata isn't joined). Color: green for positive, red for negative.
+
+**2. Removed option-row background tint.** Option rows had `background:#fbf7ff` (pale purple) as visual identification. Operator: this faint purple was bleeding into the SPREAD header's `#ede7f6` (also purple-ish), so adjacent multileg groups merged together visually instead of separating. Removed the row tint entirely — the OPT badge + OCC sublabel still identify the row as an option, and the SPREAD header + purple left-border on multileg leg rows are sufficient delineation. Side benefit: option leg rows now stripe-alternate cleanly with the table's default striping.
+
+No tests touched — presentation-layer change. Locally rendered against mock dashboard data; both cases verified (with-spread-pnl and without).
+
+---
+
 ## 2026-05-21 PM — Dashboard: surface multileg grouping fields on enriched positions. Severity: low (UI follow-up to earlier same-day commit).
 
 Operator: dashboard for pid24 showed each leg of 5 open multileg spreads as an independent row with no SPREAD header — the visual grouping shipped earlier today (commit f91f416) wasn't activating on the dashboard. Activated correctly on `/trades` because that query pulls raw trade rows (which carry `order_id` + `option_strategy` + `signal_type`), but the dashboard goes through `_enriched_positions` which built its dicts from broker positions + per-leg trade metadata WITHOUT copying those three grouping-key fields out of the metadata.

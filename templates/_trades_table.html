@@ -104,6 +104,20 @@
                     {% endfor %}
                     {% set _is_credit = _net_premium.value < 0 %}
                     {% set _net_disp = '$%.2f'|format(_net_premium.value|abs) %}
+                    {# 2026-05-21 — unrealized P&L on the header. Pulled
+                       from `spread_pnl` / `spread_pnl_pct` fields the
+                       spread grouper (in views._enriched_positions)
+                       stamps on every leg of a recognized spread.
+                       Only present on dashboard positions, not /trades
+                       raw rows — the conditional gracefully degrades
+                       (header shows only entry credit/debit on
+                       /trades, full credit + unrealized on dashboard).
+                       Reading from `t` since the first leg of the
+                       group is the current row — every leg in the
+                       group carries the same spread-level P&L. #}
+                    {% set _has_unrealized = (
+                        t.spread_pnl is defined and t.spread_pnl is not none
+                    ) %}
                     <tr class="multileg-header-row" style="background:#ede7f6;border-top:2px solid #7e57c2;border-left:4px solid #7e57c2;">
                         <td colspan="{{ 9 if show_profile else 8 }}" style="padding:0.4rem 0.75rem;font-size:0.8rem;">
                             <span style="display:inline-block;background:#5e35b1;color:white;font-size:0.65rem;font-weight:700;padding:0.1rem 0.4rem;border-radius:3px;letter-spacing:0.05em;margin-right:0.5rem;">SPREAD</span>
@@ -111,8 +125,16 @@
                             <span style="margin-left:0.4rem;color:#5e35b1;font-weight:600;">{{ t.option_strategy|humanize }}</span>
                             {% if t.expiry %}<span class="muted" style="margin-left:0.4rem;">· exp {{ t.expiry }}</span>{% endif %}
                             <span class="muted" style="margin-left:0.4rem;">· {{ _group_legs|length }} legs</span>
-                            <span style="float:right;font-weight:600;color:{{ '#2e7d32' if _is_credit else '#c62828' }};">
-                                {{ 'Net credit' if _is_credit else 'Net debit' }} {{ _net_disp }}
+                            <span style="float:right;">
+                                <span style="font-weight:600;color:{{ '#2e7d32' if _is_credit else '#c62828' }};">
+                                    {{ 'Net credit' if _is_credit else 'Net debit' }} {{ _net_disp }}
+                                </span>
+                                {% if _has_unrealized %}
+                                <span class="muted" style="margin:0 0.35rem;">·</span>
+                                <span style="font-weight:600;color:{{ '#2e7d32' if t.spread_pnl >= 0 else '#c62828' }};">
+                                    Unrealized {% if t.spread_pnl >= 0 %}+${{ "{:,.2f}".format(t.spread_pnl) }}{% else %}-${{ "{:,.2f}".format(-t.spread_pnl) }}{% endif %}{% if t.spread_pnl_pct is not none %} ({{ "{:+.1f}%".format(t.spread_pnl_pct) }}){% endif %}
+                                </span>
+                                {% endif %}
                             </span>
                         </td>
                     </tr>
@@ -137,7 +159,15 @@
                    muted row styling + EXCLUDED badge make it clear
                    they're not counted in headline metrics. #}
                 {% set is_excluded_dq = t.data_quality is defined and t.data_quality %}
-                <tr class="trade-row{% if is_option %} option-row{% endif %}{% if is_excluded_dq %} dq-excluded-row{% endif %}{% if _is_multileg_leg %} multileg-leg-row{% endif %}" data-symbol="{{ t.symbol }}" data-ts="{{ t.timestamp or '' }}" style="cursor:pointer;{% if _is_multileg_leg %}border-left:4px solid #7e57c2;{% endif %}{% if is_option %}background:#fbf7ff;{% endif %}{% if is_terminal_unfilled %}opacity:0.55;font-style:italic;{% endif %}{% if is_excluded_dq %}opacity:0.5;background:#f5f5f5;{% endif %}" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? '' : 'none'; this.querySelector('.expand-caret').innerHTML = this.nextElementSibling.style.display === 'none' ? '&#9654;' : '&#9660;'">
+                {# 2026-05-21 — option-row tint (was background:#fbf7ff,
+                   pale purple) REMOVED per operator feedback: it was
+                   bleeding into the SPREAD header's #ede7f6 purple,
+                   making adjacent groups visually merge instead of
+                   separate. The purple SPREAD header + purple
+                   left-border on multileg-leg-row are sufficient
+                   delineation. The OPT badge + OCC sublabel still
+                   identify the row as an option. #}
+                <tr class="trade-row{% if is_option %} option-row{% endif %}{% if is_excluded_dq %} dq-excluded-row{% endif %}{% if _is_multileg_leg %} multileg-leg-row{% endif %}" data-symbol="{{ t.symbol }}" data-ts="{{ t.timestamp or '' }}" style="cursor:pointer;{% if _is_multileg_leg %}border-left:4px solid #7e57c2;{% endif %}{% if is_terminal_unfilled %}opacity:0.55;font-style:italic;{% endif %}{% if is_excluded_dq %}opacity:0.5;background:#f5f5f5;{% endif %}" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? '' : 'none'; this.querySelector('.expand-caret').innerHTML = this.nextElementSibling.style.display === 'none' ? '&#9654;' : '&#9660;'">
                     <td style="width:1.5rem;text-align:center;"><span class="expand-caret" style="font-size:0.7rem;color:#888;">&#9654;</span></td>
                     <td class="muted" data-raw="{{ t.timestamp or '' }}">{{ (t.timestamp or '')|friendly_time }}</td>
                     {% if show_profile %}<td>{{ t.profile_name or t.segment or '--' }}</td>{% endif %}
