@@ -17,6 +17,58 @@ Rules going forward:
 
 ---
 
+## 2026-05-21 AM — `cover` mis-classified as cash IN inflated pid16 equity by $41K of phantom P&L. Severity: HIGH (data integrity — dashboard, learning loop, and self-tuner all read against the wrong number).
+
+### Symptom
+
+Operator noticed pid16 (EXP-A2-NoAltData) showed Profile P&L of +$18.6K → +$40K within minutes mid-cycle. Investigation showed realized P&L was actually +$54, unrealized was essentially flat. The displayed equity was inflated by ~$41,206 — exactly matching 2 × $20,603 of NVTS cover-trade notional.
+
+### Root cause
+
+`journal.get_virtual_account_info` bucketed `cover` trades with `sell`/`short`/`dividend` as cash IN:
+
+```python
+elif side in ("sell", "cover", "short", "dividend"):
+    total_sells += notional
+```
+
+`cover` is the close-leg of a stock short — the trader buys shares back to return them to the lender. That's cash OUT (like `buy`), not cash IN. The misclassification inflated every cover trade's contribution to cash by 2 × notional: once as spurious cash-IN, once as never-subtracted cash-OUT.
+
+A misleading comment on the line above claimed the branch was "mostly dormant" because "in practice this codebase uses 'buy' to close stock shorts." That was wrong: the broker reconciler (`reconcile_journal_to_broker.py:871`) writes rows with `side='cover'` whenever it backfills short-close fills from Alpaca. The branch is anything but dormant.
+
+Same misclassification appeared in `journal.py:2050` — the slippage-cost CASE statement put `cover` with `sell`/`short` (the cash-IN bucket where `slippage_cost = (decision − fill) × qty`), instead of with `buy`/`sell_short` (the cash-OUT bucket where `slippage_cost = (fill − decision) × qty`). Slippage on cover was therefore being reported in the wrong direction.
+
+### Why only pid16 surfaced today
+
+pid16 is the only profile that translated short predictions into actual short-then-cover round trips this session — 4 SHORT/STRONG_SELL predictions → 3 NVTS shorts → 2 NVTS covers (third short still open). pid17 and pid20 had SHORT predictions but their executions were blocked at the cross-direction-conflict gate on the shared Alpaca account (PA31QN9AVOW4) because pid16's NVTS short was already open. Other 10 profiles never predicted short today. The bug itself is universal — it fires for any profile that ever gets a cover row in its trades table — pid16 was just the first to trip it post-reset.
+
+### Fix
+
+1. `journal.get_virtual_account_info` — `cover` moved from the cash-IN bucket to the cash-OUT bucket alongside `buy`. Rewrote the surrounding comment to be unambiguous about each side's cash direction.
+
+2. `journal.py:2050` slippage-cost CASE — `cover` moved from the `(sell, cover, short)` arm to the `(buy, sell_short, cover)` arm. Both `cover` and `buy` are cash-OUT and have positive slippage when `fill > decision`.
+
+### Impact on already-shipped 2026-05-20 work
+
+The phantom equity was being fed into:
+- The new `ai_prediction_outcomes.return_pct_net` column (#185) — but only for predictions resolving today, and the bug landed in cash only, not in per-position market_value, so the multi-horizon labels themselves are unaffected. The training-dataset query joins by prediction, not by equity.
+- The self-tuner's drawdown signal — pid16's tuner saw +20% phantom equity and could have been about to widen risk params on a "winning streak" it wasn't actually on. The next self-tune cycle (post-deploy) will read corrected equity.
+- The daily_snapshots row for 2026-05-20 — written BEFORE any cover row existed on pid16 (first cover today 14:18 UTC); the historical snapshot is clean. No backfill needed.
+
+### Tests — `tests/test_cover_is_cash_out_2026_05_21.py` (12 cases)
+
+Cover regression core: bare cover reduces cash; short+cover at same price net-zero; short+cover at a loss reduces cash; short+cover at a gain increases cash.
+Pid16 repro: replays the exact 3 shorts + 2 covers with original prices/quantities; asserts cash = $212,206.93 (vs $253,413 pre-fix — exactly the +$41,206 phantom).
+Property: phantom is exactly 2 × notional per cover row (cash inflation = double-side error).
+Regression-free: buy still reduces cash, sell/short/dividend still increase cash.
+Source guardrails: scans `get_virtual_account_info` source for `("buy", "cover")` tuple presence; scans slippage CASE for `'sell_short', 'cover'` tuple presence. Either refactor that strips cover from these buckets fails the test.
+
+### Operator note
+
+This bug was mine. The comment claiming cover was dormant was mine. The line bucketing cover wrong was mine. The "small surface" framing in the original PR that let the bug ship without a test for the cover branch was mine. Apologies — surfacing it here in plain language so the next session can see the failure mode clearly.
+
+---
+
 ## 2026-05-20 PM — morning_health_check.sh: D1 grace for pre-market. Severity: low (script-only false-positive fix).
 
 `[D1] Capture task ran today` was hard-failing every morning run executed before market open. The capture task runs inside the per-profile cycle loop, which is intentionally idle pre-market — so before 13:30 UTC it cannot have run "today" yet. Section C (reconciler heartbeat) and Section E (daily snapshot) both already have explicit pre-market-close grace using `$MARKET_OPEN_NOW`; D1 was missed when those landed.

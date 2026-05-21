@@ -1638,18 +1638,27 @@ def get_virtual_account_info(db_path=None, initial_capital=100000.0,
             continue
         multiplier = 100.0 if occ else 1.0
         notional = qty * price * multiplier
-        # 'buy' = cash out (long open or short close)
-        # 'sell', 'cover', 'short' = cash in
-        #   - 'sell' = long close (proceeds) OR option sell-to-open
-        #              (premium received)
-        #   - 'cover' = stock short close via the rarely-used 'cover'
-        #              side label (in practice this codebase uses
-        #              'buy' to close stock shorts, so this branch
-        #              is mostly dormant)
-        #   - 'short' = stock short open (proceeds received)
-        if side == "buy":
+        # 'buy'   = cash OUT (long open or short close via 'buy' label)
+        # 'cover' = cash OUT (stock short close — buying shares back
+        #           to return them to the lender)
+        # 'sell'  = cash IN  (long close OR option sell-to-open premium)
+        # 'short' = cash IN  (stock short open — proceeds received)
+        # 'dividend' = cash IN (non-trade credit; #168)
+        #
+        # 2026-05-21 — 'cover' was previously in the cash-IN bucket
+        # alongside 'sell'/'short' with a misleading "mostly dormant"
+        # comment claiming the codebase always used 'buy' to close
+        # shorts. That was wrong: stock-side short closes via the
+        # `cover` label DO get written here (caught when pid16 showed
+        # +$40K phantom equity from 2 NVTS covers totaling ~$20.6K
+        # notional that were inflating cash by ~$41.2K — once as
+        # spurious cash-IN, once as never-subtracted cash-OUT). The
+        # fix moves 'cover' into the cash-OUT bucket. Audit + snapshot
+        # rewrite of every profile with cover rows happens alongside
+        # this commit; see CHANGELOG 2026-05-21.
+        if side in ("buy", "cover"):
             total_buys += notional
-        elif side in ("sell", "cover", "short", "dividend"):
+        elif side in ("sell", "short", "dividend"):
             # 'dividend' added 2026-05-17 (#168): non-trade cash credits
             # captured via activities_capture.py. Stored as a trades row
             # with side='dividend', qty=1, price=dividend_amount so the
@@ -2036,9 +2045,16 @@ def get_slippage_stats(db_path=None, kind=None):
                         AS total_slippage_magnitude,
                     SUM(
                         CASE
-                            WHEN side IN ('buy', 'sell_short')
+                            -- Cash-OUT sides (you pay; bad slippage when
+                            -- fill > decision): buy / sell_short / cover.
+                            -- ('cover' moved here 2026-05-21 alongside the
+                            -- equity-cash fix in get_virtual_account_info;
+                            -- same misclassification class.)
+                            WHEN side IN ('buy', 'sell_short', 'cover')
                                 THEN (fill_price - decision_price) * qty
-                            WHEN side IN ('sell', 'cover', 'short')
+                            -- Cash-IN sides (you receive; bad slippage when
+                            -- fill < decision): sell / short.
+                            WHEN side IN ('sell', 'short')
                                 THEN (decision_price - fill_price) * qty
                             ELSE 0
                         END
