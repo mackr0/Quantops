@@ -21,17 +21,37 @@
     <form method="post" action="/settings/keys">
         <div class="grid">
             <label>
-                Alpaca API Key
+                System-wide Alpaca API Key
                 <input type="text" name="alpaca_api_key" value="{{ keys.alpaca_api_key }}"
-                       placeholder="Enter Alpaca API key">
+                       placeholder="Paste one of your profile-level Alpaca keys here">
                 {% if keys.has_alpaca %}<small class="pnl-pos">Configured</small>{% endif %}
             </label>
             <label>
-                Alpaca Secret Key
+                System-wide Alpaca Secret Key
                 <input type="password" name="alpaca_secret_key" value="{{ keys.alpaca_secret_key }}"
-                       placeholder="Enter Alpaca secret key">
+                       placeholder="Paste the matching secret">
             </label>
         </div>
+        <p style="font-size:0.8rem;color:#666;margin:-0.25rem 0 0.75rem 0;">
+            <strong>Must be one of the profile-level Alpaca keys you've
+            already configured below.</strong> Used for system-wide data
+            calls that don't run inside a per-profile context:
+            <ul style="margin:0.25rem 0 0 1.25rem;padding:0;">
+                <li>Daily stock bars + intraday snapshots (used by every
+                    screener candidate the AI sees)</li>
+                <li>Historical bar windows (multi-horizon outcome
+                    measurement for the learning loop)</li>
+                <li>Options chain quotes (when the AI evaluates an
+                    options candidate)</li>
+                <li>Intraday 1-min bars (alt-data intraday-pattern
+                    signal)</li>
+                <li>News article fetcher</li>
+                <li>Asset name resolution (ticker → company name lookup)</li>
+            </ul>
+            Any of your profile keys will work — they all share the same
+            Alpaca data subscription. Per-profile <em>order submission</em>
+            still uses each profile's own key independently of this field.
+        </p>
         <div class="grid">
             <label>
                 Fallback LLM Key

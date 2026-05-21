@@ -17,6 +17,18 @@ Rules going forward:
 
 ---
 
+## 2026-05-20 PM — Settings page: relabel the top-of-page Alpaca key field to honestly describe its purpose. Severity: low (UI-only text change).
+
+Operator caught that I'd claimed the "master Alpaca key" was removed when in fact only the env-variable path was killed; the DB-table master at `alpaca_accounts ORDER BY id LIMIT 1` is still live and still depended on by 8 no-context code paths (daily/intraday bars, options chains, news, asset names, intraday alt-data, and the #185 horizon-measurement bar fetcher I just shipped). The settings page still exposed a generic "Alpaca API Key" field at the top with no explanation, which contributed to the recurring "is this a master key or a profile key" confusion.
+
+Relabels the top-of-settings Alpaca fields from "Alpaca API Key / Alpaca Secret Key" to "System-wide Alpaca API Key / System-wide Alpaca Secret Key" and adds explainer text under the inputs enumerating the 6 system-wide call sites that need this credential (daily stock bars, intraday snapshots, historical bar windows for multi-horizon measurement, options chain quotes, intraday 1-min alt-data bars, news article fetcher, asset name resolution). Notes that any of the profile-level keys can be pasted here because they all share the same Alpaca data subscription.
+
+Architectural mismatch left as-is per operator decision: the form posts to `/settings/keys` which writes to `users.alpaca_api_key_enc`, but `market_data._resolve_alpaca_credentials` reads from `alpaca_accounts ORDER BY id LIMIT 1`. So the form doesn't actually control the credential it appears to manage. Master credential verified working against Alpaca paper (account PA35KZUXD8UG, status ACTIVE) — leaving in place until the proper cleanup ticket lands. The form text now makes the existence of this credential visible to the operator so it can't be lost again.
+
+**No backend changes.** UI text only. No tests touched.
+
+---
+
 ## 2026-05-20 PM — #185: multi-horizon outcomes + deterministic-panel snapshot — fine-tune-optimized schema. Severity: medium (learning-signal fidelity + future fine-tune readiness).
 
 The third and final ship in today's learning-loop fidelity sequence
