@@ -17,6 +17,30 @@ Rules going forward:
 
 ---
 
+## 2026-05-21 PM — Phase 4B1 fine-tune package: dataset builder + model registry (foundation). Severity: low (new package, not wired to live trading).
+
+First, data-independent pieces of the incremental fine-tune pipeline (docs/20). Buildable now even though the first real training run is gated on ~4-8 weeks of post-B1 data accumulation (docs/20 §17 — earliest ~late June 2026). Nothing here runs on the live path yet; it's pure infrastructure behind no flag.
+
+**`finetune/dataset_builder.py`** — turns the system's own resolved predictions (live `ai_predictions` + durable `predictions_archive/`) into a hindsight-relabeled OpenAI chat-JSONL corpus:
+- `hindsight_label()` — relabels each prediction to the action correct given the realized outcome (winning directional → keep; losing directional → HOLD; HOLD that missed a >5% move → BUY/SHORT; 2-5% gray zone skipped; option/multileg skipped — premium P&L, not stock-%).
+- Prefers `actual_return_pct_net` (#186) over gross — corpus reflects what actually made money after costs.
+- `assert_no_lookahead()` — the load-bearing safety property: every label must come from an outcome that resolved STRICTLY after the decision. Asserted at runtime inside `build_example` AND pinned by a source-scan test. docs/20 §11 rates look-ahead the one Critical-impact risk.
+- `_is_training_quality()` filters to resolved / prompt-present / parseable-response / canonical-outcome / non-tainted / non-option rows.
+- Assistant target matches the production trade-dict shape so the live parser stays unchanged (docs/20 open decision #6); HOLD relabels strip sizing/targets.
+- `build_dataset()` pools across profile journals + archive, dedups by prediction id, holds out the most-recent N as a self-scored eval set, splits the rest 90/10 train/val, writes vendor JSONL (`_meta` stripped).
+
+**`finetune/model_registry.py`** — `finetune_models` + `finetune_evaluations` tables (master DB, lazy `ensure_schema`) + lifecycle CRUD: register / promote-to-shadow / promote-to-live / retire / `latest_live_model`.
+
+Granularity note: first cut is one example per resolved prediction. Per-cycle batch-output (group by `cycle_id`) is a noted refinement once we measure whether per-candidate framing underfits.
+
+Still to build (deferred until the vendor path — 4b.1 OpenAI vs 4b.2 local M2 Max LoRA — is chosen): training_runner, job_monitor, evaluator, inference, scheduler wiring, `/finetune` dashboard.
+
+### Tests
+`tests/test_finetune_dataset_builder.py` (24): every hindsight-relabel case; look-ahead guard (after/before/equal/missing); training-quality filter; build_example incl. HOLD-strips-sizing + net-return preference; build_dataset split + JSONL shape + live/archive dedup; model_registry lifecycle.
+`tests/test_finetune_no_lookahead_bias.py` (3): AST scan that build_example calls the guard; strict `>` comparison; builder imports NO market-data access (labels only from resolved outcome columns).
+
+---
+
 ## 2026-05-21 PM — Protective-order protection decided by Alpaca truth (order_id), not fuzzy journal lookup. Severity: high (every-cycle "insufficient qty available" spam + journal/broker linkage drift).
 
 ### Symptom

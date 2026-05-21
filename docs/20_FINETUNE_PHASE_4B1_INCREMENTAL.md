@@ -2,10 +2,14 @@
 
 **Scoping doc for the chip-away weekly fine-tune of an open-vendor model (OpenAI `gpt-4o-mini` recommended) trained on the system's own archived predictions.**
 
-Status: SCOPING — not yet implemented.
+Status: IN PROGRESS — foundation shipped 2026-05-21; first training run gated on data accumulation (~late June 2026, see §17).
 Owner: TBD.
 Created: 2026-05-19.
-Depends on: B1 (archive-before-reset) ✅ shipped 2026-05-19; B2 (multi-horizon outcomes) recommended but not strictly required.
+Depends on: B1 (archive-before-reset) ✅ shipped 2026-05-19; B2 (multi-horizon outcomes, #185) ✅ shipped 2026-05-21; B3 (cost-adjusted returns, #186) ✅ shipped 2026-05-21.
+
+**Shipped so far (2026-05-21):** `finetune/dataset_builder.py` (hindsight relabel + look-ahead guard + OpenAI JSONL + train/val/eval split, pooling live journals + `predictions_archive/`) and `finetune/model_registry.py` (`finetune_models` / `finetune_evaluations` tables + lifecycle CRUD). Tests: `test_finetune_dataset_builder.py` (24), `test_finetune_no_lookahead_bias.py` (3). NOT wired to live trading — no flag, no scheduler task yet.
+
+**Still to build:** `training_runner` / `job_monitor` / `evaluator` / `inference`, scheduler wiring, `/finetune` dashboard — deferred until the vendor path is chosen (4b.1 OpenAI §6 vs 4b.2 local M2 Max LoRA §16.1). Both consume the same dataset_builder corpus.
 Targets the docs/17 Phase 4b workstream; supersedes the "big-batch" implicit assumption with an incremental architecture that's ~50× cheaper.
 
 ---
