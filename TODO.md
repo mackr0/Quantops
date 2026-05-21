@@ -6,539 +6,146 @@ or incremental refactors that don't fit in the current commit chain.
 Each item names what to build, the user-visible problem it solves,
 and any technical pre-requisites or pitfalls.
 
----
-
-## P0 — Instrument-class pipeline architecture (ratified 2026-05-11)
-
-See `docs/14_INSTRUMENT_PIPELINE_ARCHITECTURE.md` for the full
-plan + rationale + migration spec. Six phases, each independently
-shippable with explicit exit criteria.
-
-### Phase 0 — Define `Pipeline` ABC + concrete `StockPipeline`/`OptionPipeline` (no behavior change)
-
-**What**: Add `pipelines/` package with the `Pipeline` ABC and
-two concrete subclasses that delegate to existing functions.
-Like Phase 1 of the Position class refactor: introduces the
-abstraction without moving any business logic.
-
-**Files to add**:
-- `pipelines/__init__.py` — `Pipeline` ABC + DTO types
-  (`Candidate`, `AIResult`, `SpecialistVerdict`,
-  `ExecutionResult`, `Outcome`, `Metrics`, `ParameterAdjustments`).
-- `pipelines/stock.py` — `StockPipeline` (delegates to existing
-  `ai_analyst`, `trader`, `trade_pipeline` code).
-- `pipelines/option.py` — `OptionPipeline` (delegates to
-  `options_multileg`, `options_trader`).
-- `pipelines/registry.py` — `get_pipelines_for_profile(ctx)`.
-- `tests/test_pipelines_phase0.py` — interface conformance + smoke.
-
-**Exit criteria** (per spec):
-- 100% of existing tests still pass (no behavior change).
-- `get_pipelines_for_profile(ctx)` returns expected list per profile.
-- Both pipelines pass smoke: `pipeline.generate_candidates(ctx)`
-  doesn't throw on prod-like context.
-
-### Phase 1 — Move metrics into per-pipeline namespaces
-
-**What**: `metrics/stock.py`, `metrics/option.py`,
-`metrics/portfolio.py`. Stock queries filter `WHERE occ_symbol IS
-NULL`; option queries filter the inverse; aggregate metrics span both.
-
-**Eliminates**: TODO #8 (1130% slippage) by construction.
-
-**Exit criteria**: Per-instrument-class metrics panels render on the
-performance page; existing tests pass with no regression in
-displayed metrics for a synthetic stock-only or option-only profile.
-
-### Phase 2 — Move tuning into per-pipeline namespaces
-
-**What**: `tuning/stock.py`, `tuning/option.py`. Each tuner reads
-its own metrics module, adjusts its own parameter set. No pollution.
-
-**Eliminates**: audit finding #3 (self-tuning corruption).
-
-**Exit criteria**: Self-tuning history shows independent stock and
-option parameter adjustments; backfill of `pipeline_name` on
-existing `ai_predictions` rows.
-
-### Phase 3 — Fork the AI prompt
-
-**What**: `pipelines/stock_prompt.py` (technicals only),
-`pipelines/option_prompt.py` (technicals + IV/Greeks/DTE/spread
-economics). `ai_analyst.py` retires its instrument-branching.
-
-**Eliminates**: audit finding #4 (option proposals lack option context).
-
-**Exit criteria**: option proposals consistently reference
-IV/Greeks/DTE in their reasoning (verified by inspecting recent
-ai_predictions).
-
-### Phase 4 — Specialist routing per pipeline
-
-**What**: `pipelines/stock_specialists.py`,
-`pipelines/option_specialists.py` (new option-specific specialists:
-IV-skew, Greeks risk, spread P&L). `MULTILEG_OPEN` proposals route
-through option specialists with veto authority.
-
-**Eliminates**: audit findings #5, #6 (multileg bypasses veto;
-stock specialists shouldn't see option proposals).
-
-**Exit criteria**: veto rate for option proposals is non-zero on
-a wide-loss-spread test scenario.
-
-### Phase 5 — Per-pipeline outcomes + scaled return
-
-**What**: option `actual_return_pct` is scaled or stored separately
-so it doesn't pool with stock outcomes.
-
-**Eliminates**: audit finding #2 (return % scaling).
-
-**Exit criteria**: synthetic stock-only and option-only resolution
-histories produce win-rate distributions that don't pollute each other.
-
-### Phase 6 — Risk model: delta-adjusted exposure
-
-**What**: `portfolio_risk_model.py` aggregates delta-weighted
-underlying exposure for option positions, not 1:1 market_value.
-Greek aggregation surfaces in the AI prompt.
-
-**Eliminates**: audit finding #7.
-
-**Exit criteria**: option positions' factor regressions use
-delta-weighted exposure; prompt visibly includes portfolio Greeks.
+**Last reconciled against code: 2026-05-21.** Most of the 2026-05-11
+incident backlog has shipped; see the Shipped section at the bottom.
 
 ---
 
-## P0 — Active risk (none currently)
+## P0 — Phase 4B1: incremental fine-tuning (the headline next project)
 
-(All P0 items as of 2026-05-11 have been shipped. The 23-phantom-
-stock-stops incident is fully closed: canceled at the broker,
-recurrence prevented by ensure_protective_stops option-skip guard,
-root cause fixed by Position class refactor.)
+**Full spec**: `docs/20_FINETUNE_PHASE_4B1_INCREMENTAL.md`
+(Status there: SCOPING — not yet implemented.)
 
----
+**What**: Fine-tune a custom model on this system's own trade history
+so the apex LLM internalizes the candidate universe, regime tagger,
+specialist taxonomy, and historical outcomes — instead of relying
+purely on a frozen base model + RAG injection at inference.
 
-## P1 — User-visible UI gaps
+**Why now**: the data foundation is complete as of 2026-05-21:
+- B1 (#184) — archive-before-reset + prompt/response persistence +
+  cycle history + cycle_id linkage. ✅ shipped 2026-05-19.
+- B2 (#185) — multi-horizon outcomes table + deterministic-panel
+  rule-vote snapshots + `ai_tracker.build_training_dataset()`.
+  ✅ shipped 2026-05-21.
+- B3 (#186) — cost-adjusted net returns. ✅ shipped 2026-05-21.
 
-### 1. Options vs stocks as separate tabs
+`build_training_dataset()` already emits per-prediction rows with
+parsed features, rule_votes, prompt_text, raw_response, and
+multi-horizon outcome labels (return_pct, return_pct_net, mfe/mae,
+outcome_class). That's the training corpus.
 
-**Where**: dashboard Open Positions section + /trades page.
-
-**Why**: option positions and stock positions have fundamentally
-different fields and economics. Today they share a single table
-(`_trades_table.html`) and the macro has to conditionally render
-OPT badges, contract-detail subtext, x100 multipliers, per-spread
-P&L, etc. Tabs would split them cleanly and let each table show
-exactly the fields that matter for its instrument type. Should
-follow the same tab pattern as the performance page.
-
-**Scope**:
-- Dashboard `templates/dashboard.html`: add Tabs ("Stocks" |
-  "Options") inside the Open Positions block per profile. Split
-  positions list at the view layer using `pos.is_option`.
-- /trades `templates/trades.html`: top-level tabs ("Stock Trades"
-  | "Option Trades"). Server-side filter on `signal_type` /
-  `occ_symbol`.
-- Probably split the macro into `_stock_trades_table.html` and
-  `_option_trades_table.html` once they diverge enough — currently
-  the shared macro has a lot of `{% if is_option %}` branches.
-- Option-specific columns: strike, expiry, days-to-expiry, premium
-  per contract, total premium (x100), per-spread P&L grouping.
-- Stock-specific columns: shares, share price, total cost, current
-  share price, unrealized P&L.
-
-**Prerequisite**: nothing — `pos.is_option` already lands via the
-Position class refactor (Phase 1, shipped 2026-05-11).
-
-**Pitfalls**: don't lose the unified "all trades" view entirely
-— some operators may want one mixed table for audit purposes.
-Consider keeping a "All" tab.
+**Open scoping questions** (resolve before building — see the
+session scoping notes appended to docs/20):
+1. Which collected signals belong IN the training input vs stay as
+   ex-post meta-model features. (Tuning parameters, ticker activity,
+   meta-model scores — see scoping discussion.)
+2. Train target: next-action imitation, outcome-conditioned, or
+   reward-weighted on return_pct_net?
+3. Base model + method: LoRA on an open model, or a hosted
+   fine-tune API? Cost economics already analyzed in #187.
+4. Soak/shadow harness reuse — docs/20 already describes a
+   per-profile shadow-model soak; confirm it covers the new model.
 
 ---
 
-### 2. Server-driven page-jump pagination on /trades
+## P1 — Still open
 
-**Where**: `templates/trades.html` + `views.py:trades()`.
+### #6 — Opportunistic migration off the Position dict shim
 
-**Why**: /trades has grown to ~20 pages of history. Current UI only
-has prev/next arrow buttons. Reaching page 18 requires 17 clicks.
-Need numbered page links with jump-to-page support.
+**Status**: ONGOING. `position.py` still carries the back-compat
+shim (`__getitem__` / `.get()` / `__contains__`). The guardrail
+(`tests/test_no_new_position_dict_access.py`) blocks producer
+regressions but consumers still use dict access.
 
-**Scope**:
-- `views.py:trades()` already does server-side pagination (50/page).
-  No data-layer change needed.
-- `templates/trades.html`: replace the prev/next-only pagination
-  block with a numbered page bar like:
-  `« 1 2 3 ... 10 11 [12] 13 14 ... 19 20 »`
-  with active page highlighted. Show ~5 pages around the current
-  page; clip with ellipses on either side.
-- Page links must preserve all other query parameters
-  (`profile_id`, `sort`, `dir`, future `search`).
-- Optional: a small "Jump to page" input box (Enter to navigate).
-
-**Pitfalls**: when a sort/filter changes, current page may become
-invalid; the existing route already clamps `page` to `total_pages`,
-keep that.
-
----
-
-### 3. Symbol search on /trades
-
-**Where**: `templates/trades.html` + `views.py:trades()` +
-`_get_trade_history_for_profile`.
-
-**Why**: with ~20 pages of trades, finding "every CWAN trade"
-requires scrolling. A search box gives instant filter-by-symbol.
-
-**Scope**:
-- Add `?search=<query>` URL parameter. Treat as case-insensitive
-  prefix on `symbol` AND substring on `occ_symbol` (so "CWAN"
-  matches both stock and option rows for CWAN).
-- `_get_trade_history_for_profile(profile_id, limit=200,
-  search=None)` — extend signature; build `WHERE` clause that
-  filters when `search` is non-empty.
-- `templates/trades.html`: search input on the same form as the
-  profile dropdown; submits a GET with the search query.
-- Pagination links preserve the search parameter alongside sort.
-
-**Pitfalls**: SQL injection — bind the search as a parameter, never
-interpolate. Empty/whitespace search should be treated as "no
-filter" so the URL doesn't double-encode.
-
----
-
-### 4. Expand "Side" column to show the actual action type
-
-**Where**: `_trades_table.html` macro.
-
-**Why**: Today the column shows just `BUY` or `SELL`. The journal
-stores more detail in `signal_type` (`BUY`, `STRONG_BUY`,
-`WEAK_BUY`, `SELL`, `STRONG_SELL`, `WEAK_SELL`, `SHORT`, `COVER`,
-`MULTILEG_OPEN`, `PAIR_OPEN`, `PAIR_CLOSE`, `OPTIONS`, `OPTION_EXERCISE`,
-`DELTA_HEDGE`). Showing the signal_type tells the operator
-*what kind* of trade it was — STRONG_BUY conviction vs WEAK_BUY
-hedge, opening vs closing leg, etc.
-
-**Scope**:
-- Macro reads `t.signal_type` and renders as a small uppercase
-  badge with appropriate color (BUY/STRONG_BUY → green, SELL →
-  red, MULTILEG_OPEN → purple, etc.). `display_names.humanize`
-  for human-readable form.
-- Rename column header from "Side" to "Action".
-- Keep the existing BUY/SELL coloring for the row's `pnl-pos`/
-  `pnl-neg` class on side context.
-
-**Pitfalls**: signal_type values are inconsistent across older
-trade rows. Defensive: fall back to `t.side` (uppercased) when
-signal_type is missing.
-
----
-
-### 4b. ✅ DONE 2026-05-11 — Audit the AI pipeline for option-specific handling end-to-end
-
-Audit shipped as `AUDIT_2026_05_11_AI_PIPELINE.md`. 11 findings
-across 7 pipeline stages confirmed the bug class is system-wide.
-Mack ratified the architectural response (per-instrument-class
-pipelines) — see `docs/14_INSTRUMENT_PIPELINE_ARCHITECTURE.md`.
-The audit findings are now the migration roadmap; each is
-eliminated by construction at one of the migration phases below.
-
-The original audit-driven individual-fix items (#9 actual_return_pct
-scaling, #10 delta-adjusted exposure, #11 specialist veto on
-multileg, #12 option-aware AI prompt) are NOT being added as
-discrete TODO items. They become side effects of the pipeline
-phases (Phase 5, Phase 6, Phase 4, Phase 3 respectively) and
-would only be re-introduced as separate fixes if the pipeline
-refactor were abandoned.
-
-### 4b-archive. Audit the AI pipeline for option-specific handling end-to-end
-
-**Where**: every step from "AI proposes a trade" → "broker submission"
-→ "position tracking" → "exit logic" → "outcome resolution".
-
-**Why**: today's incident response surfaced six bugs where option
-positions were treated like stocks (the symbol-vs-OCC overload).
-Those were the visible ones. The same root mindset — "options were
-bolted onto a stock-first system" — may have produced other
-silent issues in: the AI prompt (does the AI know what option
-strategies to propose? what features about IV/Greeks does it see?),
-the signal pipeline (do strategies emit option-friendly signals
-or just stock signals reused?), the AI prediction tracker (does it
-resolve option outcomes correctly — strike, expiry, premium decay?),
-the metrics layer (does Sharpe / win-rate count options correctly?
-do contracts vs shares net out in qty-weighted stats?).
-
-**Scope**:
-- Walk each stage and document option-specific behavior vs
-  borrowed-from-stock. Output: a doc listing every "options use the
-  stock path here" finding + whether it's a bug, an acceptable
-  reuse, or a TODO.
-- For each finding tagged as a bug, file a ticket with the same
-  Position-class principle: option-aware code paths use
-  `pos.is_option` / `pos.broker_symbol` / spread economics.
-- Pay particular attention to:
-  - `ai_analyst.py` prompt construction — what features does the AI
-    see about an option candidate? IV rank? Greeks? Days to expiry?
-    Spread economics?
-  - `ai_tracker.resolve_predictions` — does an option win/loss
-    resolve at expiry vs at exit? How is "return %" measured for
-    a contract vs a share?
-  - `metrics.py` Sharpe / Sortino / win-rate — do option contracts
-    count once or x100? Are short option legs treated as positive
-    or negative qty in turnover stats?
-  - `self_tuning.py` parameter optimization — is it tuning stock
-    parameters with option trades mixed in? That would corrupt the
-    stock-tuner's signal.
-  - Strategy signals — do strategies that propose `MULTILEG_OPEN`
-    have option-specific feature sets, or are they just stock
-    signals with a wrapper?
-- Add a guardrail test or two for any structural invariants that
-  surface (e.g., "if signal_type=MULTILEG, expected_features must
-  include implied_vol_rank").
-
-**Prerequisite**: Position class refactor in place (already shipped).
-The audit becomes much easier because option-vs-stock is now
-explicitly tagged on every position object.
-
-**Pitfalls**: this audit could surface a LOT of work. Be aggressive
-about classifying findings: not every "options use stock code here"
-is a bug — some reuse is correct (e.g., AI provider call is the
-same regardless of instrument). Don't make every reuse into a
-ticket.
-
----
-
-### 4a. ✅ DONE 2026-05-11 — Documentation sweep — test counts + drift
-
-(commit pending — see CHANGELOG entry "TODO #4a: docs sweep — stale test counts updated + ±10% drift guardrail")
-
-### 4a-archive. Documentation sweep — test counts + drift
-
-**Where**: `docs/13_QUALITY_RELIABILITY.md` (QE/RE doc) and any
-sibling doc that quotes test counts or post-incident state.
-
-**Why**: docs quoting specific test counts (e.g., "2,234 tests")
-drift every time a new test lands. Mack flagged 2026-05-11 that
-the QE/RE doc's numbers are wrong relative to the current suite
-(2,708 passing as of `9df7463`). More broadly: every doc that
-cites a specific number, file path, or function signature is at
-risk of going stale silently — the only reliable enforcement is
-a guardrail test (we already have one for OPEN_ITEMS file:line
-refs; the same pattern could cover docs).
-
-**Scope**:
-- Audit every `docs/*.md` for outdated test counts, broken file
-  refs, stale architecture descriptions, references to deleted
-  features or renamed functions.
-- Update or strike each.
-- Add a guardrail test: scan `docs/*.md` for patterns like
-  `\d{3,4}\s+(?:tests?\s+)?(?:passing|pass\b)` and either (a)
-  compare to the current suite count, OR (b) require the number
-  to live in an auto-generated section so updates are mechanical.
-  Similar pattern for file:line refs (we already have
-  `test_open_items_refs_match_source.py`).
-
-**Prerequisite**: nothing — docs are static; CI guardrail is
-additive.
-
-**Pitfalls**: don't tie docs too tightly to the test count or
-every commit needs a doc bump. The guardrail should auto-replace
-the number when CI runs, OR flag staleness rather than fail outright.
-
----
-
-## P2 — Pending from 2026-05-11 incident
-
-### 5. AI Brain panel surfaces broker_rejections inline
-
-**Why**: today, broker-rejected trades are persisted in the
-`broker_rejections` table (shipped fbd375c) but the AI Brain panel
-still shows "TRADES SELECTED" with no execution outcome. Mack went
-looking for CWAN BUY today because nothing on screen surfaced the
-rejection.
-
-**Scope**:
-- View layer: query `broker_rejections` for recent rejections in
-  the same window the AI Brain panel covers, indexed by
-  `prediction_id` (when set) or `(symbol, action, timestamp)`.
-- Macro/template: render a small badge on each TRADES SELECTED row:
-  ✅ submitted / ❌ REJECTED (with broker reason in a tooltip) /
-  ⏳ pending.
-- Win-rate analytics path (`ai_tracker.resolve_predictions` etc.)
-  must EXCLUDE predictions that have a matching broker_rejection
-  row — they didn't actually trade, they shouldn't influence the
-  AI's measured win rate.
-
-**Prerequisite**: broker_rejections persistence + helpers (already
-shipped fbd375c).
-
-**Pitfalls**: prediction_id ↔ rejection linkage is currently NULL
-in most rows (we didn't thread it through the rejection handler
-yet). For now, match by (symbol, action, timestamp ±5min). Add
-prediction_id thread-through later for tighter binding.
-
----
-
-### 6. Phase 5b+ — opportunistic migration off Position dict shim
-
-**Why**: the Position class refactor (2026-05-11) introduced a
-back-compat shim (`__getitem__`, `.get()`, `__contains__`) so
-existing consumers continued working without a single massive
-migration. The guardrail (`tests/test_no_new_position_dict_access.py`)
-blocks producer regressions but allows consumer dict access.
-
-**Scope**: each cleanup commit migrates ONE consumer file from
+**Scope**: each commit migrates ONE consumer file from
 `pos["symbol"]` / `pos.get("qty")` to `pos.broker_symbol` /
-`pos.qty_signed` / `pos.is_option` etc. Files to migrate (rough
-order of safety + impact):
-  1. `views.py` (highest user-facing surface)
-  2. `bracket_orders.py`
-  3. `trader.py`
-  4. `portfolio_manager.py`
-  5. `trade_pipeline.py`
-  6. `reconcile_journal_to_broker.py`
-  7. ... everything else
+`pos.qty_signed` / `pos.is_option`. When the last consumer is
+migrated, delete the shim and the dict-access bug class becomes
+impossible to construct. One file per commit (reviewable).
 
-When the last consumer is migrated, a final commit deletes the
-`__getitem__` shim from `position.py` and the bug class becomes
-literally impossible to construct.
+### #7 — Proactive exits for single-leg long options
 
-**Prerequisite**: nothing — phase 1 produced the shim, every
-incremental migration is independently shippable.
+**Status**: PARTIAL. `options_lifecycle.py` resolves options at
+EXPIRY (marks closed, computes P&L). What's MISSING is proactive
+exit before expiry for single-leg long calls/puts:
+- Premium-based stop: close when current premium drops N% from
+  entry (e.g. 50%), using the contract bid (not stock-style %).
+- Time-based exit: close at N days-to-expiry (e.g. 7 DTE) to avoid
+  gamma blowup.
 
-**Pitfalls**: don't migrate too many files in one commit (hard to
-review). One file per commit, with the relevant tests still
-passing.
-
----
-
-### 8. Slippage stats showing impossible values (1130% avg)
-
-**Where**: performance page Slippage Impact panel (and underlying
-metrics calc).
-
-**Why**: Mack flagged 2026-05-11 — performance page shows:
-  - Avg Slippage: **1130.102%**
-  - Net Slippage Cost: -$1,863.13
-  - Execution Variance: $15,167.15
-  - Trades with Fill Data: 1,004
-
-A 1130% average slippage is impossible — slippage is bounded by the
-bid-ask spread plus a small market-impact term, typically <0.5%
-for stocks and a few % for liquid options. The two dollar columns
-($1,863 cost vs $15,167 variance) also don't reconcile in a way
-that makes economic sense.
-
-**Hypothesis** (related to today's option-handling discoveries):
-the slippage % is being computed as `(fill - decision) / decision`
-on option premiums, which produces 10-100% moves on normal
-contract value swings (a $0.01 → $1.00 mark-to-market on an OTM
-option = 10,000% by that formula). The `1004 trades with fill data`
-bucket likely includes option legs whose entry premium was
-pennies — when the closing premium is anything more than pennies,
-the % balloons. Probably the same option-vs-stock conflation
-class that produced the phantom-stock-stops, the deferral-forever
-bug, etc.
-
-**Scope**:
-- Find the slippage calc (likely `journal.get_slippage_stats`
-  or `metrics.py`).
-- Audit it for option vs stock handling. Per-leg option premium
-  % is misleading; spread-level dollar is more meaningful.
-- Either: (a) compute slippage in DOLLARS and report dollars-
-  only on options, OR (b) compute % only when entry premium is
-  above a sanity floor (e.g. $0.10) so penny premiums don't
-  produce 10,000% spurious values, OR (c) split the panel into
-  Stock Slippage / Option Slippage with appropriate units.
-- Add a guardrail test that asserts displayed slippage % is
-  bounded (e.g. < 200%) for any individual row.
-
-**Prerequisite**: Position class refactor in place (already
-shipped). Easier to detect option vs stock now that we have the
-canonical attributes.
-
-**Pitfalls**: don't just clip the display — the underlying calc is
-wrong, and clipping hides the real distortion in net-slippage
-aggregates. Fix at the calc layer.
-
----
-
-### 7. Option-side exit logic for single-leg long options
-
-**Why**: today, defined-risk multileg spreads are protected by
-their structural max loss (debit paid). Single-leg long option
-positions have no broker-side protective order — `ensure_protective_stops`
-skips all options to avoid the phantom-stock-stops bug. So a long
-call/put could lose 100% of premium with no automated exit.
-
-**Scope**:
-- Premium-based stop-loss: close the position when current
-  premium drops by N% from entry (e.g., 50%). Uses the option
-  contract's bid (not stock-style %).
-- Time-based exit: close at N days to expiry (e.g., 7 DTE) to
-  avoid gamma blowup. Already exists in `options_lifecycle.py`?
-  Verify; extend if not.
-- Submission must be OCC-side: `api.submit_order(symbol=OCC,
-  qty=N, side="sell" if long else "buy", type="market" or "limit",
-  position_intent="sell_to_close" or "buy_to_close")`.
-- Skip multileg legs — they're managed at the spread level.
-
-**Prerequisite**: nothing — Position class makes the OCC routing
-unambiguous via `pos.broker_symbol`.
-
-**Pitfalls**: option bid-ask spreads are wide; market orders can
-fill badly. Prefer limit-at-mid with a fallback to market after
-N seconds.
+Multileg legs are managed at the spread level (structural max
+loss) — skip them. Submission is OCC-side
+(`position_intent=sell_to_close`). Pitfall: option bid-ask spreads
+are wide — prefer limit-at-mid with a market fallback.
 
 ---
 
 ## Methodology — class tests over instance tests
 
-Mack flagged 2026-05-11: the test suite grew from ~300 to ~2,800 in
-a short window, mostly via *instance tests* (one test per specific
-case). The higher-leverage pattern is *class tests* — one test that
-catches the entire bug shape via AST/regex scan, property-based
-invariant, or table-driven roundtrip from a source of truth.
+Mack flagged 2026-05-11: the suite grew mostly via *instance tests*
+(one per case). The higher-leverage pattern is *class tests* — one
+test that catches the entire bug shape via AST/regex scan,
+property-based invariant, or table-driven roundtrip from a source
+of truth.
 
 **Rule**: before writing test #2 of a similar shape, ask "is there
 an invariant that catches both #1 and #2 plus cases I haven't
 thought of?" If yes, write the class test instead.
 
-**Examples of class tests already in the suite** (each replaces
-50-200 hypothetical instance tests):
-- `test_no_silent_pass_in_views.py` — AST scan for `except: pass`.
-- `test_no_orphan_templates.py` — every template must be rendered.
-- `test_no_snake_case_in_user_facing_ids.py` — wide-coverage regex.
-- `test_no_unwired_writers.py` — every INSERT writer must have callers.
-- `test_no_new_position_dict_access.py` — producers must return Position.
-- `test_docs_test_counts_fresh.py` — documented counts within ±10% of actual.
-
-**Patterns I should reach for first**:
+**Patterns to reach for first**:
 1. AST / regex scan for code-shape bugs.
 2. `hypothesis` property tests for invariants over input space.
-3. Table-driven tests parametrized from a source of truth (e.g.
-   `pytest.mark.parametrize` from a registry list, not hand-listed).
-4. Roundtrip tests (every entry in mapping X must roundtrip through
-   function Y).
-
-**Periodic refactor target**: collapse instance-test clusters into
-class tests. Examples queued (~1 day of work, ~200-400 net test
-reduction with broader coverage):
-- `tests/test_pagination.py` (12 cases) → 1-2 hypothesis properties.
-- `tests/test_trades_search.py` cases → composition-property test.
-- `tests/test_multileg_partial_fill_rollback.py` mismatch cases →
-  table-driven single test.
-- `tests/test_broker_rejections.py::TestClassifyRejectionMessage`
-  cases → parametrized from `_REJECTION_PATTERNS` itself.
+3. Table-driven tests parametrized from a source of truth.
+4. Roundtrip tests (every entry in mapping X roundtrips through Y).
 
 ---
 
 ## Process
 
-- New items added at the top of their priority section.
-- Priority bumps: items move between sections as urgency changes.
-- When work starts on an item, link the commit / branch in the
-  item; on completion, move it to a "Shipped" section with the
-  ship date.
+- New items at the top of their priority section.
+- When work starts, link the commit; on completion move to Shipped
+  with the ship date.
 - Don't expand an item into a multi-week saga without re-checking
   scope with Mack first.
+
+---
+
+## Shipped (reconciled 2026-05-21)
+
+### P0 — Instrument-class pipeline architecture (all 6 phases)
+`docs/14_INSTRUMENT_PIPELINE_ARCHITECTURE.md`. Verified present:
+- `pipelines/` — ABC + `stock.py` / `option.py` / `registry.py` /
+  `dispatch.py` / `specialist_router.py` / `option_prompt.py`
+- `metrics/` — `stock.py` / `option.py` / `portfolio.py` / `legacy.py`
+- `tuning/` — `stock.py` / `option.py`
+- `pipelines/outcomes/` — `stock.py` / `option_resolver.py` /
+  `recalibrate.py` / `backfill.py` (per-pipeline outcome resolution)
+- Greek-aggregated exposure via `options_greeks_aggregator.py`
+
+### P1 — UI gaps
+- #1 Options vs stocks tabs — dashboard + /trades both split by
+  `is_option` / `occ_symbol`.
+- #2 Numbered pagination on /trades — `_build_page_links` in views.
+- #3 Symbol search on /trades — `?search=` param, bound (no injection).
+- #4 Action column shows `signal_type` badge in `_trades_table.html`.
+- 4a Docs sweep — test counts + ±10% drift guardrail.
+- 4b AI-pipeline option-handling audit → became the pipeline roadmap.
+
+### P2 — 2026-05-11 incident follow-ups
+- #5 broker_rejections surfaced in views + dashboard. (Note: confirm
+  win-rate analytics EXCLUDE rejected predictions — display done,
+  exclusion not separately verified.)
+- #8 Slippage % option/stock scoping — `test_slippage_pct_kind_scoping`.
+- The 23-phantom-stop incident — fully closed (broker cancel +
+  ensure_protective_stops option-skip + Position class refactor).
+
+### Multi-leg + reconciliation hardening (2026-05-20/21)
+- #189 multileg journal OCC symbol bug.
+- #192 per-key ensemble lock.
+- #195 position cap soft bound + live same-cycle decrement.
+- cover-as-cash-OUT equity fix; tainted-prompt tagging.
+- Same-provider Gemini model fallback (lite → flash).
+- Protective orders journal at placement (orphan-fill class closed).
+- Protective protection decided by Alpaca truth (order_id-keyed) +
+  `verify_protective_order_sync` invariant.
+- Buy-qty guard median computed from stock buys only.
