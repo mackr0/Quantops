@@ -22,10 +22,11 @@ Top of the page: the multi-profile equity overview.
 
 For each profile:
 - **Equity** (current account value)
-- **Daily P&L** (today's change)
-- **Total P&L** (since profile creation)
-- **Open positions** count
-- **Pending orders** (stops + limits at the broker)
+- **P&L** (absolute, since profile creation)
+- **P&L %** (return on initial capital) — the column to compare accounts by, since each profile runs a different strategy at a different capital base. The three baselines (Buy-Hold SPY, Random A/B) appear here too, so you can read the system arms straight against the benchmarks they have to beat.
+- **Cash**, **Open positions** count, **AI cost today**
+
+The footer shows only the **AI cost total** across profiles. Equity / P&L / cash / position counts are *not* summed: each profile is a different strategy at a different capital base, so an additive "system total" is meaningless — compare by the per-account P&L % instead. AI cost is the one book-wide figure that is genuinely additive.
 
 Each profile-row links to the per-profile detail dashboard.
 
@@ -188,7 +189,7 @@ Trade ledger across all profiles.
 
 ## 6. Performance page (`/performance`)
 
-Per-profile performance breakdown.
+Per-profile performance breakdown. The profile dropdown defaults to **All System Profiles (excl. baselines)** — the aggregate (headline metrics, scaling, exposure, AI accuracy) covers only the AI arms; the Buy-Hold/Random controls are left out so they don't distort the system's numbers. Select a baseline in the dropdown to view it on its own.
 
 - Equity curve.
 - Daily / weekly / monthly P&L.

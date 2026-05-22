@@ -131,7 +131,21 @@ def train_lora(corpus_path: str, adapter_out: str):
     opt = torch.optim.AdamW(
         (p for p in model.parameters() if p.requires_grad), lr=1e-4)
 
-    examples = [json.loads(l) for l in open(corpus_path)]
+    # corpus is the synthetic JSONL this script wrote moments ago via
+    # make_synthetic_corpus (json.dumps), so every line should be valid
+    # JSON. Parse defensively anyway and fail LOUDLY (never swallow) so a
+    # corrupt corpus surfaces with the offending line, not a cryptic crash.
+    examples = []
+    with open(corpus_path) as _corpus_fh:
+        for _i, line in enumerate(_corpus_fh, start=1):
+            try:
+                examples.append(json.loads(line))
+            except (json.JSONDecodeError, ValueError) as exc:
+                sys.exit(
+                    f"corpus line {_i} in {corpus_path} is not valid JSON "
+                    f"({exc}); make_synthetic_corpus should never produce "
+                    "this — investigate before trusting the dry run."
+                )
     steps = 12
     for step in range(steps):
         ex = examples[step % len(examples)]

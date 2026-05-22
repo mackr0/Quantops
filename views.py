@@ -2432,6 +2432,7 @@ def ai_performance_legacy():
     }
 
     # Parse optional profile filter
+    from profile_classification import is_baseline_profile
     profiles = [p for p in get_user_profiles(current_user.effective_user_id) if p.get("enabled")]
     selected_profile = request.args.get("profile_id", "", type=str)
     selected_profile_int = int(selected_profile) if selected_profile else None
@@ -2449,8 +2450,13 @@ def ai_performance_legacy():
                     db_paths.add(db_path)
                 break
     else:
-        # All profiles mode (current behavior)
+        # All-profiles mode — exclude baselines. They run buy_hold/random
+        # and generate ZERO ai_predictions, so they contribute nothing
+        # today; this is a structural guard so the AI-accuracy aggregate
+        # can never include a control profile if that ever changes.
         for p in profiles:
+            if is_baseline_profile(p):
+                continue
             db_path = f"quantopsai_profile_{p['id']}.db"
             if os.path.exists(db_path):
                 db_paths.add(db_path)
@@ -2663,11 +2669,21 @@ def performance_dashboard():
     """Institutional metrics dashboard -- 5-tab layout."""
     import os
     from metrics import calculate_all_metrics
+    from profile_classification import is_baseline_profile
 
     profiles = [p for p in get_user_profiles(current_user.effective_user_id) if p.get("enabled")]
     selected_profile = request.args.get("profile_id", "", type=str)
     selected_profile_int = int(selected_profile) if selected_profile else None
     selected_profile_name = None
+
+    # When NO single profile is selected, every metric on this page is an
+    # aggregate across profiles. The buy_hold / random profiles are
+    # experiment CONTROLS, not our system — folding them into the "All
+    # System Profiles" aggregate is meaningless (each tests a different
+    # strategy). So the aggregate is built over agg_profiles (AI only).
+    # A baseline is still fully viewable by selecting it in the dropdown,
+    # in which case the per-profile branches below use its own id.
+    agg_profiles = [p for p in profiles if not is_baseline_profile(p)]
 
     # Collect DB paths based on filter
     db_paths = set()
@@ -2680,17 +2696,22 @@ def performance_dashboard():
                     db_paths.add(db_path)
                 break
     else:
-        for p in profiles:
+        # Baselines excluded — db_paths feeds both calculate_all_metrics
+        # (headline metrics) and the AI-accuracy rollup below, so this one
+        # filter keeps the whole "All System Profiles" view baseline-free.
+        for p in agg_profiles:
             if not p.get("enabled"):
                 continue
             db_path = f"quantopsai_profile_{p['id']}.db"
             if os.path.exists(db_path):
                 db_paths.add(db_path)
 
-    # Calculate total initial capital across selected ENABLED profiles only
+    # Calculate total initial capital across selected ENABLED profiles only.
+    # No-selection aggregate uses agg_profiles (AI only) so the capital base
+    # matches the baseline-free db_paths above.
     total_initial_capital = 0
     capital_by_db = {}
-    for p in profiles:
+    for p in (profiles if selected_profile_int else agg_profiles):
         if not p.get("enabled"):
             continue
         if selected_profile_int and p["id"] != selected_profile_int:
@@ -2721,7 +2742,7 @@ def performance_dashboard():
         if selected_profile_int:
             target_profiles = [p for p in profiles if p["id"] == selected_profile_int]
         else:
-            target_profiles = list(profiles)
+            target_profiles = list(agg_profiles)  # baseline-free aggregate
 
         # Build per-profile data: name, capital, market_type, trades, latest_equity.
         profile_data = []
@@ -2794,7 +2815,8 @@ def performance_dashboard():
             target_profiles = [p for p in target_profiles
                                if p and p["user_id"] == current_user.effective_user_id]
         else:
-            target_profiles = profiles  # already filtered to enabled, owned
+            # baseline-free aggregate — controls aren't part of "the book"
+            target_profiles = agg_profiles
 
         all_positions = []  # gathered across target profiles
         equity_sum = 0.0
@@ -5673,11 +5695,15 @@ def api_positions_html(profile_id):
 @views_bp.route("/api/dashboard-totals")
 @login_required
 def api_dashboard_totals():
-    """Live equity / cash / positions / AI-cost-today snapshot for the
-    dashboard header. Polled by JS at 30s cadence during market hours
-    and 5min otherwise. Returns:
-      {profiles: [{id, name, equity, cash, num_positions, cost_today}],
-       total_equity, total_cash, total_positions, total_cost}
+    """Live per-profile equity / cash / positions / P&L / AI-cost-today
+    snapshot for the dashboard overview. Polled by JS at 30s cadence
+    during market hours and 5min otherwise. Returns:
+      {profiles: [{id, name, equity, cash, num_positions, cost_today,
+                   initial_capital, pnl, pnl_pct}],
+       total_cost}
+    Book-wide equity/P&L/cash/position sums were dropped 2026-05-22 — not
+    additive across heterogeneous strategies; per-account P&L % (in each
+    row) is the cross-profile comparison. AI cost is the one true total.
 
     Cached 30s per user — JS polls this every 30s, so every-poll
     Alpaca calls were wasted (11 profiles × 2 calls = 22/poll).
@@ -5694,9 +5720,9 @@ def api_dashboard_totals():
 
     profiles = get_active_profiles(user_id=current_user.effective_user_id)
     rows = []
-    total_equity = 0.0
-    total_cash = 0.0
-    total_positions = 0
+    # AI cost is the only book-wide total still shown on the overview —
+    # equity/P&L/cash/position sums were removed 2026-05-22 (not additive
+    # across heterogeneous strategies; compare by per-row P&L % instead).
     total_cost = 0.0
     for p in profiles:
         try:
@@ -5727,6 +5753,11 @@ def api_dashboard_totals():
             # still surfaced it).
             initial_capital = float(p.get("initial_capital") or 0)
             pnl = equity - initial_capital if initial_capital > 0 else 0.0
+            # % return on initial capital — the cross-account-comparable
+            # number the overview table sorts on (each profile runs a
+            # different strategy at a different capital base, so absolute
+            # P&L isn't comparable; % is).
+            pnl_pct = (pnl / initial_capital * 100.0) if initial_capital > 0 else 0.0
             rows.append({
                 "id": p["id"],
                 "name": p["name"],
@@ -5736,10 +5767,8 @@ def api_dashboard_totals():
                 "cost_today": cost_today,
                 "initial_capital": initial_capital,
                 "pnl": pnl,
+                "pnl_pct": pnl_pct,
             })
-            total_equity += equity
-            total_cash += cash
-            total_positions += n_pos
             total_cost += cost_today
         except Exception as exc:
             # Surface at WARNING so silent skips don't hide a real
@@ -5752,14 +5781,10 @@ def api_dashboard_totals():
             continue
     payload = {
         "profiles": rows,
-        "total_equity": total_equity,
-        "total_cash": total_cash,
-        "total_positions": total_positions,
+        # Only AI cost is summed book-wide — see the comment at the
+        # accumulator init above. Per-profile equity/cash/pnl/pnl_pct ride
+        # in `rows` for the per-row live refresh.
         "total_cost": total_cost,
-        # Book-wide P&L = total_equity - sum(initial_capital). Drives
-        # the overview footer total cell. Sum of per-row pnl values
-        # (which already handle the initial_capital=0 fallback).
-        "total_pnl": sum(r.get("pnl", 0.0) for r in rows),
     }
     # Cache only on success. The endpoint never raises explicitly
     # (per-profile failures are absorbed via the WARNING above), so

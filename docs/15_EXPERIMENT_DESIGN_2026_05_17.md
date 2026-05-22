@@ -206,6 +206,7 @@ Two possible outcomes, both informative:
 | `enable_self_tuning` flag | ✅ pre-existing |
 | `enable_short_selling` flag | ✅ pre-existing |
 | Comparative-returns chart (overlays all profiles vs baselines on dashboard) | ✅ commit 37cdbf4 |
+| Baselines excluded from system aggregates (dashboard footer, `/performance` "All System Profiles", `/ai-performance`) via `profile_classification.is_baseline_strategy` | ✅ 2026-05-22 — controls are benchmark-only, never folded into system totals; per-account P&L % is the cross-profile comparison |
 | Seven-tier integrity contract + 10-minute audit_runner | ✅ commits c2c6e47, 07dea6f, b6420de, 40c0f1c, 917c040 |
 | Options P&L auto-cutoff (#171 — prevents the 2026-05-13 episode) | ✅ commit f14f5f2 |
 | Orphaned-profile cleanup script | ✅ `clean_orphaned_profiles.py` (commit 778e2f0) |

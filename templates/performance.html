@@ -8,7 +8,7 @@
 <div style="margin-bottom:1rem;">
     <form method="get" action="/performance" style="display:flex;gap:0.5rem;align-items:center;">
         <select name="profile_id" onchange="var h=window.location.hash;this.form.action=this.form.action.split('#')[0]+h;this.form.submit()">
-            <option value="">All Profiles</option>
+            <option value="">All System Profiles (excl. baselines)</option>
             {% for p in profiles %}
             <option value="{{ p.id }}" {{ 'selected' if selected_profile == p.id }}>{{ p.name }}</option>
             {% endfor %}

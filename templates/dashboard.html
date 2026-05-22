@@ -151,15 +151,22 @@
                     <th>Type</th>
                     <th>Equity</th>
                     <th>P&amp;L</th>
+                    <th title="Return on initial capital — comparable across accounts regardless of their starting size">P&amp;L %</th>
                     <th>Cash</th>
                     <th>Positions</th>
                     <th>AI Cost Today</th>
                 </tr>
             </thead>
             <tbody>
-                {% set ns = namespace(total_equity=0, total_cash=0, total_positions=0, total_cost=0, total_pnl=0) %}
+                {# Only AI cost is additive across profiles. Equity/P&L/cash
+                   totals were removed 2026-05-22: each profile tests a
+                   DIFFERENT strategy at a DIFFERENT capital base, so summing
+                   them is meaningless. Compare accounts by the per-row P&L %
+                   column instead. #}
+                {% set ns = namespace(total_cost=0) %}
                 {% for prof in profiles_data %}
                 {% set pnl = (prof.account.equity - prof.initial_capital) if (prof.account and prof.initial_capital) else 0 %}
+                {% set pnl_pct = (pnl / prof.initial_capital * 100) if (prof.account and prof.initial_capital) else 0 %}
                 <tr id="totals-row-{{ prof.id }}" style="cursor:pointer;" onclick="showDashTab(event, 'p{{ prof.id }}'); document.querySelector('a[href=\'#p{{ prof.id }}\']').classList.add('active');">
                     <td>
                         <strong>{{ prof.name }}</strong>
@@ -169,28 +176,29 @@
                     {% if prof.account %}
                     <td><strong id="totals-equity-{{ prof.id }}">${{ "{:,.0f}".format(prof.account.equity) }}</strong></td>
                     <td id="totals-pnl-{{ prof.id }}" style="color:{{ '#2e7d32' if pnl > 0 else ('#c62828' if pnl < 0 else '#666') }};">{{ '+' if pnl > 0 else '' }}${{ "{:,.2f}".format(pnl) }}</td>
+                    <td id="totals-pnlpct-{{ prof.id }}" style="font-weight:bold; color:{{ '#2e7d32' if pnl_pct > 0 else ('#c62828' if pnl_pct < 0 else '#666') }};">{{ '+' if pnl_pct > 0 else '' }}{{ "{:.2f}".format(pnl_pct) }}%</td>
                     <td class="muted" id="totals-cash-{{ prof.id }}">${{ "{:,.0f}".format(prof.account.cash) }}</td>
                     <td id="totals-positions-{{ prof.id }}">{{ prof.positions|length }}</td>
                     <td class="muted" id="totals-cost-{{ prof.id }}">${{ "{:.2f}".format(prof.cost_today or 0) }}</td>
-                    {% set ns.total_equity = ns.total_equity + prof.account.equity %}
-                    {% set ns.total_cash = ns.total_cash + prof.account.cash %}
-                    {% set ns.total_positions = ns.total_positions + prof.positions|length %}
                     {% set ns.total_cost = ns.total_cost + (prof.cost_today or 0) %}
-                    {% set ns.total_pnl = ns.total_pnl + pnl %}
                     {% else %}
-                    <td colspan="5" class="muted">Not connected</td>
+                    <td colspan="6" class="muted">Not connected</td>
                     {% endif %}
                 </tr>
                 {% endfor %}
             </tbody>
             <tfoot>
+                {# Equity/P&L/cash/position totals intentionally omitted —
+                   not additive across heterogeneous strategies (2026-05-22).
+                   AI cost is the one book-wide number that IS meaningful. #}
                 <tr style="font-weight:bold;">
-                    <td>Total ({{ profiles_data|length }} profiles) <small id="totals-updated" class="muted" style="font-weight:normal;">— live</small></td>
+                    <td>AI Cost Total ({{ profiles_data|length }} profiles) <small id="totals-updated" class="muted" style="font-weight:normal;">— live</small></td>
                     <td></td>
-                    <td id="totals-book-equity">${{ "{:,.0f}".format(ns.total_equity) }}</td>
-                    <td id="totals-book-pnl" style="color:{{ '#2e7d32' if ns.total_pnl > 0 else ('#c62828' if ns.total_pnl < 0 else '#666') }};">{{ '+' if ns.total_pnl > 0 else '' }}${{ "{:,.2f}".format(ns.total_pnl) }}</td>
-                    <td class="muted" id="totals-book-cash">${{ "{:,.0f}".format(ns.total_cash) }}</td>
-                    <td id="totals-book-positions">{{ ns.total_positions }}</td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
                     <td class="muted" id="totals-book-cost">${{ "{:.2f}".format(ns.total_cost) }}</td>
                 </tr>
             </tfoot>
@@ -219,6 +227,7 @@
                         var poEl = document.getElementById('totals-positions-' + p.id);
                         var coEl = document.getElementById('totals-cost-' + p.id);
                         var pnEl = document.getElementById('totals-pnl-' + p.id);
+                        var ppEl = document.getElementById('totals-pnlpct-' + p.id);
                         if (eqEl) eqEl.innerHTML = '<strong>' + QF.dollars0(p.equity) + '</strong>';
                         if (caEl) caEl.textContent = QF.dollars0(p.cash);
                         if (poEl) poEl.textContent = p.num_positions;
@@ -228,22 +237,17 @@
                             pnEl.textContent = pnlText(v);
                             pnEl.style.color = pnlColor(v);
                         }
+                        if (ppEl) {
+                            var pv = p.pnl_pct || 0;
+                            ppEl.textContent = QF.signedPct(pv, 2);
+                            ppEl.style.color = pnlColor(pv);
+                        }
                     });
-                    var be = document.getElementById('totals-book-equity');
-                    var bc = document.getElementById('totals-book-cash');
-                    var bp = document.getElementById('totals-book-positions');
+                    // Only the AI-cost footer total remains — equity/P&L/cash
+                    // totals were removed (not additive across strategies).
                     var bk = document.getElementById('totals-book-cost');
-                    var bpnl = document.getElementById('totals-book-pnl');
                     var u = document.getElementById('totals-updated');
-                    if (be) be.textContent = QF.dollars0(d.total_equity || 0);
-                    if (bc) bc.textContent = QF.dollars0(d.total_cash || 0);
-                    if (bp) bp.textContent = (d.total_positions || 0);
                     if (bk) bk.textContent = QF.dollars2(d.total_cost || 0);
-                    if (bpnl) {
-                        var tv = d.total_pnl || 0;
-                        bpnl.textContent = pnlText(tv);
-                        bpnl.style.color = pnlColor(tv);
-                    }
                     if (u) u.textContent = '— live · updated ' + new Date().toLocaleTimeString();
                 }).catch(function(){});
             }

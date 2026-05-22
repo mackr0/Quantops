@@ -76,11 +76,26 @@ def _has_try_ancestor(node, parent_lookup) -> bool:
     return False
 
 
+def _has_json_ok_comment(src_lines: List[str], lineno: int) -> bool:
+    """True if a `# JSON_OK` rationale comment sits on the json.loads call
+    line or within the 2 source lines directly above it.
+
+    `lineno` is 1-indexed (ast convention). The slice covers the call line
+    and the two lines above it — the window the failure message documents.
+    Previously this check was described in a comment but never implemented,
+    so the advertised escape hatch silently did nothing (fixed 2026-05-22).
+    """
+    lo = max(0, lineno - 3)   # index of the line 2 above the call
+    hi = lineno               # exclusive end → includes the call line
+    return any("# JSON_OK" in line for line in src_lines[lo:hi])
+
+
 def _find_unsafe_json_loads(src: str) -> List[int]:
     try:
         tree = ast.parse(src)
     except SyntaxError:
         return []
+    src_lines = src.splitlines()
     parent = {}
     for node in ast.walk(tree):
         for child in ast.iter_child_nodes(node):
@@ -93,7 +108,10 @@ def _find_unsafe_json_loads(src: str) -> List[int]:
             continue
         if _has_try_ancestor(node, parent):
             continue
-        # Check for # JSON_OK comment within 2 lines above
+        # Documented escape hatch: a `# JSON_OK: <rationale>` comment on the
+        # call line or within 2 lines above it marks guaranteed-valid input.
+        if _has_json_ok_comment(src_lines, node.lineno):
+            continue
         out.append(node.lineno)
     return out
 
@@ -165,3 +183,39 @@ class TestJsonDecodePathsSafe:
                 + "\n\nLock in the improvement by updating "
                 "GRANDFATHER_BASELINE."
             )
+
+
+class TestJsonOkEscapeHatch:
+    """The `# JSON_OK` escape hatch advertised by the failure message must
+    actually work. Before 2026-05-22 the detection was described in a
+    comment but never implemented, so option 3 silently did nothing."""
+
+    def test_bare_json_loads_is_flagged(self):
+        src = "import json\nx = json.loads(s)\n"
+        assert _find_unsafe_json_loads(src) == [2]
+
+    def test_json_ok_inline_comment_suppresses(self):
+        src = "import json\nx = json.loads(s)  # JSON_OK: trusted\n"
+        assert _find_unsafe_json_loads(src) == []
+
+    def test_json_ok_one_line_above_suppresses(self):
+        src = "import json\n# JSON_OK: from json.dumps above\nx = json.loads(s)\n"
+        assert _find_unsafe_json_loads(src) == []
+
+    def test_json_ok_two_lines_above_suppresses(self):
+        src = ("import json\n# JSON_OK: rationale\n# continued\n"
+               "x = json.loads(s)\n")
+        assert _find_unsafe_json_loads(src) == []
+
+    def test_json_ok_three_lines_above_does_not_suppress(self):
+        # Too far away — the window is "within 2 lines above", so a comment
+        # 3 lines up must NOT count (prevents an unrelated annotation from
+        # accidentally covering a later call).
+        src = ("import json\n# JSON_OK: rationale\n\n\n"
+               "x = json.loads(s)\n")
+        assert _find_unsafe_json_loads(src) == [5]
+
+    def test_try_except_still_suppresses(self):
+        src = ("import json\ntry:\n    x = json.loads(s)\n"
+               "except ValueError:\n    x = None\n")
+        assert _find_unsafe_json_loads(src) == []

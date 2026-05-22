@@ -17,6 +17,27 @@ Rules going forward:
 
 ---
 
+## 2026-05-22 — Separate experiment baselines from system aggregates. Severity: medium (misleading metrics; no trading-path change).
+
+**Problem:** The dashboard Overview footer summed equity / P&L / cash / positions across all 13 profiles, and `/performance` "All Profiles" aggregated the same way. Three of those profiles (EXP-A1-BuyHoldSPY, EXP-A1-RandomA, EXP-A1-RandomB) are experiment CONTROLS — buy-and-hold / random benchmarks we measure the system *against*, not part of the system. Folding their ~$300K of equity into a "system total" made the headline number meaningless, and worse, each profile runs a *different* strategy at a *different* capital base, so summing absolute equity/P&L across them never had a coherent meaning regardless of baselines.
+
+**Root cause:** The overview and `/performance` were built when all profiles were the same kind of thing; there was no notion of a control vs. the system, and no per-account normalization, so the only cross-profile view was an additive total.
+
+**Fix:**
+- New `profile_classification.is_baseline_strategy()` — the single source of truth. Classifies by `strategy_type != 'ai'` (structural, not an allowlist) so any future control type is excluded from system aggregates automatically.
+- **Dashboard Overview:** dropped the equity/P&L/cash/positions footer totals (not additive across heterogeneous strategies) — only the AI-cost total remains. Added a per-account **P&L %** column (return on initial capital) so all 13 accounts, baselines included, are directly comparable regardless of starting size. `/api/dashboard-totals` now returns `pnl_pct` per row for the 30s live refresh.
+- **`/performance` "All Profiles":** relabeled "All System Profiles (excl. baselines)"; the no-selection aggregate (headline metrics, scaling, exposure, capital base, AI-accuracy rollup — all keyed off `db_paths`) now excludes baselines. A baseline is still fully viewable by selecting it in the dropdown.
+- **`/ai-performance`:** structural guard added (baselines already produce zero `ai_predictions`, but the all-profiles `db_paths` now excludes them so a control can never leak into AI-accuracy stats).
+- Untouched: per-profile views (already isolated), the comparative-returns chart (already labels baselines as distinct lines — the desired behavior), and reconciliation / book-loss-floor / broker audits (those legitimately need every account).
+
+**Tests:** `tests/test_profile_classification.py` — classifier behavior incl. the class-level invariant (any non-'ai' → baseline, so a new control can't leak), plus an AST guard that `performance_dashboard` and `ai_performance_legacy` reference `is_baseline_profile` so the exclusion can't be silently removed. `tests/test_dashboard_pnl_column_2026_05_18.py` rewritten to pin the new contract (per-row P&L + P&L %, AI-cost-only footer, negative assertion that the dead book totals can't return).
+
+**Also fixed (found by the full-suite run):**
+- `finetune/dryrun_portability.py` (prior session) had an unguarded `json.loads` on the corpus read — wrapped in try/except that fails loudly with the offending line number, and closed a file-handle leak in the same comprehension.
+- `tests/test_json_decode_paths_safe.py` advertised a `# JSON_OK: <rationale>` escape hatch in its failure message, but the detection was only a comment — never implemented, so option 3 silently did nothing. Implemented the comment scan (call line + 2 lines above) and added `TestJsonOkEscapeHatch` proving both directions (suppresses when present/near, flags when absent/too far).
+
+---
+
 ## 2026-05-21 PM — Phase 4B1 portability contract + dry-run proof. Severity: low (doc + operator script; no live-path code).
 
 Operator concern on the local-LoRA path: "I don't want to train on my machine and then be told the model can only run from my machine." Lock-in is avoidable by design; this makes the guarantee binding.
