@@ -23,7 +23,7 @@ Top of the page: the multi-profile equity overview.
 For each profile:
 - **Equity** (current account value)
 - **P&L** (absolute, since profile creation)
-- **P&L %** (return on initial capital) — the column to compare accounts by, since each profile runs a different strategy at a different capital base. The three baselines (Buy-Hold SPY, Random A/B) appear here too, so you can read the system arms straight against the benchmarks they have to beat.
+- **P&L %** (return on initial capital) — the column to compare accounts by, since each profile runs a different strategy at a different capital base. The three baselines (Buy-Hold SPY, Random A/B) appear here too, so you can read the system arms straight against the benchmarks they have to beat. The three accounts with the highest P&L % carry 🥇🥈🥉 medals next to their names — all profiles ranked together (a medal on a baseline means the system hasn't overtaken it yet); the medals update live as the standings change.
 - **Cash**, **Open positions** count, **AI cost today**
 
 The footer shows only the **AI cost total** across profiles. Equity / P&L / cash / position counts are *not* summed: each profile is a different strategy at a different capital base, so an additive "system total" is meaningless — compare by the per-account P&L % instead. AI cost is the one book-wide figure that is genuinely additive.

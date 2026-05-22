@@ -164,12 +164,17 @@
                    them is meaningless. Compare accounts by the per-row P&L %
                    column instead. #}
                 {% set ns = namespace(total_cost=0) %}
+                {# Rank connected profiles by P&L % for the 🥇🥈🥉 medals —
+                   top 3 highest get gold/silver/bronze (baselines included).
+                   Recomputed live by the JS refresh below so the medals move
+                   as the standings change. #}
+                {% set ranked_ids = profiles_data | selectattr('account') | sort(attribute='pnl_pct', reverse=true) | map(attribute='id') | list %}
                 {% for prof in profiles_data %}
                 {% set pnl = (prof.account.equity - prof.initial_capital) if (prof.account and prof.initial_capital) else 0 %}
-                {% set pnl_pct = (pnl / prof.initial_capital * 100) if (prof.account and prof.initial_capital) else 0 %}
+                {% set pnl_pct = prof.pnl_pct | default(0) %}
                 <tr id="totals-row-{{ prof.id }}" style="cursor:pointer;" onclick="showDashTab(event, 'p{{ prof.id }}'); document.querySelector('a[href=\'#p{{ prof.id }}\']').classList.add('active');">
                     <td>
-                        <strong>{{ prof.name }}</strong>
+                        <strong>{{ prof.name }}</strong><span id="medal-{{ prof.id }}" title="Rank by P&amp;L %">{% if prof.id == ranked_ids[0] %} 🥇{% elif prof.id == ranked_ids[1] %} 🥈{% elif prof.id == ranked_ids[2] %} 🥉{% endif %}</span>
                         {% if prof.is_virtual %}<small class="muted">(Virtual)</small>{% endif %}
                     </td>
                     <td><small>{{ prof.market_type_name }}</small></td>
@@ -242,6 +247,19 @@
                             ppEl.textContent = QF.signedPct(pv, 2);
                             ppEl.style.color = pnlColor(pv);
                         }
+                    });
+                    // 🥇🥈🥉 — dynamic medals for the top 3 by P&L %
+                    // (baselines included). Recomputed every refresh so the
+                    // standings move as the numbers change.
+                    var medals = ['🥇', '🥈', '🥉'];
+                    var ranked = (d.profiles || []).slice().sort(function(a, b) {
+                        return (b.pnl_pct || 0) - (a.pnl_pct || 0);
+                    });
+                    var medalById = {};
+                    ranked.slice(0, 3).forEach(function(p, i) { medalById[p.id] = medals[i]; });
+                    (d.profiles || []).forEach(function(p) {
+                        var mEl = document.getElementById('medal-' + p.id);
+                        if (mEl) mEl.textContent = medalById[p.id] ? (' ' + medalById[p.id]) : '';
                     });
                     // Only the AI-cost footer total remains — equity/P&L/cash
                     // totals were removed (not additive across strategies).

@@ -112,3 +112,53 @@ def test_pnl_color_branches_present_in_js():
     src = _dashboard()
     assert "#2e7d32" in src, "Positive P&L color (green) missing"
     assert "#c62828" in src, "Negative P&L color (red) missing"
+
+
+# ---------------------------------------------------------------------------
+# 🥇🥈🥉 medals — top 3 profiles by P&L %, dynamic (2026-05-22).
+# ---------------------------------------------------------------------------
+
+def test_medal_span_addressable_per_row():
+    src = _dashboard()
+    assert 'id="medal-{{ prof.id }}"' in src, (
+        "Per-row medal span missing or unaddressable from JS — the live "
+        "refresh sets the medal by this id."
+    )
+
+
+def test_all_three_medals_rendered_server_side():
+    """First paint must already show 🥇🥈🥉 (not wait for the 5s JS poll)."""
+    src = _dashboard()
+    for medal in ("🥇", "🥈", "🥉"):
+        assert medal in src, f"{medal} missing from the overview template"
+
+
+def test_server_render_ranks_by_pnl_pct_descending():
+    src = _dashboard()
+    assert "ranked_ids" in src and "sort(attribute='pnl_pct', reverse=true)" in src, (
+        "Server-side medal ranking must sort connected profiles by pnl_pct "
+        "descending so the top 3 get gold/silver/bronze on first paint."
+    )
+
+
+def test_js_recomputes_medals_by_pnl_pct():
+    """The 30s refresh must re-rank by pnl_pct so the medals move as the
+    standings change — not stay frozen at the first-paint order."""
+    src = _dashboard()
+    assert "medalById" in src, "JS medal re-ranking logic missing"
+    assert "b.pnl_pct" in src and "a.pnl_pct" in src, (
+        "JS must sort the live payload by pnl_pct to award medals"
+    )
+
+
+def test_load_profile_provides_pnl_pct_for_ranking():
+    """The dashboard server-render dict must carry pnl_pct so the template
+    can rank profiles for medals on first paint."""
+    src = _views()
+    start = src.index("def _load_profile(")
+    end = src.index("\n    # Load all profiles", start)
+    body = src[start:end]
+    assert '"pnl_pct"' in body, (
+        "_load_profile must include pnl_pct in the profile dict — the "
+        "template ranks by it for the medals."
+    )

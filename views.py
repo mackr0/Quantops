@@ -980,6 +980,17 @@ def dashboard():
                 # until the 30s /api/dashboard-totals poll lands.
                 # Same pattern as the cost_today column.
                 "initial_capital": float(prof.get("initial_capital") or 0),
+                # % return on initial capital — used both for the P&L %
+                # column and to rank profiles for the 🥇🥈🥉 medals. One
+                # computation feeds both so they can't disagree.
+                "pnl_pct": (
+                    (float((account or {}).get("equity") or 0)
+                     - float(prof.get("initial_capital") or 0))
+                    / float(prof.get("initial_capital"))
+                    * 100.0
+                    if (account and float(prof.get("initial_capital") or 0) > 0)
+                    else 0.0
+                ),
             }
         except Exception as exc:
             logger.warning("Dashboard error for profile #%d: %s", prof["id"], exc)

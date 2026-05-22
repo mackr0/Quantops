@@ -17,6 +17,12 @@ Rules going forward:
 
 ---
 
+## 2026-05-22 — Dashboard 🥇🥈🥉 medals for top-3 P&L %. Severity: low (UI only).
+
+Operator request: at-a-glance ranking of which arms are winning. The overview now awards gold/silver/bronze to the three profiles with the highest P&L % — **all profiles ranked together, baselines included** (a medal on Buy-Hold SPY / Random is exactly the signal the experiment is for: the system isn't beating the benchmark yet). Dynamic: rendered server-side on first paint and re-ranked by the 30s live refresh, so the medals move as the standings change. `pnl_pct` is now computed once in `_load_profile` (single source for both the P&L % column and the ranking). Tests: medal markup + server-side `pnl_pct`-descending ranking + JS re-ranking, in `tests/test_dashboard_pnl_column_2026_05_18.py`.
+
+---
+
 ## 2026-05-22 — Separate experiment baselines from system aggregates. Severity: medium (misleading metrics; no trading-path change).
 
 **Problem:** The dashboard Overview footer summed equity / P&L / cash / positions across all 13 profiles, and `/performance` "All Profiles" aggregated the same way. Three of those profiles (EXP-A1-BuyHoldSPY, EXP-A1-RandomA, EXP-A1-RandomB) are experiment CONTROLS — buy-and-hold / random benchmarks we measure the system *against*, not part of the system. Folding their ~$300K of equity into a "system total" made the headline number meaningless, and worse, each profile runs a *different* strategy at a *different* capital base, so summing absolute equity/P&L across them never had a coherent meaning regardless of baselines.
