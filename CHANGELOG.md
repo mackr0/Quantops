@@ -35,6 +35,18 @@ Rules going forward:
 
 ---
 
+## 2026-05-24 — Dashboard "next session" label is holiday-aware. Severity: low (UI only).
+
+**Problem:** After the scheduler was made holiday-aware, the dashboard still showed each profile's next run as "9:30 AM ET Monday" on the Sunday before Memorial Day — the scheduler correctly skips the holiday, but the UI claimed trading resumes Monday.
+
+**Root cause:** `dashboard()` in `views.py` computed the "next session" string with its own inline weekday-only logic that **hardcoded the literal "Monday"** for any Friday/weekend (`elif weekday >= 4: next_session = f"{start} ET Monday"`). It never consulted the market calendar, so it had no concept of holidays — a separate code path from the scheduler's `is_market_open`.
+
+**Fix:** Extracted `views._next_session_label(ctx, now)`, which derives the next trading day from `market_calendar.next_market_open()` (Alpaca clock/calendar, hardcoded-holiday fallback) and labels it today / tomorrow / weekday-name. On the Sunday before Memorial Day it now returns "9:30 AM ET Tuesday". Requires a `quantopsai-web` restart to take effect (web process loads the new code).
+
+**Tests:** `tests/test_market_calendar.py::TestDashboardNextSessionLabel` — Sunday-before-holiday says Tuesday (not Monday), normal after-close says tomorrow, extended-hours uses 4:00 AM, 24/7 says Always on.
+
+---
+
 ## 2026-05-22 — Dashboard 🥇🥈🥉 medals for top-3 P&L %. Severity: low (UI only).
 
 Operator request: at-a-glance ranking of which arms are winning. The overview now awards gold/silver/bronze to the three profiles with the highest P&L % — **all profiles ranked together, baselines included** (a medal on Buy-Hold SPY / Random is exactly the signal the experiment is for: the system isn't beating the benchmark yet). Dynamic: rendered server-side on first paint and re-ranked by the 30s live refresh, so the medals move as the standings change. `pnl_pct` is now computed once in `_load_profile` (single source for both the P&L % column and the ranking). Tests: medal markup + server-side `pnl_pct`-descending ranking + JS re-ranking, in `tests/test_dashboard_pnl_column_2026_05_18.py`.

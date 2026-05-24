@@ -907,6 +907,30 @@ def api_comparative_returns():
     return jsonify(build_payload(user_id=current_user.effective_user_id))
 
 
+def _next_session_label(ctx, now):
+    """Human 'next session' string for an inactive profile, holiday-aware.
+
+    Uses market_calendar (Alpaca clock/calendar, hardcoded-holiday
+    fallback) so the dashboard never claims trading resumes on a market
+    holiday — e.g. on the Sunday before Memorial Day this returns
+    "9:30 AM ET Tuesday", not the old hardcoded "Monday".
+    """
+    import market_calendar
+
+    if ctx.schedule_type == "24_7":
+        return "Always on"
+    if ctx.schedule_type in ("market_hours", "extended_hours"):
+        start = "9:30 AM" if ctx.schedule_type == "market_hours" else "4:00 AM"
+        # Inactive on a trading day before the close → session is today.
+        if market_calendar.is_trading_day(now) and now.hour < 16:
+            return f"{start} ET today"
+        nxt = market_calendar.next_market_open(now)
+        delta = (nxt.date() - now.date()).days
+        label = "tomorrow" if delta == 1 else nxt.strftime("%A")
+        return f"{start} ET {label}"
+    return f"{ctx.custom_start} ET"
+
+
 @views_bp.route("/dashboard")
 @login_required
 def dashboard():
@@ -1060,19 +1084,8 @@ def dashboard():
             # Determine next session text
             if active:
                 next_session = ""
-            elif ctx.schedule_type == "24_7":
-                next_session = "Always on"
-            elif ctx.schedule_type in ("market_hours", "extended_hours"):
-                weekday = _now.weekday()
-                start = "9:30 AM" if ctx.schedule_type == "market_hours" else "4:00 AM"
-                if weekday < 5 and _now.hour < 16:
-                    next_session = f"{start} ET today"
-                elif weekday >= 4:
-                    next_session = f"{start} ET Monday"
-                else:
-                    next_session = f"{start} ET tomorrow"
             else:
-                next_session = f"{ctx.custom_start} ET"
+                next_session = _next_session_label(ctx, _now)
 
             # Per-profile scan timing from task_runs
             next_scan_text = ""
@@ -5525,14 +5538,9 @@ def api_scheduler_status():
         status["scan_remaining"] = max(0, int(status.get("next_scan", 0) - now))
         status["exit_remaining"] = max(0, int(status.get("next_exit_check", 0) - now))
         status["ai_remaining"] = max(0, int(status.get("next_ai_resolve", 0) - now))
-        # Market open flag — check actual market hours, not scan timing
-        from datetime import datetime as _dt
-        from zoneinfo import ZoneInfo
-        _et = _dt.now(ZoneInfo("America/New_York"))
-        _wd = _et.weekday()  # 0=Mon, 6=Sun
-        _is_market_hours = (_wd < 5 and 9 <= _et.hour < 16 and
-                            not (_et.hour == 9 and _et.minute < 30))
-        status["market_open"] = (_is_market_hours or
+        # Market open flag — holiday-aware (Alpaca clock), not just weekday.
+        import market_calendar
+        status["market_open"] = (market_calendar.is_market_open() or
                                   status["scan_remaining"] > 0 or
                                   status["exit_remaining"] > 0)
         return jsonify(status)

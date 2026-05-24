@@ -109,3 +109,42 @@ class TestIsWithinScheduleHoliday:
     def test_24_7_active_on_holiday(self):
         ctx = self._ctx("24_7")
         assert ctx.is_within_schedule(MEMORIAL_DAY) is True
+
+
+class TestDashboardNextSessionLabel:
+    """Dashboard 'next session' text must skip holidays, not hardcode Monday."""
+
+    def _ctx(self, schedule_type="market_hours", **kw):
+        from user_context import UserContext
+        return UserContext(
+            user_id=1, segment="test",
+            alpaca_api_key="k", alpaca_secret_key="s",
+            schedule_type=schedule_type, **kw,
+        )
+
+    def test_sunday_before_holiday_says_tuesday_not_monday(self):
+        from views import _next_session_label
+        ctx = self._ctx("market_hours")
+        label = _next_session_label(ctx, SUNDAY_BEFORE_MEMORIAL)
+        assert "Tuesday" in label
+        assert "Monday" not in label
+        assert "9:30 AM ET" in label
+
+    def test_normal_weekday_after_close_says_tomorrow(self):
+        from views import _next_session_label
+        # Tuesday 2026-05-19 after close → Wednesday is a normal trading day
+        from datetime import datetime
+        tue_after = datetime(2026, 5, 19, 18, 0, tzinfo=ET)
+        ctx = self._ctx("market_hours")
+        assert _next_session_label(ctx, tue_after) == "9:30 AM ET tomorrow"
+
+    def test_extended_hours_uses_4am(self):
+        from views import _next_session_label
+        ctx = self._ctx("extended_hours")
+        label = _next_session_label(ctx, SUNDAY_BEFORE_MEMORIAL)
+        assert label == "4:00 AM ET Tuesday"
+
+    def test_24_7_always_on(self):
+        from views import _next_session_label
+        ctx = self._ctx("24_7")
+        assert _next_session_label(ctx, MEMORIAL_DAY) == "Always on"
