@@ -17,6 +17,24 @@ Rules going forward:
 
 ---
 
+## 2026-05-24 — Market-open checks are holiday-aware (Alpaca clock). Severity: high (would have traded on Memorial Day).
+
+**Problem:** `is_market_open()` (in both `multi_scheduler.py` and `scheduler.py`) and `UserContext.is_within_schedule()` decided "is the market open?" from weekday + clock time alone — no holiday awareness. On a full-closure holiday (e.g. Memorial Day, Mon 2026-05-25) the scheduler would run full scan/trade cycles, spend AI budget analyzing stale (prior-session) data, and submit `time_in_force="day"` orders that Alpaca queues and fills at the *next* session's open — a thesis priced on Friday's close executing after a 3-day gap.
+
+**Root cause:** All three gates only checked `weekday() >= 5`. There was no holiday calendar anywhere in the codebase, and no call to Alpaca's clock/calendar (which already know holidays and half-days).
+
+**Fix:**
+- New `market_calendar.py` makes Alpaca authoritative: `is_market_open()` uses `GET /clock`'s `is_open` (holiday- and half-day-aware); `is_trading_day()` uses `GET /calendar`; `is_market_holiday()` distinguishes weekday closures from weekends; `next_market_open()` uses `clock.next_open`. All Alpaca calls are cached (30s clock, 1h calendar) and wrapped so a network blip never breaks the loop.
+- Falls back to a weekday + hardcoded-NYSE-holiday (2025–2027) + time-window heuristic when Alpaca is unreachable or when called with a non-live datetime (tests/backtests).
+- Both schedulers' `is_market_open`/`next_market_open` now delegate to the module; `is_within_schedule` gates `market_hours`/`extended_hours` on `is_trading_day` and `custom` on `is_market_holiday` (so weekend-inclusive custom schedules keep working).
+- Because `order_guard.check_can_submit` already gates on `is_within_schedule`, order submission is now blocked on holidays too — closing the queued-order risk at the source.
+
+**Why it wasn't caught:** holidays are rare and the system launched between them; no test exercised a holiday date, and nothing ever cross-checked the broker calendar.
+
+**Tests:** `tests/test_market_calendar.py` — Memorial Day closed, normal-day open, weekend-vs-holiday distinction, `next_market_open` skipping the holiday, live clock/calendar paths, and the `is_within_schedule` holiday regression across schedule types.
+
+---
+
 ## 2026-05-22 — Dashboard 🥇🥈🥉 medals for top-3 P&L %. Severity: low (UI only).
 
 Operator request: at-a-glance ranking of which arms are winning. The overview now awards gold/silver/bronze to the three profiles with the highest P&L % — **all profiles ranked together, baselines included** (a medal on Buy-Hold SPY / Random is exactly the signal the experiment is for: the system isn't beating the benchmark yet). Dynamic: rendered server-side on first paint and re-ranked by the 30s live refresh, so the medals move as the standings change. `pnl_pct` is now computed once in `_load_profile` (single source for both the P&L % column and the ranking). Tests: medal markup + server-side `pnl_pct`-descending ranking + JS re-ranking, in `tests/test_dashboard_pnl_column_2026_05_18.py`.

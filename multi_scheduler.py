@@ -59,24 +59,20 @@ def _handle_signal(signum, frame):
 # ── Market Hours (same logic as scheduler.py) ────────────────────────
 
 def is_market_open(now=None):
-    """Return True if 9:30 AM - 4:00 PM ET, Monday-Friday."""
-    now = now or datetime.now(ET)
-    if now.weekday() >= 5:
-        return False
-    market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
-    market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
-    return market_open <= now < market_close
+    """Return True if the regular US cash session is open right now.
+
+    Holiday- and half-day-aware via Alpaca's clock (see market_calendar);
+    falls back to a weekday + hardcoded-holiday heuristic when Alpaca is
+    unreachable."""
+    import market_calendar
+    return market_calendar.is_market_open(now)
 
 
 def next_market_open(now=None):
-    """Return datetime of next market open (9:30 AM ET), skipping weekends."""
-    now = now or datetime.now(ET)
-    candidate = now.replace(hour=9, minute=30, second=0, microsecond=0)
-    if now >= candidate or now.weekday() >= 5:
-        candidate += timedelta(days=1)
-    while candidate.weekday() >= 5:
-        candidate += timedelta(days=1)
-    return candidate
+    """Return datetime of next regular market open, skipping weekends
+    and holidays (Alpaca clock when live, heuristic otherwise)."""
+    import market_calendar
+    return market_calendar.next_market_open(now)
 
 
 # ── Build UserContext ────────────────────────────────────────────────

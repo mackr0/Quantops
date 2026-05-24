@@ -386,19 +386,26 @@ class UserContext:
         if self.schedule_type == "24_7":
             return True
 
+        import market_calendar
+
         if self.schedule_type == "market_hours":
-            # Mon-Fri 9:30 AM - 4:00 PM ET
-            if weekday >= 5:
+            # Mon-Fri 9:30 AM - 4:00 PM ET, holidays excluded.
+            if not market_calendar.is_trading_day(now):
                 return False
             return 9 * 60 + 30 <= current_minutes < 16 * 60
 
         if self.schedule_type == "extended_hours":
-            # Mon-Fri 4:00 AM - 8:00 PM ET (pre-market + after-hours)
-            if weekday >= 5:
+            # Mon-Fri 4:00 AM - 8:00 PM ET (pre-market + after-hours),
+            # holidays excluded.
+            if not market_calendar.is_trading_day(now):
                 return False
             return 4 * 60 <= current_minutes < 20 * 60
 
         if self.schedule_type == "custom":
+            # Skip market holidays (weekday closures) but leave the
+            # user's weekend-inclusive day selection intact.
+            if market_calendar.is_market_holiday(now):
+                return False
             # Check day
             allowed_days = [int(d.strip()) for d in self.custom_days.split(",") if d.strip()]
             if weekday not in allowed_days:
