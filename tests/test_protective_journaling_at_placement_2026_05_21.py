@@ -226,46 +226,42 @@ class TestOrderFailureNoJournal:
 
 
 # ---------------------------------------------------------------------------
-# 6. Back-compat: db_path=None still places the order, just logs warning
+# 6. Atomic placement: db_path=None rolls back the broker order (2026-06-04)
 # ---------------------------------------------------------------------------
 
-class TestDbPathOptional:
-    def test_no_db_path_still_places_order(self, caplog):
-        """The order MUST still be placed at the broker when db_path
-        isn't provided — we don't want to skip protective orders just
-        because the caller didn't wire the db. A WARNING is logged
-        so the operator sees the journal gap."""
+class TestAtomicPlacementOnMissingDb:
+    def test_no_db_path_rolls_back_broker_order(self, caplog):
+        """db_path=None means we can't journal. Per the no-orphan-
+        broker-fills contract (upgraded 2026-06-04 to atomic placement),
+        the helper must CANCEL the broker order and return None. Old
+        back-compat path that silently let unjournaled broker orders
+        through is removed — that's exactly the gap class #1."""
         from bracket_orders import submit_protective_stop
         api = _fake_api_with_order_id("no-db-oid")
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.ERROR):
             out = submit_protective_stop(
                 api, "AAPL", qty=100, side="sell",
                 stop_price=180.0, db_path=None,
             )
-        assert out == "no-db-oid"
-        api.submit_order.assert_called_once()
-        # The warning should mention the missing journal write
-        warning_msgs = [r.message for r in caplog.records
-                          if r.levelname == "WARNING"]
-        assert any("db_path is None" in m for m in warning_msgs), (
-            "When db_path is None the placement helper should log a "
-            "WARNING explaining that the journal write was skipped — "
-            "otherwise the operator never finds out their protective "
-            "orders are unprotected against the orphan-fill bug."
+        assert out is None, (
+            "db_path=None must NOT result in a placed broker order. "
+            "The helper must roll back via cancel_order to maintain "
+            "the no-orphan-broker-fills invariant."
         )
+        api.submit_order.assert_called_once()
+        api.cancel_order.assert_called_once_with("no-db-oid")
 
 
 # ---------------------------------------------------------------------------
-# 7. Journal write failure is non-fatal
+# 7. Atomic placement: journal write failure → cancel broker order
 # ---------------------------------------------------------------------------
 
-class TestJournalWriteFailureNonFatal:
-    def test_db_locked_does_not_break_placement(self, tmp_path, caplog):
+class TestAtomicPlacementOnJournalFailure:
+    def test_db_locked_cancels_broker_order_and_returns_none(self, tmp_path, caplog):
         """If the journal write fails (e.g., DB locked, disk full),
-        the helper should still return the order_id — the broker
-        order IS placed; failing the placement would be worse than
-        failing the journal write. Reconciler safety-net catches
-        the orphan if it ever fires."""
+        the helper must CANCEL the broker order and return None. The
+        2026-06-04 atomic-placement contract: either the broker order
+        AND the journal row are written, or neither is."""
         from bracket_orders import submit_protective_stop
         # Point db_path at a path that can't be written
         bad_path = str(tmp_path / "nonexistent_dir" / "missing.db")
@@ -275,10 +271,46 @@ class TestJournalWriteFailureNonFatal:
                 api, "AAPL", qty=100, side="sell",
                 stop_price=180.0, db_path=bad_path,
             )
-        assert out == "badpath-oid", (
-            "Placement helper must return the order_id even if the "
-            "journal write fails — the broker order IS placed and "
-            "the caller needs the id to track it."
+        assert out is None, (
+            "Journal-write failure must result in a rolled-back broker "
+            "placement — the helper must call cancel_order and return "
+            "None so the caller treats it as failed placement."
+        )
+        api.cancel_order.assert_called_once_with("badpath-oid")
+        # ROLLBACK ok log line should be present
+        rollback_msgs = [r.message for r in caplog.records
+                          if "ROLLBACK ok" in r.message]
+        assert rollback_msgs, (
+            "Successful rollback must log a WARNING starting with "
+            "'ROLLBACK ok' so the operator sees the recovery."
+        )
+
+    def test_journal_failure_with_cancel_failure_logs_critical(
+        self, tmp_path, caplog,
+    ):
+        """Worst case: journal fails AND cancel fails. This IS an
+        orphan — the broker has an order we can't journal and can't
+        cancel. The helper must log CRITICAL so the operator sees it
+        immediately; the reconciler safety net is the last line."""
+        from bracket_orders import submit_protective_stop
+        bad_path = str(tmp_path / "nonexistent_dir" / "missing.db")
+        api = _fake_api_with_order_id("orphan-oid")
+        api.cancel_order.side_effect = Exception("broker API down")
+        with caplog.at_level(logging.CRITICAL):
+            out = submit_protective_stop(
+                api, "AAPL", qty=100, side="sell",
+                stop_price=180.0, db_path=bad_path,
+            )
+        assert out is None, (
+            "Even when rollback fails, helper returns None — the "
+            "caller MUST NOT treat it as a successful placement."
+        )
+        critical_msgs = [r.message for r in caplog.records
+                          if r.levelname == "CRITICAL"]
+        assert any("ROLLBACK FAILED" in m for m in critical_msgs), (
+            "Rollback failure must log CRITICAL with 'ROLLBACK FAILED' "
+            "so the operator surfaces it immediately on /issues — this "
+            "is the only case that produces an actual broker orphan."
         )
 
 

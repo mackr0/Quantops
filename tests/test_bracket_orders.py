@@ -45,14 +45,16 @@ def test_invalid_inputs_return_none():
 # submit_protective_stop
 # ---------------------------------------------------------------------------
 
-def test_submit_calls_alpaca_with_stop_order():
+def test_submit_calls_alpaca_with_stop_order(tmp_db):
     """The Alpaca submit_order call must use type='stop' with stop_price
-    specified — type='market' would defeat the whole purpose."""
+    specified — type='market' would defeat the whole purpose.
+    db_path is required (2026-06-04 atomic-placement contract)."""
     from bracket_orders import submit_protective_stop
     api = MagicMock()
     api.submit_order.return_value = MagicMock(id="abc-123")
     order_id = submit_protective_stop(
         api, "AAPL", qty=100, side="sell", stop_price=95.50,
+        db_path=tmp_db,
     )
     assert order_id == "abc-123"
     args = api.submit_order.call_args
@@ -120,11 +122,17 @@ def test_cancel_returns_false_on_unknown_error():
 def tmp_db(tmp_path):
     db = str(tmp_path / "trades.db")
     conn = sqlite3.connect(db)
+    # Schema must include signal_type + reason because the 2026-06-04
+    # atomic-placement path writes `pending_protective` rows with both
+    # columns set. A schema missing either would make the journal
+    # write fail and trigger the rollback path, breaking sweep tests
+    # for an unrelated reason.
     conn.execute("""
         CREATE TABLE trades (
             id INTEGER PRIMARY KEY,
             timestamp TEXT, symbol TEXT, side TEXT, qty REAL, price REAL,
             order_id TEXT, status TEXT,
+            signal_type TEXT, reason TEXT,
             decision_price REAL, fill_price REAL, slippage_pct REAL,
             max_favorable_excursion REAL,
             protective_stop_order_id TEXT,
@@ -292,14 +300,16 @@ def test_short_tp_price_below_entry():
     assert tp == pytest.approx(90.0, abs=0.001)
 
 
-def test_submit_take_profit_uses_limit_order_type():
+def test_submit_take_profit_uses_limit_order_type(tmp_db):
     """TP must use type='limit', not 'stop'. Limit fills only at the
-    target price or better — won't slip past on gaps."""
+    target price or better — won't slip past on gaps.
+    db_path is required (2026-06-04 atomic-placement contract)."""
     from bracket_orders import submit_protective_take_profit
     api = MagicMock()
     api.submit_order.return_value = MagicMock(id="tp-123")
     order_id = submit_protective_take_profit(
         api, "AAPL", qty=100, side="sell", limit_price=110.50,
+        db_path=tmp_db,
     )
     assert order_id == "tp-123"
     args = api.submit_order.call_args
@@ -427,16 +437,18 @@ def test_trail_percent_returns_none_for_invalid_inputs():
     assert trail_percent_for_entry(-0.05) is None
 
 
-def test_submit_trailing_uses_trailing_stop_order_type():
+def test_submit_trailing_uses_trailing_stop_order_type(tmp_db):
     """The fix relies on Alpaca's native trailing_stop type — the
     broker tracks high water and fires when price drops by trail_percent.
     Polling on daily bars never had a chance to catch fast intraday
-    reversals (the IBM tiny-win pattern)."""
+    reversals (the IBM tiny-win pattern).
+    db_path is required (2026-06-04 atomic-placement contract)."""
     from bracket_orders import submit_protective_trailing
     api = MagicMock()
     api.submit_order.return_value = MagicMock(id="trail-xyz")
     order_id = submit_protective_trailing(
         api, "AAPL", qty=100, side="sell", trail_percent=5.0,
+        db_path=tmp_db,
     )
     assert order_id == "trail-xyz"
     args = api.submit_order.call_args

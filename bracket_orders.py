@@ -51,28 +51,24 @@ def _write_pending_protective_row(
     trigger_price: Optional[float],
     entry_trade_id: Optional[int] = None,
     reason: Optional[str] = None,
-) -> None:
+) -> bool:
     """Write a placeholder trades row for a protective order at
-    PLACEMENT time. The reconciler will UPDATE this row to
-    status='closed' with the fill data once the broker fires it.
+    PLACEMENT time. Returns True on success, False on failure.
 
-    No-op when `db_path` is None (caller couldn't pass one — better
-    to log a WARNING than to crash the placement). The protective
-    order IS still placed at the broker either way; missing the
-    journal row just means the reconciler will fall through to its
-    safety-net halt on that fill, which is the SAME outcome as the
-    pre-fix world. Better to fail loud than silently swallow.
+    Per `feedback_no_orphan_broker_fills` (and the 2026-06-04
+    atomic-placement upgrade): the CALLER must treat False as a
+    placement failure and cancel the broker order to maintain the
+    "every broker order has a journal row" invariant. db_path=None
+    counts as failure (we can't journal without it).
     """
     if not db_path:
-        logger.warning(
+        logger.error(
             "Pending-protective row NOT written for %s/%s order_id=%s — "
-            "db_path is None. The protective order IS placed at the "
-            "broker but its FILL will trigger the reconciler safety-net "
-            "halt because no journal row exists to update. Fix the "
-            "caller to pass db_path.",
+            "db_path is None. Caller MUST cancel the broker order to "
+            "preserve the no-orphan-broker-fills contract.",
             signal_type, symbol, order_id,
         )
-        return
+        return False
     try:
         with closing(sqlite3.connect(db_path)) as conn:
             conn.execute(
@@ -97,18 +93,41 @@ def _write_pending_protective_row(
                 ),
             )
             conn.commit()
+        return True
     except sqlite3.Error as exc:
-        # Log loudly — this IS the orphan-prevention contract. If the
-        # journal write fails after submit_order succeeded, we have a
-        # broker order with no journal row. WARNING (not CRITICAL)
-        # because the next reconcile pass will catch the fill and
-        # halt the profile; the safety net is the backstop.
-        logger.warning(
+        logger.error(
             "Pending-protective journal write FAILED for %s/%s "
-            "order_id=%s: %s: %s. The protective order IS placed at "
-            "the broker but its FILL will trigger the reconciler "
-            "safety-net halt because no journal row exists.",
+            "order_id=%s: %s: %s. Caller MUST cancel the broker order.",
             signal_type, symbol, order_id, type(exc).__name__, exc,
+        )
+        return False
+
+
+def _rollback_broker_order(api, order_id: str, why: str) -> None:
+    """Cancel a broker order after the journal write failed, so the
+    placement is atomic (either both succeed or both are rolled back).
+
+    If cancel itself fails: log CRITICAL — the broker has an order
+    with no journal row AND we couldn't undo it. The reconciler's
+    fuzzy fallback will detect the eventual fill and halt the profile,
+    but at the cost of a stale-data trade. This is the worst case
+    the atomic-placement contract is designed to make rare.
+    """
+    try:
+        api.cancel_order(order_id)
+        logger.warning(
+            "ROLLBACK ok: canceled broker order %s after journal write "
+            "failed (%s). No orphan produced.",
+            order_id, why,
+        )
+    except Exception as cancel_exc:
+        logger.critical(
+            "ROLLBACK FAILED for broker order %s after journal write "
+            "failed (%s): cancel raised %s: %s. BROKER HAS AN ORDER "
+            "WITHOUT A JOURNAL ROW. The reconciler safety net WILL "
+            "halt the profile on the next reconcile pass when the "
+            "fill arrives, but the placement itself was not atomic.",
+            order_id, why, type(cancel_exc).__name__, cancel_exc,
         )
 
 
@@ -152,33 +171,40 @@ def submit_protective_stop(
             stop_price=round(float(stop_price), 2),
             time_in_force="gtc",
         )
-        order_id = getattr(order, "id", None)
-        if order_id:
-            logger.info(
-                "Protective stop placed: %s %s qty=%d stop=$%.2f order_id=%s",
-                side, symbol, qty, stop_price, order_id,
-            )
-            # ATOMIC JOURNALING per feedback_no_orphan_broker_fills.
-            _write_pending_protective_row(
-                db_path=db_path,
-                symbol=symbol, side=side, qty=qty,
-                order_id=order_id,
-                signal_type="PROTECTIVE_STOP",
-                trigger_price=stop_price,
-                entry_trade_id=entry_trade_id,
-                reason=(
-                    f"broker stop @ ${stop_price:.2f}; entry_trade={entry_trade_id}"
-                    if entry_trade_id else
-                    f"broker stop @ ${stop_price:.2f}"
-                ),
-            )
-        return order_id
     except Exception as exc:
         logger.warning(
             "Could not place protective stop for %s (qty=%d, stop=$%.2f): %s",
             symbol, qty, stop_price, exc,
         )
         return None
+    order_id = getattr(order, "id", None)
+    if not order_id:
+        return None
+    logger.info(
+        "Protective stop placed: %s %s qty=%d stop=$%.2f order_id=%s",
+        side, symbol, qty, stop_price, order_id,
+    )
+    # ATOMIC PLACEMENT per feedback_no_orphan_broker_fills. If the
+    # journal write fails, roll back the broker order so we never
+    # leave a broker-side order without a journal row.
+    journaled = _write_pending_protective_row(
+        db_path=db_path,
+        symbol=symbol, side=side, qty=qty,
+        order_id=order_id,
+        signal_type="PROTECTIVE_STOP",
+        trigger_price=stop_price,
+        entry_trade_id=entry_trade_id,
+        reason=(
+            f"broker stop @ ${stop_price:.2f}; entry_trade={entry_trade_id}"
+            if entry_trade_id else
+            f"broker stop @ ${stop_price:.2f}"
+        ),
+    )
+    if not journaled:
+        _rollback_broker_order(
+            api, order_id, why=f"PROTECTIVE_STOP/{symbol}")
+        return None
+    return order_id
 
 
 def cancel_protective_stop(api, order_id: Optional[str]) -> bool:
@@ -274,33 +300,39 @@ def submit_protective_take_profit(
             limit_price=round(float(limit_price), 2),
             time_in_force="gtc",
         )
-        order_id = getattr(order, "id", None)
-        if order_id:
-            logger.info(
-                "Protective take-profit placed: %s %s qty=%d limit=$%.2f order_id=%s",
-                side, symbol, qty, limit_price, order_id,
-            )
-            _write_pending_protective_row(
-                db_path=db_path,
-                symbol=symbol, side=side, qty=qty,
-                order_id=order_id,
-                signal_type="PROTECTIVE_TAKE_PROFIT",
-                trigger_price=limit_price,
-                entry_trade_id=entry_trade_id,
-                reason=(
-                    f"broker take-profit @ ${limit_price:.2f}; "
-                    f"entry_trade={entry_trade_id}"
-                    if entry_trade_id else
-                    f"broker take-profit @ ${limit_price:.2f}"
-                ),
-            )
-        return order_id
     except Exception as exc:
         logger.warning(
             "Could not place protective take-profit for %s (qty=%d, limit=$%.2f): %s",
             symbol, qty, limit_price, exc,
         )
         return None
+    order_id = getattr(order, "id", None)
+    if not order_id:
+        return None
+    logger.info(
+        "Protective take-profit placed: %s %s qty=%d limit=$%.2f order_id=%s",
+        side, symbol, qty, limit_price, order_id,
+    )
+    # ATOMIC PLACEMENT — roll back broker order on journal failure.
+    journaled = _write_pending_protective_row(
+        db_path=db_path,
+        symbol=symbol, side=side, qty=qty,
+        order_id=order_id,
+        signal_type="PROTECTIVE_TAKE_PROFIT",
+        trigger_price=limit_price,
+        entry_trade_id=entry_trade_id,
+        reason=(
+            f"broker take-profit @ ${limit_price:.2f}; "
+            f"entry_trade={entry_trade_id}"
+            if entry_trade_id else
+            f"broker take-profit @ ${limit_price:.2f}"
+        ),
+    )
+    if not journaled:
+        _rollback_broker_order(
+            api, order_id, why=f"PROTECTIVE_TAKE_PROFIT/{symbol}")
+        return None
+    return order_id
 
 
 # Bounds on trail percent to avoid stops that are too tight (whipsaw
@@ -360,27 +392,6 @@ def submit_protective_trailing(
             trail_percent=str(round(float(trail_percent), 2)),
             time_in_force="gtc",
         )
-        order_id = getattr(order, "id", None)
-        if order_id:
-            logger.info(
-                "Protective trailing stop placed: %s %s qty=%d trail=%.2f%% order_id=%s",
-                side, symbol, qty, trail_percent, order_id,
-            )
-            _write_pending_protective_row(
-                db_path=db_path,
-                symbol=symbol, side=side, qty=qty,
-                order_id=order_id,
-                signal_type="PROTECTIVE_TRAILING",
-                trigger_price=None,  # trailing has no fixed price
-                entry_trade_id=entry_trade_id,
-                reason=(
-                    f"broker trailing-stop {trail_percent:.2f}%; "
-                    f"entry_trade={entry_trade_id}"
-                    if entry_trade_id else
-                    f"broker trailing-stop {trail_percent:.2f}%"
-                ),
-            )
-        return order_id
     except Exception as exc:
         logger.warning(
             "Could not place protective trailing stop for %s "
@@ -388,6 +399,33 @@ def submit_protective_trailing(
             symbol, qty, trail_percent, exc,
         )
         return None
+    order_id = getattr(order, "id", None)
+    if not order_id:
+        return None
+    logger.info(
+        "Protective trailing stop placed: %s %s qty=%d trail=%.2f%% order_id=%s",
+        side, symbol, qty, trail_percent, order_id,
+    )
+    # ATOMIC PLACEMENT — roll back broker order on journal failure.
+    journaled = _write_pending_protective_row(
+        db_path=db_path,
+        symbol=symbol, side=side, qty=qty,
+        order_id=order_id,
+        signal_type="PROTECTIVE_TRAILING",
+        trigger_price=None,  # trailing has no fixed price
+        entry_trade_id=entry_trade_id,
+        reason=(
+            f"broker trailing-stop {trail_percent:.2f}%; "
+            f"entry_trade={entry_trade_id}"
+            if entry_trade_id else
+            f"broker trailing-stop {trail_percent:.2f}%"
+        ),
+    )
+    if not journaled:
+        _rollback_broker_order(
+            api, order_id, why=f"PROTECTIVE_TRAILING/{symbol}")
+        return None
+    return order_id
 
 
 def _is_order_active(api, order_id: str) -> bool:

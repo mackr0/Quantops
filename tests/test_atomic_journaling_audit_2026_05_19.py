@@ -228,6 +228,53 @@ def test_bracket_callers_persist_order_id_atomically():
         )
 
 
+def test_protective_placement_rolls_back_broker_order_on_journal_failure():
+    """2026-06-04 atomic-placement contract: every call site that
+    invokes `_write_pending_protective_row` must check its return
+    value and call `_rollback_broker_order` on False so the broker
+    order is canceled when the journal write fails. Without this,
+    a journal-write failure leaves a broker order with no journal
+    row — the orphan class the reconciler safety net is designed
+    to halt on.
+
+    Structural check: scan bracket_orders.py for every call to
+    `_write_pending_protective_row(`. Within the next 50 lines,
+    confirm a `_rollback_broker_order(` appears (the False branch
+    handler). If a future placement helper is added that journals
+    but doesn't roll back, this test fails immediately."""
+    src = _read(REPO / "bracket_orders.py")
+    src_lines = src.splitlines()
+    offenders = []
+    for i, line in enumerate(src_lines):
+        if "_write_pending_protective_row(" not in line:
+            continue
+        # Skip the function definition itself
+        if line.strip().startswith("def _write_pending_protective_row"):
+            continue
+        # Skip docstring/comment occurrences
+        stripped = line.strip()
+        if (stripped.startswith("#") or stripped.startswith('"""')
+                or stripped.startswith("'''")):
+            continue
+        # Scan forward for the rollback call
+        found_rollback = False
+        for j in range(i + 1, min(i + 50, len(src_lines))):
+            if "_rollback_broker_order(" in src_lines[j]:
+                found_rollback = True
+                break
+        if not found_rollback:
+            offenders.append(
+                f"bracket_orders.py:{i + 1}: "
+                f"_write_pending_protective_row() call has no "
+                f"_rollback_broker_order() within 50 lines — journal "
+                f"failure would leave a broker orphan"
+            )
+    assert not offenders, (
+        "Atomic-placement contract violated:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
 def test_no_unknown_submit_order_call_sites():
     """If a NEW file adds api.submit_order, this test fails — forcing
     the operator to add it to PRODUCTION_SUBMIT_FILES + confirm
