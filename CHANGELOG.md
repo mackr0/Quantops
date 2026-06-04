@@ -17,6 +17,29 @@ Rules going forward:
 
 ---
 
+## 2026-06-04 — /trades page excludes pending_protective placeholder rows. Severity: medium (UI only; cash/position math was already correct).
+
+**Problem:** Every protective stop placement (status='pending_protective') was rendering on /trades as a "Long Close" row, often with a misleadingly positive "+0.2%" P&L because `_enrich_trade_history_with_live_pnl` matched the placeholder against the still-open entry's live broker P&L. Operator saw rows like:
+
+```
+Jun 4, 11:23 AM ET | EXP-A2-NoOptions | AVGO | Protective Trailing | Long Close 21 | +$21.05 (+0.2%)
+AI Reasoning: broker trailing-stop 5.00%; Entry Trade=8
+```
+
+…which is the protective trailing-stop ORDER (a placeholder) rendered as if it were an exit. There was no real exit; the AVGO position was still open.
+
+**Root cause:** `_get_trade_history_for_profile` in `views.py:494` issued `SELECT * FROM trades` with optional filters for `kind` (stocks/options) and symbol `search`, but no filter on `status`. `journal.get_virtual_positions` and `get_virtual_account_info` already excluded `pending_protective` rows (so positions and cash math were correct), but the /trades page was the last UI surface missing the same filter.
+
+**Fix:** Add `COALESCE(status, 'open') != 'pending_protective'` as the first WHERE clause in `_get_trade_history_for_profile`. The SQL composition stays identical otherwise — kind + search filters still compose AND-style on top.
+
+**Other UI surfaces verified NOT to leak:**
+- Dashboard `_enriched_positions` (views.py:236) — filters `side IN ('buy','short')` or option SELL; stock pending_protective SELLs are excluded by the side filter naturally
+- Strategy / performance / AI-stats queries (lines 2193, 2660, 2795, 4432) — gated on `WHERE pnl IS NOT NULL` or `WHERE fill_price IS NOT NULL`; pending_protective rows have neither
+
+**Tests:** `tests/test_trades_page_excludes_pending_protective_2026_06_04.py` (4) — pending_protective excluded; real trades (open BUY, closed SELL, canceled BUY) still appear; kind filter composes correctly; search filter composes correctly.
+
+---
+
 ## 2026-06-04 — Four follow-ups from the reset: D race-grace, random tradable filter, manifest AI defaults, AI-key preserved across resets. Severity: high (false-positive alerts + day-1 capital imbalance + silent provider reversion).
 
 Surfaced during the 2026-06-04 reset operation; bundled in one commit since they all spawn from the same incident.

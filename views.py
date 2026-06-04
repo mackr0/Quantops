@@ -506,7 +506,17 @@ def _get_trade_history_for_profile(profile_id, limit=100, kind=None,
             Wired 2026-05-11 (TODO #3).
     """
     db_path = f"quantopsai_profile_{profile_id}.db"
-    where = []
+    # 2026-06-04 — pending_protective rows are PLACEMENT-time
+    # placeholders (written by bracket_orders.submit_protective_* when
+    # a broker stop/TP/trailing is placed, flipped to 'closed' by the
+    # reconciler on fill). They're meant to be invisible until the
+    # broker fires the stop. journal.py:get_virtual_positions and
+    # get_virtual_account_info already exclude them — the /trades
+    # page was the last surface where they leaked through, rendering
+    # as "Long Close" rows with borrowed live P&L from the still-open
+    # entry. Filter them here so the trades list shows only actual
+    # trades (entries + real exits + canceled).
+    where = ["COALESCE(status, 'open') != 'pending_protective'"]
     params = []
     if kind == "stocks":
         where.append("occ_symbol IS NULL")
@@ -521,9 +531,7 @@ def _get_trade_history_for_profile(profile_id, limit=100, kind=None,
             where.append("(UPPER(symbol) LIKE ? OR "
                          "UPPER(COALESCE(occ_symbol, '')) LIKE ?)")
             params.extend([f"{s}%", f"{s}%"])
-    sql = "SELECT * FROM trades"
-    if where:
-        sql += " WHERE " + " AND ".join(where)
+    sql = "SELECT * FROM trades WHERE " + " AND ".join(where)
     sql += " ORDER BY timestamp DESC LIMIT ?"
     params.append(limit)
     try:
