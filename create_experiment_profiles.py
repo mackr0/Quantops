@@ -270,6 +270,23 @@ PROFILES: List[Dict[str, Any]] = [
 ]
 
 
+# 2026-06-04 — every profile must explicitly carry ai_provider +
+# ai_model in source. The schema defaults (anthropic / claude-haiku)
+# don't match what the operator actually uses (google / gemini), so
+# without this, every fresh-start reset silently reverts AI config and
+# 401s on the first cycle (caught on the 2026-06-04 reset, see
+# CHANGELOG). Applied via setdefault so per-profile overrides in the
+# manifest above still win. Single source of truth — future provider
+# switches change ONE line here, not 13.
+_AI_PROVIDER_DEFAULTS = {
+    "ai_provider": "google",
+    "ai_model": "gemini-2.5-flash-lite",
+}
+for _p in PROFILES:
+    for _k, _v in _AI_PROVIDER_DEFAULTS.items():
+        _p.setdefault(_k, _v)
+
+
 # Capital integrity check — fails loudly if the manifest doesn't sum
 # to the intended $3M, so a typo can't quietly miss target capital.
 def _verify_manifest_totals() -> None:

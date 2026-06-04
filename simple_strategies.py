@@ -285,16 +285,58 @@ def run_buy_hold_spy(ctx) -> Dict[str, Any]:
 # Random Stock-of-Day
 # ─────────────────────────────────────────────────────────────────────
 
+def _is_alpaca_tradable(api, symbol: str) -> bool:
+    """Return True if Alpaca lists the asset as active + tradable.
+    Fail-safe: any error returns False so the caller substitutes
+    rather than risks a rejection mid-flight."""
+    if api is None:
+        return True  # tests / no-api path — preserve old behavior
+    try:
+        asset = api.get_asset(symbol)
+    except Exception:
+        return False
+    status = (getattr(asset, "status", "") or "").lower()
+    return status == "active" and bool(getattr(asset, "tradable", False))
+
+
 def _pick_random_symbols(profile_id: int,
-                         universe: List[str], n: int) -> List[str]:
+                         universe: List[str], n: int,
+                         api=None) -> List[str]:
     """Deterministic pick from the universe, seeded by profile_id
     ALONE (no date component). 2026-05-19 — was previously seeded
     by (profile_id, today_date), which produced different picks
     every day and rotated the portfolio. For a benchmark that
-    fires once and holds, the seed must be stable across days."""
+    fires once and holds, the seed must be stable across days.
+
+    2026-06-04 — added `api`-keyed substitution. The raw seed sample
+    may land on symbols that Alpaca has marked inactive (delisted /
+    halted at the broker), causing submit_order to reject mid-cycle
+    and leaving fewer than n holdings. To keep replicas of the
+    random benchmark comparable, draw a larger pool from the same
+    seeded RNG and take the first n that are tradable at Alpaca.
+    Determinism is preserved — same seed + same broker state →
+    same picks. When `api` is None (tests without get_asset
+    mocking), falls back to the pre-2026-06-04 unfiltered behavior."""
     seed = hash(("random_baseline_v2", profile_id)) & 0xFFFFFFFF
     rng = random.Random(seed)
-    return rng.sample(list(universe), min(n, len(universe)))
+    universe_list = list(universe)
+    n = min(n, len(universe_list))
+    if api is None:
+        return rng.sample(universe_list, n)
+    # Draw a larger pool from the seeded RNG; take first n tradable.
+    # Pool size 4× n is conservative — even with ~25% inactive symbols
+    # in the universe, this finds n active picks. If somehow the pool
+    # is exhausted (would require >75% of universe inactive), returns
+    # whatever it found.
+    pool_size = min(max(n * 4, 20), len(universe_list))
+    candidates = rng.sample(universe_list, pool_size)
+    picks: List[str] = []
+    for sym in candidates:
+        if len(picks) >= n:
+            break
+        if _is_alpaca_tradable(api, sym):
+            picks.append(sym)
+    return picks
 
 
 def run_random_stock_of_day(ctx) -> Dict[str, Any]:
@@ -326,9 +368,12 @@ def run_random_stock_of_day(ctx) -> Dict[str, Any]:
 
     # First fire: pick + buy.
     from segments import STOCK_UNIVERSE
+    from client import get_api
+    api = get_api(ctx)
     picks = _pick_random_symbols(
         getattr(ctx, "profile_id", 0) or 0,
         STOCK_UNIVERSE, RANDOM_PICK_COUNT,
+        api=api,
     )
     logger.info("[%s random] INITIAL picks (held forever): %s",
                 seg_label, picks)
@@ -340,9 +385,6 @@ def run_random_stock_of_day(ctx) -> Dict[str, Any]:
         summary["errors"] += 1
         return summary
     cash_per_pick = (equity * (1.0 - CASH_BUFFER)) / RANDOM_PICK_COUNT
-
-    from client import get_api
-    api = get_api(ctx)
     for sym in picks:
         price = _fetch_price(api, sym)
         if not price or price <= 0:

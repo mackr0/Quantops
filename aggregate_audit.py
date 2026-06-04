@@ -266,6 +266,18 @@ _BROKER_ACTIVE_STATUSES = frozenset({
     "replaced", "pending_replace",
 })
 
+# Grace window (seconds) for excluding very-recent broker orders from
+# the manual-order audit. The system submits an order via the broker
+# API and then journals it; there's a small race window (submit_order
+# returns ms before the INSERT INTO trades commits) where the order
+# is visible at the broker but not in any journal yet. Without a grace
+# window, the audit fires false-positive alerts on EVERY normal cycle
+# that places orders. 60s is well past healthy submit→journal latency
+# (typically <1s) but short enough that a genuine manual broker order
+# is detected by the next cycle. Documented 2026-06-04 after a
+# false-positive at 13:30:49 during the post-reset opening cycle.
+_MANUAL_ORDER_GRACE_SECONDS = 60
+
 
 def _all_journal_order_ids_for_profile(db_path: str) -> set:
     """Every order_id this profile's journal has touched, across all
@@ -305,10 +317,39 @@ def _all_journal_order_ids_for_profile(db_path: str) -> set:
     return out
 
 
+def _is_within_grace_window(created_at_str: str,
+                              now=None,
+                              window_seconds: int =
+                              _MANUAL_ORDER_GRACE_SECONDS) -> bool:
+    """True if the order's broker `created_at` is within the grace
+    window from now. Orders inside the window are still in the
+    submit→journal race for our own cycle and should be excluded
+    from the manual-order audit to avoid false positives."""
+    import datetime as _dt
+    if not created_at_str:
+        return False  # no timestamp → can't establish grace, don't grant it
+    try:
+        # Alpaca emits ISO 8601 with 'Z' or numeric offset
+        s = created_at_str.replace("Z", "+00:00")
+        dt = _dt.datetime.fromisoformat(s)
+    except (ValueError, TypeError):
+        return False  # un-parseable → don't grant grace
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_dt.timezone.utc)
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    age = (now - dt).total_seconds()
+    return 0 <= age < window_seconds
+
+
 def _broker_active_orders(api) -> List[Dict]:
     """Pull every currently-active order from the broker. Filters by
     status so only actionable orders surface (filled/canceled history
-    is excluded — that's the reconciler's domain)."""
+    is excluded — that's the reconciler's domain).
+
+    Also excludes orders within the grace window (default 60s from
+    `created_at`) — those may still be journal-pending from our own
+    just-submitted cycle. Without this filter the audit produces
+    false-positive alerts on every cycle that places orders."""
     try:
         orders = api.list_orders(status="open", limit=500)
     except Exception as exc:
@@ -324,6 +365,11 @@ def _broker_active_orders(api) -> List[Dict]:
         oid = getattr(o, "id", None)
         if not oid:
             continue
+        created_at = str(getattr(o, "created_at", ""))
+        if _is_within_grace_window(created_at):
+            # Just-submitted by this system; journal INSERT may not
+            # have committed yet. Skip to avoid a race false-positive.
+            continue
         out.append({
             "order_id": oid,
             "symbol": (getattr(o, "symbol", "") or "").upper(),
@@ -332,7 +378,7 @@ def _broker_active_orders(api) -> List[Dict]:
             "type": (getattr(o, "order_type", None)
                      or getattr(o, "type", "") or "").lower(),
             "status": status,
-            "created_at": str(getattr(o, "created_at", "")),
+            "created_at": created_at,
         })
     return out
 

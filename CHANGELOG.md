@@ -17,6 +17,29 @@ Rules going forward:
 
 ---
 
+## 2026-06-04 — Four follow-ups from the reset: D race-grace, random tradable filter, manifest AI defaults, AI-key preserved across resets. Severity: high (false-positive alerts + day-1 capital imbalance + silent provider reversion).
+
+Surfaced during the 2026-06-04 reset operation; bundled in one commit since they all spawn from the same incident.
+
+**1. D audit gains a young-order grace window.** `audit_manual_broker_orders` previously flagged any broker order not in any journal — including orders the system had just submitted, before the `INSERT INTO trades` had committed. Result: false-positive email alert at 13:30:49 during the post-reset opening cycle, claiming the random strategy's own orders were "manual broker-side orders." `_broker_active_orders` now filters out orders whose `created_at` is within `_MANUAL_ORDER_GRACE_SECONDS=60` of now. 60s is well past healthy submit→journal latency (<1s typical) but short enough that a genuine manual order surfaces by the next cycle. Tests pin: young-order excluded, older-order still flagged, un-parseable timestamps don't grant grace.
+
+**2. `_pick_random_symbols` substitutes inactive Alpaca symbols.** On reset morning, pid26 (`EXP-A1-RandomA`) drew `[CRK, GE, PG, VERV, CERE]` deterministically. VERV + CERE were inactive at Alpaca → `submit_order` rejected each → strategy moved on without substituting → pid26 ended with 3 holdings while sibling replica pid27 had 5. The two replicas are meant to bound variance against each other; day-1 imbalance compromised that. Fixed: `_pick_random_symbols(... api=api)` draws a larger pool from the SAME seeded RNG and returns the first n that pass `api.get_asset(sym).tradable + status=='active'`. Determinism preserved (same seed + same broker state → same picks). Backwards-compat: `api=None` falls back to pre-2026-06-04 behavior. Pid26's day-1 state was remediated via `scripts/topup_pid26_random_2026_06_04.py` (added 2 substitution picks: TEAM, TXN). Tests pin substitution + determinism + fail-safe on API errors.
+
+**3. `create_experiment_profiles.py` manifest sets `ai_provider`/`ai_model`.** The schema defaults are `anthropic` / `claude-haiku-4-5-20251001`. The operator switched to `google` / `gemini-2.5-flash-lite` via the Settings UI months ago; that change lived in the master-DB row, not in the manifest source code. Today's reset rebuilt the 13 profiles from the manifest → they reverted to schema defaults → all 13 AI calls 401'd on the opening cycle. Fix: a single `_AI_PROVIDER_DEFAULTS` dict applied to every profile via `setdefault` at module load. Single source of truth — future provider switches change one line, not 13.
+
+**4. `full_fresh_start_*` orchestrator snapshots + restores AI keys across the destroy/rebuild cycle.** The encrypted API key can't live in source code (per the no-master-key memory rule), so even after fix #3, the rebuilt profiles still have `ai_api_key_enc=''`. New step 1b: snapshot `(ai_provider, ai_model, ai_api_key_enc)` per profile name BEFORE the destroy step. New step 5b: after `create_experiment_profiles` rebuilds, restore from the snapshot matched by name. Today's reset was remediated manually via `/tmp/restore_ai_keys.py` reading from this-morning's master-DB backup; this commit makes the same restoration automatic on future runs.
+
+**Also in this commit:** `scripts/topup_pid26_random_2026_06_04.py` is the one-off remediation that brought pid26 from 3 → 5 holdings on the morning of the reset, promoted from `/tmp/` to source control with a deterministic SHA-256 seed (replacing Python's `hash()` which is randomized per process via `PYTHONHASHSEED`).
+
+**Tests:**
+- `tests/test_manual_broker_order_audit_2026_06_04.py` — 3 new (young-order excluded, older-order flagged, un-parseable timestamp).
+- `tests/test_random_strategy_inactive_filter_2026_06_04.py` — 6 new (api=None preserves old behavior, filters inactive, deterministic, fail-safe on API error, predicate unit tests).
+- `tests/test_create_experiment_profiles_2026_05_17.py` — 20 existing tests still pass (manifest contract preserved).
+
+**Why none of this was caught:** the reset script template was cloned from the May 18 mid-day-restart variant which never had to deal with profile destruction (just key swaps). The random-strategy filter gap predates the reset entirely — VERV/CERE were inactive long before today; the bug only surfaced when the experiment ran with seeded picks for the first time. The D audit grace window is brand-new today (D shipped this morning); the false-positive on the same day proves the design needs the grace window.
+
+---
+
 ## 2026-06-04 — Fresh-start script: broaden altdata-log truncation + clear stale scrape_runs. Severity: medium (cosmetic, /issues page).
 
 **Problem:** After running `full_fresh_start_2026_06_04.py` on prod today, the /issues page still showed 5 stale entries — 4 WARNINGs from `altdata-20260529.log` and 1 ERROR from a biotechevents `scrape_runs` row dated 2026-06-03. Both predate the reset but weren't covered by the script's cleanup steps.

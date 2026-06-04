@@ -233,7 +233,66 @@ def test_api_error_returns_empty_for_that_account(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 7. Summary formatter
+# 7. Young-order grace window (race-condition false-positive guard)
+# ---------------------------------------------------------------------------
+
+def test_young_broker_order_excluded_from_audit(tmp_path):
+    """An order whose broker `created_at` is within the grace window
+    (default 60s) is in the submit→journal race for our own cycle —
+    must be excluded so the audit doesn't fire false positives every
+    time the system places orders. Caught 2026-06-04 13:30:49 when
+    the post-reset opening cycle triggered a false email alert."""
+    from aggregate_audit import audit_manual_broker_orders
+    import datetime as dt
+    now = dt.datetime.now(dt.timezone.utc)
+    recent_iso = (now - dt.timedelta(seconds=10)).isoformat()
+    db = _make_journal(tmp_path, "p1")  # no journal rows
+    api = MagicMock()
+    young_order = _broker_order("just-submitted", "new")
+    young_order.created_at = recent_iso
+    api.list_orders.return_value = [young_order]
+    profiles = {1: {"db_path": db, "alpaca_account_id": 13}}
+    with _patch_build_ctx(profiles, api):
+        out = audit_manual_broker_orders(profile_ids=[1])
+    assert out["manual"] == [], (
+        "Order created within the grace window must be excluded — the "
+        "system's own submit→journal race would otherwise produce a "
+        "false-positive 'manual order' alert on every cycle."
+    )
+
+
+def test_older_broker_order_still_flagged_as_manual(tmp_path):
+    """An order older than the grace window (60s) is past the
+    submit→journal race — if it's still not in any journal, it IS
+    a manual order and must be flagged."""
+    from aggregate_audit import audit_manual_broker_orders
+    import datetime as dt
+    now = dt.datetime.now(dt.timezone.utc)
+    old_iso = (now - dt.timedelta(seconds=180)).isoformat()
+    db = _make_journal(tmp_path, "p1")
+    api = MagicMock()
+    old_order = _broker_order("real-manual", "new")
+    old_order.created_at = old_iso
+    api.list_orders.return_value = [old_order]
+    profiles = {1: {"db_path": db, "alpaca_account_id": 13}}
+    with _patch_build_ctx(profiles, api):
+        out = audit_manual_broker_orders(profile_ids=[1])
+    assert len(out["manual"]) == 1
+    assert out["manual"][0]["order_id"] == "real-manual"
+
+
+def test_unparseable_created_at_does_not_grant_grace():
+    """If `created_at` can't be parsed, the grace window can't be
+    established — default to NOT granting grace (so a malformed
+    timestamp doesn't silently bypass detection)."""
+    from aggregate_audit import _is_within_grace_window
+    assert _is_within_grace_window("") is False
+    assert _is_within_grace_window("not-a-timestamp") is False
+    assert _is_within_grace_window(None) is False
+
+
+# ---------------------------------------------------------------------------
+# 8. Summary formatter
 # ---------------------------------------------------------------------------
 
 def test_format_summary_zero_manual():

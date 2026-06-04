@@ -151,6 +151,91 @@ def step1_verify_keys() -> bool:
     return ok
 
 
+_AI_CONFIG_SNAPSHOT: dict = {}  # populated by step1b; consumed by step5b
+
+
+def step1b_snapshot_ai_config() -> None:
+    """Snapshot (ai_provider, ai_model, ai_api_key_enc) keyed by name
+    BEFORE the destroy step. The manifest in `create_experiment_profiles`
+    sets ai_provider + ai_model (single source of truth), but the
+    encrypted API key lives only in the master DB — it can't be in
+    source code per the no-master-key memory rule. This snapshot
+    carries the key across the reset boundary so step 5b can restore
+    it onto the rebuilt rows; without it the new profiles 401 on
+    the first AI cycle (caught 2026-06-04 reset)."""
+    print("\n=== STEP 1b: snapshot AI config (per-profile API key) ===")
+    if not os.path.exists(MAIN_DB):
+        print("  master DB not found — nothing to snapshot")
+        return
+    try:
+        with closing(sqlite3.connect(MAIN_DB)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT name, ai_provider, ai_model, ai_api_key_enc "
+                "FROM trading_profiles WHERE enabled = 1"
+            ).fetchall()
+    except sqlite3.Error as exc:
+        print(f"  WARN: snapshot read failed: {exc}")
+        return
+    for r in rows:
+        # Only snapshot rows that ACTUALLY have a key — the
+        # zero-length-blob default doesn't carry useful state forward.
+        if not r["ai_api_key_enc"]:
+            continue
+        _AI_CONFIG_SNAPSHOT[r["name"]] = {
+            "ai_provider": r["ai_provider"],
+            "ai_model": r["ai_model"],
+            "ai_api_key_enc": r["ai_api_key_enc"],
+        }
+    print(f"  snapshotted AI config for {len(_AI_CONFIG_SNAPSHOT)} "
+          f"profile(s) (matched by name across reset)")
+
+
+def step5b_restore_ai_config(apply: bool) -> None:
+    """Restore (ai_provider, ai_model, ai_api_key_enc) onto each
+    rebuilt profile by matching the step-1b snapshot to the new
+    rows by `name`. Names are stable across resets; pids are not."""
+    print("\n=== STEP 5b: restore per-profile AI keys (from step-1b snapshot) ===")
+    if not _AI_CONFIG_SNAPSHOT:
+        print("  snapshot empty — nothing to restore (operator must "
+              "set ai_api_key_enc on each profile via Settings UI)")
+        return
+    try:
+        with closing(sqlite3.connect(MAIN_DB)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT id, name FROM trading_profiles "
+                "WHERE enabled = 1"
+            ).fetchall()
+            restored = 0
+            unmatched = []
+            for r in rows:
+                snap = _AI_CONFIG_SNAPSHOT.get(r["name"])
+                if not snap:
+                    unmatched.append(r["name"])
+                    continue
+                print(f"  pid{r['id']:>3} {r['name']:<32s} restore "
+                      f"{snap['ai_provider']}/{snap['ai_model']} "
+                      f"key={len(snap['ai_api_key_enc'])}B")
+                if apply:
+                    conn.execute(
+                        "UPDATE trading_profiles SET "
+                        "ai_provider=?, ai_model=?, ai_api_key_enc=? "
+                        "WHERE id=?",
+                        (snap["ai_provider"], snap["ai_model"],
+                         snap["ai_api_key_enc"], r["id"]),
+                    )
+                    restored += 1
+            if apply:
+                conn.commit()
+                print(f"  restored {restored} profile(s)")
+            if unmatched:
+                print(f"  WARN no snapshot for: {unmatched} — set "
+                      "ai_api_key_enc manually via Settings UI")
+    except sqlite3.Error as exc:
+        print(f"  restore failed: {exc}")
+
+
 def step2_destroy_old_state(apply: bool) -> int:
     """Invoke clean_orphaned_profiles.py with --remove-all-alpaca-accounts
     + --clear-audit-alerts. This is the destructive core:
@@ -507,6 +592,9 @@ def main() -> int:
         print("\nKEY VERIFICATION FAILED — aborting before any writes.")
         return 1
 
+    # Snapshot pre-destroy state for restoration after rebuild.
+    step1b_snapshot_ai_config()
+
     rc = step2_destroy_old_state(args.apply)
     if rc != 0:
         print("\nSTEP 2 FAILED — aborting.")
@@ -518,6 +606,7 @@ def main() -> int:
         print("\nSTEP 4 FAILED — aborting before linkage.")
         return rc
     step5_link_profiles(args.apply)
+    step5b_restore_ai_config(args.apply)
 
     linkage_ok = True
     if args.apply:
