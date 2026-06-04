@@ -169,14 +169,15 @@ def step2_destroy_old_state(apply: bool) -> int:
     ]
     if apply:
         cmd.append("--apply")
-    result = subprocess.run(cmd, capture_output=True, text=True,
+    # Merge stderr into stdout because clean_orphaned_profiles logs
+    # through Python's `logging` module, which defaults to stderr.
+    result = subprocess.run(cmd, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True,
                              timeout=300, cwd=REPO_ROOT)
     for line in result.stdout.splitlines():
         print(f"  {line}")
     if result.returncode != 0:
         print(f"  ABORT: clean_orphaned_profiles exit code {result.returncode}")
-        if result.stderr:
-            print(f"  stderr: {result.stderr[:500]}")
         return result.returncode
     return 0
 
@@ -235,15 +236,16 @@ def step4_build_profiles(apply: bool) -> int:
            f"{REPO_ROOT}/create_experiment_profiles.py"]
     if apply:
         cmd.append("--apply")
-    result = subprocess.run(cmd, capture_output=True, text=True,
+    # Merge stderr into stdout — create_experiment_profiles also logs
+    # through Python's logging module (stderr by default).
+    result = subprocess.run(cmd, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True,
                              timeout=120, cwd=REPO_ROOT)
     for line in result.stdout.splitlines():
         print(f"  {line}")
     if result.returncode != 0:
         print(f"  ABORT: create_experiment_profiles exit code "
               f"{result.returncode}")
-        if result.stderr:
-            print(f"  stderr: {result.stderr[:500]}")
         return result.returncode
     return 0
 
@@ -442,6 +444,13 @@ def main() -> int:
     print("=" * 70)
     print(f"FULL FRESH-START 2026-06-04 (apply={args.apply})")
     print("=" * 70)
+    if not args.apply:
+        print(
+            "NOTE — Dry-run shows each step against the CURRENT state. "
+            "In --apply mode the steps run sequentially, so step 4 sees "
+            "the deletions step 2 performs (existing profiles get CREATE, "
+            "not UPDATE), and step 5 finds the rows step 4 just inserted."
+        )
 
     if not step1_verify_keys():
         print("\nKEY VERIFICATION FAILED — aborting before any writes.")
