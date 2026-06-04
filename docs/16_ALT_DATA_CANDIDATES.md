@@ -53,14 +53,14 @@ Symbol-targeted SEC filings (10-K, 10-Q, 8-K diffs for held + shortlist symbols 
 
 ## Candidates — not yet implemented
 
-### Tier 1 — High signal, broad applicability (build NOW)
+### Tier 1 — High signal, broad applicability (✅ 3 of 4 built 2026-05-17; Reddit awaiting API access)
 
-| # | Source | Free? | Why | Effort |
+| # | Source | Status | Module / wiring | Why |
 |---|---|---|---|---|
-| 1 | **SEC 8-K broad discovery** | ✅ EDGAR | Daily scan of ALL new 8-K filings across the universe, parse Item type (1.01 M&A, 2.02 earnings, 5.02 officer change, 8.01 other material). Surfaces NEW opportunities, not just monitors known watchlist. The single highest-signal SEC filing type. | ~half day |
-| 2 | **SEC 13D/G activist filings** | ✅ EDGAR | Real-time activist >5% positions (different from 13F which is quarterly + late). Strong directional signal for the named symbol. | ~half day |
-| 3 | **MOVE / OVX / GVZ vol indices** | ✅ yfinance | Bond / oil / gold volatility (extends VIX). Differentiates "equity vol spike" from cross-asset stress. | ~30 min |
-| 4 | **Reddit /r/wallstreetbets sentiment** | ✅ Reddit JSON API | Retail-driven name detection (NVDA, TSLA, PLTR, GME-class). Distinct from StockTwits. **Awaiting Reddit API access.** | ~1 day after access |
+| 1 | **SEC 8-K broad discovery** | ✅ Built 2026-05-17 | `sec_8k_broad.py` + `altdata/edgar_8k/` cron shim; wired into `alternative_data.get_all_alternative_data` as `recent_8k_events` (cycle-fresh, not cached — 8:30am ET filings matter) | Daily scan of ALL new 8-K filings across the universe, parse Item type (1.01 M&A, 2.02 earnings, 5.02 officer change, 8.01 other material). Surfaces NEW opportunities, not just monitors known watchlist. The single highest-signal SEC filing type. |
+| 2 | **SEC 13D/G activist filings** | ✅ Built 2026-05-17 | `sec_13dg_activist.py` + `altdata/edgar_13dg/` cron shim; wired as `activist_13dg` | Real-time activist >5% positions (different from 13F which is quarterly + late). Strong directional signal for the named symbol. |
+| 3 | **MOVE / OVX / GVZ vol indices** | ✅ Built 2026-05-17 | `macro_data.get_cross_asset_vol` (1h cache); surfaced under `alt_data["macro"]["cross_asset_vol"]` | Bond / oil / gold volatility (extends VIX). Differentiates "equity vol spike" from cross-asset stress. |
+| 4 | **Reddit /r/wallstreetbets sentiment** | ⏸ Awaiting Reddit API access | (estimate ~1 day after access; would land alongside `stocktwits_sentiment`) | Retail-driven name detection (NVDA, TSLA, PLTR, GME-class). Distinct from StockTwits. |
 
 ### Tier 2 — Sector-specific (✅ ALL BUILT 2026-05-17)
 
