@@ -910,6 +910,227 @@ def verify_protective_order_sync(api, db_path: str) -> dict:
     return {"stale": stale, "verified": verified}
 
 
+def sync_pending_protective_order_ids(api, db_path: str) -> dict:
+    """Proactive chain-walk sweep — keep pending_protective rows'
+    order_id in sync with the broker's live replace-chain terminal.
+
+    Closes gap #3 from the 2026-06-04 orphan-prevention list: Alpaca
+    silently REPLACES trailing-stop orders as the trail bumps
+    (server-side, no `submit_order` call). The journal records the
+    placement id; if we wait until fill time to walk the chain, we
+    can hit max_depth on a long chain. Running this sweep every cycle
+    keeps the journal's recorded id within 1-2 hops of the live id,
+    so the fill-time chain walk is always near-trivial.
+
+    For each `pending_protective` row in the journal:
+      - get_order(row.order_id) to check broker status.
+      - If `replaced` / `pending_replace`: walk forward via
+        `walk_replace_chain_forward`. UPDATE the row's order_id to
+        the live id (and the entry row's protective_*_order_id
+        pointer to match).
+      - If `canceled` / `expired` / `rejected`: the broker order is
+        dead. Mark the row status='canceled' with a reason so it
+        stops counting as pending. The next ensure_protective_stops
+        sweep will place a new one if the position still needs
+        coverage.
+      - If `filled`: leave for the reconciler — flip-to-closed
+        with full fill data is the reconciler's job, not ours.
+      - If alive (`new`/`accepted`/`held`/`pending_new`): no-op.
+
+    Read-only-ish: only writes when state actually drifted at the
+    broker. Best-effort; never raises. Caller should run this in
+    the same cycle phase as ensure_protective_stops + the existing
+    verify_protective_order_sync — they form a three-layer defense:
+      1. ensure_protective_stops: ensures EVERY open position has
+         broker coverage (per-position truth).
+      2. verify_protective_order_sync: invariant check — every
+         journaled active id IS live at Alpaca (linkage truth).
+      3. sync_pending_protective_order_ids: keeps the journaled id
+         CURRENT through Alpaca's replace chain (id-freshness truth).
+
+    Returns: {"checked", "advanced", "marked_canceled", "errored"}.
+    """
+    if not db_path:
+        return {"checked": 0, "advanced": 0,
+                "marked_canceled": 0, "errored": 0}
+    try:
+        from reconcile_journal_to_broker import walk_replace_chain_forward
+    except ImportError as exc:
+        logger.warning(
+            "sync_pending_protective_order_ids: cannot import "
+            "walk_replace_chain_forward (%s)", exc,
+        )
+        return {"checked": 0, "advanced": 0,
+                "marked_canceled": 0, "errored": 0}
+
+    stats = {"checked": 0, "advanced": 0,
+             "marked_canceled": 0, "errored": 0}
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error as exc:
+        logger.warning(
+            "sync_pending_protective_order_ids: DB open failed: %s",
+            exc,
+        )
+        return stats
+
+    try:
+        try:
+            rows = conn.execute(
+                "SELECT id, symbol, order_id, signal_type, qty "
+                "FROM trades "
+                "WHERE status = 'pending_protective' "
+                "AND order_id IS NOT NULL AND order_id != ''"
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            logger.debug(
+                "sync_pending_protective_order_ids: trades table "
+                "missing expected columns (%s); skipping", exc,
+            )
+            return stats
+
+        for row in rows:
+            stats["checked"] += 1
+            pending_id = row["id"]
+            current_oid = row["order_id"]
+            symbol = row["symbol"]
+            signal_type = (row["signal_type"] or "").upper()
+
+            try:
+                order = api.get_order(current_oid)
+            except Exception as exc:
+                # API blip — leave row untouched, count as errored.
+                logger.debug(
+                    "sync: get_order failed for %s/%s (%s); skipping",
+                    symbol, current_oid[:8], exc,
+                )
+                stats["errored"] += 1
+                continue
+            if order is None:
+                stats["errored"] += 1
+                continue
+
+            status = (getattr(order, "status", "") or "").lower()
+
+            # Alive — nothing to do.
+            if status in ("new", "accepted", "held", "pending_new",
+                          "accepted_for_bidding"):
+                continue
+            # Filled — defer to the reconciler.
+            if status == "filled":
+                continue
+            # Replaced — walk the chain forward, update the row.
+            if status in _REPLACE_TRANSIENT_STATUSES_BO:
+                terminal, depth = walk_replace_chain_forward(
+                    api, current_oid)
+                if terminal is None:
+                    stats["errored"] += 1
+                    continue
+                terminal_oid = getattr(terminal, "id", None)
+                terminal_status = (
+                    getattr(terminal, "status", "") or "").lower()
+                if not terminal_oid or terminal_oid == current_oid:
+                    continue
+                # If the terminal is filled, leave for the reconciler
+                # (don't pre-empt the closed-with-fill-data write).
+                if terminal_status == "filled":
+                    continue
+                # Otherwise advance the row's order_id to the terminal.
+                # Also heal the entry-row pointer column when relevant.
+                try:
+                    conn.execute(
+                        "UPDATE trades SET order_id = ?, "
+                        "reason = COALESCE(reason || ' | ', '') || ? "
+                        "WHERE id = ?",
+                        (terminal_oid,
+                         f"sync 2026-06-04: order_id advanced "
+                         f"{current_oid[:8]}->{terminal_oid[:8]} "
+                         f"after {depth} replace(s)",
+                         pending_id),
+                    )
+                    # Heal entry pointer if it was the old id.
+                    col = _entry_pointer_column_for_signal(signal_type)
+                    if col:
+                        conn.execute(
+                            f"UPDATE trades SET {col} = ? "
+                            f"WHERE {col} = ?",
+                            (terminal_oid, current_oid),
+                        )
+                    conn.commit()
+                    stats["advanced"] += 1
+                    logger.info(
+                        "sync: advanced %s pending #%d order_id "
+                        "%s -> %s (after %d replace(s))",
+                        symbol, pending_id, current_oid[:8],
+                        terminal_oid[:8], depth,
+                    )
+                except sqlite3.Error as exc:
+                    logger.warning(
+                        "sync: failed to advance %s pending #%d: %s",
+                        symbol, pending_id, exc,
+                    )
+                    stats["errored"] += 1
+                continue
+            # Canceled / expired / rejected — broker order is dead.
+            # Mark the row canceled so it stops counting as pending.
+            if status in ("canceled", "expired", "rejected"):
+                try:
+                    conn.execute(
+                        "UPDATE trades SET status = 'canceled', "
+                        "reason = COALESCE(reason || ' | ', '') || ? "
+                        "WHERE id = ?",
+                        (f"sync 2026-06-04: broker order {current_oid[:8]} "
+                         f"status={status} — pending row no longer "
+                         f"references a live order",
+                         pending_id),
+                    )
+                    conn.commit()
+                    stats["marked_canceled"] += 1
+                    logger.info(
+                        "sync: marked %s pending #%d canceled "
+                        "(broker status=%s)",
+                        symbol, pending_id, status,
+                    )
+                except sqlite3.Error as exc:
+                    logger.warning(
+                        "sync: failed to cancel %s pending #%d: %s",
+                        symbol, pending_id, exc,
+                    )
+                    stats["errored"] += 1
+                continue
+            # Any other status — log + continue (don't mutate on
+            # statuses we don't recognize).
+            logger.debug(
+                "sync: %s pending #%d has unrecognized broker "
+                "status=%r; leaving untouched",
+                symbol, pending_id, status,
+            )
+    finally:
+        conn.close()
+    return stats
+
+
+# Mirror of _REPLACE_TRANSIENT_STATUSES from reconcile_journal_to_broker;
+# duplicated here to avoid an import cycle since reconcile uses
+# bracket_orders.* helpers in some paths.
+_REPLACE_TRANSIENT_STATUSES_BO = frozenset({"replaced", "pending_replace"})
+
+
+_PROTECTIVE_ENTRY_POINTER_BY_SIGNAL = {
+    "PROTECTIVE_STOP": "protective_stop_order_id",
+    "PROTECTIVE_TAKE_PROFIT": "protective_tp_order_id",
+    "PROTECTIVE_TRAILING": "protective_trailing_order_id",
+}
+
+
+def _entry_pointer_column_for_signal(signal_type: str):
+    """Map signal_type -> the entry row's protective_*_order_id column.
+    Returns None for unknown signal_types (sync just skips the
+    pointer-heal in that case)."""
+    return _PROTECTIVE_ENTRY_POINTER_BY_SIGNAL.get(signal_type)
+
+
 def cancel_for_symbol(api, db_path: str, symbol: str) -> None:
     """Cancel any active protective stop / take-profit / trailing-stop
     orders for the given symbol.

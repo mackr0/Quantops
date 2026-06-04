@@ -411,12 +411,17 @@ def _all_journal_sell_order_ids(profile_ids: Iterable[int]) -> set:
     return used
 
 
-_REPLACE_CHAIN_MAX_DEPTH = 10
+_REPLACE_CHAIN_MAX_DEPTH = 50  # bumped 2026-06-04: with proactive
+# sync_pending_protective_order_ids running every cycle, chain depth
+# at fill time should be ~1. 50 is a generous safety margin; hitting
+# it means the sync sweep isn't running OR Alpaca is replacing the
+# order pathologically fast — logged CRITICAL so it's distinguishable
+# from the more common "no protective order" path.
 _REPLACE_TRANSIENT_STATUSES = frozenset({"replaced", "pending_replace"})
 
 
-def _walk_replace_chain_forward(api, start_oid: str,
-                                 max_depth: int = _REPLACE_CHAIN_MAX_DEPTH):
+def walk_replace_chain_forward(api, start_oid: str,
+                                max_depth: int = _REPLACE_CHAIN_MAX_DEPTH):
     """Follow `replaced_by` on an Alpaca order until we hit a terminal
     status (filled / canceled / expired / rejected / accepted / new),
     or run out of chain links, or exceed max_depth.
@@ -450,12 +455,34 @@ def _walk_replace_chain_forward(api, start_oid: str,
     if depth >= max_depth and order is not None and (
         getattr(order, "status", "") in _REPLACE_TRANSIENT_STATUSES
     ):
-        logger.warning(
-            "replace-chain walk hit max_depth=%d on start_oid=%s; "
-            "treating as unresolved", max_depth, start_oid,
+        # max_depth=50 hit: the proactive sync sweep should keep the
+        # journal's order_id within 1-2 hops of the live id. If we're
+        # still walking after 50 steps, either the sweep is broken or
+        # something is wrong at Alpaca. CRITICAL because the fill (if
+        # any) will surface as orphan + reconciler halt — the operator
+        # needs to know the root cause is "chain too deep" not "no
+        # journal row."
+        logger.critical(
+            "replace-chain walk hit max_depth=%d on start_oid=%s "
+            "(terminal status=%s, replaced_by=%s). The proactive "
+            "sync_pending_protective_order_ids sweep should keep "
+            "this near 0; hitting %d indicates either the sweep "
+            "isn't running OR a single order has been replaced >%d "
+            "times. Any fill will surface as an orphan and halt the "
+            "profile.",
+            max_depth, start_oid, getattr(order, "status", "?"),
+            getattr(order, "replaced_by", None),
+            max_depth, max_depth,
         )
         return None, depth
     return order, depth
+
+
+# Backwards-compat alias: existing call sites in this module + the
+# 2026-06-04 test file import the underscore-prefixed name. Public
+# name is preferred for new code (bracket_orders.sync_pending_*
+# uses the un-prefixed version).
+_walk_replace_chain_forward = walk_replace_chain_forward
 
 
 def _detect_protective_fill(api, row, used_sell_ids):

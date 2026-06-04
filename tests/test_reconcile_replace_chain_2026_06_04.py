@@ -274,19 +274,26 @@ def test_replace_chain_terminal_canceled_returns_no_fill():
 # ---------------------------------------------------------------------------
 
 def test_replace_chain_max_depth_returns_no_fill():
-    """A chain longer than max_depth (10) bails out safely."""
-    from reconcile_journal_to_broker import _walk_replace_chain_forward
-    # 12 replaces in a row, last one filled
+    """A chain longer than max_depth bails out safely.
+
+    Bumped 2026-06-04 to track _REPLACE_CHAIN_MAX_DEPTH=50 — with the
+    proactive sync sweep running every cycle, chain depth at fill
+    time should be ~1. 50 is the generous safety margin; we test
+    well past it (60) to ensure the bail-out still fires."""
+    from reconcile_journal_to_broker import (
+        _walk_replace_chain_forward, _REPLACE_CHAIN_MAX_DEPTH,
+    )
+    n = _REPLACE_CHAIN_MAX_DEPTH + 10  # well past the bail-out
     chain = {f"oid-{i}": _broker_order(
         f"oid-{i}", "replaced", replaced_by=f"oid-{i+1}")
-        for i in range(12)}
-    chain["oid-12"] = _broker_order(
-        "oid-12", "filled", filled_qty=100, filled_avg_price=10.0)
+        for i in range(n)}
+    chain[f"oid-{n}"] = _broker_order(
+        f"oid-{n}", "filled", filled_qty=100, filled_avg_price=10.0)
     api = _api_with_chain(chain)
     order, depth = _walk_replace_chain_forward(api, "oid-0")
-    # Returns None (couldn't resolve within max_depth=10)
+    # Returns None (couldn't resolve within max_depth)
     assert order is None
-    assert depth == 10
+    assert depth == _REPLACE_CHAIN_MAX_DEPTH
 
 
 # ---------------------------------------------------------------------------

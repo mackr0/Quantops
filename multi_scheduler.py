@@ -2642,6 +2642,30 @@ def _task_reconcile_trade_statuses(ctx):
             seg_label, type(_sync_exc).__name__, _sync_exc,
         )
 
+    # 2026-06-04 — PROACTIVE chain-walk sweep. Closes gap #3 from the
+    # post-reset orphan-prevention list. For each pending_protective
+    # row, advance its order_id through Alpaca's replace chain so the
+    # journal's recorded id stays within 1-2 hops of the live id. The
+    # fill-time chain walk in _detect_protective_fill then has a
+    # near-trivial chain to traverse, keeping max_depth headroom huge.
+    try:
+        from bracket_orders import sync_pending_protective_order_ids
+        from client import get_api as _get_api_csync
+        csync = sync_pending_protective_order_ids(
+            _get_api_csync(ctx), ctx.db_path)
+        if csync["advanced"] or csync["marked_canceled"] or csync["errored"]:
+            logging.info(
+                "[%s] Pending-protective chain sync: "
+                "checked=%d advanced=%d canceled=%d errored=%d",
+                seg_label, csync["checked"], csync["advanced"],
+                csync["marked_canceled"], csync["errored"],
+            )
+    except Exception as _csync_exc:
+        logging.warning(
+            "[%s] pending-protective chain sync failed (%s: %s)",
+            seg_label, type(_csync_exc).__name__, _csync_exc,
+        )
+
     # Aggregate audit — defense-in-depth alongside the per-profile
     # reconcile. Compares sum(virtual_positions across profiles routing
     # to the same Alpaca account) vs broker.list_positions for that
