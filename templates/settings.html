@@ -206,6 +206,28 @@
             </span>
         </label>
 
+        <hr style="margin:1rem 0;border:none;border-top:1px solid #ddd;">
+
+        <label style="display:block;padding:0.5rem 0;">
+            <strong>Scan cadence</strong>
+            <small class="muted" style="display:block;margin-top:0.25rem;">
+                How often each profile's full AI scan + decision cycle fires during market hours. Lower = more frequent decisions + more training data, but also more AI calls per day. The current rate is roughly <strong>$0.03/day per AI profile</strong> at 15-min cadence; cost scales near-linearly with frequency. Takes effect on the next orchestrator loop iteration — no restart needed.
+                <br>Current cadence:
+                <strong>every {{ autonomy.scan_interval_minutes }} min</strong>
+                during market hours.
+                <br><em>Exits</em> (TP/SL trigger checks) stay at every 5 min and aren't affected by this setting.
+            </small>
+            <select name="scan_interval_minutes"
+                    style="margin-top:0.4rem;max-width:24rem;">
+                {% for value, label, note in autonomy.scan_interval_options %}
+                <option value="{{ value }}"
+                        {{ 'selected' if value == autonomy.scan_interval_minutes else '' }}>
+                    {{ label }} — {{ note }}
+                </option>
+                {% endfor %}
+            </select>
+        </label>
+
         <button type="submit" style="margin-top:0.75rem;">Save</button>
     </form>
 </article>

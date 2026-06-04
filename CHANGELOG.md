@@ -17,6 +17,23 @@ Rules going forward:
 
 ---
 
+## 2026-06-04 — Operator-tunable scan cadence (Settings page). Severity: low (new capability; default preserves prior behavior).
+
+**Background:** Scan cadence had been hardcoded to 15 minutes in `multi_scheduler.py`. After the move to `gemini-2.5-flash-lite` + the prompt-cache / specialist optimizations, per-cycle AI cost dropped to ~$0.0003/profile/cycle — daily cost across all 10 AI profiles is ~$0.27. Cost is no longer the constraint; the question is wall-time safety (max scan time ~90s observed) and diminishing data-signal returns at higher frequencies.
+
+**What this ships:** A dropdown on the Settings page under "Autonomy" that lets the operator pick scan cadence from 15 / 10 / 5 / 3 / 2 minutes. The value persists in `users.scan_interval_minutes` (new column, default 15). `multi_scheduler` reads via `models.get_scan_interval_minutes()` on every loop iteration, so a change in the UI takes effect on the next cycle — no service restart needed.
+
+**Why 1-min isn't an option:** the slowest per-profile scan observed has been ~90s. A 60-second cadence would mean the orchestrator's next scan attempt fires before the prior one finishes, causing cycle overlap. 2-min (120s) is included with a "risky if a scan tail spikes" label — it's the floor of safe values given current per-profile peak. The model helper enforces the same safe set server-side: `set_scan_interval_minutes` raises `ValueError` for anything outside {15, 10, 5, 3, 2}.
+
+**Architecture notes:**
+- The setting lives on the `users` table to follow the existing pattern for `auto_capital_allocation` / `daily_cost_ceiling_usd` / `shadow_daily_cost_cap_usd`. Single-tenant deployment, so user_id=1 is effectively the system-wide value.
+- Exit checks remain at 5 min (not operator-tunable; the floor where broker-side latency dominates).
+- `INTERVAL_SCAN` literal is removed from `multi_scheduler.py` — every reference now flows through `_scan_interval_seconds()` so the value can't drift from operator intent.
+
+**Tests:** `tests/test_scan_cadence_setting_2026_06_04.py` (6) — default is 15; valid values round-trip; invalid values rejected; corrupted column falls back to default; missing-user falls back to default; UI dropdown options match the model's validation set (so the UI can't offer a value the helper would refuse).
+
+---
+
 ## 2026-06-04 — /trades page excludes pending_protective placeholder rows. Severity: medium (UI only; cash/position math was already correct).
 
 **Problem:** Every protective stop placement (status='pending_protective') was rendering on /trades as a "Long Close" row, often with a misleadingly positive "+0.2%" P&L because `_enrich_trade_history_with_live_pnl` matched the placeholder against the still-open entry's live broker P&L. Operator saw rows like:

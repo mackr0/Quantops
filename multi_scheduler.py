@@ -4793,10 +4793,21 @@ def main_loop(active_segments=None, legacy_mode=False):
                 )
         return profile_runs[pid]
 
-    INTERVAL_SCAN = 15 * 60   # 15 minutes
+    # 2026-06-04 — scan cadence is operator-tunable via the Settings
+    # page (users.scan_interval_minutes; default 15). Read fresh on
+    # every loop iteration below so a UI change takes effect on the
+    # next cycle without a restart. The literal `INTERVAL_SCAN` is
+    # gone — every reference reads through _scan_interval_seconds()
+    # so the value can't drift from the operator's intent.
+    from models import get_scan_interval_minutes as _get_scan_min
+
+    def _scan_interval_seconds() -> int:
+        return int(_get_scan_min()) * 60
+
     # Exits check every 5 min — cheap, time-critical (TP/SL triggers
-    # need to fire within minutes of price hitting threshold, not whenever
-    # the 15-min scan happens to complete).
+    # need to fire within minutes of price hitting threshold, not
+    # whenever the scan happens to complete). Not operator-tunable;
+    # 5min is the bound below which broker-side latency dominates.
     INTERVAL_CHECK_EXITS = 5 * 60
     INTERVAL_RESOLVE_PREDICTIONS = 60 * 60  # 60 minutes
     # 2026-05-17 (#169): cross-profile integrity audit + first-detection
@@ -4828,8 +4839,8 @@ def main_loop(active_segments=None, legacy_mode=False):
         # Legacy-mode global interval checks (used only by the legacy
         # segment-based branch below — profile branch computes these
         # per-profile on each iteration).
-        do_scan = (current_time - last_run["scan"]
-                   >= INTERVAL_SCAN)
+        _scan_secs = _scan_interval_seconds()
+        do_scan = (current_time - last_run["scan"] >= _scan_secs)
         do_exits = (current_time - last_run["check_exits"]
                     >= INTERVAL_CHECK_EXITS)
         do_predictions = (current_time - last_run["resolve_predictions"]
@@ -4912,7 +4923,7 @@ def main_loop(active_segments=None, legacy_mode=False):
                     break
                 pr = _get_profile_runs(prof["id"])
                 now_t = time.time()
-                prof_do_scan = (now_t - pr["scan"]) >= INTERVAL_SCAN
+                prof_do_scan = (now_t - pr["scan"]) >= _scan_secs
                 prof_do_exits = (now_t - pr["check_exits"]) >= INTERVAL_CHECK_EXITS
                 prof_do_predictions = (now_t - pr["resolve_predictions"]) >= INTERVAL_RESOLVE_PREDICTIONS
                 if not (prof_do_scan or prof_do_exits or prof_do_predictions or do_snapshot):
@@ -5034,12 +5045,12 @@ def main_loop(active_segments=None, legacy_mode=False):
             try:
                 status = {
                     "last_scan": last_run["scan"],
-                    "next_scan": last_run["scan"] + INTERVAL_SCAN,
+                    "next_scan": last_run["scan"] + _scan_secs,
                     "last_exit_check": last_run["check_exits"],
                     "next_exit_check": last_run["check_exits"] + INTERVAL_CHECK_EXITS,
                     "last_ai_resolve": last_run["resolve_predictions"],
                     "next_ai_resolve": last_run["resolve_predictions"] + INTERVAL_RESOLVE_PREDICTIONS,
-                    "scan_interval_min": INTERVAL_SCAN // 60,
+                    "scan_interval_min": _scan_secs // 60,
                     "exit_interval_min": INTERVAL_CHECK_EXITS // 60,
                     "ai_interval_min": INTERVAL_RESOLVE_PREDICTIONS // 60,
                     "market_open": market_open,

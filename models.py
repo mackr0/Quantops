@@ -442,6 +442,15 @@ def init_user_db(db_path: Optional[str] = None) -> None:
             # blow out the operational AI budget. NULL = use the
             # SHADOW_DAILY_COST_CAP_USD env var default ($1/day).
             ("users", "shadow_daily_cost_cap_usd", "REAL"),
+            # 2026-06-04 — operator-tunable scan cadence (minutes).
+            # multi_scheduler reads this each loop iteration so the
+            # change takes effect on the next cycle (no restart needed).
+            # Valid range enforced server-side at 1..60; UI restricts
+            # to the safe options 15/10/5/3/2 (1-min is excluded because
+            # the slowest scan can exceed 60s, causing cycle overlap).
+            # Default 15 preserves pre-2026-06-04 behavior.
+            ("users", "scan_interval_minutes",
+             "INTEGER NOT NULL DEFAULT 15"),
             # Per-profile opt-in: lets the tuner A/B test ai_provider/ai_model
             # within the cost guard. Default OFF so cost-conscious users
             # aren't surprised by Sonnet/Opus calls.
@@ -801,6 +810,54 @@ def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
             "SELECT * FROM users WHERE id = ?", (user_id,)
         ).fetchone()
     return dict(row) if row else None
+
+
+_VALID_SCAN_INTERVAL_MINUTES = (15, 10, 5, 3, 2)
+_DEFAULT_SCAN_INTERVAL_MINUTES = 15
+
+
+def get_scan_interval_minutes(user_id: int = 1) -> int:
+    """Return the operator-configured scan cadence in minutes.
+
+    multi_scheduler reads this on every loop iteration so a change in
+    the Settings UI takes effect on the next cycle (no restart). The
+    column was added 2026-06-04 with default=15 (preserves prior
+    behavior); the Settings dropdown restricts to {15, 10, 5, 3, 2}
+    (1-min excluded — slowest single-profile scan can exceed 60s,
+    causing cycle overlap).
+
+    Defaults to 15 on any read error so a flaky DB doesn't accidentally
+    change cadence to something unexpected.
+    """
+    try:
+        with closing(_get_conn()) as conn:
+            row = conn.execute(
+                "SELECT scan_interval_minutes FROM users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+        if row and row[0] and 1 <= int(row[0]) <= 60:
+            return int(row[0])
+    except Exception:
+        # Defensive: never let a flaky DB read change cadence silently.
+        pass
+    return _DEFAULT_SCAN_INTERVAL_MINUTES
+
+
+def set_scan_interval_minutes(user_id: int, minutes: int) -> None:
+    """Update the operator-configured scan cadence. Enforces the same
+    safe range the Settings UI exposes (15/10/5/3/2). Raises
+    ValueError on out-of-range input."""
+    if int(minutes) not in _VALID_SCAN_INTERVAL_MINUTES:
+        raise ValueError(
+            f"scan_interval_minutes must be one of "
+            f"{_VALID_SCAN_INTERVAL_MINUTES}, got {minutes!r}"
+        )
+    with closing(_get_conn()) as conn:
+        conn.execute(
+            "UPDATE users SET scan_interval_minutes = ? WHERE id = ?",
+            (int(minutes), user_id),
+        )
+        conn.commit()
 
 
 def verify_password(user: Dict[str, Any], password: str) -> bool:

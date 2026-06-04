@@ -1227,10 +1227,26 @@ def settings():
             acct["_key_masked"] = "****"
 
     # Layer 9 — auto capital allocation user opt-in + cost ceiling
+    from models import get_scan_interval_minutes
     autonomy = {
         "auto_capital_allocation": bool(user.get("auto_capital_allocation", 0)),
         "daily_cost_ceiling_usd": user.get("daily_cost_ceiling_usd"),
         "shadow_daily_cost_cap_usd": user.get("shadow_daily_cost_cap_usd"),
+        # 2026-06-04 — operator-tunable scan cadence (minutes). Read via
+        # the helper which enforces the safe range + default fallback.
+        "scan_interval_minutes": get_scan_interval_minutes(
+            current_user.effective_user_id),
+        "scan_interval_options": [
+            # (value, label, note) — restricted to safe options.
+            # 1-min is excluded because the slowest per-profile scan
+            # observed has exceeded 60s, which would cause cycle
+            # overlap (next scan fires before the prior one finishes).
+            (15, "15 min", "default — minimal cost"),
+            (10, "10 min", "1.5× cycles, ~1.5× cost"),
+            (5,  "5 min",  "3× cycles, ~3× cost (recommended)"),
+            (3,  "3 min",  "5× cycles, tight wall-time margin"),
+            (2,  "2 min",  "7.5× cycles, risky if a scan tail spikes"),
+        ],
     }
     try:
         from cost_guard import status as _cost_status
@@ -1309,6 +1325,22 @@ def update_autonomy():
             flash(f"Invalid shadow cost cap value: {raw_shadow_cap!r}", "error")
             return redirect(url_for("views.settings") + "#autonomy")
 
+    # 2026-06-04 — scan cadence (minutes). UI restricts the select to
+    # the safe range; we re-validate server-side via the model helper.
+    raw_scan_interval = (request.form.get("scan_interval_minutes")
+                          or "").strip()
+    scan_interval_value = None
+    if raw_scan_interval:
+        try:
+            from models import set_scan_interval_minutes
+            scan_interval_value = int(raw_scan_interval)
+            set_scan_interval_minutes(
+                current_user.effective_user_id, scan_interval_value)
+        except (ValueError, TypeError) as exc:
+            flash(f"Invalid scan interval: {raw_scan_interval!r} ({exc})",
+                  "error")
+            return redirect(url_for("views.settings") + "#autonomy")
+
     with closing(_get_conn()) as conn:
         conn.execute(
             "UPDATE users SET auto_capital_allocation = ?, "
@@ -1319,6 +1351,11 @@ def update_autonomy():
         )
         conn.commit()
     msgs = ["Auto capital allocation " + ("enabled" if enabled else "disabled") + "."]
+    if scan_interval_value is not None:
+        msgs.append(
+            f"Scan cadence: every {scan_interval_value} min "
+            "(takes effect on next orchestrator loop iteration; no restart needed)."
+        )
     if ceiling_value is None:
         msgs.append("Cost ceiling: auto-computed (trailing-7d-avg × 1.5).")
     else:
