@@ -44,6 +44,16 @@ def _stub_api(price_map, positions=None, account=None):
             symbol=symbol, qty=qty, side=side,
         )
     api.submit_order.side_effect = submit_order
+
+    # 2026-06-04 — _pick_random_symbols now consults get_asset to
+    # filter inactive Alpaca symbols. Default this stub to "every
+    # symbol is active+tradable" so pre-existing tests still pass;
+    # tests that need to simulate inactive symbols can override
+    # api.get_asset.side_effect after the stub is built.
+    def get_asset(symbol):
+        return SimpleNamespace(symbol=symbol, status="active", tradable=True)
+    api.get_asset.side_effect = get_asset
+
     api._positions = positions or []
     api._account = account or {
         "equity": 333_000.0, "cash": 333_000.0,
