@@ -55,7 +55,7 @@ PROFILES: List[Dict[str, Any]] = [
     # ── Account 1: Baselines ($1M, 4 × $250K) ─────────────────────────
     {
         "name": "EXP-A1-BuyHoldSPY",
-        "market_type": "largecap",  # SPY lives in largecap universe
+        "market_type": "stocks",  # post-2026-05-20 unified stock universe
         "initial_capital": 250_000.0,
         "strategy_type": "buy_hold",
         # All AI flags moot for buy_hold but set explicitly so the
@@ -71,7 +71,7 @@ PROFILES: List[Dict[str, Any]] = [
     },
     {
         "name": "EXP-A1-RandomA",
-        "market_type": "largecap",
+        "market_type": "stocks",
         "initial_capital": 250_000.0,
         "strategy_type": "random",
         "enable_alt_data": 1, "enable_meta_model": 1,
@@ -83,7 +83,7 @@ PROFILES: List[Dict[str, Any]] = [
     },
     {
         "name": "EXP-A1-RandomB",
-        "market_type": "largecap",
+        "market_type": "stocks",
         "initial_capital": 250_000.0,
         "strategy_type": "random",
         "enable_alt_data": 1, "enable_meta_model": 1,
@@ -96,7 +96,7 @@ PROFILES: List[Dict[str, Any]] = [
     {
         # THE ANCHOR — every Account 2 ablation compares to this profile.
         "name": "EXP-A1-FullSystemStandard",
-        "market_type": "largecap",
+        "market_type": "stocks",
         "initial_capital": 250_000.0,
         "strategy_type": "ai",
         "enable_alt_data": 1,
@@ -120,7 +120,7 @@ PROFILES: List[Dict[str, Any]] = [
     # the delta meaningful.
     {
         "name": "EXP-A2-NoAltData",
-        "market_type": "largecap",
+        "market_type": "stocks",
         "initial_capital": 200_000.0,
         "strategy_type": "ai",
         "enable_alt_data": 0,   # ← the only knob different from Anchor
@@ -135,7 +135,7 @@ PROFILES: List[Dict[str, Any]] = [
     },
     {
         "name": "EXP-A2-NoMetaModel",
-        "market_type": "largecap",
+        "market_type": "stocks",
         "initial_capital": 200_000.0,
         "strategy_type": "ai",
         "enable_alt_data": 1,
@@ -150,7 +150,7 @@ PROFILES: List[Dict[str, Any]] = [
     },
     {
         "name": "EXP-A2-NoSelfTuning",
-        "market_type": "largecap",
+        "market_type": "stocks",
         "initial_capital": 200_000.0,
         "strategy_type": "ai",
         "enable_alt_data": 1,
@@ -165,7 +165,7 @@ PROFILES: List[Dict[str, Any]] = [
     },
     {
         "name": "EXP-A2-NoOptions",
-        "market_type": "largecap",
+        "market_type": "stocks",
         "initial_capital": 200_000.0,
         "strategy_type": "ai",
         "enable_alt_data": 1,
@@ -182,7 +182,7 @@ PROFILES: List[Dict[str, Any]] = [
         # COMBINED ablation — tests whether alt-data + meta-model are
         # complementary or redundant.
         "name": "EXP-A2-NoAltData-NoMetaModel",
-        "market_type": "largecap",
+        "market_type": "stocks",
         "initial_capital": 200_000.0,
         "strategy_type": "ai",
         "enable_alt_data": 0,    # ←
@@ -202,7 +202,7 @@ PROFILES: List[Dict[str, Any]] = [
         # Constrained best-of-all-strategies: small enough to
         # concentrate, but with all signal sources ON.
         "name": "EXP-A3-25K-Candidate",
-        "market_type": "largecap",
+        "market_type": "stocks",
         "initial_capital": 25_000.0,
         "strategy_type": "ai",
         "enable_alt_data": 1,
@@ -219,7 +219,7 @@ PROFILES: List[Dict[str, Any]] = [
         # Reproducibility replica — IDENTICAL config, different
         # profile_id so RNG paths diverge. ±5% vs Candidate = signal.
         "name": "EXP-A3-25K-Replica",
-        "market_type": "largecap",
+        "market_type": "stocks",
         "initial_capital": 25_000.0,
         "strategy_type": "ai",
         "enable_alt_data": 1,
@@ -235,7 +235,7 @@ PROFILES: List[Dict[str, Any]] = [
     {
         # 10× scaling test — same constraints as Candidate.
         "name": "EXP-A3-250K-ConservativeScale",
-        "market_type": "largecap",
+        "market_type": "stocks",
         "initial_capital": 250_000.0,
         "strategy_type": "ai",
         "enable_alt_data": 1,
@@ -254,7 +254,7 @@ PROFILES: List[Dict[str, Any]] = [
         # Sized to fill Account 3 to the $1M Alpaca cap after the
         # $25K + $25K + $250K from the other three profiles.
         "name": "EXP-A3-700K-AggressiveFree",
-        "market_type": "largecap",
+        "market_type": "stocks",
         "initial_capital": 700_000.0,
         "strategy_type": "ai",
         "enable_alt_data": 1,
