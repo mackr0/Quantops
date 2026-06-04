@@ -2,9 +2,30 @@
 
 **Scoping doc for the chip-away weekly fine-tune of an open-vendor model (OpenAI `gpt-4o-mini` recommended) trained on the system's own archived predictions.**
 
-Status: IN PROGRESS — foundation shipped 2026-05-21; first training run gated on data accumulation (~late June 2026, see §17).
+Status: IN PROGRESS — foundation shipped 2026-05-21; **corpus clock reset 2026-06-04** (see "2026-06-04 update" below); first training run gated on data accumulation (~early-to-mid August 2026, see §17).
 Owner: TBD.
 Created: 2026-05-19.
+
+**2026-06-04 update:** The EXP-A* experiment was fully reset because the
+post-2026-05-20 data was contaminated by the trailing-stop orphan class
+(10-day cohort outage halted pid15–24 across ~40 orphan fills; see
+CHANGELOG entry "Orphan-prevention contract"). The reset used the
+`clean_orphaned_profiles` path which deletes per-profile DBs outright —
+deliberately bypassing the `reset_for_clean_experiment` archive step
+that would have preserved predictions to `predictions_archive/`.
+Archiving tainted data into the future fine-tune corpus was worse than
+losing it. Effect on this doc:
+- The `predictions_archive/` directory referenced in §1.4 and §5.1 is
+  currently empty / does not exist on prod. The corpus accumulation
+  clock restarts from 2026-06-04.
+- Profile IDs referenced throughout (e.g. pid15 for
+  `EXP-A1-FullSystemStandard`) have shifted to pid25–37 in the new
+  generation. The new pilot profile is `EXP-A1-FullSystemStandard`
+  pid28. References below have been updated to use the stable
+  experiment name rather than the volatile pid.
+- The §17 "earliest realistic activation" timeline pushes from
+  late June 2026 to early-to-mid August 2026 (4-6 weeks of post-reset
+  accumulation from 2026-06-04).
 Depends on: B1 (archive-before-reset) ✅ shipped 2026-05-19; B2 (multi-horizon outcomes, #185) ✅ shipped 2026-05-21; B3 (cost-adjusted returns, #186) ✅ shipped 2026-05-21.
 
 **Shipped so far (2026-05-21):** `finetune/dataset_builder.py` (hindsight relabel + look-ahead guard + OpenAI JSONL + train/val/eval split, pooling live journals + `predictions_archive/`) and `finetune/model_registry.py` (`finetune_models` / `finetune_evaluations` tables + lifecycle CRUD). Tests: `test_finetune_dataset_builder.py` (24), `test_finetune_no_lookahead_bias.py` (3). NOT wired to live trading — no flag, no scheduler task yet.
@@ -50,9 +71,18 @@ B1 (shipped 2026-05-19) added the data foundation:
 - `ai_predictions.prompt_text` — exact prompt the AI saw (the training input)
 - `ai_predictions.raw_response_json` — exact response the AI produced (the training label)
 - `ai_predictions.cycle_id` + `ai_cycles` — cross-candidate context for context-aware training
-- `predictions_archive/*.jsonl` — durable corpus that survives experiment resets
+- `predictions_archive/*.jsonl` — durable corpus that survives **routine** experiment resets (the `reset_for_clean_experiment.py` path archives before wipe)
 
 Without B1, every reset destroyed the corpus and incremental fine-tune was impossible.
+
+**Caveat — when the archive is deliberately bypassed:** the full
+fresh-start path (`clean_orphaned_profiles --remove-all-alpaca-accounts`
+followed by `create_experiment_profiles`) does NOT archive — it
+deletes the per-profile DBs outright. Use this path only when the
+corpus is known-contaminated and shouldn't carry forward (as on
+2026-06-04, when the orphan-class data poisoned the period). Routine
+resets that just swap Alpaca keys or wipe live state should use
+`reset_for_clean_experiment.py` instead, which preserves the corpus.
 
 ---
 
@@ -94,7 +124,7 @@ Without B1, every reset destroyed the corpus and incremental fine-tune was impos
 - **OpenAI billing budget** — recommend $50/month cap to start; raise after observing actual usage.
 
 ### Operator decisions needed before implementation
-1. **Pilot profile choice** — recommend profile 15 (`EXP-A1-FullSystemStandard`) since it's the AI control arm with shadow harness already enabled.
+1. **Pilot profile choice** — recommend `EXP-A1-FullSystemStandard` (currently pid 28 after the 2026-06-04 reset; pids shift on every full reset, the experiment name is the stable identifier) since it's the AI Anchor profile with shadow harness already enabled.
 2. **Base model choice** — `gpt-4o-mini` (~$0.30/M input, $1.20/M output for fine-tuned) vs `gpt-4o` (~$3.75/M input, $15/M output for fine-tuned). Strongly recommend mini for cost; revisit if quality is insufficient.
 3. **Training cadence** — recommended weekly (Sunday 23:00 UTC). Could be daily but weekly batches give cleaner regime cohorts.
 4. **Pooled vs per-profile dataset** — recommended pooled for the first model (faster to useful dataset size); per-profile is a future iteration once each profile has 25K+ examples individually.
@@ -524,14 +554,14 @@ For fleet-wide rollback (rare; only if a systemic issue is identified):
 - Verify inference works: hand-call the fine-tuned model on a sample candidate; confirm response shape matches.
 
 ### Phase B — shadow on one profile (weeks 2-5)
-- Set `enable_pipeline_shadow_eval = 1` AND `use_finetuned_ai = 0` on profile 15 (pilot).
+- Set `enable_pipeline_shadow_eval = 1` AND `use_finetuned_ai = 0` on the pilot profile `EXP-A1-FullSystemStandard` (currently pid 28; pid shifts on every full reset, name is stable).
 - Modify shadow harness to ALSO run the latest fine-tune model in parallel (no real broker submission).
 - Collect 4 weeks of `pipeline_shadow_runs` data comparing fine-tune verdict vs base verdict.
 - Generate weekly `finetune_evaluations` reports.
 
 ### Phase C — promote on one profile (weeks 6-9)
 - After 4 weeks of shadow data show ≥5% lift AND ≥70% agreement AND no per-direction degradation:
-- Flip `use_finetuned_ai = 1` on profile 15.
+- Flip `use_finetuned_ai = 1` on `EXP-A1-FullSystemStandard` (the pilot).
 - The new model now submits real broker orders.
 - Continue shadow against base (`use_finetuned_ai = 1` AND `enable_pipeline_shadow_eval = 1` still set) to measure live performance.
 
@@ -629,7 +659,7 @@ tests/
 ## 15. Open decisions
 
 1. **OpenAI account tier** — does the operator's current OpenAI account qualify for fine-tune API access? Verify before scoping further.
-2. **Pilot profile** — recommend profile 15 (EXP-A1-FullSystemStandard); operator can override.
+2. **Pilot profile** — recommend `EXP-A1-FullSystemStandard` (the AI Anchor; currently pid 28 after the 2026-06-04 reset, pid shifts on every full reset but the experiment name is stable); operator can override.
 3. **Training cadence** — weekly recommended; daily is feasible but costs 7× more per run with no obvious quality benefit at our scale.
 4. **Pool everyone vs per-profile from day 1** — recommend pool. The ablation profiles (NoAltData, NoMetaModel, etc.) intentionally see different inputs; pooling washes that out but accelerates dataset growth. Trade-off worth taking until data per-profile crosses 25K.
 5. **Hyperparameter strategy** — `n_epochs=1` recommended for incremental; consider 2-3 epochs for the FIRST training job to bootstrap from the pooled archive.
@@ -769,7 +799,7 @@ Per docs/17 §4 go/no-go pattern:
 | Operator wants tighter cost control + vendor diversification | YES (Phase 4b.2 follows) |
 | OpenAI account tier supports fine-tune API + has ≥$50/month budget | REQUIRED |
 
-None of these are observed today (2026-05-19). The earliest realistic activation is **late June 2026** after the first month of post-B1 data accumulation. Reassess at that point.
+None of these are observed today. The earliest realistic activation is **early-to-mid August 2026** after the first 4–6 weeks of post-reset data accumulation (the corpus clock restarted 2026-06-04 — see the "2026-06-04 update" at the top of this doc). Reassess at that point.
 
 ---
 
