@@ -391,23 +391,24 @@ def step8_runtime_files(apply: bool) -> None:
 
 
 def step9_altdata_logs(apply: bool) -> None:
-    """Truncate today+yesterday altdata LOG FILES (text logs only,
-    not the altdata DBs — those are world data, preserved). The
-    /issues page tails these logs for the trailing 24h, so leaving
-    them populated would show stale altdata warnings from the
-    contaminated period."""
-    print("\n=== STEP 9: truncate altdata + edgar_form4 log files ===")
-    today = datetime.date.today()
-    yesterday = today - datetime.timedelta(days=1)
-    targets = [
-        f"{REPO_ROOT}/logs/altdata-{today:%Y%m%d}.log",
-        f"{REPO_ROOT}/logs/altdata-{yesterday:%Y%m%d}.log",
-    ]
-    targets.extend(glob.glob(f"{REPO_ROOT}/logs/edgar_form4_*.log"))
+    """Truncate EVERY altdata LOG FILE present (text logs only — not
+    the altdata DBs, those are world data and preserved). The /issues
+    page tails these logs for the trailing 168 hours (the page's
+    default `?hours=168` arg surfaces 7-day-old warnings). Truncating
+    only today+yesterday left ~6 days of stale entries visible after
+    the 2026-06-04 reset; this version sweeps every altdata-*.log
+    AND edgar_form4_*.log in the logs/ dir, so post-reset /issues
+    is clean across the full 7-day window."""
+    print("\n=== STEP 9: truncate ALL altdata + edgar_form4 log files ===")
+    targets = sorted(glob.glob(f"{REPO_ROOT}/logs/altdata-*.log"))
+    targets.extend(sorted(glob.glob(f"{REPO_ROOT}/logs/edgar_form4_*.log")))
+    truncated = 0
     for path in targets:
         if not os.path.exists(path):
             continue
         sz = os.path.getsize(path)
+        if sz == 0:
+            continue  # already empty — nothing to do
         print(f"  {'truncate' if apply else 'would truncate'} "
               f"{path} (currently {sz}B)")
         if apply:
@@ -416,8 +417,58 @@ def step9_altdata_logs(apply: bool) -> None:
                 shutil.copy2(path, bak)
                 with open(path, "w") as f:
                     pass  # truncate
+                truncated += 1
             except OSError as e:
                 print(f"    FAILED: {e}")
+    if apply:
+        print(f"  truncated {truncated} non-empty log file(s)")
+
+
+def step9b_altdata_scrape_runs(apply: bool) -> None:
+    """DELETE non-ok rows from each altdata DB's `scrape_runs` table.
+
+    `scrape_runs` is OPERATIONAL TELEMETRY (when scrapes ran + their
+    status) — NOT world data. The actual altdata events (insider
+    filings, congressional trades, biotech catalysts, sentiment, etc.)
+    live in OTHER tables in those DBs and are PRESERVED. The /issues
+    page surfaces non-ok scrape_runs (`_collect_scrape_runs` in
+    issues_collector.py), so leaving stale failures from the
+    contaminated period would show on /issues even after the rest of
+    the reset.
+
+    Failed scrapes from before today are stale telemetry — the next
+    cron job either reproduces the failure (real bug, will resurface)
+    or succeeds (the historical failure is now irrelevant). Clearing
+    them doesn't lose anything load-bearing."""
+    print("\n=== STEP 9b: clear non-ok scrape_runs in altdata DBs ===")
+    altdata_dbs = sorted(glob.glob(f"{REPO_ROOT}/altdata/*/data/*.db"))
+    cleared = 0
+    for db in altdata_dbs:
+        try:
+            with closing(sqlite3.connect(db)) as conn:
+                n = conn.execute(
+                    "SELECT COUNT(*) FROM scrape_runs "
+                    "WHERE status != 'ok'"
+                ).fetchone()[0]
+        except sqlite3.Error as e:
+            print(f"  {db}: read failed ({e}); skipping")
+            continue
+        if not n:
+            continue
+        print(f"  {db}: "
+              f"{'DELETE' if apply else 'would delete'} "
+              f"{n} non-ok scrape_runs row(s)")
+        if apply:
+            try:
+                with closing(sqlite3.connect(db)) as conn:
+                    conn.execute(
+                        "DELETE FROM scrape_runs WHERE status != 'ok'")
+                    conn.commit()
+                cleared += n
+            except sqlite3.Error as e:
+                print(f"    FAILED: {e}")
+    if apply:
+        print(f"  cleared {cleared} non-ok scrape_runs row(s) total")
 
 
 def step10_rotate_journald(apply: bool) -> None:
@@ -482,6 +533,7 @@ def main() -> int:
     step7_extra_master_wipe(args.apply)
     step8_runtime_files(args.apply)
     step9_altdata_logs(args.apply)
+    step9b_altdata_scrape_runs(args.apply)
     step10_rotate_journald(args.apply)
 
     print()

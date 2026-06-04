@@ -17,6 +17,24 @@ Rules going forward:
 
 ---
 
+## 2026-06-04 — Fresh-start script: broaden altdata-log truncation + clear stale scrape_runs. Severity: medium (cosmetic, /issues page).
+
+**Problem:** After running `full_fresh_start_2026_06_04.py` on prod today, the /issues page still showed 5 stale entries — 4 WARNINGs from `altdata-20260529.log` and 1 ERROR from a biotechevents `scrape_runs` row dated 2026-06-03. Both predate the reset but weren't covered by the script's cleanup steps.
+
+**Root cause:** The original script only truncated TODAY + YESTERDAY altdata log files (mirroring `full_reset_2026_05_18.py`'s pattern). The /issues page actually tails altdata logs for the trailing 168 hours (`?hours=168` default). And the script didn't touch `scrape_runs` tables in altdata DBs at all — those are operational telemetry surfaced on /issues by `_collect_scrape_runs`.
+
+**Fix:**
+- Step 9 (`step9_altdata_logs`) now sweeps EVERY `altdata-*.log` and `edgar_form4_*.log` in `logs/` (not just yesterday + today). Only truncates non-empty files; backs each up to `/tmp/`.
+- New step 9b (`step9b_altdata_scrape_runs`) runs `DELETE FROM scrape_runs WHERE status != 'ok'` across every altdata DB found at `altdata/*/data/*.db`. World-data tables in those DBs (filings, events, sentiment, etc.) are NOT touched — only the operational telemetry table.
+
+Both gaps were closed manually after detection during today's reset; this commit promotes that fix into the script so the next dated clone (next experiment reset) starts complete.
+
+**Why not caught:** the May 18 script template that was cloned didn't cover the 7-day /issues window (the page existed but wasn't introspected when the template was written), and the altdata-DB `scrape_runs` source for /issues was added later (in `issues_collector.py`) but never wired into any reset script. Nothing tested the post-reset /issues page against the actual collector output.
+
+**Tests:** none added — the script is a one-off dated orchestrator, not a library function. The next-time check is operator-driven: after the next reset, query `issues_collector.collect_issues(since_hours=168)['total_groups']` — must return 0.
+
+---
+
 ## 2026-06-04 — Orphan-prevention contract: all known classes closed. Severity: high (10-day cohort outage, full experiment reset).
 
 **Problem:** Profiles pid15-24 (the EXP-A* experimental cohort) had been halted daily since 2026-05-28 across ~40 trailing-stop orphan fills (CRM, V, SCHW, NFLX, BA, PLTR, AMZN, GRAB, FISV, DXCM). The reconciler safety net (May 19) caught every orphan as designed — but only as halt-after-the-fact, not prevent. The "every Alpaca order has a journal row" contract that the codebase claimed was *structurally impossible to violate* was demonstrably violated.
