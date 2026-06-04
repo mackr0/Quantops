@@ -411,6 +411,53 @@ def _all_journal_sell_order_ids(profile_ids: Iterable[int]) -> set:
     return used
 
 
+_REPLACE_CHAIN_MAX_DEPTH = 10
+_REPLACE_TRANSIENT_STATUSES = frozenset({"replaced", "pending_replace"})
+
+
+def _walk_replace_chain_forward(api, start_oid: str,
+                                 max_depth: int = _REPLACE_CHAIN_MAX_DEPTH):
+    """Follow `replaced_by` on an Alpaca order until we hit a terminal
+    status (filled / canceled / expired / rejected / accepted / new),
+    or run out of chain links, or exceed max_depth.
+
+    Alpaca silently REPLACES trailing-stop orders as the trail bumps
+    (server-side, no `submit_order` call). Each replacement has a
+    fresh order_id; the parent's status becomes 'replaced' and exposes
+    a `replaced_by` field pointing at the successor.
+
+    When a trailing stop finally fires, the FILL lands under the
+    terminal id in the chain — not the id we journaled at placement.
+    To detect the fill from the journaled id, we walk forward.
+
+    Returns (terminal_order, depth_walked).
+      - terminal_order is the Alpaca order object at the end of the
+        chain, or None if the walk could not complete (API error,
+        broken chain, max depth exceeded).
+      - depth_walked is how many `replaced_by` links we followed
+        (0 means the start order was already terminal).
+    """
+    order, _exc = _retrying_call(api.get_order, start_oid)
+    depth = 0
+    while (order is not None
+           and getattr(order, "status", "") in _REPLACE_TRANSIENT_STATUSES
+           and depth < max_depth):
+        next_id = getattr(order, "replaced_by", None)
+        if not next_id:
+            return None, depth
+        order, _exc = _retrying_call(api.get_order, next_id)
+        depth += 1
+    if depth >= max_depth and order is not None and (
+        getattr(order, "status", "") in _REPLACE_TRANSIENT_STATUSES
+    ):
+        logger.warning(
+            "replace-chain walk hit max_depth=%d on start_oid=%s; "
+            "treating as unresolved", max_depth, start_oid,
+        )
+        return None, depth
+    return order, depth
+
+
 def _detect_protective_fill(api, row, used_sell_ids):
     """For any open BUY/SHORT, check whether its OWN protective order
     fired at the broker — independent of the symbol's broker_qty.
@@ -425,8 +472,12 @@ def _detect_protective_fill(api, row, used_sell_ids):
 
     Two-layer detection:
       1. Look up the protective_*_order_id columns directly. Fast,
-         precise. But the columns may be empty (older trades, or paths
-         that submitted protective orders without recording the id).
+         precise. Walks the Alpaca REPLACE chain forward from the
+         journaled id (trailing stops are silently replaced server-
+         side as they trail). The fill data comes from the chain's
+         terminal order; the returned `order_id` is the ORIGINAL
+         journaled placement id so the reconciler's pending_protective
+         UPDATE can still match by primary key.
       2. Fallback: search broker order history for SELLs/BUYs that
          match the journal qty, occurred after the BUY's timestamp,
          and aren't already attributed to a sibling profile.
@@ -451,9 +502,17 @@ def _detect_protective_fill(api, row, used_sell_ids):
             continue
         if stop_oid in used_sell_ids:
             continue
-        order, _exc = _retrying_call(api.get_order, stop_oid)
+        order, _depth = _walk_replace_chain_forward(api, stop_oid)
         if order is None:
             continue
+        # When the walk traversed >= 1 replace link, also mark the
+        # terminal id as used. The fuzzy fallback (and sibling-profile
+        # reconciles via cross_profile_used_ids) matches broker fills
+        # by id; without this they might double-attribute one fill.
+        terminal_oid = getattr(order, "id", None)
+        if (_depth > 0 and terminal_oid
+                and terminal_oid != stop_oid):
+            used_sell_ids.add(terminal_oid)
         if getattr(order, "status", "") != "filled":
             continue
         # Side check: longs exit via 'sell', shorts cover via 'buy'
