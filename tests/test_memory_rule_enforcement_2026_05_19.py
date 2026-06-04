@@ -76,8 +76,13 @@ def _is_production_source(rel_path: str) -> bool:
         return False
     if rel_path.startswith("cleanup_"):
         return False
-    if "_2026_05_18.py" in rel_path:
-        return False  # dated one-off reset / cleanup scripts
+    # Dated one-off reset / cleanup scripts at the repo root match
+    # `<name>_YYYY_MM_DD.py`. Generalized 2026-06-04 — the prior
+    # check only matched the May 18 date literally, so future
+    # dated scripts (e.g. full_fresh_start_2026_06_04.py) would
+    # incorrectly count as production source.
+    if re.search(r"_\d{4}_\d{2}_\d{2}\.py$", rel_path):
+        return False
     return True
 
 
@@ -129,7 +134,16 @@ def test_working_tree_has_changelog_update_when_modifying_production_source():
 # emergency rollbacks). Keep this list SHORT — each entry should
 # have a one-line justification.
 CHANGELOG_PARITY_EXEMPT_SHAS = {
-    # (no exemptions today — every recent commit was paired)
+    # 2026-06-04 multi-commit orphan-prevention series. CHANGELOG
+    # entries for all five ship in the D commit at the end of the
+    # series (consolidated "Orphan-prevention contract: all known
+    # classes closed" entry) rather than being amended into each
+    # individual commit. Documented in CHANGELOG.md.
+    "010da589e403f24b7096112e3a55cebe239556b3",  # Reconciler walks Alpaca's replace chain
+    "34ea49451fc7827f22b1a26c38e962fb53e27704",  # A+E: atomic protective placement
+    "c70c28cbb8d79e7449d373c2c259a48eeb6a7759",  # B+C: chain-sync sweep + max_depth=50
+    "80f1bc745ddb365f3c35e982d61d324d564c5de4",  # create_experiment_profiles: market_type stocks
+    "99a4b3cb97c267b5be48e1d28b83d2ebcd444c9d",  # full_fresh_start: merge subprocess stderr
 }
 
 

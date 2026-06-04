@@ -2707,6 +2707,44 @@ def _task_reconcile_trade_statuses(ctx):
         except Exception:
             logging.exception("Aggregate audit failed")
 
+        # 2026-06-04 — Manual broker-side order audit (D). Closes the
+        # last orphan path the codebase contracts don't cover: orders
+        # placed at the broker via Alpaca.com UI, external scripts,
+        # or any path that doesn't go through submit_order in this
+        # system. Diffs live broker orders against the union of every
+        # profile's journaled order_ids per Alpaca account; anything
+        # left is a manual order. Logs ERROR + sends email alert on
+        # detection (low-frequency, high-signal — manual broker
+        # activity is rare and always worth surfacing).
+        try:
+            from aggregate_audit import (
+                audit_manual_broker_orders, format_manual_orders_summary,
+            )
+            manual_audit = audit_manual_broker_orders(
+                profile_ids=get_active_profile_ids())
+            if manual_audit.get("manual"):
+                summary = format_manual_orders_summary(manual_audit)
+                logging.error("MANUAL BROKER ORDER DETECTED:\n%s", summary)
+                try:
+                    from notifications import notify_error
+                    notify_error(
+                        error_msg=summary,
+                        context=(
+                            "manual broker-side order — placed outside "
+                            "this system (Alpaca.com UI / external "
+                            "tool) so it bypasses every contract that "
+                            "prevents orphans for system-placed orders"
+                        ),
+                    )
+                except (ImportError, AttributeError, OSError) as _ne_exc:
+                    logger.warning(
+                        "manual-order-alert notify_error delivery "
+                        "failed: %s: %s",
+                        type(_ne_exc).__name__, _ne_exc,
+                    )
+        except Exception:
+            logging.exception("Manual-order audit failed")
+
 
 def _task_check_exits(ctx):
     """Check stop-loss and take-profit triggers on open positions."""

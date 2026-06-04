@@ -243,6 +243,184 @@ def audit_aggregate_drift(profile_ids: Iterable[int],
     return {"accounts": accounts, "drift": drift, "errored": errored}
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Manual broker-side order detector (D, 2026-06-04)
+# ─────────────────────────────────────────────────────────────────────
+#
+# The atomic-placement contract (A) plus the proactive chain sync (C)
+# close the orphan class for orders the SYSTEM places. They don't
+# detect orders placed THROUGH the broker by other means — Alpaca.com
+# UI clicks, external scripts using the API directly, etc. Those are
+# the last orphan path that bypasses every contract this codebase
+# enforces. This audit makes them visible by diffing the broker's
+# active orders against the union of every profile's journaled
+# order_ids per Alpaca account.
+
+# Statuses that count as "active" at the broker for the manual-order
+# scan. Filled/canceled/expired orders are excluded — they're
+# historical and the reconciler already handles attribution
+# of recent fills. We want the currently-actionable surface area.
+_BROKER_ACTIVE_STATUSES = frozenset({
+    "new", "accepted", "pending_new", "accepted_for_bidding",
+    "held", "partially_filled",
+    "replaced", "pending_replace",
+})
+
+
+def _all_journal_order_ids_for_profile(db_path: str) -> set:
+    """Every order_id this profile's journal has touched, across all
+    statuses. The manual-order audit compares against this union."""
+    import sqlite3 as _sqlite3
+    out: set = set()
+    try:
+        conn = _sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        for r in conn.execute(
+            "SELECT order_id FROM trades "
+            "WHERE order_id IS NOT NULL AND order_id != ''"
+        ):
+            if r[0]:
+                out.add(r[0])
+        # protective_*_order_id columns also count — they're the
+        # entry-row pointers to live broker protectives. If a journal
+        # has them, the broker order is ours.
+        try:
+            for col in ("protective_stop_order_id",
+                        "protective_tp_order_id",
+                        "protective_trailing_order_id"):
+                for r in conn.execute(
+                    f"SELECT {col} FROM trades "
+                    f"WHERE {col} IS NOT NULL AND {col} != ''"
+                ):
+                    if r[0]:
+                        out.add(r[0])
+        except _sqlite3.OperationalError:
+            # Columns don't exist on this minimal schema — skip.
+            pass
+        conn.close()
+    except Exception as exc:
+        logger.warning(
+            "manual-order audit: failed to read order_ids from %s: %s",
+            db_path, exc,
+        )
+    return out
+
+
+def _broker_active_orders(api) -> List[Dict]:
+    """Pull every currently-active order from the broker. Filters by
+    status so only actionable orders surface (filled/canceled history
+    is excluded — that's the reconciler's domain)."""
+    try:
+        orders = api.list_orders(status="open", limit=500)
+    except Exception as exc:
+        logger.warning(
+            "manual-order audit: list_orders failed: %s", exc,
+        )
+        return []
+    out: List[Dict] = []
+    for o in orders or []:
+        status = (getattr(o, "status", "") or "").lower()
+        if status not in _BROKER_ACTIVE_STATUSES:
+            continue
+        oid = getattr(o, "id", None)
+        if not oid:
+            continue
+        out.append({
+            "order_id": oid,
+            "symbol": (getattr(o, "symbol", "") or "").upper(),
+            "side": (getattr(o, "side", "") or "").lower(),
+            "qty": float(getattr(o, "qty", 0) or 0),
+            "type": (getattr(o, "order_type", None)
+                     or getattr(o, "type", "") or "").lower(),
+            "status": status,
+            "created_at": str(getattr(o, "created_at", "")),
+        })
+    return out
+
+
+def audit_manual_broker_orders(profile_ids: Iterable[int]) -> Dict:
+    """Detect broker-side orders with no corresponding journal row in
+    any profile routing to that Alpaca account.
+
+    Per-account diff:
+      live_broker_order_ids on account A
+        MINUS
+      union(journaled_order_ids for every profile routing to A)
+    Anything left is a manual / external order.
+
+    Returns: {
+        'accounts': {acct_id: {'total_broker_active': int,
+                                'journal_known': int,
+                                'manual': [<order dict>, ...]}},
+        'manual': [flat list of all manual orders across accounts],
+        'errored': [profile_ids that failed to load],
+    }
+    """
+    from models import build_user_context_from_profile
+
+    api_per_acct: Dict[int, object] = {}
+    journal_ids_per_acct: Dict[int, set] = defaultdict(set)
+    errored: List[int] = []
+
+    for p_id in profile_ids:
+        try:
+            ctx = build_user_context_from_profile(p_id)
+        except Exception:
+            errored.append(p_id)
+            continue
+        acct = getattr(ctx, "alpaca_account_id", None)
+        if not acct:
+            continue
+        if acct not in api_per_acct:
+            try:
+                api_per_acct[acct] = (
+                    ctx.get_alpaca_api()
+                    if hasattr(ctx, "get_alpaca_api") else ctx.api
+                )
+            except Exception:
+                errored.append(p_id)
+                continue
+        journal_ids_per_acct[acct] |= _all_journal_order_ids_for_profile(
+            ctx.db_path)
+
+    accounts: Dict[int, Dict] = {}
+    manual_flat: List[Dict] = []
+    for acct, api in api_per_acct.items():
+        broker_orders = _broker_active_orders(api)
+        journal_ids = journal_ids_per_acct.get(acct, set())
+        manual = [o for o in broker_orders
+                   if o["order_id"] not in journal_ids]
+        accounts[acct] = {
+            "total_broker_active": len(broker_orders),
+            "journal_known": len(broker_orders) - len(manual),
+            "manual": manual,
+        }
+        for m in manual:
+            manual_flat.append({**m, "account": acct})
+
+    return {
+        "accounts": accounts,
+        "manual": manual_flat,
+        "errored": errored,
+    }
+
+
+def format_manual_orders_summary(audit: Dict) -> str:
+    """Human-readable summary for log lines / email."""
+    manual = audit.get("manual", [])
+    if not manual:
+        return ("manual-order audit: 0 manual orders, every broker "
+                "order is journaled")
+    lines = [f"manual-order audit: {len(manual)} manual broker order(s) "
+             "with no journal row"]
+    for m in manual:
+        lines.append(
+            f"  acct{m['account']} {m['symbol']:>8s} {m['side']:>4s} "
+            f"qty={m['qty']:>6.0f} type={m['type']:<14s} "
+            f"id={m['order_id'][:8]} status={m['status']}"
+        )
+    return "\n".join(lines)
+
+
 def format_drift_summary(audit: Dict) -> str:
     """Human-readable summary for log lines / email."""
     drift = audit.get("drift", [])

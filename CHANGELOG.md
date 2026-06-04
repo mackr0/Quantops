@@ -17,6 +17,48 @@ Rules going forward:
 
 ---
 
+## 2026-06-04 — Orphan-prevention contract: all known classes closed. Severity: high (10-day cohort outage, full experiment reset).
+
+**Problem:** Profiles pid15-24 (the EXP-A* experimental cohort) had been halted daily since 2026-05-28 across ~40 trailing-stop orphan fills (CRM, V, SCHW, NFLX, BA, PLTR, AMZN, GRAB, FISV, DXCM). The reconciler safety net (May 19) caught every orphan as designed — but only as halt-after-the-fact, not prevent. The "every Alpaca order has a journal row" contract that the codebase claimed was *structurally impossible to violate* was demonstrably violated.
+
+**Root causes — five distinct gaps:**
+
+1. **Alpaca silent replace chain (#1).** Trailing-stop orders are REPLACED server-side as the trail bumps. Each replacement has a fresh order_id; the parent goes status='replaced' with `replaced_by` pointing at the successor. The journal records the placement id from `submit_order`; the fill arrives under the chain's terminal id — not the journaled id. The pending_protective UPDATE path matches by primary key, missed, and the fuzzy fallback classified the fill as phantom-source orphan → halt. The `b77e4d5` contract ("every submit_order writes a journal row") held literally but was structurally insufficient because Alpaca's replace doesn't go through submit_order.
+
+2. **Journal-write failure swallowed silently (#2).** `_write_pending_protective_row` caught sqlite errors with a WARNING and the placement helper still returned the order_id — meaning a journal-write failure left a broker order with no journal row. The reconciler would catch the eventual fill and halt, but the placement was not atomic.
+
+3. **Chain-walk max_depth too low (#3).** When the fill-time chain walk shipped, max_depth was set to 10. A chain longer than 10 (rare but possible if Alpaca rapidly replaces an order) bails to fuzzy fallback → orphan.
+
+4. **No proactive chain sync (#4).** Without a sweep, the journaled order_id drifts further from the live broker id over the lifetime of a position. By the time a fill arrives, the chain walk has to traverse the entire drift in one shot.
+
+5. **No detection of orders we didn't place (#5).** Manual orders placed at Alpaca.com UI or by external tools bypass every contract this codebase enforces. The reconciler would eventually surface their fills as phantom orphans + halt, but the placement itself was undetected.
+
+**Fix — five complementary commits closing each gap:**
+
+- **`010da58`** — `_detect_protective_fill` walks the Alpaca replace chain forward via `walk_replace_chain_forward` (follows `order.replaced_by` to the terminal). Returns the ORIGINAL journaled placement id in `detail["order_id"]` so the reconciler's pending_protective UPDATE matches by primary key; adds the terminal id to `used_sell_ids` to dedupe sibling-profile fuzzy-fallback attribution.
+
+- **`34ea494` (A+E)** — `_write_pending_protective_row` returns bool. On False (or db_path=None), the placement helpers call `_rollback_broker_order(api, order_id)` to cancel the broker order. The atomic guarantee: either both writes succeed or both are rolled back. Cancel-failure logs CRITICAL (the worst-case orphan that the reconciler safety net catches). New structural audit `test_protective_placement_rolls_back_broker_order_on_journal_failure` greps `bracket_orders.py` to verify every `_write_pending_protective_row` call site has a matching `_rollback_broker_order` within 50 lines.
+
+- **`c70c28c` (B+C)** — `_REPLACE_CHAIN_MAX_DEPTH` bumped from 10 to 50; hitting max_depth now logs CRITICAL (distinguishes "chain too deep, sync sweep broken" from "no protective order"). New `sync_pending_protective_order_ids(api, db_path)` runs every per-profile cycle (right after `verify_protective_order_sync`): walks each pending_protective row's chain forward proactively, UPDATEs the row's order_id to the live terminal, heals the entry's protective_*_order_id pointer, marks canceled/expired/rejected broker orders as canceled in the journal so they stop counting as pending. Chain depth at fill time should be ~1 after this.
+
+- **D (this commit)** — `audit_manual_broker_orders(profile_ids)` in `aggregate_audit.py` diffs live broker `list_orders(status='open')` against the union of every profile's journaled order_ids per Alpaca account. Anything left is a manual / external order. Logs ERROR + sends email alert on detection (rare event, high signal). Wired into `multi_scheduler.py` alongside the existing aggregate-drift audit so it runs once per orchestrator cycle.
+
+**Operational recovery (separate from the contract fixes):** All 13 EXP-A* profiles were reset to a clean baseline (`full_fresh_start_2026_06_04.py`). 3 new Alpaca paper accounts were swapped in with fresh 2026-06-04 keys; the contaminated period (May 20 → Jun 4) is preserved in `/opt/quantopsai/backups/pre-orphan-cleanup-20260604T123831Z/`. Master-DB extras wiped (`shared_ai_cache`, `decision_log`, `kill_switch_history/state`); altdata DBs preserved (world data, not experiment artifacts). `create_experiment_profiles.py` manifest updated to use `market_type='stocks'` matching the 2026-05-20 unified-stock-universe refactor.
+
+**Why none of this was caught:** the May 21 atomic-journaling fix (`b77e4d5`) verified placements wrote a journal row — but never checked that Alpaca-side replacements were also tracked. The original "feedback_no_orphan_broker_fills" rule was about submit_order, not server-side broker mutations. None of the existing audits diffed broker orders against journal orders (only positions).
+
+**Tests:**
+- `tests/test_reconcile_replace_chain_2026_06_04.py` (6) — chain walk, end-to-end pending_protective UPDATE under journaled id, max_depth=50 pin, broken chain, no-replacement preserved.
+- `tests/test_backfill_orphan_trailing_stops_2026_06_04.py` (7) — safety-net script that resolves orphans the structural fix can't auto-recover.
+- `tests/test_protective_journaling_at_placement_2026_05_21.py` (updated) — db_path=None rolls back, db locked rolls back, cancel-failure logs CRITICAL.
+- `tests/test_atomic_journaling_audit_2026_05_19.py` (updated) — structural audit enforces rollback on every `_write_pending_protective_row` site.
+- `tests/test_sync_pending_protective_2026_06_04.py` (9) — proactive sweep semantics, max_depth CRITICAL log.
+- `tests/test_manual_broker_order_audit_2026_06_04.py` (8) — manual-order detection, multi-profile union, protective-pointer columns, historical excluded, API errors don't crash.
+
+**After this:** the contract is "every Alpaca order ties to a journal row OR is detected as manual and alerted." That's enforceable. "Impossible" still overclaims — see the `gap #1-5` list above for the residual cases (e.g. rollback-of-rollback fails, chain >50 replacements). The safety net is unchanged and surfaces those within one reconcile cycle.
+
+---
+
 ## 2026-05-24 — Market-open checks are holiday-aware (Alpaca clock). Severity: high (would have traded on Memorial Day).
 
 **Problem:** `is_market_open()` (in both `multi_scheduler.py` and `scheduler.py`) and `UserContext.is_within_schedule()` decided "is the market open?" from weekday + clock time alone — no holiday awareness. On a full-closure holiday (e.g. Memorial Day, Mon 2026-05-25) the scheduler would run full scan/trade cycles, spend AI budget analyzing stale (prior-session) data, and submit `time_in_force="day"` orders that Alpaca queues and fills at the *next* session's open — a thesis priced on Friday's close executing after a 3-day gap.
