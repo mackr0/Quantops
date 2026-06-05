@@ -9,7 +9,7 @@
 
 QuantOpsAI ships changes daily, often via AI-assisted edits. The threat model is not just "does the code compile" — it includes "did the assistant hallucinate a column name?", "did the assistant remove a guard while fixing something else?", "did the assistant claim a fix is done when it isn't?". The safety system has three layers, all enforced automatically:
 
-1. **Pre-commit / CI tests** (~273 files, ~3,065 tests, zero skipped) — must pass before merge.
+1. **Pre-commit / CI tests** (375 files, 4,561 tests, 1 skipped — an `_EMPTY_FIRE_EXEMPT` rule whose purpose IS to fire on minimal context) — must pass before merge.
 2. **Production-side controls** — defense-in-depth gates that catch what slips past tests.
 3. **Backups + rehearsed disaster recovery** — assume something will eventually break.
 
@@ -227,7 +227,7 @@ Single command: `restore_from_backup("<filename>")`.
 4. Copies the verified backup into place.
 5. Re-runs `check_db` on the restored file.
 
-The full procedure has been rehearsed end-to-end on production with bit-identical recovery. Step-by-step is in `Docs/07_OPERATIONS.md` §9.
+The full procedure has been rehearsed end-to-end on production with bit-identical recovery. Step-by-step is in `docs/07_OPERATIONS.md` §9.
 
 ### 5.3 What the system does NOT have (honest limits)
 - No off-site backup replication. The 14-day local snapshots are the only copies.
@@ -286,7 +286,7 @@ After the fresh-experiment cutover, `morning_health_check.sh` is the canonical d
 - File: `CHANGELOG.md` at repo root — the project's institutional memory. **Date-stamped incident detail belongs here, not in this docs tree.**
 
 ### 7.2 Auto-memory (Claude assistant)
-- File-based memory at `/Users/mackr0/.claude/projects/-Users-mackr0/memory/`.
+- File-based memory at `/Users/mackr0/.claude/projects/-Users-mackr0-Quantops/memory/`.
 - Loaded into every Claude session.
 - Captures user preferences, project state, feedback corrections, and references to external systems.
 - Current rules saved as feedback memories:
@@ -316,14 +316,14 @@ These are the de-facto contract for what the AI is allowed to do on this codebas
 - The AI assistant CAN be asked to do something the rules say not to. The user is the final check on intent.
 
 **What's documented as a known limit:**
-- See `Docs/01_EXECUTIVE_SUMMARY.md` "What's honest about the limits" + every module's `**Honest limits:**` block.
+- See `docs/01_EXECUTIVE_SUMMARY.md` "What's honest about the limits" + every module's `**Honest limits:**` block.
 
 ---
 
 ## See also
 
-- `Docs/07_OPERATIONS.md` — deploy, monitoring, restore runbook in operational detail.
-- `Docs/08_RISK_CONTROLS.md` — every risk gate enumerated.
-- `Docs/10_METHODOLOGY.md` — the engineering principles these guardrails encode.
-- `Docs/11_INTEGRATION_GUIDE.md` — how to add new code without violating the guardrails.
+- `docs/07_OPERATIONS.md` — deploy, monitoring, restore runbook in operational detail.
+- `docs/08_RISK_CONTROLS.md` — every risk gate enumerated.
+- `docs/10_METHODOLOGY.md` — the engineering principles these guardrails encode.
+- `docs/11_INTEGRATION_GUIDE.md` — how to add new code without violating the guardrails.
 - `CHANGELOG.md` — the institutional memory.
