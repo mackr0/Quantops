@@ -17,7 +17,7 @@ Single droplet at `67.205.155.63`. Resources: ~$6-12/month standard tier (CPU + 
 ├── docs/                           # documentation
 ├── venv/                           # Python 3.9 venv
 ├── quantopsai.db                   # master DB (users, profiles, audit logs)
-├── quantopsai_profile_<id>.db      # per-profile DB (1 per profile, 10+ total)
+├── quantopsai_profile_<id>.db      # per-profile DB (1 per profile, 13 active)
 ├── .cache/                         # disk caches (slippage K, Ken French CSVs)
 ├── .env                            # env vars (DB_PATH, ALTDATA_BASE_PATH, etc.)
 ├── online_meta_model_p<id>.pkl     # SGD freshness layer (per profile)
@@ -33,8 +33,8 @@ Single droplet at `67.205.155.63`. Resources: ~$6-12/month standard tier (CPU + 
 └── logs/
 
 /etc/systemd/system/
-├── quantopsai-web.service
-└── quantopsai-scheduler.service
+├── quantopsai-web.service          # gunicorn / Flask
+└── quantopsai.service              # scheduler (the trading loop)
 
 /etc/nginx/sites-enabled/
 └── quantopsai                      # TLS termination + reverse proxy → :8000
@@ -48,9 +48,9 @@ Three running processes:
 |---|---|---|
 | `nginx` | 80, 443 | TLS termination + reverse proxy. |
 | `quantopsai-web` | localhost:8000 | Gunicorn + Flask app. 4 workers default. |
-| `quantopsai-scheduler` | (no port) | The trading loop. 24/7 process. |
+| `quantopsai` | (no port) | The scheduler / trading loop. 24/7 process. |
 
-`quantopsai-web` and `quantopsai-scheduler` both run from `/opt/quantopsai/venv/bin/python`. Both unit files use `Restart=always` with `RestartSec=5` so a crash auto-recovers.
+`quantopsai-web` and `quantopsai` both run from `/opt/quantopsai/venv/bin/python`. Both unit files use `Restart=always` with `RestartSec=5` so a crash auto-recovers.
 
 ## 3. Deploy
 
@@ -60,14 +60,14 @@ Local: `sync.sh` is the single deploy command. Steps:
 
 1. `rsync -avz --delete --exclude=...` from local to `/opt/quantopsai/`. Excludes `__pycache__`, `.cache/`, `*.db`, `tests/__pycache__`, etc.
 2. `ssh root@67.205.155.63 'cd /opt/quantopsai && git fetch && git reset --hard origin/main'` — sync prod's `.git/` to GitHub. Without this step prod git would drift since rsync skips `.git/`.
-3. Wait for the scheduler to be idle (no active task), then `systemctl restart quantopsai-scheduler quantopsai-web`.
+3. Wait for the scheduler to be idle (no active task), then `systemctl restart quantopsai quantopsai-web`.
 4. Verify both services running.
 
 Failure modes:
 
 - **rsync fails:** check SSH connectivity. `ssh root@67.205.155.63` from the local machine.
 - **Git reset fails:** check the prod git remote is still pointing at GitHub. `cd /opt/quantopsai && git remote -v`.
-- **Scheduler doesn't return to idle:** `journalctl -u quantopsai-scheduler --since '5 min ago'` to find the stuck task. May need `systemctl restart quantopsai-scheduler` with `--force` (will kill in-flight tasks).
+- **Scheduler doesn't return to idle:** `journalctl -u quantopsai --since '5 min ago'` to find the stuck task. May need `systemctl restart quantopsai` with `--force` (will kill in-flight tasks).
 
 ### Schema migrations
 
@@ -96,19 +96,19 @@ print(\"master DB migrated\")
 
 ```bash
 # Scheduler logs (last hour)
-journalctl -u quantopsai-scheduler --since '1 hour ago' | less
+journalctl -u quantopsai --since '1 hour ago' | less
 
 # Web app logs (last 100 lines)
 journalctl -u quantopsai-web -n 100
 
 # Both, real-time follow
-journalctl -u quantopsai-scheduler -u quantopsai-web -f
+journalctl -u quantopsai -u quantopsai-web -f
 
 # Filter for errors
-journalctl -u quantopsai-scheduler --since today | grep -i error
+journalctl -u quantopsai --since today | grep -i error
 
 # Filter by profile
-journalctl -u quantopsai-scheduler --since today | grep "Mid Cap"
+journalctl -u quantopsai --since today | grep "EXP-A1"
 ```
 
 Log retention is journald's default (rotated by size + age). For longer retention, the AI cost ledger and `task_runs` tables persist forever per profile.
@@ -182,7 +182,7 @@ Restoring a backup is a one-command operation — see §9 "Restoring from backup
 
 ## 7. Cron / scheduled tasks
 
-The `quantopsai-scheduler` process IS the scheduler. There is no system cron. Per-cycle and once-per-day tasks are dispatched inside `multi_scheduler.run_scheduler()`.
+The `quantopsai` systemd service IS the in-process scheduler — per-cycle and once-per-day trading tasks all dispatch inside `multi_scheduler.run_scheduler()`. There is no system cron for any trading-decision logic. The only system-cron entries are the daily backup (§6) and the alt-data refresher (below).
 
 The 4 alt-data scrapers (now bundled in `altdata/` after the 2026-05-04 merge) are orchestrated by a single system cron entry that calls `altdata/run-altdata-daily.sh` (refreshes all 4 sequentially using the Quantops venv).
 
@@ -202,9 +202,9 @@ The PDUFA event scraper (`pdufa_scraper.py`, OPEN_ITEMS #6) is scheduled separat
 
 ```bash
 ssh root@67.205.155.63
-journalctl -u quantopsai-scheduler -f         # see what it's doing
-systemctl status quantopsai-scheduler         # is it actually running?
-systemctl restart quantopsai-scheduler        # restart if needed
+journalctl -u quantopsai -f         # see what it's doing
+systemctl status quantopsai         # is it actually running?
+systemctl restart quantopsai        # restart if needed
 ```
 
 ### 8b. Web app returns 500 on a specific page
@@ -263,14 +263,14 @@ Most common causes:
 
 ### Severity classes
 
-- **SEV-1 (immediate):** orders submitted incorrectly, P&L corruption, security breach. **Action:** stop the scheduler immediately (`systemctl stop quantopsai-scheduler`); investigate before resuming.
+- **SEV-1 (immediate):** orders submitted incorrectly, P&L corruption, security breach. **Action:** stop the scheduler immediately (`systemctl stop quantopsai`); investigate before resuming.
 - **SEV-2 (within hours):** AI provider down, Alpaca outage, single profile stuck. **Action:** monitor; let the scheduler retry; investigate root cause if persistent.
 - **SEV-3 (within days):** dashboard glitch, cost overrun, performance degradation, slippage K drift. **Action:** investigate during normal hours; fix in next deploy.
 
 ### Stopping the scheduler immediately
 
 ```bash
-ssh root@67.205.155.63 'systemctl stop quantopsai-scheduler'
+ssh root@67.205.155.63 'systemctl stop quantopsai'
 ```
 
 The web app stays up; users can still see dashboards but no new trades fire. Existing protective stops at the broker remain active.
@@ -369,7 +369,7 @@ This skips corrupt pages and produces a new DB file with whatever it could read.
 ssh root@67.205.155.63 'ps aux | grep python'
 
 # Kill the whole scheduler (recovers automatically)
-ssh root@67.205.155.63 'systemctl restart quantopsai-scheduler'
+ssh root@67.205.155.63 'systemctl restart quantopsai'
 ```
 
 The watchdog (`_task_run_watchdog`) tries to do this automatically for tasks running longer than the cycle window, but a hard SIGKILL is sometimes needed.

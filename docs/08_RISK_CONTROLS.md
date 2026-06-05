@@ -327,7 +327,7 @@ The operator retains manual control:
 
 - **Disable a profile entirely** via the master toggle — stops all trading for that profile.
 - **Cancel orders** at the broker via Alpaca dashboard or via the platform's pending-orders panel.
-- **Stop the scheduler** via systemd: `systemctl stop quantopsai-scheduler`. Web app stays up; existing protective stops at the broker remain active.
+- **Stop the scheduler** via systemd: `systemctl stop quantopsai`. Web app stays up; existing protective stops at the broker remain active.
 - **Manual close** of a position via the platform's per-position close button (submits a market order via Alpaca).
 - **Restore deprecated strategies** via the Strategy tab Restore button.
 - **Override Layer 2 weights** via Operations tab.
