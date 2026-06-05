@@ -30,7 +30,7 @@ Every per-profile setting lives here. Source of truth: `models.py` `init_user_db
 | `id` | INTEGER PK | autoincrement | Profile ID. Used everywhere as the per-profile key. |
 | `user_id` | INTEGER | required | Foreign key → `users.id`. Owner. |
 | `name` | TEXT | required | User-chosen profile name. |
-| `market_type` | TEXT | required | `stocks` / `crypto`. Cap tiers (`largecap` / `midcap` / `small` / `micro`) were removed 2026-05-20 (commit `a49c9d6`); see `docs/22_UNIFIED_STOCK_UNIVERSE.md` in archive for migration detail. `stocks` profiles trade the unified Alpaca-tradable US equity universe filtered per-profile by `min_price` / `max_price` / `min_volume`. `crypto` profiles use a separate code path (24/7 schedule, crypto data endpoints). The actual instrument-class pipeline split (`stock` vs `option`) lives in `pipelines/dispatch.py`. |
+| `market_type` | TEXT | required | `stocks` / `crypto`. Cap tiers (`largecap` / `midcap` / `small` / `micro`) were removed 2026-05-20 (commit `a49c9d6`); see `docs/archive/2026-06-04-pre-audit/22_UNIFIED_STOCK_UNIVERSE.md` for migration detail. `stocks` profiles trade the unified Alpaca-tradable US equity universe filtered per-profile by `min_price` / `max_price` / `min_volume`. `crypto` profiles use a separate code path (24/7 schedule, crypto data endpoints). The actual instrument-class pipeline split (`stock` vs `option`) lives in `pipelines/dispatch.py`. |
 | `enabled` | INTEGER | 1 | Master on/off for this profile. |
 | `created_at` | TEXT | now() | Profile creation timestamp. |
 

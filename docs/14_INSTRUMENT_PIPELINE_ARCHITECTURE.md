@@ -11,7 +11,7 @@ implementation to a clean per-instrument-class pipeline model.
 
 **Status**: ratified 2026-05-11 in response to a sweep of bugs
 caused by stock/option conflation (see CHANGELOG entries from that
-date and `AUDIT_2026_05_11_AI_PIPELINE.md`). Phase 0 implementation
+date and `docs/archive/2026-06-04-pre-audit/AUDIT_2026_05_11_AI_PIPELINE.md`). Phase 0 implementation
 in progress; Phases 1-6 queued in `TODO.md`.
 
 ---
@@ -29,7 +29,7 @@ positions that didn't exist on the underlying).
 Today's Position class refactor fixed the *symbol-vs-OCC* layer of
 that conflation — at the position-tracking layer, an option
 position is now unambiguously typed and routed correctly. But the
-audit (`AUDIT_2026_05_11_AI_PIPELINE.md`) confirmed the same bug
+audit (`docs/archive/2026-06-04-pre-audit/AUDIT_2026_05_11_AI_PIPELINE.md`) confirmed the same bug
 class lives in **every layer above position-tracking**:
 
 - The AI prompt feeds option candidates only stock technicals.
@@ -512,7 +512,7 @@ aggregation surfaces in the AI prompt for all pipelines.
 
 ## 5. What this prevents
 
-Every audit finding from `AUDIT_2026_05_11_AI_PIPELINE.md` is
+Every audit finding from `docs/archive/2026-06-04-pre-audit/AUDIT_2026_05_11_AI_PIPELINE.md` is
 either eliminated by construction or made impossible without
 explicit cross-pipeline contamination:
 
@@ -560,7 +560,7 @@ to manage.
 
 ## 8. References
 
-- `AUDIT_2026_05_11_AI_PIPELINE.md` — the symptom map this
+- `docs/archive/2026-06-04-pre-audit/AUDIT_2026_05_11_AI_PIPELINE.md` — the symptom map this
   architecture eliminates.
 - `position.py` — the type-level disambiguation layer this
   architecture builds on.

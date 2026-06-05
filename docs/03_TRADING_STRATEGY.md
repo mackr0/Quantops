@@ -17,7 +17,7 @@ The `segments.py:SEGMENTS` dict has **two keys**:
 | `stocks` | Unified Alpaca-tradable US equity universe (~8,000 names) | Filtered per-profile by `min_price` / `max_price` / `min_volume`. The `STOCK_UNIVERSE` constant (~524 names) is retained as the outage-fallback for `screen_dynamic_universe` only. |
 | `crypto` | Alpaca-tradable crypto symbols | Separate code path — 24/7 schedule, crypto-specific data endpoints. Currently `enable_crypto=0` on every profile (deliberate baseline-control choice). |
 
-> **Historical note.** The platform previously had four cap-tier segments (`largecap`, `midcap`, `small`, `micro`). These were removed in commit `a49c9d6` (2026-05-20) when an audit found seven places where cap-tier still drove behavior at runtime, despite earlier commits declaring it "informational." See archived `docs/22_UNIFIED_STOCK_UNIVERSE.md` for the full migration rationale. The actual operational dimensions today are:
+> **Historical note.** The platform previously had four cap-tier segments (`largecap`, `midcap`, `small`, `micro`). These were removed in commit `a49c9d6` (2026-05-20) when an audit found seven places where cap-tier still drove behavior at runtime, despite earlier commits declaring it "informational." See `docs/archive/2026-06-04-pre-audit/22_UNIFIED_STOCK_UNIVERSE.md` for the full migration rationale. The actual operational dimensions today are:
 >
 > - **Per-profile risk knobs** (`min_price`, `max_price`, `min_volume`, `max_position_pct`, etc.) — set per profile to dial the desired risk profile
 > - **`pipeline_kind` (`stock` vs `option`)** — the genuine instrument-class split, lives in `pipelines/dispatch.py` and routes through `StockPipeline` or `OptionPipeline` (per `docs/14`)
