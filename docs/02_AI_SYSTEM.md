@@ -34,7 +34,7 @@ Each layer is documented below. Section sequence follows the data flow.
 
 Source: Alpaca's `/v2/assets` endpoint (US equities + ETFs, ~8,000 active symbols), filtered per-profile by:
 
-- Market type (`stocks` / `crypto` — cap tiers removed 2026-05-20 per commit `a49c9d6`), via `segments.py` and `segments_historical.py`. Per-profile `min_price` / `max_price` / `min_volume` thresholds gate which of the ~8,000 active symbols actually reach the strategy layer; short selling is gated by `enable_short_selling`.
+- Market type (`stocks` / `crypto`), via `segments.py` and `segments_historical.py`. The `stocks` segment is the unified Alpaca-tradable US equity universe; `crypto` is a separate 24/7 data path. Per-profile `min_price` / `max_price` / `min_volume` thresholds gate which of the ~8,000 active symbols actually reach the strategy layer; short selling is gated by `enable_short_selling`. The genuine instrument-class split (`stock` vs `option`) lives in `pipelines/dispatch.py`, not here.
 - Active-status flag (delisted / merged / renamed names are removed from live universe but kept in `historical_universe_additions` for backtest survivorship-bias correction).
 - Per-profile custom watchlist (additions) and exclusion list (removals).
 
@@ -47,7 +47,7 @@ The platform ships **25 plugin strategies** in `strategies/`. Each is a pure fun
 - **Bullish (12):** gap_reversal, news_sentiment_spike, short_squeeze_setup (long side), earnings_drift, insider_cluster, fifty_two_week_breakout, macd_cross_confirmation, sector_momentum_rotation, analyst_upgrade_drift, short_term_reversal, volume_dryup_breakout, max_pain_pinning.
 - **Bearish (13):** breakdown_support, distribution_at_highs, failed_breakout, parabolic_exhaustion, relative_weakness_in_strong_sector, earnings_disaster_short, catalyst_filing_short, sector_rotation_short, iv_regime_short, relative_weakness_universe, insider_selling_cluster, high_iv_rank_fade, vol_regime.
 
-(Historical note: the original four `momentum_breakout` / `volume_spike` / `mean_reversion` / `gap_and_go` strategies live in `fallback_strategy.py` + `strategy_small.py` and the per-profile toggle columns `strategy_momentum_breakout` etc. still exist for schema back-compat, but these legacy paths are dead-code as of the 2026-05-20 cap-tier removal — only invoked via the now-removed `market_type`-branching in `strategy_router.py`. The live versions of those strategies are part of the 25 plugins above.)
+(The same four strategy names — `momentum_breakout`, `volume_spike`, `mean_reversion`, `gap_and_go` — also exist as standalone modules in `fallback_strategy.py` / `strategy_small.py`, gated by per-profile `strategy_*` toggle columns. Those files are dead-code paths that no live cycle invokes; the live versions are part of the 25 plugins above. The toggle columns remain in the schema for backward compatibility only.)
 
 Strategy votes are deterministic; they're cheap (no LLM cost) and run on every cycle. Each strategy emits one of: STRONG_BUY, BUY, HOLD, SELL, STRONG_SELL, SHORT, STRONG_SHORT.
 
@@ -55,7 +55,7 @@ The shortlist is built by aggregating strategy votes per symbol, computing a com
 
 ## 3. Meta-model pre-gate (Lever 2)
 
-Before each candidate reaches the specialist ensemble — which costs API tokens — the meta-model evaluates whether the AI is likely to be **right** on this candidate given the full feature payload. Candidates whose predicted probability of success is below `meta_pregate_threshold` (default 0.35 since 2026-05-13 — lowered from 0.5 after audit found 68% of candidates were being filtered before AI evaluation) are dropped silently. AI-tunable via `_optimize_meta_pregate_threshold`.
+Before each candidate reaches the specialist ensemble — which costs API tokens — the meta-model evaluates whether the AI is likely to be **right** on this candidate given the full feature payload. Candidates whose predicted probability of success is below `meta_pregate_threshold` (schema default 0.35) are dropped silently. The threshold is per-profile and AI-tunable via `_optimize_meta_pregate_threshold`: it's the dial that trades off cost against opportunity-set breadth — tighter values save AI spend but filter more candidates before the apex call sees them.
 
 This is a cost-and-quality lever: it cuts specialist API calls roughly in half once the meta-model is trained, and it also functions as a quality filter — candidates the meta-model strongly suspects are noise don't pollute the specialist consensus.
 
@@ -83,11 +83,11 @@ Per-rule exception isolation: one bad rule logs at DEBUG and is skipped; the res
   - **Direct match** (stock candidates): the candidate's signal must appear in the rule's tuple. Long-only rules don't fire on SHORT candidates and vice versa.
   - **Directional match** (options / multileg candidates): the router calls `signal_direction(candidate)` to classify the candidate by `(signal, option_strategy)` as `bullish` / `bearish` / `neutral`. A rule then fires if its `APPLIES_TO_SIGNALS` overlaps the same-direction stock-action set. So a `long_call` / `bull_call_spread` / `cash_secured_put` / `covered_call` / `bull_put_spread` fires the same long-only rules as a `BUY` would; `long_put` / `bear_call_spread` / `bear_put_spread` / `protective_put` fires the same short-only rules as a `SHORT` would.
 
-Non-directional strategies (`iron_condor`, `iron_butterfly`, `straddle`, `strangle`, `calendar_spread`) don't trigger directional rules — they're covered by the option-specific LLM specialists (`gamma_pin_specialist`, `iv_skew_specialist`, `option_spread_risk`). Unknown option strategies on an `OPTIONS` / `MULTILEG_OPEN` candidate fire no directional rules (avoid mis-attribution). This routing landed 2026-05-19; no per-rule edits were needed — every rule's existing `APPLIES_TO_SIGNALS` tuple already encodes its direction.
+Non-directional strategies (`iron_condor`, `iron_butterfly`, `straddle`, `strangle`, `calendar_spread`) don't trigger directional rules — they're covered by the option-specific LLM specialists (`gamma_pin_specialist`, `iv_skew_specialist`, `option_spread_risk`). Unknown option strategies on an `OPTIONS` / `MULTILEG_OPEN` candidate fire no directional rules (avoid mis-attribution). The directional rule layer carries no per-rule option-side code: every rule's existing `APPLIES_TO_SIGNALS` tuple already encodes its direction, and the router uses that to dispatch correctly.
 
 ### 4b. LLM specialist ensemble (`specialists/`)
 
-Eight LLM-narrative specialists, each instantiated with the same backend model but a differentiated system prompt and feature subset. Originally each specialist re-derived observations from the candidate dict; as of 2026-05-18 (Phase 3 re-scope) six of them have been pivoted to **synthesize** from the deterministic panel rather than re-derive facts. Two remain as-is because they cover unique territory the rule library cannot subsume.
+Eight LLM-narrative specialists, each instantiated with the same backend model but a differentiated system prompt and feature subset. Six of the eight read the deterministic panel's verdicts and **synthesize** a coherent narrative on top of them rather than re-derive the underlying facts; the other two cover territory the rule library structurally can't subsume and read raw candidate features directly. This division — facts on rails, narrative on judgment — is what keeps per-cycle cost flat as the rule library grows.
 
 **Re-scoped specialists** (consume the rules-suffix in the candidate render and pivot to synthesis):
 
@@ -184,14 +184,12 @@ The drift can be inspected on the AI Brain tab; the slippage panel exposes calib
 
 After the candidate list has been pre-gated (meta-model), enriched (specialist ensemble), and contextualized (portfolio state + market context + per-stock memory), the system makes **one batched LLM call per scan cycle** via `ai_analyst.ai_select_trades`.
 
-### 7.1 Core directive (added 2026-05-14)
+### 7.1 Core directive
 
 The prompt opens with two non-negotiable principles:
 
-1. **No fixed cap on the number of trades.** "Propose every trade where conviction is genuine. There is no fixed cap — propose as many high-conviction setups as you see, and zero is acceptable when none qualify." The previous "PICK the best 0-3 trades" cap was removed: it was an artificial constraint that left real opportunity on the table when many candidates qualified.
-2. **Stocks and options are equal opportunities, not competing alternatives.** "When you see a candidate, evaluate it on its own merits — directional stock entry (BUY/SHORT), defined-risk options structure (MULTILEG_OPEN), or single-leg option (OPTIONS) — and pick the action with the best risk/reward for THAT setup." Stocks and options flow into the prompt as parallel pre-built recommendations (see §7.3); the AI picks based on quality of setup, not on which side has more pre-built work.
-
-This framing is the architectural fix for the bug class that drove stock BUY signals from ~24/day to 0/day between 2026-05-06 and 2026-05-14. Root cause: the multi-leg options advisor pre-computed a fully-analyzed strategy block for every candidate, while stocks were a bare indicator dump. The AI consistently chose the side with the pre-built analysis. Fixed by adding `stock_strategy_advisor.evaluate_candidate_for_stock_action`, which produces sized + ATR-stop + ATR-TP + rationale recs for every directional candidate, rendered alongside multileg recs.
+1. **No fixed cap on the number of trades.** "Propose every trade where conviction is genuine. There is no fixed cap — propose as many high-conviction setups as you see, and zero is acceptable when none qualify." A fixed numeric cap would leave real opportunity on the table when many candidates qualify, and would force forced choices when none do.
+2. **Stocks and options are equal opportunities, not competing alternatives.** "When you see a candidate, evaluate it on its own merits — directional stock entry (BUY/SHORT), defined-risk options structure (MULTILEG_OPEN), or single-leg option (OPTIONS) — and pick the action with the best risk/reward for THAT setup." Stocks and options flow into the prompt as parallel pre-built recommendations (see §7.3) — same level of detail on both sides — so the AI's choice is driven by quality of setup, not by which side has more pre-built analysis to read.
 
 ### 7.2 Prompt sections (in order)
 
@@ -229,7 +227,7 @@ The prompt structure is verbosity-tunable per profile via `prompt_layout.set_ver
 
 ### 7.5 Response parsing
 
-The LLM's response is parsed by `_parse_ai_response_tolerant` (in `ai_analyst.py`), a defensive parser tolerant of common malformations (markdown fences, single quotes, trailing commas, prose preambles). Parse failure logs the raw response and skips the cycle without any trades. After the 2026-05-20 cycle-time incident the apex call also explicitly sets `response_mime_type: application/json` on Gemini providers so prose responses don't trigger the retry cascade.
+The LLM's response is parsed by `_parse_ai_response_tolerant` (in `ai_analyst.py`), a defensive parser tolerant of common malformations (markdown fences, single quotes, trailing commas, prose preambles). Parse failure logs the raw response and skips the cycle without any trades. The apex call also explicitly sets `response_mime_type: application/json` on Gemini providers so the provider returns JSON natively rather than prose that has to be coaxed.
 
 ### 7.6 Display-safe rendering of LLM-emitted text
 
@@ -255,7 +253,7 @@ After the LLM returns trades, hard rules in `_validate_ai_trades` filter them. E
 
 The self-tuner runs nightly per profile (`_task_self_tune`) and is the largest single source of long-term improvement. It is a rule-based system, not learned: each rule is a small, auditable piece of code that adjusts one parameter, signal weight, override, or enable/disable bit based on its own track record.
 
-### 9.0 Architectural principle (added 2026-05-14): bias toward confident trading
+### 9.0 Architectural principle: bias toward confident trading
 
 The self-tuner exists to make the system trade better, not to make it trade less. The architectural principle, enforced by all 12 layers, is that the system should drift toward CONFIDENT TRADING, not stasis. This is not optional — it is the contract every tuning rule honors:
 
@@ -264,9 +262,9 @@ The self-tuner exists to make the system trade better, not to make it trade less
 - **TTL-based auto-restoration.** Every strategy deprecation auto-restores after 14 days unless the existing Sharpe-recovery check has already restored it. Without TTL, deprecations were effectively permanent (a deprecated strategy emits no signals → can never recover its Sharpe → stays deprecated forever). Re-deprecation requires fresh ≥30-sample evidence. Implemented in `alpha_decay.restore_expired_deprecations`.
 - **No manual rescue scripts.** A revert script needed to "rescue" the system from over-restriction is evidence of architectural failure, not a feature. Every restriction must have a path back to action.
 
-These guarantees were added on 2026-05-14 in response to a 14-day compounding-restriction collapse (stock entries fell from 24/day to 0/day system-wide) — see `feedback_self_tuner_must_drift_toward_trading.md` and the 2026-05-14 CHANGELOG entries for the incident narrative.
+These guarantees protect the system from a compounding-restriction failure mode: many small parameter tightenings, each individually reasonable, can stack into a state where the entry filter rejects everything. The five guardrails below formalize the principle as deterministic code rather than convention so the failure can't recur structurally.
 
-**Phase 1 hard-rule layer (added 2026-05-18, see `docs/17_SELF_TUNER_GUARDRAILS_AND_RAG.md`).** Five guardrails formalize the principle as deterministic code rather than convention:
+**Phase 1 hard-rule layer (see `docs/17_SELF_TUNER_GUARDRAILS_AND_RAG.md`).** Five guardrails:
 
 1. **Per-cycle delta cap.** Every numeric parameter write routes through `_apply_param_change` which clamps the change to ±25% of the current value. Composes with #3 so no single cycle can cascade past the cap.
 2. **Trade-count floor auto-loosen.** When stock entries fall below 3 in a 7-day window, `_optimize_trade_count_auto_loosen` (tagged LOOSEN — fires FIRST in the registry) picks the most-restrictive entry-filter parameter and forces it to loosen by 25%. Encodes "drift toward trading" as a deterministic action, not just a soft bias.
@@ -418,7 +416,7 @@ The journal is the single source of truth for everything downstream: meta-model 
 
 ## 13. Cost discipline
 
-The system is engineered to operate on a **per-user daily AI ceiling** that defaults to `max($5, trailing_7d_avg × 1.5)` via `cost_guard.py` and is operator-overridable in Settings. Observed steady-state spend at the current `gemini-2.5-flash-lite` default model across the 13-profile experiment fleet: **~$0.27/day** (one full trading day on 2026-06-04). Three quality levers documented in the (now archived) COST_AND_QUALITY_LEVERS_PLAN keep this number low:
+The system is engineered to operate on a **per-user daily AI ceiling** that defaults to `max($5, trailing_7d_avg × 1.5)` via `cost_guard.py` and is operator-overridable in Settings. Observed steady-state spend at the current `gemini-2.5-flash-lite` default model across the 13-profile experiment fleet runs at roughly $0.30/day. Three quality levers keep this number low:
 
 1. **Persistent shared cache** (`shared_ai_cache.py`) — ensemble + political-context responses cached in SQLite, surviving scheduler restarts.
 2. **Meta-model pre-gate** (§3) — drops low-prob candidates before specialist fan-out.
