@@ -10,16 +10,18 @@ This document describes WHAT the system trades, HOW it sizes, and HOW it manages
 
 The platform trades US equities and options on those equities. Universe construction is dynamic, not hardcoded — every cycle pulls Alpaca's active asset list, which carries ~8,000 tradeable US-listed names.
 
-Each profile is constrained to a **market segment**:
+The `segments.py:SEGMENTS` dict has **two keys**:
 
-| Segment | Approximate price range | Liquidity floor | Strategies emphasized |
-|---|---|---|---|
-| `largecap` | $50-$500+ | $50M+ daily $vol | Momentum continuation, sector rotation, mean reversion at scale, options income (covered calls, cash-secured puts) |
-| `midcap` | $20-$100 | $10M+ daily $vol | Catalyst-driven moves, earnings drift, breakout patterns, balanced long/short |
-| `smallcap` | $5-$20 | $1M+ daily $vol | Volatility breakouts, gap plays, short squeezes (long side), insider clusters |
-| `microsmall` | $1-$5 | $500K+ daily $vol | Pure technical, news-driven, more conservative sizing |
-| `crypto` | n/a | n/a | Crypto-specific strategies via Alpaca's crypto endpoint |
-| `largecap_shorts`, `smallcap_shorts`, `mid_shorts` | (matching) | (matching) | Short-bias variants of above with bearish strategy library |
+| Segment | Universe | Notes |
+|---|---|---|
+| `stocks` | Unified Alpaca-tradable US equity universe (~8,000 names) | Filtered per-profile by `min_price` / `max_price` / `min_volume`. The `STOCK_UNIVERSE` constant (~524 names) is retained as the outage-fallback for `screen_dynamic_universe` only. |
+| `crypto` | Alpaca-tradable crypto symbols | Separate code path — 24/7 schedule, crypto-specific data endpoints. Currently `enable_crypto=0` on every profile (deliberate baseline-control choice). |
+
+> **Historical note.** The platform previously had four cap-tier segments (`largecap`, `midcap`, `small`, `micro`). These were removed in commit `a49c9d6` (2026-05-20) when an audit found seven places where cap-tier still drove behavior at runtime, despite earlier commits declaring it "informational." See archived `docs/22_UNIFIED_STOCK_UNIVERSE.md` for the full migration rationale. The actual operational dimensions today are:
+>
+> - **Per-profile risk knobs** (`min_price`, `max_price`, `min_volume`, `max_position_pct`, etc.) — set per profile to dial the desired risk profile
+> - **`pipeline_kind` (`stock` vs `option`)** — the genuine instrument-class split, lives in `pipelines/dispatch.py` and routes through `StockPipeline` or `OptionPipeline` (per `docs/14`)
+> - **`enable_short_selling`** — per-profile flag that opens / closes the short-side action vocabulary
 
 Segment definition lives in `segments.py` (live) and `segments_historical.py` (frozen baseline used for backtest survivorship-bias correction).
 
@@ -27,9 +29,9 @@ Segment definition lives in `segments.py` (live) and `segments_historical.py` (f
 
 The platform ships with 20+ deterministic strategies, organized by direction and methodology.
 
-### 2a. Bullish strategies (16)
+### 2a. Bullish strategies (12 plugin + 4 legacy schema toggles)
 
-The first four are the legacy "core" strategies in `fallback_strategy.py` / `strategy_small.py` — controlled by the per-profile `strategy_momentum_breakout` / `strategy_volume_spike` / `strategy_mean_reversion` / `strategy_gap_and_go` toggle columns. The rest live as plugin modules in `strategies/`.
+All 12 live as plugin modules in `strategies/` — the canonical registry is `strategies/__init__.py`. The four legacy core strategies (`momentum_breakout`, `volume_spike`, `mean_reversion`, `gap_and_go`) still appear in `fallback_strategy.py` / `strategy_small.py` and their `strategy_*` toggle columns still exist for schema back-compat — but those files are **dead-code paths** after the 2026-05-20 cap-tier removal (only invoked via the now-removed `market_type` branch in `strategy_router.py`). The live versions of the same four strategies are part of the 12 plugins below.
 
 | Strategy | Edge claim | Confirmation signals |
 |---|---|---|
@@ -50,7 +52,7 @@ The first four are the legacy "core" strategies in `fallback_strategy.py` / `str
 | `volume_dryup_breakout` | Volume contraction precedes breakouts | Volume ratio ≤ 0.5× × N consecutive days, then expansion |
 | `max_pain_pinning` | Index ETFs pin to max-pain near monthly opex | Days to monthly opex ≤ 3 + spot near max pain |
 
-### 2b. Bearish strategies (10)
+### 2b. Bearish strategies (13)
 
 | Strategy | Edge claim |
 |---|---|
@@ -114,7 +116,7 @@ The options program is governed by:
 
 `options_strategy_advisor.py` evaluates each held position for opportunistic options strategies (covered call on a stable long, protective put on a high-conviction long with elevated IV). It also evaluates each screener candidate for multi-leg opportunities via `evaluate_candidate_for_multileg`, which produces fully-specified strategy recommendations (strategy name, strikes, expiry, rationale) inserted into the AI prompt as the MULTI-LEG OPTIONS STRATEGIES block.
 
-**IV dead zone.** Multi-leg recommendations only fire when IV rank is OUTSIDE the neutral band (default rich threshold 60, cheap threshold 45 — must remain ≥10 points apart). When a candidate's IV rank falls in the 45-60 neutral band, no multileg rec is generated; the AI evaluates the candidate as a stock opportunity (or skips) without a pre-built options recommendation crowding the prompt. Restoring the dead zone (originally 50-60, removed 2026-05-12, re-added 2026-05-14 as 45-60) was the immediate fix for the bug class that drove stock BUY signals to 0/day. Per-profile overrides via `option_iv_rich_threshold` / `option_iv_cheap_threshold` honor the ≥10-point minimum, enforced by `tests/test_multileg_iv_dead_zone.py`.
+**IV dead zone.** Multi-leg recommendations only fire when IV rank is OUTSIDE the neutral band. Schema defaults: `option_iv_rich_threshold=55.0` and `option_iv_cheap_threshold=55.0` (collapsed to a single point — no dead zone by default; operator widens the gap on the Settings page, with the ≥10-point minimum enforced). When a candidate's IV rank falls in the no-rec zone, no multileg rec is generated; the AI evaluates the candidate as a stock opportunity (or skips) without a pre-built options recommendation crowding the prompt. Restoring a dead zone (originally 50-60, removed 2026-05-12, re-added 2026-05-14) was the immediate fix for the bug class that drove stock BUY signals to 0/day. Per-profile overrides via `option_iv_rich_threshold` / `option_iv_cheap_threshold` honor the ≥10-point minimum, enforced by `tests/test_multileg_iv_dead_zone.py`.
 
 ### Stocks and options as equal opportunities
 
