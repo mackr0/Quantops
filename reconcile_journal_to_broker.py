@@ -485,6 +485,133 @@ def walk_replace_chain_forward(api, start_oid: str,
 _walk_replace_chain_forward = walk_replace_chain_forward
 
 
+def walk_replace_chain_backward(
+    api,
+    terminal_oid: str,
+    target_oid: str,
+    max_depth: int = _REPLACE_CHAIN_MAX_DEPTH,
+) -> bool:
+    """Walk an Alpaca order's `replaces` chain backward looking for
+    `target_oid`. Returns True if found within max_depth, False if
+    not (chain dead-ended, hit max_depth, or never linked).
+
+    Used by `_detect_protective_fill`'s backward-traverse fallback:
+    when forward walk from a journaled id dead-ends because an
+    intermediate replace link has been GC'd, we can still match a
+    candidate broker order to the journaled placement by walking
+    backward from the candidate via `replaces`. If the trail leads
+    to our journaled id, the candidate IS the terminal fill we want.
+    """
+    if not terminal_oid or not target_oid:
+        return False
+    if terminal_oid == target_oid:
+        return True
+    current_oid = terminal_oid
+    for _ in range(max_depth):
+        order, _exc = _retrying_call(api.get_order, current_oid)
+        if order is None:
+            return False
+        prev_oid = (
+            getattr(order, "replaces", None)
+            or getattr(order, "replaced_id", None)
+        )
+        if not prev_oid:
+            return False
+        if prev_oid == target_oid:
+            return True
+        current_oid = prev_oid
+    return False
+
+
+def _find_terminal_via_backward_walk(
+    api, row, journaled_oid: str, used_sell_ids: set,
+) -> Optional[dict]:
+    """Forward-walk fallback: when `walk_replace_chain_forward`
+    dead-ends from the journaled id, search recent broker orders on
+    this symbol for any filled SELL/BUY whose `replaces` chain
+    traces back to the journaled id. This catches the case where
+    Alpaca GC'd intermediate replace links and the forward walk
+    can't reach the terminal.
+
+    Returns the fill detail dict in the same shape as
+    `_detect_protective_fill` produces, or None if no backward-walk
+    match exists.
+    """
+    side = (row["side"] or "").lower()
+    expected_exit_side = "buy" if side == "short" else "sell"
+    sym = _lookup_symbol_for_row(row)
+    if not sym:
+        return None
+    try:
+        ts = _to_utc_iso(row["timestamp"]) or datetime.now(timezone.utc)
+    except Exception:
+        return None
+    # Pull recent broker orders on this symbol. The fuzzy-fallback
+    # path elsewhere uses the same shape; we reuse list_orders here
+    # to get candidates without coupling to its exact filter.
+    try:
+        orders = api.list_orders(
+            status="filled",
+            symbols=[sym],
+            after=ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+            direction="asc",
+            limit=200,
+        )
+    except TypeError:
+        # SDK that doesn't accept symbols=/after= — fall back to
+        # full list + filter.
+        try:
+            orders = api.list_orders(status="filled", limit=500,
+                                       direction="desc")
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+    for cand in orders or []:
+        cand_id = getattr(cand, "id", None)
+        if not cand_id or cand_id in used_sell_ids:
+            continue
+        if getattr(cand, "side", "") != expected_exit_side:
+            continue
+        if getattr(cand, "symbol", "") != sym:
+            continue
+        # Walk this candidate's `replaces` chain backward. If we
+        # land on the journaled id, this is the terminal fill that
+        # corresponds to our protective placement.
+        if not walk_replace_chain_backward(api, cand_id, journaled_oid):
+            continue
+        try:
+            filled_qty = float(getattr(cand, "filled_qty", 0) or 0)
+            fill_price = float(getattr(cand, "filled_avg_price", 0) or 0)
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if filled_qty <= 0 or fill_price <= 0:
+            continue
+        filled_at = getattr(cand, "filled_at", None)
+        if hasattr(filled_at, "isoformat"):
+            fa_dt = (
+                filled_at
+                if filled_at.tzinfo
+                else filled_at.replace(tzinfo=timezone.utc)
+            )
+        else:
+            fa_dt = _to_utc_iso(filled_at)
+        used_sell_ids.add(cand_id)
+        return {
+            # IMPORTANT: return the JOURNALED oid as `order_id` so
+            # the apply path's UPDATE matches the pending_protective
+            # row's order_id column. The terminal id was added to
+            # used_sell_ids above to prevent double-attribution.
+            "order_id": journaled_oid,
+            "filled_at": fa_dt,
+            "filled_qty": filled_qty,
+            "filled_avg_price": fill_price,
+            "order_type": getattr(cand, "order_type", "?"),
+        }
+    return None
+
+
 def _detect_protective_fill(api, row, used_sell_ids):
     """For any open BUY/SHORT, check whether its OWN protective order
     fired at the broker — independent of the symbol's broker_qty.
@@ -531,6 +658,23 @@ def _detect_protective_fill(api, row, used_sell_ids):
             continue
         order, _depth = _walk_replace_chain_forward(api, stop_oid)
         if order is None:
+            # RC2 (2026-06-05): forward walk dead-ended (chain GC'd,
+            # intermediate link missing, max_depth hit). Try the
+            # backward-walk fallback: scan recent broker orders on
+            # this symbol, walking each candidate's `replaces` chain
+            # backward looking for stop_oid. If we find a candidate
+            # whose backward trail reaches us, that candidate IS the
+            # terminal fill we want.
+            backward = _find_terminal_via_backward_walk(
+                api, row, stop_oid, used_sell_ids,
+            )
+            if backward is not None:
+                journal_qty = float(row["qty"] or 0)
+                filled_qty = backward["filled_qty"]
+                if abs(filled_qty - journal_qty) < 0.5:
+                    return "backfill_full", backward
+                if filled_qty < journal_qty:
+                    return "backfill_partial", backward
             continue
         # When the walk traversed >= 1 replace link, also mark the
         # terminal id as used. The fuzzy fallback (and sibling-profile
