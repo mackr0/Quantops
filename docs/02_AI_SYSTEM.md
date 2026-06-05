@@ -11,11 +11,11 @@ QuantOpsAI's AI architecture is a **stacked decision pipeline** in which a front
 The pipeline is summarized as:
 
 ```
-Universe (8,000 symbols) →
-    Strategy votes (20+ engines) →
-        Pre-rank shortlist (~30) →
-            Meta-model pre-gate (drops low-prob candidates) →
-                Specialist ensemble (5 calibrated specialists) →
+Universe (~8,000 Alpaca-tradable US equities) →
+    Strategy votes (25 plugin strategies) →
+        Pre-rank shortlist (top 30) →
+            Meta-model pre-gate (drops candidates below meta_pregate_threshold, default 0.35) →
+                Two-layer specialist ensemble (179 deterministic rules + 8 LLM specialists) →
                     LLM batch decision (the apex policy) →
                         Validation gates (hard rules) →
                             Execution →
@@ -24,13 +24,15 @@ Universe (8,000 symbols) →
                                         Feedback loops (training data for every layer above)
 ```
 
+**This is the value-prop story.** The system scales the AI's accuracy without scaling its cost by putting hundreds of *deterministic* rule-checkers in front of the *narrative* LLM call. The 179 rule modules each cost zero API tokens — they're pure-Python pattern matchers — and they catch the structurally-checkable patterns (RSI overbought, insider clusters, gap into resistance, etc.) so the LLM only spends tokens on the synthesis work it's uniquely good at. Most decisions short-circuit cleanly through the rule layer; only the genuinely-contested candidates exercise the apex LLM. Result: ~$0.27/day of AI spend across the 13-profile fleet at the current `gemini-2.5-flash-lite` rate.
+
 Each layer is documented below. Section sequence follows the data flow.
 
 ## 1. Universe construction
 
 Source: Alpaca's `/v2/assets` endpoint (US equities + ETFs, ~8,000 active symbols), filtered per-profile by:
 
-- Market type (mid-cap / small-cap / micro-cap / large-cap / crypto / shorts variants), via `segments.py` and `segments_historical.py`.
+- Market type (`stocks` / `crypto` — cap tiers removed 2026-05-20 per commit `a49c9d6`), via `segments.py` and `segments_historical.py`. Per-profile `min_price` / `max_price` / `min_volume` thresholds gate which of the ~8,000 active symbols actually reach the strategy layer; short selling is gated by `enable_short_selling`.
 - Active-status flag (delisted / merged / renamed names are removed from live universe but kept in `historical_universe_additions` for backtest survivorship-bias correction).
 - Per-profile custom watchlist (additions) and exclusion list (removals).
 
@@ -38,17 +40,12 @@ The dynamic-universe layer is described in detail in `docs/04_TECHNICAL_REFERENC
 
 ## 2. Strategy engines
 
-The platform ships ~30 deterministic per-symbol strategies. Each is a pure function returning a vote (signal + score). Strategies live in two locations:
-
-- **`strategies/*.py`** — 25 plugin-style strategies. The convention going forward.
-- **`strategy_micro.py`, `strategy_small.py`, `strategy_mid.py`, `strategy_large.py`, `strategy_crypto.py`, `fallback_strategy.py`** — the legacy market-type-specific engines. Includes the original four (`momentum_breakout`, `volume_spike`, `mean_reversion`, `gap_and_go`) defined as `*_strategy` functions in `fallback_strategy.py` and `strategy_small.py`. These are the strategies the `strategy_*` profile-toggle columns control directly.
-
-Plugin-style strategies in `strategies/`:
+The platform ships **25 plugin strategies** in `strategies/`. Each is a pure function returning a vote (signal + score). Cost: zero per cycle (pure code, no API). The canonical registry lives at `strategies/__init__.py`.
 
 - **Bullish (12):** gap_reversal, news_sentiment_spike, short_squeeze_setup (long side), earnings_drift, insider_cluster, fifty_two_week_breakout, macd_cross_confirmation, sector_momentum_rotation, analyst_upgrade_drift, short_term_reversal, volume_dryup_breakout, max_pain_pinning.
 - **Bearish (13):** breakdown_support, distribution_at_highs, failed_breakout, parabolic_exhaustion, relative_weakness_in_strong_sector, earnings_disaster_short, catalyst_filing_short, sector_rotation_short, iv_regime_short, relative_weakness_universe, insider_selling_cluster, high_iv_rank_fade, vol_regime.
 
-Plus the four legacy bullish strategies (`momentum_breakout`, `volume_spike`, `mean_reversion`, `gap_and_go`) for a total of approximately 29 distinct strategies in active production use.
+(Historical note: the original four `momentum_breakout` / `volume_spike` / `mean_reversion` / `gap_and_go` strategies live in `fallback_strategy.py` + `strategy_small.py` and the per-profile toggle columns `strategy_momentum_breakout` etc. still exist for schema back-compat, but these legacy paths are dead-code as of the 2026-05-20 cap-tier removal — only invoked via the now-removed `market_type`-branching in `strategy_router.py`. The live versions of those strategies are part of the 25 plugins above.)
 
 Strategy votes are deterministic; they're cheap (no LLM cost) and run on every cycle. Each strategy emits one of: STRONG_BUY, BUY, HOLD, SELL, STRONG_SELL, SHORT, STRONG_SHORT.
 
@@ -56,7 +53,7 @@ The shortlist is built by aggregating strategy votes per symbol, computing a com
 
 ## 3. Meta-model pre-gate (Lever 2)
 
-Before each candidate reaches the specialist ensemble — which costs API tokens — the meta-model evaluates whether the AI is likely to be **right** on this candidate given the full feature payload. Candidates whose predicted probability of success is below `meta_pregate_threshold` (default 0.5) are dropped silently.
+Before each candidate reaches the specialist ensemble — which costs API tokens — the meta-model evaluates whether the AI is likely to be **right** on this candidate given the full feature payload. Candidates whose predicted probability of success is below `meta_pregate_threshold` (default 0.35 since 2026-05-13 — lowered from 0.5 after audit found 68% of candidates were being filtered before AI evaluation) are dropped silently. AI-tunable via `_optimize_meta_pregate_threshold`.
 
 This is a cost-and-quality lever: it cuts specialist API calls roughly in half once the meta-model is trained, and it also functions as a quality filter — candidates the meta-model strongly suspects are noise don't pollute the specialist consensus.
 
@@ -230,7 +227,7 @@ The prompt structure is verbosity-tunable per profile via `prompt_layout.set_ver
 
 ### 7.5 Response parsing
 
-The LLM's response is parsed by `_parse_ai_response_strict_json`, which is a defensive parser tolerant of common malformations (markdown fences, single quotes, trailing commas). Strict-JSON parse failure logs the response and skips the cycle without any trades.
+The LLM's response is parsed by `_parse_ai_response_tolerant` (in `ai_analyst.py`), a defensive parser tolerant of common malformations (markdown fences, single quotes, trailing commas, prose preambles). Parse failure logs the raw response and skips the cycle without any trades. After the 2026-05-20 cycle-time incident the apex call also explicitly sets `response_mime_type: application/json` on Gemini providers so prose responses don't trigger the retry cascade.
 
 ### 7.6 Display-safe rendering of LLM-emitted text
 
@@ -419,7 +416,7 @@ The journal is the single source of truth for everything downstream: meta-model 
 
 ## 13. Cost discipline
 
-The system is engineered to operate on a $1.50-2.00/day AI budget across ten profiles. Three levers documented in the (now archived) COST_AND_QUALITY_LEVERS_PLAN:
+The system is engineered to operate on a **per-user daily AI ceiling** that defaults to `max($5, trailing_7d_avg × 1.5)` via `cost_guard.py` and is operator-overridable in Settings. Observed steady-state spend at the current `gemini-2.5-flash-lite` default model across the 13-profile experiment fleet: **~$0.27/day** (one full trading day on 2026-06-04). Three quality levers documented in the (now archived) COST_AND_QUALITY_LEVERS_PLAN keep this number low:
 
 1. **Persistent shared cache** (`shared_ai_cache.py`) — ensemble + political-context responses cached in SQLite, surviving scheduler restarts.
 2. **Meta-model pre-gate** (§3) — drops low-prob candidates before specialist fan-out.
@@ -440,7 +437,7 @@ Three providers wired (`ai_providers.py`): Anthropic Claude (Haiku, Sonnet, Opus
 
 - **No reinforcement learning loop.** The system is a stacked prediction-and-decision pipeline, not an RL agent. The "feedback loop" is supervised: resolve labeled predictions, retrain models. This is a deliberate choice; see `docs/10_METHODOLOGY.md`.
 - **No prompt-learning / fine-tuning.** The LLM is used as a frozen-weights frontier policy; calibration happens externally via the meta-model and specialist Plat scaling.
-- **No latency optimization.** The system runs on a 5-15 minute cycle. Sub-second execution is out of scope.
+- **No latency optimization.** The system runs on an operator-tunable cycle (default 15 min; selectable 15 / 10 / 5 / 3 / 2 min via Settings → AI Behavior, persisted to `users.scan_interval_minutes`). Sub-second execution is out of scope; tighter cadence is for operator preference, not latency arbitrage.
 
 ## See also
 
