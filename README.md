@@ -1,6 +1,6 @@
 # QuantOpsAI
 
-QuantOpsAI is an AI-first autonomous trading platform. It runs a multi-strategy paper-trading book on Alpaca with a Claude / GPT / Gemini AI in the portfolio-manager seat. The system surfaces every candidate's full feature context — technicals, alternative data, options state, factor exposures, portfolio-level risk, and its own track record — to the AI on every cycle, captures every decision and resolves it against price action, and feeds the resolved outcomes back into a two-layer meta-model, a five-specialist calibrated ensemble, a twelve-layer self-tuning stack, and a Barra-style portfolio risk model. The platform tests ten or more strategies in parallel inside three free Alpaca paper accounts via a virtual-account reconciliation layer, and is wired with guardrail tests that prevent hidden levers, untracked features, and untested code from shipping.
+QuantOpsAI is an AI-first autonomous trading platform. It runs a multi-strategy paper-trading book on Alpaca with a Claude / GPT / Gemini AI in the portfolio-manager seat. The system surfaces every candidate's full feature context — technicals, alternative data, options state, factor exposures, portfolio-level risk, and its own track record — to the AI on every cycle, captures every decision and resolves it against price action, and feeds the resolved outcomes back into a two-layer meta-model (GBM batch + SGD freshness), a **two-layer calibrated specialist ensemble** (179 deterministic rule-checkers + 8 LLM-narrative specialists), a self-tuning stack (12 original layers + 5 deterministic guardrails), and a Barra-style portfolio risk model. The platform runs **13 profiles in parallel inside 3 Alpaca paper accounts** via a virtual-account reconciliation layer, and is wired with guardrail tests that prevent hidden levers, untracked features, and untested code from shipping. The deterministic-vs-narrative architecture is the cost story: hundreds of zero-API-cost rule checkers handle structurally-checkable patterns so the single batched LLM call only spends tokens on synthesis — steady-state observed AI spend is ~$0.27/day across the 13-profile fleet at the current `gemini-2.5-flash-lite` rate.
 
 ## Documentation
 
@@ -33,10 +33,10 @@ Read in this order — each doc is written for a specific audience.
 
 ## Status
 
-- **Mode:** paper trading on Alpaca, three live accounts virtualized into ten or more profiles.
-- **Capital:** simulated $10K per profile (configurable per virtual account).
-- **Test suite:** 1,914 tests, zero skipped.
-- **Guardrails:** snake_case leakage, hidden-lever, scheduled-feature-toggle, meta-feature UI coverage, schema migration safety.
+- **Mode:** paper trading on Alpaca, three accounts virtualized into 13 profiles via the FIFO journal layer.
+- **Capital:** $3M total virtual ($1M per Alpaca paper-account cap × 3 accounts), allocated per-profile across baselines + ablations + capital-scaling experiment per `docs/15_EXPERIMENT_DESIGN_2026_05_17.md`. Per-profile range $25K–$700K.
+- **Test suite:** 4,561 tests, 1 skipped (an `_EMPTY_FIRE_EXEMPT` rule whose purpose IS to fire on minimal context).
+- **Guardrails:** snake_case leakage, hidden-lever, scheduled-feature-toggle, meta-feature UI coverage, schema migration safety, no silent except: pass, no unguarded json.loads, every option submit passes position_intent, every mutating endpoint admin-required.
 - **Deploy:** continuous deployment via `sync.sh` to a single droplet.
 
 ## License & ownership
