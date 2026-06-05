@@ -6,15 +6,17 @@ or incremental refactors that don't fit in the current commit chain.
 Each item names what to build, the user-visible problem it solves,
 and any technical pre-requisites or pitfalls.
 
-**Last reconciled against code: 2026-05-21.** Most of the 2026-05-11
-incident backlog has shipped; see the Shipped section at the bottom.
+**Last reconciled against code: 2026-06-04.** Phase 4B1 foundation
+shipped 2026-05-21 (dataset_builder + model_registry); training
+runner / job monitor / evaluator / inference + scheduler wiring +
+`/finetune` dashboard still pending per docs/20 §3 "Still to build."
 
 ---
 
 ## P0 — Phase 4B1: incremental fine-tuning (the headline next project)
 
 **Full spec**: `docs/20_FINETUNE_PHASE_4B1_INCREMENTAL.md`
-(Status there: SCOPING — not yet implemented.)
+(Status there: **FOUNDATION SHIPPED 2026-05-21**; corpus clock reset 2026-06-04 after the orphan-class contamination; first training run gated on data accumulation, ~early-to-mid August 2026.)
 
 **What**: Fine-tune a custom model on this system's own trade history
 so the apex LLM internalizes the candidate universe, regime tagger,
