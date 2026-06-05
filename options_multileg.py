@@ -740,6 +740,7 @@ def execute_multileg_strategy(
                 "Duplicate-position check failed (continuing): %s", exc,
             )
 
+    combo_id: Optional[str] = None
     if use_combo:
         try:
             combo_kwargs = {
@@ -756,15 +757,27 @@ def execute_multileg_strategy(
             # accept the `legs` kwarg, but the underlying REST API
             # does. Bypass the SDK for option orders. Wrapped in a
             # 5xx-retry helper because Alpaca's paper MLEG endpoint
-            # returns transient 500s on ~30% of submissions (caught
-            # 2026-05-08 — half-filled spread incident traced to
-            # combo failure → sequential fallback → leg expired
-            # unfilled while partner filled). 4xx client errors
-            # bypass retry.
+            # returns transient 500s on ~30% of submissions. 4xx
+            # client errors bypass retry.
             combo_order = _combo_submit_with_retry(api, combo_kwargs)
             combo_id = getattr(combo_order, "id", None)
             # Combo orders return one parent id; child fills come via
             # api.list_orders(parent=combo_id) once filled.
+            #
+            # Atomic-placement contract: the per-leg journal writes
+            # in `_log_strategy_legs` re-raise on any failure, having
+            # already cancelled the broker order and halted the
+            # profile. The caller-side except below converts the
+            # raised exception into an ERROR result so the trade
+            # pipeline records the failure without falling through
+            # to the sequential path (which would re-submit to a
+            # broker we already rolled back from).
+            if log and db_path:
+                _log_strategy_legs(
+                    strategy, combo_id, ctx, api=api,
+                    ai_confidence=ai_confidence,
+                    ai_reasoning=ai_reasoning,
+                )
             result.update({
                 "action": "MULTILEG_OPEN",
                 "leg_order_ids": [combo_id],
@@ -774,12 +787,21 @@ def execute_multileg_strategy(
                     f"as MLEG combo (parent={combo_id})"
                 ),
             })
-            if log and db_path:
-                _log_strategy_legs(
-                    strategy, combo_id, ctx, api=api,
-                    ai_confidence=ai_confidence,
-                    ai_reasoning=ai_reasoning,
-                )
+            return result
+        except _AtomicPlacementBreach:
+            # Already rolled back at the broker + halted the profile
+            # inside _log_strategy_legs; surface ERROR so the trade
+            # pipeline records the failure but do NOT fall through
+            # to the sequential path.
+            result.update({
+                "action": "ERROR",
+                "combo_order_id": combo_id,
+                "reason": (
+                    f"Multileg journal-write breach: {strategy.name} "
+                    f"on {strategy.underlying} — broker rolled back, "
+                    f"profile halted"
+                ),
+            })
             return result
         except Exception as exc:
             logger.warning(
@@ -853,6 +875,24 @@ def execute_multileg_strategy(
 
     # All legs submitted successfully via sequential path
     leg_order_ids = [s["order_id"] for s in submitted]
+    if log and db_path:
+        try:
+            _log_strategy_legs(
+                strategy, None, ctx,
+                leg_order_ids=leg_order_ids, api=api,
+                ai_confidence=ai_confidence, ai_reasoning=ai_reasoning,
+            )
+        except _AtomicPlacementBreach:
+            result.update({
+                "action": "ERROR",
+                "leg_order_ids": leg_order_ids,
+                "reason": (
+                    f"Multileg journal-write breach (sequential): "
+                    f"{strategy.name} on {strategy.underlying} — "
+                    f"broker rolled back, profile halted"
+                ),
+            })
+            return result
     result.update({
         "action": "MULTILEG_OPEN",
         "leg_order_ids": leg_order_ids,
@@ -861,12 +901,6 @@ def execute_multileg_strategy(
             f"{strategy.underlying} sequentially (combo unavailable)"
         ),
     })
-    if log and db_path:
-        _log_strategy_legs(
-            strategy, None, ctx,
-            leg_order_ids=leg_order_ids, api=api,
-            ai_confidence=ai_confidence, ai_reasoning=ai_reasoning,
-        )
     return result
 
 
@@ -1396,6 +1430,106 @@ ALL_MULTILEG_BUILDERS = {
 }
 
 
+class _AtomicPlacementBreach(Exception):
+    """Raised by `_log_strategy_legs` when a per-leg journal write
+    fails AFTER broker orders were placed. Broker rollback has been
+    attempted and the profile halted before this is raised; callers
+    use the exception type to distinguish "atomic-placement breach
+    with cleanup already done" from a fall-through pre-broker
+    failure (e.g., combo path 5xx → fall through to sequential).
+    """
+    pass
+
+
+def _rollback_multileg_broker_orders(
+    api,
+    combo_order_id: Optional[str],
+    leg_order_ids: Optional[List[str]],
+) -> None:
+    """Cancel every broker order produced by a multileg submission so
+    a partial / total journal-write failure can't leave the broker
+    holding positions that no profile's virtual book reflects (the
+    `broker_orphan` class the aggregate audit catches after the fact).
+
+    Combo path: one parent `combo_order_id` whose cancel unwinds all
+    legs at the broker. Sequential path: per-leg order_ids — every
+    one gets cancelled. Some IDs may be None (failed leg before its
+    own submit completed); skip those.
+
+    Caller responsibility: invoke this on ANY exception inside the
+    journal-write block. Re-raises the first cancel exception so the
+    caller knows the rollback was incomplete and can halt the
+    profile.
+    """
+    if api is None:
+        return
+    candidates: List[str] = []
+    if combo_order_id:
+        candidates.append(str(combo_order_id))
+    for oid in (leg_order_ids or []):
+        if oid and str(oid) not in candidates:
+            candidates.append(str(oid))
+    first_exc: Optional[Exception] = None
+    for oid in candidates:
+        try:
+            api.cancel_order(oid)
+            logger.info(
+                "Multileg rollback: cancelled broker order %s", oid,
+            )
+        except Exception as exc:
+            # Treat "already terminal" cancels as success — the
+            # broker order is in the desired non-active state.
+            msg = str(exc).lower()
+            if (
+                "already" in msg and (
+                    "filled" in msg or "cancel" in msg
+                    or "terminal" in msg
+                )
+            ):
+                logger.info(
+                    "Multileg rollback: order %s already terminal: %s",
+                    oid, exc,
+                )
+                continue
+            logger.error(
+                "Multileg rollback: cancel %s FAILED: %s: %s",
+                oid, type(exc).__name__, exc,
+            )
+            if first_exc is None:
+                first_exc = exc
+    if first_exc is not None:
+        raise first_exc
+
+
+def _mark_legs_canceled(
+    db_path: Optional[str],
+    journal_row_ids: List[int],
+) -> None:
+    """Flip status='canceled' on every journal row this same call
+    successfully wrote before a later leg's log_trade raised. The
+    FIFO position book filters on `status != 'canceled'`, so these
+    rows stop affecting any virtual book derivation; the rows
+    themselves survive for audit traceability.
+
+    Best-effort: the caller has already initiated broker rollback +
+    profile halt before invoking this, so a DB failure here is logged
+    but doesn't change the outcome (the halt is what stops further
+    trading until manual review).
+    """
+    if not db_path or not journal_row_ids:
+        return
+    from contextlib import closing
+    import sqlite3
+    with closing(sqlite3.connect(db_path)) as conn:
+        placeholders = ",".join("?" * len(journal_row_ids))
+        conn.execute(
+            f"UPDATE trades SET status='canceled' "
+            f"WHERE id IN ({placeholders})",
+            list(journal_row_ids),
+        )
+        conn.commit()
+
+
 def _log_strategy_legs(strategy: OptionStrategy,
                           combo_order_id: Optional[str],
                           ctx,
@@ -1457,6 +1591,18 @@ def _log_strategy_legs(strategy: OptionStrategy,
             )
 
     leg_order_ids = leg_order_ids or [combo_order_id] * len(strategy.legs)
+
+    # Per atomic-placement contract (`feedback_no_orphan_broker_fills`,
+    # `feedback_fix_class_not_instance`): if ANY per-leg journal write
+    # raises, every successfully-journaled leg AND every broker order
+    # placed by this call MUST be unwound — otherwise the broker
+    # holds positions no virtual book reflects (a `broker_orphan`
+    # which the aggregate audit surfaces but only after the fact).
+    # On rollback failure the profile is halted so the operator sees
+    # the breach immediately rather than discovering it via the next
+    # audit cycle.
+    journaled_leg_ids: List[int] = []
+    rollback_failed = False
     for i, leg in enumerate(strategy.legs):
         order_id = (leg_order_ids[i]
                     if i < len(leg_order_ids) else combo_order_id)
@@ -1504,7 +1650,7 @@ def _log_strategy_legs(strategy: OptionStrategy,
             # fall back to the spread's structural thesis so the
             # row always carries SOMETHING explanatory.
             row_reasoning = ai_reasoning or strategy.thesis
-            log_trade(
+            row_id = log_trade(
                 symbol=leg.underlying,
                 side=leg.side,
                 qty=leg.qty,
@@ -1525,8 +1671,90 @@ def _log_strategy_legs(strategy: OptionStrategy,
                 strike=float(leg.strike),
                 db_path=db_path,
             )
+            if row_id:
+                journaled_leg_ids.append(int(row_id))
         except Exception as exc:
-            logger.warning(
-                "log_trade failed for leg %d of %s: %s",
-                i, strategy.name, exc,
+            # Atomic-placement breach: the broker has fills this
+            # process can no longer journal. Cancel every order
+            # this call placed, mark any leg row already written
+            # as 'canceled' so the FIFO position book ignores it,
+            # halt the profile, then re-raise so the caller sees
+            # the failure (vs the prior silent warning + continue).
+            logger.error(
+                "log_trade FAILED for leg %d of %s (occ=%s, combo=%s): "
+                "%s: %s — initiating atomic rollback",
+                i, strategy.name, leg.occ_symbol, combo_order_id,
+                type(exc).__name__, exc,
             )
+            try:
+                _rollback_multileg_broker_orders(
+                    api, combo_order_id, leg_order_ids,
+                )
+            except Exception as cancel_exc:
+                rollback_failed = True
+                logger.error(
+                    "Rollback of broker orders FAILED for %s "
+                    "(combo=%s): %s: %s — broker may hold orphan "
+                    "positions; halting profile",
+                    strategy.name, combo_order_id,
+                    type(cancel_exc).__name__, cancel_exc,
+                )
+            # Mark any successfully-journaled leg rows from this
+            # same call as canceled so the virtual book treats the
+            # whole strategy as never having existed.
+            try:
+                _mark_legs_canceled(db_path, journaled_leg_ids)
+            except Exception as mark_exc:
+                logger.error(
+                    "Marking journaled legs %s canceled FAILED: "
+                    "%s: %s",
+                    journaled_leg_ids,
+                    type(mark_exc).__name__, mark_exc,
+                )
+            # Halt the profile so trading stops until the operator
+            # acknowledges. Rollback failure is more serious (broker
+            # could still hold orphan fills) so distinguish in the
+            # alert title.
+            try:
+                from halt_helpers import halt_and_alert
+                profile_id = (
+                    getattr(ctx, "profile_id", None) if ctx else None
+                )
+                if profile_id:
+                    title = (
+                        "Multileg journal-write breach (rollback FAILED): "
+                        + strategy.name
+                        if rollback_failed
+                        else "Multileg journal-write breach: "
+                        + strategy.name
+                    )
+                    halt_and_alert(
+                        profile_id=profile_id,
+                        db_path=db_path,
+                        alert_type="multileg_atomic_breach",
+                        title=title,
+                        detail=(
+                            f"strategy={strategy.name} "
+                            f"underlying={strategy.underlying} "
+                            f"combo_order_id={combo_order_id} "
+                            f"failing_leg_index={i} "
+                            f"failing_leg_occ={leg.occ_symbol} "
+                            f"log_trade_exc={type(exc).__name__}: {exc} "
+                            f"rollback_failed={rollback_failed}"
+                        ),
+                    )
+            except Exception as halt_exc:
+                logger.error(
+                    "halt_and_alert FAILED: %s: %s — "
+                    "operator must investigate manually",
+                    type(halt_exc).__name__, halt_exc,
+                )
+            # Re-raise as a sentinel so the caller's outer try/except
+            # converts the result dict to ERROR (vs the prior silent
+            # swallow that left the broker holding fills the journal
+            # didn't reflect — the `broker_orphan` class observed on
+            # the EXP-A2 NVDA strangle).
+            raise _AtomicPlacementBreach(
+                f"log_trade failed for leg {i} of {strategy.name}: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc

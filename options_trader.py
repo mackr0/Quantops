@@ -574,10 +574,82 @@ def execute_option_strategy(
                 db_path=ctx.db_path if ctx else None,
             )
         except Exception as exc:
-            logger.warning(
-                "Option order placed (id=%s) but log_trade failed: %s",
-                order_id, exc,
+            # Atomic-placement contract: the broker holds an order
+            # this process can no longer journal. Cancel the broker
+            # order and halt the profile so trading stops until the
+            # operator acknowledges. Without this, the prior silent
+            # warning left the broker in a `broker_orphan` state
+            # (no profile's virtual book reflects the position).
+            logger.error(
+                "Single-leg option order placed (id=%s) but "
+                "log_trade failed: %s: %s — initiating atomic rollback",
+                order_id, type(exc).__name__, exc,
             )
+            rollback_failed = False
+            try:
+                api.cancel_order(order_id)
+                logger.info(
+                    "Single-leg rollback: cancelled broker order %s",
+                    order_id,
+                )
+            except Exception as cancel_exc:
+                msg = str(cancel_exc).lower()
+                already_terminal = (
+                    "already" in msg and (
+                        "filled" in msg or "cancel" in msg
+                        or "terminal" in msg
+                    )
+                )
+                if not already_terminal:
+                    rollback_failed = True
+                    logger.error(
+                        "Cancel of broker order %s FAILED: %s: %s — "
+                        "broker may hold orphan position",
+                        order_id, type(cancel_exc).__name__,
+                        cancel_exc,
+                    )
+            try:
+                from halt_helpers import halt_and_alert
+                profile_id = (
+                    getattr(ctx, "profile_id", None) if ctx else None
+                )
+                if profile_id:
+                    title = (
+                        "Single-leg option journal-write breach "
+                        "(rollback FAILED): " + str(occ)
+                        if rollback_failed
+                        else "Single-leg option journal-write breach: "
+                        + str(occ)
+                    )
+                    halt_and_alert(
+                        profile_id=profile_id,
+                        db_path=(
+                            ctx.db_path if ctx else None
+                        ),
+                        alert_type="option_atomic_breach",
+                        title=title,
+                        detail=(
+                            f"occ={occ} side={side} qty={contracts} "
+                            f"order_id={order_id} "
+                            f"log_trade_exc={type(exc).__name__}: {exc} "
+                            f"rollback_failed={rollback_failed}"
+                        ),
+                    )
+            except Exception as halt_exc:
+                logger.error(
+                    "halt_and_alert FAILED: %s: %s",
+                    type(halt_exc).__name__, halt_exc,
+                )
+            result.update({
+                "action": "ERROR",
+                "occ_symbol": occ,
+                "order_id": order_id,
+                "reason": (
+                    f"Single-leg option journal-write breach on "
+                    f"{occ} — broker rolled back, profile halted"
+                ),
+            })
+            return result
 
     result.update({
         "action": "OPTIONS_OPEN",
