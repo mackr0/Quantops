@@ -13,9 +13,11 @@ Update this file every time a signal is added, deprecated, or moved between tier
 
 ---
 
-## Implemented signals (22 active + 4 macro = 26 total)
+## Implemented signals (29 per-symbol + 1 macro block with 5-6 sub-keys ≈ 30 total)
 
-### Per-symbol signals (18) — `get_all_alternative_data(symbol)` returns
+`alternative_data.get_all_alternative_data(symbol)` returns a dict whose top-level keys are listed below. The exact key count drifts as alt-data fetchers ship; the canonical inventory at any moment is whatever `get_all_alternative_data` actually returns (see `alternative_data.py:2421-2486`).
+
+### Per-symbol signals — `get_all_alternative_data(symbol)` returns
 
 | Key | Source | What it measures |
 |---|---|---|
@@ -37,8 +39,22 @@ Update this file every time a signal is added, deprecated, or moved between tier
 | `google_trends` | pytrends | Search-volume momentum |
 | `wikipedia_pageviews` | Wikipedia API | Pageview spike detection |
 | `app_store_ranking` | scrape | Consumer app rank (for consumer-tech names) |
+| `recent_8k_events` | SEC EDGAR (`sec_8k_broad.py`) | Cycle-fresh: daily scan of NEW 8-K filings parsed by Item type (1.01 M&A, 2.02 earnings, 5.02 officer change, 8.01 other material). Built 2026-05-17 per Tier 1. |
+| `activist_13dg` | SEC EDGAR (`sec_13dg_activist.py`) | Real-time activist >5% positions (different from quarterly 13F). Built 2026-05-17. |
+| `github_activity` | `altdata_tier2_corporate.get_github_activity` | Commits / stars / active-30d for 26 tech tickers. Built 2026-05-17. |
+| `fda_inspections` | `get_fda_inspections` | FDA inspection citations for 17 pharma tickers. Built 2026-05-17. |
+| `nhtsa_recalls` | `get_nhtsa_recalls` | NHTSA recall database for 12 auto/EV tickers. Built 2026-05-17. |
+| `sam_gov_contracts` | `get_sam_gov_contracts` | SAM.gov / USASpending contracts for 11 defense/govtech tickers. Built 2026-05-17. |
+| `risk_factor_diff` | `altdata_tier3.get_risk_factor_diff` | SEC 10-K YoY risk-factor diff — counts NEW risk sentences vs prior year. Built 2026-05-17. |
+| `epa_osha_violations` | `get_epa_osha_violations` | EPA ECHO + OSHA (via Cloudflare Worker proxy) for 25 heavy-industrial tickers. Built 2026-05-17. |
+| `bls_jobless_claims` | `altdata_tier3.get_bls_jobless_claims` | Weekly Thursday jobless claims (FRED ICSA series). Built 2026-05-17. |
+| `wikipedia_edits` | `get_wikipedia_edits` | Article EDIT counts — controversy precursor (distinct from pageviews). Built 2026-05-17. |
+| `uspto_patents` | `get_uspto_patents` | USPTO last-365d applications for 13 tech tickers. Built 2026-05-17. |
+| `job_postings` | `get_job_postings_count` | Greenhouse public-board API for 13 tickers. Built 2026-05-17. |
+| `insider_track_records` | derived from `edgar_form4.db` | CEO / insider personal track records. Built 2026-05-17. |
+| `star_manager_holdings` | derived from `edgar13f.db` | Berkshire / Pershing / Greenlight / Third Point hand-curated. Built 2026-05-17. |
 
-### Symbol-agnostic macro signals (4) — `macro` key, cached at module level
+### Symbol-agnostic macro signals — `macro` key, cached at module level
 
 | Sub-key | Source | What it measures |
 |---|---|---|
@@ -46,6 +62,8 @@ Update this file every time a signal is added, deprecated, or moved between tier
 | `fred_macro` | FRED API | Unemployment claims, CPI, consumer sentiment |
 | `cboe_skew` | yfinance (`^SKEW`) | CBOE Skew Index — tail-risk pricing |
 | `etf_flows` | yfinance / ETF.com | Sector ETF flows (XLF/XLK/XLV/...) |
+| `cross_asset_vol` | `macro_data.get_cross_asset_vol` (1h cache) | MOVE / OVX / GVZ — bond / oil / gold vol (extends VIX). Built 2026-05-17 per Tier 1. |
+| `sector_flow_diff` | `altdata_tier2_macro.get_sector_flow_differentials` | Sector ETF flow differentials (derived from `etf_flows`). Built 2026-05-17 per Tier 2. |
 
 Symbol-targeted SEC filings (10-K, 10-Q, 8-K diffs for held + shortlist symbols only) handled separately by `sec_filings.monitor_symbol` via `_task_sec_filings`. Not in the per-cycle alt-data dict because it produces alerts on demand.
 
