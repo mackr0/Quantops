@@ -169,7 +169,7 @@ When EVERY box below ticks, options work is done. Until then it isn't.
 
 ## 6. References
 
-- `pipelines/option.py` — the class itself (currently 2 stubs + 5 implemented methods).
+- `pipelines/option.py` — the class itself (all 7 methods implemented per §1c "STUB — RESOLVED 2026-05-19").
 - `pipelines/__init__.py` — the `Pipeline` ABC + DTOs.
 - `docs/14_INSTRUMENT_PIPELINE_ARCHITECTURE.md` — the original architectural plan; Phases 0-6 narrative.
 - `docs/04_TECHNICAL_REFERENCE.md` — module-by-module reference for all `options_*.py` files.
