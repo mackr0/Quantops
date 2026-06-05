@@ -17,11 +17,11 @@ The `segments.py:SEGMENTS` dict has **two keys**:
 | `stocks` | Unified Alpaca-tradable US equity universe (~8,000 names) | Filtered per-profile by `min_price` / `max_price` / `min_volume`. The `STOCK_UNIVERSE` constant (~524 names) is retained as the outage-fallback for `screen_dynamic_universe` only. |
 | `crypto` | Alpaca-tradable crypto symbols | Separate code path — 24/7 schedule, crypto-specific data endpoints. Currently `enable_crypto=0` on every profile (deliberate baseline-control choice). |
 
-> **Historical note.** The platform previously had four cap-tier segments (`largecap`, `midcap`, `small`, `micro`). These were removed in commit `a49c9d6` (2026-05-20) when an audit found seven places where cap-tier still drove behavior at runtime, despite earlier commits declaring it "informational." See `docs/archive/2026-06-04-pre-audit/22_UNIFIED_STOCK_UNIVERSE.md` for the full migration rationale. The actual operational dimensions today are:
->
-> - **Per-profile risk knobs** (`min_price`, `max_price`, `min_volume`, `max_position_pct`, etc.) — set per profile to dial the desired risk profile
-> - **`pipeline_kind` (`stock` vs `option`)** — the genuine instrument-class split, lives in `pipelines/dispatch.py` and routes through `StockPipeline` or `OptionPipeline` (per `docs/14`)
-> - **`enable_short_selling`** — per-profile flag that opens / closes the short-side action vocabulary
+The actual operational dimensions per profile are:
+
+- **Per-profile risk knobs** (`min_price`, `max_price`, `min_volume`, `max_position_pct`, etc.) — set per profile to dial the desired risk profile within the unified universe. The platform does not pre-bucket symbols into named cap tiers; the operator composes a profile's effective universe by setting thresholds.
+- **`pipeline_kind` (`stock` vs `option`)** — the genuine instrument-class split. Lives in `pipelines/dispatch.py` and routes through `StockPipeline` or `OptionPipeline` (per `docs/14`). A single profile can run both pipelines per cycle; the routing is by what's being traded, not by the profile.
+- **`enable_short_selling`** — per-profile flag that opens or closes the short-side action vocabulary.
 
 Segment definition lives in `segments.py` (live) and `segments_historical.py` (frozen baseline used for backtest survivorship-bias correction).
 
@@ -29,9 +29,9 @@ Segment definition lives in `segments.py` (live) and `segments_historical.py` (f
 
 The platform ships with 20+ deterministic strategies, organized by direction and methodology.
 
-### 2a. Bullish strategies (12 plugin + 4 legacy schema toggles)
+### 2a. Bullish strategies (12)
 
-All 12 live as plugin modules in `strategies/` — the canonical registry is `strategies/__init__.py`. The four legacy core strategies (`momentum_breakout`, `volume_spike`, `mean_reversion`, `gap_and_go`) still appear in `fallback_strategy.py` / `strategy_small.py` and their `strategy_*` toggle columns still exist for schema back-compat — but those files are **dead-code paths** after the 2026-05-20 cap-tier removal (only invoked via the now-removed `market_type` branch in `strategy_router.py`). The live versions of the same four strategies are part of the 12 plugins below.
+All 12 live as plugin modules in `strategies/` — the canonical registry is `strategies/__init__.py`. (Four older standalone modules — `momentum_breakout`, `volume_spike`, `mean_reversion`, `gap_and_go` — exist in `fallback_strategy.py` / `strategy_small.py` with per-profile `strategy_*` toggle columns. They are dead-code paths today; the live versions of those strategies are part of the 12 plugins below. The schema columns persist for backward compatibility only.)
 
 | Strategy | Edge claim | Confirmation signals |
 |---|---|---|
@@ -116,11 +116,15 @@ The options program is governed by:
 
 `options_strategy_advisor.py` evaluates each held position for opportunistic options strategies (covered call on a stable long, protective put on a high-conviction long with elevated IV). It also evaluates each screener candidate for multi-leg opportunities via `evaluate_candidate_for_multileg`, which produces fully-specified strategy recommendations (strategy name, strikes, expiry, rationale) inserted into the AI prompt as the MULTI-LEG OPTIONS STRATEGIES block.
 
-**IV dead zone.** Multi-leg recommendations only fire when IV rank is OUTSIDE the neutral band. Schema defaults: `option_iv_rich_threshold=55.0` and `option_iv_cheap_threshold=55.0` (collapsed to a single point — no dead zone by default; operator widens the gap on the Settings page, with the ≥10-point minimum enforced). When a candidate's IV rank falls in the no-rec zone, no multileg rec is generated; the AI evaluates the candidate as a stock opportunity (or skips) without a pre-built options recommendation crowding the prompt. Restoring a dead zone (originally 50-60, removed 2026-05-12, re-added 2026-05-14) was the immediate fix for the bug class that drove stock BUY signals to 0/day. Per-profile overrides via `option_iv_rich_threshold` / `option_iv_cheap_threshold` honor the ≥10-point minimum, enforced by `tests/test_multileg_iv_dead_zone.py`.
+**IV dead zone.** Multi-leg recommendations only fire when IV rank is OUTSIDE the neutral band defined by `option_iv_rich_threshold` (above which the system proposes credit-spread structures) and `option_iv_cheap_threshold` (below which it proposes debit-spread structures). Between those two thresholds, no multileg recommendation is generated and the AI evaluates the candidate purely as a stock opportunity.
+
+The dead zone exists to keep stock and options recommendations on equal footing. The options advisor produces a fully-analyzed strategy block — strikes, expiries, max-loss, rationale — and a stock advisor produces an equivalently detailed block. When the IV picture is decisively rich or cheap, the options structure has real edge and earns its place in the prompt. When IV is in the indecisive middle, surfacing a pre-built options structure anyway would bias the AI's attention toward options for the wrong reason — not because the trade is better, but because more pre-built analysis is available to read.
+
+Schema defaults are `option_iv_rich_threshold=55.0` and `option_iv_cheap_threshold=55.0` (single-point, no dead zone). The operator widens the gap on the Settings page; a `≥10`-point minimum gap is enforced so the band can't collapse back to a point. Both thresholds are AI-tunable via `OptionPipeline.tune()`. The gap invariant is pinned by `tests/test_multileg_iv_dead_zone.py`.
 
 ### Stocks and options as equal opportunities
 
-Critical architectural principle (added 2026-05-14): **stocks and options are independent opportunity streams, not competing alternatives for a candidate's recommendation slot.** Both flow into the AI prompt as parallel pre-built recommendations:
+Architectural principle: **stocks and options are independent opportunity streams, not competing alternatives for a candidate's recommendation slot.** Both flow into the AI prompt as parallel pre-built recommendations:
 
 - `stock_strategy_advisor.evaluate_candidate_for_stock_action` produces sized + ATR-stop + ATR-TP + rationale recs for every directional candidate.
 - `options_strategy_advisor.evaluate_candidate_for_multileg` produces strategy + strikes + expiry + rationale recs (gated by the IV dead zone above).
