@@ -1400,12 +1400,30 @@ def _task_update_fills(ctx):
                 )
                 opp_side = "buy" if trade["side"] == "sell" else "short"
                 exit_side = trade["side"]  # 'sell' or 'cover'
+                # FIFO-walk MUST filter by occ_symbol so an option SELL
+                # only consumes option lots of the same contract, and
+                # a stock SELL only consumes stock lots. Without this
+                # filter the walk's `WHERE symbol = ?` clause mixes
+                # stock + option rows for the same underlying (both
+                # carry symbol=<ticker>; only the OCC distinguishes
+                # them). The result: an option close consumed stock
+                # BUY qty in FIFO bookkeeping and the virtual position
+                # book under-reported stock holdings vs the broker
+                # (broker_orphan on the stock side) — 2026-06-05.
+                trade_occ = trade["occ_symbol"]
+                if trade_occ:
+                    occ_filter = "AND occ_symbol = ?"
+                    extra_params = [trade_occ]
+                else:
+                    occ_filter = "AND occ_symbol IS NULL"
+                    extra_params = []
                 rows = conn.execute(
                     "SELECT id, side, qty FROM trades "
                     "WHERE symbol = ? AND side IN (?, ?) "
+                    f"  {occ_filter} "
                     "  AND COALESCE(status, 'open') != 'canceled' "
                     "ORDER BY timestamp ASC, id ASC",
-                    (trade["symbol"], opp_side, exit_side),
+                    [trade["symbol"], opp_side, exit_side] + extra_params,
                 ).fetchall()
                 # FIFO walk: entries open lots, exits consume them
                 lots = []  # [trade_id, qty_remaining]
@@ -1708,37 +1726,19 @@ def _task_cross_account_reconcile(ctx):
             "\n".join("- %s" % p for p in problems),
         )
 
-        # Auto-remediate option-contract orphans. The remediator
-        # submits `sell_to_close` / `buy_to_close` for each orphan
-        # OCC and journals each close atomically (halts the profile
-        # if the journal write fails after the broker accepts the
-        # close). Stock-side drift is skipped — handled by
-        # reconcile_journal_to_broker which has per-symbol attribution.
-        try:
-            from auto_close_broker_orphans import remediate_account_drift
-            results = remediate_account_drift(
-                alpaca_account_id=acct_id,
-                profile_ids=pids,
-                problems=problems,
-            )
-            if results:
-                summary_lines = [
-                    f"- {r['occ_symbol']}: {r['action']} "
-                    f"(diff={r['diff_qty']:.0f}, reason={r['reason']})"
-                    for r in results
-                ]
-                _safe_log_activity(
-                    getattr(ctx, "profile_id", 0), ctx.user_id,
-                    "cross_reconcile_remediation",
-                    "Auto-Close Orphan Contracts: %d action(s)"
-                    % len(results),
-                    "\n".join(summary_lines),
-                )
-        except Exception as exc:
-            logging.exception(
-                "Auto-close remediation failed for account %s: %s",
-                acct_id, exc,
-            )
+        # NOTE 2026-06-05: autonomous remediator wiring DISABLED
+        # pending verification. The remediator's AUTO_RECONCILE_CLOSE
+        # journal write triggered the FIFO-walk bug above (option
+        # SELL consumed stock BUY qty in the per-underlying FIFO
+        # bookkeeping). The FIFO walk has since been fixed to filter
+        # by occ_symbol, but until that fix is verified end-to-end
+        # on real production drift, we don't autonomously write
+        # AUTO_RECONCILE_CLOSE rows. Operators trigger the remediator
+        # explicitly via `scripts/force_remediate_account_2026_06_05.py`
+        # while monitoring the trade journal.
+        #
+        # The audit is still logged to /activity above so drift is
+        # surfaced; only the auto-close write is gated.
     except Exception as exc:
         logging.warning("Cross-account reconcile failed: %s", exc)
 
