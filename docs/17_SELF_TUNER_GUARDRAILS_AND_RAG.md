@@ -54,7 +54,7 @@ Implementation: `case_file_rag.py` (270 lines), wired into `ai_analyst.py:_build
   - Each rule = pure function `(candidate, ctx) → Optional[{severity, reasoning}]`
   - Severities: `VETO` (high-confidence stop), `CAUTION` (yellow flag), `CONFIRM` (pattern supports the signal)
   - Zero per-rule API cost — runs as a panel block injected into the prompt, weighed by the LLM
-  - Registered in `RULE_MODULES`; each gated by `APPLIES_TO_SIGNALS`. Routing: stock candidates direct-match by signal; OPTIONS/MULTILEG_OPEN candidates route to same-direction rules via `signal_direction(candidate)` (added 2026-05-19) — a bullish option strategy (`long_call`, `bull_call_spread`, `bull_put_spread`, `cash_secured_put`, `covered_call`) fires the same long-only rules a `BUY` would, and bearish strategies fire the short-only set. Neutral strategies (`iron_condor`, etc.) skip directional rules — they're covered by `gamma_pin_specialist` / `iv_skew_specialist` / `option_spread_risk` in the LLM layer.
+  - Registered in `RULE_MODULES`; each gated by `APPLIES_TO_SIGNALS`. Routing: stock candidates direct-match by signal; OPTIONS/MULTILEG_OPEN candidates route to same-direction rules via `signal_direction(candidate)` — a bullish option strategy (`long_call`, `bull_call_spread`, `bull_put_spread`, `cash_secured_put`, `covered_call`) fires the same long-only rules a `BUY` would, and bearish strategies fire the short-only set. Neutral strategies (`iron_condor`, etc.) skip directional rules — they're covered by `gamma_pin_specialist` / `iv_skew_specialist` / `option_spread_risk` in the LLM layer.
 
 **Status after second batch (2026-05-18, same day):**
 - **179 deterministic specialists** in `deterministic_specialists/`
@@ -146,7 +146,7 @@ Each sub-section below retains its full scope description so the next session ca
 
 #### 4c. Quant-ML — additional learned models beyond the meta-model
 
-**Clarification (per Mack's question 2026-05-18):** Quant-ML is NOT a product to buy. In this context it means us building additional learned models that complement or extend the AI ensemble — same architectural shape as the GBM + SGD layers we already run in `meta_model.py` and `online_meta_model.py`, just more of them.
+**Clarification:** Quant-ML is NOT a product to buy. In this context it means us building additional learned models that complement or extend the AI ensemble — same architectural shape as the GBM + SGD layers we already run in `meta_model.py` and `online_meta_model.py`, just more of them.
 
 **What we have today.**
 - `meta_model.py` — scikit-learn `GradientBoostingClassifier` predicting P(AI was right) per candidate at decision time. Trained nightly on resolved predictions. Drives the pre-gate (drops sub-0.5 candidates) and re-weights AI confidence at execution.

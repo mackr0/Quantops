@@ -123,21 +123,13 @@ Symbol-targeted SEC filings (10-K, 10-Q, 8-K diffs for held + shortlist symbols 
 
 ---
 
-## Build history
+## Status
 
-All 20 of 21 candidates landed 2026-05-17 (Reddit/WSB still blocked on API access). Tier 1 most-important first per operator request, then Tier 2 and Tier 3 in tier order:
+All Tier 1, Tier 2, and Tier 3 candidates are wired in production except Reddit /r/wallstreetbets (awaiting API access). Per-source module map:
 
-1. ✅ **SEC 8-K broad discovery** — `sec_8k_broad.py` + `altdata/edgar_8k/` cron shim
-2. ✅ **SEC 13D/G** — `sec_13dg_activist.py` + `altdata/edgar_13dg/` cron shim
-3. ✅ **MOVE / OVX / GVZ** — `macro_data.get_cross_asset_vol`
-4. ⏸ **Reddit /r/wallstreetbets** — awaiting Reddit API access
-5-7. ✅ **GitHub / FDA / NHTSA / SAM.gov** — `altdata_tier2_corporate.py`
-8-11. ✅ **USDA / EIA / CFTC / sector_flow_diff** — `altdata_tier2_macro.py`
-12-21. ✅ **All Tier 3 slots wired** — `altdata_tier3.py` (6 fully functional, 4 placeholder with documented reason)
-
-Reddit/WSB blocked on API access; revisit when access granted.
-
-Tier 2 starts after the 13-profile experiment has produced ≥30 days of clean data — we'll know which sectors the AI actually picks from, which prioritizes sector-specific signals correctly instead of "build everything just in case."
+- **Tier 1** — `sec_8k_broad.py` (broad 8-K discovery), `sec_13dg_activist.py` (activist filings), `macro_data.get_cross_asset_vol` (MOVE / OVX / GVZ). Reddit/WSB remains blocked on API access.
+- **Tier 2** — `altdata_tier2_corporate.py` (GitHub, FDA, NHTSA, SAM.gov) and `altdata_tier2_macro.py` (USDA, EIA, CFTC, sector flow differentials).
+- **Tier 3** — `altdata_tier3.py` covers all slots; some sources require an API key and degrade gracefully to a no-op when one isn't configured.
 
 ---
 

@@ -8,7 +8,7 @@
 - **Mode:** paper trading on Alpaca.
 - **Capital:** $3M total virtual capital across 13 profiles ($1M per Alpaca paper-account × 3 accounts). Per-profile range $25K–$700K. See `docs/15_EXPERIMENT_DESIGN_2026_05_17.md` for the full baseline + ablation + scaling experiment design.
 - **Profiles:** 13, sharing 3 paper accounts via the virtual-account architecture.
-- **Goal of current stage:** prove the AI's prediction signal generates positive risk-adjusted returns over a meaningful sample. The cohort was reset on 2026-06-04 with three new Alpaca accounts after the 2026-05-20 trailing-stop orphan-class incident contaminated the prior corpus; data accumulation restarted from that date.
+- **Goal of current stage:** prove the AI's prediction signal generates positive risk-adjusted returns over a meaningful sample. The graduation trigger is 30+ trading days of consistent positive P&L with the ablation arms (per `docs/15`) showing the AI's stock-picking adds measurable value over the random and buy-hold baselines.
 
 ## 1. Stages
 
