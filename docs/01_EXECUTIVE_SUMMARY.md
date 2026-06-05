@@ -10,11 +10,13 @@ QuantOpsAI is an autonomous, AI-driven trading platform. It does what a discreti
 
 Three claims define what makes the architecture distinctive:
 
-1. **The AI is the portfolio manager, not a feature.** A single batched call to a large language model picks zero-to-three trades per scan cycle from a ranked candidate list. The AI sees roughly fifty per-candidate signals plus full portfolio state, factor exposures, regime context, learned patterns from prior cycles, and per-stock track record. There is no rules engine downstream telling the AI "no" — there are only objective gates (crisis state, regulatory limits, margin checks) that block clearly unsafe actions.
+1. **The AI is the portfolio manager, not a feature.** A single batched call to a large language model picks the trades per scan cycle from a ranked candidate list. The AI sees roughly fifty per-candidate signals plus full portfolio state, factor exposures, regime context, learned patterns from prior cycles, and per-stock track record. There is no rules engine downstream telling the AI "no" — there are only objective gates (crisis state, regulatory limits, margin checks) that block clearly unsafe actions.
 
-2. **Every decision is captured, resolved, and used to retrain the system.** Each prediction is written to a journal with the full feature snapshot it was made on. When the prediction resolves (target hit, stop hit, time decay, exit signal), the row is labeled win/loss and pushed back into a two-layer meta-model, a five-specialist calibrated ensemble, a twelve-layer self-tuning rule set, and an online (per-resolution) freshness layer. This is the proprietary asset — the corpus of resolved AI predictions in this exact decision context cannot be replicated by competitors.
+2. **Every decision is captured, resolved, and used to retrain the system.** Each prediction is written to a journal with the full feature snapshot it was made on. When the prediction resolves (target hit, stop hit, time decay, exit signal), the row is labeled win/loss and pushed back into a two-layer meta-model (GBM batch + SGD freshness), a **two-layer calibrated specialist ensemble (179 deterministic rule-checkers + 8 LLM-narrative specialists)**, a self-tuning rule set (12 original layers + 5 deterministic guardrails added 2026-05-18), and an online (per-resolution) freshness layer. This is the proprietary asset — the corpus of resolved AI predictions in this exact decision context cannot be replicated by competitors.
 
-3. **The platform tests ten or more strategies in parallel inside three free Alpaca paper accounts.** This is novel infrastructure: see "Virtual paper accounts," below. It compresses what would otherwise require ten brokerage relationships into three.
+3. **The platform runs 13 profiles in parallel inside three Alpaca paper accounts** via a virtual-account reconciliation layer. This is novel infrastructure: see "Virtual paper accounts," below. It compresses what would otherwise require 13 brokerage relationships into 3, and is the foundation for the rigorous baseline + ablation + scaling experiment in `docs/15_EXPERIMENT_DESIGN_2026_05_17.md`.
+
+4. **The deterministic-vs-narrative split is the cost story.** Hundreds of zero-API-cost rule checkers handle structurally-checkable patterns (RSI overbought, insider clusters, gap into resistance, regulatory events, etc.) so the single batched LLM call only spends tokens on the synthesis work the rule layer structurally can't do. Steady-state observed AI spend across the 13-profile fleet: **~$0.27/day** at the current `gemini-2.5-flash-lite` rate. Quality goes up with specialist count; cost does not.
 
 ## Why this might be valuable
 
@@ -28,11 +30,11 @@ The traditional case for AI-augmented trading rests on better signal extraction.
 
 ## What it actually trades
 
-The platform trades long and short positions in US equities, options on those equities (single-leg and multi-leg structures), and statistical-arbitrage pairs. It does not trade futures, FX, or crypto in production yet — those are scoped as future work in `OPEN_ITEMS.md`.
+The platform trades long and short positions in US equities, options on those equities (single-leg and multi-leg structures), and statistical-arbitrage pairs. Crypto infrastructure (segment + per-profile flag `enable_crypto`) is wired but `enable_crypto=0` on every profile today — a deliberate baseline-control choice (per `project_capital_allocation` memory rationale). Futures and FX are scoped as future work via IBKR in `OPEN_ITEMS.md` §4a.
 
 Concretely:
 
-- **20+ equity strategies**, both bullish (momentum breakout, volume spike, mean reversion, gap and go, insider cluster, news sentiment spike, earnings drift, short squeeze setup, fifty-two-week breakout, MACD cross confirmation, sector momentum rotation, analyst upgrade drift, short-term reversal, volume dryup breakout, fifty-two-week breakout) and bearish (breakdown of support, distribution at highs, failed breakout, parabolic exhaustion, relative weakness in strong sector, earnings disaster short, catalyst filing short, sector rotation short, IV regime short, relative weakness universe-wide).
+- **25 plugin equity strategies**, both bullish (gap reversal, news sentiment spike, short squeeze setup, earnings drift, insider cluster, fifty-two-week breakout, MACD cross confirmation, sector momentum rotation, analyst upgrade drift, short-term reversal, volume dryup breakout, max-pain pinning — 12 total) and bearish (breakdown of support, distribution at highs, failed breakout, parabolic exhaustion, relative weakness in strong sector, relative weakness universe-wide, earnings disaster short, catalyst filing short, sector rotation short, IV regime short, insider selling cluster, high IV-rank fade, vol regime — 13 total). Canonical registry: `strategies/__init__.py`.
 
 - **Five single-leg options primitives** (long call, long put, covered call, cash-secured put, protective put) plus **eleven multi-leg primitives** (four vertical spreads — bull call, bear put, bull put, bear call — plus iron condor, iron butterfly, long straddle, short straddle, long strangle, calendar spread, diagonal spread).
 
@@ -93,7 +95,7 @@ The full open-items list, including paid-data upgrades that would close specific
 
 Three things distinguish this codebase from typical retail-trading projects:
 
-1. **Test discipline.** 4,600 tests pass (1 skipped — an `_EMPTY_FIRE_EXEMPT` rule whose purpose IS to fire on minimal context). Test skips were systematically removed; new skips are blocked at code review.
+1. **Test discipline.** 4,561 tests pass (1 skipped — an `_EMPTY_FIRE_EXEMPT` rule whose purpose IS to fire on minimal context). Test skips were systematically removed; new skips are blocked at code review.
 
 2. **Anti-drift guardrails.** Static-analysis tests prevent the failure modes that retail-trading systems silently suffer from: hidden levers (every per-profile scheduled feature must have a settings toggle); meta-features without UI surfaces; snake_case identifiers leaking into rendered HTML; columns added to the schema that aren't either auto-tuned or explicitly enumerated as user-set; new modules that ship without changelog entries.
 
