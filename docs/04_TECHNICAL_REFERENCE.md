@@ -2,7 +2,7 @@
 
 **Audience:** software engineers joining the project or reviewing it.
 **Purpose:** map the codebase. After reading this, an engineer should be able to find any module, understand its responsibility, trace a request end-to-end, and identify where to add new functionality.
-**Last updated:** 2026-05-03.
+**Last updated:** 2026-06-04 (audit reconciliation — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`).
 
 ## 1. System overview
 

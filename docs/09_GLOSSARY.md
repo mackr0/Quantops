@@ -1,7 +1,7 @@
 # 09 — Glossary
 
 **Audience:** cross-audience reference. Any term used in the technical docs without definition is defined here.
-**Last updated:** 2026-05-03.
+**Last updated:** 2026-06-04 (audit reconciliation — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`).
 
 Alphabetical. Linked terms reference other glossary entries.
 

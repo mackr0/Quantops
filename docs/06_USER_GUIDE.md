@@ -2,7 +2,7 @@
 
 **Audience:** the operator using QuantOpsAI to run paper-trading strategies. Assumes basic familiarity with stock and options trading.
 **Purpose:** explain every screen, every setting, every dashboard signal, and the typical workflows.
-**Last updated:** 2026-05-03.
+**Last updated:** 2026-06-04 (audit reconciliation — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`).
 
 ## 1. First-time setup
 

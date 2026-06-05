@@ -2,7 +2,7 @@
 
 **Audience:** developers extending the platform with new strategies, signals, specialists, scheduled features, or schema columns.
 **Purpose:** procedural how-to reference. Each section below is a recipe — follow it end-to-end and the guardrail tests pass.
-**Last updated:** 2026-05-03.
+**Last updated:** 2026-06-04 (audit reconciliation — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`).
 
 This guide is procedural. The principles those procedures encode are in `docs/10_METHODOLOGY.md`.
 

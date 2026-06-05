@@ -2,7 +2,7 @@
 
 **Audience:** quants, ML researchers, anyone who builds production prediction systems.
 **Prerequisites:** familiarity with gradient-boosted trees, online learning, calibration, ensemble methods.
-**Last updated:** 2026-05-03.
+**Last updated:** 2026-06-04 (audit reconciliation — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`).
 
 ## Overview
 

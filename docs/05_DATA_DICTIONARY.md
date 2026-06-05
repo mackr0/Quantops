@@ -2,7 +2,7 @@
 
 **Audience:** quants, engineers, anyone who needs the canonical name and definition of any column / signal / feature / knob.
 **Purpose:** the reference open while reading every other doc. If a name is mentioned anywhere else and you need to look it up, look here.
-**Last updated:** 2026-05-03.
+**Last updated:** 2026-06-04 (audit reconciliation — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`).
 
 ## Table of contents
 

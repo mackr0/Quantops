@@ -2,7 +2,7 @@
 
 **Audience:** finance professionals, strategy researchers, anyone evaluating what the system actually trades.
 **Prerequisites:** working knowledge of equity / options market structure, position sizing math, factor models.
-**Last updated:** 2026-05-03.
+**Last updated:** 2026-06-04 (audit reconciliation — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`).
 
 This document describes WHAT the system trades, HOW it sizes, and HOW it manages risk in finance terms — without dwelling on software architecture (`docs/04`) or the AI/ML internals (`docs/02`).
 

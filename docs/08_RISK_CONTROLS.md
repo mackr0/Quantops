@@ -2,7 +2,7 @@
 
 **Audience:** risk officers, compliance, anyone auditing what stops the system from blowing up.
 **Purpose:** enumerate every gate, every kill switch, every safety override. After reading this, an auditor can identify exactly what mechanisms protect capital and reproduce the conditions under which each fires.
-**Last updated:** 2026-05-03.
+**Last updated:** 2026-06-04 (audit reconciliation — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`).
 
 ## Operating principles
 

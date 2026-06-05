@@ -2,7 +2,7 @@
 
 **Audience:** investors, executives, anyone evaluating QuantOpsAI without diving into the technical layers.
 **Length:** ~3 pages.
-**Last updated:** 2026-05-03.
+**Last updated:** 2026-06-04 (audit reconciliation — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`).
 
 ## What QuantOpsAI is
 

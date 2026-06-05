@@ -2,7 +2,7 @@
 
 **Audience:** SRE, ops engineers, anyone responsible for keeping the platform up.
 **Purpose:** deploy, monitor, recover, audit. After reading this, an ops engineer can ship a change, diagnose a failure, and restore service.
-**Last updated:** 2026-05-03.
+**Last updated:** 2026-06-04 (audit reconciliation — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`).
 
 ## 1. Production layout
 

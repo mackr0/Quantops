@@ -2,7 +2,7 @@
 
 **Audience:** anyone reviewing or extending the system; reviewers asking "is this rigorous or improvised?"
 **Purpose:** capture HOW decisions get made on this codebase, so that future contributors (including the operator's future self and any AI assistants) can extend the system without violating its spirit.
-**Last updated:** 2026-05-03.
+**Last updated:** 2026-06-04 (audit reconciliation — see `docs/AUDIT_2026_06_04_DOC_RECONCILIATION.md`).
 
 ## What this document is
 
