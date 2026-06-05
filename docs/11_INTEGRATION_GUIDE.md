@@ -226,7 +226,7 @@ A tuning rule is a function that buckets resolved predictions and adjusts a para
 
 ## 8. Adding a new specialty data source (e.g. a 5th alt-data scraper)
 
-The platform ships with 4 alt-data scrapers bundled under `altdata/` (`congresstrades`, `stocktwits`, `biotechevents`, `edgar13f`). They were merged into the Quantops repo on 2026-05-04 — previously they lived as 4 standalone GitHub repos rsync'd to prod, but that broke the "prod git must track deployed code" rule. Adding a 5th now lives inline.
+The platform ships with 4 alt-data scrapers bundled under `altdata/` (`congresstrades`, `stocktwits`, `biotechevents`, `edgar13f`). They live in-tree so prod's git checkout fully describes deployed code; adding a 5th lives inline under the same path.
 
 ### 8a. Steps
 

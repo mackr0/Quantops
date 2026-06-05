@@ -184,7 +184,7 @@ Restoring a backup is a one-command operation — see §9 "Restoring from backup
 
 The `quantopsai` systemd service IS the in-process scheduler — per-cycle and once-per-day trading tasks all dispatch inside `multi_scheduler.run_scheduler()`. There is no system cron for any trading-decision logic. The only system-cron entries are the daily backup (§6) and the alt-data refresher (below).
 
-The 4 alt-data scrapers (now bundled in `altdata/` after the 2026-05-04 merge) are orchestrated by a single system cron entry that calls `altdata/run-altdata-daily.sh` (refreshes all 4 sequentially using the Quantops venv).
+The 4 alt-data scrapers bundled in `altdata/` are orchestrated by a single system cron entry that calls `altdata/run-altdata-daily.sh` (refreshes all 4 sequentially using the Quantops venv).
 
 ```bash
 # Cron entry on prod (06:00 UTC daily)
@@ -277,7 +277,7 @@ The web app stays up; users can still see dashboards but no new trades fire. Exi
 
 ### Restoring from backup
 
-This runbook was rehearsed end-to-end on 2026-05-05 against a sandbox copy of `quantopsai_profile_11.db`. The rehearsal surfaced three latent bugs (sidecar matching, 0-byte file accepted as valid, `corrupt-*` archive matching) — all are fixed and covered by `tests/test_db_integrity.py`. Use this runbook with confidence.
+This runbook has been rehearsed end-to-end against a sandbox copy of a per-profile DB. The restore path's edge cases (sidecar-file matching, 0-byte file detection, `corrupt-*` archive-file filtering) are covered by `tests/test_db_integrity.py`. Use this runbook with confidence.
 
 Worst case: a DB has corrupted (orchestrator startup integrity check halted, `[scheduler] DB corrupt — refusing to start` in logs).
 

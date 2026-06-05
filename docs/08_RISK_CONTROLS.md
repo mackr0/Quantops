@@ -88,7 +88,7 @@ When `use_conviction_tp_override=1` and a position hits its fixed take-profit, t
 
 The conviction override is OFF by default. Enabling it accepts more upside but requires more discretion.
 
-## 3.5 Doomsday gates (added 2026-05-04 / 2026-05-05)
+## 3.5 Doomsday gates
 
 A defense-in-depth layer above the per-trade and validation gates. These exist for catastrophic-failure scenarios that the existing risk controls don't cover individually. **Each gate is independent and any one of them is sufficient to stop the bleed.**
 
@@ -298,7 +298,7 @@ Daily AI-spend ceiling per user. Default: `max($5, trailing_7d_avg × 1.5)`. Use
 
 Two enforcement paths:
 
-1. **Pipeline-wide hard block** (added 2026-05-15). Every AI call routed through `ai_providers.call_ai` / `call_ai_structured` is gated against a worst-case cost estimate (`len(prompt)//3` input tokens + `max_tokens` output, priced via `ai_pricing.estimate_cost_usd`) before the provider is invoked. Over-budget calls raise `CostCapExceeded`; the trade pipeline catches it distinctly (returns `{cost_capped: True}` from `ai_select_trades`) so the cycle skips the AI step without crashing or being mistaken for a broken-AI failure. Each cap fire writes an `activity_type='cost_cap_blocked'` row to `activity_log`. The dashboard renders a yellow banner when `headroom_usd ≤ $0.05`.
+1. **Pipeline-wide hard block.** Every AI call routed through `ai_providers.call_ai` / `call_ai_structured` is gated against a worst-case cost estimate (`len(prompt)//3` input tokens + `max_tokens` output, priced via `ai_pricing.estimate_cost_usd`) before the provider is invoked. Over-budget calls raise `CostCapExceeded`; the trade pipeline catches it distinctly (returns `{cost_capped: True}` from `ai_select_trades`) so the cycle skips the AI step without crashing or being mistaken for a broken-AI failure. Each cap fire writes an `activity_type='cost_cap_blocked'` row to `activity_log`. The dashboard renders a yellow banner when `headroom_usd ≤ $0.05`.
 
 2. **Self-tuner advisory** (3 sites in `self_tuning.py`: strategy commissioning, parameter tuning, guardrail expansion). Over-budget tuner actions are surfaced as `Recommendation: cost-gated …` strings instead of auto-applying. This is the only legitimate use of the `Recommendation:` prefix allowed by the no-recommendation-only guardrail test.
 

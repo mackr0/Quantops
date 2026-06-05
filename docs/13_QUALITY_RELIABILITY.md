@@ -194,7 +194,7 @@ All seven run every 10 minutes via the `audit_runner` cron; the first detection 
 
 Visibility (the seven-tier contract) is the precondition for action, not action itself. The self-tuner is what converts visibility signals into automated parameter changes.
 
-- **`_optimize_options_pnl_cutoff`** (#171) — reads 30-day realized P&L on rows where `occ_symbol IS NOT NULL`. If ≥10 closed options trades sum to less than `-3% × initial_capital`, flips `enable_options=0` on the profile. Auto-re-enables after 14 days (per the "self-tuner must drift toward confident trading" memory — no permanent off-state; if bleeding resumes, disable re-fires). The direct fix for the 2026-05-13 episode where options lost $200K with no auto-stop.
+- **`_optimize_options_pnl_cutoff`** — reads 30-day realized P&L on rows where `occ_symbol IS NOT NULL`. If ≥10 closed options trades sum to less than `-3% × initial_capital`, flips `enable_options=0` on the profile to stop options bleed without operator intervention. Auto-re-enables after 14 days (per the bias-toward-trading principle — no permanent off-state); if the bleed resumes, the disable re-fires.
 
 The pattern generalizes: every bucket with an `enable_X` flag can have a P&L-driven optimizer that watches its slice of `trades.pnl` and auto-flips the flag when the bucket consistently destroys value. Future expansions tracked as follow-ups in CHANGELOG.
 
@@ -242,7 +242,7 @@ Two complementary scripts live in the repo root:
 
 ### 6.1 `morning_health_check.sh` — daily operational check
 
-Run every morning before market open. Drives off the seven-tier integrity contract + audit_runner shipped 2026-05-17. **Dynamically discovers active profiles** via `SELECT id FROM trading_profiles WHERE enabled = 1`, so it survives any profile rotation (the fresh-experiment account swap, future profile churn).
+Run every morning before market open. Drives off the seven-tier integrity contract + audit_runner. **Dynamically discovers active profiles** via `SELECT id FROM trading_profiles WHERE enabled = 1`, so it survives any profile rotation (cohort resets, profile additions / removals).
 
 Sections:
 - **§0 Services + deploy hygiene** — both services active, prod git = origin/main, gunicorn workers fresh.

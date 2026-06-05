@@ -108,7 +108,7 @@ Settings are organized into sections. Every numeric / boolean knob has a tooltip
 ### AI behavior
 
 - **AI confidence threshold** — minimum AI confidence (0-100) to act on a trade. Default 25.
-- **Self-tuning** — master toggle for the self-tuner (12 original layers + 5 deterministic guardrails added 2026-05-18 per `docs/17`).
+- **Self-tuning** — master toggle for the autonomous self-tuner (12 layers + 5 deterministic guardrails; structural detail in `docs/17`).
 - **AI Model Auto-Tune (cost-sensitive)** — allows the tuner to A/B-test alternative models. Default OFF (avoids surprise Sonnet/Opus calls).
 
 ### Advanced Risk & Research Features
