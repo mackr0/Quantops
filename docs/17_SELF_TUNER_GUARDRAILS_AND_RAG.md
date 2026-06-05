@@ -109,9 +109,11 @@ Categories shipped in the first batch:
 
 **Operational consequence**: as the library grows, the AI's role shifts from "decider" to "tie-breaker." With 200 specialists, most candidates will be unambiguous (clear majority pattern). The LLM only resolves the genuinely-contested cases. Cost per cycle DROPS because most decisions short-circuit before the LLM call.
 
-### Phase 4 (deferred — detailed scope so it can be picked up cleanly)
+### Phase 4 (4a + 4c deferred; 4b STARTED 2026-05-21)
 
-These three workstreams were intentionally deferred past today's build because they each carry substantial commitment that the current state doesn't yet need. Documented in detail here so the next session can pick them up without re-deriving the plan.
+Three workstreams originally deferred past 2026-05-18's build. **Phase 4b (fine-tune)** has since started — the dataset_builder + model_registry foundation shipped 2026-05-21 and the corpus clock reset 2026-06-04 (per `docs/20_FINETUNE_PHASE_4B1_INCREMENTAL.md`). First training run gated on data accumulation (~early-to-mid August 2026 per `docs/20` §17). **Phases 4a and 4c remain deferred.**
+
+Each sub-section below retains its full scope description so the next session can pick up cleanly.
 
 #### 4a. Prompt engineering — systematic A/B testing of prompt structure
 
@@ -186,6 +188,6 @@ None of these conditions are observed today. Phase 4 stays parked until the data
 
 ## Deploy + ops
 
-- Every commit: `./sync.sh` + full test suite (3794+ passing)
+- Every commit: `./sync.sh` + full test suite (4,561+ passing as of 2026-06-04)
 - After phase 1 lands: monitor `tuning_history` table for restriction events; verify auto-loosen fires when synthetic conditions are met
 - After phase 2 lands: monitor `cycle_data_*.json` shortlist entries for the new case-file field
