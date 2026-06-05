@@ -632,7 +632,11 @@ _dyn_logger = _logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _ACTIVE_SYMBOLS_TTL = 86400  # 24h — Alpaca's asset list rarely changes
-_active_symbols_cache = {"timestamp": 0.0, "symbols": set()}
+_active_symbols_cache = {
+    "timestamp": 0.0,
+    "symbols": set(),
+    "last_failure_ts": 0.0,
+}
 
 
 def is_alpaca_active(symbol: str, ctx=None) -> bool:
@@ -662,6 +666,9 @@ def is_alpaca_active(symbol: str, ctx=None) -> bool:
     return symbol.upper() in actives
 
 
+_FAILED_LOOKUP_BACKOFF_SECONDS = 300  # 5 min between retries after failure
+
+
 def get_active_alpaca_symbols(ctx=None, ttl=_ACTIVE_SYMBOLS_TTL):
     """Return the set of Alpaca-active, tradable US equity symbols.
 
@@ -672,11 +679,25 @@ def get_active_alpaca_symbols(ctx=None, ttl=_ACTIVE_SYMBOLS_TTL):
 
     On Alpaca failure, returns the last known good set (stale is better
     than empty — the caller can always fall back to its own logic if it
-    sees an empty set). On first call with Alpaca down, returns empty.
+    sees an empty set). A failed lookup is itself cached for
+    `_FAILED_LOOKUP_BACKOFF_SECONDS` so per-symbol callers iterating
+    a universe don't retry-and-WARN once per symbol (this produced
+    292 WARN events / 24h on /issues when a cron context had broken
+    credentials and called this per-ticker). On first call with
+    Alpaca down, returns empty.
     """
     now = _time.time()
     if (now - _active_symbols_cache["timestamp"] < ttl
             and _active_symbols_cache["symbols"]):
+        return _active_symbols_cache["symbols"]
+    # Failed-lookup back-off: if the last attempt failed and we're
+    # within the back-off window, return what we have without
+    # retrying and without spamming the log. This is what makes the
+    # WARN fire ONCE per cron run instead of once per ticker the
+    # cron iterates.
+    last_failure = _active_symbols_cache.get("last_failure_ts", 0.0)
+    if (last_failure
+            and (now - last_failure) < _FAILED_LOOKUP_BACKOFF_SECONDS):
         return _active_symbols_cache["symbols"]
 
     try:
@@ -691,14 +712,17 @@ def get_active_alpaca_symbols(ctx=None, ttl=_ACTIVE_SYMBOLS_TTL):
                 active.add(a.symbol)
         _active_symbols_cache["timestamp"] = now
         _active_symbols_cache["symbols"] = active
+        _active_symbols_cache["last_failure_ts"] = 0.0
         _dyn_logger.info("Alpaca active-symbols cache refreshed: %d symbols",
                          len(active))
         return active
     except Exception as exc:
+        _active_symbols_cache["last_failure_ts"] = now
         _dyn_logger.warning(
             "get_active_alpaca_symbols: Alpaca lookup failed (%s), "
-            "returning %d stale entries",
+            "returning %d stale entries (next retry in %ds)",
             exc, len(_active_symbols_cache["symbols"]),
+            _FAILED_LOOKUP_BACKOFF_SECONDS,
         )
         return _active_symbols_cache["symbols"]
 

@@ -37,10 +37,38 @@ logger = logging.getLogger(__name__)
 
 
 def _master_db_path() -> str:
-    """Best-effort resolution of the master DB path. Most callers run
-    from /opt/quantopsai (prod) or the repo root (tests / dev).
-    Honors QUANTOPSAI_DB env var if set for unit tests."""
-    return os.environ.get("QUANTOPSAI_DB", "quantopsai.db")
+    """Best-effort resolution of the master DB path.
+
+    Resolution order:
+      1. `QUANTOPSAI_DB` env var (used by unit tests and overrides)
+      2. `config.DB_PATH` (the canonical app-level setting,
+         DB_PATH env-aware)
+      3. `/opt/quantopsai/quantopsai.db` (prod canonical absolute
+         path — covers cron jobs that `cd` into subdirectories
+         before invoking Python, which is what produced the
+         2026-06-05 /issues flood when cred lookups resolved
+         a CWD-local empty DB instead of the real one)
+      4. `quantopsai.db` next to this module (dev / repo-local)
+    """
+    explicit = os.environ.get("QUANTOPSAI_DB")
+    if explicit:
+        return explicit
+    try:
+        from config import DB_PATH as _cfg_db
+    except Exception:
+        _cfg_db = "quantopsai.db"
+    if os.path.isabs(_cfg_db) or os.path.exists(_cfg_db):
+        return _cfg_db
+    for candidate in (
+        "/opt/quantopsai/quantopsai.db",
+        os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "quantopsai.db",
+        ),
+    ):
+        if os.path.exists(candidate):
+            return candidate
+    return _cfg_db
 
 
 def is_halted(profile_id: int, db_path: Optional[str] = None,

@@ -54,8 +54,32 @@ from typing import Iterable, List, Optional, Set
 logger = logging.getLogger(__name__)
 
 # Master DB holds the ledger so any backtester can read it without
-# needing a per-profile context.
-MASTER_DB = os.environ.get("QUANTOPSAI_MASTER_DB", "quantopsai.db")
+# needing a per-profile context. Resolved through config (which is
+# DB_PATH env-aware) and then the prod canonical path so cron jobs
+# that `cd` into subdirs still find the actual master DB instead of
+# silently creating an empty CWD-local one.
+def _resolve_master_db_path() -> str:
+    explicit = os.environ.get("QUANTOPSAI_MASTER_DB")
+    if explicit:
+        return explicit
+    try:
+        from config import DB_PATH as _DB_PATH
+    except Exception:
+        _DB_PATH = os.environ.get("DB_PATH", "quantopsai.db")
+    if not os.path.isabs(_DB_PATH) and not os.path.exists(_DB_PATH):
+        for candidate in (
+            "/opt/quantopsai/quantopsai.db",
+            os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "quantopsai.db",
+            ),
+        ):
+            if os.path.exists(candidate):
+                return candidate
+    return _DB_PATH
+
+
+MASTER_DB = _resolve_master_db_path()
 
 _schema_lock = threading.Lock()
 _schema_initialized = False
