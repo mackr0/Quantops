@@ -170,13 +170,13 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | `earnings_calendar.py` | Earnings date lookup with cache. |
 | `screener.py` | Universe scanning + sector rotation. |
 | `historical_universe_augment.py` | Daily diff of Alpaca's active asset list (survivorship-bias correction). |
-| `segments.py` | Live universe definitions per market type. As of 2026-05-20 (commit `a49c9d6`) the `SEGMENTS` dict has TWO keys: `stocks` (unified Alpaca-tradable US equity universe filtered per-profile by `min_price`/`max_price`/`min_volume`) and `crypto` (separate 24/7 data path). The four cap-tier values (`largecap`, `midcap`, `small`, `micro`) were removed in this commit. The actual instrument-class pipeline split (`stock` vs `option`) lives in `pipelines/dispatch.py`, not in `segments.py`. |
+| `segments.py` | Live universe definitions per market type. The `SEGMENTS` dict has two keys: `stocks` (the unified Alpaca-tradable US equity universe filtered per-profile by `min_price`/`max_price`/`min_volume`) and `crypto` (separate 24/7 data path). The instrument-class pipeline split (`stock` vs `option`) lives in `pipelines/dispatch.py`, not here. |
 | `segments_historical.py` | Frozen baseline for backtest. |
 
 ### 3g. Self-tuning + learning
 | Module | Purpose |
 |---|---|
-| `self_tuning.py` | The self-tuner (largest single module — 12 original layers + 5 deterministic guardrails added 2026-05-18 per `docs/17` Phase 1: per-cycle delta cap, trade-count auto-loosen, reference-window invariant, auto-expiry on tightenings, trade-rate anomaly alert). |
+| `self_tuning.py` | The self-tuner (largest single module). 12 base layers each adjusting one parameter family from resolved-prediction outcomes, plus 5 deterministic guardrails (per-cycle delta cap, trade-count auto-loosen, reference-window invariant, auto-expiry on tightenings, trade-rate anomaly alert) that protect against compounding-restriction failure modes. Full structural description in `docs/17`. |
 | `signal_weights.py` | Layer 2 weighted signal intensity. |
 | `regime_overrides.py` | Layer 3 per-regime parameter overrides. |
 | `tod_overrides.py` | Layer 4 per-time-of-day overrides. |
@@ -219,7 +219,7 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | `display_names.py` | snake_case → human label registry + Jinja filters (`humanize`, `display_name`, `format_occ`, `action_label`, `friendly_time`, `friendly_date`). `action_label(side, signal_type, is_option)` derives Long Open / Long Close / Short Open / Short Cover for stocks and Buy to Open / Sell to Open Leg / Sell to Close / Buy to Close for options. API endpoints that return user-facing text MUST call `humanize()` server-side — caught by `tests/test_no_allcaps_snake_case_in_api.py` regex guardrail. |
 | `param_bounds.py` | Min/max bounds for every tunable parameter. |
 | `notifications.py` | Alert dispatching. |
-| `metrics/` | Per-pipeline performance metrics (`metrics/stock.py`, `metrics/option.py`, `metrics/portfolio.py`, `metrics/legacy.py`). Per `docs/14` Phase 1 (shipped 2026-05-11), the monolithic `metrics.py` was split into a `metrics/` package so option slippage is computed in $-per-contract (not %-of-premium, which produced the 1130% bug) and stock metrics don't pool with option metrics. |
+| `metrics/` | Per-pipeline performance metrics (`metrics/stock.py`, `metrics/option.py`, `metrics/portfolio.py`, `metrics/legacy.py`). The split-by-pipeline structure exists because option slippage is meaningfully measured in dollars-per-contract while stock slippage is measured in percent-of-price — pooling them obscures both. Per-pipeline aggregations are then composed at the portfolio level by `metrics/portfolio.py`. See `docs/14`. |
 | `scan_status.py` | Per-profile scan-cycle health/timeliness. |
 
 ### 3m. Reporting & monitoring
@@ -406,7 +406,7 @@ Single droplet at `67.205.155.63`. Layout:
 - `/opt/quantopsai/quantopsai.db` — master DB.
 - `/opt/quantopsai/quantopsai_profile_<id>.db` — per-profile DBs.
 - `/opt/quantopsai/.cache/` — disk caches (slippage K, Ken French CSVs).
-- `/opt/quantopsai/altdata/` — bundled alt-data scrapers (`congresstrades`, `stocktwits`, `biotechevents`, `edgar13f`). Merged into the Quantops repo on 2026-05-04 (commit `086aed2`); previously lived in 4 separate private GitHub repos rsync'd to `/opt/quantopsai-altdata/`. Each scraper writes to `altdata/<project>/data/<project>.db`. Daily refresh via `altdata/run-altdata-daily.sh` (cron 06:00 UTC).
+- `/opt/quantopsai/altdata/` — bundled alt-data scrapers (`congresstrades`, `stocktwits`, `biotechevents`, `edgar13f`). Each scraper writes to `altdata/<project>/data/<project>.db`. Daily refresh via `altdata/run-altdata-daily.sh` (cron 06:00 UTC). Bundled in-repo (not separate repos) so prod's git tree fully describes the deployed code.
 
 `sync.sh`:
 
@@ -437,7 +437,7 @@ Flask + Jinja2. Templates in `templates/`. Major pages:
 - `/trades` — trade ledger.
 - `/settings` — per-profile settings.
 
-Major API endpoints in `views.py` (~69 routes as of 2026-06-04). Documented inline; selected endpoints in `docs/06_USER_GUIDE.md`.
+Major API endpoints in `views.py` (~69 routes). Documented inline; selected endpoints in `docs/06_USER_GUIDE.md`.
 
 ## 14. Adding a new module
 
