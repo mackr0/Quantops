@@ -156,7 +156,7 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | Module | Purpose |
 |---|---|
 | `market_data.py` | Alpaca historical bars + cache. |
-| `alternative_data.py` | Single canonical entry point for all 34 alt-data signals — `get_all_alternative_data(symbol)` returns the unified dict. See `docs/16_ALT_DATA_CANDIDATES.md` for the full inventory. Sub-modules: `sec_8k_broad.py`, `sec_13dg_activist.py`, `altdata_tier2_corporate.py`, `altdata_tier2_macro.py`, `altdata_tier3.py`. Macro signals reach the prompt via `alternative_data._get_cached_macro()` (same canonical bucket, not a separate pipeline). |
+| `alternative_data.py` | Single canonical entry point for all alt-data signals — `get_all_alternative_data(symbol)` returns the unified dict (~30 top-level keys: 29 per-symbol signal sub-dicts + 1 nested `macro` block carrying 5-6 sub-keys). See `docs/16_ALT_DATA_CANDIDATES.md` for the full inventory. Sub-modules: `sec_8k_broad.py`, `sec_13dg_activist.py`, `altdata_tier2_corporate.py`, `altdata_tier2_macro.py`, `altdata_tier3.py`. Macro signals reach the prompt via `alternative_data._get_cached_macro()` (same canonical bucket, not a separate pipeline). |
 | `news_sentiment.py` | Per-stock news from Alpaca. |
 | `social_sentiment.py` | Reddit ticker mentions via PRAW. |
 | `political_sentiment.py` | Macro political context (MAGA mode). |
@@ -170,13 +170,13 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | `earnings_calendar.py` | Earnings date lookup with cache. |
 | `screener.py` | Universe scanning + sector rotation. |
 | `historical_universe_augment.py` | Daily diff of Alpaca's active asset list (survivorship-bias correction). |
-| `segments.py` | Live universe definitions per market type. Note: 2026-05-19 — within stock markets (largecap/midcap/small/micro) the strategy mix is identical; the label is for profile organization + the stock-vs-crypto data-source split, not behavior gating. See `strategies/__init__.py:_strategy_applies_to_market`. |
+| `segments.py` | Live universe definitions per market type. As of 2026-05-20 (commit `a49c9d6`) the `SEGMENTS` dict has TWO keys: `stocks` (unified Alpaca-tradable US equity universe filtered per-profile by `min_price`/`max_price`/`min_volume`) and `crypto` (separate 24/7 data path). The four cap-tier values (`largecap`, `midcap`, `small`, `micro`) were removed in this commit. The actual instrument-class pipeline split (`stock` vs `option`) lives in `pipelines/dispatch.py`, not in `segments.py`. |
 | `segments_historical.py` | Frozen baseline for backtest. |
 
 ### 3g. Self-tuning + learning
 | Module | Purpose |
 |---|---|
-| `self_tuning.py` | The 12-layer self-tuner (the largest single module). |
+| `self_tuning.py` | The self-tuner (largest single module — 12 original layers + 5 deterministic guardrails added 2026-05-18 per `docs/17` Phase 1: per-cycle delta cap, trade-count auto-loosen, reference-window invariant, auto-expiry on tightenings, trade-rate anomaly alert). |
 | `signal_weights.py` | Layer 2 weighted signal intensity. |
 | `regime_overrides.py` | Layer 3 per-regime parameter overrides. |
 | `tod_overrides.py` | Layer 4 per-time-of-day overrides. |
@@ -219,7 +219,7 @@ Scheduler and web run as systemd units. `sync.sh` deploys both (rsync + systemd 
 | `display_names.py` | snake_case → human label registry + Jinja filters (`humanize`, `display_name`, `format_occ`, `action_label`, `friendly_time`, `friendly_date`). `action_label(side, signal_type, is_option)` derives Long Open / Long Close / Short Open / Short Cover for stocks and Buy to Open / Sell to Open Leg / Sell to Close / Buy to Close for options. API endpoints that return user-facing text MUST call `humanize()` server-side — caught by `tests/test_no_allcaps_snake_case_in_api.py` regex guardrail. |
 | `param_bounds.py` | Min/max bounds for every tunable parameter. |
 | `notifications.py` | Alert dispatching. |
-| `metrics.py` | Performance metric computation. |
+| `metrics/` | Per-pipeline performance metrics (`metrics/stock.py`, `metrics/option.py`, `metrics/portfolio.py`, `metrics/legacy.py`). Per `docs/14` Phase 1 (shipped 2026-05-11), the monolithic `metrics.py` was split into a `metrics/` package so option slippage is computed in $-per-contract (not %-of-premium, which produced the 1130% bug) and stock metrics don't pool with option metrics. |
 | `scan_status.py` | Per-profile scan-cycle health/timeliness. |
 
 ### 3m. Reporting & monitoring
@@ -381,7 +381,7 @@ Multiple TTL-based caches across the system. Source of TTLs: `alternative_data._
 
 ## 10. Test suite
 
-Source: `tests/`. 354 test files covering:
+Source: `tests/`. 375 test files covering:
 
 - **Per-module unit tests** (~170 files): one per major module.
 - **Integration tests**: `test_today_integration.py` (scheduler wiring), `test_pipeline.py` (end-to-end cycle).
@@ -392,7 +392,7 @@ Run: `venv/bin/python -m pytest tests/ -q`.
 
 Test discipline:
 
-- 3,963 tests passing (1 skipped — an `_EMPTY_FIRE_EXEMPT` rule whose purpose is to fire on minimal context).
+- 4,561 tests passing (1 skipped — an `_EMPTY_FIRE_EXEMPT` rule whose purpose IS to fire on minimal context).
 - pytest-randomly for order-independence.
 - 30s default timeout per test.
 - Mocked external APIs (no network calls).
@@ -437,7 +437,7 @@ Flask + Jinja2. Templates in `templates/`. Major pages:
 - `/trades` — trade ledger.
 - `/settings` — per-profile settings.
 
-Major API endpoints in `views.py` (~50 routes). Documented inline; selected endpoints in `docs/06_USER_GUIDE.md`.
+Major API endpoints in `views.py` (~69 routes as of 2026-06-04). Documented inline; selected endpoints in `docs/06_USER_GUIDE.md`.
 
 ## 14. Adding a new module
 
